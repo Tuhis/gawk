@@ -1,0 +1,45 @@
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.surface {
+  width: 100%;
+  /* auto: pick up intrinsic aspect of the replaced element (video's
+     videoWidth/videoHeight). 16 / 9 is the fallback before dimensions load.
+     Note: canvas doesn't use this — see .canvasFrame below. */
+  aspect-ratio: auto 16 / 9;
+  background: #000;
+  display: block;
+  object-fit: contain;
+}
+
+/* Chrome doesn't reliably use canvas intrinsic aspect ratio, so we wrap the
+   canvas in this plain div whose aspect-ratio we control from JS. The canvas
+   inside fills the div and letterboxes via object-fit if buffer differs. */
+.canvasFrame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  display: block;
+}
+
+.canvasFill {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}

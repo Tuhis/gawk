@@ -1,0 +1,149 @@
+import { log } from '../lib/logger';
+import type { CaptureConfig } from './types';
+
+type ConfigVariant = {
+  label: string;
+  hardwareAcceleration?: HardwareAcceleration;
+  latencyMode?: LatencyMode;
+};
+
+// The WebCodecs spec only has 'prefer-hardware' | 'prefer-software' | 'no-preference'
+// — no way to *require* hardware. But: if we ask for 'prefer-hardware' and
+// isConfigSupported returns supported=true, Chrome commits to using HW (it
+// returns false when it can't). So probing with prefer-hardware FIRST gives
+// us a reasonable answer. If that fails, we drop the hint and the browser
+// falls back to whatever it can do — usually software.
+const CONFIG_VARIANTS: ConfigVariant[] = [
+  { label: 'prefer-hw + realtime', hardwareAcceleration: 'prefer-hardware', latencyMode: 'realtime' },
+  { label: 'prefer-hw',            hardwareAcceleration: 'prefer-hardware' },
+  { label: 'realtime',             latencyMode: 'realtime' },
+  { label: 'default' },
+];
+
+export type Acceleration = 'hardware' | 'software' | 'unknown';
+
+function classifyAcceleration(
+  variant: ConfigVariant,
+  resolved: HardwareAcceleration | undefined,
+): Acceleration {
+  // If the resolved (post-isConfigSupported) config says prefer-software, the
+  // browser told us explicitly it went software — trust that over our request.
+  if (resolved === 'prefer-software') return 'software';
+  if (resolved === 'prefer-hardware') return 'hardware';
+  // No resolved answer. Fall back to what we asked for: if we asked for HW
+  // and got 'supported: true', Chrome does commit to HW.
+  if (variant.hardwareAcceleration === 'prefer-hardware') return 'hardware';
+  return 'unknown';
+}
+
+export interface EncoderConfigured {
+  codec: string;
+  variantLabel: string;
+  acceleration: Acceleration;
+}
+
+export interface EncodedFrame {
+  chunk: EncodedVideoChunk;
+  meta: EncodedVideoChunkMetadata | undefined;
+  captureTimestampUs: number;
+  encodeStartMs: number;
+  encodeEndMs: number;
+}
+
+export interface EncoderCallbacks {
+  onEncoded: (frame: EncodedFrame) => void;
+  onError: (err: Error) => void;
+}
+
+export class Encoder {
+  private encoder: VideoEncoder;
+  private config: CaptureConfig;
+  private frameIndex = 0;
+  private captureStartMap = new Map<number, number>();
+  private chosenCodec: string | null = null;
+
+  constructor(config: CaptureConfig, callbacks: EncoderCallbacks) {
+    this.config = config;
+    this.encoder = new VideoEncoder({
+      output: (chunk, meta) => {
+        const captureTsUs = chunk.timestamp;
+        const encodeStartMs = this.captureStartMap.get(captureTsUs) ?? performance.now();
+        this.captureStartMap.delete(captureTsUs);
+        callbacks.onEncoded({
+          chunk,
+          meta,
+          captureTimestampUs: captureTsUs,
+          encodeStartMs,
+          encodeEndMs: performance.now(),
+        });
+      },
+      error: (e) => callbacks.onError(e instanceof Error ? e : new Error(String(e))),
+    });
+  }
+
+  async configure(): Promise<EncoderConfigured> {
+    const attempts: string[] = [];
+    for (const codec of this.config.codecPreferences) {
+      for (const variant of CONFIG_VARIANTS) {
+        const encoderConfig: VideoEncoderConfig = {
+          codec,
+          width: this.config.width,
+          height: this.config.height,
+          bitrate: this.config.bitrate,
+          framerate: this.config.framerate,
+          ...(variant.latencyMode ? { latencyMode: variant.latencyMode } : {}),
+          ...(variant.hardwareAcceleration ? { hardwareAcceleration: variant.hardwareAcceleration } : {}),
+        };
+        try {
+          const support = await VideoEncoder.isConfigSupported(encoderConfig);
+          if (support.supported) {
+            const finalConfig = support.config ?? encoderConfig;
+            this.encoder.configure(finalConfig);
+            this.chosenCodec = codec;
+            const acceleration = classifyAcceleration(variant, finalConfig.hardwareAcceleration);
+            log.info(
+              `Encoder accepted ${codec} with variant "${variant.label}" (${acceleration}); resolved config:`,
+              finalConfig,
+            );
+            return { codec, variantLabel: variant.label, acceleration };
+          }
+          attempts.push(`${codec}/${variant.label}: unsupported`);
+        } catch (e) {
+          attempts.push(`${codec}/${variant.label}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+    log.error('All encoder configs rejected. Attempts:', attempts);
+    throw new Error(
+      `No codec / config combination supported at ${this.config.width}x${this.config.height}@${this.config.framerate}. See console for full list.`,
+    );
+  }
+
+  get codec(): string | null {
+    return this.chosenCodec;
+  }
+
+  encode(frame: VideoFrame): boolean {
+    if (this.encoder.state !== 'configured') return false;
+    if (this.encoder.encodeQueueSize > 2) return false;
+    const keyFrame = this.frameIndex % this.config.keyframeIntervalFrames === 0;
+    this.captureStartMap.set(frame.timestamp, performance.now());
+    this.encoder.encode(frame, { keyFrame });
+    this.frameIndex++;
+    return true;
+  }
+
+  get queueSize(): number {
+    return this.encoder.encodeQueueSize;
+  }
+
+  async close(): Promise<void> {
+    try {
+      if (this.encoder.state === 'configured') await this.encoder.flush();
+    } catch {
+      // flush can throw during shutdown races — ignore
+    }
+    if (this.encoder.state !== 'closed') this.encoder.close();
+    this.captureStartMap.clear();
+  }
+}
