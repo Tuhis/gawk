@@ -8,7 +8,7 @@
 | A2 tlsutil | ✅ done | hash fixtures verified against openssl |
 | A3 gawk-devcert CLI | ✅ done | |
 | A4 transport /echo + E2E | ✅ done | 3 library gotchas — see `02-webtransport-hello.md` |
-| A5 manual browser verify | ⬜ pending | needs a human with Chrome; snippet in `02-webtransport-hello.md` |
+| A5 manual browser verify | ⬜ pending | blocked in WSL2 (UDP/Chrome issue — see `02-webtransport-hello.md`); retry after move to native dev |
 | B1 wire format | ✅ done | done early (no deps); golden vectors in `wire_test.go` |
 | B2 hub | ⬜ next | |
 | B3 publish/subscribe routes | ⬜ | |

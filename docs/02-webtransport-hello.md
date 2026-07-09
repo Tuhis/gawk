@@ -64,6 +64,27 @@ Two options:
 Note: CLI testing does not replace A5 — the browser check exists precisely to
 validate Chrome's cert acceptance rules, which no Go client exercises.
 
+## WSL2 blocks browser verification (2026-07-10)
+
+A5 could not be completed with the server inside WSL2 (NAT mode) and Chrome
+on Windows. Findings, so nobody re-debugs this:
+
+- `https://localhost:4433` from Chrome hangs forever: WSL2's localhost
+  forwarding is **TCP-only**; QUIC/UDP datagrams silently vanish.
+- Using the WSL NAT IP (`hostname -I`) instead, Chrome fails with
+  `QUIC_NETWORK_IDLE_TIMEOUT ... num_undecryptable_packets: 0` — it sends
+  Initials and receives nothing back.
+- The path itself is fine: raw UDP from Windows → WSL IP works (tested small
+  and 1256-byte packets), and a **Windows-native build of gawk-echo**
+  (`GOOS=windows go build ./cmd/gawk-echo`) completes the full
+  QUIC + WebTransport handshake against the same WSL server. Only Chrome
+  fails. No system proxy, no Chrome policies, Hyper-V firewall all defaults —
+  root cause inside Chrome/WSL2-NAT interaction, not identified.
+- Untried: WSL2 mirrored networking mode (`networkingMode=mirrored` in
+  `.wslconfig`) may fix it, since localhost then carries UDP natively.
+
+**Decision: moved to native development instead of debugging WSL further.**
+
 ## Manual browser verification (A5) — pending
 
 1. `go run ./cmd/gawk-server -dev-cert` (in `gawk-server/`) — the startup log
