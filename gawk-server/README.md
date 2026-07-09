@@ -25,6 +25,13 @@ go run ./cmd/gawk-server -dev-cert
 go run ./cmd/gawk-server -cert-file /tls/tls.crt -key-file /tls/tls.key
 ```
 
+To verify connectivity from the CLI (`-cert-hash` value is logged by the
+server at startup; omit it to skip cert verification):
+
+```sh
+go run ./cmd/gawk-echo -cert-hash <cert_hash_hex>
+```
+
 Every flag has a `GAWK_*` environment fallback (flag > env > default):
 
 | Flag | Env | Default |

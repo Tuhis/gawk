@@ -43,6 +43,27 @@ Also:
   toolchain auto-downloads it (GOTOOLCHAIN=auto), no manual install needed.
 - Client-side `tls.Config` for the Go Dialer needs `NextProtos: ["h3"]` too.
 
+## CLI testing (no browser)
+
+Two options:
+
+- `go test ./internal/transport/` — automated E2E: in-process server, real
+  QUIC echo round-trip.
+- `cmd/gawk-echo` — probes a *running* server, e.g. from another terminal or
+  LAN machine:
+
+  ```sh
+  go run ./cmd/gawk-server -dev-cert   # terminal 1; logs cert_hash_hex
+  go run ./cmd/gawk-echo -cert-hash <cert_hash_hex>   # terminal 2
+  ```
+
+  It verifies the server cert by SHA-256 hash (same mechanism as the
+  browser's `serverCertificateHashes`; omit `-cert-hash` to skip
+  verification) and prints per-datagram RTT. Loopback measured ~250µs.
+
+Note: CLI testing does not replace A5 — the browser check exists precisely to
+validate Chrome's cert acceptance rules, which no Go client exercises.
+
 ## Manual browser verification (A5) — pending
 
 1. `go run ./cmd/gawk-server -dev-cert` (in `gawk-server/`) — the startup log
