@@ -27,28 +27,37 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   Pub/sub hub — one publisher fans out encoded video datagrams to up to 15
   subscriber sessions.
 
-## Relay server behavior
-- Caches the last keyframe to prime newly-joined viewers
+## Relay server behavior (design; hub implementation pending — chunks B2+)
+- Caches the last keyframe + decoder config to prime newly-joined viewers
 - Drops chunks for slow subscribers rather than blocking others
-- Currently uses minimal framing (single keyframe-flag byte) — **needs extension**
-  to include frame IDs + chunk indexes, since encoded frames can exceed the safe
-  datagram payload size (~1200 bytes)
+- Framing protocol is **implemented** (`gawk-server/internal/wire`): VideoChunk
+  datagrams carry frameID + chunkIndex/chunkCount + keyframe flag + timestamp
+  (20-byte header, big-endian); a separate DecoderConfig message carries
+  codec string + AVCC extradata. Golden test vectors for the future TS mirror
+  live in `wire_test.go` and `docs/02-webtransport-hello.md`.
 
 ## Directory structure
 - `gawk-app` is the folder for the frontend application
-- `gawk-server` is the folder for the backend (the Relay server)
+- `gawk-server` is the folder for the backend (the Relay server) — Go module,
+  see `gawk-server/README.md` for build/run
 - `docs/` — per-build-step design notes and gotchas. See
-  `docs/01-loopback-test.md` for v0.1 (local loopback).
+  `docs/01-loopback-test.md` for v0.1 (local loopback),
+  `docs/02-webtransport-hello.md` for v0.2 (server + TLS + echo).
+- `docs/implementation-tasks.md` — **the server design + chunked task
+  breakdown (A1–D3) with per-chunk acceptance criteria and progress status.
+  Start here when continuing server work.**
 
 ## Build order
 1. Local loopback testing — **done** (v0.1 in `gawk-app/`; see `docs/01-loopback-test.md`)
-2. WebTransport hello-world (nail TLS/certificate setup)
-3. Single-client end-to-end
-4. Fan-out (multi-subscriber)
-5. Resilience features (forced keyframes, etc.)
+2. WebTransport hello-world (TLS/certificate setup) — **code done** (chunks
+   A1–A4 + B1; see `docs/02-webtransport-hello.md`). Only A5 remains: manual
+   browser echo verification, needs a human with Chrome.
+3. Single-client end-to-end — next up: chunks B2 (hub), B3 (publish/subscribe
+   routes), B4 (frontend transport module)
+4. Fan-out (multi-subscriber) — chunks C1–C3
+5. Resilience features (forced keyframes, etc.) — chunks D1–D3 incl. deployment
 
 ## On the horizon (not started)
-- Extend framing protocol: frame IDs + chunk indexes for multi-datagram frames
 - Periodic forced keyframes for resilience
 - Media over QUIC (MoQ) — explicitly deferred; still an unstable IETF draft
   (draft-17 surveyed) with no native browser support yet. Don't build toward it now.

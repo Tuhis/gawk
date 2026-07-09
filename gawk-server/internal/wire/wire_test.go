@@ -1,0 +1,411 @@
+package wire
+
+import (
+	"bytes"
+	"encoding/hex"
+	"errors"
+	"strings"
+	"testing"
+)
+
+// Golden vectors, computed by hand from the wire format spec.
+//
+// NOTE: these hex strings will be copy-pasted into the TypeScript mirror's
+// tests (gawk-app/src/transport/) — they are the cross-language portability
+// guarantee. Do not regenerate them from code; if they change, the wire
+// format changed.
+const (
+	// VideoChunk: Keyframe=true, FrameID=0x01020304, ChunkIndex=5,
+	// ChunkCount=130, TimestampUs=0x0000005D21DBA5F0, payload "abc".
+	//
+	//   01                       version
+	//   01                       type = VideoChunk
+	//   01                       flags (bit0 keyframe = 1)
+	//   00                       reserved
+	//   01 02 03 04              frameID = 0x01020304
+	//   00 05                    chunkIndex = 5
+	//   00 82                    chunkCount = 130
+	//   00 00 00 5d 21 db a5 f0  timestampUs = 0x0000005D21DBA5F0
+	//   61 62 63                 payload "abc"
+	goldenVideoChunkHex = "0101010001020304000500820000005d21dba5f0616263"
+
+	// DecoderConfig: Codec="avc1.42E02A", extradata 01 42 E0 2A FF E1.
+	//
+	//   01                                 version
+	//   02                                 type = DecoderConfig
+	//   00                                 reserved
+	//   0b                                 codecLen = 11
+	//   61 76 63 31 2e 34 32 45 30 32 41   "avc1.42E02A"
+	//   01 42 e0 2a ff e1                  extradata
+	goldenDecoderConfigAVCHex = "0102000b617663312e3432453032410142e02affe1"
+
+	// DecoderConfig: Codec="vp8", empty extradata.
+	//
+	//   01         version
+	//   02         type = DecoderConfig
+	//   00         reserved
+	//   03         codecLen = 3
+	//   76 70 38   "vp8"
+	goldenDecoderConfigVP8Hex = "01020003767038"
+)
+
+var (
+	goldenVideoChunkHeader = VideoChunkHeader{
+		Keyframe:    true,
+		FrameID:     0x01020304,
+		ChunkIndex:  5,
+		ChunkCount:  130,
+		TimestampUs: 0x0000005D21DBA5F0,
+	}
+	goldenVideoChunkPayload = []byte("abc")
+
+	goldenDecoderConfigAVC = DecoderConfig{
+		Codec:     "avc1.42E02A",
+		Extradata: []byte{0x01, 0x42, 0xE0, 0x2A, 0xFF, 0xE1},
+	}
+	goldenDecoderConfigVP8 = DecoderConfig{Codec: "vp8"}
+)
+
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("bad hex constant %q: %v", s, err)
+	}
+	return b
+}
+
+func TestConstants(t *testing.T) {
+	if MaxChunkPayload != MaxDatagramSize-VideoChunkHeaderSize {
+		t.Fatalf("MaxChunkPayload = %d, want %d", MaxChunkPayload, MaxDatagramSize-VideoChunkHeaderSize)
+	}
+}
+
+func TestVideoChunkRoundTrip(t *testing.T) {
+	cases := []struct {
+		name    string
+		h       VideoChunkHeader
+		payload []byte
+	}{
+		{"keyframe", VideoChunkHeader{Keyframe: true, FrameID: 42, ChunkIndex: 0, ChunkCount: 3, TimestampUs: 1234567}, []byte("hello")},
+		{"delta frame", VideoChunkHeader{Keyframe: false, FrameID: 43, ChunkIndex: 2, ChunkCount: 3, TimestampUs: 7654321}, []byte{0xde, 0xad, 0xbe, 0xef}},
+		{"empty payload", VideoChunkHeader{Keyframe: false, FrameID: 0, ChunkIndex: 0, ChunkCount: 1, TimestampUs: 0}, nil},
+		{"max payload", VideoChunkHeader{Keyframe: true, FrameID: 0xFFFFFFFF, ChunkIndex: 0xFFFE, ChunkCount: 0xFFFF, TimestampUs: 0xFFFFFFFFFFFFFFFF}, bytes.Repeat([]byte{0xAB}, MaxChunkPayload)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dgram, err := AppendVideoChunk(nil, tc.h, tc.payload)
+			if err != nil {
+				t.Fatalf("AppendVideoChunk: %v", err)
+			}
+			if len(dgram) > MaxDatagramSize {
+				t.Fatalf("datagram %d bytes exceeds MaxDatagramSize", len(dgram))
+			}
+			ver, typ, err := PeekType(dgram)
+			if err != nil || ver != Version || typ != TypeVideoChunk {
+				t.Fatalf("PeekType = (%d, %d, %v), want (%d, %d, nil)", ver, typ, err, Version, TypeVideoChunk)
+			}
+			h, payload, err := ParseVideoChunk(dgram)
+			if err != nil {
+				t.Fatalf("ParseVideoChunk: %v", err)
+			}
+			if h != tc.h {
+				t.Errorf("header = %+v, want %+v", h, tc.h)
+			}
+			if !bytes.Equal(payload, tc.payload) {
+				t.Errorf("payload mismatch: got %d bytes, want %d bytes", len(payload), len(tc.payload))
+			}
+		})
+	}
+}
+
+func TestVideoChunkAppendToExisting(t *testing.T) {
+	prefix := []byte("existing")
+	dgram, err := AppendVideoChunk(prefix, VideoChunkHeader{ChunkCount: 1}, []byte("x"))
+	if err != nil {
+		t.Fatalf("AppendVideoChunk: %v", err)
+	}
+	if !bytes.HasPrefix(dgram, prefix) {
+		t.Fatalf("append did not preserve dst prefix")
+	}
+	if len(dgram) != len(prefix)+VideoChunkHeaderSize+1 {
+		t.Fatalf("dgram length = %d, want %d", len(dgram), len(prefix)+VideoChunkHeaderSize+1)
+	}
+}
+
+func TestVideoChunkPayloadAliasesInput(t *testing.T) {
+	dgram, err := AppendVideoChunk(nil, VideoChunkHeader{ChunkCount: 1}, []byte("abc"))
+	if err != nil {
+		t.Fatalf("AppendVideoChunk: %v", err)
+	}
+	_, payload, err := ParseVideoChunk(dgram)
+	if err != nil {
+		t.Fatalf("ParseVideoChunk: %v", err)
+	}
+	dgram[VideoChunkHeaderSize] = 'Z'
+	if payload[0] != 'Z' {
+		t.Fatalf("payload does not alias input datagram")
+	}
+}
+
+func TestDecoderConfigRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		c    DecoderConfig
+	}{
+		{"h264 with extradata", DecoderConfig{Codec: "avc1.640028", Extradata: []byte{0x01, 0x64, 0x00, 0x28}}},
+		{"vp9 empty extradata", DecoderConfig{Codec: "vp09.00.40.08"}},
+		{"single char codec", DecoderConfig{Codec: "x", Extradata: []byte{0x00}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dgram, err := AppendDecoderConfig(nil, tc.c)
+			if err != nil {
+				t.Fatalf("AppendDecoderConfig: %v", err)
+			}
+			ver, typ, err := PeekType(dgram)
+			if err != nil || ver != Version || typ != TypeDecoderConfig {
+				t.Fatalf("PeekType = (%d, %d, %v), want (%d, %d, nil)", ver, typ, err, Version, TypeDecoderConfig)
+			}
+			got, err := ParseDecoderConfig(dgram)
+			if err != nil {
+				t.Fatalf("ParseDecoderConfig: %v", err)
+			}
+			if got.Codec != tc.c.Codec {
+				t.Errorf("codec = %q, want %q", got.Codec, tc.c.Codec)
+			}
+			if !bytes.Equal(got.Extradata, tc.c.Extradata) {
+				t.Errorf("extradata = %x, want %x", got.Extradata, tc.c.Extradata)
+			}
+			if len(tc.c.Extradata) == 0 && len(got.Extradata) != 0 {
+				t.Errorf("expected empty extradata, got %d bytes", len(got.Extradata))
+			}
+		})
+	}
+}
+
+func TestGoldenVideoChunk(t *testing.T) {
+	want := mustHex(t, goldenVideoChunkHex)
+
+	dgram, err := AppendVideoChunk(nil, goldenVideoChunkHeader, goldenVideoChunkPayload)
+	if err != nil {
+		t.Fatalf("AppendVideoChunk: %v", err)
+	}
+	if !bytes.Equal(dgram, want) {
+		t.Errorf("append produced %x, want %x", dgram, want)
+	}
+
+	h, payload, err := ParseVideoChunk(want)
+	if err != nil {
+		t.Fatalf("ParseVideoChunk: %v", err)
+	}
+	if h != goldenVideoChunkHeader {
+		t.Errorf("header = %+v, want %+v", h, goldenVideoChunkHeader)
+	}
+	if !bytes.Equal(payload, goldenVideoChunkPayload) {
+		t.Errorf("payload = %x, want %x", payload, goldenVideoChunkPayload)
+	}
+}
+
+func TestGoldenDecoderConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		hexData string
+		want    DecoderConfig
+	}{
+		{"avc1 with extradata", goldenDecoderConfigAVCHex, goldenDecoderConfigAVC},
+		{"vp8 empty extradata", goldenDecoderConfigVP8Hex, goldenDecoderConfigVP8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wantBytes := mustHex(t, tc.hexData)
+
+			dgram, err := AppendDecoderConfig(nil, tc.want)
+			if err != nil {
+				t.Fatalf("AppendDecoderConfig: %v", err)
+			}
+			if !bytes.Equal(dgram, wantBytes) {
+				t.Errorf("append produced %x, want %x", dgram, wantBytes)
+			}
+
+			got, err := ParseDecoderConfig(wantBytes)
+			if err != nil {
+				t.Fatalf("ParseDecoderConfig: %v", err)
+			}
+			if got.Codec != tc.want.Codec {
+				t.Errorf("codec = %q, want %q", got.Codec, tc.want.Codec)
+			}
+			if !bytes.Equal(got.Extradata, tc.want.Extradata) {
+				t.Errorf("extradata = %x, want %x", got.Extradata, tc.want.Extradata)
+			}
+		})
+	}
+}
+
+func TestPeekTypeErrors(t *testing.T) {
+	for _, dgram := range [][]byte{nil, {}, {0x01}} {
+		if _, _, err := PeekType(dgram); !errors.Is(err, ErrShortDatagram) {
+			t.Errorf("PeekType(%x) error = %v, want ErrShortDatagram", dgram, err)
+		}
+	}
+	// PeekType does not validate version or type.
+	ver, typ, err := PeekType([]byte{0xFF, 0xEE})
+	if err != nil || ver != 0xFF || typ != 0xEE {
+		t.Errorf("PeekType = (%#x, %#x, %v), want (0xff, 0xee, nil)", ver, typ, err)
+	}
+}
+
+func TestParseVideoChunkErrors(t *testing.T) {
+	valid := mustHex(t, goldenVideoChunkHex)
+
+	corrupt := func(offset int, b byte) []byte {
+		d := bytes.Clone(valid)
+		d[offset] = b
+		return d
+	}
+	setU16 := func(offset int, v uint16) []byte {
+		d := bytes.Clone(valid)
+		d[offset] = byte(v >> 8)
+		d[offset+1] = byte(v)
+		return d
+	}
+
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"empty", nil, ErrShortDatagram},
+		{"1 byte", valid[:1], ErrShortDatagram},
+		{"19 bytes", valid[:19], ErrShortDatagram},
+		{"bad version", corrupt(0, 0x02), ErrBadVersion},
+		{"bad type", corrupt(1, 0x02), ErrBadType},
+		{"chunkCount zero", setU16(10, 0), ErrBadChunkCount},
+		{"chunkIndex == chunkCount", setU16(8, 130), ErrBadChunkCount},
+		{"chunkIndex > chunkCount", setU16(8, 200), ErrBadChunkCount},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ParseVideoChunk(tc.dgram); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	// Exactly header-sized datagram with empty payload is valid.
+	if _, payload, err := ParseVideoChunk(valid[:VideoChunkHeaderSize]); err != nil || len(payload) != 0 {
+		t.Errorf("20-byte datagram: payload = %x, err = %v; want empty, nil", payload, err)
+	}
+}
+
+func TestAppendVideoChunkErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		h       VideoChunkHeader
+		payload []byte
+		want    error
+	}{
+		{"oversized payload", VideoChunkHeader{ChunkCount: 1}, make([]byte, MaxChunkPayload+1), ErrPayloadTooLarge},
+		{"chunkCount zero", VideoChunkHeader{ChunkCount: 0}, nil, ErrBadChunkCount},
+		{"chunkIndex == chunkCount", VideoChunkHeader{ChunkIndex: 3, ChunkCount: 3}, nil, ErrBadChunkCount},
+		{"chunkIndex > chunkCount", VideoChunkHeader{ChunkIndex: 4, ChunkCount: 3}, nil, ErrBadChunkCount},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := AppendVideoChunk(nil, tc.h, tc.payload); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseDecoderConfigErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"empty", nil, ErrShortDatagram},
+		{"1 byte", []byte{0x01}, ErrShortDatagram},
+		{"3 bytes", []byte{0x01, 0x02, 0x00}, ErrShortDatagram},
+		{"bad version", []byte{0x02, 0x02, 0x00, 0x01, 'x'}, ErrBadVersion},
+		{"bad type", []byte{0x01, 0x01, 0x00, 0x01, 'x'}, ErrBadType},
+		{"codecLen overruns datagram", []byte{0x01, 0x02, 0x00, 0x05, 'v', 'p', '8'}, ErrBadCodec},
+		{"codecLen overruns by one", []byte{0x01, 0x02, 0x00, 0x04, 'v', 'p', '8'}, ErrBadCodec},
+		{"codecLen zero", []byte{0x01, 0x02, 0x00, 0x00}, ErrBadCodec},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseDecoderConfig(tc.dgram); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendDecoderConfigErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		c    DecoderConfig
+		want error
+	}{
+		{"empty codec", DecoderConfig{Codec: ""}, ErrBadCodec},
+		{"codec over 255 bytes", DecoderConfig{Codec: strings.Repeat("a", 256)}, ErrBadCodec},
+		{"total exceeds MaxDatagramSize", DecoderConfig{Codec: "vp8", Extradata: make([]byte, MaxDatagramSize)}, ErrDatagramTooLarge},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := AppendDecoderConfig(nil, tc.c); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	// Exactly at the size limit is fine: 4 + 3 + 1193 = 1200.
+	c := DecoderConfig{Codec: "vp8", Extradata: make([]byte, MaxDatagramSize-4-3)}
+	dgram, err := AppendDecoderConfig(nil, c)
+	if err != nil {
+		t.Fatalf("AppendDecoderConfig at limit: %v", err)
+	}
+	if len(dgram) != MaxDatagramSize {
+		t.Fatalf("dgram length = %d, want %d", len(dgram), MaxDatagramSize)
+	}
+}
+
+// FuzzParse feeds arbitrary bytes to PeekType and both parsers, asserting
+// only that they never panic and, on success, uphold their invariants.
+func FuzzParse(f *testing.F) {
+	seed := func(hexData string) []byte {
+		b, err := hex.DecodeString(hexData)
+		if err != nil {
+			f.Fatalf("bad seed hex %q: %v", hexData, err)
+		}
+		return b
+	}
+	f.Add(seed(goldenVideoChunkHex))
+	f.Add(seed(goldenDecoderConfigAVCHex))
+	f.Add(seed(goldenDecoderConfigVP8Hex))
+	f.Add([]byte{})
+	f.Add([]byte{0x01})
+	f.Add([]byte{0x01, 0x01})
+	f.Add([]byte{0x01, 0x02, 0x00, 0xFF})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _, _ = PeekType(data)
+
+		if h, payload, err := ParseVideoChunk(data); err == nil {
+			if h.ChunkCount == 0 || h.ChunkIndex >= h.ChunkCount {
+				t.Errorf("ParseVideoChunk accepted invalid index/count: %+v", h)
+			}
+			if len(payload) > MaxChunkPayload && len(data) <= MaxDatagramSize {
+				t.Errorf("payload %d bytes from %d-byte datagram", len(payload), len(data))
+			}
+		}
+
+		if c, err := ParseDecoderConfig(data); err == nil {
+			if len(c.Codec) == 0 || len(c.Codec) > 255 {
+				t.Errorf("ParseDecoderConfig accepted codec of length %d", len(c.Codec))
+			}
+		}
+	})
+}
