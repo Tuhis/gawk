@@ -7,6 +7,11 @@ config to prime late joiners.
 
 Design, wire format and task breakdown: [`../docs/implementation-tasks.md`](../docs/implementation-tasks.md).
 
+Routes: `CONNECT /publish` (single publisher; 409 while taken),
+`CONNECT /subscribe` (429 when full; primed with cached decoder config +
+last keyframe on join), `CONNECT /echo` (connectivity diagnostic),
+`GET /healthz`.
+
 ## Build & test
 
 ```sh

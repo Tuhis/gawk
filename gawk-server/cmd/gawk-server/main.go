@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
+	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 )
@@ -55,7 +56,8 @@ func run() error {
 		return err
 	}
 
-	if err := transport.New(cfg, getCert, log).Run(ctx); err != nil {
+	h := hub.New(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers})
+	if err := transport.New(cfg, h, getCert, log).Run(ctx); err != nil {
 		return err
 	}
 
