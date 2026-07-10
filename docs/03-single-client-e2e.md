@@ -1,9 +1,11 @@
 # v0.3 — Single-client end-to-end: hub + publish/subscribe relay (Milestone B)
 
-Status (2026-07-10): **B2, B3 and B4 implemented.** Server-side relay is
-complete and integration-tested; the frontend has broadcast and view pages
-wired to `/publish` and `/subscribe`. What remains to close milestone B is
-the manual browser verification (see "Manual verification" below).
+Status (2026-07-10): **Milestone B complete.** Server-side relay is complete
+and integration-tested; the frontend has broadcast and view pages wired to
+`/publish` and `/subscribe`. Manual browser verification passed end-to-end
+(Chrome inside WSL2): broadcast → relay → view shows live picture, with relay
+priming on join. One bug surfaced and was fixed during verification — the
+viewer decoder needed a HW→software fallback (see gotchas below).
 
 ## What was built
 
@@ -110,6 +112,17 @@ config + full cached keyframe with no publisher traffic after its join;
   (delete `node_modules` + lockfile, reinstall) does **not** fix it here.
   Workaround: `npm install @rolldown/binding-linux-x64-gnu @oxlint/binding-linux-x64-gnu --no-save`.
   May need repeating after a fresh clone/install.
+- **The decoder needs the same HW→software fallback the encoder has.** The
+  viewer's `VideoDecoder` originally forced `hardwareAcceleration:
+  'prefer-hardware'` and threw on the first `isConfigSupported` miss. Inside
+  WSL2 (software Chrome, no GPU) there is no hardware H.264 decoder, so it
+  failed with `Decoder config unsupported: avc1.42E02A @ undefinedxundefined`
+  while the broadcaster's encoder worked fine — the encoder already cascades
+  down to software (see `media/encoder.ts`). `media/decoder.ts` now probes
+  prefer-hardware first, then falls back to no hint (software). The
+  `undefinedxundefined` was a red herring: the wire `DecoderConfig` carries no
+  dimensions (Chrome derives them from the AVCC `description`), so those fields
+  are always absent.
 - **quic-go's outgoing datagram queue is finite**: blasting datagrams
   faster than the connection sends them can surface as send errors/loss
   even on loopback. The relay integration test paces frames ~2ms apart

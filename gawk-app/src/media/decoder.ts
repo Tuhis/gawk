@@ -31,16 +31,26 @@ export class Decoder {
   }
 
   async configure(cfg: VideoDecoderConfig): Promise<void> {
-    const wantsHwHint: VideoDecoderConfig = {
-      hardwareAcceleration: 'prefer-hardware',
-      optimizeForLatency: true,
-      ...cfg,
-    };
-    const support = await VideoDecoder.isConfigSupported(wantsHwHint);
-    if (!support.supported) {
-      throw new Error(`Decoder config unsupported: ${cfg.codec} @ ${cfg.codedWidth}x${cfg.codedHeight}`);
+    // Like the encoder (see media/encoder.ts): 'prefer-hardware' makes Chrome
+    // return supported=false when it can't deliver HW decode — e.g. software
+    // Chrome inside WSL2 with no GPU. So probe HW first, then fall back to no
+    // hint (software) rather than throwing on the first miss.
+    const base: VideoDecoderConfig = { optimizeForLatency: true, ...cfg };
+    const variants: VideoDecoderConfig[] = [
+      { hardwareAcceleration: 'prefer-hardware', ...base },
+      base,
+    ];
+    for (const variant of variants) {
+      const support = await VideoDecoder.isConfigSupported(variant);
+      if (support.supported) {
+        this.decoder.configure(support.config ?? variant);
+        return;
+      }
     }
-    this.decoder.configure(support.config ?? wantsHwHint);
+    throw new Error(
+      `Decoder config unsupported (tried HW + software): ${cfg.codec}` +
+        (cfg.codedWidth ? ` @ ${cfg.codedWidth}x${cfg.codedHeight}` : ''),
+    );
   }
 
   decode(chunk: EncodedVideoChunk): void {
