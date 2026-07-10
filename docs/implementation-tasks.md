@@ -1,6 +1,6 @@
 # `gawk-server` Implementation Plan — Go WebTransport Relay
 
-## Progress (updated 2026-07-09)
+## Progress (updated 2026-07-10)
 
 | Chunk | Status | Notes |
 |-------|--------|-------|
@@ -8,11 +8,11 @@
 | A2 tlsutil | ✅ done | hash fixtures verified against openssl |
 | A3 gawk-devcert CLI | ✅ done | |
 | A4 transport /echo + E2E | ✅ done | 3 library gotchas — see `02-webtransport-hello.md` |
-| A5 manual browser verify | ⬜ pending | blocked in WSL2 (UDP/Chrome issue — see `02-webtransport-hello.md`); retry after move to native dev |
+| A5 manual browser verify | ✅ done | Chrome must run *inside* WSL2 (Windows Chrome → WSL2 NAT UDP is broken) — see `02-webtransport-hello.md` |
 | B1 wire format | ✅ done | done early (no deps); golden vectors in `wire_test.go` |
-| B2 hub | ⬜ next | |
-| B3 publish/subscribe routes | ⬜ | |
-| B4 frontend transport (TS) | ⬜ | |
+| B2 hub | ✅ done | see `03-single-client-e2e.md` |
+| B3 publish/subscribe routes | ✅ done | integration tests incl. late-join priming over the network |
+| B4 frontend transport (TS) | ✅ done | full `gawk-app/src/transport/` module + broadcast/view pages; **milestone B close-out: manual browser verify pending** — steps in `03-single-client-e2e.md` |
 | C1–C3 fan-out | ⬜ | |
 | D1–D3 resilience + deploy | ⬜ | |
 

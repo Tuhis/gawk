@@ -27,9 +27,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   Pub/sub hub — one publisher fans out encoded video datagrams to up to 15
   subscriber sessions.
 
-## Relay server behavior (design; hub implementation pending — chunks B2+)
+## Relay server behavior (implemented — chunks B2/B3; fan-out hardening C1+ pending)
 - Caches the last keyframe + decoder config to prime newly-joined viewers
-- Drops chunks for slow subscribers rather than blocking others
+  (`gawk-server/internal/hub`)
+- Drops chunks for slow subscribers rather than blocking others (per-subscriber
+  bounded queue, non-blocking enqueue)
+- Routes: `CONNECT /publish` (single publisher, 409 when taken),
+  `CONNECT /subscribe` (429 when full), `/echo` diagnostic, `GET /healthz`
 - Framing protocol is **implemented** (`gawk-server/internal/wire`): VideoChunk
   datagrams carry frameID + chunkIndex/chunkCount + keyframe flag + timestamp
   (20-byte header, big-endian); a separate DecoderConfig message carries
@@ -37,12 +41,15 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   live in `wire_test.go` and `docs/02-webtransport-hello.md`.
 
 ## Directory structure
+- `README.md` — project overview, quickstart, and the consolidated gotcha
+  list (keep it in sync when a new gotcha lands in `docs/`)
 - `gawk-app` is the folder for the frontend application
 - `gawk-server` is the folder for the backend (the Relay server) — Go module,
   see `gawk-server/README.md` for build/run
 - `docs/` — per-build-step design notes and gotchas. See
   `docs/01-loopback-test.md` for v0.1 (local loopback),
-  `docs/02-webtransport-hello.md` for v0.2 (server + TLS + echo).
+  `docs/02-webtransport-hello.md` for v0.2 (server + TLS + echo),
+  `docs/03-single-client-e2e.md` for v0.3 (hub + publish/subscribe relay).
 - `docs/implementation-tasks.md` — **the server design + chunked task
   breakdown (A1–D3) with per-chunk acceptance criteria and progress status.
   Start here when continuing server work.**
@@ -52,8 +59,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 2. WebTransport hello-world (TLS/certificate setup) — **done** (chunks
    A1–A4 + B1; A5 browser echo verified 2026-07-10 with Chrome inside WSL2;
    see `docs/02-webtransport-hello.md`).
-3. Single-client end-to-end — next up: chunks B2 (hub), B3 (publish/subscribe
-   routes), B4 (frontend transport module)
+3. Single-client end-to-end — implemented: B2 (hub), B3 (publish/subscribe
+   routes), B4 (frontend transport module + broadcast/view pages, hash-routed
+   `#/broadcast` / `#/view` / `#/loopback`). Milestone close-out pending:
+   manual browser verify — steps in `docs/03-single-client-e2e.md`.
 4. Fan-out (multi-subscriber) — chunks C1–C3
 5. Resilience features (forced keyframes, etc.) — chunks D1–D3 incl. deployment
 
