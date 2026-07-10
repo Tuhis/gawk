@@ -29,8 +29,10 @@ func TestGenerateDevCertProperties(t *testing.T) {
 		t.Errorf("curve = %v, want P-256", pub.Curve.Params().Name)
 	}
 
-	if v := leaf.NotAfter.Sub(leaf.NotBefore); v > MaxDevCertValidity+time.Hour {
-		t.Errorf("validity %v exceeds 14 days (+skew allowance)", v)
+	// Chromium rejects serverCertificateHashes certs whose total span
+	// exceeds 14 days; the clock-skew backdate must not push it over.
+	if v := leaf.NotAfter.Sub(leaf.NotBefore); v > MaxDevCertValidity {
+		t.Errorf("validity span %v exceeds Chromium's 14-day limit", v)
 	}
 
 	if !slices.Contains(leaf.DNSNames, "localhost") || !slices.Contains(leaf.DNSNames, "gawk.lan") {
@@ -52,9 +54,10 @@ func TestGenerateDevCertCapsValidity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateDevCert: %v", err)
 	}
-	// NotBefore is backdated 1h for clock skew; total span must stay ≤ 14d + 1h.
-	if v := cert.Leaf.NotAfter.Sub(cert.Leaf.NotBefore); v > MaxDevCertValidity+time.Hour {
-		t.Errorf("validity %v not capped to 14 days", v)
+	// NotBefore is backdated 1h for clock skew, but the total span (which is
+	// what Chromium limits) must still stay ≤ 14 days.
+	if v := cert.Leaf.NotAfter.Sub(cert.Leaf.NotBefore); v > MaxDevCertValidity {
+		t.Errorf("validity span %v not capped to 14 days", v)
 	}
 }
 

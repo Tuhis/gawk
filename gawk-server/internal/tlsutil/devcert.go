@@ -34,8 +34,13 @@ func GenerateDevCert(hosts []string, validity time.Duration) (tls.Certificate, e
 	if len(hosts) == 0 {
 		return tls.Certificate{}, fmt.Errorf("tlsutil: no hosts given")
 	}
-	if validity <= 0 || validity > MaxDevCertValidity {
-		validity = MaxDevCertValidity
+	// Chromium rejects certs used with serverCertificateHashes whose total
+	// span (NotAfter-NotBefore) exceeds 14 days. We backdate NotBefore by
+	// clockSkew for tolerance, so the future validity must be capped to leave
+	// room for it: skew + validity <= MaxDevCertValidity.
+	const clockSkew = time.Hour
+	if validity <= 0 || validity > MaxDevCertValidity-clockSkew {
+		validity = MaxDevCertValidity - clockSkew
 	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -52,7 +57,7 @@ func GenerateDevCert(hosts []string, validity time.Duration) (tls.Certificate, e
 	tmpl := x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "gawk-server dev cert"},
-		NotBefore:    now.Add(-time.Hour), // tolerate clock skew
+		NotBefore:    now.Add(-clockSkew), // tolerate clock skew
 		NotAfter:     now.Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},

@@ -49,9 +49,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 
 ## Build order
 1. Local loopback testing — **done** (v0.1 in `gawk-app/`; see `docs/01-loopback-test.md`)
-2. WebTransport hello-world (TLS/certificate setup) — **code done** (chunks
-   A1–A4 + B1; see `docs/02-webtransport-hello.md`). Only A5 remains: manual
-   browser echo verification, needs a human with Chrome.
+2. WebTransport hello-world (TLS/certificate setup) — **done** (chunks
+   A1–A4 + B1; A5 browser echo verified 2026-07-10 with Chrome inside WSL2;
+   see `docs/02-webtransport-hello.md`).
 3. Single-client end-to-end — next up: chunks B2 (hub), B3 (publish/subscribe
    routes), B4 (frontend transport module)
 4. Fan-out (multi-subscriber) — chunks C1–C3

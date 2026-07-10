@@ -83,9 +83,15 @@ on Windows. Findings, so nobody re-debugs this:
 - Untried: WSL2 mirrored networking mode (`networkingMode=mirrored` in
   `.wslconfig`) may fix it, since localhost then carries UDP natively.
 
-**Decision: moved to native development instead of debugging WSL further.**
+**Resolution (2026-07-10): ran Chrome *inside* WSL2 too, alongside the server.**
+With both endpoints in the same Linux network namespace, the localhost
+UDP-forwarding problem disappears and QUIC connects. This unblocked A5 —
+see below.
 
-## Manual browser verification (A5) — pending
+## Manual browser verification (A5) — done (2026-07-10)
+
+Verified with both `gawk-server` and Chrome running inside WSL2 (see the
+resolution note above). Steps:
 
 1. `go run ./cmd/gawk-server -dev-cert` (in `gawk-server/`) — the startup log
    prints the SPKI fingerprint, cert hash, and ready-to-paste Chrome flags.
@@ -104,7 +110,22 @@ on Windows. Findings, so nobody re-debugs this:
    console.log(new TextDecoder().decode((await r.read()).value)); // "ping"
    ```
 
-3. Record any browser-side gotchas here.
+### Browser-side gotchas found
+
+- **The dev cert's total validity span must be ≤ 14 days, backdate included.**
+  Chromium's `serverCertificateHashes` verifier rejects any cert whose
+  `notAfter − notBefore` exceeds 14 days with
+  `ERR_QUIC_PROTOCOL_ERROR.QUIC_TLS_CERTIFICATE_UNKNOWN` /
+  `CERTIFICATE_VERIFY_FAILED` (`certificate unknown`). `GenerateDevCert`
+  originally added its 1-hour clock-skew backdate *on top of* the full 14-day
+  validity (span = 14d + 1h), so the server's `-dev-cert` path (which requests
+  `MaxDevCertValidity`) always produced a cert Chrome refused. Fixed by
+  anchoring `NotAfter` to `NotBefore` so the skew hour lives inside the budget.
+  The Go `gawk-echo` probe never caught this — it verifies only the hash match,
+  not Chromium's 14-day span rule, so it accepted the bad cert.
+- **The dev cert is ephemeral** — regenerated on every server start. Re-copy
+  the fresh `cert_hash_hex` from the startup log after each restart; a stale
+  hash fails the same way (`certificate unknown`).
 
 ## Wire format golden vectors (for the TS mirror, chunk B4)
 
