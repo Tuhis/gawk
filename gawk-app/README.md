@@ -1,32 +1,45 @@
-# React + TypeScript + Vite
+# gawk-app
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React SPA frontend for the gawk game stream: screen capture, WebCodecs
+encode/decode, and WebTransport datagram transport to the relay. Project
+overview, quickstart and gotchas: [root README](../README.md).
 
-Currently, two official plugins are available:
+## Pages (hash-routed)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- `#/view` (default) — subscribe to the relay, reassemble datagrams, decode,
+  paint to canvas
+- `#/broadcast` — capture the screen, encode, publish chunked datagrams
+- `#/loopback` — capture → encode → decode in one tab, no network; kept as a
+  pipeline diagnostic
 
-## React Compiler
+## Structure
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Path | What |
+|------|------|
+| `src/media/` | Capture (`getDisplayMedia` + MSTP/rVFC fallback), encoder/decoder wrappers, loopback pipeline |
+| `src/transport/` | Wire format mirror (`wire.ts`, golden-tested against the Go source of truth), packetizer, reassembler, WebTransport connection, broadcaster/viewer pipelines |
+| `src/features/` | Pages and components |
+| `src/state/` | Zustand stores (pipeline state, persisted server settings) |
 
-## Expanding the Oxlint configuration
+## Commands
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm run dev      # Vite dev server on :5173
+npm test         # vitest — wire golden vectors, packetize/reassemble policy
+npm run lint     # oxlint
+npm run build    # tsc -b + vite build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+If any of these die with "Cannot find native binding", npm skipped the
+platform-native optional deps ([npm/cli#4828](https://github.com/npm/cli/issues/4828)):
+
+```sh
+npm install @rolldown/binding-linux-x64-gnu @oxlint/binding-linux-x64-gnu --no-save
+```
+
+## Invariant worth knowing
+
+`src/transport/wire.ts` must stay byte-compatible with
+`gawk-server/internal/wire`. The golden hex vectors in `wire.test.ts` are
+copied verbatim from `wire_test.go` — never regenerate them from code; if
+they fail, the wire format drifted and that's the bug.

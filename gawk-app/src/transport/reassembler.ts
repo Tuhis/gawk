@@ -1,0 +1,208 @@
+// Viewer-side depacketization: relay datagrams → decoder config messages +
+// complete encoded frames. Pure bytes-in/callbacks-out (no WebCodecs, no
+// network) so the whole drop/reorder policy is unit-testable in node.
+//
+// Policy (per the project principle: favor dropped frames over stalls):
+// - A frame is emitted only when all of its chunks have arrived; nothing
+//   ever waits for retransmits.
+// - At most MAX_ASSEMBLIES frames assemble concurrently; starting one more
+//   evicts the oldest in-progress assembly (it lost the race — a datagram
+//   went missing).
+// - Completed delta frames older than the last emitted frame are dropped
+//   (late reorder). Completed keyframes are always emitted and reset the
+//   ordering watermark: a keyframe doesn't reference other frames, and this
+//   is also what makes a broadcaster restart (frameIds reset to 0) recover.
+// - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
+//   the relay re-emits the config before every keyframe by design.
+
+import { parseDecoderConfig, parseVideoChunk, peekType, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, WIRE_VERSION, type DecoderConfigMessage } from './wire';
+
+const MAX_ASSEMBLIES = 8;
+
+export interface AssembledFrame {
+  frameId: number;
+  keyframe: boolean;
+  timestampUs: bigint;
+  data: Uint8Array; // contiguous copy, safe to retain
+}
+
+export interface ReassemblerCallbacks {
+  // Called only when the config bytes differ from the previous one.
+  onConfig: (config: DecoderConfigMessage) => void;
+  onFrame: (frame: AssembledFrame) => void;
+}
+
+export interface ReassemblerStats {
+  datagramsReceived: number;
+  badDatagrams: number;
+  duplicateChunks: number;
+  duplicateConfigs: number;
+  framesCompleted: number;
+  framesDroppedIncomplete: number;
+  framesDroppedLate: number;
+}
+
+interface Assembly {
+  keyframe: boolean;
+  timestampUs: bigint;
+  chunkCount: number;
+  payloads: (Uint8Array | null)[];
+  received: number;
+  bytes: number;
+}
+
+export class Reassembler {
+  private cb: ReassemblerCallbacks;
+  private assemblies = new Map<number, Assembly>(); // insertion order = arrival order
+  private lastConfigBytes: Uint8Array | null = null;
+  private lastEmittedFrameId: number | null = null;
+
+  private stats: ReassemblerStats = {
+    datagramsReceived: 0,
+    badDatagrams: 0,
+    duplicateChunks: 0,
+    duplicateConfigs: 0,
+    framesCompleted: 0,
+    framesDroppedIncomplete: 0,
+    framesDroppedLate: 0,
+  };
+
+  constructor(callbacks: ReassemblerCallbacks) {
+    this.cb = callbacks;
+  }
+
+  getStats(): ReassemblerStats {
+    return { ...this.stats };
+  }
+
+  // Feeds one received datagram. The buffer must not be reused by the
+  // caller afterwards (payload views are retained until frame completion).
+  push(dgram: Uint8Array): void {
+    this.stats.datagramsReceived++;
+    let version: number;
+    let msgType: number;
+    try {
+      ({ version, msgType } = peekType(dgram));
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    if (version !== WIRE_VERSION) {
+      this.stats.badDatagrams++;
+      return;
+    }
+    switch (msgType) {
+      case TYPE_DECODER_CONFIG:
+        this.pushConfig(dgram);
+        break;
+      case TYPE_VIDEO_CHUNK:
+        this.pushChunk(dgram);
+        break;
+      default:
+        this.stats.badDatagrams++;
+    }
+  }
+
+  private pushConfig(dgram: Uint8Array): void {
+    let config: DecoderConfigMessage;
+    try {
+      config = parseDecoderConfig(dgram);
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    if (this.lastConfigBytes !== null && bytesEqual(this.lastConfigBytes, dgram)) {
+      this.stats.duplicateConfigs++;
+      return;
+    }
+    this.lastConfigBytes = dgram;
+    this.cb.onConfig(config);
+  }
+
+  private pushChunk(dgram: Uint8Array): void {
+    let header, payload: Uint8Array;
+    try {
+      ({ header, payload } = parseVideoChunk(dgram));
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+
+    let assembly = this.assemblies.get(header.frameId);
+    if (!assembly) {
+      this.evictIfFull();
+      assembly = {
+        keyframe: header.keyframe,
+        timestampUs: header.timestampUs,
+        chunkCount: header.chunkCount,
+        payloads: new Array<Uint8Array | null>(header.chunkCount).fill(null),
+        received: 0,
+        bytes: 0,
+      };
+      this.assemblies.set(header.frameId, assembly);
+    }
+    if (header.chunkCount !== assembly.chunkCount) {
+      // Chunks of one frame disagree on the count: corrupt.
+      this.stats.badDatagrams++;
+      return;
+    }
+    if (assembly.payloads[header.chunkIndex] !== null) {
+      this.stats.duplicateChunks++;
+      return;
+    }
+    assembly.payloads[header.chunkIndex] = payload;
+    assembly.received++;
+    assembly.bytes += payload.length;
+
+    if (assembly.received === assembly.chunkCount) {
+      this.assemblies.delete(header.frameId);
+      this.completeFrame(header.frameId, assembly);
+    }
+  }
+
+  private completeFrame(frameId: number, assembly: Assembly): void {
+    // Late delta frames are useless (their reference frame was already
+    // superseded); late or duplicate keyframes are still self-contained and
+    // emitting them lets a broadcaster restart (frameIds reset) recover.
+    if (
+      !assembly.keyframe &&
+      this.lastEmittedFrameId !== null &&
+      frameId <= this.lastEmittedFrameId
+    ) {
+      this.stats.framesDroppedLate++;
+      return;
+    }
+    const data = new Uint8Array(assembly.bytes);
+    let offset = 0;
+    for (const payload of assembly.payloads) {
+      // All payloads are non-null once received === chunkCount.
+      data.set(payload!, offset);
+      offset += payload!.length;
+    }
+    this.lastEmittedFrameId = frameId;
+    this.stats.framesCompleted++;
+    this.cb.onFrame({
+      frameId,
+      keyframe: assembly.keyframe,
+      timestampUs: assembly.timestampUs,
+      data,
+    });
+  }
+
+  private evictIfFull(): void {
+    if (this.assemblies.size < MAX_ASSEMBLIES) return;
+    const oldest = this.assemblies.keys().next();
+    if (!oldest.done) {
+      this.assemblies.delete(oldest.value);
+      this.stats.framesDroppedIncomplete++;
+    }
+  }
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
