@@ -83,7 +83,7 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 1. ✅ Local loopback (capture → encode → decode in one tab) — `docs/01`
 2. ✅ WebTransport hello-world: TLS, dev certs, echo — `docs/02`
 3. ✅ Single-client end-to-end: hub, publish/subscribe, frontend transport — `docs/03`
-4. ⬜ Fan-out hardening (multi-subscriber, stats endpoint)
+4. ✅ Fan-out hardening: multi-subscriber, restart-safe caches, `/statusz` — `docs/04`
 5. ⬜ Resilience + deployment (Docker, k8s, cert-manager)
 
 ## Important gotchas
