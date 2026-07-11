@@ -293,6 +293,94 @@ func TestNewConfigReplacesCache(t *testing.T) {
 	wantDatagrams(t, f, [][]byte{cfg2})
 }
 
+// TestPublisherRestartResetsCaches is the C2 acceptance test: caches persist
+// while the broadcaster is away, but a new publisher session — whose frameIDs
+// restart at 0 and whose config may differ — must invalidate them, so a
+// joiner is never primed with data from an older session.
+func TestPublisherRestartResetsCaches(t *testing.T) {
+	h := New(discardLog, Options{})
+	p1, err := h.StartPublish()
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	cfg1 := configDgram(t, "avc1.42E02A")
+	p1.HandleDatagram(cfg1)
+	kf1 := [][]byte{
+		chunkDgram(t, true, 41, 0, 2, "old0"),
+		chunkDgram(t, true, 41, 1, 2, "old1"),
+	}
+	for _, d := range kf1 {
+		p1.HandleDatagram(d)
+	}
+	p1.Close()
+
+	// Broadcaster away: caches persist, a joiner still gets the last picture.
+	if st := h.Stats(); !st.HasConfig || st.CachedKeyframeID != 41 || st.CachedKeyframeChunks != 2 {
+		t.Fatalf("caches after publisher close = %+v, want config + keyframe 41 (2 chunks)", st)
+	}
+	away := &fakeSender{}
+	sa, _ := h.Subscribe(away)
+	sa.Close()
+	wantDatagrams(t, away, [][]byte{cfg1, kf1[0], kf1[1]})
+
+	// New session: both caches must be invalidated immediately.
+	p2, err := h.StartPublish()
+	if err != nil {
+		t.Fatalf("StartPublish after restart: %v", err)
+	}
+	if st := h.Stats(); st.HasConfig || st.CachedKeyframeID != 0 || st.CachedKeyframeChunks != 0 || st.CachedKeyframeBytes != 0 {
+		t.Fatalf("caches survived publisher restart: %+v", st)
+	}
+
+	// A joiner in the window before the new session's first keyframe gets no
+	// stale priming — only the new session's live datagrams.
+	early := &fakeSender{}
+	se, _ := h.Subscribe(early)
+
+	cfg2 := configDgram(t, "vp09.00.40.08")
+	kf2 := chunkDgram(t, true, 0, 0, 1, "new")
+	p2.HandleDatagram(cfg2)
+	p2.HandleDatagram(kf2)
+	se.Close()
+	// Live config, then its re-emission ahead of the keyframe's chunk 0.
+	wantDatagrams(t, early, [][]byte{cfg2, cfg2, kf2})
+
+	// A later joiner is primed with the new session's config + keyframe only.
+	late := &fakeSender{}
+	sl, _ := h.Subscribe(late)
+	sl.Close()
+	wantDatagrams(t, late, [][]byte{cfg2, kf2})
+}
+
+// TestConfigPrecedesEveryKeyframe pins the C2 ordering guarantee across a
+// stream: the config that is current at the time immediately precedes chunk 0
+// of every keyframe, including after a mid-stream config replacement.
+func TestConfigPrecedesEveryKeyframe(t *testing.T) {
+	h := New(discardLog, Options{})
+	p, _ := h.StartPublish()
+	f := &fakeSender{}
+	s, _ := h.Subscribe(f)
+
+	cfg1 := configDgram(t, "avc1.42E02A")
+	cfg2 := configDgram(t, "vp09.00.40.08")
+	k0 := [][]byte{chunkDgram(t, true, 0, 0, 2, "k0a"), chunkDgram(t, true, 0, 1, 2, "k0b")}
+	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
+	d2 := chunkDgram(t, false, 2, 0, 1, "d2")
+	k3 := [][]byte{chunkDgram(t, true, 3, 0, 2, "k3a"), chunkDgram(t, true, 3, 1, 2, "k3b")}
+	d4 := chunkDgram(t, false, 4, 0, 1, "d4")
+
+	for _, d := range [][]byte{cfg1, k0[0], k0[1], d1, d2, cfg2, k3[0], k3[1], d4} {
+		p.HandleDatagram(d)
+	}
+	s.Close()
+
+	// cfg1 re-emitted before keyframe 0's chunk 0; cfg2 (the replacement)
+	// before keyframe 3's; deltas get no config.
+	wantDatagrams(t, f, [][]byte{
+		cfg1, cfg1, k0[0], k0[1], d1, d2, cfg2, cfg2, k3[0], k3[1], d4,
+	})
+}
+
 func TestBadDatagramsDroppedAndCounted(t *testing.T) {
 	h := New(discardLog, Options{})
 	p, _ := h.StartPublish()
@@ -367,6 +455,113 @@ func TestSlowSubscriberDropsHealthyPeerUnaffected(t *testing.T) {
 	}
 }
 
+func TestSixteenthSubscriberRejectedAtDefaultCap(t *testing.T) {
+	h := New(discardLog, Options{}) // default MaxSubscribers = 15
+	for i := range 15 {
+		if _, err := h.Subscribe(&fakeSender{}); err != nil {
+			t.Fatalf("Subscribe %d: %v", i+1, err)
+		}
+	}
+	if !h.Full() {
+		t.Error("Full() = false with all 15 slots used")
+	}
+	if _, err := h.Subscribe(&fakeSender{}); !errors.Is(err, ErrFull) {
+		t.Fatalf("16th Subscribe error = %v, want ErrFull", err)
+	}
+}
+
+// TestFifteenSubscribersOneBlocked is the C1 acceptance test: a full house
+// of 15 subscribers, one of them stuck mid-send, receiving a ~60fps synthetic
+// chunked stream for 5 seconds. Every unblocked subscriber must receive 100%
+// of the datagrams in order; the blocked one drops and never holds anyone up.
+func TestFifteenSubscribersOneBlocked(t *testing.T) {
+	duration := 5 * time.Second
+	if testing.Short() {
+		duration = 300 * time.Millisecond
+	}
+
+	h := New(discardLog, Options{}) // defaults: 15 subs, queue depth 256
+	p, err := h.StartPublish()
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+
+	const healthyCount = 14
+	healthy := make([]*fakeSender, healthyCount)
+	healthySubs := make([]*Subscriber, healthyCount)
+	for i := range healthy {
+		healthy[i] = &fakeSender{}
+		if healthySubs[i], err = h.Subscribe(healthy[i]); err != nil {
+			t.Fatalf("Subscribe healthy %d: %v", i, err)
+		}
+	}
+	blocked := &fakeSender{block: make(chan struct{})}
+	blockedSub, err := h.Subscribe(blocked)
+	if err != nil {
+		t.Fatalf("Subscribe blocked: %v", err)
+	}
+	if !h.Full() {
+		t.Fatal("Full() = false with 15 subscribers")
+	}
+
+	// want is the exact per-subscriber delivery sequence, including the
+	// config re-emitted ahead of every keyframe's chunk 0.
+	cfg := configDgram(t, "avc1.42E02A")
+	want := [][]byte{cfg}
+	p.HandleDatagram(cfg)
+
+	const chunksPerFrame = 3
+	deadline := time.Now().Add(duration)
+	for frameID := uint32(0); time.Now().Before(deadline); frameID++ {
+		keyframe := frameID%60 == 0
+		if keyframe {
+			want = append(want, cfg)
+		}
+		for ci := range uint16(chunksPerFrame) {
+			d := chunkDgram(t, keyframe, frameID, ci, chunksPerFrame,
+				fmt.Sprintf("f%d/%d", frameID, ci))
+			want = append(want, d)
+			p.HandleDatagram(d)
+		}
+		time.Sleep(16 * time.Millisecond) // ~60fps
+	}
+
+	// The healthy drain goroutines lag the publisher by at most a queue's
+	// worth; give them a moment to finish flushing.
+	catchup := time.Now().Add(5 * time.Second)
+	for i, f := range healthy {
+		for len(f.received()) < len(want) {
+			if time.Now().After(catchup) {
+				t.Fatalf("healthy subscriber %d received %d of %d datagrams",
+					i, len(f.received()), len(want))
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	for i, s := range healthySubs {
+		s.Close()
+		if got := s.Dropped(); got != 0 {
+			t.Errorf("healthy subscriber %d dropped %d datagrams, want 0", i, got)
+		}
+		wantDatagrams(t, healthy[i], want)
+	}
+
+	// The blocked peer consumed one datagram (stuck in-flight) and buffered a
+	// queue's worth; everything else must have been dropped, not deferred.
+	// (In -short mode the stream may fit the queue, making the bound 0.)
+	minDropped := uint64(max(0, len(want)-h.opts.QueueDepth-1))
+	if got := blockedSub.Dropped(); got < minDropped {
+		t.Errorf("blocked subscriber dropped %d datagrams, want >= %d", got, minDropped)
+	}
+	close(blocked.block)
+	blockedSub.Close()
+
+	if st := h.Stats(); st.DatagramsDropped < minDropped {
+		t.Errorf("Stats().DatagramsDropped = %d, want >= %d", st.DatagramsDropped, minDropped)
+	}
+}
+
 func TestSubscriberCloseIdempotentAndConcurrent(t *testing.T) {
 	h := New(discardLog, Options{})
 	f := &fakeSender{}
@@ -405,9 +600,10 @@ func TestSendErrorsDoNotStopDrain(t *testing.T) {
 }
 
 // TestConcurrentPublishSubscribeChurn exercises the locking under -race:
-// a publisher streams while subscribers join and leave.
+// a publisher streams while subscribers join and leave. MaxSubscribers is
+// below the churner count so the ErrFull path races with Close too.
 func TestConcurrentPublishSubscribeChurn(t *testing.T) {
-	h := New(discardLog, Options{QueueDepth: 32})
+	h := New(discardLog, Options{MaxSubscribers: 2, QueueDepth: 32})
 	p, _ := h.StartPublish()
 
 	stop := make(chan struct{})

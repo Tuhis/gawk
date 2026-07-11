@@ -45,18 +45,18 @@ type Options struct {
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
-// future /statusz endpoint.
+// GET /statusz endpoint (the json tags are its response shape).
 type Stats struct {
-	PublisherActive      bool
-	Subscribers          int
-	FramesRelayed        uint64 // counted at chunk 0 of each frame
-	DatagramsRelayed     uint64 // datagrams fanned out (before per-sub drops)
-	DatagramsDropped     uint64 // enqueue failures summed over all subscribers
-	BadDatagrams         uint64 // unparseable/unknown datagrams dropped
-	HasConfig            bool
-	CachedKeyframeID     uint32
-	CachedKeyframeChunks int
-	CachedKeyframeBytes  int
+	PublisherActive      bool   `json:"publisherActive"`
+	Subscribers          int    `json:"subscribers"`
+	FramesRelayed        uint64 `json:"framesRelayed"`     // counted at chunk 0 of each frame
+	DatagramsRelayed     uint64 `json:"datagramsRelayed"`  // datagrams fanned out (before per-sub drops)
+	DatagramsDropped     uint64 `json:"datagramsDropped"`  // enqueue failures summed over all subscribers
+	BadDatagrams         uint64 `json:"badDatagrams"`      // unparseable/unknown datagrams dropped
+	HasConfig            bool   `json:"hasConfig"`
+	CachedKeyframeID     uint32 `json:"cachedKeyframeId"`
+	CachedKeyframeChunks int    `json:"cachedKeyframeChunks"`
+	CachedKeyframeBytes  int    `json:"cachedKeyframeBytes"`
 }
 
 // Hub owns the publisher slot, the subscriber set and the priming caches.
@@ -100,9 +100,11 @@ func New(log *slog.Logger, opts Options) *Hub {
 }
 
 // StartPublish claims the single publisher slot. The caller must Close the
-// returned Publisher when its session ends; the caches persist across
-// publisher sessions so viewers can still be primed while the broadcaster
-// is away.
+// returned Publisher when its session ends. The caches persist after Close
+// so viewers can still be primed while the broadcaster is away — but a new
+// publisher session invalidates them: its frameIDs restart at 0 and its
+// config may differ, so datagrams cached from an older session must never
+// prime a joiner once a newer session exists.
 func (h *Hub) StartPublish() (*Publisher, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -110,6 +112,10 @@ func (h *Hub) StartPublish() (*Publisher, error) {
 		return nil, ErrPublisherActive
 	}
 	h.publisherActive = true
+	h.cachedConfig = nil
+	h.cachedKeyframe.frameID = 0
+	h.cachedKeyframe.chunks = nil
+	h.cachedKeyframe.bytes = 0
 	return &Publisher{hub: h}, nil
 }
 
@@ -219,7 +225,8 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 	}
 }
 
-// Close releases the publisher slot. The caches persist. Idempotent.
+// Close releases the publisher slot. The caches persist until the next
+// publisher session starts. Idempotent.
 func (p *Publisher) Close() {
 	h := p.hub
 	h.mu.Lock()

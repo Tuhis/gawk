@@ -6,6 +6,7 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -35,6 +36,12 @@ func New(cfg config.Config, h *hub.Hub, getCert func(*tls.ClientHelloInfo) (*tls
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("GET /statusz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(h.Stats()); err != nil {
+			log.Warn("statusz encode failed", "err", err)
+		}
 	})
 	mux.HandleFunc("CONNECT /echo", s.handleEcho)
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)

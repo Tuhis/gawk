@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -150,10 +151,10 @@ func encodeFrame(t *testing.T, frameID uint32, keyframe bool, chunkCount int) []
 	return chunks
 }
 
-func testConfigDgram(t *testing.T) []byte {
+func testConfigDgram(t *testing.T, codec string) []byte {
 	t.Helper()
 	d, err := wire.AppendDecoderConfig(nil, wire.DecoderConfig{
-		Codec:     "avc1.42E02A",
+		Codec:     codec,
 		Extradata: []byte{0x01, 0x42, 0xE0, 0x2A},
 	})
 	if err != nil {
@@ -228,7 +229,7 @@ func TestRelayPublishToSubscribe(t *testing.T) {
 		}
 	}()
 
-	if err := pub.SendDatagram(testConfigDgram(t)); err != nil {
+	if err := pub.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
 		t.Fatalf("send config: %v", err)
 	}
 	for frameID := uint32(0); frameID < totalFrames; frameID++ {
@@ -317,7 +318,7 @@ func TestLateJoinerPrimedOverNetwork(t *testing.T) {
 	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
 
 	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
-	if err := pub.SendDatagram(testConfigDgram(t)); err != nil {
+	if err := pub.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
 		t.Fatalf("send config: %v", err)
 	}
 	const kfChunks = 4
@@ -356,6 +357,195 @@ func TestLateJoinerPrimedOverNetwork(t *testing.T) {
 				gotChunks[hdr.ChunkIndex] = true
 			}
 		}
+	}
+}
+
+// h3Get performs an HTTP/3 GET against the server, retrying until it is up.
+func h3Get(t *testing.T, ctx context.Context, clientTLS *tls.Config, url string) (*http.Response, []byte) {
+	t.Helper()
+	tr := &http3.Transport{TLSClientConfig: clientTLS}
+	t.Cleanup(func() { tr.Close() })
+	client := &http.Client{Transport: tr}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("NewRequest %s: %v", url, err)
+		}
+		rsp, err := client.Do(req)
+		if err == nil {
+			body, err := io.ReadAll(rsp.Body)
+			rsp.Body.Close()
+			if err != nil {
+				t.Fatalf("read %s body: %v", url, err)
+			}
+			return rsp, body
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET %s: %v", url, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestStatuszReachableAndNumbersMove is the C3 acceptance test: /statusz is
+// served over HTTP/3, starts zeroed, and reflects hub activity.
+func TestStatuszReachableAndNumbersMove(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
+	url := fmt.Sprintf("https://127.0.0.1:%d/statusz", port)
+
+	rsp, body := h3Get(t, ctx, clientTLS, url)
+	if rsp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /statusz status = %d, want 200", rsp.StatusCode)
+	}
+	if ct := rsp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var before hub.Stats
+	if err := json.Unmarshal(body, &before); err != nil {
+		t.Fatalf("unmarshal initial /statusz %q: %v", body, err)
+	}
+	if before != (hub.Stats{}) {
+		t.Errorf("initial stats = %+v, want all zero", before)
+	}
+
+	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	_ = sub
+	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
+	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+
+	const kfChunks = 3
+	if err := pub.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
+		t.Fatalf("send config: %v", err)
+	}
+	for _, chunk := range encodeFrame(t, 0, true, kfChunks) {
+		if err := pub.SendDatagram(chunk); err != nil {
+			t.Fatalf("send keyframe chunk: %v", err)
+		}
+	}
+	for _, chunk := range encodeFrame(t, 1, false, 1) {
+		if err := pub.SendDatagram(chunk); err != nil {
+			t.Fatalf("send delta chunk: %v", err)
+		}
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		st := h.Stats()
+		return st.HasConfig && st.CachedKeyframeChunks == kfChunks && st.FramesRelayed >= 2
+	}, "stream observed by hub")
+
+	_, body = h3Get(t, ctx, clientTLS, url)
+	var after hub.Stats
+	if err := json.Unmarshal(body, &after); err != nil {
+		t.Fatalf("unmarshal /statusz %q: %v", body, err)
+	}
+	switch {
+	case !after.PublisherActive:
+		t.Error("statusz publisherActive = false, want true")
+	case after.Subscribers != 1:
+		t.Errorf("statusz subscribers = %d, want 1", after.Subscribers)
+	case after.FramesRelayed < 2 || after.DatagramsRelayed < kfChunks+1:
+		t.Errorf("statusz counters did not move: %+v", after)
+	case !after.HasConfig || after.CachedKeyframeChunks != kfChunks || after.CachedKeyframeBytes == 0:
+		t.Errorf("statusz cache fields wrong: %+v", after)
+	}
+}
+
+// TestPublisherRestartPrimesWithNewConfig is the C2 acceptance test over the
+// network: after the publisher reconnects with a new config, a joiner is
+// primed with the new config and the new session's keyframe — never with
+// cached data from the previous session.
+func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
+	pubURL := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
+
+	// Session 1: old codec, keyframe with frameID 7.
+	pub1 := dial(t, ctx, pubURL, clientTLS)
+	if err := pub1.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
+		t.Fatalf("send config: %v", err)
+	}
+	for _, chunk := range encodeFrame(t, 7, true, 2) {
+		if err := pub1.SendDatagram(chunk); err != nil {
+			t.Fatalf("send keyframe chunk: %v", err)
+		}
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		st := h.Stats()
+		return st.HasConfig && st.CachedKeyframeChunks == 2
+	}, "session 1 config and keyframe cached")
+
+	pub1.CloseWithError(0, "restart")
+	waitFor(t, 5*time.Second, func() bool { return !h.Stats().PublisherActive }, "publisher slot freed")
+	if st := h.Stats(); !st.HasConfig {
+		t.Fatal("caches must persist while the broadcaster is away")
+	}
+
+	// Session 2: new codec, frameIDs restart at 0.
+	pub2 := dial(t, ctx, pubURL, clientTLS)
+	waitFor(t, 5*time.Second, func() bool {
+		st := h.Stats()
+		return st.PublisherActive && !st.HasConfig && st.CachedKeyframeChunks == 0
+	}, "caches invalidated by new publisher session")
+
+	const newCodec = "vp09.00.40.08"
+	const kfChunks = 3
+	if err := pub2.SendDatagram(testConfigDgram(t, newCodec)); err != nil {
+		t.Fatalf("send new config: %v", err)
+	}
+	for _, chunk := range encodeFrame(t, 0, true, kfChunks) {
+		if err := pub2.SendDatagram(chunk); err != nil {
+			t.Fatalf("send new keyframe chunk: %v", err)
+		}
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		st := h.Stats()
+		return st.HasConfig && st.CachedKeyframeChunks == kfChunks
+	}, "session 2 config and keyframe cached")
+
+	// A late joiner must be primed with the new session's data only.
+	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	gotCodec := ""
+	gotChunks := make(map[uint16]bool)
+	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer recvCancel()
+	for gotCodec == "" || len(gotChunks) < kfChunks {
+		dgram, err := sub.ReceiveDatagram(recvCtx)
+		if err != nil {
+			t.Fatalf("priming incomplete (codec %q, %d/%d keyframe chunks): %v",
+				gotCodec, len(gotChunks), kfChunks, err)
+		}
+		_, typ, err := wire.PeekType(dgram)
+		if err != nil {
+			continue
+		}
+		switch typ {
+		case wire.TypeDecoderConfig:
+			cfg, err := wire.ParseDecoderConfig(dgram)
+			if err != nil {
+				t.Fatalf("ParseDecoderConfig: %v", err)
+			}
+			if gotCodec == "" {
+				gotCodec = cfg.Codec
+			}
+		case wire.TypeVideoChunk:
+			hdr, _, err := wire.ParseVideoChunk(dgram)
+			if err != nil {
+				continue
+			}
+			if hdr.FrameID == 7 {
+				t.Fatal("primed with a keyframe chunk from the previous publisher session")
+			}
+			if hdr.Keyframe && hdr.FrameID == 0 {
+				gotChunks[hdr.ChunkIndex] = true
+			}
+		}
+	}
+	if gotCodec != newCodec {
+		t.Errorf("first primed config codec = %q, want %q", gotCodec, newCodec)
 	}
 }
 
