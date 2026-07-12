@@ -58,7 +58,14 @@ spec:
             - name: GAWK_MAX_TOTAL_SUBSCRIBERS
               value: {{ .Values.config.maxTotalSubscribers | quote }}
             - name: GAWK_PUBLISH_SECRET
+              {{- if .Values.config.publishSecretKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.publishSecretKeyRef.name | quote }}
+                  key: {{ .Values.config.publishSecretKeyRef.key | quote }}
+              {{- else }}
               value: {{ .Values.config.publishSecret | quote }}
+              {{- end }}
             - name: GAWK_CONN_RATE_LIMIT
               value: {{ .Values.config.connRateLimit | quote }}
             - name: GAWK_CONN_BURST_LIMIT

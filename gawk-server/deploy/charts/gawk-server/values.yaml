@@ -52,6 +52,7 @@ config:
   maxBroadcasts: 5
   maxTotalSubscribers: 50
   publishSecret: ""
+  publishSecretKeyRef: {}
   connRateLimit: 3.0
   connBurstLimit: 10
   maxBandwidth: "0"
