@@ -1,0 +1,108 @@
+# Code & Review Guidelines
+
+Distilled from the post-R1 code review (2026-07-13, see
+[docs/06](docs/06-multi-broadcaster.md#post-implementation-review-2026-07-13)),
+which found six issues in an implementation whose tests were all green.
+Every rule below exists because its absence cost us a real bug; the R1
+example is cited so the rule stays concrete. Applies to human and AI
+contributors alike.
+
+## Fixing bugs: test-first, always
+
+Write a test that reproduces the bug, **run it and watch it fail**, then
+fix, then watch it pass. Never land a fix whose test didn't first fail —
+a test written after the fix proves nothing about the bug.
+
+- If the bug is genuinely unreachable from the existing harnesses, say so
+  explicitly in the PR and agree on the fallback *before* fixing. Adding a
+  small seam is usually better than skipping the test: R1's post-upgrade
+  race got a nil-in-production `testHookPostUpgradeSubscribe` hook; the
+  ViewPage effect bug justified adding `@testing-library/react`.
+- Pure-quality refactors don't need new tests, but must stay green under
+  the full gates (below).
+
+## Coding guidelines
+
+**Error paths must release what they acquired.** Any `start()`/`connect()`
+that fails midway must tear down everything it built before rethrowing —
+in this codebase a leaked WebTransport session is a *zombie publisher*
+that holds a broadcast ID hostage until the tab closes. Route success and
+failure through one shared teardown (`BroadcastPipeline.teardown()`).
+
+**Type your failure phases.** When callers behave differently depending on
+*where* an operation failed (retry vs. surface), encode that in the error
+(`BroadcastStartError.phase: 'connect' | 'capture'`) instead of letting
+them guess from messages. R1's reclaim fallback treated "server rejected
+the dial" and "user cancelled the share picker" identically — silently
+minting a new broadcast on a cancelled picker.
+
+**One event, one authoritative signal.** When several async signals report
+the same underlying event (datagram read loop ending vs. `wt.closed`),
+their settle order is unspecified. Pick the signal that carries the
+semantics (only `wt.closed` has the close code) and make the others defer
+to it — never let whichever-fires-first decide behavior. See the README
+gotcha and `viewer.ts handleReadLoopEnd`.
+
+**Shared constants have exactly one definition per language.** Go's
+`wire` package and `wire.ts` are the two homes; nothing else hardcodes
+wire values. R1 shipped `CLOSE_CODE_BROADCAST_ENDED` in `wire.ts` and then
+compared against a literal `4000` twice, plus a third copy of the
+broadcast-ID alphabet in `ViewPage.tsx`.
+
+**React effects that *act* (dial, join, navigate) fire on explicit events
+only** — mount, or a real DOM/browser event — never on re-renders driven by
+state or recreated callbacks. Read the latest handler through a ref; don't
+put it in the deps. Reading state a component renders from inside an
+effect without depending on it is a stale-closure bug, not a lint nit:
+R1's auto-join effect rejoined a stale broadcast while the user typed a
+new code.
+
+**Counters and stats survive their owner's deletion.** Fold per-child
+counters into the aggregate *under the lock, before* deleting the parent
+(`handleGraceExpiry` folds live subscribers' drop counts before dropping
+the hub). Anything counted after deletion is silently lost.
+
+**New config knobs land fully plumbed in the same change:** flag + `GAWK_*`
+env in `config.go`, chart `values.yaml`, chart `templates/deployment.yaml`,
+and the flag's docs. R1 shipped `-broadcast-grace` without the Helm half —
+deploys silently ran the default with no values-level override.
+
+## Review checklist
+
+Work from the design doc, not just the diff. For gawk, milestone docs
+(`docs/NN-*.md`) are contracts with **locked decisions** and per-chunk
+**acceptance criteria** tables.
+
+1. **Locked decisions**: re-read them and check the code does what they
+   say. R1's design said, twice, that the announce read "must not gate
+   media start"; the implementation awaited it before capture and could
+   hang forever. Green tests don't catch contract violations nobody tested.
+2. **Acceptance criteria → tests**: walk every criterion and point at the
+   test that covers it. Missing ones (R1: the generation-race test, the
+   pipeline URL tests, network-level isolation, the Helm values) are
+   findings even when the code looks right.
+3. **Walk the failure paths by hand**: for each `await` in a setup
+   sequence, ask "what is live if *this* rejects, and who cleans it up?"
+   The happy path is what the author tested; the leak was in the catch.
+4. **Hunt settle-order races**: any place two promises/goroutines react to
+   one event, ask which order the test exercised — and what happens in the
+   other order. "Manual verify passed in Chrome" is one ordering, not both.
+5. **Check both sides of the wire**: a constant, format, or close-code
+   added on one side must be *used* (not re-hardcoded) on the other.
+6. **Error mapping at boundaries**: every distinct sentinel error crossing
+   a transport boundary needs a deliberate status/close-code, not a
+   catch-all (R1 closed a GC'd-broadcast race with the "subscriber limit"
+   code).
+7. **Ops surface**: flags, Helm values, `/statusz` fields, log fields —
+   shipped together, or the gap called out explicitly.
+
+## Gates (all must pass before merge)
+
+```sh
+cd gawk-server && go vet ./... && CGO_ENABLED=1 go test -race ./...
+cd gawk-app    && npx tsc --noEmit && npm test && npm run lint && npm run build
+helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
+```
+
+Chart template changes additionally get a `helm template` render check of
+the touched values (default + one override).

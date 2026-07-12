@@ -20,6 +20,7 @@ chunk is written to be implementable from this document alone.
 | F4 BroadcastPage ID/link UI + reclaim | done |
 | G1 manual multi-broadcast browser verify | done |
 | G2 docs close-out | done |
+| Post-implementation code review + hardening (see [below](#post-implementation-review-2026-07-13)) | done |
 
 ## Context
 
@@ -224,7 +225,7 @@ deployment, revisit with the R2 trust model.
 |-------|----------|
 | `CONNECT /publish` | Mint. Upgrade first (nothing can fail pre-check), then `StartPublish("")`, then open uni stream and write `BroadcastAnnounce`, then the existing datagram receive loop. If the announce write fails, close the session (broadcaster can't share a code it never saw). |
 | `CONNECT /publish/{id}` | Reclaim. `r.PathValue("id")` (Go 1.22 mux) → normalize → pre-upgrade checks like today's publish handler: 404 `ErrNotFound`, 409 `ErrPublisherActive`; claim **before** upgrade, release on upgrade failure. Announce still sent (client re-confirms its ID). |
-| `CONNECT /subscribe/{id}` | 404 unknown ID, 429 full — both pre-upgrade via `CheckSubscribe`; after upgrade, `Subscribe` re-checks and a lost race closes the session with the matching code (extends the existing 429-race handling). |
+| `CONNECT /subscribe/{id}` | 404 unknown ID, 429 full — both pre-upgrade via `CheckSubscribe`; after upgrade, `Subscribe` re-checks: a race lost to the subscriber cap closes with 429, one lost to GC (`ErrNotFound`) closes with `CloseCodeBroadcastEnded` (4000) so the viewer terminal-ends instead of burning its reconnect budget against a 404. |
 | `/echo`, `GET /healthz` | Unchanged. |
 | `GET /statusz` | Serializes `RegistryStats` (shape above). |
 | `/publish`, `/subscribe` legacy ID-less semantics | **Gone.** `/subscribe` without an ID is 404. |
@@ -257,10 +258,17 @@ unchanged.
   async and must not gate media start — capture/encode begins immediately;
   the ID shows up in the UI when it arrives. Reassembly note: a uni stream
   read may deliver the 9 bytes in multiple chunks; buffer to EOF before
-  parsing.
+  parsing. `start()` failures are typed (`BroadcastStartError.phase`:
+  `'connect'` = no session was ever established; `'capture'` = the session
+  was live and the pipeline has already torn it down — a leaked session
+  here would be a zombie publisher holding the ID until the tab closes).
 - **`viewer.ts`** (`ViewerPipeline`): dial `/subscribe/<id>`; report
   `wt.closed`'s `WebTransportCloseInfo` outward (new callback or extended
-  stop-reason) so the session wrapper can see close codes.
+  stop-reason) so the session wrapper can see close codes. The datagram
+  read loop and `wt.closed` settle in unspecified order on a server close
+  and only `wt.closed` carries the close code, so read-loop termination
+  must consult `wt.closed` (short race window) before being treated as an
+  anonymous drop.
 - **`viewer-session.ts`** (`ViewerSession`): the ID is baked into the URL
   the session already stores and reuses, so reconnect-rejoins-same-ID is
   free. New rule: a close with `closeCode === CLOSE_CODE_BROADCAST_ENDED`
@@ -285,10 +293,13 @@ unchanged.
   a copy-link button (`${location.origin}${location.pathname}#/view/<id>`).
   Keep the ID in page state; Stop→Start within the page session passes it
   to `BroadcastPipeline` for **reclaim**, so viewers survive a publisher
-  restart (preserves the D1 behavior). If the reclaim dial fails (expired
-  ⇒ 404, zombie session ⇒ 409 — indistinguishable in JS), automatically
-  fall back to a fresh mint and show a note: "previous broadcast expired —
-  new code minted".
+  restart (preserves the D1 behavior). If the reclaim **dial** fails
+  (`phase === 'connect'`: expired ⇒ 404, zombie session ⇒ 409 —
+  indistinguishable in JS), automatically fall back to a fresh mint and
+  show a note: "previous broadcast expired — new code minted". Any
+  post-connect failure (e.g. the user cancels the share picker) surfaces
+  as an error on the same ID instead — silently minting there would
+  abandon the reclaimed broadcast and re-prompt the picker.
 
 State: the active broadcast ID can live in page-local state; do not add it
 to the persisted `transportStore` (IDs are ephemeral by design — a stale
@@ -306,7 +317,7 @@ E-chunks and F1 can start immediately after their listed deps.
 |---|-------|------|---------------------|
 | E1 | `wire`: `TypeBroadcastAnnounce` + append/parse, `CloseCodeBroadcastEnded`; new `internal/broadcastid` (Mint/Normalize/Alphabet) | — | Round-trip tests + the golden vector `0103064b375851324d` (ID `K7XQ2M`); parse errors on short buf/bad version/bad type/idLen overrun/invalid chars; fuzz — parse never panics. `broadcastid`: Mint yields 6 chars of the alphabet, ~uniform over 10k samples (no χ² needed — just every-symbol-appears); Normalize uppercases, rejects wrong length/charset |
 | E2 | `hub`: `Registry` of per-broadcast hubs; `Conn` interface (SendDatagram + CloseWithError); `StartPublish(id)`, `CheckSubscribe`/`Subscribe`, `RegistryStats` | E1 | All existing hub semantics tests pass rewired through a registry (cache invalidation on new publisher, config-before-keyframe, slow-sub drops, per-broadcast 16th-subscriber ErrFull); **isolation test**: two broadcasts, each with fake subs — datagrams never cross IDs, stats independent; `ErrNotFound` for unknown/invalid IDs; `-race` clean |
-| E3 | Lifecycle: grace timer on publisher close, reclaim cancels, expiry closes subs with 4000 + deletes entry; `-broadcast-grace` flag + Helm values | E2 | With 50ms grace: publisher closes → subs get `CloseWithError(4000, …)` and entry is gone; reclaim within grace → timer canceled, caches intact, viewers uninterrupted; reclaim after expiry → `ErrNotFound`; timer/reclaim race covered by a generation-check test; config test covers flag/env/default + rejects `0`; `-race` clean |
+| E3 | Lifecycle: grace timer on publisher close, reclaim cancels, expiry closes subs with 4000 + deletes entry; `-broadcast-grace` flag + Helm values | E2 | With 50ms grace: publisher closes → subs get `CloseWithError(4000, …)` and entry is gone; reclaim within grace → timer canceled, entry survives, viewers uninterrupted (caches **reset** — a reclaim is a new publisher session, frameIDs restart; only *joining while the broadcaster is away* is served from the old caches); reclaim after expiry → `ErrNotFound`; timer/reclaim race covered by a generation-check test; config test covers flag/env/default + rejects `0`; `-race` clean |
 | E4 | Routes: `/publish` mint + announce uni stream, `/publish/{id}` reclaim, `/subscribe/{id}`, legacy removal, `/statusz` new shape | E3 | Go integration tests (existing harness): publish → client reads announce, ID is valid; two concurrent publisher→subscriber pairs relay independently (no cross-talk); subscribe to bogus ID → 404 pre-session; 16th subscriber on one broadcast → 429 while the other broadcast still accepts; reclaim keeps a live viewer's stream flowing across publisher restart; GC (short grace) closes a live viewer with code 4000 and `/subscribe/<id>` then 404s; `/statusz` shows `totals` + per-ID entries and `graceRemainingSeconds` moves; ID-less `/publish`//`/subscribe` → 404 |
 
 ### Milestone F — frontend
@@ -360,3 +371,40 @@ because deploys are per-release, not per-merge.
   codes (4000) carry semantics.
 - **`/statusz` exposes join-capable IDs** — fine for the private homelab,
   explicitly revisit in R2's trust model.
+
+## Post-implementation review (2026-07-13)
+
+A full code review of the R1 implementation (commit `b8eb374`) against this
+document found and fixed six issues; each bug fix landed **test-first** (a
+failing test reproducing the bug, then the fix). The general lessons are
+distilled into [`CODE-REVIEW.md`](../CODE-REVIEW.md); the R1-specific
+outcomes, now part of the contract above, were:
+
+1. **Reclaim fallback fired on *any* `start()` failure and leaked the
+   session** — cancelling the share picker after a successful reclaim dial
+   minted a new ID, re-prompted the picker, and left a zombie publisher
+   holding the old ID until the tab closed. Fixed with
+   `BroadcastStartError.phase` + pipeline-internal teardown
+   (`broadcaster.test.ts`).
+2. **The announce read gated media start** — violating the locked decision
+   above; a missing announce stream hung `start()` forever. The read is now
+   a detached task (`broadcaster.test.ts`).
+3. **Close code 4000 could lose the settle-order race** — if the datagram
+   read loop settled before `wt.closed`, viewers reconnect-looped instead of
+   showing "broadcast ended". `viewer.ts` now consults `wt.closed` on
+   read-loop end (`viewer.test.ts`; also a README gotcha).
+4. **ViewPage auto-rejoined the stale hash ID** while typing a new code
+   after Stop (state-keyed effect re-runs). Auto-join now fires only on
+   mount and real hashchange events (`ViewPage.test.tsx`).
+5. **Post-upgrade subscribe race lost to GC closed with 429** instead of
+   4000 (route table above updated; `TestSubscribeLostRaceToGCClosesWithBroadcastEnded`).
+6. **`broadcastGrace` was missing from the Helm chart** despite being an E3
+   acceptance criterion.
+
+Also closed: the acceptance-criteria test gaps (E3 generation-race test,
+pipeline URL/announce tests, E4 two-broadcast network isolation +
+`graceRemainingSeconds` movement) and a stats leak (per-subscriber drop
+counters of subscribers still live at GC time vanished from `/statusz`
+totals). Note the E3 criterion above originally read "caches intact" on
+reclaim — ambiguous; the implemented (and correct, v0.4-consistent) rule is
+that a reclaim resets the caches like any new publisher session.

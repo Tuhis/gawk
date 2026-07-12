@@ -46,7 +46,15 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 - Viewer side: **auto-reconnect with backoff** (`ViewerSession` wrapping the
   single-shot `ViewerPipeline`; 1s→15s capped, 10 attempts). Never-connected
   failures are fatal by design — `WebTransportError` hides the HTTP status,
-  so 429/bad-cert/wrong-URL are indistinguishable in JS.
+  so 429/bad-cert/wrong-URL are indistinguishable in JS. Close code **4000
+  (broadcast ended) is terminal** — no reconnect; it is sent on GC expiry
+  and when a subscriber loses the post-upgrade race to GC. Close codes only
+  travel on `wt.closed`, and the read loop can settle first — `viewer.ts`
+  races them (see README gotchas).
+- Broadcaster side: `BroadcastPipeline.start()` failures are typed
+  (`BroadcastStartError.phase`); post-connect failures tear the session
+  down internally (no zombie publisher). BroadcastPage falls back from
+  reclaim to mint **only** on `phase === 'connect'`.
 - Framing protocol is **implemented** (`gawk-server/internal/wire`): VideoChunk
   datagrams carry frameID + chunkIndex/chunkCount + keyframe flag + timestamp
   (20-byte header, big-endian); a separate DecoderConfig message carries
@@ -56,6 +64,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
+- `CODE-REVIEW.md` — **coding + review guidelines; bug fixes are test-first
+  (failing test before the fix, always). Follow it for every change and
+  review.**
 - `ROADMAP.md` — **high-level roadmap for post-v0.5 work (R1 multi-broadcaster
   → R6 production UI), with per-item status and design links.**
 - `gawk-app` is the folder for the frontend application

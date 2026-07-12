@@ -151,6 +151,13 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 - Go *clients* need `EnableStreamResetPartialDelivery: true` in their
   `quic.Config`. ([docs/02](docs/02-webtransport-hello.md))
 - **Session close code hiding on datagram reads**: In both Go and JS, when a session is closed with a custom error code, reading from the datagram queue/channel returns only a generic `EOF` or channel-closed status. To retrieve the actual close code (e.g. `4000`), the client must listen to `wt.closed` (JS) or block on `AcceptStream` / `AcceptUniStream` (Go). ([docs/06](docs/06-multi-broadcaster.md))
+- **…and `wt.closed` can lose the settle-order race**: on a server close, the
+  datagram read loop and the `wt.closed` promise settle in unspecified,
+  browser-dependent order. If close semantics (like 4000 = "broadcast ended,
+  don't reconnect") ride on `wt.closed` alone, a read-loop-first settle
+  silently degrades them to an anonymous drop. On read-loop termination,
+  race `wt.closed` with a short timeout before deciding
+  (`viewer.ts handleReadLoopEnd`). ([docs/06](docs/06-multi-broadcaster.md))
 
 **Media pipeline**
 
