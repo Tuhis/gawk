@@ -1,6 +1,6 @@
 # `gawk-server` Implementation Plan — Go WebTransport Relay
 
-## Progress (updated 2026-07-11)
+## Progress (updated 2026-07-12)
 
 | Chunk | Status | Notes |
 |-------|--------|-------|
@@ -15,7 +15,7 @@
 | B4 frontend transport (TS) | ✅ done | full `gawk-app/src/transport/` module + broadcast/view pages; milestone B close-out verified in browser 2026-07-10 (HW→SW decoder fallback bug found + fixed) — see `03-single-client-e2e.md` |
 | C1 hub hardening | ✅ done | B2 hub already had ErrFull + per-sub drop counters; C1 added the full-scale acceptance tests (16th sub rejected at default cap; 15 subs / one blocked / 5s @60fps synthetic stream, unblocked get 100%; ErrFull raced under churn) — `-race` clean |
 | C2 restart-safe caches | ✅ done | new publisher session invalidates both caches (frameIDs reset / config may differ); caches still persist while broadcaster away; config-precedes-every-keyframe pinned incl. mid-stream config swap — see `04-fanout.md` |
-| C3 Stats + /statusz | ✅ done | json tags on `hub.Stats` = response shape; `GET /statusz` integration-tested over HTTP/3 (numbers move). **Milestone C close-out: manual multi-viewer browser verify pending** — steps in `04-fanout.md` |
+| C3 Stats + /statusz | ✅ done | json tags on `hub.Stats` = response shape; `GET /statusz` integration-tested over HTTP/3 (numbers move). Milestone C close-out verified in browser 2026-07-12 (multi-viewer, churn, broadcaster restart, `/statusz` live) — see `04-fanout.md` |
 | D1–D3 resilience + deploy | ⬜ | |
 
 Note for implementers: webtransport-go v0.11.1 bumped the `go` directive to

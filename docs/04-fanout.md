@@ -1,8 +1,14 @@
 # v0.4 — Fan-out: multi-subscriber hardening, restart-safe caches, /statusz (Milestone C)
 
-Status (2026-07-11): **Implemented and fully covered by automated tests**
-(unit + network integration, `-race` clean). Milestone close-out: manual
-multi-viewer browser verify pending — steps below.
+Status (2026-07-12): **Milestone C complete.** Implemented and fully covered
+by automated tests (unit + network integration, `-race` clean); manual
+multi-viewer browser verify passed 2026-07-12 (Chrome inside WSL2): 3+
+viewer tabs primed instantly and stayed in sync, viewer churn left peers
+unaffected, broadcaster restart recovered all viewers at the new session's
+first keyframe with no stale-frame flash, and `/statusz` tracked it all
+live — subscriber count followed tabs, cache invalidation on restart was
+visible (`hasConfig` false / keyframe fields zeroed, then `cachedKeyframeId`
+restarting near 0), with zero dropped and zero bad datagrams throughout.
 
 ## What was built
 
@@ -72,17 +78,20 @@ Tests:
   keyframe/delta traffic it shows the correct counts (decoded back into
   `hub.Stats`, which also proves the tag round-trip).
 
-Handy during manual testing:
+Handy during manual testing — `/statusz` is HTTP/3-only (the server has no
+TCP listener), and distro curl (incl. Ubuntu's) is built without HTTP/3.
+What actually works:
 
 ```sh
-# no h3-capable curl needed — just watch the server-side numbers move
-watch -n1 'curl -s --http3-only --insecure https://localhost:4433/statusz'  # curl ≥8.6 with h3
+# h3-capable curl (e.g. a static build from github.com/stunnel/static-curl):
+watch -n1 'curl3 -s --http3-only --insecure https://localhost:4433/statusz'
 ```
 
-(If local curl lacks HTTP/3, hit it from the browser instead — a plain
-`fetch` from a page won't work against the dev cert, but the numbers also
-appear in the server log at session end, and `go run ./cmd/gawk-echo` proves
-connectivity.)
+or a ~25-line quic-go probe (what the close-out verify used): an
+`http3.Transport` with `InsecureSkipVerify` + `http.Client.Get` — see
+`TestStatuszReachableAndNumbersMove` in `internal/transport/server_test.go`
+for the pattern. A browser `fetch` does *not* work against the dev cert
+(`serverCertificateHashes` only applies to WebTransport, not fetch).
 
 ## Gotchas hit in this milestone
 
@@ -90,7 +99,7 @@ Nothing new — no library surprises this time. The two standing ones that
 apply here: `-race` needs `CGO_ENABLED=1`, and tests that assert "healthy
 subscriber gets 100%" must pace the publisher (see `docs/03`).
 
-## Manual verification (closes milestone C)
+## Manual verification (closed milestone C — passed 2026-07-12)
 
 Same setup as milestone B (`docs/03` — Chrome **inside** WSL2, dev-cert hash
 pasted into the app):

@@ -69,9 +69,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    routes, B4 frontend transport module + broadcast/view pages, hash-routed
    `#/broadcast` / `#/view` / `#/loopback`; manual browser verify passed
    2026-07-10 — see `docs/03-single-client-e2e.md`).
-4. Fan-out (multi-subscriber) — implemented: C1 (hub hardening), C2
-   (restart-safe caches), C3 (`/statusz`). Milestone close-out pending:
-   manual multi-viewer browser verify — steps in `docs/04-fanout.md`.
+4. Fan-out (multi-subscriber) — **done** (v0.4: C1 hub hardening, C2
+   restart-safe caches, C3 `/statusz`; manual multi-viewer browser verify
+   passed 2026-07-12 — see `docs/04-fanout.md`).
 5. Resilience features (forced keyframes, etc.) — chunks D1–D3 incl. deployment
 
 ## On the horizon (not started)
