@@ -56,6 +56,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
+- `ROADMAP.md` — **high-level roadmap for post-v0.5 work (R1 multi-broadcaster
+  → R6 production UI), with per-item scope and design questions. Start here
+  when picking up new feature work; each item gets its own `docs/NN-*.md`
+  design doc when started.**
 - `gawk-app` is the folder for the frontend application
 - `gawk-server` is the folder for the backend (the Relay server) — Go module,
   see `gawk-server/README.md` for build/run

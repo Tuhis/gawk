@@ -36,6 +36,7 @@ getDisplayMedia
 
 | Path | What |
 |------|------|
+| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R6), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Pages: `#/view` (default), `#/broadcast`, `#/loopback` (no-network diagnostic). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `docs/` | Per-milestone design notes and gotchas (`01`–`05`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
@@ -105,6 +106,9 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
    Helm charts, release-please CI — `docs/05` (v0.5.0 released to GHCR
    2026-07-12; homelab install + automated deploy-on-release and the manual
    end-to-end browser verify completed 2026-07-12)
+
+What comes next (multi-broadcaster, hardening, quality pickers, production
+UI, …) is laid out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
 
