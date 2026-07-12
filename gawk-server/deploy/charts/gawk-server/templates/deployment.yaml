@@ -27,6 +27,19 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      {{- if .Values.sysctlInitContainer.enabled }}
+      initContainers:
+        - name: sysctl-tuner
+          image: {{ .Values.sysctlInitContainer.image | quote }}
+          command:
+            - sysctl
+            - -w
+            - net.core.rmem_max=7340032
+            - net.core.wmem_max=7340032
+          securityContext:
+            privileged: true
+            runAsUser: 0
+      {{- end }}
       containers:
         - name: gawk-server
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
