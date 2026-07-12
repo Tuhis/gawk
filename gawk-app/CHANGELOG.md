@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.5.0...gawk-app-v0.6.0) (2026-07-12)
+
+
+### Features
+
+* restructure Helm chart dirs to deploy/charts/&lt;chart-name&gt; ([39ef8fe](https://github.com/Tuhis/gawk/commit/39ef8fe96d6df9c5fbf4e3b4d01c526565ea8a0c))
+
 ## [0.5.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.4.0...gawk-app-v0.5.0) (2026-07-12)
 
 
