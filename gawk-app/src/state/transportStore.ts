@@ -6,7 +6,10 @@ import { create } from 'zustand';
 const LS_SERVER_URL = 'gawk.serverUrl';
 const LS_CERT_HASH = 'gawk.certHashHex';
 
-const DEFAULT_SERVER_URL = 'https://localhost:4433';
+const DEFAULT_SERVER_URL =
+  typeof window !== 'undefined' && window.location.hostname === 'gawk.ioio.fi'
+    ? 'https://api.gawk.ioio.fi'
+    : 'https://localhost:4433';
 
 interface TransportSettingsState {
   serverUrl: string;
