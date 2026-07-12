@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
 
@@ -74,6 +75,16 @@ func New(cfg config.Config, h *hub.Hub, getCert func(*tls.ClientHelloInfo) (*tls
 	if len(cfg.AllowedOrigins) > 0 {
 		allowed := cfg.AllowedOrigins
 		s.wt.CheckOrigin = func(r *http.Request) bool {
+			// The startup/liveness/readiness probes exec gawk-echo against
+			// 127.0.0.1 from inside this same pod; a plain WebTransport
+			// dial sends no Origin header, so without this bypass every
+			// real deployment (AllowedOrigins non-empty) fails its own
+			// probes and crash-loops. Loopback can't be spoofed over QUIC
+			// (it requires a full handshake), so this doesn't weaken the
+			// check against real, off-pod clients.
+			if isLoopbackAddr(r.RemoteAddr) {
+				return true
+			}
 			return slices.Contains(allowed, r.Header.Get("Origin"))
 		}
 	} else {
@@ -170,6 +181,17 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// isLoopbackAddr reports whether addr (an http.Request.RemoteAddr-style
+// "host:port" string) resolves to a loopback IP.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // handleEcho upgrades the CONNECT request and echoes every datagram back.

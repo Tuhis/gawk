@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -677,6 +678,41 @@ func TestIdleSubscriberTimesOutWithoutKeepalive(t *testing.T) {
 	_ = sub
 	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
 	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 0 }, "idle subscriber timed out")
+}
+
+// TestCheckOriginLoopbackBypassesAllowlist covers the production
+// crash-loop bug: with AllowedOrigins configured, the exec probe (gawk-echo
+// dialing 127.0.0.1 from inside the pod, no Origin header) must still pass,
+// while an off-pod client is still held to the allowlist.
+func TestCheckOriginLoopbackBypassesAllowlist(t *testing.T) {
+	h := hub.New(discardLog, hub.Options{MaxSubscribers: 1})
+	srv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
+		h, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, discardLog)
+
+	cases := []struct {
+		name       string
+		remoteAddr string
+		origin     string
+		want       bool
+	}{
+		{"loopback probe, no origin header", "127.0.0.1:53211", "", true},
+		{"loopback IPv6, no origin header", "[::1]:53211", "", true},
+		{"remote client, allowed origin", "10.0.0.5:53211", "https://gawk.example.com", true},
+		{"remote client, disallowed origin", "10.0.0.5:53211", "https://evil.example.com", false},
+		{"remote client, no origin header", "10.0.0.5:53211", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodConnect, "https://gawk.example.com/echo", nil)
+			req.RemoteAddr = tc.remoteAddr
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			if got := srv.wt.CheckOrigin(req); got != tc.want {
+				t.Errorf("CheckOrigin(remote=%s, origin=%q) = %v, want %v", tc.remoteAddr, tc.origin, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestGracefulShutdown(t *testing.T) {
