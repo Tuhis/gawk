@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gawk-server.fullname" . }}
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+spec:
+  # The hub is an in-memory single-publisher pub/sub: a second live pod
+  # behind the same Service would split the publisher and the subscribers.
+  # Recreate (not RollingUpdate) so two pods never overlap.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gawk-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gawk-server.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gawk-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: webtransport
+              containerPort: 4433
+              protocol: UDP
+          env:
+            - name: GAWK_ADDR
+              value: ":4433"
+            - name: GAWK_CERT_FILE
+              value: /tls/tls.crt
+            - name: GAWK_KEY_FILE
+              value: /tls/tls.key
+            - name: GAWK_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: GAWK_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: GAWK_MAX_SUBSCRIBERS
+              value: {{ .Values.config.maxSubscribers | quote }}
+            - name: GAWK_MAX_IDLE_TIMEOUT
+              value: {{ .Values.config.maxIdleTimeout | quote }}
+            - name: GAWK_KEEPALIVE_PERIOD
+              value: {{ .Values.config.keepalivePeriod | quote }}
+            {{- with .Values.config.allowedOrigins }}
+            - name: GAWK_ALLOWED_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          # The server is HTTP/3-only (UDP) — kubelet can't probe it with
+          # httpGet/tcpSocket, so all probes exec the bundled gawk-echo
+          # against localhost. No -cert-hash: verification is skipped,
+          # which is correct for a self-probe and keeps probes working
+          # across cert renewals.
+          startupProbe:
+            exec:
+              command: &probe ["/gawk-echo", "-url", "https://127.0.0.1:4433/echo", "-count", "1", "-timeout", "2s"]
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: *probe
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: *probe
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.certificate.secretName }}

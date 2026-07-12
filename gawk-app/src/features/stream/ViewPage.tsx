@@ -4,20 +4,22 @@ import { ServerSettings } from './ServerSettings';
 import { StatsGrid } from './StatsGrid';
 import { fmt } from '../../lib/format';
 import { DecodedPreview } from '../loopback/components/DecodedPreview';
-import { ViewerPipeline, type ViewerStats } from '../../transport/viewer';
+import { type ViewerStats } from '../../transport/viewer';
+import { ViewerSession, RECONNECT_MAX_ATTEMPTS } from '../../transport/viewer-session';
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
 
-type Status = 'idle' | 'connecting' | 'watching' | 'stopping' | 'error';
+type Status = 'idle' | 'connecting' | 'watching' | 'reconnecting' | 'stopping' | 'error';
 
 export function ViewPage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const pipelineRef = useRef<ViewerPipeline | null>(null);
+  const sessionRef = useRef<ViewerSession | null>(null);
   const [status, setStatus] = useState<Status>('idle');
   const [stats, setStats] = useState<ViewerStats | null>(null);
   const [codec, setCodec] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryNote, setRetryNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (canvasRef.current && !canvasCtxRef.current) {
@@ -26,13 +28,14 @@ export function ViewPage() {
   });
 
   const handleStart = useCallback(async () => {
-    if (pipelineRef.current) return;
+    if (sessionRef.current) return;
     const { serverUrl, certHashHex } = useTransportStore.getState();
     setError(null);
     setStats(null);
     setCodec(null);
+    setRetryNote(null);
     setStatus('connecting');
-    const pipeline = new ViewerPipeline(serverUrl, { certHashHex }, {
+    const session = new ViewerSession(serverUrl, { certHashHex }, {
       onDecodedFrame: ({ frame }) => {
         const ctx = canvasCtxRef.current;
         const canvas = canvasRef.current;
@@ -56,45 +59,58 @@ export function ViewPage() {
       },
       onConfig: (config) => {
         setCodec(config.codec);
-        setStatus('watching');
       },
       onStats: (s) => setStats(s),
+      onConnected: () => {
+        // Connected (or reconnected); the picture appears once the relay
+        // primes us.
+        setRetryNote(null);
+        setStatus('watching');
+      },
+      onReconnecting: ({ attempt, reason }) => {
+        setStatus('reconnecting');
+        setRetryNote(`Connection lost — retrying (attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS}): ${reason}`);
+      },
       onError: (err) => {
         setError(err.message);
         setStatus('error');
+        // Finalize the session; its onEnded clears the ref and keeps the
+        // error status on screen.
+        void sessionRef.current?.stop();
       },
       onEnded: () => {
-        pipelineRef.current = null;
+        sessionRef.current = null;
+        setRetryNote(null);
         setStatus((prev) => (prev === 'error' ? prev : 'idle'));
       },
     });
-    pipelineRef.current = pipeline;
+    sessionRef.current = session;
     try {
-      await pipeline.start();
-      // Connected; the first picture appears once the relay primes us.
-      setStatus((prev) => (prev === 'connecting' ? 'watching' : prev));
+      await session.start();
     } catch (e) {
+      // Never-connected failures are fatal by design: a 429 (stream full),
+      // bad cert hash and wrong URL are indistinguishable in JS.
       const err = e instanceof Error ? e : new Error(String(e));
       log.error(err);
       setError(err.message);
       setStatus('error');
-      pipelineRef.current = null;
+      sessionRef.current = null;
     }
   }, []);
 
   const handleStop = useCallback(async () => {
-    if (!pipelineRef.current) return;
+    if (!sessionRef.current) return;
     setStatus('stopping');
-    await pipelineRef.current.stop();
+    await sessionRef.current.stop();
   }, []);
 
   useEffect(() => {
     return () => {
-      void pipelineRef.current?.stop();
+      void sessionRef.current?.stop();
     };
   }, []);
 
-  const running = status === 'connecting' || status === 'watching';
+  const running = status === 'connecting' || status === 'watching' || status === 'reconnecting';
 
   return (
     <div className={styles.page}>
@@ -122,6 +138,7 @@ export function ViewPage() {
       </div>
 
       {error && status === 'error' && <div className={styles.error}>Error: {error}</div>}
+      {retryNote && status === 'reconnecting' && <div className={styles.notice}>{retryNote}</div>}
 
       <div className={styles.single}>
         <DecodedPreview ref={canvasRef} />

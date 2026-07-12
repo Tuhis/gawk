@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the fully-resolved server configuration.
@@ -24,6 +25,12 @@ type Config struct {
 	LogFormat      string   // "text" or "json"
 	MaxSubscribers int
 	AllowedOrigins []string // empty = allow all (dev); checked on CONNECT
+
+	// The effective QUIC idle timeout is the minimum of both endpoints'
+	// advertised values (browsers advertise ~30s), so raising this alone
+	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
+	MaxIdleTimeout  time.Duration // QUIC idle timeout for all sessions
+	KeepAlivePeriod time.Duration // server-sent QUIC PING interval; 0 disables
 }
 
 // ParseFlags parses args (without the program name) into a Config.
@@ -49,6 +56,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	maxSubs := fs.String("max-subscribers", env("GAWK_MAX_SUBSCRIBERS", "15"), "maximum concurrent subscribers")
 	origins := fs.String("allowed-origins", env("GAWK_ALLOWED_ORIGINS", ""),
 		"comma-separated allowed Origin values; empty allows all")
+	maxIdle := fs.String("max-idle-timeout", env("GAWK_MAX_IDLE_TIMEOUT", "30s"),
+		"QUIC idle timeout for all sessions")
+	keepalive := fs.String("keepalive-period", env("GAWK_KEEPALIVE_PERIOD", "10s"),
+		"QUIC keepalive PING interval; keeps idle viewers alive while the broadcaster is away; 0 disables")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -68,6 +79,17 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if (*certFile == "") != (*keyFile == "") {
 		return Config{}, fmt.Errorf("cert-file and key-file must be set together")
 	}
+	idleTimeout, err := time.ParseDuration(*maxIdle)
+	if err != nil || idleTimeout <= 0 {
+		return Config{}, fmt.Errorf("invalid max-idle-timeout %q: want a positive duration", *maxIdle)
+	}
+	keepalivePeriod, err := time.ParseDuration(*keepalive)
+	if err != nil || keepalivePeriod < 0 {
+		return Config{}, fmt.Errorf("invalid keepalive-period %q: want a non-negative duration", *keepalive)
+	}
+	if keepalivePeriod > 0 && keepalivePeriod >= idleTimeout {
+		return Config{}, fmt.Errorf("keepalive-period %v must be less than max-idle-timeout %v", keepalivePeriod, idleTimeout)
+	}
 
 	return Config{
 		Addr:           *addr,
@@ -79,6 +101,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		LogFormat:      *logFormat,
 		MaxSubscribers: n,
 		AllowedOrigins: splitNonEmpty(*origins),
+
+		MaxIdleTimeout:  idleTimeout,
+		KeepAlivePeriod: keepalivePeriod,
 	}, nil
 }
 

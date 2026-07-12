@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func noEnv(string) string { return "" }
@@ -18,11 +19,13 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("ParseFlags: %v", err)
 	}
 	want := Config{
-		Addr:           ":4433",
-		DevCertHosts:   "localhost,127.0.0.1",
-		LogLevel:       slog.LevelInfo,
-		LogFormat:      "text",
-		MaxSubscribers: 15,
+		Addr:            ":4433",
+		DevCertHosts:    "localhost,127.0.0.1",
+		LogLevel:        slog.LevelInfo,
+		LogFormat:       "text",
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -35,8 +38,10 @@ func TestEnvFallback(t *testing.T) {
 		"GAWK_LOG_LEVEL":       "debug",
 		"GAWK_LOG_FORMAT":      "json",
 		"GAWK_MAX_SUBSCRIBERS": "3",
-		"GAWK_DEV_CERT":        "true",
-		"GAWK_ALLOWED_ORIGINS": "https://a.example, https://b.example",
+		"GAWK_DEV_CERT":         "true",
+		"GAWK_ALLOWED_ORIGINS":  "https://a.example, https://b.example",
+		"GAWK_MAX_IDLE_TIMEOUT": "45s",
+		"GAWK_KEEPALIVE_PERIOD": "5s",
 	})
 	cfg, err := ParseFlags(nil, getenv)
 	if err != nil {
@@ -60,6 +65,12 @@ func TestEnvFallback(t *testing.T) {
 	wantOrigins := []string{"https://a.example", "https://b.example"}
 	if !reflect.DeepEqual(cfg.AllowedOrigins, wantOrigins) {
 		t.Errorf("AllowedOrigins = %v, want %v", cfg.AllowedOrigins, wantOrigins)
+	}
+	if cfg.MaxIdleTimeout != 45*time.Second {
+		t.Errorf("MaxIdleTimeout = %v, want 45s", cfg.MaxIdleTimeout)
+	}
+	if cfg.KeepAlivePeriod != 5*time.Second {
+		t.Errorf("KeepAlivePeriod = %v, want 5s", cfg.KeepAlivePeriod)
 	}
 }
 
@@ -97,6 +108,30 @@ func TestInvalidMaxSubscribers(t *testing.T) {
 		if _, err := ParseFlags([]string{"-max-subscribers", v}, noEnv); err == nil {
 			t.Errorf("expected error for max-subscribers=%q, got nil", v)
 		}
+	}
+}
+
+func TestInvalidTimeouts(t *testing.T) {
+	bad := [][]string{
+		{"-max-idle-timeout", "soon"},
+		{"-max-idle-timeout", "0s"},
+		{"-max-idle-timeout", "-5s"},
+		{"-keepalive-period", "often"},
+		{"-keepalive-period", "-1s"},
+		{"-keepalive-period", "30s"},                             // == default idle timeout
+		{"-max-idle-timeout", "10s", "-keepalive-period", "15s"}, // keepalive > idle
+	}
+	for _, args := range bad {
+		if _, err := ParseFlags(args, noEnv); err == nil {
+			t.Errorf("expected error for %v, got nil", args)
+		}
+	}
+	cfg, err := ParseFlags([]string{"-keepalive-period", "0"}, noEnv)
+	if err != nil {
+		t.Fatalf("keepalive-period 0 should disable keepalive, got error: %v", err)
+	}
+	if cfg.KeepAlivePeriod != 0 {
+		t.Errorf("KeepAlivePeriod = %v, want 0 (disabled)", cfg.KeepAlivePeriod)
 	}
 }
 

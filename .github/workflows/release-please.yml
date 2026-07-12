@@ -1,0 +1,108 @@
+# Release automation: release-please maintains one release PR per component
+# (gawk-server, gawk-app) computing the next SemVer from conventional
+# commits; merging a release PR tags (e.g. gawk-server-v0.5.0) and the
+# publish jobs below push the docker image and OCI Helm chart to GHCR with
+# matching versions.
+#
+# The publish jobs MUST live in this workflow, gated on release-please
+# outputs: tags created with GITHUB_TOKEN do not trigger other workflows,
+# so an `on: push: tags` publish workflow would silently never run.
+#
+# GHCR refs hardcode lowercase "tuhis" — GHCR rejects uppercase and
+# github.repository_owner returns "Tuhis".
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      server_release: ${{ steps.rp.outputs['gawk-server--release_created'] }}
+      server_version: ${{ steps.rp.outputs['gawk-server--version'] }}
+      app_release: ${{ steps.rp.outputs['gawk-app--release_created'] }}
+      app_version: ${{ steps.rp.outputs['gawk-app--version'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish-server:
+    needs: release-please
+    if: needs.release-please.outputs.server_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.server_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: gawk-server
+          file: gawk-server/deploy/Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: |
+            ghcr.io/tuhis/gawk-server:${{ env.VERSION }}
+            ghcr.io/tuhis/gawk-server:latest
+          cache-from: type=gha,scope=gawk-server
+          cache-to: type=gha,mode=max,scope=gawk-server
+      - name: Push Helm chart
+        # The tagged commit's Chart.yaml already carries the right versions
+        # (release-please extra-files); the explicit flags are
+        # belt-and-suspenders so the published chart always matches the
+        # release even if the updater mis-fires.
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package gawk-server/deploy/chart --version "$VERSION" --app-version "$VERSION"
+          helm push "gawk-server-$VERSION.tgz" oci://ghcr.io/tuhis/charts
+
+  publish-app:
+    needs: release-please
+    if: needs.release-please.outputs.app_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: gawk-app
+          file: gawk-app/deploy/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/tuhis/gawk-app:${{ env.VERSION }}
+            ghcr.io/tuhis/gawk-app:latest
+          cache-from: type=gha,scope=gawk-app
+          cache-to: type=gha,mode=max,scope=gawk-app
+      - name: Push Helm chart
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package gawk-app/deploy/chart --version "$VERSION" --app-version "$VERSION"
+          helm push "gawk-app-$VERSION.tgz" oci://ghcr.io/tuhis/charts

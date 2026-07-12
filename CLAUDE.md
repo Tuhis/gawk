@@ -27,7 +27,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   Pub/sub hub — one publisher fans out encoded video datagrams to up to 15
   subscriber sessions.
 
-## Relay server behavior (implemented — chunks B2/B3 + C1–C3)
+## Relay server behavior (implemented — chunks B2/B3 + C1–C3 + D1)
 - Caches the last keyframe + decoder config to prime newly-joined viewers
   (`gawk-server/internal/hub`); a **new publisher session invalidates both
   caches** (frameIDs reset, config may differ) while caches persist when the
@@ -38,6 +38,15 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 - Routes: `CONNECT /publish` (single publisher, 409 when taken),
   `CONNECT /subscribe` (429 when full), `/echo` diagnostic, `GET /healthz`,
   `GET /statusz` (JSON `hub.Stats` snapshot)
+- **QUIC keepalive keeps idle viewers connected while the broadcaster is
+  away** (`-keepalive-period`, default 10s; `-max-idle-timeout`, default
+  30s). Raising the idle timeout alone is a no-op — the effective timeout is
+  the min of both endpoints and browsers advertise ~30s; the keepalive is
+  the mechanism.
+- Viewer side: **auto-reconnect with backoff** (`ViewerSession` wrapping the
+  single-shot `ViewerPipeline`; 1s→15s capped, 10 attempts). Never-connected
+  failures are fatal by design — `WebTransportError` hides the HTTP status,
+  so 429/bad-cert/wrong-URL are indistinguishable in JS.
 - Framing protocol is **implemented** (`gawk-server/internal/wire`): VideoChunk
   datagrams carry frameID + chunkIndex/chunkCount + keyframe flag + timestamp
   (20-byte header, big-endian); a separate DecoderConfig message carries
@@ -55,7 +64,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `docs/02-webtransport-hello.md` for v0.2 (server + TLS + echo),
   `docs/03-single-client-e2e.md` for v0.3 (hub + publish/subscribe relay),
   `docs/04-fanout.md` for v0.4 (fan-out hardening, restart-safe caches,
-  `/statusz`).
+  `/statusz`), `docs/05-resilience-deploy.md` for v0.5 (keepalive, viewer
+  auto-reconnect, Docker, Helm, CI/release — **includes the deploy runbook**).
+- Each component has `deploy/` (Dockerfile + Helm chart); `.github/workflows/`
+  holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
   breakdown (A1–D3) with per-chunk acceptance criteria and progress status.
   Start here when continuing server work.**
@@ -72,10 +84,30 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 4. Fan-out (multi-subscriber) — **done** (v0.4: C1 hub hardening, C2
    restart-safe caches, C3 `/statusz`; manual multi-viewer browser verify
    passed 2026-07-12 — see `docs/04-fanout.md`).
-5. Resilience features (forced keyframes, etc.) — chunks D1–D3 incl. deployment
+5. Resilience + deployment — **done** (v0.5: D1 keepalive + viewer
+   auto-reconnect, D2 Docker images, D3 Helm charts, D4 release-please CI;
+   first GitHub release cycle + manual browser verify pending — see
+   `docs/05-resilience-deploy.md`). Forced keyframes were already
+   broadcaster-side (`keyframeIntervalFrames: 120` in `gawk-app/src/media/`).
+
+## Deployment & CI (locked in — decided 2026-07-12)
+- **Helm charts, one per component** (`gawk-server/deploy/chart/`,
+  `gawk-app/deploy/chart/`), separately versioned; **chart version ==
+  appVersion == image tag** always. The frontend is deployed too (nginx
+  behind Ingress class `nginx-int`); the relay is a UDP LoadBalancer
+  (nginx ingress can't proxy WebTransport).
+- **Versioning**: SemVer 2 from conventional commits via release-please
+  (monorepo manifest mode, separate release PRs, tags `gawk-server-vX.Y.Z` /
+  `gawk-app-vX.Y.Z`).
+- **Registry**: GHCR — images `ghcr.io/tuhis/<component>`, charts
+  `oci://ghcr.io/tuhis/charts/<component>` (lowercase; private → classic PAT
+  pull secret).
+- **CD is publish-only**: CI never touches the cluster; deploys are manual
+  `helm upgrade --install`. Flux exists on the cluster but is deliberately
+  unused. Don't re-propose raw manifests, semantic-release, or CI-driven
+  deploys without discussion.
 
 ## On the horizon (not started)
-- Periodic forced keyframes for resilience
 - Media over QUIC (MoQ) — explicitly deferred; still an unstable IETF draft
   (draft-17 surveyed) with no native browser support yet. Don't build toward it now.
 

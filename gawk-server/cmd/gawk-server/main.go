@@ -19,6 +19,10 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 )
 
+// Stamped at build time via -ldflags "-X main.version=..." (see
+// deploy/Dockerfile); "dev" for plain go build/run.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "gawk-server:", err)
@@ -46,9 +50,12 @@ func run() error {
 	defer stop()
 
 	log.Info("starting",
+		"version", version,
 		"addr", cfg.Addr,
 		"dev_cert", cfg.DevCert,
 		"max_subscribers", cfg.MaxSubscribers,
+		"max_idle_timeout", cfg.MaxIdleTimeout,
+		"keepalive_period", cfg.KeepAlivePeriod,
 	)
 
 	getCert, err := certSource(cfg, log)

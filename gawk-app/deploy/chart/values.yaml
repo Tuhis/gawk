@@ -1,0 +1,34 @@
+image:
+  repository: ghcr.io/tuhis/gawk-app
+  # Empty = use the chart's appVersion, which release-please keeps in
+  # lockstep with the published image tag.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# GHCR is private — same pull secret as the gawk-server chart (one per
+# namespace suffices): imagePullSecrets: [{name: ghcr-pull}]
+imagePullSecrets: []
+
+# Stateless static-file serving; safe to scale.
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 80 # targetPort is the nginx-unprivileged listen port, 8080
+
+ingress:
+  className: nginx-int
+  host: gawk.example.com # CHANGEME: the frontend's public name; the server
+  # chart's config.allowedOrigins must contain https://<this host>.
+  tls:
+    enabled: true
+    secretName: gawk-app-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 64Mi

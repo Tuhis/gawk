@@ -1,0 +1,18 @@
+{{- if .Values.certificate.enabled }}
+# cert-manager provisions {{ .Values.certificate.secretName }} and renews it
+# ~30 days before expiry; the server's tlsutil.Reloader notices the mounted
+# file change per-handshake, so renewals need no pod restart.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gawk-server.fullname" . }}
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.certificate.secretName }}
+  issuerRef:
+    name: {{ .Values.certificate.issuerRef.name }}
+    kind: {{ .Values.certificate.issuerRef.kind }}
+  dnsNames:
+    {{- toYaml .Values.certificate.dnsNames | nindent 4 }}
+{{- end }}

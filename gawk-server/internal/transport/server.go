@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -57,7 +56,12 @@ func New(cfg config.Config, h *hub.Hub, getCert func(*tls.ClientHelloInfo) (*tls
 			EnableDatagrams: true,
 			QUICConfig: &quic.Config{
 				EnableDatagrams: true,
-				MaxIdleTimeout:  30 * time.Second,
+				MaxIdleTimeout:  cfg.MaxIdleTimeout,
+				// The keepalive is what keeps idle subscribers alive while the
+				// broadcaster is away: PINGs reset both endpoints' idle timers,
+				// and the effective idle timeout is the min of both endpoints'
+				// advertised values (browsers advertise ~30s).
+				KeepAlivePeriod: cfg.KeepAlivePeriod,
 				// Required by webtransport-go v0.11+.
 				EnableStreamResetPartialDelivery: true,
 			},

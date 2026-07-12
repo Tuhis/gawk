@@ -1,5 +1,10 @@
 # `gawk-server` Implementation Plan — Go WebTransport Relay
 
+All milestones (A–D) are implemented. Milestone D's deployment shape was
+redecided during planning: Helm charts + a release-please/GHCR CI pipeline
+instead of raw manifests, plus frontend deployment — the authoritative
+close-out is `05-resilience-deploy.md`.
+
 ## Progress (updated 2026-07-12)
 
 | Chunk | Status | Notes |
@@ -16,7 +21,10 @@
 | C1 hub hardening | ✅ done | B2 hub already had ErrFull + per-sub drop counters; C1 added the full-scale acceptance tests (16th sub rejected at default cap; 15 subs / one blocked / 5s @60fps synthetic stream, unblocked get 100%; ErrFull raced under churn) — `-race` clean |
 | C2 restart-safe caches | ✅ done | new publisher session invalidates both caches (frameIDs reset / config may differ); caches still persist while broadcaster away; config-precedes-every-keyframe pinned incl. mid-stream config swap — see `04-fanout.md` |
 | C3 Stats + /statusz | ✅ done | json tags on `hub.Stats` = response shape; `GET /statusz` integration-tested over HTTP/3 (numbers move). Milestone C close-out verified in browser 2026-07-12 (multi-viewer, churn, broadcaster restart, `/statusz` live) — see `04-fanout.md` |
-| D1–D3 resilience + deploy | ⬜ | |
+| D1 resilience | ✅ done | `-max-idle-timeout`/`-keepalive-period` flags (keepalive keeps idle viewers alive while broadcaster away); `TestSubscriberSurvivesPublisherRestart` + negative control; **scope grew**: viewer auto-reconnect (`ViewerSession`, backoff 1s→15s, 10 attempts, never-connected-is-fatal) — see `05-resilience-deploy.md` |
+| D2 containers | ✅ done | `gawk-server/deploy/Dockerfile` (distroless nonroot, ships gawk-echo as k8s exec-probe helper, VERSION ldflags) + `gawk-app/deploy/Dockerfile` (nginx-unprivileged); both acceptance-tested locally incl. echo-from-host |
+| D3 deploy | ✅ done | **superseded raw manifests → Helm charts** (`*/deploy/chart/`), one per component, chart version == appVersion == image tag; exec probes (h3-only server), replicas:1+Recreate, cert-manager Certificate; server-side dry-run clean vs homelab |
+| D4 CI/release (added) | ✅ done | release-please monorepo (components seeded 0.4.0, tags `gawk-server-vX.Y.Z`), `ci.yml` (go/app/helm/docker), `release-please.yml` with chained GHCR publish (images + OCI charts). First release cycle pending push — checklist in `05-resilience-deploy.md` |
 
 Note for implementers: webtransport-go v0.11.1 bumped the `go` directive to
 1.25 (toolchain auto-downloads). The A4 chunk hit three runtime-only library
@@ -51,7 +59,7 @@ gawk-server/
     wire/wire.go, wire_test.go     # pure encode/parse + golden vectors
     hub/hub.go, hub_test.go        # Hub, Publisher, Subscriber, caches, drop policy
     transport/server.go, session.go
-  deploy/                          # Milestone D only: Dockerfile, k8s/
+  deploy/                          # Milestone D: Dockerfile, chart/ (Helm)
 ```
 
 ## Config, logging, shutdown
@@ -205,11 +213,17 @@ Nothing in A is throwaway.
 
 ### Milestone D — build step 5: resilience + deployment
 
+> **As built (2026-07-12):** D3 was superseded — deployment is via Helm
+> charts (`gawk-server/deploy/chart/`, `gawk-app/deploy/chart/`) published
+> to GHCR as OCI packages, with a release-please-driven CI pipeline (D4)
+> and the frontend deployed too. See `05-resilience-deploy.md`.
+
 | # | Chunk | Deps | Acceptance criteria |
 |---|-------|------|---------------------|
 | D1 | Publisher-gone handling (subs stay connected, re-primed when publisher returns), idle timeout/keepalive tuning | B3 | Integration test: kill publisher, viewers stay; new publisher resumes flow |
 | D2 | `deploy/Dockerfile`: multi-stage, CGO_ENABLED=0, distroless/static, non-root | A4 | `docker build` + `docker run -p 4433:4433/udp` passes the A4 echo test from host |
-| D3 | `deploy/k8s/`: Deployment (cert Secret mounted, `GAWK_CERT_FILE=/tls/tls.crt`), Service (UDP), cert-manager Certificate | D2 | `kubectl apply --dry-run=server` clean; Reloader means renewals need no restart. Note: k8s HTTP probes can't speak h3 — use exec/startup probe |
+| D3 | Helm charts per component (was: raw `deploy/k8s/` manifests): cert Secret mounted, `GAWK_CERT_FILE=/tls/tls.crt`, UDP LoadBalancer Service, cert-manager Certificate | D2 | `helm lint` + rendered `kubectl apply --dry-run=server` clean; Reloader means renewals need no restart. Note: k8s HTTP probes can't speak h3 — exec probes via the bundled gawk-echo |
+| D4 | CI + release automation (added): release-please monorepo versioning, GHCR image + OCI chart publish | D2, D3 | CI green on PR/main; merging a release PR tags and publishes image+chart with matching versions |
 
 Deployment lands after fan-out works locally (when a friend first tests). Each milestone close-out: write `docs/0N-*.md` per repo convention. Forced-keyframe cadence is broadcaster-side (`keyframeIntervalFrames` already exists in gawk-app); server-side resilience = D1 + C2 semantics.
 

@@ -1,0 +1,78 @@
+# Validation on every PR and main push: Go tests (with -race, which needs
+# CGO), frontend lint/test/build, chart lint/render, and docker builds
+# (no push — publishing happens in release-please.yml on release).
+#
+# No path filters on purpose: the whole matrix takes a few minutes, and
+# skipped-vs-required check semantics aren't worth it at this repo size.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gawk-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - run: go vet ./...
+      - run: go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gawk-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gawk-app/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: helm lint gawk-server/deploy/chart gawk-app/deploy/chart
+      - run: helm template gawk-server/deploy/chart > /dev/null
+      - run: helm template gawk-app/deploy/chart > /dev/null
+
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - context: gawk-server
+            dockerfile: gawk-server/deploy/Dockerfile
+          - context: gawk-app
+            dockerfile: gawk-app/deploy/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          # Distinct scope per image or the two builds evict each other.
+          cache-from: type=gha,scope=${{ matrix.context }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.context }}

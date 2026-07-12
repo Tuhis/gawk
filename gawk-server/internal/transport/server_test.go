@@ -31,6 +31,14 @@ var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 // hub (for state assertions) and Run's completion channel.
 func startTestServer(t *testing.T, ctx context.Context, maxSubscribers int) (port int, clientTLS *tls.Config, h *hub.Hub, done chan error) {
 	t.Helper()
+	return startTestServerCfg(t, ctx, config.Config{MaxSubscribers: maxSubscribers})
+}
+
+// startTestServerCfg is startTestServer with a caller-supplied config, for
+// tests that need non-default timeouts. cfg.Addr is overwritten with a
+// random free port.
+func startTestServerCfg(t *testing.T, ctx context.Context, cfg config.Config) (port int, clientTLS *tls.Config, h *hub.Hub, done chan error) {
+	t.Helper()
 
 	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
 	if err != nil {
@@ -45,7 +53,7 @@ func startTestServer(t *testing.T, ctx context.Context, maxSubscribers int) (por
 	port = pc.LocalAddr().(*net.UDPAddr).Port
 	pc.Close()
 
-	cfg := config.Config{Addr: fmt.Sprintf("127.0.0.1:%d", port), MaxSubscribers: maxSubscribers}
+	cfg.Addr = fmt.Sprintf("127.0.0.1:%d", port)
 	h = hub.New(discardLog, hub.Options{MaxSubscribers: cfg.MaxSubscribers})
 	srv := New(cfg, h, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, discardLog)
 
@@ -547,6 +555,128 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 	if gotCodec != newCodec {
 		t.Errorf("first primed config codec = %q, want %q", gotCodec, newCodec)
 	}
+}
+
+// TestSubscriberSurvivesPublisherRestart is the D1 acceptance test: a
+// connected viewer must ride out the broadcaster leaving (including an idle
+// gap longer than the QUIC idle timeout — the server keepalive is what keeps
+// the session alive) and then receive the new session's stream with no
+// action of its own.
+func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, h, _ := startTestServerCfg(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  2 * time.Second,
+		KeepAlivePeriod: 250 * time.Millisecond,
+	})
+
+	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
+
+	// Session 1: stream a config + keyframe and make sure the subscriber
+	// actually receives it (proves the fan-out path before the restart).
+	pubURL := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
+	pub1 := dial(t, ctx, pubURL, clientTLS)
+	if err := pub1.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
+		t.Fatalf("send config: %v", err)
+	}
+	for _, chunk := range encodeFrame(t, 7, true, 2) {
+		if err := pub1.SendDatagram(chunk); err != nil {
+			t.Fatalf("send keyframe chunk: %v", err)
+		}
+	}
+	gotChunks := make(map[uint16]bool)
+	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
+	for len(gotChunks) < 2 {
+		dgram, err := sub.ReceiveDatagram(recvCtx)
+		if err != nil {
+			recvCancel()
+			t.Fatalf("session 1 stream incomplete (%d/2 keyframe chunks): %v", len(gotChunks), err)
+		}
+		if _, typ, err := wire.PeekType(dgram); err != nil || typ != wire.TypeVideoChunk {
+			continue
+		}
+		if hdr, _, err := wire.ParseVideoChunk(dgram); err == nil && hdr.FrameID == 7 {
+			gotChunks[hdr.ChunkIndex] = true
+		}
+	}
+	recvCancel()
+
+	// Broadcaster leaves. The subscriber must stay connected through a
+	// quiet window longer than the idle timeout: only the keepalive PINGs
+	// hold the session open, since no media flows.
+	pub1.CloseWithError(0, "broadcaster gone")
+	waitFor(t, 5*time.Second, func() bool { return !h.Stats().PublisherActive }, "publisher slot freed")
+	time.Sleep(3 * time.Second)
+	if got := h.Stats().Subscribers; got != 1 {
+		t.Fatalf("subscribers after idle gap = %d, want 1 (session idled out?)", got)
+	}
+	select {
+	case <-sub.Context().Done():
+		t.Fatal("subscriber session closed during the broadcaster-away gap")
+	default:
+	}
+
+	// Session 2: new codec, frameIDs restart at 0. The same subscriber
+	// session must receive the new config and the full new keyframe.
+	pub2 := dial(t, ctx, pubURL, clientTLS)
+	const newCodec = "vp09.00.40.08"
+	const kfChunks = 3
+	if err := pub2.SendDatagram(testConfigDgram(t, newCodec)); err != nil {
+		t.Fatalf("send new config: %v", err)
+	}
+	for _, chunk := range encodeFrame(t, 0, true, kfChunks) {
+		if err := pub2.SendDatagram(chunk); err != nil {
+			t.Fatalf("send new keyframe chunk: %v", err)
+		}
+	}
+
+	gotCodec := ""
+	newChunks := make(map[uint16]bool)
+	recvCtx, recvCancel = context.WithTimeout(ctx, 5*time.Second)
+	defer recvCancel()
+	for gotCodec != newCodec || len(newChunks) < kfChunks {
+		dgram, err := sub.ReceiveDatagram(recvCtx)
+		if err != nil {
+			t.Fatalf("resumed stream incomplete (codec %q, %d/%d keyframe chunks): %v",
+				gotCodec, len(newChunks), kfChunks, err)
+		}
+		_, typ, err := wire.PeekType(dgram)
+		if err != nil {
+			continue
+		}
+		switch typ {
+		case wire.TypeDecoderConfig:
+			if cfg, err := wire.ParseDecoderConfig(dgram); err == nil && cfg.Codec == newCodec {
+				gotCodec = cfg.Codec
+			}
+		case wire.TypeVideoChunk:
+			// Chunks from session 1 (frameID 7) may still be in flight
+			// early on — only the new session's keyframe counts.
+			if hdr, _, err := wire.ParseVideoChunk(dgram); err == nil && hdr.Keyframe && hdr.FrameID == 0 {
+				newChunks[hdr.ChunkIndex] = true
+			}
+		}
+	}
+}
+
+// TestIdleSubscriberTimesOutWithoutKeepalive is the negative control for
+// the test above: with the keepalive disabled, an idle subscriber session
+// hits the QUIC idle timeout and is dropped.
+func TestIdleSubscriberTimesOutWithoutKeepalive(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, h, _ := startTestServerCfg(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  time.Second,
+		KeepAlivePeriod: 0,
+	})
+
+	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	_ = sub
+	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
+	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 0 }, "idle subscriber timed out")
 }
 
 func TestGracefulShutdown(t *testing.T) {

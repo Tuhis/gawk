@@ -36,9 +36,10 @@ getDisplayMedia
 
 | Path | What |
 |------|------|
-| `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Pages: `#/view` (default), `#/broadcast`, `#/loopback` (no-network diagnostic) |
-| `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. See its [README](gawk-server/README.md) |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`03`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Pages: `#/view` (default), `#/broadcast`, `#/loopback` (no-network diagnostic). `deploy/`: Dockerfile + Helm chart |
+| `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`05`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
 ## Quickstart (local dev)
 
@@ -76,6 +77,20 @@ cd gawk-server && go vet ./... && CGO_ENABLED=1 go test -race ./...
 cd gawk-app    && npm test && npm run lint && npm run build
 ```
 
+### Containers & deployment
+
+Both components build to images (`<component>/deploy/Dockerfile`) and ship
+as Helm charts (`<component>/deploy/chart/`) published to GHCR by CI on
+release — chart version, `appVersion` and image tag always match. Deploying
+is manual by design (`helm upgrade --install` from the workstation; no
+cluster credentials in CI). Runbook, GHCR pull-secret setup and the release
+flow: [`docs/05-resilience-deploy.md`](docs/05-resilience-deploy.md).
+
+```sh
+cd gawk-server && docker build -f deploy/Dockerfile -t gawk-server:dev .
+cd gawk-app    && docker build -f deploy/Dockerfile -t gawk-app:dev .
+```
+
 ## Status
 
 Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks.md)):
@@ -84,7 +99,9 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 2. ✅ WebTransport hello-world: TLS, dev certs, echo — `docs/02`
 3. ✅ Single-client end-to-end: hub, publish/subscribe, frontend transport — `docs/03`
 4. ✅ Fan-out hardening: multi-subscriber, restart-safe caches, `/statusz` — `docs/04`
-5. ⬜ Resilience + deployment (Docker, k8s, cert-manager)
+5. ✅ Resilience + deployment: keepalive, viewer auto-reconnect, Docker,
+   Helm charts, release-please CI — `docs/05` (first release cycle + manual
+   browser verify pending)
 
 ## Important gotchas
 
@@ -114,7 +131,10 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   opaque `CERTIFICATE_VERIFY_FAILED (certificate unknown)`. The Go probe
   won't catch this; only Chrome enforces it. ([docs/02](docs/02-webtransport-hello.md))
 - The dev cert is **regenerated on every server start** — re-paste the fresh
-  `cert_hash_hex` after each restart; a stale hash fails identically.
+  `cert_hash_hex` after each restart; a stale hash fails identically. This
+  also means the viewer's **auto-reconnect can never heal a relay restart in
+  `-dev-cert` mode** — test that with a file-based dev cert
+  (`gawk-devcert -out certs`). ([docs/05](docs/05-resilience-deploy.md))
 
 **webtransport-go (v0.11.x) — all fail at runtime, not compile time**
 
@@ -141,3 +161,19 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   (promise-chain them).
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
+- **Raising the QUIC idle timeout does not keep idle viewers alive** — the
+  effective timeout is the min of both endpoints' advertised values and
+  browsers advertise ~30s. The server-side keepalive (`-keepalive-period`)
+  is the mechanism. ([docs/05](docs/05-resilience-deploy.md))
+
+**CI / deployment**
+
+- **Tags created with `GITHUB_TOKEN` don't trigger workflows** — publish
+  jobs must chain off release-please outputs in the same workflow, never
+  `on: push: tags`. ([docs/05](docs/05-resilience-deploy.md))
+- **GHCR**: refs are lowercase-only (`tuhis`), and cluster pulls need a
+  **classic** PAT with `read:packages` (fine-grained PATs don't cover GHCR).
+- **The relay is HTTP/3-only (no TCP listener)** — kubelet probes must exec
+  the bundled `gawk-echo` binary; `httpGet`/`tcpSocket` can never succeed.
+- **release-please `extra-files` paths are package-relative** — a repo-
+  relative path silently leaves Chart.yaml unbumped.

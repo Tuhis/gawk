@@ -1,0 +1,88 @@
+image:
+  repository: ghcr.io/tuhis/gawk-server
+  # Empty = use the chart's appVersion, which release-please keeps in
+  # lockstep with the published image tag. Only set this to pin a
+  # different image than the chart was released with.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# GHCR is private: create a pull secret once per namespace with a classic
+# PAT that has read:packages only (fine-grained PATs don't cover GHCR):
+#
+#   kubectl -n gawk create secret docker-registry ghcr-pull \
+#     --docker-server=ghcr.io --docker-username=Tuhis --docker-password=<PAT>
+#
+# then set: imagePullSecrets: [{name: ghcr-pull}]
+imagePullSecrets: []
+
+# Replicas are deliberately not configurable: the hub is an in-memory
+# single-publisher pub/sub — two pods behind one Service would split the
+# publisher and the subscribers. The Deployment is hardcoded to
+# replicas: 1 with strategy Recreate.
+
+service:
+  type: LoadBalancer
+  port: 4433
+  # Pin a MetalLB address if the relay's DNS record points at a fixed IP:
+  # loadBalancerIP: 10.12.0.40
+  loadBalancerIP: ""
+  # e.g. metallb.universe.tf/address-pool: default
+  annotations: {}
+
+certificate:
+  # cert-manager Certificate for the relay's public name. The server's
+  # tlsutil.Reloader picks up renewals on the fly — no pod restart needed.
+  enabled: true
+  issuerRef:
+    # Use letsencrypt-staging for the first rollout to avoid burning
+    # production rate limits while iterating.
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  dnsNames:
+    - gawk-relay.example.com # CHANGEME: the relay's public DNS name
+  secretName: gawk-server-tls
+
+config:
+  # Origins allowed to CONNECT, checked against the Origin header. MUST
+  # include the frontend's origin (the gawk-app ingress host), e.g.
+  # ["https://gawk.example.com"]. Empty allows all — fine for dev, don't
+  # ship it to prod.
+  allowedOrigins: []
+  maxSubscribers: 15
+  logLevel: info
+  logFormat: json
+  # QUIC session tuning. The keepalive is what keeps idle viewers
+  # connected while the broadcaster is away; it must stay below the idle
+  # timeout. See gawk-server/README.md.
+  maxIdleTimeout: 30s
+  keepalivePeriod: 10s
+
+# Extra GAWK_* environment variables, verbatim pod-spec env entries.
+extraEnv: []
+
+# Probe timings. The probe itself execs the bundled gawk-echo binary
+# against localhost — the server is HTTP/3-only (UDP, no TCP listener), so
+# kubelet's httpGet/tcpSocket probes cannot reach it. Each probe run costs
+# one QUIC dial: trivial at this scale.
+probes:
+  startup:
+    periodSeconds: 2
+    failureThreshold: 15
+  liveness:
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# Note for node sizing: quic-go wants large UDP buffers; on stock nodes it
+# logs a warning and runs degraded. Fix on the node, not in the chart:
+#   sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000

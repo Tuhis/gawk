@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "include-component-in-tag": true,
+  "packages": {
+    "gawk-server": {
+      "release-type": "go",
+      "component": "gawk-server",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/chart/Chart.yaml"
+        }
+      ]
+    },
+    "gawk-app": {
+      "release-type": "node",
+      "component": "gawk-app",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/chart/Chart.yaml"
+        }
+      ]
+    }
+  }
+}

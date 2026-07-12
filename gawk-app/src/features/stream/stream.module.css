@@ -78,6 +78,14 @@
   background: rgba(217, 83, 79, 0.08);
 }
 
+/* Non-fatal status note (e.g. auto-reconnect in progress). */
+.notice {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+}
+
 .statsPanel {
   background: var(--panel);
   border: 1px solid var(--border);
