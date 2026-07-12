@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.9.0...gawk-server-v0.9.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* harden R1 failure paths, close-code handling, and GC stats ([b7d8f58](https://github.com/Tuhis/gawk/commit/b7d8f583a92da4e8588252fae95c935dafa4d460))
+
 ## [0.9.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.8.0...gawk-server-v0.9.0) (2026-07-12)
 
 
