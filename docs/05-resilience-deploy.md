@@ -4,9 +4,10 @@ Status (2026-07-12): **implemented; automated verification passed** (server
 `-race` suite incl. the new restart/keepalive integration tests, frontend
 vitest suite, both docker images built and acceptance-tested locally, both
 Helm charts `kubectl apply --dry-run=server`-clean against the homelab
-cluster, workflows actionlint-clean). Pending: manual browser verify
-(checklist below) and the first release-please cycle on GitHub (only
-provable after push).
+cluster, workflows actionlint-clean). **First release cycle completed
+2026-07-12**: both components released as v0.5.0, all four artifacts
+(2 images, 2 OCI charts) verified on GHCR. Pending: manual browser verify
+(checklist below) and the first real cluster install.
 
 Scope note: the original D3 ("raw k8s manifests") was superseded during
 planning — deployment is Helm-based with a full CI pipeline, and the
@@ -153,14 +154,18 @@ server-side dry-run can't see a namespace it didn't persist.
 ## D4 — CI + release automation
 
 - `release-please-config.json` + `.release-please-manifest.json`: monorepo
-  manifest mode, `separate-pull-requests`, components `gawk-server`
-  (release-type `go` — changelog+tag only; the binary gets its version via
-  ldflags, the chart via extra-files, no redundant version.txt) and
-  `gawk-app` (release-type `node` — bumps package.json/lock). Tags:
-  `gawk-server-vX.Y.Z` / `gawk-app-vX.Y.Z`. Both seeded at **0.4.0**
-  (matching the project milestone numbering; package.json aligned) so the
-  first releases come out 0.5.0. `extra-files` paths are
-  **package-relative** (`deploy/chart/Chart.yaml`).
+  manifest mode, **one combined release PR**
+  (`"separate-pull-requests": false` — see the gotcha below; the first
+  cycle ran with separate PRs and they conflicted on the shared manifest),
+  components `gawk-server` (release-type `go` — changelog+tag only; the
+  binary gets its version via ldflags, the chart via extra-files, no
+  redundant version.txt) and `gawk-app` (release-type `node` — bumps
+  package.json/lock). The combined PR only includes components with
+  releasable commits, and merging it still cuts **separate per-component
+  tags and releases**: `gawk-server-vX.Y.Z` / `gawk-app-vX.Y.Z`. Both were
+  seeded at **0.4.0** (matching the project milestone numbering;
+  package.json aligned) so the first releases came out 0.5.0. `extra-files`
+  paths are **package-relative** (`deploy/chart/Chart.yaml`).
 - `.github/workflows/ci.yml` (PR + main): Go vet + `-race` tests
   (`CGO_ENABLED=1`), frontend `npm ci`/lint/test/build, `helm lint` +
   `helm template`, docker build validation (no push, GHA cache with
@@ -174,12 +179,13 @@ server-side dry-run can't see a namespace it didn't persist.
   over the Chart.yaml bump). Login is `GITHUB_TOKEN`; packages inherit the
   repo's private visibility.
 
-**First-cycle checklist** (after pushing this milestone): both release PRs
-open with version 0.5.0 and the Chart.yaml bump visible in the diff → merge
-→ tags + GitHub Releases appear → **verify the publish jobs actually ran**
-(wrong output names skip them silently) → GHCR shows 4 packages
-(2 images, 2 charts) → `helm pull oci://ghcr.io/tuhis/charts/gawk-server
---version 0.5.0` works from the workstation.
+**First cycle (completed 2026-07-12):** release PRs opened at 0.5.0 with
+the Chart.yaml bumps visible in the diffs → merged → per-component tags +
+GitHub Releases created → publish jobs ran and pushed all 4 GHCR packages
+(verified via push digests in the job logs). Two setup snags, both fixed:
+the repo setting "Allow GitHub Actions to create and approve pull requests"
+had to be enabled first, and the separate release PRs conflicted on the
+shared manifest (→ `"separate-pull-requests": false`, gotcha below).
 
 ### Deploying (manual, publish-only CD by design)
 
@@ -203,6 +209,19 @@ optional MetalLB IP pin.
 
 ## Gotchas hit in this milestone
 
+- **`"separate-pull-requests": true` self-conflicts in a monorepo** — every
+  release PR edits the shared `.release-please-manifest.json`, so merging
+  one strands the other on a conflict, and release-please does *not*
+  reliably refresh the surviving PR (observed: post-merge run left it
+  stale; the fix was manually merging main into the PR branch and resolving
+  the manifest). Fixed by switching to one combined release PR
+  (`"separate-pull-requests": false`) — components still get separate tags,
+  releases and publish jobs; a component without releasable commits simply
+  isn't in the PR.
+- **Actions must be allowed to open PRs** — release-please fails with
+  "GitHub Actions is not permitted to create or approve pull requests"
+  until Settings → Actions → General → Workflow permissions → "Allow GitHub
+  Actions to create and approve pull requests" is enabled (off by default).
 - **Tags created with `GITHUB_TOKEN` do not trigger workflows** — publish
   jobs must chain off release-please outputs in the *same* workflow. Never
   "simplify" to an `on: push: tags` publish workflow; it will silently never

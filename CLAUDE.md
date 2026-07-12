@@ -97,8 +97,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   behind Ingress class `nginx-int`); the relay is a UDP LoadBalancer
   (nginx ingress can't proxy WebTransport).
 - **Versioning**: SemVer 2 from conventional commits via release-please
-  (monorepo manifest mode, separate release PRs, tags `gawk-server-vX.Y.Z` /
-  `gawk-app-vX.Y.Z`).
+  (monorepo manifest mode, **one combined release PR** — separate PRs
+  conflicted on the shared manifest, don't switch back; tags stay
+  per-component: `gawk-server-vX.Y.Z` / `gawk-app-vX.Y.Z`). First releases
+  (v0.5.0 both) published 2026-07-12.
 - **Registry**: GHCR — images `ghcr.io/tuhis/<component>`, charts
   `oci://ghcr.io/tuhis/charts/<component>` (lowercase; private → classic PAT
   pull secret).

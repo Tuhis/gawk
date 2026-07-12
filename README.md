@@ -100,8 +100,8 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 3. ✅ Single-client end-to-end: hub, publish/subscribe, frontend transport — `docs/03`
 4. ✅ Fan-out hardening: multi-subscriber, restart-safe caches, `/statusz` — `docs/04`
 5. ✅ Resilience + deployment: keepalive, viewer auto-reconnect, Docker,
-   Helm charts, release-please CI — `docs/05` (first release cycle + manual
-   browser verify pending)
+   Helm charts, release-please CI — `docs/05` (v0.5.0 released to GHCR
+   2026-07-12; manual browser verify + first cluster install pending)
 
 ## Important gotchas
 
@@ -171,6 +171,11 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 - **Tags created with `GITHUB_TOKEN` don't trigger workflows** — publish
   jobs must chain off release-please outputs in the same workflow, never
   `on: push: tags`. ([docs/05](docs/05-resilience-deploy.md))
+- **release-please separate PRs self-conflict in a monorepo** (all release
+  PRs edit the shared manifest, and the bot doesn't refresh the stranded
+  one) — use one combined release PR (`"separate-pull-requests": false`);
+  tags/releases/publishes stay per-component.
+  ([docs/05](docs/05-resilience-deploy.md))
 - **GHCR**: refs are lowercase-only (`tuhis`), and cluster pulls need a
   **classic** PAT with `read:packages` (fine-grained PATs don't cover GHCR).
 - **The relay is HTTP/3-only (no TCP listener)** — kubelet probes must exec
