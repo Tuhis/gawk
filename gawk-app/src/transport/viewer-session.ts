@@ -11,7 +11,7 @@
 import { log } from '../lib/logger';
 import type { ConnectOptions } from './connection';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
-import type { DecoderConfigMessage } from './wire';
+import { CLOSE_CODE_BROADCAST_ENDED, type DecoderConfigMessage } from './wire';
 import type { DecodedFrame } from '../media/decoder';
 
 export const RECONNECT_MAX_ATTEMPTS = 10;
@@ -154,7 +154,7 @@ export class ViewerSession {
       this.cb.onEnded();
       return;
     }
-    if (this.lastCloseCode === 4000) {
+    if (this.lastCloseCode === CLOSE_CODE_BROADCAST_ENDED) {
       log.info('Broadcast ended cleanly by server (code 4000). Stopping.');
       this.stopped = true;
       this.cb.onEnded();
@@ -197,7 +197,7 @@ export class ViewerSession {
       } else {
         this.lastCloseCode = null;
       }
-      if (this.lastCloseCode === 4000) {
+      if (this.lastCloseCode === CLOSE_CODE_BROADCAST_ENDED) {
         log.info('Broadcast ended cleanly by server during reconnect (code 4000).');
         this.stopped = true;
         this.cb.onEnded();

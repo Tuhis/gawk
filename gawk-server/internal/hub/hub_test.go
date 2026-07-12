@@ -692,10 +692,13 @@ func TestGraceLifecycle(t *testing.T) {
 	}
 
 	f := &fakeSender{}
-	_, err = r.Subscribe(id, f)
+	s, err := r.Subscribe(id, f)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
+	// Drops from a subscriber still live at GC time must survive into the
+	// registry totals.
+	s.dropped.Add(5)
 
 	p.Close()
 
@@ -708,6 +711,9 @@ func TestGraceLifecycle(t *testing.T) {
 	}
 	if closeCode != uint32(wire.CloseCodeBroadcastEnded) {
 		t.Errorf("expected close code %d, got %d", wire.CloseCodeBroadcastEnded, closeCode)
+	}
+	if got := r.Stats().Totals.DatagramsDropped; got != 5 {
+		t.Errorf("Totals.DatagramsDropped after GC = %d, want 5", got)
 	}
 
 	// Entry must be deleted
@@ -749,6 +755,47 @@ func TestGraceReclaim(t *testing.T) {
 	closeCode, closed := f.getCloseInfo()
 	if closed {
 		t.Fatalf("subscriber was closed early with code %d; reclaim did not cancel GC", closeCode)
+	}
+
+	p2.Close()
+	s.Close()
+}
+
+// The AfterFunc/reclaim race (design doc 06, E3): a grace callback armed for
+// an older publisher generation can fire concurrently with — or after — a
+// successful reclaim (Timer.Stop does not guarantee the callback hasn't
+// started). The generation check must make the stale callback a no-op.
+func TestGraceExpiryStaleGenerationIsNoOp(t *testing.T) {
+	r := NewRegistry(discardLog, Options{BroadcastGrace: time.Hour})
+	id, p1, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	s, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	p1.Close() // arms the (1h) grace timer for the current generation
+
+	r.mu.Lock()
+	staleGen := r.hubs[id].generation
+	r.mu.Unlock()
+
+	_, p2, err := r.StartPublish(id) // reclaim: cancels timer, bumps generation
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+
+	// Simulate the armed callback firing anyway with its stale generation.
+	r.handleGraceExpiry(id, staleGen)
+
+	if err := r.CheckSubscribe(id); err != nil {
+		t.Errorf("broadcast deleted by stale grace callback: %v", err)
+	}
+	if closeCode, closed := f.getCloseInfo(); closed {
+		t.Errorf("subscriber closed by stale grace callback (code %d)", closeCode)
 	}
 
 	p2.Close()

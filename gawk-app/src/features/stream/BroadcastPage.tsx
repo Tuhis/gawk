@@ -4,7 +4,7 @@ import { ServerSettings } from './ServerSettings';
 import { StatsGrid } from './StatsGrid';
 import { fmt } from '../../lib/format';
 import { SourcePreview } from '../loopback/components/SourcePreview';
-import { BroadcastPipeline, type BroadcastStats } from '../../transport/broadcaster';
+import { BroadcastPipeline, BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import type { EncoderConfigured } from '../../media/encoder';
 import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
 import { useTransportStore } from '../../state/transportStore';
@@ -32,6 +32,33 @@ export function BroadcastPage() {
     setEncoderInfo(null);
     setCapturePath(null);
 
+    // afterFailedReclaim controls the note shown when the announce delivers
+    // a fresh code because the previous one couldn't be reclaimed.
+    const makeCallbacks = (afterFailedReclaim: boolean) => ({
+      onSourceStream: (s: MediaStream) => {
+        setSourceStream(s);
+        setStatus('broadcasting');
+      },
+      onEncoderConfigured: (info: EncoderConfigured) => setEncoderInfo(info),
+      onCapturePathChosen: (path: string) => setCapturePath(path),
+      onStats: (s: BroadcastStats) => setStats(s),
+      onBroadcastId: (id: string) => {
+        setBroadcastId(id);
+        setReclaimFailedNote(
+          afterFailedReclaim ? 'Reclaim failed (expired/taken); started a new broadcast.' : null,
+        );
+      },
+      onError: (err: Error) => {
+        setError(err.message);
+        setStatus('error');
+      },
+      onEnded: () => {
+        setSourceStream(null);
+        pipelineRef.current = null;
+        setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+      },
+    });
+
     let activeId = broadcastId;
     let triedReclaim = false;
 
@@ -42,28 +69,7 @@ export function BroadcastPage() {
         { ...DEFAULT_CAPTURE_CONFIG },
         serverUrl,
         { certHashHex },
-        {
-          onSourceStream: (s) => {
-            setSourceStream(s);
-            setStatus('broadcasting');
-          },
-          onEncoderConfigured: (info) => setEncoderInfo(info),
-          onCapturePathChosen: (path) => setCapturePath(path),
-          onStats: (s) => setStats(s),
-          onBroadcastId: (id) => {
-            setBroadcastId(id);
-            setReclaimFailedNote(null);
-          },
-          onError: (err) => {
-            setError(err.message);
-            setStatus('error');
-          },
-          onEnded: () => {
-            setSourceStream(null);
-            pipelineRef.current = null;
-            setStatus((prev) => (prev === 'error' ? prev : 'idle'));
-          },
-        },
+        makeCallbacks(false),
         activeId,
       );
       pipelineRef.current = pipeline;
@@ -71,8 +77,21 @@ export function BroadcastPage() {
         await pipeline.start();
         return; // Success!
       } catch (e) {
-        log.warn("Reclaim failed, falling back to mint:", e);
         pipelineRef.current = null;
+        if (!(e instanceof BroadcastStartError) || e.phase !== 'connect') {
+          // The reclaim session was established and start() failed later
+          // (e.g. the share picker was cancelled); the pipeline has torn the
+          // session down. Minting here would silently abandon the reclaimed
+          // ID and re-prompt the picker — surface the error instead.
+          const err = e instanceof Error ? e : new Error(String(e));
+          log.error(err);
+          setError(err.message);
+          setStatus('error');
+          return;
+        }
+        // Reclaim dial rejected (expired ⇒ 404, zombie ⇒ 409 —
+        // indistinguishable in JS): fall back to a fresh mint.
+        log.warn('Reclaim failed, falling back to mint:', e);
         setBroadcastId(null);
         activeId = null;
       }
@@ -84,32 +103,7 @@ export function BroadcastPage() {
       { ...DEFAULT_CAPTURE_CONFIG },
       serverUrl,
       { certHashHex },
-      {
-        onSourceStream: (s) => {
-          setSourceStream(s);
-          setStatus('broadcasting');
-        },
-        onEncoderConfigured: (info) => setEncoderInfo(info),
-        onCapturePathChosen: (path) => setCapturePath(path),
-        onStats: (s) => setStats(s),
-        onBroadcastId: (id) => {
-          setBroadcastId(id);
-          if (triedReclaim) {
-            setReclaimFailedNote("Reclaim failed (expired/taken); started a new broadcast.");
-          } else {
-            setReclaimFailedNote(null);
-          }
-        },
-        onError: (err) => {
-          setError(err.message);
-          setStatus('error');
-        },
-        onEnded: () => {
-          setSourceStream(null);
-          pipelineRef.current = null;
-          setStatus((prev) => (prev === 'error' ? prev : 'idle'));
-        },
-      },
+      makeCallbacks(triedReclaim),
     );
     pipelineRef.current = pipeline;
     try {

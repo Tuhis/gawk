@@ -56,6 +56,10 @@ config:
   # timeout. See gawk-server/README.md.
   maxIdleTimeout: 30s
   keepalivePeriod: 10s
+  # How long an abandoned broadcast ID survives after its publisher
+  # disconnects (the reclaim window); on expiry remaining viewers get a
+  # terminal "broadcast ended" close. See docs/06-multi-broadcaster.md.
+  broadcastGrace: 5m
   # Suppresses the INFO "session started"/"session ended" logs for the k8s
   # exec probe's own /echo sessions (fires every startup/liveness/readiness
   # probe period, forever). Real off-pod echo diagnostic use still logs

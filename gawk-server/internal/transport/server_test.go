@@ -50,6 +50,14 @@ func startTestServerCfg(t *testing.T, ctx context.Context, cfg config.Config) (p
 
 func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config, log *slog.Logger) (port int, clientTLS *tls.Config, r *hub.Registry, done chan error) {
 	t.Helper()
+	port, clientTLS, r, done, _ = startTestServerCfgLogSrv(t, ctx, cfg, log)
+	return
+}
+
+// startTestServerCfgLogSrv additionally returns the *Server so tests can set
+// its unexported test hooks.
+func startTestServerCfgLogSrv(t *testing.T, ctx context.Context, cfg config.Config, log *slog.Logger) (port int, clientTLS *tls.Config, r *hub.Registry, done chan error, srv *Server) {
+	t.Helper()
 
 	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
 	if err != nil {
@@ -65,7 +73,7 @@ func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config,
 
 	cfg.Addr = fmt.Sprintf("127.0.0.1:%d", port)
 	r = hub.NewRegistry(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers, BroadcastGrace: cfg.BroadcastGrace})
-	srv := New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log)
+	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log)
 
 	done = make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -73,7 +81,7 @@ func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config,
 	pool := x509.NewCertPool()
 	pool.AddCert(cert.Leaf)
 	clientTLS = &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{http3.NextProtoH3}}
-	return port, clientTLS, r, done
+	return port, clientTLS, r, done, srv
 }
 
 func dial(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) *webtransport.Session {
@@ -890,5 +898,220 @@ func TestE4Specifics(t *testing.T) {
 	}
 	if rsp == nil || rsp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expired subscribe status = %v (err %v), want 404", rsp, err)
+	}
+}
+
+// A subscriber that upgrades successfully but loses the race against GC
+// (broadcast deleted between CheckSubscribe and Subscribe) must be closed
+// with the terminal CloseCodeBroadcastEnded, not the 429 "full" code —
+// otherwise the viewer burns its reconnect budget against a 404 instead of
+// showing "broadcast ended". The server's test hook widens the race window
+// deterministically.
+func TestSubscribeLostRaceToGCClosesWithBroadcastEnded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  100 * time.Millisecond,
+	}, discardLog)
+
+	pubSess, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+
+	// Between the subscriber's upgrade and its registry.Subscribe, kill the
+	// publisher and wait for the grace timer to GC the broadcast. No t.Fatalf
+	// here: this runs on the server's handler goroutine.
+	srv.testHookPostUpgradeSubscribe = func(string) {
+		pubSess.CloseWithError(0, "")
+		deadline := time.Now().Add(5 * time.Second)
+		for !errors.Is(r.CheckSubscribe(id), hub.ErrNotFound) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	subSess := dialSubscriber(t, ctx, port, id, clientTLS)
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer recvCancel()
+	_, err := subSess.AcceptStream(recvCtx)
+	if err == nil {
+		t.Fatal("expected subscriber session to be closed, but got no error")
+	}
+	var se *webtransport.SessionError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected webtransport.SessionError, got %v", err)
+	}
+	if se.ErrorCode != webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded) {
+		t.Errorf("close code = %v, want %d (broadcast ended)", se.ErrorCode, wire.CloseCodeBroadcastEnded)
+	}
+}
+
+// E4: two concurrent publisher→subscriber pairs relay independently — no
+// datagram or config cross-talk between broadcasts.
+func TestTwoBroadcastsRelayIndependently(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
+
+	pubA, idA := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	pubB, idB := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	if idA == idB {
+		t.Fatalf("both publishers got the same ID %q", idA)
+	}
+	subA := dialSubscriber(t, ctx, port, idA, clientTLS)
+	subB := dialSubscriber(t, ctx, port, idB, clientTLS)
+	waitFor(t, 5*time.Second, func() bool {
+		st := r.Stats()
+		return st.Broadcasts[idA].Subscribers == 1 && st.Broadcasts[idB].Subscribers == 1
+	}, "both subscribers registered")
+
+	// Disjoint frameID ranges and codecs per broadcast make cross-talk
+	// detectable on both the chunk and the config path.
+	const totalFrames = 20
+	const chunksPerFrame = 2
+	const baseA, baseB = uint32(100), uint32(200)
+
+	type recvState struct {
+		codecs    map[string]bool
+		frames    map[uint32]map[uint16]bool
+		badFrames []uint32
+	}
+	collect := func(sub *webtransport.Session, wantBase uint32) chan recvState {
+		ch := make(chan recvState, 1)
+		go func() {
+			st := recvState{codecs: make(map[string]bool), frames: make(map[uint32]map[uint16]bool)}
+			recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
+			defer recvCancel()
+			defer func() { ch <- st }()
+			for {
+				dgram, err := sub.ReceiveDatagram(recvCtx)
+				if err != nil {
+					return
+				}
+				_, typ, err := wire.PeekType(dgram)
+				if err != nil {
+					continue
+				}
+				switch typ {
+				case wire.TypeDecoderConfig:
+					if c, err := wire.ParseDecoderConfig(dgram); err == nil {
+						st.codecs[c.Codec] = true
+					}
+				case wire.TypeVideoChunk:
+					hdr, _, err := wire.ParseVideoChunk(dgram)
+					if err != nil {
+						continue
+					}
+					if hdr.FrameID < wantBase || hdr.FrameID >= wantBase+totalFrames {
+						st.badFrames = append(st.badFrames, hdr.FrameID)
+						continue
+					}
+					m := st.frames[hdr.FrameID]
+					if m == nil {
+						m = make(map[uint16]bool)
+						st.frames[hdr.FrameID] = m
+					}
+					m[hdr.ChunkIndex] = true
+				}
+				complete := 0
+				for _, m := range st.frames {
+					if len(m) == chunksPerFrame {
+						complete++
+					}
+				}
+				if len(st.codecs) > 0 && complete == totalFrames {
+					return
+				}
+			}
+		}()
+		return ch
+	}
+	chA := collect(subA, baseA)
+	chB := collect(subB, baseB)
+
+	if err := pubA.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
+		t.Fatalf("send config A: %v", err)
+	}
+	if err := pubB.SendDatagram(testConfigDgram(t, "vp8")); err != nil {
+		t.Fatalf("send config B: %v", err)
+	}
+	for i := uint32(0); i < totalFrames; i++ {
+		for _, chunk := range encodeFrame(t, baseA+i, i == 0, chunksPerFrame) {
+			if err := pubA.SendDatagram(chunk); err != nil {
+				t.Fatalf("send A frame %d: %v", i, err)
+			}
+		}
+		for _, chunk := range encodeFrame(t, baseB+i, i == 0, chunksPerFrame) {
+			if err := pubB.SendDatagram(chunk); err != nil {
+				t.Fatalf("send B frame %d: %v", i, err)
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	check := func(name string, st recvState, wantCodec string) {
+		t.Helper()
+		if len(st.badFrames) > 0 {
+			t.Errorf("subscriber %s received %d frames from the other broadcast: %v", name, len(st.badFrames), st.badFrames)
+		}
+		if !st.codecs[wantCodec] || len(st.codecs) != 1 {
+			t.Errorf("subscriber %s codecs = %v, want exactly {%q}", name, st.codecs, wantCodec)
+		}
+		complete := 0
+		for _, m := range st.frames {
+			if len(m) == chunksPerFrame {
+				complete++
+			}
+		}
+		if complete < totalFrames*95/100 {
+			t.Errorf("subscriber %s reassembled %d/%d frames, want >= 95%%", name, complete, totalFrames)
+		}
+	}
+	check("A", <-chA, "avc1.42E02A")
+	check("B", <-chB, "vp8")
+}
+
+// E4: /statusz graceRemainingSeconds is 0 while the publisher is active and
+// counts down after it disconnects.
+func TestStatuszGraceRemainingMoves(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  10 * time.Second,
+	})
+	url := fmt.Sprintf("https://127.0.0.1:%d/statusz", port)
+
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+
+	fetch := func() hub.Stats {
+		t.Helper()
+		_, body := h3Get(t, ctx, clientTLS, url)
+		var st hub.RegistryStats
+		if err := json.Unmarshal(body, &st); err != nil {
+			t.Fatalf("unmarshal /statusz %q: %v", body, err)
+		}
+		return st.Broadcasts[id]
+	}
+
+	if g := fetch().GraceRemainingSeconds; g != 0 {
+		t.Errorf("graceRemainingSeconds with active publisher = %d, want 0", g)
+	}
+
+	pub.CloseWithError(0, "")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[id].PublisherActive }, "publisher inactive")
+
+	g1 := fetch().GraceRemainingSeconds
+	if g1 <= 0 || g1 > 10 {
+		t.Fatalf("graceRemainingSeconds after publisher close = %d, want in (0, 10]", g1)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	g2 := fetch().GraceRemainingSeconds
+	if g2 <= 0 || g2 >= g1 {
+		t.Errorf("graceRemainingSeconds did not count down: first %d, then %d", g1, g2)
 	}
 }

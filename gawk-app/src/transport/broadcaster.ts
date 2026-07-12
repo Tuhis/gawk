@@ -48,6 +48,24 @@ function roundDownToEven(n: number): number {
   return n - (n % 2);
 }
 
+export type BroadcastStartPhase = 'connect' | 'capture';
+
+// Thrown by BroadcastPipeline.start(). The phase tells the caller whether a
+// relay session was ever established: 'connect' failures never had one (safe
+// to retry, e.g. mint after a failed reclaim), while 'capture' failures had a
+// live publisher session which the pipeline has already torn down — falling
+// back to a different broadcast ID would be wrong there.
+export class BroadcastStartError extends Error {
+  readonly phase: BroadcastStartPhase;
+
+  constructor(phase: BroadcastStartPhase, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'BroadcastStartError';
+    this.phase = phase;
+    this.cause = cause;
+  }
+}
+
 export class BroadcastPipeline {
   private config: CaptureConfig;
   private serverUrl: string;
@@ -92,25 +110,52 @@ export class BroadcastPipeline {
     // picker ever appearing.
     const path = this.broadcastId ? `/publish/${this.broadcastId}` : '/publish';
     const url = new URL(path, this.serverUrl).toString();
-    this.wt = await connectWebTransport(url, this.connectOpts);
+    try {
+      this.wt = await connectWebTransport(url, this.connectOpts);
+    } catch (e) {
+      throw new BroadcastStartError('connect', e);
+    }
     this.sender = new DatagramSender(this.wt);
     void this.wt.closed
       .then(() => this.handleSessionGone(null))
       .catch((e) => this.handleSessionGone(e instanceof Error ? e : new Error(String(e))));
 
-    // Read the server-initiated unidirectional stream for the broadcast announcement
-    const reader = this.wt.incomingUnidirectionalStreams.getReader();
+    // The announce read is detached: media flow must never wait on the
+    // announce — only the UI code display consumes it (docs/06).
+    void this.readAnnounce(this.wt);
+
     try {
-      const { value: stream, done } = await reader.read();
-      if (done || !stream) {
-        throw new Error('WebTransport closed before announcement');
+      await this.startMedia();
+    } catch (e) {
+      // The session is live; a leaked WebTransport here would be a zombie
+      // publisher holding the broadcast ID until the tab closes.
+      this.stopping = true;
+      await this.teardown();
+      throw new BroadcastStartError('capture', e);
+    }
+  }
+
+  // Reads the server's BroadcastAnnounce from the first server-initiated
+  // unidirectional stream, buffering to EOF (the 9 bytes may arrive in
+  // multiple chunks). Failures are logged, never fatal: the broadcast runs
+  // fine without the code being displayed.
+  private async readAnnounce(wt: WebTransport): Promise<void> {
+    try {
+      const reader = wt.incomingUnidirectionalStreams.getReader();
+      let stream: ReadableStream<Uint8Array>;
+      try {
+        const { value, done } = await reader.read();
+        if (done || !value) return;
+        stream = value;
+      } finally {
+        reader.releaseLock();
       }
       const chunks: Uint8Array[] = [];
       const streamReader = stream.getReader();
       try {
         while (true) {
-          const { value, done: streamDone } = await streamReader.read();
-          if (streamDone) break;
+          const { value, done } = await streamReader.read();
+          if (done) break;
           if (value) chunks.push(value);
         }
       } finally {
@@ -125,11 +170,13 @@ export class BroadcastPipeline {
         offset += c.length;
       }
       const id = parseBroadcastAnnounce(data);
-      this.cb.onBroadcastId?.(id);
-    } finally {
-      reader.releaseLock();
+      if (!this.stopping) this.cb.onBroadcastId?.(id);
+    } catch (e) {
+      if (!this.stopping) log.warn('Broadcast announce read failed:', e);
     }
+  }
 
+  private async startMedia(): Promise<void> {
     this.capture = await startCapture(this.config);
     log.info('Capture path:', this.capture.capturePath);
     this.cb.onCapturePathChosen(this.capture.capturePath);
@@ -285,7 +332,14 @@ export class BroadcastPipeline {
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    await this.teardown();
+    this.cb.onEnded();
+  }
 
+  // Releases everything start() acquired. Shared by stop() and start()'s own
+  // failure path, which must not fire onEnded — the start() rejection is the
+  // caller's error surface there.
+  private async teardown(): Promise<void> {
     if (this.statsTimer !== null) {
       clearInterval(this.statsTimer);
       this.statsTimer = null;
@@ -304,7 +358,5 @@ export class BroadcastPipeline {
     this.capture = null;
     this.sender = null;
     this.wt = null;
-
-    this.cb.onEnded();
   }
 }

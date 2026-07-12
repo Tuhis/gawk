@@ -28,6 +28,11 @@ type Server struct {
 	registry *hub.Registry
 	log      *slog.Logger
 	wt       *webtransport.Server
+
+	// testHookPostUpgradeSubscribe runs between the session upgrade and the
+	// authoritative Subscribe, letting tests deterministically widen the
+	// CheckSubscribe→Subscribe race window. Always nil in production.
+	testHookPostUpgradeSubscribe func(id string)
 }
 
 // New builds the server. getCert supplies the TLS certificate per handshake
@@ -235,9 +240,20 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.testHookPostUpgradeSubscribe != nil {
+		s.testHookPostUpgradeSubscribe(id)
+	}
+
 	sub, err := s.registry.Subscribe(id, &webtransportSessionAdapter{sess})
 	if err != nil {
 		s.log.Warn("subscribe rejected after upgrade", "id", id, "remote", sess.RemoteAddr(), "err", err)
+		if errors.Is(err, hub.ErrNotFound) {
+			// The broadcast was GC'd between the pre-upgrade check and now:
+			// send the terminal code so the viewer shows "broadcast ended"
+			// instead of burning its reconnect budget against a 404.
+			sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
+			return
+		}
 		sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "subscriber limit reached")
 		return
 	}

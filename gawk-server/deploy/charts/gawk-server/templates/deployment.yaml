@@ -57,6 +57,8 @@ spec:
               value: {{ .Values.config.maxIdleTimeout | quote }}
             - name: GAWK_KEEPALIVE_PERIOD
               value: {{ .Values.config.keepalivePeriod | quote }}
+            - name: GAWK_BROADCAST_GRACE
+              value: {{ .Values.config.broadcastGrace | quote }}
             - name: GAWK_QUIET_PROBE_LOGS
               value: {{ .Values.config.quietProbeLogs | quote }}
             {{- with .Values.config.allowedOrigins }}

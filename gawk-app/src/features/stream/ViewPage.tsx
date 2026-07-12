@@ -7,11 +7,10 @@ import { DecodedPreview } from '../loopback/components/DecodedPreview';
 import { type ViewerStats } from '../../transport/viewer';
 import { ViewerSession, RECONNECT_MAX_ATTEMPTS } from '../../transport/viewer-session';
 import { useTransportStore } from '../../state/transportStore';
+import { BROADCAST_ID_ALPHABET } from '../../transport/wire';
 import { log } from '../../lib/logger';
 
 type Status = 'idle' | 'connecting' | 'watching' | 'reconnecting' | 'stopping' | 'error' | 'ended';
-
-const BROADCAST_ID_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 
 function getBroadcastIdFromHash(): string | null {
   const hash = window.location.hash;
@@ -130,28 +129,27 @@ export function ViewPage() {
     await sessionRef.current.stop();
   }, []);
 
-  // Auto-join on mount if code is in hash
+  // Auto-join from the URL: once on mount, then only on real hashchange
+  // events. Deliberately NOT keyed on handleStart/broadcastId/status — a
+  // Stop leaves the old ID in the hash, and any state-driven re-evaluation
+  // here would silently rejoin it (e.g. while the user types a new code).
+  const handleStartRef = useRef(handleStart);
   useEffect(() => {
-    const id = getBroadcastIdFromHash();
-    if (id && status === 'idle' && !sessionRef.current) {
-      void handleStart(id);
-    }
-  }, [handleStart]);
-
-  // Listen to hashchange to auto-join new ID
+    handleStartRef.current = handleStart;
+  });
   useEffect(() => {
-    const onHashChange = () => {
+    const joinFromHash = () => {
       const id = getBroadcastIdFromHash();
-      if (id) {
-        setBroadcastId(id);
-        if (status === 'idle' && !sessionRef.current) {
-          void handleStart(id);
-        }
+      if (!id) return;
+      setBroadcastId(id);
+      if (!sessionRef.current) {
+        void handleStartRef.current(id);
       }
     };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, [status, handleStart]);
+    joinFromHash();
+    window.addEventListener('hashchange', joinFromHash);
+    return () => window.removeEventListener('hashchange', joinFromHash);
+  }, []);
 
   useEffect(() => {
     return () => {

@@ -344,6 +344,10 @@ func (r *Registry) handleGraceExpiry(id string, gen uint64) {
 
 	var subs []*Subscriber
 	for s := range b.subs {
+		// Fold still-live subscribers' drops into the totals here: their
+		// Close below runs against the already-deleted hub, so this is the
+		// last chance to count them.
+		r.totalDatagramsDropped += s.dropped.Load()
 		subs = append(subs, s)
 	}
 	r.mu.Unlock()

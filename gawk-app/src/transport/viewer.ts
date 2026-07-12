@@ -102,13 +102,33 @@ export class ViewerPipeline {
     // relay primes us with the cached config + last keyframe, so the first
     // picture typically appears without waiting for the next keyframe.
     const reassembler = this.reassembler;
-    void readDatagrams(this.wt, (dgram) => reassembler.push(dgram), this.abort.signal)
-      .then(() => {
-        if (!this.stopping) this.fail(new Error('WebTransport session closed by server'));
-      })
-      .catch((e) => {
-        if (!this.stopping) this.fail(e instanceof Error ? e : new Error(String(e)));
-      });
+    const wt = this.wt;
+    void readDatagrams(wt, (dgram) => reassembler.push(dgram), this.abort.signal)
+      .then(() => this.handleReadLoopEnd(wt, null))
+      .catch((e) => this.handleReadLoopEnd(wt, e instanceof Error ? e : new Error(String(e))));
+  }
+
+  // On a server close, the datagram read loop and wt.closed settle in
+  // unspecified, browser-dependent order — and only wt.closed carries the
+  // close code (4000 = broadcast ended, the one signal that must stop
+  // reconnecting). Give wt.closed a short window to settle before treating
+  // the read-loop end as an anonymous drop.
+  private async handleReadLoopEnd(wt: WebTransport, err: Error | null): Promise<void> {
+    if (this.stopping) return;
+    const closeInfo = await Promise.race([
+      wt.closed.then(
+        (info) => info ?? {},
+        (e) => e ?? {},
+      ),
+      new Promise<null>((r) => setTimeout(() => r(null), 100)),
+    ]);
+    if (this.stopping) return; // the wt.closed handler acted first
+    if (closeInfo !== null) {
+      const info = closeInfo as { closeCode?: number; reason?: string; message?: string };
+      this.handleClose(info.closeCode, info.reason || info.message);
+      return;
+    }
+    this.fail(err ?? new Error('WebTransport session closed by server'));
   }
 
   private handleClose(closeCode?: number, reason?: string): void {

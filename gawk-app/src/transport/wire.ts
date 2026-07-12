@@ -154,7 +154,9 @@ export function parseDecoderConfig(dgram: Uint8Array): DecoderConfigMessage {
   };
 }
 
-const BROADCAST_ID_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+// The 31 allowed broadcast-ID symbols (no 0/O, 1/I/L) — mirrors
+// gawk-server/internal/broadcastid.
+export const BROADCAST_ID_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 
 export function parseBroadcastAnnounce(dgram: Uint8Array): string {
   if (dgram.length < 3) {
