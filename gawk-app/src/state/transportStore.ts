@@ -8,7 +8,7 @@ const LS_CERT_HASH = 'gawk.certHashHex';
 
 const DEFAULT_SERVER_URL =
   typeof window !== 'undefined' && window.location.hostname === 'gawk.ioio.fi'
-    ? 'https://api.gawk.ioio.fi'
+    ? 'https://api.gawk.ioio.fi:4433'
     : 'https://localhost:4433';
 
 interface TransportSettingsState {
