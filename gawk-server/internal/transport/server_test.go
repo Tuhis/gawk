@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -723,6 +724,26 @@ func TestCheckOriginLoopbackBypassesAllowlist(t *testing.T) {
 	}
 }
 
+// syncBuffer is a mutex-guarded bytes.Buffer for use as a slog sink: the
+// server logs from its own goroutines, so an unguarded buffer read races
+// with them even after the observable event being asserted on.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // TestQuietProbeLogsSuppressesLoopbackEchoSessions is the fix for k8s exec
 // probes (loopback /echo dials, forever, on a tight period) spamming the
 // server log: with QuietProbeLogs set, those sessions log nothing at INFO,
@@ -732,7 +753,7 @@ func TestQuietProbeLogsSuppressesLoopbackEchoSessions(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		var buf bytes.Buffer
+		var buf syncBuffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 		port, clientTLS, _, _ := startTestServerCfgLog(t, ctx, config.Config{
 			MaxSubscribers: 15,
