@@ -19,7 +19,7 @@ feature set exists).
 
 | # | Item | Status |
 |---|------|--------|
-| R1 | [Multi-broadcaster support](#r1--multi-broadcaster-support) | not started |
+| R1 | [Multi-broadcaster support](#r1--multi-broadcaster-support) | design done ([docs/06](docs/06-multi-broadcaster.md)); implementation not started |
 | R2 | [Hardening](#r2--hardening) | not started |
 | R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | not started |
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | not started |
@@ -84,7 +84,11 @@ stable bookmarkable ID surviving restarts) — deliberately deferred; it needs
 an identity/persistence story the ephemeral design avoids. Noted as a
 possible follow-up, not part of R1.
 
-**Status**: not started.
+**Status**: design doc complete —
+[`docs/06-multi-broadcaster.md`](docs/06-multi-broadcaster.md) (decisions
+locked 2026-07-12: server-minted ID announced over a WT uni stream, 5-min GC
+grace, auto-join links, legacy routes removed; chunks E1–G2). Implementation
+not started.
 
 ## R2 — Hardening
 

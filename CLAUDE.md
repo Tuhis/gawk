@@ -69,7 +69,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `docs/03-single-client-e2e.md` for v0.3 (hub + publish/subscribe relay),
   `docs/04-fanout.md` for v0.4 (fan-out hardening, restart-safe caches,
   `/statusz`), `docs/05-resilience-deploy.md` for v0.5 (keepalive, viewer
-  auto-reconnect, Docker, Helm, CI/release — **includes the deploy runbook**).
+  auto-reconnect, Docker, Helm, CI/release — **includes the deploy runbook**),
+  `docs/06-multi-broadcaster.md` for R1 (multi-broadcaster design + chunked
+  tasks E1–G2; design done, implementation not started — start here for R1
+  work).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
