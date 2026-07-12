@@ -102,10 +102,8 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 2. ✅ WebTransport hello-world: TLS, dev certs, echo — `docs/02`
 3. ✅ Single-client end-to-end: hub, publish/subscribe, frontend transport — `docs/03`
 4. ✅ Fan-out hardening: multi-subscriber, restart-safe caches, `/statusz` — `docs/04`
-5. ✅ Resilience + deployment: keepalive, viewer auto-reconnect, Docker,
-   Helm charts, release-please CI — `docs/05` (v0.5.0 released to GHCR
-   2026-07-12; homelab install + automated deploy-on-release and the manual
-   end-to-end browser verify completed 2026-07-12)
+5. ✅ Resilience + deployment: keepalive, viewer auto-reconnect, Docker, Helm charts, release-please CI — `docs/05`
+6. ✅ Multi-broadcaster support: server registry, path-based routes, client uni-stream ID announcements, reclaim UI, and ended states — `docs/06` (completed 2026-07-12)
 
 What comes next (multi-broadcaster, hardening, quality pickers, production
 UI, …) is laid out in [`ROADMAP.md`](ROADMAP.md).
@@ -152,6 +150,7 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   "server didn't enable WebTransport".
 - Go *clients* need `EnableStreamResetPartialDelivery: true` in their
   `quic.Config`. ([docs/02](docs/02-webtransport-hello.md))
+- **Session close code hiding on datagram reads**: In both Go and JS, when a session is closed with a custom error code, reading from the datagram queue/channel returns only a generic `EOF` or channel-closed status. To retrieve the actual close code (e.g. `4000`), the client must listen to `wt.closed` (JS) or block on `AcceptStream` / `AcceptUniStream` (Go). ([docs/06](docs/06-multi-broadcaster.md))
 
 **Media pipeline**
 

@@ -27,17 +27,17 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   Pub/sub hub — one publisher fans out encoded video datagrams to up to 15
   subscriber sessions.
 
-## Relay server behavior (implemented — chunks B2/B3 + C1–C3 + D1)
+## Relay server behavior (implemented — chunks B2/B3 + C1–C3 + D1 + R1)
 - Caches the last keyframe + decoder config to prime newly-joined viewers
   (`gawk-server/internal/hub`); a **new publisher session invalidates both
   caches** (frameIDs reset, config may differ) while caches persist when the
-  broadcaster is merely away
+  broadcaster is merely away (GC grace period defaults to 5 minutes)
 - Drops chunks for slow subscribers rather than blocking others (per-subscriber
   bounded queue, non-blocking enqueue); cached config re-emitted before every
   keyframe's chunk 0
-- Routes: `CONNECT /publish` (single publisher, 409 when taken),
-  `CONNECT /subscribe` (429 when full), `/echo` diagnostic, `GET /healthz`,
-  `GET /statusz` (JSON `hub.Stats` snapshot)
+- Routes: `CONNECT /publish` (mint ID), `CONNECT /publish/{id}` (reclaim ID),
+  `CONNECT /subscribe/{id}` (subscribe to ID), `/echo` diagnostic, `GET /healthz`,
+  `GET /statusz` (JSON RegistryStats snapshot)
 - **QUIC keepalive keeps idle viewers connected while the broadcaster is
   away** (`-keepalive-period`, default 10s; `-max-idle-timeout`, default
   30s). Raising the idle timeout alone is a no-op — the effective timeout is
@@ -57,9 +57,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
 - `ROADMAP.md` — **high-level roadmap for post-v0.5 work (R1 multi-broadcaster
-  → R6 production UI), with per-item scope and design questions. Start here
-  when picking up new feature work; each item gets its own `docs/NN-*.md`
-  design doc when started.**
+  → R6 production UI), with per-item status and design links.**
 - `gawk-app` is the folder for the frontend application
 - `gawk-server` is the folder for the backend (the Relay server) — Go module,
   see `gawk-server/README.md` for build/run
@@ -70,14 +68,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `docs/04-fanout.md` for v0.4 (fan-out hardening, restart-safe caches,
   `/statusz`), `docs/05-resilience-deploy.md` for v0.5 (keepalive, viewer
   auto-reconnect, Docker, Helm, CI/release — **includes the deploy runbook**),
-  `docs/06-multi-broadcaster.md` for R1 (multi-broadcaster design + chunked
-  tasks E1–G2; design done, implementation not started — start here for R1
-  work).
+  `docs/06-multi-broadcaster.md` for R1 (multi-broadcaster design + E1–G2 chunks;
+  implemented and verified).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
-  breakdown (A1–D3) with per-chunk acceptance criteria and progress status.
-  Start here when continuing server work.**
+  breakdown (A1–D3) and R1 support (E–G reference) with per-chunk status.**
 
 ## Build order
 1. Local loopback testing — **done** (v0.1 in `gawk-app/`; see `docs/01-loopback-test.md`)
@@ -97,6 +93,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    manual end-to-end browser verify all completed 2026-07-12 — see
    `docs/05-resilience-deploy.md`). Forced keyframes were already
    broadcaster-side (`keyframeIntervalFrames: 120` in `gawk-app/src/media/`).
+6. Multi-broadcaster support — **done** (R1: E1-E4 server registry + routes,
+   F1-F4 frontend ID announcements + reclaim UI + terminal states; manual
+   E2E verify passed 2026-07-12 — see `docs/06-multi-broadcaster.md`).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,
