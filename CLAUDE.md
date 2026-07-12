@@ -86,7 +86,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    passed 2026-07-12 — see `docs/04-fanout.md`).
 5. Resilience + deployment — **done** (v0.5: D1 keepalive + viewer
    auto-reconnect, D2 Docker images, D3 Helm charts, D4 release-please CI;
-   first GitHub release cycle + manual browser verify pending — see
+   first release cycle, homelab install + automated deploy-on-release, and
+   manual end-to-end browser verify all completed 2026-07-12 — see
    `docs/05-resilience-deploy.md`). Forced keyframes were already
    broadcaster-side (`keyframeIntervalFrames: 120` in `gawk-app/src/media/`).
 
@@ -104,10 +105,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 - **Registry**: GHCR — images `ghcr.io/tuhis/<component>`, charts
   `oci://ghcr.io/tuhis/charts/<component>` (lowercase; private → classic PAT
   pull secret).
-- **CD is publish-only**: CI never touches the cluster; deploys are manual
-  `helm upgrade --install`. Flux exists on the cluster but is deliberately
-  unused. Don't re-propose raw manifests, semantic-release, or CI-driven
-  deploys without discussion.
+- **CI is publish-only; deploys are automated cluster-side** (since
+  2026-07-12): whenever a new version is released, it is deployed to the
+  homelab automatically. CI never touches the cluster — no cluster
+  credentials in GitHub. Manual `helm upgrade --install` remains the
+  initial-install / break-glass path (runbook in `docs/05`). Don't
+  re-propose raw manifests, semantic-release, or CI-driven deploys
+  without discussion.
 
 ## On the horizon (not started)
 - Media over QUIC (MoQ) — explicitly deferred; still an unstable IETF draft

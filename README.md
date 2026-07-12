@@ -81,10 +81,12 @@ cd gawk-app    && npm test && npm run lint && npm run build
 
 Both components build to images (`<component>/deploy/Dockerfile`) and ship
 as Helm charts (`<component>/deploy/charts/<component>/`) published to GHCR by CI on
-release — chart version, `appVersion` and image tag always match. Deploying
-is manual by design (`helm upgrade --install` from the workstation; no
-cluster credentials in CI). Runbook, GHCR pull-secret setup and the release
-flow: [`docs/05-resilience-deploy.md`](docs/05-resilience-deploy.md).
+release — chart version, `appVersion` and image tag always match. Homelab
+deployment is automated cluster-side: whenever a new version is released,
+it is deployed to the homelab automatically (CI itself stays publish-only —
+no cluster credentials in GitHub). Initial install runbook, GHCR pull-secret
+setup and the release flow:
+[`docs/05-resilience-deploy.md`](docs/05-resilience-deploy.md).
 
 ```sh
 cd gawk-server && docker build -f deploy/Dockerfile -t gawk-server:dev .
@@ -101,7 +103,8 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 4. ✅ Fan-out hardening: multi-subscriber, restart-safe caches, `/statusz` — `docs/04`
 5. ✅ Resilience + deployment: keepalive, viewer auto-reconnect, Docker,
    Helm charts, release-please CI — `docs/05` (v0.5.0 released to GHCR
-   2026-07-12; manual browser verify + first cluster install pending)
+   2026-07-12; homelab install + automated deploy-on-release and the manual
+   end-to-end browser verify completed 2026-07-12)
 
 ## Important gotchas
 

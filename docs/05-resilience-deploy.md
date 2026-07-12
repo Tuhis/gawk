@@ -6,8 +6,10 @@ vitest suite, both docker images built and acceptance-tested locally, both
 Helm charts `kubectl apply --dry-run=server`-clean against the homelab
 cluster, workflows actionlint-clean). **First release cycle completed
 2026-07-12**: both components released as v0.5.0, all four artifacts
-(2 images, 2 OCI charts) verified on GHCR. Pending: manual browser verify
-(checklist below) and the first real cluster install.
+(2 images, 2 OCI charts) verified on GHCR. **Milestone closed 2026-07-12**:
+manual browser verify (checklist below) passed end-to-end, and the homelab
+install is live — deployment is now automated cluster-side (every new
+release is deployed to the homelab automatically; CI stays publish-only).
 
 Scope note: the original D3 ("raw k8s manifests") was superseded during
 planning — deployment is Helm-based with a full CI pipeline, and the
@@ -194,7 +196,12 @@ the repo setting "Allow GitHub Actions to create and approve pull requests"
 had to be enabled first, and the separate release PRs conflicted on the
 shared manifest (→ `"separate-pull-requests": false`, gotcha below).
 
-### Deploying (manual, publish-only CD by design)
+### Deploying (CI is publish-only; the cluster pulls releases itself)
+
+New releases are deployed to the homelab automatically by cluster-side
+automation (since 2026-07-12) — no cluster credentials in GitHub. The manual
+`helm upgrade --install` flow below remains the initial-install /
+break-glass runbook:
 
 ```sh
 # once per namespace — classic PAT with read:packages ONLY
@@ -268,7 +275,7 @@ optional MetalLB IP pin.
   weaken the check against real off-pod clients. Caught 2026-07-12 in the
   first real cluster install (`internal/transport/server.go`).
 
-## Manual verification (to close the milestone)
+## Manual verification (✅ all passed 2026-07-12 — milestone closed)
 
 Setup: file-based dev cert (see gotcha above — hash survives restarts),
 Chrome inside WSL2, hash pasted into the app.
