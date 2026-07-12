@@ -5,6 +5,10 @@
 // Certificate verification mirrors the browser's serverCertificateHashes
 // mechanism: pass -cert-hash with the hex SHA-256 the server logs at
 // startup. Without it the certificate is not verified (dev tool).
+//
+// If the target's -allowed-origins is non-empty (e.g. a production
+// deployment), pass -origin with one of the allowed values or the CONNECT
+// is rejected with "request origin not allowed".
 package main
 
 import (
@@ -15,6 +19,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -33,6 +38,7 @@ func main() {
 func run() error {
 	url := flag.String("url", "https://localhost:4433/echo", "echo endpoint URL")
 	certHash := flag.String("cert-hash", "", "hex SHA-256 of the server cert DER (from server startup log); empty skips verification")
+	origin := flag.String("origin", "", "Origin header to send; required if the target's -allowed-origins is non-empty (unset skips it, fine for dev)")
 	message := flag.String("message", "ping", "datagram payload to send")
 	count := flag.Int("count", 3, "number of round-trips")
 	timeout := flag.Duration("timeout", 5*time.Second, "per-operation timeout")
@@ -69,8 +75,13 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
+	var hdr http.Header
+	if *origin != "" {
+		hdr = http.Header{"Origin": {*origin}}
+	}
+
 	dialStart := time.Now()
-	_, sess, err := d.Dial(ctx, *url, nil)
+	_, sess, err := d.Dial(ctx, *url, hdr)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", *url, err)
 	}

@@ -39,6 +39,14 @@ server at startup; omit it to skip cert verification):
 go run ./cmd/gawk-echo -cert-hash <cert_hash_hex>
 ```
 
+Against a deployment with `-allowed-origins` set (e.g. production), also
+pass `-origin` with one of the allowed values — a real CA-issued cert needs
+no `-cert-hash`:
+
+```sh
+go run ./cmd/gawk-echo -url https://api.gawk.ioio.fi:4433/echo -origin https://gawk.ioio.fi
+```
+
 Every flag has a `GAWK_*` environment fallback (flag > env > default):
 
 | Flag | Env | Default |
