@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/wire"
 )
 
@@ -119,7 +120,7 @@ func TestVerbatimForwarding(t *testing.T) {
 	wantDatagrams(t, f, sent)
 
 	st := r.Stats()
-	bst := st.Broadcasts[id]
+	bst := st.Broadcasts[broadcastid.Obfuscate(id)]
 	if bst.FramesRelayed != 1 || bst.DatagramsRelayed != 3 || bst.BadDatagrams != 0 {
 		t.Errorf("stats = %+v, want 1 frame, 3 datagrams, 0 bad", bst)
 	}
@@ -229,7 +230,7 @@ func TestIncompleteKeyframeNeverCached(t *testing.T) {
 	p.HandleDatagram(chunkDgram(t, true, 6, 0, 3, "x"))
 	p.HandleDatagram(chunkDgram(t, true, 6, 2, 3, "z"))
 
-	st := r.Stats().Broadcasts[id]
+	st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
 	if st.CachedKeyframeID != 5 || st.CachedKeyframeChunks != 2 {
 		t.Fatalf("cached keyframe = id %d (%d chunks), want id 5 (2 chunks)",
 			st.CachedKeyframeID, st.CachedKeyframeChunks)
@@ -242,13 +243,13 @@ func TestIncompleteKeyframeNeverCached(t *testing.T) {
 
 	kf7 := chunkDgram(t, true, 7, 0, 1, "w")
 	p.HandleDatagram(kf7)
-	st = r.Stats().Broadcasts[id]
+	st = r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
 	if st.CachedKeyframeID != 7 || st.CachedKeyframeChunks != 1 {
 		t.Fatalf("cached keyframe = id %d (%d chunks), want id 7 (1 chunk)",
 			st.CachedKeyframeID, st.CachedKeyframeChunks)
 	}
 	p.HandleDatagram(chunkDgram(t, true, 6, 1, 3, "y"))
-	st = r.Stats().Broadcasts[id]
+	st = r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
 	if st.CachedKeyframeID != 7 {
 		t.Fatalf("cached keyframe id = %d after straggler, want 7", st.CachedKeyframeID)
 	}
@@ -326,7 +327,7 @@ func TestPublisherRestartResetsCaches(t *testing.T) {
 	}
 	p1.Close()
 
-	st := r.Stats().Broadcasts[id]
+	st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
 	if !st.HasConfig || st.CachedKeyframeID != 41 || st.CachedKeyframeChunks != 2 {
 		t.Fatalf("caches after publisher close = %+v, want config + keyframe 41 (2 chunks)", st)
 	}
@@ -339,7 +340,7 @@ func TestPublisherRestartResetsCaches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish after restart: %v", err)
 	}
-	st = r.Stats().Broadcasts[id]
+	st = r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
 	if st.HasConfig || st.CachedKeyframeID != 0 || st.CachedKeyframeChunks != 0 || st.CachedKeyframeBytes != 0 {
 		t.Fatalf("caches survived publisher restart: %+v", st)
 	}
@@ -402,7 +403,7 @@ func TestBadDatagramsDroppedAndCounted(t *testing.T) {
 	}
 	s.Close()
 	wantDatagrams(t, f, nil)
-	st := r.Stats().Broadcasts[id]
+	st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
 	if st.BadDatagrams != uint64(len(bad)) {
 		t.Errorf("BadDatagrams = %d, want %d", st.BadDatagrams, len(bad))
 	}
@@ -676,10 +677,10 @@ func TestBroadcastIsolation(t *testing.T) {
 	if st.Totals.Broadcasts != 2 {
 		t.Errorf("expected 2 active broadcasts in totals, got %d", st.Totals.Broadcasts)
 	}
-	if bst1 := st.Broadcasts[id1]; bst1.DatagramsRelayed != 1 {
+	if bst1 := st.Broadcasts[broadcastid.Obfuscate(id1)]; bst1.DatagramsRelayed != 1 {
 		t.Errorf("broadcast 1 expected 1 relayed, got %d", bst1.DatagramsRelayed)
 	}
-	if bst2 := st.Broadcasts[id2]; bst2.DatagramsRelayed != 1 {
+	if bst2 := st.Broadcasts[broadcastid.Obfuscate(id2)]; bst2.DatagramsRelayed != 1 {
 		t.Errorf("broadcast 2 expected 1 relayed, got %d", bst2.DatagramsRelayed)
 	}
 }
@@ -801,3 +802,94 @@ func TestGraceExpiryStaleGenerationIsNoOp(t *testing.T) {
 	p2.Close()
 	s.Close()
 }
+
+func TestMaxBroadcastsLimit(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxBroadcasts: 2})
+	id1, _, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish 1: %v", err)
+	}
+	id2, _, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish 2: %v", err)
+	}
+	if _, _, err := r.StartPublish(""); !errors.Is(err, ErrMaxBroadcasts) {
+		t.Fatalf("StartPublish 3 error = %v, want ErrMaxBroadcasts", err)
+	}
+	// Reclaims should not count towards max broadcasts
+	_, _, err = r.StartPublish(id1)
+	if !errors.Is(err, ErrPublisherActive) { // active, but not ErrMaxBroadcasts
+		t.Fatalf("reclaim error = %v, want ErrPublisherActive", err)
+	}
+	// Clean up one to free slot
+	r.mu.Lock()
+	delete(r.hubs, id2)
+	r.mu.Unlock()
+
+	_, _, err = r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish 4 after delete: %v", err)
+	}
+}
+
+func TestMaxTotalSubscribersLimit(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxBroadcasts: 2, MaxSubscribers: 10, MaxTotalSubscribers: 3})
+	id1, _, _ := r.StartPublish("")
+	id2, _, _ := r.StartPublish("")
+
+	s1, err := r.Subscribe(id1, &fakeSender{})
+	if err != nil {
+		t.Fatalf("Subscribe 1: %v", err)
+	}
+	defer s1.Close()
+
+	s2, err := r.Subscribe(id1, &fakeSender{})
+	if err != nil {
+		t.Fatalf("Subscribe 2: %v", err)
+	}
+	defer s2.Close()
+
+	s3, err := r.Subscribe(id2, &fakeSender{})
+	if err != nil {
+		t.Fatalf("Subscribe 3: %v", err)
+	}
+	defer s3.Close()
+
+	// 4th subscriber exceeds total limit (3)
+	if err := r.CheckSubscribe(id2); !errors.Is(err, ErrTotalSubscribers) {
+		t.Fatalf("CheckSubscribe 4 error = %v, want ErrTotalSubscribers", err)
+	}
+	if _, err := r.Subscribe(id2, &fakeSender{}); !errors.Is(err, ErrTotalSubscribers) {
+		t.Fatalf("Subscribe 4 error = %v, want ErrTotalSubscribers", err)
+	}
+}
+
+func TestBandwidthLimiting(t *testing.T) {
+	// Limiter with 100 bytes/sec limit
+	r := NewRegistry(discardLog, Options{MaxBandwidthBytes: 100})
+	if r.limiter == nil {
+		t.Fatal("limiter not initialized")
+	}
+
+	// Consume 100 bytes (burst cap)
+	if !r.consumeBandwidth(100) {
+		t.Error("consumeBandwidth(100) expected true, got false")
+	}
+	// Instantly consuming more should fail
+	if r.consumeBandwidth(1) {
+		t.Error("consumeBandwidth(1) expected false, got true")
+	}
+
+	// Refill check
+	r.limiter.mu.Lock()
+	r.limiter.tokens = 50
+	r.limiter.mu.Unlock()
+
+	if !r.consumeBandwidth(40) {
+		t.Error("consumeBandwidth(40) expected true, got false")
+	}
+	if r.consumeBandwidth(20) {
+		t.Error("consumeBandwidth(20) expected false, got true")
+	}
+}
+

@@ -19,14 +19,20 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("ParseFlags: %v", err)
 	}
 	want := Config{
-		Addr:            ":4433",
-		DevCertHosts:    "localhost,127.0.0.1",
-		LogLevel:        slog.LevelInfo,
-		LogFormat:       "text",
-		MaxSubscribers:  15,
-		MaxIdleTimeout:  30 * time.Second,
-		KeepAlivePeriod: 10 * time.Second,
-		BroadcastGrace:  5 * time.Minute,
+		Addr:                ":4433",
+		DevCertHosts:        "localhost,127.0.0.1",
+		LogLevel:            slog.LevelInfo,
+		LogFormat:           "text",
+		MaxSubscribers:      15,
+		MaxIdleTimeout:      30 * time.Second,
+		KeepAlivePeriod:     10 * time.Second,
+		BroadcastGrace:      5 * time.Minute,
+		MaxBroadcasts:       5,
+		MaxTotalSubscribers: 50,
+		PublishSecret:       "",
+		ConnRateLimit:       3.0,
+		ConnBurstLimit:      10,
+		MaxBandwidthBytes:   0,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -164,4 +170,75 @@ func TestCertKeyMustBePaired(t *testing.T) {
 	if _, err := ParseFlags([]string{"-cert-file", "/tls/tls.crt", "-key-file", "/tls/tls.key"}, noEnv); err != nil {
 		t.Errorf("expected paired cert/key to parse, got %v", err)
 	}
+}
+
+func TestHardeningConfig(t *testing.T) {
+	t.Run("valid custom values", func(t *testing.T) {
+		cfg, err := ParseFlags([]string{
+			"-max-broadcasts", "10",
+			"-max-total-subscribers", "100",
+			"-publish-secret", "supersecret",
+			"-conn-rate-limit", "5.5",
+			"-conn-burst-limit", "20",
+			"-max-bandwidth", "10mbps",
+		}, noEnv)
+		if err != nil {
+			t.Fatalf("ParseFlags failed: %v", err)
+		}
+		if cfg.MaxBroadcasts != 10 {
+			t.Errorf("MaxBroadcasts = %d, want 10", cfg.MaxBroadcasts)
+		}
+		if cfg.MaxTotalSubscribers != 100 {
+			t.Errorf("MaxTotalSubscribers = %d, want 100", cfg.MaxTotalSubscribers)
+		}
+		if cfg.PublishSecret != "supersecret" {
+			t.Errorf("PublishSecret = %q, want supersecret", cfg.PublishSecret)
+		}
+		if cfg.ConnRateLimit != 5.5 {
+			t.Errorf("ConnRateLimit = %f, want 5.5", cfg.ConnRateLimit)
+		}
+		if cfg.ConnBurstLimit != 20 {
+			t.Errorf("ConnBurstLimit = %d, want 20", cfg.ConnBurstLimit)
+		}
+		// 10mbps = 10 * 1,000,000 / 8 = 1,250,000 bytes/sec
+		if cfg.MaxBandwidthBytes != 1250000 {
+			t.Errorf("MaxBandwidthBytes = %d, want 1250000", cfg.MaxBandwidthBytes)
+		}
+	})
+
+	t.Run("invalid max-broadcasts", func(t *testing.T) {
+		if _, err := ParseFlags([]string{"-max-broadcasts", "0"}, noEnv); err == nil {
+			t.Error("expected error for max-broadcasts 0, got nil")
+		}
+		if _, err := ParseFlags([]string{"-max-broadcasts", "-1"}, noEnv); err == nil {
+			t.Error("expected error for max-broadcasts -1, got nil")
+		}
+	})
+
+	t.Run("invalid max-total-subscribers", func(t *testing.T) {
+		if _, err := ParseFlags([]string{"-max-total-subscribers", "0"}, noEnv); err == nil {
+			t.Error("expected error for max-total-subscribers 0, got nil")
+		}
+	})
+
+	t.Run("invalid conn-rate-limit", func(t *testing.T) {
+		if _, err := ParseFlags([]string{"-conn-rate-limit", "-0.1"}, noEnv); err == nil {
+			t.Error("expected error for conn-rate-limit -0.1, got nil")
+		}
+	})
+
+	t.Run("invalid conn-burst-limit", func(t *testing.T) {
+		if _, err := ParseFlags([]string{"-conn-burst-limit", "0"}, noEnv); err == nil {
+			t.Error("expected error for conn-burst-limit 0, got nil")
+		}
+	})
+
+	t.Run("invalid max-bandwidth", func(t *testing.T) {
+		if _, err := ParseFlags([]string{"-max-bandwidth", "-5mbps"}, noEnv); err == nil {
+			t.Error("expected error for negative bandwidth, got nil")
+		}
+		if _, err := ParseFlags([]string{"-max-bandwidth", "abc"}, noEnv); err == nil {
+			t.Error("expected error for invalid bandwidth unit, got nil")
+		}
+	})
 }

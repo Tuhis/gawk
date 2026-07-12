@@ -30,6 +30,10 @@ var (
 	ErrFull = errors.New("hub: subscriber limit reached")
 	// ErrNotFound is returned when the requested broadcast ID does not exist.
 	ErrNotFound = errors.New("hub: broadcast not found")
+	// ErrMaxBroadcasts is returned by StartPublish when MaxBroadcasts limit is reached.
+	ErrMaxBroadcasts = errors.New("hub: max concurrent broadcasts reached")
+	// ErrTotalSubscribers is returned by Subscribe when MaxTotalSubscribers limit is reached.
+	ErrTotalSubscribers = errors.New("hub: total subscriber limit reached")
 )
 
 // Conn is the connection interface required by subscribers.
@@ -51,38 +55,46 @@ type Options struct {
 	// BroadcastGrace is the amount of time a broadcast ID survives after its
 	// publisher disconnects, allowing it to be reclaimed. Defaults to 5 minutes.
 	BroadcastGrace time.Duration
+
+	MaxBroadcasts       int
+	MaxTotalSubscribers int
+	MaxBandwidthBytes   int64
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
 // GET /statusz endpoint (the json tags are its response shape).
 type Stats struct {
-	PublisherActive       bool   `json:"publisherActive"`
-	Subscribers           int    `json:"subscribers"`
-	FramesRelayed         uint64 `json:"framesRelayed"`          // counted at chunk 0 of each frame
-	DatagramsRelayed      uint64 `json:"datagramsRelayed"`       // datagrams fanned out (before per-sub drops)
-	DatagramsDropped      uint64 `json:"datagramsDropped"`       // enqueue failures summed over all subscribers
-	BadDatagrams          uint64 `json:"badDatagrams"`           // unparseable/unknown datagrams dropped
-	HasConfig             bool   `json:"hasConfig"`
-	CachedKeyframeID      uint32 `json:"cachedKeyframeId"`
-	CachedKeyframeChunks  int    `json:"cachedKeyframeChunks"`
+	PublisherActive           bool   `json:"publisherActive"`
+	Subscribers               int    `json:"subscribers"`
+	FramesRelayed             uint64 `json:"framesRelayed"`          // counted at chunk 0 of each frame
+	DatagramsRelayed          uint64 `json:"datagramsRelayed"`       // datagrams fanned out (before per-sub drops)
+	DatagramsDropped          uint64 `json:"datagramsDropped"`       // enqueue failures summed over all subscribers
+	BadDatagrams              uint64 `json:"badDatagrams"`           // unparseable/unknown datagrams dropped
+	BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
+	BandwidthDroppedBytes     uint64 `json:"bandwidthDroppedBytes"`
+	HasConfig                 bool   `json:"hasConfig"`
+	CachedKeyframeID          uint32 `json:"cachedKeyframeId"`
+	CachedKeyframeChunks      int    `json:"cachedKeyframeChunks"`
 	CachedKeyframeBytes   int    `json:"cachedKeyframeBytes"`
-	GraceRemainingSeconds int    `json:"graceRemainingSeconds"`  // 0 while publisher is active
+	GraceRemainingSeconds     int    `json:"graceRemainingSeconds"`  // 0 while publisher is active
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
 type TotalStats struct {
-	Broadcasts       int    `json:"broadcasts"`
-	Subscribers      int    `json:"subscribers"`
-	FramesRelayed    uint64 `json:"framesRelayed"`
-	DatagramsRelayed uint64 `json:"datagramsRelayed"`
-	DatagramsDropped uint64 `json:"datagramsDropped"`
-	BadDatagrams     uint64 `json:"badDatagrams"`
+	Broadcasts                int    `json:"broadcasts"`
+	Subscribers               int    `json:"subscribers"`
+	FramesRelayed             uint64 `json:"framesRelayed"`
+	DatagramsRelayed          uint64 `json:"datagramsRelayed"`
+	DatagramsDropped          uint64 `json:"datagramsDropped"`
+	BadDatagrams              uint64 `json:"badDatagrams"`
+	BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
+	BandwidthDroppedBytes     uint64 `json:"bandwidthDroppedBytes"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
 type RegistryStats struct {
 	Totals     TotalStats            `json:"totals"`
-	Broadcasts map[string]Stats      `json:"broadcasts"` // keyed by broadcast ID
+	Broadcasts map[string]Stats      `json:"broadcasts"` // keyed by obfuscated broadcast ID
 }
 
 // Registry owns the map of active broadcasts and cumulative statistics.
@@ -93,10 +105,14 @@ type Registry struct {
 	mu   sync.Mutex
 	hubs map[string]*broadcastHub
 
-	totalFramesRelayed    uint64
-	totalDatagramsRelayed uint64
-	totalDatagramsDropped uint64
-	totalBadDatagrams     uint64
+	totalFramesRelayed             uint64
+	totalDatagramsRelayed          uint64
+	totalDatagramsDropped          uint64
+	totalBadDatagrams              uint64
+	totalBandwidthDroppedDatagrams uint64
+	totalBandwidthDroppedBytes     uint64
+
+	limiter *bandwidthLimiter
 }
 
 // broadcastHub is the per-broadcast session unit.
@@ -119,10 +135,52 @@ type broadcastHub struct {
 		bytes   int
 	}
 
-	framesRelayed    uint64
-	datagramsRelayed uint64
-	datagramsDropped uint64
-	badDatagrams     uint64
+	framesRelayed             uint64
+	datagramsRelayed          uint64
+	datagramsDropped          uint64
+	badDatagrams              uint64
+	bandwidthDroppedDatagrams uint64
+	bandwidthDroppedBytes     uint64
+}
+
+type bandwidthLimiter struct {
+	mu     sync.Mutex
+	rate   float64
+	burst  float64
+	tokens float64
+	last   time.Time
+}
+
+func newBandwidthLimiter(rate float64) *bandwidthLimiter {
+	return &bandwidthLimiter{
+		rate:   rate,
+		burst:  rate,
+		tokens: rate,
+		last:   time.Now(),
+	}
+}
+
+func (l *bandwidthLimiter) consume(n int) bool {
+	if l.rate <= 0 {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(l.last).Seconds()
+	l.last = now
+
+	l.tokens += elapsed * l.rate
+	if l.tokens > l.burst {
+		l.tokens = l.burst
+	}
+
+	if l.tokens >= float64(n) {
+		l.tokens -= float64(n)
+		return true
+	}
+	return false
 }
 
 // NewRegistry builds a Registry. Zero-valued Options fields get defaults.
@@ -136,10 +194,21 @@ func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	if opts.BroadcastGrace <= 0 {
 		opts.BroadcastGrace = 5 * time.Minute
 	}
+	if opts.MaxBroadcasts <= 0 {
+		opts.MaxBroadcasts = 5
+	}
+	if opts.MaxTotalSubscribers <= 0 {
+		opts.MaxTotalSubscribers = 50
+	}
+	var limiter *bandwidthLimiter
+	if opts.MaxBandwidthBytes > 0 {
+		limiter = newBandwidthLimiter(float64(opts.MaxBandwidthBytes))
+	}
 	return &Registry{
-		log:  log,
-		opts: opts,
-		hubs: make(map[string]*broadcastHub),
+		log:     log,
+		opts:    opts,
+		hubs:    make(map[string]*broadcastHub),
+		limiter: limiter,
 	}
 }
 
@@ -158,6 +227,9 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 		}
 		id = normID
 	} else {
+		if r.opts.MaxBroadcasts > 0 && len(r.hubs) >= r.opts.MaxBroadcasts {
+			return "", nil, ErrMaxBroadcasts
+		}
 		// Mint a new ID (with collision check)
 		var newID string
 		var err error
@@ -225,6 +297,15 @@ func (r *Registry) CheckSubscribe(id string) error {
 	if len(b.subs) >= r.opts.MaxSubscribers {
 		return ErrFull
 	}
+	if r.opts.MaxTotalSubscribers > 0 {
+		totalSubs := 0
+		for _, hub := range r.hubs {
+			totalSubs += len(hub.subs)
+		}
+		if totalSubs >= r.opts.MaxTotalSubscribers {
+			return ErrTotalSubscribers
+		}
+	}
 	return nil
 }
 
@@ -243,6 +324,15 @@ func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
 	}
 	if len(b.subs) >= r.opts.MaxSubscribers {
 		return nil, ErrFull
+	}
+	if r.opts.MaxTotalSubscribers > 0 {
+		totalSubs := 0
+		for _, hub := range r.hubs {
+			totalSubs += len(hub.subs)
+		}
+		if totalSubs >= r.opts.MaxTotalSubscribers {
+			return nil, ErrTotalSubscribers
+		}
 	}
 
 	s := &Subscriber{
@@ -275,12 +365,16 @@ func (r *Registry) Stats() RegistryStats {
 	var activeDatagramsRelayed uint64
 	var activeDatagramsDropped uint64
 	var activeBadDatagrams uint64
+	var activeBandwidthDroppedDatagrams uint64
+	var activeBandwidthDroppedBytes uint64
 
 	for id, b := range r.hubs {
 		activeSubscribersCount += len(b.subs)
 		activeFramesRelayed += b.framesRelayed
 		activeDatagramsRelayed += b.datagramsRelayed
 		activeBadDatagrams += b.badDatagrams
+		activeBandwidthDroppedDatagrams += b.bandwidthDroppedDatagrams
+		activeBandwidthDroppedBytes += b.bandwidthDroppedBytes
 
 		dropped := b.datagramsDropped
 		for s := range b.subs {
@@ -296,28 +390,33 @@ func (r *Registry) Stats() RegistryStats {
 			}
 		}
 
-		broadcasts[id] = Stats{
-			PublisherActive:       b.publisherActive,
-			Subscribers:           len(b.subs),
-			FramesRelayed:         b.framesRelayed,
-			DatagramsRelayed:      b.datagramsRelayed,
-			DatagramsDropped:      dropped,
-			BadDatagrams:          b.badDatagrams,
-			HasConfig:             b.cachedConfig != nil,
-			CachedKeyframeID:      b.cachedKeyframe.frameID,
-			CachedKeyframeChunks:  len(b.cachedKeyframe.chunks),
-			CachedKeyframeBytes:   b.cachedKeyframe.bytes,
-			GraceRemainingSeconds: graceRemaining,
+		obf := broadcastid.Obfuscate(id)
+		broadcasts[obf] = Stats{
+			PublisherActive:           b.publisherActive,
+			Subscribers:               len(b.subs),
+			FramesRelayed:             b.framesRelayed,
+			DatagramsRelayed:          b.datagramsRelayed,
+			DatagramsDropped:          dropped,
+			BadDatagrams:              b.badDatagrams,
+			BandwidthDroppedDatagrams: b.bandwidthDroppedDatagrams,
+			BandwidthDroppedBytes:     b.bandwidthDroppedBytes,
+			HasConfig:                 b.cachedConfig != nil,
+			CachedKeyframeID:          b.cachedKeyframe.frameID,
+			CachedKeyframeChunks:      len(b.cachedKeyframe.chunks),
+			CachedKeyframeBytes:       b.cachedKeyframe.bytes,
+			GraceRemainingSeconds:     graceRemaining,
 		}
 	}
 
 	totals := TotalStats{
-		Broadcasts:       len(r.hubs),
-		Subscribers:      activeSubscribersCount,
-		FramesRelayed:    r.totalFramesRelayed + activeFramesRelayed,
-		DatagramsRelayed: r.totalDatagramsRelayed + activeDatagramsRelayed,
-		DatagramsDropped: r.totalDatagramsDropped + activeDatagramsDropped,
-		BadDatagrams:     r.totalBadDatagrams + activeBadDatagrams,
+		Broadcasts:                len(r.hubs),
+		Subscribers:               activeSubscribersCount,
+		FramesRelayed:             r.totalFramesRelayed + activeFramesRelayed,
+		DatagramsRelayed:          r.totalDatagramsRelayed + activeDatagramsRelayed,
+		DatagramsDropped:          r.totalDatagramsDropped + activeDatagramsDropped,
+		BadDatagrams:              r.totalBadDatagrams + activeBadDatagrams,
+		BandwidthDroppedDatagrams: r.totalBandwidthDroppedDatagrams + activeBandwidthDroppedDatagrams,
+		BandwidthDroppedBytes:     r.totalBandwidthDroppedBytes + activeBandwidthDroppedBytes,
 	}
 
 	return RegistryStats{
@@ -341,6 +440,8 @@ func (r *Registry) handleGraceExpiry(id string, gen uint64) {
 	r.totalDatagramsRelayed += b.datagramsRelayed
 	r.totalDatagramsDropped += b.datagramsDropped
 	r.totalBadDatagrams += b.badDatagrams
+	r.totalBandwidthDroppedDatagrams += b.bandwidthDroppedDatagrams
+	r.totalBandwidthDroppedBytes += b.bandwidthDroppedBytes
 
 	var subs []*Subscriber
 	for s := range b.subs {
@@ -378,6 +479,10 @@ type keyframeAssembly struct {
 // HandleDatagram processes and relays one publisher datagram.
 func (p *Publisher) HandleDatagram(dgram []byte) {
 	b := p.hub
+	if len(dgram) > wire.MaxDatagramSize {
+		b.countBad()
+		return
+	}
 	ver, typ, err := wire.PeekType(dgram)
 	if err != nil || ver != wire.Version {
 		b.countBad()
@@ -527,6 +632,11 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 func (s *Subscriber) drain() {
 	defer close(s.done)
 	for dgram := range s.queue {
+		if !s.hub.registry.consumeBandwidth(len(dgram)) {
+			s.dropped.Add(1)
+			s.hub.countBandwidthDrop(len(dgram))
+			continue
+		}
 		if err := s.sender.SendDatagram(dgram); err != nil {
 			s.sendErrors.Add(1)
 		}
@@ -553,3 +663,18 @@ func (s *Subscriber) Close() {
 
 // Dropped reports dropped datagrams count.
 func (s *Subscriber) Dropped() uint64 { return s.dropped.Load() }
+
+func (r *Registry) consumeBandwidth(n int) bool {
+	if r.limiter == nil {
+		return true
+	}
+	return r.limiter.consume(n)
+}
+
+func (b *broadcastHub) countBandwidthDrop(n int) {
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b.bandwidthDroppedDatagrams++
+	b.bandwidthDroppedBytes += uint64(n)
+}

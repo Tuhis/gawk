@@ -28,6 +28,7 @@ type Server struct {
 	registry *hub.Registry
 	log      *slog.Logger
 	wt       *webtransport.Server
+	limiter  *ipRateLimiter
 
 	// testHookPostUpgradeSubscribe runs between the session upgrade and the
 	// authoritative Subscribe, letting tests deterministically widen the
@@ -38,7 +39,11 @@ type Server struct {
 // New builds the server. getCert supplies the TLS certificate per handshake
 // (a tlsutil.Reloader in production, a fixed dev cert locally).
 func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, registry: r, log: log}
+	var limiter *ipRateLimiter
+	if cfg.ConnRateLimit > 0 {
+		limiter = newIPRateLimiter(cfg.ConnRateLimit, cfg.ConnBurstLimit)
+	}
+	s := &Server{cfg: cfg, registry: r, log: log, limiter: limiter}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +117,11 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() { errCh <- s.wt.ListenAndServe() }()
 
 	s.log.Info("listening", "addr", s.cfg.Addr)
+	defer func() {
+		if s.limiter != nil {
+			s.limiter.Close()
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		s.wt.Close()
@@ -127,6 +137,19 @@ func (s *Server) Run(ctx context.Context) error {
 // reclaim the slot. If "id" is empty, it upgrades first, then mints a new ID,
 // starts publishing, and announces the ID to the publisher over a unidirectional stream.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
+	if s.limiter != nil && !isLoopbackAddr(r.RemoteAddr) {
+		if !s.limiter.Allow(r.RemoteAddr) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+	}
+
+	if s.cfg.PublishSecret != "" && r.URL.Query().Get("secret") != s.cfg.PublishSecret {
+		s.log.Warn("publish unauthorized: invalid or missing secret", "remote", r.RemoteAddr)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
 	id := r.PathValue("id")
 	var pub *hub.Publisher
 	var err error
@@ -166,7 +189,11 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		id, pub, err = s.registry.StartPublish("")
 		if err != nil {
 			s.log.Warn("failed to start publish session after upgrade", "err", err)
-			sess.CloseWithError(500, "failed to start publish session")
+			if errors.Is(err, hub.ErrMaxBroadcasts) {
+				sess.CloseWithError(429, "max concurrent broadcasts reached")
+			} else {
+				sess.CloseWithError(500, "failed to start publish session")
+			}
 			return
 		}
 	}
@@ -214,6 +241,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // ID-less requests or non-existent broadcast IDs return 404 pre-upgrade.
 // Full broadcasts return 429.
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
+	if s.limiter != nil && !isLoopbackAddr(r.RemoteAddr) {
+		if !s.limiter.Allow(r.RemoteAddr) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+	}
+
 	id := r.PathValue("id")
 	if id == "" {
 		w.WriteHeader(http.StatusNotFound)
@@ -226,7 +260,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if errors.Is(err, hub.ErrFull) {
+		if errors.Is(err, hub.ErrFull) || errors.Is(err, hub.ErrTotalSubscribers) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -252,6 +286,10 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			// send the terminal code so the viewer shows "broadcast ended"
 			// instead of burning its reconnect budget against a 404.
 			sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
+			return
+		}
+		if errors.Is(err, hub.ErrTotalSubscribers) {
+			sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "total subscriber limit reached")
 			return
 		}
 		sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "subscriber limit reached")
@@ -285,6 +323,13 @@ func isLoopbackAddr(addr string) bool {
 // exec probe target, so its routine session logs are quietable — see
 // QuietProbeLogs.
 func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
+	if s.limiter != nil && !isLoopbackAddr(r.RemoteAddr) {
+		if !s.limiter.Allow(r.RemoteAddr) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+	}
+
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
 		s.log.Warn("echo upgrade failed", "err", err)

@@ -49,6 +49,12 @@ config:
   # ship it to prod.
   allowedOrigins: []
   maxSubscribers: 15
+  maxBroadcasts: 5
+  maxTotalSubscribers: 50
+  publishSecret: ""
+  connRateLimit: 3.0
+  connBurstLimit: 10
+  maxBandwidth: "0"
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers

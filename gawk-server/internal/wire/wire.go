@@ -65,6 +65,9 @@ const (
 	VideoChunkHeaderSize = 20
 	// MaxChunkPayload is the largest payload a single VideoChunk may carry.
 	MaxChunkPayload = MaxDatagramSize - VideoChunkHeaderSize
+	// MaxChunkCount is the maximum number of chunks permitted in a keyframe
+	// to prevent memory inflation attacks.
+	MaxChunkCount = 1000
 )
 
 // flagKeyframe is bit 0 of the VideoChunk flags byte.
@@ -179,8 +182,8 @@ func ParseVideoChunk(dgram []byte) (h VideoChunkHeader, payload []byte, err erro
 		ChunkCount:  binary.BigEndian.Uint16(dgram[10:12]),
 		TimestampUs: binary.BigEndian.Uint64(dgram[12:20]),
 	}
-	if h.ChunkCount == 0 || h.ChunkIndex >= h.ChunkCount {
-		return VideoChunkHeader{}, nil, fmt.Errorf("%w: index %d, count %d", ErrBadChunkCount, h.ChunkIndex, h.ChunkCount)
+	if h.ChunkCount == 0 || h.ChunkIndex >= h.ChunkCount || h.ChunkCount > MaxChunkCount {
+		return VideoChunkHeader{}, nil, fmt.Errorf("%w: index %d, count %d (max %d)", ErrBadChunkCount, h.ChunkIndex, h.ChunkCount, MaxChunkCount)
 	}
 	return h, dgram[VideoChunkHeaderSize:], nil
 }

@@ -59,6 +59,12 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-log-level` | `GAWK_LOG_LEVEL` | `info` |
 | `-log-format` | `GAWK_LOG_FORMAT` | `text` |
 | `-max-subscribers` | `GAWK_MAX_SUBSCRIBERS` | `15` |
+| `-max-broadcasts` | `GAWK_MAX_BROADCASTS` | `5` |
+| `-max-total-subscribers` | `GAWK_MAX_TOTAL_SUBSCRIBERS` | `50` |
+| `-publish-secret` | `GAWK_PUBLISH_SECRET` | (empty) |
+| `-conn-rate-limit` | `GAWK_CONN_RATE_LIMIT` | `3.0` |
+| `-conn-burst-limit` | `GAWK_CONN_BURST_LIMIT` | `10` |
+| `-max-bandwidth` | `GAWK_MAX_BANDWIDTH` | `0` (unlimited) |
 | `-allowed-origins` | `GAWK_ALLOWED_ORIGINS` | (empty = allow all) |
 | `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
 | `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |

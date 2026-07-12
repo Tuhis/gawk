@@ -109,7 +109,11 @@ export class BroadcastPipeline {
     // taken (409) or the server is unreachable, fail without the share
     // picker ever appearing.
     const path = this.broadcastId ? `/publish/${this.broadcastId}` : '/publish';
-    const url = new URL(path, this.serverUrl).toString();
+    const urlObj = new URL(path, this.serverUrl);
+    if (this.connectOpts.publishSecret) {
+      urlObj.searchParams.set('secret', this.connectOpts.publishSecret);
+    }
+    const url = urlObj.toString();
     try {
       this.wt = await connectWebTransport(url, this.connectOpts);
     } catch (e) {

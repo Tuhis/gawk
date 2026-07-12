@@ -8,8 +8,10 @@ interface Props {
 export function ServerSettings({ disabled }: Props) {
   const serverUrl = useTransportStore((s) => s.serverUrl);
   const certHashHex = useTransportStore((s) => s.certHashHex);
+  const publishSecret = useTransportStore((s) => s.publishSecret);
   const setServerUrl = useTransportStore((s) => s.setServerUrl);
   const setCertHashHex = useTransportStore((s) => s.setCertHashHex);
+  const setPublishSecret = useTransportStore((s) => s.setPublishSecret);
 
   return (
     <div className={styles.settings}>
@@ -25,13 +27,25 @@ export function ServerSettings({ disabled }: Props) {
         />
       </div>
       <div className={styles.field}>
-        <label htmlFor="cert-hash">Dev cert hash (hex; from server log, empty for a real cert)</label>
+        <label htmlFor="cert-hash">Dev cert hash (hex; empty for a real cert)</label>
         <input
           id="cert-hash"
           value={certHashHex}
           onChange={(e) => setCertHashHex(e.target.value)}
           disabled={disabled}
           placeholder="cert_hash_hex from gawk-server startup log"
+          spellCheck={false}
+        />
+      </div>
+      <div className={styles.field}>
+        <label htmlFor="publish-secret">Publish Secret (for broadcasters)</label>
+        <input
+          id="publish-secret"
+          type="password"
+          value={publishSecret}
+          onChange={(e) => setPublishSecret(e.target.value)}
+          disabled={disabled}
+          placeholder="shared secret configured server-side"
           spellCheck={false}
         />
       </div>

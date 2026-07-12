@@ -11,6 +11,7 @@ export interface ConnectOptions {
   // was launched with the --ignore-certificate-errors-spki-list flag; leave
   // empty for a real (publicly trusted) certificate.
   certHashHex?: string;
+  publishSecret?: string;
 }
 
 export async function connectWebTransport(url: string, opts: ConnectOptions = {}): Promise<WebTransport> {

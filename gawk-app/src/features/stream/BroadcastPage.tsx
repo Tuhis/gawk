@@ -26,7 +26,7 @@ export function BroadcastPage() {
 
   const handleStart = useCallback(async () => {
     if (pipelineRef.current) return;
-    const { serverUrl, certHashHex } = useTransportStore.getState();
+    const { serverUrl, certHashHex, publishSecret } = useTransportStore.getState();
     setError(null);
     setStats(null);
     setEncoderInfo(null);
@@ -68,7 +68,7 @@ export function BroadcastPage() {
       const pipeline = new BroadcastPipeline(
         { ...DEFAULT_CAPTURE_CONFIG },
         serverUrl,
-        { certHashHex },
+        { certHashHex, publishSecret },
         makeCallbacks(false),
         activeId,
       );
@@ -102,7 +102,7 @@ export function BroadcastPage() {
     const pipeline = new BroadcastPipeline(
       { ...DEFAULT_CAPTURE_CONFIG },
       serverUrl,
-      { certHashHex },
+      { certHashHex, publishSecret },
       makeCallbacks(triedReclaim),
     );
     pipelineRef.current = pipeline;

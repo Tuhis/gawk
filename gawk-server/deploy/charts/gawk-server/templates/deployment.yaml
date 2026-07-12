@@ -53,6 +53,18 @@ spec:
               value: {{ .Values.config.logFormat | quote }}
             - name: GAWK_MAX_SUBSCRIBERS
               value: {{ .Values.config.maxSubscribers | quote }}
+            - name: GAWK_MAX_BROADCASTS
+              value: {{ .Values.config.maxBroadcasts | quote }}
+            - name: GAWK_MAX_TOTAL_SUBSCRIBERS
+              value: {{ .Values.config.maxTotalSubscribers | quote }}
+            - name: GAWK_PUBLISH_SECRET
+              value: {{ .Values.config.publishSecret | quote }}
+            - name: GAWK_CONN_RATE_LIMIT
+              value: {{ .Values.config.connRateLimit | quote }}
+            - name: GAWK_CONN_BURST_LIMIT
+              value: {{ .Values.config.connBurstLimit | quote }}
+            - name: GAWK_MAX_BANDWIDTH
+              value: {{ .Values.config.maxBandwidth | quote }}
             - name: GAWK_MAX_IDLE_TIMEOUT
               value: {{ .Values.config.maxIdleTimeout | quote }}
             - name: GAWK_KEEPALIVE_PERIOD

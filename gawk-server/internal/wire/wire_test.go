@@ -90,7 +90,7 @@ func TestVideoChunkRoundTrip(t *testing.T) {
 		{"keyframe", VideoChunkHeader{Keyframe: true, FrameID: 42, ChunkIndex: 0, ChunkCount: 3, TimestampUs: 1234567}, []byte("hello")},
 		{"delta frame", VideoChunkHeader{Keyframe: false, FrameID: 43, ChunkIndex: 2, ChunkCount: 3, TimestampUs: 7654321}, []byte{0xde, 0xad, 0xbe, 0xef}},
 		{"empty payload", VideoChunkHeader{Keyframe: false, FrameID: 0, ChunkIndex: 0, ChunkCount: 1, TimestampUs: 0}, nil},
-		{"max payload", VideoChunkHeader{Keyframe: true, FrameID: 0xFFFFFFFF, ChunkIndex: 0xFFFE, ChunkCount: 0xFFFF, TimestampUs: 0xFFFFFFFFFFFFFFFF}, bytes.Repeat([]byte{0xAB}, MaxChunkPayload)},
+		{"max payload", VideoChunkHeader{Keyframe: true, FrameID: 0xFFFFFFFF, ChunkIndex: MaxChunkCount - 1, ChunkCount: MaxChunkCount, TimestampUs: 0xFFFFFFFFFFFFFFFF}, bytes.Repeat([]byte{0xAB}, MaxChunkPayload)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,6 +117,20 @@ func TestVideoChunkRoundTrip(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("exceeds max chunk count", func(t *testing.T) {
+		h := VideoChunkHeader{ChunkIndex: 0, ChunkCount: MaxChunkCount + 1}
+		// AppendVideoChunk itself checks h.ChunkIndex >= h.ChunkCount, but doesn't check MaxChunkCount because Append is pure formatting.
+		// So we construct a manual/raw datagram or call Append and Parse to verify.
+		dgram, err := AppendVideoChunk(nil, h, []byte("x"))
+		if err != nil {
+			t.Fatalf("AppendVideoChunk: %v", err)
+		}
+		_, _, err = ParseVideoChunk(dgram)
+		if !errors.Is(err, ErrBadChunkCount) {
+			t.Fatalf("ParseVideoChunk error = %v, want %v", err, ErrBadChunkCount)
+		}
+	})
 }
 
 func TestVideoChunkAppendToExisting(t *testing.T) {

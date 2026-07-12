@@ -20,7 +20,7 @@ feature set exists).
 | # | Item | Status |
 |---|------|--------|
 | R1 | [Multi-broadcaster support](#r1--multi-broadcaster-support) | ✅ done ([docs/06](docs/06-multi-broadcaster.md)) |
-| R2 | [Hardening](#r2--hardening) | not started |
+| R2 | [Hardening](#r2--hardening) | ✅ done ([docs/07](docs/07-hardening.md)) |
 | R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | not started |
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | not started |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
@@ -131,7 +131,7 @@ for a "safe by default" install.
 the audience. DDoS-grade protection — this is a private homelab service, not
 a public platform.
 
-**Status**: not started.
+**Status**: done.
 
 ## R3 — Broadcaster resolution & framerate picker
 

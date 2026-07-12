@@ -26,6 +26,13 @@ type Config struct {
 	MaxSubscribers int
 	AllowedOrigins []string // empty = allow all (dev); checked on CONNECT
 
+	MaxBroadcasts       int
+	MaxTotalSubscribers int
+	PublishSecret       string
+	ConnRateLimit       float64
+	ConnBurstLimit      int
+	MaxBandwidthBytes   int64
+
 	// Suppresses the INFO "session started"/"session ended" logs for /echo
 	// sessions from loopback (the k8s exec probe hitting 127.0.0.1, which
 	// otherwise logs on every startup/liveness/readiness probe forever).
@@ -73,6 +80,18 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"suppress INFO logs for loopback /echo sessions (k8s exec probes)")
 	broadcastGrace := fs.String("broadcast-grace", env("GAWK_BROADCAST_GRACE", "5m"),
 		"broadcast GC grace period after publisher disconnects")
+	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", "5"),
+		"maximum concurrent broadcasts")
+	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", "50"),
+		"maximum total subscribers across all broadcasts")
+	pubSecret := fs.String("publish-secret", env("GAWK_PUBLISH_SECRET", ""),
+		"shared secret required to publish")
+	connRateLimit := fs.String("conn-rate-limit", env("GAWK_CONN_RATE_LIMIT", "3.0"),
+		"connection attempts rate limit per client IP per second; 0 disables")
+	connBurstLimit := fs.String("conn-burst-limit", env("GAWK_CONN_BURST_LIMIT", "10"),
+		"connection attempts burst limit per client IP")
+	maxBandwidth := fs.String("max-bandwidth", env("GAWK_MAX_BANDWIDTH", "0"),
+		"global egress bandwidth limit; e.g. 10mbps")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -107,6 +126,26 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if err != nil || graceDuration <= 0 {
 		return Config{}, fmt.Errorf("invalid broadcast-grace %q: want a positive duration", *broadcastGrace)
 	}
+	maxB, err := strconv.Atoi(*maxBroadcasts)
+	if err != nil || maxB < 1 {
+		return Config{}, fmt.Errorf("invalid max-broadcasts %q: want a positive integer", *maxBroadcasts)
+	}
+	maxTotal, err := strconv.Atoi(*maxTotalSubs)
+	if err != nil || maxTotal < 1 {
+		return Config{}, fmt.Errorf("invalid max-total-subscribers %q: want a positive integer", *maxTotalSubs)
+	}
+	rateLimit, err := strconv.ParseFloat(*connRateLimit, 64)
+	if err != nil || rateLimit < 0 {
+		return Config{}, fmt.Errorf("invalid conn-rate-limit %q: want a non-negative float", *connRateLimit)
+	}
+	burstLimit, err := strconv.Atoi(*connBurstLimit)
+	if err != nil || burstLimit < 1 {
+		return Config{}, fmt.Errorf("invalid conn-burst-limit %q: want a positive integer", *connBurstLimit)
+	}
+	bandwidthBytes, err := parseBandwidth(*maxBandwidth)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Addr:           *addr,
@@ -119,6 +158,13 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		MaxSubscribers: n,
 		AllowedOrigins: splitNonEmpty(*origins),
 		QuietProbeLogs: *quietProbeLogs,
+
+		MaxBroadcasts:       maxB,
+		MaxTotalSubscribers: maxTotal,
+		PublishSecret:       *pubSecret,
+		ConnRateLimit:       rateLimit,
+		ConnBurstLimit:      burstLimit,
+		MaxBandwidthBytes:   bandwidthBytes,
 
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,
@@ -148,4 +194,30 @@ func splitNonEmpty(s string) []string {
 		}
 	}
 	return out
+}
+
+func parseBandwidth(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" || s == "0" || s == "unlimited" {
+		return 0, nil
+	}
+	var multiplier int64 = 1
+	if strings.HasSuffix(s, "mbps") {
+		multiplier = 1000 * 1000 / 8
+		s = strings.TrimSuffix(s, "mbps")
+	} else if strings.HasSuffix(s, "kbps") {
+		multiplier = 1000 / 8
+		s = strings.TrimSuffix(s, "kbps")
+	} else if strings.HasSuffix(s, "m") {
+		multiplier = 1000 * 1000 / 8
+		s = strings.TrimSuffix(s, "m")
+	} else if strings.HasSuffix(s, "k") {
+		multiplier = 1000 / 8
+		s = strings.TrimSuffix(s, "k")
+	}
+	val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || val < 0 {
+		return 0, fmt.Errorf("invalid bandwidth format %q", s)
+	}
+	return val * multiplier, nil
 }
