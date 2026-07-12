@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.8.1...gawk-app-v0.8.2) (2026-07-12)
+
+
+### Bug Fixes
+
+* unbreak gawk-app build — type the vi.fn mocks in broadcaster.test.ts ([a19810b](https://github.com/Tuhis/gawk/commit/a19810b4f1975f6305eb3d121cf2930fc133d4cd))
+
 ## [0.8.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.8.0...gawk-app-v0.8.1) (2026-07-12)
 
 
