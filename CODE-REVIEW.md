@@ -100,9 +100,18 @@ Work from the design doc, not just the diff. For gawk, milestone docs
 
 ```sh
 cd gawk-server && go vet ./... && CGO_ENABLED=1 go test -race ./...
-cd gawk-app    && npx tsc --noEmit && npm test && npm run lint && npm run build
+cd gawk-app    && npm test && npm run lint && npm run build
 helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
 ```
 
 Chart template changes additionally get a `helm template` render check of
 the touched values (default + one override).
+
+**`npm run build` is the only real frontend typecheck.** gawk-app's root
+`tsconfig.json` is solution-style (references only), so a bare
+`npx tsc --noEmit` type-checks *nothing* and passes vacuously; `tsc -b`
+inside `npm run build` is what actually checks the code — including test
+files. This exact gap let a `vi.fn()` typing error through local
+verification and broke the main build (run 29212215376). Vitest doesn't
+typecheck either (it strips types), so green tests prove nothing about
+types.

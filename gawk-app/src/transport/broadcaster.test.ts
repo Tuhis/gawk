@@ -80,15 +80,18 @@ function makeCaptureHandle() {
   };
 }
 
-function makeCallbacks(): BroadcastCallbacks & { onBroadcastId: ReturnType<typeof vi.fn> } {
+// Typed per-callback so the mocks satisfy BroadcastCallbacks: vitest 4 types
+// a bare vi.fn() as Mock<Procedure | Constructable>, which tsc rejects
+// against a concrete callback signature.
+function makeCallbacks() {
   return {
-    onSourceStream: vi.fn(),
-    onEncoderConfigured: vi.fn(),
-    onCapturePathChosen: vi.fn(),
-    onStats: vi.fn(),
-    onError: vi.fn(),
-    onEnded: vi.fn(),
-    onBroadcastId: vi.fn(),
+    onSourceStream: vi.fn<BroadcastCallbacks['onSourceStream']>(),
+    onEncoderConfigured: vi.fn<BroadcastCallbacks['onEncoderConfigured']>(),
+    onCapturePathChosen: vi.fn<BroadcastCallbacks['onCapturePathChosen']>(),
+    onStats: vi.fn<BroadcastCallbacks['onStats']>(),
+    onError: vi.fn<BroadcastCallbacks['onError']>(),
+    onEnded: vi.fn<BroadcastCallbacks['onEnded']>(),
+    onBroadcastId: vi.fn<NonNullable<BroadcastCallbacks['onBroadcastId']>>(),
   };
 }
 

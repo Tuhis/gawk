@@ -119,6 +119,10 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   (localhost forwarding is TCP-only; via the NAT IP Chrome idle-times-out
   even though CLI clients work). ([docs/02](docs/02-webtransport-hello.md))
 - **`go test -race` needs `CGO_ENABLED=1`** — this environment defaults to 0.
+- **`npx tsc --noEmit` in `gawk-app` passes vacuously** — the root
+  `tsconfig.json` is solution-style (references only), so it checks nothing.
+  `npm run build` (`tsc -b`) is the real typecheck; vitest strips types and
+  won't catch type errors either. ([CODE-REVIEW.md](CODE-REVIEW.md))
 - **npm may silently skip native bindings** (rolldown/vite 8, oxlint) due to
   [npm/cli#4828](https://github.com/npm/cli/issues/4828); build/lint/test
   then die with "Cannot find native binding" and the documented
