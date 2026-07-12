@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.7.0...gawk-app-v0.7.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* correct default production server url ([b6c5b21](https://github.com/Tuhis/gawk/commit/b6c5b2179d104315995a0557eb2a5a73d60efa4c))
+
 ## [0.7.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.6.0...gawk-app-v0.7.0) (2026-07-12)
 
 
