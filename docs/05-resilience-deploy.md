@@ -139,7 +139,9 @@ image tag defaults to `.Chart.AppVersion`.
 - Service `LoadBalancer` UDP 4433 (MetalLB; optional `loadBalancerIP` pin).
 - `config.allowedOrigins` **must contain the frontend's origin** (the
   gawk-app ingress host, `https://` included) — the server checks `Origin`
-  on CONNECT; empty allows all, don't ship that to prod.
+  on CONNECT; empty allows all, don't ship that to prod. `CheckOrigin`
+  exempts loopback `RemoteAddr` so the in-pod exec probe (no `Origin`
+  header) still passes — see gotcha below.
 
 `gawk-app` chart: 2 stateless nginx replicas, ClusterIP, Ingress
 (`nginx-int` class, cert-manager annotation, TLS). Plain httpGet probes —
@@ -251,6 +253,15 @@ optional MetalLB IP pin.
 - `erasableSyntaxOnly` is enabled in gawk-app's tsconfig — no TS constructor
   parameter properties (surfaced in test code; oxlint doesn't catch it,
   `tsc -b` does).
+- **The exec probe crash-loops the pod once `allowedOrigins` is set** —
+  `gawk-echo` sends no `Origin` header, so `CheckOrigin` rejected its own
+  `/echo` CONNECT (`webtransport: request origin not allowed`, surfaced to
+  kubelet as `received status 500`) as soon as production set a real
+  origin; dev never hit it because empty `allowedOrigins` allows all. Fixed
+  by exempting loopback `RemoteAddr` in `CheckOrigin` — the probe always
+  runs in-pod over `127.0.0.1`, which QUIC can't spoof, so this doesn't
+  weaken the check against real off-pod clients. Caught 2026-07-12 in the
+  first real cluster install (`internal/transport/server.go`).
 
 ## Manual verification (to close the milestone)
 

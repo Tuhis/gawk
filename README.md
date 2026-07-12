@@ -180,5 +180,10 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   **classic** PAT with `read:packages` (fine-grained PATs don't cover GHCR).
 - **The relay is HTTP/3-only (no TCP listener)** — kubelet probes must exec
   the bundled `gawk-echo` binary; `httpGet`/`tcpSocket` can never succeed.
+- **That exec probe crash-loops the pod once `allowedOrigins` is set** —
+  `gawk-echo` sends no `Origin` header, so `CheckOrigin` rejected its own
+  probe as soon as production configured a real origin (dev's empty
+  allowlist never hit it). `CheckOrigin` now exempts loopback `RemoteAddr`.
+  ([docs/05](docs/05-resilience-deploy.md))
 - **release-please `extra-files` paths are package-relative** — a repo-
   relative path silently leaves Chart.yaml unbumped.
