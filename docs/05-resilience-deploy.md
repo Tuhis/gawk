@@ -132,6 +132,11 @@ image tag defaults to `.Chart.AppVersion`.
   `-cert-hash` → verification skipped: correct for a localhost self-probe
   and immune to cert renewals. Each probe costs one QUIC dial; trivial at
   this scale.
+- `config.quietProbeLogs` defaults **`true`** in the chart — those same
+  probes hit `/echo` forever on a tight period and would otherwise spam
+  `session started`/`session ended` INFO lines; the binary itself defaults
+  it `false` so local/dev runs still log everything. Set it `false` in the
+  chart to see probe traffic while debugging.
 - cert-manager `Certificate` (default issuer `letsencrypt-production`,
   ClusterIssuer; use `-staging` for first rollouts) → secret mounted at
   `/tls`; the server's `tlsutil.Reloader` picks up renewals per-handshake,

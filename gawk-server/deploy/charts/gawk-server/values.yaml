@@ -56,6 +56,11 @@ config:
   # timeout. See gawk-server/README.md.
   maxIdleTimeout: 30s
   keepalivePeriod: 10s
+  # Suppresses the INFO "session started"/"session ended" logs for the k8s
+  # exec probe's own /echo sessions (fires every startup/liveness/readiness
+  # probe period, forever). Real off-pod echo diagnostic use still logs
+  # normally. Set false to see probe traffic while debugging.
+  quietProbeLogs: true
 
 # Extra GAWK_* environment variables, verbatim pod-spec env entries.
 extraEnv: []

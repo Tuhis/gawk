@@ -34,14 +34,15 @@ func TestDefaults(t *testing.T) {
 
 func TestEnvFallback(t *testing.T) {
 	getenv := envMap(map[string]string{
-		"GAWK_ADDR":            ":9999",
-		"GAWK_LOG_LEVEL":       "debug",
-		"GAWK_LOG_FORMAT":      "json",
-		"GAWK_MAX_SUBSCRIBERS": "3",
+		"GAWK_ADDR":             ":9999",
+		"GAWK_LOG_LEVEL":        "debug",
+		"GAWK_LOG_FORMAT":       "json",
+		"GAWK_MAX_SUBSCRIBERS":  "3",
 		"GAWK_DEV_CERT":         "true",
 		"GAWK_ALLOWED_ORIGINS":  "https://a.example, https://b.example",
 		"GAWK_MAX_IDLE_TIMEOUT": "45s",
 		"GAWK_KEEPALIVE_PERIOD": "5s",
+		"GAWK_QUIET_PROBE_LOGS": "true",
 	})
 	cfg, err := ParseFlags(nil, getenv)
 	if err != nil {
@@ -72,14 +73,18 @@ func TestEnvFallback(t *testing.T) {
 	if cfg.KeepAlivePeriod != 5*time.Second {
 		t.Errorf("KeepAlivePeriod = %v, want 5s", cfg.KeepAlivePeriod)
 	}
+	if !cfg.QuietProbeLogs {
+		t.Error("QuietProbeLogs = false, want true")
+	}
 }
 
 func TestFlagOverridesEnv(t *testing.T) {
 	getenv := envMap(map[string]string{
-		"GAWK_ADDR":      ":9999",
-		"GAWK_LOG_LEVEL": "error",
+		"GAWK_ADDR":             ":9999",
+		"GAWK_LOG_LEVEL":        "error",
+		"GAWK_QUIET_PROBE_LOGS": "true",
 	})
-	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn"}, getenv)
+	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn", "-quiet-probe-logs=false"}, getenv)
 	if err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
@@ -88,6 +93,9 @@ func TestFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.LogLevel != slog.LevelWarn {
 		t.Errorf("LogLevel = %v, want warn from flag", cfg.LogLevel)
+	}
+	if cfg.QuietProbeLogs {
+		t.Error("QuietProbeLogs = true, want false from flag override")
 	}
 }
 

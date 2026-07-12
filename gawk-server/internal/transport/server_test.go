@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,13 @@ func startTestServer(t *testing.T, ctx context.Context, maxSubscribers int) (por
 // random free port.
 func startTestServerCfg(t *testing.T, ctx context.Context, cfg config.Config) (port int, clientTLS *tls.Config, h *hub.Hub, done chan error) {
 	t.Helper()
+	return startTestServerCfgLog(t, ctx, cfg, discardLog)
+}
+
+// startTestServerCfgLog is startTestServerCfg with a caller-supplied logger,
+// for tests that assert on log output.
+func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config, log *slog.Logger) (port int, clientTLS *tls.Config, h *hub.Hub, done chan error) {
+	t.Helper()
 
 	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
 	if err != nil {
@@ -55,8 +63,8 @@ func startTestServerCfg(t *testing.T, ctx context.Context, cfg config.Config) (p
 	pc.Close()
 
 	cfg.Addr = fmt.Sprintf("127.0.0.1:%d", port)
-	h = hub.New(discardLog, hub.Options{MaxSubscribers: cfg.MaxSubscribers})
-	srv := New(cfg, h, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, discardLog)
+	h = hub.New(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers})
+	srv := New(cfg, h, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log)
 
 	done = make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -712,6 +720,45 @@ func TestCheckOriginLoopbackBypassesAllowlist(t *testing.T) {
 				t.Errorf("CheckOrigin(remote=%s, origin=%q) = %v, want %v", tc.remoteAddr, tc.origin, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestQuietProbeLogsSuppressesLoopbackEchoSessions is the fix for k8s exec
+// probes (loopback /echo dials, forever, on a tight period) spamming the
+// server log: with QuietProbeLogs set, those sessions log nothing at INFO,
+// but the flag defaults off so local/dev runs are unaffected.
+func TestQuietProbeLogsSuppressesLoopbackEchoSessions(t *testing.T) {
+	run := func(t *testing.T, quiet bool) string {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+		port, clientTLS, _, _ := startTestServerCfgLog(t, ctx, config.Config{
+			MaxSubscribers: 15,
+			QuietProbeLogs: quiet,
+		}, log)
+
+		sess := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/echo", port), clientTLS)
+		if err := sess.SendDatagram([]byte("ping")); err != nil {
+			t.Fatalf("SendDatagram: %v", err)
+		}
+		recvCtx, recvCancel := context.WithTimeout(ctx, time.Second)
+		defer recvCancel()
+		if _, err := sess.ReceiveDatagram(recvCtx); err != nil {
+			t.Fatalf("ReceiveDatagram: %v", err)
+		}
+		// The round trip proves the server-side handler ran past its
+		// "session started" log point, so the buffer can be asserted on
+		// immediately without waiting on teardown.
+		return buf.String()
+	}
+
+	if got := run(t, true); strings.Contains(got, "session started") {
+		t.Errorf("QuietProbeLogs=true: loopback echo session logged, want silence:\n%s", got)
+	}
+	if got := run(t, false); !strings.Contains(got, "session started") {
+		t.Errorf("QuietProbeLogs=false: loopback echo session not logged, want \"session started\":\n%s", got)
 	}
 }
 

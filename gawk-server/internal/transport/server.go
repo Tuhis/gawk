@@ -195,7 +195,9 @@ func isLoopbackAddr(addr string) bool {
 }
 
 // handleEcho upgrades the CONNECT request and echoes every datagram back.
-// Kept permanently as a connectivity diagnostic.
+// Kept permanently as a connectivity diagnostic; it also doubles as the k8s
+// exec probe target, so its routine session logs are quietable — see
+// QuietProbeLogs.
 func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
@@ -203,12 +205,20 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	// The k8s startup/liveness/readiness probes exec gawk-echo against
+	// 127.0.0.1 on a tight period, forever; quiet that specific traffic
+	// while still logging real (off-pod) echo diagnostic use normally.
+	quiet := s.cfg.QuietProbeLogs && isLoopbackAddr(r.RemoteAddr)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "echo")
-	log.Info("session started")
+	if !quiet {
+		log.Info("session started")
+	}
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
-			log.Info("session ended", "reason", err)
+			if !quiet {
+				log.Info("session ended", "reason", err)
+			}
 			return
 		}
 		if err := sess.SendDatagram(dgram); err != nil {

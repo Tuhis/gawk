@@ -16,15 +16,22 @@ import (
 
 // Config is the fully-resolved server configuration.
 type Config struct {
-	Addr           string     // UDP listen address, e.g. ":4433"
-	CertFile       string     // path to PEM cert; empty in dev-cert mode
-	KeyFile        string     // path to PEM key; empty in dev-cert mode
-	DevCert        bool       // generate an in-memory ephemeral cert at startup
-	DevCertHosts   string     // comma-separated SANs for the dev cert
+	Addr           string // UDP listen address, e.g. ":4433"
+	CertFile       string // path to PEM cert; empty in dev-cert mode
+	KeyFile        string // path to PEM key; empty in dev-cert mode
+	DevCert        bool   // generate an in-memory ephemeral cert at startup
+	DevCertHosts   string // comma-separated SANs for the dev cert
 	LogLevel       slog.Level
-	LogFormat      string   // "text" or "json"
+	LogFormat      string // "text" or "json"
 	MaxSubscribers int
 	AllowedOrigins []string // empty = allow all (dev); checked on CONNECT
+
+	// Suppresses the INFO "session started"/"session ended" logs for /echo
+	// sessions from loopback (the k8s exec probe hitting 127.0.0.1, which
+	// otherwise logs on every startup/liveness/readiness probe forever).
+	// Off by default so plain binary/local-dev runs log everything as
+	// usual; the Helm chart turns it on.
+	QuietProbeLogs bool
 
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
@@ -60,6 +67,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"QUIC idle timeout for all sessions")
 	keepalive := fs.String("keepalive-period", env("GAWK_KEEPALIVE_PERIOD", "10s"),
 		"QUIC keepalive PING interval; keeps idle viewers alive while the broadcaster is away; 0 disables")
+	quietProbeLogs := fs.Bool("quiet-probe-logs",
+		env("GAWK_QUIET_PROBE_LOGS", "") == "true" || env("GAWK_QUIET_PROBE_LOGS", "") == "1",
+		"suppress INFO logs for loopback /echo sessions (k8s exec probes)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -101,6 +111,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		LogFormat:      *logFormat,
 		MaxSubscribers: n,
 		AllowedOrigins: splitNonEmpty(*origins),
+		QuietProbeLogs: *quietProbeLogs,
 
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,

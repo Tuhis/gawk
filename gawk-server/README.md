@@ -54,11 +54,20 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-allowed-origins` | `GAWK_ALLOWED_ORIGINS` | (empty = allow all) |
 | `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
 | `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |
+| `-quiet-probe-logs` | `GAWK_QUIET_PROBE_LOGS` | `false` |
 
 The keepalive is what keeps idle viewers connected while the broadcaster is
 away: QUIC PINGs reset both endpoints' idle timers. Raising
 `-max-idle-timeout` alone does not help — the effective idle timeout is the
 minimum of both endpoints' advertised values, and browsers advertise ~30s.
+
+`-quiet-probe-logs` suppresses the `session started`/`session ended` INFO
+logs for `/echo` sessions dialed from loopback — i.e. the k8s exec probe,
+which otherwise logs on every startup/liveness/readiness period, forever.
+It defaults to `false` here (plain binary / local dev logs everything as
+usual); the Helm chart sets it `true` by default (`config.quietProbeLogs`).
+Real, off-pod echo diagnostic use is never affected — only loopback traffic
+is quieted.
 
 The server exits cleanly on SIGINT/SIGTERM.
 
