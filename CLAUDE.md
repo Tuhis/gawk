@@ -66,7 +66,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `docs/04-fanout.md` for v0.4 (fan-out hardening, restart-safe caches,
   `/statusz`), `docs/05-resilience-deploy.md` for v0.5 (keepalive, viewer
   auto-reconnect, Docker, Helm, CI/release — **includes the deploy runbook**).
-- Each component has `deploy/` (Dockerfile + Helm chart); `.github/workflows/`
+- Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
   breakdown (A1–D3) with per-chunk acceptance criteria and progress status.
@@ -91,8 +91,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    broadcaster-side (`keyframeIntervalFrames: 120` in `gawk-app/src/media/`).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
-- **Helm charts, one per component** (`gawk-server/deploy/chart/`,
-  `gawk-app/deploy/chart/`), separately versioned; **chart version ==
+- **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,
+  `gawk-app/deploy/charts/gawk-app/`), separately versioned; **chart version ==
   appVersion == image tag** always. The frontend is deployed too (nginx
   behind Ingress class `nginx-int`); the relay is a UDP LoadBalancer
   (nginx ingress can't proxy WebTransport).

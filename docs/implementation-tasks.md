@@ -23,7 +23,7 @@ close-out is `05-resilience-deploy.md`.
 | C3 Stats + /statusz | ✅ done | json tags on `hub.Stats` = response shape; `GET /statusz` integration-tested over HTTP/3 (numbers move). Milestone C close-out verified in browser 2026-07-12 (multi-viewer, churn, broadcaster restart, `/statusz` live) — see `04-fanout.md` |
 | D1 resilience | ✅ done | `-max-idle-timeout`/`-keepalive-period` flags (keepalive keeps idle viewers alive while broadcaster away); `TestSubscriberSurvivesPublisherRestart` + negative control; **scope grew**: viewer auto-reconnect (`ViewerSession`, backoff 1s→15s, 10 attempts, never-connected-is-fatal) — see `05-resilience-deploy.md` |
 | D2 containers | ✅ done | `gawk-server/deploy/Dockerfile` (distroless nonroot, ships gawk-echo as k8s exec-probe helper, VERSION ldflags) + `gawk-app/deploy/Dockerfile` (nginx-unprivileged); both acceptance-tested locally incl. echo-from-host |
-| D3 deploy | ✅ done | **superseded raw manifests → Helm charts** (`*/deploy/chart/`), one per component, chart version == appVersion == image tag; exec probes (h3-only server), replicas:1+Recreate, cert-manager Certificate; server-side dry-run clean vs homelab |
+| D3 deploy | ✅ done | **superseded raw manifests → Helm charts** (`*/deploy/charts/<component>/`), one per component, chart version == appVersion == image tag; exec probes (h3-only server), replicas:1+Recreate, cert-manager Certificate; server-side dry-run clean vs homelab |
 | D4 CI/release (added) | ✅ done | release-please monorepo (combined release PR — separate PRs conflicted on the shared manifest; tags per-component `gawk-server-vX.Y.Z`), `ci.yml` (go/app/helm/docker), `release-please.yml` with chained GHCR publish. **First cycle completed 2026-07-12: v0.5.0 both, 4 GHCR packages verified** — see `05-resilience-deploy.md` |
 
 Note for implementers: webtransport-go v0.11.1 bumped the `go` directive to
@@ -214,7 +214,7 @@ Nothing in A is throwaway.
 ### Milestone D — build step 5: resilience + deployment
 
 > **As built (2026-07-12):** D3 was superseded — deployment is via Helm
-> charts (`gawk-server/deploy/chart/`, `gawk-app/deploy/chart/`) published
+> charts (`gawk-server/deploy/charts/gawk-server/`, `gawk-app/deploy/charts/gawk-app/`) published
 > to GHCR as OCI packages, with a release-please-driven CI pipeline (D4)
 > and the frontend deployed too. See `05-resilience-deploy.md`.
 

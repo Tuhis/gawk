@@ -114,8 +114,8 @@ docker run --rm -d -p 8080:8080 gawk-app:dev   # curl localhost:8080 → the SPA
 
 ## D3 — Helm charts
 
-Charts live **inside** their component (`gawk-server/deploy/chart/`,
-`gawk-app/deploy/chart/`) so release-please's path scoping versions chart
+Charts live **inside** their component (`gawk-server/deploy/charts/gawk-server/`,
+`gawk-app/deploy/charts/gawk-app/`) so release-please's path scoping versions chart
 changes with the component — that placement is what makes chart version ==
 image tag hold for free. Both `Chart.yaml`s carry
 `# x-release-please-version` markers on `version:` and `appVersion:`; the
@@ -165,7 +165,7 @@ server-side dry-run can't see a namespace it didn't persist.
   tags and releases**: `gawk-server-vX.Y.Z` / `gawk-app-vX.Y.Z`. Both were
   seeded at **0.4.0** (matching the project milestone numbering;
   package.json aligned) so the first releases came out 0.5.0. `extra-files`
-  paths are **package-relative** (`deploy/chart/Chart.yaml`).
+  paths are **package-relative** (`deploy/charts/<component>/Chart.yaml`).
 - `.github/workflows/ci.yml` (PR + main): Go vet + `-race` tests
   (`CGO_ENABLED=1`), frontend `npm ci`/lint/test/build, `helm lint` +
   `helm template`, docker build validation (no push, GHA cache with

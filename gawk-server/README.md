@@ -79,12 +79,12 @@ must be a binary path in exec-form.
 
 ## Deploy (Helm)
 
-The chart lives in `deploy/chart/` and is published by CI to
+The chart lives in `deploy/charts/gawk-server/` and is published by CI to
 `oci://ghcr.io/tuhis/charts/gawk-server`, versioned in lockstep with the
 image (chart `version` == `appVersion` == image tag). Values that must be
 set per install: `certificate.dnsNames`, `config.allowedOrigins` (the
 frontend's origin) and `imagePullSecrets` — see the comments in
-[`deploy/chart/values.yaml`](deploy/chart/values.yaml). Full runbook incl.
+[`deploy/charts/gawk-server/values.yaml`](deploy/charts/gawk-server/values.yaml). Full runbook incl.
 the GHCR pull secret: [`../docs/05-resilience-deploy.md`](../docs/05-resilience-deploy.md).
 
 ```sh

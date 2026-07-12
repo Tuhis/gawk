@@ -10,7 +10,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "deploy/chart/Chart.yaml"
+          "path": "deploy/charts/gawk-server/Chart.yaml"
         }
       ]
     },
@@ -21,7 +21,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "deploy/chart/Chart.yaml"
+          "path": "deploy/charts/gawk-app/Chart.yaml"
         }
       ]
     }

@@ -71,7 +71,7 @@ jobs:
         # release even if the updater mis-fires.
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm package gawk-server/deploy/chart --version "$VERSION" --app-version "$VERSION"
+          helm package gawk-server/deploy/charts/gawk-server --version "$VERSION" --app-version "$VERSION"
           helm push "gawk-server-$VERSION.tgz" oci://ghcr.io/tuhis/charts
 
   publish-app:
@@ -104,5 +104,5 @@ jobs:
       - name: Push Helm chart
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm package gawk-app/deploy/chart --version "$VERSION" --app-version "$VERSION"
+          helm package gawk-app/deploy/charts/gawk-app --version "$VERSION" --app-version "$VERSION"
           helm push "gawk-app-$VERSION.tgz" oci://ghcr.io/tuhis/charts

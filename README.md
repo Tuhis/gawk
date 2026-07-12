@@ -80,7 +80,7 @@ cd gawk-app    && npm test && npm run lint && npm run build
 ### Containers & deployment
 
 Both components build to images (`<component>/deploy/Dockerfile`) and ship
-as Helm charts (`<component>/deploy/chart/`) published to GHCR by CI on
+as Helm charts (`<component>/deploy/charts/<component>/`) published to GHCR by CI on
 release — chart version, `appVersion` and image tag always match. Deploying
 is manual by design (`helm upgrade --install` from the workstation; no
 cluster credentials in CI). Runbook, GHCR pull-secret setup and the release
