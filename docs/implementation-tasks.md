@@ -1,7 +1,8 @@
 # `gawk-server` Implementation Plan — Go WebTransport Relay
 
-All milestones (A–D) are implemented. Milestone D's deployment shape was
-redecided during planning: Helm charts + a release-please/GHCR CI pipeline
+All milestones (A–D) and R1 multi-broadcaster support (E–G) are implemented.
+For details on E–G, see [06-multi-broadcaster.md](file:///home/tuhis/gits/gawk/docs/06-multi-broadcaster.md).
+Milestone D's deployment shape was redecided during planning: Helm charts + a release-please/GHCR CI pipeline
 instead of raw manifests, plus frontend deployment — the authoritative
 close-out is `05-resilience-deploy.md`.
 

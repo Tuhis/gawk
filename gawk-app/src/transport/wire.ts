@@ -28,6 +28,9 @@ export const WIRE_VERSION = 0x01;
 
 export const TYPE_VIDEO_CHUNK = 0x01;
 export const TYPE_DECODER_CONFIG = 0x02;
+export const TYPE_BROADCAST_ANNOUNCE = 0x03;
+
+export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 
 export const MAX_DATAGRAM_SIZE = 1200;
 export const VIDEO_CHUNK_HEADER_SIZE = 20;
@@ -149,4 +152,29 @@ export function parseDecoderConfig(dgram: Uint8Array): DecoderConfigMessage {
     codec: new TextDecoder().decode(dgram.subarray(4, 4 + codecLen)),
     extradata: dgram.subarray(4 + codecLen),
   };
+}
+
+const BROADCAST_ID_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+
+export function parseBroadcastAnnounce(dgram: Uint8Array): string {
+  if (dgram.length < 3) {
+    throw new WireError(`message too short: ${dgram.length} bytes, need at least 3 for broadcast announce`);
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_BROADCAST_ANNOUNCE) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want broadcast announce`);
+  }
+  const idLen = dgram[2];
+  if (3 + idLen !== dgram.length) {
+    throw new WireError(`expected ${3 + idLen} bytes for ID length ${idLen}, got ${dgram.length}`);
+  }
+  const id = new TextDecoder().decode(dgram.subarray(3));
+  for (let i = 0; i < id.length; i++) {
+    if (BROADCAST_ID_ALPHABET.indexOf(id[i]) === -1) {
+      throw new WireError(`invalid character "${id[i]}" in broadcast ID`);
+    }
+  }
+  return id;
 }

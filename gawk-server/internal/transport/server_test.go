@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,25 +30,25 @@ import (
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// startTestServer runs a Server with an in-memory dev cert on a random UDP
-// port. It returns the port, a client TLS config trusting the cert, the
-// hub (for state assertions) and Run's completion channel.
-func startTestServer(t *testing.T, ctx context.Context, maxSubscribers int) (port int, clientTLS *tls.Config, h *hub.Hub, done chan error) {
+func startTestServer(t *testing.T, ctx context.Context, maxSubs int) (port int, clientTLS *tls.Config, r *hub.Registry, done chan error) {
 	t.Helper()
-	return startTestServerCfg(t, ctx, config.Config{MaxSubscribers: maxSubscribers})
+	return startTestServerCfgLog(t, ctx, config.Config{
+		MaxSubscribers:  maxSubs,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  5 * time.Minute,
+	}, discardLog)
 }
 
-// startTestServerCfg is startTestServer with a caller-supplied config, for
-// tests that need non-default timeouts. cfg.Addr is overwritten with a
-// random free port.
-func startTestServerCfg(t *testing.T, ctx context.Context, cfg config.Config) (port int, clientTLS *tls.Config, h *hub.Hub, done chan error) {
+func startTestServerCfg(t *testing.T, ctx context.Context, cfg config.Config) (port int, clientTLS *tls.Config, r *hub.Registry, done chan error) {
 	t.Helper()
+	if cfg.BroadcastGrace <= 0 {
+		cfg.BroadcastGrace = 5 * time.Minute
+	}
 	return startTestServerCfgLog(t, ctx, cfg, discardLog)
 }
 
-// startTestServerCfgLog is startTestServerCfg with a caller-supplied logger,
-// for tests that assert on log output.
-func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config, log *slog.Logger) (port int, clientTLS *tls.Config, h *hub.Hub, done chan error) {
+func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config, log *slog.Logger) (port int, clientTLS *tls.Config, r *hub.Registry, done chan error) {
 	t.Helper()
 
 	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
@@ -55,7 +56,6 @@ func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config,
 		t.Fatalf("GenerateDevCert: %v", err)
 	}
 
-	// Reserve a random free UDP port.
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -64,8 +64,8 @@ func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config,
 	pc.Close()
 
 	cfg.Addr = fmt.Sprintf("127.0.0.1:%d", port)
-	h = hub.New(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers})
-	srv := New(cfg, h, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log)
+	r = hub.NewRegistry(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers, BroadcastGrace: cfg.BroadcastGrace})
+	srv := New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log)
 
 	done = make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -73,7 +73,7 @@ func startTestServerCfgLog(t *testing.T, ctx context.Context, cfg config.Config,
 	pool := x509.NewCertPool()
 	pool.AddCert(cert.Leaf)
 	clientTLS = &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{http3.NextProtoH3}}
-	return port, clientTLS, h, done
+	return port, clientTLS, r, done
 }
 
 func dial(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) *webtransport.Session {
@@ -86,7 +86,6 @@ func dial(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) 
 
 	var sess *webtransport.Session
 	var err error
-	// The server goroutine may not be listening yet on the first attempt.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		_, sess, err = d.Dial(ctx, url, nil)
@@ -100,32 +99,6 @@ func dial(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) 
 	}
 }
 
-func TestEchoRoundTrip(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	port, clientTLS, _, _ := startTestServer(t, ctx, 15)
-
-	sess := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/echo", port), clientTLS)
-
-	payload := []byte("hello gawk")
-	if err := sess.SendDatagram(payload); err != nil {
-		t.Fatalf("SendDatagram: %v", err)
-	}
-
-	recvCtx, recvCancel := context.WithTimeout(ctx, time.Second)
-	defer recvCancel()
-	got, err := sess.ReceiveDatagram(recvCtx)
-	if err != nil {
-		t.Fatalf("ReceiveDatagram: %v", err)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Errorf("echoed %q, want %q", got, payload)
-	}
-}
-
-// dialOnce dials without retrying and returns the HTTP response and error,
-// for asserting rejection status codes. Callers must know the server is
-// already up (e.g. after a successful dial helper call).
 func dialOnce(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) (*http.Response, *webtransport.Session, error) {
 	t.Helper()
 	d := webtransport.Dialer{
@@ -136,7 +109,60 @@ func dialOnce(t *testing.T, ctx context.Context, url string, clientTLS *tls.Conf
 	return d.Dial(ctx, url, nil)
 }
 
-// waitFor polls cond until it is true or the timeout elapses.
+func dialPublisherAndGetID(t *testing.T, ctx context.Context, port int, clientTLS *tls.Config) (*webtransport.Session, string) {
+	t.Helper()
+	url := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
+	pub := dial(t, ctx, url, clientTLS)
+	str, err := pub.AcceptUniStream(ctx)
+	if err != nil {
+		pub.CloseWithError(0, "")
+		t.Fatalf("AcceptUniStream failed: %v", err)
+	}
+	data, err := io.ReadAll(str)
+	if err != nil {
+		pub.CloseWithError(0, "")
+		t.Fatalf("failed to read announce stream: %v", err)
+	}
+	id, err := wire.ParseBroadcastAnnounce(data)
+	if err != nil {
+		pub.CloseWithError(0, "")
+		t.Fatalf("failed to parse announce: %v", err)
+	}
+	return pub, id
+}
+
+func dialPublisherReclaim(t *testing.T, ctx context.Context, port int, id string, clientTLS *tls.Config) *webtransport.Session {
+	t.Helper()
+	url := fmt.Sprintf("https://127.0.0.1:%d/publish/%s", port, id)
+	pub := dial(t, ctx, url, clientTLS)
+	str, err := pub.AcceptUniStream(ctx)
+	if err != nil {
+		pub.CloseWithError(0, "")
+		t.Fatalf("AcceptUniStream reclaim failed: %v", err)
+	}
+	data, err := io.ReadAll(str)
+	if err != nil {
+		pub.CloseWithError(0, "")
+		t.Fatalf("failed to read reclaim announce: %v", err)
+	}
+	gotID, err := wire.ParseBroadcastAnnounce(data)
+	if err != nil {
+		pub.CloseWithError(0, "")
+		t.Fatalf("failed to parse reclaim announce: %v", err)
+	}
+	if gotID != id {
+		pub.CloseWithError(0, "")
+		t.Fatalf("reclaim announce got ID %q, want %q", gotID, id)
+	}
+	return pub
+}
+
+func dialSubscriber(t *testing.T, ctx context.Context, port int, id string, clientTLS *tls.Config) *webtransport.Session {
+	t.Helper()
+	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id)
+	return dial(t, ctx, url, clientTLS)
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, desc string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -148,12 +174,11 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, desc string)
 	}
 }
 
-// encodeFrame builds the chunk datagrams of one synthetic frame.
 func encodeFrame(t *testing.T, frameID uint32, keyframe bool, chunkCount int) [][]byte {
 	t.Helper()
 	chunks := make([][]byte, 0, chunkCount)
 	for i := range chunkCount {
-		payload := bytes.Repeat([]byte{byte(frameID), byte(i)}, 300) // 600 bytes
+		payload := bytes.Repeat([]byte{byte(frameID), byte(i)}, 300)
 		d, err := wire.AppendVideoChunk(nil, wire.VideoChunkHeader{
 			Keyframe:    keyframe,
 			FrameID:     frameID,
@@ -181,25 +206,42 @@ func testConfigDgram(t *testing.T, codec string) []byte {
 	return d
 }
 
-// TestRelayPublishToSubscribe streams synthetic chunked frames through
-// /publish and asserts a /subscribe session reassembles at least 95% of
-// them intact (loopback; datagrams may still drop in the stack).
+func TestEchoRoundTrip(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, _, _ := startTestServer(t, ctx, 15)
+
+	sess := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/echo", port), clientTLS)
+
+	payload := []byte("hello gawk")
+	if err := sess.SendDatagram(payload); err != nil {
+		t.Fatalf("SendDatagram: %v", err)
+	}
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, time.Second)
+	defer recvCancel()
+	got, err := sess.ReceiveDatagram(recvCtx)
+	if err != nil {
+		t.Fatalf("ReceiveDatagram: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("echoed %q, want %q", got, payload)
+	}
+}
+
 func TestRelayPublishToSubscribe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
-	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
-	// Dial returns on the 200 response; Subscribe runs just after the
-	// upgrade, so wait until the hub actually has the subscriber.
-	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 
-	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
 	const totalFrames = 40
 	const chunksPerFrame = 3
 
-	// Receiver: reassemble frames until complete or timed out.
 	type recvState struct {
 		gotConfig bool
 		frames    map[uint32]map[uint16]bool
@@ -234,7 +276,6 @@ func TestRelayPublishToSubscribe(t *testing.T) {
 				}
 				m[hdr.ChunkIndex] = true
 			}
-			// Done once every frame is complete.
 			complete := 0
 			for _, m := range st.frames {
 				if len(m) == chunksPerFrame {
@@ -256,7 +297,7 @@ func TestRelayPublishToSubscribe(t *testing.T) {
 				t.Fatalf("send frame %d: %v", frameID, err)
 			}
 		}
-		time.Sleep(2 * time.Millisecond) // ~realistic frame pacing, avoids queue overrun
+		time.Sleep(2 * time.Millisecond)
 	}
 
 	st := <-resultCh
@@ -278,12 +319,12 @@ func TestSecondPublisherConflict(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _ := startTestServer(t, ctx, 15)
-	url := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
 
-	first := dial(t, ctx, url, clientTLS)
+	first, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
 	_ = first
 
-	rsp, sess, err := dialOnce(t, ctx, url, clientTLS)
+	reclaimURL := fmt.Sprintf("https://127.0.0.1:%d/publish/%s", port, id)
+	rsp, sess, err := dialOnce(t, ctx, reclaimURL, clientTLS)
 	if err == nil {
 		sess.CloseWithError(0, "")
 		t.Fatal("second publisher dial succeeded, want 409 rejection")
@@ -296,28 +337,30 @@ func TestSecondPublisherConflict(t *testing.T) {
 func TestPublisherDisconnectFreesSlot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
-	url := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
-	first := dial(t, ctx, url, clientTLS)
-	waitFor(t, 5*time.Second, func() bool { return h.Stats().PublisherActive }, "publisher registered")
+	first, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Broadcasts[id].PublisherActive }, "publisher registered")
 	first.CloseWithError(0, "done")
-	waitFor(t, 5*time.Second, func() bool { return !h.Stats().PublisherActive }, "publisher slot freed")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[id].PublisherActive }, "publisher slot freed")
 
-	second := dial(t, ctx, url, clientTLS)
+	second := dialPublisherReclaim(t, ctx, port, id, clientTLS)
 	_ = second
 }
 
 func TestSubscriberLimitRejected(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServer(t, ctx, 1)
-	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe", port)
+	port, clientTLS, r, _ := startTestServer(t, ctx, 1)
 
-	first := dial(t, ctx, url, clientTLS)
-	_ = first
-	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	_ = pub
 
+	sub1 := dialSubscriber(t, ctx, port, id, clientTLS)
+	_ = sub1
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+
+	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id)
 	rsp, sess, err := dialOnce(t, ctx, url, clientTLS)
 	if err == nil {
 		sess.CloseWithError(0, "")
@@ -328,14 +371,12 @@ func TestSubscriberLimitRejected(t *testing.T) {
 	}
 }
 
-// TestLateJoinerPrimedOverNetwork publishes a config and a complete
-// keyframe, then subscribes and asserts the primed datagrams arrive.
 func TestLateJoinerPrimedOverNetwork(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
-	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
 	if err := pub.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
 		t.Fatalf("send config: %v", err)
 	}
@@ -346,11 +387,11 @@ func TestLateJoinerPrimedOverNetwork(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := h.Stats()
+		st := r.Stats().Broadcasts[id]
 		return st.HasConfig && st.CachedKeyframeChunks == kfChunks
 	}, "config and keyframe cached")
 
-	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 
 	gotConfig := false
 	gotChunks := make(map[uint16]bool)
@@ -378,7 +419,6 @@ func TestLateJoinerPrimedOverNetwork(t *testing.T) {
 	}
 }
 
-// h3Get performs an HTTP/3 GET against the server, retrying until it is up.
 func h3Get(t *testing.T, ctx context.Context, clientTLS *tls.Config, url string) (*http.Response, []byte) {
 	t.Helper()
 	tr := &http3.Transport{TLSClientConfig: clientTLS}
@@ -407,12 +447,10 @@ func h3Get(t *testing.T, ctx context.Context, clientTLS *tls.Config, url string)
 	}
 }
 
-// TestStatuszReachableAndNumbersMove is the C3 acceptance test: /statusz is
-// served over HTTP/3, starts zeroed, and reflects hub activity.
 func TestStatuszReachableAndNumbersMove(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 	url := fmt.Sprintf("https://127.0.0.1:%d/statusz", port)
 
 	rsp, body := h3Get(t, ctx, clientTLS, url)
@@ -422,18 +460,18 @@ func TestStatuszReachableAndNumbersMove(t *testing.T) {
 	if ct := rsp.Header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	var before hub.Stats
+	var before hub.RegistryStats
 	if err := json.Unmarshal(body, &before); err != nil {
 		t.Fatalf("unmarshal initial /statusz %q: %v", body, err)
 	}
-	if before != (hub.Stats{}) {
-		t.Errorf("initial stats = %+v, want all zero", before)
+	if before.Totals.Broadcasts != 0 {
+		t.Errorf("initial stats = %+v, want totals.broadcasts 0", before)
 	}
 
-	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 	_ = sub
-	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
-	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
 	const kfChunks = 3
 	if err := pub.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
@@ -450,39 +488,40 @@ func TestStatuszReachableAndNumbersMove(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := h.Stats()
+		st := r.Stats().Broadcasts[id]
 		return st.HasConfig && st.CachedKeyframeChunks == kfChunks && st.FramesRelayed >= 2
-	}, "stream observed by hub")
+	}, "stream observed by registry")
 
 	_, body = h3Get(t, ctx, clientTLS, url)
-	var after hub.Stats
+	var after hub.RegistryStats
 	if err := json.Unmarshal(body, &after); err != nil {
 		t.Fatalf("unmarshal /statusz %q: %v", body, err)
 	}
+	if after.Totals.Broadcasts != 1 {
+		t.Errorf("totals.broadcasts = %d, want 1", after.Totals.Broadcasts)
+	}
+	if after.Totals.Subscribers != 1 {
+		t.Errorf("totals.subscribers = %d, want 1", after.Totals.Subscribers)
+	}
+	bst := after.Broadcasts[id]
 	switch {
-	case !after.PublisherActive:
+	case !bst.PublisherActive:
 		t.Error("statusz publisherActive = false, want true")
-	case after.Subscribers != 1:
-		t.Errorf("statusz subscribers = %d, want 1", after.Subscribers)
-	case after.FramesRelayed < 2 || after.DatagramsRelayed < kfChunks+1:
-		t.Errorf("statusz counters did not move: %+v", after)
-	case !after.HasConfig || after.CachedKeyframeChunks != kfChunks || after.CachedKeyframeBytes == 0:
-		t.Errorf("statusz cache fields wrong: %+v", after)
+	case bst.Subscribers != 1:
+		t.Errorf("statusz subscribers = %d, want 1", bst.Subscribers)
+	case bst.FramesRelayed < 2 || bst.DatagramsRelayed < kfChunks+1:
+		t.Errorf("statusz counters did not move: %+v", bst)
+	case !bst.HasConfig || bst.CachedKeyframeChunks != kfChunks || bst.CachedKeyframeBytes == 0:
+		t.Errorf("statusz cache fields wrong: %+v", bst)
 	}
 }
 
-// TestPublisherRestartPrimesWithNewConfig is the C2 acceptance test over the
-// network: after the publisher reconnects with a new config, a joiner is
-// primed with the new config and the new session's keyframe — never with
-// cached data from the previous session.
 func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServer(t, ctx, 15)
-	pubURL := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
-	// Session 1: old codec, keyframe with frameID 7.
-	pub1 := dial(t, ctx, pubURL, clientTLS)
+	pub1, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
 	if err := pub1.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
 		t.Fatalf("send config: %v", err)
 	}
@@ -492,20 +531,19 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := h.Stats()
+		st := r.Stats().Broadcasts[id]
 		return st.HasConfig && st.CachedKeyframeChunks == 2
 	}, "session 1 config and keyframe cached")
 
 	pub1.CloseWithError(0, "restart")
-	waitFor(t, 5*time.Second, func() bool { return !h.Stats().PublisherActive }, "publisher slot freed")
-	if st := h.Stats(); !st.HasConfig {
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[id].PublisherActive }, "publisher slot freed")
+	if st := r.Stats().Broadcasts[id]; !st.HasConfig {
 		t.Fatal("caches must persist while the broadcaster is away")
 	}
 
-	// Session 2: new codec, frameIDs restart at 0.
-	pub2 := dial(t, ctx, pubURL, clientTLS)
+	pub2 := dialPublisherReclaim(t, ctx, port, id, clientTLS)
 	waitFor(t, 5*time.Second, func() bool {
-		st := h.Stats()
+		st := r.Stats().Broadcasts[id]
 		return st.PublisherActive && !st.HasConfig && st.CachedKeyframeChunks == 0
 	}, "caches invalidated by new publisher session")
 
@@ -520,12 +558,11 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := h.Stats()
+		st := r.Stats().Broadcasts[id]
 		return st.HasConfig && st.CachedKeyframeChunks == kfChunks
 	}, "session 2 config and keyframe cached")
 
-	// A late joiner must be primed with the new session's data only.
-	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 	gotCodec := ""
 	gotChunks := make(map[uint16]bool)
 	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -567,27 +604,19 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 	}
 }
 
-// TestSubscriberSurvivesPublisherRestart is the D1 acceptance test: a
-// connected viewer must ride out the broadcaster leaving (including an idle
-// gap longer than the QUIC idle timeout — the server keepalive is what keeps
-// the session alive) and then receive the new session's stream with no
-// action of its own.
 func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServerCfg(t, ctx, config.Config{
+	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
 		MaxSubscribers:  15,
 		MaxIdleTimeout:  2 * time.Second,
 		KeepAlivePeriod: 250 * time.Millisecond,
 	})
 
-	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
-	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
+	pub1, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
-	// Session 1: stream a config + keyframe and make sure the subscriber
-	// actually receives it (proves the fan-out path before the restart).
-	pubURL := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
-	pub1 := dial(t, ctx, pubURL, clientTLS)
 	if err := pub1.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
 		t.Fatalf("send config: %v", err)
 	}
@@ -613,13 +642,10 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 	}
 	recvCancel()
 
-	// Broadcaster leaves. The subscriber must stay connected through a
-	// quiet window longer than the idle timeout: only the keepalive PINGs
-	// hold the session open, since no media flows.
 	pub1.CloseWithError(0, "broadcaster gone")
-	waitFor(t, 5*time.Second, func() bool { return !h.Stats().PublisherActive }, "publisher slot freed")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[id].PublisherActive }, "publisher slot freed")
 	time.Sleep(3 * time.Second)
-	if got := h.Stats().Subscribers; got != 1 {
+	if got := r.Stats().Totals.Subscribers; got != 1 {
 		t.Fatalf("subscribers after idle gap = %d, want 1 (session idled out?)", got)
 	}
 	select {
@@ -628,9 +654,7 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 	default:
 	}
 
-	// Session 2: new codec, frameIDs restart at 0. The same subscriber
-	// session must receive the new config and the full new keyframe.
-	pub2 := dial(t, ctx, pubURL, clientTLS)
+	pub2 := dialPublisherReclaim(t, ctx, port, id, clientTLS)
 	const newCodec = "vp09.00.40.08"
 	const kfChunks = 3
 	if err := pub2.SendDatagram(testConfigDgram(t, newCodec)); err != nil {
@@ -662,8 +686,6 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 				gotCodec = cfg.Codec
 			}
 		case wire.TypeVideoChunk:
-			// Chunks from session 1 (frameID 7) may still be in flight
-			// early on — only the new session's keyframe counts.
 			if hdr, _, err := wire.ParseVideoChunk(dgram); err == nil && hdr.Keyframe && hdr.FrameID == 0 {
 				newChunks[hdr.ChunkIndex] = true
 			}
@@ -671,32 +693,28 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 	}
 }
 
-// TestIdleSubscriberTimesOutWithoutKeepalive is the negative control for
-// the test above: with the keepalive disabled, an idle subscriber session
-// hits the QUIC idle timeout and is dropped.
 func TestIdleSubscriberTimesOutWithoutKeepalive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, h, _ := startTestServerCfg(t, ctx, config.Config{
+	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
 		MaxSubscribers:  15,
 		MaxIdleTimeout:  time.Second,
 		KeepAlivePeriod: 0,
 	})
 
-	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe", port), clientTLS)
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	_ = pub
+
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 	_ = sub
-	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 1 }, "subscriber registered")
-	waitFor(t, 5*time.Second, func() bool { return h.Stats().Subscribers == 0 }, "idle subscriber timed out")
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 0 }, "idle subscriber timed out")
 }
 
-// TestCheckOriginLoopbackBypassesAllowlist covers the production
-// crash-loop bug: with AllowedOrigins configured, the exec probe (gawk-echo
-// dialing 127.0.0.1 from inside the pod, no Origin header) must still pass,
-// while an off-pod client is still held to the allowlist.
 func TestCheckOriginLoopbackBypassesAllowlist(t *testing.T) {
-	h := hub.New(discardLog, hub.Options{MaxSubscribers: 1})
+	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
 	srv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
-		h, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, discardLog)
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, discardLog)
 
 	cases := []struct {
 		name       string
@@ -724,9 +742,6 @@ func TestCheckOriginLoopbackBypassesAllowlist(t *testing.T) {
 	}
 }
 
-// syncBuffer is a mutex-guarded bytes.Buffer for use as a slog sink: the
-// server logs from its own goroutines, so an unguarded buffer read races
-// with them even after the observable event being asserted on.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -744,10 +759,6 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestQuietProbeLogsSuppressesLoopbackEchoSessions is the fix for k8s exec
-// probes (loopback /echo dials, forever, on a tight period) spamming the
-// server log: with QuietProbeLogs set, those sessions log nothing at INFO,
-// but the flag defaults off so local/dev runs are unaffected.
 func TestQuietProbeLogsSuppressesLoopbackEchoSessions(t *testing.T) {
 	run := func(t *testing.T, quiet bool) string {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -769,9 +780,6 @@ func TestQuietProbeLogsSuppressesLoopbackEchoSessions(t *testing.T) {
 		if _, err := sess.ReceiveDatagram(recvCtx); err != nil {
 			t.Fatalf("ReceiveDatagram: %v", err)
 		}
-		// The round trip proves the server-side handler ran past its
-		// "session started" log point, so the buffer can be asserted on
-		// immediately without waiting on teardown.
 		return buf.String()
 	}
 
@@ -787,7 +795,6 @@ func TestGracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	port, clientTLS, _, done := startTestServer(t, ctx, 15)
 
-	// Make sure it is actually serving before we shut it down.
 	sess := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/echo", port), clientTLS)
 	_ = sess
 
@@ -799,5 +806,89 @@ func TestGracefulShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Run did not return within 5s of ctx cancel")
+	}
+}
+
+func TestE4Specifics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// short grace of 100ms
+	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
+		MaxSubscribers: 15,
+		BroadcastGrace: 100 * time.Millisecond,
+	})
+
+	// 1. ID-less subscribe -> 404
+	subURLNoID := fmt.Sprintf("https://127.0.0.1:%d/subscribe", port)
+	rsp, sess, err := dialOnce(t, ctx, subURLNoID, clientTLS)
+	if err == nil {
+		sess.CloseWithError(0, "")
+		t.Fatal("ID-less subscribe dial succeeded, want 404")
+	}
+	if rsp == nil || rsp.StatusCode != http.StatusNotFound {
+		t.Fatalf("ID-less subscribe status = %v (err %v), want 404", rsp, err)
+	}
+
+	// 2. Subscribe with trailing slash but no ID -> 404
+	subURLSlash := fmt.Sprintf("https://127.0.0.1:%d/subscribe/", port)
+	rsp, sess, err = dialOnce(t, ctx, subURLSlash, clientTLS)
+	if err == nil {
+		sess.CloseWithError(0, "")
+		t.Fatal("subscribe trailing slash dial succeeded, want 404")
+	}
+	if rsp == nil || rsp.StatusCode != http.StatusNotFound {
+		t.Fatalf("subscribe trailing slash status = %v (err %v), want 404", rsp, err)
+	}
+
+	// 3. ID-less publish (mint) -> success and returns ID
+	pubSess, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	if len(id) != 6 {
+		pubSess.CloseWithError(0, "")
+		t.Fatalf("expected 6 char ID from publish mint, got %q", id)
+	}
+
+	// 4. Subscribe to bogus ID -> 404
+	bogusSubURL := fmt.Sprintf("https://127.0.0.1:%d/subscribe/ZZZZZZ", port)
+	rsp, sess, err = dialOnce(t, ctx, bogusSubURL, clientTLS)
+	if err == nil {
+		sess.CloseWithError(0, "")
+		t.Fatal("bogus subscribe dial succeeded, want 404")
+	}
+	if rsp == nil || rsp.StatusCode != http.StatusNotFound {
+		t.Fatalf("bogus subscribe status = %v (err %v), want 404", rsp, err)
+	}
+
+	// 4. GC (short grace) closes subscriber with code 4000, then sub is 404
+	subSess := dialSubscriber(t, ctx, port, id, clientTLS)
+	pubSess.CloseWithError(0, "")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[id].PublisherActive }, "publisher inactive")
+
+	// Wait for grace timeout (100ms) to GC the broadcast
+	time.Sleep(200 * time.Millisecond)
+
+	// Subscriber session must have been closed
+	recvCtx, recvCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer recvCancel()
+	_, err = subSess.AcceptStream(recvCtx)
+	if err == nil {
+		t.Fatal("expected subscriber session to be closed by GC, but got no error")
+	}
+
+	var se *webtransport.SessionError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected webtransport.SessionError, got %v", err)
+	}
+	if se.ErrorCode != webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded) {
+		t.Errorf("expected close code %d, got %v", wire.CloseCodeBroadcastEnded, se.ErrorCode)
+	}
+
+	// Subscribing again to the expired ID must 404
+	rsp, sess, err = dialOnce(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id), clientTLS)
+	if err == nil {
+		sess.CloseWithError(0, "")
+		t.Fatal("expired subscribe dial succeeded, want 404")
+	}
+	if rsp == nil || rsp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expired subscribe status = %v (err %v), want 404", rsp, err)
 	}
 }

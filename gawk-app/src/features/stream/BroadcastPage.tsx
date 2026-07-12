@@ -20,6 +20,9 @@ export function BroadcastPage() {
   const [encoderInfo, setEncoderInfo] = useState<EncoderConfigured | null>(null);
   const [capturePath, setCapturePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [broadcastId, setBroadcastId] = useState<string | null>(null);
+  const [reclaimFailedNote, setReclaimFailedNote] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const handleStart = useCallback(async () => {
     if (pipelineRef.current) return;
@@ -28,6 +31,54 @@ export function BroadcastPage() {
     setStats(null);
     setEncoderInfo(null);
     setCapturePath(null);
+
+    let activeId = broadcastId;
+    let triedReclaim = false;
+
+    if (activeId) {
+      triedReclaim = true;
+      setStatus('connecting');
+      const pipeline = new BroadcastPipeline(
+        { ...DEFAULT_CAPTURE_CONFIG },
+        serverUrl,
+        { certHashHex },
+        {
+          onSourceStream: (s) => {
+            setSourceStream(s);
+            setStatus('broadcasting');
+          },
+          onEncoderConfigured: (info) => setEncoderInfo(info),
+          onCapturePathChosen: (path) => setCapturePath(path),
+          onStats: (s) => setStats(s),
+          onBroadcastId: (id) => {
+            setBroadcastId(id);
+            setReclaimFailedNote(null);
+          },
+          onError: (err) => {
+            setError(err.message);
+            setStatus('error');
+          },
+          onEnded: () => {
+            setSourceStream(null);
+            pipelineRef.current = null;
+            setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+          },
+        },
+        activeId,
+      );
+      pipelineRef.current = pipeline;
+      try {
+        await pipeline.start();
+        return; // Success!
+      } catch (e) {
+        log.warn("Reclaim failed, falling back to mint:", e);
+        pipelineRef.current = null;
+        setBroadcastId(null);
+        activeId = null;
+      }
+    }
+
+    // Mint path
     setStatus('connecting');
     const pipeline = new BroadcastPipeline(
       { ...DEFAULT_CAPTURE_CONFIG },
@@ -41,6 +92,14 @@ export function BroadcastPage() {
         onEncoderConfigured: (info) => setEncoderInfo(info),
         onCapturePathChosen: (path) => setCapturePath(path),
         onStats: (s) => setStats(s),
+        onBroadcastId: (id) => {
+          setBroadcastId(id);
+          if (triedReclaim) {
+            setReclaimFailedNote("Reclaim failed (expired/taken); started a new broadcast.");
+          } else {
+            setReclaimFailedNote(null);
+          }
+        },
         onError: (err) => {
           setError(err.message);
           setStatus('error');
@@ -62,13 +121,22 @@ export function BroadcastPage() {
       setStatus('error');
       pipelineRef.current = null;
     }
-  }, []);
+  }, [broadcastId]);
 
   const handleStop = useCallback(async () => {
     if (!pipelineRef.current) return;
     setStatus('stopping');
     await pipelineRef.current.stop();
   }, []);
+
+  const handleCopy = () => {
+    if (!broadcastId) return;
+    const joinLink = `${window.location.origin}${window.location.pathname}#/view/${broadcastId}`;
+    navigator.clipboard.writeText(joinLink).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
 
   useEffect(() => {
     return () => {
@@ -101,8 +169,18 @@ export function BroadcastPage() {
           </button>
         )}
         <span className={styles.statusPill}>{status}</span>
+
+        {broadcastId && (
+          <div className={styles.shareCode}>
+            <span>Code: <code>{broadcastId}</code></span>
+            <button className="secondary" onClick={handleCopy}>
+              {copied ? 'Copied!' : 'Copy Link'}
+            </button>
+          </div>
+        )}
       </div>
 
+      {reclaimFailedNote && <div className={styles.notice}>{reclaimFailedNote}</div>}
       {error && status === 'error' && <div className={styles.error}>Error: {error}</div>}
 
       <SourcePreview stream={sourceStream} />

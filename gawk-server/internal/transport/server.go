@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,20 +19,21 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/wire"
 )
 
 // Server wraps a webtransport.Server with the gawk routes.
 type Server struct {
-	cfg config.Config
-	hub *hub.Hub
-	log *slog.Logger
-	wt  *webtransport.Server
+	cfg      config.Config
+	registry *hub.Registry
+	log      *slog.Logger
+	wt       *webtransport.Server
 }
 
 // New builds the server. getCert supplies the TLS certificate per handshake
 // (a tlsutil.Reloader in production, a fixed dev cert locally).
-func New(cfg config.Config, h *hub.Hub, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, hub: h, log: log}
+func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), log *slog.Logger) *Server {
+	s := &Server{cfg: cfg, registry: r, log: log}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -39,13 +41,14 @@ func New(cfg config.Config, h *hub.Hub, getCert func(*tls.ClientHelloInfo) (*tls
 	})
 	mux.HandleFunc("GET /statusz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(h.Stats()); err != nil {
+		if err := json.NewEncoder(w).Encode(s.registry.Stats()); err != nil {
 			log.Warn("statusz encode failed", "err", err)
 		}
 	})
 	mux.HandleFunc("CONNECT /echo", s.handleEcho)
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)
-	mux.HandleFunc("CONNECT /subscribe", s.handleSubscribe)
+	mux.HandleFunc("CONNECT /publish/{id}", s.handlePublish)
+	mux.HandleFunc("CONNECT /subscribe/{id}", s.handleSubscribe)
 
 	s.wt = &webtransport.Server{
 		H3: &http3.Server{
@@ -114,26 +117,83 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-// handlePublish claims the hub's single publisher slot, upgrades the
-// session and feeds every received datagram to the hub. A second concurrent
-// publisher is rejected with 409 before the upgrade.
+// handlePublish claims a publisher slot, upgrades the session and feeds received
+// datagrams to the publisher. If the path value "id" is present, it attempts to
+// reclaim the slot. If "id" is empty, it upgrades first, then mints a new ID,
+// starts publishing, and announces the ID to the publisher over a unidirectional stream.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	pub, err := s.hub.StartPublish()
-	if err != nil {
-		s.log.Warn("publish rejected: publisher already active", "remote", r.RemoteAddr)
-		w.WriteHeader(http.StatusConflict)
-		return
-	}
-	sess, err := s.wt.Upgrade(w, r)
-	if err != nil {
-		pub.Close()
-		s.log.Warn("publish upgrade failed", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	id := r.PathValue("id")
+	var pub *hub.Publisher
+	var err error
+	var sess *webtransport.Session
+
+	if id != "" {
+		// Reclaim path: pre-upgrade checks
+		id, pub, err = s.registry.StartPublish(id)
+		if err != nil {
+			s.log.Warn("publish reclaim rejected", "id", id, "remote", r.RemoteAddr, "err", err)
+			if errors.Is(err, hub.ErrNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if errors.Is(err, hub.ErrPublisherActive) {
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		sess, err = s.wt.Upgrade(w, r)
+		if err != nil {
+			pub.Close() // Release on upgrade failure
+			s.log.Warn("publish upgrade failed", "err", err)
+			return
+		}
+	} else {
+		// Mint path: upgrade first
+		sess, err = s.wt.Upgrade(w, r)
+		if err != nil {
+			s.log.Warn("publish upgrade failed", "err", err)
+			return
+		}
+
+		id, pub, err = s.registry.StartPublish("")
+		if err != nil {
+			s.log.Warn("failed to start publish session after upgrade", "err", err)
+			sess.CloseWithError(500, "failed to start publish session")
+			return
+		}
 	}
 	defer pub.Close()
 
-	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish")
+	// Send BroadcastAnnounce on a server-initiated uni stream
+	stream, err := sess.OpenUniStream()
+	if err != nil {
+		s.log.Warn("failed to open uni stream for broadcast announce", "err", err)
+		sess.CloseWithError(500, "failed to open announce stream")
+		return
+	}
+	announceBytes, err := wire.AppendBroadcastAnnounce(nil, id)
+	if err != nil {
+		s.log.Warn("failed to build broadcast announce bytes", "err", err)
+		sess.CloseWithError(500, "failed to build announce")
+		return
+	}
+	_, err = stream.Write(announceBytes)
+	if err != nil {
+		s.log.Warn("failed to write broadcast announce to uni stream", "err", err)
+		sess.CloseWithError(500, "failed to write announce")
+		return
+	}
+	err = stream.Close()
+	if err != nil {
+		s.log.Warn("failed to close uni stream for broadcast announce", "err", err)
+		sess.CloseWithError(500, "failed to close announce stream")
+		return
+	}
+
+	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
 	log.Info("publisher session started")
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
@@ -141,39 +201,49 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			log.Info("publisher session ended", "reason", err)
 			return
 		}
-		// ReceiveDatagram returns a fresh slice per datagram, so handing
-		// ownership to the hub is safe.
 		pub.HandleDatagram(dgram)
 	}
 }
 
-// handleSubscribe upgrades the session and registers it with the hub, which
-// primes it (cached config + last keyframe) and adds it to the fan-out.
-// When the hub is full the session is rejected with 429 before the upgrade.
-// Inbound datagrams are read and discarded (reserved for future control
-// messages); the read loop's only job is to notice the session ending.
+// handleSubscribe upgrades the session and registers it with the hub.
+// ID-less requests or non-existent broadcast IDs return 404 pre-upgrade.
+// Full broadcasts return 429.
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
-	if s.hub.Full() {
-		s.log.Warn("subscribe rejected: hub full", "remote", r.RemoteAddr)
-		w.WriteHeader(http.StatusTooManyRequests)
+	id := r.PathValue("id")
+	if id == "" {
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+
+	if err := s.registry.CheckSubscribe(id); err != nil {
+		s.log.Warn("subscribe rejected pre-upgrade", "id", id, "remote", r.RemoteAddr, "err", err)
+		if errors.Is(err, hub.ErrNotFound) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, hub.ErrFull) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
 		s.log.Warn("subscribe upgrade failed", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	sub, err := s.hub.Subscribe(sess)
+
+	sub, err := s.registry.Subscribe(id, &webtransportSessionAdapter{sess})
 	if err != nil {
-		// Lost the race for the last slot between the Full check and here.
-		s.log.Warn("subscribe rejected after upgrade: hub full", "remote", sess.RemoteAddr())
+		s.log.Warn("subscribe rejected after upgrade", "id", id, "remote", sess.RemoteAddr(), "err", err)
 		sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "subscriber limit reached")
 		return
 	}
 	defer sub.Close()
 
-	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe")
+	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)
 	log.Info("subscriber session started")
 	for {
 		if _, err := sess.ReceiveDatagram(r.Context()); err != nil {
@@ -226,4 +296,12 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+type webtransportSessionAdapter struct {
+	*webtransport.Session
+}
+
+func (w *webtransportSessionAdapter) CloseWithError(code uint32, reason string) error {
+	return w.Session.CloseWithError(webtransport.SessionErrorCode(code), reason)
 }

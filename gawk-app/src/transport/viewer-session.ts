@@ -51,14 +51,16 @@ export interface PipelineHandle {
 
 export type PipelineFactory = (
   serverUrl: string,
+  broadcastId: string,
   connectOpts: ConnectOptions,
   callbacks: ViewerCallbacks,
 ) => PipelineHandle;
 
-const defaultFactory: PipelineFactory = (url, opts, cbs) => new ViewerPipeline(url, opts, cbs);
+const defaultFactory: PipelineFactory = (url, id, opts, cbs) => new ViewerPipeline(url, id, opts, cbs);
 
 export class ViewerSession {
   private serverUrl: string;
+  private broadcastId: string;
   private connectOpts: ConnectOptions;
   private cb: ViewerSessionCallbacks;
   private createPipeline: PipelineFactory;
@@ -69,14 +71,17 @@ export class ViewerSession {
   private attempt = 0;
   private stopped = false;
   private lastReason = 'session closed';
+  private lastCloseCode: number | null = null;
 
   constructor(
     serverUrl: string,
+    broadcastId: string,
     connectOpts: ConnectOptions,
     callbacks: ViewerSessionCallbacks,
     createPipeline: PipelineFactory = defaultFactory,
   ) {
     this.serverUrl = serverUrl;
+    this.broadcastId = broadcastId;
     this.connectOpts = connectOpts;
     this.cb = callbacks;
     this.createPipeline = createPipeline;
@@ -124,6 +129,7 @@ export class ViewerSession {
   }
 
   private buildPipeline(): PipelineHandle {
+    this.lastCloseCode = null;
     const inner: ViewerCallbacks = {
       onDecodedFrame: (d) => this.cb.onDecodedFrame(d),
       onConfig: (c) => this.cb.onConfig(c),
@@ -133,15 +139,24 @@ export class ViewerSession {
       // surface a fatal error before every reconnect.
       onError: (e) => {
         this.lastReason = e.message;
+        if ('closeCode' in (e as any)) {
+          this.lastCloseCode = (e as any).closeCode;
+        }
       },
       onEnded: () => this.handlePipelineEnded(),
     };
-    return this.createPipeline(this.serverUrl, this.connectOpts, inner);
+    return this.createPipeline(this.serverUrl, this.broadcastId, this.connectOpts, inner);
   }
 
   private handlePipelineEnded(): void {
     this.pipeline = null;
     if (this.stopped) {
+      this.cb.onEnded();
+      return;
+    }
+    if (this.lastCloseCode === 4000) {
+      log.info('Broadcast ended cleanly by server (code 4000). Stopping.');
+      this.stopped = true;
       this.cb.onEnded();
       return;
     }
@@ -177,6 +192,17 @@ export class ViewerSession {
       // burns out (~100s) instead of looping forever.
       this.pipeline = null;
       this.lastReason = e instanceof Error ? e.message : String(e);
+      if ('closeCode' in (e as any)) {
+        this.lastCloseCode = (e as any).closeCode;
+      } else {
+        this.lastCloseCode = null;
+      }
+      if (this.lastCloseCode === 4000) {
+        log.info('Broadcast ended cleanly by server during reconnect (code 4000).');
+        this.stopped = true;
+        this.cb.onEnded();
+        return;
+      }
       if (!this.stopped) this.scheduleReconnect();
       return;
     } finally {

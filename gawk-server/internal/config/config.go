@@ -38,6 +38,7 @@ type Config struct {
 	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
 	MaxIdleTimeout  time.Duration // QUIC idle timeout for all sessions
 	KeepAlivePeriod time.Duration // server-sent QUIC PING interval; 0 disables
+	BroadcastGrace  time.Duration // broadcast GC grace period after publisher disconnects
 }
 
 // ParseFlags parses args (without the program name) into a Config.
@@ -70,6 +71,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	quietProbeLogs := fs.Bool("quiet-probe-logs",
 		env("GAWK_QUIET_PROBE_LOGS", "") == "true" || env("GAWK_QUIET_PROBE_LOGS", "") == "1",
 		"suppress INFO logs for loopback /echo sessions (k8s exec probes)")
+	broadcastGrace := fs.String("broadcast-grace", env("GAWK_BROADCAST_GRACE", "5m"),
+		"broadcast GC grace period after publisher disconnects")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -100,6 +103,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if keepalivePeriod > 0 && keepalivePeriod >= idleTimeout {
 		return Config{}, fmt.Errorf("keepalive-period %v must be less than max-idle-timeout %v", keepalivePeriod, idleTimeout)
 	}
+	graceDuration, err := time.ParseDuration(*broadcastGrace)
+	if err != nil || graceDuration <= 0 {
+		return Config{}, fmt.Errorf("invalid broadcast-grace %q: want a positive duration", *broadcastGrace)
+	}
 
 	return Config{
 		Addr:           *addr,
@@ -115,6 +122,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,
+		BroadcastGrace:  graceDuration,
 	}, nil
 }
 

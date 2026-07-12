@@ -385,6 +385,7 @@ func FuzzParse(f *testing.F) {
 	f.Add(seed(goldenVideoChunkHex))
 	f.Add(seed(goldenDecoderConfigAVCHex))
 	f.Add(seed(goldenDecoderConfigVP8Hex))
+	f.Add(seed("0103064b375851324d"))
 	f.Add([]byte{})
 	f.Add([]byte{0x01})
 	f.Add([]byte{0x01, 0x01})
@@ -407,5 +408,105 @@ func FuzzParse(f *testing.F) {
 				t.Errorf("ParseDecoderConfig accepted codec of length %d", len(c.Codec))
 			}
 		}
+
+		if _, err := ParseBroadcastAnnounce(data); err == nil {
+			// just asserting no panic
+		}
 	})
+}
+
+func TestBroadcastAnnounceRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"normal ID", "ABCDEF"},
+		{"numbers in ID", "234567"},
+		{"mixed standard ID", "K7XQ2M"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dgram, err := AppendBroadcastAnnounce(nil, tc.id)
+			if err != nil {
+				t.Fatalf("AppendBroadcastAnnounce: %v", err)
+			}
+			ver, typ, err := PeekType(dgram)
+			if err != nil || ver != Version || typ != TypeBroadcastAnnounce {
+				t.Fatalf("PeekType = (%d, %d, %v), want (%d, %d, nil)", ver, typ, err, Version, TypeBroadcastAnnounce)
+			}
+			got, err := ParseBroadcastAnnounce(dgram)
+			if err != nil {
+				t.Fatalf("ParseBroadcastAnnounce: %v", err)
+			}
+			if got != tc.id {
+				t.Errorf("got %q, want %q", got, tc.id)
+			}
+		})
+	}
+}
+
+func TestGoldenBroadcastAnnounce(t *testing.T) {
+	const goldenHex = "0103064b375851324d"
+	const expectedID = "K7XQ2M"
+	wantBytes := mustHex(t, goldenHex)
+
+	dgram, err := AppendBroadcastAnnounce(nil, expectedID)
+	if err != nil {
+		t.Fatalf("AppendBroadcastAnnounce: %v", err)
+	}
+	if !bytes.Equal(dgram, wantBytes) {
+		t.Errorf("AppendBroadcastAnnounce produced %x, want %x", dgram, wantBytes)
+	}
+
+	got, err := ParseBroadcastAnnounce(wantBytes)
+	if err != nil {
+		t.Fatalf("ParseBroadcastAnnounce: %v", err)
+	}
+	if got != expectedID {
+		t.Errorf("ParseBroadcastAnnounce got %q, want %q", got, expectedID)
+	}
+}
+
+func TestParseBroadcastAnnounceErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"empty", nil, ErrShortDatagram},
+		{"1 byte", []byte{0x01}, ErrShortDatagram},
+		{"2 bytes", []byte{0x01, 0x03}, ErrShortDatagram},
+		{"bad version", []byte{0x02, 0x03, 0x01, 'K'}, ErrBadVersion},
+		{"bad type", []byte{0x01, 0x02, 0x01, 'K'}, ErrBadType},
+		{"idLen overrun", []byte{0x01, 0x03, 0x05, 'K'}, ErrBadBroadcastID},
+		{"idLen underrun", []byte{0x01, 0x03, 0x01, 'K', '7'}, ErrBadBroadcastID},
+		{"chars outside alphabet (lowercase)", []byte{0x01, 0x03, 0x01, 'k'}, ErrBadBroadcastID},
+		{"chars outside alphabet (invalid symbols)", []byte{0x01, 0x03, 0x01, '0'}, ErrBadBroadcastID},
+		{"chars outside alphabet (invalid letter O)", []byte{0x01, 0x03, 0x01, 'O'}, ErrBadBroadcastID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseBroadcastAnnounce(tc.dgram); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendBroadcastAnnounceErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+		want error
+	}{
+		{"empty ID", "", ErrBadBroadcastID},
+		{"too long ID", strings.Repeat("K", 256), ErrBadBroadcastID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := AppendBroadcastAnnounce(nil, tc.id); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
 }

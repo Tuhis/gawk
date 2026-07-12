@@ -121,3 +121,49 @@
   display: grid;
   grid-template-columns: 1fr;
 }
+
+.joinForm {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.codeInput {
+  font: inherit;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+  font-weight: bold;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  width: 140px;
+  text-align: center;
+}
+
+.codeInput:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.shareCode {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.shareCode code {
+  font-family: ui-monospace, monospace;
+  font-weight: bold;
+  color: var(--accent);
+  margin-left: 0.25rem;
+}

@@ -5,6 +5,8 @@ import {
   MAX_DATAGRAM_SIZE,
   TYPE_DECODER_CONFIG,
   TYPE_VIDEO_CHUNK,
+  TYPE_BROADCAST_ANNOUNCE,
+  CLOSE_CODE_BROADCAST_ENDED,
   VIDEO_CHUNK_HEADER_SIZE,
   WIRE_VERSION,
   WireError,
@@ -13,6 +15,7 @@ import {
   parseDecoderConfig,
   parseVideoChunk,
   peekType,
+  parseBroadcastAnnounce,
   type DecoderConfigMessage,
   type VideoChunkHeader,
 } from './wire';
@@ -23,6 +26,7 @@ import {
 const GOLDEN_VIDEO_CHUNK_HEX = '0101010001020304000500820000005d21dba5f0616263';
 const GOLDEN_DECODER_CONFIG_AVC_HEX = '0102000b617663312e3432453032410142e02affe1';
 const GOLDEN_DECODER_CONFIG_VP8_HEX = '01020003767038';
+const GOLDEN_BROADCAST_ANNOUNCE_HEX = '0103064b375851324d';
 
 const goldenVideoChunkHeader: VideoChunkHeader = {
   keyframe: true,
@@ -59,6 +63,8 @@ describe('constants', () => {
     expect(MAX_DATAGRAM_SIZE).toBe(1200);
     expect(VIDEO_CHUNK_HEADER_SIZE).toBe(20);
     expect(MAX_CHUNK_PAYLOAD).toBe(1180);
+    expect(TYPE_BROADCAST_ANNOUNCE).toBe(0x03);
+    expect(CLOSE_CODE_BROADCAST_ENDED).toBe(4000);
   });
 });
 
@@ -87,6 +93,11 @@ describe('golden vectors', () => {
     const vp8 = parseDecoderConfig(fromHex(GOLDEN_DECODER_CONFIG_VP8_HEX));
     expect(vp8.codec).toBe('vp8');
     expect(vp8.extradata.length).toBe(0);
+  });
+
+  it('parses the golden broadcast announce', () => {
+    const id = parseBroadcastAnnounce(fromHex(GOLDEN_BROADCAST_ANNOUNCE_HEX));
+    expect(id).toBe('K7XQ2M');
   });
 });
 
@@ -197,5 +208,16 @@ describe('error cases', () => {
       extradata: new Uint8Array(MAX_DATAGRAM_SIZE - 4 - 3),
     });
     expect(atLimit.length).toBe(MAX_DATAGRAM_SIZE);
+  });
+
+  it('rejects malformed broadcast announces', () => {
+    expect(() => parseBroadcastAnnounce(new Uint8Array(0))).toThrow(/too short/);
+    expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03]))).toThrow(/too short/);
+    expect(() => parseBroadcastAnnounce(new Uint8Array([0x02, 0x03, 0x01, 0x4b]))).toThrow(/version/);
+    expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x02, 0x01, 0x4b]))).toThrow(/type/);
+    expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03, 0x02, 0x4b]))).toThrow(/length/);
+    expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03, 0x01, 0x6b]))).toThrow(/invalid character/); // lowercase 'k'
+    expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03, 0x01, 0x30]))).toThrow(/invalid character/); // '0'
+    expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03, 0x01, 0x4f]))).toThrow(/invalid character/); // 'O'
   });
 });

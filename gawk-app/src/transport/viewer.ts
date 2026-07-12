@@ -51,14 +51,22 @@ export class ViewerPipeline {
   private lastStatsAt = 0;
   private statsTimer: number | null = null;
 
-  constructor(serverUrl: string, connectOpts: ConnectOptions, callbacks: ViewerCallbacks) {
+  private broadcastId: string;
+
+  constructor(
+    serverUrl: string,
+    broadcastId: string,
+    connectOpts: ConnectOptions,
+    callbacks: ViewerCallbacks,
+  ) {
     this.serverUrl = serverUrl;
+    this.broadcastId = broadcastId;
     this.connectOpts = connectOpts;
     this.cb = callbacks;
   }
 
   async start(): Promise<void> {
-    const url = new URL('/subscribe', this.serverUrl).toString();
+    const url = new URL(`/subscribe/${this.broadcastId}`, this.serverUrl).toString();
     this.wt = await connectWebTransport(url, this.connectOpts);
 
     this.decoder = new Decoder({
@@ -74,6 +82,22 @@ export class ViewerPipeline {
     this.lastStatsAt = performance.now();
     this.statsTimer = window.setInterval(() => this.publishStats(), 500);
 
+    void this.wt.closed
+      .then((closeInfo) => {
+        if (!this.stopping) {
+          const code = (closeInfo as any)?.closeCode;
+          const reason = (closeInfo as any)?.reason;
+          this.handleClose(code, reason);
+        }
+      })
+      .catch((err) => {
+        if (!this.stopping) {
+          const code = err?.closeCode;
+          const reason = err?.reason || err?.message;
+          this.handleClose(code, reason);
+        }
+      });
+
     // Read loop runs for the life of the session. On a joining viewer the
     // relay primes us with the cached config + last keyframe, so the first
     // picture typically appears without waiting for the next keyframe.
@@ -85,6 +109,16 @@ export class ViewerPipeline {
       .catch((e) => {
         if (!this.stopping) this.fail(e instanceof Error ? e : new Error(String(e)));
       });
+  }
+
+  private handleClose(closeCode?: number, reason?: string): void {
+    if (this.stopping) return;
+    const msg = reason ? `WebTransport session closed: ${reason}` : 'WebTransport session closed by server';
+    const err = new Error(msg) as any;
+    if (closeCode !== undefined) {
+      err.closeCode = closeCode;
+    }
+    this.fail(err);
   }
 
   private applyConfig(config: DecoderConfigMessage): void {

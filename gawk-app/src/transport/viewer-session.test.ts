@@ -15,17 +15,22 @@ import {
 class FakePipeline implements PipelineHandle {
   stopped = false;
   cbs: ViewerCallbacks;
-  private startResult: 'ok' | 'fail';
+  private startResult: 'ok' | 'fail' | 'fail-4000';
 
-  constructor(cbs: ViewerCallbacks, startResult: 'ok' | 'fail') {
+  constructor(cbs: ViewerCallbacks, startResult: 'ok' | 'fail' | 'fail-4000') {
     this.cbs = cbs;
     this.startResult = startResult;
   }
 
   start(): Promise<void> {
-    return this.startResult === 'ok'
-      ? Promise.resolve()
-      : Promise.reject(new Error('connect failed'));
+    if (this.startResult === 'ok') {
+      return Promise.resolve();
+    }
+    const err = new Error('connect failed') as any;
+    if (this.startResult === 'fail-4000') {
+      err.closeCode = 4000;
+    }
+    return Promise.reject(err);
   }
 
   async stop(): Promise<void> {
@@ -36,8 +41,12 @@ class FakePipeline implements PipelineHandle {
 
   // Simulates the pipeline dying the way ViewerPipeline.fail() does:
   // onError with the reason, then onEnded via its own stop().
-  crash(reason: string): void {
-    this.cbs.onError(new Error(reason));
+  crash(reason: string, closeCode?: number): void {
+    const err = new Error(reason) as any;
+    if (closeCode !== undefined) {
+      err.closeCode = closeCode;
+    }
+    this.cbs.onError(err);
     void this.stop();
   }
 }
@@ -51,7 +60,7 @@ interface Harness {
 
 // startResults[i] applies to the i-th created pipeline; past the end of the
 // array, pipelines start successfully.
-function makeHarness(startResults: ('ok' | 'fail')[] = []): Harness {
+function makeHarness(startResults: ('ok' | 'fail' | 'fail-4000')[] = []): Harness {
   const pipelines: FakePipeline[] = [];
   const events: string[] = [];
   const cb: ViewerSessionCallbacks = {
@@ -63,7 +72,7 @@ function makeHarness(startResults: ('ok' | 'fail')[] = []): Harness {
     onError: (e) => events.push(`error:${e.message}`),
     onEnded: () => events.push('ended'),
   };
-  const session = new ViewerSession('https://relay.test:4433', {}, cb, (_url, _opts, cbs) => {
+  const session = new ViewerSession('https://relay.test:4433', 'ABC123', {}, cb, (_url, _id, _opts, cbs) => {
     const p = new FakePipeline(cbs, startResults[pipelines.length] ?? 'ok');
     pipelines.push(p);
     return p;
@@ -177,5 +186,27 @@ describe('ViewerSession', () => {
 
     await session.stop(); // idempotent
     expect(events).toEqual(['connected', 'ended']);
+  });
+
+  it('stops reconnecting and ends cleanly when closed with code 4000', async () => {
+    const { session, pipelines, events } = makeHarness();
+    await session.start();
+    expect(events).toEqual(['connected']);
+
+    pipelines[0].crash('broadcast ended', 4000);
+    expect(events).toEqual(['connected', 'ended']);
+    expect(pipelines).toHaveLength(1);
+  });
+
+  it('stops reconnecting and ends cleanly when reconnect start rejects with code 4000', async () => {
+    const { session, pipelines, events } = makeHarness(['ok', 'fail-4000']);
+    await session.start();
+
+    pipelines[0].crash('drop');
+    expect(events).toEqual(['connected', 'reconnecting:1:1000']);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(events).toEqual(['connected', 'reconnecting:1:1000', 'ended']);
+    expect(pipelines).toHaveLength(2);
   });
 });

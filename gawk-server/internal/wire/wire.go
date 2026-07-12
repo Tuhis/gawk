@@ -32,6 +32,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 )
 
 // Version is the only wire protocol version currently defined. It occupies
@@ -44,7 +47,13 @@ const (
 	TypeVideoChunk = 0x01
 	// TypeDecoderConfig identifies a DecoderConfig datagram.
 	TypeDecoderConfig = 0x02
+	// TypeBroadcastAnnounce identifies a BroadcastAnnounce message.
+	TypeBroadcastAnnounce = 0x03
 )
+
+// CloseCodeBroadcastEnded is the WebTransport application close code sent
+// to subscribers when their broadcast is garbage-collected.
+const CloseCodeBroadcastEnded = 4000
 
 // Size constants for the wire format.
 const (
@@ -81,6 +90,8 @@ var (
 	// ErrDatagramTooLarge indicates an encoded datagram would exceed
 	// MaxDatagramSize.
 	ErrDatagramTooLarge = errors.New("wire: datagram exceeds MaxDatagramSize")
+	// ErrBadBroadcastID indicates a BroadcastAnnounce message with an invalid ID.
+	ErrBadBroadcastID = errors.New("wire: invalid broadcast ID")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -223,4 +234,44 @@ func ParseDecoderConfig(dgram []byte) (DecoderConfig, error) {
 		Codec:     string(dgram[4 : 4+codecLen]),
 		Extradata: dgram[4+codecLen:],
 	}, nil
+}
+
+// AppendBroadcastAnnounce appends a BroadcastAnnounce message encoding ID to dst
+// and returns the extended slice.
+func AppendBroadcastAnnounce(dst []byte, id string) ([]byte, error) {
+	if len(id) == 0 || len(id) > 255 {
+		return nil, fmt.Errorf("%w: invalid length %d", ErrBadBroadcastID, len(id))
+	}
+	dst = append(dst, Version, TypeBroadcastAnnounce, uint8(len(id)))
+	dst = append(dst, id...)
+	return dst, nil
+}
+
+// ParseBroadcastAnnounce parses a BroadcastAnnounce message.
+// It returns an error if the message is shorter than 3 bytes, has the wrong version
+// or type, or if the ID length is invalid or characters are outside the alphabet.
+func ParseBroadcastAnnounce(dgram []byte) (string, error) {
+	if len(dgram) < 3 {
+		return "", fmt.Errorf("%w: %d bytes, need at least 3 for broadcast announce",
+			ErrShortDatagram, len(dgram))
+	}
+	if dgram[0] != Version {
+		return "", fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeBroadcastAnnounce {
+		return "", fmt.Errorf("%w: got 0x%02x, want broadcast announce 0x%02x",
+			ErrBadType, dgram[1], TypeBroadcastAnnounce)
+	}
+	idLen := int(dgram[2])
+	if 3+idLen != len(dgram) {
+		return "", fmt.Errorf("%w: expected %d bytes for ID length %d, got %d",
+			ErrBadBroadcastID, 3+idLen, idLen, len(dgram))
+	}
+	id := string(dgram[3:])
+	for i := 0; i < len(id); i++ {
+		if strings.IndexByte(broadcastid.Alphabet, id[i]) == -1 {
+			return "", fmt.Errorf("%w: invalid character %q at index %d", ErrBadBroadcastID, id[i], i)
+		}
+	}
+	return id, nil
 }

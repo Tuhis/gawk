@@ -9,12 +9,35 @@ import { ViewerSession, RECONNECT_MAX_ATTEMPTS } from '../../transport/viewer-se
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
 
-type Status = 'idle' | 'connecting' | 'watching' | 'reconnecting' | 'stopping' | 'error';
+type Status = 'idle' | 'connecting' | 'watching' | 'reconnecting' | 'stopping' | 'error' | 'ended';
+
+const BROADCAST_ID_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+
+function getBroadcastIdFromHash(): string | null {
+  const hash = window.location.hash;
+  const match = hash.match(/^#\/view\/([a-zA-Z0-9]+)$/);
+  if (!match) return null;
+  const id = match[1].toUpperCase();
+  if (id.length !== 6) return null;
+  for (let i = 0; i < id.length; i++) {
+    if (BROADCAST_ID_ALPHABET.indexOf(id[i]) === -1) return null;
+  }
+  return id;
+}
+
+function validateBroadcastId(id: string): boolean {
+  if (id.length !== 6) return false;
+  for (let i = 0; i < id.length; i++) {
+    if (BROADCAST_ID_ALPHABET.indexOf(id[i].toUpperCase()) === -1) return false;
+  }
+  return true;
+}
 
 export function ViewPage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   const sessionRef = useRef<ViewerSession | null>(null);
+  const [broadcastId, setBroadcastId] = useState(() => getBroadcastIdFromHash() || '');
   const [status, setStatus] = useState<Status>('idle');
   const [stats, setStats] = useState<ViewerStats | null>(null);
   const [codec, setCodec] = useState<string | null>(null);
@@ -27,21 +50,25 @@ export function ViewPage() {
     }
   });
 
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(async (overrideId?: string) => {
     if (sessionRef.current) return;
+    const id = overrideId || broadcastId;
+    if (!validateBroadcastId(id)) return;
+    const normalizedId = id.toUpperCase();
+    setBroadcastId(normalizedId);
+    window.location.hash = `#/view/${normalizedId}`;
+
     const { serverUrl, certHashHex } = useTransportStore.getState();
     setError(null);
     setStats(null);
     setCodec(null);
     setRetryNote(null);
     setStatus('connecting');
-    const session = new ViewerSession(serverUrl, { certHashHex }, {
+    const session = new ViewerSession(serverUrl, normalizedId, { certHashHex }, {
       onDecodedFrame: ({ frame }) => {
         const ctx = canvasCtxRef.current;
         const canvas = canvasRef.current;
         if (ctx && canvas) {
-          // Same aspect-sync dance as the loopback page — see the bug note
-          // there about Chrome and canvas intrinsic aspect ratios.
           const wrapper = canvas.parentElement;
           if (wrapper) {
             const targetAspect = `${frame.displayWidth} / ${frame.displayHeight}`;
@@ -62,8 +89,6 @@ export function ViewPage() {
       },
       onStats: (s) => setStats(s),
       onConnected: () => {
-        // Connected (or reconnected); the picture appears once the relay
-        // primes us.
         setRetryNote(null);
         setStatus('watching');
       },
@@ -74,35 +99,59 @@ export function ViewPage() {
       onError: (err) => {
         setError(err.message);
         setStatus('error');
-        // Finalize the session; its onEnded clears the ref and keeps the
-        // error status on screen.
         void sessionRef.current?.stop();
       },
       onEnded: () => {
         sessionRef.current = null;
         setRetryNote(null);
-        setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+        setStatus((prev) => {
+          if (prev === 'watching' || prev === 'reconnecting') {
+            return 'ended';
+          }
+          return prev === 'error' ? 'error' : 'idle';
+        });
       },
     });
     sessionRef.current = session;
     try {
       await session.start();
     } catch (e) {
-      // Never-connected failures are fatal by design: a 429 (stream full),
-      // bad cert hash and wrong URL are indistinguishable in JS.
       const err = e instanceof Error ? e : new Error(String(e));
       log.error(err);
       setError(err.message);
       setStatus('error');
       sessionRef.current = null;
     }
-  }, []);
+  }, [broadcastId]);
 
   const handleStop = useCallback(async () => {
     if (!sessionRef.current) return;
     setStatus('stopping');
     await sessionRef.current.stop();
   }, []);
+
+  // Auto-join on mount if code is in hash
+  useEffect(() => {
+    const id = getBroadcastIdFromHash();
+    if (id && status === 'idle' && !sessionRef.current) {
+      void handleStart(id);
+    }
+  }, [handleStart]);
+
+  // Listen to hashchange to auto-join new ID
+  useEffect(() => {
+    const onHashChange = () => {
+      const id = getBroadcastIdFromHash();
+      if (id) {
+        setBroadcastId(id);
+        if (status === 'idle' && !sessionRef.current) {
+          void handleStart(id);
+        }
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [status, handleStart]);
 
   useEffect(() => {
     return () => {
@@ -126,9 +175,28 @@ export function ViewPage() {
 
       <div className={styles.controls}>
         {!running ? (
-          <button onClick={handleStart} disabled={status === 'stopping'}>
-            Start Watching
-          </button>
+          <div className={styles.joinForm}>
+            <input
+              type="text"
+              placeholder="Enter 6-char code"
+              value={broadcastId}
+              onChange={(e) => {
+                setBroadcastId(e.target.value.toUpperCase());
+                if (status === 'ended' || status === 'error') {
+                  setStatus('idle');
+                }
+              }}
+              disabled={status === 'stopping'}
+              maxLength={6}
+              className={styles.codeInput}
+            />
+            <button
+              onClick={() => handleStart()}
+              disabled={status === 'stopping' || !validateBroadcastId(broadcastId)}
+            >
+              Watch
+            </button>
+          </div>
         ) : (
           <button className="danger" onClick={handleStop}>
             Stop
@@ -138,6 +206,7 @@ export function ViewPage() {
       </div>
 
       {error && status === 'error' && <div className={styles.error}>Error: {error}</div>}
+      {status === 'ended' && <div className={styles.notice}>Broadcast has ended.</div>}
       {retryNote && status === 'reconnecting' && <div className={styles.notice}>{retryNote}</div>}
 
       <div className={styles.single}>

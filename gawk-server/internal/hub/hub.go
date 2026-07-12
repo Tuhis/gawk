@@ -1,5 +1,6 @@
-// Package hub implements the relay's pub/sub core: a single publisher fans
-// encoded-video datagrams out to a small set of subscribers.
+// Package hub implements the relay's pub/sub core: a registry of broadcast
+// sessions, where each broadcast has a publisher fanning encoded-video
+// datagrams out to a small set of subscribers.
 //
 // The hub is a byte forwarder. It parses datagram headers only to observe —
 // caching the latest decoder config and the last complete keyframe so that
@@ -14,7 +15,9 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/wire"
 )
 
@@ -25,53 +28,91 @@ var (
 	ErrPublisherActive = errors.New("hub: a publisher is already active")
 	// ErrFull is returned by Subscribe when MaxSubscribers is reached.
 	ErrFull = errors.New("hub: subscriber limit reached")
+	// ErrNotFound is returned when the requested broadcast ID does not exist.
+	ErrNotFound = errors.New("hub: broadcast not found")
 )
 
-// DatagramSender is all the hub needs from a network session.
-// *webtransport.Session satisfies it structurally.
-type DatagramSender interface {
+// Conn is the connection interface required by subscribers.
+// *webtransport.Session is wrapped in an adapter by the transport layer to satisfy this.
+type Conn interface {
 	SendDatagram(payload []byte) error
+	CloseWithError(code uint32, reason string) error
 }
 
-// Options configures a Hub.
+// Options configures a Registry.
 type Options struct {
-	// MaxSubscribers caps concurrent subscribers; Subscribe returns ErrFull
+	// MaxSubscribers caps concurrent subscribers per broadcast; Subscribe returns ErrFull
 	// beyond it. Defaults to 15.
 	MaxSubscribers int
 	// QueueDepth is the per-subscriber datagram queue capacity. It must
 	// comfortably exceed the chunk count of a keyframe (~130 at 1080p) or
 	// priming itself will drop. Defaults to 256.
 	QueueDepth int
+	// BroadcastGrace is the amount of time a broadcast ID survives after its
+	// publisher disconnects, allowing it to be reclaimed. Defaults to 5 minutes.
+	BroadcastGrace time.Duration
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
 // GET /statusz endpoint (the json tags are its response shape).
 type Stats struct {
-	PublisherActive      bool   `json:"publisherActive"`
-	Subscribers          int    `json:"subscribers"`
-	FramesRelayed        uint64 `json:"framesRelayed"`     // counted at chunk 0 of each frame
-	DatagramsRelayed     uint64 `json:"datagramsRelayed"`  // datagrams fanned out (before per-sub drops)
-	DatagramsDropped     uint64 `json:"datagramsDropped"`  // enqueue failures summed over all subscribers
-	BadDatagrams         uint64 `json:"badDatagrams"`      // unparseable/unknown datagrams dropped
-	HasConfig            bool   `json:"hasConfig"`
-	CachedKeyframeID     uint32 `json:"cachedKeyframeId"`
-	CachedKeyframeChunks int    `json:"cachedKeyframeChunks"`
-	CachedKeyframeBytes  int    `json:"cachedKeyframeBytes"`
+	PublisherActive       bool   `json:"publisherActive"`
+	Subscribers           int    `json:"subscribers"`
+	FramesRelayed         uint64 `json:"framesRelayed"`          // counted at chunk 0 of each frame
+	DatagramsRelayed      uint64 `json:"datagramsRelayed"`       // datagrams fanned out (before per-sub drops)
+	DatagramsDropped      uint64 `json:"datagramsDropped"`       // enqueue failures summed over all subscribers
+	BadDatagrams          uint64 `json:"badDatagrams"`           // unparseable/unknown datagrams dropped
+	HasConfig             bool   `json:"hasConfig"`
+	CachedKeyframeID      uint32 `json:"cachedKeyframeId"`
+	CachedKeyframeChunks  int    `json:"cachedKeyframeChunks"`
+	CachedKeyframeBytes   int    `json:"cachedKeyframeBytes"`
+	GraceRemainingSeconds int    `json:"graceRemainingSeconds"`  // 0 while publisher is active
 }
 
-// Hub owns the publisher slot, the subscriber set and the priming caches.
-type Hub struct {
+// TotalStats aggregates stats across all active and past broadcasts.
+type TotalStats struct {
+	Broadcasts       int    `json:"broadcasts"`
+	Subscribers      int    `json:"subscribers"`
+	FramesRelayed    uint64 `json:"framesRelayed"`
+	DatagramsRelayed uint64 `json:"datagramsRelayed"`
+	DatagramsDropped uint64 `json:"datagramsDropped"`
+	BadDatagrams     uint64 `json:"badDatagrams"`
+}
+
+// RegistryStats is the full response structure of GET /statusz.
+type RegistryStats struct {
+	Totals     TotalStats            `json:"totals"`
+	Broadcasts map[string]Stats      `json:"broadcasts"` // keyed by broadcast ID
+}
+
+// Registry owns the map of active broadcasts and cumulative statistics.
+type Registry struct {
 	log  *slog.Logger
 	opts Options
 
-	mu              sync.Mutex
-	publisherActive bool
-	subs            map[*Subscriber]struct{}
+	mu   sync.Mutex
+	hubs map[string]*broadcastHub
 
-	// cachedConfig is the latest DecoderConfig datagram, verbatim.
+	totalFramesRelayed    uint64
+	totalDatagramsRelayed uint64
+	totalDatagramsDropped uint64
+	totalBadDatagrams     uint64
+}
+
+// broadcastHub is the per-broadcast session unit.
+type broadcastHub struct {
+	registry *Registry
+	id       string
+	log      *slog.Logger
+
+	publisherActive bool
+	generation      uint64
+	graceTimer      *time.Timer
+	graceStart      time.Time
+
+	subs map[*Subscriber]struct{}
+
 	cachedConfig []byte
-	// cachedKeyframe is the last completely-assembled keyframe: its chunk
-	// datagrams verbatim, in chunk order.
 	cachedKeyframe struct {
 		frameID uint32
 		chunks  [][]byte
@@ -84,176 +125,327 @@ type Hub struct {
 	badDatagrams     uint64
 }
 
-// New builds a Hub. Zero-valued Options fields get defaults.
-func New(log *slog.Logger, opts Options) *Hub {
+// NewRegistry builds a Registry. Zero-valued Options fields get defaults.
+func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	if opts.MaxSubscribers <= 0 {
 		opts.MaxSubscribers = 15
 	}
 	if opts.QueueDepth <= 0 {
 		opts.QueueDepth = 256
 	}
-	return &Hub{
+	if opts.BroadcastGrace <= 0 {
+		opts.BroadcastGrace = 5 * time.Minute
+	}
+	return &Registry{
 		log:  log,
 		opts: opts,
-		subs: make(map[*Subscriber]struct{}),
+		hubs: make(map[string]*broadcastHub),
 	}
 }
 
-// StartPublish claims the single publisher slot. The caller must Close the
-// returned Publisher when its session ends. The caches persist after Close
-// so viewers can still be primed while the broadcaster is away — but a new
-// publisher session invalidates them: its frameIDs restart at 0 and its
-// config may differ, so datagrams cached from an older session must never
-// prime a joiner once a newer session exists.
-func (h *Hub) StartPublish() (*Publisher, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.publisherActive {
-		return nil, ErrPublisherActive
+// StartPublish claims a publisher slot.
+// With an empty id, it mints a new broadcast ID.
+// With a non-empty id, it attempts to reclaim the broadcast: ErrNotFound if it doesn't
+// exist or has expired, and ErrPublisherActive if another publisher holds it.
+func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if id != "" {
+		normID, err := broadcastid.Normalize(id)
+		if err != nil {
+			return "", nil, ErrNotFound
+		}
+		id = normID
+	} else {
+		// Mint a new ID (with collision check)
+		var newID string
+		var err error
+		for range 10 {
+			newID, err = broadcastid.Mint()
+			if err != nil {
+				return "", nil, err
+			}
+			if _, exists := r.hubs[newID]; !exists {
+				break
+			}
+		}
+		if _, exists := r.hubs[newID]; exists {
+			return "", nil, errors.New("hub: collision limits exceeded minting ID")
+		}
+		id = newID
+		r.hubs[id] = &broadcastHub{
+			registry: r,
+			id:       id,
+			log:      r.log.With("broadcast_id", id),
+			subs:     make(map[*Subscriber]struct{}),
+		}
 	}
-	h.publisherActive = true
-	h.cachedConfig = nil
-	h.cachedKeyframe.frameID = 0
-	h.cachedKeyframe.chunks = nil
-	h.cachedKeyframe.bytes = 0
-	return &Publisher{hub: h}, nil
+
+	b, exists := r.hubs[id]
+	if !exists {
+		return "", nil, ErrNotFound
+	}
+	if b.publisherActive {
+		return "", nil, ErrPublisherActive
+	}
+
+	// Cancel grace timer if running
+	if b.graceTimer != nil {
+		b.graceTimer.Stop()
+		b.graceTimer = nil
+		b.graceStart = time.Time{}
+	}
+
+	b.publisherActive = true
+	b.generation++
+
+	// Reset caches on new publisher session
+	b.cachedConfig = nil
+	b.cachedKeyframe.frameID = 0
+	b.cachedKeyframe.chunks = nil
+	b.cachedKeyframe.bytes = 0
+
+	return id, &Publisher{hub: b}, nil
 }
 
-// Subscribe registers a new subscriber. Before the subscriber joins the
-// live fan-out it is primed, in order, with the cached decoder config and
-// the chunks of the last complete keyframe, so a late joiner can render
-// without waiting for the next keyframe.
-func (h *Hub) Subscribe(sender DatagramSender) (*Subscriber, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if len(h.subs) >= h.opts.MaxSubscribers {
+// CheckSubscribe is the read-only pre-upgrade check: ErrNotFound / ErrFull / nil.
+func (r *Registry) CheckSubscribe(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return ErrNotFound
+	}
+	b, exists := r.hubs[normID]
+	if !exists {
+		return ErrNotFound
+	}
+	if len(b.subs) >= r.opts.MaxSubscribers {
+		return ErrFull
+	}
+	return nil
+}
+
+// Subscribe registers a subscriberAuthoritative, re-checking under lock.
+func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	b, exists := r.hubs[normID]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	if len(b.subs) >= r.opts.MaxSubscribers {
 		return nil, ErrFull
 	}
+
 	s := &Subscriber{
-		hub:    h,
-		sender: sender,
-		queue:  make(chan []byte, h.opts.QueueDepth),
+		hub:    b,
+		sender: conn,
+		queue:  make(chan []byte, r.opts.QueueDepth),
 		done:   make(chan struct{}),
 	}
-	if h.cachedConfig != nil {
-		s.enqueueLocked(h.cachedConfig)
+
+	if b.cachedConfig != nil {
+		s.enqueueLocked(b.cachedConfig)
 	}
-	for _, chunk := range h.cachedKeyframe.chunks {
+	for _, chunk := range b.cachedKeyframe.chunks {
 		s.enqueueLocked(chunk)
 	}
-	h.subs[s] = struct{}{}
+	b.subs[s] = struct{}{}
 	go s.drain()
+
 	return s, nil
 }
 
-// Full reports whether the subscriber limit is currently reached. It is a
-// convenience for rejecting sessions before the WebTransport upgrade;
-// Subscribe remains the authoritative check.
-func (h *Hub) Full() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.subs) >= h.opts.MaxSubscribers
+// Stats returns a point-in-time snapshot of registry state.
+func (r *Registry) Stats() RegistryStats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	broadcasts := make(map[string]Stats)
+	var activeSubscribersCount int
+	var activeFramesRelayed uint64
+	var activeDatagramsRelayed uint64
+	var activeDatagramsDropped uint64
+	var activeBadDatagrams uint64
+
+	for id, b := range r.hubs {
+		activeSubscribersCount += len(b.subs)
+		activeFramesRelayed += b.framesRelayed
+		activeDatagramsRelayed += b.datagramsRelayed
+		activeBadDatagrams += b.badDatagrams
+
+		dropped := b.datagramsDropped
+		for s := range b.subs {
+			dropped += s.dropped.Load()
+		}
+		activeDatagramsDropped += dropped
+
+		var graceRemaining int
+		if !b.publisherActive && !b.graceStart.IsZero() {
+			rem := r.opts.BroadcastGrace - time.Since(b.graceStart)
+			if rem > 0 {
+				graceRemaining = int(rem.Seconds())
+			}
+		}
+
+		broadcasts[id] = Stats{
+			PublisherActive:       b.publisherActive,
+			Subscribers:           len(b.subs),
+			FramesRelayed:         b.framesRelayed,
+			DatagramsRelayed:      b.datagramsRelayed,
+			DatagramsDropped:      dropped,
+			BadDatagrams:          b.badDatagrams,
+			HasConfig:             b.cachedConfig != nil,
+			CachedKeyframeID:      b.cachedKeyframe.frameID,
+			CachedKeyframeChunks:  len(b.cachedKeyframe.chunks),
+			CachedKeyframeBytes:   b.cachedKeyframe.bytes,
+			GraceRemainingSeconds: graceRemaining,
+		}
+	}
+
+	totals := TotalStats{
+		Broadcasts:       len(r.hubs),
+		Subscribers:      activeSubscribersCount,
+		FramesRelayed:    r.totalFramesRelayed + activeFramesRelayed,
+		DatagramsRelayed: r.totalDatagramsRelayed + activeDatagramsRelayed,
+		DatagramsDropped: r.totalDatagramsDropped + activeDatagramsDropped,
+		BadDatagrams:     r.totalBadDatagrams + activeBadDatagrams,
+	}
+
+	return RegistryStats{
+		Totals:     totals,
+		Broadcasts: broadcasts,
+	}
 }
 
-// Stats returns a snapshot of hub state.
-func (h *Hub) Stats() Stats {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	dropped := h.datagramsDropped
-	for s := range h.subs {
-		dropped += s.dropped.Load()
+// handleGraceExpiry deletes the hub, shuts down viewers and records metrics.
+func (r *Registry) handleGraceExpiry(id string, gen uint64) {
+	r.mu.Lock()
+	b, exists := r.hubs[id]
+	if !exists || b.publisherActive || b.generation != gen {
+		r.mu.Unlock()
+		return
 	}
-	return Stats{
-		PublisherActive:      h.publisherActive,
-		Subscribers:          len(h.subs),
-		FramesRelayed:        h.framesRelayed,
-		DatagramsRelayed:     h.datagramsRelayed,
-		DatagramsDropped:     dropped,
-		BadDatagrams:         h.badDatagrams,
-		HasConfig:            h.cachedConfig != nil,
-		CachedKeyframeID:     h.cachedKeyframe.frameID,
-		CachedKeyframeChunks: len(h.cachedKeyframe.chunks),
-		CachedKeyframeBytes:  h.cachedKeyframe.bytes,
+
+	delete(r.hubs, id)
+
+	r.totalFramesRelayed += b.framesRelayed
+	r.totalDatagramsRelayed += b.datagramsRelayed
+	r.totalDatagramsDropped += b.datagramsDropped
+	r.totalBadDatagrams += b.badDatagrams
+
+	var subs []*Subscriber
+	for s := range b.subs {
+		subs = append(subs, s)
+	}
+	r.mu.Unlock()
+
+	r.log.Info("broadcast expired and garbage collected", "broadcast_id", id, "subscribers", len(subs))
+
+	for _, s := range subs {
+		_ = s.sender.CloseWithError(uint32(wire.CloseCodeBroadcastEnded), "broadcast ended")
+		s.Close()
 	}
 }
 
-// Publisher is the active publisher session's handle into the hub.
+// Publisher is the active publisher session's handle.
 type Publisher struct {
-	hub *Hub
-
-	// closed is guarded by hub.mu.
+	hub    *broadcastHub
 	closed bool
-	// assembly is the in-progress keyframe reassembly for this session.
-	// Guarded by hub.mu. Abandoned when a keyframe with a different frameID
-	// starts; the previously cached complete keyframe is unaffected.
+	// assembly is the keyframe reassembly buffer.
 	assembly *keyframeAssembly
 }
 
 type keyframeAssembly struct {
 	frameID  uint32
-	chunks   [][]byte // len == chunkCount; nil entries not yet received
+	chunks   [][]byte
 	received int
 	bytes    int
 }
 
-// HandleDatagram observes and relays one publisher datagram. The hub takes
-// ownership of dgram: it must not be modified or reused by the caller, as
-// the same slice is shared across subscriber queues and the caches.
-// Malformed or unknown datagrams are dropped and counted, never forwarded.
+// HandleDatagram processes and relays one publisher datagram.
 func (p *Publisher) HandleDatagram(dgram []byte) {
+	b := p.hub
 	ver, typ, err := wire.PeekType(dgram)
 	if err != nil || ver != wire.Version {
-		p.hub.countBad()
+		b.countBad()
 		return
 	}
 	switch typ {
 	case wire.TypeVideoChunk:
 		hdr, _, err := wire.ParseVideoChunk(dgram)
 		if err != nil {
-			p.hub.countBad()
+			b.countBad()
 			return
 		}
 		p.relayVideoChunk(hdr, dgram)
 	case wire.TypeDecoderConfig:
 		if _, err := wire.ParseDecoderConfig(dgram); err != nil {
-			p.hub.countBad()
+			b.countBad()
 			return
 		}
 		p.relayConfig(dgram)
 	default:
-		p.hub.countBad()
+		b.countBad()
 	}
 }
 
-// Close releases the publisher slot. The caches persist until the next
-// publisher session starts. Idempotent.
+// Close releases the publisher slot and schedules GC grace timer.
 func (p *Publisher) Close() {
-	h := p.hub
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	b := p.hub
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if p.closed {
 		return
 	}
 	p.closed = true
 	p.assembly = nil
-	h.publisherActive = false
+	b.publisherActive = false
+
+	if r.opts.BroadcastGrace > 0 {
+		gen := b.generation
+		id := b.id
+		b.graceStart = time.Now()
+		b.graceTimer = time.AfterFunc(r.opts.BroadcastGrace, func() {
+			r.handleGraceExpiry(id, gen)
+		})
+	}
+}
+
+func (b *broadcastHub) countBad() {
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b.badDatagrams++
 }
 
 func (p *Publisher) relayConfig(dgram []byte) {
-	h := p.hub
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	b := p.hub
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if p.closed {
 		return
 	}
-	h.cachedConfig = dgram
-	h.fanOutLocked(dgram)
+	b.cachedConfig = dgram
+	b.fanOutLocked(dgram)
 }
 
 func (p *Publisher) relayVideoChunk(hdr wire.VideoChunkHeader, dgram []byte) {
-	h := p.hub
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	b := p.hub
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if p.closed {
 		return
 	}
@@ -262,25 +454,20 @@ func (p *Publisher) relayVideoChunk(hdr wire.VideoChunkHeader, dgram []byte) {
 		p.assembleLocked(hdr, dgram)
 	}
 	if hdr.ChunkIndex == 0 {
-		h.framesRelayed++
-		// Re-emit the cached config ahead of every keyframe so a viewer
-		// that missed the publisher's config datagram can still configure
-		// its decoder. Duplicates are idempotent on the viewer side.
-		if hdr.Keyframe && h.cachedConfig != nil {
-			for s := range h.subs {
-				s.enqueueLocked(h.cachedConfig)
+		b.framesRelayed++
+		if hdr.Keyframe && b.cachedConfig != nil {
+			for s := range b.subs {
+				s.enqueueLocked(b.cachedConfig)
 			}
 		}
 	}
-	h.fanOutLocked(dgram)
+	b.fanOutLocked(dgram)
 }
 
-// assembleLocked feeds one keyframe chunk into the reassembly buffer and,
-// on completion, promotes it to the hub's keyframe cache.
 func (p *Publisher) assembleLocked(hdr wire.VideoChunkHeader, dgram []byte) {
+	b := p.hub
 	a := p.assembly
 	if a == nil || a.frameID != hdr.FrameID {
-		// A new keyframe starts; any incomplete assembly is abandoned.
 		a = &keyframeAssembly{
 			frameID: hdr.FrameID,
 			chunks:  make([][]byte, hdr.ChunkCount),
@@ -288,58 +475,43 @@ func (p *Publisher) assembleLocked(hdr wire.VideoChunkHeader, dgram []byte) {
 		p.assembly = a
 	}
 	if int(hdr.ChunkCount) != len(a.chunks) {
-		// Chunks of one frame disagree on the count: corrupt. Skip assembly;
-		// the datagram is still forwarded.
-		p.hub.badDatagrams++
+		b.badDatagrams++
 		return
 	}
 	if a.chunks[hdr.ChunkIndex] != nil {
-		return // duplicate
+		return
 	}
 	a.chunks[hdr.ChunkIndex] = dgram
 	a.received++
 	a.bytes += len(dgram)
 	if a.received == len(a.chunks) {
-		h := p.hub
-		h.cachedKeyframe.frameID = a.frameID
-		h.cachedKeyframe.chunks = a.chunks
-		h.cachedKeyframe.bytes = a.bytes
+		b.cachedKeyframe.frameID = a.frameID
+		b.cachedKeyframe.chunks = a.chunks
+		b.cachedKeyframe.bytes = a.bytes
 		p.assembly = nil
 	}
 }
 
-func (h *Hub) fanOutLocked(dgram []byte) {
-	h.datagramsRelayed++
-	for s := range h.subs {
+func (b *broadcastHub) fanOutLocked(dgram []byte) {
+	b.datagramsRelayed++
+	for s := range b.subs {
 		s.enqueueLocked(dgram)
 	}
 }
 
-func (h *Hub) countBad() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.badDatagrams++
-}
-
-// Subscriber is one viewer's handle into the hub. Datagrams are pushed into
-// its bounded queue and sent to the session by a dedicated goroutine.
+// Subscriber is one viewer's handle.
 type Subscriber struct {
-	hub    *Hub
-	sender DatagramSender
+	hub    *broadcastHub
+	sender Conn
 	queue  chan []byte
-	done   chan struct{} // closed when the drain goroutine exits
+	done   chan struct{}
 
-	// closed is guarded by hub.mu.
 	closed bool
 
 	dropped    atomic.Uint64
 	sendErrors atomic.Uint64
 }
 
-// enqueueLocked enqueues without blocking; a full queue drops the datagram.
-// Callers must hold hub.mu — that is what makes enqueue-after-Close
-// impossible (Close removes the subscriber and closes the queue under the
-// same lock).
 func (s *Subscriber) enqueueLocked(dgram []byte) {
 	select {
 	case s.queue <- dgram:
@@ -348,9 +520,6 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 	}
 }
 
-// drain sends queued datagrams to the session until Close closes the queue.
-// Send errors are counted, not fatal: a dying session is detected and
-// cleaned up by the transport layer, which then calls Close.
 func (s *Subscriber) drain() {
 	defer close(s.done)
 	for dgram := range s.queue {
@@ -360,24 +529,23 @@ func (s *Subscriber) drain() {
 	}
 }
 
-// Close removes the subscriber from the fan-out, stops its drain goroutine
-// and waits for it to finish. Idempotent.
+// Close removes the subscriber and stops its drain loop.
 func (s *Subscriber) Close() {
-	h := s.hub
-	h.mu.Lock()
+	b := s.hub
+	r := b.registry
+	r.mu.Lock()
 	if s.closed {
-		h.mu.Unlock()
+		r.mu.Unlock()
 		<-s.done
 		return
 	}
 	s.closed = true
-	delete(h.subs, s)
-	h.datagramsDropped += s.dropped.Load()
+	delete(b.subs, s)
+	b.datagramsDropped += s.dropped.Load()
 	close(s.queue)
-	h.mu.Unlock()
+	r.mu.Unlock()
 	<-s.done
 }
 
-// Dropped reports how many datagrams were dropped for this subscriber
-// because its queue was full.
+// Dropped reports dropped datagrams count.
 func (s *Subscriber) Dropped() uint64 { return s.dropped.Load() }

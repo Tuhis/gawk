@@ -56,6 +56,7 @@ func run() error {
 		"max_subscribers", cfg.MaxSubscribers,
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
+		"broadcast_grace", cfg.BroadcastGrace,
 	)
 
 	getCert, err := certSource(cfg, log)
@@ -63,8 +64,8 @@ func run() error {
 		return err
 	}
 
-	h := hub.New(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers})
-	if err := transport.New(cfg, h, getCert, log).Run(ctx); err != nil {
+	r := hub.NewRegistry(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers, BroadcastGrace: cfg.BroadcastGrace})
+	if err := transport.New(cfg, r, getCert, log).Run(ctx); err != nil {
 		return err
 	}
 

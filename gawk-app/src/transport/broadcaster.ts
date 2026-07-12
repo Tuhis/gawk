@@ -8,6 +8,7 @@ import { Encoder, type EncodedFrame, type EncoderConfigured } from '../media/enc
 import type { CaptureConfig } from '../media/types';
 import { connectWebTransport, DatagramSender, type ConnectOptions } from './connection';
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
+import { parseBroadcastAnnounce } from './wire';
 
 export interface BroadcastStats {
   encodedFrames: number;
@@ -40,6 +41,7 @@ export interface BroadcastCallbacks {
   onStats: (stats: BroadcastStats) => void;
   onError: (err: Error) => void;
   onEnded: () => void;
+  onBroadcastId?: (id: string) => void;
 }
 
 function roundDownToEven(n: number): number {
@@ -51,6 +53,7 @@ export class BroadcastPipeline {
   private serverUrl: string;
   private connectOpts: ConnectOptions;
   private cb: BroadcastCallbacks;
+  private broadcastId?: string;
 
   private wt: WebTransport | null = null;
   private sender: DatagramSender | null = null;
@@ -74,23 +77,58 @@ export class BroadcastPipeline {
     serverUrl: string,
     connectOpts: ConnectOptions,
     callbacks: BroadcastCallbacks,
+    broadcastId?: string,
   ) {
     this.config = config;
     this.serverUrl = serverUrl;
     this.connectOpts = connectOpts;
     this.cb = callbacks;
+    this.broadcastId = broadcastId;
   }
 
   async start(): Promise<void> {
     // Connect before prompting for screen capture: if the publisher slot is
     // taken (409) or the server is unreachable, fail without the share
     // picker ever appearing.
-    const url = new URL('/publish', this.serverUrl).toString();
+    const path = this.broadcastId ? `/publish/${this.broadcastId}` : '/publish';
+    const url = new URL(path, this.serverUrl).toString();
     this.wt = await connectWebTransport(url, this.connectOpts);
     this.sender = new DatagramSender(this.wt);
     void this.wt.closed
       .then(() => this.handleSessionGone(null))
       .catch((e) => this.handleSessionGone(e instanceof Error ? e : new Error(String(e))));
+
+    // Read the server-initiated unidirectional stream for the broadcast announcement
+    const reader = this.wt.incomingUnidirectionalStreams.getReader();
+    try {
+      const { value: stream, done } = await reader.read();
+      if (done || !stream) {
+        throw new Error('WebTransport closed before announcement');
+      }
+      const chunks: Uint8Array[] = [];
+      const streamReader = stream.getReader();
+      try {
+        while (true) {
+          const { value, done: streamDone } = await streamReader.read();
+          if (streamDone) break;
+          if (value) chunks.push(value);
+        }
+      } finally {
+        streamReader.releaseLock();
+      }
+      let totalLen = 0;
+      for (const c of chunks) totalLen += c.length;
+      const data = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const c of chunks) {
+        data.set(c, offset);
+        offset += c.length;
+      }
+      const id = parseBroadcastAnnounce(data);
+      this.cb.onBroadcastId?.(id);
+    } finally {
+      reader.releaseLock();
+    }
 
     this.capture = await startCapture(this.config);
     log.info('Capture path:', this.capture.capturePath);

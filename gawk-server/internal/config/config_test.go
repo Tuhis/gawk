@@ -26,6 +26,7 @@ func TestDefaults(t *testing.T) {
 		MaxSubscribers:  15,
 		MaxIdleTimeout:  30 * time.Second,
 		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  5 * time.Minute,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -43,6 +44,7 @@ func TestEnvFallback(t *testing.T) {
 		"GAWK_MAX_IDLE_TIMEOUT": "45s",
 		"GAWK_KEEPALIVE_PERIOD": "5s",
 		"GAWK_QUIET_PROBE_LOGS": "true",
+		"GAWK_BROADCAST_GRACE":  "2m",
 	})
 	cfg, err := ParseFlags(nil, getenv)
 	if err != nil {
@@ -76,6 +78,9 @@ func TestEnvFallback(t *testing.T) {
 	if !cfg.QuietProbeLogs {
 		t.Error("QuietProbeLogs = false, want true")
 	}
+	if cfg.BroadcastGrace != 2*time.Minute {
+		t.Errorf("BroadcastGrace = %v, want 2m", cfg.BroadcastGrace)
+	}
 }
 
 func TestFlagOverridesEnv(t *testing.T) {
@@ -84,7 +89,7 @@ func TestFlagOverridesEnv(t *testing.T) {
 		"GAWK_LOG_LEVEL":        "error",
 		"GAWK_QUIET_PROBE_LOGS": "true",
 	})
-	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn", "-quiet-probe-logs=false"}, getenv)
+	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn", "-quiet-probe-logs=false", "-broadcast-grace", "10s"}, getenv)
 	if err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
@@ -96,6 +101,9 @@ func TestFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.QuietProbeLogs {
 		t.Error("QuietProbeLogs = true, want false from flag override")
+	}
+	if cfg.BroadcastGrace != 10*time.Second {
+		t.Errorf("BroadcastGrace = %v, want 10s from flag override", cfg.BroadcastGrace)
 	}
 }
 
@@ -128,6 +136,9 @@ func TestInvalidTimeouts(t *testing.T) {
 		{"-keepalive-period", "-1s"},
 		{"-keepalive-period", "30s"},                             // == default idle timeout
 		{"-max-idle-timeout", "10s", "-keepalive-period", "15s"}, // keepalive > idle
+		{"-broadcast-grace", "later"},
+		{"-broadcast-grace", "0s"},
+		{"-broadcast-grace", "-5s"},
 	}
 	for _, args := range bad {
 		if _, err := ParseFlags(args, noEnv); err == nil {

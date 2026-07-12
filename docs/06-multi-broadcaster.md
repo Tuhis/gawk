@@ -10,16 +10,16 @@ chunk is written to be implementable from this document alone.
 
 | Chunk | Status |
 |-------|--------|
-| E1 wire: announce message, close code, ID helpers | not started |
-| E2 hub → registry refactor | not started |
-| E3 broadcast lifecycle (grace timer, GC) | not started |
-| E4 transport routes + `/statusz` | not started |
-| F1 TS wire mirror + URL construction + announce read | not started |
-| F2 `ViewerSession` terminal states | not started |
-| F3 routing params, ViewPage join flow | not started |
-| F4 BroadcastPage ID/link UI + reclaim | not started |
-| G1 manual multi-broadcast browser verify | not started |
-| G2 docs close-out | not started |
+| E1 wire: announce message, close code, ID helpers | done |
+| E2 hub → registry refactor | done |
+| E3 broadcast lifecycle (grace timer, GC) | done |
+| E4 transport routes + `/statusz` | done |
+| F1 TS wire mirror + URL construction + announce read | done |
+| F2 `ViewerSession` terminal states | done |
+| F3 routing params, ViewPage join flow | done |
+| F4 BroadcastPage ID/link UI + reclaim | done |
+| G1 manual multi-broadcast browser verify | done |
+| G2 docs close-out | done |
 
 ## Context
 

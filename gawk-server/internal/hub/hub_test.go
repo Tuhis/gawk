@@ -15,13 +15,14 @@ import (
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// fakeSender records every datagram it is asked to send. If block is
-// non-nil, SendDatagram waits on it first, simulating a stuck peer.
+// fakeSender records every datagram and close code.
 type fakeSender struct {
-	mu    sync.Mutex
-	got   [][]byte
-	block chan struct{}
-	err   error
+	mu        sync.Mutex
+	got       [][]byte
+	block     chan struct{}
+	err       error
+	closeCode uint32
+	closed    bool
 }
 
 func (f *fakeSender) SendDatagram(d []byte) error {
@@ -37,10 +38,24 @@ func (f *fakeSender) SendDatagram(d []byte) error {
 	return nil
 }
 
+func (f *fakeSender) CloseWithError(code uint32, reason string) error {
+	f.mu.Lock()
+	f.closeCode = code
+	f.closed = true
+	f.mu.Unlock()
+	return nil
+}
+
 func (f *fakeSender) received() [][]byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]byte(nil), f.got...)
+}
+
+func (f *fakeSender) getCloseInfo() (uint32, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeCode, f.closed
 }
 
 func chunkDgram(t *testing.T, keyframe bool, frameID uint32, index, count uint16, payload string) []byte {
@@ -67,9 +82,6 @@ func configDgram(t *testing.T, codec string) []byte {
 	return d
 }
 
-// wantDatagrams asserts that the sender received exactly these datagrams in
-// this order. Call only after the subscriber is closed (Close flushes the
-// queue).
 func wantDatagrams(t *testing.T, f *fakeSender, want [][]byte) {
 	t.Helper()
 	got := f.received()
@@ -84,13 +96,13 @@ func wantDatagrams(t *testing.T, f *fakeSender, want [][]byte) {
 }
 
 func TestVerbatimForwarding(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, err := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	s, err := h.Subscribe(f)
+	s, err := r.Subscribe(id, f)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -106,52 +118,61 @@ func TestVerbatimForwarding(t *testing.T) {
 	s.Close()
 	wantDatagrams(t, f, sent)
 
-	st := h.Stats()
-	if st.FramesRelayed != 1 || st.DatagramsRelayed != 3 || st.BadDatagrams != 0 {
-		t.Errorf("stats = %+v, want 1 frame, 3 datagrams, 0 bad", st)
+	st := r.Stats()
+	bst := st.Broadcasts[id]
+	if bst.FramesRelayed != 1 || bst.DatagramsRelayed != 3 || bst.BadDatagrams != 0 {
+		t.Errorf("stats = %+v, want 1 frame, 3 datagrams, 0 bad", bst)
 	}
 }
 
 func TestSecondPublisherRejected(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, err := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	if _, err := h.StartPublish(); !errors.Is(err, ErrPublisherActive) {
+	if _, _, err := r.StartPublish(id); !errors.Is(err, ErrPublisherActive) {
 		t.Fatalf("second StartPublish error = %v, want ErrPublisherActive", err)
 	}
 	p.Close()
 	p.Close() // idempotent
-	if _, err := h.StartPublish(); err != nil {
+	if _, _, err := r.StartPublish(id); err != nil {
 		t.Fatalf("StartPublish after Close: %v", err)
 	}
 }
 
 func TestSubscribeFull(t *testing.T) {
-	h := New(discardLog, Options{MaxSubscribers: 2})
-	s1, _ := h.Subscribe(&fakeSender{})
-	if h.Full() {
-		t.Error("Full() = true with 1 of 2 slots used")
+	r := NewRegistry(discardLog, Options{MaxSubscribers: 2})
+	id, _, _ := r.StartPublish("")
+
+	s1, err := r.Subscribe(id, &fakeSender{})
+	if err != nil {
+		t.Fatalf("first Subscribe: %v", err)
 	}
-	if _, err := h.Subscribe(&fakeSender{}); err != nil {
+	if err := r.CheckSubscribe(id); err != nil {
+		t.Errorf("CheckSubscribe should not fail: %v", err)
+	}
+
+	_, err = r.Subscribe(id, &fakeSender{})
+	if err != nil {
 		t.Fatalf("second Subscribe: %v", err)
 	}
-	if !h.Full() {
-		t.Error("Full() = false with 2 of 2 slots used")
+	if err := r.CheckSubscribe(id); !errors.Is(err, ErrFull) {
+		t.Errorf("CheckSubscribe error = %v, want ErrFull", err)
 	}
-	if _, err := h.Subscribe(&fakeSender{}); !errors.Is(err, ErrFull) {
+
+	if _, err := r.Subscribe(id, &fakeSender{}); !errors.Is(err, ErrFull) {
 		t.Fatalf("third Subscribe error = %v, want ErrFull", err)
 	}
 	s1.Close()
-	if _, err := h.Subscribe(&fakeSender{}); err != nil {
+	if _, err := r.Subscribe(id, &fakeSender{}); err != nil {
 		t.Fatalf("Subscribe after a slot freed: %v", err)
 	}
 }
 
 func TestLateJoinerPrimed(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 
 	cfg := configDgram(t, "avc1.42E02A")
 	kf := [][]byte{
@@ -164,9 +185,8 @@ func TestLateJoinerPrimed(t *testing.T) {
 		p.HandleDatagram(d)
 	}
 
-	// Joins after the keyframe was fully relayed.
 	f := &fakeSender{}
-	s, err := h.Subscribe(f)
+	s, err := r.Subscribe(id, f)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -174,13 +194,12 @@ func TestLateJoinerPrimed(t *testing.T) {
 	p.HandleDatagram(live)
 	s.Close()
 
-	// Primed with [config, kf chunks in order] before any live data.
 	wantDatagrams(t, f, [][]byte{cfg, kf[0], kf[1], kf[2], live})
 }
 
 func TestPrimingSurvivesPublisherClose(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{BroadcastGrace: 5 * time.Minute})
+	id, p, _ := r.StartPublish("")
 	cfg := configDgram(t, "vp8")
 	kf := chunkDgram(t, true, 0, 0, 1, "kf")
 	p.HandleDatagram(cfg)
@@ -188,7 +207,7 @@ func TestPrimingSurvivesPublisherClose(t *testing.T) {
 	p.Close()
 
 	f := &fakeSender{}
-	s, err := h.Subscribe(f)
+	s, err := r.Subscribe(id, f)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -197,10 +216,9 @@ func TestPrimingSurvivesPublisherClose(t *testing.T) {
 }
 
 func TestIncompleteKeyframeNeverCached(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 
-	// Complete keyframe 5, then keyframe 6 missing chunk 1 of 3.
 	kf5 := [][]byte{
 		chunkDgram(t, true, 5, 0, 2, "a"),
 		chunkDgram(t, true, 5, 1, 2, "b"),
@@ -211,43 +229,42 @@ func TestIncompleteKeyframeNeverCached(t *testing.T) {
 	p.HandleDatagram(chunkDgram(t, true, 6, 0, 3, "x"))
 	p.HandleDatagram(chunkDgram(t, true, 6, 2, 3, "z"))
 
-	if st := h.Stats(); st.CachedKeyframeID != 5 || st.CachedKeyframeChunks != 2 {
+	st := r.Stats().Broadcasts[id]
+	if st.CachedKeyframeID != 5 || st.CachedKeyframeChunks != 2 {
 		t.Fatalf("cached keyframe = id %d (%d chunks), want id 5 (2 chunks)",
 			st.CachedKeyframeID, st.CachedKeyframeChunks)
 	}
 
-	// A new joiner is primed with the last *complete* keyframe.
 	f := &fakeSender{}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 	s.Close()
 	wantDatagrams(t, f, kf5)
 
-	// Keyframe 7 starts: 6's assembly is abandoned; completing 7 caches it.
 	kf7 := chunkDgram(t, true, 7, 0, 1, "w")
 	p.HandleDatagram(kf7)
-	if st := h.Stats(); st.CachedKeyframeID != 7 || st.CachedKeyframeChunks != 1 {
+	st = r.Stats().Broadcasts[id]
+	if st.CachedKeyframeID != 7 || st.CachedKeyframeChunks != 1 {
 		t.Fatalf("cached keyframe = id %d (%d chunks), want id 7 (1 chunk)",
 			st.CachedKeyframeID, st.CachedKeyframeChunks)
 	}
-	// The straggler chunk of 6 must not resurrect the abandoned assembly.
 	p.HandleDatagram(chunkDgram(t, true, 6, 1, 3, "y"))
-	if st := h.Stats(); st.CachedKeyframeID != 7 {
+	st = r.Stats().Broadcasts[id]
+	if st.CachedKeyframeID != 7 {
 		t.Fatalf("cached keyframe id = %d after straggler, want 7", st.CachedKeyframeID)
 	}
 }
 
 func TestDuplicateAndReorderedKeyframeChunks(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 
-	// Out of order and with a duplicate: must still complete exactly once.
 	p.HandleDatagram(chunkDgram(t, true, 3, 2, 3, "c"))
 	p.HandleDatagram(chunkDgram(t, true, 3, 0, 3, "a"))
 	p.HandleDatagram(chunkDgram(t, true, 3, 0, 3, "a"))
 	p.HandleDatagram(chunkDgram(t, true, 3, 1, 3, "b"))
 
 	f := &fakeSender{}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 	s.Close()
 	got := f.received()
 	if len(got) != 3 {
@@ -262,13 +279,13 @@ func TestDuplicateAndReorderedKeyframeChunks(t *testing.T) {
 }
 
 func TestConfigReEmittedBeforeKeyframe(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 	cfg := configDgram(t, "avc1.42E02A")
 	p.HandleDatagram(cfg)
 
 	f := &fakeSender{}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 
 	kf0 := chunkDgram(t, true, 1, 0, 2, "k0")
 	kf1 := chunkDgram(t, true, 1, 1, 2, "k1")
@@ -276,30 +293,25 @@ func TestConfigReEmittedBeforeKeyframe(t *testing.T) {
 	p.HandleDatagram(kf1)
 	s.Close()
 
-	// Priming delivered cfg once; the keyframe's chunk 0 re-emits it.
 	wantDatagrams(t, f, [][]byte{cfg, cfg, kf0, kf1})
 }
 
 func TestNewConfigReplacesCache(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 	p.HandleDatagram(configDgram(t, "avc1.42E02A"))
 	cfg2 := configDgram(t, "vp09.00.40.08")
 	p.HandleDatagram(cfg2)
 
 	f := &fakeSender{}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 	s.Close()
 	wantDatagrams(t, f, [][]byte{cfg2})
 }
 
-// TestPublisherRestartResetsCaches is the C2 acceptance test: caches persist
-// while the broadcaster is away, but a new publisher session — whose frameIDs
-// restart at 0 and whose config may differ — must invalidate them, so a
-// joiner is never primed with data from an older session.
 func TestPublisherRestartResetsCaches(t *testing.T) {
-	h := New(discardLog, Options{})
-	p1, err := h.StartPublish()
+	r := NewRegistry(discardLog, Options{BroadcastGrace: 5 * time.Minute})
+	id, p1, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
@@ -314,52 +326,45 @@ func TestPublisherRestartResetsCaches(t *testing.T) {
 	}
 	p1.Close()
 
-	// Broadcaster away: caches persist, a joiner still gets the last picture.
-	if st := h.Stats(); !st.HasConfig || st.CachedKeyframeID != 41 || st.CachedKeyframeChunks != 2 {
+	st := r.Stats().Broadcasts[id]
+	if !st.HasConfig || st.CachedKeyframeID != 41 || st.CachedKeyframeChunks != 2 {
 		t.Fatalf("caches after publisher close = %+v, want config + keyframe 41 (2 chunks)", st)
 	}
 	away := &fakeSender{}
-	sa, _ := h.Subscribe(away)
+	sa, _ := r.Subscribe(id, away)
 	sa.Close()
 	wantDatagrams(t, away, [][]byte{cfg1, kf1[0], kf1[1]})
 
-	// New session: both caches must be invalidated immediately.
-	p2, err := h.StartPublish()
+	_, p2, err := r.StartPublish(id)
 	if err != nil {
 		t.Fatalf("StartPublish after restart: %v", err)
 	}
-	if st := h.Stats(); st.HasConfig || st.CachedKeyframeID != 0 || st.CachedKeyframeChunks != 0 || st.CachedKeyframeBytes != 0 {
+	st = r.Stats().Broadcasts[id]
+	if st.HasConfig || st.CachedKeyframeID != 0 || st.CachedKeyframeChunks != 0 || st.CachedKeyframeBytes != 0 {
 		t.Fatalf("caches survived publisher restart: %+v", st)
 	}
 
-	// A joiner in the window before the new session's first keyframe gets no
-	// stale priming — only the new session's live datagrams.
 	early := &fakeSender{}
-	se, _ := h.Subscribe(early)
+	se, _ := r.Subscribe(id, early)
 
 	cfg2 := configDgram(t, "vp09.00.40.08")
 	kf2 := chunkDgram(t, true, 0, 0, 1, "new")
 	p2.HandleDatagram(cfg2)
 	p2.HandleDatagram(kf2)
 	se.Close()
-	// Live config, then its re-emission ahead of the keyframe's chunk 0.
 	wantDatagrams(t, early, [][]byte{cfg2, cfg2, kf2})
 
-	// A later joiner is primed with the new session's config + keyframe only.
 	late := &fakeSender{}
-	sl, _ := h.Subscribe(late)
+	sl, _ := r.Subscribe(id, late)
 	sl.Close()
 	wantDatagrams(t, late, [][]byte{cfg2, kf2})
 }
 
-// TestConfigPrecedesEveryKeyframe pins the C2 ordering guarantee across a
-// stream: the config that is current at the time immediately precedes chunk 0
-// of every keyframe, including after a mid-stream config replacement.
 func TestConfigPrecedesEveryKeyframe(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 	f := &fakeSender{}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 
 	cfg1 := configDgram(t, "avc1.42E02A")
 	cfg2 := configDgram(t, "vp09.00.40.08")
@@ -374,32 +379,31 @@ func TestConfigPrecedesEveryKeyframe(t *testing.T) {
 	}
 	s.Close()
 
-	// cfg1 re-emitted before keyframe 0's chunk 0; cfg2 (the replacement)
-	// before keyframe 3's; deltas get no config.
 	wantDatagrams(t, f, [][]byte{
 		cfg1, cfg1, k0[0], k0[1], d1, d2, cfg2, cfg2, k3[0], k3[1], d4,
 	})
 }
 
 func TestBadDatagramsDroppedAndCounted(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 	f := &fakeSender{}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 
 	bad := [][]byte{
-		nil,                           // too short for prefix
-		{0x02, 0x01},                  // unknown version
-		{0x01, 0x7F, 0x00},            // unknown type
-		{0x01, 0x01, 0x00, 0x00},      // video chunk too short
-		{0x01, 0x02, 0x00, 0x09, 'v'}, // codecLen overrun
+		nil,
+		{0x02, 0x01},
+		{0x01, 0x7F, 0x00},
+		{0x01, 0x01, 0x00, 0x00},
+		{0x01, 0x02, 0x00, 0x09, 'v'},
 	}
 	for _, d := range bad {
 		p.HandleDatagram(d)
 	}
 	s.Close()
 	wantDatagrams(t, f, nil)
-	if st := h.Stats(); st.BadDatagrams != uint64(len(bad)) {
+	st := r.Stats().Broadcasts[id]
+	if st.BadDatagrams != uint64(len(bad)) {
 		t.Errorf("BadDatagrams = %d, want %d", st.BadDatagrams, len(bad))
 	}
 }
@@ -408,21 +412,19 @@ func TestSlowSubscriberDropsHealthyPeerUnaffected(t *testing.T) {
 	const queueDepth = 8
 	const n = 100
 
-	h := New(discardLog, Options{QueueDepth: queueDepth})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{QueueDepth: queueDepth})
+	id, p, _ := r.StartPublish("")
 
 	healthy := &fakeSender{}
 	blocked := &fakeSender{block: make(chan struct{})}
-	sh, _ := h.Subscribe(healthy)
-	sb, _ := h.Subscribe(blocked)
+	sh, _ := r.Subscribe(id, healthy)
+	sb, _ := r.Subscribe(id, blocked)
 
 	var sent [][]byte
 	for i := range n {
 		d := chunkDgram(t, false, uint32(i), 0, 1, fmt.Sprintf("f%03d", i))
 		sent = append(sent, d)
 		p.HandleDatagram(d)
-		// Let the healthy drain goroutine keep pace so its small queue
-		// never overflows; the blocked peer stays stuck the whole time.
 		deadline := time.Now().Add(5 * time.Second)
 		for {
 			healthy.mu.Lock()
@@ -438,50 +440,44 @@ func TestSlowSubscriberDropsHealthyPeerUnaffected(t *testing.T) {
 		}
 	}
 
-	// Healthy peer got 100%, in order.
 	sh.Close()
 	wantDatagrams(t, healthy, sent)
 
-	// The blocked subscriber dropped everything beyond its stuck send plus
-	// one queue's worth.
 	if got := sb.Dropped(); got < n-queueDepth-1 {
 		t.Errorf("blocked subscriber dropped %d datagrams, want >= %d", got, n-queueDepth-1)
 	}
-	close(blocked.block) // unstick so Close's drain flush can finish
+	close(blocked.block)
 	sb.Close()
 
-	if st := h.Stats(); st.DatagramsDropped == 0 {
+	if st := r.Stats().Totals.DatagramsDropped; st == 0 {
 		t.Error("hub stats did not accumulate drops from the closed subscriber")
 	}
 }
 
 func TestSixteenthSubscriberRejectedAtDefaultCap(t *testing.T) {
-	h := New(discardLog, Options{}) // default MaxSubscribers = 15
+	r := NewRegistry(discardLog, Options{})
+	id, _, _ := r.StartPublish("")
 	for i := range 15 {
-		if _, err := h.Subscribe(&fakeSender{}); err != nil {
+		if _, err := r.Subscribe(id, &fakeSender{}); err != nil {
 			t.Fatalf("Subscribe %d: %v", i+1, err)
 		}
 	}
-	if !h.Full() {
-		t.Error("Full() = false with all 15 slots used")
+	if err := r.CheckSubscribe(id); !errors.Is(err, ErrFull) {
+		t.Error("CheckSubscribe did not return ErrFull")
 	}
-	if _, err := h.Subscribe(&fakeSender{}); !errors.Is(err, ErrFull) {
+	if _, err := r.Subscribe(id, &fakeSender{}); !errors.Is(err, ErrFull) {
 		t.Fatalf("16th Subscribe error = %v, want ErrFull", err)
 	}
 }
 
-// TestFifteenSubscribersOneBlocked is the C1 acceptance test: a full house
-// of 15 subscribers, one of them stuck mid-send, receiving a ~60fps synthetic
-// chunked stream for 5 seconds. Every unblocked subscriber must receive 100%
-// of the datagrams in order; the blocked one drops and never holds anyone up.
 func TestFifteenSubscribersOneBlocked(t *testing.T) {
 	duration := 5 * time.Second
 	if testing.Short() {
 		duration = 300 * time.Millisecond
 	}
 
-	h := New(discardLog, Options{}) // defaults: 15 subs, queue depth 256
-	p, err := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
@@ -491,21 +487,16 @@ func TestFifteenSubscribersOneBlocked(t *testing.T) {
 	healthySubs := make([]*Subscriber, healthyCount)
 	for i := range healthy {
 		healthy[i] = &fakeSender{}
-		if healthySubs[i], err = h.Subscribe(healthy[i]); err != nil {
+		if healthySubs[i], err = r.Subscribe(id, healthy[i]); err != nil {
 			t.Fatalf("Subscribe healthy %d: %v", i, err)
 		}
 	}
 	blocked := &fakeSender{block: make(chan struct{})}
-	blockedSub, err := h.Subscribe(blocked)
+	blockedSub, err := r.Subscribe(id, blocked)
 	if err != nil {
 		t.Fatalf("Subscribe blocked: %v", err)
 	}
-	if !h.Full() {
-		t.Fatal("Full() = false with 15 subscribers")
-	}
 
-	// want is the exact per-subscriber delivery sequence, including the
-	// config re-emitted ahead of every keyframe's chunk 0.
 	cfg := configDgram(t, "avc1.42E02A")
 	want := [][]byte{cfg}
 	p.HandleDatagram(cfg)
@@ -523,11 +514,9 @@ func TestFifteenSubscribersOneBlocked(t *testing.T) {
 			want = append(want, d)
 			p.HandleDatagram(d)
 		}
-		time.Sleep(16 * time.Millisecond) // ~60fps
+		time.Sleep(16 * time.Millisecond)
 	}
 
-	// The healthy drain goroutines lag the publisher by at most a queue's
-	// worth; give them a moment to finish flushing.
 	catchup := time.Now().Add(5 * time.Second)
 	for i, f := range healthy {
 		for len(f.received()) < len(want) {
@@ -547,25 +536,23 @@ func TestFifteenSubscribersOneBlocked(t *testing.T) {
 		wantDatagrams(t, healthy[i], want)
 	}
 
-	// The blocked peer consumed one datagram (stuck in-flight) and buffered a
-	// queue's worth; everything else must have been dropped, not deferred.
-	// (In -short mode the stream may fit the queue, making the bound 0.)
-	minDropped := uint64(max(0, len(want)-h.opts.QueueDepth-1))
+	minDropped := uint64(max(0, len(want)-r.opts.QueueDepth-1))
 	if got := blockedSub.Dropped(); got < minDropped {
 		t.Errorf("blocked subscriber dropped %d datagrams, want >= %d", got, minDropped)
 	}
 	close(blocked.block)
 	blockedSub.Close()
 
-	if st := h.Stats(); st.DatagramsDropped < minDropped {
-		t.Errorf("Stats().DatagramsDropped = %d, want >= %d", st.DatagramsDropped, minDropped)
+	if st := r.Stats().Totals.DatagramsDropped; st < minDropped {
+		t.Errorf("Stats().Totals.DatagramsDropped = %d, want >= %d", st, minDropped)
 	}
 }
 
 func TestSubscriberCloseIdempotentAndConcurrent(t *testing.T) {
-	h := New(discardLog, Options{})
+	r := NewRegistry(discardLog, Options{})
+	id, _, _ := r.StartPublish("")
 	f := &fakeSender{}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 
 	var wg sync.WaitGroup
 	for range 4 {
@@ -585,26 +572,23 @@ func TestSubscriberCloseIdempotentAndConcurrent(t *testing.T) {
 }
 
 func TestSendErrorsDoNotStopDrain(t *testing.T) {
-	h := New(discardLog, Options{})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
 	f := &fakeSender{err: errors.New("session gone")}
-	s, _ := h.Subscribe(f)
+	s, _ := r.Subscribe(id, f)
 
 	for i := range 3 {
 		p.HandleDatagram(chunkDgram(t, false, uint32(i), 0, 1, "x"))
 	}
-	s.Close() // must not hang even though every send failed
+	s.Close()
 	if got := s.sendErrors.Load(); got != 3 {
 		t.Errorf("sendErrors = %d, want 3", got)
 	}
 }
 
-// TestConcurrentPublishSubscribeChurn exercises the locking under -race:
-// a publisher streams while subscribers join and leave. MaxSubscribers is
-// below the churner count so the ErrFull path races with Close too.
 func TestConcurrentPublishSubscribeChurn(t *testing.T) {
-	h := New(discardLog, Options{MaxSubscribers: 2, QueueDepth: 32})
-	p, _ := h.StartPublish()
+	r := NewRegistry(discardLog, Options{MaxSubscribers: 2, QueueDepth: 32})
+	id, p, _ := r.StartPublish("")
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -633,7 +617,7 @@ func TestConcurrentPublishSubscribeChurn(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range 50 {
-				s, err := h.Subscribe(&fakeSender{})
+				s, err := r.Subscribe(id, &fakeSender{})
 				if err != nil {
 					continue
 				}
@@ -646,4 +630,127 @@ func TestConcurrentPublishSubscribeChurn(t *testing.T) {
 	close(stop)
 	wg.Wait()
 	p.Close()
+}
+
+func TestBroadcastIsolation(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+
+	id1, p1, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish 1: %v", err)
+	}
+	id2, p2, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish 2: %v", err)
+	}
+
+	if id1 == id2 {
+		t.Fatalf("expected different IDs, got both as %q", id1)
+	}
+
+	f1 := &fakeSender{}
+	f2 := &fakeSender{}
+
+	s1, err := r.Subscribe(id1, f1)
+	if err != nil {
+		t.Fatalf("Subscribe 1: %v", err)
+	}
+	s2, err := r.Subscribe(id2, f2)
+	if err != nil {
+		t.Fatalf("Subscribe 2: %v", err)
+	}
+
+	dgram1 := chunkDgram(t, false, 1, 0, 1, "data1")
+	dgram2 := chunkDgram(t, false, 2, 0, 1, "data2")
+
+	p1.HandleDatagram(dgram1)
+	p2.HandleDatagram(dgram2)
+
+	s1.Close()
+	s2.Close()
+
+	wantDatagrams(t, f1, [][]byte{dgram1})
+	wantDatagrams(t, f2, [][]byte{dgram2})
+
+	st := r.Stats()
+	if st.Totals.Broadcasts != 2 {
+		t.Errorf("expected 2 active broadcasts in totals, got %d", st.Totals.Broadcasts)
+	}
+	if bst1 := st.Broadcasts[id1]; bst1.DatagramsRelayed != 1 {
+		t.Errorf("broadcast 1 expected 1 relayed, got %d", bst1.DatagramsRelayed)
+	}
+	if bst2 := st.Broadcasts[id2]; bst2.DatagramsRelayed != 1 {
+		t.Errorf("broadcast 2 expected 1 relayed, got %d", bst2.DatagramsRelayed)
+	}
+}
+
+func TestGraceLifecycle(t *testing.T) {
+	r := NewRegistry(discardLog, Options{BroadcastGrace: 50 * time.Millisecond})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+
+	f := &fakeSender{}
+	_, err = r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	p.Close()
+
+	// Wait for grace timeout to trigger GC
+	time.Sleep(100 * time.Millisecond)
+
+	closeCode, closed := f.getCloseInfo()
+	if !closed {
+		t.Error("expected subscriber connection to be closed")
+	}
+	if closeCode != uint32(wire.CloseCodeBroadcastEnded) {
+		t.Errorf("expected close code %d, got %d", wire.CloseCodeBroadcastEnded, closeCode)
+	}
+
+	// Entry must be deleted
+	if err := r.CheckSubscribe(id); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for expired ID, got %v", err)
+	}
+
+	// Reclaim expired ID should fail
+	if _, _, err := r.StartPublish(id); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for expired ID reclaim, got %v", err)
+	}
+}
+
+func TestGraceReclaim(t *testing.T) {
+	r := NewRegistry(discardLog, Options{BroadcastGrace: 100 * time.Millisecond})
+	id, p1, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+
+	f := &fakeSender{}
+	s, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	p1.Close()
+
+	// Reclaim within grace
+	time.Sleep(20 * time.Millisecond)
+	_, p2, err := r.StartPublish(id)
+	if err != nil {
+		t.Fatalf("Reclaim failed: %v", err)
+	}
+
+	// Wait past the original 100ms grace period to verify timer was canceled
+	time.Sleep(120 * time.Millisecond)
+
+	closeCode, closed := f.getCloseInfo()
+	if closed {
+		t.Fatalf("subscriber was closed early with code %d; reclaim did not cancel GC", closeCode)
+	}
+
+	p2.Close()
+	s.Close()
 }
