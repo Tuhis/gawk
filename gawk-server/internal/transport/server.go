@@ -52,7 +52,12 @@ func (s *Server) rateLimited(r *http.Request) bool {
 	if isLoopbackAddr(r.RemoteAddr) && !s.testHookRateLimitLoopback {
 		return false
 	}
-	return !s.limiter.Allow(r.RemoteAddr)
+	if s.limiter.Allow(r.RemoteAddr) {
+		return false
+	}
+	s.log.Warn("connection rate limited",
+		"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "path", r.URL.Path)
+	return true
 }
 
 // New builds the server. getCert supplies the TLS certificate per handshake
@@ -117,7 +122,16 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 			if isLoopbackAddr(r.RemoteAddr) {
 				return true
 			}
-			return slices.Contains(allowed, r.Header.Get("Origin"))
+			origin := r.Header.Get("Origin")
+			if slices.Contains(allowed, origin) {
+				return true
+			}
+			// A disallowed origin is otherwise rejected silently inside
+			// webtransport-go; log it so blocked cross-origin dials are
+			// visible (with the offending origin + remote) rather than a
+			// mystery to operators.
+			s.log.Warn("origin rejected", "origin", origin, "remote", r.RemoteAddr, "path", r.URL.Path)
+			return false
 		}
 	} else {
 		// Dev default: accept any origin (webtransport-go's built-in default
@@ -163,7 +177,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	if s.cfg.PublishSecret != "" &&
 		subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("secret")), []byte(s.cfg.PublishSecret)) != 1 {
-		s.log.Warn("publish unauthorized: invalid or missing secret", "remote", r.RemoteAddr)
+		s.log.Warn("publish unauthorized: invalid or missing secret",
+			"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -177,7 +192,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// Reclaim path: pre-upgrade checks
 		id, pub, err = s.registry.StartPublish(id)
 		if err != nil {
-			s.log.Warn("publish reclaim rejected", "id", id, "remote", r.RemoteAddr, "err", err)
+			s.log.Warn("publish reclaim rejected",
+				"id", id, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 			if errors.Is(err, hub.ErrNotFound) {
 				w.WriteHeader(http.StatusNotFound)
 				return
@@ -201,7 +217,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// clean HTTP 429 (a failed dial), mirroring the subscribe path;
 		// StartPublish below re-checks authoritatively after the upgrade.
 		if err := s.registry.CheckPublishNew(); err != nil {
-			s.log.Warn("publish mint rejected", "remote", r.RemoteAddr, "err", err)
+			s.log.Warn("publish mint rejected",
+				"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -280,7 +297,8 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.registry.CheckSubscribe(id); err != nil {
-		s.log.Warn("subscribe rejected pre-upgrade", "id", id, "remote", r.RemoteAddr, "err", err)
+		s.log.Warn("subscribe rejected pre-upgrade",
+			"id", id, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 		if errors.Is(err, hub.ErrNotFound) {
 			w.WriteHeader(http.StatusNotFound)
 			return

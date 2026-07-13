@@ -148,7 +148,11 @@ image tag defaults to `.Chart.AppVersion`.
   gawk-app ingress host, `https://` included) — the server checks `Origin`
   on CONNECT; empty allows all, don't ship that to prod. `CheckOrigin`
   exempts loopback `RemoteAddr` so the in-pod exec probe (no `Origin`
-  header) still passes — see gotcha below.
+  header) still passes — see gotcha below. A rejected origin now logs a
+  `"origin rejected"` warn (offending `origin` + `remote`) instead of
+  failing silently, so an allowlist misconfiguration is diagnosable from
+  the server logs; connection-rate-limit drops log likewise
+  (`"connection rate limited"`).
 
 `gawk-app` chart: 2 stateless nginx replicas, ClusterIP, Ingress
 (`nginx-int` class, cert-manager annotation, TLS). Plain httpGet probes —

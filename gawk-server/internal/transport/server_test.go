@@ -809,6 +809,73 @@ func TestQuietProbeLogsSuppressesLoopbackEchoSessions(t *testing.T) {
 	}
 }
 
+// TestOriginRejectedIsLogged verifies that a disallowed Origin is not merely
+// rejected silently — the rejection is logged with the offending Origin and
+// the remote address so operators can see who was blocked and from where.
+func TestOriginRejectedIsLogged(t *testing.T) {
+	var buf syncBuffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
+	srv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, log)
+
+	// Disallowed origin from a real (non-loopback) client: rejected + logged.
+	req := httptest.NewRequest(http.MethodConnect, "https://gawk.example.com/subscribe/abc", nil)
+	req.RemoteAddr = "203.0.113.7:44001"
+	req.Header.Set("Origin", "https://evil.example.com")
+	if srv.wt.CheckOrigin(req) {
+		t.Fatal("CheckOrigin allowed a disallowed origin")
+	}
+	if got := buf.String(); !strings.Contains(got, "origin rejected") ||
+		!strings.Contains(got, "https://evil.example.com") || !strings.Contains(got, "203.0.113.7") {
+		t.Errorf("expected origin-rejection log with the origin and remote, got:\n%s", got)
+	}
+
+	// Allowed origin: accepted, and no rejection log emitted.
+	var okBuf syncBuffer
+	okLog := slog.New(slog.NewTextHandler(&okBuf, nil))
+	okSrv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, okLog)
+	okReq := httptest.NewRequest(http.MethodConnect, "https://gawk.example.com/subscribe/abc", nil)
+	okReq.RemoteAddr = "203.0.113.7:44002"
+	okReq.Header.Set("Origin", "https://gawk.example.com")
+	if !okSrv.wt.CheckOrigin(okReq) {
+		t.Fatal("CheckOrigin rejected an allowed origin")
+	}
+	if got := okBuf.String(); strings.Contains(got, "origin rejected") {
+		t.Errorf("allowed origin should not log a rejection, got:\n%s", got)
+	}
+}
+
+// TestRateLimitBlockLogsOrigin verifies a rate-limited connection attempt is
+// logged with the request's origin and remote address rather than being
+// dropped with a silent 429.
+func TestRateLimitBlockLogsOrigin(t *testing.T) {
+	var buf syncBuffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
+	srv := New(config.Config{MaxSubscribers: 1, ConnRateLimit: 1, ConnBurstLimit: 1},
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, log)
+	// Test requests come from 127.0.0.1-style addrs; disable the loopback
+	// bypass so the limiter actually engages (as production does off-pod).
+	srv.testHookRateLimitLoopback = true
+
+	req := httptest.NewRequest(http.MethodConnect, "https://gawk.example.com/subscribe/abc", nil)
+	req.RemoteAddr = "203.0.113.9:5000"
+	req.Header.Set("Origin", "https://app.example.com")
+
+	if srv.rateLimited(req) {
+		t.Fatal("first attempt rate-limited, want allowed (burst=1)")
+	}
+	if !srv.rateLimited(req) {
+		t.Fatal("second attempt allowed, want rate-limited")
+	}
+	if got := buf.String(); !strings.Contains(got, "connection rate limited") ||
+		!strings.Contains(got, "https://app.example.com") || !strings.Contains(got, "203.0.113.9") {
+		t.Errorf("expected rate-limit log with the origin and remote, got:\n%s", got)
+	}
+}
+
 func TestGracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	port, clientTLS, _, done := startTestServer(t, ctx, 15)
