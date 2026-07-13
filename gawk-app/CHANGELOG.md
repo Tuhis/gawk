@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.9.0...gawk-app-v0.10.0) (2026-07-13)
+
+
+### Features
+
+* add broadcaster resolution & framerate picker (R3) ([f8f256b](https://github.com/Tuhis/gawk/commit/f8f256bfb6be4e92ed99a36325456ddf10dc8754))
+
 ## [0.9.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.8.2...gawk-app-v0.9.0) (2026-07-13)
 
 
