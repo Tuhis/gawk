@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.12.0...gawk-app-v0.13.0) (2026-07-13)
+
+
+### Features
+
+* **media:** implement dynamic GPU HW encoding check and cap framerate above FullHD; default dev mode to prompt publish secret ([384d520](https://github.com/Tuhis/gawk/commit/384d520f5e4f86ad26a40239dfea231ae9dccd2d))
+
 ## [0.12.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.11.0...gawk-app-v0.12.0) (2026-07-13)
 
 
