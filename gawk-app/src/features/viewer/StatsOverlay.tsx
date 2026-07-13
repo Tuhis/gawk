@@ -19,6 +19,7 @@ interface Props {
 export function StatsOverlay({ stats, codec, onClose }: Props) {
   const rows: Array<[string, string]> = [
     ['Codec', codec ?? '—'],
+    ['Decode mode', stats?.isHardwareAccelerated === true ? 'Hardware' : stats?.isHardwareAccelerated === false ? 'Software' : '—'],
     ['Decoder fps', fmt(stats?.decoderFps ?? NaN)],
     ['Decoded', String(stats?.decodedFrames ?? '—')],
     ['Completed', String(stats?.framesCompleted ?? '—')],

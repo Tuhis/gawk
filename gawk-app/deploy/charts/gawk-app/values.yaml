@@ -41,3 +41,7 @@ config:
   # Set true when the relay runs with -publish-secret (server chart's
   # config.publishSecret); the value itself is never shipped to the client.
   requirePublishSecret: false
+
+  # The maximum number of frames the viewer's WebCodecs VideoDecoder will queue
+  # before it starts dropping frames until the next keyframe.
+  maxDecoderQueueSize: 5

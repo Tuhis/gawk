@@ -10,6 +10,10 @@ export interface GawkRuntimeConfig {
   // -publish-secret). When true, the broadcaster asks for it on "Start a
   // stream". Default false.
   requirePublishSecret?: boolean;
+  
+  // The maximum number of frames the viewer's WebCodecs VideoDecoder will queue
+  // before it starts dropping frames until the next keyframe.
+  maxDecoderQueueSize?: number;
 }
 
 declare global {
@@ -28,6 +32,14 @@ export function requiresPublishSecret(): boolean {
     return config.requirePublishSecret;
   }
   return isDevEnvironment();
+}
+
+export function getMaxDecoderQueueSize(): number {
+  const config = getRuntimeConfig();
+  if (config.maxDecoderQueueSize !== undefined) {
+    return config.maxDecoderQueueSize;
+  }
+  return 5;
 }
 
 // "Debug build" per the product spec = running locally. Vite dev mode, or a

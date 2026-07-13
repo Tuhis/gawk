@@ -10,5 +10,6 @@ data:
   # client-safe flags belong here.
   config.js: |
     window.__GAWK_CONFIG__ = {
-      "requirePublishSecret": {{ .Values.config.requirePublishSecret | default false }}
+      "requirePublishSecret": {{ .Values.config.requirePublishSecret | default false }},
+      "maxDecoderQueueSize": {{ .Values.config.maxDecoderQueueSize | default 5 }}
     };

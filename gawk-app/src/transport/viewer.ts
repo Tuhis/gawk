@@ -7,6 +7,7 @@ import { Decoder, type DecodedFrame } from '../media/decoder';
 import { connectWebTransport, readDatagrams, type ConnectOptions } from './connection';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import type { DecoderConfigMessage } from './wire';
+import { getMaxDecoderQueueSize } from '../config';
 
 export interface ViewerStats extends ReassemblerStats {
   decodedFrames: number;
@@ -15,6 +16,7 @@ export interface ViewerStats extends ReassemblerStats {
   configsApplied: number;
   framesDiscardedAwaitingKey: number;
   lastDecodeLatencyMs: number;
+  isHardwareAccelerated: boolean | null;
 }
 
 export interface ViewerCallbacks {
@@ -160,6 +162,11 @@ export class ViewerPipeline {
     const dec = this.decoder;
     if (!dec || this.stopping) return;
 
+    if (dec.queueSize > getMaxDecoderQueueSize()) {
+      log.warn(`Decoder queue size (${dec.queueSize}) too large, dropping frames until next keyframe.`);
+      this.waitingForKeyframe = true;
+    }
+
     if (this.pendingConfig) {
       const config = this.pendingConfig;
       this.pendingConfig = null;
@@ -273,6 +280,7 @@ export class ViewerPipeline {
       configsApplied: this.configsApplied,
       framesDiscardedAwaitingKey: this.framesDiscardedAwaitingKey,
       lastDecodeLatencyMs: this.lastDecodeLatencyMs,
+      isHardwareAccelerated: this.decoder?.isHardwareAccelerated ?? null,
     });
   }
 

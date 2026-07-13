@@ -13,6 +13,7 @@ export interface DecoderCallbacks {
 export class Decoder {
   private decoder: VideoDecoder;
   private decodeStartMap = new Map<number, number>();
+  public isHardwareAccelerated: boolean | null = null;
 
   constructor(callbacks: DecoderCallbacks) {
     this.decoder = new VideoDecoder({
@@ -43,6 +44,7 @@ export class Decoder {
     for (const variant of variants) {
       const support = await VideoDecoder.isConfigSupported(variant);
       if (support.supported) {
+        this.isHardwareAccelerated = variant.hardwareAcceleration === 'prefer-hardware';
         this.decoder.configure(support.config ?? variant);
         return;
       }
