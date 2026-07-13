@@ -22,7 +22,7 @@ feature set exists).
 | R1 | [Multi-broadcaster support](#r1--multi-broadcaster-support) | ✅ done ([docs/06](docs/06-multi-broadcaster.md)) |
 | R2 | [Hardening](#r2--hardening) | ✅ done ([docs/07](docs/07-hardening.md)) |
 | R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | 🚧 implemented, manual verify pending ([docs/08](docs/08-resolution-framerate-picker.md)) |
-| R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | not started |
+| R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | 📝 designed ([docs/09](docs/09-automatic-fallback.md)), implementation not started |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
 | R6 | [Production UI](#r6--production-ui) | not started |
 
@@ -186,11 +186,12 @@ browser verification pending) — see
 
 ## R4 — Automatic resolution fallback
 
-**Goal**: if the broadcaster's machine can't sustain encoding at the chosen
+**Goal**: if the broadcaster's machine can't sustain encoding at the current
 resolution, step down the R3 ladder automatically instead of stuttering or
-dying. The broadcaster picked "native" on a laptop that can't do it — the
-stream should degrade to 720p on its own, with a visible indication, rather
-than requiring the broadcaster to diagnose encoder backpressure themselves.
+dying — and step back up when the machine recovers. The broadcaster left the
+default ("auto") on a laptop that can't do native — the stream should
+degrade to 720p on its own, with a visible indication, rather than requiring
+the broadcaster to diagnose encoder backpressure themselves.
 
 **Why here**: pure delta on top of R3 — the ladder, the scaling stage, and
 mid-stream reconfiguration all exist; R4 adds detection and the decision
@@ -205,9 +206,11 @@ loop.
 - **Action**: step down one rung (resolution first; possibly framerate as a
   later rung), reconfigure via the R3 machinery, notify the UI ("streaming
   at 720p — encoder can't keep up at 1080p").
-- Auto-stepping never overrides an *explicit* lower choice — it only moves
-  below the broadcaster's selection, and the selection remains what the UI
-  shows as intent.
+- Auto-stepping exists only in a new **"auto" resolution selection** (the
+  default). An *explicit* rung is honored unconditionally — no stepping in
+  either direction; frame drops are preferred over going against the
+  broadcaster's stated choice (a passive "encoder can't keep up" warning is
+  the only feedback there).
 
 **Key design questions**: whether to ever step back **up** automatically
 (risk: oscillation; a conservative option is "step down automatically,
@@ -220,7 +223,14 @@ resolution drops.
 what their downlink supports") — that's a different architecture (the relay
 is a byte forwarder by design) and explicitly out of scope.
 
-**Status**: not started.
+**Status**: designed 2026-07-13 — see
+[`docs/09-automatic-fallback.md`](docs/09-automatic-fallback.md) (chunks
+I1–I4). The design resolves the open questions above: detection is the
+encode-queue rejection ratio with a sliding window + cooldown; stepping is
+resolution-only, lives behind a new "auto" selection (the default), and
+goes **both down and up** there — step-up probes carry exponential backoff
+so steady overload can't pump quality; explicit rungs are never stepped;
+bitrate is not a fallback rung. Implementation not started.
 
 ## R5 — Viewer live-edge enhancements
 

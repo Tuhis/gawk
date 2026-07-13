@@ -101,7 +101,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   implemented and verified), `docs/07-hardening.md` for R2 (limits, access
   control, bandwidth cap; implemented, incl. post-implementation review),
   `docs/08-resolution-framerate-picker.md` for R3 (broadcaster ladder:
-  pre-encode scaling + fps gating, H1–H4 chunks).
+  pre-encode scaling + fps gating, H1–H4 chunks),
+  `docs/09-automatic-fallback.md` for R4 (automatic resolution fallback:
+  encode-backpressure detection + auto step-down, I1–I4 chunks; designed,
+  not yet implemented).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -139,6 +142,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `keyframeIntervalFrames: 120` — a frame-count GOP is 24 s at 5 fps),
    live mid-stream changes via encoder recreate; zero server changes — see
    `docs/08-resolution-framerate-picker.md`).
+9. Automatic resolution fallback — **designed, not implemented** (R4:
+   encode-queue rejection-ratio detection with hysteresis + cooldown; a
+   new **"auto" resolution selection (default)** steps both down and up
+   (up-probes with exponential backoff against oscillation) plus
+   encoder-error step-down, while **explicit rungs are never auto-stepped**
+   — frame drops over overriding the broadcaster; zero server changes —
+   see `docs/09-automatic-fallback.md`).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,
