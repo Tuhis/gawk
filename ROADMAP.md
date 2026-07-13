@@ -223,15 +223,21 @@ resolution drops.
 what their downlink supports") — that's a different architecture (the relay
 is a byte forwarder by design) and explicitly out of scope.
 
-**Status**: implemented 2026-07-13 (chunks I1–I3 + automated gates; manual
-browser verification and real-hardware threshold tuning pending) — see
-[`docs/09-automatic-fallback.md`](docs/09-automatic-fallback.md). The design
-resolved the open questions above: detection is the encode-queue rejection
-ratio with a sliding window + cooldown; stepping is resolution-only, lives
-behind a new "auto" selection (the default), and goes **both down and up**
-there — step-up probes carry exponential backoff so steady overload can't
-pump quality; explicit rungs are never stepped; bitrate is not a fallback
-rung. Zero relay-server, wire-format, and viewer changes.
+**Status**: implemented + released 2026-07-13 (chunks I1–I3 + automated
+gates) — see [`docs/09-automatic-fallback.md`](docs/09-automatic-fallback.md).
+The design resolved the open questions above: detection is the encode-queue
+rejection ratio with a sliding window + cooldown; stepping is
+resolution-only, lives behind a new "auto" selection (the default), and goes
+**both down and up** there — step-up probes carry exponential backoff so
+steady overload can't pump quality; explicit rungs are never stepped;
+bitrate is not a fallback rung. Zero relay-server, wire-format, and viewer
+changes. **Real-hardware caveat**: the auto step-down could not be induced on
+the gaming PC's hardware encode path — hardware encoders don't surface
+backpressure via `encodeQueueSize`, so the rejection signal under-fires
+there; observed perf limits were source-side (4K capture), a correct no-op.
+Software-path verification + threshold tuning remain outstanding (see the
+doc's "Manual verification findings"), and a hardware-strain signal is a
+possible deferred follow-up.
 
 ## R5 — Viewer live-edge enhancements
 

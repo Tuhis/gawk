@@ -142,15 +142,20 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `keyframeIntervalFrames: 120` — a frame-count GOP is 24 s at 5 fps),
    live mid-stream changes via encoder recreate; zero server changes — see
    `docs/08-resolution-framerate-picker.md`).
-9. Automatic resolution fallback — **implemented, manual verify pending** (R4:
-   encode-queue rejection-ratio detection with hysteresis + cooldown, in the
-   pure `media/fallback.ts` `FallbackController`; a new **"auto" resolution
-   selection (default)** steps both down and up (up-probes with exponential
-   backoff against oscillation) plus encoder-error step-down, while
-   **explicit rungs are never auto-stepped** — frame drops over overriding
-   the broadcaster; thresholds are named constants in `fallback.ts` awaiting
-   real-hardware tuning; zero server/wire/viewer changes — see
-   `docs/09-automatic-fallback.md`).
+9. Automatic resolution fallback — **implemented + released; software-path
+   verify + tuning pending** (R4: encode-queue rejection-ratio detection with
+   hysteresis + cooldown, in the pure `media/fallback.ts` `FallbackController`;
+   a new **"auto" resolution selection (default)** steps both down and up
+   (up-probes with exponential backoff against oscillation) plus
+   encoder-error step-down, while **explicit rungs are never auto-stepped** —
+   frame drops over overriding the broadcaster; zero server/wire/viewer
+   changes — see `docs/09-automatic-fallback.md`). **Real-hardware finding
+   (2026-07-13)**: the auto step-down does not fire on the gaming PC's
+   hardware encode path — HW encoders drain frames without `encodeQueueSize`
+   growing past the `> 2` trigger, so the rejection signal under-fires;
+   observed low fps was source-limited (4K capture), a correct no-op. Named
+   thresholds in `fallback.ts` are unstarted (no HW backpressure to tune
+   against); a hardware-strain signal is a possible deferred follow-up.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

@@ -42,7 +42,7 @@ all exist and are the actuation path; R4 adds only *detection* and the
 | I1 | Fallback decision core, pure logic (`media/fallback.ts` `FallbackController`; `autoLadder` in `media/ladder.ts`) | Unit tests (written first) pass: sustained-rejection step-down at the ratio/window thresholds, spike immunity (short bursts never trigger), cooldown discards outcomes after any step, step-up probe fires after the sustained-healthy period, up-probe backoff doubles after a failed probe (step-down soon after step-up) and resets after a surviving one, `autoLadder` yields only rungs that actually shrink the source (4K → [native, 1080, 720, 480]; 1080p source → [native, 720, 480]; sub-480p source → [native]), error-path bounding (step-down vs. fail per Decision 7) | ✅ done (`fallback.test.ts`, `ladder.test.ts`) |
 | I2 | Pipeline integration (`transport/broadcaster.ts`: `ResolutionSelection` plumbing, auto-mode rung state, outcome feed, decision actuation via the existing reset path, encoder-error rewire, pressure flag for explicit mode, stats fields) | Existing vitest suite green; new broadcaster-level tests cover: an explicit selection never steps under sustained rejections (only `droppedFrames` grows, pressure flag sets), auto mode steps down and later back up, switching selection mid-broadcast applies immediately (explicit) or restarts at the ceiling (auto), encoder error in auto steps down while a second error inside the bound fails, encoder error in explicit mode fails as today; `tsc -b` + lint green | ✅ done (`broadcaster-fallback.test.ts`) |
 | I3 | UI (`LadderPicker`, `broadcastSettingsStore`, `BroadcastPage.tsx` + `stream.module.css`) | Picker's resolution axis gains "auto" as the first/default option; store defaults to `'auto'` when the localStorage key is missing or invalid, previously persisted explicit rungs keep their meaning; auto-mode indicator shows the currently applied rung and updates on steps; explicit-mode pressure warning is display-only (no button, no actuation); stats grid gains auto/pressure rows; lint + build green | ✅ done (`broadcastSettingsStore.test.ts`) |
-| I4 | Verification, tuning + docs sync | `npm test`, `npm run lint`, `npm run build` green; manual browser verification (below) passed, thresholds adjusted from real-hardware behavior if needed (constants are named in one place); README gotchas + ROADMAP + CLAUDE.md synced | 🚧 automated gates green + docs synced; **manual browser verify + threshold tuning pending** (needs the real gaming PC) |
+| I4 | Verification, tuning + docs sync | `npm test`, `npm run lint`, `npm run build` green; manual browser verification (below) passed, thresholds adjusted from real-hardware behavior if needed (constants are named in one place); README gotchas + ROADMAP + CLAUDE.md synced | 🚧 automated gates green + docs synced; real-hardware pass (2026-07-13, see [Manual verification findings](#manual-verification-findings-2026-07-13)) confirmed the source-limited no-op but **could not induce the auto step-down on the hardware encode path** (HW encoders don't surface queue backpressure); software-path verify + threshold tuning still outstanding |
 
 Goal → verified-by, for the cross-cutting behaviors:
 
@@ -339,3 +339,34 @@ throttle factor was needed against the hardware path:
 8. **Late joiner during fallback**: join a new viewer after an auto step —
    first picture is at the stepped-down resolution (relay cache, R3
    behavior).
+
+### Manual verification findings (2026-07-13)
+
+First real-hardware pass on the gaming PC (Chromium, H.264 **hardware**
+`realtime` — the happy path, now with a 4K capture default):
+
+- **The auto step-down could not be induced on the hardware encode path.**
+  Hardware encoders drain frames without letting `encodeQueueSize` grow past
+  the `> 2` threshold `Encoder.encode()` gates on, so the rejection-ratio
+  signal — R4's *sole* trigger (Decision 1) — never fires under strain. This
+  is a property of the detection signal, not a wiring bug: the automated
+  tests drive the same accept/reject path and pass.
+- **Observed low-fps episodes were source-limited, not encoder-limited.**
+  With the 4K capture default the bottleneck was the capture/render side
+  producing fewer frames; the encoder kept up with everything it was handed
+  (encoder queue stays 0–2, `Dropped (source)` doesn't climb). R4 correctly
+  does nothing here — a lower resolution wouldn't raise a source-bound fps,
+  which is exactly the false trigger Decision 1 set out to avoid.
+- **Implication.** R4's detection is exercised on the *software* encode path
+  and under DevTools CPU throttling (which forces software / real
+  backpressure), but under-fires on the *hardware* path the gaming PC
+  actually uses. Threshold tuning is consequently still unstarted — there was
+  no hardware backpressure to tune against.
+
+**Possible follow-up (deferred, needs evidence).** If genuine hardware-encoder
+strain later shows up as sustained output-fps-below-target *without* queue
+rejections, a second detection signal (output-fps-vs-target or encode
+latency) could be added, gated hard against slow-source false positives. Not
+worth building speculatively: Decision 1's reasoning against the fps signal
+still stands until there is a real hardware-strain case that is not simply a
+slow source.

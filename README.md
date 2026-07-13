@@ -106,7 +106,7 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 6. ✅ Multi-broadcaster support: server registry, path-based routes, client uni-stream ID announcements, reclaim UI, and ended states — `docs/06` (completed 2026-07-12)
 7. ✅ Hardening (R2): broadcast/subscriber/bandwidth limits, publish secret, connection rate limiting, defensive parsing, obfuscated `/statusz` IDs — `docs/07` (completed 2026-07-13)
 8. ✅ Broadcaster resolution & framerate picker (R3): pre-encode scaling + fps gating ladder, ladder-scaled bitrate, time-based keyframe cadence, live mid-stream changes — `docs/08` (completed 2026-07-13)
-9. 🚧 Automatic resolution fallback (R4): encode-queue rejection-ratio detection with hysteresis + cooldown, a default "auto" selection that steps down and back up (backoff against oscillation) while explicit rungs are never auto-stepped, encoder-error step-down — `docs/09` (implemented 2026-07-13; manual browser verify + threshold tuning pending)
+9. 🚧 Automatic resolution fallback (R4): encode-queue rejection-ratio detection with hysteresis + cooldown, a default "auto" selection that steps down and back up (backoff against oscillation) while explicit rungs are never auto-stepped, encoder-error step-down — `docs/09` (implemented + released 2026-07-13; real-hardware check found the queue signal under-fires on hardware encoders, so software-path verify + threshold tuning remain pending)
 
 What comes next (live-edge work, production UI, …) is laid
 out in [`ROADMAP.md`](ROADMAP.md).
@@ -185,6 +185,14 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   effective timeout is the min of both endpoints' advertised values and
   browsers advertise ~30s. The server-side keepalive (`-keepalive-period`)
   is the mechanism. ([docs/05](docs/05-resilience-deploy.md))
+- **Hardware encoders don't surface backpressure via `encodeQueueSize`** —
+  they drain frames without the queue growing past R4's `> 2` threshold, so
+  the encode-queue rejection signal (auto-fallback's sole trigger) under-fires
+  on the hardware path the gaming PC uses. Low fps there is usually
+  source-limited, not encoder strain (encoder queue stays 0–2, `Dropped
+  (source)` flat). Reproduce real backpressure with DevTools CPU throttling,
+  which forces the software encode path.
+  ([docs/09](docs/09-automatic-fallback.md))
 
 **CI / deployment**
 
