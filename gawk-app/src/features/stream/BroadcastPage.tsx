@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './stream.module.css';
+import { LadderPicker } from './LadderPicker';
 import { ServerSettings } from './ServerSettings';
 import { StatsGrid } from './StatsGrid';
 import { fmt } from '../../lib/format';
@@ -7,6 +8,7 @@ import { SourcePreview } from '../loopback/components/SourcePreview';
 import { BroadcastPipeline, BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import type { EncoderConfigured } from '../../media/encoder';
 import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
+import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
 
@@ -59,6 +61,8 @@ export function BroadcastPage() {
       },
     });
 
+    const { resolutionRung, framerateRung } = useBroadcastSettingsStore.getState();
+
     let activeId = broadcastId;
     let triedReclaim = false;
 
@@ -72,6 +76,7 @@ export function BroadcastPage() {
         makeCallbacks(false),
         activeId,
       );
+      pipeline.setLadder(resolutionRung, framerateRung);
       pipelineRef.current = pipeline;
       try {
         await pipeline.start();
@@ -105,6 +110,7 @@ export function BroadcastPage() {
       { certHashHex, publishSecret },
       makeCallbacks(triedReclaim),
     );
+    pipeline.setLadder(resolutionRung, framerateRung);
     pipelineRef.current = pipeline;
     try {
       await pipeline.start();
@@ -152,6 +158,8 @@ export function BroadcastPage() {
 
       <ServerSettings disabled={running} />
 
+      <LadderPicker onChange={(res, fps) => pipelineRef.current?.setLadder(res, fps)} />
+
       <div className={styles.controls}>
         {!running ? (
           <button onClick={handleStart} disabled={status === 'stopping'}>
@@ -184,10 +192,17 @@ export function BroadcastPage() {
           ['Capture path', capturePath ?? '—'],
           ['Codec', encoderInfo?.codec ?? '—'],
           ['Acceleration', encoderInfo?.acceleration ?? '—'],
+          [
+            'Sending',
+            encoderInfo
+              ? `${encoderInfo.width}×${encoderInfo.height} @ ${fmt(encoderInfo.framerate, 0)} (${fmt(encoderInfo.bitrate / 1_000_000, 1)} Mbps)`
+              : '—',
+          ],
           ['Encoder fps', fmt(stats?.encoderFps ?? NaN)],
           ['Encoded frames', String(stats?.encodedFrames ?? '—')],
           ['Keyframes', String(stats?.keyframes ?? '—')],
           ['Dropped (source)', String(stats?.droppedFrames ?? '—')],
+          ['Dropped (fps gate)', String(stats?.fpsGateDropped ?? '—')],
           ['Datagrams sent', String(stats?.datagramsSent ?? '—')],
           ['Sent', `${fmt((stats?.bytesSent ?? 0) / 1_000_000, 1)} MB`],
           ['Configs sent', String(stats?.configsSent ?? '—')],

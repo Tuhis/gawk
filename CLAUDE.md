@@ -99,7 +99,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   auto-reconnect, Docker, Helm, CI/release — **includes the deploy runbook**),
   `docs/06-multi-broadcaster.md` for R1 (multi-broadcaster design + E1–G2 chunks;
   implemented and verified), `docs/07-hardening.md` for R2 (limits, access
-  control, bandwidth cap; implemented, incl. post-implementation review).
+  control, bandwidth cap; implemented, incl. post-implementation review),
+  `docs/08-resolution-framerate-picker.md` for R3 (broadcaster ladder:
+  pre-encode scaling + fps gating, H1–H4 chunks).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -130,6 +132,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    limiting, defensive parsing, bandwidth cap, obfuscated `/statusz`;
    implemented 2026-07-13 with post-implementation review fixes — see
    `docs/07-hardening.md`).
+8. Broadcaster resolution & framerate picker — **implemented, manual verify
+   pending** (R3: native/1080p/720p/480p × native/60/30/5 ladder, pre-encode
+   OffscreenCanvas scaling + timestamp fps gate, ladder-scaled bitrate,
+   **keyframe cadence now time-based** (`keyframeIntervalMs: 2000`, was
+   `keyframeIntervalFrames: 120` — a frame-count GOP is 24 s at 5 fps),
+   live mid-stream changes via encoder recreate; zero server changes — see
+   `docs/08-resolution-framerate-picker.md`).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

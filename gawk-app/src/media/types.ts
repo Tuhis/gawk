@@ -6,7 +6,9 @@ export interface CaptureConfig {
   height: number;
   bitrate: number;
   framerate: number;
-  keyframeIntervalFrames: number;
+  // Time-based (docs/08): frame-count cadence would stretch the GOP to 24s
+  // at the ladder's 5 fps rung.
+  keyframeIntervalMs: number;
 }
 
 // Ordered by preference. Encoder walks this list and picks the first one
@@ -30,7 +32,7 @@ export const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
   height: 1080,
   bitrate: 6_000_000,
   framerate: 60,
-  keyframeIntervalFrames: 120,
+  keyframeIntervalMs: 2000,
 };
 
 export interface PipelineStats {

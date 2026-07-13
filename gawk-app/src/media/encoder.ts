@@ -22,6 +22,27 @@ const CONFIG_VARIANTS: ConfigVariant[] = [
 
 export type Acceleration = 'hardware' | 'software' | 'unknown';
 
+// Time-based keyframe cadence (docs/08): a keyframe is forced when the frame
+// timestamp is at least the interval past the last keyframe's. Frame-count
+// cadence would stretch the GOP to 24s at the ladder's 5 fps rung. Pure —
+// unit-tested in encoder-keyframe.test.ts.
+export class KeyframeCadence {
+  private intervalUs: number;
+  private lastKeyframeTsUs: number | null = null;
+
+  constructor(intervalMs: number) {
+    this.intervalUs = intervalMs * 1000;
+  }
+
+  shouldKeyframe(timestampUs: number): boolean {
+    if (this.lastKeyframeTsUs === null || timestampUs - this.lastKeyframeTsUs >= this.intervalUs) {
+      this.lastKeyframeTsUs = timestampUs;
+      return true;
+    }
+    return false;
+  }
+}
+
 function classifyAcceleration(
   variant: ConfigVariant,
   resolved: HardwareAcceleration | undefined,
@@ -40,6 +61,10 @@ export interface EncoderConfigured {
   codec: string;
   variantLabel: string;
   acceleration: Acceleration;
+  width: number;
+  height: number;
+  framerate: number;
+  bitrate: number;
 }
 
 export interface EncodedFrame {
@@ -58,14 +83,17 @@ export interface EncoderCallbacks {
 export class Encoder {
   private encoder: VideoEncoder;
   private config: CaptureConfig;
-  private frameIndex = 0;
+  private cadence: KeyframeCadence;
   private captureStartMap = new Map<number, number>();
   private chosenCodec: string | null = null;
+  private disposed = false;
 
   constructor(config: CaptureConfig, callbacks: EncoderCallbacks) {
     this.config = config;
+    this.cadence = new KeyframeCadence(config.keyframeIntervalMs);
     this.encoder = new VideoEncoder({
       output: (chunk, meta) => {
+        if (this.disposed) return;
         const captureTsUs = chunk.timestamp;
         const encodeStartMs = this.captureStartMap.get(captureTsUs) ?? performance.now();
         this.captureStartMap.delete(captureTsUs);
@@ -77,7 +105,10 @@ export class Encoder {
           encodeEndMs: performance.now(),
         });
       },
-      error: (e) => callbacks.onError(e instanceof Error ? e : new Error(String(e))),
+      error: (e) => {
+        if (this.disposed) return;
+        callbacks.onError(e instanceof Error ? e : new Error(String(e)));
+      },
     });
   }
 
@@ -105,7 +136,15 @@ export class Encoder {
               `Encoder accepted ${codec} with variant "${variant.label}" (${acceleration}); resolved config:`,
               finalConfig,
             );
-            return { codec, variantLabel: variant.label, acceleration };
+            return {
+              codec,
+              variantLabel: variant.label,
+              acceleration,
+              width: this.config.width,
+              height: this.config.height,
+              framerate: this.config.framerate,
+              bitrate: this.config.bitrate,
+            };
           }
           attempts.push(`${codec}/${variant.label}: unsupported`);
         } catch (e) {
@@ -126,15 +165,24 @@ export class Encoder {
   encode(frame: VideoFrame): boolean {
     if (this.encoder.state !== 'configured') return false;
     if (this.encoder.encodeQueueSize > 2) return false;
-    const keyFrame = this.frameIndex % this.config.keyframeIntervalFrames === 0;
+    const keyFrame = this.cadence.shouldKeyframe(frame.timestamp);
     this.captureStartMap.set(frame.timestamp, performance.now());
     this.encoder.encode(frame, { keyFrame });
-    this.frameIndex++;
     return true;
   }
 
   get queueSize(): number {
     return this.encoder.encodeQueueSize;
+  }
+
+  // Immediate teardown for the mid-stream ladder-change path: no flush —
+  // in-flight frames are deliberately dropped (drops over stalls), and any
+  // late callbacks from the browser are suppressed so a dying encoder can't
+  // fail the pipeline that already replaced it.
+  dispose(): void {
+    this.disposed = true;
+    if (this.encoder.state !== 'closed') this.encoder.close();
+    this.captureStartMap.clear();
   }
 
   async close(): Promise<void> {

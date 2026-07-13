@@ -5,6 +5,8 @@
 import { log } from '../lib/logger';
 import { startCapture, stopCapture, type CaptureHandle } from '../media/capture';
 import { Encoder, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
+import { computeBitrate, type FramerateRung, type ResolutionRung } from '../media/ladder';
+import { FramePreprocessor } from '../media/preprocess';
 import type { CaptureConfig } from '../media/types';
 import { connectWebTransport, DatagramSender, type ConnectOptions } from './connection';
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
@@ -14,6 +16,7 @@ export interface BroadcastStats {
   encodedFrames: number;
   keyframes: number;
   droppedFrames: number;
+  fpsGateDropped: number;
   datagramsSent: number;
   bytesSent: number;
   configsSent: number;
@@ -26,6 +29,7 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   encodedFrames: 0,
   keyframes: 0,
   droppedFrames: 0,
+  fpsGateDropped: 0,
   datagramsSent: 0,
   bytesSent: 0,
   configsSent: 0,
@@ -78,6 +82,16 @@ export class BroadcastPipeline {
   private capture: CaptureHandle | null = null;
   private encoder: Encoder | null = null;
   private stopping = false;
+
+  // R3 ladder (docs/08): gate + scale before encode. The encoder is
+  // recreated — not reconfigured — whenever the preprocessed frames stop
+  // matching its configured size, or a ladder change is flagged.
+  private preprocessor = new FramePreprocessor();
+  private ladderFps: FramerateRung = 'native';
+  private pendingEncoderReset = false;
+  private encoderIniting = false;
+  private encoderDims: { width: number; height: number } | null = null;
+  private nativeFps: number | null = null;
 
   private nextFrameId = 0;
   // Latest DecoderConfig datagram; re-sent immediately before every
@@ -180,13 +194,27 @@ export class BroadcastPipeline {
     }
   }
 
+  // Live ladder change: takes effect on the next captured frame. Safe to
+  // call any time (before start(), while running). Resolution changes are
+  // caught by the dimension check; framerate-only changes need the explicit
+  // reset flag because the frame size doesn't move (the encoder's
+  // framerate/bitrate config must still follow the rung).
+  setLadder(resolution: ResolutionRung, framerate: FramerateRung): void {
+    this.ladderFps = framerate;
+    this.preprocessor.setTarget(resolution, framerate);
+    this.pendingEncoderReset = true;
+  }
+
   private async startMedia(): Promise<void> {
     this.capture = await startCapture(this.config);
     log.info('Capture path:', this.capture.capturePath);
     this.cb.onCapturePathChosen(this.capture.capturePath);
     this.cb.onSourceStream(this.capture.stream);
 
-    const settings = this.capture.track.getSettings();
+    // Framerate is the one setting still taken from getSettings(): frames
+    // don't carry a rate, and it only seeds the encoder's rate-control hint
+    // when the framerate rung is 'native'.
+    this.nativeFps = this.capture.track.getSettings().frameRate ?? null;
 
     this.capture.track.addEventListener('ended', () => {
       log.info('Capture track ended (user stopped sharing).');
@@ -196,62 +224,94 @@ export class BroadcastPipeline {
     this.lastStatsAt = performance.now();
     this.statsTimer = window.setInterval(() => this.publishStats(), 500);
 
-    // Encoder is configured from the FIRST frame's actual dimensions, not
-    // track.getSettings() — see docs/01-loopback-test.md.
-    let encoderInitStarted = false;
-
     await this.capture.startFrames((frame) => {
       if (this.stopping) {
         frame.close();
         return;
       }
 
-      if (!this.encoder && !encoderInitStarted) {
-        encoderInitStarted = true;
-        log.info(
-          `First captured frame: display=${frame.displayWidth}x${frame.displayHeight}, coded=${frame.codedWidth}x${frame.codedHeight}`,
-        );
-        const negotiatedConfig: CaptureConfig = {
-          ...this.config,
-          width: roundDownToEven(frame.displayWidth),
-          height: roundDownToEven(frame.displayHeight),
-          framerate: settings.frameRate ?? this.config.framerate,
-        };
-        const enc = new Encoder(negotiatedConfig, {
-          onEncoded: (encoded) => this.handleEncoded(encoded),
-          onError: (e) => this.fail(e),
-        });
-        const firstFrame = frame;
-        void enc
-          .configure()
-          .then((chosen) => {
-            if (this.stopping) {
-              firstFrame.close();
-              return;
-            }
-            this.encoder = enc;
-            this.cb.onEncoderConfigured(chosen);
-            const accepted = enc.encode(firstFrame);
-            if (!accepted) this.stats.droppedFrames++;
-            firstFrame.close();
-          })
-          .catch((e) => {
-            firstFrame.close();
-            this.fail(e instanceof Error ? e : new Error(String(e)));
-          });
-        return;
+      const processed = this.preprocessor.process(frame);
+      if (!processed) return; // fps gate drop; frame closed inside
+
+      // Encoder no longer matches what we're sending (ladder change, or the
+      // source itself changed dimensions): dispose and renegotiate from this
+      // frame, exactly like first-frame startup.
+      if (this.encoder && (this.pendingEncoderReset || this.dimsChanged(processed))) {
+        log.info('Encoder reset: ladder or source dimensions changed.');
+        this.encoder.dispose();
+        this.encoder = null;
+        this.encoderDims = null;
       }
 
       if (!this.encoder) {
-        frame.close();
-        this.stats.droppedFrames++;
+        if (this.encoderIniting) {
+          processed.close();
+          this.stats.droppedFrames++;
+          return;
+        }
+        this.initEncoder(processed);
         return;
       }
 
-      const accepted = this.encoder.encode(frame);
+      const accepted = this.encoder.encode(processed);
       if (!accepted) this.stats.droppedFrames++;
-      frame.close();
+      processed.close();
     });
+  }
+
+  private dimsChanged(frame: VideoFrame): boolean {
+    return (
+      this.encoderDims !== null &&
+      (this.encoderDims.width !== roundDownToEven(frame.displayWidth) ||
+        this.encoderDims.height !== roundDownToEven(frame.displayHeight))
+    );
+  }
+
+  // (Re)creates the encoder from an actual frame's dimensions — never
+  // track.getSettings() (see docs/01-loopback-test.md). Consumes the frame:
+  // it becomes the encoder's first input (a keyframe) on success.
+  private initEncoder(firstFrame: VideoFrame): void {
+    this.encoderIniting = true;
+    this.pendingEncoderReset = false;
+    log.info(
+      `Configuring encoder from frame: display=${firstFrame.displayWidth}x${firstFrame.displayHeight}, coded=${firstFrame.codedWidth}x${firstFrame.codedHeight}`,
+    );
+    const width = roundDownToEven(firstFrame.displayWidth);
+    const height = roundDownToEven(firstFrame.displayHeight);
+    const framerate = this.ladderFps === 'native' ? (this.nativeFps ?? this.config.framerate) : this.ladderFps;
+    const negotiatedConfig: CaptureConfig = {
+      ...this.config,
+      width,
+      height,
+      framerate,
+      bitrate: computeBitrate(width, height, framerate),
+    };
+    const enc = new Encoder(negotiatedConfig, {
+      onEncoded: (encoded) => this.handleEncoded(encoded),
+      onError: (e) => this.fail(e),
+    });
+    void enc
+      .configure()
+      .then((chosen) => {
+        if (this.stopping) {
+          firstFrame.close();
+          enc.dispose();
+          return;
+        }
+        this.encoder = enc;
+        this.encoderDims = { width, height };
+        this.encoderIniting = false;
+        this.cb.onEncoderConfigured(chosen);
+        const accepted = enc.encode(firstFrame);
+        if (!accepted) this.stats.droppedFrames++;
+        firstFrame.close();
+      })
+      .catch((e) => {
+        firstFrame.close();
+        enc.dispose();
+        this.encoderIniting = false;
+        this.fail(e instanceof Error ? e : new Error(String(e)));
+      });
   }
 
   private handleEncoded(encoded: EncodedFrame): void {
@@ -324,6 +384,7 @@ export class BroadcastPipeline {
     if (dt > 0) this.stats.encoderFps = this.encodedSinceStats / dt;
     this.encodedSinceStats = 0;
     this.lastStatsAt = now;
+    this.stats.fpsGateDropped = this.preprocessor.getStats().gateDropped;
     this.cb.onStats({ ...this.stats });
   }
 

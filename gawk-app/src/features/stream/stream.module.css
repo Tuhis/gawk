@@ -56,6 +56,35 @@
   opacity: 0.5;
 }
 
+.field select {
+  font: inherit;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+}
+
+.field select:disabled {
+  opacity: 0.5;
+}
+
+/* R3 ladder picker: two compact selects, usable mid-broadcast. */
+.ladderPicker {
+  display: flex;
+  gap: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+
+.ladderPicker .field {
+  min-width: 140px;
+}
+
 .controls {
   display: flex;
   align-items: center;

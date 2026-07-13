@@ -21,7 +21,7 @@ feature set exists).
 |---|------|--------|
 | R1 | [Multi-broadcaster support](#r1--multi-broadcaster-support) | ✅ done ([docs/06](docs/06-multi-broadcaster.md)) |
 | R2 | [Hardening](#r2--hardening) | ✅ done ([docs/07](docs/07-hardening.md)) |
-| R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | not started |
+| R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | 🚧 implemented, manual verify pending ([docs/08](docs/08-resolution-framerate-picker.md)) |
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | not started |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
 | R6 | [Production UI](#r6--production-ui) | not started |
@@ -157,9 +157,11 @@ machinery.
 - **Framerate limiting = timestamp-based frame dropping before encode** —
   skip frames until the inter-frame interval matches the target. No capture
   renegotiation here either.
-- Selected resolution means "cap the longer dimension, preserve aspect
-  ratio" — ultrawide native sources scale to e.g. 1080-height equivalents,
-  they don't get squeezed to 16:9.
+- Selected resolution means "cap the longer dimension at the rung's 16:9
+  width equivalent (1080p → 1920), preserve aspect ratio" — ultrawide
+  3440×1440 at 1080p becomes 1920×804, not a 16:9 squeeze. Capping the
+  longer dimension (not the shorter) keeps total pixel count bounded even
+  for pathological aspect ratios like 25000×1080.
 - Encoder reconfiguration on ladder change (new config → new keyframe →
   viewers' decoders reconfigure via the existing DecoderConfig re-emit path —
   this flow already exists for late joiners and should be verified for
@@ -178,7 +180,9 @@ important here — derive all dimensions from the actual `VideoFrame` in hand,
 never `getSettings()`; and keep H.264's even-dimension requirement when
 computing scaled sizes.
 
-**Status**: not started.
+**Status**: implemented 2026-07-13 (chunks H1–H3 + automated gates; manual
+browser verification pending) — see
+[`docs/08-resolution-framerate-picker.md`](docs/08-resolution-framerate-picker.md).
 
 ## R4 — Automatic resolution fallback
 
