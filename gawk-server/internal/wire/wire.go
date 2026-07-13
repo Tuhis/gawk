@@ -67,7 +67,7 @@ const (
 	MaxChunkPayload = MaxDatagramSize - VideoChunkHeaderSize
 	// MaxChunkCount is the maximum number of chunks permitted in a keyframe
 	// to prevent memory inflation attacks.
-	MaxChunkCount = 1000
+	MaxChunkCount = 3000
 )
 
 // flagKeyframe is bit 0 of the VideoChunk flags byte.

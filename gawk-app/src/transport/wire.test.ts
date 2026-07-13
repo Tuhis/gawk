@@ -64,7 +64,7 @@ describe('constants', () => {
     expect(MAX_DATAGRAM_SIZE).toBe(1200);
     expect(VIDEO_CHUNK_HEADER_SIZE).toBe(20);
     expect(MAX_CHUNK_PAYLOAD).toBe(1180);
-    expect(MAX_CHUNK_COUNT).toBe(1000);
+    expect(MAX_CHUNK_COUNT).toBe(3000);
     expect(TYPE_BROADCAST_ANNOUNCE).toBe(0x03);
     expect(CLOSE_CODE_BROADCAST_ENDED).toBe(4000);
   });

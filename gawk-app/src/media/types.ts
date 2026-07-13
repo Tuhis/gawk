@@ -28,8 +28,8 @@ export const DEFAULT_CODEC_PREFERENCES: string[] = [
 
 export const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
   codecPreferences: DEFAULT_CODEC_PREFERENCES,
-  width: 1920,
-  height: 1080,
+  width: 3840,
+  height: 2160,
   bitrate: 6_000_000,
   framerate: 60,
   keyframeIntervalMs: 2000,

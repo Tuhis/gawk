@@ -38,7 +38,7 @@ export const MAX_CHUNK_PAYLOAD = MAX_DATAGRAM_SIZE - VIDEO_CHUNK_HEADER_SIZE;
 // Mirrors wire.MaxChunkCount: the relay drops any chunk whose count exceeds
 // this (memory-inflation defense), so a frame that needs more chunks can
 // never reach viewers — the encoder must fail loudly instead.
-export const MAX_CHUNK_COUNT = 1000;
+export const MAX_CHUNK_COUNT = 3000;
 
 const FLAG_KEYFRAME = 0x01;
 
