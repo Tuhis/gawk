@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.10.1...gawk-server-v0.11.0) (2026-07-13)
+
+
+### Features
+
+* **media:** increase default capture resolution to 4K and chunk cap to 3000 ([789fa6b](https://github.com/Tuhis/gawk/commit/789fa6b9f89e21c892dd01384a1f1ca35ac2cddb))
+
 ## [0.10.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.10.0...gawk-server-v0.10.1) (2026-07-13)
 
 
