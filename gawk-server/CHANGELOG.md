@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.10.0...gawk-server-v0.10.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* disable sysctl initContainer by default ([80a2fd6](https://github.com/Tuhis/gawk/commit/80a2fd690877d6c774dc85b7efc4b339add02d08))
+
 ## [0.10.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.9.1...gawk-server-v0.10.0) (2026-07-13)
 
 
