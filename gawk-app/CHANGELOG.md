@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.11.0...gawk-app-v0.12.0) (2026-07-13)
+
+
+### Features
+
+* **media:** add 4K-compatible H.264 level profiles to default preferences ([14eacbe](https://github.com/Tuhis/gawk/commit/14eacbe028afa8b29d3a5f76282c53825ef564d8))
+* **media:** increase default capture resolution to 4K and chunk cap to 3000 ([789fa6b](https://github.com/Tuhis/gawk/commit/789fa6b9f89e21c892dd01384a1f1ca35ac2cddb))
+
 ## [0.11.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.10.0...gawk-app-v0.11.0) (2026-07-13)
 
 
