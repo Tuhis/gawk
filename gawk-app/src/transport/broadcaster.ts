@@ -5,7 +5,14 @@
 import { log } from '../lib/logger';
 import { startCapture, stopCapture, type CaptureHandle } from '../media/capture';
 import { Encoder, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
-import { computeBitrate, type FramerateRung, type ResolutionRung } from '../media/ladder';
+import {
+  autoLadder,
+  computeBitrate,
+  type FramerateRung,
+  type ResolutionRung,
+  type ResolutionSelection,
+} from '../media/ladder';
+import { FallbackController } from '../media/fallback';
 import { FramePreprocessor } from '../media/preprocess';
 import type { CaptureConfig } from '../media/types';
 import { connectWebTransport, DatagramSender, type ConnectOptions } from './connection';
@@ -23,6 +30,15 @@ export interface BroadcastStats {
   encoderQueueDepth: number;
   encoderFps: number;
   lastEncodeLatencyMs: number;
+  // R4 automatic-fallback observability (docs/09). autoRung is the currently
+  // applied ladder rung in auto mode, null in explicit mode. encoderPressure
+  // is the explicit-mode passive warning: the encoder can't keep up but the
+  // rung is held because the broadcaster chose it.
+  autoRung: ResolutionRung | null;
+  autoAtFloor: boolean;
+  autoStepDowns: number;
+  autoStepUps: number;
+  encoderPressure: boolean;
 }
 
 const EMPTY_BROADCAST_STATS: BroadcastStats = {
@@ -36,6 +52,11 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   encoderQueueDepth: 0,
   encoderFps: 0,
   lastEncodeLatencyMs: 0,
+  autoRung: null,
+  autoAtFloor: false,
+  autoStepDowns: 0,
+  autoStepUps: 0,
+  encoderPressure: false,
 };
 
 export interface BroadcastCallbacks {
@@ -93,6 +114,17 @@ export class BroadcastPipeline {
   private encoderDims: { width: number; height: number } | null = null;
   private nativeFps: number | null = null;
 
+  // R4 automatic fallback (docs/09). The controller is pure and timer-free;
+  // the pipeline resolves its direction decisions against a per-source
+  // effective ladder. Auto state is runtime-only — reset to the ceiling on
+  // every start and on any resolution-selection change (Decision 6).
+  private resolutionSelection: ResolutionSelection = 'auto';
+  private controller = new FallbackController();
+  private autoRungs: ResolutionRung[] | null = null;
+  private autoIndex = 0;
+  private autoSrcLongerDim: number | null = null;
+  private now: () => number;
+
   private nextFrameId = 0;
   // Latest DecoderConfig datagram; re-sent immediately before every
   // keyframe so a viewer that missed it can always recover at the next
@@ -110,12 +142,16 @@ export class BroadcastPipeline {
     connectOpts: ConnectOptions,
     callbacks: BroadcastCallbacks,
     broadcastId?: string,
+    // Injectable clock (defaults to performance.now); the R4 controller's
+    // decisions are time-based, so tests drive it deterministically.
+    now: () => number = () => performance.now(),
   ) {
     this.config = config;
     this.serverUrl = serverUrl;
     this.connectOpts = connectOpts;
     this.cb = callbacks;
     this.broadcastId = broadcastId;
+    this.now = now;
   }
 
   async start(): Promise<void> {
@@ -199,10 +235,51 @@ export class BroadcastPipeline {
   // caught by the dimension check; framerate-only changes need the explicit
   // reset flag because the frame size doesn't move (the encoder's
   // framerate/bitrate config must still follow the rung).
-  setLadder(resolution: ResolutionRung, framerate: FramerateRung): void {
+  //
+  // R4 (docs/09): the resolution axis is a ResolutionSelection. 'auto' walks
+  // the ladder on its own; an explicit rung is honored unconditionally (never
+  // auto-stepped). A resolution-selection change resets auto state to the
+  // ceiling (Decision 6); a framerate-only change keeps the current auto rung.
+  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void {
+    const selectionChanged = selection !== this.resolutionSelection;
+    this.resolutionSelection = selection;
     this.ladderFps = framerate;
-    this.preprocessor.setTarget(resolution, framerate);
+
+    if (selection === 'auto') {
+      if (selectionChanged) {
+        // Switched into auto: restart optimistically at the ceiling.
+        this.autoRungs = null;
+        this.autoSrcLongerDim = null;
+        this.autoIndex = 0;
+        this.stats.autoAtFloor = false;
+        this.stats.encoderPressure = false;
+      }
+      // 'native' is always the ceiling; a framerate-only change keeps the
+      // rung the auto ladder had already settled on.
+      this.preprocessor.setTarget(this.currentAutoRung() ?? 'native', framerate);
+    } else {
+      // Explicit rung: drives the preprocessor directly, forever.
+      this.autoRungs = null;
+      this.autoSrcLongerDim = null;
+      this.autoIndex = 0;
+      this.stats.autoAtFloor = false;
+      this.stats.encoderPressure = false;
+      this.preprocessor.setTarget(selection, framerate);
+    }
+
     this.pendingEncoderReset = true;
+    // A live encoder means this call causes a real recreate; discard the
+    // renegotiation churn and give the new config a fair evaluation window.
+    // Before start() there is no encoder and nothing to reset — and a
+    // startup cooldown would needlessly blind the controller to the first
+    // seconds of the stream.
+    if (this.encoder) this.controller.noteReset(this.now());
+  }
+
+  private currentAutoRung(): ResolutionRung | null {
+    if (this.resolutionSelection !== 'auto') return null;
+    if (this.autoRungs === null) return 'native'; // ceiling, before the first frame
+    return this.autoRungs[this.autoIndex];
   }
 
   private async startMedia(): Promise<void> {
@@ -221,13 +298,20 @@ export class BroadcastPipeline {
       void this.stop();
     });
 
-    this.lastStatsAt = performance.now();
+    this.lastStatsAt = this.now();
     this.statsTimer = window.setInterval(() => this.publishStats(), 500);
 
     await this.capture.startFrames((frame) => {
       if (this.stopping) {
         frame.close();
         return;
+      }
+
+      // Auto mode resolves against a per-source effective ladder; the source
+      // (captured) dimensions determine which rungs actually shrink the
+      // picture. Read them from the raw frame before preprocessing consumes it.
+      if (this.resolutionSelection === 'auto') {
+        this.updateAutoLadder(Math.max(frame.displayWidth, frame.displayHeight));
       }
 
       const processed = this.preprocessor.process(frame);
@@ -256,7 +340,68 @@ export class BroadcastPipeline {
       const accepted = this.encoder.encode(processed);
       if (!accepted) this.stats.droppedFrames++;
       processed.close();
+
+      // Feed every accept/reject outcome to the fallback controller and act
+      // on its decision (R4, docs/09). fps-gate drops never reach here — they
+      // are not encoder backpressure — so the ratio stays self-normalizing.
+      this.applyDecision(this.controller.record(accepted, this.now()));
     });
+  }
+
+  // Recomputes the auto ladder when the source dimensions first appear or
+  // change (a window-share resize). A change resets to the ceiling and a
+  // fresh baseline — rare, and better than guessing an equivalent index.
+  private updateAutoLadder(srcLongerDim: number): void {
+    if (this.autoRungs === null) {
+      this.autoRungs = autoLadder(srcLongerDim);
+      this.autoSrcLongerDim = srcLongerDim;
+      this.autoIndex = 0;
+      return;
+    }
+    if (srcLongerDim === this.autoSrcLongerDim) return;
+    this.autoRungs = autoLadder(srcLongerDim);
+    this.autoSrcLongerDim = srcLongerDim;
+    this.autoIndex = 0;
+    this.stats.autoAtFloor = false;
+    this.preprocessor.setTarget('native', this.ladderFps);
+    this.pendingEncoderReset = true;
+    this.controller.noteReset(this.now());
+  }
+
+  // Acts on a controller decision. In auto mode it walks the ladder; in
+  // explicit mode a would-be step-down only raises the passive pressure
+  // warning (Decision 8) — the rung is never touched.
+  private applyDecision(decision: 'none' | 'stepDown' | 'stepUp'): void {
+    if (decision === 'none') return;
+    if (this.resolutionSelection !== 'auto') {
+      this.stats.encoderPressure = decision === 'stepDown';
+      return;
+    }
+    this.stepAuto(decision === 'stepDown' ? 1 : -1);
+  }
+
+  // Moves the auto ladder index by delta (+1 down a rung, -1 up), updates the
+  // preprocessor and flags the encoder reset. A step demanded past the floor
+  // or ceiling takes no action and latches the controller so it doesn't
+  // re-fire every frame.
+  private stepAuto(delta: 1 | -1): void {
+    if (!this.autoRungs) return;
+    const next = this.autoIndex + delta;
+    if (next < 0) {
+      this.controller.stepRejected('up'); // already at the ceiling
+      return;
+    }
+    if (next >= this.autoRungs.length) {
+      this.controller.stepRejected('down'); // already at the floor
+      this.stats.autoAtFloor = true;
+      return;
+    }
+    this.autoIndex = next;
+    this.stats.autoAtFloor = false;
+    if (delta > 0) this.stats.autoStepDowns++;
+    else this.stats.autoStepUps++;
+    this.preprocessor.setTarget(this.autoRungs[this.autoIndex], this.ladderFps);
+    this.pendingEncoderReset = true;
   }
 
   private dimsChanged(frame: VideoFrame): boolean {
@@ -288,7 +433,7 @@ export class BroadcastPipeline {
     };
     const enc = new Encoder(negotiatedConfig, {
       onEncoded: (encoded) => this.handleEncoded(encoded),
-      onError: (e) => this.fail(e),
+      onError: (e) => this.handleEncoderError(e),
     });
     void enc
       .configure()
@@ -373,18 +518,45 @@ export class BroadcastPipeline {
       });
   }
 
+  // A mid-stream encoder error. In explicit mode it stays fatal (silently
+  // switching resolution against an explicit choice is exactly what Decision 4
+  // rules out). In auto mode it is the strongest backpressure evidence: step
+  // down one rung and recreate, bounded — a second error inside the controller's
+  // window, or an error at the floor, fails for real (Decision 7).
+  private handleEncoderError(err: Error): void {
+    if (this.resolutionSelection !== 'auto') {
+      this.fail(err);
+      return;
+    }
+    if (this.controller.onEncoderError(this.now()) === 'fail') {
+      this.fail(err);
+      return;
+    }
+    log.warn('Encoder error in auto mode; stepping down one rung and recreating:', err);
+    this.encoder?.dispose();
+    this.encoder = null;
+    this.encoderDims = null;
+    const before = this.autoIndex;
+    this.stepAuto(1);
+    if (this.autoIndex === before) {
+      // Already at the floor — nothing lower to fall back to.
+      this.fail(err);
+    }
+  }
+
   private handleSessionGone(err: Error | null): void {
     if (this.stopping) return;
     this.fail(err ?? new Error('WebTransport session closed by server'));
   }
 
   private publishStats(): void {
-    const now = performance.now();
+    const now = this.now();
     const dt = (now - this.lastStatsAt) / 1000;
     if (dt > 0) this.stats.encoderFps = this.encodedSinceStats / dt;
     this.encodedSinceStats = 0;
     this.lastStatsAt = now;
     this.stats.fpsGateDropped = this.preprocessor.getStats().gateDropped;
+    this.stats.autoRung = this.currentAutoRung();
     this.cb.onStats({ ...this.stats });
   }
 

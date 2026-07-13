@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   FRAMERATE_RUNGS,
   RESOLUTION_RUNGS,
+  RESOLUTION_SELECTIONS,
+  autoLadder,
   computeBitrate,
   computeTargetSize,
 } from './ladder';
@@ -16,6 +18,35 @@ describe('RESOLUTION_RUNGS / FRAMERATE_RUNGS', () => {
   it('cover the ladder from the design doc', () => {
     expect(RESOLUTION_RUNGS).toEqual(['native', 1080, 720, 480]);
     expect(FRAMERATE_RUNGS).toEqual(['native', 60, 30, 5]);
+  });
+});
+
+describe('RESOLUTION_SELECTIONS', () => {
+  it('leads with auto as the default, followed by the explicit rungs', () => {
+    expect(RESOLUTION_SELECTIONS[0]).toBe('auto');
+    expect(RESOLUTION_SELECTIONS).toEqual(['auto', ...RESOLUTION_RUNGS]);
+  });
+});
+
+describe('autoLadder', () => {
+  it('yields the full ladder for a 4K source', () => {
+    expect(autoLadder(3840)).toEqual(['native', 1080, 720, 480]);
+  });
+
+  it('skips the no-op 1080 rung for a 1080p source (its 1920 cap would not shrink it)', () => {
+    expect(autoLadder(1920)).toEqual(['native', 720, 480]);
+  });
+
+  it('skips 1080 and 720 for a 720p source', () => {
+    expect(autoLadder(1280)).toEqual(['native', 480]);
+  });
+
+  it('yields only native for a source at the 480 cap', () => {
+    expect(autoLadder(854)).toEqual(['native']);
+  });
+
+  it('yields only native for a sub-480p source', () => {
+    expect(autoLadder(640)).toEqual(['native']);
   });
 });
 

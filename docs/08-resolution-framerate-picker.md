@@ -31,7 +31,7 @@ must prove it works.
 | H1 | Ladder + gate pure logic (`media/ladder.ts`, `FpsGate` in `media/preprocess.ts`) | Unit tests (written first) pass: target-size math (16:9 downscale, ultrawide, portrait, never-upscale, even-dimension rounding), fps-gate cadence (60→30, 60→5, jitter tolerance, stall recovery, native passthrough), bitrate policy (reference points + clamps) | ✅ done (2026-07-13; tests red-then-green) |
 | H2 | Pipeline integration (`FramePreprocessor` scaler, time-based keyframe cadence in `encoder.ts`, encoder re-init on target change + `setLadder()` in `broadcaster.ts`) | Existing vitest suite still green; keyframe cadence unit test passes (time-based, not frame-count); `broadcaster.ts` compiles with preprocessor stage inserted and re-init path in place; loopback pipeline unaffected at native/native | ✅ done (2026-07-13) |
 | H3 | Picker UI (`broadcastSettingsStore`, picker on BroadcastPage, stats rows) | Store persists rungs to localStorage; picker enabled while broadcasting; stats grid shows actual output resolution/fps/bitrate and fps-gate drops; lint + build green | ✅ done (2026-07-13) |
-| H4 | Verification + docs sync | `npm test`, `npm run lint`, `npm run build` all green; manual browser matrix + mid-stream-change verify passed (see Manual Verification); README gotchas + ROADMAP + CLAUDE.md synced | 🚧 automated gates green + docs synced (2026-07-13); **manual browser verify pending** |
+| H4 | Verification + docs sync | `npm test`, `npm run lint`, `npm run build` all green; manual browser matrix + mid-stream-change verify passed (see Manual Verification); README gotchas + ROADMAP + CLAUDE.md synced | ✅ done (manual browser verify passed 2026-07-13) |
 
 Goal → verified-by, for the cross-cutting behaviors:
 

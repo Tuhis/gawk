@@ -7,12 +7,18 @@ import { fmt } from '../../lib/format';
 import { SourcePreview } from '../loopback/components/SourcePreview';
 import { BroadcastPipeline, BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import type { EncoderConfigured } from '../../media/encoder';
+import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
 import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
 
 type Status = 'idle' | 'connecting' | 'broadcasting' | 'stopping' | 'error';
+
+function selectionLabel(selection: ResolutionSelection): string {
+  if (selection === 'auto') return 'auto';
+  return selection === 'native' ? 'native' : `${selection}p`;
+}
 
 export function BroadcastPage() {
   const pipelineRef = useRef<BroadcastPipeline | null>(null);
@@ -25,6 +31,10 @@ export function BroadcastPage() {
   const [broadcastId, setBroadcastId] = useState<string | null>(null);
   const [reclaimFailedNote, setReclaimFailedNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // The explicit rung the broadcaster picked, for the explicit-mode pressure
+  // warning ("can't keep up at 1080p"). In auto mode the applied rung comes
+  // from stats.autoRung instead.
+  const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
 
   const handleStart = useCallback(async () => {
     if (pipelineRef.current) return;
@@ -61,7 +71,7 @@ export function BroadcastPage() {
       },
     });
 
-    const { resolutionRung, framerateRung } = useBroadcastSettingsStore.getState();
+    const { resolutionSelection, framerateRung } = useBroadcastSettingsStore.getState();
 
     let activeId = broadcastId;
     let triedReclaim = false;
@@ -76,7 +86,7 @@ export function BroadcastPage() {
         makeCallbacks(false),
         activeId,
       );
-      pipeline.setLadder(resolutionRung, framerateRung);
+      pipeline.setLadder(resolutionSelection, framerateRung);
       pipelineRef.current = pipeline;
       try {
         await pipeline.start();
@@ -110,7 +120,7 @@ export function BroadcastPage() {
       { certHashHex, publishSecret },
       makeCallbacks(triedReclaim),
     );
-    pipeline.setLadder(resolutionRung, framerateRung);
+    pipeline.setLadder(resolutionSelection, framerateRung);
     pipelineRef.current = pipeline;
     try {
       await pipeline.start();
@@ -185,6 +195,31 @@ export function BroadcastPage() {
       {reclaimFailedNote && <div className={styles.notice}>{reclaimFailedNote}</div>}
       {error && status === 'error' && <div className={styles.error}>Error: {error}</div>}
 
+      {/* R4 auto-mode indicator: shown whenever the applied rung is below the
+          ceiling. Recovery is automatic — no buttons. */}
+      {stats?.autoAtFloor ? (
+        <div className={styles.warning}>
+          Encoder can&apos;t keep up even at {selectionLabel(stats.autoRung ?? 480)} — try a lower
+          framerate or close other apps.
+        </div>
+      ) : (
+        stats?.autoRung != null &&
+        stats.autoRung !== 'native' && (
+          <div className={styles.autoNotice}>
+            Auto: sending at {selectionLabel(stats.autoRung)} — encoder couldn&apos;t keep up higher.
+            Recovery is automatic.
+          </div>
+        )
+      )}
+
+      {/* R4 explicit-mode passive warning (display-only, no actuation). */}
+      {stats?.encoderPressure && (
+        <div className={styles.warning}>
+          Encoder can&apos;t keep up at {selectionLabel(resolutionSelection)} — frames are being
+          dropped. Consider auto or a lower rung.
+        </div>
+      )}
+
       <SourcePreview stream={sourceStream} />
 
       <StatsGrid
@@ -203,6 +238,15 @@ export function BroadcastPage() {
           ['Keyframes', String(stats?.keyframes ?? '—')],
           ['Dropped (source)', String(stats?.droppedFrames ?? '—')],
           ['Dropped (fps gate)', String(stats?.fpsGateDropped ?? '—')],
+          [
+            'Auto rung',
+            stats?.autoRung == null
+              ? '—'
+              : stats.autoAtFloor
+                ? `${selectionLabel(stats.autoRung)} (at floor)`
+                : selectionLabel(stats.autoRung),
+          ],
+          ['Auto steps (down/up)', stats ? `${stats.autoStepDowns} / ${stats.autoStepUps}` : '—'],
           ['Datagrams sent', String(stats?.datagramsSent ?? '—')],
           ['Sent', `${fmt((stats?.bytesSent ?? 0) / 1_000_000, 1)} MB`],
           ['Configs sent', String(stats?.configsSent ?? '—')],

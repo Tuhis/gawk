@@ -9,6 +9,13 @@ export type FramerateRung = 'native' | 60 | 30 | 5;
 export const RESOLUTION_RUNGS: readonly ResolutionRung[] = ['native', 1080, 720, 480];
 export const FRAMERATE_RUNGS: readonly FramerateRung[] = ['native', 60, 30, 5];
 
+// R4 (docs/09): "auto" is a selection, not a rung — the picker's resolution
+// axis. Everything downstream (computeTargetSize, the preprocessor) stays
+// concrete; the pipeline resolves 'auto' to the current auto-ladder rung.
+// Auto first — it is the new default.
+export type ResolutionSelection = 'auto' | ResolutionRung;
+export const RESOLUTION_SELECTIONS: readonly ResolutionSelection[] = ['auto', ...RESOLUTION_RUNGS];
+
 export interface TargetSize {
   width: number;
   height: number;
@@ -55,6 +62,19 @@ export function computeTargetSize(
 const BITS_PER_PIXEL_AT_60 = 0.05;
 const MIN_BITRATE = 500_000;
 const MAX_BITRATE = 10_000_000;
+
+// The per-source effective ladder auto mode walks (docs/09 Decision 3):
+// 'native' (the ceiling) followed by every rung whose longer-dimension cap
+// is strictly below the source's longer dimension — the rungs that actually
+// shrink the picture. Stepping to a rung whose cap wouldn't change anything
+// would recreate the encoder for an identical config.
+export function autoLadder(srcLongerDim: number): ResolutionRung[] {
+  const rungs: ResolutionRung[] = ['native'];
+  for (const rung of RESOLUTION_RUNGS) {
+    if (rung !== 'native' && LONGER_DIM_CAP[rung] < srcLongerDim) rungs.push(rung);
+  }
+  return rungs;
+}
 
 export function computeBitrate(width: number, height: number, fps: number): number {
   const base = BITS_PER_PIXEL_AT_60 * width * height * 60 * Math.sqrt(fps / 60);

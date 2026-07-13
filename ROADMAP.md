@@ -21,8 +21,8 @@ feature set exists).
 |---|------|--------|
 | R1 | [Multi-broadcaster support](#r1--multi-broadcaster-support) | ✅ done ([docs/06](docs/06-multi-broadcaster.md)) |
 | R2 | [Hardening](#r2--hardening) | ✅ done ([docs/07](docs/07-hardening.md)) |
-| R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | 🚧 implemented, manual verify pending ([docs/08](docs/08-resolution-framerate-picker.md)) |
-| R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | 📝 designed ([docs/09](docs/09-automatic-fallback.md)), implementation not started |
+| R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | ✅ done ([docs/08](docs/08-resolution-framerate-picker.md)) |
+| R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | 🚧 implemented, manual verify pending ([docs/09](docs/09-automatic-fallback.md)) |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
 | R6 | [Production UI](#r6--production-ui) | not started |
 
@@ -180,8 +180,8 @@ important here — derive all dimensions from the actual `VideoFrame` in hand,
 never `getSettings()`; and keep H.264's even-dimension requirement when
 computing scaled sizes.
 
-**Status**: implemented 2026-07-13 (chunks H1–H3 + automated gates; manual
-browser verification pending) — see
+**Status**: done — implemented and manually verified 2026-07-13 (chunks
+H1–H4) — see
 [`docs/08-resolution-framerate-picker.md`](docs/08-resolution-framerate-picker.md).
 
 ## R4 — Automatic resolution fallback
@@ -223,14 +223,15 @@ resolution drops.
 what their downlink supports") — that's a different architecture (the relay
 is a byte forwarder by design) and explicitly out of scope.
 
-**Status**: designed 2026-07-13 — see
-[`docs/09-automatic-fallback.md`](docs/09-automatic-fallback.md) (chunks
-I1–I4). The design resolves the open questions above: detection is the
-encode-queue rejection ratio with a sliding window + cooldown; stepping is
-resolution-only, lives behind a new "auto" selection (the default), and
-goes **both down and up** there — step-up probes carry exponential backoff
-so steady overload can't pump quality; explicit rungs are never stepped;
-bitrate is not a fallback rung. Implementation not started.
+**Status**: implemented 2026-07-13 (chunks I1–I3 + automated gates; manual
+browser verification and real-hardware threshold tuning pending) — see
+[`docs/09-automatic-fallback.md`](docs/09-automatic-fallback.md). The design
+resolved the open questions above: detection is the encode-queue rejection
+ratio with a sliding window + cooldown; stepping is resolution-only, lives
+behind a new "auto" selection (the default), and goes **both down and up**
+there — step-up probes carry exponential backoff so steady overload can't
+pump quality; explicit rungs are never stepped; bitrate is not a fallback
+rung. Zero relay-server, wire-format, and viewer changes.
 
 ## R5 — Viewer live-edge enhancements
 
