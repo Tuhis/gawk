@@ -1,19 +1,20 @@
 import styles from './stream.module.css';
 import {
   FRAMERATE_RUNGS,
-  RESOLUTION_RUNGS,
+  RESOLUTION_SELECTIONS,
   type FramerateRung,
-  type ResolutionRung,
+  type ResolutionSelection,
 } from '../../media/ladder';
 import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 
 interface Props {
   // Invoked after the store updates so a live pipeline can apply the change.
-  onChange?: (resolution: ResolutionRung, framerate: FramerateRung) => void;
+  onChange?: (resolution: ResolutionSelection, framerate: FramerateRung) => void;
 }
 
-function resolutionLabel(rung: ResolutionRung): string {
-  return rung === 'native' ? 'native' : `${rung}p`;
+function resolutionLabel(selection: ResolutionSelection): string {
+  if (selection === 'auto') return 'auto';
+  return selection === 'native' ? 'native' : `${selection}p`;
 }
 
 function framerateLabel(rung: FramerateRung): string {
@@ -21,14 +22,16 @@ function framerateLabel(rung: FramerateRung): string {
 }
 
 // Deliberately never disabled: changing rungs mid-broadcast is a supported,
-// designed-for operation (docs/08) — and the mechanism R4 will automate.
+// designed-for operation (docs/08) — and the mechanism R4 automates behind
+// the "auto" selection (docs/09).
 export function LadderPicker({ onChange }: Props) {
-  const resolutionRung = useBroadcastSettingsStore((s) => s.resolutionRung);
+  const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
   const framerateRung = useBroadcastSettingsStore((s) => s.framerateRung);
-  const setResolutionRung = useBroadcastSettingsStore((s) => s.setResolutionRung);
+  const setResolutionSelection = useBroadcastSettingsStore((s) => s.setResolutionSelection);
   const setFramerateRung = useBroadcastSettingsStore((s) => s.setFramerateRung);
 
-  const parseRes = (v: string): ResolutionRung => (v === 'native' ? v : (Number(v) as ResolutionRung));
+  const parseRes = (v: string): ResolutionSelection =>
+    v === 'auto' || v === 'native' ? v : (Number(v) as ResolutionSelection);
   const parseFps = (v: string): FramerateRung => (v === 'native' ? v : (Number(v) as FramerateRung));
 
   return (
@@ -37,16 +40,16 @@ export function LadderPicker({ onChange }: Props) {
         <label htmlFor="resolution-rung">Resolution</label>
         <select
           id="resolution-rung"
-          value={String(resolutionRung)}
+          value={String(resolutionSelection)}
           onChange={(e) => {
-            const rung = parseRes(e.target.value);
-            setResolutionRung(rung);
-            onChange?.(rung, framerateRung);
+            const selection = parseRes(e.target.value);
+            setResolutionSelection(selection);
+            onChange?.(selection, framerateRung);
           }}
         >
-          {RESOLUTION_RUNGS.map((rung) => (
-            <option key={String(rung)} value={String(rung)}>
-              {resolutionLabel(rung)}
+          {RESOLUTION_SELECTIONS.map((selection) => (
+            <option key={String(selection)} value={String(selection)}>
+              {resolutionLabel(selection)}
             </option>
           ))}
         </select>
@@ -59,7 +62,7 @@ export function LadderPicker({ onChange }: Props) {
           onChange={(e) => {
             const rung = parseFps(e.target.value);
             setFramerateRung(rung);
-            onChange?.(resolutionRung, rung);
+            onChange?.(resolutionSelection, rung);
           }}
         >
           {FRAMERATE_RUNGS.map((rung) => (

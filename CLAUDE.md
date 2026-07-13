@@ -103,8 +103,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `docs/08-resolution-framerate-picker.md` for R3 (broadcaster ladder:
   pre-encode scaling + fps gating, H1–H4 chunks),
   `docs/09-automatic-fallback.md` for R4 (automatic resolution fallback:
-  encode-backpressure detection + auto step-down, I1–I4 chunks; designed,
-  not yet implemented).
+  encode-backpressure detection + auto step-down/up, I1–I4 chunks;
+  implemented, manual verify pending).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -135,20 +135,22 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    limiting, defensive parsing, bandwidth cap, obfuscated `/statusz`;
    implemented 2026-07-13 with post-implementation review fixes — see
    `docs/07-hardening.md`).
-8. Broadcaster resolution & framerate picker — **implemented, manual verify
-   pending** (R3: native/1080p/720p/480p × native/60/30/5 ladder, pre-encode
+8. Broadcaster resolution & framerate picker — **done** (R3, implemented +
+   manually verified 2026-07-13: native/1080p/720p/480p × native/60/30/5 ladder, pre-encode
    OffscreenCanvas scaling + timestamp fps gate, ladder-scaled bitrate,
    **keyframe cadence now time-based** (`keyframeIntervalMs: 2000`, was
    `keyframeIntervalFrames: 120` — a frame-count GOP is 24 s at 5 fps),
    live mid-stream changes via encoder recreate; zero server changes — see
    `docs/08-resolution-framerate-picker.md`).
-9. Automatic resolution fallback — **designed, not implemented** (R4:
-   encode-queue rejection-ratio detection with hysteresis + cooldown; a
-   new **"auto" resolution selection (default)** steps both down and up
-   (up-probes with exponential backoff against oscillation) plus
-   encoder-error step-down, while **explicit rungs are never auto-stepped**
-   — frame drops over overriding the broadcaster; zero server changes —
-   see `docs/09-automatic-fallback.md`).
+9. Automatic resolution fallback — **implemented, manual verify pending** (R4:
+   encode-queue rejection-ratio detection with hysteresis + cooldown, in the
+   pure `media/fallback.ts` `FallbackController`; a new **"auto" resolution
+   selection (default)** steps both down and up (up-probes with exponential
+   backoff against oscillation) plus encoder-error step-down, while
+   **explicit rungs are never auto-stepped** — frame drops over overriding
+   the broadcaster; thresholds are named constants in `fallback.ts` awaiting
+   real-hardware tuning; zero server/wire/viewer changes — see
+   `docs/09-automatic-fallback.md`).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

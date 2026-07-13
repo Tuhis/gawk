@@ -105,9 +105,10 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 5. ✅ Resilience + deployment: keepalive, viewer auto-reconnect, Docker, Helm charts, release-please CI — `docs/05`
 6. ✅ Multi-broadcaster support: server registry, path-based routes, client uni-stream ID announcements, reclaim UI, and ended states — `docs/06` (completed 2026-07-12)
 7. ✅ Hardening (R2): broadcast/subscriber/bandwidth limits, publish secret, connection rate limiting, defensive parsing, obfuscated `/statusz` IDs — `docs/07` (completed 2026-07-13)
-8. 🚧 Broadcaster resolution & framerate picker (R3): pre-encode scaling + fps gating ladder, ladder-scaled bitrate, time-based keyframe cadence, live mid-stream changes — `docs/08` (implemented 2026-07-13; manual browser verify pending)
+8. ✅ Broadcaster resolution & framerate picker (R3): pre-encode scaling + fps gating ladder, ladder-scaled bitrate, time-based keyframe cadence, live mid-stream changes — `docs/08` (completed 2026-07-13)
+9. 🚧 Automatic resolution fallback (R4): encode-queue rejection-ratio detection with hysteresis + cooldown, a default "auto" selection that steps down and back up (backoff against oscillation) while explicit rungs are never auto-stepped, encoder-error step-down — `docs/09` (implemented 2026-07-13; manual browser verify + threshold tuning pending)
 
-What comes next (quality pickers, live-edge work, production UI, …) is laid
+What comes next (live-edge work, production UI, …) is laid
 out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas

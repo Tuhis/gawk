@@ -115,6 +115,26 @@
   color: var(--muted);
 }
 
+/* R4 auto-mode indicator: informational, distinct from the error style —
+   the stream is fine, just running at a stepped-down rung. */
+.autoNotice {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  background: rgba(76, 139, 245, 0.08);
+}
+
+/* R4 pressure / at-floor warning: something the broadcaster may want to act
+   on (lower framerate, close apps) but not a fatal error. */
+.warning {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  color: var(--warning);
+  background: rgba(208, 162, 21, 0.08);
+}
+
 .statsPanel {
   background: var(--panel);
   border: 1px solid var(--border);
