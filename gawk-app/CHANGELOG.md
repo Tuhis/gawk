@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.10.0...gawk-app-v0.11.0) (2026-07-13)
+
+
+### Features
+
+* **gawk-app:** automatic resolution fallback (R4) ([#25](https://github.com/Tuhis/gawk/issues/25)) ([2853ca6](https://github.com/Tuhis/gawk/commit/2853ca6c4e67f5cabe3df439146abacb5260273b))
+
 ## [0.10.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.9.0...gawk-app-v0.10.0) (2026-07-13)
 
 
