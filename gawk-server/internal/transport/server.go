@@ -5,6 +5,7 @@ package transport
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,24 @@ type Server struct {
 	// authoritative Subscribe, letting tests deterministically widen the
 	// CheckSubscribe→Subscribe race window. Always nil in production.
 	testHookPostUpgradeSubscribe func(id string)
+
+	// testHookRateLimitLoopback disables the loopback bypass of the
+	// connection rate limiter, so tests (which dial from 127.0.0.1) can
+	// exercise the 429 path. Always false in production.
+	testHookRateLimitLoopback bool
+}
+
+// rateLimited reports whether a connection attempt should be rejected with
+// 429. Loopback bypasses the limiter (k8s exec probes hit /echo on every
+// probe cycle) unless the test hook forces it.
+func (s *Server) rateLimited(r *http.Request) bool {
+	if s.limiter == nil {
+		return false
+	}
+	if isLoopbackAddr(r.RemoteAddr) && !s.testHookRateLimitLoopback {
+		return false
+	}
+	return !s.limiter.Allow(r.RemoteAddr)
 }
 
 // New builds the server. getCert supplies the TLS certificate per handshake
@@ -137,14 +156,13 @@ func (s *Server) Run(ctx context.Context) error {
 // reclaim the slot. If "id" is empty, it upgrades first, then mints a new ID,
 // starts publishing, and announces the ID to the publisher over a unidirectional stream.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	if s.limiter != nil && !isLoopbackAddr(r.RemoteAddr) {
-		if !s.limiter.Allow(r.RemoteAddr) {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
+	if s.rateLimited(r) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		return
 	}
 
-	if s.cfg.PublishSecret != "" && r.URL.Query().Get("secret") != s.cfg.PublishSecret {
+	if s.cfg.PublishSecret != "" &&
+		subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("secret")), []byte(s.cfg.PublishSecret)) != 1 {
 		s.log.Warn("publish unauthorized: invalid or missing secret", "remote", r.RemoteAddr)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -179,6 +197,15 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		// Mint path: reject at-capacity pre-upgrade so the browser sees a
+		// clean HTTP 429 (a failed dial), mirroring the subscribe path;
+		// StartPublish below re-checks authoritatively after the upgrade.
+		if err := s.registry.CheckPublishNew(); err != nil {
+			s.log.Warn("publish mint rejected", "remote", r.RemoteAddr, "err", err)
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+
 		// Mint path: upgrade first
 		sess, err = s.wt.Upgrade(w, r)
 		if err != nil {
@@ -241,11 +268,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // ID-less requests or non-existent broadcast IDs return 404 pre-upgrade.
 // Full broadcasts return 429.
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
-	if s.limiter != nil && !isLoopbackAddr(r.RemoteAddr) {
-		if !s.limiter.Allow(r.RemoteAddr) {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
+	if s.rateLimited(r) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		return
 	}
 
 	id := r.PathValue("id")
@@ -323,11 +348,9 @@ func isLoopbackAddr(addr string) bool {
 // exec probe target, so its routine session logs are quietable — see
 // QuietProbeLogs.
 func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
-	if s.limiter != nil && !isLoopbackAddr(r.RemoteAddr) {
-		if !s.limiter.Allow(r.RemoteAddr) {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
+	if s.rateLimited(r) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		return
 	}
 
 	sess, err := s.wt.Upgrade(w, r)

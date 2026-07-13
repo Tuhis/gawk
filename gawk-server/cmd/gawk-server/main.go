@@ -54,6 +54,12 @@ func run() error {
 		"addr", cfg.Addr,
 		"dev_cert", cfg.DevCert,
 		"max_subscribers", cfg.MaxSubscribers,
+		"max_broadcasts", cfg.MaxBroadcasts,
+		"max_total_subscribers", cfg.MaxTotalSubscribers,
+		"publish_secret_set", cfg.PublishSecret != "",
+		"conn_rate_limit", cfg.ConnRateLimit,
+		"conn_burst_limit", cfg.ConnBurstLimit,
+		"max_bandwidth_bytes", cfg.MaxBandwidthBytes,
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
@@ -64,13 +70,26 @@ func run() error {
 		return err
 	}
 
-	r := hub.NewRegistry(log, hub.Options{MaxSubscribers: cfg.MaxSubscribers, BroadcastGrace: cfg.BroadcastGrace})
+	r := hub.NewRegistry(log, registryOptions(cfg))
 	if err := transport.New(cfg, r, getCert, log).Run(ctx); err != nil {
 		return err
 	}
 
 	log.Info("shutting down")
 	return nil
+}
+
+// registryOptions maps the parsed config onto hub.Options. Every limit knob
+// in config.Config must cross here — a knob that parses but isn't mapped is
+// silently inert in production while wired-by-hand tests stay green.
+func registryOptions(cfg config.Config) hub.Options {
+	return hub.Options{
+		MaxSubscribers:      cfg.MaxSubscribers,
+		BroadcastGrace:      cfg.BroadcastGrace,
+		MaxBroadcasts:       cfg.MaxBroadcasts,
+		MaxTotalSubscribers: cfg.MaxTotalSubscribers,
+		MaxBandwidthBytes:   cfg.MaxBandwidthBytes,
+	}
 }
 
 // certSource returns the per-handshake certificate callback: an ephemeral

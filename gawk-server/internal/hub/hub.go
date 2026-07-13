@@ -11,6 +11,10 @@
 package hub
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"sync"
@@ -66,17 +70,17 @@ type Options struct {
 type Stats struct {
 	PublisherActive           bool   `json:"publisherActive"`
 	Subscribers               int    `json:"subscribers"`
-	FramesRelayed             uint64 `json:"framesRelayed"`          // counted at chunk 0 of each frame
-	DatagramsRelayed          uint64 `json:"datagramsRelayed"`       // datagrams fanned out (before per-sub drops)
-	DatagramsDropped          uint64 `json:"datagramsDropped"`       // enqueue failures summed over all subscribers
-	BadDatagrams              uint64 `json:"badDatagrams"`           // unparseable/unknown datagrams dropped
+	FramesRelayed             uint64 `json:"framesRelayed"`    // counted at chunk 0 of each frame
+	DatagramsRelayed          uint64 `json:"datagramsRelayed"` // datagrams fanned out (before per-sub drops)
+	DatagramsDropped          uint64 `json:"datagramsDropped"` // per-subscriber drops: queue overflows + bandwidth-limit drops
+	BadDatagrams              uint64 `json:"badDatagrams"`     // unparseable/unknown datagrams dropped
 	BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
 	BandwidthDroppedBytes     uint64 `json:"bandwidthDroppedBytes"`
 	HasConfig                 bool   `json:"hasConfig"`
 	CachedKeyframeID          uint32 `json:"cachedKeyframeId"`
 	CachedKeyframeChunks      int    `json:"cachedKeyframeChunks"`
-	CachedKeyframeBytes   int    `json:"cachedKeyframeBytes"`
-	GraceRemainingSeconds     int    `json:"graceRemainingSeconds"`  // 0 while publisher is active
+	CachedKeyframeBytes       int    `json:"cachedKeyframeBytes"`
+	GraceRemainingSeconds     int    `json:"graceRemainingSeconds"` // 0 while publisher is active
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
@@ -93,8 +97,8 @@ type TotalStats struct {
 
 // RegistryStats is the full response structure of GET /statusz.
 type RegistryStats struct {
-	Totals     TotalStats            `json:"totals"`
-	Broadcasts map[string]Stats      `json:"broadcasts"` // keyed by obfuscated broadcast ID
+	Totals     TotalStats       `json:"totals"`
+	Broadcasts map[string]Stats `json:"broadcasts"` // keyed by obfuscated broadcast ID
 }
 
 // Registry owns the map of active broadcasts and cumulative statistics.
@@ -113,6 +117,11 @@ type Registry struct {
 	totalBandwidthDroppedBytes     uint64
 
 	limiter *bandwidthLimiter
+
+	// statsKey keys ObfuscateID so /statusz broadcast keys can't be
+	// brute-forced back to joinable IDs. Fresh per process; stats keys are
+	// only ever compared within one server run.
+	statsKey []byte
 }
 
 // broadcastHub is the per-broadcast session unit.
@@ -128,7 +137,7 @@ type broadcastHub struct {
 
 	subs map[*Subscriber]struct{}
 
-	cachedConfig []byte
+	cachedConfig   []byte
 	cachedKeyframe struct {
 		frameID uint32
 		chunks  [][]byte
@@ -204,11 +213,16 @@ func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	if opts.MaxBandwidthBytes > 0 {
 		limiter = newBandwidthLimiter(float64(opts.MaxBandwidthBytes))
 	}
+	statsKey := make([]byte, 32)
+	if _, err := rand.Read(statsKey); err != nil {
+		panic("hub: crypto/rand unavailable: " + err.Error())
+	}
 	return &Registry{
-		log:     log,
-		opts:    opts,
-		hubs:    make(map[string]*broadcastHub),
-		limiter: limiter,
+		log:      log,
+		opts:     opts,
+		hubs:     make(map[string]*broadcastHub),
+		limiter:  limiter,
+		statsKey: statsKey,
 	}
 }
 
@@ -279,6 +293,18 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	b.cachedKeyframe.bytes = 0
 
 	return id, &Publisher{hub: b}, nil
+}
+
+// CheckPublishNew is the read-only pre-upgrade check for minting a new
+// broadcast: ErrMaxBroadcasts when the registry is at capacity, nil
+// otherwise. StartPublish re-checks authoritatively under the same lock.
+func (r *Registry) CheckPublishNew() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opts.MaxBroadcasts > 0 && len(r.hubs) >= r.opts.MaxBroadcasts {
+		return ErrMaxBroadcasts
+	}
+	return nil
 }
 
 // CheckSubscribe is the read-only pre-upgrade check: ErrNotFound / ErrFull / nil.
@@ -354,6 +380,16 @@ func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
 	return s, nil
 }
 
+// ObfuscateID returns the key under which a broadcast appears in this
+// registry's Stats. It must not be computable by anyone who doesn't hold
+// server state: broadcast IDs are only ~31^6 strong, so any unkeyed hash of
+// them can be brute-forced offline from a /statusz scrape.
+func (r *Registry) ObfuscateID(id string) string {
+	mac := hmac.New(sha256.New, r.statsKey)
+	mac.Write([]byte(id))
+	return hex.EncodeToString(mac.Sum(nil)[:6])
+}
+
 // Stats returns a point-in-time snapshot of registry state.
 func (r *Registry) Stats() RegistryStats {
 	r.mu.Lock()
@@ -390,7 +426,7 @@ func (r *Registry) Stats() RegistryStats {
 			}
 		}
 
-		obf := broadcastid.Obfuscate(id)
+		obf := r.ObfuscateID(id)
 		broadcasts[obf] = Stats{
 			PublisherActive:           b.publisherActive,
 			Subscribers:               len(b.subs),
@@ -445,10 +481,10 @@ func (r *Registry) handleGraceExpiry(id string, gen uint64) {
 
 	var subs []*Subscriber
 	for s := range b.subs {
-		// Fold still-live subscribers' drops into the totals here: their
-		// Close below runs against the already-deleted hub, so this is the
-		// last chance to count them.
-		r.totalDatagramsDropped += s.dropped.Load()
+		// Still-live subscribers' drop counts are NOT folded here: their
+		// drain loops may still be dropping. Subscriber.Close (called below)
+		// folds each count once drain has finished, crediting the registry
+		// totals because the hub is no longer registered.
 		subs = append(subs, s)
 	}
 	r.mu.Unlock()
@@ -655,10 +691,21 @@ func (s *Subscriber) Close() {
 	}
 	s.closed = true
 	delete(b.subs, s)
-	b.datagramsDropped += s.dropped.Load()
 	close(s.queue)
 	r.mu.Unlock()
 	<-s.done
+
+	// Fold the final drop count only after drain has finished: drain keeps
+	// consuming (and bandwidth-dropping) the queued backlog after the queue
+	// closes, so folding any earlier loses those drops. The hub may itself
+	// have been GC'd by now — credit the registry totals then.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.hubs[b.id] == b {
+		b.datagramsDropped += s.dropped.Load()
+	} else {
+		r.totalDatagramsDropped += s.dropped.Load()
+	}
 }
 
 // Dropped reports dropped datagrams count.
@@ -671,10 +718,19 @@ func (r *Registry) consumeBandwidth(n int) bool {
 	return r.limiter.consume(n)
 }
 
+// countBandwidthDrop records one bandwidth-limited drop. It runs on drain
+// goroutines, which can outlive their broadcast: after handleGraceExpiry has
+// folded the hub's counters into the totals and deleted it, incrementing the
+// orphaned hub struct would lose the count — credit the totals directly then.
 func (b *broadcastHub) countBandwidthDrop(n int) {
 	r := b.registry
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	b.bandwidthDroppedDatagrams++
-	b.bandwidthDroppedBytes += uint64(n)
+	if r.hubs[b.id] == b {
+		b.bandwidthDroppedDatagrams++
+		b.bandwidthDroppedBytes += uint64(n)
+	} else {
+		r.totalBandwidthDroppedDatagrams++
+		r.totalBandwidthDroppedBytes += uint64(n)
+	}
 }

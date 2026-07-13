@@ -2,8 +2,6 @@ package broadcastid
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"strings"
 )
@@ -52,10 +50,4 @@ func Normalize(s string) (string, error) {
 		}
 	}
 	return s, nil
-}
-
-// Obfuscate returns a truncated SHA-256 hash of the broadcast ID.
-func Obfuscate(id string) string {
-	h := sha256.Sum256([]byte(id))
-	return hex.EncodeToString(h[:6])
 }

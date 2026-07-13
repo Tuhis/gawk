@@ -35,6 +35,10 @@ export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 export const MAX_DATAGRAM_SIZE = 1200;
 export const VIDEO_CHUNK_HEADER_SIZE = 20;
 export const MAX_CHUNK_PAYLOAD = MAX_DATAGRAM_SIZE - VIDEO_CHUNK_HEADER_SIZE;
+// Mirrors wire.MaxChunkCount: the relay drops any chunk whose count exceeds
+// this (memory-inflation defense), so a frame that needs more chunks can
+// never reach viewers — the encoder must fail loudly instead.
+export const MAX_CHUNK_COUNT = 1000;
 
 const FLAG_KEYFRAME = 0x01;
 
@@ -72,6 +76,9 @@ export function encodeVideoChunk(header: VideoChunkHeader, payload: Uint8Array):
   if (header.chunkCount === 0 || header.chunkIndex >= header.chunkCount) {
     throw new WireError(`invalid chunk index ${header.chunkIndex} / count ${header.chunkCount}`);
   }
+  if (header.chunkCount > MAX_CHUNK_COUNT) {
+    throw new WireError(`chunk count ${header.chunkCount} exceeds MAX_CHUNK_COUNT ${MAX_CHUNK_COUNT}`);
+  }
   const dgram = new Uint8Array(VIDEO_CHUNK_HEADER_SIZE + payload.length);
   const view = new DataView(dgram.buffer);
   dgram[0] = WIRE_VERSION;
@@ -108,6 +115,9 @@ export function parseVideoChunk(dgram: Uint8Array): { header: VideoChunkHeader; 
   };
   if (header.chunkCount === 0 || header.chunkIndex >= header.chunkCount) {
     throw new WireError(`invalid chunk index ${header.chunkIndex} / count ${header.chunkCount}`);
+  }
+  if (header.chunkCount > MAX_CHUNK_COUNT) {
+    throw new WireError(`chunk count ${header.chunkCount} exceeds MAX_CHUNK_COUNT ${MAX_CHUNK_COUNT}`);
   }
   return { header, payload: dgram.subarray(VIDEO_CHUNK_HEADER_SIZE) };
 }

@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/wire"
 )
 
@@ -120,7 +120,7 @@ func TestVerbatimForwarding(t *testing.T) {
 	wantDatagrams(t, f, sent)
 
 	st := r.Stats()
-	bst := st.Broadcasts[broadcastid.Obfuscate(id)]
+	bst := st.Broadcasts[r.ObfuscateID(id)]
 	if bst.FramesRelayed != 1 || bst.DatagramsRelayed != 3 || bst.BadDatagrams != 0 {
 		t.Errorf("stats = %+v, want 1 frame, 3 datagrams, 0 bad", bst)
 	}
@@ -230,7 +230,7 @@ func TestIncompleteKeyframeNeverCached(t *testing.T) {
 	p.HandleDatagram(chunkDgram(t, true, 6, 0, 3, "x"))
 	p.HandleDatagram(chunkDgram(t, true, 6, 2, 3, "z"))
 
-	st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 	if st.CachedKeyframeID != 5 || st.CachedKeyframeChunks != 2 {
 		t.Fatalf("cached keyframe = id %d (%d chunks), want id 5 (2 chunks)",
 			st.CachedKeyframeID, st.CachedKeyframeChunks)
@@ -243,13 +243,13 @@ func TestIncompleteKeyframeNeverCached(t *testing.T) {
 
 	kf7 := chunkDgram(t, true, 7, 0, 1, "w")
 	p.HandleDatagram(kf7)
-	st = r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+	st = r.Stats().Broadcasts[r.ObfuscateID(id)]
 	if st.CachedKeyframeID != 7 || st.CachedKeyframeChunks != 1 {
 		t.Fatalf("cached keyframe = id %d (%d chunks), want id 7 (1 chunk)",
 			st.CachedKeyframeID, st.CachedKeyframeChunks)
 	}
 	p.HandleDatagram(chunkDgram(t, true, 6, 1, 3, "y"))
-	st = r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+	st = r.Stats().Broadcasts[r.ObfuscateID(id)]
 	if st.CachedKeyframeID != 7 {
 		t.Fatalf("cached keyframe id = %d after straggler, want 7", st.CachedKeyframeID)
 	}
@@ -327,7 +327,7 @@ func TestPublisherRestartResetsCaches(t *testing.T) {
 	}
 	p1.Close()
 
-	st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 	if !st.HasConfig || st.CachedKeyframeID != 41 || st.CachedKeyframeChunks != 2 {
 		t.Fatalf("caches after publisher close = %+v, want config + keyframe 41 (2 chunks)", st)
 	}
@@ -340,7 +340,7 @@ func TestPublisherRestartResetsCaches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish after restart: %v", err)
 	}
-	st = r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+	st = r.Stats().Broadcasts[r.ObfuscateID(id)]
 	if st.HasConfig || st.CachedKeyframeID != 0 || st.CachedKeyframeChunks != 0 || st.CachedKeyframeBytes != 0 {
 		t.Fatalf("caches survived publisher restart: %+v", st)
 	}
@@ -403,7 +403,7 @@ func TestBadDatagramsDroppedAndCounted(t *testing.T) {
 	}
 	s.Close()
 	wantDatagrams(t, f, nil)
-	st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 	if st.BadDatagrams != uint64(len(bad)) {
 		t.Errorf("BadDatagrams = %d, want %d", st.BadDatagrams, len(bad))
 	}
@@ -677,10 +677,10 @@ func TestBroadcastIsolation(t *testing.T) {
 	if st.Totals.Broadcasts != 2 {
 		t.Errorf("expected 2 active broadcasts in totals, got %d", st.Totals.Broadcasts)
 	}
-	if bst1 := st.Broadcasts[broadcastid.Obfuscate(id1)]; bst1.DatagramsRelayed != 1 {
+	if bst1 := st.Broadcasts[r.ObfuscateID(id1)]; bst1.DatagramsRelayed != 1 {
 		t.Errorf("broadcast 1 expected 1 relayed, got %d", bst1.DatagramsRelayed)
 	}
-	if bst2 := st.Broadcasts[broadcastid.Obfuscate(id2)]; bst2.DatagramsRelayed != 1 {
+	if bst2 := st.Broadcasts[r.ObfuscateID(id2)]; bst2.DatagramsRelayed != 1 {
 		t.Errorf("broadcast 2 expected 1 relayed, got %d", bst2.DatagramsRelayed)
 	}
 }
@@ -803,6 +803,35 @@ func TestGraceExpiryStaleGenerationIsNoOp(t *testing.T) {
 	s.Close()
 }
 
+// R2 review finding F2: broadcast IDs are only ~31^6 strong, so an unkeyed
+// hash of them (the original truncated SHA-256) is brute-forceable offline
+// from a /statusz scrape. The stats key must depend on per-registry secret
+// state — two registries must key the same ID differently.
+func TestObfuscatedStatsKeysArePerRegistry(t *testing.T) {
+	r1 := NewRegistry(discardLog, Options{})
+	r2 := NewRegistry(discardLog, Options{})
+	const id = "ABCDEF"
+	if r1.ObfuscateID(id) == r2.ObfuscateID(id) {
+		t.Errorf("ObfuscateID(%q) identical across registries (%q): keying is offline-computable", id, r1.ObfuscateID(id))
+	}
+	if r1.ObfuscateID(id) != r1.ObfuscateID(id) {
+		t.Error("ObfuscateID not stable within a registry")
+	}
+
+	mintedID, p, err := r1.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	defer p.Close()
+	st := r1.Stats()
+	if _, ok := st.Broadcasts[r1.ObfuscateID(mintedID)]; !ok {
+		t.Errorf("Stats not keyed by this registry's ObfuscateID; keys = %v", st.Broadcasts)
+	}
+	if _, ok := st.Broadcasts[mintedID]; ok {
+		t.Error("Stats leaked the raw broadcast ID as a key")
+	}
+}
+
 func TestMaxBroadcastsLimit(t *testing.T) {
 	r := NewRegistry(discardLog, Options{MaxBroadcasts: 2})
 	id1, _, err := r.StartPublish("")
@@ -864,6 +893,136 @@ func TestMaxTotalSubscribersLimit(t *testing.T) {
 	}
 }
 
+// Design-doc verification item (R2): datagrams larger than
+// wire.MaxDatagramSize are dropped and counted as bad — never relayed,
+// never cached — even when they start with a valid VideoChunk header.
+func TestOversizedDatagramDroppedAndCounted(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	s, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	oversized := make([]byte, wire.MaxDatagramSize+1)
+	copy(oversized, chunkDgram(t, true, 1, 0, 1, "x")) // valid header: only the size check can reject it
+	p.HandleDatagram(oversized)
+
+	s.Close()
+	wantDatagrams(t, f, nil)
+	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if st.BadDatagrams != 1 {
+		t.Errorf("BadDatagrams = %d, want 1", st.BadDatagrams)
+	}
+	if st.DatagramsRelayed != 0 || st.CachedKeyframeChunks != 0 {
+		t.Errorf("oversized datagram leaked into relay/cache: %+v", st)
+	}
+}
+
+// R2 review finding F3: drain() keeps consuming — and bandwidth-dropping —
+// a closed subscriber's queued backlog after Close folded its drop count
+// into the hub, so those drops vanished from the totals. The fold must
+// happen only once drain has finished.
+func TestBandwidthDropsSurviveSubscriberClose(t *testing.T) {
+	const backlog = 5
+	payload := strings.Repeat("x", 1000)
+	r := NewRegistry(discardLog, Options{MaxBandwidthBytes: 1100})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{block: make(chan struct{})}
+	s, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// The first datagram fits the bandwidth burst and parks drain inside
+	// SendDatagram; the backlog queues up behind it with the token bucket
+	// exhausted (refilling far too slowly to pass another ~1KB datagram).
+	p.HandleDatagram(chunkDgram(t, false, 1, 0, 1, payload))
+	for i := range backlog {
+		p.HandleDatagram(chunkDgram(t, false, uint32(2+i), 0, 1, payload))
+	}
+
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	// Wait until Close has marked the subscriber closed (and closed the
+	// queue), then release drain to bandwidth-drop the backlog.
+	for {
+		r.mu.Lock()
+		c := s.closed
+		r.mu.Unlock()
+		if c {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(f.block)
+	<-closed
+	p.Close()
+
+	st := r.Stats().Totals
+	if st.DatagramsDropped != backlog {
+		t.Errorf("Totals.DatagramsDropped = %d, want %d (post-close bandwidth drops lost)", st.DatagramsDropped, backlog)
+	}
+	if st.BandwidthDroppedDatagrams != backlog {
+		t.Errorf("Totals.BandwidthDroppedDatagrams = %d, want %d", st.BandwidthDroppedDatagrams, backlog)
+	}
+}
+
+// R2 review finding F3: a subscriber still draining when its broadcast is
+// garbage collected recorded bandwidth drops onto the orphaned hub struct —
+// after handleGraceExpiry had already folded the hub's counters into the
+// registry totals — losing them. Late drops must fall back to the totals.
+func TestBandwidthDropsSurviveHubGC(t *testing.T) {
+	const backlog = 5
+	payload := strings.Repeat("x", 1000)
+	r := NewRegistry(discardLog, Options{MaxBandwidthBytes: 1100, BroadcastGrace: 30 * time.Millisecond})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{block: make(chan struct{})}
+	s, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	p.HandleDatagram(chunkDgram(t, false, 1, 0, 1, payload))
+	for i := range backlog {
+		p.HandleDatagram(chunkDgram(t, false, uint32(2+i), 0, 1, payload))
+	}
+	p.Close() // grace timer starts; drain is parked in SendDatagram
+
+	deadline := time.Now().Add(5 * time.Second)
+	for r.Stats().Totals.Broadcasts != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("broadcast was not garbage collected")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	close(f.block) // drain now bandwidth-drops the backlog on the GC'd hub
+	s.Close()      // idempotent; waits for drain teardown
+
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		st := r.Stats().Totals
+		if st.BandwidthDroppedDatagrams == backlog && st.DatagramsDropped == backlog {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Totals = %+v, want %d bandwidth drops and %d dropped datagrams surviving GC", st, backlog, backlog)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestBandwidthLimiting(t *testing.T) {
 	// Limiter with 100 bytes/sec limit
 	r := NewRegistry(discardLog, Options{MaxBandwidthBytes: 100})
@@ -892,4 +1051,3 @@ func TestBandwidthLimiting(t *testing.T) {
 		t.Error("consumeBandwidth(20) expected false, got true")
 	}
 }
-

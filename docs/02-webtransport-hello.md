@@ -137,3 +137,10 @@ From `internal/wire/wire_test.go`:
 - DecoderConfig (codec `avc1.42E02A`, extradata `01 42 E0 2A FF E1`):
   `0102000b617663312e3432453032410142e02affe1`
 - DecoderConfig (codec `vp8`, no extradata): `01020003767038`
+
+**Validation limit (added in R2, [docs/07](07-hardening.md))**: `chunkCount`
+is capped at **1000** (`wire.MaxChunkCount` / `MAX_CHUNK_COUNT`, ~1.2 MB per
+keyframe) — the relay counts anything above it as a bad datagram to bound
+keyframe-reassembly memory, and the TS side rejects it in both encode and
+parse so an over-limit frame fails loudly at the broadcaster instead of
+being silently dropped server-side.

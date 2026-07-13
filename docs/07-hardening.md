@@ -23,26 +23,44 @@ This document details the goals, proposed changes, and verification plan for add
 
 ---
 
-## User Review Required
+## Status
 
-- **Publish Secret UX**: Broadcasters will need to enter the secret once in the Settings panel (stored in `localStorage` alongside the Server URL and Dev Cert Hash).
+Implemented 2026-07-13 (single change, plus the post-implementation review
+fixes below). Acceptance per goal:
+
+| Goal | Where | Verified by |
+|------|-------|-------------|
+| `max-broadcasts` / `max-total-subscribers` limits | `hub.Registry` (`StartPublish`, `CheckPublishNew`, `Subscribe`/`CheckSubscribe`) | `TestMaxBroadcastsLimit`, `TestMaxTotalSubscribersLimit`, `TestMintRejected429PreUpgradeAtBroadcastLimit` |
+| Connection rate limiting + loopback bypass | `transport.rateLimited` / `ipRateLimiter` | `TestIPRateLimiter`, `TestConnRateLimit429OverNetwork`, `TestConnRateLimitLoopbackBypass` |
+| Publish secret (401 pre-upgrade) | `transport.handlePublish` (constant-time compare) | `TestPublishSecret`; frontend URL tests in `broadcaster.test.ts` |
+| Defensive parsing (chunk-count cap, size cap) | `wire.ParseVideoChunk`, `hub.HandleDatagram`; mirrored in `wire.ts` | `TestVideoChunkRoundTrip`, `TestOversizedDatagramDroppedAndCounted`, `wire.test.ts` |
+| Bandwidth limit + drop accounting | `hub.bandwidthLimiter`, drain-phase drops | `TestBandwidthLimiting`, `TestBandwidthLimitingE2E`, `TestBandwidthDropsSurvive*` |
+| `/statusz` ID obfuscation | `Registry.ObfuscateID` (per-process HMAC) | `TestObfuscatedStatsKeysArePerRegistry`, raw-ID assertion in `TestStatuszReachableAndNumbersMove` |
+| Config plumbing (flags/env/Helm/prod wiring) | `config.go`, charts, `cmd/gawk-server/registryOptions` | `TestHardeningConfig`, `TestRegistryOptionsCarryAllLimits` |
+
+## Decisions (reviewed and locked)
+
+- **Publish Secret UX**: Broadcasters enter the secret once in the Settings panel (stored in `localStorage` alongside the Server URL and Dev Cert Hash). It travels as a `?secret=` query param because the WebTransport JS API cannot set request headers.
 - **Default limits**:
   - `max-broadcasts`: Default 5.
   - `max-total-subscribers`: Default 50.
   - Egress bandwidth limit: Default `0` (unlimited).
   - Connection rate limiter: Default 3.0 attempts/sec (burst 10).
-
----
-
-## Open Questions
-
-- **Rate Limiting Status Code**: Return `429 Too Many Requests` on rate-limited connection upgrades. This is standard and maps cleanly in HTTP/3.
+- **Rate Limiting Status Code**: `429 Too Many Requests` on rate-limited connection attempts, rejected pre-upgrade. The broadcast-capacity rejection on the mint path is also pre-upgrade 429 (post-review), matching the subscribe path.
+- **ID obfuscation must be keyed** (post-review): broadcast IDs are only ~31^6 strong, so `/statusz` keys are a per-process HMAC-SHA256 of the ID — an unkeyed (even truncated) hash can be brute-forced offline back to joinable IDs. Keys change across server restarts; that's fine, they're only compared within one run.
 
 ---
 
 ## Proposed Changes
 
 ### `gawk-server`
+
+#### [MODIFY] gawk-server/cmd/gawk-server/main.go
+- Pass the new limits into `hub.NewRegistry` via a `registryOptions(cfg)`
+  helper (unit-tested), and log them at startup. *(Added by the
+  post-implementation review — the original plan omitted this file, and the
+  implementation faithfully reproduced the omission: every limit parsed but
+  never reached the production registry.)*
 
 #### [MODIFY] gawk-server/internal/config/config.go
 - Add new fields to `Config` struct:
@@ -236,3 +254,50 @@ This document details the goals, proposed changes, and verification plan for add
 3. Enter the correct secret in settings, start broadcasting (expect successful dial and broadcast ID minted).
 4. Share the join link; viewers should be able to watch without needing to enter any secret (frictionless watch).
 5. Verify `/statusz` output hides the broadcast IDs under a hashed key.
+
+---
+
+## Post-implementation review (2026-07-13)
+
+A full review against this doc and [CODE-REVIEW.md](../CODE-REVIEW.md) found
+six issues in the initial implementation (all tests green). All were fixed
+test-first — each fix's test was run red before the fix landed.
+
+1. **Critical — limits never wired into production.** `main.go` still built
+   the registry with only `MaxSubscribers` + `BroadcastGrace`:
+   `-max-bandwidth` was a complete no-op, and `-max-broadcasts` /
+   `-max-total-subscribers` overrides were silently ignored (the registry's
+   internal defaults coincide with the flag defaults, masking it). Only the
+   *test helper* had been wired, so every test passed. Root cause: this doc's
+   file list omitted `main.go`. Fix: `registryOptions(cfg)` +
+   `TestRegistryOptionsCarryAllLimits`; limits added to the startup log.
+   Lesson recorded in CODE-REVIEW.md's "fully plumbed" rule: the plumbing
+   includes the production call site, and a design doc's file list is not
+   proof of completeness.
+2. **High — brute-forceable `/statusz` obfuscation.** Truncated *unsalted*
+   SHA-256 over a ~31^6 ID space is enumerable offline in seconds; anyone who
+   could read `/statusz` could recover every joinable broadcast ID, defeating
+   this doc's stated goal. Fix: per-process-keyed HMAC
+   (`Registry.ObfuscateID`), `TestObfuscatedStatsKeysArePerRegistry`.
+3. **Medium — bandwidth drops lost after owner teardown.** Drain-phase drops
+   landed after `Subscriber.Close` had folded the subscriber's count (post-
+   close backlog) or after `handleGraceExpiry` had folded and deleted the hub
+   (post-GC drops) — violating "counters survive their owner's deletion".
+   Fix: fold once, after drain finishes, with a fall-back to registry totals
+   when the hub is gone; `TestBandwidthDropsSurviveSubscriberClose` /
+   `TestBandwidthDropsSurviveHubGC`.
+4. **Medium — promised tests missing.** The verification plan's oversized-
+   datagram, network-level 429 + loopback-bypass, raw-ID-absent, and frontend
+   secret-URL tests didn't exist. Added (the rate-limit test needed a
+   `testHookRateLimitLoopback` seam — test dials come from 127.0.0.1, which
+   production bypasses).
+5. **Medium — `MaxChunkCount` existed only in Go.** `wire.ts` (the designated
+   mirror) had no `MAX_CHUNK_COUNT`; a >1000-chunk keyframe would be silently
+   eaten server-side while the broadcaster kept sending. Mirrored with
+   encode+parse validation (encode throws loudly — the broadcaster is the
+   side that produces chunk counts) and documented in docs/02.
+6. **Low.** Secret compare made constant-time (`crypto/subtle`); mint-path
+   capacity rejection moved pre-upgrade (HTTP 429, symmetric with subscribe;
+   `CheckPublishNew`); gofmt dirt cleaned and `gofmt -l` added to the gates;
+   README/CLAUDE.md status synced; this doc gained the Status/Decisions
+   sections above.

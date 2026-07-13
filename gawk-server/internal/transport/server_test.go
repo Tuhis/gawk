@@ -22,7 +22,6 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
@@ -355,9 +354,9 @@ func TestPublisherDisconnectFreesSlot(t *testing.T) {
 	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
 	first, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
-	waitFor(t, 5*time.Second, func() bool { return r.Stats().Broadcasts[broadcastid.Obfuscate(id)].PublisherActive }, "publisher registered")
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher registered")
 	first.CloseWithError(0, "done")
-	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[broadcastid.Obfuscate(id)].PublisherActive }, "publisher slot freed")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher slot freed")
 
 	second := dialPublisherReclaim(t, ctx, port, id, clientTLS)
 	_ = second
@@ -402,7 +401,7 @@ func TestLateJoinerPrimedOverNetwork(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 		return st.HasConfig && st.CachedKeyframeChunks == kfChunks
 	}, "config and keyframe cached")
 
@@ -503,7 +502,7 @@ func TestStatuszReachableAndNumbersMove(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 		return st.HasConfig && st.CachedKeyframeChunks == kfChunks && st.FramesRelayed >= 2
 	}, "stream observed by registry")
 
@@ -518,7 +517,11 @@ func TestStatuszReachableAndNumbersMove(t *testing.T) {
 	if after.Totals.Subscribers != 1 {
 		t.Errorf("totals.subscribers = %d, want 1", after.Totals.Subscribers)
 	}
-	bst := after.Broadcasts[broadcastid.Obfuscate(id)]
+	// R2: /statusz must not leak joinable broadcast IDs — only obfuscated keys.
+	if _, ok := after.Broadcasts[id]; ok {
+		t.Error("statusz leaked the raw broadcast ID as a key")
+	}
+	bst := after.Broadcasts[r.ObfuscateID(id)]
 	switch {
 	case !bst.PublisherActive:
 		t.Error("statusz publisherActive = false, want true")
@@ -546,19 +549,19 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 		return st.HasConfig && st.CachedKeyframeChunks == 2
 	}, "session 1 config and keyframe cached")
 
 	pub1.CloseWithError(0, "restart")
-	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[broadcastid.Obfuscate(id)].PublisherActive }, "publisher slot freed")
-	if st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]; !st.HasConfig {
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher slot freed")
+	if st := r.Stats().Broadcasts[r.ObfuscateID(id)]; !st.HasConfig {
 		t.Fatal("caches must persist while the broadcaster is away")
 	}
 
 	pub2 := dialPublisherReclaim(t, ctx, port, id, clientTLS)
 	waitFor(t, 5*time.Second, func() bool {
-		st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 		return st.PublisherActive && !st.HasConfig && st.CachedKeyframeChunks == 0
 	}, "caches invalidated by new publisher session")
 
@@ -573,7 +576,7 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		st := r.Stats().Broadcasts[broadcastid.Obfuscate(id)]
+		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 		return st.HasConfig && st.CachedKeyframeChunks == kfChunks
 	}, "session 2 config and keyframe cached")
 
@@ -658,7 +661,7 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 	recvCancel()
 
 	pub1.CloseWithError(0, "broadcaster gone")
-	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[broadcastid.Obfuscate(id)].PublisherActive }, "publisher slot freed")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher slot freed")
 	time.Sleep(3 * time.Second)
 	if got := r.Stats().Totals.Subscribers; got != 1 {
 		t.Fatalf("subscribers after idle gap = %d, want 1 (session idled out?)", got)
@@ -876,7 +879,7 @@ func TestE4Specifics(t *testing.T) {
 	// 4. GC (short grace) closes subscriber with code 4000, then sub is 404
 	subSess := dialSubscriber(t, ctx, port, id, clientTLS)
 	pubSess.CloseWithError(0, "")
-	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[broadcastid.Obfuscate(id)].PublisherActive }, "publisher inactive")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher inactive")
 
 	// Wait for grace timeout (100ms) to GC the broadcast
 	time.Sleep(200 * time.Millisecond)
@@ -971,7 +974,7 @@ func TestTwoBroadcastsRelayIndependently(t *testing.T) {
 	subB := dialSubscriber(t, ctx, port, idB, clientTLS)
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats()
-		return st.Broadcasts[broadcastid.Obfuscate(idA)].Subscribers == 1 && st.Broadcasts[broadcastid.Obfuscate(idB)].Subscribers == 1
+		return st.Broadcasts[r.ObfuscateID(idA)].Subscribers == 1 && st.Broadcasts[r.ObfuscateID(idB)].Subscribers == 1
 	}, "both subscribers registered")
 
 	// Disjoint frameID ranges and codecs per broadcast make cross-talk
@@ -1102,7 +1105,7 @@ func TestStatuszGraceRemainingMoves(t *testing.T) {
 		if err := json.Unmarshal(body, &st); err != nil {
 			t.Fatalf("unmarshal /statusz %q: %v", body, err)
 		}
-		return st.Broadcasts[broadcastid.Obfuscate(id)]
+		return st.Broadcasts[r.ObfuscateID(id)]
 	}
 
 	if g := fetch().GraceRemainingSeconds; g != 0 {
@@ -1110,7 +1113,7 @@ func TestStatuszGraceRemainingMoves(t *testing.T) {
 	}
 
 	pub.CloseWithError(0, "")
-	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[broadcastid.Obfuscate(id)].PublisherActive }, "publisher inactive")
+	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher inactive")
 
 	g1 := fetch().GraceRemainingSeconds
 	if g1 <= 0 || g1 > 10 {
@@ -1196,9 +1199,95 @@ func TestBandwidthLimitingE2E(t *testing.T) {
 	// Wait for stats to show bandwidth drops
 	waitFor(t, 2*time.Second, func() bool {
 		stats := r.Stats()
-		bst := stats.Broadcasts[broadcastid.Obfuscate(id)]
+		bst := stats.Broadcasts[r.ObfuscateID(id)]
 		return bst.BandwidthDroppedDatagrams > 0 && bst.BandwidthDroppedBytes > 0
 	}, "bandwidth drops recorded")
+}
+
+// R2 review finding F6: at the broadcast limit, an ID-less /publish dial
+// must be rejected pre-upgrade with HTTP 429 (symmetric with the subscribe
+// path's CheckSubscribe), not accepted and then session-closed — the
+// frontend's never-connected-fatal semantics depend on the dial failing.
+func TestMintRejected429PreUpgradeAtBroadcastLimit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, _, _ := startTestServerCfg(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		MaxBroadcasts:   1,
+	})
+	pub, _ := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+
+	url := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
+	rsp, sess, err := dialOnce(t, ctx, url, clientTLS)
+	if err == nil {
+		sess.CloseWithError(0, "")
+		t.Fatal("mint at broadcast limit should have failed")
+	}
+	if rsp == nil || rsp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429 pre-upgrade, got %v (err: %v)", rsp, err)
+	}
+}
+
+// Design-doc verification item (R2): rate-limited connection attempts are
+// rejected with 429 pre-upgrade. Test dials come from 127.0.0.1, which the
+// limiter bypasses in production, so the bypass is disabled via the test hook.
+func TestConnRateLimit429OverNetwork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	port, clientTLS, _, _, srv := startTestServerCfgLogSrv(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  5 * time.Minute,
+		ConnRateLimit:   0.001, // effectively no refill within the test
+		ConnBurstLimit:  2,
+	}, discardLog)
+	srv.testHookRateLimitLoopback = true
+
+	url := fmt.Sprintf("https://127.0.0.1:%d/echo", port)
+	for i := range 2 {
+		rsp, sess, err := dialOnce(t, ctx, url, clientTLS)
+		if err != nil {
+			t.Fatalf("dial %d within burst: %v (rsp %v)", i+1, err, rsp)
+		}
+		sess.CloseWithError(0, "")
+	}
+	rsp, sess, err := dialOnce(t, ctx, url, clientTLS)
+	if err == nil {
+		sess.CloseWithError(0, "")
+		t.Fatal("third dial should have been rate limited")
+	}
+	if rsp == nil || rsp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429, got %v (err: %v)", rsp, err)
+	}
+}
+
+// Design-doc verification item (R2): loopback dials (k8s exec probes)
+// bypass the connection rate limiter.
+func TestConnRateLimitLoopbackBypass(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	port, clientTLS, _, _ := startTestServerCfg(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		ConnRateLimit:   0.001,
+		ConnBurstLimit:  2,
+	})
+
+	url := fmt.Sprintf("https://127.0.0.1:%d/echo", port)
+	for i := range 5 { // well past the burst of 2
+		rsp, sess, err := dialOnce(t, ctx, url, clientTLS)
+		if err != nil {
+			t.Fatalf("loopback dial %d should bypass the rate limit: %v (rsp %v)", i+1, err, rsp)
+		}
+		sess.CloseWithError(0, "")
+	}
 }
 
 func TestIPRateLimiter(t *testing.T) {
@@ -1234,4 +1323,3 @@ func TestIPRateLimiter(t *testing.T) {
 		t.Error("expected subsequent attempt to be rate limited again")
 	}
 }
-

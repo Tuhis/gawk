@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAX_CHUNK_COUNT,
   MAX_CHUNK_PAYLOAD,
   MAX_DATAGRAM_SIZE,
   TYPE_DECODER_CONFIG,
@@ -63,6 +64,7 @@ describe('constants', () => {
     expect(MAX_DATAGRAM_SIZE).toBe(1200);
     expect(VIDEO_CHUNK_HEADER_SIZE).toBe(20);
     expect(MAX_CHUNK_PAYLOAD).toBe(1180);
+    expect(MAX_CHUNK_COUNT).toBe(1000);
     expect(TYPE_BROADCAST_ANNOUNCE).toBe(0x03);
     expect(CLOSE_CODE_BROADCAST_ENDED).toBe(4000);
   });
@@ -121,7 +123,7 @@ describe('video chunk round trip', () => {
     ['keyframe', { keyframe: true, frameId: 42, chunkIndex: 0, chunkCount: 3, timestampUs: 1234567n }, new TextEncoder().encode('hello')],
     ['delta frame', { keyframe: false, frameId: 43, chunkIndex: 2, chunkCount: 3, timestampUs: 7654321n }, new Uint8Array([0xde, 0xad, 0xbe, 0xef])],
     ['empty payload', { keyframe: false, frameId: 0, chunkIndex: 0, chunkCount: 1, timestampUs: 0n }, new Uint8Array(0)],
-    ['max payload', { keyframe: true, frameId: 0xffffffff, chunkIndex: 0xfffe, chunkCount: 0xffff, timestampUs: 0xffffffffffffffffn }, new Uint8Array(MAX_CHUNK_PAYLOAD).fill(0xab)],
+    ['max payload', { keyframe: true, frameId: 0xffffffff, chunkIndex: MAX_CHUNK_COUNT - 1, chunkCount: MAX_CHUNK_COUNT, timestampUs: 0xffffffffffffffffn }, new Uint8Array(MAX_CHUNK_PAYLOAD).fill(0xab)],
   ] satisfies [string, VideoChunkHeader, Uint8Array][])('%s', (_name, header, payload) => {
     const dgram = encodeVideoChunk(header, payload);
     expect(dgram.length).toBeLessThanOrEqual(MAX_DATAGRAM_SIZE);
@@ -174,6 +176,12 @@ describe('error cases', () => {
     indexBeyondCount[8] = 0;
     indexBeyondCount[9] = 130; // chunkIndex == chunkCount
     expect(() => parseVideoChunk(indexBeyondCount)).toThrow(/index/);
+    // R2: the relay caps keyframe reassembly at MAX_CHUNK_COUNT chunks and
+    // counts anything above it as a bad datagram; the TS side must agree.
+    const overMaxCount = validChunk.slice();
+    const view = new DataView(overMaxCount.buffer);
+    view.setUint16(10, MAX_CHUNK_COUNT + 1);
+    expect(() => parseVideoChunk(overMaxCount)).toThrow(/count/);
   });
 
   it('accepts an exactly header-sized chunk with empty payload', () => {
@@ -186,6 +194,10 @@ describe('error cases', () => {
     expect(() => encodeVideoChunk(header, new Uint8Array(MAX_CHUNK_PAYLOAD + 1))).toThrow(/payload/);
     expect(() => encodeVideoChunk({ ...header, chunkCount: 0 }, new Uint8Array(0))).toThrow(/index/);
     expect(() => encodeVideoChunk({ ...header, chunkIndex: 3, chunkCount: 3 }, new Uint8Array(0))).toThrow(/index/);
+    // The broadcaster is the side that *produces* chunk counts: encoding a
+    // frame the relay would drop as bad must fail loudly here, not silently
+    // black-hole the keyframe server-side.
+    expect(() => encodeVideoChunk({ ...header, chunkIndex: 0, chunkCount: MAX_CHUNK_COUNT + 1 }, new Uint8Array(0))).toThrow(/count/);
   });
 
   it('rejects malformed decoder configs', () => {

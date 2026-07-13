@@ -27,7 +27,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   Pub/sub hub — one publisher fans out encoded video datagrams to up to 15
   subscriber sessions.
 
-## Relay server behavior (implemented — chunks B2/B3 + C1–C3 + D1 + R1)
+## Relay server behavior (implemented — chunks B2/B3 + C1–C3 + D1 + R1 + R2)
 - Caches the last keyframe + decoder config to prime newly-joined viewers
   (`gawk-server/internal/hub`); a **new publisher session invalidates both
   caches** (frameIDs reset, config may differ) while caches persist when the
@@ -59,7 +59,19 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   datagrams carry frameID + chunkIndex/chunkCount + keyframe flag + timestamp
   (20-byte header, big-endian); a separate DecoderConfig message carries
   codec string + AVCC extradata. Golden test vectors for the future TS mirror
-  live in `wire_test.go` and `docs/02-webtransport-hello.md`.
+  live in `wire_test.go` and `docs/02-webtransport-hello.md`. chunkCount is
+  capped at 1000 (`wire.MaxChunkCount` == `MAX_CHUNK_COUNT` in `wire.ts`).
+- Hardening is **implemented** (R2, see `docs/07-hardening.md`): limits on
+  concurrent broadcasts (default 5), total subscribers (50), per-IP connection
+  rate (3/s burst 10, loopback bypassed), and global egress bandwidth
+  (unlimited by default; over-limit datagrams are dropped at the subscriber
+  drain, never queued); publishing requires a pre-shared secret when
+  `-publish-secret` is set (query param — the WebTransport JS API can't set
+  headers); `/statusz` keys broadcasts by a per-process HMAC of the ID (raw
+  IDs are joinable and only ~31^6 strong — never expose them or hash them
+  unkeyed). All knobs are flags + `GAWK_*` envs + Helm values, and **must be
+  plumbed through `registryOptions` in `cmd/gawk-server/main.go`** — the R2
+  post-implementation review found them wired only into the test helper.
 
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
@@ -72,7 +84,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 - `gawk-app` is the folder for the frontend application
 - `gawk-server` is the folder for the backend (the Relay server) — Go module,
   see `gawk-server/README.md` for build/run
-- `docs/` — per-build-step design notes and gotchas. See
+- `docs/` — per-build-step design notes and gotchas. **Every design doc must
+  define explicit acceptance criteria for its milestones and chunks of work**
+  (a per-chunk criteria table à la `docs/implementation-tasks.md`, or a
+  goal → verified-by table à la `docs/07`) — the R2 review traced its
+  critical finding partly to a doc that listed proposed changes without
+  acceptance criteria, so nothing forced the "does the flag actually reach
+  production?" question. See
   `docs/01-loopback-test.md` for v0.1 (local loopback),
   `docs/02-webtransport-hello.md` for v0.2 (server + TLS + echo),
   `docs/03-single-client-e2e.md` for v0.3 (hub + publish/subscribe relay),
@@ -80,7 +98,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `/statusz`), `docs/05-resilience-deploy.md` for v0.5 (keepalive, viewer
   auto-reconnect, Docker, Helm, CI/release — **includes the deploy runbook**),
   `docs/06-multi-broadcaster.md` for R1 (multi-broadcaster design + E1–G2 chunks;
-  implemented and verified).
+  implemented and verified), `docs/07-hardening.md` for R2 (limits, access
+  control, bandwidth cap; implemented, incl. post-implementation review).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -107,6 +126,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 6. Multi-broadcaster support — **done** (R1: E1-E4 server registry + routes,
    F1-F4 frontend ID announcements + reclaim UI + terminal states; manual
    E2E verify passed 2026-07-12 — see `docs/06-multi-broadcaster.md`).
+7. Hardening — **done** (R2: limits, publish secret, connection rate
+   limiting, defensive parsing, bandwidth cap, obfuscated `/statusz`;
+   implemented 2026-07-13 with post-implementation review fixes — see
+   `docs/07-hardening.md`).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

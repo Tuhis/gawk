@@ -42,14 +42,14 @@ func TestNormalize(t *testing.T) {
 		{"23456A", "23456A", false},
 		{"23456a", "23456A", false}, // uppercase normalization
 		{"2345", "", true},          // too short
-		{"2345678", "", true},        // too long
-		{"23456O", "", true},         // O is not in alphabet
-		{"234560", "", true},         // 0 is not in alphabet
-		{"23456I", "", true},         // I is not in alphabet
-		{"234561", "", true},         // 1 is not in alphabet
-		{"23456L", "", true},         // L is not in alphabet
-		{"23456l", "", true},         // l is not in alphabet
-		{"234567\x00", "", true},     // null byte / too long
+		{"2345678", "", true},       // too long
+		{"23456O", "", true},        // O is not in alphabet
+		{"234560", "", true},        // 0 is not in alphabet
+		{"23456I", "", true},        // I is not in alphabet
+		{"234561", "", true},        // 1 is not in alphabet
+		{"23456L", "", true},        // L is not in alphabet
+		{"23456l", "", true},        // l is not in alphabet
+		{"234567\x00", "", true},    // null byte / too long
 	}
 
 	for _, tt := range tests {

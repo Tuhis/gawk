@@ -64,8 +64,14 @@ the hub). Anything counted after deletion is silently lost.
 
 **New config knobs land fully plumbed in the same change:** flag + `GAWK_*`
 env in `config.go`, chart `values.yaml`, chart `templates/deployment.yaml`,
-and the flag's docs. R1 shipped `-broadcast-grace` without the Helm half —
-deploys silently ran the default with no values-level override.
+the flag's docs, **and the production call site** (`registryOptions` in
+`cmd/gawk-server/main.go`). R1 shipped `-broadcast-grace` without the Helm
+half — deploys silently ran the default with no values-level override. R2
+shipped all six hardening knobs parsed, charted and documented but wired
+only into the transport *test helper* — `-max-bandwidth` was a complete
+no-op in production and every test stayed green. Walk each knob from flag
+to the object that consumes it; a design doc's file list is not proof of
+completeness.
 
 ## Review checklist
 
@@ -99,10 +105,13 @@ Work from the design doc, not just the diff. For gawk, milestone docs
 ## Gates (all must pass before merge)
 
 ```sh
-cd gawk-server && go vet ./... && CGO_ENABLED=1 go test -race ./...
+cd gawk-server && test -z "$(gofmt -l .)" && go vet ./... && CGO_ENABLED=1 go test -race ./...
 cd gawk-app    && npm test && npm run lint && npm run build
 helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
 ```
+
+`gofmt -l` prints nothing when clean — it joined the gates after R2 landed
+unformatted files (`go vet` does not check formatting, so nothing failed).
 
 Chart template changes additionally get a `helm template` render check of
 the touched values (default + one override).

@@ -136,6 +136,41 @@ describe('BroadcastPipeline URLs', () => {
     expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish/K7XQ2M', {});
     await pipeline.stop();
   });
+
+  // R2: publishing requires the pre-shared secret; it travels as a query
+  // param because the WebTransport JS API cannot set request headers.
+  it('appends ?secret= when a publish secret is configured', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const opts = { publishSecret: 's3cret' };
+    const pipeline = new BroadcastPipeline(
+      { ...DEFAULT_CAPTURE_CONFIG },
+      'https://relay.test:4433',
+      opts,
+      makeCallbacks(),
+    );
+    await pipeline.start();
+    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish?secret=s3cret', opts);
+    await pipeline.stop();
+  });
+
+  it('appends ?secret= on the reclaim URL too', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const opts = { publishSecret: 's3cret' };
+    const pipeline = new BroadcastPipeline(
+      { ...DEFAULT_CAPTURE_CONFIG },
+      'https://relay.test:4433',
+      opts,
+      makeCallbacks(),
+      'K7XQ2M',
+    );
+    await pipeline.start();
+    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish/K7XQ2M?secret=s3cret', opts);
+    await pipeline.stop();
+  });
 });
 
 describe('BroadcastPipeline announce handling', () => {

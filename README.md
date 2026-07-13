@@ -104,9 +104,10 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 4. ✅ Fan-out hardening: multi-subscriber, restart-safe caches, `/statusz` — `docs/04`
 5. ✅ Resilience + deployment: keepalive, viewer auto-reconnect, Docker, Helm charts, release-please CI — `docs/05`
 6. ✅ Multi-broadcaster support: server registry, path-based routes, client uni-stream ID announcements, reclaim UI, and ended states — `docs/06` (completed 2026-07-12)
+7. ✅ Hardening (R2): broadcast/subscriber/bandwidth limits, publish secret, connection rate limiting, defensive parsing, obfuscated `/statusz` IDs — `docs/07` (completed 2026-07-13)
 
-What comes next (multi-broadcaster, hardening, quality pickers, production
-UI, …) is laid out in [`ROADMAP.md`](ROADMAP.md).
+What comes next (quality pickers, live-edge work, production UI, …) is laid
+out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
 
