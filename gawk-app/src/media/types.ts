@@ -18,6 +18,8 @@ export interface CaptureConfig {
 // - VP9 profile 0 lvl 4.0 / lvl 3.1: cross-browser software, sometimes HW.
 // - VP8: universal software fallback.
 export const DEFAULT_CODEC_PREFERENCES: string[] = [
+  'avc1.640034', // H.264 High Profile Level 5.2 (4K @ 60fps)
+  'avc1.640033', // H.264 High Profile Level 5.1 (4K @ 30fps)
   'avc1.42E02A',
   'avc1.640028',
   'avc1.42E01F',
