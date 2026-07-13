@@ -91,3 +91,104 @@ describe('FpsGate', () => {
     expect(run(gate, 60, 60, 1 * US)).toHaveLength(60);
   });
 });
+
+import { FramePreprocessor } from './preprocess';
+import { vi, afterEach, beforeEach } from 'vitest';
+
+class MockVideoFrame {
+  timestamp: number;
+  displayWidth: number;
+  displayHeight: number;
+  closed = false;
+
+  constructor(source: any, init?: any) {
+    this.timestamp = init?.timestamp ?? 0;
+    if (source instanceof MockVideoFrame) {
+      this.displayWidth = source.displayWidth;
+      this.displayHeight = source.displayHeight;
+    } else {
+      this.displayWidth = source.width ?? source.displayWidth ?? 0;
+      this.displayHeight = source.height ?? source.displayHeight ?? 0;
+    }
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
+class MockOffscreenCanvas {
+  width: number;
+  height: number;
+  constructor(w: number, h: number) {
+    this.width = w;
+    this.height = h;
+  }
+  getContext() {
+    return {
+      drawImage: () => {}
+    };
+  }
+}
+
+describe('FramePreprocessor', () => {
+  beforeEach(() => {
+    vi.stubGlobal('VideoFrame', MockVideoFrame);
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('passes frames through without capping when no cap is set', () => {
+    const preprocessor = new FramePreprocessor();
+    preprocessor.setTarget('native', 60);
+
+    const frame = new MockVideoFrame({ displayWidth: 1920, displayHeight: 1080 }) as unknown as VideoFrame;
+    const result = preprocessor.process(frame, 60);
+
+    expect(result).toBe(frame);
+    expect((frame as any).closed).toBe(false);
+  });
+
+  it('drops frames according to the target framerate', () => {
+    const preprocessor = new FramePreprocessor();
+    preprocessor.setTarget('native', 30);
+
+    // Feed 60fps frames (16.6ms interval)
+    const results: any[] = [];
+    for (let i = 0; i < 10; i++) {
+      const ts = Math.round((i * 1000000) / 60);
+      const frame = new MockVideoFrame({ displayWidth: 1920, displayHeight: 1080 }) as unknown as VideoFrame;
+      (frame as any).timestamp = ts;
+      const res = preprocessor.process(frame, 60);
+      if (res) {
+        results.push(res);
+      } else {
+        expect((frame as any).closed).toBe(true);
+      }
+    }
+    expect(results.length).toBe(5);
+  });
+
+  it('applies cappedFps dynamically when set', () => {
+    const preprocessor = new FramePreprocessor();
+    preprocessor.setTarget('native', 60);
+    preprocessor.setCappedFps(30);
+
+    // Feed 60fps frames, but with a 30fps cap in place
+    const results: any[] = [];
+    for (let i = 0; i < 10; i++) {
+      const ts = Math.round((i * 1000000) / 60);
+      const frame = new MockVideoFrame({ displayWidth: 3840, displayHeight: 2160 }) as unknown as VideoFrame;
+      (frame as any).timestamp = ts;
+      const res = preprocessor.process(frame, 60);
+      if (res) {
+        results.push(res);
+      }
+    }
+    expect(results.length).toBe(5);
+  });
+});
+

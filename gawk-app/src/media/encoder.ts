@@ -195,3 +195,33 @@ export class Encoder {
     this.captureStartMap.clear();
   }
 }
+
+export async function probeHardwareSupport(
+  codecs: string[],
+  width: number,
+  height: number,
+  framerate: number,
+): Promise<boolean> {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoEncoder.isConfigSupported !== 'function') {
+    return false;
+  }
+  for (const codec of codecs) {
+    try {
+      const support = await VideoEncoder.isConfigSupported({
+        codec,
+        width,
+        height,
+        bitrate: 1_000_000,
+        framerate,
+        hardwareAcceleration: 'prefer-hardware',
+      });
+      if (support.supported && support.config?.hardwareAcceleration !== 'prefer-software') {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+

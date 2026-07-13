@@ -16,8 +16,11 @@ export class FpsGate {
   private dropped = 0;
 
   setTargetFps(fps: number | null): void {
-    this.intervalUs = fps === null ? null : Math.round(1_000_000 / fps);
-    this.nextDueUs = null; // re-anchor on the next frame
+    const intervalUs = fps === null ? null : Math.round(1_000_000 / fps);
+    if (intervalUs !== this.intervalUs) {
+      this.intervalUs = intervalUs;
+      this.nextDueUs = null; // re-anchor on the next frame
+    }
   }
 
   get droppedCount(): number {
@@ -51,13 +54,19 @@ export interface PreprocessStats {
 export class FramePreprocessor {
   private gate = new FpsGate();
   private resolutionRung: ResolutionRung = 'native';
+  private framerateRung: FramerateRung = 'native';
   private canvas: OffscreenCanvas | null = null;
   private ctx: OffscreenCanvasRenderingContext2D | null = null;
   private scaledFrames = 0;
+  private cappedFps: number | null = null;
 
   setTarget(resolution: ResolutionRung, framerate: FramerateRung): void {
     this.resolutionRung = resolution;
-    this.gate.setTargetFps(framerate === 'native' ? null : framerate);
+    this.framerateRung = framerate;
+  }
+
+  setCappedFps(fps: number | null): void {
+    this.cappedFps = fps;
   }
 
   getStats(): PreprocessStats {
@@ -67,7 +76,22 @@ export class FramePreprocessor {
   // Returns the frame to encode (the input itself, or a scaled replacement
   // with the same timestamp), or null when the fps gate drops it. The input
   // frame is closed unless returned as-is.
-  process(frame: VideoFrame): VideoFrame | null {
+  process(frame: VideoFrame, nativeFps: number | null): VideoFrame | null {
+    let targetFps: number | null = null;
+    if (this.framerateRung !== 'native') {
+      targetFps = this.framerateRung;
+    } else if (nativeFps !== null) {
+      targetFps = nativeFps;
+    }
+
+    if (this.cappedFps !== null) {
+      if (targetFps === null || targetFps > this.cappedFps) {
+        targetFps = this.cappedFps;
+      }
+    }
+
+    this.gate.setTargetFps(targetFps);
+
     if (!this.gate.accept(frame.timestamp)) {
       frame.close();
       return null;

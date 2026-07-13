@@ -23,7 +23,11 @@ export function getRuntimeConfig(): GawkRuntimeConfig {
 }
 
 export function requiresPublishSecret(): boolean {
-  return getRuntimeConfig().requirePublishSecret === true;
+  const config = getRuntimeConfig();
+  if (config.requirePublishSecret !== undefined) {
+    return config.requirePublishSecret;
+  }
+  return isDevEnvironment();
 }
 
 // "Debug build" per the product spec = running locally. Vite dev mode, or a

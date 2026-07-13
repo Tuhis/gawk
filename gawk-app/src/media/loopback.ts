@@ -1,6 +1,6 @@
 import { log } from '../lib/logger';
 import { startCapture, stopCapture, type CaptureHandle } from './capture';
-import { Encoder, type EncodedFrame, type EncoderConfigured } from './encoder';
+import { Encoder, probeHardwareSupport, type EncodedFrame, type EncoderConfigured } from './encoder';
 import { Decoder, type DecodedFrame } from './decoder';
 import type { CaptureConfig, PipelineStats } from './types';
 import { EMPTY_STATS } from './types';
@@ -83,24 +83,42 @@ export class LoopbackPipeline {
         log.info(
           `First captured frame: display=${frame.displayWidth}x${frame.displayHeight}, coded=${frame.codedWidth}x${frame.codedHeight}`,
         );
-        const negotiatedConfig: CaptureConfig = {
-          ...this.config,
-          width: roundDownToEven(frame.displayWidth),
-          height: roundDownToEven(frame.displayHeight),
-          framerate: settings.frameRate ?? this.config.framerate,
-        };
-        log.info(
-          `Configuring encoder for ${negotiatedConfig.width}x${negotiatedConfig.height}, codec choices:`,
-          negotiatedConfig.codecPreferences,
-        );
-        const enc = new Encoder(negotiatedConfig, {
-          onEncoded: (encoded) => this.handleEncoded(encoded),
-          onError: (e) => this.fail(e),
-        });
-        const firstFrame = frame;
-        void enc
-          .configure()
-          .then((chosen) => {
+        const width = roundDownToEven(frame.displayWidth);
+        const height = roundDownToEven(frame.displayHeight);
+        let framerate = settings.frameRate ?? this.config.framerate;
+
+        const proceedInit = async () => {
+          if ((width > 1920 || height > 1080) && framerate > 30) {
+            const hwSupported = await probeHardwareSupport(
+              this.config.codecPreferences,
+              width,
+              height,
+              framerate,
+            );
+            if (!hwSupported) {
+              log.info(
+                `HW encoding not supported for loopback target ${width}x${height}@${framerate}fps. Capping to 30fps.`,
+              );
+              framerate = 30;
+            }
+          }
+
+          const negotiatedConfig: CaptureConfig = {
+            ...this.config,
+            width,
+            height,
+            framerate,
+          };
+          log.info(
+            `Configuring encoder for ${negotiatedConfig.width}x${negotiatedConfig.height}, codec choices:`,
+            negotiatedConfig.codecPreferences,
+          );
+          const enc = new Encoder(negotiatedConfig, {
+            onEncoded: (encoded) => this.handleEncoded(encoded),
+            onError: (e) => this.fail(e),
+          });
+          try {
+            const chosen = await enc.configure();
             if (this.stopping) {
               firstFrame.close();
               return;
@@ -110,11 +128,13 @@ export class LoopbackPipeline {
             const accepted = enc.encode(firstFrame);
             if (!accepted) this.stats.droppedFrames++;
             firstFrame.close();
-          })
-          .catch((e) => {
+          } catch (e) {
             firstFrame.close();
             this.fail(e instanceof Error ? e : new Error(String(e)));
-          });
+          }
+        };
+        const firstFrame = frame;
+        void proceedInit();
         return;
       }
 

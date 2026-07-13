@@ -1,3 +1,5 @@
+import { log } from '../lib/logger';
+import { probeHardwareSupport } from './encoder';
 import type { CaptureConfig } from './types';
 
 export type FrameHandler = (frame: VideoFrame) => void;
@@ -12,9 +14,25 @@ export interface CaptureHandle {
 }
 
 export async function startCapture(config: CaptureConfig): Promise<CaptureHandle> {
+  let targetFramerate = config.framerate;
+  if ((config.width > 1920 || config.height > 1080) && targetFramerate > 30) {
+    const hwSupported = await probeHardwareSupport(
+      config.codecPreferences,
+      config.width,
+      config.height,
+      targetFramerate,
+    );
+    if (!hwSupported) {
+      log.info(
+        `HW encoding not supported for capture config ${config.width}x${config.height}@${targetFramerate}fps. Capping to 30fps.`,
+      );
+      targetFramerate = 30;
+    }
+  }
+
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {
-      frameRate: { ideal: config.framerate },
+      frameRate: { ideal: targetFramerate },
       // Constrain ONLY width. Chrome scales the source to fit width and
       // preserves the source's aspect ratio for height. Constraining both
       // width and height makes Chrome pillarbox non-16:9 sources into the

@@ -25,6 +25,7 @@ feature set exists).
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | 🚧 implemented, manual verify pending ([docs/09](docs/09-automatic-fallback.md)) |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
 | R6 | [Production UI](#r6--production-ui) | 🚧 implemented (J1–J6); automated gates green, manual browser verify pending ([docs/10](docs/10-production-ui.md)) |
+| R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 
 ---
 
@@ -330,6 +331,25 @@ share can only be judged in a browser — same posture as R4). Zero
 server/wire/pipeline changes. Note R5 was skipped for now — the doc does not
 depend on it and slots an R5 live-edge metric into the stats overlay if/when
 it lands.
+
+## R7 — Hardware-supported controls & capture constraints
+
+**Goal**: Adjust the broadcaster resolution and framerate pickers in the UI to only show options that are verified to be supported by the browser's hardware acceleration capability, and apply selected settings directly to the capture layer (`getDisplayMedia` / `applyConstraints`) rather than just capping at the encoder/preprocessor level.
+
+**Why here**: Prevents broadcasters from selecting unsupported high-framerate/high-resolution configurations that would force a fallback to software encoding or trigger hard caps mid-stream, and minimizes resource consumption by aligning capture parameters with the selected output target.
+
+**Scope sketch**:
+
+- **Hardware-Aware UI Controls**: Probe the browser's `VideoEncoder.isConfigSupported()` on startup or picker load, and dynamically disable or filter out picker options (e.g., 60fps at 4K) if they are resolved to software acceleration or are completely unsupported by the GPU.
+- **Direct Capture Constraint Propagation**: When the user selects a resolution or framerate rung (or when auto fallback chooses one), propagate the constraints directly to the active `MediaStreamTrack` using `track.applyConstraints()`. This ensures the browser only captures what we actually intend to encode, saving capture pipeline overhead.
+- **Dynamic Capture Resolution Capping**: Translate resolution rungs to specific capture constraints on `getDisplayMedia` and track updates, rather than capturing at native resolution and scaling via `FramePreprocessor` when scaled down.
+
+**Key design questions**:
+- How to handle `applyConstraints` failures or latency (e.g., how the pipeline is kept stable during live track renegotiation).
+- How the "auto" fallback controller interacts with capture-level renegotiation without triggering infinite loop resets.
+- Designing the UI representation for disabled options (e.g., warning tooltips explaining GPU hardware limits).
+
+**Status**: not started.
 
 ---
 

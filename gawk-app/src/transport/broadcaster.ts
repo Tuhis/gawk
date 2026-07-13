@@ -4,7 +4,7 @@
 
 import { log } from '../lib/logger';
 import { startCapture, stopCapture, type CaptureHandle } from '../media/capture';
-import { Encoder, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
+import { Encoder, probeHardwareSupport, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
 import {
   autoLadder,
   computeBitrate,
@@ -314,7 +314,7 @@ export class BroadcastPipeline {
         this.updateAutoLadder(Math.max(frame.displayWidth, frame.displayHeight));
       }
 
-      const processed = this.preprocessor.process(frame);
+      const processed = this.preprocessor.process(frame, this.nativeFps);
       if (!processed) return; // fps gate drop; frame closed inside
 
       // Encoder no longer matches what we're sending (ladder change, or the
@@ -423,21 +423,40 @@ export class BroadcastPipeline {
     );
     const width = roundDownToEven(firstFrame.displayWidth);
     const height = roundDownToEven(firstFrame.displayHeight);
-    const framerate = this.ladderFps === 'native' ? (this.nativeFps ?? this.config.framerate) : this.ladderFps;
-    const negotiatedConfig: CaptureConfig = {
-      ...this.config,
-      width,
-      height,
-      framerate,
-      bitrate: computeBitrate(width, height, framerate),
-    };
-    const enc = new Encoder(negotiatedConfig, {
-      onEncoded: (encoded) => this.handleEncoded(encoded),
-      onError: (e) => this.handleEncoderError(e),
-    });
-    void enc
-      .configure()
-      .then((chosen) => {
+    let framerate = this.ladderFps === 'native' ? (this.nativeFps ?? this.config.framerate) : this.ladderFps;
+
+    const proceedInit = async () => {
+      let cappedFps: number | null = null;
+      if ((width > 1920 || height > 1080) && framerate > 30) {
+        const hwSupported = await probeHardwareSupport(
+          this.config.codecPreferences,
+          width,
+          height,
+          framerate,
+        );
+        if (!hwSupported) {
+          log.info(
+            `HW encoding not supported for encoder target ${width}x${height}@${framerate}fps. Capping to 30fps.`,
+          );
+          framerate = 30;
+          cappedFps = 30;
+        }
+      }
+      this.preprocessor.setCappedFps(cappedFps);
+
+      const negotiatedConfig: CaptureConfig = {
+        ...this.config,
+        width,
+        height,
+        framerate,
+        bitrate: computeBitrate(width, height, framerate),
+      };
+      const enc = new Encoder(negotiatedConfig, {
+        onEncoded: (encoded) => this.handleEncoded(encoded),
+        onError: (e) => this.handleEncoderError(e),
+      });
+      try {
+        const chosen = await enc.configure();
         if (this.stopping) {
           firstFrame.close();
           enc.dispose();
@@ -450,13 +469,14 @@ export class BroadcastPipeline {
         const accepted = enc.encode(firstFrame);
         if (!accepted) this.stats.droppedFrames++;
         firstFrame.close();
-      })
-      .catch((e) => {
+      } catch (e) {
         firstFrame.close();
         enc.dispose();
         this.encoderIniting = false;
         this.fail(e instanceof Error ? e : new Error(String(e)));
-      });
+      }
+    };
+    void proceedInit();
   }
 
   private handleEncoded(encoded: EncodedFrame): void {
