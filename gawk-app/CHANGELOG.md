@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.8.2...gawk-app-v0.9.0) (2026-07-13)
+
+
+### Features
+
+* implement R2 hardening limits, access control, and bandwidth drops ([7cd4824](https://github.com/Tuhis/gawk/commit/7cd4824bedb6c0e45f9c5507e168adf39cacbaee))
+
+
+### Bug Fixes
+
+* wire R2 hardening limits into production and fix review findings ([8f67538](https://github.com/Tuhis/gawk/commit/8f6753867ca7525fc096add67b28f9296f788052))
+
 ## [0.8.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.8.1...gawk-app-v0.8.2) (2026-07-12)
 
 

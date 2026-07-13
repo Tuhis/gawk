@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.9.1...gawk-server-v0.10.0) (2026-07-13)
+
+
+### Features
+
+* add privileged sysctl initContainer for UDP buffer tuning ([e181f2e](https://github.com/Tuhis/gawk/commit/e181f2e4bbe084132c739e4b927d4b79c3ff91d6))
+* add publishSecretKeyRef to Helm chart for secure secrets ([7cfeb7d](https://github.com/Tuhis/gawk/commit/7cfeb7d4b829103d7199bbd56220c3062735a7ea))
+* implement R2 hardening limits, access control, and bandwidth drops ([7cd4824](https://github.com/Tuhis/gawk/commit/7cd4824bedb6c0e45f9c5507e168adf39cacbaee))
+
+
+### Bug Fixes
+
+* wire R2 hardening limits into production and fix review findings ([8f67538](https://github.com/Tuhis/gawk/commit/8f6753867ca7525fc096add67b28f9296f788052))
+
 ## [0.9.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.9.0...gawk-server-v0.9.1) (2026-07-12)
 
 
