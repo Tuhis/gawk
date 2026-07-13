@@ -24,7 +24,7 @@ feature set exists).
 | R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | ✅ done ([docs/08](docs/08-resolution-framerate-picker.md)) |
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | 🚧 implemented, manual verify pending ([docs/09](docs/09-automatic-fallback.md)) |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
-| R6 | [Production UI](#r6--production-ui) | not started |
+| R6 | [Production UI](#r6--production-ui) | 🚧 implemented (J1–J6); automated gates green, manual browser verify pending ([docs/10](docs/10-production-ui.md)) |
 
 ---
 
@@ -318,7 +318,18 @@ rebuilt (the transport/media modules are UI-agnostic and carry over
 untouched; the React pages are probably rebuilt); whether `#/debug` shares
 components with the production UI or stays frozen as-is.
 
-**Status**: not started.
+**Status**: implemented 2026-07-13 (chunks J1–J6) — see
+[`docs/10-production-ui.md`](docs/10-production-ui.md). Taste locked
+(monochrome/restrained, segmented code entry, preview-hero broadcaster,
+subtle motion); the open key design questions are resolved in the doc (debug
+stays frozen and does **not** share components; the React page shells were
+rebuilt while all transport/media/state modules carry over untouched). All
+automated gates green (tsc, 162 tests, lint, build); **manual browser verify
+pending** (the visual polish + real WebTransport/WebCodecs/fullscreen/screen
+share can only be judged in a browser — same posture as R4). Zero
+server/wire/pipeline changes. Note R5 was skipped for now — the doc does not
+depend on it and slots an R5 live-edge metric into the stats overlay if/when
+it lands.
 
 ---
 

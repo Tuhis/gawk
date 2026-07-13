@@ -32,3 +32,12 @@ resources:
     memory: 32Mi
   limits:
     memory: 64Mi
+
+# Frontend runtime config. Rendered into /config.js by a ConfigMap and read by
+# the SPA at load — deploy-time flags with no image rebuild and no server
+# endpoint. See gawk-app/src/config.ts.
+config:
+  # Prompt broadcasters for the relay's publish secret on "Start a stream".
+  # Set true when the relay runs with -publish-secret (server chart's
+  # config.publishSecret); the value itself is never shipped to the client.
+  requirePublishSecret: false

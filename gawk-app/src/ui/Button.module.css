@@ -1,0 +1,66 @@
+.btn {
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 0.6rem 1.1rem;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  line-height: 1;
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Primary: near-white fill on the dark canvas — the calm, high-contrast CTA
+   the monochrome system leans on instead of a colored accent. */
+.primary {
+  background: var(--text);
+  color: #0a0b0d;
+  font-weight: 600;
+}
+.primary:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.secondary {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+.secondary:hover:not(:disabled) {
+  border-color: var(--faint);
+  background: var(--surface-1);
+}
+
+.ghost {
+  background: transparent;
+  color: var(--muted);
+}
+.ghost:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.danger {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+}
+.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: var(--danger);
+}

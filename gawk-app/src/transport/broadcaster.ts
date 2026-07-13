@@ -493,6 +493,7 @@ export class BroadcastPipeline {
           timestampUs: BigInt(Math.round(chunk.timestamp)),
         },
         data,
+        this.wt?.datagrams.maxDatagramSize,
       );
     } catch (e) {
       this.fail(e instanceof Error ? e : new Error(String(e)));

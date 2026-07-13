@@ -14,7 +14,10 @@ type Status = 'idle' | 'connecting' | 'watching' | 'reconnecting' | 'stopping' |
 
 function getBroadcastIdFromHash(): string | null {
   const hash = window.location.hash;
-  const match = hash.match(/^#\/view\/([a-zA-Z0-9]+)$/);
+  // Debug viewer lives under #/debug/view/<id> — NOT #/view/<id>, which R6
+  // reassigned to the production viewer (App routes it to ViewerScreen). Using
+  // the production path here would bounce the debug viewer into the new UI.
+  const match = hash.match(/^#\/debug\/view\/([a-zA-Z0-9]+)$/);
   if (!match) return null;
   const id = match[1].toUpperCase();
   if (id.length !== 6) return null;
@@ -55,7 +58,7 @@ export function ViewPage() {
     if (!validateBroadcastId(id)) return;
     const normalizedId = id.toUpperCase();
     setBroadcastId(normalizedId);
-    window.location.hash = `#/view/${normalizedId}`;
+    window.location.hash = `#/debug/view/${normalizedId}`;
 
     const { serverUrl, certHashHex } = useTransportStore.getState();
     setError(null);

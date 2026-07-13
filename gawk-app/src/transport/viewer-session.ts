@@ -72,6 +72,9 @@ export class ViewerSession {
   private stopped = false;
   private lastReason = 'session closed';
   private lastCloseCode: number | null = null;
+  // Set when the pipeline reported a non-recoverable error (e.g. an unsupported
+  // codec). Reconnecting can't help, so the session surfaces it and stops.
+  private lastFatal = false;
 
   constructor(
     serverUrl: string,
@@ -130,6 +133,7 @@ export class ViewerSession {
 
   private buildPipeline(): PipelineHandle {
     this.lastCloseCode = null;
+    this.lastFatal = false;
     const inner: ViewerCallbacks = {
       onDecodedFrame: (d) => this.cb.onDecodedFrame(d),
       onConfig: (c) => this.cb.onConfig(c),
@@ -141,6 +145,9 @@ export class ViewerSession {
         this.lastReason = e.message;
         if ('closeCode' in (e as any)) {
           this.lastCloseCode = (e as any).closeCode;
+        }
+        if ((e as { fatal?: boolean }).fatal) {
+          this.lastFatal = true;
         }
       },
       onEnded: () => this.handlePipelineEnded(),
@@ -157,6 +164,17 @@ export class ViewerSession {
     if (this.lastCloseCode === CLOSE_CODE_BROADCAST_ENDED) {
       log.info('Broadcast ended cleanly by server (code 4000). Stopping.');
       this.stopped = true;
+      this.cb.onEnded();
+      return;
+    }
+    if (this.lastFatal) {
+      // Unplayable stream (e.g. unsupported codec): surface it and stop — no
+      // reconnect, since every retry would fail identically.
+      log.info('Viewer stopping: stream not playable. No reconnect.');
+      this.stopped = true;
+      const err = new Error(this.lastReason) as Error & { fatal?: boolean };
+      err.fatal = true;
+      this.cb.onError(err);
       this.cb.onEnded();
       return;
     }

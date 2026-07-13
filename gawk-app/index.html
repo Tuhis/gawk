@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>gawk-app</title>
+    <meta name="theme-color" content="#0a0b0d" />
+    <meta name="description" content="gawk — low-latency self-hosted game streaming. Join a stream with a 6-character code." />
+    <title>gawk</title>
+    <!-- Runtime config (Helm-overridable). Plain script → runs before the
+         deferred module bundle, so window.__GAWK_CONFIG__ is set in time. -->
+    <script src="/config.js"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -46,3 +46,12 @@ spec:
             periodSeconds: 15
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # Override the shipped default /config.js with the Helm-rendered one.
+            - name: runtime-config
+              mountPath: /usr/share/nginx/html/config.js
+              subPath: config.js
+      volumes:
+        - name: runtime-config
+          configMap:
+            name: {{ include "gawk-app.fullname" . }}-config

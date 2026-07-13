@@ -14,15 +14,21 @@ export interface CaptureConfig {
 // Ordered by preference. Encoder walks this list and picks the first one
 // isConfigSupported() approves for the negotiated width/height/framerate.
 // - H.264 baseline lvl 4.2 / lvl 3.1: HW on Chromium/Safari, best decode compat.
-// - H.264 high profile lvl 4.0: what most HW encoders internally prefer.
+// - H.264 high/main/baseline fallback ladder.
 // - VP9 profile 0 lvl 4.0 / lvl 3.1: cross-browser software, sometimes HW.
 // - VP8: universal software fallback.
 export const DEFAULT_CODEC_PREFERENCES: string[] = [
-  'avc1.640034', // H.264 High Profile Level 5.2 (4K @ 60fps)
-  'avc1.640033', // H.264 High Profile Level 5.1 (4K @ 30fps)
-  'avc1.42E02A',
-  'avc1.640028',
-  'avc1.42E01F',
+  // Chrome's VideoDecoder cannot decode H.264 High Profile Level 5.1 or 5.2
+  // 'avc1.640034', // H.264 High Profile Level 5.2 (4K @ 60fps)
+  // 'avc1.640033', // H.264 High Profile Level 5.1 (4K @ 30fps)
+  'avc1.4D4034', // H.264 Main Profile Level 5.2 (4K @ 60fps)
+  'avc1.4D4033', // H.264 Main Profile Level 5.1 (4K @ 30fps)
+  'avc1.42E02A', // H.264 Constrained Baseline Profile Level 4.2
+  'avc1.4D402A', // H.264 Main Profile Level 4.2
+  'avc1.640028', // H.264 High Profile Level 4.0
+  'avc1.4D4028', // H.264 Main Profile Level 4.0
+  'avc1.42E01F', // H.264 Constrained Baseline Profile Level 3.1
+  'avc1.4D401F', // H.264 Main Profile Level 3.1
   'vp09.00.40.08',
   'vp09.00.31.08',
   'vp8',

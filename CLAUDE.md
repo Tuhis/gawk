@@ -104,7 +104,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   pre-encode scaling + fps gating, H1–H4 chunks),
   `docs/09-automatic-fallback.md` for R4 (automatic resolution fallback:
   encode-backpressure detection + auto step-down/up, I1–I4 chunks;
-  implemented, manual verify pending).
+  implemented, manual verify pending),
+  `docs/10-production-ui.md` for R6 (production UI: landing/broadcaster/viewer
+  surfaces, monochrome design system, J1–J6 chunks; implemented, automated
+  gates green, manual browser verify pending).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -156,6 +159,18 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    observed low fps was source-limited (4K capture), a correct no-op. Named
    thresholds in `fallback.ts` are unstarted (no HW backpressure to tune
    against); a hardware-strain signal is a possible deferred follow-up.
+10. Production UI — **implemented; automated gates green, manual browser
+   verify pending** (R6, `docs/10-production-ui.md`). Three surfaces (landing
+   at `#/`, broadcaster at `#/broadcast`, viewer at `#/view/<id>`),
+   monochrome-restrained design system (tokens in `styles/global.css` +
+   `src/ui/` primitives), segmented code entry, preview-hero broadcaster,
+   cinematic viewer with fullscreen + a stats overlay (hotkey
+   `Ctrl+Alt+Shift+D` + right-click menu); current pages re-homed **frozen**
+   under `#/debug/*` (they do not share components with the production UI).
+   UI-only — zero server/wire/viewer-protocol changes; all transport/media/state
+   modules carry over untouched. Chunks J1–J6. **R5 (viewer live-edge) was
+   skipped for now**; R6 doesn't depend on it (an R5 live-edge metric slots
+   into the stats overlay later).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

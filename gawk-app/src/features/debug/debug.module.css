@@ -1,0 +1,98 @@
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.tag {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  margin-right: 0.5rem;
+}
+
+.nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+  padding: 0.2rem 0.4rem;
+  border-radius: var(--r-sm);
+}
+
+.nav a:hover {
+  color: var(--text);
+}
+
+.activeLink {
+  color: var(--text) !important;
+  background: var(--bg);
+}
+
+.exit {
+  margin-left: auto;
+}
+
+.index {
+  max-width: 640px;
+  margin: 4rem auto;
+  padding: 0 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.index h1 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.index p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.card {
+  display: block;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.card:hover {
+  border-color: var(--faint);
+}
+
+.card b {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.card span {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}

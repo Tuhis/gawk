@@ -5,6 +5,8 @@
 
 import {
   MAX_CHUNK_PAYLOAD,
+  MAX_DATAGRAM_SIZE,
+  VIDEO_CHUNK_HEADER_SIZE,
   encodeDecoderConfig,
   encodeVideoChunk,
   WireError,
@@ -16,17 +18,22 @@ export interface FrameInfo {
   timestampUs: bigint;
 }
 
-// Splits data into ceil(len / MAX_CHUNK_PAYLOAD) datagrams (a zero-length
-// frame still produces one chunk so the frame exists on the wire). Throws
+// Splits data into datagrams that fit within the path MTU. A zero-length
+// frame still produces one chunk so the frame exists on the wire. Throws
 // WireError if the frame would need more than 65535 chunks.
-export function packetizeFrame(info: FrameInfo, data: Uint8Array): Uint8Array<ArrayBuffer>[] {
-  const chunkCount = Math.max(1, Math.ceil(data.length / MAX_CHUNK_PAYLOAD));
+export function packetizeFrame(
+  info: FrameInfo,
+  data: Uint8Array,
+  pathMaxDatagramSize = MAX_DATAGRAM_SIZE,
+): Uint8Array<ArrayBuffer>[] {
+  const maxPayload = Math.min(MAX_CHUNK_PAYLOAD, Math.max(1, pathMaxDatagramSize - VIDEO_CHUNK_HEADER_SIZE));
+  const chunkCount = Math.max(1, Math.ceil(data.length / maxPayload));
   if (chunkCount > 0xffff) {
     throw new WireError(`frame of ${data.length} bytes needs ${chunkCount} chunks, max 65535`);
   }
   const datagrams: Uint8Array<ArrayBuffer>[] = new Array(chunkCount);
   for (let i = 0; i < chunkCount; i++) {
-    const payload = data.subarray(i * MAX_CHUNK_PAYLOAD, (i + 1) * MAX_CHUNK_PAYLOAD);
+    const payload = data.subarray(i * maxPayload, (i + 1) * maxPayload);
     datagrams[i] = encodeVideoChunk(
       {
         keyframe: info.keyframe,

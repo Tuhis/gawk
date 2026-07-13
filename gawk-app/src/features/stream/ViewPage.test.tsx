@@ -54,14 +54,14 @@ afterEach(() => {
 
 describe('ViewPage auto-join', () => {
   it('auto-joins the broadcast ID from the URL hash on mount', async () => {
-    window.location.hash = '#/view/AB2CD3';
+    window.location.hash = '#/debug/view/AB2CD3';
     render(<ViewPage />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(sessions[0].broadcastId).toBe('AB2CD3');
   });
 
   it('does not rejoin the stale hash ID when typing a new code after stop', async () => {
-    window.location.hash = '#/view/AB2CD3';
+    window.location.hash = '#/debug/view/AB2CD3';
     render(<ViewPage />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
@@ -78,7 +78,7 @@ describe('ViewPage auto-join', () => {
   });
 
   it('does not auto-join without an ID in the hash', async () => {
-    window.location.hash = '#/view';
+    window.location.hash = '#/debug/view';
     render(<ViewPage />);
     await new Promise((r) => setTimeout(r, 50));
     expect(sessions).toHaveLength(0);

@@ -49,6 +49,14 @@ class FakePipeline implements PipelineHandle {
     this.cbs.onError(err);
     void this.stop();
   }
+
+  // A non-recoverable failure, the way ViewerPipeline.failDecode() reports it.
+  crashFatal(reason: string): void {
+    const err = new Error(reason) as any;
+    err.fatal = true;
+    this.cbs.onError(err);
+    void this.stop();
+  }
 }
 
 interface Harness {
@@ -186,6 +194,24 @@ describe('ViewerSession', () => {
 
     await session.stop(); // idempotent
     expect(events).toEqual(['connected', 'ended']);
+  });
+
+  it('surfaces a fatal (unplayable-codec) error and does not reconnect', async () => {
+    const { session, pipelines, events } = makeHarness();
+    await session.start();
+    expect(events).toEqual(['connected']);
+
+    pipelines[0].crashFatal("Can't play this stream — codec avc1.640034");
+    // Error surfaced to the UI, then a single clean end — no reconnect event.
+    expect(events).toEqual([
+      'connected',
+      "error:Can't play this stream — codec avc1.640034",
+      'ended',
+    ]);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pipelines).toHaveLength(1); // never retried
+    expect(events.some((e) => e.startsWith('reconnecting'))).toBe(false);
   });
 
   it('stops reconnecting and ends cleanly when closed with code 4000', async () => {

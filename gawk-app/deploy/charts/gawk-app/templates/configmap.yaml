@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gawk-app.fullname" . }}-config
+  labels:
+    {{- include "gawk-app.labels" . | nindent 4 }}
+data:
+  # Mounted over /usr/share/nginx/html/config.js (see deployment.yaml), served
+  # at /config.js and evaluated before the app bundle. Only non-secret,
+  # client-safe flags belong here.
+  config.js: |
+    window.__GAWK_CONFIG__ = {
+      "requirePublishSecret": {{ .Values.config.requirePublishSecret | default false }}
+    };

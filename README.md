@@ -37,9 +37,9 @@ getDisplayMedia
 | Path | What |
 |------|------|
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R6), with ordering rationale and per-item scope sketches |
-| `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Pages: `#/view` (default), `#/broadcast`, `#/loopback` (no-network diagnostic). `deploy/`: Dockerfile + Helm chart |
+| `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`05`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`10`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
 ## Quickstart (local dev)
@@ -59,10 +59,13 @@ npm install
 npm run dev            # http://localhost:5173
 ```
 
-Open `http://localhost:5173/#/broadcast`, paste the cert hash into the "Dev
-cert hash" field, Start Broadcast, pick a screen. Open `#/view` in another
-tab (same hash), Start Watching. No Chrome flags needed — the app passes
-the hash via `serverCertificateHashes`.
+Open `http://localhost:5173/#/broadcast`, open the **⚙ settings** panel,
+paste the cert hash into the "Dev cert hash" field, **Start a stream**, pick a
+screen — you get a 6-char code. The cert hash persists to `localStorage`, so
+in another tab just open the join link (or type the code on the landing page
+`#/`) and it connects. No Chrome flags needed — the app passes the hash via
+`serverCertificateHashes`. (The old stats-heavy pages remain at
+`#/debug/broadcast` and `#/debug/view` for diagnostics.)
 
 To probe a running server without a browser:
 
@@ -89,6 +92,12 @@ no cluster credentials in GitHub). Initial install runbook, GHCR pull-secret
 setup and the release flow:
 [`docs/05-resilience-deploy.md`](docs/05-resilience-deploy.md).
 
+Frontend deploy-time flags are set as gawk-app chart values under `config.*`
+(rendered into a `/config.js` the SPA reads at load — no rebuild, no server
+endpoint). Notably, set `config.requirePublishSecret=true` when the relay runs
+with `-publish-secret`, so the broadcaster is prompted for the secret on
+"Start a stream". See [`docs/10`](docs/10-production-ui.md) Decision 11.
+
 ```sh
 cd gawk-server && docker build -f deploy/Dockerfile -t gawk-server:dev .
 cd gawk-app    && docker build -f deploy/Dockerfile -t gawk-app:dev .
@@ -107,8 +116,9 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 7. ✅ Hardening (R2): broadcast/subscriber/bandwidth limits, publish secret, connection rate limiting, defensive parsing, obfuscated `/statusz` IDs — `docs/07` (completed 2026-07-13)
 8. ✅ Broadcaster resolution & framerate picker (R3): pre-encode scaling + fps gating ladder, ladder-scaled bitrate, time-based keyframe cadence, live mid-stream changes — `docs/08` (completed 2026-07-13)
 9. 🚧 Automatic resolution fallback (R4): encode-queue rejection-ratio detection with hysteresis + cooldown, a default "auto" selection that steps down and back up (backoff against oscillation) while explicit rungs are never auto-stepped, encoder-error step-down — `docs/09` (implemented + released 2026-07-13; real-hardware check found the queue signal under-fires on hardware encoders, so software-path verify + threshold tuning remain pending)
+10. 🚧 Production UI (R6): landing/broadcaster/viewer surfaces, a monochrome design system (`styles/global.css` tokens + `src/ui/` primitives), segmented join-code entry, and a cinematic fullscreen viewer with a stats overlay (`Ctrl+Alt+Shift+D` or right-click); the old pages are re-homed frozen under `#/debug/*`. UI-only — zero server/wire/pipeline changes — `docs/10` (implemented 2026-07-13; automated gates green, manual browser verify pending)
 
-What comes next (live-edge work, production UI, …) is laid
+What comes next (R5 viewer live-edge work, …) is laid
 out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
@@ -135,6 +145,24 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 - **UDP buffers**: quic-go wants ~7 MiB receive buffers; Linux defaults to
   208 KiB. `sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000`
   for real streaming loads.
+- **The production viewer (`#/view/<id>`) has no cert-hash field** — it is
+  deliberately chrome-free (fullscreen + leave only). For `-dev-cert` local
+  testing set the hash once in the broadcaster's ⚙ panel; it persists to
+  `localStorage` (shared same-origin, so the viewer picks it up). Or use
+  `#/debug/view`, which keeps the full settings form. ([docs/10](docs/10-production-ui.md))
+- **The debug viewer uses `#/debug/view/<id>`, not `#/view/<id>`** — R6 gave
+  `#/view/<id>` to the production viewer, and `ViewPage` syncs its code into the
+  hash, so it must stay in its own namespace or clicking **Watch** bounces you
+  into the production UI. Any "frozen" page that writes `location.hash` is not
+  actually route-frozen. ([docs/10](docs/10-production-ui.md))
+- **A codec the viewer's browser can't decode is a *terminal* error, not a
+  reconnect** — an unsupported codec (e.g. Chrome can't decode a Firefox
+  broadcaster's `avc1.640034` High-5.2) fails every attempt identically, so the
+  viewer shows a "can't play this stream" card and stops instead of looping the
+  auto-reconnect. Decoder/codec failures are tagged `fatal` in
+  `ViewerPipeline`; `ViewerSession` reconnects only on transport drops. (H.264
+  `description` handling also matters: an Annex-B extradata blob must *not* be
+  passed as the AVCC `description` — `viewer.ts` sniffs `avcC`'s `0x01` prefix.)
 
 **Certificates (Chromium `serverCertificateHashes` rules)**
 

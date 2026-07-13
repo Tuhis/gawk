@@ -1,0 +1,106 @@
+.root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* Quiet, slow-drifting gradient behind the card. Low-contrast on purpose;
+   under prefers-reduced-motion the global rule stops the animation. */
+.bg {
+  position: absolute;
+  inset: -25%;
+  z-index: 0;
+  background:
+    radial-gradient(38% 42% at 30% 32%, rgba(107, 138, 254, 0.14), transparent 70%),
+    radial-gradient(34% 40% at 72% 68%, rgba(134, 59, 255, 0.12), transparent 70%),
+    radial-gradient(30% 36% at 60% 20%, rgba(71, 191, 255, 0.08), transparent 70%);
+  filter: blur(30px);
+  animation: drift 26s ease-in-out infinite alternate;
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(-3%, -2%, 0) scale(1.05);
+  }
+  to {
+    transform: translate3d(4%, 3%, 0) scale(1.12);
+  }
+}
+
+.card {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 400px);
+  padding: 2.25rem 2rem 1.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin-bottom: 1.75rem;
+}
+
+.prompt {
+  margin: 0 0 1.5rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hint {
+  margin: 0.9rem 0 0;
+  font-size: var(--fs-xs);
+  color: var(--faint);
+}
+
+.join {
+  margin-top: 1.5rem;
+  width: 100%;
+}
+
+.divider {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1.25rem 0 0.9rem;
+  color: var(--faint);
+  font-size: var(--fs-xs);
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.startLink {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.startLink:hover {
+  color: var(--text);
+}
