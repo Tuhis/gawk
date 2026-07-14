@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.15.0...gawk-app-v0.16.0) (2026-07-14)
+
+
+### Features
+
+* viewer render performance — WebGL + rAF-coalesced render sinks (R10, P1-P2) ([01296e0](https://github.com/Tuhis/gawk/commit/01296e09529abd3ac5b8834ec795ce1d70cc3dea))
+
 ## [0.15.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.14.0...gawk-app-v0.15.0) (2026-07-14)
 
 
