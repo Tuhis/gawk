@@ -108,20 +108,20 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   pre-encode scaling + fps gating, H1–H4 chunks),
   `docs/09-automatic-fallback.md` for R4 (automatic resolution fallback:
   encode-backpressure detection + auto step-down/up, I1–I4 chunks;
-  implemented, manual verify pending),
+  implemented + manually verified 2026-07-14),
   `docs/10-production-ui.md` for R6 (production UI: landing/broadcaster/viewer
-  surfaces, monochrome design system, J1–J6 chunks; implemented, automated
-  gates green, manual browser verify pending),
+  surfaces, monochrome design system, J1–J6 chunks; implemented, manual
+  browser verify passed 2026-07-14),
   `docs/13-observability.md` for R9 (observability & metrics: TCP ops
   endpoint with Prometheus `/metrics` + ServiceMonitor, relay ingress-loss
   window, client funnel stats + both-surface overlays, bottleneck playbook;
-  M1–M7 implemented 2026-07-14, manual verify + M8 Grafana pending),
+  M1–M7 implemented + manually verified 2026-07-14, M8 Grafana deferred),
   `docs/14-viewer-render-performance.md` for R10 (viewer render performance:
   Firefox drop/decode-gap diagnosis, rAF-coalesced latest-frame-wins
   rendering + WebGL render sink behind the R8 `RenderSink` seam, nested
   transport-worker split behind a `ViewerTransport` seam, decoder queue
-  5→10, P1–P4 chunks; P1–P3 + queue bump implemented 2026-07-14, Firefox
-  verify pending).
+  5→10, P1–P4 chunks; P1–P3 + queue bump implemented 2026-07-14, re-verified
+  on Chrome + Firefox 2026-07-14).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -160,8 +160,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    was 2000, later cut to **500** for loss recovery — see item 11),
    live mid-stream changes via encoder recreate; zero server changes — see
    `docs/08-resolution-framerate-picker.md`).
-9. Automatic resolution fallback — **implemented + released; software-path
-   verify + tuning pending** (R4: encode-queue rejection-ratio detection with
+9. Automatic resolution fallback — **done; implemented + released 2026-07-13,
+   manually verified 2026-07-14** (R4: encode-queue rejection-ratio detection with
    hysteresis + cooldown, in the pure `media/fallback.ts` `FallbackController`;
    a new **"auto" resolution selection (default)** steps both down and up
    (up-probes with exponential backoff against oscillation) plus
@@ -171,11 +171,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    (2026-07-13)**: the auto step-down does not fire on the gaming PC's
    hardware encode path — HW encoders drain frames without `encodeQueueSize`
    growing past the `> 2` trigger, so the rejection signal under-fires;
-   observed low fps was source-limited (4K capture), a correct no-op. Named
-   thresholds in `fallback.ts` are unstarted (no HW backpressure to tune
-   against); a hardware-strain signal is a possible deferred follow-up.
-10. Production UI — **implemented; automated gates green, manual browser
-   verify pending** (R6, `docs/10-production-ui.md`). Three surfaces (landing
+   observed low fps was source-limited (4K capture), a correct no-op.
+   Software-path verification passed 2026-07-14 (named thresholds in
+   `fallback.ts` kept as-is); a hardware-strain signal is a possible
+   deferred follow-up.
+10. Production UI — **done; implemented 2026-07-13, manual browser verify
+   passed 2026-07-14** (R6, `docs/10-production-ui.md`). Three surfaces (landing
    at `#/`, broadcaster at `#/broadcast`, viewer at `#/view/<id>`),
    monochrome-restrained design system (tokens in `styles/global.css` +
    `src/ui/` primitives), segmented code entry, preview-hero broadcaster,
@@ -196,7 +197,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    gap discards surface on the existing "Awaiting keyframe" stat); (c)
    **30 fps default fan-out cap** (`framerateRung` default native→30 in
    `broadcastSettingsStore`; a broadcaster can still pick 60/native), halving
-   the datagram rate and viewer decode load. Manual browser verify pending —
+   the datagram rate and viewer decode load. Manual browser verify passed
+   2026-07-14 —
    see `docs/08-resolution-framerate-picker.md` (GOP + fps default) and
    `docs/03-single-client-e2e.md` (freeze-on-gap decode policy).
 12. Worker offloading & reliable keyframes — **done (S1–S7: reliable
@@ -232,8 +234,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the whole view and teardown is StrictMode-deferred (see README gotcha). Zero
    WebRTC/MoQ; wire+server+broadcaster+viewer changed in lock-step. S6 is
    UI/pipeline-only (zero server/wire changes on top of S1–S5).
-13. Observability & metrics — **implemented (M1–M7); manual verify + M8
-   (Grafana dashboard) pending** (R9, `docs/13-observability.md`,
+13. Observability & metrics — **done (M1–M7); manually verified 2026-07-14;
+   M8 (Grafana dashboard) deferred** (R9, `docs/13-observability.md`,
    2026-07-14). The relay grew a **plain-TCP ops endpoint** (`-metrics-addr`,
    default `:2112`, literal `off` disables — an empty env var reads as unset)
    serving Prometheus `/metrics`, `/healthz`, and a curl-able `/statusz`
@@ -256,8 +258,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    sample window) as the remote-troubleshooting story. The
    symptom→signature **bottleneck playbook** lives in docs/13. Zero
    wire-format changes.
-14. Viewer render performance — **P1–P3 + decoder-queue bump + field-finding
-   fixes implemented 2026-07-14; re-verify on both browsers pending** (R10,
+14. Viewer render performance — **done; P1–P3 + decoder-queue bump + field-finding
+   fixes implemented 2026-07-14, re-verified on Chrome + Firefox 2026-07-14
+   (P4 remainder deferred)** (R10,
    `docs/14-viewer-render-performance.md`; P1–P4 UI/pipeline only — the
    field findings later added one server-side fix, zombie eviction, below).
    Diagnosis: the R8 worker ran transport + decode + render on one

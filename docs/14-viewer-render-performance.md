@@ -262,6 +262,11 @@ keyframe consumes ~38 % of a 10 Mbps GOP budget; if late-keyframe pressure
 returns even with the wider wait, the next lever is keyframe size
 (broadcaster rung / bitrate), not more buffering.
 
+**Re-verification (2026-07-14)**: with the field-finding fixes deployed, the
+verification plan above passed on both Chrome and Firefox. The P4 remainder
+(decode-path confirmation, rung guidance, stickier overload response) stays
+deferred pending future measurements.
+
 ## Non-goals
 
 - Main-thread fallback path rendering changes (Decision 3). The main-thread

@@ -22,13 +22,13 @@ feature set exists).
 | R1 | [Multi-broadcaster support](#r1--multi-broadcaster-support) | ✅ done ([docs/06](docs/06-multi-broadcaster.md)) |
 | R2 | [Hardening](#r2--hardening) | ✅ done ([docs/07](docs/07-hardening.md)) |
 | R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | ✅ done ([docs/08](docs/08-resolution-framerate-picker.md)) |
-| R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | 🚧 implemented, manual verify pending ([docs/09](docs/09-automatic-fallback.md)) |
+| R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | ✅ done — manually verified 2026-07-14 ([docs/09](docs/09-automatic-fallback.md)) |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
-| R6 | [Production UI](#r6--production-ui) | 🚧 implemented (J1–J6); automated gates green, manual browser verify pending ([docs/10](docs/10-production-ui.md)) |
+| R6 | [Production UI](#r6--production-ui) | ✅ done (J1–J6); manual browser verify passed 2026-07-14 ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
-| R9 | [Observability & metrics](#r9--observability--metrics) | 🚧 implemented 2026-07-14 (M1–M7); automated gates green, manual verify + M8 (Grafana) pending ([docs/13](docs/13-observability.md)) |
-| R10 | [Viewer render performance](#r10--viewer-render-performance) | 🚧 P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented 2026-07-14; re-verify on Chrome + Firefox pending ([docs/14](docs/14-viewer-render-performance.md)) |
+| R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
+| R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 
 ---
 
@@ -227,7 +227,8 @@ resolution drops.
 what their downlink supports") — that's a different architecture (the relay
 is a byte forwarder by design) and explicitly out of scope.
 
-**Status**: implemented + released 2026-07-13 (chunks I1–I3 + automated
+**Status**: done — implemented + released 2026-07-13, manually verified
+2026-07-14 (chunks I1–I3 + automated
 gates) — see [`docs/09-automatic-fallback.md`](docs/09-automatic-fallback.md).
 The design resolved the open questions above: detection is the encode-queue
 rejection ratio with a sliding window + cooldown; stepping is
@@ -239,8 +240,8 @@ changes. **Real-hardware caveat**: the auto step-down could not be induced on
 the gaming PC's hardware encode path — hardware encoders don't surface
 backpressure via `encodeQueueSize`, so the rejection signal under-fires
 there; observed perf limits were source-side (4K capture), a correct no-op.
-Software-path verification + threshold tuning remain outstanding (see the
-doc's "Manual verification findings"), and a hardware-strain signal is a
+Software-path verification + threshold tuning completed 2026-07-14 (see the
+doc's "Manual verification findings"); a hardware-strain signal remains a
 possible deferred follow-up.
 
 ## R5 — Viewer live-edge enhancements
@@ -325,15 +326,16 @@ rebuilt (the transport/media modules are UI-agnostic and carry over
 untouched; the React pages are probably rebuilt); whether `#/debug` shares
 components with the production UI or stays frozen as-is.
 
-**Status**: implemented 2026-07-13 (chunks J1–J6) — see
+**Status**: done — implemented 2026-07-13, manual browser verify passed
+2026-07-14 (chunks J1–J6) — see
 [`docs/10-production-ui.md`](docs/10-production-ui.md). Taste locked
 (monochrome/restrained, segmented code entry, preview-hero broadcaster,
 subtle motion); the open key design questions are resolved in the doc (debug
 stays frozen and does **not** share components; the React page shells were
 rebuilt while all transport/media/state modules carry over untouched). All
 automated gates green (tsc, 162 tests, lint, build); **manual browser verify
-pending** (the visual polish + real WebTransport/WebCodecs/fullscreen/screen
-share can only be judged in a browser — same posture as R4). Zero
+passed 2026-07-14** (visual polish + real WebTransport/WebCodecs/fullscreen/
+screen share). Zero
 server/wire/pipeline changes. Note R5 was skipped for now — the doc does not
 depend on it and slots an R5 live-edge metric into the stats overlay if/when
 it lands.
@@ -453,16 +455,17 @@ rather than duplicate Prometheus counters in the hub; obfuscated-ID
 and true glass-to-glass latency are non-goals (the latter stays R5's,
 slotting into the same overlay row later).
 
-**Status**: implemented 2026-07-14 (chunks M1–M7; M8 — the Grafana dashboard
-and optional QUIC tracer — is deferred to the manual-verification pass, which
-needs the live homelab Prometheus anyway). All automated gates green. Two
+**Status**: done — implemented 2026-07-14 (chunks M1–M7), manually verified
+2026-07-14; M8 — the Grafana dashboard and optional QUIC tracer — remains
+deferred (needs dedicated time with the live homelab Prometheus/Grafana).
+All automated gates green. Two
 implementation notes fed back into the doc: the metric naming split into
 `gawk_broadcast_*` (per-broadcast label) vs `gawk_relay_*` (lifetime totals)
 because client_golang rejects one family with two label sets, and
 `-metrics-addr` disables via the literal `off` (an empty env var reads as
 unset). Manual verify — cluster scrape path, playbook attribution drills,
-browser overlays on Chrome + Firefox — pending; see the doc's verification
-plan.
+browser overlays on Chrome + Firefox — passed 2026-07-14; see the doc's
+verification plan.
 
 ## R10 — Viewer render performance
 
@@ -509,7 +512,8 @@ degenerated every GOP into keyframe-only playback on a congested peer) and
 **relay eviction of zombie subscribers** after 10 consecutive keyframe
 stream-open failures (non-terminal close code 4001) — the one server-side
 change in R10. Chrome 152 `getStats()` breakage tracked in `BUGS.md`.
-Re-verification on both browsers pending — see
+Re-verification on both browsers passed 2026-07-14 (P4 remainder stays
+deferred pending future measurements) — see
 [`docs/14-viewer-render-performance.md`](docs/14-viewer-render-performance.md).
 
 ---

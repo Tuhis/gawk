@@ -99,9 +99,9 @@ follows CODE-REVIEW.md (tests with the change; bug fixes test-first).
 **M1–M7 implemented 2026-07-14**; all automated gates green (gofmt/vet/
 `go test -race`, vitest/lint/`tsc -b` build, helm lint + template renders).
 The [manual verification plan](#verification-plan) — cluster scrape path,
-attribution drills, browser overlays — is pending, same posture as R4/R6.
-M8 (Grafana dashboard + optional QUIC tracer) is deferred to ride along with
-that manual pass.
+attribution drills, browser overlays — **passed 2026-07-14**.
+M8 (Grafana dashboard + optional QUIC tracer) remains deferred (needs
+dedicated time with the live homelab Prometheus/Grafana).
 
 ## Current state (inventory)
 
