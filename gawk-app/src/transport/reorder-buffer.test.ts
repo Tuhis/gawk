@@ -103,6 +103,29 @@ describe('ReorderBuffer', () => {
     expect(ids()).toEqual([0, 3, 4]);
   });
 
+  it('survives a keyframe that arrives ~500ms behind its trailing deltas (R10 field finding)', () => {
+    // The 2026-07-14 Chrome diagnostics trace (docs/14): keyframes ride the
+    // store-and-forward stream path and can land hundreds of ms after their
+    // trailing deltas arrived via datagrams — a ~236 KB keyframe to a congested
+    // peer regularly took > 500 ms. The deltas held while waiting must survive
+    // that long, or every GOP degenerates into keyframe-only 2 fps playback:
+    // deltas expire → keyframe releases alone → instant gap → freeze → repeat.
+    const { rb, clock, ids } = harness();
+
+    // Waiting for a keyframe (initial sync — same state as after a gap).
+    // Deltas 101..105 arrive promptly and buffer; the pipeline keeps ticking.
+    for (let id = 101; id <= 105; id++) rb.pushDelta(delta(id));
+    for (let i = 0; i < 5; i++) {
+      clock.t += 100; // 500 ms of ticks while the keyframe stream transfers
+      rb.tick();
+    }
+    expect(ids()).toEqual([]);
+
+    rb.pushKeyframe(kf(100)); // the late keyframe finally lands
+    expect(ids()).toEqual([100, 101, 102, 103, 104, 105]);
+    expect(rb.getStats().keyframeWaitDrops).toBe(0);
+  });
+
   it('drops undecodable held frames once they age past KEYFRAME_WAIT_MS', () => {
     const { rb, clock } = harness();
     rb.pushDelta(delta(5)); // waiting for a keyframe that never comes

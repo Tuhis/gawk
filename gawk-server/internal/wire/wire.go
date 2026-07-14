@@ -60,6 +60,14 @@ const (
 // to subscribers when their broadcast is garbage-collected.
 const CloseCodeBroadcastEnded = 4000
 
+// CloseCodeSubscriberUnresponsive is sent when the relay evicts a subscriber
+// whose keyframe stream opens fail persistently (R10, docs/14 — typically a
+// session whose client stopped reading uni streams and exhausted its stream
+// credit). Unlike CloseCodeBroadcastEnded it is NOT terminal for a live
+// client: the viewer's reconnect policy retries, and a fresh session
+// restores the stream credit.
+const CloseCodeSubscriberUnresponsive = 4001
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen

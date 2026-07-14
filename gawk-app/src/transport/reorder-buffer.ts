@@ -27,7 +27,16 @@ import type { DecoderConfigMessage } from './wire';
 
 // Tunables, named in one place (à la media/fallback.ts) for later real-world
 // tuning. Times are milliseconds.
-export const KEYFRAME_WAIT_MS = 200;
+//
+// KEYFRAME_WAIT_MS must cover the real-world latency gap between the two
+// channels, not just reordering jitter: a keyframe is store-and-forwarded as
+// a single large stream (~236 KB at native ultrawide) and was measured (R10
+// field finding, docs/14) landing > 500 ms behind its trailing datagram
+// deltas on a congested peer. At 200 ms those deltas expired before their
+// keyframe arrived, so every GOP degenerated into keyframe-only playback.
+// 1000 ms covers the measured worst case with margin and stays within
+// MAX_BUFFERED_FRAMES (~1.07 s at 60 fps), which remains the memory bound.
+export const KEYFRAME_WAIT_MS = 1000;
 export const DELTA_GAP_GRACE_MS = 60;
 // Hard cap on buffered frames; guards against a lingering stale frame (e.g. a
 // straggler above the decode position after a broadcaster restart) growing the

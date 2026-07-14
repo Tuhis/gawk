@@ -28,7 +28,7 @@ feature set exists).
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 | R9 | [Observability & metrics](#r9--observability--metrics) | 🚧 implemented 2026-07-14 (M1–M7); automated gates green, manual verify + M8 (Grafana) pending ([docs/13](docs/13-observability.md)) |
-| R10 | [Viewer render performance](#r10--viewer-render-performance) | 🚧 P1–P3 + decoder-queue bump implemented 2026-07-14; Firefox before/after verify pending ([docs/14](docs/14-viewer-render-performance.md)) |
+| R10 | [Viewer render performance](#r10--viewer-render-performance) | 🚧 P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented 2026-07-14; re-verify on Chrome + Firefox pending ([docs/14](docs/14-viewer-render-performance.md)) |
 
 ---
 
@@ -498,10 +498,18 @@ live entirely behind the R8 `RenderSink` seam.
   drop-to-keyframe); the rest (decode-path confirmation, rung guidance)
   deferred pending measurements (Firefox H.264 WebCodecs is often software).
 
-Zero server/wire/broadcaster changes; main-thread fallback path untouched.
+P1–P4 were zero server/wire/broadcaster changes; the main-thread fallback
+path is untouched throughout.
 
-**Status**: P1–P3 + decoder-queue bump implemented 2026-07-14; manual
-Firefox before/after verification pending — see
+**Status**: P1–P3 + decoder-queue bump implemented 2026-07-14; the first
+field diagnostics session (same day, doc'd in docs/14) then produced two
+follow-up fixes — `KEYFRAME_WAIT_MS` 200→1000 ms (store-and-forwarded
+keyframes measured landing >500 ms behind their datagram deltas; 200 ms
+degenerated every GOP into keyframe-only playback on a congested peer) and
+**relay eviction of zombie subscribers** after 10 consecutive keyframe
+stream-open failures (non-terminal close code 4001) — the one server-side
+change in R10. Chrome 152 `getStats()` breakage tracked in `BUGS.md`.
+Re-verification on both browsers pending — see
 [`docs/14-viewer-render-performance.md`](docs/14-viewer-render-performance.md).
 
 ---

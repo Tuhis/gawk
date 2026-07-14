@@ -76,6 +76,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs (currently: Chrome 152
+  broke `WebTransport.getStats()` sampling — `connection: null` on both
+  surfaces). Check it before debugging anything overlay/stats-related;
+  remove entries when fixed.
 - `CODE-REVIEW.md` — **coding + review guidelines; bug fixes are test-first
   (failing test before the fix, always). Follow it for every change and
   review.**
@@ -252,10 +256,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    sample window) as the remote-troubleshooting story. The
    symptom→signature **bottleneck playbook** lives in docs/13. Zero
    wire-format changes.
-14. Viewer render performance — **P1–P3 + decoder-queue bump implemented
-   2026-07-14; Firefox before/after verify pending** (R10,
-   `docs/14-viewer-render-performance.md`; UI/pipeline only, zero server/wire
-   changes). Diagnosis: the R8 worker ran transport + decode + render on one
+14. Viewer render performance — **P1–P3 + decoder-queue bump + field-finding
+   fixes implemented 2026-07-14; re-verify on both browsers pending** (R10,
+   `docs/14-viewer-render-performance.md`; P1–P4 UI/pipeline only — the
+   field findings later added one server-side fix, zombie eviction, below).
+   Diagnosis: the R8 worker ran transport + decode + render on one
    thread, and Firefox's 2D-canvas `drawImage(VideoFrame)` does a synchronous
    CPU conversion per frame — starving the datagram reader (silent datagram
    drops → "Dropped (incomplete)") and the decoder (decoded fps < received
@@ -280,7 +285,15 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    incoming-datagram queue; in-process transport remains for the main-thread
    path and no-nested-worker fallback. **P4 partial**: decoder queue bound
    raised 5→10 (`getMaxDecoderQueueSize`); the rest deferred pending Firefox
-   measurements.
+   measurements. **Field findings (2026-07-14, docs/14)**: keyframes are
+   store-and-forwarded (~236 KB) and can land >500 ms behind their datagram
+   deltas — `KEYFRAME_WAIT_MS` raised 200→1000 ms (200 ms made every GOP
+   keyframe-only ~2 fps on a congested peer; signature: one gap resync per
+   keyframe, zero reassembler drops); the relay now **evicts** a subscriber
+   after 10 consecutive keyframe stream-open failures (zombie session with
+   exhausted stream credit) with non-terminal close code **4001**
+   (`CloseCodeSubscriberUnresponsive` == `CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE`);
+   Chrome 152 broke `getStats()` sampling → BUGS.md.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

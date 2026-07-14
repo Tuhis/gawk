@@ -34,6 +34,12 @@ export const TYPE_BROADCAST_ANNOUNCE = 0x03;
 export const TYPE_STREAM_FRAME = 0x04;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
+// The relay evicted this subscriber because its keyframe stream opens failed
+// persistently (R10, docs/14 — typically a zombie session with exhausted
+// stream credit). Non-terminal by design: the viewer's normal reconnect
+// applies (a fresh session restores stream credit), so no special handling —
+// mirrored from Go wire.CloseCodeSubscriberUnresponsive for namespace parity.
+export const CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE = 4001;
 
 export const MAX_DATAGRAM_SIZE = 1200;
 export const VIDEO_CHUNK_HEADER_SIZE = 20;

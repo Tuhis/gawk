@@ -40,6 +40,7 @@ getDisplayMedia
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `docs/` | Per-milestone design notes and gotchas (`01`–`14`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
 ## Quickstart (local dev)
@@ -237,6 +238,19 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   counters rising on Chrome during heavy motion is the fix working, not a
   decoder falling behind.
   ([docs/03](docs/03-single-client-e2e.md), [docs/12](docs/12-worker-and-reliable-keyframes.md))
+- **Keyframes arrive hundreds of ms behind their own deltas — the reorder
+  wait must cover *transfer* latency, not just reordering jitter (R10).**
+  A ~236 KB keyframe is store-and-forwarded as one stream while its trailing
+  deltas arrive instantly as datagrams; to a congested peer it was measured
+  landing > 500 ms late. With `KEYFRAME_WAIT_MS` at 200 ms the held deltas
+  expired first, so every GOP became keyframe-only ~2 fps playback — the
+  telltale signature is **one gap resync per keyframe with zero reassembler
+  drops**. The wait is now 1000 ms (bounded by `MAX_BUFFERED_FRAMES`).
+  Relatedly, a subscriber whose keyframe stream *opens* fail persistently
+  (exhausted stream credit — a zombie session that stopped reading streams)
+  is now **evicted** after 10 consecutive failures with non-terminal close
+  code 4001, so it reconnects if live and stops costing fan-out if dead.
+  ([docs/14](docs/14-viewer-render-performance.md))
 - **Keyframes go over a reliable uni stream; deltas stay on datagrams (R8).**
   A keyframe split into ~1200-byte datagrams is ruined by a single lost packet,
   and heavy-motion keyframes are large — so the broadcaster sends each keyframe

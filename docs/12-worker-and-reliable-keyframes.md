@@ -303,9 +303,15 @@ Key properties of this split:
      - *Waiting for an in-progress keyframe.* Because keyframes are reliable
        they **will** arrive (delayed only by retransmit — tens of ms on a LAN).
        Decodable-pending deltas after that keyframe are held up to
-       `KEYFRAME_WAIT_MS` (generous, ~200 ms — a ceiling, not a target; the
-       steady case releases in ≪ that). If the keyframe still hasn't arrived,
-       the held deltas are undecodable anyway and are dropped.
+       `KEYFRAME_WAIT_MS` (a ceiling, not a target; the steady case releases
+       in ≪ that). If the keyframe still hasn't arrived, the held deltas are
+       undecodable anyway and are dropped. **Amended by the R10 field
+       finding (docs/14)**: the original ~200 ms assumed retransmit-scale
+       delay, but a ~236 KB keyframe store-and-forwarded to a congested peer
+       was measured landing > 500 ms behind its deltas — at 200 ms every GOP
+       degenerated into keyframe-only playback. The ceiling is now
+       **1000 ms**, aligned with `MAX_BUFFERED_FRAMES` (~1.07 s at 60 fps) as
+       the memory bound.
      - *A missing predecessor **delta**.* A lost delta never retransmits, so
        waiting is pointless. If frame `p+2` arrives while `p+1` is absent past
        a tiny `DELTA_GAP_GRACE_MS` (≈ 2 frame intervals, ~60 ms), declare a gap,

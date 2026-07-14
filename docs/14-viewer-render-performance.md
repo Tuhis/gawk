@@ -9,7 +9,10 @@ behind and the resync-to-keyframe policy dumps work). This doc diagnoses
 both, records the fix ideas, and implements P1–P3: the render fixes (P1/P2)
 land behind the worker-side **`RenderSink`** seam introduced by R8 S6, the
 transport split (P3) behind a new **`ViewerTransport`** seam in
-`ViewerPipeline`. Zero server, wire, broadcaster, or protocol changes.
+`ViewerPipeline`. P1–P4 are zero server/wire/broadcaster changes; the
+[field findings](#field-findings-2026-07-14-diagnostics-session) below later
+added one server-side fix (zombie-subscriber eviction, with new close code
+4001) and a viewer reorder-wait retune. Wire *format* unchanged throughout.
 
 ## Background: the diagnosis
 
@@ -186,6 +189,57 @@ same broadcaster settings, ~60 s samples via Copy diagnostics:
 If the decoded-vs-received gap persists after P1–P3 on Firefox, that is a
 pure decode deficit — pick up the rest of P4 (decode-path confirmation,
 rung guidance, stickier overload response): re-measure, then design.
+
+## Field findings (2026-07-14 diagnostics session)
+
+First real capture with P1–P3 deployed (Chrome broadcaster 3440×1440@60
+native/HW, Chrome + Firefox viewers, relay `/statusz` deltas + Copy
+diagnostics from all three, one shared window). Firefox: much improved,
+usable. Chrome: worse than before — and the data attributed it precisely.
+
+1. **Keyframes ride a much slower path than their deltas, and the reorder
+   buffer's 200 ms wait couldn't cover it.** Deltas arrive as datagrams
+   near-instantly; a keyframe is a ~236 KB store-and-forward stream and was
+   measured landing > 500 ms behind its trailing deltas on a congested peer
+   (relay-side evidence: that subscriber's `superseded` keyframe drops — the
+   previous keyframe write still in flight when the next arrived — plus a
+   26–55-deep egress datagram queue). At `KEYFRAME_WAIT_MS = 200` the held
+   deltas expired before their keyframe landed → guaranteed frame-id gap →
+   freeze until the *next* (also late) keyframe → **one gap resync per GOP
+   with zero reassembler loss** and keyframe-only ~2 fps playback. Firefox
+   played fine on the identical stream because its keyframe latency was
+   ~50 ms — inside the window. **Fix (implemented, test-first)**:
+   `KEYFRAME_WAIT_MS` 200 → **1000 ms**, which covers the measured worst
+   case and stays inside the `MAX_BUFFERED_FRAMES` memory bound (~1.07 s at
+   60 fps). Amends docs/12 Decision 7's latency assumption; this hold only
+   engages while a keyframe is in flight — the steady path is untouched.
+2. **A zombie subscriber can absorb keyframe fan-out forever.** `/statusz`
+   showed a third subscriber whose *every* keyframe stream open had failed
+   for ~20 minutes (`openFailed` ticking at exactly the keyframe rate,
+   lifetime sent+dropped ≈ the broadcast's lifetime keyframes) — the
+   signature of a leaked session whose client stopped reading uni streams
+   and exhausted its stream credit. QUIC keepalives keep such a session
+   alive indefinitely. **Fix (implemented, test-first)**: the relay evicts a
+   subscriber after `KeyframeOpenFailEvictThreshold` (10) *consecutive* open
+   failures — closed with new close code **4001
+   (`CloseCodeSubscriberUnresponsive`**, mirrored as
+   `CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE` in `wire.ts`), which is deliberately
+   **non-terminal**: a live client's auto-reconnect gets a fresh session
+   (and fresh stream credit); a zombie stops costing work. The streak resets
+   on any successful open. A constant, not a knob — leak cleanup is
+   correctness, not tuning.
+3. **`WebTransport.getStats()` is broken on Chrome 152** — `connection:
+   null` on both surfaces including the main-thread broadcaster, so not a
+   P3/nested-worker issue. Not fixed yet; tracked in [`BUGS.md`](../BUGS.md).
+4. Healthy-by-data: broadcaster cadence (1.9 keyframes/s, encoder queue 0),
+   broadcaster→relay leg (`ingressFramesLost` 0), and relay→Firefox
+   delivery (2.0/s, zero drops) — the R9 playbook attribution worked as
+   designed.
+
+Broadcast-scale note for the future: at native ultrawide the ~236 KB
+keyframe consumes ~38 % of a 10 Mbps GOP budget; if late-keyframe pressure
+returns even with the wider wait, the next lever is keyframe size
+(broadcaster rung / bitrate), not more buffering.
 
 ## Non-goals
 

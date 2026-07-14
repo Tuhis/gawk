@@ -82,6 +82,12 @@ func (f *fakeSender) getCloseInfo() (uint32, bool) {
 	return f.closeCode, f.closed
 }
 
+func (f *fakeSender) setKfOpenErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kfOpenErr = err
+}
+
 // fakeKeyframeStream is one keyframe delivery to a fakeSender. Write optionally
 // blocks on the parent's kfBlock channel and is unblocked by CancelWrite (its
 // per-stream cancel channel), mirroring how a real SendStream.CancelWrite
@@ -500,6 +506,80 @@ func TestSlowKeyframeStreamDropsHealthyPeerUnaffected(t *testing.T) {
 	}
 	if st := r.Stats().Totals.KeyframeStreamsDropped; st == 0 {
 		t.Error("hub stats did not accumulate keyframe drops from the blocked subscriber")
+	}
+}
+
+func TestUnreachableSubscriberEvictedAfterConsecutiveOpenFailures(t *testing.T) {
+	// R10 field finding (docs/14): a session whose client stopped reading uni
+	// streams exhausts its stream credit — every OpenKeyframeStream fails,
+	// forever. Without eviction the relay burns fan-out work on the zombie
+	// indefinitely. After KeyframeOpenFailEvictThreshold consecutive open
+	// failures the subscriber must be closed (with the non-terminal
+	// "unresponsive" code so a live client reconnects) and removed, while a
+	// healthy peer keeps receiving every keyframe.
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
+
+	healthy := &fakeSender{}
+	zombie := &fakeSender{kfOpenErr: errors.New("too many open streams")}
+	sh, _ := r.Subscribe(id, healthy)
+	defer sh.Close()
+	if _, err := r.Subscribe(id, zombie); err != nil {
+		t.Fatalf("Subscribe(zombie): %v", err)
+	}
+
+	for i := range KeyframeOpenFailEvictThreshold {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(i+1), "vp8", fmt.Sprintf("kf%02d", i)))
+		// Pace on the healthy peer's delivery so rapid ingests don't supersede
+		// its in-flight writes (≤1 in flight per subscriber, by design).
+		waitKeyframes(t, healthy, i+1)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		code, closed := zombie.getCloseInfo()
+		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
+	}, "zombie subscriber to be closed with the unresponsive code")
+	waitFor(t, 5*time.Second, func() bool {
+		return singleBroadcastStats(t, r).Subscribers == 1
+	}, "evicted subscriber to be removed from the broadcast")
+
+	// The healthy peer got every keyframe; the drops were all counted.
+	waitKeyframes(t, healthy, KeyframeOpenFailEvictThreshold)
+	if st := singleBroadcastStats(t, r); st.KeyframeDrops.OpenFailed != KeyframeOpenFailEvictThreshold {
+		t.Errorf("KeyframeDrops.OpenFailed = %d, want %d", st.KeyframeDrops.OpenFailed, KeyframeOpenFailEvictThreshold)
+	}
+}
+
+func TestOpenFailureStreakResetsOnSuccess(t *testing.T) {
+	// Eviction is for *persistent* unreachability: a single successful stream
+	// open between two sub-threshold failure streaks must reset the count.
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
+
+	flaky := &fakeSender{kfOpenErr: errors.New("transient")}
+	if _, err := r.Subscribe(id, flaky); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	seq := uint32(0)
+	ingest := func(n int) {
+		for range n {
+			seq++
+			ingestKeyframe(t, p, keyframeMsg(t, seq, "vp8", fmt.Sprintf("kf%03d", seq)))
+		}
+	}
+
+	ingest(KeyframeOpenFailEvictThreshold - 1)
+	flaky.setKfOpenErr(nil)
+	ingest(1) // success resets the streak
+	flaky.setKfOpenErr(errors.New("transient again"))
+	ingest(KeyframeOpenFailEvictThreshold - 1)
+
+	if _, closed := flaky.getCloseInfo(); closed {
+		t.Fatal("subscriber was evicted despite the streak resetting on success")
+	}
+	if got := singleBroadcastStats(t, r).Subscribers; got != 1 {
+		t.Errorf("Subscribers = %d, want 1 (no eviction)", got)
 	}
 }
 

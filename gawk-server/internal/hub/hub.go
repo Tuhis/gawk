@@ -49,6 +49,19 @@ var (
 	ErrTotalSubscribers = errors.New("hub: total subscriber limit reached")
 )
 
+// KeyframeOpenFailEvictThreshold is the number of *consecutive* keyframe
+// stream-open failures after which a subscriber is evicted (session closed
+// with wire.CloseCodeSubscriberUnresponsive and removed). Persistent open
+// failure means the peer's uni-stream credit is exhausted — the signature of
+// a session whose client stopped reading streams (R10 field finding,
+// docs/14): it never recovers on its own, and without eviction the relay
+// burns fan-out work on it forever while /statusz counts a ghost viewer.
+// At the default 500 ms GOP, 10 misses ≈ 5 s of unreachability — far above
+// any transient stream-limit blip, and a wrongly-evicted live client just
+// reconnects (the code is non-terminal). A constant, not a knob: this is
+// correctness (leak cleanup), not capacity tuning.
+const KeyframeOpenFailEvictThreshold = 10
+
 // Conn is the connection interface required by subscribers.
 // *webtransport.Session is wrapped in an adapter by the transport layer to
 // satisfy this.
@@ -931,6 +944,11 @@ type Subscriber struct {
 	kfLastSeq     uint64
 	kfWriters     sync.WaitGroup
 	keyframesSent atomic.Uint64
+	// Consecutive OpenKeyframeStream failures (guarded by kfMu); reset on any
+	// successful open. Crossing KeyframeOpenFailEvictThreshold evicts the
+	// subscriber (R10, docs/14); evicting latches so it fires exactly once.
+	kfConsecOpenFailed int
+	evicting           bool
 	// Keyframe drops by cause (R9 M2); KeyframesDropped() sums them.
 	kfDroppedSuperseded atomic.Uint64
 	kfDroppedSlow       atomic.Uint64
@@ -1007,10 +1025,24 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 	}
 	stream, err := s.sender.OpenKeyframeStream()
 	if err != nil {
+		// Track the failure streak under kfMu; a subscriber that can't accept
+		// streams for KeyframeOpenFailEvictThreshold consecutive keyframes is
+		// unreachable for good (exhausted stream credit) — evict it. The evict
+		// itself runs off-goroutine: Close takes the registry lock and
+		// CloseWithError is a network op, neither belongs under kfMu.
+		s.kfConsecOpenFailed++
+		evict := !s.evicting && s.kfConsecOpenFailed >= KeyframeOpenFailEvictThreshold
+		if evict {
+			s.evicting = true
+		}
 		s.kfMu.Unlock()
 		s.kfDroppedOpenFailed.Add(1)
+		if evict {
+			go s.evict()
+		}
 		return
 	}
+	s.kfConsecOpenFailed = 0
 	s.kfCurrent = stream
 	s.kfWriters.Add(1)
 	s.kfMu.Unlock()
@@ -1051,6 +1083,18 @@ func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
 	}
 	s.keyframesSent.Add(1)
 	s.egressKeyframeBytes.Add(uint64(len(msg)))
+}
+
+// evict closes an unreachable subscriber's session and removes it from the
+// hub (R10, docs/14). The close code is non-terminal: a live client's
+// reconnect gets a fresh session (and fresh stream credit); a zombie simply
+// stops costing fan-out work. Fired at most once per subscriber (the
+// `evicting` latch) from its own goroutine.
+func (s *Subscriber) evict() {
+	s.hub.log.Warn("evicting unreachable subscriber: keyframe stream opens failing persistently",
+		"subscriber", s.statsKey, "consecutive_open_failures", KeyframeOpenFailEvictThreshold)
+	_ = s.sender.CloseWithError(uint32(wire.CloseCodeSubscriberUnresponsive), "subscriber unresponsive")
+	s.Close()
 }
 
 // Close removes the subscriber and stops its drain loop.
