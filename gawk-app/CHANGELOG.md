@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.13.0...gawk-app-v0.13.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* reduce viewer corruption and drops during heavy motion ([2c6d50f](https://github.com/Tuhis/gawk/commit/2c6d50f9877afb7fed224fb376f09b7e4f0de1fa))
+* **viewer:** bound decode queue size to prevent unbounded latency ([70e2065](https://github.com/Tuhis/gawk/commit/70e2065cabc6a03246b4cb5af9817071c6d4b833))
+
 ## [0.13.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.12.0...gawk-app-v0.13.0) (2026-07-13)
 
 

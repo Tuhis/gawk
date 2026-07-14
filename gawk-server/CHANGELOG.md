@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.11.0...gawk-server-v0.12.0) (2026-07-14)
+
+
+### Features
+
+* log request origin when a connection is blocked ([f14eb9b](https://github.com/Tuhis/gawk/commit/f14eb9b8fc2ef0a84d1e56200a0818017acd97c2))
+
 ## [0.11.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.10.1...gawk-server-v0.11.0) (2026-07-13)
 
 
