@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.13.1...gawk-app-v0.14.0) (2026-07-14)
+
+
+### Features
+
+* reliable keyframes over WebTransport uni streams (R8, S1-S5+S7) ([a522ec7](https://github.com/Tuhis/gawk/commit/a522ec71dd9db815a1fb49dcf55afbad37568ce1))
+
 ## [0.13.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.13.0...gawk-app-v0.13.1) (2026-07-14)
 
 
