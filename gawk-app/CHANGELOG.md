@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.17.0...gawk-app-v0.17.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* cover real keyframe latency in reorder wait + evict zombie subscribers (R10 field findings) ([92e3ef9](https://github.com/Tuhis/gawk/commit/92e3ef99311560befe981f2fba531d8ac68d0bc4))
+
 ## [0.17.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.16.0...gawk-app-v0.17.0) (2026-07-14)
 
 
