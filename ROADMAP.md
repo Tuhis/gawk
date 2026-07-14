@@ -27,6 +27,7 @@ feature set exists).
 | R6 | [Production UI](#r6--production-ui) | 🚧 implemented (J1–J6); automated gates green, manual browser verify pending ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
+| R9 | [Observability & metrics](#r9--observability--metrics) | 📐 designed 2026-07-14, not implemented ([docs/13](docs/13-observability.md), chunks M1–M8) |
 
 ---
 
@@ -401,6 +402,59 @@ host-agnostic, synchronously-testable pipeline core and transfers the
 `OffscreenCanvas` exactly once (reconnect logic moves into the worker). New
 relay knobs are plumbed through `registryOptions` to production per the R2
 finding.
+
+## R9 — Observability & metrics
+
+**Goal**: turn the accreted per-feature counters into a designed
+observability system. The relay exposes **Prometheus-compatible metrics on a
+non-public endpoint** (scraped in-cluster via a ServiceMonitor); both the
+broadcaster and the viewer get a production stats overlay (the viewer's
+interaction model, extended to both surfaces); and the metrics are chosen so
+any playback problem can be attributed from data alone: broadcaster encode,
+broadcaster→relay network, relay egress/bandwidth cap, relay→viewer network,
+viewer decode, or viewer render.
+
+**Why now**: R8 closed the last known transport-level failure mode, so the
+remaining work is tuning and diagnosis — which today runs on vibes. The
+relay's `/statusz` is served over HTTP/3 only (the server has no TCP
+listener), so *nothing* can scrape or even conveniently `curl` it; the relay
+has no ingress-loss signal (it can't distinguish "broadcaster never sent it"
+from "uplink lost it"); neither client measures its own connection; and the
+broadcaster's production UI shows almost no stats at all.
+
+**Scope sketch** (full design in [`docs/13-observability.md`](docs/13-observability.md)):
+
+- **Server**: a second plain-TCP ops listener (`-metrics-addr`, default
+  `:2112`) serving `/metrics` (client_golang), `/healthz`, and a mirrored
+  `/statusz`; a snapshot `prometheus.Collector` over the existing
+  `Registry.Stats()` (one source of truth — no parallel bookkeeping);
+  refined counters (keyframe-drop reasons split, `sendErrors` finally
+  exposed, egress bytes); an RTP-style ingress-loss window (frames/chunks
+  the broadcaster sent that never arrived — the leg-A attribution signal);
+  route/limit outcome counters; per-subscriber detail in `/statusz`.
+- **Chart**: metrics ClusterIP Service + gated ServiceMonitor; the metrics
+  port never touches the public LoadBalancer.
+- **Clients**: `WebTransport.getStats()` sampling (feature-detected;
+  RTT/loss/send-rate per leg, per end) and a full pipeline **funnel** —
+  capture → post-gate → encoded → *actually sent* fps on the broadcaster,
+  received → decoded → rendered fps on the viewer; a shared sectioned
+  overlay on both surfaces with windowed rates and a "Copy diagnostics"
+  JSON export (the remote-troubleshooting story in place of any
+  client-metrics-push channel).
+- **Doc**: a bottleneck playbook mapping symptom → metric signature →
+  verdict, kept in docs/13 for humans and Claude alike.
+
+**Key design decisions** (resolved in the doc): separate TCP listener rather
+than any attempt to scrape H3; snapshot collector over `Registry.Stats()`
+rather than duplicate Prometheus counters in the hub; obfuscated-ID
+`broadcast` labels with bounded cardinality and **no per-subscriber labels**
+(per-subscriber detail lives in `/statusz` JSON); client→server metrics push
+and true glass-to-glass latency are non-goals (the latter stays R5's,
+slotting into the same overlay row later).
+
+**Status**: design complete 2026-07-14 (chunks M1–M8 with acceptance
+criteria — see [`docs/13-observability.md`](docs/13-observability.md));
+implementation not started.
 
 ---
 
