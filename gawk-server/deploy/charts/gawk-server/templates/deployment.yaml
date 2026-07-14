@@ -53,9 +53,22 @@ spec:
             - name: webtransport
               containerPort: 4433
               protocol: UDP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: GAWK_ADDR
               value: ":4433"
+            # "off" (not empty) disables: an empty env var reads as unset and
+            # would fall back to the flag default.
+            - name: GAWK_METRICS_ADDR
+              {{- if .Values.metrics.enabled }}
+              value: ":{{ .Values.metrics.port }}"
+              {{- else }}
+              value: "off"
+              {{- end }}
             - name: GAWK_CERT_FILE
               value: /tls/tls.crt
             - name: GAWK_KEY_FILE

@@ -35,9 +35,42 @@ func TestDefaults(t *testing.T) {
 		MaxBandwidthBytes:    0,
 		MaxKeyframeBytes:     8388608,
 		KeyframeWriteTimeout: time.Second,
+		MetricsAddr:          ":2112",
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
+	}
+}
+
+func TestMetricsAddr(t *testing.T) {
+	// Env fallback.
+	cfg, err := ParseFlags(nil, envMap(map[string]string{"GAWK_METRICS_ADDR": ":9999"}))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.MetricsAddr != ":9999" {
+		t.Errorf("MetricsAddr = %q, want :9999", cfg.MetricsAddr)
+	}
+
+	// Flag beats env.
+	cfg, err = ParseFlags([]string{"-metrics-addr", ":7000"}, envMap(map[string]string{"GAWK_METRICS_ADDR": ":9999"}))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.MetricsAddr != ":7000" {
+		t.Errorf("MetricsAddr = %q, want :7000", cfg.MetricsAddr)
+	}
+
+	// "off" disables (empty string can't travel through an env var — it
+	// reads as unset and falls back to the default).
+	for _, v := range []string{"off", "OFF", " off "} {
+		cfg, err = ParseFlags([]string{"-metrics-addr", v}, noEnv)
+		if err != nil {
+			t.Fatalf("ParseFlags(%q): %v", v, err)
+		}
+		if cfg.MetricsAddr != "" {
+			t.Errorf("MetricsAddr(%q) = %q, want empty (disabled)", v, cfg.MetricsAddr)
+		}
 	}
 }
 

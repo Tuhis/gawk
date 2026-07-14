@@ -107,7 +107,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   implemented, manual verify pending),
   `docs/10-production-ui.md` for R6 (production UI: landing/broadcaster/viewer
   surfaces, monochrome design system, J1–J6 chunks; implemented, automated
-  gates green, manual browser verify pending).
+  gates green, manual browser verify pending),
+  `docs/13-observability.md` for R9 (observability & metrics: TCP ops
+  endpoint with Prometheus `/metrics` + ServiceMonitor, relay ingress-loss
+  window, client funnel stats + both-surface overlays, bottleneck playbook;
+  M1–M7 implemented 2026-07-14, manual verify + M8 Grafana pending).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -218,6 +222,30 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the whole view and teardown is StrictMode-deferred (see README gotcha). Zero
    WebRTC/MoQ; wire+server+broadcaster+viewer changed in lock-step. S6 is
    UI/pipeline-only (zero server/wire changes on top of S1–S5).
+13. Observability & metrics — **implemented (M1–M7); manual verify + M8
+   (Grafana dashboard) pending** (R9, `docs/13-observability.md`,
+   2026-07-14). The relay grew a **plain-TCP ops endpoint** (`-metrics-addr`,
+   default `:2112`, literal `off` disables — an empty env var reads as unset)
+   serving Prometheus `/metrics`, `/healthz`, and a curl-able `/statusz`
+   mirror — the HTTP/3 server itself is unscrapeable. Metrics come from a
+   snapshot `prometheus.Collector` over `Registry.Stats()` (one source of
+   truth): per-broadcast `gawk_broadcast_*{broadcast=<obfuscated>}` +
+   lifetime `gawk_relay_*` totals (two prefixes because client_golang rejects
+   one family with two label sets). New signals: an RTP-style **ingress-loss
+   window** (`hub/ingress.go` — broadcaster→relay frame/chunk loss, robust to
+   datagram reordering), keyframe-drop reasons split
+   (superseded/slow/bandwidth/open_failed), `sendErrors` exposed, egress
+   bytes, `gawk_connections_total{route,outcome}`, per-subscriber
+   `subscriberDetails` in `/statusz`. Chart: metrics ClusterIP Service +
+   gated ServiceMonitor; the metrics port never touches the public
+   LoadBalancer. Clients: `WebTransport.getStats()` sampling (feature-
+   detected, all-nullable — Firefox lacks it) + funnel rates (capture →
+   post-gate → encoded → **sent** fps; received → decoded → rendered fps),
+   stall ages, and a shared sectioned stats overlay on **both** production
+   surfaces (same hotkey) with **Copy diagnostics** JSON (rolling ~10 s
+   sample window) as the remote-troubleshooting story. The
+   symptom→signature **bottleneck playbook** lives in docs/13. Zero
+   wire-format changes.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

@@ -1,0 +1,22 @@
+{{- if .Values.metrics.enabled }}
+# ClusterIP-only exposure of the ops endpoint (/metrics, /healthz, /statusz).
+# Deliberately a separate Service from the public LoadBalancer: the metrics
+# port must never be reachable from outside the cluster. The component label
+# lets the ServiceMonitor select exactly this Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-metrics
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gawk-server.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

@@ -56,6 +56,7 @@ function fakeSink() {
       drawn.push(frame);
       frame.close();
     },
+    drawnFrames: () => drawn.length,
   };
   return { sink, drawn };
 }

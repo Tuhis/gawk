@@ -12,7 +12,14 @@ publisher session invalidates the priming caches), `CONNECT /subscribe`
 (429 when full; primed with cached decoder config + last keyframe on join),
 `CONNECT /echo` (connectivity diagnostic), `GET /healthz`,
 `GET /statusz` (JSON stats: subscribers, frames/datagrams relayed, drops,
-cached keyframe).
+cached keyframe, per-subscriber detail).
+
+A separate plain-TCP **ops endpoint** (R9, [`../docs/13-observability.md`](../docs/13-observability.md))
+serves `GET /metrics` (Prometheus), `GET /healthz` and a mirror of
+`GET /statusz` on `-metrics-addr` (default `:2112`) — the main server is
+HTTP/3-over-UDP only, which Prometheus (and plain curl) can't reach. Never
+expose this port publicly; the Helm chart exposes it via a ClusterIP Service
++ optional ServiceMonitor only.
 
 ## Build & test
 
@@ -67,6 +74,7 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-max-bandwidth` | `GAWK_MAX_BANDWIDTH` | `0` (unlimited) |
 | `-max-keyframe-bytes` | `GAWK_MAX_KEYFRAME_BYTES` | `8388608` (8 MiB) |
 | `-keyframe-write-timeout` | `GAWK_KEYFRAME_WRITE_TIMEOUT` | `1s` |
+| `-metrics-addr` | `GAWK_METRICS_ADDR` | `:2112` (`off` disables) |
 | `-allowed-origins` | `GAWK_ALLOWED_ORIGINS` | (empty = allow all) |
 | `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
 | `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |
@@ -76,6 +84,10 @@ The keepalive is what keeps idle viewers connected while the broadcaster is
 away: QUIC PINGs reset both endpoints' idle timers. Raising
 `-max-idle-timeout` alone does not help — the effective idle timeout is the
 minimum of both endpoints' advertised values, and browsers advertise ~30s.
+
+`-metrics-addr` takes the literal value `off` to disable (not the empty
+string: an empty environment variable reads as unset and silently falls back
+to the default — the Helm chart passes `off` when `metrics.enabled=false`).
 
 `-quiet-probe-logs` suppresses the `session started`/`session ended` INFO
 logs for `/echo` sessions dialed from loopback — i.e. the k8s exec probe,

@@ -27,7 +27,7 @@ feature set exists).
 | R6 | [Production UI](#r6--production-ui) | 🚧 implemented (J1–J6); automated gates green, manual browser verify pending ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
-| R9 | [Observability & metrics](#r9--observability--metrics) | 📐 designed 2026-07-14, not implemented ([docs/13](docs/13-observability.md), chunks M1–M8) |
+| R9 | [Observability & metrics](#r9--observability--metrics) | 🚧 implemented 2026-07-14 (M1–M7); automated gates green, manual verify + M8 (Grafana) pending ([docs/13](docs/13-observability.md)) |
 
 ---
 
@@ -452,9 +452,16 @@ rather than duplicate Prometheus counters in the hub; obfuscated-ID
 and true glass-to-glass latency are non-goals (the latter stays R5's,
 slotting into the same overlay row later).
 
-**Status**: design complete 2026-07-14 (chunks M1–M8 with acceptance
-criteria — see [`docs/13-observability.md`](docs/13-observability.md));
-implementation not started.
+**Status**: implemented 2026-07-14 (chunks M1–M7; M8 — the Grafana dashboard
+and optional QUIC tracer — is deferred to the manual-verification pass, which
+needs the live homelab Prometheus anyway). All automated gates green. Two
+implementation notes fed back into the doc: the metric naming split into
+`gawk_broadcast_*` (per-broadcast label) vs `gawk_relay_*` (lifetime totals)
+because client_golang rejects one family with two label sets, and
+`-metrics-addr` disables via the literal `off` (an empty env var reads as
+unset). Manual verify — cluster scrape path, playbook attribution drills,
+browser overlays on Chrome + Firefox — pending; see the doc's verification
+plan.
 
 ---
 

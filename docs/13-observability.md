@@ -82,19 +82,26 @@ debugging session) starts from data, not vibes.
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| M1 | **Ops HTTP listener** — new plain-TCP `net/http` server on `-metrics-addr` (default `:2112`, empty disables; `GAWK_METRICS_ADDR`), serving `/metrics` (client_golang handler: Go + process collectors, `gawk_build_info`), `/healthz`, and a mirror of `/statusz` (same JSON as the H3 route) | Unit tests: listener serves all three routes over TCP; empty addr starts no listener; `gawk_build_info{version}` carries the ldflags version; H3 `/statusz` unchanged (existing tests green); startup log includes the metrics addr | not started |
-| M2 | **Registry collector** — `internal/metrics` custom `prometheus.Collector` snapshotting `Registry.Stats()` into per-broadcast + total const-metrics; hub counter refinements: split `keyframeStreamsDropped` by reason (`superseded`/`slow`/`bandwidth`/`open_failed`), surface the existing-but-unread `Subscriber.sendErrors`, add egress-bytes counters (datagram + keyframe bytes actually written) | Unit tests with `prometheus/testutil`: metric names/labels/values match a scripted hub scenario (drops attributed to the right reason label); `/statusz` JSON gains the new fields additively (existing keys unchanged); collector holds the registry lock only for the snapshot | not started |
-| M3 | **Ingress loss window** — RTP-style sliding window (~1024 frameIDs, per publisher generation) over VideoChunk/StreamFrame headers in the hub: a frameID that ages out unseen counts `frames_lost`; per-frame distinct-chunks-seen vs `chunkCount` counts `chunks_lost`; both per broadcast. Plus per-subscriber detail in `/statusz` (hashed key, live queue depth, dropped, sendErrors, keyframes sent/dropped) | Unit tests: scripted ingest with gaps/reorder/wraparound counts losses correctly (out-of-order arrival within the window is *not* a loss; publisher restart resets the window); memory bounded regardless of frameID jumps; `/statusz` lists one entry per live subscriber with a stable-within-session hashed key | not started |
-| M4 | **Route & limit counters** — `gawk_connections_total{route,outcome}` in the transport handlers (publish/subscribe/echo × accepted/unauthorized/not_found/conflict/limit_rejected/upgrade_failed), `gawk_rate_limited_total`, `gawk_origin_rejected_total` | Unit tests drive each handler rejection path (the transport tests already exercise them) and assert the labeled counter increments; accepted sessions count exactly once | not started |
-| M5 | **Helm: metrics Service + ServiceMonitor** — new ClusterIP Service exposing only the metrics TCP port; `servicemonitor.yaml` gated by `metrics.serviceMonitor.enabled` (default false — needs prometheus-operator CRDs) with configurable labels/interval/scrapeTimeout; values `metrics.{enabled,port}`; Deployment gains the container port + `--metrics-addr` arg; metrics port **never** added to the public LoadBalancer Service | `helm template` snapshots: ServiceMonitor rendered only when enabled and selects the metrics Service by label; LoadBalancer Service unchanged; disabling `metrics.enabled` removes port/args/Service/ServiceMonitor; chart lints | not started |
-| M6 | **Client connection + funnel stats** — sample `WebTransport.getStats()` (feature-detected, null-safe) each stats tick in both pipelines (viewer: inside the worker); extend `BroadcastStats` (captureFps, sentFps, connection substats) and `ViewerStats` (receivedFps, renderedFps, timeSinceLastFrameMs, lastKeyframeAgeMs, connection substats); RenderSink gains a drawn-frames counter | Unit tests with a fake `wt.getStats` (present, absent, and rejecting): stats carry rtt/loss/send-rate when available and nulls otherwise, never throwing; funnel counters advance in a scripted pipeline run (sent counts only *successful* sends); worker path forwards the new fields through `ViewerWorkerOutbound` unchanged | not started |
-| M7 | **Unified overlays + diagnostics export** — generalize the R6 overlay into a shared sectioned component (Video / Pipeline / Network) computing windowed rates from successive samples; broadcaster production screen gets the overlay (same hotkey family as the viewer's); viewer overlay gains the new rows; both get "Copy diagnostics" (JSON: surface, UA, settings, last N stat samples). `#/debug` pages stay frozen and untouched | Component tests: overlay renders full and degraded (nulls → "—") stats; copy button writes well-formed JSON including config + samples; broadcaster hotkey toggles; existing viewer overlay tests keep passing; tsc/lint/build green | not started |
-| M8 | *(optional)* **Grafana dashboard + QUIC tracer** — `gawk-server/deploy/grafana/gawk-relay.json` (funnel, per-leg loss, bandwidth vs cap, per-broadcast drill-down); investigate quic-go `logging.Tracer` for server-side RTT/loss histograms (API needs verification; aggregate-only labels to bound cardinality) | Dashboard imports cleanly against a scraping Prometheus and every panel query returns data during a test broadcast; tracer metrics (if the API pans out) covered by an integration test, else the finding is written back into this doc | not started |
+| M1 | **Ops HTTP listener** — new plain-TCP `net/http` server on `-metrics-addr` (default `:2112`, `off` disables; `GAWK_METRICS_ADDR`), serving `/metrics` (client_golang handler: Go + process collectors, `gawk_build_info`), `/healthz`, and a mirror of `/statusz` (same JSON as the H3 route) | Unit tests: listener serves all three routes over TCP; empty addr starts no listener; `gawk_build_info{version}` carries the ldflags version; H3 `/statusz` unchanged (existing tests green); startup log includes the metrics addr | ✅ done (`internal/ops`; the H3 route now shares `ops.StatuszHandler`) |
+| M2 | **Registry collector** — `internal/metrics` custom `prometheus.Collector` snapshotting `Registry.Stats()` into per-broadcast + total const-metrics; hub counter refinements: split `keyframeStreamsDropped` by reason (`superseded`/`slow`/`bandwidth`/`open_failed`), surface the existing-but-unread `Subscriber.sendErrors`, add egress-bytes counters (datagram + keyframe bytes actually written) | Unit tests with `prometheus/testutil`: metric names/labels/values match a scripted hub scenario (drops attributed to the right reason label); `/statusz` JSON gains the new fields additively (existing keys unchanged); collector holds the registry lock only for the snapshot | ✅ done (`internal/metrics`; see the naming note under the inventory) |
+| M3 | **Ingress loss window** — RTP-style sliding window (~1024 frameIDs, per publisher generation) over VideoChunk/StreamFrame headers in the hub: a frameID that ages out unseen counts `frames_lost`; per-frame distinct-chunks-seen vs `chunkCount` counts `chunks_lost`; both per broadcast. Plus per-subscriber detail in `/statusz` (hashed key, live queue depth, dropped, sendErrors, keyframes sent/dropped) | Unit tests: scripted ingest with gaps/reorder/wraparound counts losses correctly (out-of-order arrival within the window is *not* a loss; publisher restart resets the window); memory bounded regardless of frameID jumps; `/statusz` lists one entry per live subscriber with a stable-within-session hashed key | ✅ done (`internal/hub/ingress.go`; detail array is `subscriberDetails`, keys are random per-session) |
+| M4 | **Route & limit counters** — `gawk_connections_total{route,outcome}` in the transport handlers (publish/subscribe/echo × accepted/unauthorized/not_found/conflict/limit_rejected/upgrade_failed), `gawk_rate_limited_total`, `gawk_origin_rejected_total` | Unit tests drive each handler rejection path (the transport tests already exercise them) and assert the labeled counter increments; accepted sessions count exactly once | ✅ done (`outcomes_test.go` drives rejections pre-upgrade with httptest; accepted asserted in the e2e relay test) |
+| M5 | **Helm: metrics Service + ServiceMonitor** — new ClusterIP Service exposing only the metrics TCP port; `servicemonitor.yaml` gated by `metrics.serviceMonitor.enabled` (default false — needs prometheus-operator CRDs) with configurable labels/interval/scrapeTimeout; values `metrics.{enabled,port}`; Deployment gains the container port + `--metrics-addr` arg; metrics port **never** added to the public LoadBalancer Service | `helm template` snapshots: ServiceMonitor rendered only when enabled and selects the metrics Service by label; LoadBalancer Service unchanged; disabling `metrics.enabled` removes port/args/Service/ServiceMonitor; chart lints | ✅ done (render-checked default / SM-enabled / disabled; disabled passes `GAWK_METRICS_ADDR=off`) |
+| M6 | **Client connection + funnel stats** — sample `WebTransport.getStats()` (feature-detected, null-safe) each stats tick in both pipelines (viewer: inside the worker); extend `BroadcastStats` (captureFps, sentFps, connection substats) and `ViewerStats` (receivedFps, renderedFps, timeSinceLastFrameMs, lastKeyframeAgeMs, connection substats); RenderSink gains a drawn-frames counter | Unit tests with a fake `wt.getStats` (present, absent, and rejecting): stats carry rtt/loss/send-rate when available and nulls otherwise, never throwing; funnel counters advance in a scripted pipeline run (sent counts only *successful* sends); worker path forwards the new fields through `ViewerWorkerOutbound` unchanged | ✅ done (`transport/net-stats.ts` sampler; renderedFps is null on the main-thread path by design) |
+| M7 | **Unified overlays + diagnostics export** — generalize the R6 overlay into a shared sectioned component (Video / Pipeline / Network) computing windowed rates from successive samples; broadcaster production screen gets the overlay (same hotkey family as the viewer's); viewer overlay gains the new rows; both get "Copy diagnostics" (JSON: surface, UA, settings, last N stat samples). `#/debug` pages stay frozen and untouched | Component tests: overlay renders full and degraded (nulls → "—") stats; copy button writes well-formed JSON including config + samples; broadcaster hotkey toggles; existing viewer overlay tests keep passing; tsc/lint/build green | ✅ done (shared `ui/StatsPanel` + `lib/diagnostics`; `STATS_HOTKEY` moved to `lib/hotkeys.ts`) |
+| M8 | *(optional)* **Grafana dashboard + QUIC tracer** — `gawk-server/deploy/grafana/gawk-relay.json` (funnel, per-leg loss, bandwidth vs cap, per-broadcast drill-down); investigate quic-go `logging.Tracer` for server-side RTT/loss histograms (API needs verification; aggregate-only labels to bound cardinality) | Dashboard imports cleanly against a scraping Prometheus and every panel query returns data during a test broadcast; tracer metrics (if the API pans out) covered by an integration test, else the finding is written back into this doc | deferred — needs the live homelab Prometheus/Grafana that the manual verify uses; do it alongside (or after) manual verification |
 
 Chunk letters continue the existing sequence (A–J, S used); R9 takes **M**.
 Ordering: M1→M2→M3 are a dependency chain on the server; M4 and M5 need only
 M1; M6→M7 are client-side and independent of the server chunks. Every chunk
 follows CODE-REVIEW.md (tests with the change; bug fixes test-first).
+
+**M1–M7 implemented 2026-07-14**; all automated gates green (gofmt/vet/
+`go test -race`, vitest/lint/`tsc -b` build, helm lint + template renders).
+The [manual verification plan](#verification-plan) — cluster scrape path,
+attribution drills, browser overlays — is pending, same posture as R4/R6.
+M8 (Grafana dashboard + optional QUIC tracer) is deferred to ride along with
+that manual pass.
 
 ## Current state (inventory)
 
@@ -283,40 +290,59 @@ designed entry point for Claude-assisted debugging of a remote viewer.
 ## Metric inventory (server, `/metrics`)
 
 Names follow Prometheus conventions (`_total` counters, base units, no
-rates — rates are query-side). All data-plane metrics carry the `broadcast`
-label (obfuscated ID); the same numbers are also emitted unlabeled from the
-registry totals (suffix shown once; totals include folded/GC'd history).
+rates — rates are query-side). Every data-plane counter exists as **two
+families**: `gawk_broadcast_*{broadcast=<obfuscated id>}` (per-broadcast
+drill-down; series vanish when the broadcast is GC'd) and `gawk_relay_*`
+(registry-lifetime totals including folded/expired broadcasts — the ones for
+long-range rate queries). *Implementation note*: the design originally
+sketched one family emitting both labeled and unlabeled series, but
+client_golang rejects a single metric name with inconsistent label
+dimensions — the two-prefix split is the clean expression of the same idea.
+
+| Metric (`gawk_broadcast_*` and `gawk_relay_*`) | Type | Extra labels | Answers |
+|--------|------|--------|---------|
+| `…_frames_relayed_total` | counter | `kind=delta\|keyframe` | relay throughput in frames; `rate()` ≈ relay-side fps |
+| `…_ingress_frames_lost_total` | counter | — | **leg-A loss**: frames the broadcaster sent that never reached the relay (window-aged, M3) |
+| `…_ingress_chunks_lost_total` | counter | — | leg-A partial loss (missing chunks of seen frames) |
+| `…_ingress_bytes_total` | counter | `kind` | broadcaster→relay volume |
+| `…_egress_bytes_total` | counter | `kind` | relay→viewers volume actually written; graph against the cap |
+| `…_datagrams_relayed_total` | counter | — | fan-out datagram volume (pre-drop) |
+| `…_datagrams_dropped_total` | counter | `reason=queue_full\|bandwidth` | **leg-B pressure**: slow-viewer queue overflow vs configured cap |
+| `…_send_errors_total` | counter | — | datagram write failures to viewers (was counted, never exposed) |
+| `…_bad_datagrams_total` | counter | — | malformed publisher input |
+| `…_bandwidth_dropped_bytes_total` | counter | — | bytes the egress cap discarded (datagrams + keyframes) |
+| `…_keyframe_streams_in_total` | counter | — | reliable keyframe ingest; `rate()` ≈ GOP cadence check |
+| `…_keyframe_streams_sent_total` | counter | — | keyframes fully delivered |
+| `…_keyframe_streams_dropped_total` | counter | `reason=superseded\|slow\|bandwidth\|open_failed` | keyframe delivery health; `slow` = stalling viewer, `superseded` = benign |
+| `…_keyframe_streams_oversize_total` | counter | — | publisher exceeding `MaxKeyframeBytes` |
+
+Per-broadcast gauges and server-wide metrics:
 
 | Metric | Type | Labels | Answers |
 |--------|------|--------|---------|
 | `gawk_build_info` | gauge (1) | `version` | what's deployed |
 | `gawk_broadcasts_active` | gauge | — | registry occupancy vs `MaxBroadcasts` |
-| `gawk_publisher_active` | gauge (0/1) | `broadcast` | is the broadcaster connected or in grace |
+| `gawk_subscribers_active` | gauge | — | audience size vs limits (all broadcasts) |
+| `gawk_broadcast_publisher_active` | gauge (0/1) | `broadcast` | is the broadcaster connected or in grace |
 | `gawk_broadcast_grace_remaining_seconds` | gauge | `broadcast` | time until GC while away |
-| `gawk_subscribers_active` | gauge | `broadcast` | audience size vs limits |
-| `gawk_relay_frames_relayed_total` | counter | `broadcast`, `kind=delta\|keyframe` | relay throughput in frames; `rate()` ≈ relay-side fps |
-| `gawk_relay_ingress_frames_lost_total` | counter | `broadcast` | **leg-A loss**: frames the broadcaster sent that never reached the relay (window-aged, M3) |
-| `gawk_relay_ingress_chunks_lost_total` | counter | `broadcast` | leg-A partial loss (missing chunks of seen frames) |
-| `gawk_relay_ingress_bytes_total` | counter | `broadcast`, `kind` | broadcaster→relay volume |
-| `gawk_relay_egress_bytes_total` | counter | `broadcast`, `kind` | relay→viewers volume; graph against the cap |
-| `gawk_relay_datagrams_relayed_total` | counter | `broadcast` | fan-out datagram volume (pre-drop) |
-| `gawk_relay_datagrams_dropped_total` | counter | `broadcast`, `reason=queue_full\|bandwidth` | **leg-B pressure**: slow-viewer queue overflow vs configured cap |
-| `gawk_relay_send_errors_total` | counter | `broadcast` | datagram write failures to viewers (was counted, never exposed) |
-| `gawk_relay_bad_datagrams_total` | counter | `broadcast` | malformed publisher input |
-| `gawk_relay_keyframe_streams_in_total` / `_bytes_in_total` | counter | `broadcast` | reliable keyframe ingest; `rate()` ≈ GOP cadence check |
-| `gawk_relay_keyframe_streams_sent_total` | counter | `broadcast` | keyframes fully delivered |
-| `gawk_relay_keyframe_streams_dropped_total` | counter | `broadcast`, `reason=superseded\|slow\|bandwidth\|open_failed` | keyframe delivery health; `slow` = stalling viewer, `superseded` = benign |
-| `gawk_relay_keyframe_streams_oversize_total` | counter | `broadcast` | publisher exceeding `MaxKeyframeBytes` |
-| `gawk_relay_cached_keyframe_bytes` | gauge | `broadcast` | late-joiner prime size (also a bitrate proxy) |
-| `gawk_connections_total` | counter | `route`, `outcome` | connect/reject rates per route (M4) |
-| `gawk_rate_limited_total` | counter | — | per-IP limiter hits |
+| `gawk_broadcast_subscribers` | gauge | `broadcast` | audience size per broadcast |
+| `gawk_broadcast_cached_keyframe_bytes` | gauge | `broadcast` | late-joiner prime size (also a bitrate proxy) |
+| `gawk_connections_total` | counter | `route`, `outcome` | connect/reject rates per route (M4); outcomes: `accepted`, `unauthorized`, `not_found`, `conflict`, `limit_rejected`, `upgrade_failed`, `error` |
+| `gawk_rate_limited_total` | counter | — | per-IP limiter hits (counted here only, not as a connection outcome) |
 | `gawk_origin_rejected_total` | counter | — | misconfigured `allowedOrigins` / probing |
 | Go/process defaults | — | — | CPU, RSS, goroutines, GC — free from client_golang |
 
-`/statusz` additions (JSON, additive): the split drop reasons, send errors,
-ingress-loss counters, egress bytes, and a `subscribers` array per broadcast
-(`key` — session-scoped hash, `queueDepth`, `dropped`, `sendErrors`,
-`keyframesSent`, `keyframesDropped`).
+`/statusz` additions (JSON, additive): `keyframeDrops`
+(`superseded`/`slow`/`bandwidth`/`openFailed`), `sendErrors`,
+`ingressDatagramBytes`, `egressDatagramBytes`, `egressKeyframeBytes`,
+`ingressFramesLost`, `ingressChunksLost`, and a `subscriberDetails` array
+per broadcast (`key` — random per-session, `queueDepth`, `dropped`,
+`sendErrors`, `keyframesSent`, `keyframesDropped`). One sharpened semantic:
+`bandwidthDroppedDatagrams` now counts *datagram* bandwidth drops only
+(keyframe bandwidth drops moved to their own reason counter — previously a
+keyframe drop inflated the datagram counter, which would have made
+queue-overflow-by-subtraction go negative); `bandwidthDroppedBytes` still
+covers both kinds.
 
 ## Client stats additions
 
@@ -351,7 +377,7 @@ The point of the whole design: symptom → discriminating signals → verdict.
 | Broadcaster: choppy source, no network signals | Overlay funnel: post-gate fps healthy but `encoderFps` below it; `encoderQueueDepth` growing; `droppedFrames` rising; (R4 `encoderPressure` badge in explicit mode) | **Encoder overload** — the R4 auto ladder's territory; on HW encode paths watch the funnel gap, since `encodeQueueSize` under-fires there (docs/09 finding) |
 | Broadcaster: encodes fine, viewers see low fps | `encoderFps` healthy, `sentFps` below it — or `sentFps` healthy but relay `rate(frames_relayed)` below it (→ leg A) | **Send path vs leg A** — the funnel splits it |
 | Viewer: fps low, network clean | `receivedFps` healthy but `decoderFps` below it; `decoderQueueDepth` high; `reorderGapResyncs` climbing; `isHardwareAccelerated: false` | **Decoder choking** (likely SW-decode fallback) — lower the rung/fps |
-| Viewer: smooth then freezes | `timeSinceLastFrameMs` grows while connection RTT still updates → upstream stopped (check `gawk_publisher_active`); RTT also dead → leg B outage (reconnect logic's territory) | **Stall attribution** |
+| Viewer: smooth then freezes | `timeSinceLastFrameMs` grows while connection RTT still updates → upstream stopped (check `gawk_broadcast_publisher_active`); RTT also dead → leg B outage (reconnect logic's territory) | **Stall attribution** |
 | Frequent "Awaiting keyframe" / gap resyncs on one viewer | Viewer `framesDroppedIncomplete`/`reorderGapResyncs` up; relay keyframe `slow` drops for that subscriber; `lastKeyframeAgeMs` spiking ≫ GOP | **Delta loss on leg B** eating GOPs; keyframe cadence + reliable streams bound recovery — if age ≫ 500 ms GOP something is wrong at the relay |
 | Nothing plays for anyone | `gawk_connections_total{outcome!="accepted"}` — 401 (secret), 404 (bad/expired ID), 429 (limits/rate limiter), `origin_rejected` (CORS config) | **Config/limits, not media** |
 

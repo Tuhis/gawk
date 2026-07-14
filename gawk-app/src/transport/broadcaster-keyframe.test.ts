@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   encoderCbs: { value: null as null | { onEncoded: (e: unknown) => void; onError: (e: Error) => void } },
   sends: [] as Uint8Array[][],
   streams: [] as Uint8Array[], // one entry per fully-written keyframe stream
+  kfFail: { value: false }, // when true, keyframe stream opens reject
 }));
 
 vi.mock('./connection', () => ({
@@ -103,6 +104,7 @@ function makeFakeWT() {
     incomingUnidirectionalStreams: new ReadableStream({ start() {} }),
     datagrams: { maxDatagramSize: 1200 },
     createUnidirectionalStream: () => {
+      if (h.kfFail.value) return Promise.reject(new Error('stream open failed'));
       const chunks: Uint8Array[] = [];
       const ws = new WritableStream<Uint8Array>({
         write(chunk) {
@@ -163,32 +165,40 @@ async function flush() {
   for (let i = 0; i < 6; i++) await Promise.resolve();
 }
 
-async function makeStartedPipeline() {
+async function makeStartedPipeline(now?: () => number) {
   h.sends.length = 0;
   h.streams.length = 0;
   h.frameCb.value = null;
   h.encoderCbs.value = null;
+  h.kfFail.value = false;
 
-  const cbs: BroadcastCallbacks = {
+  const cbs = {
     onSourceStream: vi.fn(),
     onEncoderConfigured: vi.fn(),
     onCapturePathChosen: vi.fn(),
-    onStats: vi.fn(),
+    onStats: vi.fn<BroadcastCallbacks['onStats']>(),
     onError: vi.fn(),
     onEnded: vi.fn(),
     onBroadcastId: vi.fn(),
-  };
+  } satisfies BroadcastCallbacks;
   connectWebTransport.mockResolvedValue(makeFakeWT());
   startCapture.mockResolvedValue(makeCaptureHandle());
 
-  const pipeline = new BroadcastPipeline({ ...DEFAULT_CAPTURE_CONFIG }, 'https://relay.test:4433', {}, cbs);
+  const pipeline = new BroadcastPipeline(
+    { ...DEFAULT_CAPTURE_CONFIG },
+    'https://relay.test:4433',
+    {},
+    cbs,
+    undefined,
+    now,
+  );
   await pipeline.start();
 
   // Prime the encoder: one frame triggers initEncoder (async configure()).
   h.frameCb.value!(fakeFrame(1000));
   await flush();
   expect(h.encoderCbs.value).not.toBeNull();
-  return pipeline;
+  return { pipeline, cbs };
 }
 
 beforeEach(() => {
@@ -203,7 +213,7 @@ afterEach(() => {
 
 describe('handleEncoded channel split (R8)', () => {
   it('sends a keyframe over a uni stream with the config embedded, deltas over datagrams', async () => {
-    const pipeline = await makeStartedPipeline();
+    const { pipeline } = await makeStartedPipeline();
 
     const keyBytes = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
     h.encoderCbs.value!.onEncoded({
@@ -249,5 +259,66 @@ describe('handleEncoded channel split (R8)', () => {
     expect(Array.from(dp)).toEqual(Array.from(deltaBytes));
 
     await pipeline.stop();
+  });
+});
+
+describe('funnel rates (R9 M6, docs/13 D5)', () => {
+  it('captureFps counts pre-gate frames; sentFps counts only successful sends', async () => {
+    vi.useFakeTimers();
+    try {
+      let t = 0;
+      const { pipeline, cbs } = await makeStartedPipeline(() => t);
+
+      // Successful keyframe stream, then a failed one, then a delta over
+      // datagrams. Sent = keyframe + delta = 2; the failed keyframe must not
+      // count as sent.
+      const meta = {
+        decoderConfig: { codec: 'avc1.42E01F', description: new Uint8Array([0x01, 0x42, 0xe0, 0x1f]) },
+      };
+      h.encoderCbs.value!.onEncoded({
+        chunk: fakeChunk('key', 1000, new Uint8Array([0xaa])),
+        meta,
+        encodeStartMs: 0,
+        encodeEndMs: 1,
+      });
+      await flush();
+      h.kfFail.value = true;
+      h.encoderCbs.value!.onEncoded({
+        chunk: fakeChunk('key', 2000, new Uint8Array([0xbb])),
+        meta: undefined,
+        encodeStartMs: 0,
+        encodeEndMs: 1,
+      });
+      await flush();
+      h.kfFail.value = false;
+      h.encoderCbs.value!.onEncoded({
+        chunk: fakeChunk('delta', 3000, new Uint8Array([0xcc])),
+        meta: undefined,
+        encodeStartMs: 0,
+        encodeEndMs: 1,
+      });
+      await flush();
+
+      // Two more captured frames on top of the priming one → 3 in the window.
+      h.frameCb.value!(fakeFrame(2000));
+      h.frameCb.value!(fakeFrame(3000));
+      await flush();
+
+      t = 500; // the injected clock the pipeline computes dt from
+      await vi.advanceTimersByTimeAsync(500); // fire the stats interval
+      const stats = cbs.onStats.mock.calls.at(-1)?.[0];
+      expect(stats).toBeDefined();
+      expect(stats!.captureFps).toBeCloseTo(3 / 0.5, 5);
+      expect(stats!.sentFps).toBeCloseTo(2 / 0.5, 5);
+      expect(stats!.keyframeStreamsSent).toBe(1);
+      expect(stats!.keyframeStreamsFailed).toBe(1);
+      expect(stats!.keyframeBytesSent).toBeGreaterThan(0);
+      // No getStats on the fake WebTransport → connection stays null, never throws.
+      expect(stats!.connection).toBeNull();
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

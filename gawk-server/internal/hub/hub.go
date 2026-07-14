@@ -100,6 +100,44 @@ type Options struct {
 	KeyframeWriteTimeout time.Duration
 }
 
+// KeyframeDrops breaks keyframe-stream drops down by cause (R9 M2). The
+// split is what makes the counter diagnostic: "superseded" is benign (a newer
+// keyframe replaced an in-flight one), "slow" is a stalling subscriber,
+// "bandwidth" is the configured egress cap, "open_failed" is a session-level
+// stream-open failure.
+type KeyframeDrops struct {
+	Superseded uint64 `json:"superseded"`
+	Slow       uint64 `json:"slow"`
+	Bandwidth  uint64 `json:"bandwidth"`
+	OpenFailed uint64 `json:"openFailed"`
+}
+
+// Total is the sum across all causes (the pre-R9 aggregate counter).
+func (k KeyframeDrops) Total() uint64 {
+	return k.Superseded + k.Slow + k.Bandwidth + k.OpenFailed
+}
+
+func (k *KeyframeDrops) add(o KeyframeDrops) {
+	k.Superseded += o.Superseded
+	k.Slow += o.Slow
+	k.Bandwidth += o.Bandwidth
+	k.OpenFailed += o.OpenFailed
+}
+
+// SubscriberStats is the per-subscriber breakdown inside a broadcast's Stats
+// (R9 M3): live-debugging detail for "which viewer is slow", keyed by a
+// random per-session key (never anything joinable or identifying). It is
+// deliberately JSON-only — per-subscriber Prometheus labels would be
+// pointless series churn.
+type SubscriberStats struct {
+	Key              string `json:"key"`        // random per-session key, stable across /statusz polls
+	QueueDepth       int    `json:"queueDepth"` // current datagram queue occupancy
+	Dropped          uint64 `json:"dropped"`
+	SendErrors       uint64 `json:"sendErrors"`
+	KeyframesSent    uint64 `json:"keyframesSent"`
+	KeyframesDropped uint64 `json:"keyframesDropped"`
+}
+
 // Stats is a point-in-time snapshot of hub state, for logging and the
 // GET /statusz endpoint (the json tags are its response shape).
 type Stats struct {
@@ -117,9 +155,21 @@ type Stats struct {
 	KeyframeStreamsIn         uint64 `json:"keyframeStreamsIn"`       // keyframes ingested from the publisher
 	KeyframeBytesIn           uint64 `json:"keyframeBytesIn"`         // total bytes of ingested keyframes
 	KeyframeStreamsSent       uint64 `json:"keyframeStreamsSent"`     // keyframe streams fully delivered to subscribers
-	KeyframeStreamsDropped    uint64 `json:"keyframeStreamsDropped"`  // superseded/slow/bandwidth/open-fail keyframe drops
+	KeyframeStreamsDropped    uint64 `json:"keyframeStreamsDropped"`  // sum of KeyframeDrops causes
 	KeyframeStreamsOversize   uint64 `json:"keyframeStreamsOversize"` // publisher streams rejected over MaxKeyframeBytes
 	GraceRemainingSeconds     int    `json:"graceRemainingSeconds"`   // 0 while publisher is active
+
+	// R9 additions (docs/13). Ingress = publisher→relay, egress = relay→
+	// subscribers; the lost counters come from the ingress window (ingress.go)
+	// and attribute loss to the broadcaster→relay leg specifically.
+	KeyframeDrops        KeyframeDrops     `json:"keyframeDrops"`
+	SendErrors           uint64            `json:"sendErrors"`           // datagram write failures to subscribers
+	IngressDatagramBytes uint64            `json:"ingressDatagramBytes"` // valid delta/config datagram bytes from the publisher
+	EgressDatagramBytes  uint64            `json:"egressDatagramBytes"`  // datagram bytes actually written to subscribers
+	EgressKeyframeBytes  uint64            `json:"egressKeyframeBytes"`  // keyframe stream bytes fully delivered
+	IngressFramesLost    uint64            `json:"ingressFramesLost"`    // frames the publisher sent that never arrived
+	IngressChunksLost    uint64            `json:"ingressChunksLost"`    // missing chunks of frames that did arrive
+	SubscriberDetails    []SubscriberStats `json:"subscriberDetails"`
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
@@ -137,6 +187,15 @@ type TotalStats struct {
 	KeyframeStreamsSent       uint64 `json:"keyframeStreamsSent"`
 	KeyframeStreamsDropped    uint64 `json:"keyframeStreamsDropped"`
 	KeyframeStreamsOversize   uint64 `json:"keyframeStreamsOversize"`
+
+	// R9 additions — see the Stats field comments.
+	KeyframeDrops        KeyframeDrops `json:"keyframeDrops"`
+	SendErrors           uint64        `json:"sendErrors"`
+	IngressDatagramBytes uint64        `json:"ingressDatagramBytes"`
+	EgressDatagramBytes  uint64        `json:"egressDatagramBytes"`
+	EgressKeyframeBytes  uint64        `json:"egressKeyframeBytes"`
+	IngressFramesLost    uint64        `json:"ingressFramesLost"`
+	IngressChunksLost    uint64        `json:"ingressChunksLost"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -162,8 +221,14 @@ type Registry struct {
 	totalKeyframeStreamsIn         uint64
 	totalKeyframeBytesIn           uint64
 	totalKeyframeStreamsSent       uint64
-	totalKeyframeStreamsDropped    uint64
+	totalKeyframeDrops             KeyframeDrops
 	totalKeyframeStreamsOversize   uint64
+	totalSendErrors                uint64
+	totalIngressDatagramBytes      uint64
+	totalEgressDatagramBytes       uint64
+	totalEgressKeyframeBytes       uint64
+	totalIngressFramesLost         uint64
+	totalIngressChunksLost         uint64
 
 	limiter *bandwidthLimiter
 
@@ -206,10 +271,19 @@ type broadcastHub struct {
 	keyframeStreamsIn         uint64
 	keyframeBytesIn           uint64
 	keyframeStreamsOversize   uint64
+	ingressDatagramBytes      uint64
+	// Ingress-loss window (R9 M3): cumulative counters live here — not on the
+	// window — so a publisher-restart window reset can't lose them.
+	ingress           ingressWindow
+	ingressFramesLost uint64
+	ingressChunksLost uint64
 	// Folded from subscribers that closed while this hub was still alive
 	// (mirrors datagramsDropped); live subscribers are summed on demand.
-	keyframeStreamsSent    uint64
-	keyframeStreamsDropped uint64
+	keyframeStreamsSent uint64
+	keyframeDrops       KeyframeDrops
+	sendErrors          uint64
+	egressDatagramBytes uint64
+	egressKeyframeBytes uint64
 }
 
 type bandwidthLimiter struct {
@@ -358,6 +432,9 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	b.cachedKeyframe = nil
 	b.cachedKeyframeID = 0
 	b.cachedKeyframeHasConfig = false
+	// New session, new frameID space: reset the ingress-loss window (its
+	// cumulative counters live on the hub and survive).
+	b.ingress.reset()
 
 	return id, &Publisher{hub: b}, nil
 }
@@ -435,10 +512,11 @@ func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
 	}
 
 	s := &Subscriber{
-		hub:    b,
-		sender: conn,
-		queue:  make(chan []byte, r.opts.QueueDepth),
-		done:   make(chan struct{}),
+		hub:      b,
+		sender:   conn,
+		queue:    make(chan []byte, r.opts.QueueDepth),
+		done:     make(chan struct{}),
+		statsKey: newSubscriberStatsKey(),
 	}
 	b.subs[s] = struct{}{}
 	go s.drain()
@@ -486,20 +564,42 @@ func (r *Registry) Stats() RegistryStats {
 		totals.KeyframeStreamsIn += b.keyframeStreamsIn
 		totals.KeyframeBytesIn += b.keyframeBytesIn
 		totals.KeyframeStreamsOversize += b.keyframeStreamsOversize
+		totals.IngressDatagramBytes += b.ingressDatagramBytes
+		totals.IngressFramesLost += b.ingressFramesLost
+		totals.IngressChunksLost += b.ingressChunksLost
 
 		// Per-subscriber counters are folded into the hub only when the
 		// subscriber closes; sum the live ones here for a current view.
 		dropped := b.datagramsDropped
 		kfSent := b.keyframeStreamsSent
-		kfDropped := b.keyframeStreamsDropped
+		kfDrops := b.keyframeDrops
+		sendErrors := b.sendErrors
+		egressDgram := b.egressDatagramBytes
+		egressKf := b.egressKeyframeBytes
+		details := make([]SubscriberStats, 0, len(b.subs))
 		for s := range b.subs {
+			subDrops := s.keyframeDrops()
 			dropped += s.dropped.Load()
 			kfSent += s.keyframesSent.Load()
-			kfDropped += s.keyframesDropped.Load()
+			kfDrops.add(subDrops)
+			sendErrors += s.sendErrors.Load()
+			egressDgram += s.egressDatagramBytes.Load()
+			egressKf += s.egressKeyframeBytes.Load()
+			details = append(details, SubscriberStats{
+				Key:              s.statsKey,
+				QueueDepth:       len(s.queue),
+				Dropped:          s.dropped.Load(),
+				SendErrors:       s.sendErrors.Load(),
+				KeyframesSent:    s.keyframesSent.Load(),
+				KeyframesDropped: subDrops.Total(),
+			})
 		}
 		totals.DatagramsDropped += dropped
 		totals.KeyframeStreamsSent += kfSent
-		totals.KeyframeStreamsDropped += kfDropped
+		totals.KeyframeDrops.add(kfDrops)
+		totals.SendErrors += sendErrors
+		totals.EgressDatagramBytes += egressDgram
+		totals.EgressKeyframeBytes += egressKf
 
 		var graceRemaining int
 		if !b.publisherActive && !b.graceStart.IsZero() {
@@ -525,9 +625,17 @@ func (r *Registry) Stats() RegistryStats {
 			KeyframeStreamsIn:         b.keyframeStreamsIn,
 			KeyframeBytesIn:           b.keyframeBytesIn,
 			KeyframeStreamsSent:       kfSent,
-			KeyframeStreamsDropped:    kfDropped,
+			KeyframeStreamsDropped:    kfDrops.Total(),
 			KeyframeStreamsOversize:   b.keyframeStreamsOversize,
 			GraceRemainingSeconds:     graceRemaining,
+			KeyframeDrops:             kfDrops,
+			SendErrors:                sendErrors,
+			IngressDatagramBytes:      b.ingressDatagramBytes,
+			EgressDatagramBytes:       egressDgram,
+			EgressKeyframeBytes:       egressKf,
+			IngressFramesLost:         b.ingressFramesLost,
+			IngressChunksLost:         b.ingressChunksLost,
+			SubscriberDetails:         details,
 		}
 	}
 
@@ -541,8 +649,15 @@ func (r *Registry) Stats() RegistryStats {
 	totals.KeyframeStreamsIn += r.totalKeyframeStreamsIn
 	totals.KeyframeBytesIn += r.totalKeyframeBytesIn
 	totals.KeyframeStreamsSent += r.totalKeyframeStreamsSent
-	totals.KeyframeStreamsDropped += r.totalKeyframeStreamsDropped
+	totals.KeyframeDrops.add(r.totalKeyframeDrops)
 	totals.KeyframeStreamsOversize += r.totalKeyframeStreamsOversize
+	totals.SendErrors += r.totalSendErrors
+	totals.IngressDatagramBytes += r.totalIngressDatagramBytes
+	totals.EgressDatagramBytes += r.totalEgressDatagramBytes
+	totals.EgressKeyframeBytes += r.totalEgressKeyframeBytes
+	totals.IngressFramesLost += r.totalIngressFramesLost
+	totals.IngressChunksLost += r.totalIngressChunksLost
+	totals.KeyframeStreamsDropped = totals.KeyframeDrops.Total()
 
 	return RegistryStats{
 		Totals:     totals,
@@ -571,7 +686,13 @@ func (r *Registry) handleGraceExpiry(id string, gen uint64) {
 	r.totalKeyframeBytesIn += b.keyframeBytesIn
 	r.totalKeyframeStreamsOversize += b.keyframeStreamsOversize
 	r.totalKeyframeStreamsSent += b.keyframeStreamsSent
-	r.totalKeyframeStreamsDropped += b.keyframeStreamsDropped
+	r.totalKeyframeDrops.add(b.keyframeDrops)
+	r.totalSendErrors += b.sendErrors
+	r.totalIngressDatagramBytes += b.ingressDatagramBytes
+	r.totalEgressDatagramBytes += b.egressDatagramBytes
+	r.totalEgressKeyframeBytes += b.egressKeyframeBytes
+	r.totalIngressFramesLost += b.ingressFramesLost
+	r.totalIngressChunksLost += b.ingressChunksLost
 
 	var subs []*Subscriber
 	for s := range b.subs {
@@ -691,6 +812,9 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 	b.keyframeStreamsIn++
 	b.keyframeBytesIn += uint64(len(msg))
 	b.framesRelayed++
+	fl, cl := b.ingress.observeFrame(hdr.FrameID)
+	b.ingressFramesLost += fl
+	b.ingressChunksLost += cl
 	subs := make([]*Subscriber, 0, len(b.subs))
 	for s := range b.subs {
 		subs = append(subs, s)
@@ -748,6 +872,7 @@ func (p *Publisher) relayDatagram(dgram []byte) {
 	if p.closed {
 		return
 	}
+	b.ingressDatagramBytes += uint64(len(dgram))
 	b.fanOutLocked(dgram)
 }
 
@@ -762,6 +887,10 @@ func (p *Publisher) relayVideoChunk(hdr wire.VideoChunkHeader, dgram []byte) {
 	if hdr.ChunkIndex == 0 {
 		b.framesRelayed++
 	}
+	b.ingressDatagramBytes += uint64(len(dgram))
+	fl, cl := b.ingress.observeChunk(hdr.FrameID, int(hdr.ChunkIndex), int(hdr.ChunkCount))
+	b.ingressFramesLost += fl
+	b.ingressChunksLost += cl
 	b.fanOutLocked(dgram)
 }
 
@@ -779,23 +908,44 @@ type Subscriber struct {
 	queue  chan []byte
 	done   chan struct{}
 
+	// statsKey names this subscriber in /statusz subscriberDetails: random
+	// per-session, so a slow viewer can be watched across polls without
+	// exposing anything identifying or joinable.
+	statsKey string
+
 	// closed is set (atomically) by Close before it cancels the in-flight
 	// keyframe stream; sendKeyframe reads it without the registry lock to avoid
 	// opening a doomed stream.
 	closed atomic.Bool
 
-	dropped    atomic.Uint64
-	sendErrors atomic.Uint64
+	dropped             atomic.Uint64
+	sendErrors          atomic.Uint64
+	egressDatagramBytes atomic.Uint64
+	egressKeyframeBytes atomic.Uint64
 
 	// Keyframe stream fan-out (R8). kfMu guards kfCurrent + kfLastSeq; at most
 	// one keyframe stream is ever in flight to a subscriber, and a stale send
 	// (lower seq) is skipped so a late prime can't supersede a live keyframe.
-	kfMu             sync.Mutex
-	kfCurrent        KeyframeStream
-	kfLastSeq        uint64
-	kfWriters        sync.WaitGroup
-	keyframesSent    atomic.Uint64
-	keyframesDropped atomic.Uint64
+	kfMu          sync.Mutex
+	kfCurrent     KeyframeStream
+	kfLastSeq     uint64
+	kfWriters     sync.WaitGroup
+	keyframesSent atomic.Uint64
+	// Keyframe drops by cause (R9 M2); KeyframesDropped() sums them.
+	kfDroppedSuperseded atomic.Uint64
+	kfDroppedSlow       atomic.Uint64
+	kfDroppedBandwidth  atomic.Uint64
+	kfDroppedOpenFailed atomic.Uint64
+}
+
+// keyframeDrops snapshots the per-cause drop atomics.
+func (s *Subscriber) keyframeDrops() KeyframeDrops {
+	return KeyframeDrops{
+		Superseded: s.kfDroppedSuperseded.Load(),
+		Slow:       s.kfDroppedSlow.Load(),
+		Bandwidth:  s.kfDroppedBandwidth.Load(),
+		OpenFailed: s.kfDroppedOpenFailed.Load(),
+	}
 }
 
 func (s *Subscriber) enqueueLocked(dgram []byte) {
@@ -816,7 +966,9 @@ func (s *Subscriber) drain() {
 		}
 		if err := s.sender.SendDatagram(dgram); err != nil {
 			s.sendErrors.Add(1)
+			continue
 		}
+		s.egressDatagramBytes.Add(uint64(len(dgram)))
 	}
 }
 
@@ -831,16 +983,19 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 	}
 	// The reliable keyframe counts against the global egress budget; checked
 	// before opening the stream because a stream can't be dropped mid-flight.
+	// Bandwidth-dropped keyframes count bytes against the shared dropped-bytes
+	// counter but not the *datagram* drop counter (R9: the reasons must not
+	// bleed across kinds or queue_full can't be derived by subtraction).
 	if !s.hub.registry.consumeBandwidth(len(msg)) {
-		s.keyframesDropped.Add(1)
-		s.hub.countBandwidthDrop(len(msg))
+		s.kfDroppedBandwidth.Add(1)
+		s.hub.countBandwidthDropBytes(len(msg))
 		return
 	}
 
 	s.kfMu.Lock()
 	if s.closed.Load() || seq < s.kfLastSeq {
 		s.kfMu.Unlock()
-		s.keyframesDropped.Add(1)
+		s.kfDroppedSuperseded.Add(1)
 		return
 	}
 	s.kfLastSeq = seq
@@ -853,7 +1008,7 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 	stream, err := s.sender.OpenKeyframeStream()
 	if err != nil {
 		s.kfMu.Unlock()
-		s.keyframesDropped.Add(1)
+		s.kfDroppedOpenFailed.Add(1)
 		return
 	}
 	s.kfCurrent = stream
@@ -872,18 +1027,30 @@ func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
 		err = stream.Close()
 	}
 
+	// If kfCurrent no longer points at this stream, someone (a newer keyframe
+	// or Close) cancelled it under kfMu — that classifies a failed write as
+	// "superseded" rather than "slow". Checked under the same lock that does
+	// the superseding, so the classification can't race the cause.
 	s.kfMu.Lock()
-	if s.kfCurrent == stream {
+	superseded := s.kfCurrent != stream
+	if !superseded {
 		s.kfCurrent = nil
 	}
 	s.kfMu.Unlock()
 
 	if err != nil {
 		stream.CancelWrite()
-		s.keyframesDropped.Add(1)
+		if superseded {
+			s.kfDroppedSuperseded.Add(1)
+		} else {
+			// Deadline exceeded (stalled flow control) or a write/close error
+			// to this peer — either way, this subscriber couldn't take it.
+			s.kfDroppedSlow.Add(1)
+		}
 		return
 	}
 	s.keyframesSent.Add(1)
+	s.egressKeyframeBytes.Add(uint64(len(msg)))
 }
 
 // Close removes the subscriber and stops its drain loop.
@@ -922,11 +1089,17 @@ func (s *Subscriber) Close() {
 	if r.hubs[b.id] == b {
 		b.datagramsDropped += s.dropped.Load()
 		b.keyframeStreamsSent += s.keyframesSent.Load()
-		b.keyframeStreamsDropped += s.keyframesDropped.Load()
+		b.keyframeDrops.add(s.keyframeDrops())
+		b.sendErrors += s.sendErrors.Load()
+		b.egressDatagramBytes += s.egressDatagramBytes.Load()
+		b.egressKeyframeBytes += s.egressKeyframeBytes.Load()
 	} else {
 		r.totalDatagramsDropped += s.dropped.Load()
 		r.totalKeyframeStreamsSent += s.keyframesSent.Load()
-		r.totalKeyframeStreamsDropped += s.keyframesDropped.Load()
+		r.totalKeyframeDrops.add(s.keyframeDrops())
+		r.totalSendErrors += s.sendErrors.Load()
+		r.totalEgressDatagramBytes += s.egressDatagramBytes.Load()
+		r.totalEgressKeyframeBytes += s.egressKeyframeBytes.Load()
 	}
 }
 
@@ -938,7 +1111,7 @@ func (s *Subscriber) KeyframesSent() uint64 { return s.keyframesSent.Load() }
 
 // KeyframesDropped reports keyframe streams dropped for this subscriber
 // (superseded, slow, bandwidth-limited, or open failures).
-func (s *Subscriber) KeyframesDropped() uint64 { return s.keyframesDropped.Load() }
+func (s *Subscriber) KeyframesDropped() uint64 { return s.keyframeDrops().Total() }
 
 func (r *Registry) consumeBandwidth(n int) bool {
 	if r.limiter == nil {
@@ -947,8 +1120,8 @@ func (r *Registry) consumeBandwidth(n int) bool {
 	return r.limiter.consume(n)
 }
 
-// countBandwidthDrop records one bandwidth-limited drop. It runs on drain and
-// keyframe-writer goroutines, which can outlive their broadcast: after
+// countBandwidthDrop records one bandwidth-limited *datagram* drop. It runs
+// on drain goroutines, which can outlive their broadcast: after
 // handleGraceExpiry has folded the hub's counters into the totals and deleted
 // it, incrementing the orphaned hub struct would lose the count — credit the
 // totals directly then.
@@ -963,4 +1136,29 @@ func (b *broadcastHub) countBandwidthDrop(n int) {
 		r.totalBandwidthDroppedDatagrams++
 		r.totalBandwidthDroppedBytes += uint64(n)
 	}
+}
+
+// countBandwidthDropBytes records the bytes of a bandwidth-limited *keyframe*
+// drop. The count itself lives in the subscriber's per-cause keyframe drop
+// counters — bandwidthDroppedDatagrams must stay datagram-only (R9) so
+// queue-overflow drops can be derived by subtraction without going negative.
+func (b *broadcastHub) countBandwidthDropBytes(n int) {
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.hubs[b.id] == b {
+		b.bandwidthDroppedBytes += uint64(n)
+	} else {
+		r.totalBandwidthDroppedBytes += uint64(n)
+	}
+}
+
+// newSubscriberStatsKey mints the random per-session key naming a subscriber
+// in /statusz subscriberDetails.
+func newSubscriberStatsKey() string {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(buf[:])
 }

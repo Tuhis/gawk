@@ -10,6 +10,7 @@ import {
   readKeyframeStreams,
   type ConnectOptions,
 } from './connection';
+import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink } from './render-sink';
@@ -33,6 +34,19 @@ export interface ViewerStats extends ReassemblerStats {
   reorderGapResyncs: number;
   reorderKeyframeWaitDrops: number;
   reorderBuffered: number;
+  // R9 funnel + stall indicators (docs/13 D5): received → decoded → rendered.
+  // receivedFps counts complete frames arriving (reassembled datagram frames
+  // + keyframe streams); renderedFps comes from the RenderSink and is null on
+  // the main-thread path (the screen draws there, not the pipeline).
+  receivedFps: number;
+  renderedFps: number | null;
+  // Time since the last complete frame arrived (stall detector) and since
+  // the last keyframe (recovery bound: should hover at or under the GOP).
+  timeSinceLastFrameMs: number | null;
+  lastKeyframeAgeMs: number | null;
+  // R9 connection health for this leg (relay→viewer); null when the browser
+  // doesn't implement WebTransport.getStats().
+  connection: TransportConnectionStats | null;
 }
 
 export interface ViewerCallbacks {
@@ -82,6 +96,12 @@ export class ViewerPipeline {
   private lastDecodeLatencyMs = 0;
   private lastStatsAt = 0;
   private statsTimer: number | null = null;
+  // R9 funnel + stall tracking.
+  private lastReceivedTotal = 0;
+  private lastRenderedTotal = 0;
+  private lastFrameReceivedAt: number | null = null;
+  private lastKeyframeReceivedAt: number | null = null;
+  private connSampler: ConnectionStatsSampler | null = null;
   // The codec of the last applied config — for a clear "can't decode" message.
   private lastCodec: string | null = null;
   private pendingConfig: DecoderConfigMessage | null = null;
@@ -108,6 +128,7 @@ export class ViewerPipeline {
   async start(): Promise<void> {
     const url = new URL(`/subscribe/${this.broadcastId}`, this.serverUrl).toString();
     this.wt = await connectWebTransport(url, this.connectOpts);
+    this.connSampler = new ConnectionStatsSampler(this.wt);
 
     this.decoder = new Decoder({
       onDecoded: (decoded) => this.handleDecoded(decoded),
@@ -127,7 +148,9 @@ export class ViewerPipeline {
       // datagram here too keeps the viewer robust to any keyframe source.
       onFrame: (frame) => {
         if (!this.reorder) return;
+        this.lastFrameReceivedAt = performance.now();
         if (frame.keyframe) {
+          this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
           this.reorder.pushKeyframe({
             frameId: frame.frameId,
             timestampUs: frame.timestampUs,
@@ -184,6 +207,8 @@ export class ViewerPipeline {
       (kf) => {
         if (this.stopping || !this.reorder) return;
         this.keyframeStreamsReceived++;
+        this.lastFrameReceivedAt = performance.now();
+        this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
         this.reorder.pushKeyframe({
           frameId: kf.frameId,
           timestampUs: kf.timestampUs,
@@ -385,6 +410,20 @@ export class ViewerPipeline {
     this.lastStatsAt = now;
     const reasm = this.reassembler?.getStats();
     const reorder: ReorderStats | undefined = this.reorder?.getStats();
+
+    // R9 funnel: complete frames arriving per second (datagram-reassembled +
+    // stream keyframes), and — on the worker path — frames actually drawn.
+    const receivedTotal = (reasm?.framesCompleted ?? 0) + this.keyframeStreamsReceived;
+    const receivedFps = dt > 0 ? (receivedTotal - this.lastReceivedTotal) / dt : 0;
+    this.lastReceivedTotal = receivedTotal;
+    let renderedFps: number | null = null;
+    if (this.renderSink) {
+      const drawn = this.renderSink.drawnFrames();
+      renderedFps = dt > 0 ? (drawn - this.lastRenderedTotal) / dt : 0;
+      this.lastRenderedTotal = drawn;
+    }
+    this.connSampler?.tick();
+
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -404,6 +443,11 @@ export class ViewerPipeline {
       reorderGapResyncs: reorder?.gapResyncs ?? 0,
       reorderKeyframeWaitDrops: reorder?.keyframeWaitDrops ?? 0,
       reorderBuffered: reorder?.buffered ?? 0,
+      receivedFps,
+      renderedFps,
+      timeSinceLastFrameMs: this.lastFrameReceivedAt === null ? null : now - this.lastFrameReceivedAt,
+      lastKeyframeAgeMs: this.lastKeyframeReceivedAt === null ? null : now - this.lastKeyframeReceivedAt,
+      connection: this.connSampler?.latest() ?? null,
     });
   }
 

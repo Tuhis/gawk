@@ -39,7 +39,7 @@ getDisplayMedia
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R6), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`10`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`13`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
 ## Quickstart (local dev)
@@ -119,6 +119,7 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 10. 🚧 Production UI (R6): landing/broadcaster/viewer surfaces, a monochrome design system (`styles/global.css` tokens + `src/ui/` primitives), segmented join-code entry, and a cinematic fullscreen viewer with a stats overlay (`Ctrl+Alt+Shift+D` or right-click); the old pages are re-homed frozen under `#/debug/*`. UI-only — zero server/wire/pipeline changes — `docs/10` (implemented 2026-07-13; automated gates green, manual browser verify pending)
 11. 🚧 Heavy-motion resilience: 500 ms GOP (`keyframeIntervalMs` 2000→500), viewer freeze-on-gap (hold the last good frame on a frameId discontinuity instead of decoding corrupt deltas), and a 30 fps default fan-out cap (broadcaster can still pick 60/native) — cuts heavy-motion corruption on Chrome and "Awaiting keyframe" stalls on Firefox. UI/pipeline only — zero server/wire changes — `docs/08` + `docs/03` (implemented 2026-07-14; automated gates green, manual browser verify pending)
 12. ✅ Worker offloading & reliable keyframes (R8): keyframes now travel over per-subscriber reliable WebTransport uni streams with server **store-and-forward** fan-out (write deadline, supersede-stale, late-joiner priming), and the viewer merges them with datagram deltas in a pure bounded reorder buffer with centralized freeze-on-gap; deltas stay on datagrams. The whole viewer pipeline (decode + `OffscreenCanvas` render + reconnect) now runs in a **Web Worker** — frames never cross to the main thread — with a capability handshake and a main-thread fallback. Wire/server/broadcaster/viewer change together — `docs/12` (S1–S7 implemented 2026-07-14; automated gates green, browser-verified 2026-07-14)
+13. 🚧 Observability & metrics (R9): the relay grew a plain-TCP ops endpoint (`-metrics-addr`, default `:2112`) serving Prometheus `/metrics`, `/healthz` and a curl-able `/statusz` mirror (the HTTP/3 server itself is unscrapeable), with per-broadcast + lifetime metric families, an ingress-loss window that attributes broadcaster→relay loss, split drop reasons, connection-outcome counters, per-subscriber `/statusz` detail, and a Helm metrics Service + gated ServiceMonitor (never on the public LoadBalancer). Both production surfaces now have a sectioned stats overlay (same hotkey) with pipeline funnel rates, `WebTransport.getStats()` connection health, and a **Copy diagnostics** JSON export; a symptom→signature bottleneck playbook lives in the doc — `docs/13` (M1–M7 implemented 2026-07-14; automated gates green, manual verify + M8 Grafana dashboard pending)
 
 What comes next (R5 viewer live-edge work, …) is laid
 out in [`ROADMAP.md`](ROADMAP.md).
@@ -195,6 +196,21 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   silently degrades them to an anonymous drop. On read-loop termination,
   race `wt.closed` with a short timeout before deciding
   (`viewer.ts handleReadLoopEnd`). ([docs/06](docs/06-multi-broadcaster.md))
+
+**Observability (R9)**
+
+- **`GAWK_METRICS_ADDR` cannot be disabled with an empty value** — the env
+  helper treats empty as unset and falls back to the default `:2112`. The
+  literal `off` disables; the Helm chart passes it when
+  `metrics.enabled=false`. ([docs/13](docs/13-observability.md))
+- **client_golang rejects one metric family with two label sets** — you
+  can't emit `gawk_x_total{broadcast=…}` and an unlabeled `gawk_x_total`
+  from the same registry (gather fails with "inconsistent label
+  dimensions"). Hence the `gawk_broadcast_*` / `gawk_relay_*` split.
+  ([docs/13](docs/13-observability.md))
+- **`WebTransport.getStats()` is Chromium-only in practice** and its field
+  set varies by version — every consumer must feature-detect and treat all
+  fields as nullable (`transport/net-stats.ts`). ([docs/13](docs/13-observability.md))
 
 **Media pipeline**
 

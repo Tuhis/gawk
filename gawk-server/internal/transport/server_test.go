@@ -18,12 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/internal/wire"
 )
@@ -81,7 +83,8 @@ func startTestServerCfgLogSrv(t *testing.T, ctx context.Context, cfg config.Conf
 		MaxKeyframeBytes:     cfg.MaxKeyframeBytes,
 		KeyframeWriteTimeout: cfg.KeyframeWriteTimeout,
 	})
-	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log)
+	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log,
+		metrics.NewServerMetrics(prometheus.NewRegistry()))
 
 	done = make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -315,7 +318,12 @@ func TestEchoRoundTrip(t *testing.T) {
 func TestRelayPublishToSubscribe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
+	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  5 * time.Minute,
+	}, discardLog)
 
 	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
 	sub := dialSubscriber(t, ctx, port, id, clientTLS)
@@ -395,6 +403,15 @@ func TestRelayPublishToSubscribe(t *testing.T) {
 	}
 	if complete < totalFrames*95/100 {
 		t.Errorf("subscriber reassembled %d/%d frames intact, want >= 95%%", complete, totalFrames)
+	}
+
+	// R9 M4: both sessions were accepted, and each accepted session counts
+	// exactly once.
+	if got := srv.metrics.ConnectionCount("publish", metrics.OutcomeAccepted); got != 1 {
+		t.Errorf("publish/accepted = %v, want 1", got)
+	}
+	if got := srv.metrics.ConnectionCount("subscribe", metrics.OutcomeAccepted); got != 1 {
+		t.Errorf("subscribe/accepted = %v, want 1", got)
 	}
 }
 
@@ -721,7 +738,7 @@ func TestIdleSubscriberTimesOutWithoutKeepalive(t *testing.T) {
 func TestCheckOriginLoopbackBypassesAllowlist(t *testing.T) {
 	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
 	srv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
-		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, discardLog)
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, discardLog, nil)
 
 	cases := []struct {
 		name       string
@@ -805,8 +822,9 @@ func TestOriginRejectedIsLogged(t *testing.T) {
 	var buf syncBuffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
+	sm := metrics.NewServerMetrics(prometheus.NewRegistry())
 	srv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
-		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, log)
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, log, sm)
 
 	// Disallowed origin from a real (non-loopback) client: rejected + logged.
 	req := httptest.NewRequest(http.MethodConnect, "https://gawk.example.com/subscribe/abc", nil)
@@ -819,12 +837,15 @@ func TestOriginRejectedIsLogged(t *testing.T) {
 		!strings.Contains(got, "https://evil.example.com") || !strings.Contains(got, "203.0.113.7") {
 		t.Errorf("expected origin-rejection log with the origin and remote, got:\n%s", got)
 	}
+	if got := sm.OriginRejectedCount(); got != 1 {
+		t.Errorf("gawk_origin_rejected_total = %v, want 1", got)
+	}
 
 	// Allowed origin: accepted, and no rejection log emitted.
 	var okBuf syncBuffer
 	okLog := slog.New(slog.NewTextHandler(&okBuf, nil))
 	okSrv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
-		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, okLog)
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, okLog, nil)
 	okReq := httptest.NewRequest(http.MethodConnect, "https://gawk.example.com/subscribe/abc", nil)
 	okReq.RemoteAddr = "203.0.113.7:44002"
 	okReq.Header.Set("Origin", "https://gawk.example.com")
@@ -843,8 +864,9 @@ func TestRateLimitBlockLogsOrigin(t *testing.T) {
 	var buf syncBuffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
+	sm := metrics.NewServerMetrics(prometheus.NewRegistry())
 	srv := New(config.Config{MaxSubscribers: 1, ConnRateLimit: 1, ConnBurstLimit: 1},
-		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, log)
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, log, sm)
 	// Test requests come from 127.0.0.1-style addrs; disable the loopback
 	// bypass so the limiter actually engages (as production does off-pod).
 	srv.testHookRateLimitLoopback = true
@@ -862,6 +884,9 @@ func TestRateLimitBlockLogsOrigin(t *testing.T) {
 	if got := buf.String(); !strings.Contains(got, "connection rate limited") ||
 		!strings.Contains(got, "https://app.example.com") || !strings.Contains(got, "203.0.113.9") {
 		t.Errorf("expected rate-limit log with the origin and remote, got:\n%s", got)
+	}
+	if got := sm.RateLimitedCount(); got != 1 {
+		t.Errorf("gawk_rate_limited_total = %v, want 1", got)
 	}
 }
 

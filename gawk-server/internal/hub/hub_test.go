@@ -19,16 +19,17 @@ var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 // fakeSender records every datagram and close code, and every keyframe stream
 // fully written to it. It implements hub.Conn.
 type fakeSender struct {
-	mu        sync.Mutex
-	got       [][]byte // datagrams delivered
-	keyframes [][]byte // full keyframe messages delivered (Write+Close)
-	block     chan struct{}
-	kfBlock   chan struct{} // if non-nil, every keyframe Write blocks on it
-	err       error
-	kfOpenErr error // if non-nil, OpenKeyframeStream fails
-	closeCode uint32
-	closed    bool
-	kfOpens   int
+	mu         sync.Mutex
+	got        [][]byte // datagrams delivered
+	keyframes  [][]byte // full keyframe messages delivered (Write+Close)
+	block      chan struct{}
+	kfBlock    chan struct{} // if non-nil, every keyframe Write blocks on it
+	err        error
+	kfOpenErr  error // if non-nil, OpenKeyframeStream fails
+	kfWriteErr error // if non-nil, every keyframe Write fails (uncancelled: the "slow peer" shape)
+	closeCode  uint32
+	closed     bool
+	kfOpens    int
 }
 
 func (f *fakeSender) SendDatagram(d []byte) error {
@@ -95,6 +96,9 @@ type fakeKeyframeStream struct {
 func (k *fakeKeyframeStream) SetWriteDeadline(time.Time) error { return nil }
 
 func (k *fakeKeyframeStream) Write(p []byte) (int, error) {
+	if k.parent.kfWriteErr != nil {
+		return 0, k.parent.kfWriteErr
+	}
 	if k.parent.kfBlock != nil {
 		select {
 		case <-k.parent.kfBlock:

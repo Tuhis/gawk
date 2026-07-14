@@ -28,7 +28,7 @@ vi.mock('../media/decoder', () => ({
   },
 }));
 
-import { ViewerPipeline, type ViewerCallbacks } from './viewer';
+import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import { CLOSE_CODE_BROADCAST_ENDED, encodeDecoderConfig, encodeVideoChunk } from './wire';
 
 function makeFakeWT(closedAfterMs: number, closeInfo: unknown) {
@@ -171,6 +171,49 @@ describe('ViewerPipeline', () => {
     expect(decodeSpy).toHaveBeenCalledTimes(5);
 
     await pipeline.stop();
+  });
+
+  it('reports received fps, stall ages and a null connection (R9 M6)', async () => {
+    // Fake performance too: the stats window (dt) and the stall ages are
+    // computed from performance.now inside the pipeline.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      connectWebTransport.mockResolvedValue(makeFakeWT(600_000, {}));
+      let deliver: ((d: Uint8Array) => void) | null = null;
+      readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+        deliver = onDatagram;
+        return new Promise(() => {});
+      });
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+      await pipeline.start();
+      const push = deliver as unknown as (d: Uint8Array) => void;
+
+      push(configDgram());
+      push(frameDgram(0, true)); // keyframe → also stamps the keyframe age
+      push(frameDgram(1, false));
+
+      await vi.advanceTimersByTimeAsync(500); // fire the stats interval
+      const last = stats.at(-1);
+      expect(last).toBeDefined();
+      // Two complete frames over the 500 ms window.
+      expect(last!.receivedFps).toBeCloseTo(2 / 0.5, 3);
+      // Both frames arrived at t≈0; the stats tick ran at t=500.
+      expect(last!.timeSinceLastFrameMs).toBeCloseTo(500, 0);
+      expect(last!.lastKeyframeAgeMs).toBeCloseTo(500, 0);
+      // Main-thread path (no RenderSink) → renderedFps is unknowable here.
+      expect(last!.renderedFps).toBeNull();
+      // The fake WebTransport has no getStats → null, never a throw.
+      expect(last!.connection).toBeNull();
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fails without a close code when the session drops abruptly', async () => {

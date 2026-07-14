@@ -15,6 +15,8 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 )
@@ -65,6 +67,7 @@ func run() error {
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
+		"metrics_addr", cfg.MetricsAddr,
 	)
 
 	getCert, err := certSource(cfg, log)
@@ -73,8 +76,31 @@ func run() error {
 	}
 
 	r := hub.NewRegistry(log, registryOptions(cfg))
-	if err := transport.New(cfg, r, getCert, log).Run(ctx); err != nil {
-		return err
+
+	// Prometheus wiring (R9, docs/13): runtime collectors + build info, the
+	// hub registry collector, and the transport connection counters — all
+	// served by the TCP ops endpoint alongside /healthz and /statusz.
+	promReg := metrics.NewBaseRegistry(version)
+	promReg.MustRegister(metrics.NewRegistryCollector(r))
+	sm := metrics.NewServerMetrics(promReg)
+
+	// The WebTransport (UDP) server and the ops (TCP) listener run together;
+	// either one failing tears the other down.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, 2)
+	go func() { errCh <- transport.New(cfg, r, getCert, log, sm).Run(runCtx) }()
+	go func() { errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, promReg, log), log) }()
+
+	var firstErr error
+	for range 2 {
+		if err := <-errCh; err != nil && firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+	if firstErr != nil {
+		return firstErr
 	}
 
 	log.Info("shutting down")

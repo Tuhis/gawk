@@ -66,4 +66,19 @@ describe('OffscreenCanvasRenderSink', () => {
     sink.draw(frame);
     expect(frame.close).toHaveBeenCalledTimes(1);
   });
+
+  it('counts drawn frames for the viewer funnel (R9 M6)', () => {
+    const { canvas } = fakeCanvas();
+    const sink = new OffscreenCanvasRenderSink(canvas);
+    expect(sink.drawnFrames()).toBe(0);
+    sink.draw(fakeFrame(640, 480));
+    sink.draw(fakeFrame(640, 480));
+    expect(sink.drawnFrames()).toBe(2);
+
+    // A context-less draw closes the frame but renders nothing — not drawn.
+    const noCtx = { width: 0, height: 0, getContext: () => null } as unknown as OffscreenCanvas;
+    const blindSink = new OffscreenCanvasRenderSink(noCtx);
+    blindSink.draw(fakeFrame(320, 240));
+    expect(blindSink.drawnFrames()).toBe(0);
+  });
 });

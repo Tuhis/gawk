@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './viewer.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
@@ -6,11 +6,13 @@ import { Button } from '../../ui/Button';
 import { FullscreenExitIcon, FullscreenIcon, LeaveIcon, StatsIcon } from '../../ui/Icons';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
 import { StatsOverlay } from './StatsOverlay';
-import { STATS_HOTKEY } from './hotkeys';
+import { STATS_HOTKEY } from '../../lib/hotkeys';
+import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
+import type { ViewerStats } from '../../transport/viewer';
 import { HOME } from '../../routing';
 
 const CONTROL_IDLE_MS = 3000;
@@ -41,8 +43,16 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const [showStats, setShowStats] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [statsCopied, setStatsCopied] = useState(false);
 
   const { isFullscreen, toggle: toggleFullscreen } = useFullscreen(rootRef);
+
+  // R9 M7: rolling stat-sample window backing "Copy diagnostics" and the
+  // derived receive bitrate. A ref, not state — it must not cause renders.
+  const diagRef = useRef(new DiagnosticsBuffer<ViewerStats>());
+  useEffect(() => {
+    if (stats) diagRef.current.push(stats);
+  }, [stats]);
 
   const leave = useCallback(() => {
     window.location.hash = HOME;
@@ -55,6 +65,14 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       setTimeout(() => setCopied(false), 1800);
     });
   }, [broadcastId]);
+
+  const copyDiagnostics = useCallback(() => {
+    const json = diagRef.current.build({ surface: 'viewer', broadcastId, codec });
+    void navigator.clipboard?.writeText(json).then(() => {
+      setStatsCopied(true);
+      setTimeout(() => setStatsCopied(false), 1800);
+    });
+  }, [broadcastId, codec]);
 
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
   useHotkey({ key: 'f' }, () => toggleFullscreen());
@@ -126,7 +144,17 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       )}
 
       {showStats && (
-        <StatsOverlay stats={stats} codec={codec} onClose={() => setShowStats(false)} />
+        <StatsOverlay
+          stats={stats}
+          codec={codec}
+          bitrateBps={(() => {
+            const bytesRate = diagRef.current.rate((s) => s.connection?.bytesReceived);
+            return bytesRate == null ? null : bytesRate * 8;
+          })()}
+          onClose={() => setShowStats(false)}
+          onCopy={copyDiagnostics}
+          copied={statsCopied}
+        />
       )}
 
       {copied && <div className={styles.toast}>Link copied</div>}

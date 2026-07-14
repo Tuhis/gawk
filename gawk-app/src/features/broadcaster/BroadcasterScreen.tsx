@@ -4,7 +4,8 @@ import { LadderPicker } from '../stream/LadderPicker';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
-import { CopyIcon, GearIcon, LeaveIcon, PlayIcon, StopIcon } from '../../ui/Icons';
+import { CopyIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
+import { BroadcasterStatsOverlay } from './BroadcasterStatsOverlay';
 import { BroadcastPipeline, BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
@@ -12,6 +13,9 @@ import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
 import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { useTransportStore } from '../../state/transportStore';
 import { isDevEnvironment, requiresPublishSecret } from '../../config';
+import { DiagnosticsBuffer } from '../../lib/diagnostics';
+import { STATS_HOTKEY } from '../../lib/hotkeys';
+import { useHotkey } from '../../lib/useHotkey';
 import { fmt } from '../../lib/format';
 import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
@@ -43,6 +47,11 @@ export function BroadcasterScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [secretPrompt, setSecretPrompt] = useState(false);
   const [secretDraft, setSecretDraft] = useState('');
+  const [showStats, setShowStats] = useState(false);
+  const [statsCopied, setStatsCopied] = useState(false);
+
+  // R9 M7: rolling stat samples backing "Copy diagnostics" + the sent bitrate.
+  const diagRef = useRef(new DiagnosticsBuffer<BroadcastStats>());
 
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
 
@@ -66,6 +75,9 @@ export function BroadcasterScreen() {
     setError(null);
     setStats(null);
     setEncoderInfo(null);
+    // Fresh sample window per broadcast: the pipeline's cumulative counters
+    // restart at zero, and mixing sessions would poison the derived rates.
+    diagRef.current = new DiagnosticsBuffer<BroadcastStats>();
 
     const makeCallbacks = (afterFailedReclaim: boolean) => ({
       onSourceStream: (s: MediaStream) => {
@@ -74,7 +86,10 @@ export function BroadcasterScreen() {
       },
       onEncoderConfigured: (info: EncoderConfigured) => setEncoderInfo(info),
       onCapturePathChosen: () => {},
-      onStats: (s: BroadcastStats) => setStats(s),
+      onStats: (s: BroadcastStats) => {
+        diagRef.current.push(s);
+        setStats(s);
+      },
       onBroadcastId: (id: string) => {
         setBroadcastId(id);
         setReclaimFailedNote(
@@ -185,6 +200,23 @@ export function BroadcasterScreen() {
     };
   }, []);
 
+  const copyDiagnostics = useCallback(() => {
+    const { resolutionSelection: res, framerateRung } = useBroadcastSettingsStore.getState();
+    const json = diagRef.current.build({
+      surface: 'broadcaster',
+      broadcastId,
+      encoder: encoderInfo,
+      resolutionSelection: res,
+      framerateRung,
+    });
+    void navigator.clipboard?.writeText(json).then(() => {
+      setStatsCopied(true);
+      setTimeout(() => setStatsCopied(false), 1800);
+    });
+  }, [broadcastId, encoderInfo]);
+
+  useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
+
   const running = status === 'connecting' || status === 'broadcasting' || status === 'stopping';
   const onStage = sourceStream != null;
 
@@ -267,6 +299,9 @@ export function BroadcasterScreen() {
                 {encoderInfo.width}×{encoderInfo.height} @ {fmt(encoderInfo.framerate, 0)}
               </span>
             )}
+            <IconButton label={showStats ? 'Hide stats' : 'Show stats'} onClick={() => setShowStats((s) => !s)}>
+              <StatsIcon />
+            </IconButton>
             <IconButton label="Settings" onClick={() => setSettingsOpen((o) => !o)}>
               <GearIcon />
             </IconButton>
@@ -275,6 +310,20 @@ export function BroadcasterScreen() {
             </IconButton>
           </div>
         </div>
+
+        {showStats && (
+          <BroadcasterStatsOverlay
+            stats={stats}
+            encoderInfo={encoderInfo}
+            bitrateBps={(() => {
+              const bytesRate = diagRef.current.rate((s) => s.bytesSent);
+              return bytesRate == null ? null : bytesRate * 8;
+            })()}
+            onClose={() => setShowStats(false)}
+            onCopy={copyDiagnostics}
+            copied={statsCopied}
+          />
+        )}
 
         {copied && <div className={styles.toast}>Join link copied</div>}
         {settingsPanel}

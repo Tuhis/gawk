@@ -40,6 +40,12 @@ type Config struct {
 	// stream is cancelled and the subscriber recovers at the next keyframe.
 	KeyframeWriteTimeout time.Duration
 
+	// MetricsAddr is the TCP listen address of the plain-HTTP ops endpoint
+	// (/metrics, /healthz, /statusz). Empty disables it. This is separate from
+	// Addr because the WebTransport server is HTTP/3-over-UDP only — Prometheus
+	// (and curl) need a TCP listener. Never expose this port publicly.
+	MetricsAddr string
+
 	// Suppresses the INFO "session started"/"session ended" logs for /echo
 	// sessions from loopback (the k8s exec probe hitting 127.0.0.1, which
 	// otherwise logs on every startup/liveness/readiness probe forever).
@@ -103,6 +109,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"maximum bytes for a single reliable keyframe stream (default 8 MiB)")
 	keyframeWriteTimeout := fs.String("keyframe-write-timeout", env("GAWK_KEYFRAME_WRITE_TIMEOUT", "1s"),
 		"how long a keyframe write to one subscriber may block before the stream is cancelled")
+	// "off" (not just "") disables, because an empty env var reads as unset
+	// and would silently fall back to the default instead of disabling.
+	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
+		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -165,6 +175,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if err != nil || kfWriteTimeout <= 0 {
 		return Config{}, fmt.Errorf("invalid keyframe-write-timeout %q: want a positive duration", *keyframeWriteTimeout)
 	}
+	mAddr := strings.TrimSpace(*metricsAddr)
+	if strings.EqualFold(mAddr, "off") {
+		mAddr = ""
+	}
 
 	return Config{
 		Addr:           *addr,
@@ -187,6 +201,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 		MaxKeyframeBytes:     kfBytes,
 		KeyframeWriteTimeout: kfWriteTimeout,
+
+		MetricsAddr: mAddr,
 
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,

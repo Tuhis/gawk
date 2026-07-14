@@ -29,6 +29,21 @@ service:
   # e.g. metallb.universe.tf/address-pool: default
   annotations: {}
 
+# R9 observability (docs/13): a plain-TCP ops endpoint serving /metrics
+# (Prometheus), /healthz and /statusz. Exposed ONLY through a ClusterIP
+# Service — never through the public LoadBalancer above. The ServiceMonitor
+# needs the prometheus-operator CRDs (e.g. kube-prometheus-stack); its
+# labels must match your Prometheus's serviceMonitorSelector (for
+# kube-prometheus-stack that is typically {release: <helm release name>}).
+metrics:
+  enabled: true
+  port: 2112
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 15s
+    scrapeTimeout: 10s
+
 certificate:
   # cert-manager Certificate for the relay's public name. The server's
   # tlsutil.Reloader picks up renewals on the fly — no pod restart needed.

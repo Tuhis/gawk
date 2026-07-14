@@ -16,6 +16,7 @@ import { FallbackController } from '../media/fallback';
 import { FramePreprocessor } from '../media/preprocess';
 import type { CaptureConfig } from '../media/types';
 import { connectWebTransport, DatagramSender, type ConnectOptions } from './connection';
+import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import { packetizeDecoderConfig, packetizeFrame, packetizeStreamKeyframe } from './packetizer';
 import { parseBroadcastAnnounce } from './wire';
 
@@ -30,9 +31,20 @@ export interface BroadcastStats {
   // R8: keyframes travel over reliable uni streams, deltas over datagrams.
   keyframeStreamsSent: number;
   keyframeStreamsFailed: number;
+  keyframeBytesSent: number;
   encoderQueueDepth: number;
   encoderFps: number;
   lastEncodeLatencyMs: number;
+  // R9 funnel rates (docs/13 D5): capture → post-gate → encoded → sent.
+  // A rate gap between two adjacent stages localizes the bottleneck to that
+  // stage. captureFps counts frames delivered by the capture path *before*
+  // the fps gate; sentFps counts frames whose bytes were actually handed to
+  // the transport without error (the "actually sent framerate").
+  captureFps: number;
+  sentFps: number;
+  // R9 connection health for this leg (broadcaster→relay); null when the
+  // browser doesn't implement WebTransport.getStats().
+  connection: TransportConnectionStats | null;
   // R4 automatic-fallback observability (docs/09). autoRung is the currently
   // applied ladder rung in auto mode, null in explicit mode. encoderPressure
   // is the explicit-mode passive warning: the encoder can't keep up but the
@@ -54,9 +66,13 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   configsSent: 0,
   keyframeStreamsSent: 0,
   keyframeStreamsFailed: 0,
+  keyframeBytesSent: 0,
   encoderQueueDepth: 0,
   encoderFps: 0,
   lastEncodeLatencyMs: 0,
+  captureFps: 0,
+  sentFps: 0,
+  connection: null,
   autoRung: null,
   autoAtFloor: false,
   autoStepDowns: 0,
@@ -139,6 +155,9 @@ export class BroadcastPipeline {
   private stats: BroadcastStats = { ...EMPTY_BROADCAST_STATS };
   private lastStatsAt = 0;
   private encodedSinceStats = 0;
+  private capturedSinceStats = 0;
+  private sentSinceStats = 0;
+  private connSampler: ConnectionStatsSampler | null = null;
   private statsTimer: number | null = null;
 
   constructor(
@@ -175,6 +194,7 @@ export class BroadcastPipeline {
       throw new BroadcastStartError('connect', e);
     }
     this.sender = new DatagramSender(this.wt);
+    this.connSampler = new ConnectionStatsSampler(this.wt);
     void this.wt.closed
       .then(() => this.handleSessionGone(null))
       .catch((e) => this.handleSessionGone(e instanceof Error ? e : new Error(String(e))));
@@ -311,6 +331,8 @@ export class BroadcastPipeline {
         frame.close();
         return;
       }
+      // Funnel stage 1 (R9): frames the capture path delivered, pre-gate.
+      this.capturedSinceStats++;
 
       // Auto mode resolves against a per-source effective ladder; the source
       // (captured) dimensions determine which rungs actually shrink the
@@ -550,6 +572,8 @@ export class BroadcastPipeline {
       .then(() => {
         this.stats.datagramsSent += datagrams.length;
         this.stats.bytesSent += bytes;
+        // Funnel stage 4 (R9): the whole frame actually left, without error.
+        this.sentSinceStats++;
       })
       .catch((e) => {
         if (!this.stopping) this.fail(e instanceof Error ? e : new Error(String(e)));
@@ -570,6 +594,8 @@ export class BroadcastPipeline {
       await writer.close();
       this.stats.keyframeStreamsSent++;
       this.stats.bytesSent += msg.length;
+      this.stats.keyframeBytesSent += msg.length;
+      this.sentSinceStats++;
     } catch (e) {
       if (!this.stopping) {
         this.stats.keyframeStreamsFailed++;
@@ -612,11 +638,20 @@ export class BroadcastPipeline {
   private publishStats(): void {
     const now = this.now();
     const dt = (now - this.lastStatsAt) / 1000;
-    if (dt > 0) this.stats.encoderFps = this.encodedSinceStats / dt;
+    if (dt > 0) {
+      this.stats.encoderFps = this.encodedSinceStats / dt;
+      this.stats.captureFps = this.capturedSinceStats / dt;
+      this.stats.sentFps = this.sentSinceStats / dt;
+    }
     this.encodedSinceStats = 0;
+    this.capturedSinceStats = 0;
+    this.sentSinceStats = 0;
     this.lastStatsAt = now;
     this.stats.fpsGateDropped = this.preprocessor.getStats().gateDropped;
     this.stats.autoRung = this.currentAutoRung();
+    // Async refresh; the latest completed sample rides this (or the next) tick.
+    this.connSampler?.tick();
+    this.stats.connection = this.connSampler?.latest() ?? null;
     this.cb.onStats({ ...this.stats });
   }
 

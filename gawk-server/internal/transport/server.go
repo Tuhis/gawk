@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -20,6 +19,8 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/wire"
 )
 
@@ -30,6 +31,9 @@ type Server struct {
 	log      *slog.Logger
 	wt       *webtransport.Server
 	limiter  *ipRateLimiter
+	// metrics carries the R9 connection-outcome counters; nil is safe (all
+	// methods are nil-receiver no-ops) so tests can run the server unwired.
+	metrics *metrics.ServerMetrics
 
 	// testHookPostUpgradeSubscribe runs between the session upgrade and the
 	// authoritative Subscribe, letting tests deterministically widen the
@@ -55,30 +59,28 @@ func (s *Server) rateLimited(r *http.Request) bool {
 	if s.limiter.Allow(r.RemoteAddr) {
 		return false
 	}
+	s.metrics.RateLimited()
 	s.log.Warn("connection rate limited",
 		"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "path", r.URL.Path)
 	return true
 }
 
 // New builds the server. getCert supplies the TLS certificate per handshake
-// (a tlsutil.Reloader in production, a fixed dev cert locally).
-func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), log *slog.Logger) *Server {
+// (a tlsutil.Reloader in production, a fixed dev cert locally). m carries the
+// connection-outcome counters and may be nil (tests).
+func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), log *slog.Logger, m *metrics.ServerMetrics) *Server {
 	var limiter *ipRateLimiter
 	if cfg.ConnRateLimit > 0 {
 		limiter = newIPRateLimiter(cfg.ConnRateLimit, cfg.ConnBurstLimit)
 	}
-	s := &Server{cfg: cfg, registry: r, log: log, limiter: limiter}
+	s := &Server{cfg: cfg, registry: r, log: log, limiter: limiter, metrics: m}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("GET /statusz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(s.registry.Stats()); err != nil {
-			log.Warn("statusz encode failed", "err", err)
-		}
-	})
+	// Same handler as the TCP ops endpoint (single definition; see ops).
+	mux.HandleFunc("GET /statusz", ops.StatuszHandler(r, log))
 	mux.HandleFunc("CONNECT /echo", s.handleEcho)
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)
 	mux.HandleFunc("CONNECT /publish/{id}", s.handlePublish)
@@ -130,6 +132,7 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 			// webtransport-go; log it so blocked cross-origin dials are
 			// visible (with the offending origin + remote) rather than a
 			// mystery to operators.
+			s.metrics.OriginRejected()
 			s.log.Warn("origin rejected", "origin", origin, "remote", r.RemoteAddr, "path", r.URL.Path)
 			return false
 		}
@@ -177,6 +180,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	if s.cfg.PublishSecret != "" &&
 		subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("secret")), []byte(s.cfg.PublishSecret)) != 1 {
+		s.metrics.Connection("publish", metrics.OutcomeUnauthorized)
 		s.log.Warn("publish unauthorized: invalid or missing secret",
 			"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
 		w.WriteHeader(http.StatusUnauthorized)
@@ -195,13 +199,16 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("publish reclaim rejected",
 				"id", id, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 			if errors.Is(err, hub.ErrNotFound) {
+				s.metrics.Connection("publish", metrics.OutcomeNotFound)
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 			if errors.Is(err, hub.ErrPublisherActive) {
+				s.metrics.Connection("publish", metrics.OutcomeConflict)
 				w.WriteHeader(http.StatusConflict)
 				return
 			}
+			s.metrics.Connection("publish", metrics.OutcomeError)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -209,6 +216,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		sess, err = s.wt.Upgrade(w, r)
 		if err != nil {
 			pub.Close() // Release on upgrade failure
+			s.metrics.Connection("publish", metrics.OutcomeUpgradeFailed)
 			s.log.Warn("publish upgrade failed", "err", err)
 			return
 		}
@@ -217,6 +225,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// clean HTTP 429 (a failed dial), mirroring the subscribe path;
 		// StartPublish below re-checks authoritatively after the upgrade.
 		if err := s.registry.CheckPublishNew(); err != nil {
+			s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
 			s.log.Warn("publish mint rejected",
 				"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -226,6 +235,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// Mint path: upgrade first
 		sess, err = s.wt.Upgrade(w, r)
 		if err != nil {
+			s.metrics.Connection("publish", metrics.OutcomeUpgradeFailed)
 			s.log.Warn("publish upgrade failed", "err", err)
 			return
 		}
@@ -234,8 +244,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.log.Warn("failed to start publish session after upgrade", "err", err)
 			if errors.Is(err, hub.ErrMaxBroadcasts) {
+				s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
 				sess.CloseWithError(429, "max concurrent broadcasts reached")
 			} else {
+				s.metrics.Connection("publish", metrics.OutcomeError)
 				sess.CloseWithError(500, "failed to start publish session")
 			}
 			return
@@ -246,29 +258,34 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// Send BroadcastAnnounce on a server-initiated uni stream
 	stream, err := sess.OpenUniStream()
 	if err != nil {
+		s.metrics.Connection("publish", metrics.OutcomeError)
 		s.log.Warn("failed to open uni stream for broadcast announce", "err", err)
 		sess.CloseWithError(500, "failed to open announce stream")
 		return
 	}
 	announceBytes, err := wire.AppendBroadcastAnnounce(nil, id)
 	if err != nil {
+		s.metrics.Connection("publish", metrics.OutcomeError)
 		s.log.Warn("failed to build broadcast announce bytes", "err", err)
 		sess.CloseWithError(500, "failed to build announce")
 		return
 	}
 	_, err = stream.Write(announceBytes)
 	if err != nil {
+		s.metrics.Connection("publish", metrics.OutcomeError)
 		s.log.Warn("failed to write broadcast announce to uni stream", "err", err)
 		sess.CloseWithError(500, "failed to write announce")
 		return
 	}
 	err = stream.Close()
 	if err != nil {
+		s.metrics.Connection("publish", metrics.OutcomeError)
 		s.log.Warn("failed to close uni stream for broadcast announce", "err", err)
 		sess.CloseWithError(500, "failed to close announce stream")
 		return
 	}
 
+	s.metrics.Connection("publish", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
 	log.Info("publisher session started")
 
@@ -334,6 +351,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	id := r.PathValue("id")
 	if id == "" {
+		s.metrics.Connection("subscribe", metrics.OutcomeNotFound)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -342,19 +360,23 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("subscribe rejected pre-upgrade",
 			"id", id, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 		if errors.Is(err, hub.ErrNotFound) {
+			s.metrics.Connection("subscribe", metrics.OutcomeNotFound)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		if errors.Is(err, hub.ErrFull) || errors.Is(err, hub.ErrTotalSubscribers) {
+			s.metrics.Connection("subscribe", metrics.OutcomeLimitRejected)
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
+		s.metrics.Connection("subscribe", metrics.OutcomeError)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
+		s.metrics.Connection("subscribe", metrics.OutcomeUpgradeFailed)
 		s.log.Warn("subscribe upgrade failed", "err", err)
 		return
 	}
@@ -370,9 +392,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			// The broadcast was GC'd between the pre-upgrade check and now:
 			// send the terminal code so the viewer shows "broadcast ended"
 			// instead of burning its reconnect budget against a 404.
+			s.metrics.Connection("subscribe", metrics.OutcomeNotFound)
 			sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
 			return
 		}
+		s.metrics.Connection("subscribe", metrics.OutcomeLimitRejected)
 		if errors.Is(err, hub.ErrTotalSubscribers) {
 			sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "total subscriber limit reached")
 			return
@@ -382,6 +406,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sub.Close()
 
+	s.metrics.Connection("subscribe", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)
 	log.Info("subscriber session started")
 	for {
@@ -415,10 +440,12 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
+		s.metrics.Connection("echo", metrics.OutcomeUpgradeFailed)
 		s.log.Warn("echo upgrade failed", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	s.metrics.Connection("echo", metrics.OutcomeAccepted)
 	// The k8s startup/liveness/readiness probes exec gawk-echo against
 	// 127.0.0.1 on a tight period, forever; quiet that specific traffic
 	// while still logging real (off-pod) echo diagnostic use normally.

@@ -8,6 +8,8 @@
 
 export interface RenderSink {
   draw(frame: VideoFrame): void;
+  // Cumulative frames drawn (R9 M6): feeds the viewer funnel's renderedFps.
+  drawnFrames(): number;
 }
 
 // Draws to an OffscreenCanvas transferred once from the main thread. The
@@ -16,6 +18,7 @@ export interface RenderSink {
 export class OffscreenCanvasRenderSink implements RenderSink {
   private canvas: OffscreenCanvas;
   private ctx: OffscreenCanvasRenderingContext2D | null;
+  private drawn = 0;
 
   constructor(canvas: OffscreenCanvas) {
     this.canvas = canvas;
@@ -31,7 +34,12 @@ export class OffscreenCanvasRenderSink implements RenderSink {
         canvas.height = frame.displayHeight;
       }
       ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      this.drawn++;
     }
     frame.close();
+  }
+
+  drawnFrames(): number {
+    return this.drawn;
   }
 }

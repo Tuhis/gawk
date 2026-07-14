@@ -1,0 +1,24 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+# Requires the prometheus-operator CRDs. With kube-prometheus-stack, set
+# metrics.serviceMonitor.labels to match its serviceMonitorSelector
+# (typically {release: <its helm release name>}).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gawk-server.fullname" . }}
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "gawk-server.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}
