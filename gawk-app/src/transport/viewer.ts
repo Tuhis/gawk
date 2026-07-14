@@ -81,6 +81,7 @@ export class ViewerPipeline {
   private pendingConfig: DecoderConfigMessage | null = null;
   private preferSoftware = false;
   private lastConfigMessage: DecoderConfigMessage | null = null;
+  private pendingDecodes = 0;
 
   private broadcastId: string;
 
@@ -191,7 +192,7 @@ export class ViewerPipeline {
     // Decoder backpressure: if the decode queue is deep, stop feeding it and
     // resync at the next keyframe so the viewer catches up to live.
     const dec = this.decoder;
-    if (dec && dec.queueSize > getMaxDecoderQueueSize()) {
+    if (dec && (dec.queueSize + this.pendingDecodes) > getMaxDecoderQueueSize()) {
       this.reorder.requestResync();
     }
     this.reorder.tick();
@@ -257,6 +258,14 @@ export class ViewerPipeline {
   private feedDecoder(keyframe: boolean, timestampUs: bigint, data: Uint8Array): void {
     const dec = this.decoder;
     if (!dec || this.stopping) return;
+
+    const totalQueueSize = this.pendingDecodes + dec.queueSize;
+    if (totalQueueSize > getMaxDecoderQueueSize()) {
+      if (this.reorder) this.reorder.requestResync();
+      // Drop this frame unless it is a keyframe (we need keyframes to recover)
+      // Actually, viewer-level waitingForKeyframe will also drop deltas if true.
+      this.waitingForKeyframe = true;
+    }
 
     if (this.pendingConfig) {
       const config = this.pendingConfig;
@@ -330,7 +339,9 @@ export class ViewerPipeline {
       timestamp: Number(timestampUs),
       data,
     });
+    this.pendingDecodes++;
     this.chainDecoderOp(() => {
+      this.pendingDecodes--;
       if (!this.stopping) dec.decode(chunk);
     });
   }
@@ -367,7 +378,7 @@ export class ViewerPipeline {
       framesDroppedIncomplete: reasm?.framesDroppedIncomplete ?? 0,
       framesDroppedLate: reasm?.framesDroppedLate ?? 0,
       decodedFrames: this.decodedFrames,
-      decoderQueueDepth: this.decoder?.queueSize ?? 0,
+      decoderQueueDepth: (this.decoder?.queueSize ?? 0) + this.pendingDecodes,
       decoderFps,
       configsApplied: this.configsApplied,
       framesDiscardedAwaitingKey: this.framesDiscardedAwaitingKey,
