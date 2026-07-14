@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.14.0...gawk-app-v0.15.0) (2026-07-14)
+
+
+### Features
+
+* observability & metrics — Prometheus ops endpoint + client funnel stats (R9, M1-M7) ([43a1035](https://github.com/Tuhis/gawk/commit/43a1035318c9ac1ce8c7de976ebff205dea4d383))
+* offload the viewer pipeline to a Web Worker (R8 S6) ([336d9e0](https://github.com/Tuhis/gawk/commit/336d9e0ab497ccfee451fcc8a73fe8a4b727fe94))
+
+
+### Bug Fixes
+
+* **viewer:** track pending decodes to enforce queue size limit properly ([3e1069c](https://github.com/Tuhis/gawk/commit/3e1069c80b1a2cee2033e993bf6fcf45d73b67fb))
+
 ## [0.14.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.13.1...gawk-app-v0.14.0) (2026-07-14)
 
 

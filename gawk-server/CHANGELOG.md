@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.13.0...gawk-server-v0.14.0) (2026-07-14)
+
+
+### Features
+
+* observability & metrics — Prometheus ops endpoint + client funnel stats (R9, M1-M7) ([43a1035](https://github.com/Tuhis/gawk/commit/43a1035318c9ac1ce8c7de976ebff205dea4d383))
+
 ## [0.13.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.12.0...gawk-server-v0.13.0) (2026-07-14)
 
 
