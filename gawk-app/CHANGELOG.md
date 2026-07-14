@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.17.1...gawk-app-v0.17.2) (2026-07-14)
+
+
+### Bug Fixes
+
+* restore restart recovery severed by R8 + wrap-aware frameId arithmetic ([7cd8104](https://github.com/Tuhis/gawk/commit/7cd810473427c1b8f0eae40385f42d1c73892de1))
+
 ## [0.17.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.17.0...gawk-app-v0.17.1) (2026-07-14)
 
 
