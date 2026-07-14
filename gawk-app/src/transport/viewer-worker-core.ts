@@ -13,6 +13,7 @@ import type { RenderSink } from './render-sink';
 import { ViewerPipeline } from './viewer';
 import type { ViewerStats } from './viewer';
 import { ViewerSession, type ViewerSessionCallbacks } from './viewer-session';
+import { LocalViewerTransport, type ViewerTransportFactory } from './viewer-transport';
 
 // Main thread → worker.
 export type ViewerWorkerCommand =
@@ -41,6 +42,10 @@ export type ViewerWorkerOutbound = ViewerWorkerEvent | ViewerWorkerBoot;
 export interface WorkerHost {
   post(event: ViewerWorkerEvent): void;
   renderSink: RenderSink;
+  // R10 P3: how each pipeline attempt gets its transport. The shell supplies
+  // a nested-transport-worker factory where nested workers exist; omitted, the
+  // pipeline runs its transport in-process (this worker) as before.
+  transportFactory?: ViewerTransportFactory;
 }
 
 // Injectable for tests; the default wires a real ViewerSession whose pipeline
@@ -54,8 +59,18 @@ export type ViewerSessionFactory = (
   renderSink: RenderSink,
 ) => ViewerSessionLike;
 
-const defaultSessionFactory: ViewerSessionFactory = (url, id, opts, cbs, sink) =>
-  new ViewerSession(url, id, opts, cbs, (u, i, o, c) => new ViewerPipeline(u, i, o, c, sink));
+const defaultSessionFactory = (host: WorkerHost): ViewerSessionFactory => {
+  const transportFactory =
+    host.transportFactory ?? ((url, opts) => new LocalViewerTransport(url, opts));
+  return (url, id, opts, cbs, sink) =>
+    new ViewerSession(
+      url,
+      id,
+      opts,
+      cbs,
+      (u, i, o, c) => new ViewerPipeline(u, i, o, c, sink, transportFactory),
+    );
+};
 
 export class ViewerWorkerCore {
   private host: WorkerHost;
@@ -66,9 +81,9 @@ export class ViewerWorkerCore {
   // remount) are ignored instead of clobbering the live session's state.
   private generation = 0;
 
-  constructor(host: WorkerHost, createSession: ViewerSessionFactory = defaultSessionFactory) {
+  constructor(host: WorkerHost, createSession?: ViewerSessionFactory) {
     this.host = host;
-    this.createSession = createSession;
+    this.createSession = createSession ?? defaultSessionFactory(host);
   }
 
   start(params: { serverUrl: string; broadcastId: string; connectOpts: ConnectOptions }): void {

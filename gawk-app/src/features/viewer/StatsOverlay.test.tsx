@@ -33,6 +33,8 @@ function fullStats(): ViewerStats {
     receivedFps: 30.2,
     renderedFps: 29.5,
     renderer: 'webgl',
+    pipelineContext: 'worker',
+    transport: 'worker',
     timeSinceLastFrameMs: 33,
     lastKeyframeAgeMs: 210,
     connection: {
@@ -68,6 +70,8 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Received fps').nextSibling?.textContent).toBe('30.2');
     expect(screen.getByText('Rendered fps').nextSibling?.textContent).toBe('29.5');
     expect(screen.getByText('Renderer').nextSibling?.textContent).toBe('WebGL');
+    expect(screen.getByText('Pipeline').nextSibling?.textContent).toBe('Worker');
+    expect(screen.getByText('Transport').nextSibling?.textContent).toBe('Worker');
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('24.5 ms');
     expect(screen.getByText('Bitrate (recv)').nextSibling?.textContent).toBe('4.2 Mbps');
     expect(screen.getByText('Keyframe age').nextSibling?.textContent).toBe('210 ms');

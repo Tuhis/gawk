@@ -209,6 +209,10 @@ describe('ViewerPipeline', () => {
       // and no sink means no renderer kind either (R10).
       expect(last!.renderedFps).toBeNull();
       expect(last!.renderer).toBeNull();
+      // These tests stub `window`, so the pipeline detects the main-thread
+      // context, with the default in-process transport (R10 P3).
+      expect(last!.pipelineContext).toBe('main-thread');
+      expect(last!.transport).toBe('in-process');
       // The fake WebTransport has no getStats → null, never a throw.
       expect(last!.connection).toBeNull();
 

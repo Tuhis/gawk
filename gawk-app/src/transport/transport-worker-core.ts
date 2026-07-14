@@ -1,0 +1,118 @@
+// R10 P3: host-agnostic core of the dedicated transport worker.
+// `transport.worker.ts` is a thin `onmessage` shell around this; the core owns
+// one WebTransport session (via LocalViewerTransport — the same connection
+// code the in-process path runs) and marshals its callbacks into postMessage
+// events with transferred buffers, so the decode/render worker receives
+// datagrams and keyframes without the transport thread ever doing decode or
+// render work. DOM-free and unit-testable with a fake host + fake transport.
+
+import type { ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { TransportConnectionStats } from './net-stats';
+import type { DecoderConfigMessage } from './wire';
+import {
+  LocalViewerTransport,
+  type TransportClosedInfo,
+  type ViewerTransportFactory,
+} from './viewer-transport';
+
+// Decode worker → transport worker.
+export type TransportWorkerCommand =
+  | { type: 'connect'; url: string; connectOpts: ConnectOptions }
+  | { type: 'close' };
+
+// Transport worker → decode worker. datagram/keyframe buffers are transferred
+// (zero-copy), never cloned.
+export type TransportWorkerEvent =
+  | { type: 'connected' }
+  | { type: 'connect-error'; message: string }
+  | { type: 'datagram'; data: Uint8Array }
+  | {
+      type: 'keyframe';
+      frameId: number;
+      timestampUs: bigint;
+      config: DecoderConfigMessage | null;
+      data: Uint8Array;
+    }
+  | { type: 'closed'; closeCode?: number; reason?: string; message: string }
+  | { type: 'connStats'; stats: TransportConnectionStats | null };
+
+export interface TransportWorkerHost {
+  post(event: TransportWorkerEvent, transfer?: Transferable[]): void;
+}
+
+// The proxy can't pull samples across the boundary, so the core pushes them
+// at the stats cadence (matches the pipeline's 500 ms publishStats tick).
+export const CONN_STATS_INTERVAL_MS = 500;
+
+export class TransportWorkerCore {
+  private host: TransportWorkerHost;
+  private createTransport: ViewerTransportFactory;
+  private transport: ReturnType<ViewerTransportFactory> | null = null;
+  private statsTimer: number | null = null;
+
+  constructor(
+    host: TransportWorkerHost,
+    createTransport: ViewerTransportFactory = (url, opts) => new LocalViewerTransport(url, opts),
+  ) {
+    this.host = host;
+    this.createTransport = createTransport;
+  }
+
+  connect(url: string, connectOpts: ConnectOptions): void {
+    const transport = this.createTransport(url, connectOpts);
+    this.transport = transport;
+    transport
+      .connect({
+        onDatagram: (data) => this.host.post({ type: 'datagram', data }, [data.buffer]),
+        onKeyframe: (kf) =>
+          this.host.post(
+            {
+              type: 'keyframe',
+              frameId: kf.frameId,
+              timestampUs: kf.timestampUs,
+              config: kf.config,
+              data: kf.data,
+            },
+            keyframeTransferables(kf),
+          ),
+        onClosed: (info: TransportClosedInfo) => {
+          this.stopStats();
+          this.host.post({ type: 'closed', ...info });
+        },
+      })
+      .then(() => {
+        this.host.post({ type: 'connected' });
+        this.statsTimer = setInterval(() => {
+          this.host.post({ type: 'connStats', stats: transport.sampleConnectionStats() });
+        }, CONN_STATS_INTERVAL_MS) as unknown as number;
+      })
+      .catch((e) => {
+        this.host.post({
+          type: 'connect-error',
+          message: e instanceof Error ? e.message : String(e),
+        });
+      });
+  }
+
+  close(): void {
+    this.stopStats();
+    this.transport?.close();
+    this.transport = null;
+  }
+
+  private stopStats(): void {
+    if (this.statsTimer !== null) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+  }
+}
+
+// The keyframe payload and its embedded config extradata are usually views of
+// one underlying buffer (readOneKeyframe slices a single read) — dedupe so the
+// transfer list never names a buffer twice.
+export function keyframeTransferables(kf: KeyframeStreamFrame): Transferable[] {
+  const buffers = new Set<ArrayBuffer>([kf.data.buffer as ArrayBuffer]);
+  if (kf.config) buffers.add(kf.config.extradata.buffer as ArrayBuffer);
+  return [...buffers];
+}

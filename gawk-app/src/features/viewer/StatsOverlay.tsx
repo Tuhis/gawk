@@ -27,6 +27,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         ['Codec', codec ?? '—'],
         ['Decode mode', stats?.isHardwareAccelerated === true ? 'Hardware' : stats?.isHardwareAccelerated === false ? 'Software' : '—'],
         ['Renderer', stats?.renderer === 'webgl' ? 'WebGL' : stats?.renderer === '2d' ? 'Canvas 2D' : '—'],
+        ['Pipeline', stats?.pipelineContext === 'worker' ? 'Worker' : stats?.pipelineContext === 'main-thread' ? 'Main thread' : '—'],
         ['Received fps', fmt(stats?.receivedFps ?? NaN)],
         ['Decoder fps', fmt(stats?.decoderFps ?? NaN)],
         ['Rendered fps', fmtOr(stats?.renderedFps)],
@@ -52,6 +53,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
     {
       title: 'Network',
       rows: [
+        ['Transport', stats?.transport === 'worker' ? 'Worker' : stats?.transport === 'in-process' ? 'In-process' : '—'],
         ['RTT', conn?.rttMs == null ? '—' : `${fmt(conn.rttMs)} ms`],
         ['RTT variation', conn?.rttVarMs == null ? '—' : `${fmt(conn.rttVarMs)} ms`],
         ['Packets lost', fmtInt(conn?.packetsLost)],

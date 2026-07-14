@@ -262,16 +262,22 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   (e.g. no worker WebCodecs) falls back to the main-thread pipeline with the
   canvas still attached. ([docs/12](docs/12-worker-and-reliable-keyframes.md))
 - **Firefox's 2D-canvas `drawImage(VideoFrame)` is a synchronous CPU
-  conversion — and on the shared viewer worker thread it starves everything
-  else (R10).** One thread runs the datagram reader, decoder feeding *and*
-  rendering; a slow per-frame draw overflows the browser's small incoming-
-  datagram queue (silent drops → "Dropped (incomplete)") and backs up decode
-  (decoded fps < received fps). Hence the worker renders through
-  `createRenderSink()`: a **WebGL** textured-quad sink (2D fallback) wrapped
-  in a **coalescing** sink that draws at most once per rAF tick,
-  latest-frame-wins. Consequence: "Rendered fps" reads ≈min(decoded fps,
-  display Hz) — rendered *below* decoded under load is coalescing working,
-  not frame loss. The overlay's "Renderer" row shows which sink is live.
+  conversion — and on a shared viewer worker thread it starves everything
+  else (R10).** When one thread runs the datagram reader, decoder feeding
+  *and* rendering, a slow per-frame draw overflows the browser's small
+  incoming-datagram queue (silent drops → "Dropped (incomplete)") and backs
+  up decode (decoded fps < received fps). Hence two structural fixes: the
+  worker renders through `createRenderSink()` — a **WebGL** textured-quad
+  sink (2D fallback) wrapped in a **coalescing** sink that draws at most
+  once per rAF tick, latest-frame-wins — and the WebTransport read loops run
+  in a **nested transport worker** (`transport.worker.ts`, one per pipeline
+  attempt behind the `ViewerTransport` seam) posting transferable buffers,
+  so decode/render pressure can't reach the datagram queue at all.
+  Consequence: "Rendered fps" reads ≈min(decoded fps, display Hz) — rendered
+  *below* decoded under load is coalescing working, not frame loss. Every
+  fallback here degrades silently, so the overlay shows the actual placement:
+  "Renderer" / "Pipeline" / "Transport" read **WebGL / Worker / Worker** on
+  the fast path (— / Main thread / In-process on the no-worker fallback).
   ([docs/14](docs/14-viewer-render-performance.md))
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.

@@ -114,8 +114,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   M1–M7 implemented 2026-07-14, manual verify + M8 Grafana pending),
   `docs/14-viewer-render-performance.md` for R10 (viewer render performance:
   Firefox drop/decode-gap diagnosis, rAF-coalesced latest-frame-wins
-  rendering + WebGL render sink behind the R8 `RenderSink` seam, P1–P4
-  chunks; P1–P2 implemented 2026-07-14, Firefox verify pending).
+  rendering + WebGL render sink behind the R8 `RenderSink` seam, nested
+  transport-worker split behind a `ViewerTransport` seam, decoder queue
+  5→10, P1–P4 chunks; P1–P3 + queue bump implemented 2026-07-14, Firefox
+  verify pending).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -250,23 +252,35 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    sample window) as the remote-troubleshooting story. The
    symptom→signature **bottleneck playbook** lives in docs/13. Zero
    wire-format changes.
-14. Viewer render performance — **P1–P2 implemented 2026-07-14; Firefox
-   before/after verify pending** (R10, `docs/14-viewer-render-performance.md`;
-   UI/pipeline only, zero server/wire changes). Diagnosis: the R8 worker runs
-   transport + decode + render on one thread, and Firefox's 2D-canvas
-   `drawImage(VideoFrame)` does a synchronous CPU conversion per frame —
-   starving the datagram reader (silent datagram drops → "Dropped
-   (incomplete)") and the decoder (decoded fps < received fps) at once. Fixes
-   land behind the R8 `RenderSink` seam: **P1** a `CoalescingRenderSink`
-   (latest-frame-wins, ≤1 draw per worker-rAF tick, superseded frames closed
-   unseen — so "Rendered fps" now reads ≈min(decoded, display Hz) and lower
-   than decoded fps under load is *healthy*); **P2** a `WebGLRenderSink`
-   (textured quad, `texImage2D(VideoFrame)`; **chosen over `bitmaprenderer`**,
-   which adds per-frame `createImageBitmap` churn and may hit the same Gecko
-   software conversion) with the 2D sink as fallback via `createRenderSink()`,
-   plus a `renderer` stat ('webgl'/'2d'/null) in `ViewerStats` + overlay.
-   Main-thread fallback path untouched. P3 (transport worker split) and P4
-   (decode-load/backpressure tuning) deferred pending Firefox measurements.
+14. Viewer render performance — **P1–P3 + decoder-queue bump implemented
+   2026-07-14; Firefox before/after verify pending** (R10,
+   `docs/14-viewer-render-performance.md`; UI/pipeline only, zero server/wire
+   changes). Diagnosis: the R8 worker ran transport + decode + render on one
+   thread, and Firefox's 2D-canvas `drawImage(VideoFrame)` does a synchronous
+   CPU conversion per frame — starving the datagram reader (silent datagram
+   drops → "Dropped (incomplete)") and the decoder (decoded fps < received
+   fps) at once. **P1** `CoalescingRenderSink` (latest-frame-wins, ≤1 draw per
+   worker-rAF tick, superseded frames closed unseen — so "Rendered fps" now
+   reads ≈min(decoded, display Hz) and lower than decoded fps under load is
+   *healthy*); **P2** `WebGLRenderSink` (textured quad,
+   `texImage2D(VideoFrame)`; **chosen over `bitmaprenderer`**, which adds
+   per-frame `createImageBitmap` churn and may hit the same Gecko software
+   conversion) with the 2D sink as fallback via `createRenderSink()`, plus
+   placement stats in `ViewerStats` + overlay — `renderer`
+   ('webgl'/'2d'/null), `pipelineContext` ('worker'/'main-thread', *detected*
+   via `window` absence), `transport` ('worker'/'in-process'/null); healthy
+   fast path reads WebGL/Worker/Worker. **P3**
+   transport/decode worker split: `ViewerPipeline` consumes a
+   `ViewerTransport` seam (`viewer-transport.ts`; `onClosed` is the single
+   session-end signal — the wt.closed race lives inside the transport);
+   the viewer worker spawns a **nested** `transport.worker.ts` (one per
+   pipeline attempt, graceful close then 250 ms reap) that runs the
+   WebTransport read loops via the same `LocalViewerTransport` and posts
+   transferable buffers, so decode/render pressure can't starve the
+   incoming-datagram queue; in-process transport remains for the main-thread
+   path and no-nested-worker fallback. **P4 partial**: decoder queue bound
+   raised 5→10 (`getMaxDecoderQueueSize`); the rest deferred pending Firefox
+   measurements.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

@@ -39,7 +39,11 @@ export function getMaxDecoderQueueSize(): number {
   if (config.maxDecoderQueueSize !== undefined) {
     return config.maxDecoderQueueSize;
   }
-  return 5;
+  // 10 (raised from 5, R10): a decoder that is briefly ~one burst behind now
+  // absorbs it instead of cycling overflow → drop-to-keyframe → GOP wait.
+  // Worst case this queues ~10 frames ≈ 330 ms at 30 fps before the resync
+  // policy kicks in — acceptable against a 500 ms GOP recovery.
+  return 10;
 }
 
 // "Debug build" per the product spec = running locally. Vite dev mode, or a

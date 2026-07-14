@@ -28,7 +28,7 @@ feature set exists).
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 | R9 | [Observability & metrics](#r9--observability--metrics) | 🚧 implemented 2026-07-14 (M1–M7); automated gates green, manual verify + M8 (Grafana) pending ([docs/13](docs/13-observability.md)) |
-| R10 | [Viewer render performance](#r10--viewer-render-performance) | 🚧 P1–P2 implemented 2026-07-14; Firefox before/after verify pending ([docs/14](docs/14-viewer-render-performance.md)) |
+| R10 | [Viewer render performance](#r10--viewer-render-performance) | 🚧 P1–P3 + decoder-queue bump implemented 2026-07-14; Firefox before/after verify pending ([docs/14](docs/14-viewer-render-performance.md)) |
 
 ---
 
@@ -487,14 +487,21 @@ live entirely behind the R8 `RenderSink` seam.
   `createImageBitmap` allocation + async hop and may hit the same software
   conversion in Gecko); 2D sink kept as fallback; active renderer exposed in
   stats/overlay.
-- **P3 (deferred)** — split transport into its own worker if drops persist.
-- **P4 (deferred)** — decode-load reduction / backpressure tuning if the
-  decode deficit persists (Firefox H.264 WebCodecs is often software).
+- **P3 — transport/decode worker split**: `ViewerPipeline` consumes a new
+  `ViewerTransport` seam; the viewer worker spawns a **nested** transport
+  worker (one per pipeline attempt) that runs the WebTransport read loops
+  and posts datagrams/keyframes as transferable buffers, so decode/render
+  pressure can never starve the browser's incoming-datagram queue. The same
+  `LocalViewerTransport` implementation serves the in-process fallbacks.
+- **P4 (partially pulled forward)** — decoder queue bound raised 5 → 10 (a
+  briefly-behind decoder absorbs the burst instead of cycling
+  drop-to-keyframe); the rest (decode-path confirmation, rung guidance)
+  deferred pending measurements (Firefox H.264 WebCodecs is often software).
 
 Zero server/wire/broadcaster changes; main-thread fallback path untouched.
 
-**Status**: P1–P2 implemented 2026-07-14; manual Firefox before/after
-verification pending — see
+**Status**: P1–P3 + decoder-queue bump implemented 2026-07-14; manual
+Firefox before/after verification pending — see
 [`docs/14-viewer-render-performance.md`](docs/14-viewer-render-performance.md).
 
 ---

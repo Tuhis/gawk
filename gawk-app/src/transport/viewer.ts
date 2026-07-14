@@ -4,13 +4,15 @@
 
 import { log } from '../lib/logger';
 import { Decoder, type DecodedFrame } from '../media/decoder';
+import type { ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { TransportConnectionStats } from './net-stats';
 import {
-  connectWebTransport,
-  readDatagrams,
-  readKeyframeStreams,
-  type ConnectOptions,
-} from './connection';
-import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
+  LocalViewerTransport,
+  type TransportClosedInfo,
+  type ViewerTransport,
+  type ViewerTransportFactory,
+  type ViewerTransportKind,
+} from './viewer-transport';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
@@ -44,6 +46,13 @@ export interface ViewerStats extends ReassemblerStats {
   // on the main-thread path. Note renderedFps is rAF-coalesced since R10 —
   // ≈min(decoded fps, display Hz); below decoded fps under load is healthy.
   renderer: RenderSinkKind | null;
+  // Where things actually run (R10, docs/14) — ground truth, not intent, so
+  // a silently-degraded fallback is visible in the overlay / diagnostics.
+  // pipelineContext: is this pipeline in the viewer worker or the main-thread
+  // fallback? transport: are the read loops in the nested transport worker or
+  // in-process next to decode?
+  pipelineContext: 'worker' | 'main-thread';
+  transport: ViewerTransportKind | null;
   // Time since the last complete frame arrived (stall detector) and since
   // the last keyframe (recovery bound: should hover at or under the GOP).
   timeSinceLastFrameMs: number | null;
@@ -71,14 +80,16 @@ export class ViewerPipeline {
   // path, where onDecodedFrame draws and the caller closes the frame.
   private renderSink: RenderSink | null;
 
-  private wt: WebTransport | null = null;
+  // Connection + read loops live behind the transport seam (R10 P3): local
+  // (in-process) by default, or proxied to a dedicated transport worker.
+  private transport: ViewerTransport | null = null;
+  private transportFactory: ViewerTransportFactory;
   private decoder: Decoder | null = null;
   private reassembler: Reassembler | null = null;
   // Merges reliable stream keyframes with lossy datagram deltas by frameId and
   // owns the freeze-on-gap / drop-to-keyframe ordering policy (R8, docs/12).
   private reorder: ReorderBuffer | null = null;
   private reorderTimer: number | null = null;
-  private abort = new AbortController();
   private stopping = false;
 
   // Decoder ops chain so configure completes before any decode and decodes
@@ -105,13 +116,16 @@ export class ViewerPipeline {
   private lastRenderedTotal = 0;
   private lastFrameReceivedAt: number | null = null;
   private lastKeyframeReceivedAt: number | null = null;
-  private connSampler: ConnectionStatsSampler | null = null;
   // The codec of the last applied config — for a clear "can't decode" message.
   private lastCodec: string | null = null;
   private pendingConfig: DecoderConfigMessage | null = null;
   private preferSoftware = false;
   private lastConfigMessage: DecoderConfigMessage | null = null;
   private pendingDecodes = 0;
+  // Detected, not configured: `window` exists only on the main thread, so
+  // this is ground truth about where the pipeline actually runs.
+  private pipelineContext: 'worker' | 'main-thread' =
+    typeof window === 'undefined' ? 'worker' : 'main-thread';
 
   private broadcastId: string;
 
@@ -121,19 +135,20 @@ export class ViewerPipeline {
     connectOpts: ConnectOptions,
     callbacks: ViewerCallbacks,
     renderSink: RenderSink | null = null,
+    transportFactory: ViewerTransportFactory = (url, opts) => new LocalViewerTransport(url, opts),
   ) {
     this.serverUrl = serverUrl;
     this.broadcastId = broadcastId;
     this.connectOpts = connectOpts;
     this.cb = callbacks;
     this.renderSink = renderSink;
+    this.transportFactory = transportFactory;
   }
 
   async start(): Promise<void> {
-    const url = new URL(`/subscribe/${this.broadcastId}`, this.serverUrl).toString();
-    this.wt = await connectWebTransport(url, this.connectOpts);
-    this.connSampler = new ConnectionStatsSampler(this.wt);
-
+    // Pipeline stages exist before the transport connects: the relay primes a
+    // joining viewer with the cached keyframe immediately, and that must land
+    // in the reorder buffer, not race the setup.
     this.decoder = new Decoder({
       onDecoded: (decoded) => this.handleDecoded(decoded),
       // A decoder error (unsupported codec, decode failure) is not recoverable
@@ -171,58 +186,47 @@ export class ViewerPipeline {
       },
     });
 
+    const url = new URL(`/subscribe/${this.broadcastId}`, this.serverUrl).toString();
+    const transport = this.transportFactory(url, this.connectOpts);
+    this.transport = transport;
+    try {
+      await transport.connect({
+        onDatagram: (dgram) => {
+          if (!this.stopping) this.reassembler?.push(dgram);
+        },
+        onKeyframe: (kf) => this.handleKeyframeStream(kf),
+        onClosed: (info) => this.handleClosed(info),
+      });
+    } catch (e) {
+      // Release what start() acquired: a never-connected failure is surfaced
+      // to the caller (ViewerSession treats it as fatal), not via onError.
+      const decoder = this.decoder;
+      this.decoder = null;
+      this.reassembler = null;
+      this.reorder = null;
+      this.transport = null;
+      transport.close();
+      if (decoder) void decoder.close();
+      throw e;
+    }
+
     this.lastStatsAt = performance.now();
     // Bare setInterval (not window.*) so the pipeline runs unchanged inside a
     // Web Worker (R8 S6), where `window` is undefined.
     this.statsTimer = setInterval(() => this.publishStats(), 500) as unknown as number;
     this.reorderTimer = setInterval(() => this.reorderTick(), REORDER_TICK_MS) as unknown as number;
+  }
 
-    void this.wt.closed
-      .then((closeInfo) => {
-        if (!this.stopping) {
-          const code = (closeInfo as any)?.closeCode;
-          const reason = (closeInfo as any)?.reason;
-          this.handleClose(code, reason);
-        }
-      })
-      .catch((err) => {
-        if (!this.stopping) {
-          const code = err?.closeCode;
-          const reason = err?.reason || err?.message;
-          this.handleClose(code, reason);
-        }
-      });
-
-    // Read loops run for the life of the session. Deltas arrive as datagrams;
-    // keyframes arrive as reliable unidirectional streams (R8). On a joining
-    // viewer the relay primes us with the last keyframe over a stream, so the
-    // first picture typically appears without waiting for the next keyframe.
-    const reassembler = this.reassembler;
-    const wt = this.wt;
-    void readDatagrams(wt, (dgram) => reassembler.push(dgram), this.abort.signal)
-      .then(() => this.handleReadLoopEnd(wt, null))
-      .catch((e) => this.handleReadLoopEnd(wt, e instanceof Error ? e : new Error(String(e))));
-
-    // Keyframe streams: failures here are not fatal to the session (the next
-    // keyframe recovers, and a real drop surfaces via the datagram loop /
-    // wt.closed), so they are logged, not propagated.
-    void readKeyframeStreams(
-      wt,
-      (kf) => {
-        if (this.stopping || !this.reorder) return;
-        this.keyframeStreamsReceived++;
-        this.lastFrameReceivedAt = performance.now();
-        this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
-        this.reorder.pushKeyframe({
-          frameId: kf.frameId,
-          timestampUs: kf.timestampUs,
-          config: kf.config,
-          data: kf.data,
-        });
-      },
-      this.abort.signal,
-    ).catch((e) => {
-      if (!this.stopping) log.warn('Keyframe stream loop ended:', e);
+  private handleKeyframeStream(kf: KeyframeStreamFrame): void {
+    if (this.stopping || !this.reorder) return;
+    this.keyframeStreamsReceived++;
+    this.lastFrameReceivedAt = performance.now();
+    this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
+    this.reorder.pushKeyframe({
+      frameId: kf.frameId,
+      timestampUs: kf.timestampUs,
+      config: kf.config,
+      data: kf.data,
     });
   }
 
@@ -237,35 +241,15 @@ export class ViewerPipeline {
     this.reorder.tick();
   }
 
-  // On a server close, the datagram read loop and wt.closed settle in
-  // unspecified, browser-dependent order — and only wt.closed carries the
-  // close code (4000 = broadcast ended, the one signal that must stop
-  // reconnecting). Give wt.closed a short window to settle before treating
-  // the read-loop end as an anonymous drop.
-  private async handleReadLoopEnd(wt: WebTransport, err: Error | null): Promise<void> {
+  // The transport reports the session end exactly once (the wt.closed vs
+  // read-loop settle-order race lives inside the transport impl — see
+  // LocalViewerTransport). Only the close code carries semantics: 4000 =
+  // broadcast ended, which ViewerSession treats as terminal.
+  private handleClosed(info: TransportClosedInfo): void {
     if (this.stopping) return;
-    const closeInfo = await Promise.race([
-      wt.closed.then(
-        (info) => info ?? {},
-        (e) => e ?? {},
-      ),
-      new Promise<null>((r) => setTimeout(() => r(null), 100)),
-    ]);
-    if (this.stopping) return; // the wt.closed handler acted first
-    if (closeInfo !== null) {
-      const info = closeInfo as { closeCode?: number; reason?: string; message?: string };
-      this.handleClose(info.closeCode, info.reason || info.message);
-      return;
-    }
-    this.fail(err ?? new Error('WebTransport session closed by server'));
-  }
-
-  private handleClose(closeCode?: number, reason?: string): void {
-    if (this.stopping) return;
-    const msg = reason ? `WebTransport session closed: ${reason}` : 'WebTransport session closed by server';
-    const err = new Error(msg) as any;
-    if (closeCode !== undefined) {
-      err.closeCode = closeCode;
+    const err = new Error(info.message) as Error & { closeCode?: number };
+    if (info.closeCode !== undefined) {
+      err.closeCode = info.closeCode;
     }
     this.fail(err);
   }
@@ -426,8 +410,6 @@ export class ViewerPipeline {
       renderedFps = dt > 0 ? (drawn - this.lastRenderedTotal) / dt : 0;
       this.lastRenderedTotal = drawn;
     }
-    this.connSampler?.tick();
-
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -450,9 +432,11 @@ export class ViewerPipeline {
       receivedFps,
       renderedFps,
       renderer: this.renderSink?.kind ?? null,
+      pipelineContext: this.pipelineContext,
+      transport: this.transport?.kind ?? null,
       timeSinceLastFrameMs: this.lastFrameReceivedAt === null ? null : now - this.lastFrameReceivedAt,
       lastKeyframeAgeMs: this.lastKeyframeReceivedAt === null ? null : now - this.lastKeyframeReceivedAt,
-      connection: this.connSampler?.latest() ?? null,
+      connection: this.transport?.sampleConnectionStats() ?? null,
     });
   }
 
@@ -521,19 +505,14 @@ export class ViewerPipeline {
       clearInterval(this.reorderTimer);
       this.reorderTimer = null;
     }
-    this.abort.abort();
+    this.transport?.close();
 
     if (this.decoder) await this.decoder.close();
-    try {
-      this.wt?.close();
-    } catch {
-      // already closed by the server — fine
-    }
 
     this.decoder = null;
     this.reassembler = null;
     this.reorder = null;
-    this.wt = null;
+    this.transport = null;
 
     this.cb.onEnded();
   }
