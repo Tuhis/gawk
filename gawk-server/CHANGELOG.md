@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.14.0...gawk-server-v0.14.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* cover real keyframe latency in reorder wait + evict zombie subscribers (R10 field findings) ([92e3ef9](https://github.com/Tuhis/gawk/commit/92e3ef99311560befe981f2fba531d8ac68d0bc4))
+
 ## [0.14.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.13.0...gawk-server-v0.14.0) (2026-07-14)
 
 
