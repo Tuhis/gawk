@@ -185,6 +185,33 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the datagram rate and viewer decode load. Manual browser verify pending —
    see `docs/08-resolution-framerate-picker.md` (GOP + fps default) and
    `docs/03-single-client-e2e.md` (freeze-on-gap decode policy).
+12. Worker offloading & reliable keyframes — **reliable-keyframe path done
+   (S1–S5 + S7 observability/docs); worker offload (S6) deferred; manual
+   browser verify pending** (R8, `docs/12-worker-and-reliable-keyframes.md`).
+   Keyframes now travel over **per-subscriber reliable WebTransport uni
+   streams** instead of datagrams — a lost UDP packet can no longer ruin a
+   (large, heavy-motion) keyframe. The relay uses **store-and-forward
+   fan-out** (`gawk-server/internal/hub`): it reads each keyframe stream fully
+   into a bounded buffer (`MaxKeyframeBytes`) *before* opening one uni stream
+   per subscriber, structurally decoupling the publisher from any slow
+   subscriber; a subscriber stalling past `KeyframeWriteTimeout` is
+   `CancelWrite`-ed and superseded by the newest keyframe (**≤1 in-flight per
+   subscriber**) — "drops over stalls" at stream granularity. **Only keyframes
+   are reliable; deltas stay on datagrams** (reliable deltas would reintroduce
+   head-of-line blocking). New wire message `TypeStreamFrame` (0x04, golden
+   vectors keep Go/TS byte-identical). The viewer merges stream keyframes with
+   datagram deltas in a pure, bounded **reorder buffer**
+   (`transport/reorder-buffer.ts`, **no fixed playout offset** — live-edge
+   philosophy preserved, constant-offset playout left to R5) that centralizes
+   the freeze-on-gap policy formerly in `viewer.ts`. New relay knobs
+   (`-max-keyframe-bytes`, `-keyframe-write-timeout` + `GAWK_*` + Helm) are
+   plumbed through `registryOptions` per the R2 finding. The preliminary
+   sketch's fixed 200 ms playout offset was **rejected**. **S6 (worker
+   offload: `viewer.worker.ts` + `OffscreenCanvas`) is deferred** as an
+   independent follow-up — it's structurally decoupled (the pipeline core is
+   already host-agnostic) and its cross-browser value is only verifiable in a
+   real browser (Chrome + Firefox). Zero WebRTC/MoQ; wire+server+broadcaster+
+   viewer changed in lock-step.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

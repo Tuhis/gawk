@@ -19,20 +19,22 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("ParseFlags: %v", err)
 	}
 	want := Config{
-		Addr:                ":4433",
-		DevCertHosts:        "localhost,127.0.0.1",
-		LogLevel:            slog.LevelInfo,
-		LogFormat:           "text",
-		MaxSubscribers:      15,
-		MaxIdleTimeout:      30 * time.Second,
-		KeepAlivePeriod:     10 * time.Second,
-		BroadcastGrace:      5 * time.Minute,
-		MaxBroadcasts:       5,
-		MaxTotalSubscribers: 50,
-		PublishSecret:       "",
-		ConnRateLimit:       3.0,
-		ConnBurstLimit:      10,
-		MaxBandwidthBytes:   0,
+		Addr:                 ":4433",
+		DevCertHosts:         "localhost,127.0.0.1",
+		LogLevel:             slog.LevelInfo,
+		LogFormat:            "text",
+		MaxSubscribers:       15,
+		MaxIdleTimeout:       30 * time.Second,
+		KeepAlivePeriod:      10 * time.Second,
+		BroadcastGrace:       5 * time.Minute,
+		MaxBroadcasts:        5,
+		MaxTotalSubscribers:  50,
+		PublishSecret:        "",
+		ConnRateLimit:        3.0,
+		ConnBurstLimit:       10,
+		MaxBandwidthBytes:    0,
+		MaxKeyframeBytes:     8388608,
+		KeyframeWriteTimeout: time.Second,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -181,9 +183,17 @@ func TestHardeningConfig(t *testing.T) {
 			"-conn-rate-limit", "5.5",
 			"-conn-burst-limit", "20",
 			"-max-bandwidth", "10mbps",
+			"-max-keyframe-bytes", "2097152",
+			"-keyframe-write-timeout", "2s",
 		}, noEnv)
 		if err != nil {
 			t.Fatalf("ParseFlags failed: %v", err)
+		}
+		if cfg.MaxKeyframeBytes != 2097152 {
+			t.Errorf("MaxKeyframeBytes = %d, want 2097152", cfg.MaxKeyframeBytes)
+		}
+		if cfg.KeyframeWriteTimeout != 2*time.Second {
+			t.Errorf("KeyframeWriteTimeout = %v, want 2s", cfg.KeyframeWriteTimeout)
 		}
 		if cfg.MaxBroadcasts != 10 {
 			t.Errorf("MaxBroadcasts = %d, want 10", cfg.MaxBroadcasts)
@@ -230,6 +240,24 @@ func TestHardeningConfig(t *testing.T) {
 	t.Run("invalid conn-burst-limit", func(t *testing.T) {
 		if _, err := ParseFlags([]string{"-conn-burst-limit", "0"}, noEnv); err == nil {
 			t.Error("expected error for conn-burst-limit 0, got nil")
+		}
+	})
+
+	t.Run("invalid max-keyframe-bytes", func(t *testing.T) {
+		if _, err := ParseFlags([]string{"-max-keyframe-bytes", "0"}, noEnv); err == nil {
+			t.Error("expected error for max-keyframe-bytes 0, got nil")
+		}
+		if _, err := ParseFlags([]string{"-max-keyframe-bytes", "abc"}, noEnv); err == nil {
+			t.Error("expected error for non-integer max-keyframe-bytes, got nil")
+		}
+	})
+
+	t.Run("invalid keyframe-write-timeout", func(t *testing.T) {
+		if _, err := ParseFlags([]string{"-keyframe-write-timeout", "0"}, noEnv); err == nil {
+			t.Error("expected error for keyframe-write-timeout 0, got nil")
+		}
+		if _, err := ParseFlags([]string{"-keyframe-write-timeout", "nope"}, noEnv); err == nil {
+			t.Error("expected error for invalid keyframe-write-timeout, got nil")
 		}
 	})
 

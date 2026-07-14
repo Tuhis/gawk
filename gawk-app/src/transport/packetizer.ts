@@ -8,6 +8,7 @@ import {
   MAX_DATAGRAM_SIZE,
   VIDEO_CHUNK_HEADER_SIZE,
   encodeDecoderConfig,
+  encodeStreamFrame,
   encodeVideoChunk,
   WireError,
 } from './wire';
@@ -56,6 +57,23 @@ export function packetizeDecoderConfig(
   description?: AllowSharedBufferSource,
 ): Uint8Array<ArrayBuffer> {
   return encodeDecoderConfig({ codec, extradata: toUint8Array(description) });
+}
+
+// Builds the single StreamFrame message a keyframe travels in over a reliable
+// unidirectional stream (R8): header + the current DecoderConfig datagram
+// (embedded so a delivered keyframe is self-sufficient to decode) + the encoded
+// keyframe payload. configDatagram may be empty when no config is available yet
+// (the viewer then relies on an earlier one).
+export function packetizeStreamKeyframe(
+  info: { frameId: number; timestampUs: bigint },
+  configDatagram: Uint8Array,
+  payload: Uint8Array,
+): Uint8Array<ArrayBuffer> {
+  return encodeStreamFrame(
+    { keyframe: true, frameId: info.frameId, timestampUs: info.timestampUs },
+    configDatagram,
+    payload,
+  );
 }
 
 function toUint8Array(src?: AllowSharedBufferSource): Uint8Array {

@@ -271,6 +271,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
 	log.Info("publisher session started")
+
+	// Keyframes arrive on publisher-initiated unidirectional streams (R8),
+	// concurrently with the delta datagram loop. This goroutine shares the
+	// request context, so it exits when the session ends alongside the loop
+	// below — no separate shutdown signal.
+	go s.acceptKeyframeStreams(r.Context(), sess, pub, log)
+
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
@@ -278,6 +285,41 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pub.HandleDatagram(dgram)
+	}
+}
+
+// maxConcurrentKeyframeStreams bounds how many publisher-initiated keyframe
+// streams the server ingests at once. Normal operation needs ~1 (keyframes are
+// ~2/s and each ingest is fast); the cap stops a hostile publisher from opening
+// unbounded streams.
+const maxConcurrentKeyframeStreams = 4
+
+// acceptKeyframeStreams reads keyframe streams from the publisher and hands
+// each to the hub for ingestion + fan-out. It returns when the session's
+// context is cancelled (AcceptUniStream errors).
+func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.Session, pub *hub.Publisher, log *slog.Logger) {
+	sem := make(chan struct{}, maxConcurrentKeyframeStreams)
+	for {
+		stream, err := sess.AcceptUniStream(ctx)
+		if err != nil {
+			return
+		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			// Too many concurrent keyframe streams: reset this one rather than
+			// blocking the accept loop or growing goroutines without bound.
+			stream.CancelRead(0)
+			log.Warn("keyframe stream rejected: too many concurrent")
+			continue
+		}
+		go func(st *webtransport.ReceiveStream) {
+			defer func() { <-sem }()
+			if err := pub.IngestKeyframeStream(st); err != nil {
+				st.CancelRead(0)
+				log.Debug("keyframe stream ingest failed", "err", err)
+			}
+		}(stream)
 	}
 }
 
@@ -406,4 +448,26 @@ type webtransportSessionAdapter struct {
 
 func (w *webtransportSessionAdapter) CloseWithError(code uint32, reason string) error {
 	return w.Session.CloseWithError(webtransport.SessionErrorCode(code), reason)
+}
+
+// OpenKeyframeStream opens a server-initiated unidirectional stream carrying
+// one keyframe to this subscriber (R8). Non-blocking: if the peer's stream
+// limit is momentarily reached it returns an error and the hub counts a drop.
+func (w *webtransportSessionAdapter) OpenKeyframeStream() (hub.KeyframeStream, error) {
+	s, err := w.Session.OpenUniStream()
+	if err != nil {
+		return nil, err
+	}
+	return keyframeSendStream{s}, nil
+}
+
+// keyframeSendStream adapts a webtransport SendStream to hub.KeyframeStream.
+// Write/Close/SetWriteDeadline are promoted from the embedded stream; only
+// CancelWrite needs a fixed application error code.
+type keyframeSendStream struct {
+	*webtransport.SendStream
+}
+
+func (k keyframeSendStream) CancelWrite() {
+	k.SendStream.CancelWrite(0)
 }

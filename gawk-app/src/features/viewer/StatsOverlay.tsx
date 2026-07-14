@@ -30,6 +30,9 @@ export function StatsOverlay({ stats, codec, onClose }: Props) {
     ['Decode latency', `${fmt(stats?.lastDecodeLatencyMs ?? NaN)} ms`],
     ['Datagrams', String(stats?.datagramsReceived ?? '—')],
     ['Bad datagrams', String(stats?.badDatagrams ?? '—')],
+    ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],
+    ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],
+    ['Reorder buffered', String(stats?.reorderBuffered ?? '—')],
   ];
 
   return (

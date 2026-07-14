@@ -33,6 +33,13 @@ type Config struct {
 	ConnBurstLimit      int
 	MaxBandwidthBytes   int64
 
+	// MaxKeyframeBytes caps a single keyframe stream (R8); a publisher stream
+	// exceeding it is reset and not cached.
+	MaxKeyframeBytes int
+	// KeyframeWriteTimeout bounds a keyframe write to one subscriber before the
+	// stream is cancelled and the subscriber recovers at the next keyframe.
+	KeyframeWriteTimeout time.Duration
+
 	// Suppresses the INFO "session started"/"session ended" logs for /echo
 	// sessions from loopback (the k8s exec probe hitting 127.0.0.1, which
 	// otherwise logs on every startup/liveness/readiness probe forever).
@@ -92,6 +99,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"connection attempts burst limit per client IP")
 	maxBandwidth := fs.String("max-bandwidth", env("GAWK_MAX_BANDWIDTH", "0"),
 		"global egress bandwidth limit; e.g. 10mbps")
+	maxKeyframeBytes := fs.String("max-keyframe-bytes", env("GAWK_MAX_KEYFRAME_BYTES", "8388608"),
+		"maximum bytes for a single reliable keyframe stream (default 8 MiB)")
+	keyframeWriteTimeout := fs.String("keyframe-write-timeout", env("GAWK_KEYFRAME_WRITE_TIMEOUT", "1s"),
+		"how long a keyframe write to one subscriber may block before the stream is cancelled")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -146,6 +157,14 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	kfBytes, err := strconv.Atoi(*maxKeyframeBytes)
+	if err != nil || kfBytes < 1 {
+		return Config{}, fmt.Errorf("invalid max-keyframe-bytes %q: want a positive integer", *maxKeyframeBytes)
+	}
+	kfWriteTimeout, err := time.ParseDuration(*keyframeWriteTimeout)
+	if err != nil || kfWriteTimeout <= 0 {
+		return Config{}, fmt.Errorf("invalid keyframe-write-timeout %q: want a positive duration", *keyframeWriteTimeout)
+	}
 
 	return Config{
 		Addr:           *addr,
@@ -165,6 +184,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		ConnRateLimit:       rateLimit,
 		ConnBurstLimit:      burstLimit,
 		MaxBandwidthBytes:   bandwidthBytes,
+
+		MaxKeyframeBytes:     kfBytes,
+		KeyframeWriteTimeout: kfWriteTimeout,
 
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,

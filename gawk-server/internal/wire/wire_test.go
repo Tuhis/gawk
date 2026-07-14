@@ -2,6 +2,7 @@ package wire
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -47,6 +48,19 @@ const (
 	//   03         codecLen = 3
 	//   76 70 38   "vp8"
 	goldenDecoderConfigVP8Hex = "01020003767038"
+
+	// StreamFrame header: Keyframe=true, FrameID=0x01020304,
+	// TimestampUs=0x0000005D21DBA5F0, ConfigLen=6, PayloadLen=3.
+	//
+	//   01                       version
+	//   04                       type = StreamFrame
+	//   01                       flags (bit0 keyframe = 1)
+	//   00                       reserved
+	//   01 02 03 04              frameID = 0x01020304
+	//   00 00 00 5d 21 db a5 f0  timestampUs = 0x0000005D21DBA5F0
+	//   00 00 00 06              configLen = 6
+	//   00 00 00 03              payloadLen = 3
+	goldenStreamFrameHeaderHex = "01040100010203040000005d21dba5f00000000600000003"
 )
 
 var (
@@ -64,6 +78,14 @@ var (
 		Extradata: []byte{0x01, 0x42, 0xE0, 0x2A, 0xFF, 0xE1},
 	}
 	goldenDecoderConfigVP8 = DecoderConfig{Codec: "vp8"}
+
+	goldenStreamFrameHeader = StreamFrameHeader{
+		Keyframe:    true,
+		FrameID:     0x01020304,
+		TimestampUs: 0x0000005D21DBA5F0,
+		ConfigLen:   6,
+		PayloadLen:  3,
+	}
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -256,6 +278,106 @@ func TestGoldenDecoderConfig(t *testing.T) {
 	}
 }
 
+func TestGoldenStreamFrameHeader(t *testing.T) {
+	want := mustHex(t, goldenStreamFrameHeaderHex)
+
+	buf, err := AppendStreamFrameHeader(nil, goldenStreamFrameHeader)
+	if err != nil {
+		t.Fatalf("AppendStreamFrameHeader: %v", err)
+	}
+	if !bytes.Equal(buf, want) {
+		t.Errorf("append produced %x, want %x", buf, want)
+	}
+	if len(buf) != StreamFrameHeaderSize {
+		t.Fatalf("header length = %d, want %d", len(buf), StreamFrameHeaderSize)
+	}
+
+	h, err := ParseStreamFrameHeader(want)
+	if err != nil {
+		t.Fatalf("ParseStreamFrameHeader: %v", err)
+	}
+	if h != goldenStreamFrameHeader {
+		t.Errorf("header = %+v, want %+v", h, goldenStreamFrameHeader)
+	}
+}
+
+func TestStreamFrameHeaderRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		h    StreamFrameHeader
+	}{
+		{"keyframe with config", StreamFrameHeader{Keyframe: true, FrameID: 42, TimestampUs: 1234567, ConfigLen: 20, PayloadLen: 500000}},
+		{"no config", StreamFrameHeader{Keyframe: true, FrameID: 0, TimestampUs: 0, ConfigLen: 0, PayloadLen: 1}},
+		{"max sizes", StreamFrameHeader{Keyframe: true, FrameID: 0xFFFFFFFF, TimestampUs: 0xFFFFFFFFFFFFFFFF, ConfigLen: 0, PayloadLen: MaxKeyframeBytes - StreamFrameHeaderSize}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf, err := AppendStreamFrameHeader(nil, tc.h)
+			if err != nil {
+				t.Fatalf("AppendStreamFrameHeader: %v", err)
+			}
+			ver, typ, err := PeekType(buf)
+			if err != nil || ver != Version || typ != TypeStreamFrame {
+				t.Fatalf("PeekType = (%d, %d, %v), want (%d, %d, nil)", ver, typ, err, Version, TypeStreamFrame)
+			}
+			got, err := ParseStreamFrameHeader(buf)
+			if err != nil {
+				t.Fatalf("ParseStreamFrameHeader: %v", err)
+			}
+			if got != tc.h {
+				t.Errorf("header = %+v, want %+v", got, tc.h)
+			}
+		})
+	}
+}
+
+func TestStreamFrameHeaderErrors(t *testing.T) {
+	valid := mustHex(t, goldenStreamFrameHeaderHex)
+	corrupt := func(offset int, b byte) []byte {
+		d := bytes.Clone(valid)
+		d[offset] = b
+		return d
+	}
+
+	t.Run("parse errors", func(t *testing.T) {
+		cases := []struct {
+			name string
+			buf  []byte
+			want error
+		}{
+			{"empty", nil, ErrShortDatagram},
+			{"23 bytes", valid[:23], ErrShortDatagram},
+			{"bad version", corrupt(0, 0x02), ErrBadVersion},
+			{"bad type", corrupt(1, 0x02), ErrBadType},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := ParseStreamFrameHeader(tc.buf); !errors.Is(err, tc.want) {
+					t.Errorf("error = %v, want %v", err, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("oversize declared payload rejected on parse", func(t *testing.T) {
+		// PayloadLen so large that header+config+payload overflows MaxKeyframeBytes.
+		h := StreamFrameHeader{Keyframe: true, ConfigLen: 0, PayloadLen: MaxKeyframeBytes}
+		buf := make([]byte, StreamFrameHeaderSize)
+		buf[0], buf[1], buf[2] = Version, TypeStreamFrame, flagKeyframe
+		binary.BigEndian.PutUint32(buf[20:24], h.PayloadLen)
+		if _, err := ParseStreamFrameHeader(buf); !errors.Is(err, ErrKeyframeTooLarge) {
+			t.Errorf("error = %v, want %v", err, ErrKeyframeTooLarge)
+		}
+	})
+
+	t.Run("oversize rejected on append", func(t *testing.T) {
+		h := StreamFrameHeader{Keyframe: true, PayloadLen: MaxKeyframeBytes}
+		if _, err := AppendStreamFrameHeader(nil, h); !errors.Is(err, ErrKeyframeTooLarge) {
+			t.Errorf("error = %v, want %v", err, ErrKeyframeTooLarge)
+		}
+	})
+}
+
 func TestPeekTypeErrors(t *testing.T) {
 	for _, dgram := range [][]byte{nil, {}, {0x01}} {
 		if _, _, err := PeekType(dgram); !errors.Is(err, ErrShortDatagram) {
@@ -399,6 +521,7 @@ func FuzzParse(f *testing.F) {
 	f.Add(seed(goldenVideoChunkHex))
 	f.Add(seed(goldenDecoderConfigAVCHex))
 	f.Add(seed(goldenDecoderConfigVP8Hex))
+	f.Add(seed(goldenStreamFrameHeaderHex))
 	f.Add(seed("0103064b375851324d"))
 	f.Add([]byte{})
 	f.Add([]byte{0x01})
@@ -425,6 +548,12 @@ func FuzzParse(f *testing.F) {
 
 		if _, err := ParseBroadcastAnnounce(data); err == nil {
 			// just asserting no panic
+		}
+
+		if h, err := ParseStreamFrameHeader(data); err == nil {
+			if StreamFrameHeaderSize+uint64(h.ConfigLen)+uint64(h.PayloadLen) > MaxKeyframeBytes {
+				t.Errorf("ParseStreamFrameHeader accepted oversize declaration: %+v", h)
+			}
 		}
 	})
 }

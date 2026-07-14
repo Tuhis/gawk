@@ -41,7 +41,8 @@ import (
 // byte 0 of every datagram.
 const Version = 0x01
 
-// Message types, occupying byte 1 of every datagram.
+// Message types, occupying byte 1 of every datagram (or, for TypeStreamFrame,
+// byte 1 of a unidirectional-stream payload).
 const (
 	// TypeVideoChunk identifies a VideoChunk datagram.
 	TypeVideoChunk = 0x01
@@ -49,6 +50,10 @@ const (
 	TypeDecoderConfig = 0x02
 	// TypeBroadcastAnnounce identifies a BroadcastAnnounce message.
 	TypeBroadcastAnnounce = 0x03
+	// TypeStreamFrame identifies a StreamFrame message. Unlike the others it
+	// never travels as a datagram — it is the payload of a reliable
+	// unidirectional stream carrying exactly one keyframe (R8, docs/12).
+	TypeStreamFrame = 0x04
 )
 
 // CloseCodeBroadcastEnded is the WebTransport application close code sent
@@ -68,6 +73,13 @@ const (
 	// MaxChunkCount is the maximum number of chunks permitted in a keyframe
 	// to prevent memory inflation attacks.
 	MaxChunkCount = 3000
+	// StreamFrameHeaderSize is the fixed size of a StreamFrame header (R8).
+	StreamFrameHeaderSize = 24
+	// MaxKeyframeBytes is the absolute ceiling on a single StreamFrame message
+	// (header + config + payload). It is the stream analogue of MaxChunkCount:
+	// a reader must never allocate a keyframe buffer larger than this from an
+	// untrusted length field. The hub's configurable cap defaults to it.
+	MaxKeyframeBytes = 8 << 20 // 8 MiB
 )
 
 // flagKeyframe is bit 0 of the VideoChunk flags byte.
@@ -95,6 +107,9 @@ var (
 	ErrDatagramTooLarge = errors.New("wire: datagram exceeds MaxDatagramSize")
 	// ErrBadBroadcastID indicates a BroadcastAnnounce message with an invalid ID.
 	ErrBadBroadcastID = errors.New("wire: invalid broadcast ID")
+	// ErrKeyframeTooLarge indicates a StreamFrame whose declared or actual
+	// size exceeds MaxKeyframeBytes.
+	ErrKeyframeTooLarge = errors.New("wire: keyframe exceeds MaxKeyframeBytes")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -277,4 +292,79 @@ func ParseBroadcastAnnounce(dgram []byte) (string, error) {
 		}
 	}
 	return id, nil
+}
+
+// StreamFrameHeader is the parsed 24-byte header of a StreamFrame message
+// (R8, docs/12). A StreamFrame is the entire payload of one unidirectional
+// stream: this header, then ConfigLen bytes of an embedded DecoderConfig
+// datagram (its 0x01/0x02 prefix included, or empty when ConfigLen == 0),
+// then PayloadLen bytes of the raw encoded keyframe.
+type StreamFrameHeader struct {
+	// Keyframe is true if this stream frame is a keyframe (always true for
+	// now; the flag is reserved so future non-keyframe stream frames stay
+	// distinguishable).
+	Keyframe bool
+	// FrameID identifies the encoded frame, monotonic per publisher session,
+	// shared with the datagram VideoChunk numbering so the viewer can order
+	// keyframes (streams) against deltas (datagrams).
+	FrameID uint32
+	// TimestampUs is the frame timestamp in microseconds.
+	TimestampUs uint64
+	// ConfigLen is the byte length of the embedded DecoderConfig datagram
+	// that follows the header (0 if none).
+	ConfigLen uint32
+	// PayloadLen is the byte length of the encoded keyframe that follows the
+	// config block.
+	PayloadLen uint32
+}
+
+// AppendStreamFrameHeader appends the 24-byte StreamFrame header encoding h to
+// dst and returns the extended slice. Reserved bits are written as 0. It
+// returns ErrKeyframeTooLarge if the declared total (header + config +
+// payload) exceeds MaxKeyframeBytes.
+func AppendStreamFrameHeader(dst []byte, h StreamFrameHeader) ([]byte, error) {
+	if StreamFrameHeaderSize+uint64(h.ConfigLen)+uint64(h.PayloadLen) > MaxKeyframeBytes {
+		return nil, fmt.Errorf("%w: header+%d+%d bytes", ErrKeyframeTooLarge, h.ConfigLen, h.PayloadLen)
+	}
+	var flags uint8
+	if h.Keyframe {
+		flags |= flagKeyframe
+	}
+	dst = append(dst, Version, TypeStreamFrame, flags, 0)
+	dst = binary.BigEndian.AppendUint32(dst, h.FrameID)
+	dst = binary.BigEndian.AppendUint64(dst, h.TimestampUs)
+	dst = binary.BigEndian.AppendUint32(dst, h.ConfigLen)
+	dst = binary.BigEndian.AppendUint32(dst, h.PayloadLen)
+	return dst, nil
+}
+
+// ParseStreamFrameHeader parses the 24-byte StreamFrame header at the start of
+// buf. It validates version and type and rejects a declared total that exceeds
+// MaxKeyframeBytes, but does not require buf to contain the whole message —
+// the caller reads ConfigLen + PayloadLen further bytes from the stream. It
+// returns an error if buf is shorter than StreamFrameHeaderSize, has the wrong
+// version or type, or declares more than MaxKeyframeBytes.
+func ParseStreamFrameHeader(buf []byte) (StreamFrameHeader, error) {
+	if len(buf) < StreamFrameHeaderSize {
+		return StreamFrameHeader{}, fmt.Errorf("%w: %d bytes, need at least %d for stream frame header",
+			ErrShortDatagram, len(buf), StreamFrameHeaderSize)
+	}
+	if buf[0] != Version {
+		return StreamFrameHeader{}, fmt.Errorf("%w: 0x%02x", ErrBadVersion, buf[0])
+	}
+	if buf[1] != TypeStreamFrame {
+		return StreamFrameHeader{}, fmt.Errorf("%w: got 0x%02x, want stream frame 0x%02x",
+			ErrBadType, buf[1], TypeStreamFrame)
+	}
+	h := StreamFrameHeader{
+		Keyframe:    buf[2]&flagKeyframe != 0,
+		FrameID:     binary.BigEndian.Uint32(buf[4:8]),
+		TimestampUs: binary.BigEndian.Uint64(buf[8:16]),
+		ConfigLen:   binary.BigEndian.Uint32(buf[16:20]),
+		PayloadLen:  binary.BigEndian.Uint32(buf[20:24]),
+	}
+	if StreamFrameHeaderSize+uint64(h.ConfigLen)+uint64(h.PayloadLen) > MaxKeyframeBytes {
+		return StreamFrameHeader{}, fmt.Errorf("%w: header+%d+%d bytes", ErrKeyframeTooLarge, h.ConfigLen, h.PayloadLen)
+	}
+	return h, nil
 }

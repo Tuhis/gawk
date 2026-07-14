@@ -29,6 +29,9 @@ export const WIRE_VERSION = 0x01;
 export const TYPE_VIDEO_CHUNK = 0x01;
 export const TYPE_DECODER_CONFIG = 0x02;
 export const TYPE_BROADCAST_ANNOUNCE = 0x03;
+// TypeStreamFrame (R8): never a datagram — the payload of one unidirectional
+// stream carrying exactly one keyframe. See encode/parseStreamFrame below.
+export const TYPE_STREAM_FRAME = 0x04;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 
@@ -39,6 +42,13 @@ export const MAX_CHUNK_PAYLOAD = MAX_DATAGRAM_SIZE - VIDEO_CHUNK_HEADER_SIZE;
 // this (memory-inflation defense), so a frame that needs more chunks can
 // never reach viewers — the encoder must fail loudly instead.
 export const MAX_CHUNK_COUNT = 3000;
+
+// StreamFrame constants (mirror gawk-server/internal/wire).
+export const STREAM_FRAME_HEADER_SIZE = 24;
+// Absolute ceiling on one StreamFrame message (header + config + payload); the
+// stream analogue of MAX_CHUNK_COUNT. A reader must never allocate beyond it
+// from an untrusted length field.
+export const MAX_KEYFRAME_BYTES = 8 * 1024 * 1024;
 
 const FLAG_KEYFRAME = 0x01;
 
@@ -162,6 +172,87 @@ export function parseDecoderConfig(dgram: Uint8Array): DecoderConfigMessage {
     codec: new TextDecoder().decode(dgram.subarray(4, 4 + codecLen)),
     extradata: dgram.subarray(4 + codecLen),
   };
+}
+
+export interface StreamFrameHeader {
+  keyframe: boolean;
+  frameId: number; // uint32, shared numbering with datagram VideoChunks
+  timestampUs: bigint; // uint64
+  configLen: number; // uint32, byte length of the embedded DecoderConfig datagram (0 = none)
+  payloadLen: number; // uint32, byte length of the encoded keyframe
+}
+
+// Encodes the 24-byte StreamFrame header (R8). Rejects a declared total
+// exceeding MAX_KEYFRAME_BYTES.
+export function encodeStreamFrameHeader(header: StreamFrameHeader): Uint8Array<ArrayBuffer> {
+  if (STREAM_FRAME_HEADER_SIZE + header.configLen + header.payloadLen > MAX_KEYFRAME_BYTES) {
+    throw new WireError(
+      `stream frame ${header.configLen + header.payloadLen} body bytes exceeds MAX_KEYFRAME_BYTES ${MAX_KEYFRAME_BYTES}`,
+    );
+  }
+  const buf = new Uint8Array(STREAM_FRAME_HEADER_SIZE);
+  const view = new DataView(buf.buffer);
+  buf[0] = WIRE_VERSION;
+  buf[1] = TYPE_STREAM_FRAME;
+  buf[2] = header.keyframe ? FLAG_KEYFRAME : 0;
+  buf[3] = 0;
+  view.setUint32(4, header.frameId);
+  view.setBigUint64(8, header.timestampUs);
+  view.setUint32(16, header.configLen);
+  view.setUint32(20, header.payloadLen);
+  return buf;
+}
+
+// Builds a complete StreamFrame message: header + optional config block + the
+// encoded keyframe payload. config is a full DecoderConfig datagram (its
+// 0x01/0x02 prefix included) or empty.
+export function encodeStreamFrame(
+  meta: { keyframe: boolean; frameId: number; timestampUs: bigint },
+  config: Uint8Array,
+  payload: Uint8Array,
+): Uint8Array<ArrayBuffer> {
+  const header = encodeStreamFrameHeader({
+    ...meta,
+    configLen: config.length,
+    payloadLen: payload.length,
+  });
+  const out = new Uint8Array(header.length + config.length + payload.length);
+  out.set(header, 0);
+  out.set(config, header.length);
+  out.set(payload, header.length + config.length);
+  return out;
+}
+
+// Parses the 24-byte StreamFrame header at the start of buf. Does not require
+// buf to hold the whole message (the reader consumes configLen + payloadLen
+// further bytes from the stream). Rejects a declared total exceeding
+// MAX_KEYFRAME_BYTES.
+export function parseStreamFrameHeader(buf: Uint8Array): StreamFrameHeader {
+  if (buf.length < STREAM_FRAME_HEADER_SIZE) {
+    throw new WireError(
+      `stream frame header too short: ${buf.length} bytes, need at least ${STREAM_FRAME_HEADER_SIZE}`,
+    );
+  }
+  if (buf[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${buf[0].toString(16)}`);
+  }
+  if (buf[1] !== TYPE_STREAM_FRAME) {
+    throw new WireError(`unexpected message type 0x${buf[1].toString(16)}, want stream frame`);
+  }
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const header: StreamFrameHeader = {
+    keyframe: (buf[2] & FLAG_KEYFRAME) !== 0,
+    frameId: view.getUint32(4),
+    timestampUs: view.getBigUint64(8),
+    configLen: view.getUint32(16),
+    payloadLen: view.getUint32(20),
+  };
+  if (STREAM_FRAME_HEADER_SIZE + header.configLen + header.payloadLen > MAX_KEYFRAME_BYTES) {
+    throw new WireError(
+      `stream frame ${header.configLen + header.payloadLen} body bytes exceeds MAX_KEYFRAME_BYTES ${MAX_KEYFRAME_BYTES}`,
+    );
+  }
+  return header;
 }
 
 // The 31 allowed broadcast-ID symbols (no 0/O, 1/I/L) — mirrors

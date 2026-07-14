@@ -56,6 +56,11 @@ config:
   connRateLimit: 3.0
   connBurstLimit: 10
   maxBandwidth: "0"
+  # R8 reliable keyframes: cap on a single keyframe stream (memory-inflation
+  # defense) and how long a keyframe write to one subscriber may block before
+  # the stream is cancelled and that subscriber recovers at the next keyframe.
+  maxKeyframeBytes: "8388608"
+  keyframeWriteTimeout: 1s
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers

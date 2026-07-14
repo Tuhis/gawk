@@ -3,7 +3,14 @@
 // and a write chain that serializes datagram sends.
 
 import { log } from '../lib/logger';
-import { MAX_DATAGRAM_SIZE } from './wire';
+import {
+  MAX_DATAGRAM_SIZE,
+  MAX_KEYFRAME_BYTES,
+  STREAM_FRAME_HEADER_SIZE,
+  parseDecoderConfig,
+  parseStreamFrameHeader,
+  type DecoderConfigMessage,
+} from './wire';
 
 export interface ConnectOptions {
   // hex(SHA-256(cert DER)) as logged by gawk-server at startup
@@ -74,6 +81,83 @@ export async function readDatagrams(
     signal?.removeEventListener('abort', onAbort);
     reader.releaseLock();
   }
+}
+
+// One keyframe delivered over a reliable unidirectional stream (R8).
+export interface KeyframeStreamFrame {
+  frameId: number;
+  timestampUs: bigint;
+  config: DecoderConfigMessage | null; // embedded config, if any
+  data: Uint8Array; // encoded keyframe payload (safe to retain: a fresh copy)
+}
+
+// Reads server-initiated unidirectional streams for the life of the session,
+// each carrying exactly one keyframe StreamFrame message. Each stream is read
+// to EOF (bounded by MAX_KEYFRAME_BYTES) and processed on its own task so a
+// stalled or superseded stream never blocks the next. Returns normally on
+// session end or abort; connection errors reject.
+export async function readKeyframeStreams(
+  wt: WebTransport,
+  onKeyframe: (kf: KeyframeStreamFrame) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const reader = wt.incomingUnidirectionalStreams.getReader();
+  const onAbort = () => void reader.cancel().catch(() => {});
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const tasks: Promise<void>[] = [];
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      if (value) tasks.push(readOneKeyframe(value, onKeyframe).catch((e) => log.warn('keyframe stream read failed:', e)));
+    }
+  } catch (e) {
+    if (signal?.aborted) return;
+    throw e instanceof Error ? e : new Error(String(e));
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    reader.releaseLock();
+    await Promise.allSettled(tasks);
+  }
+}
+
+async function readOneKeyframe(
+  stream: ReadableStream<Uint8Array>,
+  onKeyframe: (kf: KeyframeStreamFrame) => void,
+): Promise<void> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.length;
+      if (total > MAX_KEYFRAME_BYTES) {
+        void reader.cancel().catch(() => {});
+        log.warn(`keyframe stream exceeds ${MAX_KEYFRAME_BYTES} bytes; dropping`);
+        return;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    data.set(c, offset);
+    offset += c.length;
+  }
+
+  const header = parseStreamFrameHeader(data);
+  const body = data.subarray(STREAM_FRAME_HEADER_SIZE);
+  const configBytes = body.subarray(0, header.configLen);
+  const payload = body.subarray(header.configLen, header.configLen + header.payloadLen);
+  const config = header.configLen > 0 ? parseDecoderConfig(configBytes) : null;
+  onKeyframe({ frameId: header.frameId, timestampUs: header.timestampUs, config, data: payload });
 }
 
 // Serializes datagram writes so frames leave in encode order (datagram

@@ -85,6 +85,10 @@ spec:
               value: {{ .Values.config.connBurstLimit | quote }}
             - name: GAWK_MAX_BANDWIDTH
               value: {{ .Values.config.maxBandwidth | quote }}
+            - name: GAWK_MAX_KEYFRAME_BYTES
+              value: {{ .Values.config.maxKeyframeBytes | quote }}
+            - name: GAWK_KEYFRAME_WRITE_TIMEOUT
+              value: {{ .Values.config.keyframeWriteTimeout | quote }}
             - name: GAWK_MAX_IDLE_TIMEOUT
               value: {{ .Values.config.maxIdleTimeout | quote }}
             - name: GAWK_KEEPALIVE_PERIOD

@@ -16,7 +16,7 @@ import { FallbackController } from '../media/fallback';
 import { FramePreprocessor } from '../media/preprocess';
 import type { CaptureConfig } from '../media/types';
 import { connectWebTransport, DatagramSender, type ConnectOptions } from './connection';
-import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
+import { packetizeDecoderConfig, packetizeFrame, packetizeStreamKeyframe } from './packetizer';
 import { parseBroadcastAnnounce } from './wire';
 
 export interface BroadcastStats {
@@ -27,6 +27,9 @@ export interface BroadcastStats {
   datagramsSent: number;
   bytesSent: number;
   configsSent: number;
+  // R8: keyframes travel over reliable uni streams, deltas over datagrams.
+  keyframeStreamsSent: number;
+  keyframeStreamsFailed: number;
   encoderQueueDepth: number;
   encoderFps: number;
   lastEncodeLatencyMs: number;
@@ -49,6 +52,8 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   datagramsSent: 0,
   bytesSent: 0,
   configsSent: 0,
+  keyframeStreamsSent: 0,
+  keyframeStreamsFailed: 0,
   encoderQueueDepth: 0,
   encoderFps: 0,
   lastEncodeLatencyMs: 0,
@@ -502,28 +507,40 @@ export class BroadcastPipeline {
 
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
-    const keyframe = chunk.type === 'key';
+    const frameId = this.nextFrameId++;
+    const timestampUs = BigInt(Math.round(chunk.timestamp));
 
+    if (chunk.type === 'key') {
+      // Keyframe → one reliable unidirectional stream carrying the current
+      // config (embedded, so the keyframe is self-sufficient) + the payload.
+      // A lost datagram can no longer strand a keyframe for a whole GOP.
+      let msg: Uint8Array<ArrayBuffer>;
+      try {
+        msg = packetizeStreamKeyframe(
+          { frameId, timestampUs },
+          this.configDatagram ?? new Uint8Array(0),
+          data,
+        );
+      } catch (e) {
+        this.fail(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      if (this.configDatagram) this.stats.configsSent++;
+      void this.sendKeyframeStream(msg);
+      return;
+    }
+
+    // Delta → datagrams (fast, lossy; a loss costs one frame, not a GOP).
     let datagrams: Uint8Array<ArrayBuffer>[];
     try {
       datagrams = packetizeFrame(
-        {
-          frameId: this.nextFrameId++,
-          keyframe,
-          timestampUs: BigInt(Math.round(chunk.timestamp)),
-        },
+        { frameId, keyframe: false, timestampUs },
         data,
         this.wt?.datagrams.maxDatagramSize,
       );
     } catch (e) {
       this.fail(e instanceof Error ? e : new Error(String(e)));
       return;
-    }
-    // Config precedes every keyframe so a viewer can always sync up at the
-    // next keyframe no matter what it missed.
-    if (keyframe && this.configDatagram) {
-      datagrams = [this.configDatagram, ...datagrams];
-      this.stats.configsSent++;
     }
 
     let bytes = 0;
@@ -537,6 +554,28 @@ export class BroadcastPipeline {
       .catch((e) => {
         if (!this.stopping) this.fail(e instanceof Error ? e : new Error(String(e)));
       });
+  }
+
+  // Sends one keyframe over a fresh unidirectional stream. A single stream
+  // failure is not fatal — the next keyframe recovers, and genuine session
+  // death is surfaced by the wt.closed handler — so it is logged and counted,
+  // not propagated to fail().
+  private async sendKeyframeStream(msg: Uint8Array<ArrayBuffer>): Promise<void> {
+    const wt = this.wt;
+    if (!wt || this.stopping) return;
+    try {
+      const stream = await wt.createUnidirectionalStream();
+      const writer = stream.getWriter();
+      await writer.write(msg);
+      await writer.close();
+      this.stats.keyframeStreamsSent++;
+      this.stats.bytesSent += msg.length;
+    } catch (e) {
+      if (!this.stopping) {
+        this.stats.keyframeStreamsFailed++;
+        log.warn('Keyframe stream send failed:', e);
+      }
+    }
   }
 
   // A mid-stream encoder error. In explicit mode it stays fatal (silently

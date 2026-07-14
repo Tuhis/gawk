@@ -11,9 +11,12 @@ const readDatagrams = vi.fn();
 // behavior: gapped deltas are never handed to decode()).
 const decodeSpy = vi.fn();
 
+const readKeyframeStreams = vi.fn();
+
 vi.mock('./connection', () => ({
   connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
   readDatagrams: (...args: unknown[]) => readDatagrams(...args),
+  readKeyframeStreams: (...args: unknown[]) => readKeyframeStreams(...args),
 }));
 
 vi.mock('../media/decoder', () => ({
@@ -66,11 +69,18 @@ beforeEach(() => {
   vi.stubGlobal(
     'EncodedVideoChunk',
     class {
-      constructor(public init: unknown) {}
+      init: unknown;
+      constructor(init: unknown) {
+        this.init = init;
+      }
     },
   );
   connectWebTransport.mockReset();
   readDatagrams.mockReset();
+  readKeyframeStreams.mockReset();
+  // No keyframe streams arrive in these tests (keyframes are driven via
+  // datagrams); the loop just stays open for the life of the session.
+  readKeyframeStreams.mockReturnValue(new Promise(() => {}));
   decodeSpy.mockReset();
 });
 

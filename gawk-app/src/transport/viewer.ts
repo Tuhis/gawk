@@ -4,10 +4,20 @@
 
 import { log } from '../lib/logger';
 import { Decoder, type DecodedFrame } from '../media/decoder';
-import { connectWebTransport, readDatagrams, type ConnectOptions } from './connection';
+import {
+  connectWebTransport,
+  readDatagrams,
+  readKeyframeStreams,
+  type ConnectOptions,
+} from './connection';
 import { Reassembler, type ReassemblerStats } from './reassembler';
+import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { DecoderConfigMessage } from './wire';
 import { getMaxDecoderQueueSize } from '../config';
+
+// How often the reorder buffer is advanced (its bounded waits and the
+// decoder-backpressure resync are time-based). ~1 frame at 60 fps.
+const REORDER_TICK_MS = 16;
 
 export interface ViewerStats extends ReassemblerStats {
   decodedFrames: number;
@@ -17,6 +27,11 @@ export interface ViewerStats extends ReassemblerStats {
   framesDiscardedAwaitingKey: number;
   lastDecodeLatencyMs: number;
   isHardwareAccelerated: boolean | null;
+  // R8 keyframe-stream + reorder observability.
+  keyframeStreamsReceived: number;
+  reorderGapResyncs: number;
+  reorderKeyframeWaitDrops: number;
+  reorderBuffered: number;
 }
 
 export interface ViewerCallbacks {
@@ -35,6 +50,10 @@ export class ViewerPipeline {
   private wt: WebTransport | null = null;
   private decoder: Decoder | null = null;
   private reassembler: Reassembler | null = null;
+  // Merges reliable stream keyframes with lossy datagram deltas by frameId and
+  // owns the freeze-on-gap / drop-to-keyframe ordering policy (R8, docs/12).
+  private reorder: ReorderBuffer | null = null;
+  private reorderTimer: number | null = null;
   private abort = new AbortController();
   private stopping = false;
 
@@ -42,15 +61,13 @@ export class ViewerPipeline {
   // stay in arrival order — same discipline as the loopback pipeline.
   private decoderChain: Promise<void> = Promise.resolve();
   // WebCodecs requires the first chunk after configure() to be a keyframe;
-  // set on every (re)configure, cleared by the first keyframe.
+  // set on every (re)configure, cleared by the first keyframe. This is the
+  // decoder-level guard; cross-frame ordering lives in the reorder buffer.
   private waitingForKeyframe = true;
-  // frameId of the last frame handed to (or considered for) the decoder. A
-  // non-contiguous delta means an intervening frame was lost upstream (dropped
-  // incomplete) — its would-be references are gone, so decoding it and the
-  // deltas after it renders corruption until the next keyframe. null until the
-  // first frame; the reassembler emits deltas in strictly increasing frameId
-  // order (late ones already dropped), so a jump is always a real gap.
-  private lastFrameId: number | null = null;
+  // Dedup key of the last applied config: the broadcaster embeds the config in
+  // every keyframe stream, so we reconfigure only when it actually changes.
+  private lastConfigKey: string | null = null;
+  private keyframeStreamsReceived = 0;
 
   private decodedFrames = 0;
   private decodedSinceStats = 0;
@@ -90,13 +107,37 @@ export class ViewerPipeline {
       onError: (e) => this.failDecode(e),
     });
 
+    this.reorder = new ReorderBuffer((frame) => this.decodeReleased(frame));
+
     this.reassembler = new Reassembler({
-      onConfig: (config) => this.applyConfig(config),
-      onFrame: (frame) => this.decodeFrame(frame.frameId, frame.keyframe, frame.timestampUs, frame.data),
+      // A datagram-borne config (legacy path) still applies; keyframes now
+      // carry their own config on the stream.
+      onConfig: (config) => this.maybeApplyConfig(config),
+      // Reassembled datagram frames feed the reorder buffer. Keyframes only
+      // arrive over streams in practice, but routing a keyframe-flagged
+      // datagram here too keeps the viewer robust to any keyframe source.
+      onFrame: (frame) => {
+        if (!this.reorder) return;
+        if (frame.keyframe) {
+          this.reorder.pushKeyframe({
+            frameId: frame.frameId,
+            timestampUs: frame.timestampUs,
+            config: null,
+            data: frame.data,
+          });
+        } else {
+          this.reorder.pushDelta({
+            frameId: frame.frameId,
+            timestampUs: frame.timestampUs,
+            data: frame.data,
+          });
+        }
+      },
     });
 
     this.lastStatsAt = performance.now();
     this.statsTimer = window.setInterval(() => this.publishStats(), 500);
+    this.reorderTimer = window.setInterval(() => this.reorderTick(), REORDER_TICK_MS);
 
     void this.wt.closed
       .then((closeInfo) => {
@@ -114,14 +155,46 @@ export class ViewerPipeline {
         }
       });
 
-    // Read loop runs for the life of the session. On a joining viewer the
-    // relay primes us with the cached config + last keyframe, so the first
-    // picture typically appears without waiting for the next keyframe.
+    // Read loops run for the life of the session. Deltas arrive as datagrams;
+    // keyframes arrive as reliable unidirectional streams (R8). On a joining
+    // viewer the relay primes us with the last keyframe over a stream, so the
+    // first picture typically appears without waiting for the next keyframe.
     const reassembler = this.reassembler;
     const wt = this.wt;
     void readDatagrams(wt, (dgram) => reassembler.push(dgram), this.abort.signal)
       .then(() => this.handleReadLoopEnd(wt, null))
       .catch((e) => this.handleReadLoopEnd(wt, e instanceof Error ? e : new Error(String(e))));
+
+    // Keyframe streams: failures here are not fatal to the session (the next
+    // keyframe recovers, and a real drop surfaces via the datagram loop /
+    // wt.closed), so they are logged, not propagated.
+    void readKeyframeStreams(
+      wt,
+      (kf) => {
+        if (this.stopping || !this.reorder) return;
+        this.keyframeStreamsReceived++;
+        this.reorder.pushKeyframe({
+          frameId: kf.frameId,
+          timestampUs: kf.timestampUs,
+          config: kf.config,
+          data: kf.data,
+        });
+      },
+      this.abort.signal,
+    ).catch((e) => {
+      if (!this.stopping) log.warn('Keyframe stream loop ended:', e);
+    });
+  }
+
+  private reorderTick(): void {
+    if (this.stopping || !this.reorder) return;
+    // Decoder backpressure: if the decode queue is deep, stop feeding it and
+    // resync at the next keyframe so the viewer catches up to live.
+    const dec = this.decoder;
+    if (dec && dec.queueSize > getMaxDecoderQueueSize()) {
+      this.reorder.requestResync();
+    }
+    this.reorder.tick();
   }
 
   // On a server close, the datagram read loop and wt.closed settle in
@@ -157,6 +230,15 @@ export class ViewerPipeline {
     this.fail(err);
   }
 
+  // Dedups: the broadcaster embeds the config in every keyframe stream, so we
+  // reconfigure the decoder only when the codec/extradata actually change.
+  private maybeApplyConfig(config: DecoderConfigMessage): void {
+    const key = `${config.codec}:${Array.from(config.extradata).join(',')}`;
+    if (key === this.lastConfigKey) return;
+    this.lastConfigKey = key;
+    this.applyConfig(config);
+  }
+
   private applyConfig(config: DecoderConfigMessage): void {
     this.pendingConfig = config;
     this.lastConfigMessage = config;
@@ -165,23 +247,16 @@ export class ViewerPipeline {
     this.cb.onConfig(config);
   }
 
-  private decodeFrame(frameId: number, keyframe: boolean, timestampUs: bigint, data: Uint8Array): void {
+  // Called by the reorder buffer in decode order. A keyframe may carry a config
+  // (stream-embedded); apply it before decoding that keyframe.
+  private decodeReleased(frame: ReleasedFrame): void {
+    if (frame.config) this.maybeApplyConfig(frame.config);
+    this.feedDecoder(frame.keyframe, frame.timestampUs, frame.data);
+  }
+
+  private feedDecoder(keyframe: boolean, timestampUs: bigint, data: Uint8Array): void {
     const dec = this.decoder;
     if (!dec || this.stopping) return;
-
-    if (dec.queueSize > getMaxDecoderQueueSize()) {
-      log.warn(`Decoder queue size (${dec.queueSize}) too large, dropping frames until next keyframe.`);
-      this.waitingForKeyframe = true;
-    }
-
-    // Freeze-on-gap: a delta whose frameId skips ahead references a frame that
-    // never arrived. Rather than feed the decoder corrupt references, hold the
-    // last good frame until the next keyframe re-syncs (kept short by the
-    // 500ms GOP). Keyframes are self-contained, so they never trip this.
-    if (!keyframe && this.lastFrameId !== null && frameId !== this.lastFrameId + 1) {
-      this.waitingForKeyframe = true;
-    }
-    this.lastFrameId = frameId;
 
     if (this.pendingConfig) {
       const config = this.pendingConfig;
@@ -282,6 +357,7 @@ export class ViewerPipeline {
     this.decodedSinceStats = 0;
     this.lastStatsAt = now;
     const reasm = this.reassembler?.getStats();
+    const reorder: ReorderStats | undefined = this.reorder?.getStats();
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -297,6 +373,10 @@ export class ViewerPipeline {
       framesDiscardedAwaitingKey: this.framesDiscardedAwaitingKey,
       lastDecodeLatencyMs: this.lastDecodeLatencyMs,
       isHardwareAccelerated: this.decoder?.isHardwareAccelerated ?? null,
+      keyframeStreamsReceived: this.keyframeStreamsReceived,
+      reorderGapResyncs: reorder?.gapResyncs ?? 0,
+      reorderKeyframeWaitDrops: reorder?.keyframeWaitDrops ?? 0,
+      reorderBuffered: reorder?.buffered ?? 0,
     });
   }
 
@@ -361,6 +441,10 @@ export class ViewerPipeline {
       clearInterval(this.statsTimer);
       this.statsTimer = null;
     }
+    if (this.reorderTimer !== null) {
+      clearInterval(this.reorderTimer);
+      this.reorderTimer = null;
+    }
     this.abort.abort();
 
     if (this.decoder) await this.decoder.close();
@@ -372,6 +456,7 @@ export class ViewerPipeline {
 
     this.decoder = null;
     this.reassembler = null;
+    this.reorder = null;
     this.wt = null;
 
     this.cb.onEnded();

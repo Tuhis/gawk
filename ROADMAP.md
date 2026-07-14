@@ -26,6 +26,7 @@ feature set exists).
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
 | R6 | [Production UI](#r6--production-ui) | 🚧 implemented (J1–J6); automated gates green, manual browser verify pending ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
+| R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | 🟡 reliable-keyframe path implemented (S1–S5, S7); worker offload (S6) deferred; manual browser verify pending ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 
 ---
 
@@ -353,6 +354,53 @@ it lands.
 - Designing the UI representation for disabled options (e.g., warning tooltips explaining GPU hardware limits).
 
 **Status**: not started.
+
+## R8 — Worker Offloading & Reliable Keyframes
+
+**Goal**: Maximize UI responsiveness by moving the viewer pipeline off the main thread, and prevent stream freezes by sending keyframes over reliable WebTransport streams instead of unreliable datagrams.
+
+**Why here**: Addresses the two major performance bottlenecks discovered during manual verification and cross-browser testing—network drops leading to `Dropped Incomplete` (especially in Chrome), and decoder performance limiting frame rates (resulting in `Awaiting keyframe` drops). Moving to a Web Worker allows rendering with `OffscreenCanvas` for fluid UI, and reliable streams ensure that massive keyframes are never ruined by a single UDP packet loss.
+
+**Scope sketch**:
+
+- **Web Worker Pipeline**: Move `ViewerPipeline` logic, `WebTransport` reads, and WebCodecs decoding to a dedicated worker. Pass an `OffscreenCanvas` from the main thread so all rendering happens locally inside the worker.
+- **Reliable Keyframe Transmission**: Broadcaster detects when a chunk is a keyframe, and rather than splitting it into 1100-byte UDP datagrams via `packetizeFrame`, encodes it and sends it over a `createUnidirectionalStream()`.
+- **Go Server Backend Upgrade**: The server's `transport/server.go` and `hub` will need to be refactored to support accepting Unidirectional Streams from the publisher and multiplexing/forwarding them to all subscribers, handling backpressure appropriately.
+- **Jitter/Reorder Playout Buffer**: Delta frames over datagrams may arrive before the reliable keyframe stream finishes. The viewer must buffer these "early" frames for up to 200ms and use their `timestampUs` to pace release into the decoder, smoothing out network micro-bursts.
+
+**Key design questions**: How to manage server-side backpressure when a subscriber stalls on a reliable stream, preventing it from blocking the publisher's broadcast stream.
+
+**Status**: **reliable-keyframe path implemented (S1–S5 + S7's observability
+and docs); worker offload (S6) deferred; manual browser verify pending** — full
+design in
+[`docs/12-worker-and-reliable-keyframes.md`](docs/12-worker-and-reliable-keyframes.md)
+(chunks S1–S7). Implemented end-to-end and covered by automated tests:
+keyframes now travel over per-subscriber reliable uni streams with server
+store-and-forward fan-out (write deadline, supersede-stale, late-joiner
+priming), and the viewer merges them with datagram deltas in a pure, bounded
+reorder buffer with freeze-on-gap. `/statusz` and both stats surfaces expose
+the new keyframe-stream and reorder counters; all automated gates are green.
+**S6 (worker offload) is deferred as an independent follow-up** — it is
+structurally decoupled from the protocol work (the pipeline core is already
+host-agnostic) and its cross-browser value is only verifiable in a real
+browser, so it is left as a clean separate chunk. What else remains is the
+manual, browser-only verification (DevTools packet-loss injection, profiler
+soak). The design resolves the open questions: the relay uses
+**store-and-forward fan-out** — it receives each keyframe stream *completely*
+into a bounded, cache-doubling buffer (capped by a new `MaxKeyframeBytes`)
+before opening one uni stream per subscriber, so the publisher ingest is
+structurally decoupled from every subscriber; a subscriber that stalls is
+`CancelWrite`-ed after a write deadline, superseded by the newest keyframe
+(≤1 in-flight per subscriber), and recovers at the next keyframe — the datagram
+"drops over stalls" discipline at stream granularity. **Only keyframes go
+reliable; deltas stay on datagrams.** The preliminary sketch's fixed 200 ms
+playout offset was **rejected** as contrary to the project's live-edge
+philosophy — the viewer gets a bounded *reorder* buffer (no constant latency),
+and constant-offset playout is left to R5. The worker offload keeps a
+host-agnostic, synchronously-testable pipeline core and transfers the
+`OffscreenCanvas` exactly once (reconnect logic moves into the worker). New
+relay knobs are plumbed through `registryOptions` to production per the R2
+finding.
 
 ---
 

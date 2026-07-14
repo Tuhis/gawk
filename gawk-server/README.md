@@ -65,6 +65,8 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-conn-rate-limit` | `GAWK_CONN_RATE_LIMIT` | `3.0` |
 | `-conn-burst-limit` | `GAWK_CONN_BURST_LIMIT` | `10` |
 | `-max-bandwidth` | `GAWK_MAX_BANDWIDTH` | `0` (unlimited) |
+| `-max-keyframe-bytes` | `GAWK_MAX_KEYFRAME_BYTES` | `8388608` (8 MiB) |
+| `-keyframe-write-timeout` | `GAWK_KEYFRAME_WRITE_TIMEOUT` | `1s` |
 | `-allowed-origins` | `GAWK_ALLOWED_ORIGINS` | (empty = allow all) |
 | `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
 | `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |

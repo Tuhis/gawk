@@ -118,8 +118,9 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 9. 🚧 Automatic resolution fallback (R4): encode-queue rejection-ratio detection with hysteresis + cooldown, a default "auto" selection that steps down and back up (backoff against oscillation) while explicit rungs are never auto-stepped, encoder-error step-down — `docs/09` (implemented + released 2026-07-13; real-hardware check found the queue signal under-fires on hardware encoders, so software-path verify + threshold tuning remain pending)
 10. 🚧 Production UI (R6): landing/broadcaster/viewer surfaces, a monochrome design system (`styles/global.css` tokens + `src/ui/` primitives), segmented join-code entry, and a cinematic fullscreen viewer with a stats overlay (`Ctrl+Alt+Shift+D` or right-click); the old pages are re-homed frozen under `#/debug/*`. UI-only — zero server/wire/pipeline changes — `docs/10` (implemented 2026-07-13; automated gates green, manual browser verify pending)
 11. 🚧 Heavy-motion resilience: 500 ms GOP (`keyframeIntervalMs` 2000→500), viewer freeze-on-gap (hold the last good frame on a frameId discontinuity instead of decoding corrupt deltas), and a 30 fps default fan-out cap (broadcaster can still pick 60/native) — cuts heavy-motion corruption on Chrome and "Awaiting keyframe" stalls on Firefox. UI/pipeline only — zero server/wire changes — `docs/08` + `docs/03` (implemented 2026-07-14; automated gates green, manual browser verify pending)
+12. 🚧 Reliable keyframes (R8): keyframes now travel over per-subscriber reliable WebTransport uni streams with server **store-and-forward** fan-out (write deadline, supersede-stale, late-joiner priming), and the viewer merges them with datagram deltas in a pure bounded reorder buffer with centralized freeze-on-gap; deltas stay on datagrams. Wire/server/broadcaster/viewer change together. The **worker offload (S6) is deferred** as an independent follow-up — `docs/12` (S1–S5 + S7 observability/docs implemented 2026-07-14; automated gates green, manual browser verify pending)
 
-What comes next (R5 viewer live-edge work, …) is laid
+What comes next (R8 worker offload, R5 viewer live-edge work, …) is laid
 out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
@@ -210,13 +211,28 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   (promise-chain them).
 - **A lost frame corrupts everything until the next keyframe — so the viewer
   freezes on a frameId gap.** Inter-frame coding means a delta whose reference
-  was dropped decodes to visible garbage. `viewer.ts` tracks the last frameId
-  and, on a non-contiguous *delta*, holds the last good frame (waits for the
-  next keyframe) instead of decoding corruption. Consequences: the **500 ms
-  GOP** (`keyframeIntervalMs`, cut from 2000) is what keeps that freeze short,
-  and gap discards surface on the **"Awaiting keyframe"** stat — so that
-  counter rising on Chrome during heavy motion is the fix working, not a
-  decoder falling behind. ([docs/03](docs/03-single-client-e2e.md))
+  was dropped decodes to visible garbage. Since R8 this freeze-on-gap policy
+  lives in **one place** — the pure `transport/reorder-buffer.ts`, which merges
+  reliable stream keyframes with datagram deltas by frameId and, on a
+  non-contiguous *delta*, holds the last good frame (waits for the next
+  keyframe) instead of decoding corruption. Consequences: the **500 ms GOP**
+  (`keyframeIntervalMs`, cut from 2000) is what keeps that freeze short, and gap
+  discards surface on the **"Awaiting keyframe"** / gap-resync stats — so those
+  counters rising on Chrome during heavy motion is the fix working, not a
+  decoder falling behind.
+  ([docs/03](docs/03-single-client-e2e.md), [docs/12](docs/12-worker-and-reliable-keyframes.md))
+- **Keyframes go over a reliable uni stream; deltas stay on datagrams (R8).**
+  A keyframe split into ~1200-byte datagrams is ruined by a single lost packet,
+  and heavy-motion keyframes are large — so the broadcaster sends each keyframe
+  (config prepended) over `createUnidirectionalStream()` and the relay
+  **stores-and-forwards** it: it reads the whole keyframe into a bounded buffer
+  (capped by `MaxKeyframeBytes`) *before* fanning out one uni stream per
+  subscriber, which is what structurally decouples the publisher from any slow
+  subscriber. A subscriber that stalls past `KeyframeWriteTimeout` is
+  `CancelWrite`-ed and superseded by the newest keyframe (**≤1 in-flight per
+  subscriber**) — "drops over stalls" at stream granularity. Only keyframes are
+  reliable; making deltas reliable would reintroduce head-of-line blocking.
+  ([docs/12](docs/12-worker-and-reliable-keyframes.md))
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
 - **Raising the QUIC idle timeout does not keep idle viewers alive** — the

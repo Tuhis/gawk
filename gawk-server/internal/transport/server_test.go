@@ -73,11 +73,13 @@ func startTestServerCfgLogSrv(t *testing.T, ctx context.Context, cfg config.Conf
 
 	cfg.Addr = fmt.Sprintf("127.0.0.1:%d", port)
 	r = hub.NewRegistry(log, hub.Options{
-		MaxSubscribers:      cfg.MaxSubscribers,
-		BroadcastGrace:      cfg.BroadcastGrace,
-		MaxBroadcasts:       cfg.MaxBroadcasts,
-		MaxTotalSubscribers: cfg.MaxTotalSubscribers,
-		MaxBandwidthBytes:   cfg.MaxBandwidthBytes,
+		MaxSubscribers:       cfg.MaxSubscribers,
+		BroadcastGrace:       cfg.BroadcastGrace,
+		MaxBroadcasts:        cfg.MaxBroadcasts,
+		MaxTotalSubscribers:  cfg.MaxTotalSubscribers,
+		MaxBandwidthBytes:    cfg.MaxBandwidthBytes,
+		MaxKeyframeBytes:     cfg.MaxKeyframeBytes,
+		KeyframeWriteTimeout: cfg.KeyframeWriteTimeout,
 	})
 	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log)
 
@@ -218,6 +220,73 @@ func testConfigDgram(t *testing.T, codec string) []byte {
 		t.Fatalf("AppendDecoderConfig: %v", err)
 	}
 	return d
+}
+
+// buildStreamKeyframe assembles a full StreamFrame message (header + embedded
+// config + payload) as the broadcaster writes it to a uni stream (R8).
+func buildStreamKeyframe(t *testing.T, frameID uint32, codec string, payloadLen int) []byte {
+	t.Helper()
+	var config []byte
+	if codec != "" {
+		var err error
+		config, err = wire.AppendDecoderConfig(nil, wire.DecoderConfig{
+			Codec:     codec,
+			Extradata: []byte{0x01, 0x42, 0xE0, 0x2A},
+		})
+		if err != nil {
+			t.Fatalf("AppendDecoderConfig: %v", err)
+		}
+	}
+	payload := bytes.Repeat([]byte{byte(frameID)}, payloadLen)
+	hdr := wire.StreamFrameHeader{
+		Keyframe:    true,
+		FrameID:     frameID,
+		TimestampUs: uint64(frameID) * 16_667,
+		ConfigLen:   uint32(len(config)),
+		PayloadLen:  uint32(len(payload)),
+	}
+	msg, err := wire.AppendStreamFrameHeader(nil, hdr)
+	if err != nil {
+		t.Fatalf("AppendStreamFrameHeader: %v", err)
+	}
+	msg = append(msg, config...)
+	msg = append(msg, payload...)
+	return msg
+}
+
+// sendKeyframeStream opens a publisher-initiated uni stream and writes one
+// keyframe message to it, exactly as the broadcaster does.
+func sendKeyframeStream(t *testing.T, pub *webtransport.Session, msg []byte) {
+	t.Helper()
+	str, err := pub.OpenUniStream()
+	if err != nil {
+		t.Fatalf("OpenUniStream: %v", err)
+	}
+	if _, err := str.Write(msg); err != nil {
+		t.Fatalf("write keyframe stream: %v", err)
+	}
+	if err := str.Close(); err != nil {
+		t.Fatalf("close keyframe stream: %v", err)
+	}
+}
+
+// readNextKeyframeStream accepts one server-initiated uni stream on the
+// subscriber and returns the parsed keyframe header plus the raw message.
+func readNextKeyframeStream(t *testing.T, ctx context.Context, sub *webtransport.Session) (wire.StreamFrameHeader, []byte) {
+	t.Helper()
+	str, err := sub.AcceptUniStream(ctx)
+	if err != nil {
+		t.Fatalf("AcceptUniStream (keyframe): %v", err)
+	}
+	data, err := io.ReadAll(str)
+	if err != nil {
+		t.Fatalf("read keyframe stream: %v", err)
+	}
+	hdr, err := wire.ParseStreamFrameHeader(data)
+	if err != nil {
+		t.Fatalf("ParseStreamFrameHeader: %v", err)
+	}
+	return hdr, data
 }
 
 func TestEchoRoundTrip(t *testing.T) {
@@ -391,45 +460,26 @@ func TestLateJoinerPrimedOverNetwork(t *testing.T) {
 	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
 	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
-	if err := pub.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
-		t.Fatalf("send config: %v", err)
-	}
-	const kfChunks = 4
-	for _, chunk := range encodeFrame(t, 0, true, kfChunks) {
-		if err := pub.SendDatagram(chunk); err != nil {
-			t.Fatalf("send keyframe chunk: %v", err)
-		}
-	}
+	// A multi-datagram-sized keyframe: the whole point of the stream path is
+	// that it arrives intact regardless of size.
+	kf := buildStreamKeyframe(t, 0, "avc1.42E02A", 5000)
+	sendKeyframeStream(t, pub, kf)
+
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-		return st.HasConfig && st.CachedKeyframeChunks == kfChunks
-	}, "config and keyframe cached")
+		return st.HasConfig && st.CachedKeyframeBytes == len(kf) && st.KeyframeStreamsIn == 1
+	}, "keyframe cached")
 
 	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 
-	gotConfig := false
-	gotChunks := make(map[uint16]bool)
 	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer recvCancel()
-	for !gotConfig || len(gotChunks) < kfChunks {
-		dgram, err := sub.ReceiveDatagram(recvCtx)
-		if err != nil {
-			t.Fatalf("priming incomplete (config %v, %d/%d keyframe chunks): %v",
-				gotConfig, len(gotChunks), kfChunks, err)
-		}
-		_, typ, err := wire.PeekType(dgram)
-		if err != nil {
-			continue
-		}
-		switch typ {
-		case wire.TypeDecoderConfig:
-			gotConfig = true
-		case wire.TypeVideoChunk:
-			hdr, _, err := wire.ParseVideoChunk(dgram)
-			if err == nil && hdr.Keyframe && hdr.FrameID == 0 {
-				gotChunks[hdr.ChunkIndex] = true
-			}
-		}
+	hdr, data := readNextKeyframeStream(t, recvCtx, sub)
+	if hdr.FrameID != 0 || !hdr.Keyframe || hdr.ConfigLen == 0 {
+		t.Errorf("primed keyframe header = %+v, want frameID 0 keyframe with config", hdr)
+	}
+	if !bytes.Equal(data, kf) {
+		t.Errorf("primed keyframe = %d bytes, want the %d-byte cached keyframe verbatim", len(data), len(kf))
 	}
 }
 
@@ -487,15 +537,8 @@ func TestStatuszReachableAndNumbersMove(t *testing.T) {
 	_ = sub
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
-	const kfChunks = 3
-	if err := pub.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
-		t.Fatalf("send config: %v", err)
-	}
-	for _, chunk := range encodeFrame(t, 0, true, kfChunks) {
-		if err := pub.SendDatagram(chunk); err != nil {
-			t.Fatalf("send keyframe chunk: %v", err)
-		}
-	}
+	kf := buildStreamKeyframe(t, 0, "avc1.42E02A", 2000)
+	sendKeyframeStream(t, pub, kf)
 	for _, chunk := range encodeFrame(t, 1, false, 1) {
 		if err := pub.SendDatagram(chunk); err != nil {
 			t.Fatalf("send delta chunk: %v", err)
@@ -503,7 +546,7 @@ func TestStatuszReachableAndNumbersMove(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-		return st.HasConfig && st.CachedKeyframeChunks == kfChunks && st.FramesRelayed >= 2
+		return st.HasConfig && st.KeyframeStreamsIn == 1 && st.FramesRelayed >= 2
 	}, "stream observed by registry")
 
 	_, body = h3Get(t, ctx, clientTLS, url)
@@ -527,9 +570,11 @@ func TestStatuszReachableAndNumbersMove(t *testing.T) {
 		t.Error("statusz publisherActive = false, want true")
 	case bst.Subscribers != 1:
 		t.Errorf("statusz subscribers = %d, want 1", bst.Subscribers)
-	case bst.FramesRelayed < 2 || bst.DatagramsRelayed < kfChunks+1:
+	case bst.FramesRelayed < 2 || bst.DatagramsRelayed < 1:
 		t.Errorf("statusz counters did not move: %+v", bst)
-	case !bst.HasConfig || bst.CachedKeyframeChunks != kfChunks || bst.CachedKeyframeBytes == 0:
+	case bst.KeyframeStreamsIn != 1 || bst.KeyframeBytesIn != uint64(len(kf)):
+		t.Errorf("statusz keyframe-stream counters wrong: %+v", bst)
+	case !bst.HasConfig || bst.CachedKeyframeID != 0 || bst.CachedKeyframeBytes != len(kf):
 		t.Errorf("statusz cache fields wrong: %+v", bst)
 	}
 }
@@ -540,18 +585,11 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
 	pub1, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
-	if err := pub1.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
-		t.Fatalf("send config: %v", err)
-	}
-	for _, chunk := range encodeFrame(t, 7, true, 2) {
-		if err := pub1.SendDatagram(chunk); err != nil {
-			t.Fatalf("send keyframe chunk: %v", err)
-		}
-	}
+	sendKeyframeStream(t, pub1, buildStreamKeyframe(t, 7, "avc1.42E02A", 1000))
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-		return st.HasConfig && st.CachedKeyframeChunks == 2
-	}, "session 1 config and keyframe cached")
+		return st.HasConfig && st.CachedKeyframeID == 7
+	}, "session 1 keyframe cached")
 
 	pub1.CloseWithError(0, "restart")
 	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher slot freed")
@@ -562,63 +600,33 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 	pub2 := dialPublisherReclaim(t, ctx, port, id, clientTLS)
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-		return st.PublisherActive && !st.HasConfig && st.CachedKeyframeChunks == 0
+		return st.PublisherActive && !st.HasConfig && st.CachedKeyframeBytes == 0
 	}, "caches invalidated by new publisher session")
 
 	const newCodec = "vp09.00.40.08"
-	const kfChunks = 3
-	if err := pub2.SendDatagram(testConfigDgram(t, newCodec)); err != nil {
-		t.Fatalf("send new config: %v", err)
-	}
-	for _, chunk := range encodeFrame(t, 0, true, kfChunks) {
-		if err := pub2.SendDatagram(chunk); err != nil {
-			t.Fatalf("send new keyframe chunk: %v", err)
-		}
-	}
+	newKf := buildStreamKeyframe(t, 0, newCodec, 1500)
+	sendKeyframeStream(t, pub2, newKf)
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-		return st.HasConfig && st.CachedKeyframeChunks == kfChunks
-	}, "session 2 config and keyframe cached")
+		return st.HasConfig && st.CachedKeyframeID == 0 && st.CachedKeyframeBytes == len(newKf)
+	}, "session 2 keyframe cached")
 
 	sub := dialSubscriber(t, ctx, port, id, clientTLS)
-	gotCodec := ""
-	gotChunks := make(map[uint16]bool)
 	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer recvCancel()
-	for gotCodec == "" || len(gotChunks) < kfChunks {
-		dgram, err := sub.ReceiveDatagram(recvCtx)
-		if err != nil {
-			t.Fatalf("priming incomplete (codec %q, %d/%d keyframe chunks): %v",
-				gotCodec, len(gotChunks), kfChunks, err)
-		}
-		_, typ, err := wire.PeekType(dgram)
-		if err != nil {
-			continue
-		}
-		switch typ {
-		case wire.TypeDecoderConfig:
-			cfg, err := wire.ParseDecoderConfig(dgram)
-			if err != nil {
-				t.Fatalf("ParseDecoderConfig: %v", err)
-			}
-			if gotCodec == "" {
-				gotCodec = cfg.Codec
-			}
-		case wire.TypeVideoChunk:
-			hdr, _, err := wire.ParseVideoChunk(dgram)
-			if err != nil {
-				continue
-			}
-			if hdr.FrameID == 7 {
-				t.Fatal("primed with a keyframe chunk from the previous publisher session")
-			}
-			if hdr.Keyframe && hdr.FrameID == 0 {
-				gotChunks[hdr.ChunkIndex] = true
-			}
-		}
+	hdr, data := readNextKeyframeStream(t, recvCtx, sub)
+	if hdr.FrameID == 7 {
+		t.Fatal("primed with the keyframe from the previous publisher session")
 	}
-	if gotCodec != newCodec {
-		t.Errorf("first primed config codec = %q, want %q", gotCodec, newCodec)
+	if hdr.FrameID != 0 || !bytes.Equal(data, newKf) {
+		t.Fatalf("primed keyframe = frameID %d (%d bytes), want the new session's frame 0", hdr.FrameID, len(data))
+	}
+	cfg, err := wire.ParseDecoderConfig(data[wire.StreamFrameHeaderSize : wire.StreamFrameHeaderSize+int(hdr.ConfigLen)])
+	if err != nil {
+		t.Fatalf("ParseDecoderConfig from primed keyframe: %v", err)
+	}
+	if cfg.Codec != newCodec {
+		t.Errorf("primed config codec = %q, want %q", cfg.Codec, newCodec)
 	}
 }
 
@@ -635,28 +643,13 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
-	if err := pub1.SendDatagram(testConfigDgram(t, "avc1.42E02A")); err != nil {
-		t.Fatalf("send config: %v", err)
-	}
-	for _, chunk := range encodeFrame(t, 7, true, 2) {
-		if err := pub1.SendDatagram(chunk); err != nil {
-			t.Fatalf("send keyframe chunk: %v", err)
-		}
-	}
-	gotChunks := make(map[uint16]bool)
+	// Session 1: a live keyframe is fanned out to the connected subscriber over
+	// a server-initiated uni stream.
+	sendKeyframeStream(t, pub1, buildStreamKeyframe(t, 7, "avc1.42E02A", 800))
 	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
-	for len(gotChunks) < 2 {
-		dgram, err := sub.ReceiveDatagram(recvCtx)
-		if err != nil {
-			recvCancel()
-			t.Fatalf("session 1 stream incomplete (%d/2 keyframe chunks): %v", len(gotChunks), err)
-		}
-		if _, typ, err := wire.PeekType(dgram); err != nil || typ != wire.TypeVideoChunk {
-			continue
-		}
-		if hdr, _, err := wire.ParseVideoChunk(dgram); err == nil && hdr.FrameID == 7 {
-			gotChunks[hdr.ChunkIndex] = true
-		}
+	if hdr, _, _ := readNextKeyframeStreamNoFatal(recvCtx, sub); hdr.FrameID != 7 {
+		recvCancel()
+		t.Fatalf("session 1 keyframe = frameID %d, want 7", hdr.FrameID)
 	}
 	recvCancel()
 
@@ -674,41 +667,37 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 
 	pub2 := dialPublisherReclaim(t, ctx, port, id, clientTLS)
 	const newCodec = "vp09.00.40.08"
-	const kfChunks = 3
-	if err := pub2.SendDatagram(testConfigDgram(t, newCodec)); err != nil {
-		t.Fatalf("send new config: %v", err)
-	}
-	for _, chunk := range encodeFrame(t, 0, true, kfChunks) {
-		if err := pub2.SendDatagram(chunk); err != nil {
-			t.Fatalf("send new keyframe chunk: %v", err)
-		}
-	}
+	newKf := buildStreamKeyframe(t, 0, newCodec, 1200)
+	sendKeyframeStream(t, pub2, newKf)
 
-	gotCodec := ""
-	newChunks := make(map[uint16]bool)
 	recvCtx, recvCancel = context.WithTimeout(ctx, 5*time.Second)
 	defer recvCancel()
-	for gotCodec != newCodec || len(newChunks) < kfChunks {
-		dgram, err := sub.ReceiveDatagram(recvCtx)
-		if err != nil {
-			t.Fatalf("resumed stream incomplete (codec %q, %d/%d keyframe chunks): %v",
-				gotCodec, len(newChunks), kfChunks, err)
-		}
-		_, typ, err := wire.PeekType(dgram)
-		if err != nil {
-			continue
-		}
-		switch typ {
-		case wire.TypeDecoderConfig:
-			if cfg, err := wire.ParseDecoderConfig(dgram); err == nil && cfg.Codec == newCodec {
-				gotCodec = cfg.Codec
-			}
-		case wire.TypeVideoChunk:
-			if hdr, _, err := wire.ParseVideoChunk(dgram); err == nil && hdr.Keyframe && hdr.FrameID == 0 {
-				newChunks[hdr.ChunkIndex] = true
-			}
-		}
+	hdr, data := readNextKeyframeStream(t, recvCtx, sub)
+	if hdr.FrameID != 0 {
+		t.Fatalf("resumed keyframe = frameID %d, want 0", hdr.FrameID)
 	}
+	cfg, err := wire.ParseDecoderConfig(data[wire.StreamFrameHeaderSize : wire.StreamFrameHeaderSize+int(hdr.ConfigLen)])
+	if err != nil {
+		t.Fatalf("ParseDecoderConfig from resumed keyframe: %v", err)
+	}
+	if cfg.Codec != newCodec {
+		t.Errorf("resumed keyframe codec = %q, want %q", cfg.Codec, newCodec)
+	}
+}
+
+// readNextKeyframeStreamNoFatal is readNextKeyframeStream without t.Fatalf, for
+// call sites that must clean up (cancel a context) before failing.
+func readNextKeyframeStreamNoFatal(ctx context.Context, sub *webtransport.Session) (wire.StreamFrameHeader, []byte, error) {
+	str, err := sub.AcceptUniStream(ctx)
+	if err != nil {
+		return wire.StreamFrameHeader{}, nil, err
+	}
+	data, err := io.ReadAll(str)
+	if err != nil {
+		return wire.StreamFrameHeader{}, nil, err
+	}
+	hdr, err := wire.ParseStreamFrameHeader(data)
+	return hdr, data, err
 }
 
 func TestIdleSubscriberTimesOutWithoutKeepalive(t *testing.T) {

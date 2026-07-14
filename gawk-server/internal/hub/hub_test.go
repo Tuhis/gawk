@@ -16,14 +16,19 @@ import (
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// fakeSender records every datagram and close code.
+// fakeSender records every datagram and close code, and every keyframe stream
+// fully written to it. It implements hub.Conn.
 type fakeSender struct {
 	mu        sync.Mutex
-	got       [][]byte
+	got       [][]byte // datagrams delivered
+	keyframes [][]byte // full keyframe messages delivered (Write+Close)
 	block     chan struct{}
+	kfBlock   chan struct{} // if non-nil, every keyframe Write blocks on it
 	err       error
+	kfOpenErr error // if non-nil, OpenKeyframeStream fails
 	closeCode uint32
 	closed    bool
+	kfOpens   int
 }
 
 func (f *fakeSender) SendDatagram(d []byte) error {
@@ -37,6 +42,17 @@ func (f *fakeSender) SendDatagram(d []byte) error {
 	f.got = append(f.got, d)
 	f.mu.Unlock()
 	return nil
+}
+
+func (f *fakeSender) OpenKeyframeStream() (KeyframeStream, error) {
+	f.mu.Lock()
+	f.kfOpens++
+	oe := f.kfOpenErr
+	f.mu.Unlock()
+	if oe != nil {
+		return nil, oe
+	}
+	return &fakeKeyframeStream{parent: f, cancel: make(chan struct{})}, nil
 }
 
 func (f *fakeSender) CloseWithError(code uint32, reason string) error {
@@ -53,10 +69,127 @@ func (f *fakeSender) received() [][]byte {
 	return append([][]byte(nil), f.got...)
 }
 
+func (f *fakeSender) receivedKeyframes() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.keyframes...)
+}
+
 func (f *fakeSender) getCloseInfo() (uint32, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.closeCode, f.closed
+}
+
+// fakeKeyframeStream is one keyframe delivery to a fakeSender. Write optionally
+// blocks on the parent's kfBlock channel and is unblocked by CancelWrite (its
+// per-stream cancel channel), mirroring how a real SendStream.CancelWrite
+// aborts an in-flight Write.
+type fakeKeyframeStream struct {
+	parent *fakeSender
+	buf    []byte
+	cancel chan struct{}
+	once   sync.Once
+}
+
+func (k *fakeKeyframeStream) SetWriteDeadline(time.Time) error { return nil }
+
+func (k *fakeKeyframeStream) Write(p []byte) (int, error) {
+	if k.parent.kfBlock != nil {
+		select {
+		case <-k.parent.kfBlock:
+		case <-k.cancel:
+			return 0, errors.New("keyframe stream cancelled")
+		}
+	}
+	select {
+	case <-k.cancel:
+		return 0, errors.New("keyframe stream cancelled")
+	default:
+	}
+	k.buf = append(k.buf, p...)
+	return len(p), nil
+}
+
+func (k *fakeKeyframeStream) Close() error {
+	select {
+	case <-k.cancel:
+		return errors.New("keyframe stream cancelled")
+	default:
+	}
+	k.parent.mu.Lock()
+	k.parent.keyframes = append(k.parent.keyframes, append([]byte(nil), k.buf...))
+	k.parent.mu.Unlock()
+	return nil
+}
+
+func (k *fakeKeyframeStream) CancelWrite() {
+	k.once.Do(func() { close(k.cancel) })
+}
+
+// keyframeMsg builds a full StreamFrame message (header + optional config +
+// payload) as the broadcaster would write it to a uni stream. An empty codec
+// omits the embedded config.
+func keyframeMsg(t *testing.T, frameID uint32, codec, payload string) []byte {
+	t.Helper()
+	var config []byte
+	if codec != "" {
+		var err error
+		config, err = wire.AppendDecoderConfig(nil, wire.DecoderConfig{Codec: codec, Extradata: []byte{0x01, 0x02}})
+		if err != nil {
+			t.Fatalf("AppendDecoderConfig: %v", err)
+		}
+	}
+	hdr := wire.StreamFrameHeader{
+		Keyframe:    true,
+		FrameID:     frameID,
+		TimestampUs: uint64(frameID) * 16_667,
+		ConfigLen:   uint32(len(config)),
+		PayloadLen:  uint32(len(payload)),
+	}
+	msg, err := wire.AppendStreamFrameHeader(nil, hdr)
+	if err != nil {
+		t.Fatalf("AppendStreamFrameHeader: %v", err)
+	}
+	msg = append(msg, config...)
+	msg = append(msg, payload...)
+	return msg
+}
+
+// ingestKeyframe feeds a keyframe message to the publisher exactly as the
+// transport accept loop would (one stream, read to EOF).
+func ingestKeyframe(t *testing.T, p *Publisher, msg []byte) {
+	t.Helper()
+	if err := p.IngestKeyframeStream(bytes.NewReader(msg)); err != nil {
+		t.Fatalf("IngestKeyframeStream: %v", err)
+	}
+}
+
+// waitFor polls cond until it holds or the timeout elapses.
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool, desc string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", desc)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// waitKeyframes blocks until the sender has received at least n keyframes.
+// Keyframe delivery is asynchronous (a per-subscriber writer goroutine), and a
+// closing subscriber cancels an in-flight keyframe — so tests wait for delivery
+// before asserting or closing.
+func waitKeyframes(t *testing.T, f *fakeSender, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.receivedKeyframes()) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("keyframes delivered = %d, want >= %d", len(f.receivedKeyframes()), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func chunkDgram(t *testing.T, keyframe bool, frameID uint32, index, count uint16, payload string) []byte {
@@ -171,40 +304,37 @@ func TestSubscribeFull(t *testing.T) {
 	}
 }
 
-func TestLateJoinerPrimed(t *testing.T) {
+func TestLateJoinerPrimedWithStreamKeyframe(t *testing.T) {
 	r := NewRegistry(discardLog, Options{})
 	id, p, _ := r.StartPublish("")
 
-	cfg := configDgram(t, "avc1.42E02A")
-	kf := [][]byte{
-		chunkDgram(t, true, 10, 0, 3, "k0"),
-		chunkDgram(t, true, 10, 1, 3, "k1"),
-		chunkDgram(t, true, 10, 2, 3, "k2"),
-	}
-	p.HandleDatagram(cfg)
-	for _, d := range kf {
-		p.HandleDatagram(d)
-	}
+	// A keyframe (config + payload) arrives over a stream and is cached.
+	kf := keyframeMsg(t, 10, "avc1.42E02A", "keyframe-bytes")
+	ingestKeyframe(t, p, kf)
 
 	f := &fakeSender{}
 	s, err := r.Subscribe(id, f)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
+	// Deltas after joining still flow over datagrams.
 	live := chunkDgram(t, false, 11, 0, 1, "delta")
 	p.HandleDatagram(live)
+
+	waitKeyframes(t, f, 1)
 	s.Close()
 
-	wantDatagrams(t, f, [][]byte{cfg, kf[0], kf[1], kf[2], live})
+	if kfs := f.receivedKeyframes(); len(kfs) != 1 || !bytes.Equal(kfs[0], kf) {
+		t.Fatalf("primed keyframes = %d, want 1 matching the cached keyframe", len(kfs))
+	}
+	wantDatagrams(t, f, [][]byte{live})
 }
 
 func TestPrimingSurvivesPublisherClose(t *testing.T) {
 	r := NewRegistry(discardLog, Options{BroadcastGrace: 5 * time.Minute})
 	id, p, _ := r.StartPublish("")
-	cfg := configDgram(t, "vp8")
-	kf := chunkDgram(t, true, 0, 0, 1, "kf")
-	p.HandleDatagram(cfg)
-	p.HandleDatagram(kf)
+	kf := keyframeMsg(t, 0, "vp8", "kf")
+	ingestKeyframe(t, p, kf)
 	p.Close()
 
 	f := &fakeSender{}
@@ -212,177 +342,161 @@ func TestPrimingSurvivesPublisherClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
+	waitKeyframes(t, f, 1)
 	s.Close()
-	wantDatagrams(t, f, [][]byte{cfg, kf})
+	if kfs := f.receivedKeyframes(); len(kfs) != 1 || !bytes.Equal(kfs[0], kf) {
+		t.Fatalf("primed keyframes = %d, want 1 (cache must survive publisher away)", len(kfs))
+	}
 }
 
-func TestIncompleteKeyframeNeverCached(t *testing.T) {
-	r := NewRegistry(discardLog, Options{})
+// A keyframe stream that overruns MaxKeyframeBytes is rejected and never
+// cached; the previous cache is left intact.
+func TestOversizeKeyframeNotCached(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxKeyframeBytes: wire.StreamFrameHeaderSize + 8})
 	id, p, _ := r.StartPublish("")
 
-	kf5 := [][]byte{
-		chunkDgram(t, true, 5, 0, 2, "a"),
-		chunkDgram(t, true, 5, 1, 2, "b"),
+	good := keyframeMsg(t, 5, "", "12345678") // exactly 8 payload bytes: fits
+	ingestKeyframe(t, p, good)
+
+	toobig := keyframeMsg(t, 6, "", "123456789") // 9 payload bytes: over the cap
+	if err := p.IngestKeyframeStream(bytes.NewReader(toobig)); err == nil {
+		t.Fatal("IngestKeyframeStream accepted an oversize keyframe, want error")
 	}
-	for _, d := range kf5 {
-		p.HandleDatagram(d)
-	}
-	p.HandleDatagram(chunkDgram(t, true, 6, 0, 3, "x"))
-	p.HandleDatagram(chunkDgram(t, true, 6, 2, 3, "z"))
 
 	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-	if st.CachedKeyframeID != 5 || st.CachedKeyframeChunks != 2 {
-		t.Fatalf("cached keyframe = id %d (%d chunks), want id 5 (2 chunks)",
-			st.CachedKeyframeID, st.CachedKeyframeChunks)
+	if st.CachedKeyframeID != 5 {
+		t.Errorf("cached keyframe id = %d after oversize reject, want 5 (unchanged)", st.CachedKeyframeID)
 	}
-
-	f := &fakeSender{}
-	s, _ := r.Subscribe(id, f)
-	s.Close()
-	wantDatagrams(t, f, kf5)
-
-	kf7 := chunkDgram(t, true, 7, 0, 1, "w")
-	p.HandleDatagram(kf7)
-	st = r.Stats().Broadcasts[r.ObfuscateID(id)]
-	if st.CachedKeyframeID != 7 || st.CachedKeyframeChunks != 1 {
-		t.Fatalf("cached keyframe = id %d (%d chunks), want id 7 (1 chunk)",
-			st.CachedKeyframeID, st.CachedKeyframeChunks)
-	}
-	p.HandleDatagram(chunkDgram(t, true, 6, 1, 3, "y"))
-	st = r.Stats().Broadcasts[r.ObfuscateID(id)]
-	if st.CachedKeyframeID != 7 {
-		t.Fatalf("cached keyframe id = %d after straggler, want 7", st.CachedKeyframeID)
+	if st.KeyframeStreamsOversize != 1 {
+		t.Errorf("KeyframeStreamsOversize = %d, want 1", st.KeyframeStreamsOversize)
 	}
 }
 
-func TestDuplicateAndReorderedKeyframeChunks(t *testing.T) {
+// A newer keyframe supersedes a stale in-flight one to the same subscriber
+// (blocked writer), and only the newest is ultimately delivered.
+func TestNewKeyframeSupersedesStale(t *testing.T) {
 	r := NewRegistry(discardLog, Options{})
 	id, p, _ := r.StartPublish("")
 
-	p.HandleDatagram(chunkDgram(t, true, 3, 2, 3, "c"))
-	p.HandleDatagram(chunkDgram(t, true, 3, 0, 3, "a"))
-	p.HandleDatagram(chunkDgram(t, true, 3, 0, 3, "a"))
-	p.HandleDatagram(chunkDgram(t, true, 3, 1, 3, "b"))
-
-	f := &fakeSender{}
-	s, _ := r.Subscribe(id, f)
-	s.Close()
-	got := f.received()
-	if len(got) != 3 {
-		t.Fatalf("primed with %d chunks, want 3 (in order)", len(got))
+	f := &fakeSender{kfBlock: make(chan struct{})}
+	s, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
 	}
-	for i, want := range []string{"a", "b", "c"} {
-		_, payload, err := wire.ParseVideoChunk(got[i])
-		if err != nil || string(payload) != want {
-			t.Errorf("primed chunk %d payload = %q (err %v), want %q", i, payload, err, want)
-		}
+
+	// First keyframe: its write blocks (subscriber slow).
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "first"))
+	waitFor(t, 2*time.Second, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.kfOpens == 1
+	}, "first keyframe stream opened")
+
+	// Second keyframe supersedes the first (CancelWrite) and opens a new stream.
+	ingestKeyframe(t, p, keyframeMsg(t, 1, "vp8", "second"))
+	waitFor(t, 2*time.Second, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.kfOpens == 2
+	}, "second keyframe stream opened")
+
+	// Release the block: the second keyframe completes, the first was dropped.
+	close(f.kfBlock)
+	waitKeyframes(t, f, 1)
+	s.Close()
+
+	if got := s.KeyframesDropped(); got < 1 {
+		t.Errorf("keyframesDropped = %d, want >= 1 (superseded first)", got)
+	}
+	kfs := f.receivedKeyframes()
+	if len(kfs) != 1 {
+		t.Fatalf("delivered %d keyframes, want exactly 1 (the newest)", len(kfs))
+	}
+	hdr, _ := wire.ParseStreamFrameHeader(kfs[0])
+	if hdr.FrameID != 1 {
+		t.Errorf("delivered keyframe frameID = %d, want 1 (newest)", hdr.FrameID)
 	}
 }
 
-func TestConfigReEmittedBeforeKeyframe(t *testing.T) {
-	r := NewRegistry(discardLog, Options{})
-	id, p, _ := r.StartPublish("")
-	cfg := configDgram(t, "avc1.42E02A")
-	p.HandleDatagram(cfg)
-
-	f := &fakeSender{}
-	s, _ := r.Subscribe(id, f)
-
-	kf0 := chunkDgram(t, true, 1, 0, 2, "k0")
-	kf1 := chunkDgram(t, true, 1, 1, 2, "k1")
-	p.HandleDatagram(kf0)
-	p.HandleDatagram(kf1)
-	s.Close()
-
-	wantDatagrams(t, f, [][]byte{cfg, cfg, kf0, kf1})
-}
-
-func TestNewConfigReplacesCache(t *testing.T) {
-	r := NewRegistry(discardLog, Options{})
-	id, p, _ := r.StartPublish("")
-	p.HandleDatagram(configDgram(t, "avc1.42E02A"))
-	cfg2 := configDgram(t, "vp09.00.40.08")
-	p.HandleDatagram(cfg2)
-
-	f := &fakeSender{}
-	s, _ := r.Subscribe(id, f)
-	s.Close()
-	wantDatagrams(t, f, [][]byte{cfg2})
-}
-
-func TestPublisherRestartResetsCaches(t *testing.T) {
+// A new publisher session invalidates the keyframe cache (frameIDs reset, codec
+// may differ); a joiner during the away window is primed with the old keyframe,
+// a joiner after restart with the new one.
+func TestPublisherRestartResetsKeyframeCache(t *testing.T) {
 	r := NewRegistry(discardLog, Options{BroadcastGrace: 5 * time.Minute})
 	id, p1, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	cfg1 := configDgram(t, "avc1.42E02A")
-	p1.HandleDatagram(cfg1)
-	kf1 := [][]byte{
-		chunkDgram(t, true, 41, 0, 2, "old0"),
-		chunkDgram(t, true, 41, 1, 2, "old1"),
-	}
-	for _, d := range kf1 {
-		p1.HandleDatagram(d)
-	}
+	oldKf := keyframeMsg(t, 41, "avc1.42E02A", "old")
+	ingestKeyframe(t, p1, oldKf)
 	p1.Close()
 
 	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-	if !st.HasConfig || st.CachedKeyframeID != 41 || st.CachedKeyframeChunks != 2 {
-		t.Fatalf("caches after publisher close = %+v, want config + keyframe 41 (2 chunks)", st)
+	if !st.HasConfig || st.CachedKeyframeID != 41 {
+		t.Fatalf("caches after publisher close = %+v, want config + keyframe 41", st)
 	}
 	away := &fakeSender{}
 	sa, _ := r.Subscribe(id, away)
+	waitKeyframes(t, away, 1)
 	sa.Close()
-	wantDatagrams(t, away, [][]byte{cfg1, kf1[0], kf1[1]})
+	if kfs := away.receivedKeyframes(); len(kfs) != 1 || !bytes.Equal(kfs[0], oldKf) {
+		t.Fatalf("away joiner primed with %d keyframes, want the old cached one", len(kfs))
+	}
 
 	_, p2, err := r.StartPublish(id)
 	if err != nil {
 		t.Fatalf("StartPublish after restart: %v", err)
 	}
 	st = r.Stats().Broadcasts[r.ObfuscateID(id)]
-	if st.HasConfig || st.CachedKeyframeID != 0 || st.CachedKeyframeChunks != 0 || st.CachedKeyframeBytes != 0 {
-		t.Fatalf("caches survived publisher restart: %+v", st)
+	if st.HasConfig || st.CachedKeyframeID != 0 || st.CachedKeyframeBytes != 0 {
+		t.Fatalf("keyframe cache survived publisher restart: %+v", st)
 	}
 
-	early := &fakeSender{}
-	se, _ := r.Subscribe(id, early)
-
-	cfg2 := configDgram(t, "vp09.00.40.08")
-	kf2 := chunkDgram(t, true, 0, 0, 1, "new")
-	p2.HandleDatagram(cfg2)
-	p2.HandleDatagram(kf2)
-	se.Close()
-	wantDatagrams(t, early, [][]byte{cfg2, cfg2, kf2})
+	newKf := keyframeMsg(t, 0, "vp09.00.40.08", "new")
+	ingestKeyframe(t, p2, newKf)
 
 	late := &fakeSender{}
 	sl, _ := r.Subscribe(id, late)
+	waitKeyframes(t, late, 1)
 	sl.Close()
-	wantDatagrams(t, late, [][]byte{cfg2, kf2})
+	if kfs := late.receivedKeyframes(); len(kfs) != 1 || !bytes.Equal(kfs[0], newKf) {
+		t.Fatalf("post-restart joiner primed with %d keyframes, want the new one", len(kfs))
+	}
 }
 
-func TestConfigPrecedesEveryKeyframe(t *testing.T) {
+// The crux (docs/12 Decision 3/4): a subscriber whose keyframe stream stalls is
+// superseded/dropped and recovers at the next keyframe, while a healthy peer
+// receives every keyframe and the publisher ingest is never blocked.
+func TestSlowKeyframeStreamDropsHealthyPeerUnaffected(t *testing.T) {
+	const n = 20
 	r := NewRegistry(discardLog, Options{})
 	id, p, _ := r.StartPublish("")
-	f := &fakeSender{}
-	s, _ := r.Subscribe(id, f)
 
-	cfg1 := configDgram(t, "avc1.42E02A")
-	cfg2 := configDgram(t, "vp09.00.40.08")
-	k0 := [][]byte{chunkDgram(t, true, 0, 0, 2, "k0a"), chunkDgram(t, true, 0, 1, 2, "k0b")}
-	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
-	d2 := chunkDgram(t, false, 2, 0, 1, "d2")
-	k3 := [][]byte{chunkDgram(t, true, 3, 0, 2, "k3a"), chunkDgram(t, true, 3, 1, 2, "k3b")}
-	d4 := chunkDgram(t, false, 4, 0, 1, "d4")
+	healthy := &fakeSender{}
+	blocked := &fakeSender{kfBlock: make(chan struct{})}
+	sh, _ := r.Subscribe(id, healthy)
+	sb, _ := r.Subscribe(id, blocked)
 
-	for _, d := range [][]byte{cfg1, k0[0], k0[1], d1, d2, cfg2, k3[0], k3[1], d4} {
-		p.HandleDatagram(d)
+	for i := range n {
+		// Ingest returns promptly regardless of the blocked subscriber — the
+		// publisher is never coupled to a slow peer.
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(i), "vp8", fmt.Sprintf("kf%02d", i)))
+		waitKeyframes(t, healthy, i+1)
 	}
-	s.Close()
 
-	wantDatagrams(t, f, [][]byte{
-		cfg1, cfg1, k0[0], k0[1], d1, d2, cfg2, cfg2, k3[0], k3[1], d4,
-	})
+	sh.Close()
+	if got := len(healthy.receivedKeyframes()); got != n {
+		t.Errorf("healthy subscriber received %d keyframes, want %d", got, n)
+	}
+
+	close(blocked.kfBlock)
+	sb.Close()
+	if got := sb.KeyframesDropped(); got == 0 {
+		t.Error("blocked subscriber recorded no keyframe drops")
+	}
+	if st := r.Stats().Totals.KeyframeStreamsDropped; st == 0 {
+		t.Error("hub stats did not accumulate keyframe drops from the blocked subscriber")
+	}
 }
 
 func TestBadDatagramsDroppedAndCounted(t *testing.T) {
@@ -505,10 +619,11 @@ func TestFifteenSubscribersOneBlocked(t *testing.T) {
 	const chunksPerFrame = 3
 	deadline := time.Now().Add(duration)
 	for frameID := uint32(0); time.Now().Before(deadline); frameID++ {
+		// Keyframe-flagged chunks are still forwarded verbatim as datagrams
+		// here; the hub no longer re-emits config before them (config rides the
+		// keyframe stream in production, R8). This test exercises datagram
+		// fan-out backpressure, so the flag only affects the payload.
 		keyframe := frameID%60 == 0
-		if keyframe {
-			want = append(want, cfg)
-		}
 		for ci := range uint16(chunksPerFrame) {
 			d := chunkDgram(t, keyframe, frameID, ci, chunksPerFrame,
 				fmt.Sprintf("f%d/%d", frameID, ci))
@@ -918,7 +1033,7 @@ func TestOversizedDatagramDroppedAndCounted(t *testing.T) {
 	if st.BadDatagrams != 1 {
 		t.Errorf("BadDatagrams = %d, want 1", st.BadDatagrams)
 	}
-	if st.DatagramsRelayed != 0 || st.CachedKeyframeChunks != 0 {
+	if st.DatagramsRelayed != 0 || st.CachedKeyframeBytes != 0 {
 		t.Errorf("oversized datagram leaked into relay/cache: %+v", st)
 	}
 }
@@ -954,10 +1069,7 @@ func TestBandwidthDropsSurviveSubscriberClose(t *testing.T) {
 	// Wait until Close has marked the subscriber closed (and closed the
 	// queue), then release drain to bandwidth-drop the backlog.
 	for {
-		r.mu.Lock()
-		c := s.closed
-		r.mu.Unlock()
-		if c {
+		if s.closed.Load() {
 			break
 		}
 		time.Sleep(time.Millisecond)

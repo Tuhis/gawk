@@ -4,7 +4,10 @@ import {
   MAX_CHUNK_COUNT,
   MAX_CHUNK_PAYLOAD,
   MAX_DATAGRAM_SIZE,
+  MAX_KEYFRAME_BYTES,
+  STREAM_FRAME_HEADER_SIZE,
   TYPE_DECODER_CONFIG,
+  TYPE_STREAM_FRAME,
   TYPE_VIDEO_CHUNK,
   TYPE_BROADCAST_ANNOUNCE,
   CLOSE_CODE_BROADCAST_ENDED,
@@ -12,12 +15,16 @@ import {
   WIRE_VERSION,
   WireError,
   encodeDecoderConfig,
+  encodeStreamFrame,
+  encodeStreamFrameHeader,
   encodeVideoChunk,
   parseDecoderConfig,
+  parseStreamFrameHeader,
   parseVideoChunk,
   peekType,
   parseBroadcastAnnounce,
   type DecoderConfigMessage,
+  type StreamFrameHeader,
   type VideoChunkHeader,
 } from './wire';
 
@@ -28,6 +35,15 @@ const GOLDEN_VIDEO_CHUNK_HEX = '0101010001020304000500820000005d21dba5f0616263';
 const GOLDEN_DECODER_CONFIG_AVC_HEX = '0102000b617663312e3432453032410142e02affe1';
 const GOLDEN_DECODER_CONFIG_VP8_HEX = '01020003767038';
 const GOLDEN_BROADCAST_ANNOUNCE_HEX = '0103064b375851324d';
+const GOLDEN_STREAM_FRAME_HEADER_HEX = '01040100010203040000005d21dba5f00000000600000003';
+
+const goldenStreamFrameHeader: StreamFrameHeader = {
+  keyframe: true,
+  frameId: 0x01020304,
+  timestampUs: 0x0000005d21dba5f0n,
+  configLen: 6,
+  payloadLen: 3,
+};
 
 const goldenVideoChunkHeader: VideoChunkHeader = {
   keyframe: true,
@@ -66,6 +82,9 @@ describe('constants', () => {
     expect(MAX_CHUNK_PAYLOAD).toBe(1180);
     expect(MAX_CHUNK_COUNT).toBe(3000);
     expect(TYPE_BROADCAST_ANNOUNCE).toBe(0x03);
+    expect(TYPE_STREAM_FRAME).toBe(0x04);
+    expect(STREAM_FRAME_HEADER_SIZE).toBe(24);
+    expect(MAX_KEYFRAME_BYTES).toBe(8 * 1024 * 1024);
     expect(CLOSE_CODE_BROADCAST_ENDED).toBe(4000);
   });
 });
@@ -100,6 +119,62 @@ describe('golden vectors', () => {
   it('parses the golden broadcast announce', () => {
     const id = parseBroadcastAnnounce(fromHex(GOLDEN_BROADCAST_ANNOUNCE_HEX));
     expect(id).toBe('K7XQ2M');
+  });
+
+  it('encodes the golden stream frame header byte-for-byte', () => {
+    expect(toHex(encodeStreamFrameHeader(goldenStreamFrameHeader))).toBe(GOLDEN_STREAM_FRAME_HEADER_HEX);
+  });
+
+  it('parses the golden stream frame header', () => {
+    expect(parseStreamFrameHeader(fromHex(GOLDEN_STREAM_FRAME_HEADER_HEX))).toEqual(goldenStreamFrameHeader);
+  });
+});
+
+describe('stream frame round trip', () => {
+  it('encodes header + config + payload and parses the header back', () => {
+    const config = new Uint8Array([0x01, 0x02, 0x00, 0x03, 0x76, 0x70, 0x38]); // a vp8 DecoderConfig datagram
+    const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef, 0x00]);
+    const msg = encodeStreamFrame({ keyframe: true, frameId: 7, timestampUs: 99n }, config, payload);
+
+    expect(peekType(msg).msgType).toBe(TYPE_STREAM_FRAME);
+    const header = parseStreamFrameHeader(msg);
+    expect(header).toEqual({
+      keyframe: true,
+      frameId: 7,
+      timestampUs: 99n,
+      configLen: config.length,
+      payloadLen: payload.length,
+    });
+    // Body slices land where the lengths say.
+    const cfg = msg.subarray(STREAM_FRAME_HEADER_SIZE, STREAM_FRAME_HEADER_SIZE + header.configLen);
+    const pay = msg.subarray(STREAM_FRAME_HEADER_SIZE + header.configLen);
+    expect(toHex(cfg)).toBe(toHex(config));
+    expect(toHex(pay)).toBe(toHex(payload));
+  });
+
+  it('supports a keyframe with no embedded config', () => {
+    const payload = new Uint8Array([1, 2, 3]);
+    const msg = encodeStreamFrame({ keyframe: true, frameId: 0, timestampUs: 0n }, new Uint8Array(0), payload);
+    const header = parseStreamFrameHeader(msg);
+    expect(header.configLen).toBe(0);
+    expect(header.payloadLen).toBe(3);
+  });
+
+  it('rejects headers that are too short or mistyped', () => {
+    expect(() => parseStreamFrameHeader(new Uint8Array(23))).toThrow(/too short/);
+    const badType = encodeStreamFrameHeader(goldenStreamFrameHeader);
+    badType[1] = 0x01;
+    expect(() => parseStreamFrameHeader(badType)).toThrow(/stream frame/);
+  });
+
+  it('rejects a declared body exceeding MAX_KEYFRAME_BYTES', () => {
+    expect(() =>
+      encodeStreamFrameHeader({ keyframe: true, frameId: 0, timestampUs: 0n, configLen: 0, payloadLen: MAX_KEYFRAME_BYTES }),
+    ).toThrow(WireError);
+    // Parse must also reject an untrusted oversize declaration.
+    const buf = encodeStreamFrameHeader({ keyframe: true, frameId: 0, timestampUs: 0n, configLen: 0, payloadLen: 1 });
+    new DataView(buf.buffer).setUint32(20, MAX_KEYFRAME_BYTES);
+    expect(() => parseStreamFrameHeader(buf)).toThrow(WireError);
   });
 });
 

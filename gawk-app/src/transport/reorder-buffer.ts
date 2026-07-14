@@ -1,0 +1,291 @@
+// Viewer reorder / playout buffer (R8, docs/12 Decision 7).
+//
+// R8 splits video across two transports: keyframes arrive reliably over
+// unidirectional streams, deltas arrive fast-but-lossy over datagrams. That
+// makes the channels race — a delta N+1 can arrive before its keyframe N
+// finishes on the stream. This buffer merges the two by frameId and releases
+// frames to the decoder in decode order.
+//
+// It is emphatically NOT a fixed-offset de-jitter buffer: the project favors
+// the latest frame over smooth-but-late playback, so there is no constant
+// playout delay. Frames are released as soon as they are decodable. The two
+// bounded waits below exist only to disambiguate the two-channel race:
+//
+//   - KEYFRAME_WAIT_MS: while waiting for a keyframe (initial sync, or after a
+//     declared gap), decodable-pending frames are held at most this long.
+//     Keyframes are reliable so one WILL arrive; this is only a safety cap on
+//     undecodable buffering.
+//   - DELTA_GAP_GRACE_MS: when the next contiguous delta is missing but later
+//     frames have arrived, wait this long for the straggler before declaring a
+//     gap. A lost delta never retransmits, so this is short — a couple of frame
+//     intervals — after which we freeze and resync at the next keyframe.
+//
+// Pure and timer-free: the pipeline injects the clock and calls tick()
+// periodically (e.g. once per rendered frame). Fully unit-testable in node.
+
+import type { DecoderConfigMessage } from './wire';
+
+// Tunables, named in one place (à la media/fallback.ts) for later real-world
+// tuning. Times are milliseconds.
+export const KEYFRAME_WAIT_MS = 200;
+export const DELTA_GAP_GRACE_MS = 60;
+// Hard cap on buffered frames; guards against a lingering stale frame (e.g. a
+// straggler above the decode position after a broadcaster restart) growing the
+// buffer without bound. Oldest-received entries are dropped past this.
+export const MAX_BUFFERED_FRAMES = 64;
+
+export interface ReorderKeyframe {
+  frameId: number;
+  timestampUs: bigint;
+  // Embedded decoder config (present on stream keyframes); null if none.
+  config: DecoderConfigMessage | null;
+  data: Uint8Array; // encoded keyframe payload
+}
+
+export interface ReorderDelta {
+  frameId: number;
+  timestampUs: bigint;
+  data: Uint8Array; // reassembled encoded delta payload
+}
+
+export interface ReleasedFrame {
+  frameId: number;
+  keyframe: boolean;
+  timestampUs: bigint;
+  data: Uint8Array;
+  // Non-null only for keyframes carrying a config; the pipeline dedups + applies.
+  config: DecoderConfigMessage | null;
+}
+
+export interface ReorderStats {
+  released: number;
+  keyframesReleased: number;
+  // Deltas dropped as stale (frameId <= decode position) or evicted by the cap.
+  deltasDropped: number;
+  // Times a missing delta was declared a gap and we froze to await a keyframe.
+  gapResyncs: number;
+  // Frames dropped while waiting for a keyframe (undecodable, aged out).
+  keyframeWaitDrops: number;
+  // Held (buffered, not yet released) frames right now.
+  buffered: number;
+}
+
+interface Entry {
+  frameId: number;
+  keyframe: boolean;
+  timestampUs: bigint;
+  data: Uint8Array;
+  config: DecoderConfigMessage | null;
+  receivedAtMs: number;
+}
+
+export class ReorderBuffer {
+  private onFrame: (frame: ReleasedFrame) => void;
+  private now: () => number;
+
+  private buffer = new Map<number, Entry>();
+  // frameId of the last frame released to the decoder; null before the first.
+  private decodePosition: number | null = null;
+  // True when we need a keyframe to (re)sync: before the first frame, after a
+  // declared delta gap, or on an explicit resync request (decoder backpressure).
+  private waitingForKeyframe = true;
+
+  private stats: ReorderStats = {
+    released: 0,
+    keyframesReleased: 0,
+    deltasDropped: 0,
+    gapResyncs: 0,
+    keyframeWaitDrops: 0,
+    buffered: 0,
+  };
+
+  constructor(onFrame: (frame: ReleasedFrame) => void, now: () => number = () => performance.now()) {
+    this.onFrame = onFrame;
+    this.now = now;
+  }
+
+  pushKeyframe(kf: ReorderKeyframe): void {
+    // A keyframe is self-contained. If it's not newer than what we've already
+    // decoded within this session it's a stale duplicate — but a frameId reset
+    // (broadcaster restart) also looks "older", so only drop an exact duplicate
+    // of the current position; anything else is buffered and the resync logic
+    // sorts out ordering (jumping backwards on restart is intentional).
+    if (this.decodePosition !== null && kf.frameId === this.decodePosition) {
+      return; // exact duplicate of the just-decoded frame
+    }
+    this.insert({
+      frameId: kf.frameId,
+      keyframe: true,
+      timestampUs: kf.timestampUs,
+      data: kf.data,
+      config: kf.config,
+      receivedAtMs: this.now(),
+    });
+    this.advance();
+  }
+
+  pushDelta(d: ReorderDelta): void {
+    // A delta at or below the decode position is stale (already superseded).
+    if (this.decodePosition !== null && d.frameId <= this.decodePosition) {
+      this.stats.deltasDropped++;
+      return;
+    }
+    this.insert({
+      frameId: d.frameId,
+      keyframe: false,
+      timestampUs: d.timestampUs,
+      data: d.data,
+      config: null,
+      receivedAtMs: this.now(),
+    });
+    this.advance();
+  }
+
+  // Called periodically by the pipeline so the time-bounded waits elapse even
+  // without new arrivals.
+  tick(): void {
+    this.advance();
+  }
+
+  // Forces a resync at the next keyframe — used when the decoder queue is deep
+  // (drop-to-keyframe) so the viewer catches up to live.
+  requestResync(): void {
+    if (!this.waitingForKeyframe) this.stats.gapResyncs++;
+    this.waitingForKeyframe = true;
+    this.advance();
+  }
+
+  getStats(): ReorderStats {
+    return { ...this.stats, buffered: this.buffer.size };
+  }
+
+  reset(): void {
+    this.buffer.clear();
+    this.decodePosition = null;
+    this.waitingForKeyframe = true;
+  }
+
+  private insert(e: Entry): void {
+    const existing = this.buffer.get(e.frameId);
+    // Keep a keyframe over a duplicate delta for the same id; otherwise ignore
+    // a duplicate.
+    if (existing && !(e.keyframe && !existing.keyframe)) return;
+    this.buffer.set(e.frameId, e);
+    this.evictIfOverCap();
+  }
+
+  private evictIfOverCap(): void {
+    while (this.buffer.size > MAX_BUFFERED_FRAMES) {
+      // Drop the oldest-received entry (Map preserves insertion order, which is
+      // arrival order).
+      const oldest = this.buffer.keys().next();
+      if (oldest.done) return;
+      this.buffer.delete(oldest.value);
+      this.stats.deltasDropped++;
+    }
+  }
+
+  private advance(): void {
+    // Repeat until no further progress can be made.
+    for (;;) {
+      if (this.decodePosition === null || this.waitingForKeyframe) {
+        if (this.jumpToKeyframe()) continue;
+        // No keyframe available yet: drop undecodable held frames that have
+        // aged past the wait cap, then stop.
+        this.dropStaleWhileWaiting();
+        return;
+      }
+
+      const next = this.decodePosition + 1;
+      const entry = this.buffer.get(next);
+      if (entry) {
+        this.release(entry);
+        continue;
+      }
+
+      // The contiguous next frame is missing.
+      // If a keyframe is already buffered ahead, it is a definitive, reliable
+      // resync point — jump to it now (latest-first) rather than waiting on
+      // deltas that clearly lost the race to it.
+      if (this.hasBufferedKeyframeAbove(this.decodePosition)) {
+        this.stats.gapResyncs++;
+        this.waitingForKeyframe = true;
+        continue;
+      }
+      // No keyframe yet: wait briefly for a straggler delta; past the grace,
+      // declare a gap and freeze until the next (reliable) keyframe arrives.
+      if (this.shouldDeclareGap()) {
+        this.stats.gapResyncs++;
+        this.waitingForKeyframe = true;
+        continue;
+      }
+      return;
+    }
+  }
+
+  // Jumps to the freshest buffered keyframe (most recently arrived — which is
+  // the newest within a session and, across a broadcaster restart, the new
+  // one). Drops buffered frames below it by frameId (undecodable / superseded).
+  // Returns true if it released a keyframe.
+  private jumpToKeyframe(): boolean {
+    let best: Entry | null = null;
+    for (const e of this.buffer.values()) {
+      if (!e.keyframe) continue;
+      if (best === null || e.receivedAtMs > best.receivedAtMs) best = e;
+    }
+    if (!best) return false;
+
+    for (const [id, e] of this.buffer) {
+      if (id < best.frameId || (id === best.frameId && !e.keyframe)) {
+        this.buffer.delete(id);
+        if (!e.keyframe) this.stats.deltasDropped++;
+      }
+    }
+    this.waitingForKeyframe = false;
+    this.release(best);
+    return true;
+  }
+
+  private hasBufferedKeyframeAbove(position: number): boolean {
+    for (const e of this.buffer.values()) {
+      if (e.keyframe && e.frameId > position) return true;
+    }
+    return false;
+  }
+
+  private shouldDeclareGap(): boolean {
+    // Declare a gap once the oldest frame waiting above the missing one has sat
+    // in the buffer longer than the grace — the straggler isn't coming.
+    let oldest = Infinity;
+    for (const e of this.buffer.values()) {
+      if (e.receivedAtMs < oldest) oldest = e.receivedAtMs;
+    }
+    if (oldest === Infinity) return false; // nothing buffered; just wait
+    return this.now() - oldest >= DELTA_GAP_GRACE_MS;
+  }
+
+  private dropStaleWhileWaiting(): void {
+    const cutoff = this.now() - KEYFRAME_WAIT_MS;
+    for (const [id, e] of this.buffer) {
+      if (e.keyframe) continue; // keyframes are always useful to resync on
+      if (e.receivedAtMs < cutoff) {
+        this.buffer.delete(id);
+        this.stats.keyframeWaitDrops++;
+      }
+    }
+  }
+
+  private release(entry: Entry): void {
+    this.buffer.delete(entry.frameId);
+    this.decodePosition = entry.frameId;
+    this.stats.released++;
+    if (entry.keyframe) this.stats.keyframesReleased++;
+    this.onFrame({
+      frameId: entry.frameId,
+      keyframe: entry.keyframe,
+      timestampUs: entry.timestampUs,
+      data: entry.data,
+      config: entry.config,
+    });
+  }
+}

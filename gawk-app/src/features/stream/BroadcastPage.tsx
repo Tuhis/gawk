@@ -248,6 +248,8 @@ export function BroadcastPage() {
           ],
           ['Auto steps (down/up)', stats ? `${stats.autoStepDowns} / ${stats.autoStepUps}` : '—'],
           ['Datagrams sent', String(stats?.datagramsSent ?? '—')],
+          ['Keyframe streams', String(stats?.keyframeStreamsSent ?? '—')],
+          ['Keyframe streams failed', String(stats?.keyframeStreamsFailed ?? '—')],
           ['Sent', `${fmt((stats?.bytesSent ?? 0) / 1_000_000, 1)} MB`],
           ['Configs sent', String(stats?.configsSent ?? '—')],
           ['Encoder queue', String(stats?.encoderQueueDepth ?? '—')],
