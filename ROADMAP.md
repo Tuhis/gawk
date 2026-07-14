@@ -511,7 +511,8 @@ keyframes measured landing >500 ms behind their datagram deltas; 200 ms
 degenerated every GOP into keyframe-only playback on a congested peer) and
 **relay eviction of zombie subscribers** after 10 consecutive keyframe
 stream-open failures (non-terminal close code 4001) — the one server-side
-change in R10. Chrome 152 `getStats()` breakage tracked in `BUGS.md`.
+change in R10. Chrome 152 `getStats()` breakage was root-caused 2026-07-14:
+Chromium removed the API entirely (see docs/13 D7), not a gawk bug.
 Re-verification on both browsers passed 2026-07-14 (P4 remainder stays
 deferred pending future measurements) — see
 [`docs/14-viewer-render-performance.md`](docs/14-viewer-render-performance.md).

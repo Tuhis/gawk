@@ -209,9 +209,15 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   from the same registry (gather fails with "inconsistent label
   dimensions"). Hence the `gawk_broadcast_*` / `gawk_relay_*` split.
   ([docs/13](docs/13-observability.md))
-- **`WebTransport.getStats()` is Chromium-only in practice** and its field
-  set varies by version — every consumer must feature-detect and treat all
-  fields as nullable (`transport/net-stats.ts`). ([docs/13](docs/13-observability.md))
+- **`WebTransport.getStats()` currently exists in NO shipping browser** —
+  Chromium removed its pre-spec implementation (absent in 150/151/152;
+  spec-conformant rewrite "in development",
+  [chromestatus](https://chromestatus.com/feature/5194440034746368)) and
+  Firefox never had it, so the overlays' Network section reads `—`
+  everywhere and per-leg attribution leans on relay-side counters. Every
+  consumer must feature-detect and treat all fields as nullable
+  (`transport/net-stats.ts` — spec-aligned, lights up on re-ship).
+  ([docs/13](docs/13-observability.md))
 
 **Media pipeline**
 

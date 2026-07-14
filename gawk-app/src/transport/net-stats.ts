@@ -3,10 +3,15 @@
 // which is what lets a problem be attributed to broadcaster-uplink vs
 // viewer-downlink without any cross-reporting channel.
 //
-// `WebTransport.getStats()` is spec'd but unevenly shipped (Chromium has it,
-// Firefox largely doesn't, and the dictionary's fields vary by version), so
-// every field is nullable and the sampler never throws: unsupported simply
-// yields null and the overlays render "—".
+// `WebTransport.getStats()` is spec'd but currently shipped by NO browser:
+// Chromium removed its pre-spec implementation (verified absent in 150
+// stable / 151 beta / 152 dev, 2026-07-14 — the spec-conformant rewrite is
+// "in development": https://chromestatus.com/feature/5194440034746368,
+// https://issues.chromium.org/issues/41492543) and Firefox never had it.
+// Every field is nullable and the sampler never throws: unsupported simply
+// yields null and the overlays render "—". The mapping below matches the
+// current spec's WebTransportConnectionStats, so it lights up again
+// automatically when Chromium re-ships.
 
 export interface TransportConnectionStats {
   rttMs: number | null;

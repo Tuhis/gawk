@@ -76,10 +76,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs (currently: Chrome 152
-  broke `WebTransport.getStats()` sampling — `connection: null` on both
-  surfaces). Check it before debugging anything overlay/stats-related;
-  remove entries when fixed.
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs (currently none; the
+  Chrome 152 `getStats()` entry was root-caused 2026-07-14 as an upstream
+  API removal, not a gawk bug — no browser ships `WebTransport.getStats()`
+  today; see docs/13 D7). Check it before debugging anything
+  overlay/stats-related; remove entries when fixed.
 - `CODE-REVIEW.md` — **coding + review guidelines; bug fixes are test-first
   (failing test before the fix, always). Follow it for every change and
   review.**
@@ -251,7 +252,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `subscriberDetails` in `/statusz`. Chart: metrics ClusterIP Service +
    gated ServiceMonitor; the metrics port never touches the public
    LoadBalancer. Clients: `WebTransport.getStats()` sampling (feature-
-   detected, all-nullable — Firefox lacks it) + funnel rates (capture →
+   detected, all-nullable — and since 2026-07-14 known to exist in **no**
+   shipping browser: Chromium removed it, rewrite "in development"; the
+   Network section is dark until it re-ships, see docs/13 D7) + funnel
+   rates (capture →
    post-gate → encoded → **sent** fps; received → decoded → rendered fps),
    stall ages, and a shared sectioned stats overlay on **both** production
    surfaces (same hotkey) with **Copy diagnostics** JSON (rolling ~10 s
@@ -296,7 +300,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    after 10 consecutive keyframe stream-open failures (zombie session with
    exhausted stream credit) with non-terminal close code **4001**
    (`CloseCodeSubscriberUnresponsive` == `CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE`);
-   Chrome 152 broke `getStats()` sampling → BUGS.md. **Restart/rollover fix**
+   Chrome 152 "broke" `getStats()` sampling → root-caused as Chromium
+   removing the API entirely (docs/13 D7). **Restart/rollover fix**
    (finding 5): R8 severed the reassembler's restart recovery (keyframes
    bypass it on streams, so its late-delta watermark never reset — a
    broadcaster restart froze viewers into a 2 fps keyframe slideshow,

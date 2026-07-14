@@ -277,6 +277,26 @@ connection fields are nullable. On the viewer this sampling runs **inside
 the worker** (the `WebTransport` lives there); the fields ride the existing
 `ViewerWorkerOutbound` stats event, so no new worker plumbing.
 
+**Post-R10 finding (2026-07-14): no current browser ships `getStats()` at
+all.** The "Chrome 152 broke sampling" report (ex-BUGS.md) was root-caused
+by probing real Chrome builds against the relay's `/echo`: `getStats` is
+absent from `WebTransport.prototype` in Chrome **150 stable, 151 beta, and
+152 dev** alike — Chromium removed its old pre-spec implementation, and the
+spec-conformant rewrite is tracked as *"in development"*
+([chromestatus 5194440034746368](https://chromestatus.com/feature/5194440034746368),
+[crbug 41492543](https://issues.chromium.org/issues/41492543); no flag or
+origin trial re-enables it). Stream-level `getStats()`
+(`WebTransportSendStream`) is gone too — uni streams are plain
+`WritableStream`s. So D7's defensive posture was the right call: the
+sampler returns `null` everywhere, overlays render `—`, and nothing
+crashes — but the whole **Network section is currently dark on every
+browser**, and per-leg attribution must lean on the relay-side counters
+(ingress-loss window, per-subscriber `/statusz` detail), which the R10
+diagnostics proved workable. The sampler's field mapping matches the
+current spec's `WebTransportConnectionStats` dictionary (verified against
+the spec 2026-07-14), so connection health lights up again automatically
+when Chromium re-ships — watch the chromestatus entry.
+
 ### D8 — Diagnostics export for remote troubleshooting
 
 Each overlay gets a "Copy diagnostics" action: a JSON blob with surface
@@ -406,6 +426,9 @@ usual posture — browser + cluster behavior can't be fully automated here):
   across Chromium versions; Firefox likely absent. Mitigated by all-nullable
   fields + manual verify matrix. Worst case the connection section is
   Chromium-only — the funnel and server metrics don't depend on it.
+  *Realized worse than worst case (2026-07-14)*: Chromium removed the API
+  entirely (see the D7 post-R10 finding), so the connection section is
+  currently dark everywhere pending Chromium's spec-conformant re-ship.
 - **quic-go tracer API** (M8): server-side RTT histograms depend on
   `logging.Tracer` details that need verification against the pinned
   quic-go version; deliberately optional and last.

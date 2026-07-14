@@ -230,7 +230,10 @@ usable. Chrome: worse than before — and the data attributed it precisely.
    correctness, not tuning.
 3. **`WebTransport.getStats()` is broken on Chrome 152** — `connection:
    null` on both surfaces including the main-thread broadcaster, so not a
-   P3/nested-worker issue. Not fixed yet; tracked in [`BUGS.md`](../BUGS.md).
+   P3/nested-worker issue. **Root-caused 2026-07-14**: not a gawk bug —
+   Chromium removed the API entirely (absent in 150/151/152; spec rewrite
+   "in development" upstream). See the D7 post-R10 finding in
+   [`docs/13-observability.md`](13-observability.md).
 4. Healthy-by-data: broadcaster cadence (1.9 keyframes/s, encoder queue 0),
    broadcaster→relay leg (`ingressFramesLost` 0), and relay→Firefox
    delivery (2.0/s, zero drops) — the R9 playbook attribution worked as
