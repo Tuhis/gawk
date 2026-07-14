@@ -18,7 +18,7 @@ import type { CaptureConfig } from '../media/types';
 import { connectWebTransport, DatagramSender, type ConnectOptions } from './connection';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import { packetizeDecoderConfig, packetizeFrame, packetizeStreamKeyframe } from './packetizer';
-import { parseBroadcastAnnounce } from './wire';
+import { nextFrameId, parseBroadcastAnnounce } from './wire';
 
 export interface BroadcastStats {
   encodedFrames: number;
@@ -529,7 +529,10 @@ export class BroadcastPipeline {
 
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
-    const frameId = this.nextFrameId++;
+    // Wrap at uint32 like the wire encoding does, so the JS counter and the
+    // on-wire frameId can never disagree (receivers compare ids serially).
+    const frameId = this.nextFrameId;
+    this.nextFrameId = nextFrameId(frameId);
     const timestampUs = BigInt(Math.round(chunk.timestamp));
 
     if (chunk.type === 'key') {

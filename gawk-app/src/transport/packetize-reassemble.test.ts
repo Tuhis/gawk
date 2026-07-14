@@ -130,6 +130,31 @@ describe('ordering policy', () => {
     expect(frames.map((f) => f.frameId)).toEqual([100, 101, 0, 1]);
   });
 
+  it('recovers new-session deltas after restart via the stream-keyframe watermark reset', () => {
+    // Since R8, real keyframes arrive over reliable streams and never pass
+    // through the reassembler — the datagram-keyframe watermark reset (test
+    // above) no longer fires in practice. After a broadcaster restart the
+    // watermark must instead be reset via noteStreamKeyframe, or every
+    // new-session delta is dropped as late (R10 field finding, docs/14).
+    const { r, frames } = collector();
+    pushFrame(r, 100_000, false); // old session's last delta; watermark = 100000
+    r.noteStreamKeyframe(3); // restart: new session's keyframe (id 3) via stream
+    pushFrame(r, 4, false); // new session's delta must flow
+    pushFrame(r, 5, false);
+    expect(frames.map((f) => f.frameId)).toEqual([100_000, 4, 5]);
+    expect(r.getStats().framesDroppedLate).toBe(0);
+  });
+
+  it('accepts deltas across frameId rollover (uint32 wrap)', () => {
+    const { r, frames } = collector();
+    pushFrame(r, 0xffff_fffe, false);
+    pushFrame(r, 0xffff_ffff, false);
+    pushFrame(r, 0, false); // wire frameId wraps: 0 is the successor
+    pushFrame(r, 1, false);
+    expect(frames.map((f) => f.frameId)).toEqual([0xffff_fffe, 0xffff_ffff, 0, 1]);
+    expect(r.getStats().framesDroppedLate).toBe(0);
+  });
+
   it('evicts the oldest incomplete assembly under pressure', () => {
     const { r, frames } = collector();
     // Frame 0 misses a chunk, then 8 more incomplete assemblies start.

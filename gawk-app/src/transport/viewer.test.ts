@@ -222,6 +222,49 @@ describe('ViewerPipeline', () => {
     }
   });
 
+  it('recovers delta flow after a broadcaster restart (stream keyframe resets the reassembler watermark)', async () => {
+    // R10 field finding (docs/14): keyframes ride streams since R8, so the
+    // reassembler's datagram-keyframe watermark reset never fires in
+    // practice. After a restart (frameIds reset to 0), the stream keyframe
+    // must reset the watermark or every new-session delta is dropped as
+    // late — keyframe-only 2 fps playback.
+    connectWebTransport.mockResolvedValue(makeFakeWT(600_000, {}));
+    let deliver: ((d: Uint8Array) => void) | null = null;
+    readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+      deliver = onDatagram;
+      return new Promise(() => {});
+    });
+    let deliverKf: ((kf: unknown) => void) | null = null;
+    readKeyframeStreams.mockImplementation((_wt: unknown, onKeyframe: (kf: unknown) => void) => {
+      deliverKf = onKeyframe;
+      return new Promise(() => {});
+    });
+    const { cbs } = makeCallbacks();
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+    await pipeline.start();
+    const push = deliver as unknown as (d: Uint8Array) => void;
+    const pushKf = deliverKf as unknown as (kf: unknown) => void;
+
+    // Old session: watermark climbs to 100001.
+    push(configDgram());
+    push(frameDgram(100_000, true));
+    push(frameDgram(100_001, false));
+    await flush();
+    expect(decodeSpy).toHaveBeenCalledTimes(2);
+
+    // Broadcaster restart: the new session's keyframe (id 3) arrives over the
+    // reliable stream, then its deltas arrive as datagrams.
+    pushKf({ frameId: 3, timestampUs: 3000n, config: null, data: new Uint8Array([9]) });
+    push(frameDgram(4, false));
+    push(frameDgram(5, false));
+
+    // The reorder buffer holds the backwards-jump keyframe for the delta-gap
+    // grace before jumping; real timers drive its tick.
+    await vi.waitFor(() => expect(decodeSpy).toHaveBeenCalledTimes(5), { timeout: 2000 });
+
+    await pipeline.stop();
+  });
+
   it('fails without a close code when the session drops abruptly', async () => {
     // A transient drop (no clean close) must keep today's reconnect path:
     // an error with no closeCode.

@@ -41,6 +41,22 @@ export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // mirrored from Go wire.CloseCodeSubscriberUnresponsive for namespace parity.
 export const CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE = 4001;
 
+// Wire frameIds are uint32 and wrap; consumers must compare them with serial
+// arithmetic (RFC 1982 flavored), not `<`/`>`. `a` is ahead of `b` when the
+// forward distance b→a (mod 2^32) is under half the space — so ids just past
+// a rollover count as ahead of ids just before it, while a genuine backwards
+// jump (broadcaster restart resetting to 0) still reads as "behind" and is
+// handled by keyframe-driven resync instead (reassembler watermark reset +
+// reorder-buffer keyframe jump).
+export function frameIdAhead(a: number, b: number): boolean {
+  return a !== b && ((a - b) >>> 0) < 0x8000_0000;
+}
+
+// The wrap-aware successor of a uint32 frameId.
+export function nextFrameId(id: number): number {
+  return (id + 1) >>> 0;
+}
+
 export const MAX_DATAGRAM_SIZE = 1200;
 export const VIDEO_CHUNK_HEADER_SIZE = 20;
 export const MAX_CHUNK_PAYLOAD = MAX_DATAGRAM_SIZE - VIDEO_CHUNK_HEADER_SIZE;

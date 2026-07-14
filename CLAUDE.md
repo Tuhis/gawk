@@ -293,7 +293,14 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    after 10 consecutive keyframe stream-open failures (zombie session with
    exhausted stream credit) with non-terminal close code **4001**
    (`CloseCodeSubscriberUnresponsive` == `CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE`);
-   Chrome 152 broke `getStats()` sampling → BUGS.md.
+   Chrome 152 broke `getStats()` sampling → BUGS.md. **Restart/rollover fix**
+   (finding 5): R8 severed the reassembler's restart recovery (keyframes
+   bypass it on streams, so its late-delta watermark never reset — a
+   broadcaster restart froze viewers into a 2 fps keyframe slideshow,
+   "Dropped (late)" at full rate). Stream keyframes now sync the watermark
+   (`noteStreamKeyframe`), all frameId comparisons are serial/uint32-wrap-
+   aware (`wire.frameIdAhead`/`nextFrameId`; broadcaster wraps its counter at
+   source), and a serially-backwards keyframe = immediate reorder resync.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

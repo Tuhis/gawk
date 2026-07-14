@@ -235,6 +235,27 @@ usable. Chrome: worse than before — and the data attributed it precisely.
    broadcaster→relay leg (`ingressFramesLost` 0), and relay→Firefox
    delivery (2.0/s, zero drops) — the R9 playbook attribution worked as
    designed.
+5. **R8 severed the reassembler's restart recovery** (found from a
+   pause/restart report: viewers froze into a 2 fps keyframe slideshow).
+   The reassembler drops "late" deltas against a watermark that only a
+   *keyframe passing through it* could reset — and since R8, keyframes ride
+   reliable streams and never pass through it. After a broadcaster restart
+   (same broadcast ID, viewers stay connected, frameIds reset to 0) every
+   new-session delta read as ≤ the old session's high watermark and was
+   dropped as "Dropped (late)" — for ~36 minutes at 50 fps, until the ids
+   caught up. Keyframes (stream path) played fine: exactly 2 fps.
+   **Fix (implemented, test-first)**: the pipeline syncs the watermark from
+   every stream keyframe (`Reassembler.noteStreamKeyframe`); all frameId
+   comparisons in the reassembler and reorder buffer now use **serial
+   (uint32 wrap-aware) arithmetic** (`wire.frameIdAhead` / `nextFrameId`, so
+   natural rollover — the wire encoding wraps at 2^32 — also survives, and
+   the broadcaster wraps its counter at source to match); and a keyframe
+   arriving serially *behind* the decode position is treated as the restart
+   signal in the reorder buffer — **immediate resync** instead of waiting
+   out the delta-gap grace, which would stale-drop the new session's first
+   deltas and cost an extra GOP of freeze. Diagnostic signature (vs. the
+   late-keyframe loop in finding 1): `framesDroppedLate` climbing at full
+   frame rate while `reorderKeyframeWaitDrops` stays flat.
 
 Broadcast-scale note for the future: at native ultrawide the ~236 KB
 keyframe consumes ~38 % of a 10 Mbps GOP budget; if late-keyframe pressure

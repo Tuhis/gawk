@@ -219,6 +219,11 @@ export class ViewerPipeline {
 
   private handleKeyframeStream(kf: KeyframeStreamFrame): void {
     if (this.stopping || !this.reorder) return;
+    // Keyframes bypass the datagram reassembler, so sync its late-delta
+    // watermark here — this is what makes a broadcaster restart (frameIds
+    // reset to 0) recover instead of dropping every new-session delta as
+    // late (R10 field finding, docs/14).
+    this.reassembler?.noteStreamKeyframe(kf.frameId);
     this.keyframeStreamsReceived++;
     this.lastFrameReceivedAt = performance.now();
     this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;

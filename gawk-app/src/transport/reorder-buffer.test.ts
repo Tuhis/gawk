@@ -164,6 +164,27 @@ describe('ReorderBuffer', () => {
     expect(ids()).toEqual([0, 1, 5]);
   });
 
+  it('releases contiguously across frameId rollover (uint32 wrap)', () => {
+    const { rb, ids } = harness();
+    rb.pushKeyframe(kf(0xffff_fffe));
+    rb.pushDelta(delta(0xffff_ffff));
+    rb.pushDelta(delta(0)); // the wire frameId wraps: 0 is the contiguous successor
+    rb.pushDelta(delta(1));
+    expect(ids()).toEqual([0xffff_fffe, 0xffff_ffff, 0, 1]);
+  });
+
+  it('treats a post-rollover keyframe as ahead of a pre-rollover gap', () => {
+    const { rb, ids } = harness();
+    rb.pushKeyframe(kf(0xffff_fffe));
+    rb.pushDelta(delta(0xffff_ffff));
+    expect(ids()).toEqual([0xffff_fffe, 0xffff_ffff]);
+
+    // Frames 0..29 lost across the wrap; keyframe 30 is a definitive resync
+    // point AHEAD of the gap and must release immediately (no grace wait).
+    rb.pushKeyframe(kf(30));
+    expect(ids()).toEqual([0xffff_fffe, 0xffff_ffff, 30]);
+  });
+
   it('drops a stale delta at or below the decode position', () => {
     const { rb, ids } = harness();
     rb.pushKeyframe(kf(5));

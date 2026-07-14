@@ -23,7 +23,7 @@
 // Pure and timer-free: the pipeline injects the clock and calls tick()
 // periodically (e.g. once per rendered frame). Fully unit-testable in node.
 
-import type { DecoderConfigMessage } from './wire';
+import { frameIdAhead, nextFrameId, type DecoderConfigMessage } from './wire';
 
 // Tunables, named in one place (à la media/fallback.ts) for later real-world
 // tuning. Times are milliseconds.
@@ -122,6 +122,19 @@ export class ReorderBuffer {
     if (this.decodePosition !== null && kf.frameId === this.decodePosition) {
       return; // exact duplicate of the just-decoded frame
     }
+    // A keyframe BEHIND the decode position (serially) is the restart signal:
+    // frameIds reset while we were mid-session. Resync to it immediately —
+    // waiting out the delta-gap grace would stale-drop the new session's
+    // first deltas against the old position, costing an extra GOP of freeze
+    // after every restart (R10 field finding, docs/14). The rare other cause
+    // (two keyframe streams read out of order) costs one brief jump back and
+    // self-heals at the next keyframe.
+    const backwards =
+      this.decodePosition !== null && !frameIdAhead(kf.frameId, this.decodePosition);
+    if (backwards && !this.waitingForKeyframe) {
+      this.stats.gapResyncs++;
+      this.waitingForKeyframe = true;
+    }
     this.insert({
       frameId: kf.frameId,
       keyframe: true,
@@ -134,8 +147,9 @@ export class ReorderBuffer {
   }
 
   pushDelta(d: ReorderDelta): void {
-    // A delta at or below the decode position is stale (already superseded).
-    if (this.decodePosition !== null && d.frameId <= this.decodePosition) {
+    // A delta at or behind the decode position is stale (already superseded).
+    // Serial comparison: a delta just past the uint32 rollover is ahead.
+    if (this.decodePosition !== null && !frameIdAhead(d.frameId, this.decodePosition)) {
       this.stats.deltasDropped++;
       return;
     }
@@ -205,7 +219,7 @@ export class ReorderBuffer {
         return;
       }
 
-      const next = this.decodePosition + 1;
+      const next = nextFrameId(this.decodePosition);
       const entry = this.buffer.get(next);
       if (entry) {
         this.release(entry);
@@ -245,7 +259,8 @@ export class ReorderBuffer {
     if (!best) return false;
 
     for (const [id, e] of this.buffer) {
-      if (id < best.frameId || (id === best.frameId && !e.keyframe)) {
+      const behindBest = id !== best.frameId && !frameIdAhead(id, best.frameId);
+      if (behindBest || (id === best.frameId && !e.keyframe)) {
         this.buffer.delete(id);
         if (!e.keyframe) this.stats.deltasDropped++;
       }
@@ -257,7 +272,7 @@ export class ReorderBuffer {
 
   private hasBufferedKeyframeAbove(position: number): boolean {
     for (const e of this.buffer.values()) {
-      if (e.keyframe && e.frameId > position) return true;
+      if (e.keyframe && frameIdAhead(e.frameId, position)) return true;
     }
     return false;
   }

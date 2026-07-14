@@ -251,6 +251,18 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   is now **evicted** after 10 consecutive failures with non-terminal close
   code 4001, so it reconnects if live and stops costing fan-out if dead.
   ([docs/14](docs/14-viewer-render-performance.md))
+- **frameIds are uint32 serial numbers — every comparison must be wrap- and
+  restart-aware, and moving keyframes off datagrams (R8) silently broke the
+  restart path (R10).** The reassembler drops "late" deltas against a
+  watermark that only keyframes could reset — but since R8 keyframes bypass
+  it on streams, so a broadcaster restart (frameIds reset to 0, viewers stay
+  connected) dropped *every* new-session delta as late for ~36 min: a 2 fps
+  keyframe slideshow. Signature: "Dropped (late)" climbing at full frame
+  rate, `keyframeWaitDrops` flat. Now: stream keyframes sync the watermark
+  (`noteStreamKeyframe`), frameId comparisons use serial arithmetic
+  (`wire.frameIdAhead`, handles uint32 rollover), and a serially-backwards
+  keyframe triggers an immediate reorder resync (a grace wait there costs an
+  extra GOP of freeze). ([docs/14](docs/14-viewer-render-performance.md))
 - **Keyframes go over a reliable uni stream; deltas stay on datagrams (R8).**
   A keyframe split into ~1200-byte datagrams is ruined by a single lost packet,
   and heavy-motion keyframes are large — so the broadcaster sends each keyframe

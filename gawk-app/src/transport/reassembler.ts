@@ -8,14 +8,19 @@
 // - At most MAX_ASSEMBLIES frames assemble concurrently; starting one more
 //   evicts the oldest in-progress assembly (it lost the race — a datagram
 //   went missing).
-// - Completed delta frames older than the last emitted frame are dropped
-//   (late reorder). Completed keyframes are always emitted and reset the
-//   ordering watermark: a keyframe doesn't reference other frames, and this
-//   is also what makes a broadcaster restart (frameIds reset to 0) recover.
+// - Completed delta frames behind the last emitted frame are dropped (late
+//   reorder). frameIds are uint32 and wrap, so "behind" is serial arithmetic
+//   (wire.frameIdAhead), never `<=`.
+// - Keyframes reset the ordering watermark — a keyframe doesn't reference
+//   other frames, and the reset is what makes a broadcaster restart
+//   (frameIds reset to 0) recover. Since R8 real keyframes arrive over
+//   reliable streams and never pass through here, so the pipeline reports
+//   them via noteStreamKeyframe(); the datagram-keyframe path below is kept
+//   for robustness but no broadcaster sends it (R10 field finding, docs/14).
 // - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
 //   the relay re-emits the config before every keyframe by design.
 
-import { parseDecoderConfig, parseVideoChunk, peekType, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, WIRE_VERSION, type DecoderConfigMessage } from './wire';
+import { frameIdAhead, parseDecoderConfig, parseVideoChunk, peekType, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, WIRE_VERSION, type DecoderConfigMessage } from './wire';
 
 const MAX_ASSEMBLIES = 8;
 
@@ -73,6 +78,20 @@ export class Reassembler {
 
   getStats(): ReassemblerStats {
     return { ...this.stats };
+  }
+
+  // Keyframes travel on reliable streams since R8 and never pass through the
+  // datagram reassembler — so the pipeline reports them here to sync the
+  // late-delta watermark. Without this, a broadcaster restart (frameIds reset
+  // to 0) leaves the watermark at the old session's high frameId and every
+  // new-session delta is dropped as "late" — keyframe-only 2 fps playback
+  // (R10 field finding, docs/14).
+  noteStreamKeyframe(frameId: number): void {
+    // Unconditional: a backwards jump here is exactly the restart signal the
+    // watermark must follow. Mid-session it's a no-op (keyframe ids track the
+    // delta sequence), and a racing stale keyframe merely re-admits at most a
+    // GOP of deltas that the reorder buffer drops as stale anyway.
+    this.lastEmittedFrameId = frameId;
   }
 
   // Feeds one received datagram. The buffer must not be reused by the
@@ -162,12 +181,13 @@ export class Reassembler {
 
   private completeFrame(frameId: number, assembly: Assembly): void {
     // Late delta frames are useless (their reference frame was already
-    // superseded); late or duplicate keyframes are still self-contained and
-    // emitting them lets a broadcaster restart (frameIds reset) recover.
+    // superseded); keyframes are self-contained and always emitted. "Late"
+    // is serial (wrap-aware): a frameId just past the uint32 rollover is
+    // AHEAD of the watermark, not 4 billion frames behind it.
     if (
       !assembly.keyframe &&
       this.lastEmittedFrameId !== null &&
-      frameId <= this.lastEmittedFrameId
+      !frameIdAhead(frameId, this.lastEmittedFrameId)
     ) {
       this.stats.framesDroppedLate++;
       return;
