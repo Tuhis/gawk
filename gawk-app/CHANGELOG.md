@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.17.2...gawk-app-v0.18.0) (2026-07-14)
+
+
+### Features
+
+* offload broadcast pipeline to a Web Worker (R11) ([02aed13](https://github.com/Tuhis/gawk/commit/02aed13fb9f934161653a6bf10fcd27973dd91b8))
+* viewer live-edge measurement + opt-in smoothed playout (R5 Q1-Q3) ([449104e](https://github.com/Tuhis/gawk/commit/449104e3a58d3b85f83353e0d0f429cc61624efc))
+
 ## [0.17.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.17.1...gawk-app-v0.17.2) (2026-07-14)
 
 

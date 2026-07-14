@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.14.1...gawk-server-v0.15.0) (2026-07-14)
+
+
+### Features
+
+* viewer live-edge measurement + opt-in smoothed playout (R5 Q1-Q3) ([449104e](https://github.com/Tuhis/gawk/commit/449104e3a58d3b85f83353e0d0f429cc61624efc))
+
 ## [0.14.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.14.0...gawk-server-v0.14.1) (2026-07-14)
 
 
