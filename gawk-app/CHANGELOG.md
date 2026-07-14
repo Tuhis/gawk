@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.16.0...gawk-app-v0.17.0) (2026-07-14)
+
+
+### Features
+
+* transport worker split, decoder queue 5→10, placement stats (R10 P3+P4-partial) ([aad212a](https://github.com/Tuhis/gawk/commit/aad212aa555ec47168b32de4dc5f594c650927b0))
+
 ## [0.16.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.15.0...gawk-app-v0.16.0) (2026-07-14)
 
 
