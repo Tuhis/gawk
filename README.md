@@ -39,7 +39,7 @@ getDisplayMedia
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R6), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`13`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`14`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
 ## Quickstart (local dev)
@@ -261,6 +261,18 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   with a **boot handshake before the transfer**, so an unsupported worker
   (e.g. no worker WebCodecs) falls back to the main-thread pipeline with the
   canvas still attached. ([docs/12](docs/12-worker-and-reliable-keyframes.md))
+- **Firefox's 2D-canvas `drawImage(VideoFrame)` is a synchronous CPU
+  conversion — and on the shared viewer worker thread it starves everything
+  else (R10).** One thread runs the datagram reader, decoder feeding *and*
+  rendering; a slow per-frame draw overflows the browser's small incoming-
+  datagram queue (silent drops → "Dropped (incomplete)") and backs up decode
+  (decoded fps < received fps). Hence the worker renders through
+  `createRenderSink()`: a **WebGL** textured-quad sink (2D fallback) wrapped
+  in a **coalescing** sink that draws at most once per rAF tick,
+  latest-frame-wins. Consequence: "Rendered fps" reads ≈min(decoded fps,
+  display Hz) — rendered *below* decoded under load is coalescing working,
+  not frame loss. The overlay's "Renderer" row shows which sink is live.
+  ([docs/14](docs/14-viewer-render-performance.md))
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
 - **Raising the QUIC idle timeout does not keep idle viewers alive** — the

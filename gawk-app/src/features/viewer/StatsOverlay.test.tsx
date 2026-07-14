@@ -32,6 +32,7 @@ function fullStats(): ViewerStats {
     reorderBuffered: 2,
     receivedFps: 30.2,
     renderedFps: 29.5,
+    renderer: 'webgl',
     timeSinceLastFrameMs: 33,
     lastKeyframeAgeMs: 210,
     connection: {
@@ -66,6 +67,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('avc1.42E01F')).toBeTruthy();
     expect(screen.getByText('Received fps').nextSibling?.textContent).toBe('30.2');
     expect(screen.getByText('Rendered fps').nextSibling?.textContent).toBe('29.5');
+    expect(screen.getByText('Renderer').nextSibling?.textContent).toBe('WebGL');
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('24.5 ms');
     expect(screen.getByText('Bitrate (recv)').nextSibling?.textContent).toBe('4.2 Mbps');
     expect(screen.getByText('Keyframe age').nextSibling?.textContent).toBe('210 ms');

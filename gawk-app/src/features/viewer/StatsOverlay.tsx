@@ -26,6 +26,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
       rows: [
         ['Codec', codec ?? '—'],
         ['Decode mode', stats?.isHardwareAccelerated === true ? 'Hardware' : stats?.isHardwareAccelerated === false ? 'Software' : '—'],
+        ['Renderer', stats?.renderer === 'webgl' ? 'WebGL' : stats?.renderer === '2d' ? 'Canvas 2D' : '—'],
         ['Received fps', fmt(stats?.receivedFps ?? NaN)],
         ['Decoder fps', fmt(stats?.decoderFps ?? NaN)],
         ['Rendered fps', fmtOr(stats?.renderedFps)],

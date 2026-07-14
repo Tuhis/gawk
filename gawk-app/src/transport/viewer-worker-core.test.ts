@@ -52,6 +52,7 @@ import { encodeDecoderConfig, encodeVideoChunk } from './wire';
 function fakeSink() {
   const drawn: VideoFrame[] = [];
   const sink: RenderSink = {
+    kind: '2d',
     draw: (frame) => {
       drawn.push(frame);
       frame.close();

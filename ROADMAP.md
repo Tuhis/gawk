@@ -28,6 +28,7 @@ feature set exists).
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 | R9 | [Observability & metrics](#r9--observability--metrics) | 🚧 implemented 2026-07-14 (M1–M7); automated gates green, manual verify + M8 (Grafana) pending ([docs/13](docs/13-observability.md)) |
+| R10 | [Viewer render performance](#r10--viewer-render-performance) | 🚧 P1–P2 implemented 2026-07-14; Firefox before/after verify pending ([docs/14](docs/14-viewer-render-performance.md)) |
 
 ---
 
@@ -462,6 +463,39 @@ because client_golang rejects one family with two label sets, and
 unset). Manual verify — cluster scrape path, playbook attribution drills,
 browser overlays on Chrome + Firefox — pending; see the doc's verification
 plan.
+
+## R10 — Viewer render performance
+
+**Goal**: close the Firefox viewer gap — a significant "Dropped (incomplete)"
+rate plus decoded fps below received fps that Chrome doesn't show. Diagnosis:
+the R8 worker runs transport, decode *and* render on one thread, and the sink
+draws every decoded frame through Firefox's slow 2D-canvas
+`drawImage(VideoFrame)` path (synchronous CPU conversion) — starving the
+datagram reader (silent datagram drops) and the decoder simultaneously.
+
+**Why now**: R9 made the funnel measurable, and the first real Firefox
+sessions produced exactly the signature above. The two cheapest fixes both
+live entirely behind the R8 `RenderSink` seam.
+
+**Scope sketch**:
+
+- **P1 — coalesced rendering**: latest-frame-wins, at most one draw per
+  worker `requestAnimationFrame` tick; superseded frames closed unseen (the
+  R5 "latest-frame-first rendering" bullet, landed early at the sink level).
+- **P2 — WebGL render sink**: textured-quad `texImage2D(VideoFrame)` instead
+  of 2D `drawImage` (chosen over `bitmaprenderer`, which adds a per-frame
+  `createImageBitmap` allocation + async hop and may hit the same software
+  conversion in Gecko); 2D sink kept as fallback; active renderer exposed in
+  stats/overlay.
+- **P3 (deferred)** — split transport into its own worker if drops persist.
+- **P4 (deferred)** — decode-load reduction / backpressure tuning if the
+  decode deficit persists (Firefox H.264 WebCodecs is often software).
+
+Zero server/wire/broadcaster changes; main-thread fallback path untouched.
+
+**Status**: P1–P2 implemented 2026-07-14; manual Firefox before/after
+verification pending — see
+[`docs/14-viewer-render-performance.md`](docs/14-viewer-render-performance.md).
 
 ---
 

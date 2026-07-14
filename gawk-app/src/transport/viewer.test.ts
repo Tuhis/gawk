@@ -205,8 +205,10 @@ describe('ViewerPipeline', () => {
       // Both frames arrived at t≈0; the stats tick ran at t=500.
       expect(last!.timeSinceLastFrameMs).toBeCloseTo(500, 0);
       expect(last!.lastKeyframeAgeMs).toBeCloseTo(500, 0);
-      // Main-thread path (no RenderSink) → renderedFps is unknowable here.
+      // Main-thread path (no RenderSink) → renderedFps is unknowable here,
+      // and no sink means no renderer kind either (R10).
       expect(last!.renderedFps).toBeNull();
+      expect(last!.renderer).toBeNull();
       // The fake WebTransport has no getStats → null, never a throw.
       expect(last!.connection).toBeNull();
 

@@ -5,7 +5,7 @@
 //
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
-import { OffscreenCanvasRenderSink } from './render-sink';
+import { createRenderSink } from './render-sink';
 import {
   ViewerWorkerCore,
   type ViewerWorkerCommand,
@@ -33,7 +33,8 @@ ctx.onmessage = (e: MessageEvent) => {
   const cmd = e.data as ViewerWorkerCommand;
   switch (cmd.type) {
     case 'init': {
-      const sink = new OffscreenCanvasRenderSink(cmd.canvas);
+      // WebGL (2D fallback) wrapped in rAF coalescing — R10, docs/14.
+      const sink = createRenderSink(cmd.canvas);
       core = new ViewerWorkerCore({ post: (ev) => ctx.postMessage(ev), renderSink: sink });
       break;
     }

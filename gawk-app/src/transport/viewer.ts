@@ -13,7 +13,7 @@ import {
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
-import type { RenderSink } from './render-sink';
+import type { RenderSink, RenderSinkKind } from './render-sink';
 import type { DecoderConfigMessage } from './wire';
 import { getMaxDecoderQueueSize } from '../config';
 
@@ -40,6 +40,10 @@ export interface ViewerStats extends ReassemblerStats {
   // the main-thread path (the screen draws there, not the pipeline).
   receivedFps: number;
   renderedFps: number | null;
+  // Which sink paints (R10, docs/14): 'webgl' | '2d' on the worker path, null
+  // on the main-thread path. Note renderedFps is rAF-coalesced since R10 —
+  // ≈min(decoded fps, display Hz); below decoded fps under load is healthy.
+  renderer: RenderSinkKind | null;
   // Time since the last complete frame arrived (stall detector) and since
   // the last keyframe (recovery bound: should hover at or under the GOP).
   timeSinceLastFrameMs: number | null;
@@ -445,6 +449,7 @@ export class ViewerPipeline {
       reorderBuffered: reorder?.buffered ?? 0,
       receivedFps,
       renderedFps,
+      renderer: this.renderSink?.kind ?? null,
       timeSinceLastFrameMs: this.lastFrameReceivedAt === null ? null : now - this.lastFrameReceivedAt,
       lastKeyframeAgeMs: this.lastKeyframeReceivedAt === null ? null : now - this.lastKeyframeReceivedAt,
       connection: this.connSampler?.latest() ?? null,
