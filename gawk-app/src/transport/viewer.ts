@@ -44,6 +44,13 @@ export class ViewerPipeline {
   // WebCodecs requires the first chunk after configure() to be a keyframe;
   // set on every (re)configure, cleared by the first keyframe.
   private waitingForKeyframe = true;
+  // frameId of the last frame handed to (or considered for) the decoder. A
+  // non-contiguous delta means an intervening frame was lost upstream (dropped
+  // incomplete) — its would-be references are gone, so decoding it and the
+  // deltas after it renders corruption until the next keyframe. null until the
+  // first frame; the reassembler emits deltas in strictly increasing frameId
+  // order (late ones already dropped), so a jump is always a real gap.
+  private lastFrameId: number | null = null;
 
   private decodedFrames = 0;
   private decodedSinceStats = 0;
@@ -85,7 +92,7 @@ export class ViewerPipeline {
 
     this.reassembler = new Reassembler({
       onConfig: (config) => this.applyConfig(config),
-      onFrame: (frame) => this.decodeFrame(frame.keyframe, frame.timestampUs, frame.data),
+      onFrame: (frame) => this.decodeFrame(frame.frameId, frame.keyframe, frame.timestampUs, frame.data),
     });
 
     this.lastStatsAt = performance.now();
@@ -158,7 +165,7 @@ export class ViewerPipeline {
     this.cb.onConfig(config);
   }
 
-  private decodeFrame(keyframe: boolean, timestampUs: bigint, data: Uint8Array): void {
+  private decodeFrame(frameId: number, keyframe: boolean, timestampUs: bigint, data: Uint8Array): void {
     const dec = this.decoder;
     if (!dec || this.stopping) return;
 
@@ -166,6 +173,15 @@ export class ViewerPipeline {
       log.warn(`Decoder queue size (${dec.queueSize}) too large, dropping frames until next keyframe.`);
       this.waitingForKeyframe = true;
     }
+
+    // Freeze-on-gap: a delta whose frameId skips ahead references a frame that
+    // never arrived. Rather than feed the decoder corrupt references, hold the
+    // last good frame until the next keyframe re-syncs (kept short by the
+    // 500ms GOP). Keyframes are self-contained, so they never trip this.
+    if (!keyframe && this.lastFrameId !== null && frameId !== this.lastFrameId + 1) {
+      this.waitingForKeyframe = true;
+    }
+    this.lastFrameId = frameId;
 
     if (this.pendingConfig) {
       const config = this.pendingConfig;

@@ -7,7 +7,9 @@ export interface CaptureConfig {
   bitrate: number;
   framerate: number;
   // Time-based (docs/08): frame-count cadence would stretch the GOP to 24s
-  // at the ladder's 5 fps rung.
+  // at the ladder's 5 fps rung. A short 500ms GOP bounds recovery from a lost
+  // or gap-discarded frame to <=0.5s (a delta referencing a missing frame
+  // corrupts everything until the next keyframe — see viewer freeze-on-gap).
   keyframeIntervalMs: number;
 }
 
@@ -40,7 +42,7 @@ export const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
   height: 2160,
   bitrate: 6_000_000,
   framerate: 60,
-  keyframeIntervalMs: 2000,
+  keyframeIntervalMs: 500,
 };
 
 export interface PipelineStats {

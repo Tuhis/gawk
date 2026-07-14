@@ -63,9 +63,32 @@ describe('broadcastSettingsStore resolution selection', () => {
     expect(localStorage.getItem(LS_RESOLUTION)).toBe('auto');
   });
 
-  it('keeps framerate defaulting to native', async () => {
+});
+
+describe('broadcastSettingsStore framerate rung', () => {
+  // The fan-out is capped to 30fps by default (halves the datagram rate and
+  // viewer decode load; spectators watch smoothly at 30). An explicit choice
+  // still wins and persists.
+  it('defaults to 30 when nothing is persisted', async () => {
+    const s = await loadStore();
+    expect(s.framerateRung).toBe(30);
+  });
+
+  it('defaults to 30 for a garbage persisted value', async () => {
     localStorage.setItem(LS_FRAMERATE, 'garbage');
     const s = await loadStore();
+    expect(s.framerateRung).toBe(30);
+  });
+
+  it('loads a persisted native rung unchanged', async () => {
+    localStorage.setItem(LS_FRAMERATE, 'native');
+    const s = await loadStore();
     expect(s.framerateRung).toBe('native');
+  });
+
+  it('loads a persisted 60 rung unchanged', async () => {
+    localStorage.setItem(LS_FRAMERATE, '60');
+    const s = await loadStore();
+    expect(s.framerateRung).toBe(60);
   });
 });
