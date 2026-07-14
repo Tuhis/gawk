@@ -262,14 +262,17 @@ this may already be adequate.
   up (slow decode, tab throttling, network burst after a stall), discard the
   backlog. Because inter-frames can't decode without their predecessors,
   skipping means jumping to the **next keyframe** — drop everything until
-  one arrives, then resume.
+  one arrives, then resume. (The viewer already does this for the *lost-frame*
+  case — freeze-on-gap, CLAUDE.md build-order item 11: a non-contiguous delta
+  waits for the next keyframe rather than decoding corruption. R5 generalizes
+  the same drop-to-keyframe move to the *backlog/slow-decode* case.)
 - **Live-edge measurement**: expose glass-to-glass / capture-to-render delta
   in stats (the wire format already carries capture timestamps) so "are we
   at live?" is observable, not vibes. Feeds the R6 debug overlay.
 - Recovery-time bound: after any stall (reconnect, tab unfocus), time back
-  to live is bounded by the keyframe interval (currently 120 frames
-  broadcaster-side) — evaluate whether that interval is right once skip-ahead
-  exists.
+  to live is bounded by the keyframe interval (currently a 500 ms time-based
+  GOP, `keyframeIntervalMs`) — evaluate whether that interval is right once
+  skip-ahead exists.
 
 **Key design questions**: whether a **viewer→server keyframe-request signal**
 is worth adding so a behind viewer doesn't wait up to a full GOP for the next

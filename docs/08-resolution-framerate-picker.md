@@ -1,9 +1,26 @@
 # R3 — Broadcaster Resolution & Framerate Picker: Design + Implementation Plan
 
+> **Update (2026-07-14, heavy-motion resilience — CLAUDE.md build-order item
+> 11).** Two R3 defaults documented below were later retuned to cut
+> heavy-motion corruption/drops, without changing any mechanism:
+> - **`keyframeIntervalMs` default `2000` → `500`** (`media/types.ts`). A
+>   short GOP bounds recovery from a lost or gap-discarded frame to ≤0.5 s.
+>   Everywhere below that says "default 2000", read **500**.
+> - **Framerate default `native` → `30`** (`broadcastSettingsStore`, via an
+>   explicit `loadRung` fallback — the persistence/validation logic is
+>   unchanged and an explicit choice still wins). 30 fps halves the datagram
+>   rate and viewer decode load; spectators watch smoothly. Where the text
+>   below says framerate "defaults to native", read **30**.
+>
+> The complementary viewer change (freeze-on-gap: hold the last good frame on
+> a frameId discontinuity instead of decoding corrupt deltas) lives in
+> [docs/03](03-single-client-e2e.md) (the `viewer.ts` decode-policy bullet).
+
 Design doc for [ROADMAP R3](../ROADMAP.md#r3--broadcaster-resolution--framerate-picker).
 The broadcaster chooses what they send: resolution **native / 1080p / 720p /
-480p**, framerate **native / 60 / 30 / 5 fps**. Native remains the default;
-lower rungs trade fidelity for encode headroom and uplink bandwidth. The
+480p**, framerate **native / 60 / 30 / 5 fps**. Native was the original default
+(now 30 — see the update note above); lower rungs trade fidelity for encode
+headroom and uplink bandwidth. The
 picker is usable **live, mid-broadcast** — this is deliberate, because R4
 (automatic fallback) will drive exactly the same mid-stream mechanism and R3
 must prove it works.

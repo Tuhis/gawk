@@ -90,6 +90,14 @@ config + full cached keyframe with no publisher traffic after its join;
   (WebCodecs requirement), and treats the relay's priming (config + cached
   keyframe on join) as ordinary traffic — first picture without waiting for
   the next keyframe.
+  **Update (2026-07-14, freeze-on-gap — CLAUDE.md build-order item 11):** the
+  viewer also tracks the last frameId and, when a *delta* arrives with a
+  non-contiguous frameId (an intervening frame was lost/dropped-incomplete
+  upstream), waits for the next keyframe instead of decoding it. Decoding a
+  delta whose reference never arrived renders visible corruption until the
+  next keyframe; holding the last good frame turns that corruption into a
+  brief freeze (kept short by the 500 ms GOP — see [docs/08](08-resolution-framerate-picker.md)).
+  Gap-induced discards surface on the existing "Awaiting keyframe" stat.
 - **UI**: hash-routed pages — `#/broadcast`, `#/view` (default), `#/loopback`
   (kept as a diagnostic). Server URL + dev-cert hash inputs persist in
   localStorage (`src/state/transportStore.ts`).

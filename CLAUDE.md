@@ -141,8 +141,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 8. Broadcaster resolution & framerate picker — **done** (R3, implemented +
    manually verified 2026-07-13: native/1080p/720p/480p × native/60/30/5 ladder, pre-encode
    OffscreenCanvas scaling + timestamp fps gate, ladder-scaled bitrate,
-   **keyframe cadence now time-based** (`keyframeIntervalMs: 2000`, was
-   `keyframeIntervalFrames: 120` — a frame-count GOP is 24 s at 5 fps),
+   **keyframe cadence now time-based** (`keyframeIntervalMs`, replacing
+   `keyframeIntervalFrames: 120` — a frame-count GOP is 24 s at 5 fps; default
+   was 2000, later cut to **500** for loss recovery — see item 11),
    live mid-stream changes via encoder recreate; zero server changes — see
    `docs/08-resolution-framerate-picker.md`).
 9. Automatic resolution fallback — **implemented + released; software-path
@@ -171,6 +172,19 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    modules carry over untouched. Chunks J1–J6. **R5 (viewer live-edge) was
    skipped for now**; R6 doesn't depend on it (an R5 live-edge metric slots
    into the stats overlay later).
+11. Heavy-motion resilience — **done** (2026-07-14; UI/pipeline only, zero
+   server/wire changes). Three changes to cut heavy-motion corruption on
+   Chrome and "Awaiting keyframe" stalls on Firefox: (a) **500ms GOP**
+   (`keyframeIntervalMs` 2000→500) so a lost/discarded frame self-heals in
+   ≤0.5 s; (b) **viewer freeze-on-gap** (`viewer.ts`): a delta whose frameId
+   skips ahead holds the last good frame until the next keyframe instead of
+   feeding the decoder corrupt references (visible corruption → brief freeze;
+   gap discards surface on the existing "Awaiting keyframe" stat); (c)
+   **30 fps default fan-out cap** (`framerateRung` default native→30 in
+   `broadcastSettingsStore`; a broadcaster can still pick 60/native), halving
+   the datagram rate and viewer decode load. Manual browser verify pending —
+   see `docs/08-resolution-framerate-picker.md` (GOP + fps default) and
+   `docs/03-single-client-e2e.md` (freeze-on-gap decode policy).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,
