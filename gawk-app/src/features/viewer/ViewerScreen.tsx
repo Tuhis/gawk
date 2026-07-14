@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import styles from './viewer.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
@@ -10,17 +10,12 @@ import { STATS_HOTKEY } from './hotkeys';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
-import { RECONNECT_MAX_ATTEMPTS, ViewerSession } from '../../transport/viewer-session';
-import type { ViewerStats } from '../../transport/viewer';
-import { useTransportStore } from '../../state/transportStore';
+import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
 import { HOME } from '../../routing';
-import { log } from '../../lib/logger';
-
-type Status = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'error';
 
 const CONTROL_IDLE_MS = 3000;
 
-const STATUS_LABEL: Record<Status, string> = {
+const STATUS_LABEL: Record<ViewerStatus, string> = {
   connecting: 'connecting',
   watching: 'live',
   reconnecting: 'reconnecting',
@@ -34,15 +29,15 @@ const STATUS_LABEL: Record<Status, string> = {
 export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const sessionRef = useRef<ViewerSession | null>(null);
 
-  const [status, setStatus] = useState<Status>('connecting');
-  const [stats, setStats] = useState<ViewerStats | null>(null);
-  const [codec, setCodec] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [errorFatal, setErrorFatal] = useState(false);
-  const [retryNote, setRetryNote] = useState<string | null>(null);
+  // The connection (worker-offloaded when supported, main-thread otherwise)
+  // owns decode + render and reports back only view state — no VideoFrame ever
+  // reaches this component (R8 S6).
+  const { status, stats, codec, error, errorFatal, retryNote } = useViewerConnection(
+    broadcastId,
+    canvasRef,
+  );
+
   const [showStats, setShowStats] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -63,96 +58,6 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
 
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
   useHotkey({ key: 'f' }, () => toggleFullscreen());
-
-  // Session lifecycle, re-created whenever the broadcast id changes.
-  useEffect(() => {
-    let active = true;
-    const { serverUrl, certHashHex } = useTransportStore.getState();
-
-    setStatus('connecting');
-    setStats(null);
-    setCodec(null);
-    setError(null);
-    setErrorFatal(false);
-    setRetryNote(null);
-    setShowStats(false);
-    setMenu(null);
-
-    const session = new ViewerSession(
-      serverUrl,
-      broadcastId,
-      { certHashHex },
-      {
-        onDecodedFrame: ({ frame }) => {
-          const canvas = canvasRef.current;
-          if (canvas) {
-            const ctx = ctxRef.current ?? canvas.getContext('2d');
-            ctxRef.current = ctx;
-            if (ctx) {
-              if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-                canvas.width = frame.displayWidth;
-                canvas.height = frame.displayHeight;
-              }
-              ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-            }
-          }
-          frame.close();
-        },
-        onConfig: (config) => {
-          if (active) setCodec(config.codec);
-        },
-        onStats: (s) => {
-          if (active) setStats(s);
-        },
-        onConnected: () => {
-          if (!active) return;
-          setRetryNote(null);
-          setStatus('watching');
-        },
-        onReconnecting: ({ attempt, reason }) => {
-          if (!active) return;
-          setStatus('reconnecting');
-          setRetryNote(`Reconnecting — attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS}`);
-          log.info('viewer reconnecting:', reason);
-        },
-        onError: (err) => {
-          if (active) {
-            setError(err.message);
-            setErrorFatal(Boolean((err as { fatal?: boolean }).fatal));
-            setStatus('error');
-          }
-          void session.stop();
-        },
-        onEnded: () => {
-          // Only clear the ref if it still points at THIS session — under
-          // StrictMode's mount/cleanup/mount, the discarded first session's
-          // late onEnded must not null out the live second session.
-          if (sessionRef.current === session) sessionRef.current = null;
-          if (!active) return;
-          setRetryNote(null);
-          // A drop before we ever connected surfaces as an error, not a clean
-          // end; code-4000 / server-side end while watching is "ended".
-          setStatus((prev) => (prev === 'connecting' || prev === 'error' ? 'error' : 'ended'));
-        },
-      },
-    );
-    sessionRef.current = session;
-    session.start().catch((e) => {
-      const err = e instanceof Error ? e : new Error(String(e));
-      log.error(err);
-      if (active) {
-        setError(err.message);
-        setStatus('error');
-      }
-      sessionRef.current = null;
-    });
-
-    return () => {
-      active = false;
-      void session.stop();
-      sessionRef.current = null;
-    };
-  }, [broadcastId]);
 
   const controlsVisible = useAutoHide(CONTROL_IDLE_MS, status === 'watching' && !menu);
   const showControls = controlsVisible || status !== 'watching' || showStats || !!menu;

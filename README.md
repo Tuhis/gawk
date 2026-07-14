@@ -118,9 +118,9 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 9. 🚧 Automatic resolution fallback (R4): encode-queue rejection-ratio detection with hysteresis + cooldown, a default "auto" selection that steps down and back up (backoff against oscillation) while explicit rungs are never auto-stepped, encoder-error step-down — `docs/09` (implemented + released 2026-07-13; real-hardware check found the queue signal under-fires on hardware encoders, so software-path verify + threshold tuning remain pending)
 10. 🚧 Production UI (R6): landing/broadcaster/viewer surfaces, a monochrome design system (`styles/global.css` tokens + `src/ui/` primitives), segmented join-code entry, and a cinematic fullscreen viewer with a stats overlay (`Ctrl+Alt+Shift+D` or right-click); the old pages are re-homed frozen under `#/debug/*`. UI-only — zero server/wire/pipeline changes — `docs/10` (implemented 2026-07-13; automated gates green, manual browser verify pending)
 11. 🚧 Heavy-motion resilience: 500 ms GOP (`keyframeIntervalMs` 2000→500), viewer freeze-on-gap (hold the last good frame on a frameId discontinuity instead of decoding corrupt deltas), and a 30 fps default fan-out cap (broadcaster can still pick 60/native) — cuts heavy-motion corruption on Chrome and "Awaiting keyframe" stalls on Firefox. UI/pipeline only — zero server/wire changes — `docs/08` + `docs/03` (implemented 2026-07-14; automated gates green, manual browser verify pending)
-12. 🚧 Reliable keyframes (R8): keyframes now travel over per-subscriber reliable WebTransport uni streams with server **store-and-forward** fan-out (write deadline, supersede-stale, late-joiner priming), and the viewer merges them with datagram deltas in a pure bounded reorder buffer with centralized freeze-on-gap; deltas stay on datagrams. Wire/server/broadcaster/viewer change together. The **worker offload (S6) is deferred** as an independent follow-up — `docs/12` (S1–S5 + S7 observability/docs implemented 2026-07-14; automated gates green, manual browser verify pending)
+12. 🚧 Worker offloading & reliable keyframes (R8): keyframes now travel over per-subscriber reliable WebTransport uni streams with server **store-and-forward** fan-out (write deadline, supersede-stale, late-joiner priming), and the viewer merges them with datagram deltas in a pure bounded reorder buffer with centralized freeze-on-gap; deltas stay on datagrams. The whole viewer pipeline (decode + `OffscreenCanvas` render + reconnect) now runs in a **Web Worker** — frames never cross to the main thread — with a capability handshake and a main-thread fallback. Wire/server/broadcaster/viewer change together — `docs/12` (S1–S7 implemented 2026-07-14; automated gates green, manual browser verify pending)
 
-What comes next (R8 worker offload, R5 viewer live-edge work, …) is laid
+What comes next (R5 viewer live-edge work, …) is laid
 out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
@@ -233,6 +233,18 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   subscriber**) — "drops over stalls" at stream granularity. Only keyframes are
   reliable; making deltas reliable would reintroduce head-of-line blocking.
   ([docs/12](docs/12-worker-and-reliable-keyframes.md))
+- **`transferControlToOffscreen()` is one-shot and irreversible — so the viewer
+  worker must outlive React's StrictMode remount (R8).** The production viewer
+  runs its pipeline in a Web Worker and hands it the `<canvas>` via
+  `transferControlToOffscreen()`; a second call on the same element throws, and
+  a transferred canvas can't be reclaimed for a main-thread 2D context. So the
+  worker + transfer are created **once for the life of the view** (reconnects
+  happen *inside* the worker, reusing `ViewerSession`), and teardown is
+  **deferred a macrotask** so StrictMode's synchronous unmount→remount reuses
+  the same worker instead of trying to transfer twice. Worker support is probed
+  with a **boot handshake before the transfer**, so an unsupported worker
+  (e.g. no worker WebCodecs) falls back to the main-thread pipeline with the
+  canvas still attached. ([docs/12](docs/12-worker-and-reliable-keyframes.md))
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
 - **Raising the QUIC idle timeout does not keep idle viewers alive** — the

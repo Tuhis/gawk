@@ -12,6 +12,7 @@ import {
 } from './connection';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
+import type { RenderSink } from './render-sink';
 import type { DecoderConfigMessage } from './wire';
 import { getMaxDecoderQueueSize } from '../config';
 
@@ -46,6 +47,11 @@ export class ViewerPipeline {
   private serverUrl: string;
   private connectOpts: ConnectOptions;
   private cb: ViewerCallbacks;
+  // When set (worker/OffscreenCanvas path, R8 S6), decoded frames are drawn
+  // straight to the sink and closed there — never handed to onDecodedFrame,
+  // so a VideoFrame never crosses the worker boundary. Null on the main-thread
+  // path, where onDecodedFrame draws and the caller closes the frame.
+  private renderSink: RenderSink | null;
 
   private wt: WebTransport | null = null;
   private decoder: Decoder | null = null;
@@ -90,11 +96,13 @@ export class ViewerPipeline {
     broadcastId: string,
     connectOpts: ConnectOptions,
     callbacks: ViewerCallbacks,
+    renderSink: RenderSink | null = null,
   ) {
     this.serverUrl = serverUrl;
     this.broadcastId = broadcastId;
     this.connectOpts = connectOpts;
     this.cb = callbacks;
+    this.renderSink = renderSink;
   }
 
   async start(): Promise<void> {
@@ -137,8 +145,10 @@ export class ViewerPipeline {
     });
 
     this.lastStatsAt = performance.now();
-    this.statsTimer = window.setInterval(() => this.publishStats(), 500);
-    this.reorderTimer = window.setInterval(() => this.reorderTick(), REORDER_TICK_MS);
+    // Bare setInterval (not window.*) so the pipeline runs unchanged inside a
+    // Web Worker (R8 S6), where `window` is undefined.
+    this.statsTimer = setInterval(() => this.publishStats(), 500) as unknown as number;
+    this.reorderTimer = setInterval(() => this.reorderTick(), REORDER_TICK_MS) as unknown as number;
 
     void this.wt.closed
       .then((closeInfo) => {
@@ -358,7 +368,13 @@ export class ViewerPipeline {
     this.decodedFrames++;
     this.decodedSinceStats++;
     this.lastDecodeLatencyMs = decoded.decodeEndMs - decoded.decodeStartMs;
-    this.cb.onDecodedFrame(decoded);
+    // Worker path: draw + close in place so the frame never crosses a boundary.
+    // Main-thread path: hand it to the callback, which draws and closes it.
+    if (this.renderSink) {
+      this.renderSink.draw(decoded.frame);
+    } else {
+      this.cb.onDecodedFrame(decoded);
+    }
   }
 
   private publishStats(): void {

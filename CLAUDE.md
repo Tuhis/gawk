@@ -185,9 +185,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the datagram rate and viewer decode load. Manual browser verify pending —
    see `docs/08-resolution-framerate-picker.md` (GOP + fps default) and
    `docs/03-single-client-e2e.md` (freeze-on-gap decode policy).
-12. Worker offloading & reliable keyframes — **reliable-keyframe path done
-   (S1–S5 + S7 observability/docs); worker offload (S6) deferred; manual
-   browser verify pending** (R8, `docs/12-worker-and-reliable-keyframes.md`).
+12. Worker offloading & reliable keyframes — **implemented (S1–S7: reliable
+   keyframes + worker offload); manual browser verify pending** (R8,
+   `docs/12-worker-and-reliable-keyframes.md`).
    Keyframes now travel over **per-subscriber reliable WebTransport uni
    streams** instead of datagrams — a lost UDP packet can no longer ruin a
    (large, heavy-motion) keyframe. The relay uses **store-and-forward
@@ -206,12 +206,18 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the freeze-on-gap policy formerly in `viewer.ts`. New relay knobs
    (`-max-keyframe-bytes`, `-keyframe-write-timeout` + `GAWK_*` + Helm) are
    plumbed through `registryOptions` per the R2 finding. The preliminary
-   sketch's fixed 200 ms playout offset was **rejected**. **S6 (worker
-   offload: `viewer.worker.ts` + `OffscreenCanvas`) is deferred** as an
-   independent follow-up — it's structurally decoupled (the pipeline core is
-   already host-agnostic) and its cross-browser value is only verifiable in a
-   real browser (Chrome + Firefox). Zero WebRTC/MoQ; wire+server+broadcaster+
-   viewer changed in lock-step.
+   sketch's fixed 200 ms playout offset was **rejected**. **S6 (worker offload)
+   is implemented**: the whole viewer pipeline runs in a Web Worker
+   (`transport/viewer.worker.ts` around a DOM-free `ViewerWorkerCore` that
+   *reuses* `ViewerSession` for reconnect) and renders decoded frames to a
+   transferred `OffscreenCanvas` via a `RenderSink` seam — **frames never cross
+   back to the main thread**. A boot handshake probes worker WebCodecs/
+   WebTransport *before* the one-shot `transferControlToOffscreen()`, so an
+   unsupported worker falls back to the main-thread `ViewerSession`
+   (`features/viewer/useViewerConnection.ts`); the worker + transfer live for
+   the whole view and teardown is StrictMode-deferred (see README gotcha). Zero
+   WebRTC/MoQ; wire+server+broadcaster+viewer changed in lock-step. S6 is
+   UI/pipeline-only (zero server/wire changes on top of S1–S5).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,
