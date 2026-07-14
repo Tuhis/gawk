@@ -3,7 +3,9 @@ import { probeHardwareSupport } from './encoder';
 import type { CaptureConfig } from './types';
 
 export type FrameHandler = (frame: VideoFrame) => void;
-export type CapturePath = 'mstp' | 'video-rvfc';
+// 'mstp-worker' is the R11 path: a transferred track pumped by an MSTP
+// created inside the broadcast worker (docs/16).
+export type CapturePath = 'mstp' | 'video-rvfc' | 'mstp-worker';
 
 export interface CaptureHandle {
   stream: MediaStream;
@@ -13,7 +15,28 @@ export interface CaptureHandle {
   stop(): void;
 }
 
-export async function startCapture(config: CaptureConfig): Promise<CaptureHandle> {
+// R11 (docs/16): what BroadcastPipeline actually needs from capture — frames,
+// the native fps hint, and an "ended" signal. The main-thread default wraps
+// startCapture (stream present, for the preview); the worker source wraps a
+// transferred track (no stream — the preview lives on the main thread).
+export interface BroadcastMediaSource {
+  capturePath: CapturePath;
+  stream: MediaStream | null;
+  nativeFps: number | null;
+  onEnded(cb: () => void): void;
+  startFrames(onFrame: FrameHandler): Promise<void>;
+  stop(): void;
+}
+
+export type BroadcastMediaSourceFactory = (config: CaptureConfig) => Promise<BroadcastMediaSource>;
+
+// The pre-capture half of startCapture: HW-probe fps capping + the actual
+// getDisplayMedia call. Split out (R11) because on the worker path this must
+// run on the main thread (window scope + user gesture) while the frame pump
+// runs in the worker.
+export async function acquireDisplayStream(
+  config: CaptureConfig,
+): Promise<{ stream: MediaStream; track: MediaStreamTrack }> {
   let targetFramerate = config.framerate;
   if ((config.width > 1920 || config.height > 1080) && targetFramerate > 30) {
     const hwSupported = await probeHardwareSupport(
@@ -44,6 +67,11 @@ export async function startCapture(config: CaptureConfig): Promise<CaptureHandle
 
   const track = stream.getVideoTracks()[0];
   if (!track) throw new Error('No video track from getDisplayMedia');
+  return { stream, track };
+}
+
+export async function startCapture(config: CaptureConfig): Promise<CaptureHandle> {
+  const { stream, track } = await acquireDisplayStream(config);
 
   if (typeof (globalThis as unknown as { MediaStreamTrackProcessor?: unknown }).MediaStreamTrackProcessor === 'function') {
     return createMstpHandle(stream, track);
@@ -51,17 +79,19 @@ export async function startCapture(config: CaptureConfig): Promise<CaptureHandle
   return createVideoRvfcHandle(stream, track);
 }
 
-// Preferred path: MediaStreamTrackProcessor. No DOM element, no compositor
-// roundtrip, not affected by tab-visibility throttling. Chromium-only today.
-function createMstpHandle(stream: MediaStream, track: MediaStreamTrack): CaptureHandle {
+// The MSTP read loop, shared by the main-thread handle and the worker-side
+// track source. Re-stamps frames on the local performance.now() clock so
+// downstream latency math is uniform across capture paths (constructor from
+// an existing VideoFrame shares the underlying buffer — no copy).
+function createMstpPump(track: MediaStreamTrack): {
+  startFrames(onFrame: FrameHandler): Promise<void>;
+  stop(): void;
+} {
   const processor = new MediaStreamTrackProcessor({ track: track as MediaStreamVideoTrack });
   let reader: ReadableStreamDefaultReader<VideoFrame> | null = null;
   let stopped = false;
 
   return {
-    stream,
-    track,
-    capturePath: 'mstp',
     async startFrames(onFrame) {
       reader = processor.readable.getReader();
       const pump = async () => {
@@ -70,9 +100,6 @@ function createMstpHandle(stream: MediaStream, track: MediaStreamTrack): Capture
             const { value: frame, done } = await reader!.read();
             if (done) break;
             if (!frame) continue;
-            // Re-stamp on the performance.now() clock so downstream latency
-            // math is uniform across capture paths. Constructor from an
-            // existing VideoFrame shares the underlying buffer (no copy).
             const arrivalUs = Math.round(performance.now() * 1000);
             const rebased = new VideoFrame(frame, { timestamp: arrivalUs });
             frame.close();
@@ -92,6 +119,45 @@ function createMstpHandle(stream: MediaStream, track: MediaStreamTrack): Capture
         // ignore
       }
       reader = null;
+    },
+  };
+}
+
+// Preferred path: MediaStreamTrackProcessor. No DOM element, no compositor
+// roundtrip, not affected by tab-visibility throttling. Chromium-only today.
+function createMstpHandle(stream: MediaStream, track: MediaStreamTrack): CaptureHandle {
+  const pump = createMstpPump(track);
+  return {
+    stream,
+    track,
+    capturePath: 'mstp',
+    startFrames: (onFrame) => pump.startFrames(onFrame),
+    stop: () => pump.stop(),
+  };
+}
+
+// R11 worker-side source: an MSTP pump around a track transferred into the
+// worker. MSTP construction is deferred to startFrames so the source can be
+// built (and unit-tested) in scopes without MediaStreamTrackProcessor.
+// nativeFps is read from the original track on the main thread and threaded
+// through — getSettings() on a transferred clone is not something we rely on.
+export function trackMediaSource(
+  track: MediaStreamTrack,
+  nativeFps: number | null,
+): BroadcastMediaSource {
+  let pump: ReturnType<typeof createMstpPump> | null = null;
+  return {
+    capturePath: 'mstp-worker',
+    stream: null,
+    nativeFps,
+    onEnded: (cb) => track.addEventListener('ended', cb),
+    async startFrames(onFrame) {
+      pump = createMstpPump(track);
+      await pump.startFrames(onFrame);
+    },
+    stop() {
+      pump?.stop();
+      track.stop();
     },
   };
 }

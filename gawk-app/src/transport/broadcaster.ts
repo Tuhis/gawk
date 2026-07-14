@@ -3,7 +3,12 @@
 // negotiation and all); the decode half is replaced by the network.
 
 import { log } from '../lib/logger';
-import { startCapture, stopCapture, type CaptureHandle } from '../media/capture';
+import {
+  startCapture,
+  stopCapture,
+  type BroadcastMediaSource,
+  type BroadcastMediaSourceFactory,
+} from '../media/capture';
 import { Encoder, probeHardwareSupport, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
 import {
   autoLadder,
@@ -60,6 +65,9 @@ export interface BroadcastStats {
   autoStepDowns: number;
   autoStepUps: number;
   encoderPressure: boolean;
+  // R11 (docs/16): where the pipeline runs, detected via `window` absence
+  // (the viewer's R10 convention) — 'worker' on the offloaded path.
+  pipelineContext: 'worker' | 'main-thread';
 }
 
 const EMPTY_BROADCAST_STATS: BroadcastStats = {
@@ -85,6 +93,7 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   autoStepDowns: 0,
   autoStepUps: 0,
   encoderPressure: false,
+  pipelineContext: 'main-thread',
 };
 
 export interface BroadcastCallbacks {
@@ -102,6 +111,33 @@ function roundDownToEven(n: number): number {
 }
 
 export type BroadcastStartPhase = 'connect' | 'capture';
+
+// R11 (docs/16): the surface BroadcasterScreen drives. Implemented by
+// BroadcastPipeline (main thread) and WorkerBroadcastSession (worker path),
+// so the screen's reclaim/mint/error logic is path-agnostic.
+export interface BroadcastSessionLike {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void;
+}
+
+// Default media source: the existing main-thread capture path, unchanged.
+// Lives here (not capture.ts) so tests that mock '../media/capture' keep
+// stubbing startCapture/stopCapture without also faking the adapter.
+const captureMediaSource: BroadcastMediaSourceFactory = async (config) => {
+  const handle = await startCapture(config);
+  return {
+    capturePath: handle.capturePath,
+    stream: handle.stream,
+    // Framerate is the one setting still taken from getSettings(): frames
+    // don't carry a rate, and it only seeds the encoder's rate-control hint
+    // when the framerate rung is 'native'.
+    nativeFps: handle.track.getSettings().frameRate ?? null,
+    onEnded: (cb) => handle.track.addEventListener('ended', cb),
+    startFrames: (onFrame) => handle.startFrames(onFrame),
+    stop: () => stopCapture(handle),
+  };
+};
 
 // Thrown by BroadcastPipeline.start(). The phase tells the caller whether a
 // relay session was ever established: 'connect' failures never had one (safe
@@ -128,7 +164,8 @@ export class BroadcastPipeline {
 
   private wt: WebTransport | null = null;
   private sender: DatagramSender | null = null;
-  private capture: CaptureHandle | null = null;
+  private media: BroadcastMediaSource | null = null;
+  private mediaSource: BroadcastMediaSourceFactory;
   private encoder: Encoder | null = null;
   private stopping = false;
 
@@ -165,13 +202,13 @@ export class BroadcastPipeline {
   private capturedSinceStats = 0;
   private sentSinceStats = 0;
   private connSampler: ConnectionStatsSampler | null = null;
-  private statsTimer: number | null = null;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
 
-  // R5 Q2 (docs/15): relay clock sync + the ClockMapping publication. Frame
+  // R5 Q2 (docs/16): relay clock sync + the ClockMapping publication. Frame
   // timestamps are already on this machine's performance.now() timeline
   // (capture.ts re-stamps at capture), so the TimeSync offset IS the mapping.
   private timeSync: TimeSyncClient | null = null;
-  private clockMappingTimer: number | null = null;
+  private clockMappingTimer: ReturnType<typeof setInterval> | null = null;
   private lastMappingSentAt: number | null = null;
 
   constructor(
@@ -183,6 +220,10 @@ export class BroadcastPipeline {
     // Injectable clock (defaults to performance.now); the R4 controller's
     // decisions are time-based, so tests drive it deterministically.
     now: () => number = () => performance.now(),
+    // R11 (docs/16): where frames come from. Default is the main-thread
+    // getDisplayMedia capture; the broadcast worker injects a source built
+    // around a transferred track.
+    mediaSource: BroadcastMediaSourceFactory = captureMediaSource,
   ) {
     this.config = config;
     this.serverUrl = serverUrl;
@@ -190,6 +231,8 @@ export class BroadcastPipeline {
     this.cb = callbacks;
     this.broadcastId = broadcastId;
     this.now = now;
+    this.mediaSource = mediaSource;
+    this.stats.pipelineContext = typeof window === 'undefined' ? 'worker' : 'main-thread';
   }
 
   async start(): Promise<void> {
@@ -228,7 +271,7 @@ export class BroadcastPipeline {
     void readDatagrams(this.wt, (dgram) => {
       this.timeSync?.handleDatagram(dgram);
     }).catch(() => {});
-    this.clockMappingTimer = window.setInterval(() => this.maybeSendClockMapping(), 1000);
+    this.clockMappingTimer = setInterval(() => this.maybeSendClockMapping(), 1000);
 
     try {
       await this.startMedia();
@@ -335,25 +378,25 @@ export class BroadcastPipeline {
   }
 
   private async startMedia(): Promise<void> {
-    this.capture = await startCapture(this.config);
-    log.info('Capture path:', this.capture.capturePath);
-    this.cb.onCapturePathChosen(this.capture.capturePath);
-    this.cb.onSourceStream(this.capture.stream);
+    const media = await this.mediaSource(this.config);
+    this.media = media;
+    log.info('Capture path:', media.capturePath);
+    this.cb.onCapturePathChosen(media.capturePath);
+    // The worker-path source has no stream — the preview lives on the main
+    // thread, and WorkerBroadcastSession fires onSourceStream there.
+    if (media.stream) this.cb.onSourceStream(media.stream);
 
-    // Framerate is the one setting still taken from getSettings(): frames
-    // don't carry a rate, and it only seeds the encoder's rate-control hint
-    // when the framerate rung is 'native'.
-    this.nativeFps = this.capture.track.getSettings().frameRate ?? null;
+    this.nativeFps = media.nativeFps;
 
-    this.capture.track.addEventListener('ended', () => {
-      log.info('Capture track ended (user stopped sharing).');
+    media.onEnded(() => {
+      log.info('Capture source ended (user stopped sharing).');
       void this.stop();
     });
 
     this.lastStatsAt = this.now();
-    this.statsTimer = window.setInterval(() => this.publishStats(), 500);
+    this.statsTimer = setInterval(() => this.publishStats(), 500);
 
-    await this.capture.startFrames((frame) => {
+    await media.startFrames((frame) => {
       if (this.stopping) {
         frame.close();
         return;
@@ -730,7 +773,7 @@ export class BroadcastPipeline {
     this.timeSync = null;
 
     if (this.encoder) await this.encoder.close();
-    if (this.capture) stopCapture(this.capture);
+    this.media?.stop();
     this.sender?.close();
     try {
       this.wt?.close();
@@ -739,7 +782,7 @@ export class BroadcastPipeline {
     }
 
     this.encoder = null;
-    this.capture = null;
+    this.media = null;
     this.sender = null;
     this.wt = null;
   }

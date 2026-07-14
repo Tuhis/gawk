@@ -48,6 +48,7 @@ function fullStats(): BroadcastStats {
     autoStepDowns: 0,
     autoStepUps: 0,
     encoderPressure: false,
+    pipelineContext: 'worker',
   };
 }
 
@@ -73,6 +74,7 @@ describe('BroadcasterStatsOverlay', () => {
         copied={false}
       />,
     );
+    expect(screen.getByText('Pipeline').nextSibling?.textContent).toBe('Worker');
     expect(screen.getByText('Capture fps').nextSibling?.textContent).toBe('60.3');
     expect(screen.getByText('Encoder fps').nextSibling?.textContent).toBe('30.1');
     expect(screen.getByText('Sent fps').nextSibling?.textContent).toBe('30.0');
@@ -96,6 +98,7 @@ describe('BroadcasterStatsOverlay', () => {
       />,
     );
     expect(screen.getByText('Codec').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Pipeline').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Capture fps').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('At capacity').nextSibling?.textContent).toBe('—');

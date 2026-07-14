@@ -6,7 +6,8 @@ import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
 import { CopyIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
 import { BroadcasterStatsOverlay } from './BroadcasterStatsOverlay';
-import { BroadcastPipeline, BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
+import { BroadcastStartError, type BroadcastSessionLike, type BroadcastStats } from '../../transport/broadcaster';
+import { createBroadcastSession } from './workerBroadcastSession';
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
@@ -33,7 +34,7 @@ function selectionLabel(selection: ResolutionSelection): string {
 // hash are developer-only (localhost); the publish secret is asked at start
 // when the deploy requires one (config.requirePublishSecret).
 export function BroadcasterScreen() {
-  const pipelineRef = useRef<BroadcastPipeline | null>(null);
+  const pipelineRef = useRef<BroadcastSessionLike | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const [status, setStatus] = useState<Status>('idle');
@@ -114,7 +115,7 @@ export function BroadcasterScreen() {
     if (activeId) {
       triedReclaim = true;
       setStatus('connecting');
-      const pipeline = new BroadcastPipeline(
+      const pipeline = await createBroadcastSession(
         { ...DEFAULT_CAPTURE_CONFIG },
         serverUrl,
         { certHashHex, publishSecret },
@@ -142,7 +143,7 @@ export function BroadcasterScreen() {
     }
 
     setStatus('connecting');
-    const pipeline = new BroadcastPipeline(
+    const pipeline = await createBroadcastSession(
       { ...DEFAULT_CAPTURE_CONFIG },
       serverUrl,
       { certHashHex, publishSecret },

@@ -39,7 +39,7 @@ getDisplayMedia
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R6), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`15`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`16`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
@@ -123,6 +123,7 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 13. ✅ Observability & metrics (R9): the relay grew a plain-TCP ops endpoint (`-metrics-addr`, default `:2112`) serving Prometheus `/metrics`, `/healthz` and a curl-able `/statusz` mirror (the HTTP/3 server itself is unscrapeable), with per-broadcast + lifetime metric families, an ingress-loss window that attributes broadcaster→relay loss, split drop reasons, connection-outcome counters, per-subscriber `/statusz` detail, and a Helm metrics Service + gated ServiceMonitor (never on the public LoadBalancer). Both production surfaces now have a sectioned stats overlay (same hotkey) with pipeline funnel rates, `WebTransport.getStats()` connection health, and a **Copy diagnostics** JSON export; a symptom→signature bottleneck playbook lives in the doc — `docs/13` (M1–M7 implemented + manually verified 2026-07-14; M8 Grafana dashboard deferred)
 14. ✅ Viewer render performance (R10): rAF-coalesced latest-frame-wins rendering + a WebGL render sink behind the R8 `RenderSink` seam, a nested transport-worker split so decode/render pressure can't starve the datagram queue, decoder queue 5→10; field findings added a 1 s keyframe reorder wait and relay eviction of zombie subscribers (close code 4001) — `docs/14` (P1–P3 + fixes implemented 2026-07-14; re-verified on Chrome + Firefox 2026-07-14; P4 remainder deferred)
 15. 🚧 Viewer live-edge (R5, re-scoped): a **live-edge drift** metric (windowed-min baseline over capture timestamps, zero protocol change), **absolute capture→render latency** via new `TimeSync` (0x05) / `ClockMapping` (0x06) wire messages with the relay's monotonic clock as the common reference (plus a self-owned per-leg RTT that doesn't need `getStats()`), and an **opt-in smoothed playout** mode (reorder-release pacing, +150 ms, default off, right-click toggle). The keyframe-request back-channel was rejected for good — `docs/15` (Q1–Q3 implemented 2026-07-14; automated gates green, Q4 measurement pass + manual browser verify pending)
+16. 🚧 Broadcaster worker offload (R11): the broadcast pipeline (MSTP capture pump, scaling/gating, encode, packetize, WebTransport send) runs in a Web Worker fed by a transferred `MediaStreamTrack` clone; `getDisplayMedia` + preview stay on main, connect-before-picker ordering and `BroadcastStartError.phase` semantics preserved, capability probe + main-thread fallback (Firefox), overlay "Pipeline" row shows placement. UI/pipeline only — zero server/wire changes — `docs/16` (implemented 2026-07-14; automated gates green, manual browser verify pending)
 
 What comes next (the R5 Q4 measurement pass, R7 hardware-supported
 controls, …) is laid out in [`ROADMAP.md`](ROADMAP.md).
@@ -313,6 +314,19 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   "Renderer" / "Pipeline" / "Transport" read **WebGL / Worker / Worker** on
   the fast path (— / Main thread / In-process on the no-worker fallback).
   ([docs/14](docs/14-viewer-render-performance.md))
+- **Transferring a `MediaStreamTrack` detaches it — the broadcast worker gets
+  a *clone*, the original stays for the preview (R11).** The broadcaster
+  pipeline runs in a Web Worker fed by a transferred `track.clone()` (MSTP is
+  created *in the worker* — transferring `processor.readable` instead would
+  keep piping every frame through the main-thread realm, defeating the
+  split). `getDisplayMedia` itself must stay on main (window scope + user
+  gesture), and transferability is probed **before** committing to the worker
+  path by postMessage-ing a dummy `canvas.captureStream()` track —
+  non-transferable types throw `DataCloneError` *synchronously on the
+  sender*, no roundtrip needed. Firefox lands on the untouched main-thread
+  pipeline via the same boot-handshake fallback as the viewer; the overlay's
+  broadcaster "Pipeline" row shows which path is live.
+  ([docs/16](docs/16-broadcaster-worker-offload.md))
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
 - **Raising the QUIC idle timeout does not keep idle viewers alive** — the

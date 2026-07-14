@@ -134,7 +134,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   per-leg RTT independent of `getStats()`, and an opt-in smoothed playout
   (reorder-release pacing, `PLAYOUT_OFFSET_MS` 150, default off, right-click
   toggle, worker `playout` command). The viewer→server keyframe-request
-  back-channel is **rejected for good** there, Decision 6).
+  back-channel is **rejected for good** there, Decision 6),
+  `docs/16-broadcaster-worker-offload.md` for R11 (broadcaster worker
+  offload: broadcast pipeline in a Web Worker fed by a transferred
+  `MediaStreamTrack` clone, K1–K4 chunks; implemented 2026-07-14, manual
+  verify pending).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -344,6 +348,30 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    keyframe-request back-channel was **rejected for good** (docs/15
    Decision 6). New overlay rows: Live-edge drift, Latency (capture→render),
    Playout (Delivery section).
+16. Broadcaster worker offload — **implemented 2026-07-14 (K1–K4); automated
+   gates green, manual browser verify pending** (R11,
+   `docs/16-broadcaster-worker-offload.md`; UI/pipeline only, zero
+   server/wire changes). The broadcast pipeline (MSTP pump → preprocess →
+   encode → packetize → send) runs in a Web Worker
+   (`transport/broadcaster.worker.ts` around a DOM-free `BroadcastWorkerCore`
+   that reuses `BroadcastPipeline` via a new media-source seam). The main
+   thread keeps `getDisplayMedia` (window scope + gesture) and the preview
+   (original track); a **`track.clone()` is transferred** into the worker,
+   which creates MSTP there — transferring `processor.readable` was rejected
+   (frames would still hop through the main-thread realm). Connect-before-
+   picker ordering and `BroadcastStartError.phase` semantics (reclaim→mint
+   only on `'connect'`) are preserved via an `awaitingCapture` handshake.
+   Capability gate: worker boot handshake + a synchronous dummy-track
+   transfer probe (`canvas.captureStream()`; `DataCloneError` throws
+   sender-side) — any failure falls back to the untouched main-thread
+   pipeline (Firefox always does; `#/debug/broadcast` stays main-thread).
+   `WorkerBroadcastSession`/`createBroadcastSession`
+   (`features/broadcaster/`) present the same `BroadcastSessionLike` surface,
+   so `BroadcasterScreen`'s reclaim/mint logic is unchanged.
+   `BroadcastStats.pipelineContext` + an overlay "Pipeline" row expose the
+   placement. **Note**: a worker does *not* escape Chrome's process-level
+   backgrounding (same renderer process) — this removes main-thread
+   contention from the frame path, nothing more.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

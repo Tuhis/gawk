@@ -29,6 +29,7 @@ feature set exists).
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 | R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
+| R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
 
 ---
 
@@ -536,6 +537,53 @@ Chromium removed the API entirely (see docs/13 D7), not a gawk bug.
 Re-verification on both browsers passed 2026-07-14 (P4 remainder stays
 deferred pending future measurements) — see
 [`docs/14-viewer-render-performance.md`](docs/14-viewer-render-performance.md).
+
+## R11 — Broadcaster worker offload
+
+**Goal**: run the broadcaster's frame path — capture consumption, pre-encode
+scaling/gating, encode, packetize, send — in a dedicated Web Worker, mirroring
+the viewer's R8 S6 architecture, so main-thread work on the broadcast page
+can never add jitter to the frame pipeline. Explicitly *not* an OS-priority
+fix: a worker shares the renderer process, so Chrome's process-level
+backgrounding applies regardless — this addresses main-thread *contention*
+only (and the heavy lifting was already out of the renderer: NVENC runs in
+the GPU process).
+
+**Why now**: asked directly while investigating how to prioritize the
+broadcaster against other apps on the gaming PC; chosen for architectural
+symmetry with the viewer (S6) and as insurance against main-thread jank, with
+the honest caveat above recorded in the design doc.
+
+**Scope sketch** (full design in
+[`docs/16-broadcaster-worker-offload.md`](docs/16-broadcaster-worker-offload.md)):
+
+- **Track transfer, not readable transfer**: main thread runs
+  `getDisplayMedia` (window scope + user gesture) and keeps the original
+  track for the preview; a `track.clone()` is transferred into the worker,
+  which creates its own `MediaStreamTrackProcessor` — frames are born,
+  scaled, encoded and closed entirely in the worker, zero per-frame copies
+  or postMessages.
+- **`BroadcastPipeline` gains a media-source seam** (the R10 P3 move applied
+  to the other end): the worker-side source waits for the transferred track;
+  the default source wraps `startCapture` unchanged.
+- **Connect-before-picker preserved**: the worker connects `/publish` first,
+  then asks main for capture (`awaitingCapture`); `BroadcastStartError.phase`
+  semantics (reclaim→mint only on `'connect'`) are identical.
+- **Capability gate + fallback**: worker boot handshake (VideoEncoder,
+  WebTransport, MSTP, OffscreenCanvas) plus a synchronous track-transfer
+  probe (dummy `canvas.captureStream()` track; `DataCloneError` throws
+  sender-side). Any failure → the untouched main-thread pipeline (Firefox
+  always lands there). `BroadcastStats.pipelineContext` + an overlay
+  "Pipeline" row make the placement observable.
+- Zero server / wire / viewer changes; the frozen `#/debug/broadcast` page
+  keeps the main-thread pipeline.
+
+**Status**: implemented 2026-07-14 (chunks K1–K4; `BroadcastWorkerCore` +
+`broadcaster.worker.ts` + `WorkerBroadcastSession`/`createBroadcastSession`,
+seam refactor in `capture.ts`/`broadcaster.ts`). All automated gates green
+(23 new tests). Manual browser verify pending — see the doc's verification
+plan (Chrome worker path + funnel-rate baseline comparison, Firefox fallback,
+main-thread CPU-throttle kill test).
 
 ---
 

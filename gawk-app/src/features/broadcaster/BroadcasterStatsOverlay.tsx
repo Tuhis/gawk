@@ -28,6 +28,7 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
         ['Codec', encoderInfo?.codec ?? '—'],
         ['Encoding', encoderInfo ? `${encoderInfo.width}×${encoderInfo.height} @ ${fmt(encoderInfo.framerate, 0)}` : '—'],
         ['Encode mode', encoderInfo?.acceleration ?? '—'],
+        ['Pipeline', stats?.pipelineContext === 'worker' ? 'Worker' : stats?.pipelineContext === 'main-thread' ? 'Main thread' : '—'],
         ['Capture fps', fmt(stats?.captureFps ?? NaN)],
         ['Encoder fps', fmt(stats?.encoderFps ?? NaN)],
         ['Sent fps', fmt(stats?.sentFps ?? NaN)],

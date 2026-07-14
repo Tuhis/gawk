@@ -346,3 +346,94 @@ describe('BroadcastPipeline time sync + clock mapping', () => {
     }
   });
 });
+
+// R11 (docs/16): the media-source seam that lets the broadcast worker inject
+// a transferred-track source in place of main-thread getDisplayMedia capture.
+describe('BroadcastPipeline media-source seam', () => {
+  function makeFakeSource() {
+    return {
+      capturePath: 'mstp-worker' as const,
+      stream: null,
+      nativeFps: 42,
+      onEnded: vi.fn(),
+      startFrames: vi.fn(() => Promise.resolve()),
+      stop: vi.fn(),
+    };
+  }
+
+  function makeSeamPipeline(
+    cbs: BroadcastCallbacks,
+    source: ReturnType<typeof makeFakeSource>,
+  ): BroadcastPipeline {
+    return new BroadcastPipeline(
+      { ...DEFAULT_CAPTURE_CONFIG },
+      'https://relay.test:4433',
+      {},
+      cbs,
+      undefined,
+      undefined,
+      async () => source,
+    );
+  }
+
+  it('runs an injected stream-less source without firing onSourceStream', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    const cbs = makeCallbacks();
+    const source = makeFakeSource();
+    const pipeline = makeSeamPipeline(cbs, source);
+    await pipeline.start();
+    expect(startCapture).not.toHaveBeenCalled();
+    expect(cbs.onSourceStream).not.toHaveBeenCalled();
+    expect(cbs.onCapturePathChosen).toHaveBeenCalledWith('mstp-worker');
+    expect(source.startFrames).toHaveBeenCalled();
+    expect(source.onEnded).toHaveBeenCalled();
+    await pipeline.stop();
+  });
+
+  it('stops the injected source on teardown', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    const source = makeFakeSource();
+    const pipeline = makeSeamPipeline(makeCallbacks(), source);
+    await pipeline.start();
+    await pipeline.stop();
+    expect(source.stop).toHaveBeenCalled();
+    expect(fake.close).toHaveBeenCalled();
+  });
+
+  it('detects pipelineContext from the realm (window present ⇒ main-thread)', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      const cbs = makeCallbacks();
+      const pipeline = makeSeamPipeline(cbs, makeFakeSource());
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(cbs.onStats).toHaveBeenCalled();
+      expect(cbs.onStats.mock.calls[0][0].pipelineContext).toBe('main-thread');
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('detects pipelineContext "worker" when window is absent', async () => {
+    vi.unstubAllGlobals(); // drop the window stub — a worker realm has none
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      const cbs = makeCallbacks();
+      const pipeline = makeSeamPipeline(cbs, makeFakeSource());
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(cbs.onStats).toHaveBeenCalled();
+      expect(cbs.onStats.mock.calls[0][0].pipelineContext).toBe('worker');
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
