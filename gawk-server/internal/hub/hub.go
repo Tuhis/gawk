@@ -275,6 +275,13 @@ type broadcastHub struct {
 	cachedKeyframeHasConfig bool
 	keyframeSeq             uint64
 
+	// cachedClockMapping holds the latest ClockMapping datagram verbatim
+	// (R5 Q2, docs/15): relayed to live subscribers as it arrives, replayed to
+	// prime late joiners, and invalidated on a new publisher session — frame
+	// timestamps live on the publisher's clock timeline, so a new session's
+	// mapping is a different mapping.
+	cachedClockMapping []byte
+
 	framesRelayed             uint64
 	datagramsRelayed          uint64
 	datagramsDropped          uint64
@@ -445,6 +452,8 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	b.cachedKeyframe = nil
 	b.cachedKeyframeID = 0
 	b.cachedKeyframeHasConfig = false
+	// New session, new clock timeline: the old mapping is meaningless (R5 Q2).
+	b.cachedClockMapping = nil
 	// New session, new frameID space: reset the ingress-loss window (its
 	// cumulative counters live on the hub and survive).
 	b.ingress.reset()
@@ -533,6 +542,13 @@ func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
 	}
 	b.subs[s] = struct{}{}
 	go s.drain()
+
+	// Prime the joiner with the cached clock mapping (R5 Q2) so absolute
+	// latency works without waiting for the broadcaster's next re-send. A
+	// plain enqueue: it rides the normal datagram queue.
+	if b.cachedClockMapping != nil {
+		s.enqueueLocked(b.cachedClockMapping)
+	}
 
 	// Snapshot the cached keyframe under the lock; prime over a stream outside
 	// it (stream I/O must never hold the registry lock). A live keyframe that
@@ -759,9 +775,33 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 			return
 		}
 		p.relayDatagram(dgram)
+	case wire.TypeClockMapping:
+		if _, err := wire.ParseClockMapping(dgram); err != nil {
+			b.countBad()
+			return
+		}
+		p.relayClockMapping(dgram)
 	default:
 		b.countBad()
 	}
+}
+
+// relayClockMapping forwards a ClockMapping datagram to all subscribers and
+// caches it for late-joiner priming (R5 Q2). The cache holds a copy: the
+// mapping outlives the datagram buffer's turn.
+func (p *Publisher) relayClockMapping(dgram []byte) {
+	b := p.hub
+	r := b.registry
+	msg := make([]byte, len(dgram))
+	copy(msg, dgram)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed {
+		return
+	}
+	b.cachedClockMapping = msg
+	b.ingressDatagramBytes += uint64(len(msg))
+	b.fanOutLocked(msg)
 }
 
 // IngestKeyframeStream reads one complete keyframe StreamFrame message from a

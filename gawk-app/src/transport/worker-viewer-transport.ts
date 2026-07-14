@@ -6,6 +6,7 @@
 
 import type { ConnectOptions } from './connection';
 import type { TransportConnectionStats } from './net-stats';
+import type { TimeSyncStats } from './time-sync';
 import type { TransportWorkerCommand, TransportWorkerEvent } from './transport-worker-core';
 import type {
   ViewerTransport,
@@ -32,6 +33,7 @@ export class WorkerViewerTransport implements ViewerTransport {
   private opts: ConnectOptions;
   private worker: TransportWorkerLike | null = null;
   private latestStats: TransportConnectionStats | null = null;
+  private latestTimeSync: TimeSyncStats | null = null;
   private closing = false;
 
   constructor(createWorker: () => TransportWorkerLike, url: string, opts: ConnectOptions) {
@@ -88,6 +90,7 @@ export class WorkerViewerTransport implements ViewerTransport {
           }
           case 'connStats':
             this.latestStats = ev.stats;
+            this.latestTimeSync = ev.timeSync;
             break;
         }
       };
@@ -107,6 +110,10 @@ export class WorkerViewerTransport implements ViewerTransport {
 
   sampleConnectionStats(): TransportConnectionStats | null {
     return this.latestStats;
+  }
+
+  sampleTimeSync(): TimeSyncStats | null {
+    return this.latestTimeSync;
   }
 
   close(): void {

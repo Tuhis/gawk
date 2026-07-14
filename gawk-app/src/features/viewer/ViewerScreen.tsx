@@ -17,6 +17,17 @@ import { HOME } from '../../routing';
 
 const CONTROL_IDLE_MS = 3000;
 
+// R5 Q3: the opt-in smoothed-playout preference, persisted per browser.
+const SMOOTHED_PLAYOUT_KEY = 'gawk:smoothed-playout';
+
+function loadSmoothedPlayout(): boolean {
+  try {
+    return localStorage.getItem(SMOOTHED_PLAYOUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 const STATUS_LABEL: Record<ViewerStatus, string> = {
   connecting: 'connecting',
   watching: 'live',
@@ -32,12 +43,28 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // R5 Q3: opt-in smoothed playout (trades ~150ms of latency for steadier
+  // pacing); default off — live-edge is the product stance.
+  const [smoothedPlayout, setSmoothedPlayout] = useState(loadSmoothedPlayout);
+  const toggleSmoothedPlayout = useCallback(() => {
+    setSmoothedPlayout((s) => {
+      const next = !s;
+      try {
+        localStorage.setItem(SMOOTHED_PLAYOUT_KEY, next ? '1' : '0');
+      } catch {
+        // private mode etc. — the toggle still works for this session
+      }
+      return next;
+    });
+  }, []);
+
   // The connection (worker-offloaded when supported, main-thread otherwise)
   // owns decode + render and reports back only view state — no VideoFrame ever
   // reaches this component (R8 S6).
   const { status, stats, codec, error, errorFatal, retryNote } = useViewerConnection(
     broadcastId,
     canvasRef,
+    smoothedPlayout,
   );
 
   const [showStats, setShowStats] = useState(false);
@@ -83,6 +110,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const menuItems: MenuItem[] = [
     { label: showStats ? 'Hide stats' : 'Stats', onSelect: () => setShowStats((s) => !s) },
     { label: isFullscreen ? 'Exit fullscreen' : 'Fullscreen', onSelect: () => toggleFullscreen() },
+    // R5 Q3: visibly costed opt-in — the overlay's Playout/latency rows show
+    // the added delay while it is on.
+    {
+      label: smoothedPlayout ? 'Smooth playback ✓' : 'Smooth playback',
+      onSelect: toggleSmoothedPlayout,
+    },
     { label: 'Copy link', onSelect: copyLink },
     { label: 'Leave', onSelect: leave },
   ];

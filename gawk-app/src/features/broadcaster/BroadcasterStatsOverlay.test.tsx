@@ -42,6 +42,7 @@ function fullStats(): BroadcastStats {
       datagramsLostOutgoing: 15,
       datagramsDroppedIncoming: null,
     },
+    timeSyncRttMs: 6.2,
     autoRung: null,
     autoAtFloor: false,
     autoStepDowns: 0,
@@ -76,6 +77,7 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Encoder fps').nextSibling?.textContent).toBe('30.1');
     expect(screen.getByText('Sent fps').nextSibling?.textContent).toBe('30.0');
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('18.4 ms');
+    expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('6.2 ms');
     expect(screen.getByText('Send rate (est.)').nextSibling?.textContent).toBe('25.0 Mbps');
     expect(screen.getByText('At capacity').nextSibling?.textContent).toBe('no');
     expect(screen.getByText('Dgrams lost (out)').nextSibling?.textContent).toBe('15');

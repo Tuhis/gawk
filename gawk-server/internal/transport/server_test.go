@@ -1404,3 +1404,98 @@ func TestIPRateLimiter(t *testing.T) {
 		t.Error("expected subsequent attempt to be rate limited again")
 	}
 }
+
+// receiveTimeSyncReply reads datagrams until a TimeSync arrives, returning its
+// parsed fields. Fails the test on timeout.
+func receiveTimeSyncReply(t *testing.T, ctx context.Context, sess *webtransport.Session) (clientUs, serverUs uint64) {
+	t.Helper()
+	recvCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		dgram, err := sess.ReceiveDatagram(recvCtx)
+		if err != nil {
+			t.Fatalf("ReceiveDatagram (awaiting time sync reply): %v", err)
+		}
+		if _, typ, err := wire.PeekType(dgram); err != nil || typ != wire.TypeTimeSync {
+			continue
+		}
+		clientUs, serverUs, err := wire.ParseTimeSync(dgram)
+		if err != nil {
+			t.Fatalf("ParseTimeSync: %v", err)
+		}
+		return clientUs, serverUs
+	}
+}
+
+// R5 Q2 (docs/15): both the publisher and subscriber sessions get TimeSync
+// pings answered inline — echoed client time, relay monotonic server time.
+func TestTimeSyncRepliesOnBothRoutes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, _, _ := startTestServer(t, ctx, 15)
+
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
+
+	if err := sub.SendDatagram(wire.AppendTimeSync(nil, 42_000, 0)); err != nil {
+		t.Fatalf("subscriber SendDatagram: %v", err)
+	}
+	clientUs, serverUs := receiveTimeSyncReply(t, ctx, sub)
+	if clientUs != 42_000 {
+		t.Errorf("subscriber reply clientTimeUs = %d, want 42000 (echo)", clientUs)
+	}
+	if serverUs == 0 {
+		t.Errorf("subscriber reply serverTimeUs = 0, want relay monotonic time")
+	}
+
+	if err := pub.SendDatagram(wire.AppendTimeSync(nil, 7_000, 0)); err != nil {
+		t.Fatalf("publisher SendDatagram: %v", err)
+	}
+	clientUs, serverUs = receiveTimeSyncReply(t, ctx, pub)
+	if clientUs != 7_000 {
+		t.Errorf("publisher reply clientTimeUs = %d, want 7000 (echo)", clientUs)
+	}
+	if serverUs == 0 {
+		t.Errorf("publisher reply serverTimeUs = 0, want relay monotonic time")
+	}
+}
+
+// A ping flood is answered at most at the reply limiter's rate — the excess is
+// silently dropped, and the session stays healthy.
+func TestTimeSyncReplyRateLimited(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, _, _ := startTestServer(t, ctx, 15)
+
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "done")
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
+
+	const flood = 40
+	for i := 0; i < flood; i++ {
+		if err := sub.SendDatagram(wire.AppendTimeSync(nil, uint64(i+1), 0)); err != nil {
+			t.Fatalf("SendDatagram %d: %v", i, err)
+		}
+	}
+
+	replies := 0
+	recvCtx, recvCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer recvCancel()
+	for {
+		dgram, err := sub.ReceiveDatagram(recvCtx)
+		if err != nil {
+			break
+		}
+		if _, typ, err := wire.PeekType(dgram); err == nil && typ == wire.TypeTimeSync {
+			replies++
+		}
+	}
+	if replies == 0 {
+		t.Fatalf("no time sync replies at all")
+	}
+	// Burst 5 + at most ~2.5 refills over the 500ms window; anything near the
+	// flood size means the limiter is not engaged.
+	if replies > 10 {
+		t.Errorf("replies = %d for a %d-ping flood, want <= 10 (rate limited)", replies, flood)
+	}
+}

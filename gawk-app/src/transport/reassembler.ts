@@ -20,7 +20,7 @@
 // - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
 //   the relay re-emits the config before every keyframe by design.
 
-import { frameIdAhead, parseDecoderConfig, parseVideoChunk, peekType, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, WIRE_VERSION, type DecoderConfigMessage } from './wire';
+import { frameIdAhead, parseClockMapping, parseDecoderConfig, parseVideoChunk, peekType, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, WIRE_VERSION, type DecoderConfigMessage } from './wire';
 
 const MAX_ASSEMBLIES = 8;
 
@@ -35,6 +35,9 @@ export interface ReassemblerCallbacks {
   // Called only when the config bytes differ from the previous one.
   onConfig: (config: DecoderConfigMessage) => void;
   onFrame: (frame: AssembledFrame) => void;
+  // R5 Q2: the broadcaster's clock mapping (relayClockUs = timestampUs +
+  // offsetUs), relayed + cached by the relay. Last one wins.
+  onClockMapping?: (offsetUs: bigint) => void;
 }
 
 export interface ReassemblerStats {
@@ -117,9 +120,23 @@ export class Reassembler {
       case TYPE_VIDEO_CHUNK:
         this.pushChunk(dgram);
         break;
+      case TYPE_CLOCK_MAPPING:
+        this.pushClockMapping(dgram);
+        break;
       default:
         this.stats.badDatagrams++;
     }
+  }
+
+  private pushClockMapping(dgram: Uint8Array): void {
+    let offsetUs: bigint;
+    try {
+      offsetUs = parseClockMapping(dgram);
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    this.cb.onClockMapping?.(offsetUs);
   }
 
   private pushConfig(dgram: Uint8Array): void {

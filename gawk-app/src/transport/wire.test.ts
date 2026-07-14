@@ -10,21 +10,30 @@ import {
   TYPE_STREAM_FRAME,
   TYPE_VIDEO_CHUNK,
   TYPE_BROADCAST_ANNOUNCE,
+  TYPE_TIME_SYNC,
+  TYPE_CLOCK_MAPPING,
+  TIME_SYNC_SIZE,
+  CLOCK_MAPPING_SIZE,
   CLOSE_CODE_BROADCAST_ENDED,
   VIDEO_CHUNK_HEADER_SIZE,
   WIRE_VERSION,
   WireError,
+  encodeClockMapping,
   encodeDecoderConfig,
   encodeStreamFrame,
   encodeStreamFrameHeader,
+  encodeTimeSync,
   encodeVideoChunk,
+  parseClockMapping,
   parseDecoderConfig,
   parseStreamFrameHeader,
+  parseTimeSync,
   parseVideoChunk,
   peekType,
   parseBroadcastAnnounce,
   type DecoderConfigMessage,
   type StreamFrameHeader,
+  type TimeSyncMessage,
   type VideoChunkHeader,
 } from './wire';
 
@@ -36,6 +45,10 @@ const GOLDEN_DECODER_CONFIG_AVC_HEX = '0102000b617663312e3432453032410142e02affe
 const GOLDEN_DECODER_CONFIG_VP8_HEX = '01020003767038';
 const GOLDEN_BROADCAST_ANNOUNCE_HEX = '0103064b375851324d';
 const GOLDEN_STREAM_FRAME_HEADER_HEX = '01040100010203040000005d21dba5f00000000600000003';
+const GOLDEN_TIME_SYNC_HEX = '01050102030405060708090a0b0c0d0e0f10';
+const GOLDEN_TIME_SYNC_REQUEST_HEX = '010500000000000f42400000000000000000';
+const GOLDEN_CLOCK_MAPPING_HEX = '0106000000000016e360';
+const GOLDEN_CLOCK_MAPPING_NEGATIVE_HEX = '0106fffffffffff0bdc0';
 
 const goldenStreamFrameHeader: StreamFrameHeader = {
   keyframe: true,
@@ -75,6 +88,17 @@ function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+const goldenTimeSync: TimeSyncMessage = {
+  clientTimeUs: 0x0102030405060708n,
+  serverTimeUs: 0x090a0b0c0d0e0f10n,
+};
+const goldenTimeSyncRequest: TimeSyncMessage = {
+  clientTimeUs: 1_000_000n,
+  serverTimeUs: 0n,
+};
+const GOLDEN_CLOCK_MAPPING_OFFSET_US = 1_500_000n;
+const GOLDEN_CLOCK_MAPPING_NEGATIVE_OFFSET_US = -1_000_000n;
+
 describe('constants', () => {
   it('match the Go package', () => {
     expect(MAX_DATAGRAM_SIZE).toBe(1200);
@@ -86,6 +110,10 @@ describe('constants', () => {
     expect(STREAM_FRAME_HEADER_SIZE).toBe(24);
     expect(MAX_KEYFRAME_BYTES).toBe(8 * 1024 * 1024);
     expect(CLOSE_CODE_BROADCAST_ENDED).toBe(4000);
+    expect(TYPE_TIME_SYNC).toBe(0x05);
+    expect(TYPE_CLOCK_MAPPING).toBe(0x06);
+    expect(TIME_SYNC_SIZE).toBe(18);
+    expect(CLOCK_MAPPING_SIZE).toBe(10);
   });
 });
 
@@ -114,6 +142,36 @@ describe('golden vectors', () => {
     const vp8 = parseDecoderConfig(fromHex(GOLDEN_DECODER_CONFIG_VP8_HEX));
     expect(vp8.codec).toBe('vp8');
     expect(vp8.extradata.length).toBe(0);
+  });
+
+  it('encodes and parses the golden time syncs byte-for-byte (R5 Q2)', () => {
+    expect(toHex(encodeTimeSync(goldenTimeSync))).toBe(GOLDEN_TIME_SYNC_HEX);
+    expect(toHex(encodeTimeSync(goldenTimeSyncRequest))).toBe(GOLDEN_TIME_SYNC_REQUEST_HEX);
+    expect(parseTimeSync(fromHex(GOLDEN_TIME_SYNC_HEX))).toEqual(goldenTimeSync);
+    expect(parseTimeSync(fromHex(GOLDEN_TIME_SYNC_REQUEST_HEX))).toEqual(goldenTimeSyncRequest);
+  });
+
+  it('encodes and parses the golden clock mappings byte-for-byte (R5 Q2)', () => {
+    expect(toHex(encodeClockMapping(GOLDEN_CLOCK_MAPPING_OFFSET_US))).toBe(GOLDEN_CLOCK_MAPPING_HEX);
+    expect(toHex(encodeClockMapping(GOLDEN_CLOCK_MAPPING_NEGATIVE_OFFSET_US))).toBe(
+      GOLDEN_CLOCK_MAPPING_NEGATIVE_HEX,
+    );
+    expect(parseClockMapping(fromHex(GOLDEN_CLOCK_MAPPING_HEX))).toBe(GOLDEN_CLOCK_MAPPING_OFFSET_US);
+    expect(parseClockMapping(fromHex(GOLDEN_CLOCK_MAPPING_NEGATIVE_HEX))).toBe(
+      GOLDEN_CLOCK_MAPPING_NEGATIVE_OFFSET_US,
+    );
+  });
+
+  it('rejects malformed time syncs and clock mappings (strict length)', () => {
+    // Truncated, oversize, wrong version, wrong type — all drop, never trust.
+    expect(() => parseTimeSync(fromHex(GOLDEN_TIME_SYNC_HEX.slice(0, -2)))).toThrow(WireError);
+    expect(() => parseTimeSync(fromHex(GOLDEN_TIME_SYNC_HEX + '00'))).toThrow(WireError);
+    expect(() => parseTimeSync(fromHex('02' + GOLDEN_TIME_SYNC_HEX.slice(2)))).toThrow(WireError);
+    expect(() => parseTimeSync(fromHex(GOLDEN_CLOCK_MAPPING_HEX))).toThrow(WireError);
+    expect(() => parseClockMapping(fromHex(GOLDEN_CLOCK_MAPPING_HEX.slice(0, -2)))).toThrow(WireError);
+    expect(() => parseClockMapping(fromHex(GOLDEN_CLOCK_MAPPING_HEX + '00'))).toThrow(WireError);
+    expect(() => parseClockMapping(fromHex('02' + GOLDEN_CLOCK_MAPPING_HEX.slice(2)))).toThrow(WireError);
+    expect(() => parseClockMapping(fromHex(GOLDEN_TIME_SYNC_HEX))).toThrow(WireError);
   });
 
   it('parses the golden broadcast announce', () => {

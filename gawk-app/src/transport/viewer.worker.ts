@@ -5,6 +5,7 @@
 //
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
+import { setSmoothedPlayout } from './playout';
 import { createRenderSink } from './render-sink';
 import {
   ViewerWorkerCore,
@@ -64,6 +65,11 @@ ctx.onmessage = (e: MessageEvent) => {
       break;
     case 'stop':
       void core?.stop();
+      break;
+    case 'playout':
+      // Worker-context module state; the live pipeline's reorder buffer reads
+      // it on every advance (R5 Q3). Valid before/after init and start alike.
+      setSmoothedPlayout(cmd.smoothed);
       break;
   }
 };

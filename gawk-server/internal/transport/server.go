@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -295,14 +296,82 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// below — no separate shutdown signal.
 	go s.acceptKeyframeStreams(r.Context(), sess, pub, log)
 
+	tsLimiter := newTimeSyncLimiter()
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
 			log.Info("publisher session ended", "reason", err)
 			return
 		}
+		// TimeSync is a transport-level concern (the reply needs this session
+		// and the relay clock); everything else is the hub's.
+		if maybeAnswerTimeSync(sess, dgram, tsLimiter) {
+			continue
+		}
 		pub.HandleDatagram(dgram)
 	}
+}
+
+// TimeSync (R5 Q2, docs/15): clients ping over their existing session and the
+// relay answers inline with its monotonic clock, giving each client an
+// NTP-style offset + RTT sample against the relay as the common reference.
+// The reply must never ride the per-subscriber video queue — a delayed reply
+// is a corrupted measurement — so it is sent directly from the read loop.
+
+// processStart anchors the relay's monotonic reference clock. Monotonic on
+// purpose: an NTP step on the server must not jump every client's offset.
+var processStart = time.Now()
+
+func relayNowUs() uint64 {
+	return uint64(time.Since(processStart).Microseconds())
+}
+
+// Replies are cheap (18 bytes) but answered at most at this rate per session —
+// a constant, not a knob: clients ping every ~2s, so anything past this is a
+// bug or abuse. Excess pings are silently dropped.
+const (
+	timeSyncReplyRate  = 5.0 // replies per second
+	timeSyncReplyBurst = 5.0
+)
+
+// timeSyncLimiter is a tiny per-session token bucket (single-goroutine use:
+// each session's read loop owns one).
+type timeSyncLimiter struct {
+	tokens float64
+	last   time.Time
+}
+
+func newTimeSyncLimiter() *timeSyncLimiter {
+	return &timeSyncLimiter{tokens: timeSyncReplyBurst, last: time.Now()}
+}
+
+func (l *timeSyncLimiter) allow() bool {
+	now := time.Now()
+	l.tokens += now.Sub(l.last).Seconds() * timeSyncReplyRate
+	l.last = now
+	if l.tokens > timeSyncReplyBurst {
+		l.tokens = timeSyncReplyBurst
+	}
+	if l.tokens < 1 {
+		return false
+	}
+	l.tokens--
+	return true
+}
+
+// maybeAnswerTimeSync answers a TimeSync ping inline and reports whether the
+// datagram was one (handled or dropped — either way the caller is done with
+// it). Malformed pings and reply errors are ignored: the next ping retries.
+func maybeAnswerTimeSync(sess *webtransport.Session, dgram []byte, lim *timeSyncLimiter) bool {
+	if len(dgram) != wire.TimeSyncSize || dgram[1] != wire.TypeTimeSync {
+		return false
+	}
+	clientUs, _, err := wire.ParseTimeSync(dgram)
+	if err != nil || !lim.allow() {
+		return true
+	}
+	_ = sess.SendDatagram(wire.AppendTimeSync(nil, clientUs, relayNowUs()))
+	return true
 }
 
 // maxConcurrentKeyframeStreams bounds how many publisher-initiated keyframe
@@ -409,11 +478,16 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Connection("subscribe", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)
 	log.Info("subscriber session started")
+	tsLimiter := newTimeSyncLimiter()
 	for {
-		if _, err := sess.ReceiveDatagram(r.Context()); err != nil {
+		dgram, err := sess.ReceiveDatagram(r.Context())
+		if err != nil {
 			log.Info("subscriber session ended", "reason", err, "dropped", sub.Dropped())
 			return
 		}
+		// Subscribers send nothing but TimeSync pings; answer those (R5 Q2)
+		// and keep discarding anything else, as before.
+		maybeAnswerTimeSync(sess, dgram, tsLimiter)
 	}
 }
 

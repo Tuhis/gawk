@@ -52,6 +52,9 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
       title: 'Network',
       rows: [
         ['RTT', conn?.rttMs == null ? '—' : `${fmt(conn.rttMs)} ms`],
+        // R5 Q2: from our own TimeSync ping — independent of getStats(), so it
+        // works even though no browser ships getStats() today (docs/13 D7).
+        ['RTT (time-sync)', stats?.timeSyncRttMs == null ? '—' : `${fmt(stats.timeSyncRttMs)} ms`],
         ['RTT variation', conn?.rttVarMs == null ? '—' : `${fmt(conn.rttVarMs)} ms`],
         ['Packets lost', fmtInt(conn?.packetsLost)],
         ['Send rate (est.)', fmtBits(conn?.estimatedSendRateBps)],

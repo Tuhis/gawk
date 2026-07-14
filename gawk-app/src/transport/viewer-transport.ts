@@ -14,6 +14,7 @@ import {
   type KeyframeStreamFrame,
 } from './connection';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
+import { TimeSyncClient, type TimeSyncStats } from './time-sync';
 
 // The one authoritative "session is over" signal (see CODE-REVIEW: one event,
 // one signal). closeCode carries the semantics when the server closed cleanly
@@ -44,6 +45,11 @@ export interface ViewerTransport {
   // Latest connection-health sample (null where getStats() is unsupported).
   // Calling it also schedules a refresh where the impl samples on demand.
   sampleConnectionStats(): TransportConnectionStats | null;
+  // Latest relay clock-sync sample (R5 Q2): local→relay clock offset + a
+  // self-owned RTT. Null until the first ping/pong completes (or where the
+  // session can't send datagrams). Lives in the transport because it owns the
+  // reply timing — on the worker path a postMessage hop would add jitter.
+  sampleTimeSync(): TimeSyncStats | null;
   close(): void;
 }
 
@@ -57,6 +63,8 @@ export class LocalViewerTransport implements ViewerTransport {
   private opts: ConnectOptions;
   private wt: WebTransport | null = null;
   private sampler: ConnectionStatsSampler | null = null;
+  private timeSync: TimeSyncClient | null = null;
+  private timeSyncWriter: WritableStreamDefaultWriter<BufferSource> | null = null;
   private abort = new AbortController();
   private closing = false; // close() called — suppress onClosed
   private closedReported = false;
@@ -71,6 +79,18 @@ export class LocalViewerTransport implements ViewerTransport {
     this.wt = wt;
     this.sampler = new ConnectionStatsSampler(wt);
 
+    // Relay clock sync (R5 Q2): ping over this session's datagrams; replies
+    // are intercepted below, before the video path ever sees them. Feature-
+    // detected so test fakes / odd environments without a writable datagram
+    // stream simply report null.
+    const datagrams = (wt as { datagrams?: { writable?: WritableStream<BufferSource> } }).datagrams;
+    if (datagrams?.writable) {
+      const writer = datagrams.writable.getWriter();
+      this.timeSyncWriter = writer;
+      this.timeSync = new TimeSyncClient((d) => void writer.write(d).catch(() => {}));
+      this.timeSync.start();
+    }
+
     void wt.closed
       .then((closeInfo) => {
         const info = closeInfo as { closeCode?: number; reason?: string } | undefined;
@@ -84,7 +104,14 @@ export class LocalViewerTransport implements ViewerTransport {
     // keyframes arrive as reliable unidirectional streams (R8). On a joining
     // viewer the relay primes us with the last keyframe over a stream, so the
     // first picture typically appears without waiting for the next keyframe.
-    void readDatagrams(wt, cb.onDatagram, this.abort.signal)
+    void readDatagrams(
+      wt,
+      (dgram) => {
+        if (this.timeSync?.handleDatagram(dgram)) return; // consumed (R5 Q2)
+        cb.onDatagram(dgram);
+      },
+      this.abort.signal,
+    )
       .then(() => this.handleReadLoopEnd(cb, wt, null))
       .catch((e) => this.handleReadLoopEnd(cb, wt, e instanceof Error ? e : new Error(String(e))));
 
@@ -144,8 +171,20 @@ export class LocalViewerTransport implements ViewerTransport {
     return this.sampler?.latest() ?? null;
   }
 
+  sampleTimeSync(): TimeSyncStats | null {
+    return this.timeSync?.sample() ?? null;
+  }
+
   close(): void {
     this.closing = true;
+    this.timeSync?.stop();
+    this.timeSync = null;
+    try {
+      this.timeSyncWriter?.releaseLock();
+    } catch {
+      // a pending write may hold the lock — the session close ends it anyway
+    }
+    this.timeSyncWriter = null;
     this.abort.abort();
     try {
       this.wt?.close();

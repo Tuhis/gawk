@@ -8,6 +8,7 @@
 
 import type { ConnectOptions, KeyframeStreamFrame } from './connection';
 import type { TransportConnectionStats } from './net-stats';
+import type { TimeSyncStats } from './time-sync';
 import type { DecoderConfigMessage } from './wire';
 import {
   LocalViewerTransport,
@@ -34,7 +35,10 @@ export type TransportWorkerEvent =
       data: Uint8Array;
     }
   | { type: 'closed'; closeCode?: number; reason?: string; message: string }
-  | { type: 'connStats'; stats: TransportConnectionStats | null };
+  // Pushed at the stats cadence: connection health + the relay clock-sync
+  // sample (R5 Q2 — measured in this worker, where the reply timing is jitter-
+  // free; bigint crosses postMessage via structured clone).
+  | { type: 'connStats'; stats: TransportConnectionStats | null; timeSync: TimeSyncStats | null };
 
 export interface TransportWorkerHost {
   post(event: TransportWorkerEvent, transfer?: Transferable[]): void;
@@ -83,7 +87,11 @@ export class TransportWorkerCore {
       .then(() => {
         this.host.post({ type: 'connected' });
         this.statsTimer = setInterval(() => {
-          this.host.post({ type: 'connStats', stats: transport.sampleConnectionStats() });
+          this.host.post({
+            type: 'connStats',
+            stats: transport.sampleConnectionStats(),
+            timeSync: transport.sampleTimeSync(),
+          });
         }, CONN_STATS_INTERVAL_MS) as unknown as number;
       })
       .catch((e) => {

@@ -22,6 +22,7 @@ function fakeTransport(connectImpl?: (cb: ViewerTransportCallbacks) => Promise<v
       if (connectImpl) await connectImpl(cb);
     }),
     sampleConnectionStats: vi.fn(() => null),
+    sampleTimeSync: vi.fn(() => null),
     close: vi.fn(),
   };
   return { transport, cb: () => callbacks! };
@@ -122,8 +123,12 @@ describe('TransportWorkerCore', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     await vi.advanceTimersByTimeAsync(CONN_STATS_INTERVAL_MS * 2);
-    expect(posted.filter((p) => p.event.type === 'connStats').length).toBeGreaterThanOrEqual(2);
+    const connStats = posted.filter((p) => p.event.type === 'connStats');
+    expect(connStats.length).toBeGreaterThanOrEqual(2);
     expect(transport.sampleConnectionStats).toHaveBeenCalled();
+    // R5 Q2: the clock-sync sample rides the same push (null from this fake).
+    expect(transport.sampleTimeSync).toHaveBeenCalled();
+    expect(connStats[0].event.type === 'connStats' && connStats[0].event.timeSync).toBeNull();
   });
 
   it('close() closes the transport and stops sampling', async () => {

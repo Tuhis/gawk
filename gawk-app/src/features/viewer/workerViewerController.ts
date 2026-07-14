@@ -90,6 +90,14 @@ export class WorkerViewerController {
     if (this.booted && this.supported && this.canvasTransferred) this.post({ type: 'stop' });
   }
 
+  // R5 Q3: apply the smoothed-playout setting inside the worker context.
+  // Safe at any lifecycle point — worker messages queue until the shell runs,
+  // and the setting is module state there, independent of start/stop.
+  setSmoothedPlayout(smoothed: boolean): void {
+    if (this.disposed) return;
+    this.post({ type: 'playout', smoothed });
+  }
+
   dispose(): void {
     this.disposed = true;
     this.worker.terminate();

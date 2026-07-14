@@ -1247,3 +1247,107 @@ func TestBandwidthLimiting(t *testing.T) {
 		t.Error("consumeBandwidth(20) expected false, got true")
 	}
 }
+
+// R5 Q2 (docs/15): the hub relays ClockMapping datagrams to live subscribers,
+// caches the latest, primes late joiners with it, and invalidates the cache on
+// a new publisher session — the same lifecycle as the cached keyframe.
+func TestClockMappingRelayedCachedAndPrimed(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+
+	hasMapping := func(f *fakeSender, want []byte) func() bool {
+		return func() bool {
+			for _, d := range f.received() {
+				if bytes.Equal(d, want) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	countMappings := func(f *fakeSender) int {
+		n := 0
+		for _, d := range f.received() {
+			if len(d) >= 2 && d[1] == wire.TypeClockMapping {
+				n++
+			}
+		}
+		return n
+	}
+
+	s1 := &fakeSender{}
+	sub1, err := r.Subscribe(id, s1)
+	if err != nil {
+		t.Fatalf("Subscribe s1: %v", err)
+	}
+	defer sub1.Close()
+
+	mapping := wire.AppendClockMapping(nil, 123_456)
+	p.HandleDatagram(mapping)
+	waitFor(t, 5*time.Second, hasMapping(s1, mapping), "mapping fanned out to live subscriber")
+
+	// Late joiner: primed with the cached mapping without the broadcaster
+	// re-sending anything.
+	s2 := &fakeSender{}
+	sub2, err := r.Subscribe(id, s2)
+	if err != nil {
+		t.Fatalf("Subscribe s2: %v", err)
+	}
+	defer sub2.Close()
+	waitFor(t, 5*time.Second, hasMapping(s2, mapping), "late joiner primed with cached mapping")
+
+	// A newer mapping supersedes the cache: the next joiner gets it, not the old one.
+	mapping2 := wire.AppendClockMapping(nil, -42)
+	p.HandleDatagram(mapping2)
+	s3 := &fakeSender{}
+	sub3, err := r.Subscribe(id, s3)
+	if err != nil {
+		t.Fatalf("Subscribe s3: %v", err)
+	}
+	defer sub3.Close()
+	waitFor(t, 5*time.Second, hasMapping(s3, mapping2), "joiner primed with newest mapping")
+
+	// New publisher session (frame timestamps on a new timeline): cache gone.
+	p.Close()
+	if _, _, err := r.StartPublish(id); err != nil {
+		t.Fatalf("StartPublish reclaim: %v", err)
+	}
+	s4 := &fakeSender{}
+	sub4, err := r.Subscribe(id, s4)
+	if err != nil {
+		t.Fatalf("Subscribe s4: %v", err)
+	}
+	defer sub4.Close()
+	time.Sleep(50 * time.Millisecond) // priming is immediate; give the drain a beat
+	if n := countMappings(s4); n != 0 {
+		t.Errorf("post-restart joiner received %d clock mappings, want 0 (cache invalidated)", n)
+	}
+}
+
+func TestClockMappingMalformedDropped(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	s := &fakeSender{}
+	sub, err := r.Subscribe(id, s)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	bad := wire.AppendClockMapping(nil, 7)[:5] // truncated
+	p.HandleDatagram(bad)
+
+	if got := r.Stats().Totals.BadDatagrams; got != 1 {
+		t.Errorf("BadDatagrams = %d, want 1", got)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if len(s.received()) != 0 {
+		t.Errorf("malformed mapping was fanned out: %d datagrams", len(s.received()))
+	}
+}

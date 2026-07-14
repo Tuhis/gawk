@@ -8,11 +8,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const connectWebTransport = vi.fn();
 const startCapture = vi.fn();
 const stopCapture = vi.fn();
+const readDatagrams = vi.fn();
+// Every datagram batch handed to any DatagramSender instance, in order — the
+// observable send stream (pings, clock mappings, video).
+const sentDatagrams: Uint8Array[][] = [];
 
 vi.mock('./connection', () => ({
   connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
+  readDatagrams: (...args: unknown[]) => readDatagrams(...args),
   DatagramSender: class {
-    send = vi.fn(() => Promise.resolve());
+    send = vi.fn((datagrams: Uint8Array[]) => {
+      sentDatagrams.push(datagrams);
+      return Promise.resolve();
+    });
     close = vi.fn();
   },
 }));
@@ -28,6 +36,14 @@ vi.mock('../media/encoder', () => ({
 
 import { BroadcastPipeline, type BroadcastCallbacks } from './broadcaster';
 import { DEFAULT_CAPTURE_CONFIG } from '../media/types';
+import { CLOCK_MAPPING_INTERVAL_MS } from './time-sync';
+import {
+  TYPE_CLOCK_MAPPING,
+  TYPE_TIME_SYNC,
+  encodeTimeSync,
+  parseClockMapping,
+  parseTimeSync,
+} from './wire';
 
 // Golden BroadcastAnnounce for ID K7XQ2M (docs/06-multi-broadcaster.md).
 const ANNOUNCE_K7XQ2M = new Uint8Array([0x01, 0x03, 0x06, 0x4b, 0x37, 0x58, 0x51, 0x32, 0x4d]);
@@ -110,6 +126,10 @@ beforeEach(() => {
   connectWebTransport.mockReset();
   startCapture.mockReset();
   stopCapture.mockReset();
+  readDatagrams.mockReset();
+  // The reply loop stays open for the life of the session by default.
+  readDatagrams.mockReturnValue(new Promise(() => {}));
+  sentDatagrams.length = 0;
 });
 
 afterEach(() => {
@@ -232,5 +252,97 @@ describe('BroadcastPipeline start failures', () => {
     const pipeline = makePipeline(makeCallbacks());
     await expect(pipeline.start()).rejects.toMatchObject({ phase: 'connect' });
     expect(startCapture).not.toHaveBeenCalled();
+  });
+});
+
+// R5 Q2 (docs/15): the broadcaster pings the relay for clock sync and, once
+// an offset sample exists, publishes a ClockMapping so viewers can compute
+// absolute capture→render latency.
+describe('BroadcastPipeline time sync + clock mapping', () => {
+  it('pings on start, then publishes the mapping derived from the reply', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      startCapture.mockResolvedValue(makeCaptureHandle());
+      let deliver: ((d: Uint8Array) => void) | null = null;
+      readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+        deliver = onDatagram;
+        return new Promise(() => {});
+      });
+
+      const pipeline = makePipeline(makeCallbacks());
+      await pipeline.start();
+
+      // The first ping goes out at start (type 0x05, serverTimeUs 0).
+      const pings = sentDatagrams.flat().filter((d) => d[1] === TYPE_TIME_SYNC);
+      expect(pings.length).toBeGreaterThanOrEqual(1);
+      const ping = parseTimeSync(pings[0]);
+      expect(ping.serverTimeUs).toBe(0n);
+
+      // Relay reply: echo the client time, server clock at 90s. With fake
+      // timers, t1 === t0 → rtt 0 → offset = 90_000_000 − t0.
+      const reply = encodeTimeSync({ clientTimeUs: ping.clientTimeUs, serverTimeUs: 90_000_000n });
+      (deliver as unknown as (d: Uint8Array) => void)(reply);
+
+      // The mapping check runs on a timer; advance past it.
+      await vi.advanceTimersByTimeAsync(1_100);
+      const mappings = sentDatagrams.flat().filter((d) => d[1] === TYPE_CLOCK_MAPPING);
+      expect(mappings.length).toBe(1);
+      expect(parseClockMapping(mappings[0])).toBe(90_000_000n - ping.clientTimeUs);
+
+      // Refresh cadence: no re-send inside CLOCK_MAPPING_INTERVAL_MS, one after.
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(sentDatagrams.flat().filter((d) => d[1] === TYPE_CLOCK_MAPPING).length).toBe(1);
+      await vi.advanceTimersByTimeAsync(CLOCK_MAPPING_INTERVAL_MS);
+      expect(
+        sentDatagrams.flat().filter((d) => d[1] === TYPE_CLOCK_MAPPING).length,
+      ).toBeGreaterThanOrEqual(2);
+
+      // The self-owned RTT surfaces in stats.
+      const cbs = makeCallbacks();
+      void cbs; // (stats asserted via the pipeline's own callback below)
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports timeSyncRttMs in stats once synced, null before', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      startCapture.mockResolvedValue(makeCaptureHandle());
+      let deliver: ((d: Uint8Array) => void) | null = null;
+      readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+        deliver = onDatagram;
+        return new Promise(() => {});
+      });
+
+      const cbs = makeCallbacks();
+      const pipeline = makePipeline(cbs);
+      await pipeline.start();
+
+      await vi.advanceTimersByTimeAsync(500); // one stats tick, unsynced
+      const first = cbs.onStats.mock.calls.at(-1)?.[0];
+      expect(first?.timeSyncRttMs).toBeNull();
+
+      const ping = parseTimeSync(sentDatagrams.flat().filter((d) => d[1] === TYPE_TIME_SYNC)[0]);
+      (deliver as unknown as (d: Uint8Array) => void)(
+        encodeTimeSync({ clientTimeUs: ping.clientTimeUs, serverTimeUs: 1_000_000n }),
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      const synced = cbs.onStats.mock.calls.at(-1)?.[0];
+      expect(synced?.timeSyncRttMs).not.toBeNull();
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

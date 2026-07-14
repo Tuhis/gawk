@@ -23,7 +23,7 @@ feature set exists).
 | R2 | [Hardening](#r2--hardening) | ✅ done ([docs/07](docs/07-hardening.md)) |
 | R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | ✅ done ([docs/08](docs/08-resolution-framerate-picker.md)) |
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | ✅ done — manually verified 2026-07-14 ([docs/09](docs/09-automatic-fallback.md)) |
-| R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
+| R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | 🚧 Q1–Q3 implemented 2026-07-14 (re-scoped); Q4 measurement pass + manual verify pending ([docs/15](docs/15-viewer-live-edge.md)) |
 | R6 | [Production UI](#r6--production-ui) | ✅ done (J1–J6); manual browser verify passed 2026-07-14 ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
@@ -287,7 +287,27 @@ aggregation/debouncing so 15 viewers can't spam the encoder). May be
 overkill given the existing cached-keyframe priming — the design doc should
 start with measurements.
 
-**Status**: not started.
+**Status**: re-scoped + designed 2026-07-14, **Q1–Q3 implemented the same
+day** — see [`docs/15-viewer-live-edge.md`](docs/15-viewer-live-edge.md);
+the Q4 measurement pass + manual browser verify remain (they need live
+sessions). All automated gates green; implementation notes (18/10-byte
+messages, decoder-output measurement point, cached-keyframe-style mapping
+lifecycle) are in the doc. The audit there found most of the sketch above already landed
+elsewhere: latest-frame-first rendering became R10 P1
+(`CoalescingRenderSink`), and backlog discard + skip-ahead became the R8 S5
+reorder buffer's drop-to-keyframe resync. The **keyframe-request
+back-channel is rejected for good** (500 ms GOP, reliable keyframe streams,
+and the R10 finding that keyframe *delivery* — not cadence — is the
+bottleneck; a request signal makes the congested case worse). What remains,
+designed as chunks Q1–Q4: a zero-protocol-change **live-edge drift** metric
+(windowed-min baseline over the capture timestamps, which `capture.ts`
+already stamps on the broadcaster's `performance.now()` clock), **absolute
+glass-to-glass latency** via new `TimeSync` (0x05) / `ClockMapping` (0x06)
+wire messages using the relay's monotonic clock as the common reference, an
+**opt-in smoothed-playout mode** (reorder-release pacing,
+`PLAYOUT_OFFSET_MS = 150`, default off, visibly costed — resolving the
+trade R8 Decision 7 deferred here), and a measurement-driven tuning pass
+over the GOP / `KEYFRAME_WAIT_MS` knobs.
 
 ## R6 — Production UI
 
@@ -531,3 +551,9 @@ Restated here so the roadmap doesn't quietly reopen settled decisions:
   toward it.
 - **Persistent broadcaster channels** — deferred beyond R1 (see R1
   non-goals).
+- **Viewer→server keyframe-request back-channel** — rejected for good in the
+  R5 design ([docs/15](docs/15-viewer-live-edge.md), Decision 6): overtaken
+  by the 500 ms GOP, reliable keyframe streams (R8), and cached-keyframe
+  priming; the R10 field finding showed keyframe *delivery*, not cadence, is
+  the bottleneck — a request signal produces more keyframes and makes the
+  congested case worse, while breaking the one-way data-flow design.

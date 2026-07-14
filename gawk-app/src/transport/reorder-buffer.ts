@@ -6,10 +6,15 @@
 // finishes on the stream. This buffer merges the two by frameId and releases
 // frames to the decoder in decode order.
 //
-// It is emphatically NOT a fixed-offset de-jitter buffer: the project favors
+// By default this is NOT a fixed-offset de-jitter buffer: the project favors
 // the latest frame over smooth-but-late playback, so there is no constant
-// playout delay. Frames are released as soon as they are decodable. The two
-// bounded waits below exist only to disambiguate the two-channel race:
+// playout delay and frames are released as soon as they are decodable. R5 Q3
+// adds an *opt-in* smoothed mode (playout.ts, default off): when the viewer
+// enables it, a decodable frame is additionally held until
+// `now >= timestampMs + arrivalBaseline + offset` — a constant offset from
+// the source clock, anchored by the windowed-min arrival baseline. Smoothing
+// adds delay, never patience: every drop/resync policy below fires unchanged.
+// The two bounded waits exist only to disambiguate the two-channel race:
 //
 //   - KEYFRAME_WAIT_MS: while waiting for a keyframe (initial sync, or after a
 //     declared gap), decodable-pending frames are held at most this long.
@@ -23,6 +28,8 @@
 // Pure and timer-free: the pipeline injects the clock and calls tick()
 // periodically (e.g. once per rendered frame). Fully unit-testable in node.
 
+import { WindowedMinTracker } from './live-edge';
+import { getPlayoutOffsetMs } from './playout';
 import { frameIdAhead, nextFrameId, type DecoderConfigMessage } from './wire';
 
 // Tunables, named in one place (à la media/fallback.ts) for later real-world
@@ -88,9 +95,27 @@ interface Entry {
   receivedAtMs: number;
 }
 
+export interface ReorderBufferOptions {
+  // Invoked when a keyframe arrives serially behind the decode position — the
+  // broadcaster-restart signal (R10 field finding; R5 Q1, docs/15). Frame
+  // timestamps move to a new timeline across a restart, so live-edge baselines
+  // built against the old one must reset. The rare other cause (two keyframe
+  // streams read out of order) costs one harmless baseline rebuild.
+  onRestart?: () => void;
+  // Playout offset in ms, read on every advance so a live toggle re-paces
+  // (R5 Q3). 0 = live-edge (the default, via playout.ts); injectable for
+  // tests.
+  playoutOffsetMs?: () => number;
+}
+
 export class ReorderBuffer {
   private onFrame: (frame: ReleasedFrame) => void;
   private now: () => number;
+  private onRestart: (() => void) | undefined;
+  private playoutOffsetMs: () => number;
+  // Windowed min of (arrivalMs − timestampMs): the pacing anchor (R5 Q3).
+  // Reset with the restart signal — new session, new timestamp timeline.
+  private arrivalBaseline = new WindowedMinTracker();
 
   private buffer = new Map<number, Entry>();
   // frameId of the last frame released to the decoder; null before the first.
@@ -108,9 +133,15 @@ export class ReorderBuffer {
     buffered: 0,
   };
 
-  constructor(onFrame: (frame: ReleasedFrame) => void, now: () => number = () => performance.now()) {
+  constructor(
+    onFrame: (frame: ReleasedFrame) => void,
+    now: () => number = () => performance.now(),
+    opts: ReorderBufferOptions = {},
+  ) {
     this.onFrame = onFrame;
     this.now = now;
+    this.onRestart = opts.onRestart;
+    this.playoutOffsetMs = opts.playoutOffsetMs ?? getPlayoutOffsetMs;
   }
 
   pushKeyframe(kf: ReorderKeyframe): void {
@@ -131,6 +162,10 @@ export class ReorderBuffer {
     // self-heals at the next keyframe.
     const backwards =
       this.decodePosition !== null && !frameIdAhead(kf.frameId, this.decodePosition);
+    if (backwards) {
+      this.arrivalBaseline.reset();
+      this.onRestart?.();
+    }
     if (backwards && !this.waitingForKeyframe) {
       this.stats.gapResyncs++;
       this.waitingForKeyframe = true;
@@ -186,9 +221,11 @@ export class ReorderBuffer {
     this.buffer.clear();
     this.decodePosition = null;
     this.waitingForKeyframe = true;
+    this.arrivalBaseline.reset();
   }
 
   private insert(e: Entry): void {
+    this.arrivalBaseline.observe(e.receivedAtMs - Number(e.timestampUs) / 1000, e.receivedAtMs);
     const existing = this.buffer.get(e.frameId);
     // Keep a keyframe over a duplicate delta for the same id; otherwise ignore
     // a duplicate.
@@ -222,6 +259,7 @@ export class ReorderBuffer {
       const next = nextFrameId(this.decodePosition);
       const entry = this.buffer.get(next);
       if (entry) {
+        if (this.now() < this.releasableAt(entry)) return; // paced (Q3): tick re-drives
         this.release(entry);
         continue;
       }
@@ -257,6 +295,7 @@ export class ReorderBuffer {
       if (best === null || e.receivedAtMs > best.receivedAtMs) best = e;
     }
     if (!best) return false;
+    if (this.now() < this.releasableAt(best)) return false; // paced (Q3): not due yet
 
     for (const [id, e] of this.buffer) {
       const behindBest = id !== best.frameId && !frameIdAhead(id, best.frameId);
@@ -268,6 +307,18 @@ export class ReorderBuffer {
     this.waitingForKeyframe = false;
     this.release(best);
     return true;
+  }
+
+  // When a frame becomes releasable (R5 Q3). Live-edge (offset 0, the
+  // default) means "now" — the smoothed schedule is
+  // timestampMs + arrivalBaseline + offset, i.e. a constant offset from the
+  // source clock anchored at the best-observed arrival delta.
+  private releasableAt(e: Entry): number {
+    const offset = this.playoutOffsetMs();
+    if (offset <= 0) return 0;
+    const base = this.arrivalBaseline.min(this.now());
+    if (base === null) return 0;
+    return Number(e.timestampUs) / 1000 + base + offset;
   }
 
   private hasBufferedKeyframeAbove(position: number): boolean {

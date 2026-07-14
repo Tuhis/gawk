@@ -13,6 +13,8 @@ import {
   type ViewerTransportFactory,
   type ViewerTransportKind,
 } from './viewer-transport';
+import { LiveEdgeTracker } from './live-edge';
+import { getPlayoutOffsetMs } from './playout';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
@@ -57,6 +59,27 @@ export interface ViewerStats extends ReassemblerStats {
   // the last keyframe (recovery bound: should hover at or under the GOP).
   timeSinceLastFrameMs: number | null;
   lastKeyframeAgeMs: number | null;
+  // R5 Q1 (docs/15): how far the newest decoded frame lags behind this
+  // session's best capture→decode delta (windowed min — clock offset cancels).
+  // ~0 = at live edge; growth = decoder backlog / reorder holds / queue
+  // growth. Null before the first decoded frame. Relative only — absolute
+  // capture→render latency is capToRenderMs (Q2).
+  liveEdgeDriftMs: number | null;
+  // R5 Q2 (docs/15): absolute capture→render latency via the relay clock as
+  // the common reference (broadcaster ClockMapping + this leg's TimeSync
+  // offset). Error ≈ sum of both legs' best-sample rtt/2 asymmetries; a
+  // negative raw value (asymmetry pathology) is clamped to 0. Null until both
+  // clock legs have synced. The render paint follows the measurement point by
+  // at most one display interval.
+  capToRenderMs: number | null;
+  // R5 Q2: self-owned relay↔viewer RTT from the TimeSync exchange — works
+  // where WebTransport.getStats() doesn't (no browser ships it today —
+  // Chromium removed its pre-spec impl in 152; see docs/13 D7).
+  timeSyncRttMs: number | null;
+  // R5 Q3: the active playout offset — 0 = live-edge (default), >0 = the
+  // opt-in smoothed mode. Ground truth from the context the pipeline runs in,
+  // so a toggle that failed to cross the worker boundary is visible.
+  playoutOffsetMs: number;
   // R9 connection health for this leg (relay→viewer); null when the browser
   // doesn't implement WebTransport.getStats().
   connection: TransportConnectionStats | null;
@@ -126,6 +149,14 @@ export class ViewerPipeline {
   // this is ground truth about where the pipeline actually runs.
   private pipelineContext: 'worker' | 'main-thread' =
     typeof window === 'undefined' ? 'worker' : 'main-thread';
+  // R5 Q1: drift over the session-best capture→decode delta, observed at
+  // decoder output (the paint that follows is ≤ one display interval later —
+  // a constant the windowed-min baseline cancels).
+  private liveEdge = new LiveEdgeTracker();
+  // R5 Q2: the broadcaster's timestamp→relay-clock mapping (last one wins;
+  // invalidated by a broadcaster restart) and the newest absolute latency.
+  private broadcastClockOffsetUs: bigint | null = null;
+  private lastCapToRenderMs: number | null = null;
 
   private broadcastId: string;
 
@@ -156,12 +187,23 @@ export class ViewerPipeline {
       onError: (e) => this.failDecode(e),
     });
 
-    this.reorder = new ReorderBuffer((frame) => this.decodeReleased(frame));
+    this.reorder = new ReorderBuffer(
+      (frame) => this.decodeReleased(frame),
+      () => performance.now(),
+      // Broadcaster restart: timestamps move to a new timeline, so the
+      // drift baseline must rebuild against it.
+      { onRestart: () => this.handleBroadcasterRestart() },
+    );
 
     this.reassembler = new Reassembler({
       // A datagram-borne config (legacy path) still applies; keyframes now
       // carry their own config on the stream.
       onConfig: (config) => this.maybeApplyConfig(config),
+      // R5 Q2: the broadcaster's clock mapping — relayed live and replayed to
+      // late joiners by the relay's cache.
+      onClockMapping: (offsetUs) => {
+        this.broadcastClockOffsetUs = offsetUs;
+      },
       // Reassembled datagram frames feed the reorder buffer. Keyframes only
       // arrive over streams in practice, but routing a keyframe-flagged
       // datagram here too keeps the viewer robust to any keyframe source.
@@ -382,10 +424,23 @@ export class ViewerPipeline {
     });
   }
 
+  // A keyframe serially behind the decode position is the broadcaster-restart
+  // signal (docs/14): the new session's frame timestamps live on a fresh
+  // clock timeline, invalidating anything derived from the old one — the
+  // drift baseline AND the clock mapping (the new session's mapping arrives
+  // with its first re-send / relay prime).
+  private handleBroadcasterRestart(): void {
+    this.liveEdge.reset();
+    this.broadcastClockOffsetUs = null;
+    this.lastCapToRenderMs = null;
+  }
+
   private handleDecoded(decoded: DecodedFrame): void {
     this.decodedFrames++;
     this.decodedSinceStats++;
     this.lastDecodeLatencyMs = decoded.decodeEndMs - decoded.decodeStartMs;
+    this.liveEdge.observe(decoded.frame.timestamp);
+    this.observeCapToRender(decoded.frame.timestamp);
     // Worker path: draw + close in place so the frame never crosses a boundary.
     // Main-thread path: hand it to the callback, which draws and closes it.
     if (this.renderSink) {
@@ -393,6 +448,20 @@ export class ViewerPipeline {
     } else {
       this.cb.onDecodedFrame(decoded);
     }
+  }
+
+  // R5 Q2: absolute capture→render, both sides translated to the relay clock:
+  //   (viewerNow + viewerOffset) − (frame.timestamp + broadcastOffset)
+  // Needs both clock legs; until then it stays null. Negative raw values
+  // (asymmetry error exceeding the true latency) clamp to 0.
+  private observeCapToRender(timestampUs: number): void {
+    const sync = this.transport?.sampleTimeSync();
+    if (!sync || this.broadcastClockOffsetUs === null) return;
+    const nowU = BigInt(Math.round(performance.now() * 1000));
+    const raw =
+      Number(nowU + sync.offsetUs - (BigInt(Math.round(timestampUs)) + this.broadcastClockOffsetUs)) /
+      1000;
+    this.lastCapToRenderMs = Math.max(0, raw);
   }
 
   private publishStats(): void {
@@ -441,6 +510,10 @@ export class ViewerPipeline {
       transport: this.transport?.kind ?? null,
       timeSinceLastFrameMs: this.lastFrameReceivedAt === null ? null : now - this.lastFrameReceivedAt,
       lastKeyframeAgeMs: this.lastKeyframeReceivedAt === null ? null : now - this.lastKeyframeReceivedAt,
+      liveEdgeDriftMs: this.liveEdge.driftMs(),
+      capToRenderMs: this.lastCapToRenderMs,
+      timeSyncRttMs: this.transport?.sampleTimeSync()?.rttMs ?? null,
+      playoutOffsetMs: getPlayoutOffsetMs(),
       connection: this.transport?.sampleConnectionStats() ?? null,
     });
   }

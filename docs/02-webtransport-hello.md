@@ -137,6 +137,15 @@ From `internal/wire/wire_test.go`:
 - DecoderConfig (codec `avc1.42E02A`, extradata `01 42 E0 2A FF E1`):
   `0102000b617663312e3432453032410142e02affe1`
 - DecoderConfig (codec `vp8`, no extradata): `01020003767038`
+- StreamFrame header (R8, [docs/12](12-worker-and-reliable-keyframes.md);
+  keyframe, frameID `0x01020304`, timestampUs `0x5D21DBA5F0`, configLen 6,
+  payloadLen 3): `01040100010203040000005d21dba5f00000000600000003`
+- TimeSync reply (R5 Q2, [docs/15](15-viewer-live-edge.md); clientTimeUs
+  `0x0102030405060708`, serverTimeUs `0x090A0B0C0D0E0F10`):
+  `01050102030405060708090a0b0c0d0e0f10`; request (clientTimeUs 1 000 000,
+  serverTimeUs 0): `010500000000000f42400000000000000000`
+- ClockMapping (R5 Q2; offsetUs +1 500 000): `0106000000000016e360`;
+  offsetUs −1 000 000 (int64 two's complement): `0106fffffffffff0bdc0`
 
 **Validation limit (added in R2, [docs/07](07-hardening.md))**: `chunkCount`
 is capped at **1000** (`wire.MaxChunkCount` / `MAX_CHUNK_COUNT`, ~1.2 MB per

@@ -117,9 +117,14 @@ describe('WorkerViewerTransport', () => {
     await connected;
 
     expect(transport.sampleConnectionStats()).toBeNull();
+    expect(transport.sampleTimeSync()).toBeNull();
     const stats = { rttMs: 12 } as never;
-    worker.emit({ type: 'connStats', stats });
+    const timeSync = { offsetUs: 5_000n, rttMs: 3 };
+    worker.emit({ type: 'connStats', stats, timeSync });
     expect(transport.sampleConnectionStats()).toBe(stats);
+    // R5 Q2: the clock-sync sample rides the same push (bigint survives the
+    // structured-clone boundary in the real pair).
+    expect(transport.sampleTimeSync()).toBe(timeSync);
   });
 
   it('close() requests a graceful close, suppresses further events, then reaps', async () => {
@@ -192,6 +197,7 @@ describe('WorkerViewerTransport + TransportWorkerCore end-to-end', () => {
         innerCbs = cb;
       },
       sampleConnectionStats: () => null,
+      sampleTimeSync: () => null,
       close: vi.fn(),
     };
     const proxy = pair(inner, 'https://r/subscribe/AB', {});

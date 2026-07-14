@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
 import { Reassembler, type AssembledFrame } from './reassembler';
-import { MAX_CHUNK_PAYLOAD, type DecoderConfigMessage } from './wire';
+import { MAX_CHUNK_PAYLOAD, encodeClockMapping, type DecoderConfigMessage } from './wire';
 
 function patternBytes(length: number, seed: number): Uint8Array {
   const out = new Uint8Array(length);
@@ -169,6 +169,39 @@ describe('ordering policy', () => {
     // leftover chunks just start a fresh (incomplete) assembly.
     stuck.slice(1).forEach((d) => r.push(d));
     expect(frames).toHaveLength(0);
+  });
+});
+
+describe('clock mapping (R5 Q2)', () => {
+  it('routes a ClockMapping datagram to the callback, last one wins', () => {
+    const offsets: bigint[] = [];
+    const r = new Reassembler({
+      onConfig: () => {},
+      onFrame: () => {},
+      onClockMapping: (offsetUs) => offsets.push(offsetUs),
+    });
+    r.push(encodeClockMapping(1_500_000n));
+    r.push(encodeClockMapping(-42n));
+    expect(offsets).toEqual([1_500_000n, -42n]);
+    expect(r.getStats().badDatagrams).toBe(0);
+  });
+
+  it('drops a malformed ClockMapping as a bad datagram', () => {
+    const offsets: bigint[] = [];
+    const r = new Reassembler({
+      onConfig: () => {},
+      onFrame: () => {},
+      onClockMapping: (offsetUs) => offsets.push(offsetUs),
+    });
+    r.push(encodeClockMapping(7n).subarray(0, 5)); // truncated
+    expect(offsets).toEqual([]);
+    expect(r.getStats().badDatagrams).toBe(1);
+  });
+
+  it('tolerates a ClockMapping with no callback wired', () => {
+    const r = new Reassembler({ onConfig: () => {}, onFrame: () => {} });
+    r.push(encodeClockMapping(5n)); // must not throw or count bad
+    expect(r.getStats().badDatagrams).toBe(0);
   });
 });
 

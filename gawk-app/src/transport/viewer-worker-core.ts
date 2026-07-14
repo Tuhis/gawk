@@ -19,7 +19,10 @@ import { LocalViewerTransport, type ViewerTransportFactory } from './viewer-tran
 export type ViewerWorkerCommand =
   | { type: 'init'; canvas: OffscreenCanvas }
   | { type: 'start'; serverUrl: string; broadcastId: string; connectOpts: ConnectOptions }
-  | { type: 'stop' };
+  | { type: 'stop' }
+  // R5 Q3: set the smoothed-playout mode in the worker's context (the reorder
+  // buffer reads it live, so this works mid-session and across reconnects).
+  | { type: 'playout'; smoothed: boolean };
 
 // Worker → main thread. Small control/telemetry messages only — decoded frames
 // are drawn in the worker and never appear here.

@@ -122,7 +122,19 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   rendering + WebGL render sink behind the R8 `RenderSink` seam, nested
   transport-worker split behind a `ViewerTransport` seam, decoder queue
   5→10, P1–P4 chunks; P1–P3 + queue bump implemented 2026-07-14, re-verified
-  on Chrome + Firefox 2026-07-14).
+  on Chrome + Firefox 2026-07-14),
+  `docs/15-viewer-live-edge.md` for R5 (viewer live-edge, re-scoped;
+  **Q1–Q3 implemented 2026-07-14, Q4 measurement pass + manual verify
+  pending**: live-edge drift metric (windowed-min baseline, zero protocol
+  change), absolute capture→render latency via new `TimeSync` (0x05, 18 B) /
+  `ClockMapping` (0x06, 10 B) wire messages with the relay's monotonic clock
+  as common reference — relay answers pings inline from both routes'
+  read loops (rate-capped constant, never the video queue), hub caches +
+  join-primes the mapping like the cached keyframe; plus a self-owned
+  per-leg RTT independent of `getStats()`, and an opt-in smoothed playout
+  (reorder-release pacing, `PLAYOUT_OFFSET_MS` 150, default off, right-click
+  toggle, worker `playout` command). The viewer→server keyframe-request
+  back-channel is **rejected for good** there, Decision 6).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -309,6 +321,29 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    (`noteStreamKeyframe`), all frameId comparisons are serial/uint32-wrap-
    aware (`wire.frameIdAhead`/`nextFrameId`; broadcaster wraps its counter at
    source), and a serially-backwards keyframe = immediate reorder resync.
+15. Viewer live-edge — **Q1–Q3 implemented 2026-07-14; Q4 measurement pass +
+   manual browser verify pending** (R5 re-scoped, `docs/15-viewer-live-edge.md`).
+   (a) **Live-edge drift** (`transport/live-edge.ts`): per-frame
+   `viewerNow − capture timestamp` minus its 60 s windowed min — pure lag
+   with the clock offset cancelled (capture.ts already stamps frames on the
+   broadcaster's `performance.now()`), reset on the reorder buffer's
+   restart signal; zero protocol change. (b) **Absolute capture→render
+   latency**: `TimeSync` (0x05, 18 B) ping/pong on both routes against the
+   relay's **monotonic** clock (inline reply from the session read loops,
+   per-session 5/s token bucket — constants, no new knobs) + a broadcaster
+   `ClockMapping` (0x06, 10 B) that the hub caches, fans out, join-primes,
+   and invalidates like the cached keyframe; the client keeps the lowest-RTT
+   sample of 8 (error ≈ rtt/2 per leg) — also yields a self-owned
+   `RTT (time-sync)` on both overlays, immune to `getStats()` being
+   unshipped in every current browser (docs/13 D7). Negative g2g clamps to 0. Both messages strict-parsed, golden
+   vectors Go↔TS. (c) **Opt-in smoothed playout** (`transport/playout.ts`):
+   reorder-release pacing to `timestamp + arrival-baseline + 150 ms`,
+   default off, right-click "Smooth playback" toggle (persisted), crosses to
+   the viewer worker as a `playout` command setting module state read live
+   per advance; drop/resync policies unchanged (delay, not patience). The
+   keyframe-request back-channel was **rejected for good** (docs/15
+   Decision 6). New overlay rows: Live-edge drift, Latency (capture→render),
+   Playout (Delivery section).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

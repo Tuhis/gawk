@@ -61,6 +61,28 @@ const (
 	//   00 00 00 06              configLen = 6
 	//   00 00 00 03              payloadLen = 3
 	goldenStreamFrameHeaderHex = "01040100010203040000005d21dba5f00000000600000003"
+
+	// TimeSync reply: ClientTimeUs=0x0102030405060708,
+	// ServerTimeUs=0x090A0B0C0D0E0F10 (R5 Q2).
+	//
+	//   01                       version
+	//   05                       type = TimeSync
+	//   01 02 03 04 05 06 07 08  clientTimeUs
+	//   09 0a 0b 0c 0d 0e 0f 10  serverTimeUs
+	goldenTimeSyncHex = "01050102030405060708090a0b0c0d0e0f10"
+
+	// TimeSync request: ClientTimeUs=1_000_000 (0x0F4240), ServerTimeUs=0.
+	goldenTimeSyncRequestHex = "010500000000000f42400000000000000000"
+
+	// ClockMapping: OffsetUs=+1_500_000 (0x16E360).
+	//
+	//   01                       version
+	//   06                       type = ClockMapping
+	//   00 00 00 00 00 16 e3 60  offsetUs (int64, big-endian)
+	goldenClockMappingHex = "0106000000000016e360"
+
+	// ClockMapping: OffsetUs=-1_000_000 (two's complement).
+	goldenClockMappingNegativeHex = "0106fffffffffff0bdc0"
 )
 
 var (
@@ -648,6 +670,100 @@ func TestAppendBroadcastAnnounceErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := AppendBroadcastAnnounce(nil, tc.id); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestTimeSyncGolden(t *testing.T) {
+	reply := mustHex(t, goldenTimeSyncHex)
+	if got := AppendTimeSync(nil, 0x0102030405060708, 0x090A0B0C0D0E0F10); !bytes.Equal(got, reply) {
+		t.Errorf("AppendTimeSync = %x, want %x", got, reply)
+	}
+	request := mustHex(t, goldenTimeSyncRequestHex)
+	if got := AppendTimeSync(nil, 1_000_000, 0); !bytes.Equal(got, request) {
+		t.Errorf("AppendTimeSync request = %x, want %x", got, request)
+	}
+
+	clientUs, serverUs, err := ParseTimeSync(reply)
+	if err != nil {
+		t.Fatalf("ParseTimeSync: %v", err)
+	}
+	if clientUs != 0x0102030405060708 || serverUs != 0x090A0B0C0D0E0F10 {
+		t.Errorf("ParseTimeSync = (%#x, %#x)", clientUs, serverUs)
+	}
+	clientUs, serverUs, err = ParseTimeSync(request)
+	if err != nil {
+		t.Fatalf("ParseTimeSync request: %v", err)
+	}
+	if clientUs != 1_000_000 || serverUs != 0 {
+		t.Errorf("ParseTimeSync request = (%d, %d), want (1000000, 0)", clientUs, serverUs)
+	}
+}
+
+func TestClockMappingGolden(t *testing.T) {
+	positive := mustHex(t, goldenClockMappingHex)
+	if got := AppendClockMapping(nil, 1_500_000); !bytes.Equal(got, positive) {
+		t.Errorf("AppendClockMapping = %x, want %x", got, positive)
+	}
+	negative := mustHex(t, goldenClockMappingNegativeHex)
+	if got := AppendClockMapping(nil, -1_000_000); !bytes.Equal(got, negative) {
+		t.Errorf("AppendClockMapping negative = %x, want %x", got, negative)
+	}
+
+	offsetUs, err := ParseClockMapping(positive)
+	if err != nil {
+		t.Fatalf("ParseClockMapping: %v", err)
+	}
+	if offsetUs != 1_500_000 {
+		t.Errorf("offsetUs = %d, want 1500000", offsetUs)
+	}
+	offsetUs, err = ParseClockMapping(negative)
+	if err != nil {
+		t.Fatalf("ParseClockMapping negative: %v", err)
+	}
+	if offsetUs != -1_000_000 {
+		t.Errorf("offsetUs = %d, want -1000000", offsetUs)
+	}
+}
+
+func TestTimeSyncParseErrors(t *testing.T) {
+	good := mustHex(t, goldenTimeSyncHex)
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"truncated", good[:TimeSyncSize-1], ErrBadLength},
+		{"oversize", append(append([]byte{}, good...), 0x00), ErrBadLength},
+		{"bad version", append([]byte{0x02}, good[1:]...), ErrBadVersion},
+		{"bad type", mustHex(t, goldenClockMappingHex+"0000000000000000"), ErrBadType},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ParseTimeSync(tc.dgram); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestClockMappingParseErrors(t *testing.T) {
+	good := mustHex(t, goldenClockMappingHex)
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"truncated", good[:ClockMappingSize-1], ErrBadLength},
+		{"oversize", append(append([]byte{}, good...), 0x00), ErrBadLength},
+		{"bad version", append([]byte{0x02}, good[1:]...), ErrBadVersion},
+		{"bad type (time sync sized down)", mustHex(t, goldenTimeSyncHex)[:ClockMappingSize], ErrBadType},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseClockMapping(tc.dgram); !errors.Is(err, tc.want) {
 				t.Errorf("error = %v, want %v", err, tc.want)
 			}
 		})

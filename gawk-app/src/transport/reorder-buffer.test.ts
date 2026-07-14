@@ -227,6 +227,42 @@ describe('ReorderBuffer', () => {
     expect(rb.getStats().deltasDropped).toBeGreaterThanOrEqual(10);
   });
 
+  it('signals onRestart when a keyframe arrives serially behind the decode position (R5 Q1)', () => {
+    // The restart signal drives live-edge baseline resets: a new broadcaster
+    // session stamps timestamps on a fresh timeline, so any windowed-min
+    // baseline built against the old one is meaningless.
+    const restarts: number[] = [];
+    const clock = { t: 1000 };
+    const rb = new ReorderBuffer(
+      () => {},
+      () => clock.t,
+      { onRestart: () => restarts.push(clock.t) },
+    );
+    rb.pushKeyframe(kf(100));
+    rb.pushDelta(delta(101));
+    expect(restarts).toEqual([]); // normal flow: no signal
+
+    rb.pushKeyframe(kf(0)); // serially behind 101 → the restart signal
+    expect(restarts).toHaveLength(1);
+
+    rb.pushDelta(delta(1));
+    rb.pushKeyframe(kf(2)); // ahead again: normal resync material, no signal
+    expect(restarts).toHaveLength(1);
+  });
+
+  it('does not signal onRestart for an exact-duplicate keyframe', () => {
+    const restarts: number[] = [];
+    const clock = { t: 1000 };
+    const rb = new ReorderBuffer(
+      () => {},
+      () => clock.t,
+      { onRestart: () => restarts.push(clock.t) },
+    );
+    rb.pushKeyframe(kf(5));
+    rb.pushKeyframe(kf(5)); // duplicate prime: dropped, not a restart
+    expect(restarts).toEqual([]);
+  });
+
   it('a keyframe supersedes a same-id delta already buffered', () => {
     const { rb, released, ids } = harness();
     rb.pushKeyframe(kf(0));
@@ -234,5 +270,124 @@ describe('ReorderBuffer', () => {
     rb.pushKeyframe(kf(3)); // same id arrives as a keyframe: it wins and resyncs
     expect(ids()).toEqual([0, 3]);
     expect(released.find((f) => f.frameId === 3)!.keyframe).toBe(true);
+  });
+});
+
+// R5 Q3 (docs/15): opt-in smoothed playout — a decodable frame is released
+// only once `now >= timestampMs + arrivalBaseline + offset`. Off by default;
+// the offset function is injected so these tests control it live. Pacing adds
+// delay, never patience: every drop/resync policy fires unchanged.
+describe('ReorderBuffer smoothed playout (R5 Q3)', () => {
+  // Timestamps in these tests are millisecond-scale (µs on the wire).
+  const tsKf = (frameId: number, tsMs: number) => ({
+    frameId,
+    timestampUs: BigInt(Math.round(tsMs * 1000)),
+    config: null,
+    data: new Uint8Array([frameId & 0xff]),
+  });
+  const tsDelta = (frameId: number, tsMs: number) => ({
+    frameId,
+    timestampUs: BigInt(Math.round(tsMs * 1000)),
+    data: new Uint8Array([frameId & 0xff]),
+  });
+
+  function pacedHarness(offset: { value: number }) {
+    const released: ReleasedFrame[] = [];
+    const clock = { t: 1000 };
+    const rb = new ReorderBuffer(
+      (f) => released.push(f),
+      () => clock.t,
+      { playoutOffsetMs: () => offset.value },
+    );
+    return { rb, released, clock, ids: () => released.map((f) => f.frameId) };
+  }
+
+  it('releases at the schedule, not on arrival', () => {
+    const offset = { value: 150 };
+    const { rb, clock, ids } = pacedHarness(offset);
+    // Keyframe captured at ts=0ms arrives at t=1000 → baseline delta 1000,
+    // due at 0 + 1000 + 150 = 1150.
+    rb.pushKeyframe(tsKf(0, 0));
+    expect(ids()).toEqual([]); // held: not due yet
+
+    clock.t = 1149;
+    rb.tick();
+    expect(ids()).toEqual([]);
+
+    clock.t = 1150;
+    rb.tick(); // due frame releases from a bare tick — no new arrivals needed
+    expect(ids()).toEqual([0]);
+
+    // The following delta (captured 16ms later) is due at 1166.
+    rb.pushDelta(tsDelta(1, 16));
+    expect(ids()).toEqual([0]);
+    clock.t = 1166;
+    rb.tick();
+    expect(ids()).toEqual([0, 1]);
+  });
+
+  it('offset 0 releases immediately (byte-for-byte the unpaced path)', () => {
+    const offset = { value: 0 };
+    const { rb, ids } = pacedHarness(offset);
+    rb.pushKeyframe(tsKf(0, 0));
+    rb.pushDelta(tsDelta(1, 16));
+    expect(ids()).toEqual([0, 1]);
+  });
+
+  it('toggling mid-session re-paces both ways', () => {
+    const offset = { value: 0 };
+    const { rb, ids } = pacedHarness(offset);
+    rb.pushKeyframe(tsKf(0, 0)); // live-edge: immediate
+    expect(ids()).toEqual([0]);
+
+    offset.value = 150; // toggle ON: subsequent frames pace
+    rb.pushDelta(tsDelta(1, 16)); // baseline ~1000-16... due = 16 + baseline + 150
+    expect(ids()).toEqual([0]);
+
+    offset.value = 0; // toggle OFF: held frame releases on the next tick
+    rb.tick();
+    expect(ids()).toEqual([0, 1]);
+  });
+
+  it('keeps the gap policy under pacing: a missing delta still freezes and resyncs', () => {
+    const offset = { value: 150 };
+    const { rb, clock, ids } = pacedHarness(offset);
+    rb.pushKeyframe(tsKf(0, 0));
+    clock.t = 1150;
+    rb.tick();
+    expect(ids()).toEqual([0]);
+
+    // Delta 1 never arrives; 2 does. Past the grace the gap is declared and
+    // we freeze awaiting a keyframe — exactly as with pacing off.
+    rb.pushDelta(tsDelta(2, 33));
+    clock.t += DELTA_GAP_GRACE_MS + 1;
+    rb.tick();
+    expect(ids()).toEqual([0]);
+    expect(rb.getStats().gapResyncs).toBe(1);
+
+    // The next keyframe resyncs, released at ITS schedule.
+    rb.pushKeyframe(tsKf(5, 100));
+    // Baseline is still the windowed min (~1000ms from frame 0); due ≈ 1250.
+    expect(ids()).toEqual([0]);
+    clock.t = 1250;
+    rb.tick();
+    expect(ids()).toEqual([0, 5]);
+  });
+
+  it('requestResync (decoder-queue-deep) still drops to the keyframe under pacing', () => {
+    const offset = { value: 150 };
+    const { rb, clock, ids } = pacedHarness(offset);
+    rb.pushKeyframe(tsKf(0, 0));
+    clock.t = 1150;
+    rb.tick();
+    expect(ids()).toEqual([0]);
+
+    rb.pushDelta(tsDelta(1, 16));
+    rb.pushKeyframe(tsKf(2, 33));
+    rb.requestResync(); // deep decoder queue: jump to the freshest keyframe
+    clock.t = 1350; // past every schedule
+    rb.tick();
+    // The resync jumped to keyframe 2; delta 1 was dropped, not decoded.
+    expect(ids()).toEqual([0, 2]);
   });
 });

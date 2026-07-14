@@ -54,6 +54,18 @@ const (
 	// never travels as a datagram — it is the payload of a reliable
 	// unidirectional stream carrying exactly one keyframe (R8, docs/12).
 	TypeStreamFrame = 0x04
+	// TypeTimeSync identifies a TimeSync datagram (R5 Q2, docs/15): a
+	// client↔relay clock-sync ping/pong. The client sends it with
+	// serverTimeUs = 0; the relay echoes clientTimeUs and fills serverTimeUs
+	// from its monotonic clock, giving the client an NTP-style offset + RTT
+	// sample against the relay clock.
+	TypeTimeSync = 0x05
+	// TypeClockMapping identifies a ClockMapping datagram (R5 Q2, docs/15):
+	// broadcaster→viewers, relayed and cached by the hub like the keyframe
+	// prime. It maps frame timestamps onto the relay clock
+	// (relayClockUs = timestampUs + offsetUs) so a viewer holding its own
+	// TimeSync offset can compute absolute capture→render latency.
+	TypeClockMapping = 0x06
 )
 
 // CloseCodeBroadcastEnded is the WebTransport application close code sent
@@ -88,6 +100,10 @@ const (
 	// a reader must never allocate a keyframe buffer larger than this from an
 	// untrusted length field. The hub's configurable cap defaults to it.
 	MaxKeyframeBytes = 8 << 20 // 8 MiB
+	// TimeSyncSize is the exact size of a TimeSync datagram (R5 Q2).
+	TimeSyncSize = 18
+	// ClockMappingSize is the exact size of a ClockMapping datagram (R5 Q2).
+	ClockMappingSize = 10
 )
 
 // flagKeyframe is bit 0 of the VideoChunk flags byte.
@@ -118,6 +134,9 @@ var (
 	// ErrKeyframeTooLarge indicates a StreamFrame whose declared or actual
 	// size exceeds MaxKeyframeBytes.
 	ErrKeyframeTooLarge = errors.New("wire: keyframe exceeds MaxKeyframeBytes")
+	// ErrBadLength indicates a fixed-size message (TimeSync, ClockMapping)
+	// whose length is not exactly the expected size.
+	ErrBadLength = errors.New("wire: unexpected message length")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -300,6 +319,61 @@ func ParseBroadcastAnnounce(dgram []byte) (string, error) {
 		}
 	}
 	return id, nil
+}
+
+// AppendTimeSync appends a TimeSync datagram to dst and returns the extended
+// slice (R5 Q2). clientTimeUs is the requester's clock at send (echoed back by
+// the relay); serverTimeUs is the relay's monotonic clock in replies and 0 in
+// requests.
+func AppendTimeSync(dst []byte, clientTimeUs, serverTimeUs uint64) []byte {
+	dst = append(dst, Version, TypeTimeSync)
+	dst = binary.BigEndian.AppendUint64(dst, clientTimeUs)
+	dst = binary.BigEndian.AppendUint64(dst, serverTimeUs)
+	return dst
+}
+
+// ParseTimeSync parses a TimeSync datagram. Strict: the datagram must be
+// exactly TimeSyncSize bytes with the right version and type.
+func ParseTimeSync(dgram []byte) (clientTimeUs, serverTimeUs uint64, err error) {
+	if len(dgram) != TimeSyncSize {
+		return 0, 0, fmt.Errorf("%w: %d bytes, want exactly %d for time sync",
+			ErrBadLength, len(dgram), TimeSyncSize)
+	}
+	if dgram[0] != Version {
+		return 0, 0, fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeTimeSync {
+		return 0, 0, fmt.Errorf("%w: got 0x%02x, want time sync 0x%02x",
+			ErrBadType, dgram[1], TypeTimeSync)
+	}
+	return binary.BigEndian.Uint64(dgram[2:10]), binary.BigEndian.Uint64(dgram[10:18]), nil
+}
+
+// AppendClockMapping appends a ClockMapping datagram to dst and returns the
+// extended slice (R5 Q2). offsetUs is signed:
+// relayClockUs = frame timestampUs + offsetUs (two's complement wraparound
+// intended on both sides).
+func AppendClockMapping(dst []byte, offsetUs int64) []byte {
+	dst = append(dst, Version, TypeClockMapping)
+	dst = binary.BigEndian.AppendUint64(dst, uint64(offsetUs))
+	return dst
+}
+
+// ParseClockMapping parses a ClockMapping datagram. Strict: the datagram must
+// be exactly ClockMappingSize bytes with the right version and type.
+func ParseClockMapping(dgram []byte) (offsetUs int64, err error) {
+	if len(dgram) != ClockMappingSize {
+		return 0, fmt.Errorf("%w: %d bytes, want exactly %d for clock mapping",
+			ErrBadLength, len(dgram), ClockMappingSize)
+	}
+	if dgram[0] != Version {
+		return 0, fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeClockMapping {
+		return 0, fmt.Errorf("%w: got 0x%02x, want clock mapping 0x%02x",
+			ErrBadType, dgram[1], TypeClockMapping)
+	}
+	return int64(binary.BigEndian.Uint64(dgram[2:10])), nil
 }
 
 // StreamFrameHeader is the parsed 24-byte header of a StreamFrame message

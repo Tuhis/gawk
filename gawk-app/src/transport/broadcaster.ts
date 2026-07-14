@@ -15,10 +15,11 @@ import {
 import { FallbackController } from '../media/fallback';
 import { FramePreprocessor } from '../media/preprocess';
 import type { CaptureConfig } from '../media/types';
-import { connectWebTransport, DatagramSender, type ConnectOptions } from './connection';
+import { connectWebTransport, DatagramSender, readDatagrams, type ConnectOptions } from './connection';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import { packetizeDecoderConfig, packetizeFrame, packetizeStreamKeyframe } from './packetizer';
-import { nextFrameId, parseBroadcastAnnounce } from './wire';
+import { CLOCK_MAPPING_INTERVAL_MS, TimeSyncClient } from './time-sync';
+import { encodeClockMapping, nextFrameId, parseBroadcastAnnounce } from './wire';
 
 export interface BroadcastStats {
   encodedFrames: number;
@@ -45,6 +46,11 @@ export interface BroadcastStats {
   // R9 connection health for this leg (broadcaster→relay); null when the
   // browser doesn't implement WebTransport.getStats().
   connection: TransportConnectionStats | null;
+  // R5 Q2: self-owned broadcaster↔relay RTT from the TimeSync exchange —
+  // works where getStats() doesn't (no browser ships it today — docs/13 D7).
+  // Null until
+  // the first ping/pong completes.
+  timeSyncRttMs: number | null;
   // R4 automatic-fallback observability (docs/09). autoRung is the currently
   // applied ladder rung in auto mode, null in explicit mode. encoderPressure
   // is the explicit-mode passive warning: the encoder can't keep up but the
@@ -73,6 +79,7 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   captureFps: 0,
   sentFps: 0,
   connection: null,
+  timeSyncRttMs: null,
   autoRung: null,
   autoAtFloor: false,
   autoStepDowns: 0,
@@ -160,6 +167,13 @@ export class BroadcastPipeline {
   private connSampler: ConnectionStatsSampler | null = null;
   private statsTimer: number | null = null;
 
+  // R5 Q2 (docs/15): relay clock sync + the ClockMapping publication. Frame
+  // timestamps are already on this machine's performance.now() timeline
+  // (capture.ts re-stamps at capture), so the TimeSync offset IS the mapping.
+  private timeSync: TimeSyncClient | null = null;
+  private clockMappingTimer: number | null = null;
+  private lastMappingSentAt: number | null = null;
+
   constructor(
     config: CaptureConfig,
     serverUrl: string,
@@ -202,6 +216,19 @@ export class BroadcastPipeline {
     // The announce read is detached: media flow must never wait on the
     // announce — only the UI code display consumes it (docs/06).
     void this.readAnnounce(this.wt);
+
+    // Relay clock sync (R5 Q2). Pings ride the ordinary datagram sender; the
+    // read loop exists solely to catch replies (the relay sends the publisher
+    // nothing else as datagrams). Failures are the session's problem, not the
+    // ping loop's. The mapping check runs on a 1s timer so the first mapping
+    // goes out promptly after the first pong, then refreshes on the cadence.
+    const sender = this.sender;
+    this.timeSync = new TimeSyncClient((d) => void sender.send([d]).catch(() => {}));
+    this.timeSync.start();
+    void readDatagrams(this.wt, (dgram) => {
+      this.timeSync?.handleDatagram(dgram);
+    }).catch(() => {});
+    this.clockMappingTimer = window.setInterval(() => this.maybeSendClockMapping(), 1000);
 
     try {
       await this.startMedia();
@@ -633,6 +660,21 @@ export class BroadcastPipeline {
     }
   }
 
+  // Publishes relayClockUs = timestampUs + offsetUs to viewers (via the relay,
+  // which caches it for late joiners). Re-sent every CLOCK_MAPPING_INTERVAL_MS
+  // to track clock skew; nothing goes out until the first offset sample.
+  private maybeSendClockMapping(): void {
+    if (this.stopping || !this.sender) return;
+    const sync = this.timeSync?.sample();
+    if (!sync) return;
+    const now = this.now();
+    if (this.lastMappingSentAt !== null && now - this.lastMappingSentAt < CLOCK_MAPPING_INTERVAL_MS) {
+      return;
+    }
+    this.lastMappingSentAt = now;
+    this.sender.send([encodeClockMapping(sync.offsetUs)]).catch(() => {});
+  }
+
   private handleSessionGone(err: Error | null): void {
     if (this.stopping) return;
     this.fail(err ?? new Error('WebTransport session closed by server'));
@@ -655,6 +697,7 @@ export class BroadcastPipeline {
     // Async refresh; the latest completed sample rides this (or the next) tick.
     this.connSampler?.tick();
     this.stats.connection = this.connSampler?.latest() ?? null;
+    this.stats.timeSyncRttMs = this.timeSync?.sample()?.rttMs ?? null;
     this.cb.onStats({ ...this.stats });
   }
 
@@ -679,6 +722,12 @@ export class BroadcastPipeline {
       clearInterval(this.statsTimer);
       this.statsTimer = null;
     }
+    if (this.clockMappingTimer !== null) {
+      clearInterval(this.clockMappingTimer);
+      this.clockMappingTimer = null;
+    }
+    this.timeSync?.stop();
+    this.timeSync = null;
 
     if (this.encoder) await this.encoder.close();
     if (this.capture) stopCapture(this.capture);

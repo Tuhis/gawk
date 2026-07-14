@@ -29,6 +29,8 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./connection', () => ({
   connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
+  // Time-sync reply loop (R5 Q2): stays open, delivers nothing.
+  readDatagrams: () => new Promise(() => {}),
   DatagramSender: class {
     send = (datagrams: Uint8Array[]) => {
       h.sends.push(datagrams);
@@ -224,9 +226,13 @@ describe('handleEncoded channel split (R8)', () => {
     });
     await flush();
 
-    // Keyframe went to exactly one uni stream, not to datagrams.
+    // Keyframe went to exactly one uni stream, never to datagrams. (The
+    // pipeline also sends TimeSync pings as datagrams since R5 Q2 — only
+    // video chunks count here.)
+    const videoSends = () =>
+      h.sends.filter((batch) => batch.some((d) => peekType(d).msgType === TYPE_VIDEO_CHUNK));
     expect(h.streams.length).toBe(1);
-    expect(h.sends.length).toBe(0);
+    expect(videoSends().length).toBe(0);
 
     const msg = h.streams[0];
     const header = parseStreamFrameHeader(msg);
@@ -250,8 +256,8 @@ describe('handleEncoded channel split (R8)', () => {
     await flush();
 
     expect(h.streams.length).toBe(1); // unchanged
-    expect(h.sends.length).toBe(1);
-    const datagrams = h.sends[0];
+    expect(videoSends().length).toBe(1);
+    const datagrams = videoSends()[0];
     expect(peekType(datagrams[0]).msgType).toBe(TYPE_VIDEO_CHUNK);
     const { header: dh, payload: dp } = parseVideoChunk(datagrams[0]);
     expect(dh.keyframe).toBe(false);

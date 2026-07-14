@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { RECONNECT_MAX_ATTEMPTS, ViewerSession } from '../../transport/viewer-session';
+import { setSmoothedPlayout as setLocalSmoothedPlayout } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import type { ViewerWorkerEvent } from '../../transport/viewer-worker-core';
 import { WorkerViewerController } from './workerViewerController';
@@ -35,6 +36,9 @@ const canUseWorker =
 export function useViewerConnection(
   broadcastId: string,
   canvasRef: RefObject<HTMLCanvasElement | null>,
+  // R5 Q3: the opt-in smoothed-playout setting. Applied to whichever context
+  // the pipeline runs in (worker command / main-thread module), live.
+  smoothedPlayout = false,
 ): ViewerConnectionState {
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [stats, setStats] = useState<ViewerStats | null>(null);
@@ -128,6 +132,15 @@ export function useViewerConnection(
       controllerRef.current?.stop();
     };
   }, [useWorker, broadcastId, resetState]);
+
+  // R5 Q3: smoothed playout, applied on mount and on every toggle. Worker
+  // path: cross into the worker's context; main-thread path: set the module
+  // state the pipeline reads directly. Runs after the controller-creation
+  // effect above, so the first application always has a controller.
+  useEffect(() => {
+    if (useWorker) controllerRef.current?.setSmoothedPlayout(smoothedPlayout);
+    else setLocalSmoothedPlayout(smoothedPlayout);
+  }, [useWorker, smoothedPlayout]);
 
   // ---- Main-thread fallback path -------------------------------------------
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);

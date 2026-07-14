@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./connection', () => ({
   connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
+  // Time-sync reply loop (R5 Q2): stays open, delivers nothing.
+  readDatagrams: () => new Promise(() => {}),
   DatagramSender: class {
     send = vi.fn(() => Promise.resolve());
     close = vi.fn();

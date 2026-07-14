@@ -48,6 +48,15 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         ['Reorder buffered', String(stats?.reorderBuffered ?? '—')],
         ['Last frame', stats?.timeSinceLastFrameMs == null ? '—' : `${fmtInt(stats.timeSinceLastFrameMs)} ms ago`],
         ['Keyframe age', stats?.lastKeyframeAgeMs == null ? '—' : `${fmtInt(stats.lastKeyframeAgeMs)} ms`],
+        // R5 Q1: lag behind this session's best capture→decode delta. ~0 = at
+        // live edge; sustained growth = falling behind (see docs/15).
+        ['Live-edge drift', stats?.liveEdgeDriftMs == null ? '—' : `${fmtInt(stats.liveEdgeDriftMs)} ms`],
+        // R5 Q2: absolute glass-to-glass via the relay clock; "—" until both
+        // clock legs (broadcaster + this viewer) have synced.
+        ['Latency (capture→render)', stats?.capToRenderMs == null ? '—' : `${fmtInt(stats.capToRenderMs)} ms`],
+        // R5 Q3: the playout mode, from the pipeline's own context (ground
+        // truth — a toggle that failed to cross the worker shows here).
+        ['Playout', stats == null ? '—' : stats.playoutOffsetMs > 0 ? `smoothed (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
       ],
     },
     {
@@ -55,6 +64,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
       rows: [
         ['Transport', stats?.transport === 'worker' ? 'Worker' : stats?.transport === 'in-process' ? 'In-process' : '—'],
         ['RTT', conn?.rttMs == null ? '—' : `${fmt(conn.rttMs)} ms`],
+        // R5 Q2: from our own TimeSync ping — independent of getStats(), so it
+        // works even though no browser ships getStats() today (docs/13 D7).
+        ['RTT (time-sync)', stats?.timeSyncRttMs == null ? '—' : `${fmt(stats.timeSyncRttMs)} ms`],
         ['RTT variation', conn?.rttVarMs == null ? '—' : `${fmt(conn.rttVarMs)} ms`],
         ['Packets lost', fmtInt(conn?.packetsLost)],
         ['Dgrams dropped (in)', fmtInt(conn?.datagramsDroppedIncoming)],

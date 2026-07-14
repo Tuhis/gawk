@@ -37,6 +37,10 @@ function fullStats(): ViewerStats {
     transport: 'worker',
     timeSinceLastFrameMs: 33,
     lastKeyframeAgeMs: 210,
+    liveEdgeDriftMs: 42,
+    capToRenderMs: 384,
+    timeSyncRttMs: 8.4,
+    playoutOffsetMs: 0,
     connection: {
       rttMs: 24.5,
       rttVarMs: 3.1,
@@ -75,6 +79,23 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('24.5 ms');
     expect(screen.getByText('Bitrate (recv)').nextSibling?.textContent).toBe('4.2 Mbps');
     expect(screen.getByText('Keyframe age').nextSibling?.textContent).toBe('210 ms');
+    expect(screen.getByText('Live-edge drift').nextSibling?.textContent).toBe('42 ms');
+    expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('384 ms');
+    expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('8.4 ms');
+    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
+
+    cleanup();
+    render(
+      <StatsOverlay
+        stats={{ ...fullStats(), playoutOffsetMs: 150 }}
+        codec="vp8"
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('smoothed (+150 ms)');
   });
 
   it('renders — for everything when stats are absent or degraded', () => {
@@ -84,6 +105,9 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Codec').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Rendered fps').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Live-edge drift').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('—');
 
     cleanup();
     // Connection-less stats (Firefox: no getStats) degrade only the network rows.

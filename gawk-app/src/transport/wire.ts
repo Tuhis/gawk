@@ -20,6 +20,13 @@
 //     byte 3       uint8   codecLen
 //     bytes 4..    codecLen bytes of ASCII codec string, then extradata
 //
+//   0x05 TimeSync (exactly 18 bytes, R5 Q2 — docs/15):
+//     bytes 2-9    uint64  clientTimeUs   sender's clock at send; echoed back
+//     bytes 10-17  uint64  serverTimeUs   relay monotonic clock; 0 in requests
+//
+//   0x06 ClockMapping (exactly 10 bytes, R5 Q2 — docs/15):
+//     bytes 2-9    int64   offsetUs       relayClockUs = timestampUs + offsetUs
+//
 // Parse functions never copy: returned payload/extradata are subarray views
 // of the input. Callers that retain them past the datagram buffer's
 // lifetime must copy.
@@ -32,6 +39,14 @@ export const TYPE_BROADCAST_ANNOUNCE = 0x03;
 // TypeStreamFrame (R8): never a datagram — the payload of one unidirectional
 // stream carrying exactly one keyframe. See encode/parseStreamFrame below.
 export const TYPE_STREAM_FRAME = 0x04;
+// TimeSync (R5 Q2): client↔relay clock-sync ping/pong datagram. The client
+// sends it with serverTimeUs = 0; the relay echoes clientTimeUs and fills its
+// monotonic clock, giving the client an NTP-style offset + RTT sample.
+export const TYPE_TIME_SYNC = 0x05;
+// ClockMapping (R5 Q2): broadcaster→viewers, relayed + cached by the relay
+// like the keyframe prime. Maps frame timestamps onto the relay clock so a
+// viewer (with its own TimeSync offset) can compute absolute capture→render.
+export const TYPE_CLOCK_MAPPING = 0x06;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -275,6 +290,72 @@ export function parseStreamFrameHeader(buf: Uint8Array): StreamFrameHeader {
     );
   }
   return header;
+}
+
+// TimeSync + ClockMapping (R5 Q2, docs/15). Both are tiny fixed-size
+// datagrams, parsed strictly (exact length) per the R2 defensive-parsing
+// discipline — a malformed datagram is dropped, never trusted partially.
+
+export const TIME_SYNC_SIZE = 18;
+export const CLOCK_MAPPING_SIZE = 10;
+
+export interface TimeSyncMessage {
+  clientTimeUs: bigint; // uint64, sender clock at send; the relay echoes it
+  serverTimeUs: bigint; // uint64, relay monotonic clock at reply; 0 in requests
+}
+
+export function encodeTimeSync(msg: TimeSyncMessage): Uint8Array<ArrayBuffer> {
+  const dgram = new Uint8Array(TIME_SYNC_SIZE);
+  const view = new DataView(dgram.buffer);
+  dgram[0] = WIRE_VERSION;
+  dgram[1] = TYPE_TIME_SYNC;
+  view.setBigUint64(2, msg.clientTimeUs);
+  view.setBigUint64(10, msg.serverTimeUs);
+  return dgram;
+}
+
+export function parseTimeSync(dgram: Uint8Array): TimeSyncMessage {
+  if (dgram.length !== TIME_SYNC_SIZE) {
+    throw new WireError(`time sync must be exactly ${TIME_SYNC_SIZE} bytes, got ${dgram.length}`);
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_TIME_SYNC) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want time sync`);
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  return {
+    clientTimeUs: view.getBigUint64(2),
+    serverTimeUs: view.getBigUint64(10),
+  };
+}
+
+// offsetUs is signed: relayClockUs = frame.timestampUs + offsetUs (two's
+// complement, uint64 wraparound intended on both sides).
+export function encodeClockMapping(offsetUs: bigint): Uint8Array<ArrayBuffer> {
+  const dgram = new Uint8Array(CLOCK_MAPPING_SIZE);
+  const view = new DataView(dgram.buffer);
+  dgram[0] = WIRE_VERSION;
+  dgram[1] = TYPE_CLOCK_MAPPING;
+  view.setBigInt64(2, offsetUs);
+  return dgram;
+}
+
+export function parseClockMapping(dgram: Uint8Array): bigint {
+  if (dgram.length !== CLOCK_MAPPING_SIZE) {
+    throw new WireError(
+      `clock mapping must be exactly ${CLOCK_MAPPING_SIZE} bytes, got ${dgram.length}`,
+    );
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_CLOCK_MAPPING) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want clock mapping`);
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  return view.getBigInt64(2);
 }
 
 // The 31 allowed broadcast-ID symbols (no 0/O, 1/I/L) — mirrors

@@ -19,17 +19,25 @@ vi.mock('./connection', () => ({
   readKeyframeStreams: (...args: unknown[]) => readKeyframeStreams(...args),
 }));
 
+// The latest Decoder instance's callbacks, so a test can fire onDecoded (the
+// pipeline's measurement point for live-edge drift + absolute latency).
+const decoderCbs: { value: { onDecoded: (d: unknown) => void } | null } = { value: null };
+
 vi.mock('../media/decoder', () => ({
   Decoder: class {
     queueSize = 0;
     configure = vi.fn();
     decode = (...args: unknown[]) => decodeSpy(...args);
     close = vi.fn(() => Promise.resolve());
+    constructor(cbs: { onDecoded: (d: unknown) => void }) {
+      decoderCbs.value = cbs;
+    }
   },
 }));
 
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
-import { CLOSE_CODE_BROADCAST_ENDED, encodeDecoderConfig, encodeVideoChunk } from './wire';
+import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
+import { CLOSE_CODE_BROADCAST_ENDED, encodeClockMapping, encodeDecoderConfig, encodeVideoChunk } from './wire';
 
 function makeFakeWT(closedAfterMs: number, closeInfo: unknown) {
   const closed = new Promise((res) => {
@@ -215,6 +223,69 @@ describe('ViewerPipeline', () => {
       expect(last!.transport).toBe('in-process');
       // The fake WebTransport has no getStats → null, never a throw.
       expect(last!.connection).toBeNull();
+      // R5 Q1: the drift metric is null before any decoded frame (the mocked
+      // decoder never emits), and the field must ride every stats tick.
+      expect(last!.liveEdgeDriftMs).toBeNull();
+      // R5 Q2: absolute latency + self-owned RTT stay null against a relay /
+      // transport that never answers time sync (older server: no regression).
+      expect(last!.capToRenderMs).toBeNull();
+      expect(last!.timeSyncRttMs).toBeNull();
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('computes absolute capture→render latency from both clock legs (R5 Q2)', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      // A fake transport supplies this leg's clock sync; the broadcaster leg
+      // arrives as a ClockMapping datagram through the normal datagram path.
+      let tcb: ViewerTransportCallbacks | null = null;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          tcb = cb;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => ({ offsetUs: 1_000_000n, rttMs: 5 }),
+        close: () => {},
+      };
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      // Broadcaster leg: relayUs = timestampUs + 2_000_000.
+      (tcb as unknown as ViewerTransportCallbacks).onDatagram(encodeClockMapping(2_000_000n));
+
+      // Choose the frame timestamp so the true latency is exactly 250 ms:
+      //   (nowUs + viewerOffset) − (ts + broadcastOffset) = 250_000
+      const nowUsV = BigInt(Math.round(performance.now() * 1000));
+      const ts = Number(nowUsV + 1_000_000n - 2_000_000n - 250_000n);
+      decoderCbs.value!.onDecoded({
+        frame: { timestamp: ts },
+        captureTimestampUs: ts,
+        decodeStartMs: 0,
+        decodeEndMs: 1,
+      });
+
+      await vi.advanceTimersByTimeAsync(500); // one stats tick
+      const last = stats.at(-1)!;
+      expect(last.capToRenderMs).toBeCloseTo(250, 0);
+      expect(last.timeSyncRttMs).toBe(5);
+      expect(last.liveEdgeDriftMs).toBe(0); // single sample IS the baseline
 
       await pipeline.stop();
     } finally {
