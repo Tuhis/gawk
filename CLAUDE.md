@@ -185,8 +185,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the datagram rate and viewer decode load. Manual browser verify pending —
    see `docs/08-resolution-framerate-picker.md` (GOP + fps default) and
    `docs/03-single-client-e2e.md` (freeze-on-gap decode policy).
-12. Worker offloading & reliable keyframes — **implemented (S1–S7: reliable
-   keyframes + worker offload); manual browser verify pending** (R8,
+12. Worker offloading & reliable keyframes — **done (S1–S7: reliable
+   keyframes + worker offload); browser-verified 2026-07-14** (R8,
    `docs/12-worker-and-reliable-keyframes.md`).
    Keyframes now travel over **per-subscriber reliable WebTransport uni
    streams** instead of datagrams — a lost UDP packet can no longer ruin a

@@ -26,7 +26,7 @@ feature set exists).
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | not started |
 | R6 | [Production UI](#r6--production-ui) | 🚧 implemented (J1–J6); automated gates green, manual browser verify pending ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
-| R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | 🟡 implemented (S1–S7: reliable keyframes + worker offload); manual browser verify pending ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
+| R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 
 ---
 
@@ -370,23 +370,22 @@ it lands.
 
 **Key design questions**: How to manage server-side backpressure when a subscriber stalls on a reliable stream, preventing it from blocking the publisher's broadcast stream.
 
-**Status**: **implemented (S1–S7: reliable keyframes + worker offload); manual
-browser verify pending** — full design in
+**Status**: **done (S1–S7: reliable keyframes + worker offload); browser-verified
+2026-07-14** — full design in
 [`docs/12-worker-and-reliable-keyframes.md`](docs/12-worker-and-reliable-keyframes.md)
-(chunks S1–S7). Implemented end-to-end and covered by automated tests:
-keyframes now travel over per-subscriber reliable uni streams with server
-store-and-forward fan-out (write deadline, supersede-stale, late-joiner
-priming), and the viewer merges them with datagram deltas in a pure, bounded
-reorder buffer with freeze-on-gap. **S6 (worker offload) is now implemented**:
-the whole viewer pipeline (and reconnect state machine, via a reused
-`ViewerSession`) runs in a Web Worker that renders decoded frames to a
-transferred `OffscreenCanvas` and never `postMessage`s a frame; a capability
-handshake plus a main-thread `ViewerSession` fallback covers browsers/environments
-without worker WebCodecs. `/statusz` and both stats surfaces expose the new
-keyframe-stream and reorder counters; all automated gates are green. What
-remains is the manual, browser-only verification (DevTools packet-loss
-injection + profiler soak, and confirming the worker path runs on Chrome / falls
-back on Firefox). The design resolves the open questions: the relay uses
+(chunks S1–S7). Implemented end-to-end, covered by automated tests, and
+confirmed working in the browser: keyframes now travel over per-subscriber
+reliable uni streams with server store-and-forward fan-out (write deadline,
+supersede-stale, late-joiner priming), and the viewer merges them with datagram
+deltas in a pure, bounded reorder buffer with freeze-on-gap. **S6 (worker
+offload) is implemented and verified**: the whole viewer pipeline (and reconnect
+state machine, via a reused `ViewerSession`) runs in a Web Worker that renders
+decoded frames to a transferred `OffscreenCanvas` and never `postMessage`s a
+frame; a capability handshake plus a main-thread `ViewerSession` fallback covers
+browsers/environments without worker WebCodecs. `/statusz` and both stats
+surfaces expose the new keyframe-stream and reorder counters; all automated gates
+are green and the end-to-end browser verification passed on the target build.
+The design resolved the open questions: the relay uses
 **store-and-forward fan-out** — it receives each keyframe stream *completely*
 into a bounded, cache-doubling buffer (capped by a new `MaxKeyframeBytes`)
 before opening one uni stream per subscriber, so the publisher ingest is

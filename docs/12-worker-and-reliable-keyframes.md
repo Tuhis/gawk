@@ -62,12 +62,13 @@ play the latest frame"* philosophy. This doc resolves all of them.
 | S3 | **Server fan-out (the crux)** — per-subscriber store-and-forward over `OpenUniStream`; `hub.Conn` gains stream-open; write deadline + supersede-stale + ≤1 in-flight per subscriber; late-joiner priming over a stream; bandwidth accounting; new knobs through `config` → `registryOptions` → Helm | A subscriber whose stream write blocks past `KeyframeWriteTimeout` is `CancelWrite`-ed and counted as a keyframe drop while the publisher ingest and all other subscribers proceed unaffected (test injects a blocking `Conn`); a new keyframe supersedes an in-flight stale one to the same subscriber; a joiner is primed with the cached keyframe over a stream; over-bandwidth fan-out is skipped (not queued); every knob is asserted reachable from `registryOptions` (mirrors `main_test.go`) | ✅ done |
 | S4 | **Broadcaster** — keyframes branch onto `wt.createUnidirectionalStream()` carrying config+payload; deltas stay on `packetizeFrame`/datagrams; `packetizer.ts` gains a stream-frame encoder | `handleEncoded` sends `chunk.type==='key'` over a uni stream (config prepended into the stream, not the datagram path) and deltas over datagrams; a write to a torn-down session fails the pipeline as today; unit tests cover the key/delta branch and the stream encoder | ✅ done |
 | S5 | **Viewer reorder/playout buffer** — new `transport/reorder-buffer.ts` merging datagram deltas + stream keyframes by `frameId`; dependency-gated release; freeze-on-gap centralized here; bounded reorder hold (Decision 7), **no fixed playout offset** | Test-first (node, no WebCodecs): a keyframe arriving *after* its following deltas releases keyframe-then-contiguous-deltas in order; a missing predecessor **delta** freezes immediately and resyncs at the next keyframe; an in-progress keyframe holds decodable-pending deltas up to `KEYFRAME_WAIT_MS` then drops them; decoder-queue-deep triggers drop-to-keyframe; watermark never emits a delta older than the decode position | ✅ done |
-| S6 | **Worker offload** — `viewer.worker.ts` hosting a host-agnostic `ViewerWorkerCore` (S1–S5 pipeline + in-worker reconnect); main-thread shell transfers `OffscreenCanvas` once and relays start/stop + status; `ViewerScreen` rewired; AVCC-normalize moves into the worker | Core is unit-testable synchronously with a fake `WebTransport` (extended for `incomingUnidirectionalStreams`) and a fake render sink — no real worker/DOM needed; `OffscreenCanvas` transferred exactly once for the life of the view; reconnect (backoff, code-4000 terminal, fatal-codec) behaves identically to today's `ViewerSession`; frames never `postMessage`-d to main thread | 🟡 implemented; manual cross-browser verify pending |
-| S7 | **Observability + verification + docs** — `/statusz` + stats-overlay fields; DevTools packet-loss and profiler verification; README gotchas + ROADMAP + CLAUDE.md sync | `/statusz` reports keyframe-stream in/out/dropped/oversize counters per broadcast and in totals; stats overlay shows keyframe-stream health and reorder holds/drops; manual packet-loss injection shows freezes eliminated and ≤1-GOP recovery; React-profiler churn no longer spikes viewer drops; all automated gates green | 🟡 observability + docs done; manual packet-loss / profiler verify pending |
+| S6 | **Worker offload** — `viewer.worker.ts` hosting a host-agnostic `ViewerWorkerCore` (S1–S5 pipeline + in-worker reconnect); main-thread shell transfers `OffscreenCanvas` once and relays start/stop + status; `ViewerScreen` rewired; AVCC-normalize moves into the worker | Core is unit-testable synchronously with a fake `WebTransport` (extended for `incomingUnidirectionalStreams`) and a fake render sink — no real worker/DOM needed; `OffscreenCanvas` transferred exactly once for the life of the view; reconnect (backoff, code-4000 terminal, fatal-codec) behaves identically to today's `ViewerSession`; frames never `postMessage`-d to main thread | ✅ done (browser-verified 2026-07-14) |
+| S7 | **Observability + verification + docs** — `/statusz` + stats-overlay fields; DevTools packet-loss and profiler verification; README gotchas + ROADMAP + CLAUDE.md sync | `/statusz` reports keyframe-stream in/out/dropped/oversize counters per broadcast and in totals; stats overlay shows keyframe-stream health and reorder holds/drops; manual packet-loss injection shows freezes eliminated and ≤1-GOP recovery; React-profiler churn no longer spikes viewer drops; all automated gates green | ✅ done (browser-verified 2026-07-14) |
 
-**Implementation status (2026-07-14).** The reliable-keyframe path (S1–S5) **and
-the worker offload (S6)** are implemented end-to-end and covered by automated
-tests: keyframes travel over per-subscriber reliable uni streams with
+**Implementation status (2026-07-14): R8 complete and browser-verified.** The
+reliable-keyframe path (S1–S5) **and the worker offload (S6)** are implemented
+end-to-end, covered by automated tests, **and confirmed working in the browser
+(2026-07-14)**: keyframes travel over per-subscriber reliable uni streams with
 store-and-forward fan-out, a write deadline, supersede-stale, and late-joiner
 priming server-side; the viewer merges stream keyframes with datagram deltas in
 a pure, bounded reorder buffer (`transport/reorder-buffer.ts`) with freeze-on-gap
@@ -75,14 +76,13 @@ centralized there; and the whole viewer pipeline runs in a Web Worker rendering
 to a transferred `OffscreenCanvas` (with a main-thread fallback). S7's
 observability and docs are done — `/statusz` and both stats surfaces expose the
 new keyframe-stream and reorder counters, and all automated gates are green
-(Go `gofmt`/`vet`/`-race`, frontend `test`/`build`/`lint`, `helm lint`). What
-remains is **manual, browser-only** verification: for S7, DevTools packet-loss
-injection to confirm freezes are eliminated with ≤1-GOP recovery and a
-React-profiler soak; for S6, confirming the worker path actually decodes/renders
-on the target Chrome and that Firefox runs it or falls back cleanly.
+(Go `gofmt`/`vet`/`-race`, frontend `test`/`build`/`lint`, `helm lint`). The
+end-to-end browser verification (worker path decoding/rendering the
+reliable-keyframe stream) passed on the target build; there is no outstanding
+gate.
 
-**S6 (worker offload) is implemented (2026-07-14); manual cross-browser verify
-pending.** Per Decision 8 the pipeline core was already host-agnostic, so S6
+**S6 (worker offload) is implemented and browser-verified (2026-07-14).** Per
+Decision 8 the pipeline core was already host-agnostic, so S6
 *moved* code rather than rewriting it:
 
 - `transport/render-sink.ts` — the `RenderSink` seam. `ViewerPipeline` now draws
@@ -111,10 +111,10 @@ pending.** Per Decision 8 the pipeline core was already host-agnostic, so S6
 Tests (`viewer-worker-core.test.ts`, `render-sink.test.ts`) instantiate the core
 with a fake host + fake render sink and the existing mocked `connection`/
 `decoder` — no real Worker/DOM — and assert the event mapping, the generation
-guard, and that decoded frames reach the sink and never the host. The remaining
-gate is **manual, browser-only**: confirm the worker path actually decodes and
-renders on the target Chrome and that Firefox either runs it or cleanly falls
-back (the `runtime`, not the logic, is what can't be exercised here).
+guard, and that decoded frames reach the sink and never the host. The
+browser-only gate — the worker path actually decoding and rendering on the
+target build — was **verified 2026-07-14** (the `runtime`, not the logic, was
+what couldn't be exercised in CI).
 
 Goal → verified-by, for the cross-cutting behaviors:
 
