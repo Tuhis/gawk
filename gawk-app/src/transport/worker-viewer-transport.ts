@@ -70,6 +70,7 @@ export class WorkerViewerTransport implements ViewerTransport {
                 timestampUs: ev.timestampUs,
                 config: ev.config,
                 data: ev.data,
+                streamBytes: ev.streamBytes,
               });
             }
             break;

@@ -33,6 +33,7 @@ export type TransportWorkerEvent =
       timestampUs: bigint;
       config: DecoderConfigMessage | null;
       data: Uint8Array;
+      streamBytes: number;
     }
   | { type: 'closed'; closeCode?: number; reason?: string; message: string }
   // Pushed at the stats cadence: connection health + the relay clock-sync
@@ -76,6 +77,7 @@ export class TransportWorkerCore {
               timestampUs: kf.timestampUs,
               config: kf.config,
               data: kf.data,
+              streamBytes: kf.streamBytes,
             },
             keyframeTransferables(kf),
           ),

@@ -8,7 +8,7 @@ import type { EncoderConfigured } from '../../media/encoder';
 interface Props {
   stats: BroadcastStats | null;
   encoderInfo: EncoderConfigured | null;
-  // Sent bitrate derived from the sample window (bits/s).
+  // Sent video bitrate derived from the sample window (bits/s).
   bitrateBps: number | null;
   onClose: () => void;
   onCopy: () => void;
@@ -51,7 +51,7 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
         ['Datagrams sent', String(stats?.datagramsSent ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsSent ?? '—')],
         ['Keyframe fails', String(stats?.keyframeStreamsFailed ?? '—')],
-        ['Bitrate (sent)', fmtBits(bitrateBps)],
+        ['Video bitrate (sent)', fmtBits(bitrateBps)],
       ],
     },
     {

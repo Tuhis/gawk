@@ -297,6 +297,20 @@ current spec's `WebTransportConnectionStats` dictionary (verified against
 the spec 2026-07-14), so connection health lights up again automatically
 when Chromium re-ships — watch the chromestatus entry.
 
+**Follow-up (2026-07-15): the received-bitrate row no longer depends on
+`getStats()`.** The always-empty "Bitrate (recv)" (it derived from
+`connection.bytesReceived`) was replaced by a self-counted
+`ViewerStats.videoBytesReceived`: the pipeline sums datagram payloads plus
+whole keyframe `StreamFrame` messages (a new `KeyframeStreamFrame.
+streamBytes` carries the on-wire message size through the transport-worker
+boundary), mirroring the broadcaster's self-counted `bytesSent` — the same
+escape hatch as R5's `RTT (time-sync)`. Both overlay rows were renamed to
+**"Video bitrate (recv)"** / **"Video bitrate (sent)"** because that is
+what they measure: encoded video payload, excluding QUIC/UDP overhead and
+(on the viewer) datagrams lost in flight, so the recv value reads slightly
+below true relay egress. The `connection.*` rows stay dark pending the
+Chromium re-ship.
+
 ### D8 — Diagnostics export for remote troubleshooting
 
 Each overlay gets a "Copy diagnostics" action: a JSON blob with surface
@@ -376,7 +390,10 @@ datagramsExpiredOutgoing, datagramsLostOutgoing }` from `getStats()`.
 **`ViewerStats` (viewer)**: `receivedFps`, `renderedFps`,
 `timeSinceLastFrameMs` (stall detector), `lastKeyframeAgeMs` (recovery-bound
 indicator: should hover ≤ GOP length), `bytesReceived`; `connection:
-{ rttMs, rttVarMs, packetsReceived, packetsLost, datagramsDroppedIncoming }`.
+{ rttMs, rttVarMs, packetsReceived, packetsLost, datagramsDroppedIncoming }`;
+`videoBytesReceived` (2026-07-15 — self-counted video payload, the source of
+the overlay's "Video bitrate (recv)" now that `getStats()` is unshipped
+everywhere; see the D7 follow-up).
 
 Existing fields are kept as-is (cumulative); the shared overlay component
 derives windowed rates client-side from successive samples rather than

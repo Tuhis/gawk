@@ -221,10 +221,13 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   Chromium removed its pre-spec implementation (absent in 150/151/152;
   spec-conformant rewrite "in development",
   [chromestatus](https://chromestatus.com/feature/5194440034746368)) and
-  Firefox never had it, so the overlays' Network section reads `—`
+  Firefox never had it, so the overlays' `connection.*` rows read `—`
   everywhere and per-leg attribution leans on relay-side counters. Every
   consumer must feature-detect and treat all fields as nullable
-  (`transport/net-stats.ts` — spec-aligned, lights up on re-ship).
+  (`transport/net-stats.ts` — spec-aligned, lights up on re-ship). The
+  self-owned rows are immune: `RTT (time-sync)` and, since 2026-07-15,
+  "Video bitrate (recv)"/"(sent)" — clients count their own video bytes
+  (`videoBytesReceived`/`bytesSent`) instead of asking the transport.
   ([docs/13](docs/13-observability.md))
 
 **Media pipeline**

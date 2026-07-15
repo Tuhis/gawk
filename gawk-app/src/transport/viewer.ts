@@ -116,6 +116,12 @@ export interface ViewerStats extends ReassemblerStats {
   // R9 connection health for this leg (relay→viewer); null when the browser
   // doesn't implement WebTransport.getStats().
   connection: TransportConnectionStats | null;
+  // Cumulative video bytes this pipeline received itself — datagram payloads
+  // plus whole keyframe StreamFrame messages, mirroring the broadcaster's
+  // bytesSent. The overlay's "Video bitrate (recv)" is derived from this
+  // counter because WebTransport.getStats() ships in no browser (docs/13 D7).
+  // Undercounts wire truth: no QUIC/UDP overhead, lost datagrams invisible.
+  videoBytesReceived: number;
 }
 
 export interface ViewerCallbacks {
@@ -174,6 +180,7 @@ export class ViewerPipeline {
   private lastRenderedTotal = 0;
   private lastFrameReceivedAt: number | null = null;
   private lastKeyframeReceivedAt: number | null = null;
+  private videoBytesReceived = 0;
   // The codec of the last applied config — for a clear "can't decode" message.
   private lastCodec: string | null = null;
   private pendingConfig: DecoderConfigMessage | null = null;
@@ -271,7 +278,9 @@ export class ViewerPipeline {
     try {
       await transport.connect({
         onDatagram: (dgram) => {
-          if (!this.stopping) this.reassembler?.push(dgram);
+          if (this.stopping) return;
+          this.videoBytesReceived += dgram.byteLength;
+          this.reassembler?.push(dgram);
         },
         onKeyframe: (kf) => this.handleKeyframeStream(kf),
         onClosed: (info) => this.handleClosed(info),
@@ -304,6 +313,7 @@ export class ViewerPipeline {
     // late (R10 field finding, docs/14).
     this.reassembler?.noteStreamKeyframe(kf.frameId);
     this.keyframeStreamsReceived++;
+    this.videoBytesReceived += kf.streamBytes;
     this.lastFrameReceivedAt = performance.now();
     this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
     this.reorder.pushKeyframe({
@@ -611,6 +621,7 @@ export class ViewerPipeline {
       arrivalJitterMs,
       decodeJitterMs,
       connection: this.transport?.sampleConnectionStats() ?? null,
+      videoBytesReceived: this.videoBytesReceived,
     });
   }
 

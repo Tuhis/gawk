@@ -240,6 +240,53 @@ describe('ViewerPipeline', () => {
     }
   });
 
+  it('counts self-received video bytes: datagrams + keyframe stream messages', async () => {
+    // "Video bitrate (recv)" is derived from this counter — the viewer counts
+    // what it receives itself because WebTransport.getStats() ships in no
+    // browser (docs/13 D7), mirroring the broadcaster's bytesSent.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      connectWebTransport.mockResolvedValue(makeFakeWT(600_000, {}));
+      let deliver: ((d: Uint8Array) => void) | null = null;
+      readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+        deliver = onDatagram;
+        return new Promise(() => {});
+      });
+      let deliverKf: ((kf: unknown) => void) | null = null;
+      readKeyframeStreams.mockImplementation((_wt: unknown, onKeyframe: (kf: unknown) => void) => {
+        deliverKf = onKeyframe;
+        return new Promise(() => {});
+      });
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+      await pipeline.start();
+      const push = deliver as unknown as (d: Uint8Array) => void;
+      const pushKf = deliverKf as unknown as (kf: unknown) => void;
+
+      const d1 = configDgram();
+      const d2 = frameDgram(0, true);
+      const d3 = frameDgram(1, false);
+      push(d1);
+      push(d2);
+      push(d3);
+      // streamBytes is the whole StreamFrame message as read off the wire
+      // (header + config + payload) — the sender-side msg.length mirror.
+      pushKf({ frameId: 2, timestampUs: 2000n, config: null, data: new Uint8Array([9]), streamBytes: 240 });
+
+      await vi.advanceTimersByTimeAsync(500); // one stats tick
+      const last = stats.at(-1)!;
+      expect(last.videoBytesReceived).toBe(d1.byteLength + d2.byteLength + d3.byteLength + 240);
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('computes absolute capture→render latency from both clock legs (R5 Q2)', async () => {
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
@@ -332,7 +379,7 @@ describe('ViewerPipeline', () => {
 
     // Broadcaster restart: the new session's keyframe (id 3) arrives over the
     // reliable stream, then its deltas arrive as datagrams.
-    pushKf({ frameId: 3, timestampUs: 3000n, config: null, data: new Uint8Array([9]) });
+    pushKf({ frameId: 3, timestampUs: 3000n, config: null, data: new Uint8Array([9]), streamBytes: 25 });
     push(frameDgram(4, false));
     push(frameDgram(5, false));
 

@@ -244,7 +244,10 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           stats={stats}
           codec={codec}
           bitrateBps={(() => {
-            const bytesRate = diagRef.current.rate((s) => s.connection?.bytesReceived);
+            // Self-counted video bytes (datagrams + keyframe streams) — the
+            // getStats()-based connection counter is null in every current
+            // browser (docs/13 D7).
+            const bytesRate = diagRef.current.rate((s) => s.videoBytesReceived);
             return bytesRate == null ? null : bytesRate * 8;
           })()}
           onClose={() => setShowStats(false)}

@@ -85,7 +85,7 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Send rate (est.)').nextSibling?.textContent).toBe('25.0 Mbps');
     expect(screen.getByText('At capacity').nextSibling?.textContent).toBe('no');
     expect(screen.getByText('Dgrams lost (out)').nextSibling?.textContent).toBe('15');
-    expect(screen.getByText('Bitrate (sent)').nextSibling?.textContent).toBe('12.0 Mbps');
+    expect(screen.getByText('Video bitrate (sent)').nextSibling?.textContent).toBe('12.0 Mbps');
     expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
   });
 

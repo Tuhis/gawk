@@ -95,9 +95,10 @@ describe('WorkerViewerTransport', () => {
       timestampUs: 99n,
       config: { codec: 'vp8', extradata: new Uint8Array(0) },
       data: new Uint8Array([4]),
+      streamBytes: 25,
     });
     expect(cbs.onKeyframe).toHaveBeenCalledWith(
-      expect.objectContaining({ frameId: 7, timestampUs: 99n }),
+      expect.objectContaining({ frameId: 7, timestampUs: 99n, streamBytes: 25 }),
     );
 
     worker.emit({ type: 'closed', closeCode: 4000, reason: 'ended', message: 'closed: ended' });
@@ -209,9 +210,10 @@ describe('WorkerViewerTransport + TransportWorkerCore end-to-end', () => {
       timestampUs: 1000n,
       config: { codec: 'vp8', extradata: new Uint8Array(0) },
       data: new Uint8Array([1, 2]),
+      streamBytes: 26,
     });
     expect(cbs.onKeyframe).toHaveBeenCalledWith(
-      expect.objectContaining({ frameId: 3, timestampUs: 1000n }),
+      expect.objectContaining({ frameId: 3, timestampUs: 1000n, streamBytes: 26 }),
     );
 
     innerCbs!.onClosed({ closeCode: 4000, message: 'broadcast ended' });

@@ -7,8 +7,10 @@ import type { ViewerStats } from '../../transport/viewer';
 interface Props {
   stats: ViewerStats | null;
   codec: string | null;
-  // Received bitrate derived from the sample window (bits/s); null until two
-  // samples with connection byte counters exist.
+  // Received video bitrate derived from the sample window (bits/s) — from
+  // the pipeline's self-counted videoBytesReceived (datagram payloads +
+  // keyframe stream messages, no transport overhead); null until two
+  // samples exist.
   bitrateBps: number | null;
   onClose: () => void;
   onCopy: () => void;
@@ -86,7 +88,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         ['RTT variation', conn?.rttVarMs == null ? '—' : `${fmt(conn.rttVarMs)} ms`],
         ['Packets lost', fmtInt(conn?.packetsLost)],
         ['Dgrams dropped (in)', fmtInt(conn?.datagramsDroppedIncoming)],
-        ['Bitrate (recv)', fmtBits(bitrateBps)],
+        ['Video bitrate (recv)', fmtBits(bitrateBps)],
         ['Datagrams', String(stats?.datagramsReceived ?? '—')],
         ['Bad datagrams', String(stats?.badDatagrams ?? '—')],
       ],

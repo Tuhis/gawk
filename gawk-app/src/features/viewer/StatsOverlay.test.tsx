@@ -50,6 +50,7 @@ function fullStats(): ViewerStats {
     renderCadenceP95Ms: 9.1,
     arrivalJitterMs: 12,
     decodeJitterMs: 1.4,
+    videoBytesReceived: 6_000_000,
     connection: {
       rttMs: 24.5,
       rttVarMs: 3.1,
@@ -87,7 +88,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Pipeline').nextSibling?.textContent).toBe('Worker');
     expect(screen.getByText('Transport').nextSibling?.textContent).toBe('Worker');
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('24.5 ms');
-    expect(screen.getByText('Bitrate (recv)').nextSibling?.textContent).toBe('4.2 Mbps');
+    expect(screen.getByText('Video bitrate (recv)').nextSibling?.textContent).toBe('4.2 Mbps');
     expect(screen.getByText('Keyframe age').nextSibling?.textContent).toBe('210 ms');
     expect(screen.getByText('Live-edge drift').nextSibling?.textContent).toBe('42 ms');
     expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('384 ms');

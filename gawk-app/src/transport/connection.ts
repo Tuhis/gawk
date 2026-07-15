@@ -89,6 +89,10 @@ export interface KeyframeStreamFrame {
   timestampUs: bigint;
   config: DecoderConfigMessage | null; // embedded config, if any
   data: Uint8Array; // encoded keyframe payload (safe to retain: a fresh copy)
+  // Whole StreamFrame message as read off the wire (header + config +
+  // payload) — mirrors the broadcaster's bytesSent accounting, so the
+  // viewer's self-counted received bitrate matches the sent one.
+  streamBytes: number;
 }
 
 // Reads server-initiated unidirectional streams for the life of the session,
@@ -157,7 +161,13 @@ async function readOneKeyframe(
   const configBytes = body.subarray(0, header.configLen);
   const payload = body.subarray(header.configLen, header.configLen + header.payloadLen);
   const config = header.configLen > 0 ? parseDecoderConfig(configBytes) : null;
-  onKeyframe({ frameId: header.frameId, timestampUs: header.timestampUs, config, data: payload });
+  onKeyframe({
+    frameId: header.frameId,
+    timestampUs: header.timestampUs,
+    config,
+    data: payload,
+    streamBytes: total,
+  });
 }
 
 // Serializes datagram writes so frames leave in encode order (datagram

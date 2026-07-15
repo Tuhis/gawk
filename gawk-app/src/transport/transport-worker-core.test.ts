@@ -86,6 +86,7 @@ describe('TransportWorkerCore', () => {
       timestampUs: 123_456n,
       config: { codec: 'avc1.42E01F', extradata: new Uint8Array([1, 2]) },
       data: new Uint8Array([9, 8, 7]),
+      streamBytes: 240,
     };
     cb().onKeyframe(kf);
     const msg = posted.find((p) => p.event.type === 'keyframe');
@@ -95,6 +96,7 @@ describe('TransportWorkerCore', () => {
       expect(msg.event.timestampUs).toBe(123_456n);
       expect(msg.event.config?.codec).toBe('avc1.42E01F');
       expect(msg.event.data).toBe(kf.data);
+      expect(msg.event.streamBytes).toBe(240);
     }
   });
 
@@ -154,6 +156,7 @@ describe('keyframeTransferables', () => {
       timestampUs: 0n,
       config: { codec: 'vp8', extradata: backing.subarray(0, 2) },
       data: backing.subarray(2),
+      streamBytes: backing.length,
     };
     expect(keyframeTransferables(kf)).toEqual([backing.buffer]);
   });
@@ -164,6 +167,7 @@ describe('keyframeTransferables', () => {
       timestampUs: 0n,
       config: { codec: 'vp8', extradata: new Uint8Array([1]) },
       data: new Uint8Array([2]),
+      streamBytes: 26,
     };
     expect(keyframeTransferables(kf)).toHaveLength(2);
     expect(keyframeTransferables({ ...kf, config: null })).toEqual([kf.data.buffer]);

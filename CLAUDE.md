@@ -300,7 +300,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    LoadBalancer. Clients: `WebTransport.getStats()` sampling (feature-
    detected, all-nullable — and since 2026-07-14 known to exist in **no**
    shipping browser: Chromium removed it, rewrite "in development"; the
-   Network section is dark until it re-ships, see docs/13 D7) + funnel
+   `connection.*` rows are dark until it re-ships, see docs/13 D7; since
+   2026-07-15 the overlay bitrates are self-counted instead — viewer
+   `videoBytesReceived` mirrors broadcaster `bytesSent`, rows renamed
+   "Video bitrate (recv)"/"(sent)") + funnel
    rates (capture →
    post-gate → encoded → **sent** fps; received → decoded → rendered fps),
    stall ages, and a shared sectioned stats overlay on **both** production
