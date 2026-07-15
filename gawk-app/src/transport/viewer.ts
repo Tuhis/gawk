@@ -14,7 +14,13 @@ import {
   type ViewerTransportKind,
 } from './viewer-transport';
 import { LiveEdgeTracker } from './live-edge';
-import { getPlayoutMode, getPlayoutOffsetMs, type PlayoutMode } from './playout';
+import {
+  getPlayoutMode,
+  getPlayoutOffsetMs,
+  resetPlayoutController,
+  updatePlayoutController,
+  type PlayoutMode,
+} from './playout';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
@@ -461,8 +467,10 @@ export class ViewerPipeline {
     this.liveEdge.reset();
     this.broadcastClockOffsetUs = null;
     this.lastCapToRenderMs = null;
-    // Held paced frames are from the old timeline — their targets are junk.
+    // Held paced frames are from the old timeline — their targets are junk,
+    // and so is any adaptive offset learned against it.
     this.renderSink?.flush?.();
+    resetPlayoutController();
   }
 
   private handleDecoded(decoded: DecodedFrame): void {
@@ -533,6 +541,10 @@ export class ViewerPipeline {
     }
     // R12 T1: this window's jitter numbers.
     const cadence = this.renderSink?.drainCadence?.() ?? null;
+    const arrivalJitterMs = this.reorder?.arrivalJitterMs() ?? null;
+    // R12 T3: the adaptive offset controller reads the same jitter estimate
+    // the overlay shows (no-op outside adaptive mode).
+    updatePlayoutController(arrivalJitterMs, now);
     const lats = this.decodeLatencies;
     this.decodeLatencies = [];
     let decodeJitterMs: number | null = null;
@@ -584,7 +596,7 @@ export class ViewerPipeline {
         : null,
       renderCadenceStdDevMs: cadence?.stdDevMs ?? null,
       renderCadenceP95Ms: cadence?.p95Ms ?? null,
-      arrivalJitterMs: this.reorder?.arrivalJitterMs() ?? null,
+      arrivalJitterMs,
       decodeJitterMs,
       connection: this.transport?.sampleConnectionStats() ?? null,
     });
