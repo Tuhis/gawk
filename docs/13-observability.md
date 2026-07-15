@@ -309,7 +309,8 @@ escape hatch as R5's `RTT (time-sync)`. Both overlay rows were renamed to
 what they measure: encoded video payload, excluding QUIC/UDP overhead and
 (on the viewer) datagrams lost in flight, so the recv value reads slightly
 below true relay egress. The `connection.*` rows stay dark pending the
-Chromium re-ship.
+Chromium re-ship. Manually verified in the browser 2026-07-15: the row
+shows a plausible live value.
 
 ### D8 — Diagnostics export for remote troubleshooting
 
