@@ -1,0 +1,517 @@
+// Command gawk-broadcast-gui is the native Linux broadcaster's window
+// (R14 V5/V6, docs/19).
+//
+// It is deliberately thin: everything worth testing lives in internal/app, and
+// this file is layout plus event wiring. The engine is consumed unmodified from
+// V1 — adding a GUI required no engine change, which is the whole reason the
+// engine was a package from the start rather than a main full of flags.
+//
+// What it deliberately does not have:
+//
+//   - **A source picker.** Your desktop's portal already shows you one, on the
+//     first run only (Decision 5). We don't draw it and we don't theme it.
+//   - **A preview.** You are looking at your own screen. The browser has one
+//     only because a tab isn't your screen. What people actually need is "am I
+//     live and are frames moving", which the code and a sent-fps readout
+//     answer (Decision 16).
+//   - **A tray.** The window *is* the app: close it and nothing is publishing.
+//     No background presence, no hidden state (Decision 15).
+//   - **A viewer count.** Nothing on the wire tells a publisher about
+//     subscribers — the browser broadcaster doesn't know either (Decision 18).
+package main
+
+import (
+	"context"
+	"fmt"
+	"image"
+	"image/color"
+	"io"
+	"log/slog"
+	"os"
+	"strings"
+
+	"gioui.org/app"
+	"gioui.org/io/clipboard"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/op/clip"
+	"gioui.org/op/paint"
+	"gioui.org/text"
+	"gioui.org/unit"
+	"gioui.org/widget"
+	"gioui.org/widget/material"
+	"gioui.org/x/component"
+
+	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
+)
+
+func main() {
+	cfgPath, err := config.DefaultPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		// A corrupt config must not stop the app starting; it shows up in the
+		// window instead.
+		fmt.Fprintln(os.Stderr, err)
+	}
+
+	go func() {
+		w := new(app.Window)
+		w.Option(
+			app.Title("gawk broadcast"),
+			app.Size(unit.Dp(460), unit.Dp(560)),
+			app.MinSize(unit.Dp(380), unit.Dp(460)),
+		)
+		if err := loop(w, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}()
+	app.Main()
+}
+
+func loop(w *app.Window, cfg *config.Config) error {
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	n := notify.New()
+
+	a := gawkapp.New(gawkapp.Options{
+		Config:   cfg,
+		Notifier: n,
+		Log:      log,
+		// The engine's callbacks arrive on its own goroutines; every state
+		// change has to poke the UI thread or the window shows stale state
+		// until the user moves the mouse.
+		Invalidate: w.Invalidate,
+	})
+	// Decision 15: closing the window ends the broadcast. Nothing survives it.
+	defer a.Quit()
+
+	ui := newUI(a, cfg)
+	var ops op.Ops
+	for {
+		switch e := w.Event().(type) {
+		case app.DestroyEvent:
+			return e.Err
+		case app.FrameEvent:
+			gtx := app.NewContext(&ops, e)
+			ui.layout(gtx)
+			e.Frame(gtx.Ops)
+		}
+	}
+}
+
+// ui holds the widget state.
+type ui struct {
+	app *gawkapp.App
+	cfg *config.Config
+	th  *material.Theme
+
+	start   widget.Clickable
+	stop    widget.Clickable
+	resume  widget.Clickable
+	copyLnk widget.Clickable
+	copyDia widget.Clickable
+	details widget.Bool
+
+	relay  component.TextField
+	appURL component.TextField
+	secret component.TextField
+
+	list   widget.List
+	copied string
+}
+
+func newUI(a *gawkapp.App, cfg *config.Config) *ui {
+	u := &ui{app: a, cfg: cfg, th: material.NewTheme()}
+	u.list.Axis = layout.Vertical
+	u.relay.SetText(cfg.RelayURL)
+	u.appURL.SetText(cfg.AppURL)
+	u.secret.SetText(cfg.PublishSecret)
+	u.secret.Mask = '•'
+	return u
+}
+
+func (u *ui) layout(gtx layout.Context) layout.Dimensions {
+	// A plain dark background: this window is a control panel, not a design
+	// exercise — the production UI (R6) is where taste lives.
+	paint.FillShape(gtx.Ops, rgb(0x14, 0x15, 0x18), clip.Rect{Max: gtx.Constraints.Max}.Op())
+
+	u.handleEvents(gtx)
+
+	inset := layout.UniformInset(unit.Dp(20))
+	return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return material.List(u.th, &u.list).Layout(gtx, 1, func(gtx layout.Context, _ int) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(u.header),
+				layout.Rigid(spacer(16)),
+				layout.Rigid(u.controls),
+				layout.Rigid(spacer(16)),
+				layout.Rigid(u.code),
+				layout.Rigid(spacer(12)),
+				layout.Rigid(u.errorBox),
+				layout.Rigid(spacer(12)),
+				layout.Rigid(u.settings),
+				layout.Rigid(spacer(12)),
+				layout.Rigid(u.stats),
+			)
+		})
+	})
+}
+
+func (u *ui) handleEvents(gtx layout.Context) {
+	if u.start.Clicked(gtx) {
+		u.save()
+		u.copied = ""
+		u.app.Start(context.Background(), "")
+	}
+	if u.resume.Clicked(gtx) {
+		u.save()
+		u.copied = ""
+		u.app.Start(context.Background(), u.cfg.LastBroadcastID)
+	}
+	if u.stop.Clicked(gtx) {
+		u.app.Stop()
+	}
+	if u.copyLnk.Clicked(gtx) {
+		if link := u.app.JoinLink(); link != "" {
+			gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(link))})
+			u.copied = "Link copied"
+		} else if id := u.app.BroadcastID(); id != "" {
+			gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(id))})
+			u.copied = "Code copied"
+		}
+	}
+	if u.copyDia.Clicked(gtx) {
+		gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(u.app.Diagnostics()))})
+		u.copied = "Diagnostics copied"
+	}
+}
+
+// save writes the settings fields back to the config.
+func (u *ui) save() {
+	u.cfg.RelayURL = strings.TrimSpace(u.relay.Text())
+	u.cfg.AppURL = strings.TrimSpace(u.appURL.Text())
+	u.cfg.PublishSecret = u.secret.Text()
+	if err := u.cfg.Save(); err != nil {
+		// Non-fatal: the broadcast can still run, the settings just won't
+		// survive a restart.
+		fmt.Fprintln(os.Stderr, "could not save settings:", err)
+	}
+}
+
+func (u *ui) header(gtx layout.Context) layout.Dimensions {
+	state, status := u.app.State()
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			t := material.H6(u.th, "gawk broadcast")
+			t.Color = rgb(0xf2, 0xf3, 0xf5)
+			return t.Layout(gtx)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					// The heartbeat: "am I live" at a glance (Decision 16 —
+					// this is what a preview would have been for).
+					c := rgb(0x6b, 0x70, 0x7a)
+					if state == gawkapp.StateLive {
+						c = rgb(0x3d, 0xd6, 0x8c)
+					}
+					return dot(gtx, c)
+				}),
+				layout.Rigid(spacerW(8)),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					t := material.Body2(u.th, status)
+					t.Color = rgb(0xa8, 0xad, 0xb8)
+					return t.Layout(gtx)
+				}),
+			)
+		}),
+	)
+}
+
+func (u *ui) controls(gtx layout.Context) layout.Dimensions {
+	state, _ := u.app.State()
+	switch state {
+	case gawkapp.StateLive, gawkapp.StateStarting:
+		btn := material.Button(u.th, &u.stop, "Stop broadcast")
+		btn.Background = rgb(0x8b, 0x2c, 0x2c)
+		if state == gawkapp.StateStarting {
+			btn.Text = "Starting…"
+		}
+		return btn.Layout(gtx)
+	default:
+		return layout.Flex{}.Layout(gtx,
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return material.Button(u.th, &u.start, "Start broadcast").Layout(gtx)
+			}),
+			// Resume is offered only when there is a code to reclaim. Per
+			// Decision 5 it no longer re-prompts the picker, so it is cheap.
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if u.cfg.LastBroadcastID == "" {
+					return layout.Dimensions{}
+				}
+				return layout.Flex{}.Layout(gtx,
+					layout.Rigid(spacerW(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						b := material.Button(u.th, &u.resume, "Resume "+u.cfg.LastBroadcastID)
+						b.Background = rgb(0x2a, 0x2d, 0x34)
+						return b.Layout(gtx)
+					}),
+				)
+			}),
+		)
+	}
+}
+
+func (u *ui) code(gtx layout.Context) layout.Dimensions {
+	id := u.app.BroadcastID()
+	if id == "" {
+		return layout.Dimensions{}
+	}
+	return card(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(label(u.th, "Broadcast code")),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				t := material.H4(u.th, id)
+				t.Color = rgb(0xf2, 0xf3, 0xf5)
+				// Monospace: this is read aloud and typed in by hand.
+				t.Font.Typeface = "monospace"
+				return t.Layout(gtx)
+			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if link := u.app.JoinLink(); link != "" {
+					t := material.Body2(u.th, link)
+					t.Color = rgb(0x8a, 0x90, 0x9c)
+					return t.Layout(gtx)
+				}
+				t := material.Body2(u.th, "Set the app URL below to get a join link.")
+				t.Color = rgb(0x6b, 0x70, 0x7a)
+				return t.Layout(gtx)
+			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						b := material.Button(u.th, &u.copyLnk, "Copy link")
+						b.Background = rgb(0x2a, 0x2d, 0x34)
+						return b.Layout(gtx)
+					}),
+					layout.Rigid(spacerW(10)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if u.copied == "" {
+							return layout.Dimensions{}
+						}
+						t := material.Body2(u.th, u.copied)
+						t.Color = rgb(0x3d, 0xd6, 0x8c)
+						return t.Layout(gtx)
+					}),
+				)
+			}),
+		)
+	})
+}
+
+func (u *ui) errorBox(gtx layout.Context) layout.Dimensions {
+	msg := u.app.LastError()
+	if msg == "" {
+		return layout.Dimensions{}
+	}
+	return card(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				// Sentences, not Go error strings — internal/app owns that
+				// mapping, including the HTTP-status distinctions the browser
+				// broadcaster structurally cannot make.
+				t := material.Body2(u.th, msg)
+				t.Color = rgb(0xff, 0xa5, 0x9e)
+				return t.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if !u.app.CanMint() {
+					return layout.Dimensions{}
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(spacer(8)),
+					// Offered only for connect-phase failures. A capture-phase
+					// failure had a live publisher session on that ID, and
+					// silently minting a new one is R1's bug.
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return material.Button(u.th, &u.start, "Start a new broadcast instead").Layout(gtx)
+					}),
+				)
+			}),
+		)
+	})
+}
+
+func (u *ui) settings(gtx layout.Context) layout.Dimensions {
+	state, _ := u.app.State()
+	live := state != gawkapp.StateIdle
+	return card(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(label(u.th, "Settings")),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if live {
+					// Decision 9: no mid-session changes. Rather than let the
+					// user type into fields that will not take effect, the
+					// panel says so.
+					gtx = gtx.Disabled()
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.relay.Layout(gtx, u.th, "Relay URL (https://…)")
+					}),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.appURL.Layout(gtx, u.th, "App URL, for join links (https://…)")
+					}),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.secret.Layout(gtx, u.th, "Publish secret (if the relay needs one)")
+					}),
+				)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if !live {
+					return layout.Dimensions{}
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(spacer(6)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						t := material.Caption(u.th, "Settings apply to the next broadcast.")
+						t.Color = rgb(0x6b, 0x70, 0x7a)
+						return t.Layout(gtx)
+					}),
+				)
+			}),
+		)
+	})
+}
+
+func (u *ui) stats(gtx layout.Context) layout.Dimensions {
+	s := u.app.Stats()
+	return card(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return material.CheckBox(u.th, &u.details, "Details").Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if !u.details.Value {
+					return layout.Dimensions{}
+				}
+				rtt := "n/a"
+				if s.TimeSyncAvailable {
+					rtt = fmt.Sprintf("%.1f ms", s.TimeSyncRttMs)
+				}
+				rows := [][2]string{
+					{"Encoder", orDash(s.Encoder)},
+					{"Codec", orDash(s.Codec)},
+					{"Rung", fmt.Sprintf("%dx%d@%d · %.1f Mbps", s.Width, s.Height, s.Fps, float64(s.BitrateBps)/1e6)},
+					// Decision 20: the GStreamer child owns capture, so this
+					// stage is genuinely unobservable from here. "n/a" is the
+					// honest answer; a number from the requested rate would
+					// answer "is the source keeping up?" wrongly.
+					{"Capture fps", "n/a (the encoder child owns capture)"},
+					{"Encode fps", fmt.Sprintf("%.1f", s.EncoderFps)},
+					{"Sent fps", fmt.Sprintf("%.1f", s.SentFps)},
+					{"Keyframes", fmt.Sprintf("%d sent · %d failed · %d superseded",
+						s.KeyframeStreamsSent, s.KeyframeStreamsFailed, s.KeyframeStreamsSuperseded)},
+					{"Dropped at send", fmt.Sprintf("%d", s.FramesDroppedAtSend)},
+					{"Datagrams", fmt.Sprintf("%d · %.1f MB", s.DatagramsSent, float64(s.BytesSent)/1e6)},
+					{"RTT (time-sync)", rtt},
+				}
+				children := make([]layout.FlexChild, 0, len(rows)+2)
+				children = append(children, layout.Rigid(spacer(8)))
+				for _, r := range rows {
+					children = append(children, layout.Rigid(statRow(u.th, r[0], r[1])))
+				}
+				children = append(children,
+					layout.Rigid(spacer(10)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						b := material.Button(u.th, &u.copyDia, "Copy diagnostics")
+						b.Background = rgb(0x2a, 0x2d, 0x34)
+						return b.Layout(gtx)
+					}),
+				)
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+			}),
+		)
+	})
+}
+
+// --- small helpers -------------------------------------------------------
+
+func statRow(th *material.Theme, k, v string) layout.Widget {
+	return func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{}.Layout(gtx,
+			layout.Flexed(0.45, func(gtx layout.Context) layout.Dimensions {
+				t := material.Body2(th, k)
+				t.Color = rgb(0x8a, 0x90, 0x9c)
+				return t.Layout(gtx)
+			}),
+			layout.Flexed(0.55, func(gtx layout.Context) layout.Dimensions {
+				t := material.Body2(th, v)
+				t.Color = rgb(0xdc, 0xe0, 0xe8)
+				t.Alignment = text.End
+				return t.Layout(gtx)
+			}),
+		)
+	}
+}
+
+func label(th *material.Theme, s string) layout.Widget {
+	return func(gtx layout.Context) layout.Dimensions {
+		t := material.Caption(th, strings.ToUpper(s))
+		t.Color = rgb(0x6b, 0x70, 0x7a)
+		return t.Layout(gtx)
+	}
+}
+
+func card(gtx layout.Context, w layout.Widget) layout.Dimensions {
+	macro := op.Record(gtx.Ops)
+	dims := layout.UniformInset(unit.Dp(14)).Layout(gtx, w)
+	call := macro.Stop()
+
+	rr := gtx.Dp(unit.Dp(10))
+	defer clip.RRect{Rect: image.Rect(0, 0, gtx.Constraints.Max.X, dims.Size.Y), SE: rr, SW: rr, NW: rr, NE: rr}.Push(gtx.Ops).Pop()
+	paint.Fill(gtx.Ops, rgb(0x1c, 0x1e, 0x23))
+	call.Add(gtx.Ops)
+	return layout.Dimensions{Size: image.Pt(gtx.Constraints.Max.X, dims.Size.Y)}
+}
+
+func dot(gtx layout.Context, c color.NRGBA) layout.Dimensions {
+	sz := gtx.Dp(unit.Dp(9))
+	defer clip.Ellipse{Max: image.Pt(sz, sz)}.Push(gtx.Ops).Pop()
+	paint.Fill(gtx.Ops, c)
+	return layout.Dimensions{Size: image.Pt(sz, sz)}
+}
+
+func spacer(dp int) layout.Widget {
+	return func(gtx layout.Context) layout.Dimensions {
+		return layout.Spacer{Height: unit.Dp(dp)}.Layout(gtx)
+	}
+}
+
+func spacerW(dp int) layout.Widget {
+	return func(gtx layout.Context) layout.Dimensions {
+		return layout.Spacer{Width: unit.Dp(dp)}.Layout(gtx)
+	}
+}
+
+func rgb(r, g, b uint8) color.NRGBA { return color.NRGBA{R: r, G: g, B: b, A: 0xff} }
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}

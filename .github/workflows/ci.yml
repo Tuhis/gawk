@@ -41,6 +41,12 @@ jobs:
     defaults:
       run:
         working-directory: gawk-broadcast
+    env:
+      # Explicit, not inherited: Gio's window backend is cgo, so with
+      # CGO_ENABLED=0 the GUI package fails to build with a confusing
+      # "build constraints exclude all Go files in gioui.org/internal/vk"
+      # rather than anything about cgo.
+      CGO_ENABLED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -59,10 +65,9 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
-        env:
-          CGO_ENABLED: "1"
-      # The GUI is cgo + Gio: `go test` alone never compiles it on a machine
-      # without a display, so build the shells explicitly.
+      # `go test` type-checks the GUI package but never links it. Building the
+      # shells is what proves the Gio window actually compiles and links —
+      # this job is the only place that happens automatically.
       - run: go build ./cmd/...
 
   app:
