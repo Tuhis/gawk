@@ -159,7 +159,14 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `docs/19-linux-native-broadcaster.md` for R14 (native Linux broadcaster:
   Gio GUI app + CLI over a shared Go engine, publishing with hardware
   encode; Vulkan Video as the target encode API; V1–V7 chunks + V8 direct
-  Vulkan Video encode; **designed 2026-07-15, not started**).
+  Vulkan Video encode; **designed 2026-07-15, not started**),
+  `docs/20-system-audio.md` for R15 (system audio, **experimental,
+  default-off**: Opus/WebCodecs over datagrams — one Opus packet per
+  datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
+  decode with a main-thread AudioWorklet sink, good-enough A/V sync
+  (shared capture clock, adaptive audio jitter buffer, audio-master pacing
+  in R12 paced modes); N1–N6 chunks; **designed 2026-07-15, not
+  started**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -496,6 +503,40 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    only mid-game signal. **Tray and global hotkeys deferred 2026-07-15** —
    research kept in the doc's Deferred section; don't re-derive it. Not a
    container/chart/CI-deploy component — binaries you run on your own PC.
+20. System audio — **designed 2026-07-15 (N1–N6), not started** (R15,
+   `docs/20-system-audio.md`). **Experimental, default-off**: an "Enable
+   audio (experimental)" toggle in the broadcaster's advanced settings
+   (off ⇒ `audio: false`, byte-identical to today), and the viewer shows
+   audio controls (mute/volume, overlay Audio section) **only when audio is
+   actually received**. Direction (settled over reliable-stream Opus, raw
+   PCM, and MediaRecorder+MSE alternatives): **Opus via WebCodecs over
+   datagrams** — 48 kHz stereo, 128 kbps, 20 ms frames ≈ 320 B, so **one
+   Opus packet per datagram** (no chunking/reassembly/keyframes/reliable
+   streams). New wire types `TypeAudioFrame` 0x07 (16 B header: own uint32
+   seq space + timestampUs on the **same broadcaster `performance.now()`
+   clock as video** — the load-bearing sync decision) and `TypeAudioConfig`
+   0x08; hub gains two dispatch cases + a `cachedAudioConfig` join-prime
+   slot (ClockMapping lifecycle); config re-sent at 1 Hz (no keyframe to
+   anchor re-emits to); audio **never** touches the video ingress-loss
+   window or `framesRelayed`. Broadcaster: parallel audio lane in
+   `BroadcastPipeline` (processing off — game audio, not voice);
+   no-audio-track = graceful video-only (Firefox broadcasters, unchecked
+   picker box); worker path transfers the audio `track.clone()` beside the
+   video clone. **The toggle applies on the next broadcast start** — the
+   one R13 live-apply exception, forced by `getDisplayMedia` (an audio
+   track can't be added without re-prompting). Viewer: `AudioDecoder` in
+   the viewer worker, decoded `AudioData` **transferred to a main-thread
+   `AudioWorklet` ring buffer** (`AudioContext` can't live in a worker —
+   the first deliberate decoded-media worker→main crossing); gaps →
+   silence, late → drop, live-edge discipline; no Opus FEC/PLC in v1
+   (WebCodecs exposes no hook). A/V sync ("good-enough"): `avSkewMs`
+   measured always (target median ≤ 60 ms, p95 ≤ 120 ms); live-edge default
+   keeps video undelayed with a small adaptive audio jitter buffer
+   (40–150 ms, R12 controller pattern); in R12 paced modes **audio becomes
+   the master clock** for video display targets (slew-limited,
+   arrival-baseline fallback); frame interpolation unaffected by
+   construction. Non-goals: mic mixing, R14-native audio (wire types are
+   ready — follow-up there), FEC, DTX, audio-only mode.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

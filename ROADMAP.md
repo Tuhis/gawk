@@ -33,6 +33,7 @@ feature set exists).
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 📋 designed 2026-07-15 (V1–V7 + V8 direct Vulkan Video, gated), not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
+| R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
 
 ---
 
@@ -778,6 +779,66 @@ browser.
 **Status**: designed 2026-07-15 (chunks V1–V7: engine V1–V3, CLI shell V4,
 GUI V5–V6, docs V7; plus **V8 direct Vulkan Video encode**, gated on V2's
 Stage-1 result), not started.
+
+---
+
+## R15 — System audio
+
+**Goal**: viewers hear the broadcaster's game audio, in sync with the video
+to within casual tolerance, without giving up live-edge: audio drops are
+concealed as brief silence, never as growing delay. Ships as an
+**experimental, default-off** feature — an "Enable audio (experimental)"
+toggle in the broadcaster's advanced settings; the viewer surfaces audio
+controls (mute/volume, overlay Audio section) only when audio is actually
+received in the stream. Graduation to default-on is a later explicit
+decision.
+
+**Why now**: the last big missing piece of the actual watching experience —
+R6 reserved the volume-control slot and docs/15 reserved the clock story for
+it. The transport layer is finally quiet enough (R8/R10 closed the video
+failure modes) that a third media lane rides existing mechanisms.
+
+**Direction (settled 2026-07-15 after an options survey)**: **Opus via
+WebCodecs over datagrams** — chosen over Opus-over-reliable-streams
+(head-of-line stalls, new server fan-out mechanism), raw PCM datagrams
+(1.5 Mbps/viewer for nothing Opus doesn't give), and MediaRecorder+MSE
+(container latency). One Opus packet (48 kHz stereo, 128 kbps, 20 ms,
+~320 B) per datagram — no chunking, no keyframes, no reliable streams.
+
+**Scope sketch** (full design in [`docs/20-system-audio.md`](docs/20-system-audio.md)):
+
+- **Wire + relay**: new `TypeAudioFrame` (0x07, 16 B header: own seq space +
+  timestampUs on the shared broadcaster clock) and `TypeAudioConfig` (0x08),
+  golden vectors Go↔TS; hub gains two dispatch cases + a `cachedAudioConfig`
+  join-prime slot mirroring the ClockMapping lifecycle; config re-sent at
+  1 Hz (no keyframe to anchor re-emits to). Audio never touches the video
+  ingress-loss window or `framesRelayed`.
+- **Broadcaster**: parallel audio lane in `BroadcastPipeline` (audio MSTP →
+  shared-clock anchor → `AudioEncoder` → datagrams), audio processing off
+  (game audio, not voice); no-audio-track (Firefox, unchecked picker box) is
+  a graceful video-only state; worker path transfers the audio clone beside
+  the video clone. The toggle applies on the next broadcast start — the one
+  R13 live-apply exception, forced by `getDisplayMedia` (an audio track
+  can't be conjured without re-prompting).
+- **Viewer**: demux in the reassembler; `AudioDecoder` in the viewer worker;
+  decoded `AudioData` transferred to a main-thread `AudioWorklet` ring
+  buffer (`AudioContext` can't live in a worker — the first deliberate
+  decoded-media worker→main crossing); gaps → silence, late → drop,
+  live-edge discipline throughout; no Opus FEC/PLC in v1 (WebCodecs exposes
+  no hook).
+- **A/V sync ("good-enough", user decision)**: one capture clock for both
+  media makes skew a subtraction; `avSkewMs` measured always (target median
+  ≤ 60 ms, p95 ≤ 120 ms); live-edge default keeps video undelayed and bounds
+  skew via a small adaptive audio jitter buffer (40–150 ms, R12
+  controller pattern); in the R12 paced modes **audio becomes the master
+  clock** for video display targets (slew-limited, arrival-baseline
+  fallback); frame interpolation is unaffected by construction.
+
+**Non-goals**: microphone/voice mixing, multiple audio tracks, audio in the
+R14 native broadcaster (wire messages are ready; noted as an R14 follow-up),
+FEC/PLC, DTX, audio-only mode.
+
+**Status**: designed 2026-07-15 (chunks N1–N6), not started.
 
 ---
 

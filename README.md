@@ -36,10 +36,10 @@ getDisplayMedia
 
 | Path | What |
 |------|------|
-| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R6), with ordering rationale and per-item scope sketches |
+| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R15), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`16`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`20`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
@@ -124,9 +124,14 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 14. ✅ Viewer render performance (R10): rAF-coalesced latest-frame-wins rendering + a WebGL render sink behind the R8 `RenderSink` seam, a nested transport-worker split so decode/render pressure can't starve the datagram queue, decoder queue 5→10; field findings added a 1 s keyframe reorder wait and relay eviction of zombie subscribers (close code 4001) — `docs/14` (P1–P3 + fixes implemented 2026-07-14; re-verified on Chrome + Firefox 2026-07-14; P4 remainder deferred)
 15. ✅ Viewer live-edge (R5, re-scoped): a **live-edge drift** metric (windowed-min baseline over capture timestamps, zero protocol change), **absolute capture→render latency** via new `TimeSync` (0x05) / `ClockMapping` (0x06) wire messages with the relay's monotonic clock as the common reference (plus a self-owned per-leg RTT that doesn't need `getStats()`), and an **opt-in smoothed playout** mode (reorder-release pacing, +150 ms, default off, right-click toggle). The keyframe-request back-channel was rejected for good — `docs/15` (Q1–Q3 implemented 2026-07-14; Q4 measurement pass + manual browser verify passed 2026-07-15, all knobs kept — measured glass-to-glass ~50 ms with hardware encode+decode, meeting the sub-500 ms target; up to ~2500 ms on software codec paths)
 16. 🚧 Broadcaster worker offload (R11): the broadcast pipeline (MSTP capture pump, scaling/gating, encode, packetize, WebTransport send) runs in a Web Worker fed by a transferred `MediaStreamTrack` clone; `getDisplayMedia` + preview stay on main, connect-before-picker ordering and `BroadcastStartError.phase` semantics preserved, capability probe + main-thread fallback (Firefox), overlay "Pipeline" row shows placement. UI/pipeline only — zero server/wire changes — `docs/16` (implemented 2026-07-14; automated gates green, manual browser verify pending)
+17. 🚧 Viewer playback smoothing (R12): jitter measurement at the actual paint (presentation-cadence error, arrival p95−min, decode σ), a separate opt-in **"Paced playback (adaptive)"** mode (`PacedPresentationSink` holding ≤3 decoded frames to vsync-aligned targets, subsuming the R10 coalescing sink) with a jitter-tracked adaptive playout offset (clamp p95−min+34 ms to [50, 350]), and an experimental opportunistic frame-interpolation scaffold (WebGL2 blend, own default-off toggle). Viewer-only — zero server/wire changes — `docs/17` (T1–T4 implemented 2026-07-15; automated gates green, manual browser verify pending; T5 motion-estimated interpolation + T6 findings not started)
+18. 🚧 Advanced broadcaster settings (R13): `isConfigSupported` probe matrix, HW-aware auto ceiling + probe-driven 'auto' framerate default (60 when hardware probes it, else 30), acceleration tri-state, bitrate/codec overrides, probe-annotated pickers, and capture aligned to the sticky selection via live `applyConstraints` — **no settings change ever restarts the stream**. Supersedes R7; UI/pipeline only — zero server/wire changes — `docs/18` (L1–L5 implemented 2026-07-15; automated gates green, manual browser verify pending)
+19. 📋 Native Linux broadcaster (R14): a Gio GUI app + CLI over a shared Go engine (inside the `gawk-server` module, reusing `internal/wire`), publishing with hardware encode from Linux via an ffmpeg subprocess (`pipewiregrab` → `h264_vulkan` → `h264_nvenc` → `h264_vaapi` → `libx264`, per-user trial-encode probing); Vulkan Video is the target encode API with direct-in-Go encode as a gated follow-up — `docs/19` (designed 2026-07-15, not started)
+20. 📋 System audio (R15, experimental): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), new wire types 0x07/0x08 + a hub audio-config cache, viewer-worker decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock (adaptive audio jitter buffer; audio-master video pacing in the R12 paced modes). Default-off "Enable audio (experimental)" broadcaster toggle; viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, not started)
 
-What comes next (the R11 manual browser verify, R7 hardware-supported
-controls, …) is laid out in [`ROADMAP.md`](ROADMAP.md).
+What comes next (the R11/R12/R13 manual browser verifies, then the R14
+native broadcaster and R15 system audio builds) is laid out in
+[`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
 
