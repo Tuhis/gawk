@@ -60,7 +60,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   (20-byte header, big-endian); a separate DecoderConfig message carries
   codec string + AVCC extradata. Golden test vectors for the future TS mirror
   live in `wire_test.go` and `docs/02-webtransport-hello.md`. chunkCount is
-  capped at 1000 (`wire.MaxChunkCount` == `MAX_CHUNK_COUNT` in `wire.ts`).
+  capped at 3000 (`wire.MaxChunkCount` == `MAX_CHUNK_COUNT` in `wire.ts`).
 - Hardening is **implemented** (R2, see `docs/07-hardening.md`): limits on
   concurrent broadcasts (default 5), total subscribers (50), per-IP connection
   rate (3/s burst 10, loopback bypassed), and global egress bandwidth
@@ -157,9 +157,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   bitrate/codec overrides + probe-annotated pickers, L1–L5 chunks;
   implemented 2026-07-15, manual browser verify pending),
   `docs/19-linux-native-broadcaster.md` for R14 (native Linux broadcaster:
-  Gio GUI app + CLI over a shared Go engine, publishing with hardware
-  encode; Vulkan Video as the target encode API; V1–V7 chunks + V8 direct
-  Vulkan Video encode; **designed 2026-07-15, not started**),
+  Gio GUI app + CLI over a shared Go engine in a new top-level
+  `gawk-broadcast/` module, hardware-only encode via a Go-owned ScreenCast
+  portal handshake + GStreamer subprocess; Vulkan Video as the target
+  encode API; V0–V7 chunks + V8 direct Vulkan Video encode; **designed
+  2026-07-15, revised the same day after design review, not started**),
   `docs/20-system-audio.md` for R15 (system audio, **experimental,
   default-off**: Opus/WebCodecs over datagrams — one Opus packet per
   datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
@@ -458,50 +460,82 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    >1080p@>30 force-caps are removed (explicit choices honored, annotated
    instead); probe-annotated pickers (badge/disable, never remove) +
    Advanced settings panel + overlay Auto ceiling/Auto fps rows.
-19. Native Linux broadcaster — **designed 2026-07-15 (V1–V7 + V8), not
-   started** (R14, `docs/19-linux-native-broadcaster.md`). A **Gio GUI app**
+19. Native Linux broadcaster — **designed 2026-07-15, revised 2026-07-15
+   after design review (V0–V7 + V8), not started** (R14,
+   `docs/19-linux-native-broadcaster.md`). A **Gio GUI app**
    (`cmd/gawk-broadcast-gui`) + a CLI (`cmd/gawk-broadcast`) over a shared
-   engine (`internal/broadcast`), publishing with **hardware encode** from
-   Linux, because the browser structurally cannot: WebCodecs `VideoEncoder`
-   HW encode ships on Windows/macOS/Android only (Linux gets HW *decode*
-   only), Chromium's VA-API doc disclaims Linux support, and on NVIDIA it is
-   impossible in principle — Chromium's Linux encode path is VA-API only and
+   engine (`internal/engine`) in a **new top-level `gawk-broadcast/` Go
+   module**, publishing with **hardware encode** from Linux, because the
+   browser structurally cannot: WebCodecs `VideoEncoder` HW encode ships on
+   Windows/macOS/Android only (Linux gets HW *decode* only), Chromium's
+   VA-API doc disclaims Linux support, and on NVIDIA it is impossible in
+   principle — Chromium's Linux encode path is VA-API only and
    `nvidia-vaapi-driver` is decode-only by design. **Don't go flag-hunting
-   for browser HW encode on Linux; it isn't there.** Design notes worth
-   knowing before touching either end: it all lives *inside* the
-   `gawk-server` module because Go's directory-based `internal/` rule forbids
-   a separate top-level module from importing `internal/wire`, and reusing
-   `wire` unchanged (never mirroring it) is what keeps a second broadcaster
-   from rotting; the engine's `Session`/`Callbacks` deliberately mirror the TS
-   `BroadcastSessionLike`/`BroadcastCallbacks` (incl. `StartError.Phase`, so
-   Resume applies the same reclaim→mint-only-on-`connect` rule); the viewer
-   **already auto-detects Annex-B vs AVCC** (`viewer.ts:352`), so the engine
-   emits raw Annex-B with empty extradata and builds no avcC record. ffmpeg
-   subprocess: `pipewiregrab` on Wayland (the portal picker replaces
-   `getDisplayMedia`, so the GUI needs no source picker) → encoder cascade
-   `h264_vulkan` → `h264_nvenc` → `h264_vaapi` → `libx264`, **probed per user
-   at every startup by real trial encode** (R13's probe-matrix instinct one
-   layer down, incl. its advisory-only caveat) — R1 means friends publish
-   from GPUs we can't survey, so **the fallbacks are permanent, never
-   scaffolding**. **Vulkan Video (`VK_KHR_video_encode_h264`) is the target
-   encode API** (V8 = direct Vulkan in Go), because it's the only one
-   spanning RADV + ANV + NVIDIA with no asterisk. **Direct VAAPI is rejected
-   and don't re-propose it**: Chromium's Linux backend is VA-API only and
-   that is *precisely why* it can't encode on NVIDIA — building on VAAPI
-   reproduces the limitation R14 exists to escape. V8 is **gated on V2**
-   proving `h264_vulkan` works and archiving a reference bitstream to diff
-   against (no oracle ⇒ undebuggable), and V8 adds a top-of-cascade candidate
-   rather than retiring the rest. Subprocess rationale is crash isolation +
-   version tolerance, *not* "no cgo" (Gio already requires cgo — that
-   original rationale was void and the doc records the correction). Fixed
-   rung (1080p60 per R13's framerate-first rule — this engine is HW by
-   construction; 500 ms GOP); R4's `FallbackController` deliberately **not**
-   ported (its `encodeQueueSize` trigger is the one R4 found never fires on
-   HW encode). GUI: Gio (native Wayland; Wails rejected — WebKitGTK DMA-BUF
-   crashes on Wayland+NVIDIA); the window **is** the app (closing it ends the
-   broadcast), no preview, no source picker, desktop notifications as the
-   only mid-game signal. **Tray and global hotkeys deferred 2026-07-15** —
-   research kept in the doc's Deferred section; don't re-derive it. Not a
+   for browser HW encode on Linux; it isn't there.** Hardware encode is a
+   **hard requirement**: cascade `vulkanh264enc` → `nvh264enc` →
+   `vah264enc` → **refusal pointing at the browser** (no software rung —
+   software encode is the browser's job; user decision 2026-07-15), each
+   candidate accepted only by **real trial encode** (`videotestsrc`, never
+   the portal; last-good cached; the live start is the final probe — R13's
+   probe-matrix instinct one layer down, incl. its advisory-only caveat).
+   Design notes worth knowing before touching either end: **V0 promotes
+   `internal/wire` to a public `gawk-server/wire`** so the new module can
+   import it (the original same-module plan coupled relay CI to Gio's cgo
+   headers and made broadcaster commits auto-redeploy the relay; instead:
+   own release-please component `gawk-broadcast-vX.Y.Z` + own CI job with
+   the Gio deps), and reusing `wire` unchanged (never mirroring it) is what
+   keeps a second broadcaster from rotting; the engine's
+   `Session`/`Callbacks` mirror the TS
+   `BroadcastSessionLike`/`BroadcastCallbacks` (incl. `StartError.Phase` —
+   Resume applies the same reclaim→mint-only-on-`connect` rule — plus the
+   HTTP status, which webtransport-go exposes and the browser's opaque
+   `WebTransportError` can't); the viewer **already auto-detects Annex-B vs
+   AVCC** (the `isAnnexB` sniff in `viewer.ts`), so the engine emits raw
+   Annex-B with empty extradata and builds no avcC record. **Capture:
+   Go-owned XDG ScreenCast portal handshake** (`godbus`, **restore token —
+   pick the screen once, ever**; cursor embedded; works on X11 GNOME too,
+   gate on the portal not on Wayland) **feeding a GStreamer subprocess**
+   (`pipewiresrc fd=…` → encoder → `h264parse config-interval=-1` →
+   `mpegtsmux` → stdout pipe; one PES = one AU, in-band SPS/PPS at every
+   IDR — load-bearing because the DecoderConfig extradata is empty).
+   **`pipewiregrab` was rejected 2026-07-15: it is NOT in mainline FFmpeg**
+   (an unmerged patchset carried downstream by Jami; mainline ffmpeg has no
+   PipeWire input at all) — don't re-propose it without verifying it
+   actually merged; ffmpeg's one remaining role is generating V8's
+   reference bitstream **offline** with mainline `h264_vulkan` (≥7.1) from
+   a committed y4m fixture. **Vulkan Video (`VK_KHR_video_encode_h264`) is
+   the target encode API** (V8 = direct Vulkan in Go), the only one
+   spanning RADV + ANV + NVIDIA with no asterisk. **Direct VAAPI is
+   rejected and don't re-propose it**: Chromium's Linux backend is VA-API
+   only and that is *precisely why* it can't encode on NVIDIA — building on
+   VAAPI reproduces the limitation R14 exists to escape. V8 is **gated on
+   V2's Stage-1 Vulkan result**, its differential oracle criteria are
+   decode-clean + PSNR-within-ε-of-reference + structural sanity (byte or
+   frame identity is unachievable even for a perfect implementation), and
+   it adds a top-of-cascade candidate rather than retiring the rest.
+   Subprocess rationale is crash isolation + version tolerance, *not* "no
+   cgo" (Gio already requires cgo). Fixed rung **1080p60** (coherent now
+   the engine is hardware-only by construction; 500 ms GOP); `SetLadder`
+   cut from the v1 surface (restarts are picker-free thanks to the restore
+   token, so a rung change is cheaply addable later); R4's
+   `FallbackController` deliberately **not** ported (its `encodeQueueSize`
+   trigger is the one R4 found never fires on HW encode). **Encoder
+   invariants are acceptance criteria**: no B-frames (decode order ==
+   presentation order is a protocol assumption), ≤1-frame encoder-internal
+   latency per candidate, drop-only fps gating (never CFR-converting
+   damage-driven capture); **uplink policy**: ≤1 in-flight keyframe stream
+   with supersede, drop-frame-remainder on datagram send failure, MTU
+   re-chunk on `DatagramTooLargeError`. GUI: Gio (native Wayland; Wails
+   rejected — WebKitGTK DMA-BUF crashes on Wayland+NVIDIA); the window
+   **is** the app (closing it ends the broadcast), no preview, no source
+   picker; **notifications via `godbus` with critical urgency for
+   failures** — KDE's portal **inhibits normal notifications while screen
+   casting**, so only critical-urgency ones reach a fullscreen broadcaster;
+   **no viewer count / "first viewer joined"** (nothing on the wire tells a
+   publisher about subscribers — browser parity; a `SubscriberCount`
+   message is a possible future wire+relay change, not an R14 smuggle-in).
+   **Tray and global hotkeys deferred 2026-07-15** — research kept in the
+   doc's Deferred section; don't re-derive it. Not a
    container/chart/CI-deploy component — binaries you run on your own PC.
 20. System audio — **designed 2026-07-15 (N1–N6), not started** (R15,
    `docs/20-system-audio.md`). **Experimental, default-off**: an "Enable

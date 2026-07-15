@@ -1,25 +1,63 @@
 # R14 — Native Linux broadcaster (`gawk-broadcast`)
 
-**Status**: design only, not started (chunks V1–V7, plus **V8 direct Vulkan
-Video encode**, gated on V2). Doc-only pickup — each chunk lands later as its
-own task.
+**Status**: design revised 2026-07-15 (post-review), not started (chunks
+V0–V7, plus **V8 direct Vulkan Video encode**, gated on V2). Doc-only pickup —
+each chunk lands later as its own task.
+
+**Revision note (2026-07-15, recorded rather than quietly edited).** The
+original same-day design was reviewed against the codebase and the outside
+world before any chunk started, and three findings forced a re-plan:
+
+1. **`pipewiregrab` is not in mainline FFmpeg — at all.** It is an unmerged
+   2023–2024 patchset (Savoir-faire Linux; RFC as a libavdevice input, v1/v2
+   as a lavfi source) that ships only as a downstream patch in their Jami
+   project. It is absent from FFmpeg's filter docs and from master's
+   `libavfilter/allfilters.c`; there is no `--enable-libpipewire` configure
+   option in any release. The original doc called it "an ffmpeg ≥7.1 lavfi
+   source filter" and built the whole capture path on it — that would have
+   meant every broadcaster (us **and every friend**, per Decision 4's own
+   premise) building a patched ffmpeg from source. The capture vehicle is now
+   **GStreamer as a subprocess** with a **Go-owned portal handshake**
+   (Decisions 3 and 5). Do not re-propose pipewiregrab without first checking
+   that it actually merged.
+2. **Hardware encode is a must-have; software encode is out** (user decision
+   2026-07-15). `libx264` is removed from the cascade: a machine with no
+   working hardware encoder is refused with a message pointing at the browser
+   broadcaster, which already covers the software case fine. This also
+   dissolves a contradiction the review found — "1080p60 because this engine
+   is hardware-by-construction" vs. "libx264 is a permanent fallback". It is
+   now actually hardware-by-construction.
+3. **Viewer count and the "first viewer joined" notification were
+   unimplementable as designed** — no wire message tells a publisher anything
+   about subscribers, the browser broadcaster doesn't know its viewer count
+   either, and `/statusz` is ops-only (cluster-internal listener, HMAC-keyed
+   IDs). Both are dropped (Decision 18).
+
+Two further decisions were made with the user the same day: the broadcaster
+moves to its **own top-level Go module** with `wire` promoted to a public
+package (Decision 1 — the original same-module plan silently coupled relay CI
+and relay releases/deploys to broadcaster work), and the encoder cascade is
+**Vulkan-first** (Decision 4, faithful to Decision 21's target-API staging).
 
 ## Goal
 
 A standalone native broadcaster for Linux with **hardware encode**, bypassing
 the browser entirely: a Gio **GUI app** for normal use, plus a CLI over the
-same engine for headless/debug use.
+same engine for headless/debug use. Easy to use, minimal dependencies — every
+runtime dependency is a stock distro package, nothing is built from source,
+and you pick your screen **once, ever** (the portal's restore token survives
+across sessions).
 
 ```
 gawk-broadcast-gui                     # the app you actually use
-gawk-broadcast -url … -resolution 1080p -fps 30   # same engine, headless
+gawk-broadcast -url … -fps 60          # same engine, headless
 → Broadcast code: K7M2QP   join: https://gawk.example/#/view/K7M2QP
 ```
 
 It speaks the existing publisher protocol byte-for-byte. Zero server changes,
 zero wire changes, zero viewer changes. The browser broadcaster stays exactly
-as it is and remains the path for Windows/macOS and for anyone who doesn't
-want to install anything.
+as it is and remains the path for Windows/macOS, for Linux machines without a
+usable hardware encoder, and for anyone who doesn't want to install anything.
 
 ## Why: the browser path cannot do hardware encode on Linux
 
@@ -51,50 +89,62 @@ precisely so nobody re-litigates it with a flag hunt:
 
 Going native also sheds three problems we already know about, for free: the
 process-level backgrounding caveat recorded in R11, the `getDisplayMedia`
-picker, and R4's field finding that observed low fps was 4K-capture-source
+picker (replaced by the portal, now with a restore token the browser can't
+have), and R4's field finding that observed low fps was 4K-capture-source
 limited.
 
 ## Why this is much cheaper than "write a second broadcaster" sounds
 
 Most of it already exists, in Go:
 
-- **`gawk-server/internal/wire` is the canonical frozen implementation with
-  golden vectors.** The engine *reuses* it rather than becoming a third
-  parallel implementation (after Go + `wire.ts`). Protocol drift risk is zero
-  by construction — this is the single biggest reason to write this in Go
-  rather than Rust or C.
+- **`gawk-server`'s `wire` package is the canonical frozen implementation
+  with golden vectors.** The engine *reuses* it rather than becoming a third
+  parallel implementation (after Go + `wire.ts`). V0 promotes it from
+  `internal/wire` to a public `gawk-server/wire` package so the broadcaster
+  module can import it; the golden vectors and the compile-time coupling are
+  what keep a second broadcaster from silently rotting (Decision 11). This is
+  the single biggest reason to write this in Go rather than Rust or C.
 - **`webtransport-go` is already a dependency** and its `Dialer`/`Session`
   expose precisely the publisher's needs: `SendDatagram` (deltas, TimeSync),
   `OpenUniStream` (keyframes), `AcceptUniStream` (the announce), and
-  `ReceiveDatagram` (TimeSync pongs).
-- **The viewer already auto-detects Annex-B vs AVCC** (`viewer.ts:352-361`:
-  Annex-B start code sniffed on the frame data itself, `description` only
-  attached when the payload isn't Annex-B *and* extradata starts with `0x01`).
-  So the engine emits raw Annex-B with **empty extradata** and never
-  constructs an `AVCDecoderConfigurationRecord`. That removes the nastiest
-  interop risk in the whole idea before it exists — and note the
-  `normalizeAvccExtradata` scrubber in `viewer.ts` becomes dead weight on this
-  path, not a dependency.
+  `ReceiveDatagram` (TimeSync pongs). Better: unlike the browser's opaque
+  `WebTransportError`, the dial returns the `*http.Response` — the engine can
+  distinguish 401 (bad secret) / 404 (unknown ID) / 409 (publisher exists) /
+  429 (limit) and say so (Decision 10).
+- **The viewer already auto-detects Annex-B vs AVCC** (the `isAnnexB`
+  start-code sniff where the pending config is applied in `viewer.ts` —
+  `description` is only attached when the payload isn't Annex-B *and* the
+  extradata starts with `0x01`; cite the behavior, not a line number — the
+  original doc's `:352` had already drifted by review time). So the engine
+  emits raw Annex-B with **empty extradata** and never constructs an
+  `AVCDecoderConfigurationRecord` — verified: `ParseDecoderConfig` accepts
+  empty extradata server-side, and the empty-extradata path routes the viewer
+  into its Annex-B branch. That removes the nastiest interop risk in the
+  whole idea before it exists.
 - **A native client trusts the homelab CA directly**, so the
   `serverCertificateHashes` 14-day certificate dance doesn't apply.
 
-The publisher protocol surface is five message types.
+The publisher protocol surface is five message types sent (VideoChunk,
+DecoderConfig, StreamFrame, TimeSync, ClockMapping) plus two received
+(BroadcastAnnounce on a server-initiated uni stream, TimeSync pongs as
+datagrams).
 
 ## What this does and does not buy (be honest)
 
 - **Does**: hardware encode on Linux at all (the browser cannot); removes
-  capture→encode from the renderer process; lets the desktop's own portal
-  picker replace `getDisplayMedia`; a broadcaster that survives having no
-  browser open.
+  capture→encode from the renderer process; replaces `getDisplayMedia` with
+  the desktop's own portal picker *plus* a restore token (pick once, ever); a
+  broadcaster that survives having no browser open.
 - **Does not**: help Windows/macOS broadcasters (already fine), improve the
-  viewer, or change end-to-end latency by itself — the win is *available
-  encode capacity and game fps on the broadcasting machine*, not a shorter
-  glass-to-glass path. The g2g budget is unchanged.
-- **Costs**: a second broadcaster implementation to keep protocol-current.
-  Decision 1 bounds that cost; Decision 11 makes it a maintenance rule rather
-  than a hope.
+  viewer, serve machines without hardware encoders (that's the browser's
+  job now, by decision), or change end-to-end latency by itself — the win is
+  *available encode capacity and game fps on the broadcasting machine*, not a
+  shorter glass-to-glass path. The g2g budget is unchanged.
+- **Costs**: a second broadcaster implementation to keep protocol-current
+  (Decisions 1 and 11 bound that cost), plus V0's one-time module/package
+  churn.
 
-## Shape: one engine, two shells
+## Shape: one engine, two shells, own module
 
 The GUI requirement is not a layer on top of the CLI — it determines the
 engine's shape. A `main` with flags and package globals would have to be
@@ -102,16 +152,22 @@ dismantled to grow a window, so the engine is a **package** from V1 and the
 CLI is its first shell, not its home:
 
 ```
-internal/broadcast          engine: Session{Start,Stop,SetLadder} + Callbacks
-  ├─ cmd/gawk-broadcast     CLI shell    — headless, harness, debug
-  └─ cmd/gawk-broadcast-gui GUI shell    — Gio window + notifications
+gawk-broadcast/                        top-level Go module (V0)
+  internal/engine    Session{Start,Stop} + Callbacks + StartError{Phase,Status}
+  internal/portal    XDG ScreenCast handshake (godbus) + restore token
+  internal/gst       subprocess supervision + pipeline construction + cascade
+  internal/mpegts    TS/PES demux → one AU per PES (V3)
+  cmd/gawk-broadcast     CLI shell — headless, harness, debug
+  cmd/gawk-broadcast-gui GUI shell — Gio window + notifications
 ```
 
 `Session` deliberately mirrors the TypeScript `BroadcastSessionLike`
-(`start`/`stop`/`setLadder`) and `BroadcastCallbacks`
+(`start`/`stop`) and `BroadcastCallbacks`
 (`onBroadcastId`/`onStats`/`onError`/`onEnded`) from `transport/broadcaster.ts`.
 Same idea, same names, other language: the two broadcasters stay legible to
-each other, which is what makes a second implementation survivable.
+each other, which is what makes a second implementation survivable. (The TS
+surface also carries `setLadder`/`setEncoderSettings`; the engine deliberately
+does not — Decision 9.)
 
 The CLI is **not** scaffolding to be discarded. It proves the engine
 end-to-end before any window exists (V4 gates the whole protocol and the
@@ -120,136 +176,247 @@ frozen `#/debug/broadcast` page next to the production UI.
 
 ## Locked decisions
 
-1. **Lives at `gawk-server/`, same Go module.** Go's `internal/` rule is
-   directory-based: a separate top-level module (`gawk-broadcaster/`) at
-   `github.com/Tuhis/gawk/gawk-broadcaster` could **not** import
-   `github.com/Tuhis/gawk/gawk-server/internal/wire` — only the tree rooted at
-   `gawk-server/` may. Reusing `wire` unchanged is the whole point
-   (Decision 11), so the engine (`internal/broadcast`) and both shells
-   (`cmd/gawk-broadcast`, `cmd/gawk-broadcast-gui`) live in that tree,
-   alongside the existing `cmd/gawk-devcert` and `cmd/gawk-echo` binaries. If
-   it ever needs to ship independently, the escape hatch is to promote `wire`
-   to a public `gawk-server/wire` package (or a shared `gawk-wire` module) —
-   deliberately deferred, since it churns the frozen package's import path
-   everywhere for no present benefit.
+1. **Own top-level module (`gawk-broadcast/`); `wire` promoted to public.**
+   *Revised 2026-07-15; the original decision put everything inside the
+   `gawk-server` module, and the review found two hidden costs it never
+   priced in.* (a) CI runs `go vet ./...` + `go test -race ./...` over the
+   gawk-server module — the moment a `cmd/` imports Gio, the **relay's** CI
+   needs gcc + Wayland/X11/EGL/Vulkan headers or fails to build. (b)
+   release-please maps everything under `gawk-server/` to the relay's release
+   unit (chart == appVersion == image tag, with automated cluster-side
+   deploy-on-release) — a GUI-only commit would bump the relay's version,
+   rebuild its image and **redeploy the relay to the homelab**. So: V0
+   promotes `internal/wire` → **`gawk-server/wire`** (public within the
+   module; it may keep importing `internal/broadcastid` — the `internal` rule
+   restricts importers by path prefix, and `gawk-server/wire` qualifies;
+   nothing else needs promoting), and the broadcaster lives at
+   **`gawk-broadcast/`** (module `github.com/Tuhis/gawk/gawk-broadcast`),
+   depending on the gawk-server module via a local `replace`. Own
+   release-please component (`gawk-broadcast-vX.Y.Z` tags in the one combined
+   release PR), own CI job (which installs the Gio headers), and the relay's
+   CI, image and deploys become permanently immune to broadcaster work. The
+   cost is a one-time mechanical import rewrite plus doc sync — the "escape
+   hatch" the original doc deferred, now taken deliberately because the
+   benefit stopped being hypothetical.
 2. **No container image, no Helm chart, no CI deploy.** These are binaries you
    run on your own gaming PC — `go build ./cmd/...`. Explicitly outside the
    "chart version == appVersion == image tag" model, which exists for
-   cluster-side components. Attaching prebuilt binaries to the
-   `gawk-server-vX.Y.Z` release is a possible later convenience, not part of
-   R14.
-3. **The media stack is delegated to an ffmpeg subprocess for V1–V7; direct
-   encode is V8 (Decision 18).** The honest reasons are **crash isolation** —
-   we are heading into flaky NVIDIA-on-Wayland driver territory, and when
-   ffmpeg segfaults there a dying child process is a notification, whereas an
-   in-process libav segfault takes the GUI down with it — and **version
-   tolerance** (any ffmpeg carrying the right features, versus `go-astiav`'s
-   hard pin to n8.0, which in practice means vendoring ffmpeg).
-   **Correction, recorded rather than quietly edited**: this decision
-   originally rested on "needs no cgo toolchain", which is **void** —
-   Decision 12 (Gio) already requires gcc, pkg-config and the
-   Wayland/xkb/EGL/GLES/Vulkan headers. The two decisions were made
-   independently and the conflict went unnoticed for a day; the cgo tax is
-   paid regardless, so it can no longer buy anything here.
-   **Also note**: ffmpeg's `pipewiregrab` does its own portal handshake and
-   offers no way to pass one in, so the subprocess forecloses the
-   "own-the-portal" option in Decision 19. **Rejected**: `go-astiav` (the pin,
-   plus it forfeits crash isolation — reconsider only if Decision 6's
-   timestamp bias fails its gate); GStreamer + `go-gst` (heavier, and reports
-   exist of `pipewiresrc` capture stopping seconds after an app goes
-   fullscreen — our exact use case, so it would need disproving first).
-4. **Vendor-agnostic encode via a cascade probed per user, at every startup.**
-   Ordered preference **`h264_vulkan`** → `h264_nvenc` → `h264_vaapi` →
-   `libx264`, each **verified by a real short trial encode**, not by
-   `ffmpeg -encoders` (which happily lists encoders that fail at runtime on
-   the actual device). `h264_vulkan` leads because Vulkan Video is the target
-   API (Decision 17) and this is how it gets proven on real hardware for the
-   price of one line. This is the native-side cousin of **R13's probe matrix**
-   (`media/probe.ts`), one layer down — and it inherits R13's caveat, which is
-   the reason it trusts a trial encode over `ffmpeg -encoders`: R13 found
-   `isConfigSupported`'s hardware answer is *advisory only*, and runtime
-   `configure()` wins. That is the project's standing `getSettings()` rule in
-   another costume: *trust the thing actually in hand, not the metadata that
-   describes it*. The chosen encoder is reported at startup, in stats, and in
-   the GUI.
+   cluster-side components. The gawk-broadcast release-please component exists
+   for versioning/changelog only; attaching prebuilt binaries to its releases
+   is a possible later convenience, not part of R14.
+3. **The media stack is a GStreamer subprocess (`gst-launch-1.0`) for V1–V7;
+   direct encode is V8.** *Revised 2026-07-15 — the original vehicle was an
+   ffmpeg subprocess around `pipewiregrab`, which does not exist in any
+   mainline or distro ffmpeg (see the revision note); mainline ffmpeg has no
+   PipeWire input at all.* The honest reasons for a subprocess are unchanged
+   and carry over intact: **crash isolation** — we are heading into flaky
+   NVIDIA-on-Wayland driver territory, and a dying child process is a
+   notification, whereas an in-process crash takes the GUI down with it — and
+   **version tolerance** (any distro GStreamer ≥1.24 works; the elements are
+   resolved at runtime). Every piece is a stock package: `gstreamer1.0-tools`
+   (the `gst-launch-1.0` binary), `gstreamer1.0-pipewire` (`pipewiresrc`,
+   shipped by the PipeWire project itself — it is how desktops already do
+   screencast), `gstreamer1.0-plugins-base/-good/-bad` (the encoders; the
+   `nvcodec` plugin `dlopen`s the NVIDIA driver's encode library at runtime,
+   so distro packages suffice on NVIDIA too). ffmpeg keeps exactly one role:
+   **offline generation of V8's reference bitstream** with mainline
+   `h264_vulkan` (FFmpeg ≥7.1, an LTS release — verified) from a committed
+   y4m fixture, which needs no capture and therefore no patches.
+   **Rejected**: `go-gst` / in-process GStreamer (forfeits crash isolation,
+   heavy cgo API); ffmpeg-as-runtime-vehicle (no PipeWire input in mainline);
+   `go-astiav` (hard pin to n8.0, in-process). The earlier report of
+   `pipewiresrc` capture stopping when an app goes fullscreen must be
+   re-tested first-hand in V2 — but note that failure class lives in the
+   compositor/portal stream, which *any* consumer (pipewiregrab included)
+   would have hit identically; it was never a differentiator between tools.
+4. **Hardware-only encode via a cascade probed per user, at every startup —
+   Vulkan first.** Ordered preference **`vulkanh264enc`** → `nvh264enc` →
+   `vah264enc` → **refusal**, each accepted only after a **real trial
+   encode**, not by element availability (`gst-inspect-1.0` happily lists
+   elements that fail at runtime on the actual device). Vulkan leads by user
+   decision (2026-07-15), faithful to Decision 21: the target API gets
+   exercised on every capable machine from day one. **`libx264`/software is
+   gone** (user decision 2026-07-15): hardware encode is the entire reason
+   this app exists, and the browser broadcaster already serves the software
+   case — a machine where no candidate passes is refused with a sentence
+   pointing there, not degraded. Trial mechanics, specified because the review
+   found them underspecified: trials encode **`videotestsrc`** (never the
+   portal — probing must not pop share dialogs); the last-good encoder is
+   cached in the config file and re-verified first at startup (full cascade
+   only on its failure or first run — still runtime-truth, without four
+   serial probes before every session); and a `videotestsrc` trial cannot
+   prove the *real* path's dmabuf import, so **the live pipeline start is the
+   final probe** — on live failure the cascade advances and retries, which
+   re-uses the already-granted portal session (Decision 5's restore token),
+   so retries cost seconds, not share dialogs. This is the native-side cousin
+   of **R13's probe matrix**, one layer down, and it inherits R13's caveat —
+   the probe's answer is advisory, runtime wins — which is the project's
+   standing `getSettings()` rule in another costume: *trust the thing
+   actually in hand, not the metadata that describes it*. The chosen encoder
+   is reported at startup, in stats, and in the GUI.
    **This is a per-user runtime decision, not a design-time one.** R1 made
-   gawk multi-broadcaster: several friends broadcast from their own machines,
-   on GPUs we do not know and cannot survey. So there is no such thing as
-   "the" encoder for this project — the cascade must resolve independently on
-   each broadcaster's hardware, every run, and **the fallbacks are permanent
-   infrastructure, not scaffolding on the way to Vulkan** (Decision 17). A
-   broadcaster whose GPU has no Vulkan Video encode must still get hardware
-   encode via NVENC or VAAPI, and one with neither must still broadcast on
-   `libx264`. Carrying every backend *is* what makes this design
-   vendor-neutral today — not one universal API, but the whole set, for free.
-5. **Wayland via `pipewiregrab`; the desktop portal is the picker.**
-   `pipewiregrab` is an ffmpeg ≥7.1 libavfilter source filter that does the
-   XDG ScreenCast portal handshake itself and supports dmabuf sharing —
-   `-f lavfi -i pipewiregrab`. The user gets their own desktop's share picker,
-   which is a strictly nicer story than `getDisplayMedia`, and it means
-   **the GUI needs no source picker of its own**. **X11 is not a target**
-   (kmsgrab and NvFBC are noted in V7 as escape hatches; `x11grab` does a CPU
-   readback per frame and is a non-starter at 4K).
+   gawk multi-broadcaster: friends broadcast from GPUs we do not know and
+   cannot survey. The three hardware backends are **permanent
+   infrastructure**, not scaffolding on the way to V8 — and the floor under
+   them is the browser broadcaster, not a software rung here.
+5. **Capture = Go-owned XDG ScreenCast portal handshake + `pipewiresrc`.**
+   *Revised 2026-07-15.* The original design had `pipewiregrab` do the portal
+   dance and recorded "owning the portal" as a deferred future option
+   (old Decision 19) that "does not compose with ffmpeg". Both halves are now
+   void: the vehicle changed, and `pipewiresrc` **requires** someone else to
+   do the portal handshake (screen content is only reachable through a
+   portal-granted PipeWire fd). So the engine does it: ~250 lines of pure Go
+   over `godbus` — `CreateSession` → `SelectSources` (cursor mode
+   **embedded**, so the pointer is visible like the browser path;
+   `persist_mode` persistent) → `Start` → collect the stream node id and
+   **`restore_token`** → `OpenPipeWireRemote` → fd, passed to the child via
+   `ExtraFiles` (`pipewiresrc fd=3 target-object=<node>`). The deferral's
+   prize arrives with the obligation: the token is persisted (Decision 19),
+   so **no re-picking your screen every session** — Start, Resume, cascade
+   retries and future encoder restarts all reuse the grant. The user still
+   gets their own desktop's share picker on first run (KDE, GNOME — we don't
+   draw it, we don't theme it), which is why **the GUI needs no source picker
+   of its own**. Portal version is feature-detected: ScreenCast v4 is needed
+   for restore tokens; older portals degrade to picking each session
+   (browser parity), never to failure. **Do not hard-gate on Wayland**: the
+   portal also works on X11 GNOME sessions — gate on the portal call
+   succeeding and let the error message name the portal when it doesn't.
+   (kmsgrab and gpu-screen-recorder remain V7 escape hatches; `x11grab` does
+   a CPU readback per frame and is a non-starter at 4K.)
 6. **Frame timestamps are stamped on arrival from the pipe, with a measured
-   bias gate.** Raw Annex-B over a pipe carries no PTS. Stamping when an
-   access unit is fully read biases R5's absolute capture→render latency
-   *low* by (capture + encode) latency — a roughly constant few ms against a
-   ~200-400 ms budget, but a silent under-report is exactly the kind of lie
-   the stats overlay must not tell. So: **V4 measures the bias, and if it
-   exceeds 15 ms or proves non-constant, the fix is to mux `-f mpegts` and
-   parse PES PTS** (which also yields AU framing free via
-   `payload_unit_start_indicator`, retiring Decision 7's AUD trick). The gate
-   is an acceptance criterion, not a footnote.
-7. **AU framing via inserted access-unit delimiters.** A pipe destroys
-   libavcodec's packet boundaries, so the engine must re-find them:
-   `-bsf:v h264_metadata=aud=insert`, then split at each AUD (NAL type 9).
-   Keyframe classification is NAL type 5 (IDR) present in the AU → reliable
-   uni stream; otherwise → datagrams. SPS/PPS ride in-band before each IDR
-   (the raw `h264` muxer sets no global header), which is exactly what the R8
-   embedded-config design wants: self-sufficient keyframes.
+   bias gate.** Stamping when an access unit is fully read biases R5's
+   absolute capture→render latency *low* by (capture + encode + mux)
+   latency. With the software encoder gone this is a genuinely small, roughly
+   constant number — the review found the original claim was only true
+   per-encoder (x264's default 40-frame lookahead alone is ~1.3 s at 30 fps),
+   which is why Decision 13's invariants table now pins every candidate to
+   ≤1 frame of internal latency, verified in its trial. The gate stands:
+   **V4 measures the bias against a physical reference, and if it exceeds
+   15 ms or proves non-constant, the fix is to anchor the MPEG-TS PES PTS**
+   (already parsed for framing, Decision 7) **to the shared monotonic
+   clock**. Note precisely: unanchored PTS only *stabilizes* the bias (it
+   reveals inter-frame pacing, not the pipeline's constant floor); removing
+   it requires capture-time stamps carried through on CLOCK_MONOTONIC —
+   which Go's `time.Since` base shares on Linux — so the mpegts fallback is
+   specified as *clock-anchored* PTS, not PTS alone. Frame timestamps and
+   the TimeSync `t0` must read the **same monotonic clock** or
+   `ClockMapping` publishes a mapping between two unrelated timelines and
+   the viewer's absolute latency is nonsense.
+7. **AU framing via MPEG-TS over the pipe.** *Revised 2026-07-15; the
+   original design pushed raw Annex-B through the pipe and re-found frame
+   boundaries with inserted AUDs, then listed "-f mpegts" as the fallback if
+   Decision 6's gate failed — i.e., risked building two framing layers.* The
+   pipe now carries **MPEG-TS** (`h264parse config-interval=-1 ! mpegtsmux !
+   fdsink`): `payload_unit_start_indicator` gives AU boundaries structurally
+   (one PES = one access unit), PES PTS comes along free (Decision 6's
+   upgrade path), and `h264parse config-interval=-1` **guarantees SPS/PPS
+   in-band before every IDR** — which is load-bearing, not cosmetic: on this
+   path the DecoderConfig extradata is empty, so a late joiner primed with
+   the relay's cached keyframe can only decode if the parameter sets travel
+   inside the keyframe AU itself. The original design left that property to
+   per-encoder header-repeat conventions; now the parser enforces it
+   structurally, and V3 asserts it over a fixture. Keyframe classification is
+   unchanged in spirit: an AU containing an IDR slice (NAL type 5) → reliable
+   uni stream; otherwise → datagrams. The Go-side demux (`internal/mpegts`)
+   is deliberately minimal: 188-byte packets, PAT/PMT once, single video PID,
+   PUSI-delimited PES with the video-stream `PES_packet_length = 0`
+   convention, AU accumulation bounded by `wire.MaxKeyframeBytes` — a few
+   hundred lines against recorded fixtures, replacing the raw-splitter's
+   adversarial start-code scanning.
 8. **The codec string is parsed from the SPS, never assumed.** `avc1.` +
    hex(profile_idc, constraint_flags, level_idc) read out of the first SPS
    NAL, because the encoder may pick a different level than requested. ~20
-   lines. On the Annex-B path the viewer uses this string as-is (its
-   extradata-derived correction only runs for AVCC), so it is the *only*
-   thing telling the decoder what it's getting — worth getting right.
-9. **No ladder, no auto-fallback in v1.** Resolution/fps/bitrate are fixed for
-   a session; scaling and fps gating happen in the ffmpeg filter graph (in
-   hardware), not in a port of `preprocess.ts`. R4's `FallbackController` is
+   lines; the three bytes sit immediately after the NAL header, before any
+   position an emulation-prevention byte can legally occupy, so a raw read is
+   safe (leave that as a comment in the parser). On the Annex-B path the
+   viewer uses this string as-is (its extradata-derived correction only runs
+   for AVCC), so it is the *only* thing telling the decoder what it's
+   getting — worth getting right.
+9. **No ladder, no auto-fallback, no mid-session rung changes in v1.**
+   Resolution/fps/bitrate are fixed for a session; scaling and fps limiting
+   happen in the GStreamer graph (in hardware). R4's `FallbackController` is
    deliberately **not** ported: its trigger is `encodeQueueSize` growth, and
    R4's own hardware finding (2026-07-13) was that HW encoders drain frames
-   without that signal ever firing — porting it would carry the complexity and
-   reproduce the under-fire. Defaults: **1080p60**, **500 ms GOP** (item 11's
-   `keyframeIntervalMs`). Note the fps default tracks **R13**, not item 11:
-   R13 consciously revised the fixed-30 fan-out cap to an 'auto' framerate
-   resolving framerate-first (60 where a rung probes hardware, else 30). This
-   engine is hardware-encode by construction — that is its entire reason to
-   exist — so it lands on the 60 side of R13's rule, and 30 stays one flag
-   away. `SetLadder` exists on the engine surface for symmetry but restarts
-   ffmpeg; the GUI disables it while live.
-10. **No auto-reconnect; reclaim is one click.** This matches the browser
-    broadcaster exactly — `BroadcasterScreen` doesn't auto-reconnect either
-    (only the viewer does, via `ViewerSession`). The GUI remembers the last
-    code and offers **Resume broadcast**, which dials `/publish/{id}`; on
-    failure it applies the existing rule — **fall back to minting only when
-    `phase == 'connect'`** — so the Go engine's start error carries the same
-    `phase` distinction (`connect` vs `capture`) for the same reason: a
-    capture-phase failure had a live publisher session and must not silently
-    move to a different broadcast ID.
+   without that signal ever firing — porting it would carry the complexity
+   and reproduce the under-fire. Defaults: **1080p60**, **500 ms GOP** (item
+   11's `keyframeIntervalMs`). The fps default tracks **R13**, not item 11:
+   R13's 'auto' framerate resolves framerate-first — 60 where hardware is
+   confirmed — and with the software path removed (Decision 4) this engine
+   is hardware-encode by construction, so 1080p60 is now *coherent* rather
+   than aspirational; 30 stays one flag away. **`SetLadder` is cut from the
+   engine surface entirely** (*revised*: the original kept it "for symmetry"
+   with the GUI disabling it while live — a dead-code footgun, since a rung
+   change means restarting the child and the original design's restart
+   re-ran the portal picker). With Decision 5's restore token a restart is a
+   ~1 s hiccup with **no** dialog, so a restart-based `SetRung` is cheaply
+   addable later — as its own task, with frameId continuity and config
+   re-emit specified. Not v1.
+10. **No auto-reconnect; reclaim is one click, and errors carry the HTTP
+    status.** This matches the browser broadcaster exactly —
+    `BroadcasterScreen` doesn't auto-reconnect either (only the viewer does,
+    via `ViewerSession`). The GUI remembers the last code and offers
+    **Resume broadcast** (which, per Decision 5, no longer re-prompts the
+    picker), dialing `/publish/{id}`; on failure it applies the existing
+    rule — **fall back to minting only when `phase == 'connect'`** — so the
+    engine's `StartError` carries the same `Phase` distinction (`connect` vs
+    `capture`): a capture-phase failure had a live publisher session and must
+    not silently move to a different broadcast ID. Additionally — a genuine
+    advantage over the browser, where `WebTransportError` hides the HTTP
+    status — `webtransport-go`'s dial returns the `*http.Response`, so
+    `StartError` also carries the status and the shells can say *"wrong
+    secret" (401)*, *"broadcast not found" (404)*, *"someone is already
+    publishing" (409)*, *"relay is full" (429)* instead of guessing. The
+    announce read is bounded (the message is ≤258 bytes; cap the read and
+    set a deadline) so a misbehaving relay cannot hang `Start`.
 11. **The wire package is reused, never mirrored, and the engine is bound to
     the protocol by the same golden vectors.** No hand-copied constants, no
-    re-derived header layouts. Any wire change breaks the engine's compilation
-    or its tests, which is the point: this is the mechanism that keeps a second
-    broadcaster from silently rotting.
+    re-derived header layouts. The module split (Decision 1) does not weaken
+    this: the local `replace` directive means any wire change still breaks
+    the engine's compilation or its golden-vector tests immediately — which
+    is the point; this is the mechanism that keeps a second broadcaster from
+    silently rotting.
+12. **Uplink backpressure has a stated policy** (*new 2026-07-15; the review
+    found none, and friends broadcast over home uplinks where saturation is a
+    normal condition, not an edge case*). Datagrams: pin down quic-go's
+    `SendDatagram` semantics in V3 (queue-full and `DatagramTooLargeError`
+    are different failures); on a mid-frame send failure, **drop the rest of
+    that frame's chunks** — a partial frame is dead weight the viewer's
+    reassembler will discard anyway — and count it
+    (`framesDroppedAtSend`). On `DatagramTooLargeError`, lower the chunk
+    size to the reported `MaxDatagramPayloadSize` and re-chunk (the Go-side
+    analogue of `docs/11`'s Firefox path-MTU fix — do not assume 1200 is
+    reachable). Keyframe uni streams: **≤1 in flight**; if a new keyframe is
+    ready while the previous stream is still writing, `CancelWrite` the old
+    one and send the new — the relay's own supersede discipline, applied at
+    the source. (The browser fire-and-forgets its keyframe streams with no
+    bound — a known-weak spot we do not reproduce in fresh code; a stalled
+    uplink with a 500 ms GOP would otherwise accumulate open streams toward
+    stream-credit exhaustion, the publisher-side mirror of R10's zombie
+    finding.) Frame IDs from 0, wrapping at uint32 like `nextFrameId` — the
+    relay's R9 ingress-loss window depends on it.
+13. **Encoder invariants are a table with per-candidate acceptance criteria**
+    (*new 2026-07-15*), not incidental pipeline args — the protocol and the
+    latency story depend on them, and three hardware backends × driver
+    versions is too much surface to leave to defaults:
+
+    | Invariant | Why it's load-bearing | Verified by |
+    |---|---|---|
+    | **No B-frames** | The whole viewer pipeline assumes decode order == presentation order (frameId ordering, reorder buffer, live-edge/pacing math) | V3 fixture: no B slices; V2 trial args pin `b-frames=0`/equivalent per element |
+    | **Closed 500 ms all-IDR GOP** | Item 11's self-healing bound; relay caches "last keyframe" and viewers resync on IDRs only | V3 fixture: keyframe cadence ≈ 500 ms, every keyframe IDR |
+    | **SPS/PPS in-band before every IDR** | Empty-extradata DecoderConfig ⇒ late-joiner priming decodes only self-sufficient keyframes | `h264parse config-interval=-1` + V3 fixture assertion |
+    | **≤1 frame encoder-internal latency** | Decision 6's arrival-stamp bias claim is only true with zero-lookahead configs | V2 trial: frame-in→AU-out < 1 frame period per candidate |
+    | **VFR pass-through, drop-only gating** | Portal capture is damage-driven; a CFR converter holds the last frame until the *next* arrives (unbounded on static content) then bursts stale duplicates that arrival-stamping would timestamp "now" | `videorate drop-only=true max-rate=<fps>` (never plain `videorate`/`fps` conversion); V2 review |
+    | **Cursor embedded** | The browser path embeds the cursor; silently losing the pointer is a viewer-visible regression | Portal `cursor_mode=embedded` (Decision 5) + V4 manual check |
 
 ### GUI decisions
 
-12. **Gio (`gioui.org`), locked.** Native Wayland (no XWayland, no webview),
+14. **Gio (`gioui.org`), locked.** Native Wayland (no XWayland, no webview),
     pure-Go application code, immediate mode. Build needs the usual Linux
     dev headers (`gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev
     libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev
     libxcursor-dev libvulkan-dev`) — document them in the README, they are the
-    honest price. **Rejected**: *Fyne* (runs through XWayland by default;
+    honest price (paid by the gawk-broadcast CI job, not the relay's —
+    Decision 1). **Rejected**: *Fyne* (runs through XWayland by default;
     `-tags wayland` is mutually exclusive with X11 — harmless here since no
     media touches the toolkit, but Gio is the more interesting and more
     native choice for a project whose stated motive is learning); *Wails v3*
@@ -262,31 +429,69 @@ frozen `#/debug/broadcast` page next to the production UI.
     `BroadcastPipeline` + Zustand, so only tokens and a few primitives would
     carry over); *GTK4/gotk4* (large cgo API surface for a window with six
     controls).
-13. **The window is the app; closing it ends the broadcast.** No tray, no
+15. **The window is the app; closing it ends the broadcast.** No tray, no
     background presence, no hidden state — if the window is gone, nothing is
     publishing. This is the simple, predictable behavior, and it is the one
     decision a tray would later overturn (see Deferred below), so it is worth
     naming rather than leaving implied.
-14. **No preview.** You are looking at your own screen, and the portal picker
+16. **No preview.** You are looking at your own screen, and the portal picker
     already showed you what you're sharing. The browser broadcaster has a
     preview only because a tab isn't your screen. What people actually need is
     *"am I live and are frames moving"*, which a sent-fps readout and a
     heartbeat indicator answer at ~zero cost. Revisit only if V7's
     verification shows people genuinely can't tell.
-15. **Notifications via `gioui.org/x/notify`** (D-Bus; X11/Wayland
-    indifferent) on: went live (with the code), first viewer joined, error,
-    ended. With no tray (Decision 13), these are the *only* thing that reaches
-    you once you're fullscreen in a game — an ffmpeg death you don't learn
-    about for an hour is the failure mode they exist to prevent. gio-x is
-    explicitly experimental with an unstable API, so wrap it behind a
-    one-method interface: a swap to raw `godbus` must be a contained change,
-    not a refactor.
-16. **Settings persist to `~/.config/gawk/broadcast.json`** (mode 0600): relay
-    URL, publish secret, rung, encoder override, last broadcast code. The GUI
-    writes it; CLI flags override it. A pre-shared secret in a local file is
-    consistent with how it already travels (a query param, per R2 — the
-    WebTransport JS API can't set headers).
-17. **Vulkan Video (`VK_KHR_video_encode_h264`) is the target encode API,
+17. **Notifications via `godbus` directly, with urgency levels — critical
+    urgency for failures.** *Revised 2026-07-15.* The review surfaced a
+    trap the original design walked straight into: **KDE's portal explicitly
+    inhibits notifications while a ScreenCast session is active**
+    (xdg-desktop-portal-kde MR !33), and Plasma can auto-enable
+    do-not-disturb for mirrored screens and fullscreen apps — so the
+    original plan's "only thing that reaches you once you're fullscreen in a
+    game" was suppressed *by the act of broadcasting*, on KDE, by default.
+    The freedesktop notification spec's **critical urgency** bypasses DND on
+    Plasma by default and is shown over fullscreen on GNOME, so: **went
+    live** (with the code) and **first frames flowing** are normal urgency
+    (fine if they're swallowed mid-game); **subprocess died / publish error /
+    broadcast ended unexpectedly** are **critical** — a child-process death
+    you don't learn about for an hour is the failure mode notifications
+    exist to prevent. `gioui.org/x/notify` is rejected
+    (experimental *and* no urgency control); the D-Bus `Notify` call with an
+    urgency hint is a page of code behind the same one-method interface, so
+    the dependency delta is zero (`godbus` is already in for the portal).
+    V6's acceptance criterion is written against the trap: the critical
+    notification must be *seen* while a portal screencast is active **and** a
+    fullscreen app is focused, on both KDE and GNOME.
+18. **No viewer count, no "first viewer joined" notification.** *New
+    2026-07-15, replacing features the original design promised.* Verified
+    against the code: nothing on the wire tells a publisher about
+    subscribers — the browser's `BroadcastStats` has no viewer count, the
+    announce stream is one-shot, and `/statusz` is ops-only (cluster-internal
+    TCP listener, HMAC-obfuscated broadcast keys a broadcaster cannot map to
+    its own ID). Implementing either feature means a relay→publisher wire
+    message — a protocol change R14's headline explicitly rules out. Dropped
+    for browser parity (the browser broadcaster doesn't know its viewer count
+    either). A `SubscriberCount` message is a fine *future* roadmap item —
+    for both broadcasters at once, as its own wire+relay change — but it is
+    not smuggled in here.
+19. **Settings persist to `~/.config/gawk/broadcast.json`** (mode 0600):
+    relay URL, **app URL** (the frontend origin for "join:" links and Copy
+    link — it is *not derivable* from the relay URL, they are different
+    hosts), publish secret, rung, encoder override, last broadcast code,
+    last-good encoder (Decision 4), and the portal **restore token**
+    (Decision 5 — it grants screen capture without a picker, which is
+    exactly why the file was already 0600). The GUI writes it; CLI flags
+    override it. A pre-shared secret in a local file is consistent with how
+    it already travels (a query param, per R2 — the WebTransport JS API
+    can't set headers).
+20. **Stats parity where it's honest, `n/a` where it isn't.** The engine
+    reports what it can see: chosen encoder, encoder fps, sent fps,
+    datagrams, keyframe streams sent/failed/superseded, frames dropped at
+    send (Decision 12), bytes, TimeSync RTT. It **cannot** see pre-encode
+    capture fps — the GStreamer child owns that stage — so R9's funnel is
+    reported with that stage marked unavailable rather than fabricated from
+    the requested rate. Copy diagnostics JSON, matching R9's
+    remote-troubleshooting story.
+21. **Vulkan Video (`VK_KHR_video_encode_h264`) is the target encode API,
     reached in two stages.** It is the only encode API that is genuinely
     vendor-neutral: RADV (AMD), ANV (Intel) and NVIDIA's proprietary driver
     all implement it — NVIDIA was among the first — with no
@@ -298,15 +503,18 @@ frozen `#/debug/broadcast` page next to the production UI.
     hardware-encode on NVIDIA. Building gawk on direct VAAPI would spend weeks
     reproducing the precise limitation R14 exists to escape. VAAPI is
     vendor-neutral for Intel and AMD and structurally excludes the third
-    vendor — it is *less* portable than the delegated cascade we already have,
-    not more.
-    - **Stage 1 (V2)**: `h264_vulkan` goes first in the delegated cascade.
-      This proves Vulkan Video encode on real hardware in minutes rather than
-      weeks, for the price of one line, and yields a **known-good reference
-      bitstream**.
+    vendor — it is *less* portable than the cascade we already have, not
+    more.
+    - **Stage 1 (V2)**: `vulkanh264enc` leads the runtime cascade (user
+      decision 2026-07-15 — the target API gets exercised on every capable
+      machine from day one), and — decoupled from capture entirely —
+      **mainline ffmpeg's `h264_vulkan` (≥7.1) generates the reference
+      bitstream** from a committed y4m fixture on the development machine.
+      The reference needs no portal, no patches, and no GStreamer: it is one
+      offline command.
     - **Stage 2 (V8)**: direct Vulkan Video encode in Go, **gated on Stage 1
-      succeeding on the development machine**, with ffmpeg's output as the
-      differential oracle.
+      establishing that this machine's driver encodes via Vulkan Video at
+      all**, with the archived reference as the differential oracle.
     The staging is not timidity, it is what makes the work tractable: without
     a reference bitstream, "my encoder emits garbage" is near-undebuggable,
     and with one, ffmpeg's `vulkan_encode_h264.c` becomes an executable spec
@@ -315,62 +523,55 @@ frozen `#/debug/broadcast` page next to the production UI.
     **Vulkan Video being the target API does not make it the only path.**
     Per Decision 4 this is a multi-broadcaster project on unsurveyed
     hardware: a friend's GPU may have no Vulkan Video encoder, an older
-    driver, or a broken one. Direct Vulkan is therefore an **additional
-    top-of-cascade candidate for machines that support it**, never a
-    replacement for the delegated backends. V8 shipping does not retire V2.
-18. **Stats parity where it's honest, `n/a` where it isn't.** The engine
-    reports what it can see: encoder fps, sent fps, datagrams, keyframe
-    streams sent/failed, bytes, TimeSync RTT, chosen encoder. It **cannot**
-    see pre-gate capture fps — ffmpeg owns that stage — so R9's funnel is
-    reported with that stage marked unavailable rather than fabricated from
-    the requested rate. Copy diagnostics JSON, matching R9's
-    remote-troubleshooting story.
-19. **Owning the portal handshake is a named future option, not v1.** Doing
-    the D-Bus `org.freedesktop.portal.ScreenCast` dance ourselves
-    (`CreateSession` → `SelectSources` → `Start`) is ~200–300 lines of pure Go
-    over `godbus`, and it buys `restore_token` + `persist_mode`: **no
-    re-picking your screen every session**, plus cursor-mode and monitor
-    selection. It is the one genuinely high-value part of the "do it all
-    ourselves" fantasy (the rest — SPA POD negotiation, dmabuf import — is a
-    slog). It is deferred because it **does not compose with ffmpeg**:
-    `pipewiregrab` owns its handshake and takes no session in. GStreamer's
-    `pipewiresrc` accepts `fd=` and `path=<node-id>`, so taking this option
-    means moving the capture half to go-gst. Revisit if re-picking the screen
-    every session becomes the thing that annoys you most.
+    driver, or a broken one — NVENC and VAAPI stay behind it, permanently.
+    V8 shipping does not retire V2.
 
 ## Architecture
 
 ```
-gaming PC (Linux/Wayland)                                    relay
-─────────────────────────                                    ─────
+gaming PC (Linux)                                              relay
+─────────────────                                              ─────
   cmd/gawk-broadcast-gui (Gio)      cmd/gawk-broadcast (CLI)
-    window · notify                   flags · stderr stats
+    window · notify(urgency)          flags · stderr stats
             └──────────┬───────────────────────┘
                        ▼
-              internal/broadcast — Session{Start,Stop,SetLadder} + Callbacks
-                       │
-    ffmpeg (subprocess)│
-      pipewiregrab ──▶ portal picker (desktop's own; no picker in our GUI)
-         │ dmabuf
-      scale/fps + h264_nvenc | h264_vaapi | libx264   ← probed by trial encode
-         │ Annex-B + AUDs, in-band SPS/PPS
-         ▼ stdout pipe
-      AU splitter ──▶ IDR? ──yes──▶ wire.AppendStreamFrameHeader
-         │              │            + embedded DecoderConfig + payload
-         │              │            └─▶ Session.OpenUniStream() ─────────▶ CONNECT
-         │              └──no───▶ chunk ≤1180B                              /publish
-         │                        wire.AppendVideoChunk                       [?secret=]
-         │                        └─▶ Session.SendDatagram() ─────────────▶
-      SPS parser ──▶ "avc1.42E02A" ──▶ wire.AppendDecoderConfig
-      TimeSync ping/pong (2 s) ──▶ offset ──▶ wire.AppendClockMapping (5 s)
-      AcceptUniStream ──▶ wire.ParseBroadcastAnnounce ──▶ code ──▶ shells
+     internal/engine — Session{Start,Stop} + Callbacks + StartError{Phase,Status}
+        │
+        ├─ internal/portal (godbus): CreateSession → SelectSources(cursor=embedded,
+        │      persist) → Start → node id + restore_token (persisted) →
+        │      OpenPipeWireRemote → fd ──┐
+        │                                ▼ (ExtraFiles → child fd 3)
+        ├─ internal/gst: gst-launch-1.0 subprocess
+        │      pipewiresrc fd=3 target-object=N
+        │        ! videorate drop-only=true max-rate=60      (gate, never CFR)
+        │        ! <hw convert/scale>                        (stays on GPU)
+        │        ! vulkanh264enc | nvh264enc | vah264enc     ← trial-probed cascade
+        │        ! h264parse config-interval=-1              (SPS/PPS every IDR)
+        │        ! mpegtsmux ! fdsink fd=1
+        │                │ stdout pipe (MPEG-TS)
+        │                ▼
+        ├─ internal/mpegts: PUSI → one PES = one AU (+ PTS, kept for Decision 6's
+        │      upgrade path); arrival-stamp on the TimeSync clock
+        │                │
+        │                ├─ IDR in AU? ──yes─▶ wire.AppendStreamFrameHeader
+        │                │        │             + embedded DecoderConfig + payload
+        │                │        │             └─▶ OpenUniStream (≤1 in flight,
+        │                │        │                 supersede) ────────────▶ CONNECT
+        │                │        └──no──▶ chunk ≤ wire.MaxChunkPayload      /publish
+        │                │                 wire.AppendVideoChunk               [?secret=]
+        │                │                 └─▶ SendDatagram (drop frame
+        │                │                     remainder on failure) ──────▶
+        │                ├─ SPS parser ─▶ "avc1.42E02A" ─▶ wire.AppendDecoderConfig
+        │                └─ TimeSync ping (2 s) ─▶ offset ─▶ ClockMapping (5 s)
+        └─ AcceptUniStream ─▶ wire.ParseBroadcastAnnounce ─▶ code ─▶ shells
 ```
 
-Reused verbatim from `internal/wire`: `AppendVideoChunk`,
+Reused verbatim from `gawk-server/wire` (public as of V0): `AppendVideoChunk`,
 `AppendDecoderConfig`, `AppendStreamFrameHeader`, `AppendTimeSync`,
 `ParseTimeSync`, `AppendClockMapping`, `ParseBroadcastAnnounce`, and the
 constants (`MaxDatagramSize` 1200, `MaxChunkPayload` 1180, `MaxChunkCount`
-3000, `StreamFrameHeaderSize` 24, `TimeSyncSize` 18, `ClockMappingSize` 10).
+3000, `StreamFrameHeaderSize` 24, `TimeSyncSize` 18, `ClockMappingSize` 10,
+`MaxKeyframeBytes` 8 MiB).
 
 ## The capture path, end to end
 
@@ -382,36 +583,44 @@ why it can be simple.
 1. **You click Start.** The app dials `/publish` *first*, before any capture.
    Same rule as the browser (Decision 10 / connect-before-picker): if the
    relay refuses, no share dialog should ever have appeared.
-2. **The app spawns ffmpeg** as a child process with a pipe on its stdout.
-3. **ffmpeg asks your desktop for a screen.** `pipewiregrab` talks to the XDG
-   ScreenCast portal over D-Bus, and **your** desktop — KDE, GNOME — shows
-   **its own** share dialog. We don't draw it, we don't theme it, we never see
-   it. That's why the GUI has no source picker (Decision 5).
-4. **You pick a screen; the portal returns a PipeWire stream.** Frames arrive
-   as **dmabufs** — handles to GPU memory, not pixels. Nothing has been copied
-   anywhere yet.
-5. **ffmpeg scales and rate-limits on the GPU** (4K→1080p, 60→30 fps).
-6. **ffmpeg encodes on the GPU's dedicated encode block** (NVENC / VAAPI) —
-   not the CPU, and not the shader cores either, so it isn't taking from the
-   game's frame budget. This is the step the browser cannot do on Linux, and
-   the entire reason R14 exists.
-7. **Compressed bytes come down the pipe.** *Now* the data is in CPU memory —
-   but it's ~1% of the size, because it's already H.264.
-8. **The app re-finds frame boundaries.** A pipe is a featureless byte stream:
-   ffmpeg knew where each frame ended, and the pipe threw that away. So we ask
-   it to insert AUD markers and we split on them (Decision 7). One blob out =
-   one frame.
-9. **The app stamps arrival time** from the same monotonic clock TimeSync uses
-   (Decision 6 — and the reason that clock must be shared is that
+2. **The app asks your desktop for a screen — in Go, over D-Bus.** The XDG
+   ScreenCast portal shows **your** desktop's own share dialog (KDE, GNOME).
+   We don't draw it, we don't theme it. On every later run the persisted
+   restore token skips this step entirely: **you pick your screen once,
+   ever** (Decision 5).
+3. **The portal returns a PipeWire stream** (a node id and an fd). Frames
+   arrive as **dmabufs** — handles to GPU memory, not pixels. Nothing has
+   been copied anywhere yet.
+4. **The app spawns GStreamer** as a child process, handing it the PipeWire
+   fd and taking a pipe on its stdout.
+5. **GStreamer rate-limits (drop-only — never holding frames to fake CFR),
+   scales and converts on the GPU.**
+6. **GStreamer encodes on the GPU's dedicated encode block** (Vulkan Video /
+   NVENC / VAAPI) — not the CPU, and not the shader cores either, so it isn't
+   taking from the game's frame budget. This is the step the browser cannot
+   do on Linux, and the entire reason R14 exists. There is **no software
+   fallback**: a machine where no hardware candidate passes its trial is
+   told to use the browser broadcaster instead (Decision 4).
+7. **Compressed bytes come down the pipe as MPEG-TS.** *Now* the data is in
+   CPU memory — but it's ~1% of the size, because it's already H.264.
+8. **The app splits the TS into access units.** One PES packet = one frame
+   (`payload_unit_start_indicator` marks the boundary — no start-code
+   scanning heuristics), with the PES PTS kept on the side (Decision 6's
+   upgrade path).
+9. **The app stamps arrival time** from the same monotonic clock TimeSync
+   uses (Decision 6 — and the reason that clock must be shared is that
    `ClockMapping` otherwise relates two unrelated timelines).
-10. **The app reads the NAL types** in the blob. Contains an IDR (type 5)?
-    Keyframe. Otherwise, delta. On the first one it also parses the SPS into
-    `avc1.42E02A` (Decision 8) — the only thing telling the viewer's decoder
-    what it's about to get.
+10. **The app reads the NAL types** in the AU. Contains an IDR (type 5)?
+    Keyframe — and thanks to `config-interval=-1` it is self-sufficient
+    (SPS/PPS inside), which is what the relay's cached-keyframe priming
+    needs. On the first SPS it also parses `avc1.42E02A` (Decision 8) — the
+    only thing telling the viewer's decoder what it's about to get.
 11. **The road forks — this is R8's design, unchanged**: a **keyframe** goes
     out whole on one **reliable uni stream** (too big and too important to
-    lose to one dropped packet), while a **delta** is sliced into ≤1180-byte
-    **datagrams** (fast and lossy — lose one and you lose a frame, not a GOP).
+    lose to one dropped packet; ≤1 in flight, newest supersedes), while a
+    **delta** is sliced into ≤1180-byte **datagrams** (fast and lossy — lose
+    one and you lose a frame, not a GOP; a mid-frame send failure drops the
+    frame's remaining chunks, Decision 12).
 12. **The relay fans out** to viewers exactly as it does for the browser
     broadcaster, because the bytes are identical.
 
@@ -419,21 +628,54 @@ Alongside all this, two small side channels: a TimeSync ping every 2 s (which
 yields the relay-clock offset) and a ClockMapping publish every 5 s (which
 turns that offset into the viewer's absolute capture→render latency).
 
-**The one place the picture might touch the CPU** is step 6 on NVIDIA:
-`pipewiregrab` hands out VAAPI/dmabuf frames and NVENC wants CUDA frames. If
-that import doesn't work on the proprietary driver, ffmpeg has to round-trip
-`hwdownload` → `hwupload_cuda` through system memory. Survivable at 1080p30,
-but it's the risk V2 exists to settle.
+**The one place the picture might touch the CPU** is step 6 on NVIDIA: the
+portal hands out dmabuf frames and `nvh264enc` wants GL/CUDA memory, and
+cross-device dmabuf import is historically unreliable on the proprietary
+driver. Expected resolutions in order: dmabuf→GL/CUDA import if it works;
+else a system-memory roundtrip (`videoconvert`-style — still *hardware
+encode*, just with a copy tax; measure it at 1080p); else the machine is
+AMD/Intel after all and `vah264enc`/`vulkanh264enc` take it. This is the risk
+V2 exists to settle — same corner as the original design, new spelling.
+
+## Dependencies (the honest bill of materials)
+
+Runtime (all stock distro packages; **nothing is built from source** — this
+is a V2 acceptance criterion, and the property whose absence sank the
+original capture plan): `gstreamer1.0-tools`, `gstreamer1.0-pipewire`,
+`gstreamer1.0-plugins-base`, `-good`, `-bad` (Vulkan/nvcodec/va encoder
+elements; the nvcodec plugin `dlopen`s the NVIDIA driver's libraries at
+runtime, so no special build), plus the desktop's own `xdg-desktop-portal`
+backend, which every Wayland desktop already ships. Build-time: Go, plus
+Gio's header list (Decision 14). `godbus` is pure Go.
 
 ## Chunks
 
+### V0 — module split + wire promotion + CI/release wiring
+
+Promote `internal/wire` → `gawk-server/wire` (public; it keeps importing
+`internal/broadcastid`, which stays internal — the path-prefix rule permits
+that); mechanical import rewrite across the relay tree; golden-vector tests
+move untouched. Scaffold the `gawk-broadcast/` module (local `replace` on
+`gawk-server`), add its release-please component and a CI job that installs
+the Gio headers (Decision 14) and runs `go vet` + `go test -race` for the new
+module only. The relay's CI job and Dockerfile are untouched.
+
+| Acceptance criterion | Verified by |
+|---|---|
+| Relay builds/tests green after the wire promotion; golden vectors byte-identical | CI + `git diff --stat` showing mechanical-only changes in `gawk-server/` |
+| `gawk-broadcast` module compiles against `gawk-server/wire` via `replace`; a deliberate wire-constant change breaks its build/tests (Decision 11 demonstrated) | one-off local experiment, noted in the PR |
+| Broadcaster-only commits produce **no** gawk-server release entry, image rebuild, or homelab deploy | release-please dry-run / first release PR inspected |
+| Relay CI job still needs no GUI headers | CI config review |
+| CLAUDE.md / README / docs references to `internal/wire` synced | review |
+
 ### V1 — engine: session surface + transport
 
-`internal/broadcast/`: the `Session` type (`Start`/`Stop`/`SetLadder`) +
-`Callbacks` struct + `StartError{Phase}` (Decision 10), all injectable-clock
-for tests. Dial `/publish` or `/publish/{id}` via `webtransport.Dialer`
+`internal/engine`: the `Session` type (`Start`/`Stop`) + `Callbacks` struct +
+`StartError{Phase, Status}` (Decision 10), all injectable-clock for tests.
+Dial `/publish` or `/publish/{id}` via `webtransport.Dialer`
 (`TLSClientConfig` with system roots; `-insecure` for the dev cert); read the
-first incoming uni stream to EOF → `ParseBroadcastAnnounce` → `OnBroadcastID`.
+first incoming uni stream (bounded: ≤258 bytes, with a deadline) →
+`ParseBroadcastAnnounce` → `OnBroadcastID`.
 
 TimeSync client mirroring `time-sync.ts` exactly: ping every
 `TIME_SYNC_INTERVAL_MS` (2 s — the relay rate-caps at 5/s per session, a
@@ -448,174 +690,190 @@ nothing before the first pong.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| `Session` surface mirrors `BroadcastSessionLike`/`BroadcastCallbacks`; no package globals, no `os.Exit`, no direct stdio — a shell could be anything | review + the fact that V4 and V5 both consume it unmodified |
+| `Session` surface mirrors `BroadcastSessionLike`/`BroadcastCallbacks` (minus ladder, Decision 9); no package globals, no `os.Exit`, no direct stdio — a shell could be anything | review + the fact that V4 and V5 both consume it unmodified |
 | Dials `/publish`, reports the announced code; `-id` dials `/publish/{id}` and reclaims | integration test against an in-process `transport.Server` |
-| `StartError.Phase` distinguishes `connect` from `capture`; a capture-phase failure tears the session down (no zombie publisher) | integration test |
-| Secret sent as query param; wrong/missing secret fails with a clear message | integration test |
+| `StartError.Phase` distinguishes `connect` from `capture`; `StartError.Status` carries the HTTP status when present; a capture-phase failure tears the session down (no zombie publisher) | integration test |
+| Secret sent as `secret` query param; wrong/missing secret surfaces as a 401-bearing, human-readable error | integration test |
+| Announce read is bounded and deadlined; a relay that never sends one fails `Start` cleanly | unit test with a fake session |
 | TimeSync lowest-RTT-of-8 selection matches `time-sync.ts` on identical sample sequences | unit test with a fake clock + shared fixture |
 | ClockMapping sent only after the first pong, then every 5 s | unit test with a fake clock |
 | Frame-timestamp clock and TimeSync `t0` clock are the same source | unit test asserting a single injected `now()` feeds both |
 
-### V2 — engine: capture + encode
+### V2 — engine: portal + capture + encode cascade
 
-`internal/broadcast/ffmpeg.go`: arg vectors per encoder; startup cascade
-(`h264_nvenc` → `h264_vaapi` → `libx264`) where each candidate is accepted
-only after a real trial encode produces output; supervise the child (stderr
-relayed at debug level, non-zero exit → clean shutdown carrying the last
-stderr lines, never a silent hang).
-
-Reference shape (VA-API; exact args are V2's job):
+`internal/portal`: the ScreenCast handshake over `godbus` (Decision 5) —
+session, source selection (cursor embedded, persist), start, restore token
+persistence, `OpenPipeWireRemote`, portal-version feature detection.
+`internal/gst`: pipeline construction per encoder; the **Vulkan-first
+hardware-only cascade** (`vulkanh264enc` → `nvh264enc` → `vah264enc` →
+refusal, Decision 4) with `videotestsrc` trial encodes, last-good caching,
+live-start-as-final-probe; child supervision (stderr relayed at debug level,
+non-zero exit → clean shutdown carrying the last stderr lines, never a silent
+hang). Reference shape (VA path; exact elements/caps/property names are V2's
+job):
 
 ```
-ffmpeg -f lavfi -i pipewiregrab \
-  -vf 'hwmap=derive_device=vaapi,scale_vaapi=w=1920:h=1080:format=nv12,fps=30' \
-  -c:v h264_vaapi -rc_mode CBR -b:v 8M -g 15 -bf 0 \
-  -bsf:v h264_metadata=aud=insert \
-  -f h264 -flush_packets 1 pipe:1
+gst-launch-1.0 -q \
+  pipewiresrc fd=3 target-object=<node> \
+  ! videorate drop-only=true max-rate=60 \
+  ! vapostproc ! 'video/x-raw(memory:VAMemory),format=NV12,width=1920,height=1080' \
+  ! vah264enc rate-control=cbr bitrate=8000 key-int-max=30 b-frames=0 \
+  ! h264parse config-interval=-1 \
+  ! mpegtsmux ! fdsink fd=1
 ```
 
-**Known risk, to be settled here**: NVIDIA + Wayland is the awkward corner —
-`pipewiregrab` yields dmabuf/VAAPI frames while NVENC wants CUDA frames, and
-cross-device import is unreliable on the proprietary driver. Expected
-resolutions in order: dmabuf→CUDA import if it works; else `hwdownload` +
-`hwupload_cuda` (a CPU roundtrip — acceptable at 1080p30, measure it); else
-`h264_vaapi` if the machine turns out to be AMD/Intel after all. If all three
-disappoint, V7's escape hatch applies.
+**Known risk, to be settled here**: NVIDIA dmabuf import (see "the one place
+the picture might touch the CPU"). **Stage-1 Vulkan gate (Decision 21)**:
+whether this GPU encodes via Vulkan Video at all is established here, plus
+the offline `h264_vulkan` reference for V8.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| Cascade picks the first candidate that *actually encodes*; a listed-but-broken encoder is rejected and the next tried | unit test over an injected trial-encode runner |
-| Chosen encoder + rung logged once and surfaced on `Callbacks` | unit test + manual |
-| ffmpeg death is detected and surfaces as `OnError` with its last stderr, never hangs | unit test with a fake failing child |
+| Portal handshake yields a stream fd + node id; restore token round-trips the config file; second run **shows no picker** | manual on KDE + GNOME; unit tests over a fake D-Bus for the state machine |
+| Portal < v4 degrades to per-session picking, never to failure | unit test (feature-detect path) |
+| Cascade picks the first candidate that *actually encodes*; a listed-but-broken element is rejected and the next tried; trials use `videotestsrc`, never the portal | unit test over an injected trial-encode runner |
+| Cached last-good encoder is re-verified first; full cascade only on its failure or first run | unit test |
+| Live-start failure advances the cascade and retries **without a new picker** (restore token reused) | manual + unit test over a fake child |
+| **No hardware candidate ⇒ refusal with a sentence pointing at the browser broadcaster** — never a software fallback, never a stack trace | unit test (all candidates fail) + manual copy review |
+| Every invariant in Decision 13's table holds for every accepted candidate (no B-frames, all-IDR 500 ms GOP, SPS/PPS per IDR, ≤1-frame latency, drop-only gating) | V2 trial checks + V3 fixture assertions |
+| Chosen encoder + rung logged once and surfaced on `Callbacks`; child death surfaces as `OnError` with its last stderr, never hangs | unit test with a fake failing child |
 | Encoder override forces one candidate and skips the cascade | unit test |
-| At the chosen rung, ffmpeg reports no dropped frames and the encoder is confirmed hardware (`nvidia-smi` / `intel_gpu_top` / `radeontop` shows encode-engine activity) | manual, on the gaming PC |
-| **The local ffmpeg actually has `pipewiregrab`** — it needs `--enable-libpipewire` at *build* time and distro builds vary, so "ffmpeg is already installed" guarantees nothing; a missing filter must produce a sentence a friend can act on, not a stack trace | manual: `ffmpeg -h filter=pipewiregrab`; a clear diagnostic if absent |
-| **Stage-1 Vulkan gate (Decision 17)**: `h264_vulkan` is probed first and the result recorded — does this GPU encode via Vulkan Video at all? | manual: `vulkaninfo \| grep -i "video_encode"` + the trial encode |
-| A `h264_vulkan` clip is captured and archived as the **reference bitstream** for V8's differential oracle | manual: file committed to a fixtures location or noted in the V8 task |
-| **The cascade degrades cleanly on a machine with no Vulkan Video and no NVENC/VAAPI** — a broadcaster on unknown hardware still ends up on `libx264` rather than a failure (Decision 4: the fallbacks are permanent, and other people's GPUs are not surveyable) | unit test over the injected trial-encode runner, forcing each candidate to fail in turn |
+| At the chosen rung, no dropped frames and the encoder is confirmed hardware (`nvidia-smi` / `intel_gpu_top` / `radeontop` shows encode-engine activity) | manual, on the gaming PC |
+| **Every runtime dependency resolves from stock distro packages** — a missing element produces a sentence naming the package to install, not a stack trace | manual on a clean container/VM |
+| Stage-1 Vulkan result recorded (does this GPU encode via Vulkan Video?) and an `h264_vulkan` reference bitstream generated **offline with mainline ffmpeg** from the committed y4m fixture and archived | manual: `vulkaninfo | grep -i video_encode`, the trial encode, one ffmpeg command; fixture + reference committed or noted in the V8 task |
 
-### V3 — engine: bitstream
+### V3 — engine: bitstream + send policy
 
-`annexb.go`: streaming AU splitter (split at AUD, NAL type 9; tolerate 3- and
-4-byte start codes; bounded buffer rejecting an AU larger than
-`wire.MaxKeyframeBytes` rather than growing without limit). `sps.go`: parse
-profile_idc/constraint_flags/level_idc → `avc1.XXXXXX`. `send.go`: IDR → one
-`StreamFrame` uni stream with embedded `DecoderConfig`; delta → chunk to
-`MaxChunkPayload` and `SendDatagram`, handling `*quic.DatagramTooLargeError`
-by lowering the chunk size to its `MaxDatagramPayloadSize` and re-chunking
-(the Go-side analogue of `docs/11`'s Firefox path-MTU fix — do not assume 1200
-is reachable). Frame IDs from 0, wrapping at uint32 like `nextFrameId` — the
-relay's R9 ingress-loss window depends on it.
+`internal/mpegts`: minimal TS demux (188-byte packets, PAT/PMT, single video
+PID, PUSI-delimited PES with `PES_packet_length = 0` handling, PTS extraction)
+→ one AU per PES, accumulation bounded by `wire.MaxKeyframeBytes`. `sps.go`:
+parse profile_idc/constraint_flags/level_idc → `avc1.XXXXXX` (EPB-safety note
+in a comment, Decision 8). `send.go`: IDR-bearing AU → one `StreamFrame` uni
+stream with embedded `DecoderConfig`, ≤1 in flight with supersede
+(Decision 12); other AUs → chunk to `MaxChunkPayload` and `SendDatagram`,
+with the Decision 12 failure policy (drop frame remainder; MTU re-chunk on
+`DatagramTooLargeError`). Frame IDs from 0, wrapping at uint32.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| Splitter emits exactly one AU per encoded frame across a recorded fixture, including start codes split across reads | unit test over a captured Annex-B fixture, byte-by-byte feed at adversarial read sizes |
+| Demux emits exactly one AU per encoded frame across a recorded fixture, including TS packets split across reads and `PES_packet_length = 0` | unit test over a captured fixture from the real V2 pipeline, byte-by-byte feed at adversarial read sizes |
 | An AU exceeding `MaxKeyframeBytes` errors, never allocates unboundedly | unit test |
-| IDR detection matches the fixture's known keyframe positions | unit test |
-| SPS parse yields the codec string ffmpeg reports for the same fixture | unit test |
+| IDR detection matches the fixture's known keyframe positions; every keyframe AU contains SPS+PPS before the IDR slice (Decision 13) | unit test |
+| Fixture contains no B slices; keyframe cadence ≈ 500 ms (Decision 13) | unit test over the fixture |
+| SPS parse yields the codec string the encoder reports for the same fixture | unit test |
 | Delta chunking round-trips against the existing reassembly logic | golden vectors from `wire_test.go` + a chunking unit test |
-| `DatagramTooLargeError` lowers chunk size and re-chunks rather than dropping the frame | unit test with a fake session |
+| quic-go send-failure semantics pinned in a test; mid-frame failure drops the frame remainder and counts it; `DatagramTooLargeError` lowers chunk size and re-chunks rather than dropping the frame | unit tests with a fake session |
+| A keyframe stream stalled past the next keyframe is `CancelWrite`-ed and superseded (≤1 in flight) | unit test with a fake session |
 | Frame IDs start at 0 and wrap at uint32 | unit test |
 
 ### V4 — CLI shell + end-to-end + the timestamp-bias gate (Decision 6)
 
-`cmd/gawk-broadcast/`: flags (`-url`, `-id`, `-secret`, `-insecure`,
-`-resolution`, `-fps`, `-bitrate`, `-encoder`) + `GAWK_*` envs over the V1–V3
-engine; periodic stderr stats line. Then **measure the bias**: compare the
-viewer overlay's `Latency (capture→render)` against a physical reference (the
-`docs/13` bottleneck-playbook method — a clock on the captured screen,
-photographed alongside the viewer) at 1080p30.
+`cmd/gawk-broadcast/`: flags (`-url`, `-app-url`, `-id`, `-secret`,
+`-insecure`, `-resolution`, `-fps`, `-bitrate`, `-encoder`) + `GAWK_*` envs
+over the V1–V3 engine; periodic stderr stats line. Then **measure the bias**:
+compare the viewer overlay's `Latency (capture→render)` against a physical
+reference (the `docs/13` bottleneck-playbook method — a clock on the captured
+screen, photographed alongside the viewer) **at the shipped default,
+1080p60** (the original doc gated at 1080p30 while defaulting to 60 — the
+gate must test what ships).
 
 | Acceptance criterion | Verified by |
 |---|---|
 | A Chrome viewer joins by code and renders; overlay reads `Renderer: WebGL`, `Transport: Worker` | manual |
 | Overlay shows live `Live-edge drift`, a plausible `Latency (capture→render)`, populated `RTT (time-sync)` | manual |
-| **Measured latency under-reports the physical reference by < 15 ms, and the gap is stable across a 60 s window** | manual, photographed reference — **if this fails, Decision 6's `-f mpegts` PTS path is required before R14 is done** |
+| **Measured latency under-reports the physical reference by < 15 ms, and the gap is stable across a 60 s window, at 1080p60 on the chosen hardware encoder** | manual, photographed reference — **if this fails, Decision 6's clock-anchored-PTS path is required before R14 is done** |
 | Keyframes arrive as streams, deltas as datagrams; `/statusz` + `/metrics` show the broadcast with ingress loss ≈ 0 on LAN | manual |
 | Relay restart → reclaim by `-id` works; viewer recovers without a terminal 4000 | manual |
-| Game fps at 1080p30 broadcast is materially better than the software-encode browser baseline on the same machine | manual — the whole point of R14 |
+| The cursor is visible in the stream (Decision 13) | manual |
+| Game fps at 1080p60 broadcast is materially better than the software-encode browser baseline on the same machine | manual — the whole point of R14 |
 
 ### V5 — GUI shell: window
 
 `cmd/gawk-broadcast-gui/`: Gio window over the same engine. Settings (relay
-URL, secret, resolution, fps, encoder override) loaded from and saved to
-`~/.config/gawk/broadcast.json` (Decision 16); big Start/Stop; the broadcast
-code with **Copy link**; **Resume broadcast** using the remembered code
-(Decision 10's reclaim→mint rule); viewer count; live state and errors in
-plain language. No source picker (Decision 5), no preview (Decision 14), no
-tray (Decision 13 — closing the window stops the broadcast).
+URL, app URL, secret, resolution, fps, encoder override) loaded from and
+saved to `~/.config/gawk/broadcast.json` (Decision 19); big Start/Stop; the
+broadcast code with **Copy link** (built from the app URL); **Resume
+broadcast** using the remembered code (Decision 10's reclaim→mint rule — and
+no picker, per Decision 5); live state and errors in plain language (the
+`StartError.Status` distinctions surfaced as sentences). No source picker
+(Decision 5), no preview (Decision 16), no tray (Decision 15 — closing the
+window stops the broadcast), no viewer count (Decision 18).
 
 | Acceptance criterion | Verified by |
 |---|---|
-| Start → portal picker appears → code shown → viewer can join | manual |
-| Engine consumed unmodified from V1 (no engine changes needed to add a GUI — the Decision-that-shaped-V1 paying off) | review of the diff: `internal/broadcast` untouched |
+| First run: Start → portal picker → code shown → viewer joins. Second run: Start → **no picker** → live | manual |
+| Engine consumed unmodified from V1 (no engine changes needed to add a GUI) | review of the diff: `internal/engine` untouched |
 | Settings round-trip the config file; file is 0600; flags still override in the CLI | unit test + manual |
 | Resume dials `/publish/{id}`; a `connect`-phase failure offers minting, a `capture`-phase failure does not | unit test over a fake engine |
-| Errors surface as sentences, not Go error strings (an ffmpeg/portal failure must say what to do) | manual |
-| Ladder controls disabled while live (Decision 9) | manual |
+| Errors surface as sentences, not Go error strings — 401/404/409/429 each say something a friend can act on; a portal/GStreamer failure says what to install or check | manual + copy review |
 | Closing the window stops the broadcast and leaves no publisher on the relay | manual + `/statusz` |
 
 ### V6 — GUI: stats panel, copy diagnostics, notifications
 
 Stats panel over the engine's `OnStats` (encoder, fps, bitrate, datagrams,
-keyframe streams sent/failed, TimeSync RTT, viewer count), with capture-fps
-marked unavailable rather than fabricated (Decision 17), plus **Copy
-diagnostics** JSON matching R9's shape closely enough to be pasted next to a
-viewer's. Notifications via `gioui.org/x/notify` behind a one-method interface
-(Decision 15) — with no tray these are the only signal that reaches you
-mid-game.
+keyframe streams sent/failed/superseded, frames dropped at send, TimeSync
+RTT), with capture-fps marked unavailable rather than fabricated
+(Decision 20), plus **Copy diagnostics** JSON matching R9's shape closely
+enough to be pasted next to a viewer's. Notifications per Decision 17:
+`godbus` `Notify` with urgency behind a one-method interface — critical for
+subprocess death / publish error / unexpected end, normal for went-live /
+frames-flowing.
 
 | Acceptance criterion | Verified by |
 |---|---|
 | Panel reflects a live session; numbers agree with `/statusz` for the same broadcast | manual |
-| Pre-gate capture fps reads `n/a`, never a fabricated number | review + manual |
+| Pre-encode capture fps reads `n/a`, never a fabricated number | review + manual |
 | Copy diagnostics produces JSON pasteable beside a viewer's Copy diagnostics | manual |
-| Notifications fire on live / first viewer / error / ended, and are swappable off gio-x without touching call sites | manual + review |
-| An ffmpeg death while fullscreen in a game reaches the user as a notification | manual — the failure mode Decision 15 exists for |
+| **A critical-urgency death notification is *seen* while the portal screencast is active and a fullscreen app is focused — on KDE (whose portal inhibits normal notifications during screencast) and on GNOME** | manual on both desktops — the trap Decision 17 exists for |
+| Normal-urgency notifications may be swallowed mid-game; critical ones must not be | manual |
+| Notification transport swappable without touching call sites | review |
 
 ### V7 — docs + escape hatches
 
-README (quickstart, the Gio build dependencies from Decision 12, the Linux
-broadcaster section, and the **Annex-B/AVCC gotcha** — a native publisher
-exercises the viewer's Annex-B branch, which the browser never does),
-CLAUDE.md build-order entry + docs list, ROADMAP R14 status. Record the escape
-hatches evaluated but not built, so a future reader doesn't rediscover them:
-**kmsgrab** (X11 + Wayland, zero-copy dmabuf → VAAPI, needs `CAP_SYS_ADMIN`);
-**NvFBC** (NVIDIA/X11, fastest, needs the well-known driver patch on GeForce);
-**gpu-screen-recorder** as a capture+encode front end — it solves exactly this
-problem (NvFBC on X11, KMS elsewhere, NVENC/VAAPI/AMF) better than ffmpeg
-does, but piping its output to stdout is *not* documented (it targets files and
-RTMP), so adopting it means first establishing whether a pipe is possible at
-all.
+README (quickstart, the runtime package list from the Dependencies section,
+the Gio build dependencies from Decision 14, the Linux broadcaster section,
+and the **Annex-B/AVCC gotcha** — a native publisher exercises the viewer's
+Annex-B branch, which the browser never does), CLAUDE.md build-order entry +
+docs list, ROADMAP R14 status. Record the escape hatches evaluated but not
+built, so a future reader doesn't rediscover them: **kmsgrab** (mainline
+ffmpeg, X11 + Wayland, zero-copy dmabuf → VAAPI, needs `CAP_SYS_ADMIN` and
+misses hardware-cursor planes — the portal-less fallback if PipeWire capture
+proves untenable); **NvFBC** (NVIDIA/X11, fastest, needs the well-known
+driver patch on GeForce); **gpu-screen-recorder** as a capture+encode front
+end — it solves exactly this problem better than raw pipelines do, but piping
+its output to stdout is *not* documented (it targets files and RTMP), so
+adopting it means first establishing whether a pipe is possible at all.
 
 | Acceptance criterion | Verified by |
 |---|---|
 | README gotcha list names the Annex-B publisher path | review |
-| Gio build dependencies documented (they are the honest price of Decision 12) | review |
+| Runtime + build dependencies documented (they are the honest price of Decisions 3, 5 and 14) | review |
 | CLAUDE.md + ROADMAP reflect R14 status | review |
-| Escape hatches recorded with their trade-offs | review |
-| All gates green (`go test ./...`, `go vet`, lint; frontend untouched) | CI |
+| Escape hatches recorded with their trade-offs; pipewiregrab's rejection recorded so nobody re-proposes it unchecked | review |
+| All gates green (both modules' `go test ./...`, `go vet`, lint; frontend untouched) | CI |
 
 ### V8 — direct Vulkan Video encode (Stage 2, gated on V2)
 
-**Entry gate**: V2 established that `h264_vulkan` encodes on the development
-machine and archived a reference bitstream. If it didn't, this chunk does not
-start — direct Vulkan would fail for the same reason, and the delegated
-cascade's `h264_nvenc`/`h264_vaapi` fallback is the answer instead.
+**Entry gate**: V2 established that this machine's driver encodes H.264 via
+Vulkan Video (the `vulkanh264enc` trial and/or the offline `h264_vulkan`
+run) and archived a reference bitstream from the committed y4m fixture. If it
+didn't, this chunk does not start — direct Vulkan would fail for the same
+reason, and the cascade's `nvh264enc`/`vah264enc` are the answer instead.
 
 **This chunk adds a candidate; it does not replace the stack.** Other
 broadcasters run GPUs we can't survey (Decision 4), so direct Vulkan sits at
-the top of the same runtime cascade and every delegated backend stays behind
-it, permanently. V8 shipping does not retire V2.
+the top of the same runtime cascade (above `vulkanh264enc`) and every
+delegated backend stays behind it, permanently. V8 shipping does not retire
+V2.
 
-Replace the encode half only: `pipewiregrab` capture stays with ffmpeg (or
-moves per Decision 19), and `send.go` + the session are untouched — the V1–V3
-seam is what makes this a contained swap rather than a rewrite. Work:
-generate the `VK_KHR_video_encode_queue` / `VK_KHR_video_encode_h264` bindings
-from `vk.xml`; create the video session + session parameters (SPS/PPS built by
-us); dmabuf → `VkImage` import via `VK_EXT_external_memory_dma_buf` +
-`VK_EXT_image_drm_format_modifier`; DPB and reference-list management; rate
-control; drain coded buffers to Annex-B.
+Replace the encode half only: portal + `pipewiresrc` capture stay (the child
+shrinks or, eventually, the dmabuf is imported directly), and `send.go` + the
+session are untouched — the V1–V3 seams are what make this a contained swap
+rather than a rewrite. Work: generate the `VK_KHR_video_encode_queue` /
+`VK_KHR_video_encode_h264` bindings from `vk.xml`; create the video session +
+session parameters (SPS/PPS built by us); dmabuf → `VkImage` import via
+`VK_EXT_external_memory_dma_buf` + `VK_EXT_image_drm_format_modifier`; DPB and
+reference-list management; rate control; drain coded buffers to Annex-B.
 
 **Known risks, stated plainly because they set the schedule, not the typing**:
 
@@ -636,7 +894,7 @@ control; drain coded buffers to Annex-B.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| Direct-Vulkan output decodes to the **same frames** as V2's archived `h264_vulkan` reference for identical input | differential test against the reference bitstream (the oracle that makes this tractable) |
+| On the committed y4m fixture, direct-Vulkan output **decodes cleanly** (reference decoder / `VideoDecoder`), its **PSNR against the source is within a stated ε of the archived reference's PSNR**, and its structure is sane (SPS fields, all-IDR 500 ms GOP, NAL pattern) — *not* byte- or frame-identity, which differing encoder decisions make unachievable even for a perfect implementation | differential test against the fixture + archived reference |
 | Chosen encoder reports `vulkan-direct` in stats; the delegated cascade remains available as fallback at runtime | manual + unit test |
 | A Chrome viewer renders the direct-Vulkan stream with no corruption over a 10-minute heavy-motion session | manual |
 | GPU encode-engine activity confirms hardware use (not a software fallback inside the driver) | manual |
@@ -644,46 +902,81 @@ control; drain coded buffers to Annex-B.
 
 ## Verification plan (manual)
 
-On the Linux gaming PC, Wayland session: launch the GUI → Start → desktop
-portal picker appears → code shown → join from a Chrome viewer on another
-machine. Then, in order: hardware encode confirmed on the GPU's **own** encode
-counter (not ffmpeg's claim); game fps against the browser-broadcaster
-baseline at the same rung; the V4 latency-bias gate; keyframe streams vs delta
-datagrams in `/statusz`; Resume across a relay restart; closing the window
-mid-broadcast leaves no publisher behind; and a heavy-motion scene for
-corruption/freeze behavior (the 500 ms GOP and the viewer's freeze-on-gap
-policy should behave exactly as with the browser broadcaster — if they don't,
-the AU splitter is the first suspect). Repeat the portal + notification path
-on both KDE and GNOME.
+On the Linux gaming PC: launch the GUI → Start → desktop portal picker
+appears (first run only — restart the app and confirm **no picker** on the
+second run) → code shown → join from a Chrome viewer on another machine.
+Then, in order: hardware encode confirmed on the GPU's **own** encode counter
+(not the pipeline's claim); game fps against the browser-broadcaster baseline
+at the same rung; the V4 latency-bias gate at 1080p60; cursor visible;
+keyframe streams vs delta datagrams in `/statusz`; Resume across a relay
+restart (again: no picker); closing the window mid-broadcast leaves no
+publisher behind; a heavy-motion scene for corruption/freeze behavior (the
+500 ms GOP and the viewer's freeze-on-gap policy should behave exactly as
+with the browser broadcaster — if they don't, the TS demux is the first
+suspect); the **no-hardware refusal** message on a machine/VM without a
+usable encoder; and the critical-notification drill (kill the GStreamer child
+while a fullscreen app is focused) on **both KDE and GNOME** — KDE is the one
+whose portal inhibits normal notifications during screencast. Repeat the
+portal + notification path on both desktops; smoke-test an X11 GNOME session
+(the portal works there; don't gate on Wayland).
 
 ## Deferred (wanted, not now)
 
-Cut from scope 2026-07-15 to keep the first version small. Both are additive —
-neither changes the engine, and the research is recorded so it doesn't need
+Cut from scope 2026-07-15 to keep the first version small. All are additive —
+none changes the engine, and the research is recorded so it doesn't need
 redoing:
 
-- **Tray icon.** Would overturn Decision 13 (window-closed currently means
-  not-publishing) and give a background presence for the three hours you're in
-  a game. `fyne.io/systray` is the pick when it comes back: D-Bus
+- **Tray icon.** Would overturn Decision 15 (window-closed currently means
+  not-publishing) and give a background presence for the three hours you're
+  in a game. `fyne.io/systray` is the pick when it comes back: D-Bus
   StatusNotifierItem, and the Fyne fork exists precisely to drop the GTK
   dependency, so it doesn't drag Fyne in. Known integration risk: Gio's
   `app.Main()` must own the main goroutine and blocks, and `systray.Run` also
   blocks — on Linux the SNI backend is pure D-Bus, so a goroutine should
-  serve, but that needs proving.
+  serve, but that needs proving. Note the review's caveat: a tray is *not*
+  a mid-game signal either (you can't see it in a fullscreen game) — the
+  critical-urgency notification (Decision 17) is that channel; the tray's
+  value is background presence, a different feature.
 - **Global start/stop hotkey.** Best-effort at best: the XDG GlobalShortcuts
   portal is implemented on KDE and Hyprland, **still blocked on GNOME**, and
   **absent on wlroots** compositors. So it could never have been load-bearing,
   which is a large part of why it's easy to drop.
+- **Mid-session rung changes** (`SetRung`): cheap now that restarts don't
+  re-prompt the picker (Decision 5), but still a restart with frameId
+  continuity and config re-emit to specify — its own small task if wanted
+  (Decision 9).
+- **A relay→publisher `SubscriberCount` message** (viewer count + "first
+  viewer joined" for both broadcasters): a real wire+relay change, benefiting
+  the browser broadcaster equally — a future roadmap item, not an R14
+  smuggle-in (Decision 18).
 
 ## Rejected
 
-- **Browser flags on Linux** — the evidence above; a five-minute test on
+- **`pipewiregrab` / ffmpeg as the capture vehicle** — not in mainline
+  FFmpeg; an unmerged patchset carried downstream by Jami (verified
+  2026-07-15 against FFmpeg's filter docs and master's `allfilters.c`).
+  Mainline ffmpeg has **no** PipeWire input at all. Do not re-propose without
+  first verifying it actually merged. ffmpeg keeps one job here: generating
+  V8's reference bitstream offline with mainline `h264_vulkan` (≥7.1).
+- **OBS as the media stack** (OBS → local MPEG-TS → Go publisher) — rejected
+  by user decision 2026-07-15: the product must be an easy, simple app with
+  minimal dependencies and no per-user tweaking; OBS is a heavyweight
+  dependency and its own learning surface.
+- **Software encode (`libx264`, or any software rung)** — user decision
+  2026-07-15: hardware encode is the must-have; the browser broadcaster
+  already covers software encode on Linux without issues. The app refuses
+  and points there instead.
+- **Browser flags on Linux** — the evidence in "Why"; a five-minute test on
   Intel/AMD is fine, but it is not a path.
 - **CLI only** — a broadcaster you drive by remembering flag names is not one
   you use before a gaming session. The CLI stays as the engine's harness and
   headless path, not as the product.
-- **Fyne / Wails v3 / GTK4** — Decision 12.
-- **Direct VAAPI** — Decision 17. Worth restating because it is the seductive
+- **Fyne / Wails v3 / GTK4** — Decision 14.
+- **`gioui.org/x/notify`** — Decision 17: experimental *and* no urgency
+  control, and urgency is load-bearing on KDE (screencast notification
+  inhibition). Direct `godbus` costs nothing extra — it's already in for the
+  portal.
+- **Direct VAAPI** — Decision 21. Worth restating because it is the seductive
   wrong answer: VAAPI *looks* like the vendor-neutral Linux standard, and it
   is the exact API whose NVIDIA gap put us here. Chromium is VAAPI-only on
   Linux; that is why Chromium cannot encode on NVIDIA. Vulkan Video is the
@@ -695,4 +988,9 @@ redoing:
   capture+encode → localhost WebSocket → page does WebTransport) — all the
   native complexity, plus a browser, plus a hop, to keep a UI we don't need on
   this path.
+- **`go-gst` / in-process GStreamer, `go-astiav`** — Decision 3: crash
+  isolation is the point of the subprocess.
+- **Raw Annex-B over the pipe + AUD splitting** — superseded by Decision 7's
+  MPEG-TS framing (structural AU boundaries, in-band parameter sets, PTS for
+  free); the original design risked building both framing layers.
 - **WebRTC/MoQ** — unchanged from CLAUDE.md.
