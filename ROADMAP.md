@@ -31,7 +31,7 @@ feature set exists).
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
-| R12 | [Advanced broadcaster settings](#r12--advanced-broadcaster-settings) | designed 2026-07-15, not started ([docs/17](docs/17-advanced-broadcaster-settings.md)) |
+| R12 | [Advanced broadcaster settings](#r12--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/17](docs/17-advanced-broadcaster-settings.md)) |
 
 ---
 
@@ -645,7 +645,12 @@ HW-supported config *up front* matters more than reacting later.
   truth).
 - Zero server / wire / viewer changes.
 
-**Status**: designed 2026-07-15 (chunks L1–L5); not started.
+**Status**: implemented 2026-07-15 (chunks L1–L5; probe matrix, encoder
+tri-state + overrides, HW-aware auto ceiling + 'auto' fps, capture
+alignment, annotated pickers + advanced settings panel + overlay rows). All
+automated gates green; zero server changes. Manual browser verify pending —
+see the docs/17 verification plan, including the applyConstraints spike
+outcome on the real gaming PC (Chrome worker path) and Firefox.
 
 ---
 

@@ -1,7 +1,31 @@
 # R12 — Advanced broadcaster settings
 
-**Status**: designed 2026-07-15; not started. Supersedes R7
+**Status**: implemented 2026-07-15 (chunks L1–L5); all automated gates green
+(40 test files / 399 tests, tsc build, lint; zero server changes). **Manual
+browser verify pending** — including the L3 spike outcome (does
+`applyConstraints` downscaling actually take effect on a display-capture
+track, and on a transferred clone inside the broadcast worker? The seam
+ships either way: the preprocessor safety net covers under-delivery, so a
+"no" only forfeits the capture-cost saving). Supersedes R7
 (hardware-supported controls & capture constraints), which is absorbed here.
+
+**Implementation notes (2026-07-15)**:
+- The probe-unavailable case (no `VideoEncoder` in scope — jsdom, exotic
+  browsers) keeps the pre-R12 optimistic defaults (`probeSupported()` gate:
+  ceiling native, auto fps 30) — an unavailable probe must not clamp
+  behavior (Decision 13 applied one level up).
+- Matrix refinement from real frame dims is **upward-only** (monotonic max):
+  re-probing at our own constrained dims would feed the ceiling its own
+  output (constrain → smaller frames → lower ceiling → …). A window-share
+  that *shrinks* therefore keeps the larger-dims matrix — conservative in
+  the safe direction.
+- The pipeline awaits the initial (pre-capture, 4K upper bound) matrix in
+  `start()` between connect and media, so the first encoder init already
+  sees the ceiling; refinements and mode/codec re-probes are fire-and-forget
+  with a generation guard.
+- The store keeps the `gawk.framerateRung` localStorage key for the widened
+  `framerateSelection` field, so persisted explicit rungs survive the R12
+  upgrade byte-for-byte.
 
 ## Goal
 
