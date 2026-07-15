@@ -24,7 +24,9 @@ export type ViewerWorkerCommand =
   // R5 Q3 + R12 T2: set the playout mode in the worker's context (the reorder
   // buffer and pipeline read it live, so this works mid-session and across
   // reconnects).
-  | { type: 'playout'; mode: PlayoutMode };
+  | { type: 'playout'; mode: PlayoutMode }
+  // R12 T4: the experimental frame-interpolation toggle, same crossing.
+  | { type: 'interpolation'; enabled: boolean };
 
 // Worker → main thread. Small control/telemetry messages only — decoded frames
 // are drawn in the worker and never appear here.

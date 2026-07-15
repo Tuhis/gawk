@@ -99,6 +99,12 @@ export class WorkerViewerController {
     this.post({ type: 'playout', mode });
   }
 
+  // R12 T4: the experimental interpolation toggle, same crossing semantics.
+  setInterpolation(enabled: boolean): void {
+    if (this.disposed) return;
+    this.post({ type: 'interpolation', enabled });
+  }
+
   dispose(): void {
     this.disposed = true;
     this.worker.terminate();

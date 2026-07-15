@@ -13,6 +13,7 @@ import {
   type ViewerTransportFactory,
   type ViewerTransportKind,
 } from './viewer-transport';
+import { getInterpolationEnabled } from './interpolation';
 import { LiveEdgeTracker } from './live-edge';
 import {
   getPlayoutMode,
@@ -97,6 +98,11 @@ export interface ViewerStats extends ReassemblerStats {
   // screen draws there, not the pipeline).
   playoutMode: PlayoutMode;
   presentation: 'paced-raf' | 'paced-timer' | 'immediate' | null;
+  // R12 T4: experimental frame interpolation — 'on'/'off' when available
+  // (WebGL2 sink + adaptive mode), null when this pipeline can't offer it
+  // (main-thread path, non-WebGL2 sink, or playout not adaptive). The menu
+  // shows the toggle only when non-null.
+  interpolation: 'on' | 'off' | null;
   // R12 T1 (docs/17): jitter, per stats window. Render cadence = how much the
   // paint intervals deviate from the frames' capture intervals (σ + p95 of
   // |err|; ≡0 for perfect pacing at any fps) — worker path only, null on the
@@ -594,6 +600,12 @@ export class ViewerPipeline {
             : 'paced-raf'
           : 'immediate'
         : null,
+      interpolation:
+        this.renderSink?.supportsInterpolation && getPlayoutMode() === 'adaptive'
+          ? getInterpolationEnabled()
+            ? 'on'
+            : 'off'
+          : null,
       renderCadenceStdDevMs: cadence?.stdDevMs ?? null,
       renderCadenceP95Ms: cadence?.p95Ms ?? null,
       arrivalJitterMs,

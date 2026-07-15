@@ -34,6 +34,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         // R12 T2: where presentation happens — paced (adaptive mode, on rAF
         // or the degraded timer fallback) or immediate (live-edge/fixed).
         ['Presentation', stats?.presentation === 'paced-raf' ? 'Paced (rAF)' : stats?.presentation === 'paced-timer' ? 'Paced (timer)' : stats?.presentation === 'immediate' ? 'Immediate' : '—'],
+        // R12 T4: the experimental interpolation state; "—" where the
+        // pipeline can't offer it.
+        ['Interpolation', stats?.interpolation === 'on' ? 'On (blend)' : stats?.interpolation === 'off' ? 'Off' : '—'],
         ['Received fps', fmt(stats?.receivedFps ?? NaN)],
         ['Decoder fps', fmt(stats?.decoderFps ?? NaN)],
         ['Rendered fps', fmtOr(stats?.renderedFps)],

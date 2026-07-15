@@ -6,10 +6,11 @@
 // given), WebGLRenderSink uploads via texImage2D, and createRenderSink
 // composes them with a 2D fallback.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CadenceRecorder,
   DisplayIntervalEstimator,
+  InterpolatingWebGLRenderSink,
   MAX_HELD_FRAMES,
   OffscreenCanvasRenderSink,
   PacedPresentationSink,
@@ -17,6 +18,9 @@ import {
   createRenderSink,
   type RenderSink,
 } from './render-sink';
+import { setInterpolationEnabled } from './interpolation';
+
+afterEach(() => setInterpolationEnabled(false));
 
 // Fake OffscreenCanvas whose width/height are accessors so we can count writes
 // (a plain data property can't distinguish "assigned same value" from "skipped").
@@ -70,7 +74,12 @@ function fakeGL({ contextLost = false } = {}) {
     RGBA: 15,
     UNSIGNED_BYTE: 16,
     TRIANGLE_STRIP: 17,
+    TEXTURE0: 33984,
     createProgram: vi.fn(() => ({})),
+    activeTexture: vi.fn(),
+    getUniformLocation: vi.fn(() => ({})),
+    uniform1i: vi.fn(),
+    uniform1f: vi.fn(),
     createShader: vi.fn(() => ({})),
     shaderSource: vi.fn(),
     compileShader: vi.fn(),
@@ -529,5 +538,154 @@ describe('createRenderSink (R10 P2)', () => {
     const { canvas } = fakeCanvas((type) => (type === 'webgl2' ? gl : null));
     const sink = createRenderSink(canvas, (cb) => cb());
     expect(sink.kind).toBe('2d');
+  });
+});
+
+// R12 T4 (docs/17 Decision 7): the interpolating WebGL sink — decoupled
+// upload/present over two ping-pong textures with a blend shader.
+describe('InterpolatingWebGLRenderSink (R12 T4)', () => {
+  it('draw() uploads and presents like a plain WebGL sink', () => {
+    const { canvas } = fakeCanvas();
+    const gl = fakeGL();
+    const sink = new InterpolatingWebGLRenderSink(canvas, gl);
+    const frame = fakeFrame(1280, 720);
+
+    sink.draw(frame);
+
+    expect(gl.texImage2D).toHaveBeenCalledTimes(1);
+    expect(gl.drawArrays).toHaveBeenCalledTimes(1);
+    expect(frame.close).toHaveBeenCalledTimes(1);
+    expect(sink.drawnFrames()).toBe(1);
+    expect(sink.kind).toBe('webgl');
+  });
+
+  it('upload() takes ownership without painting; present() paints', () => {
+    const { canvas } = fakeCanvas();
+    const gl = fakeGL();
+    const sink = new InterpolatingWebGLRenderSink(canvas, gl);
+    const frame = fakeFrame(640, 480);
+
+    sink.upload(frame);
+    expect(frame.close).toHaveBeenCalledTimes(1);
+    expect(gl.drawArrays).not.toHaveBeenCalled();
+    expect(sink.drawnFrames()).toBe(0);
+
+    sink.present(0.5);
+    expect(gl.drawArrays).toHaveBeenCalledTimes(1);
+    expect(sink.drawnFrames()).toBe(1);
+  });
+
+  it('forces alpha 1 until two same-sized frames are in (nothing to blend)', () => {
+    const { canvas } = fakeCanvas();
+    const gl = fakeGL();
+    const sink = new InterpolatingWebGLRenderSink(canvas, gl);
+
+    sink.upload(fakeFrame(640, 480));
+    sink.present(0.5); // only one frame in: must not half-blend garbage
+    expect(gl.uniform1f).toHaveBeenLastCalledWith(expect.anything(), 1);
+
+    sink.upload(fakeFrame(640, 480));
+    sink.present(0.5);
+    expect(gl.uniform1f).toHaveBeenLastCalledWith(expect.anything(), 0.5);
+  });
+
+  it('a resolution change invalidates the previous texture', () => {
+    const { canvas } = fakeCanvas();
+    const gl = fakeGL();
+    const sink = new InterpolatingWebGLRenderSink(canvas, gl);
+    sink.upload(fakeFrame(640, 480));
+    sink.upload(fakeFrame(640, 480));
+    sink.upload(fakeFrame(1280, 720)); // mid-stream ladder change
+    sink.present(0.5);
+    expect(gl.uniform1f).toHaveBeenLastCalledWith(expect.anything(), 1);
+  });
+});
+
+// R12 T4: the paced sink's α-slot scheduling — a synthesized mid frame
+// between two consecutive real slots, only when the next frame is in hand.
+describe('PacedPresentationSink interpolation (R12 T4)', () => {
+  function interpHarness() {
+    const events: string[] = [];
+    const raw = {
+      kind: 'webgl' as const,
+      draw: vi.fn((f: VideoFrame) => {
+        events.push('draw');
+        f.close();
+      }),
+      drawnFrames: () => 0,
+      upload: vi.fn((f: VideoFrame) => {
+        events.push(`upload:${(f as { timestamp?: number }).timestamp ?? 0}`);
+        f.close();
+      }),
+      present: vi.fn((a: number) => events.push(`present:${a}`)),
+    };
+    const sched = manualSchedule();
+    const clock = { t: 1000 };
+    const paced = new PacedPresentationSink(raw as unknown as RenderSink, sched.schedule, () => clock.t);
+    return { paced, events, sched, clock };
+  }
+
+  it('reports interpolation support from the inner sink', () => {
+    const { paced } = interpHarness();
+    expect(paced.supportsInterpolation).toBe(true);
+    const { paced: plain } = pacedHarness();
+    expect(plain.supportsInterpolation).toBe(false);
+  });
+
+  it('synthesizes a mid frame between two consecutive slots (30→60)', () => {
+    setInterpolationEnabled(true);
+    const { paced, events, sched, clock } = interpHarness();
+
+    paced.draw(fakeFrame(640, 480, 0), 1000);
+    sched.fire(); // slot 1000: real frame via upload + present(1)
+    expect(events).toEqual(['upload:0', 'present:1']);
+
+    paced.draw(fakeFrame(640, 480, 33_333), 1033);
+    clock.t = 1016; // the mid slot (1016.5) is due, the real slot (1033) is not
+    sched.fire();
+    expect(events).toEqual(['upload:0', 'present:1', 'upload:33333', 'present:0.5']);
+
+    clock.t = 1033; // the real slot: present from the already-uploaded texture
+    sched.fire();
+    expect(events).toEqual(['upload:0', 'present:1', 'upload:33333', 'present:0.5', 'present:1']);
+  });
+
+  it('does not synthesize across a wide gap (stall/resync)', () => {
+    setInterpolationEnabled(true);
+    const { paced, events, sched, clock } = interpHarness();
+
+    paced.draw(fakeFrame(640, 480, 0), 1000);
+    sched.fire();
+    paced.draw(fakeFrame(640, 480, 200_000), 1200); // 200 ms later — a stall
+    clock.t = 1100;
+    sched.fire();
+    expect(events.filter((e) => e === 'present:0.5')).toHaveLength(0);
+    clock.t = 1200;
+    sched.fire();
+    expect(events[events.length - 1]).toBe('present:1'); // real slot still presents
+  });
+
+  it('uses the plain draw path when the toggle is off', () => {
+    const { paced, events, sched, clock } = interpHarness();
+    paced.draw(fakeFrame(640, 480, 0), 1000);
+    clock.t = 1000;
+    sched.fire();
+    expect(events).toEqual(['draw']);
+  });
+
+  it('flush() forgets the last slot — no mid frame across a resync', () => {
+    setInterpolationEnabled(true);
+    const { paced, events, sched, clock } = interpHarness();
+    paced.draw(fakeFrame(640, 480, 0), 1000);
+    sched.fire();
+    paced.flush();
+
+    paced.draw(fakeFrame(640, 480, 33_333), 1033);
+    clock.t = 1016;
+    sched.fire(); // would be the mid slot, but the left edge is gone
+    expect(events.filter((e) => e === 'present:0.5')).toHaveLength(0);
+    clock.t = 1033;
+    sched.fire();
+    expect(events[events.length - 1]).toBe('present:1');
   });
 });

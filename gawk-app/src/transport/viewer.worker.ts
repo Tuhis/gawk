@@ -5,6 +5,7 @@
 //
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
+import { setInterpolationEnabled } from './interpolation';
 import { setPlayoutMode } from './playout';
 import { createRenderSink, type RenderSink } from './render-sink';
 import {
@@ -75,6 +76,10 @@ ctx.onmessage = (e: MessageEvent) => {
       // instead of letting it wait out a schedule that no longer applies.
       setPlayoutMode(cmd.mode);
       if (cmd.mode !== 'adaptive') sink?.flush?.(true);
+      break;
+    case 'interpolation':
+      // R12 T4: read live by the paced sink on every tick.
+      setInterpolationEnabled(cmd.enabled);
       break;
   }
 };

@@ -24,6 +24,16 @@ const CONTROL_IDLE_MS = 3000;
 // "Smooth playback") migrates to 'fixed'.
 const PLAYOUT_MODE_KEY = 'gawk:playout-mode';
 const LEGACY_SMOOTHED_KEY = 'gawk:smoothed-playout';
+// R12 T4: the experimental frame-interpolation preference.
+const INTERPOLATION_KEY = 'gawk:interpolation';
+
+function loadInterpolation(): boolean {
+  try {
+    return localStorage.getItem(INTERPOLATION_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 function loadPlayoutMode(): PlayoutMode {
   try {
@@ -70,10 +80,26 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // The connection (worker-offloaded when supported, main-thread otherwise)
   // owns decode + render and reports back only view state — no VideoFrame ever
   // reaches this component (R8 S6).
+  // R12 T4: experimental frame interpolation — only offered when the
+  // pipeline reports it available (WebGL2 worker sink + adaptive mode).
+  const [interpolation, setInterpolation] = useState(loadInterpolation);
+  const toggleInterpolation = useCallback(() => {
+    setInterpolation((on) => {
+      const next = !on;
+      try {
+        localStorage.setItem(INTERPOLATION_KEY, next ? '1' : '0');
+      } catch {
+        // private mode etc. — the toggle still works for this session
+      }
+      return next;
+    });
+  }, []);
+
   const { status, stats, codec, error, errorFatal, retryNote } = useViewerConnection(
     broadcastId,
     canvasRef,
     playoutMode,
+    interpolation,
   );
 
   const [showStats, setShowStats] = useState(false);
@@ -130,6 +156,19 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         playoutMode === 'adaptive' ? 'Paced playback (adaptive) ✓' : 'Paced playback (adaptive)',
       onSelect: () => togglePlayoutMode('adaptive'),
     },
+    // R12 T4: only offered where the pipeline can actually interpolate
+    // (stats.interpolation is null on the main-thread path, non-WebGL2 sinks,
+    // and outside adaptive mode).
+    ...(playoutMode === 'adaptive' && stats?.interpolation != null
+      ? [
+          {
+            label: interpolation
+              ? 'Frame interpolation (experimental) ✓'
+              : 'Frame interpolation (experimental)',
+            onSelect: toggleInterpolation,
+          },
+        ]
+      : []),
     { label: 'Copy link', onSelect: copyLink },
     { label: 'Leave', onSelect: leave },
   ];

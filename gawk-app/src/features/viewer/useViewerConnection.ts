@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { RECONNECT_MAX_ATTEMPTS, ViewerSession } from '../../transport/viewer-session';
+import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
 import { setPlayoutMode as setLocalPlayoutMode, type PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import type { ViewerWorkerEvent } from '../../transport/viewer-worker-core';
@@ -39,6 +40,9 @@ export function useViewerConnection(
   // R5 Q3 + R12 T2: the opt-in playout mode. Applied to whichever context
   // the pipeline runs in (worker command / main-thread module), live.
   playoutMode: PlayoutMode = 'off',
+  // R12 T4: the experimental frame-interpolation toggle (only effective on a
+  // WebGL2 worker sink in adaptive mode; harmless elsewhere).
+  interpolation = false,
 ): ViewerConnectionState {
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [stats, setStats] = useState<ViewerStats | null>(null);
@@ -142,6 +146,12 @@ export function useViewerConnection(
     if (useWorker) controllerRef.current?.setPlayoutMode(playoutMode);
     else setLocalPlayoutMode(playoutMode);
   }, [useWorker, playoutMode]);
+
+  // R12 T4: interpolation, same live-crossing pattern.
+  useEffect(() => {
+    if (useWorker) controllerRef.current?.setInterpolation(interpolation);
+    else setLocalInterpolation(interpolation);
+  }, [useWorker, interpolation]);
 
   // ---- Main-thread fallback path -------------------------------------------
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);

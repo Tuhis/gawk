@@ -10,6 +10,7 @@ const { sessions, FakeViewerSession } = vi.hoisted(() => {
   interface Cbs {
     onConnected: () => void;
     onReconnecting: (i: { attempt: number; reason: string }) => void;
+    onStats: (s: unknown) => void;
     onError: (e: Error) => void;
     onEnded: () => void;
   }
@@ -151,6 +152,31 @@ describe('ViewerScreen playout modes', () => {
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutMode()).toBe('fixed');
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+    cleanupPlayout();
+  });
+
+  // R12 T4: the experimental interpolation toggle appears only when the
+  // pipeline reports it available (stats.interpolation non-null) in
+  // adaptive mode, and persists like the other toggles.
+  it('offers frame interpolation only when the pipeline reports it available', async () => {
+    cleanupPlayout();
+    localStorage.removeItem('gawk:interpolation');
+    localStorage.setItem('gawk:playout-mode', 'adaptive');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    openMenu();
+    expect(screen.queryByText(/Frame interpolation/)).toBeNull(); // no stats yet
+
+    act(() => sessions[0].cbs.onStats({ interpolation: 'off' }));
+    expect(screen.getByText('Frame interpolation (experimental)')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Frame interpolation (experimental)'));
+    expect(localStorage.getItem('gawk:interpolation')).toBe('1');
+    openMenu();
+    expect(screen.getByText('Frame interpolation (experimental) ✓')).toBeTruthy();
+
+    localStorage.removeItem('gawk:interpolation');
     cleanupPlayout();
   });
 });

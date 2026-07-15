@@ -16,6 +16,7 @@
 // owner — the pipeline never touches the frame again).
 
 import { log } from '../lib/logger';
+import { getInterpolationEnabled, midSlotMs } from './interpolation';
 
 // Which context ultimately paints — surfaced in ViewerStats.renderer so
 // "is your Firefox actually on the WebGL sink?" is answerable remotely.
@@ -40,6 +41,22 @@ export interface RenderSink {
   // resync, stop); presentNewest paints the newest held frame first (mode
   // toggled off — don't let it wait out a schedule that no longer applies).
   flush?(presentNewest?: boolean): void;
+  // R12 T4: whether this sink can synthesize interpolated frames (the
+  // WebGL2 two-texture path) — gates the experimental toggle's visibility.
+  readonly supportsInterpolation?: boolean;
+}
+
+// R12 T4: what the paced sink needs from an interpolation-capable inner sink.
+interface InterpolatingInner {
+  upload(frame: VideoFrame): void;
+  present(alpha: number): void;
+}
+
+function asInterpolating(sink: RenderSink): (RenderSink & InterpolatingInner) | null {
+  const s = sink as RenderSink & Partial<InterpolatingInner>;
+  return typeof s.upload === 'function' && typeof s.present === 'function'
+    ? (s as RenderSink & InterpolatingInner)
+    : null;
 }
 
 // Presentation-cadence error per stats window (R12 T1, docs/17 Decision 1).
@@ -221,6 +238,121 @@ export class WebGLRenderSink implements RenderSink {
   }
 }
 
+// R12 T4 (docs/17 Decision 7): the interpolating WebGL sink — two ping-pong
+// textures (previous + current frame) and a linear-blend fragment shader.
+// upload() is decoupled from present(): the paced sink uploads the NEXT real
+// frame early to synthesize a mid frame (present(0.5) = blend of the frame
+// on screen and the one in hand), then presents the real frame from the
+// already-uploaded texture (present(1)). Plain draw() = upload + present(1),
+// so this sink is a drop-in WebGLRenderSink when interpolation is off.
+// WebGL2-only by policy (createContextSink); T5 swaps the blend for
+// motion-estimated warping behind the same two methods.
+const BLEND_FRAGMENT_SHADER = `
+precision mediump float;
+varying vec2 uv;
+uniform sampler2D prevTex;
+uniform sampler2D currTex;
+uniform float alphaMix;
+void main() {
+  gl_FragColor = mix(texture2D(prevTex, uv), texture2D(currTex, uv), alphaMix);
+}`;
+
+export class InterpolatingWebGLRenderSink implements RenderSink {
+  readonly kind: RenderSinkKind = 'webgl';
+  private canvas: OffscreenCanvas;
+  private gl: GL;
+  private drawn = 0;
+  private currUnit = 0; // texture unit holding the newest uploaded frame
+  private uploads = 0;
+  private prevValid = false; // false until two same-sized frames are in
+  private prevTexLoc: WebGLUniformLocation | null;
+  private currTexLoc: WebGLUniformLocation | null;
+  private alphaLoc: WebGLUniformLocation | null;
+
+  constructor(canvas: OffscreenCanvas, gl: GL) {
+    this.canvas = canvas;
+    this.gl = gl;
+
+    const program = gl.createProgram();
+    if (!program) throw new Error('WebGL createProgram failed');
+    gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER));
+    gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, BLEND_FRAGMENT_SHADER));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(`WebGL program link failed: ${gl.getProgramInfoLog(program) ?? ''}`);
+    }
+    gl.useProgram(program);
+
+    const quad = gl.createBuffer();
+    if (!quad) throw new Error('WebGL createBuffer failed');
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const pos = gl.getAttribLocation(program, 'pos');
+    gl.enableVertexAttribArray(pos);
+    gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+
+    for (const unit of [0, 1]) {
+      const texture = gl.createTexture();
+      if (!texture) throw new Error('WebGL createTexture failed');
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+    this.prevTexLoc = gl.getUniformLocation(program, 'prevTex');
+    this.currTexLoc = gl.getUniformLocation(program, 'currTex');
+    this.alphaLoc = gl.getUniformLocation(program, 'alphaMix');
+  }
+
+  // Takes ownership of the frame: uploads it into the "current" texture
+  // (the old current becomes "previous") and closes it. Does not paint.
+  upload(frame: VideoFrame): void {
+    const gl = this.gl;
+    try {
+      if (gl.isContextLost()) return;
+      const canvas = this.canvas;
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        // A resolution change makes the previous texture unblendable.
+        this.uploads = 0;
+      }
+      this.currUnit = 1 - this.currUnit;
+      gl.activeTexture(gl.TEXTURE0 + this.currUnit);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+      this.uploads++;
+      this.prevValid = this.uploads >= 2;
+    } finally {
+      frame.close();
+    }
+  }
+
+  // Paints mix(previous, current, alpha): 1 = the current (real) frame,
+  // 0.5 = the synthesized mid frame. Falls back to the current frame while
+  // no valid previous texture exists.
+  present(alpha: number): void {
+    const gl = this.gl;
+    if (gl.isContextLost()) return;
+    gl.uniform1i(this.currTexLoc, this.currUnit);
+    gl.uniform1i(this.prevTexLoc, this.prevValid ? 1 - this.currUnit : this.currUnit);
+    gl.uniform1f(this.alphaLoc, this.prevValid ? alpha : 1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this.drawn++;
+  }
+
+  draw(frame: VideoFrame): void {
+    this.upload(frame);
+    this.present(1);
+  }
+
+  drawnFrames(): number {
+    return this.drawn;
+  }
+}
+
 function compileShader(gl: GL, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
   if (!shader) throw new Error('WebGL createShader failed');
@@ -306,6 +438,12 @@ export class PacedPresentationSink implements RenderSink {
   private immediate: VideoFrame | null = null;
   private tickScheduled = false;
   private dropped = 0;
+  // R12 T4: the interpolation-capable view of the inner sink (null = plain).
+  private interpolating: (RenderSink & InterpolatingInner) | null;
+  // The last REAL frame's display slot — the left edge of a mid slot.
+  private lastPresentedTarget: number | null = null;
+  // A real frame uploaded early for a mid blend; its own slot still pends.
+  private uploadedNext: { targetDisplayMs: number; timestampUs: number } | null = null;
 
   constructor(
     inner: RenderSink,
@@ -318,6 +456,11 @@ export class PacedPresentationSink implements RenderSink {
     this.schedule = schedule;
     this.now = now;
     this.scheduleKind = scheduleKind;
+    this.interpolating = asInterpolating(inner);
+  }
+
+  get supportsInterpolation(): boolean {
+    return this.interpolating !== null;
   }
 
   draw(frame: VideoFrame, targetDisplayMs?: number): void {
@@ -340,6 +483,8 @@ export class PacedPresentationSink implements RenderSink {
   }
 
   flush(presentNewest = false): void {
+    this.uploadedNext = null;
+    this.lastPresentedTarget = null;
     // The newest frame overall: a pending immediate frame arrived after any
     // held paced one (mixing only happens across a mode switch).
     let newest = this.immediate;
@@ -377,18 +522,20 @@ export class PacedPresentationSink implements RenderSink {
     this.tickScheduled = false;
     const now = this.now();
     this.display.recordTick(now);
+    const dueBy = now + this.display.intervalMs() / 2;
 
     if (this.immediate) {
       // An ASAP frame paints this tick; held paced frames keep their slots
       // and are handled next tick (16 ms — mixing is a mode-switch transient).
       const frame = this.immediate;
       this.immediate = null;
+      this.uploadedNext = null; // superseded by the newer ASAP frame
+      this.lastPresentedTarget = null; // no slot to interpolate from
       this.paint(frame);
     } else {
       // Held frames are in decode order with monotonic targets: the due ones
       // are a prefix. The newest due frame wins; older due frames missed
       // their slot to it and close unseen.
-      const dueBy = now + this.display.intervalMs() / 2;
       let dueCount = 0;
       while (dueCount < this.held.length && this.held[dueCount].targetDisplayMs <= dueBy) {
         dueCount++;
@@ -400,11 +547,54 @@ export class PacedPresentationSink implements RenderSink {
           h.frame.close();
           this.dropped++;
         }
-        this.paint(winner.frame);
+        this.uploadedNext = null; // a newer real frame supersedes its slot
+        this.presentReal(winner.frame, winner.targetDisplayMs);
+      } else if (this.uploadedNext && this.uploadedNext.targetDisplayMs <= dueBy) {
+        // The early-uploaded frame's own slot: present it from its texture.
+        const { targetDisplayMs, timestampUs } = this.uploadedNext;
+        this.uploadedNext = null;
+        if (this.interpolating) {
+          this.cadence.record(timestampUs, this.now());
+          this.interpolating.present(1);
+          this.lastPresentedTarget = targetDisplayMs;
+        }
+      } else if (this.held.length > 0 && this.uploadedNext === null) {
+        // R12 T4: mid slot — synthesize a frame halfway between the one on
+        // screen and the next one already in hand (opportunistic: a missing
+        // next frame simply means no interpolation this interval).
+        const interp = getInterpolationEnabled() ? this.interpolating : null;
+        const next = this.held[0];
+        const mid = interp ? midSlotMs(this.lastPresentedTarget, next.targetDisplayMs) : null;
+        if (interp && mid !== null && mid <= dueBy) {
+          this.held.shift();
+          this.uploadedNext = {
+            targetDisplayMs: next.targetDisplayMs,
+            timestampUs: next.frame.timestamp,
+          };
+          interp.upload(next.frame); // takes ownership, closes the frame
+          interp.present(0.5);
+          // Synthesized presents don't move lastPresentedTarget — real
+          // slots anchor the mid computation and the cadence metric.
+        }
       }
     }
 
-    if (this.held.length > 0 || this.immediate) this.ensureTick();
+    if (this.held.length > 0 || this.immediate || this.uploadedNext) this.ensureTick();
+  }
+
+  // A real frame's slot: through the interpolation path when it is both
+  // available and enabled (so the previous-frame texture stays warm), the
+  // plain inner draw otherwise.
+  private presentReal(frame: VideoFrame, targetDisplayMs: number): void {
+    this.cadence.record(frame.timestamp, this.now());
+    const interp = getInterpolationEnabled() ? this.interpolating : null;
+    if (interp) {
+      interp.upload(frame);
+      interp.present(1);
+    } else {
+      this.inner.draw(frame);
+    }
+    this.lastPresentedTarget = targetDisplayMs;
   }
 
   private paint(frame: VideoFrame): void {
@@ -430,13 +620,29 @@ export function createRenderSink(
 
 function createContextSink(canvas: OffscreenCanvas): RenderSink {
   const opts = { alpha: false, antialias: false, depth: false, stencil: false };
-  const gl = (canvas.getContext('webgl2', opts) ??
-    canvas.getContext('webgl', opts)) as GL | null;
-  if (gl) {
+  // WebGL2 gets the interpolation-capable sink (R12 T4 — WebGL2-only by
+  // policy); its plain draw() path is identical to WebGLRenderSink, so this
+  // costs nothing when the experimental toggle is off.
+  const gl2 = canvas.getContext('webgl2', opts) as GL | null;
+  if (gl2) {
     try {
-      return new WebGLRenderSink(canvas, gl);
+      return new InterpolatingWebGLRenderSink(canvas, gl2);
     } catch (e) {
-      log.warn('WebGL render sink init failed; falling back to 2D:', e);
+      log.warn('WebGL2 interpolating sink init failed; trying plain WebGL:', e);
+      try {
+        return new WebGLRenderSink(canvas, gl2);
+      } catch (e2) {
+        log.warn('WebGL render sink init failed; falling back to 2D:', e2);
+      }
+    }
+  } else {
+    const gl = canvas.getContext('webgl', opts) as GL | null;
+    if (gl) {
+      try {
+        return new WebGLRenderSink(canvas, gl);
+      } catch (e) {
+        log.warn('WebGL render sink init failed; falling back to 2D:', e);
+      }
     }
   }
   return new OffscreenCanvasRenderSink(canvas);

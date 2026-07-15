@@ -45,6 +45,7 @@ function fullStats(): ViewerStats {
     playoutOffsetMs: 0,
     playoutMode: 'off',
     presentation: 'immediate',
+    interpolation: 'off',
     renderCadenceStdDevMs: 3.2,
     renderCadenceP95Ms: 9.1,
     arrivalJitterMs: 12,
@@ -93,6 +94,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('8.4 ms');
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
     expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('Immediate');
+    expect(screen.getByText('Interpolation').nextSibling?.textContent).toBe('Off');
     // R12 T1: the jitter rows.
     expect(screen.getByText('Render cadence σ').nextSibling?.textContent).toBe('3.2 ms');
     expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('12 ms');
@@ -115,7 +117,7 @@ describe('StatsOverlay', () => {
     // R12 T2: adaptive mode shows the live offset and the pacing placement.
     render(
       <StatsOverlay
-        stats={{ ...fullStats(), playoutMode: 'adaptive', playoutOffsetMs: 187, presentation: 'paced-raf' }}
+        stats={{ ...fullStats(), playoutMode: 'adaptive', playoutOffsetMs: 187, presentation: 'paced-raf', interpolation: 'on' }}
         codec="vp8"
         bitrateBps={null}
         onClose={() => {}}
@@ -125,6 +127,7 @@ describe('StatsOverlay', () => {
     );
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('adaptive (+187 ms)');
     expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('Paced (rAF)');
+    expect(screen.getByText('Interpolation').nextSibling?.textContent).toBe('On (blend)');
   });
 
   it('renders — for everything when stats are absent or degraded', () => {
@@ -142,6 +145,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Decode jitter σ').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Interpolation').nextSibling?.textContent).toBe('—');
 
     cleanup();
     // Connection-less stats (Firefox: no getStats) degrade only the network rows.
