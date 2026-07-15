@@ -30,6 +30,7 @@ feature set exists).
 | R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
+| R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 📐 designed 2026-07-15 (T1–T6), not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 
 ---
 
@@ -589,6 +590,36 @@ seam refactor in `capture.ts`/`broadcaster.ts`). All automated gates green
 (23 new tests). Manual browser verify pending — see the doc's verification
 plan (Chrome worker path + funnel-rate baseline comparison, Firefox fallback,
 main-thread CPU-throttle kill test).
+
+---
+
+## R12 — Viewer playback smoothing
+
+**Goal**: reduce residual playback judder beyond R5's fixed-offset smoothing,
+in three layers: (1) a **jitter measurement foundation** (presentation-cadence
+error measured at the actual paint, arrival-jitter percentiles, decode
+jitter — so acceptance criteria are numbers); (2) a new, separate opt-in
+**"Paced playback (adaptive)"** mode — sub-frame-accurate presentation pacing
+(a `PacedPresentationSink` holding ≤3 decoded frames to vsync-aligned target
+times, subsuming `CoalescingRenderSink`) with a jitter-tracked adaptive
+playout offset (clamp(p95 − min + headroom, 50–350 ms), asymmetric slew)
+instead of the fixed 150 ms; and (3) **experimental frame interpolation**
+(WebGL2 block-matching optical-flow-lite, 30 → 60 fps) with a pre-registered
+kill criterion — a documented rejection is a valid completion.
+
+**Why now**: the docs/15 non-goal ("sub-frame presentation pacing — worth
+revisiting if Q4 measures visible judder with smoothing on") is deliberately
+re-opened, measurement-first. The existing "Smooth playback" (fixed 150 ms)
+toggle is preserved as-is; the new machinery is a separate viewer opt-in
+(user decision 2026-07-15). FEC and keyframe-burst taming were surveyed in
+this design round and not selected — candidate future items.
+
+**Scope**: client-only, zero server/wire changes; live-edge stays the
+default; every drop/resync policy fires unchanged in every mode. Chunks
+T1–T6 (T4/T5 interpolation droppable as a unit). Full design in
+[`docs/17-viewer-playback-smoothing.md`](docs/17-viewer-playback-smoothing.md).
+
+**Status**: designed 2026-07-15, not started.
 
 ---
 

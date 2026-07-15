@@ -299,5 +299,9 @@ future live session captures exact figures, add them here.
 - **Sub-frame-accurate presentation pacing** (holding decoded frames to
   vsync-aligned deadlines) — Decision 4 explains the frame-pool risk; only
   worth revisiting if Q4 measures visible judder *with* smoothing on.
+  **Re-opened 2026-07-15 as R12**
+  ([docs/17](17-viewer-playback-smoothing.md)): measurement-first, as a
+  *separate* opt-in mode — this doc's fixed-offset "Smooth playback" stays
+  as-is, and R12's decode-lead layering answers the frame-pool objection.
 - **Audio/AV sync** — there is no audio; when audio lands, its clock story
   should build on Q2's relay-clock mapping.
