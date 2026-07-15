@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.20.0...gawk-app-v0.20.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* bound concurrent isConfigSupported probes — Chrome tab OOM crash ([50483f6](https://github.com/Tuhis/gawk/commit/50483f6ef75708063f2952be1eafce94d2f4c34f))
+
 ## [0.20.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.19.0...gawk-app-v0.20.0) (2026-07-15)
 
 
