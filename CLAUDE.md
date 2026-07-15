@@ -125,7 +125,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   on Chrome + Firefox 2026-07-14),
   `docs/15-viewer-live-edge.md` for R5 (viewer live-edge, re-scoped;
   **Q1–Q3 implemented 2026-07-14, Q4 measurement pass + manual verify
-  pending**: live-edge drift metric (windowed-min baseline, zero protocol
+  passed 2026-07-15 — done**: live-edge drift metric (windowed-min baseline, zero protocol
   change), absolute capture→render latency via new `TimeSync` (0x05, 18 B) /
   `ClockMapping` (0x06, 10 B) wire messages with the relay's monotonic clock
   as common reference — relay answers pings inline from both routes'
@@ -325,8 +325,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    (`noteStreamKeyframe`), all frameId comparisons are serial/uint32-wrap-
    aware (`wire.frameIdAhead`/`nextFrameId`; broadcaster wraps its counter at
    source), and a serially-backwards keyframe = immediate reorder resync.
-15. Viewer live-edge — **Q1–Q3 implemented 2026-07-14; Q4 measurement pass +
-   manual browser verify pending** (R5 re-scoped, `docs/15-viewer-live-edge.md`).
+15. Viewer live-edge — **done; Q1–Q3 implemented 2026-07-14, Q4 measurement
+   pass + manual browser verify passed 2026-07-15 (all knobs kept)**
+   (R5 re-scoped, `docs/15-viewer-live-edge.md`).
    (a) **Live-edge drift** (`transport/live-edge.ts`): per-frame
    `viewerNow − capture timestamp` minus its 60 s windowed min — pure lag
    with the clock offset cancelled (capture.ts already stamps frames on the

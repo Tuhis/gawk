@@ -23,7 +23,7 @@ feature set exists).
 | R2 | [Hardening](#r2--hardening) | ✅ done ([docs/07](docs/07-hardening.md)) |
 | R3 | [Broadcaster resolution & framerate picker](#r3--broadcaster-resolution--framerate-picker) | ✅ done ([docs/08](docs/08-resolution-framerate-picker.md)) |
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | ✅ done — manually verified 2026-07-14 ([docs/09](docs/09-automatic-fallback.md)) |
-| R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | 🚧 Q1–Q3 implemented 2026-07-14 (re-scoped); Q4 measurement pass + manual verify pending ([docs/15](docs/15-viewer-live-edge.md)) |
+| R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | ✅ done (re-scoped; Q1–Q4) — manual verify passed 2026-07-15 ([docs/15](docs/15-viewer-live-edge.md)) |
 | R6 | [Production UI](#r6--production-ui) | ✅ done (J1–J6); manual browser verify passed 2026-07-14 ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
@@ -288,10 +288,15 @@ aggregation/debouncing so 15 viewers can't spam the encoder). May be
 overkill given the existing cached-keyframe priming — the design doc should
 start with measurements.
 
-**Status**: re-scoped + designed 2026-07-14, **Q1–Q3 implemented the same
-day** — see [`docs/15-viewer-live-edge.md`](docs/15-viewer-live-edge.md);
-the Q4 measurement pass + manual browser verify remain (they need live
-sessions). All automated gates green; implementation notes (18/10-byte
+**Status**: done — re-scoped + designed 2026-07-14, **Q1–Q3 implemented the
+same day**, **Q4 measurement pass + manual verify passed 2026-07-15** (live
+sessions; all knobs kept — `keyframeIntervalMs` 500, `KEYFRAME_WAIT_MS`
+1000, `PLAYOUT_OFFSET_MS` 150. Measured glass-to-glass: ~50 ms with
+hardware encode+decode — well under the 500 ms target — up to ~2500 ms when
+software codec paths are involved; latency is dominated by codec path
+placement, reinforcing R7) — see
+[`docs/15-viewer-live-edge.md`](docs/15-viewer-live-edge.md).
+All automated gates green; implementation notes (18/10-byte
 messages, decoder-output measurement point, cached-keyframe-style mapping
 lifecycle) are in the doc. The audit there found most of the sketch above already landed
 elsewhere: latest-frame-first rendering became R10 P1

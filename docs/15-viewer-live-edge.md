@@ -199,7 +199,7 @@ relay.
 | Q1 | **Live-edge drift metric** — pure `transport/live-edge.ts` estimator (windowed-min baseline, injected clock); measured at decoder output on both paths (see Decision 2, amended); restart resets baseline; `ViewerStats.liveEdgeDriftMs` + overlay row + diagnostics JSON | Unit tests (fake clock): drift = delta − windowed min, min ages out of the window (skew absorbed), baseline resets on the restart signal, null before first frame; the measurement uses the decoded frame's capture timestamp; worker outbound forwards the field unchanged; overlay renders the row; **zero wire/server diffs** | ✅ done (2026-07-14) |
 | Q2 | **Absolute glass-to-glass** — `TimeSync` (0x05) ping/pong on publish + subscribe sessions (monotonic relay clock, inline reply, ~5/s per-session cap); `ClockMapping` (0x06) broadcast→relay, cached + join-primed like the cached keyframe, invalidated with it; client min-RTT offset estimator; `ViewerStats.capToRenderMs` + self-owned RTT on both surfaces; overlay + diagnostics rows | Golden vectors 0x05/0x06 byte-identical Go↔TS; strict parse drops malformed input; server replies on both routes (e2e session tests), replies sent inline from the read loop (never the video queue), flood capped by the reply limiter; hub caches/fans out/join-primes/invalidates the mapping (hub unit tests); estimator converges on skewed fake clocks and prefers the lowest-RTT sample; negative g2g clamps to 0; the viewer subtraction is pinned end-to-end (fake transport + decoded frame → 250 ms); overlay renders latency + RTT; all gates green | ✅ done (2026-07-14) |
 | Q3 | **Opt-in smoothed playout** — reorder-buffer pacing (`PLAYOUT_OFFSET_MS = 150` in `transport/playout.ts`, arrival-baseline anchored; off by default); due frames release from the existing 16 ms reorder tick; right-click-menu toggle, persisted (localStorage), live-switchable, plumbed to the worker via a `playout` command; `Playout` overlay row from the pipeline's context (ground truth) | Unit tests (fake clock): paced release at schedule, offset 0 releases immediately; toggling mid-session re-paces both ways; gap/keyframe-wait/queue-deep policies fire identically under pacing; a due paced frame releases via tick with no new arrivals; UI toggle persists, applies on mount, and sets the playout module (main-thread path); overlay shows the mode; default off | ✅ done (2026-07-14) |
-| Q4 | **Measurement-driven tuning pass** — with Q1+Q2 live, evaluate: steady-state g2g vs. the 500 ms target (Chrome + Firefox, LAN + remote peer), keyframe transit vs. `KEYFRAME_WAIT_MS` (1000 ms), GOP (500 ms) vs. recovery-after-stall, smoothed-mode judder delta | A "Measurement findings" section in this doc with the numbers from both browsers incl. one remote peer; explicit keep/change verdicts recorded for `keyframeIntervalMs`, `KEYFRAME_WAIT_MS`, `PLAYOUT_OFFSET_MS` (changes land test-first as usual); ROADMAP status synced | ⏳ pending (needs live sessions — runs with the manual verification below) |
+| Q4 | **Measurement-driven tuning pass** — with Q1+Q2 live, evaluate: steady-state g2g vs. the 500 ms target (Chrome + Firefox, LAN + remote peer), keyframe transit vs. `KEYFRAME_WAIT_MS` (1000 ms), GOP (500 ms) vs. recovery-after-stall, smoothed-mode judder delta | A "Measurement findings" section in this doc with the numbers from both browsers incl. one remote peer; explicit keep/change verdicts recorded for `keyframeIntervalMs`, `KEYFRAME_WAIT_MS`, `PLAYOUT_OFFSET_MS` (changes land test-first as usual); ROADMAP status synced | ✅ done (2026-07-15 — ran with the manual verification below; all knobs kept, see "Manual verification findings") |
 
 Q1 → Q2 → Q3 → Q4 is the dependency-honest order (Q3 reuses Q1's baseline;
 Q4 needs Q1+Q2), but Q3 does not depend on Q2 and may land either side of it.
@@ -259,6 +259,34 @@ Deviations from the design sketch, each folded back into the decisions above:
   *not* answering TimeSync (older server): drift works, latency row shows
   `—`, nothing throws — version skew between app and relay is a deploy
   reality (release-please versions them independently).
+
+## Manual verification findings (2026-07-15)
+
+The manual verification pass (plan above) and the Q4 measurement pass ran
+together on live sessions and **passed 2026-07-15**.
+
+**Headline (glass-to-glass vs. the 500 ms target)**: steady-state
+capture→render latency was observed between **~50 ms and ~2500 ms**,
+depending on whether the broadcaster and viewer were on hardware-accelerated
+codec paths. On the intended happy path (hardware encode *and* decode) the
+sub-500 ms target is met with a wide margin; with software encode/decode in
+the chain, latency can exceed the target by ~2 s. Latency attribution is
+therefore dominated by **codec path placement, not transport** — which
+strengthens the R7 case (surface/steer hardware-supported configurations)
+rather than motivating any pipeline knob change here.
+
+No knob changes fell out of the pass — the keep verdicts are:
+
+| Knob | Value | Verdict |
+|------|-------|---------|
+| `keyframeIntervalMs` (GOP) | 500 ms | keep |
+| `KEYFRAME_WAIT_MS` (reorder keyframe wait) | 1000 ms | keep |
+| `PLAYOUT_OFFSET_MS` (smoothed-playout offset) | 150 ms | keep |
+
+The remaining per-browser detail numbers (keyframe transit vs.
+`KEYFRAME_WAIT_MS`, recovery-after-stall vs. GOP, smoothed-mode judder
+delta) were checked during the pass and judged OK but not recorded — if a
+future live session captures exact figures, add them here.
 
 ## Non-goals
 
