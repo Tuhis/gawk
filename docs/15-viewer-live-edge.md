@@ -293,6 +293,10 @@ future live session captures exact figures, add them here.
 - **A keyframe-request back-channel** — rejected for good (Decision 6).
 - **Changing the live-edge default.** Smoothed playout is opt-in, per
   viewer, visibly costed; the project's drops-over-stalls philosophy stands.
+  **Superseded 2026-07-15 for the production viewer**: R12's adaptive paced
+  playback (+ interpolation) became the default there
+  ([docs/17](17-viewer-playback-smoothing.md), Decision 8); this doc's
+  fixed mode and the drops-over-stalls policies are unchanged.
 - **Per-viewer adaptation** (simulcast/SVC) — unchanged from R4/R10.
 - **Client→server metrics push / Prometheus export of client latency** —
   R9's non-goal stands; Copy diagnostics carries the numbers.

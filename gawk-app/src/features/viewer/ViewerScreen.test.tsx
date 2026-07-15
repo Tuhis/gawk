@@ -79,22 +79,35 @@ describe('ViewerScreen states', () => {
 // R5 Q3 + R12 T2: the playout toggles — two mutually exclusive right-click
 // menu items ("Smooth playback" = fixed 150 ms, unchanged; "Paced playback
 // (adaptive)" = the R12 paced-presentation mode), persisted as one mode and
-// applied to the (main-thread, in these tests) pipeline context.
+// applied to the (main-thread, in these tests) pipeline context. Since the
+// default flip (user decision 2026-07-15), a fresh browser defaults to
+// adaptive + interpolation; the menu is the disable path.
 describe('ViewerScreen playout modes', () => {
   function cleanupPlayout() {
     setPlayoutMode('off');
     localStorage.removeItem('gawk:playout-mode');
     localStorage.removeItem('gawk:smoothed-playout');
+    localStorage.removeItem('gawk:interpolation');
   }
 
   const openMenu = () =>
     fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
 
+  it('defaults to adaptive paced playback when nothing is stored', async () => {
+    cleanupPlayout();
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(getPlayoutMode()).toBe('adaptive');
+    openMenu();
+    expect(screen.getByText('Paced playback (adaptive) ✓')).toBeTruthy();
+    cleanupPlayout();
+  });
+
   it('toggles fixed smoothing via the context menu, persists, and sets the module', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
-    expect(getPlayoutOffsetMs()).toBe(0); // default: live-edge
+    expect(getPlayoutMode()).toBe('adaptive'); // the default
 
     openMenu();
     fireEvent.click(screen.getByText('Smooth playback'));
@@ -102,7 +115,7 @@ describe('ViewerScreen playout modes', () => {
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
     expect(localStorage.getItem('gawk:playout-mode')).toBe('fixed');
 
-    // Toggle back off: the menu item shows the checked label.
+    // Toggle back off: live-edge, persisted so the default flip won't undo it.
     openMenu();
     fireEvent.click(screen.getByText('Smooth playback ✓'));
     expect(getPlayoutMode()).toBe('off');
@@ -111,17 +124,12 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  it('toggles adaptive paced playback and the two modes exclude each other', async () => {
+  it('the two smoothing modes exclude each other and uncheck back to live-edge', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
-    openMenu();
-    fireEvent.click(screen.getByText('Paced playback (adaptive)'));
-    expect(getPlayoutMode()).toBe('adaptive');
-    expect(localStorage.getItem('gawk:playout-mode')).toBe('adaptive');
-
-    // Checking the other mode unchecks this one.
+    // Checking the other mode unchecks the default adaptive one.
     openMenu();
     expect(screen.queryByText('Paced playback (adaptive) ✓')).toBeTruthy();
     fireEvent.click(screen.getByText('Smooth playback'));
@@ -130,53 +138,62 @@ describe('ViewerScreen playout modes', () => {
     expect(screen.queryByText('Paced playback (adaptive) ✓')).toBeNull();
     expect(screen.queryByText('Smooth playback ✓')).toBeTruthy();
 
+    // Re-checking adaptive flips back.
+    fireEvent.click(screen.getByText('Paced playback (adaptive)'));
+    expect(getPlayoutMode()).toBe('adaptive');
+
     // And unchecking the checked one returns to live-edge.
-    fireEvent.click(screen.getByText('Smooth playback ✓'));
+    openMenu();
+    fireEvent.click(screen.getByText('Paced playback (adaptive) ✓'));
     expect(getPlayoutMode()).toBe('off');
     cleanupPlayout();
   });
 
-  it('applies a persisted mode on mount', async () => {
+  it('applies a persisted mode on mount — an explicit off is respected', async () => {
     cleanupPlayout();
-    localStorage.setItem('gawk:playout-mode', 'adaptive');
+    localStorage.setItem('gawk:playout-mode', 'off');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
-    expect(getPlayoutMode()).toBe('adaptive');
+    expect(getPlayoutMode()).toBe('off');
     cleanupPlayout();
   });
 
-  it('migrates the legacy smoothed-playout preference to fixed mode', async () => {
+  it('migrates the legacy smoothed-playout preference: on → fixed, explicit off → off', async () => {
     cleanupPlayout();
     localStorage.setItem('gawk:smoothed-playout', '1');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutMode()).toBe('fixed');
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+    cleanup();
+
+    // A viewer who explicitly turned the old smoothing off chose live-edge;
+    // the default flip must not overrule them.
+    cleanupPlayout();
+    localStorage.setItem('gawk:smoothed-playout', '0');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(getPlayoutMode()).toBe('off');
     cleanupPlayout();
   });
 
-  // R12 T4: the experimental interpolation toggle appears only when the
-  // pipeline reports it available (stats.interpolation non-null) in
-  // adaptive mode, and persists like the other toggles.
-  it('offers frame interpolation only when the pipeline reports it available', async () => {
+  // R12 T4 + default flip: interpolation defaults ON, shown (checked) when
+  // the pipeline reports it available, and the menu is the disable path.
+  it('interpolation defaults on and toggles off through the menu', async () => {
     cleanupPlayout();
-    localStorage.removeItem('gawk:interpolation');
-    localStorage.setItem('gawk:playout-mode', 'adaptive');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
     openMenu();
     expect(screen.queryByText(/Frame interpolation/)).toBeNull(); // no stats yet
 
-    act(() => sessions[0].cbs.onStats({ interpolation: 'off' }));
-    expect(screen.getByText('Frame interpolation (experimental)')).toBeTruthy();
-
-    fireEvent.click(screen.getByText('Frame interpolation (experimental)'));
-    expect(localStorage.getItem('gawk:interpolation')).toBe('1');
-    openMenu();
+    act(() => sessions[0].cbs.onStats({ interpolation: 'on' }));
     expect(screen.getByText('Frame interpolation (experimental) ✓')).toBeTruthy();
 
-    localStorage.removeItem('gawk:interpolation');
+    fireEvent.click(screen.getByText('Frame interpolation (experimental) ✓'));
+    expect(localStorage.getItem('gawk:interpolation')).toBe('0');
+    openMenu();
+    expect(screen.getByText('Frame interpolation (experimental)')).toBeTruthy();
     cleanupPlayout();
   });
 });

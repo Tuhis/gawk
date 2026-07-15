@@ -215,12 +215,28 @@ final sub-frame alignment (Decision 4 below).
      eyes are the metric); (iii) total measured glass-to-glass exceeds
      500 ms on the reference LAN setup with default settings.
 
-8. **Defaults unchanged.** Live-edge (mode `'off'`, immediate present)
-   stays the default; the existing fixed mode is preserved as-is; every
-   drop/resync policy — gap grace, keyframe wait, queue-deep resync, frame
-   cap — fires unchanged in every mode. Smoothing adds bounded delay, never
-   patience: pacing holds only frames already in hand, and never waits
-   longer for missing ones.
+8. **Defaults — SUPERSEDED 2026-07-15 (user decision after T1–T4 landed).**
+   The design originally kept live-edge (mode `'off'`) as the default.
+   Later the same day the user flipped it: the **production viewer now
+   defaults to `'adaptive'` paced playback with frame interpolation on**;
+   the right-click menu is the disable path (each toggle unchecks back to
+   live-edge / interpolation off, persisted). Scope and safeguards of the
+   flip:
+   - It is a **UI-preference default** (`ViewerScreen`'s stored-preference
+     loaders). The pipeline-level module default stays `'off'` — the frozen
+     `#/debug/*` surfaces and any context that never receives the playout
+     command keep live-edge behavior.
+   - **Explicit choices survive migration**: a stored new-key mode always
+     wins; the legacy boolean's `'1'` migrates to `'fixed'` and its `'0'`
+     (an explicit live-edge choice) to `'off'` — the flip never overrules a
+     viewer who opted out.
+   - Interpolation-on is a no-op wherever the pipeline can't interpolate
+     (main-thread path, non-WebGL2 sink); nothing breaks on Firefox.
+   - Everything else stands: the fixed mode is preserved as-is; every
+     drop/resync policy — gap grace, keyframe wait, queue-deep resync,
+     frame cap — fires unchanged in every mode. Smoothing adds bounded
+     delay, never patience: pacing holds only frames already in hand, and
+     never waits longer for missing ones.
 
 9. **Worker-first, honest degradation.** Main-thread pipeline path: no
    pacing, no interpolation, null cadence metrics (existing `renderedFps`
@@ -275,6 +291,11 @@ the sketch, each folded back into the decisions above:
 - **Persistence**: one mode key (`gawk:playout-mode`) replaces the legacy
   boolean (`gawk:smoothed-playout`, migrated to `'fixed'` on load);
   interpolation persists under `gawk:interpolation`.
+- **Default flip (2026-07-15, after T1–T4 landed)**: the production viewer
+  now defaults to adaptive paced playback + interpolation (Decision 8, as
+  superseded). Legacy `'0'` (explicit old-toggle opt-out) maps to `'off'`
+  so the flip never overrules a prior explicit choice; interpolation
+  defaults on via `gawk:interpolation !== '0'`.
 
 ## Verification plan (manual, per chunk — summarized)
 
@@ -296,8 +317,11 @@ the sketch, each folded back into the decisions above:
 
 ## Non-goals
 
-- **Changing the live-edge default** — re-rejected; opt-in, per viewer,
-  visibly costed.
+- ~~**Changing the live-edge default** — re-rejected; opt-in, per viewer,
+  visibly costed.~~ **Superseded 2026-07-15** (user decision): adaptive
+  paced playback + interpolation are now the production viewer's defaults —
+  see Decision 8. Still per-viewer disableable and visibly costed (the
+  overlay's Playout/latency rows).
 - **FEC parity chunks / keyframe-burst taming** — surveyed 2026-07-15,
   deliberately not selected for R12; candidates for their own roadmap items.
 - **Keyframe-request back-channel** — rejected for good (docs/15

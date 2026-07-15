@@ -143,7 +143,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   jitter measurement, paced presentation + adaptive offset behind a new
   separate "Paced playback (adaptive)" toggle, experimental frame
   interpolation with pre-registered kill criteria, T1–T6 chunks; **T1–T4
-  implemented 2026-07-15, manual verify pending; T5/T6 not started**),
+  implemented 2026-07-15, manual verify pending; T5/T6 not started;
+  adaptive + interpolation are the production viewer's defaults since
+  2026-07-15** — the right-click menu disables them),
   `docs/18-advanced-broadcaster-settings.md` for R13 (advanced broadcaster
   settings, **supersedes R7**: `isConfigSupported` probe matrix, HW-aware
   auto ceiling + 'auto' framerate default resolving framerate-first (60 fps
@@ -418,10 +420,15 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `InterpolatingWebGLRenderSink` (ping-pong textures, upload/present(α)
    blend shader, WebGL2-only) + opportunistic α=0.5 mid-slots (30→60, no
    added latency — synthesized only when the next frame is already in
-   hand, never across >100 ms gaps); own default-off "Frame interpolation
+   hand, never across >100 ms gaps); own "Frame interpolation
    (experimental)" toggle, offered only where the pipeline reports it
    available; **pre-registered kill criteria** — a documented rejection of
-   T5 is a valid completion.
+   T5 is a valid completion. **Defaults flipped 2026-07-15 (user
+   decision)**: the production viewer defaults to **adaptive paced playback
+   with interpolation on** (right-click menu disables either; a legacy
+   explicit smooth-playback opt-out migrates to live-edge, and the
+   pipeline-level/module default stays `'off'` so `#/debug/*` keeps
+   live-edge) — docs/17 Decision 8, as superseded.
 18. Advanced broadcaster settings — **implemented 2026-07-15 (L1–L5);
    automated gates green, manual browser verify pending** (R13,
    `docs/18-advanced-broadcaster-settings.md`; supersedes R7; UI/pipeline

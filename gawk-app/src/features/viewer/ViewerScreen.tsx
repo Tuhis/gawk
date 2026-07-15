@@ -18,20 +18,26 @@ import { HOME } from '../../routing';
 
 const CONTROL_IDLE_MS = 3000;
 
-// R5 Q3 + R12 T2: the opt-in playout preference, persisted per browser as
-// one mode ('off' | 'fixed' | 'adaptive') — the two smoothing toggles are
-// mutually exclusive by construction. The legacy boolean key (pre-R12
-// "Smooth playback") migrates to 'fixed'.
+// R5 Q3 + R12 T2: the playout preference, persisted per browser as one mode
+// ('off' | 'fixed' | 'adaptive') — the two smoothing toggles are mutually
+// exclusive by construction. **Default: 'adaptive'** (user decision
+// 2026-07-15, flipping the earlier live-edge default for the production
+// viewer; the right-click menu is the disable path). Migration order: an
+// explicit new-key choice wins; then the legacy boolean ('1' = the old
+// "Smooth playback" → 'fixed'; '0' = an explicit live-edge choice → 'off' —
+// the default flip must not overrule it); then the adaptive default.
 const PLAYOUT_MODE_KEY = 'gawk:playout-mode';
 const LEGACY_SMOOTHED_KEY = 'gawk:smoothed-playout';
-// R12 T4: the experimental frame-interpolation preference.
+// R12 T4: the experimental frame-interpolation preference. **Default: on**
+// (same 2026-07-15 decision); a no-op wherever the pipeline can't
+// interpolate (main-thread path, non-WebGL2 sink, non-adaptive mode).
 const INTERPOLATION_KEY = 'gawk:interpolation';
 
 function loadInterpolation(): boolean {
   try {
-    return localStorage.getItem(INTERPOLATION_KEY) === '1';
+    return localStorage.getItem(INTERPOLATION_KEY) !== '0';
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -39,9 +45,12 @@ function loadPlayoutMode(): PlayoutMode {
   try {
     const v = localStorage.getItem(PLAYOUT_MODE_KEY);
     if (v === 'fixed' || v === 'adaptive' || v === 'off') return v;
-    return localStorage.getItem(LEGACY_SMOOTHED_KEY) === '1' ? 'fixed' : 'off';
+    const legacy = localStorage.getItem(LEGACY_SMOOTHED_KEY);
+    if (legacy === '1') return 'fixed';
+    if (legacy === '0') return 'off';
+    return 'adaptive';
   } catch {
-    return 'off';
+    return 'adaptive';
   }
 }
 
@@ -60,10 +69,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // R5 Q3 + R12 T2: opt-in playout smoothing (trades latency for steadier
-  // pacing); default off — live-edge is the product stance. 'fixed' is the
-  // original 150 ms mode, 'adaptive' the R12 paced-presentation mode; each
-  // menu item toggles its own mode and checking one unchecks the other.
+  // R5 Q3 + R12 T2: playout smoothing (trades latency for steadier pacing).
+  // 'adaptive' (the R12 paced-presentation mode) is the default since
+  // 2026-07-15; 'fixed' is the original 150 ms mode. Each menu item toggles
+  // its own mode, checking one unchecks the other, and unchecking the
+  // active one returns to live-edge ('off').
   const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
   const togglePlayoutMode = useCallback((mode: 'fixed' | 'adaptive') => {
     setPlayoutModeState((current) => {
