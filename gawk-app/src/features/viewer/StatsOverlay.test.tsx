@@ -43,6 +43,8 @@ function fullStats(): ViewerStats {
     capToRenderMs: 384,
     timeSyncRttMs: 8.4,
     playoutOffsetMs: 0,
+    playoutMode: 'off',
+    presentation: 'immediate',
     renderCadenceStdDevMs: 3.2,
     renderCadenceP95Ms: 9.1,
     arrivalJitterMs: 12,
@@ -90,6 +92,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('384 ms');
     expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('8.4 ms');
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
+    expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('Immediate');
     // R12 T1: the jitter rows.
     expect(screen.getByText('Render cadence σ').nextSibling?.textContent).toBe('3.2 ms');
     expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('12 ms');
@@ -98,7 +101,7 @@ describe('StatsOverlay', () => {
     cleanup();
     render(
       <StatsOverlay
-        stats={{ ...fullStats(), playoutOffsetMs: 150 }}
+        stats={{ ...fullStats(), playoutMode: 'fixed', playoutOffsetMs: 150 }}
         codec="vp8"
         bitrateBps={null}
         onClose={() => {}}
@@ -106,7 +109,22 @@ describe('StatsOverlay', () => {
         copied={false}
       />,
     );
-    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('smoothed (+150 ms)');
+    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('fixed (+150 ms)');
+
+    cleanup();
+    // R12 T2: adaptive mode shows the live offset and the pacing placement.
+    render(
+      <StatsOverlay
+        stats={{ ...fullStats(), playoutMode: 'adaptive', playoutOffsetMs: 187, presentation: 'paced-raf' }}
+        codec="vp8"
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('adaptive (+187 ms)');
+    expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('Paced (rAF)');
   });
 
   it('renders — for everything when stats are absent or degraded', () => {
@@ -123,6 +141,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Render cadence σ').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Decode jitter σ').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('—');
 
     cleanup();
     // Connection-less stats (Firefox: no getStats) degrade only the network rows.

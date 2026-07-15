@@ -12,19 +12,26 @@ import { useAutoHide } from '../../lib/useAutoHide';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
+import type { PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import { HOME } from '../../routing';
 
 const CONTROL_IDLE_MS = 3000;
 
-// R5 Q3: the opt-in smoothed-playout preference, persisted per browser.
-const SMOOTHED_PLAYOUT_KEY = 'gawk:smoothed-playout';
+// R5 Q3 + R12 T2: the opt-in playout preference, persisted per browser as
+// one mode ('off' | 'fixed' | 'adaptive') — the two smoothing toggles are
+// mutually exclusive by construction. The legacy boolean key (pre-R12
+// "Smooth playback") migrates to 'fixed'.
+const PLAYOUT_MODE_KEY = 'gawk:playout-mode';
+const LEGACY_SMOOTHED_KEY = 'gawk:smoothed-playout';
 
-function loadSmoothedPlayout(): boolean {
+function loadPlayoutMode(): PlayoutMode {
   try {
-    return localStorage.getItem(SMOOTHED_PLAYOUT_KEY) === '1';
+    const v = localStorage.getItem(PLAYOUT_MODE_KEY);
+    if (v === 'fixed' || v === 'adaptive' || v === 'off') return v;
+    return localStorage.getItem(LEGACY_SMOOTHED_KEY) === '1' ? 'fixed' : 'off';
   } catch {
-    return false;
+    return 'off';
   }
 }
 
@@ -43,14 +50,16 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // R5 Q3: opt-in smoothed playout (trades ~150ms of latency for steadier
-  // pacing); default off — live-edge is the product stance.
-  const [smoothedPlayout, setSmoothedPlayout] = useState(loadSmoothedPlayout);
-  const toggleSmoothedPlayout = useCallback(() => {
-    setSmoothedPlayout((s) => {
-      const next = !s;
+  // R5 Q3 + R12 T2: opt-in playout smoothing (trades latency for steadier
+  // pacing); default off — live-edge is the product stance. 'fixed' is the
+  // original 150 ms mode, 'adaptive' the R12 paced-presentation mode; each
+  // menu item toggles its own mode and checking one unchecks the other.
+  const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
+  const togglePlayoutMode = useCallback((mode: 'fixed' | 'adaptive') => {
+    setPlayoutModeState((current) => {
+      const next = current === mode ? 'off' : mode;
       try {
-        localStorage.setItem(SMOOTHED_PLAYOUT_KEY, next ? '1' : '0');
+        localStorage.setItem(PLAYOUT_MODE_KEY, next);
       } catch {
         // private mode etc. — the toggle still works for this session
       }
@@ -64,7 +73,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const { status, stats, codec, error, errorFatal, retryNote } = useViewerConnection(
     broadcastId,
     canvasRef,
-    smoothedPlayout,
+    playoutMode,
   );
 
   const [showStats, setShowStats] = useState(false);
@@ -110,11 +119,16 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const menuItems: MenuItem[] = [
     { label: showStats ? 'Hide stats' : 'Stats', onSelect: () => setShowStats((s) => !s) },
     { label: isFullscreen ? 'Exit fullscreen' : 'Fullscreen', onSelect: () => toggleFullscreen() },
-    // R5 Q3: visibly costed opt-in — the overlay's Playout/latency rows show
-    // the added delay while it is on.
+    // R5 Q3 + R12 T2: visibly costed opt-ins — the overlay's Playout/latency
+    // rows show the added delay while either is on. Mutually exclusive.
     {
-      label: smoothedPlayout ? 'Smooth playback ✓' : 'Smooth playback',
-      onSelect: toggleSmoothedPlayout,
+      label: playoutMode === 'fixed' ? 'Smooth playback ✓' : 'Smooth playback',
+      onSelect: () => togglePlayoutMode('fixed'),
+    },
+    {
+      label:
+        playoutMode === 'adaptive' ? 'Paced playback (adaptive) ✓' : 'Paced playback (adaptive)',
+      onSelect: () => togglePlayoutMode('adaptive'),
     },
     { label: 'Copy link', onSelect: copyLink },
     { label: 'Leave', onSelect: leave },

@@ -1,15 +1,18 @@
 // R8 S6: OffscreenCanvasRenderSink resizes the backing store to the frame and
 // always closes the frame (single-owner contract). No real OffscreenCanvas —
 // a fake canvas/context is enough to pin the behavior.
-// R10 (docs/14): CoalescingRenderSink paces draws to one per scheduler tick
-// (latest-frame-wins), WebGLRenderSink uploads via texImage2D, and
-// createRenderSink composes them with a 2D fallback.
+// R10 (docs/14) + R12 (docs/17): PacedPresentationSink schedules at most one
+// draw per tick (latest-frame-wins; display-slot pacing when targets are
+// given), WebGLRenderSink uploads via texImage2D, and createRenderSink
+// composes them with a 2D fallback.
 
 import { describe, expect, it, vi } from 'vitest';
 import {
   CadenceRecorder,
-  CoalescingRenderSink,
+  DisplayIntervalEstimator,
+  MAX_HELD_FRAMES,
   OffscreenCanvasRenderSink,
+  PacedPresentationSink,
   WebGLRenderSink,
   createRenderSink,
   type RenderSink,
@@ -146,38 +149,47 @@ describe('OffscreenCanvasRenderSink', () => {
   });
 });
 
-describe('CoalescingRenderSink (R10 P1)', () => {
-  function innerSink() {
-    const drawn: VideoFrame[] = [];
-    const sink: RenderSink = {
-      kind: '2d',
-      draw: (f) => drawn.push(f),
-      drawnFrames: () => drawn.length,
-    };
-    return { sink, drawn };
-  }
+function innerSink() {
+  const drawn: VideoFrame[] = [];
+  const sink: RenderSink = {
+    kind: '2d',
+    draw: (f) => drawn.push(f),
+    drawnFrames: () => drawn.length,
+  };
+  return { sink, drawn };
+}
 
-  // Manual scheduler: collects callbacks; fire() runs one tick.
-  function manualSchedule() {
-    const pending: (() => void)[] = [];
-    return {
-      schedule: (cb: () => void) => pending.push(cb),
-      fire: () => pending.splice(0).forEach((cb) => cb()),
-      scheduled: () => pending.length,
-    };
-  }
+// Manual scheduler: collects callbacks; fire() runs one tick.
+function manualSchedule() {
+  const pending: (() => void)[] = [];
+  return {
+    schedule: (cb: () => void) => pending.push(cb),
+    fire: () => pending.splice(0).forEach((cb) => cb()),
+    scheduled: () => pending.length,
+  };
+}
 
+function pacedHarness() {
+  const { sink, drawn } = innerSink();
+  const sched = manualSchedule();
+  const clock = { t: 1000 };
+  const paced = new PacedPresentationSink(sink, sched.schedule, () => clock.t);
+  return { paced, drawn, sched, clock };
+}
+
+// R12 T2: with no target (the default path), the paced sink IS the old
+// coalescing sink — hold ≤1, newest wins, ≤1 inner draw per tick. These are
+// the R10 P1 tests, ported.
+describe('PacedPresentationSink no-target mode (R10 P1 semantics)', () => {
   it('draws only the newest frame per tick and closes superseded ones unseen', () => {
-    const { sink, drawn } = innerSink();
-    const sched = manualSchedule();
-    const coalescing = new CoalescingRenderSink(sink, sched.schedule);
+    const { paced, drawn, sched } = pacedHarness();
 
     const a = fakeFrame(640, 480);
     const b = fakeFrame(640, 480);
     const c = fakeFrame(640, 480);
-    coalescing.draw(a);
-    coalescing.draw(b);
-    coalescing.draw(c);
+    paced.draw(a);
+    paced.draw(b);
+    paced.draw(c);
 
     expect(drawn).toHaveLength(0); // nothing painted before the tick
     expect(a.close).toHaveBeenCalledTimes(1);
@@ -189,39 +201,152 @@ describe('CoalescingRenderSink (R10 P1)', () => {
   });
 
   it('schedules at most one flush per tick', () => {
-    const { sink } = innerSink();
-    const sched = manualSchedule();
-    const coalescing = new CoalescingRenderSink(sink, sched.schedule);
-
-    coalescing.draw(fakeFrame(640, 480));
-    coalescing.draw(fakeFrame(640, 480));
+    const { paced, sched } = pacedHarness();
+    paced.draw(fakeFrame(640, 480));
+    paced.draw(fakeFrame(640, 480));
     expect(sched.scheduled()).toBe(1);
   });
 
   it('a frame arriving after a flush schedules a new tick', () => {
-    const { sink, drawn } = innerSink();
-    const sched = manualSchedule();
-    const coalescing = new CoalescingRenderSink(sink, sched.schedule);
+    const { paced, drawn, sched } = pacedHarness();
 
-    coalescing.draw(fakeFrame(640, 480));
+    paced.draw(fakeFrame(640, 480));
     sched.fire();
     expect(drawn).toHaveLength(1);
 
-    coalescing.draw(fakeFrame(640, 480));
+    paced.draw(fakeFrame(640, 480));
     expect(sched.scheduled()).toBe(1);
     sched.fire();
     expect(drawn).toHaveLength(2);
   });
 
   it('delegates drawnFrames and kind to the inner sink', () => {
-    const { sink, drawn } = innerSink();
-    const sched = manualSchedule();
-    const coalescing = new CoalescingRenderSink(sink, sched.schedule);
-    expect(coalescing.kind).toBe('2d');
-    coalescing.draw(fakeFrame(640, 480));
-    expect(coalescing.drawnFrames()).toBe(0); // pending, not painted
+    const { paced, drawn, sched } = pacedHarness();
+    expect(paced.kind).toBe('2d');
+    paced.draw(fakeFrame(640, 480));
+    expect(paced.drawnFrames()).toBe(0); // pending, not painted
     sched.fire();
-    expect(coalescing.drawnFrames()).toBe(drawn.length);
+    expect(paced.drawnFrames()).toBe(drawn.length);
+  });
+});
+
+// R12 T2 (docs/17 Decision 3): with a target display time, frames are held
+// (≤ MAX_HELD_FRAMES) and presented in their vsync slot — the newest due
+// frame wins, older ones close unseen, and pacing never queue-grows.
+describe('PacedPresentationSink paced mode (R12 T2)', () => {
+  it('holds an early frame and presents it once its slot is due', () => {
+    const { paced, drawn, sched, clock } = pacedHarness();
+    const f = fakeFrame(640, 480, 0);
+    paced.draw(f, 1100);
+
+    sched.fire(); // t=1000: slot 1100 is beyond now + half-vsync — hold
+    expect(drawn).toHaveLength(0);
+    expect(f.close).not.toHaveBeenCalled();
+    expect(sched.scheduled()).toBe(1); // keeps ticking while frames are held
+
+    clock.t = 1100;
+    sched.fire();
+    expect(drawn).toEqual([f]);
+    expect(sched.scheduled()).toBe(0); // nothing held — stops ticking
+  });
+
+  it('a slot due within half a display interval presents now (no extra vsync of delay)', () => {
+    const { paced, drawn, sched, clock } = pacedHarness();
+    clock.t = 1000;
+    paced.draw(fakeFrame(640, 480, 0), 1006); // within 16.7/2 ms of now
+    sched.fire();
+    expect(drawn).toHaveLength(1);
+  });
+
+  it('presents the newest due frame and closes older due frames unseen', () => {
+    const { paced, drawn, sched, clock } = pacedHarness();
+    const a = fakeFrame(640, 480, 0);
+    const b = fakeFrame(640, 480, 33_333);
+    paced.draw(a, 1000);
+    paced.draw(b, 1033);
+    clock.t = 1040; // both slots passed
+    sched.fire();
+    expect(drawn).toEqual([b]);
+    expect(a.close).toHaveBeenCalledTimes(1);
+    expect(paced.pacingDropped()).toBe(1);
+  });
+
+  it('never holds more than MAX_HELD_FRAMES — the oldest closes', () => {
+    const { paced, sched, clock } = pacedHarness();
+    const frames = Array.from({ length: MAX_HELD_FRAMES + 1 }, (_, i) => fakeFrame(640, 480, i));
+    frames.forEach((f, i) => paced.draw(f, 2000 + i * 33));
+    expect(frames[0].close).toHaveBeenCalledTimes(1); // overflow: oldest out
+    frames.slice(1).forEach((f) => expect(f.close).not.toHaveBeenCalled());
+
+    clock.t = 3000;
+    sched.fire(); // all due: newest paints, the rest close
+    expect(paced.pacingDropped()).toBe(MAX_HELD_FRAMES); // 1 overflow + (MAX−1) superseded
+  });
+
+  it('flush() closes everything held and presents nothing', () => {
+    const { paced, drawn, clock } = pacedHarness();
+    clock.t = 1000;
+    const a = fakeFrame(640, 480, 0);
+    const b = fakeFrame(640, 480, 33_333);
+    paced.draw(a, 1100);
+    paced.draw(b, 1133);
+    paced.flush();
+    expect(a.close).toHaveBeenCalledTimes(1);
+    expect(b.close).toHaveBeenCalledTimes(1);
+    expect(drawn).toHaveLength(0);
+  });
+
+  it('flush(true) presents the newest held frame immediately (mode toggled off)', () => {
+    const { paced, drawn, clock } = pacedHarness();
+    clock.t = 1000;
+    const a = fakeFrame(640, 480, 0);
+    const b = fakeFrame(640, 480, 33_333);
+    paced.draw(a, 1100);
+    paced.draw(b, 1133);
+    paced.flush(true);
+    expect(drawn).toEqual([b]);
+    expect(a.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a no-target frame after paced frames presents next tick without waiting', () => {
+    const { paced, drawn, sched, clock } = pacedHarness();
+    clock.t = 1000;
+    paced.draw(fakeFrame(640, 480, 0), 1150); // held, not due for 150 ms
+    paced.draw(fakeFrame(640, 480, 33_333)); // toggle raced: immediate frame
+    sched.fire();
+    expect(drawn).toHaveLength(1); // the immediate frame — no 150 ms stall
+  });
+});
+
+describe('DisplayIntervalEstimator (R12 T2)', () => {
+  it('defaults to ~60 Hz before enough ticks arrive', () => {
+    const e = new DisplayIntervalEstimator();
+    expect(e.intervalMs()).toBeCloseTo(1000 / 60, 1);
+  });
+
+  it('reads the median tick delta', () => {
+    const e = new DisplayIntervalEstimator();
+    let t = 0;
+    for (let i = 0; i < 10; i++) {
+      e.recordTick(t);
+      t += 8.333; // 120 Hz display
+    }
+    expect(e.intervalMs()).toBeCloseTo(8.333, 2);
+  });
+
+  it('ignores pauses (huge deltas) instead of skewing the median', () => {
+    const e = new DisplayIntervalEstimator();
+    let t = 0;
+    for (let i = 0; i < 8; i++) {
+      e.recordTick(t);
+      t += 16.7;
+    }
+    e.recordTick(t + 5000); // tab hidden for 5 s — not a display interval
+    for (let i = 0; i < 3; i++) {
+      t += 16.7;
+      e.recordTick(t + 5000);
+    }
+    expect(e.intervalMs()).toBeCloseTo(16.7, 1);
   });
 });
 
@@ -290,25 +415,21 @@ describe('CadenceRecorder (R12 T1)', () => {
   });
 });
 
-describe('CoalescingRenderSink cadence (R12 T1)', () => {
+describe('PacedPresentationSink cadence (R12 T1)', () => {
   it('records presentation cadence at the inner draw and drains it', () => {
-    const drawn: VideoFrame[] = [];
-    const inner: RenderSink = { kind: '2d', draw: (f) => drawn.push(f), drawnFrames: () => drawn.length };
-    const pending: (() => void)[] = [];
-    const clock = { t: 1000 };
-    const sink = new CoalescingRenderSink(inner, (cb) => pending.push(cb), () => clock.t);
+    const { paced, sched, clock } = pacedHarness();
 
-    sink.draw(fakeFrame(640, 480, 0));
-    pending.splice(0).forEach((cb) => cb());
+    paced.draw(fakeFrame(640, 480, 0));
+    sched.fire();
     clock.t += 40; // 33.333 ms of content presented 40 ms apart → ~6.7 ms error
-    sink.draw(fakeFrame(640, 480, 33_333));
-    pending.splice(0).forEach((cb) => cb());
+    paced.draw(fakeFrame(640, 480, 33_333));
+    sched.fire();
 
-    const s = sink.drainCadence();
+    const s = paced.drainCadence();
     expect(s).not.toBeNull();
     expect(s!.samples).toBe(1);
     expect(s!.p95Ms).toBeCloseTo(6.667, 2);
-    expect(sink.drainCadence()).toBeNull();
+    expect(paced.drainCadence()).toBeNull();
   });
 });
 
@@ -382,7 +503,7 @@ describe('createRenderSink (R10 P2)', () => {
     const sched: (() => void)[] = [];
     const sink = createRenderSink(canvas, (cb) => sched.push(cb));
 
-    expect(sink).toBeInstanceOf(CoalescingRenderSink);
+    expect(sink).toBeInstanceOf(PacedPresentationSink);
     expect(sink.kind).toBe('webgl');
 
     // Draws coalesce and land on the GL context.

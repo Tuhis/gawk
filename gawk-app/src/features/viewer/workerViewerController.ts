@@ -8,6 +8,7 @@
 // dispose() on teardown.
 
 import type { ConnectOptions } from '../../transport/connection';
+import type { PlayoutMode } from '../../transport/playout';
 import type {
   ViewerWorkerCommand,
   ViewerWorkerEvent,
@@ -90,12 +91,12 @@ export class WorkerViewerController {
     if (this.booted && this.supported && this.canvasTransferred) this.post({ type: 'stop' });
   }
 
-  // R5 Q3: apply the smoothed-playout setting inside the worker context.
+  // R5 Q3 + R12 T2: apply the playout mode inside the worker context.
   // Safe at any lifecycle point — worker messages queue until the shell runs,
   // and the setting is module state there, independent of start/stop.
-  setSmoothedPlayout(smoothed: boolean): void {
+  setPlayoutMode(mode: PlayoutMode): void {
     if (this.disposed) return;
-    this.post({ type: 'playout', smoothed });
+    this.post({ type: 'playout', mode });
   }
 
   dispose(): void {

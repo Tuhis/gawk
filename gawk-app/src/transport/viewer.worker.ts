@@ -5,8 +5,8 @@
 //
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
-import { setSmoothedPlayout } from './playout';
-import { createRenderSink } from './render-sink';
+import { setPlayoutMode } from './playout';
+import { createRenderSink, type RenderSink } from './render-sink';
 import {
   ViewerWorkerCore,
   type ViewerWorkerCommand,
@@ -46,13 +46,15 @@ const transportFactory: ViewerTransportFactory | undefined =
     : undefined;
 
 let core: ViewerWorkerCore | null = null;
+let sink: RenderSink | null = null;
 
 ctx.onmessage = (e: MessageEvent) => {
   const cmd = e.data as ViewerWorkerCommand;
   switch (cmd.type) {
     case 'init': {
-      // WebGL (2D fallback) wrapped in rAF coalescing — R10, docs/14.
-      const sink = createRenderSink(cmd.canvas);
+      // WebGL (2D fallback) wrapped in the paced presentation sink — R10 P1
+      // semantics by default, display-slot pacing in adaptive mode (R12).
+      sink = createRenderSink(cmd.canvas);
       core = new ViewerWorkerCore({
         post: (ev) => ctx.postMessage(ev),
         renderSink: sink,
@@ -67,9 +69,12 @@ ctx.onmessage = (e: MessageEvent) => {
       void core?.stop();
       break;
     case 'playout':
-      // Worker-context module state; the live pipeline's reorder buffer reads
-      // it on every advance (R5 Q3). Valid before/after init and start alike.
-      setSmoothedPlayout(cmd.smoothed);
+      // Worker-context module state; the live pipeline reads it on every
+      // advance/decode (R5 Q3 + R12 T2). Valid before/after init and start
+      // alike. Leaving adaptive mode presents the newest held frame now
+      // instead of letting it wait out a schedule that no longer applies.
+      setPlayoutMode(cmd.mode);
+      if (cmd.mode !== 'adaptive') sink?.flush?.(true);
       break;
   }
 };

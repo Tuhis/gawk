@@ -29,7 +29,7 @@
 // periodically (e.g. once per rendered frame). Fully unit-testable in node.
 
 import { WindowedMinTracker, WindowedQuantileTracker } from './live-edge';
-import { getPlayoutOffsetMs } from './playout';
+import { DECODE_LEAD_MS, getPlayoutMode, getPlayoutOffsetMs } from './playout';
 import { frameIdAhead, nextFrameId, type DecoderConfigMessage } from './wire';
 
 // Tunables, named in one place (à la media/fallback.ts) for later real-world
@@ -106,6 +106,12 @@ export interface ReorderBufferOptions {
   // (R5 Q3). 0 = live-edge (the default, via playout.ts); injectable for
   // tests.
   playoutOffsetMs?: () => number;
+  // R12 T2 (docs/17 Decision 4): how much earlier than the presentation
+  // target a frame releases to the decoder. Non-zero only in adaptive mode —
+  // the sink holds the decoded frame for its display slot, so releasing at
+  // target − lead keeps the decoder frame pool bounded while the paint stays
+  // on time. Fixed mode keeps its R5 Q3 semantics (lead 0). Injectable.
+  decodeLeadMs?: () => number;
 }
 
 export class ReorderBuffer {
@@ -113,6 +119,7 @@ export class ReorderBuffer {
   private now: () => number;
   private onRestart: (() => void) | undefined;
   private playoutOffsetMs: () => number;
+  private decodeLeadMs: () => number;
   // Windowed min of (arrivalMs − timestampMs): the pacing anchor (R5 Q3).
   // Reset with the restart signal — new session, new timestamp timeline.
   private arrivalBaseline = new WindowedMinTracker();
@@ -145,6 +152,8 @@ export class ReorderBuffer {
     this.now = now;
     this.onRestart = opts.onRestart;
     this.playoutOffsetMs = opts.playoutOffsetMs ?? getPlayoutOffsetMs;
+    this.decodeLeadMs =
+      opts.decodeLeadMs ?? (() => (getPlayoutMode() === 'adaptive' ? DECODE_LEAD_MS : 0));
   }
 
   pushKeyframe(kf: ReorderKeyframe): void {
@@ -329,13 +338,22 @@ export class ReorderBuffer {
   // When a frame becomes releasable (R5 Q3). Live-edge (offset 0, the
   // default) means "now" — the smoothed schedule is
   // timestampMs + arrivalBaseline + offset, i.e. a constant offset from the
-  // source clock anchored at the best-observed arrival delta.
+  // source clock anchored at the best-observed arrival delta. In adaptive
+  // mode (R12 T2) release happens DECODE_LEAD_MS early: the presentation
+  // sink holds the decoded frame for its actual display slot.
   private releasableAt(e: Entry): number {
     const offset = this.playoutOffsetMs();
     if (offset <= 0) return 0;
     const base = this.arrivalBaseline.min(this.now());
     if (base === null) return 0;
-    return Number(e.timestampUs) / 1000 + base + offset;
+    return Number(e.timestampUs) / 1000 + base + offset - this.decodeLeadMs();
+  }
+
+  // The pacing anchor (windowed min of arrival − timestamp), exposed so the
+  // pipeline computes each decoded frame's display target from the same
+  // baseline the release gate uses (R12 T2). Null before any frame.
+  arrivalBaselineMs(): number | null {
+    return this.arrivalBaseline.min(this.now());
   }
 
   private hasBufferedKeyframeAbove(position: number): boolean {

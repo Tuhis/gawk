@@ -9,6 +9,7 @@
 // no OffscreenCanvas, no DOM.
 
 import type { ConnectOptions } from './connection';
+import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
 import { ViewerPipeline } from './viewer';
 import type { ViewerStats } from './viewer';
@@ -20,9 +21,10 @@ export type ViewerWorkerCommand =
   | { type: 'init'; canvas: OffscreenCanvas }
   | { type: 'start'; serverUrl: string; broadcastId: string; connectOpts: ConnectOptions }
   | { type: 'stop' }
-  // R5 Q3: set the smoothed-playout mode in the worker's context (the reorder
-  // buffer reads it live, so this works mid-session and across reconnects).
-  | { type: 'playout'; smoothed: boolean };
+  // R5 Q3 + R12 T2: set the playout mode in the worker's context (the reorder
+  // buffer and pipeline read it live, so this works mid-session and across
+  // reconnects).
+  | { type: 'playout'; mode: PlayoutMode };
 
 // Worker → main thread. Small control/telemetry messages only — decoded frames
 // are drawn in the worker and never appear here.

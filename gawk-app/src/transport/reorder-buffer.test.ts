@@ -462,3 +462,43 @@ describe('ReorderBuffer arrival jitter (R12 T1)', () => {
     expect(j!).toBeLessThan(QUANTILE_BIN_MS); // single fresh sample, old ones gone
   });
 });
+
+// R12 T2 (docs/17 Decision 4): in adaptive (paced-presentation) mode the
+// release gate retargets to target − DECODE_LEAD_MS — frames reach the sink
+// just in time for their display slot while the pre-decode pace still bounds
+// the decoder frame pool. Fixed mode is untouched (lead 0).
+describe('ReorderBuffer decode lead (R12 T2)', () => {
+  const tsKf = (frameId: number, tsMs: number) => ({
+    frameId,
+    timestampUs: BigInt(Math.round(tsMs * 1000)),
+    config: null,
+    data: new Uint8Array([frameId & 0xff]),
+  });
+
+  it('releases at target − lead in adaptive mode', () => {
+    const released: ReleasedFrame[] = [];
+    const clock = { t: 1000 };
+    const rb = new ReorderBuffer((f) => released.push(f), () => clock.t, {
+      playoutOffsetMs: () => 150,
+      decodeLeadMs: () => 35,
+    });
+    // Keyframe ts=0 arriving at t=1000: baseline 1000, target 1150, release
+    // due at 1150 − 35 = 1115.
+    rb.pushKeyframe(tsKf(0, 0));
+    clock.t = 1114;
+    rb.tick();
+    expect(released).toHaveLength(0);
+    clock.t = 1115;
+    rb.tick();
+    expect(released).toHaveLength(1);
+  });
+
+  it('exposes the arrival baseline for the pipeline to compute display targets', () => {
+    const released: ReleasedFrame[] = [];
+    const clock = { t: 1000 };
+    const rb = new ReorderBuffer((f) => released.push(f), () => clock.t);
+    expect(rb.arrivalBaselineMs()).toBeNull();
+    rb.pushKeyframe(tsKf(0, 0)); // arrival delta 1000
+    expect(rb.arrivalBaselineMs()).toBe(1000);
+  });
+});

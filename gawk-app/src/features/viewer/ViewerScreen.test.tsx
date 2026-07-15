@@ -34,7 +34,12 @@ vi.mock('../../transport/viewer-session', () => ({
 }));
 
 import { ViewerScreen } from './ViewerScreen';
-import { PLAYOUT_OFFSET_MS, getPlayoutOffsetMs, setSmoothedPlayout } from '../../transport/playout';
+import {
+  PLAYOUT_OFFSET_MS,
+  getPlayoutMode,
+  getPlayoutOffsetMs,
+  setPlayoutMode,
+} from '../../transport/playout';
 
 beforeEach(() => {
   sessions.length = 0;
@@ -70,34 +75,82 @@ describe('ViewerScreen states', () => {
   });
 });
 
-// R5 Q3: the smoothed-playout toggle — right-click menu item, persisted, and
+// R5 Q3 + R12 T2: the playout toggles — two mutually exclusive right-click
+// menu items ("Smooth playback" = fixed 150 ms, unchanged; "Paced playback
+// (adaptive)" = the R12 paced-presentation mode), persisted as one mode and
 // applied to the (main-thread, in these tests) pipeline context.
-describe('ViewerScreen smoothed playout', () => {
-  it('toggles via the context menu, persists, and sets the playout module', async () => {
+describe('ViewerScreen playout modes', () => {
+  function cleanupPlayout() {
+    setPlayoutMode('off');
+    localStorage.removeItem('gawk:playout-mode');
     localStorage.removeItem('gawk:smoothed-playout');
+  }
+
+  const openMenu = () =>
+    fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
+
+  it('toggles fixed smoothing via the context menu, persists, and sets the module', async () => {
+    cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutOffsetMs()).toBe(0); // default: live-edge
 
-    fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
+    openMenu();
     fireEvent.click(screen.getByText('Smooth playback'));
+    expect(getPlayoutMode()).toBe('fixed');
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
-    expect(localStorage.getItem('gawk:smoothed-playout')).toBe('1');
+    expect(localStorage.getItem('gawk:playout-mode')).toBe('fixed');
 
     // Toggle back off: the menu item shows the checked label.
-    fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
+    openMenu();
     fireEvent.click(screen.getByText('Smooth playback ✓'));
+    expect(getPlayoutMode()).toBe('off');
     expect(getPlayoutOffsetMs()).toBe(0);
-    expect(localStorage.getItem('gawk:smoothed-playout')).toBe('0');
+    expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
+    cleanupPlayout();
   });
 
-  it('applies a persisted preference on mount', async () => {
+  it('toggles adaptive paced playback and the two modes exclude each other', async () => {
+    cleanupPlayout();
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    openMenu();
+    fireEvent.click(screen.getByText('Paced playback (adaptive)'));
+    expect(getPlayoutMode()).toBe('adaptive');
+    expect(localStorage.getItem('gawk:playout-mode')).toBe('adaptive');
+
+    // Checking the other mode unchecks this one.
+    openMenu();
+    expect(screen.queryByText('Paced playback (adaptive) ✓')).toBeTruthy();
+    fireEvent.click(screen.getByText('Smooth playback'));
+    expect(getPlayoutMode()).toBe('fixed');
+    openMenu();
+    expect(screen.queryByText('Paced playback (adaptive) ✓')).toBeNull();
+    expect(screen.queryByText('Smooth playback ✓')).toBeTruthy();
+
+    // And unchecking the checked one returns to live-edge.
+    fireEvent.click(screen.getByText('Smooth playback ✓'));
+    expect(getPlayoutMode()).toBe('off');
+    cleanupPlayout();
+  });
+
+  it('applies a persisted mode on mount', async () => {
+    cleanupPlayout();
+    localStorage.setItem('gawk:playout-mode', 'adaptive');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(getPlayoutMode()).toBe('adaptive');
+    cleanupPlayout();
+  });
+
+  it('migrates the legacy smoothed-playout preference to fixed mode', async () => {
+    cleanupPlayout();
     localStorage.setItem('gawk:smoothed-playout', '1');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(getPlayoutMode()).toBe('fixed');
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
-    // Reset the module + storage so nothing leaks past this file's tests.
-    setSmoothedPlayout(false);
-    localStorage.removeItem('gawk:smoothed-playout');
+    cleanupPlayout();
   });
 });

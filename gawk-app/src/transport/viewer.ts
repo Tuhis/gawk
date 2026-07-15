@@ -14,7 +14,7 @@ import {
   type ViewerTransportKind,
 } from './viewer-transport';
 import { LiveEdgeTracker } from './live-edge';
-import { getPlayoutOffsetMs } from './playout';
+import { getPlayoutMode, getPlayoutOffsetMs, type PlayoutMode } from './playout';
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
@@ -85,6 +85,12 @@ export interface ViewerStats extends ReassemblerStats {
   // opt-in smoothed mode. Ground truth from the context the pipeline runs in,
   // so a toggle that failed to cross the worker boundary is visible.
   playoutOffsetMs: number;
+  // R12 T2: the playout mode itself ('off' | 'fixed' | 'adaptive') and where
+  // presentation happens — paced on rAF, paced on the timer fallback, or
+  // immediate (live-edge/fixed). Null presentation = main-thread path (the
+  // screen draws there, not the pipeline).
+  playoutMode: PlayoutMode;
+  presentation: 'paced-raf' | 'paced-timer' | 'immediate' | null;
   // R12 T1 (docs/17): jitter, per stats window. Render cadence = how much the
   // paint intervals deviate from the frames' capture intervals (σ + p95 of
   // |err|; ≡0 for perfect pacing at any fps) — worker path only, null on the
@@ -303,6 +309,8 @@ export class ViewerPipeline {
     const dec = this.decoder;
     if (dec && (dec.queueSize + this.pendingDecodes) > getMaxDecoderQueueSize()) {
       this.reorder.requestResync();
+      // The resync jumps ahead; frames held for pacing are already superseded.
+      this.renderSink?.flush?.();
     }
     this.reorder.tick();
   }
@@ -351,6 +359,7 @@ export class ViewerPipeline {
     const totalQueueSize = this.pendingDecodes + dec.queueSize;
     if (totalQueueSize > getMaxDecoderQueueSize()) {
       if (this.reorder) this.reorder.requestResync();
+      this.renderSink?.flush?.();
       // Drop this frame unless it is a keyframe (we need keyframes to recover)
       // Actually, viewer-level waitingForKeyframe will also drop deltas if true.
       this.waitingForKeyframe = true;
@@ -452,6 +461,8 @@ export class ViewerPipeline {
     this.liveEdge.reset();
     this.broadcastClockOffsetUs = null;
     this.lastCapToRenderMs = null;
+    // Held paced frames are from the old timeline — their targets are junk.
+    this.renderSink?.flush?.();
   }
 
   private handleDecoded(decoded: DecodedFrame): void {
@@ -468,10 +479,22 @@ export class ViewerPipeline {
     // Worker path: draw + close in place so the frame never crosses a boundary.
     // Main-thread path: hand it to the callback, which draws and closes it.
     if (this.renderSink) {
-      this.renderSink.draw(decoded.frame);
+      this.renderSink.draw(decoded.frame, this.displayTargetMs(decoded.frame.timestamp));
     } else {
       this.cb.onDecodedFrame(decoded);
     }
+  }
+
+  // R12 T2: in adaptive mode, each decoded frame's display slot —
+  // timestamp + arrival baseline + offset, the same schedule the reorder
+  // buffer released it (DECODE_LEAD_MS early) against. Undefined everywhere
+  // else ⇒ the sink presents ASAP, exactly the pre-R12 behavior.
+  private displayTargetMs(timestampUs: number): number | undefined {
+    if (getPlayoutMode() !== 'adaptive') return undefined;
+    const base = this.reorder?.arrivalBaselineMs();
+    const offset = getPlayoutOffsetMs();
+    if (base == null || offset <= 0) return undefined;
+    return timestampUs / 1000 + base + offset;
   }
 
   // R5 Q2: absolute capture→render, both sides translated to the relay clock:
@@ -551,6 +574,14 @@ export class ViewerPipeline {
       capToRenderMs: this.lastCapToRenderMs,
       timeSyncRttMs: this.transport?.sampleTimeSync()?.rttMs ?? null,
       playoutOffsetMs: getPlayoutOffsetMs(),
+      playoutMode: getPlayoutMode(),
+      presentation: this.renderSink
+        ? getPlayoutMode() === 'adaptive'
+          ? this.renderSink.scheduleKind === 'timer'
+            ? 'paced-timer'
+            : 'paced-raf'
+          : 'immediate'
+        : null,
       renderCadenceStdDevMs: cadence?.stdDevMs ?? null,
       renderCadenceP95Ms: cadence?.p95Ms ?? null,
       arrivalJitterMs: this.reorder?.arrivalJitterMs() ?? null,
@@ -624,6 +655,7 @@ export class ViewerPipeline {
       clearInterval(this.reorderTimer);
       this.reorderTimer = null;
     }
+    this.renderSink?.flush?.();
     this.transport?.close();
 
     if (this.decoder) await this.decoder.close();

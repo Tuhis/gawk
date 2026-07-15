@@ -31,6 +31,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         ['Decode mode', stats?.isHardwareAccelerated === true ? 'Hardware' : stats?.isHardwareAccelerated === false ? 'Software' : '—'],
         ['Renderer', stats?.renderer === 'webgl' ? 'WebGL' : stats?.renderer === '2d' ? 'Canvas 2D' : '—'],
         ['Pipeline', stats?.pipelineContext === 'worker' ? 'Worker' : stats?.pipelineContext === 'main-thread' ? 'Main thread' : '—'],
+        // R12 T2: where presentation happens — paced (adaptive mode, on rAF
+        // or the degraded timer fallback) or immediate (live-edge/fixed).
+        ['Presentation', stats?.presentation === 'paced-raf' ? 'Paced (rAF)' : stats?.presentation === 'paced-timer' ? 'Paced (timer)' : stats?.presentation === 'immediate' ? 'Immediate' : '—'],
         ['Received fps', fmt(stats?.receivedFps ?? NaN)],
         ['Decoder fps', fmt(stats?.decoderFps ?? NaN)],
         ['Rendered fps', fmtOr(stats?.renderedFps)],
@@ -57,9 +60,10 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         // R5 Q2: absolute glass-to-glass via the relay clock; "—" until both
         // clock legs (broadcaster + this viewer) have synced.
         ['Latency (capture→render)', stats?.capToRenderMs == null ? '—' : `${fmtInt(stats.capToRenderMs)} ms`],
-        // R5 Q3: the playout mode, from the pipeline's own context (ground
-        // truth — a toggle that failed to cross the worker shows here).
-        ['Playout', stats == null ? '—' : stats.playoutOffsetMs > 0 ? `smoothed (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
+        // R5 Q3 + R12 T2: the playout mode, from the pipeline's own context
+        // (ground truth — a toggle that failed to cross the worker shows
+        // here). Adaptive shows the live offset (T3 makes it dynamic).
+        ['Playout', stats == null ? '—' : stats.playoutMode === 'adaptive' ? `adaptive (+${fmtInt(stats.playoutOffsetMs)} ms)` : stats.playoutMode === 'fixed' ? `fixed (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
         // R12 T1: the jitter trio (docs/17 Decision 1). Render cadence σ is
         // what T2's paced presentation must move; arrival jitter sizes T3's
         // adaptive offset; decode jitter sizes the decode lead.
