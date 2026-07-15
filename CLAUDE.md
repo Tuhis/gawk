@@ -143,7 +143,17 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   jitter measurement, paced presentation + adaptive offset behind a new
   separate "Paced playback (adaptive)" toggle, experimental frame
   interpolation with pre-registered kill criteria, T1–T6 chunks; **T1–T4
-  implemented 2026-07-15, manual verify pending; T5/T6 not started**).
+  implemented 2026-07-15, manual verify pending; T5/T6 not started**),
+  `docs/17-advanced-broadcaster-settings.md` for R12 (advanced broadcaster
+  settings, **supersedes R7**: `isConfigSupported` probe matrix, HW-aware
+  auto ceiling + 'auto' framerate default resolving framerate-first (60 fps
+  when hardware probes it, else 30 — consciously revising item 11's fan-out
+  default; software path keeps 30), acceleration
+  tri-state (auto/hardware-only/software-only), capture aligned to the
+  sticky selection via live `applyConstraints` so **no settings change ever
+  restarts the stream** while R4 auto-stepping stays encode-only,
+  bitrate/codec overrides + probe-annotated pickers, L1–L5 chunks; designed
+  2026-07-15, not started).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task

@@ -25,12 +25,13 @@ feature set exists).
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | ✅ done — manually verified 2026-07-14 ([docs/09](docs/09-automatic-fallback.md)) |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | ✅ done (re-scoped; Q1–Q4) — manual verify passed 2026-07-15 ([docs/15](docs/15-viewer-live-edge.md)) |
 | R6 | [Production UI](#r6--production-ui) | ✅ done (J1–J6); manual browser verify passed 2026-07-14 ([docs/10](docs/10-production-ui.md)) |
-| R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | not started |
+| R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | ⤳ superseded by R12 |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 | R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
+| R12 | [Advanced broadcaster settings](#r12--advanced-broadcaster-settings) | designed 2026-07-15, not started ([docs/17](docs/17-advanced-broadcaster-settings.md)) |
 
 ---
 
@@ -384,7 +385,12 @@ it lands.
 - How the "auto" fallback controller interacts with capture-level renegotiation without triggering infinite loop resets.
 - Designing the UI representation for disabled options (e.g., warning tooltips explaining GPU hardware limits).
 
-**Status**: not started.
+**Status**: superseded by [R12 — Advanced broadcaster settings](#r12--advanced-broadcaster-settings)
+(decided 2026-07-15). Both bullets — hardware-aware UI controls and
+capture-constraint propagation — carry into R12; the third bullet
+(requesting the rung's resolution directly in `getDisplayMedia`) was
+rejected there in favor of a broad grant + live `applyConstraints`, which
+never requires re-prompting the screen picker.
 
 ## R8 — Worker Offloading & Reliable Keyframes
 
@@ -590,6 +596,56 @@ seam refactor in `capture.ts`/`broadcaster.ts`). All automated gates green
 (23 new tests). Manual browser verify pending — see the doc's verification
 plan (Chrome worker path + funnel-rate baseline comparison, Firefox fallback,
 main-thread CPU-throttle kill test).
+
+## R12 — Advanced broadcaster settings
+
+**Goal**: rehaul the resolution/framerate settings into a
+hardware-acceleration-aware system. Probe the encoder's capabilities up
+front (`VideoEncoder.isConfigSupported()` matrix over resolution × framerate
+× codec × acceleration) so the **default is the best configuration that
+hardware acceleration supports**; give the broadcaster an advanced panel
+(acceleration tri-state, resolution, framerate, bitrate override, codec
+override) with probe-annotated options; and align the **capture** layer with
+the selection via live `track.applyConstraints()` so a 720p30 session stops
+paying full 4K@60 capture cost — without ever restarting the stream.
+
+**Why now**: supersedes R7 and absorbs both of its bullets. The R4
+verification on the gaming PC showed the capture side is the real cost
+(source-limited 4K capture), and the R4 hardware-path finding (HW encoders
+don't surface backpressure via `encodeQueueSize`) means picking a
+HW-supported config *up front* matters more than reacting later.
+
+**Locked decisions** (full design in
+[`docs/17-advanced-broadcaster-settings.md`](docs/17-advanced-broadcaster-settings.md)):
+
+- **HW-aware auto ceiling**: 'auto' stays the default selection; the probe
+  matrix sets its ceiling to the highest rung that resolves hardware at the
+  selected fps (1080p ceiling when nothing does — Firefox, software mode).
+  R4 stepping below the ceiling is untouched and stays **encode-only**
+  (up-probes need the higher-res source still flowing).
+- **The framerate default is probe-driven too**: a new 'auto' framerate
+  selection (default) resolves framerate-first — **60 fps when any rung
+  probes hardware at 60**, else 30; never 'native'. This consciously
+  revises build-order item 11's 30 fps fan-out default: with hardware
+  encode confirmed, 60 is the default experience (the software path keeps
+  30). 'auto' fps never runtime-steps — R4 stays resolution-only.
+- **Tri-state acceleration control**: auto (prefer HW, fall back) /
+  hardware only (refuses to run software — the "did NVENC engage" mode) /
+  software only.
+- **Capture alignment = broad `getDisplayMedia` grant + live
+  `applyConstraints`** on the sticky target (explicit rung or auto
+  ceiling): **no settings change ever requires a stream restart** or
+  re-picking the screen. The preprocessor stays as the safety net — frames
+  remain truth (docs/01). On the R11 worker path, constraints apply to the
+  transferred clone worker-side (the design's main spike).
+- Probe-driven picker annotation (badges, never removal — explicit software
+  choices are honored; the old force-cap-to-30 heuristics are removed),
+  bitrate override ([0.5, 50] Mbps), codec pin, and an overlay Encode row
+  showing the *actual* codec + acceleration (runtime truth over probe
+  truth).
+- Zero server / wire / viewer changes.
+
+**Status**: designed 2026-07-15 (chunks L1–L5); not started.
 
 ---
 
