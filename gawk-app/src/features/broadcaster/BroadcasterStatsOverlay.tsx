@@ -27,7 +27,12 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
       rows: [
         ['Codec', encoderInfo?.codec ?? '—'],
         ['Encoding', encoderInfo ? `${encoderInfo.width}×${encoderInfo.height} @ ${fmt(encoderInfo.framerate, 0)}` : '—'],
+        // Runtime truth (docs/17 Decision 13): what configure() actually
+        // landed on, not what the probe matrix predicted.
         ['Encode mode', encoderInfo?.acceleration ?? '—'],
+        // R12: the probe-resolved auto targets ('—' on explicit selections).
+        ['Auto ceiling', stats?.autoCeiling == null ? '—' : stats.autoCeiling === 'native' ? 'native' : `${stats.autoCeiling}p`],
+        ['Auto fps', stats?.autoFps == null ? '—' : String(stats.autoFps)],
         ['Pipeline', stats?.pipelineContext === 'worker' ? 'Worker' : stats?.pipelineContext === 'main-thread' ? 'Main thread' : '—'],
         ['Capture fps', fmt(stats?.captureFps ?? NaN)],
         ['Encoder fps', fmt(stats?.encoderFps ?? NaN)],

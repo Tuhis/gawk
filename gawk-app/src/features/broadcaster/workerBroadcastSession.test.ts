@@ -116,6 +116,14 @@ describe('WorkerBroadcastSession start + ladder', () => {
     expect(worker.commands()).toContainEqual({ type: 'setLadder', selection: 'auto', framerate: 60 });
   });
 
+  it('posts setEncoderSettings for changes after start (R12 L4 — no restart)', () => {
+    const { session, worker } = makeSession();
+    void session.start().catch(() => {});
+    const settings = { hwPreference: 'software' as const, bitrateOverride: 2_000_000, codecOverride: 'vp8' };
+    session.setEncoderSettings(settings);
+    expect(worker.commands()).toContainEqual({ type: 'setEncoderSettings', settings });
+  });
+
   it('resolves start() on the started event', async () => {
     const { session, worker } = makeSession();
     const started = session.start();

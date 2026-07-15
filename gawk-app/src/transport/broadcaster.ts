@@ -156,7 +156,7 @@ export const DEFAULT_ENCODER_SETTINGS: EncoderSettings = {
 export interface BroadcastSessionLike {
   start(): Promise<void>;
   stop(): Promise<void>;
-  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void;
+  setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void;
   setEncoderSettings(settings: EncoderSettings): void;
 }
 

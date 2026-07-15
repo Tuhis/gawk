@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './broadcaster.module.css';
 import { LadderPicker } from '../stream/LadderPicker';
+import { EncoderSettingsPanel } from '../stream/EncoderSettingsPanel';
+import { useSupportMatrix } from '../stream/useSupportMatrix';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
@@ -11,7 +13,7 @@ import { createBroadcastSession } from './workerBroadcastSession';
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
-import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
+import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { useTransportStore } from '../../state/transportStore';
 import { isDevEnvironment, requiresPublishSecret } from '../../config';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
@@ -55,6 +57,10 @@ export function BroadcasterScreen() {
   const diagRef = useRef(new DiagnosticsBuffer<BroadcastStats>());
 
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
+
+  // R12 (docs/17 L4): probe matrix for picker annotations — advisory only;
+  // the overlay's Encode mode row shows the runtime truth.
+  const supportMatrix = useSupportMatrix();
 
   // Developer-only settings (localhost). Wired straight to the transport store.
   const showDevSettings = isDevEnvironment();
@@ -108,7 +114,7 @@ export function BroadcasterScreen() {
       },
     });
 
-    const { resolutionSelection: res, framerateRung } = useBroadcastSettingsStore.getState();
+    const { resolutionSelection: res, framerateSelection } = useBroadcastSettingsStore.getState();
     let activeId = broadcastId;
     let triedReclaim = false;
 
@@ -122,7 +128,8 @@ export function BroadcasterScreen() {
         makeCallbacks(false),
         activeId,
       );
-      pipeline.setLadder(res, framerateRung);
+      pipeline.setLadder(res, framerateSelection);
+      pipeline.setEncoderSettings(encoderSettingsFromStore());
       pipelineRef.current = pipeline;
       try {
         await pipeline.start();
@@ -149,7 +156,8 @@ export function BroadcasterScreen() {
       { certHashHex, publishSecret },
       makeCallbacks(triedReclaim),
     );
-    pipeline.setLadder(res, framerateRung);
+    pipeline.setLadder(res, framerateSelection);
+    pipeline.setEncoderSettings(encoderSettingsFromStore());
     pipelineRef.current = pipeline;
     try {
       await pipeline.start();
@@ -202,13 +210,17 @@ export function BroadcasterScreen() {
   }, []);
 
   const copyDiagnostics = useCallback(() => {
-    const { resolutionSelection: res, framerateRung } = useBroadcastSettingsStore.getState();
+    const { resolutionSelection: res, framerateSelection, hwPreference, bitrateOverride, codecOverride } =
+      useBroadcastSettingsStore.getState();
     const json = diagRef.current.build({
       surface: 'broadcaster',
       broadcastId,
       encoder: encoderInfo,
       resolutionSelection: res,
-      framerateRung,
+      framerateSelection,
+      hwPreference,
+      bitrateOverride,
+      codecOverride,
     });
     void navigator.clipboard?.writeText(json).then(() => {
       setStatsCopied(true);
@@ -234,7 +246,17 @@ export function BroadcasterScreen() {
 
         <section className={styles.group}>
           <h3 className={styles.groupTitle}>Stream quality</h3>
-          <LadderPicker onChange={(res, fps) => pipelineRef.current?.setLadder(res, fps)} />
+          <LadderPicker
+            matrix={supportMatrix}
+            onChange={(res, fps) => pipelineRef.current?.setLadder(res, fps)}
+          />
+        </section>
+
+        <section className={styles.group}>
+          <h3 className={styles.groupTitle}>Advanced</h3>
+          <EncoderSettingsPanel
+            onChange={(settings) => pipelineRef.current?.setEncoderSettings(settings)}
+          />
         </section>
 
         {showDevSettings && (

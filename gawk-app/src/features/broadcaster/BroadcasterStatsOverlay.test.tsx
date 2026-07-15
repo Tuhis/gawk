@@ -86,6 +86,37 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('At capacity').nextSibling?.textContent).toBe('no');
     expect(screen.getByText('Dgrams lost (out)').nextSibling?.textContent).toBe('15');
     expect(screen.getByText('Bitrate (sent)').nextSibling?.textContent).toBe('12.0 Mbps');
+    expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
+  });
+
+  it('renders the R12 auto ceiling + auto fps rows when in auto mode', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), autoCeiling: 1080, autoFps: 60 }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Auto ceiling').nextSibling?.textContent).toBe('1080p');
+    expect(screen.getByText('Auto fps').nextSibling?.textContent).toBe('60');
+  });
+
+  it('renders — for the auto rows on explicit selections', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={fullStats()}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Auto ceiling').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Auto fps').nextSibling?.textContent).toBe('—');
   });
 
   it('renders — before stats exist and without connection support', () => {

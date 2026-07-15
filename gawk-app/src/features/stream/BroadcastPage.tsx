@@ -71,7 +71,7 @@ export function BroadcastPage() {
       },
     });
 
-    const { resolutionSelection, framerateRung } = useBroadcastSettingsStore.getState();
+    const { resolutionSelection, framerateSelection: framerateRung } = useBroadcastSettingsStore.getState();
 
     let activeId = broadcastId;
     let triedReclaim = false;
