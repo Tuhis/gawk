@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.21.0...gawk-app-v0.21.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* viewer "Bitrate (recv)" always empty — count received video bytes client-side ([2f45766](https://github.com/Tuhis/gawk/commit/2f45766d38d9895ff6229a649c7caf5621cba95b))
+
 ## [0.21.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.20.1...gawk-app-v0.21.0) (2026-07-15)
 
 
