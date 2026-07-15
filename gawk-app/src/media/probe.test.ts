@@ -1,4 +1,4 @@
-// R12 (docs/17) L1: the probe matrix classifies each (rung, fps) combo as
+// R13 (docs/18) L1: the probe matrix classifies each (rung, fps) combo as
 // hardware / software / unsupported from isConfigSupported answers, honors
 // the acceleration policy, memoizes, and never throws.
 

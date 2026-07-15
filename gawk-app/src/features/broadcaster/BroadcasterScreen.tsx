@@ -58,7 +58,7 @@ export function BroadcasterScreen() {
 
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
 
-  // R12 (docs/17 L4): probe matrix for picker annotations — advisory only;
+  // R13 (docs/18 L4): probe matrix for picker annotations — advisory only;
   // the overlay's Encode mode row shows the runtime truth.
   const supportMatrix = useSupportMatrix();
 

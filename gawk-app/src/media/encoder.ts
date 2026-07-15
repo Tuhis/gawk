@@ -27,7 +27,7 @@ const SW_VARIANTS: ConfigVariant[] = [
   { label: 'prefer-sw',            hardwareAcceleration: 'prefer-software' },
 ];
 
-// R12 (docs/17 Decision 5): the acceleration tri-state selects which
+// R13 (docs/18 Decision 5): the acceleration tri-state selects which
 // variants the cascade may try. 'auto' is the historical behavior (prefer
 // hardware, silently fall back); 'hardware' refuses to run software;
 // 'software' forces it.
@@ -157,7 +157,7 @@ export class Encoder {
             const finalConfig = support.config ?? encoderConfig;
             const acceleration = classifyAcceleration(variant, finalConfig.hardwareAcceleration);
             // Hardware-only mode: a supported=true that the browser resolved
-            // to software is a refusal, not a fallback (docs/17 Decision 5).
+            // to software is a refusal, not a fallback (docs/18 Decision 5).
             if (hwPreference === 'hardware' && acceleration !== 'hardware') {
               attempts.push(`${codec}/${variant.label}: resolved software under hardware-only`);
               continue;

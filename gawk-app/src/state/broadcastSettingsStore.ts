@@ -17,7 +17,7 @@ import { DEFAULT_CODEC_PREFERENCES } from '../media/types';
 // R4: the resolution axis is a ResolutionSelection whose default is 'auto';
 // a previously persisted explicit rung (including 'native') keeps its exact
 // meaning.
-// R12 (docs/17): the framerate axis widens to FramerateSelection with
+// R13 (docs/18): the framerate axis widens to FramerateSelection with
 // default 'auto' (probe-resolved: 60 when hardware supports it, else 30 —
 // consciously revising the old fixed-30 fan-out default); a previously
 // persisted explicit fps rung keeps its exact meaning. New advanced axes:
@@ -108,7 +108,7 @@ export const useBroadcastSettingsStore = create<BroadcastSettingsState>((set) =>
   },
 }));
 
-// The EncoderSettings snapshot the pipeline consumes (docs/17 L4): one
+// The EncoderSettings snapshot the pipeline consumes (docs/18 L4): one
 // place derives it so the screen's two call sites and the live-change
 // handler can't drift.
 export function encoderSettingsFromStore(): {

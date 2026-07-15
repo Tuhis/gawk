@@ -13,7 +13,7 @@ import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 interface Props {
   // Invoked after the store updates so a live pipeline can apply the change.
   onChange?: (resolution: ResolutionSelection, framerate: FramerateSelection) => void;
-  // R12 (docs/17 Decision 9): probe matrix backing the option annotations.
+  // R13 (docs/18 Decision 9): probe matrix backing the option annotations.
   // null (probe unavailable / not yet landed) renders options unannotated.
   matrix?: SupportMatrix | null;
 }
@@ -28,7 +28,7 @@ function framerateLabel(selection: FramerateSelection): string {
   return selection === 'native' ? 'native' : `${selection} fps`;
 }
 
-// docs/17 Decision 9: options are annotated, never removed — an explicit
+// docs/18 Decision 9: options are annotated, never removed — an explicit
 // software rung is allowed (R4's "explicit choices are honored"); only
 // genuinely unsupported combos disable.
 function annotate(label: string, acceleration: ProbeAcceleration | null): {

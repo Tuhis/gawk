@@ -25,13 +25,13 @@ feature set exists).
 | R4 | [Automatic resolution fallback](#r4--automatic-resolution-fallback) | ✅ done — manually verified 2026-07-14 ([docs/09](docs/09-automatic-fallback.md)) |
 | R5 | [Viewer live-edge enhancements](#r5--viewer-live-edge-enhancements) | ✅ done (re-scoped; Q1–Q4) — manual verify passed 2026-07-15 ([docs/15](docs/15-viewer-live-edge.md)) |
 | R6 | [Production UI](#r6--production-ui) | ✅ done (J1–J6); manual browser verify passed 2026-07-14 ([docs/10](docs/10-production-ui.md)) |
-| R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | ⤳ superseded by R12 |
+| R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | ⤳ superseded by R13 |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
 | R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
-| R12 | [Advanced broadcaster settings](#r12--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/17](docs/17-advanced-broadcaster-settings.md)) |
+| R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 
 ---
 
@@ -385,9 +385,9 @@ it lands.
 - How the "auto" fallback controller interacts with capture-level renegotiation without triggering infinite loop resets.
 - Designing the UI representation for disabled options (e.g., warning tooltips explaining GPU hardware limits).
 
-**Status**: superseded by [R12 — Advanced broadcaster settings](#r12--advanced-broadcaster-settings)
+**Status**: superseded by [R13 — Advanced broadcaster settings](#r13--advanced-broadcaster-settings)
 (decided 2026-07-15). Both bullets — hardware-aware UI controls and
-capture-constraint propagation — carry into R12; the third bullet
+capture-constraint propagation — carry into R13; the third bullet
 (requesting the rung's resolution directly in `getDisplayMedia`) was
 rejected there in favor of a broad grant + live `applyConstraints`, which
 never requires re-prompting the screen picker.
@@ -597,7 +597,7 @@ seam refactor in `capture.ts`/`broadcaster.ts`). All automated gates green
 plan (Chrome worker path + funnel-rate baseline comparison, Firefox fallback,
 main-thread CPU-throttle kill test).
 
-## R12 — Advanced broadcaster settings
+## R13 — Advanced broadcaster settings
 
 **Goal**: rehaul the resolution/framerate settings into a
 hardware-acceleration-aware system. Probe the encoder's capabilities up
@@ -616,7 +616,7 @@ don't surface backpressure via `encodeQueueSize`) means picking a
 HW-supported config *up front* matters more than reacting later.
 
 **Locked decisions** (full design in
-[`docs/17-advanced-broadcaster-settings.md`](docs/17-advanced-broadcaster-settings.md)):
+[`docs/18-advanced-broadcaster-settings.md`](docs/18-advanced-broadcaster-settings.md)):
 
 - **HW-aware auto ceiling**: 'auto' stays the default selection; the probe
   matrix sets its ceiling to the highest rung that resolves hardware at the
@@ -649,7 +649,7 @@ HW-supported config *up front* matters more than reacting later.
 tri-state + overrides, HW-aware auto ceiling + 'auto' fps, capture
 alignment, annotated pickers + advanced settings panel + overlay rows). All
 automated gates green; zero server changes. Manual browser verify pending —
-see the docs/17 verification plan, including the applyConstraints spike
+see the docs/18 verification plan, including the applyConstraints spike
 outcome on the real gaming PC (Chrome worker path) and Firefox.
 
 ---

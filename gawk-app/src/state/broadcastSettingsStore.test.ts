@@ -65,8 +65,8 @@ describe('broadcastSettingsStore resolution selection', () => {
 
 });
 
-describe('broadcastSettingsStore framerate selection (R12)', () => {
-  // docs/17 Decision 4: the default is 'auto' (probe-resolved — 60 when
+describe('broadcastSettingsStore framerate selection (R13)', () => {
+  // docs/18 Decision 4: the default is 'auto' (probe-resolved — 60 when
   // hardware supports it, else 30). A previously persisted explicit rung
   // keeps its exact meaning across the widening.
   it('defaults to auto when nothing is persisted', async () => {
@@ -96,7 +96,7 @@ describe('broadcastSettingsStore framerate selection (R12)', () => {
   });
 });
 
-describe('broadcastSettingsStore advanced axes (R12 L4)', () => {
+describe('broadcastSettingsStore advanced axes (R13 L4)', () => {
   it('hwPreference defaults to auto and validates persisted values', async () => {
     expect((await loadStore()).hwPreference).toBe('auto');
     localStorage.setItem('gawk.hwPreference', 'hardware');

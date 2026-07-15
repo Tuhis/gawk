@@ -5,7 +5,7 @@
 // "why is this stream software-encoded?" is answerable from one console
 // line instead of a debugging session.
 //
-// R12 (docs/17 L2): the acceleration tri-state filters the variant cascade
+// R13 (docs/18 L2): the acceleration tri-state filters the variant cascade
 // — 'hardware' refuses to configure software, 'software' probes only
 // prefer-software variants.
 
@@ -87,7 +87,7 @@ describe('Encoder.configure hardware-unavailable hint', () => {
   });
 });
 
-describe('Encoder.configure acceleration tri-state (R12)', () => {
+describe('Encoder.configure acceleration tri-state (R13)', () => {
   it('hardware mode refuses when every prefer-hardware variant is rejected', async () => {
     stubVideoEncoder((c) => c.hardwareAcceleration !== 'prefer-hardware');
     await expect(makeEncoder({ hwPreference: 'hardware' }).configure()).rejects.toThrow(

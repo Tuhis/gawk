@@ -91,7 +91,7 @@ describe('BroadcastWorkerCore start', () => {
     expect(events).toContainEqual({ type: 'started' });
   });
 
-  it('forwards encoder settings on start and via the live command (R12 L3)', () => {
+  it('forwards encoder settings on start and via the live command (R13 L3)', () => {
     const { core, fake } = makeCore();
     const settings = { hwPreference: 'software' as const, bitrateOverride: 2_000_000, codecOverride: null };
     core.start({ ...START_PARAMS, encoderSettings: settings });
@@ -101,7 +101,7 @@ describe('BroadcastWorkerCore start', () => {
     expect(fake.pipeline.setEncoderSettings).toHaveBeenCalledWith(changed);
   });
 
-  it('accepts the R12 FramerateSelection auto on both ladder paths', () => {
+  it('accepts the R13 FramerateSelection auto on both ladder paths', () => {
     const { core, fake } = makeCore();
     core.start({ ...START_PARAMS, framerate: 'auto' });
     expect(fake.pipeline.setLadder).toHaveBeenCalledWith('auto', 'auto');

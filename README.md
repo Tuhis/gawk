@@ -330,13 +330,13 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 - **`isConfigSupported({hardwareAcceleration: 'prefer-hardware'})` answering
   `supported: true` is Chromium's hardware commitment** — the spec has no
   "require hardware", but Chromium returns false when it can't do HW, which
-  is what makes the R12 probe matrix (and its "hardware only" mode)
+  is what makes the R13 probe matrix (and its "hardware only" mode)
   meaningful. The probe stays *advisory*: the live `configure()` result wins,
   and the overlay's "Encode mode" row shows the runtime truth — picker
   badges are predictions, not guarantees.
-  ([docs/17](docs/17-advanced-broadcaster-settings.md))
+  ([docs/18](docs/18-advanced-broadcaster-settings.md))
 - **Track-clone constraints are per-track and must be applied worker-side
-  (R12).** Capture alignment (`track.applyConstraints` on the sticky
+  (R13).** Capture alignment (`track.applyConstraints` on the sticky
   resolution/fps target) lands on whichever track feeds MSTP: the
   transferred clone inside the broadcast worker, or the original on the
   main-thread path. Constraining the main-thread original does nothing for
@@ -344,7 +344,7 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   the preview stays native). And the probe matrix refines from real frame
   dims **upward only**: re-probing at our own constrained dims would feed
   the ceiling its own output (constrain → smaller frames → lower ceiling →
-  constrain…). ([docs/17](docs/17-advanced-broadcaster-settings.md))
+  constrain…). ([docs/18](docs/18-advanced-broadcaster-settings.md))
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
 - **Raising the QUIC idle timeout does not keep idle viewers alive** — the

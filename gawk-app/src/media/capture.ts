@@ -17,7 +17,7 @@ export interface CaptureHandle {
 // the native fps hint, and an "ended" signal. The main-thread default wraps
 // startCapture (stream present, for the preview); the worker source wraps a
 // transferred track (no stream — the preview lives on the main thread).
-// R12 (docs/17 Decision 6): applyConstraints aligns the capture track with
+// R13 (docs/18 Decision 6): applyConstraints aligns the capture track with
 // the sticky target — live, no restart. Optional: a source without it (test
 // fakes, exotic paths) simply keeps preprocessor-only scaling.
 export interface BroadcastMediaSource {
@@ -39,7 +39,7 @@ export type BroadcastMediaSourceFactory = (config: CaptureConfig) => Promise<Bro
 export async function acquireDisplayStream(
   config: CaptureConfig,
 ): Promise<{ stream: MediaStream; track: MediaStreamTrack }> {
-  // The grant is deliberately broad (docs/17 Decision 6): capture alignment
+  // The grant is deliberately broad (docs/18 Decision 6): capture alignment
   // happens post-acquisition via track.applyConstraints on the sticky
   // target, so nothing a settings change can express exceeds this request —
   // no re-prompt, ever. The old HW-probe fps cap here is gone (Decision 10):
@@ -151,7 +151,7 @@ export function trackMediaSource(
       pump?.stop();
       track.stop();
     },
-    // R12: constraints land on the transferred clone, worker-side — clones
+    // R13: constraints land on the transferred clone, worker-side — clones
     // hold independent constraints, and this track is the encode source
     // (the main-thread original keeps the broad grant for the preview).
     applyConstraints: (constraints) => track.applyConstraints(constraints),

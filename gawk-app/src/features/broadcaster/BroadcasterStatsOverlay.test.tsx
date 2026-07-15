@@ -89,7 +89,7 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
   });
 
-  it('renders the R12 auto ceiling + auto fps rows when in auto mode', () => {
+  it('renders the R13 auto ceiling + auto fps rows when in auto mode', () => {
     render(
       <BroadcasterStatsOverlay
         stats={{ ...fullStats(), autoCeiling: 1080, autoFps: 60 }}

@@ -16,7 +16,7 @@ export const FRAMERATE_RUNGS: readonly FramerateRung[] = ['native', 60, 30, 5];
 export type ResolutionSelection = 'auto' | ResolutionRung;
 export const RESOLUTION_SELECTIONS: readonly ResolutionSelection[] = ['auto', ...RESOLUTION_RUNGS];
 
-// R12 (docs/17 Decision 4): the framerate axis gets the same shape. 'auto'
+// R13 (docs/18 Decision 4): the framerate axis gets the same shape. 'auto'
 // resolves at probe time (framerate-first, resolveAutoFps below) and never
 // runtime-steps — R4 stepping stays resolution-only.
 export type FramerateSelection = 'auto' | FramerateRung;
@@ -82,7 +82,7 @@ export function autoLadder(srcLongerDim: number): ResolutionRung[] {
   return rungs;
 }
 
-// R12 (docs/17 Decisions 3+4): structural mirror of the probe matrix's
+// R13 (docs/18 Decisions 3+4): structural mirror of the probe matrix's
 // lookup — declared here (not imported) because probe.ts imports this
 // module; the extra SupportEntry fields are structurally compatible.
 export type SupportLookup = (
@@ -133,7 +133,7 @@ export function applyCeiling(
   return out.length > 0 ? out : [rungs[rungs.length - 1]];
 }
 
-// Capture-constraint width cap for a sticky rung (docs/17 Decision 6): null
+// Capture-constraint width cap for a sticky rung (docs/18 Decision 6): null
 // for native — the broad grant, no cap beyond the original request.
 export function rungCapWidth(rung: ResolutionRung): number | null {
   return rung === 'native' ? null : LONGER_DIM_CAP[rung];
@@ -144,7 +144,7 @@ export function computeBitrate(width: number, height: number, fps: number): numb
   return Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, Math.round(base)));
 }
 
-// R12 (docs/17 Decision 11): the advanced bitrate override is absolute —
+// R13 (docs/18 Decision 11): the advanced bitrate override is absolute —
 // it replaces the ladder math until reset — but clamped to a wider band
 // than the ladder's: the 1 Gbps homelab uplink allows experiments past the
 // 10 Mbps ladder cap (15 viewers × 50 Mbps stays within egress), while the

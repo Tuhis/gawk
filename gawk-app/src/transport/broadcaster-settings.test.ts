@@ -1,4 +1,4 @@
-// R12 pipeline-integration tests (docs/17, chunk L2): the advanced encoder
+// R13 pipeline-integration tests (docs/18, chunk L2): the advanced encoder
 // settings — bitrate override, codec pin, acceleration tri-state — reach the
 // encoder's negotiated config, changes recreate the encoder mid-stream, and
 // the old >1080p@>30 force-cap is gone (an explicit 4K@60 choice is honored
@@ -221,7 +221,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('bitrate override (docs/17 Decision 11)', () => {
+describe('bitrate override (docs/18 Decision 11)', () => {
   it('replaces the ladder bitrate, clamped to the 50 Mbps ceiling', async () => {
     const p = await startPipeline({ bitrateOverride: 80_000_000 });
     await prime();
@@ -244,7 +244,7 @@ describe('bitrate override (docs/17 Decision 11)', () => {
   });
 });
 
-describe('codec pin (docs/17 Decision 12)', () => {
+describe('codec pin (docs/18 Decision 12)', () => {
   it('narrows the preference walk to the pinned codec', async () => {
     const p = await startPipeline({ codecOverride: 'vp8' });
     await prime();
@@ -294,7 +294,7 @@ describe('mid-stream settings changes', () => {
   });
 });
 
-describe('the >1080p@>30 force-cap is gone (docs/17 Decision 10)', () => {
+describe('the >1080p@>30 force-cap is gone (docs/18 Decision 10)', () => {
   it('explicit 4K@60 configures at 60 fps with no probe gate', async () => {
     const p = await startPipeline({ hwPreference: 'software' });
     p.setLadder('native', 60);
@@ -305,7 +305,7 @@ describe('the >1080p@>30 force-cap is gone (docs/17 Decision 10)', () => {
   });
 });
 
-describe('HW-aware auto ceiling + auto fps (docs/17 Decisions 3+4, L3)', () => {
+describe('HW-aware auto ceiling + auto fps (docs/18 Decisions 3+4, L3)', () => {
   it('auto/auto with HW up to 1080p starts at the 1080 rung at 60 fps', async () => {
     const p = await startPipeline(undefined, {
       prober: proberWhere((c) => (c.width ?? 0) <= 1920),
@@ -350,7 +350,7 @@ describe('HW-aware auto ceiling + auto fps (docs/17 Decisions 3+4, L3)', () => {
     await p.stop();
   });
 
-  it('no prober (no WebCodecs in scope) keeps the optimistic pre-R12 defaults', async () => {
+  it('no prober (no WebCodecs in scope) keeps the optimistic pre-R13 defaults', async () => {
     const p = await startPipeline(undefined, {
       ladder: { selection: 'auto', framerate: 'native' },
     });
@@ -360,7 +360,7 @@ describe('HW-aware auto ceiling + auto fps (docs/17 Decisions 3+4, L3)', () => {
   });
 });
 
-describe('capture alignment via applyConstraints (docs/17 Decision 6, L3)', () => {
+describe('capture alignment via applyConstraints (docs/18 Decision 6, L3)', () => {
   it('constrains capture to the auto ceiling at start', async () => {
     const p = await startPipeline(undefined, {
       prober: proberWhere((c) => (c.width ?? 0) <= 1920),

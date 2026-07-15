@@ -1,4 +1,4 @@
-// R12 (docs/17 L4): the advanced encoder controls — acceleration tri-state,
+// R13 (docs/18 L4): the advanced encoder controls — acceleration tri-state,
 // bitrate override, codec pin. Store-backed like LadderPicker; onChange
 // hands the full EncoderSettings snapshot to a live session. All three are
 // applied via encoder recreate on the next frame — never a stream restart.

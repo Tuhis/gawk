@@ -144,7 +144,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   separate "Paced playback (adaptive)" toggle, experimental frame
   interpolation with pre-registered kill criteria, T1–T6 chunks; **T1–T4
   implemented 2026-07-15, manual verify pending; T5/T6 not started**),
-  `docs/17-advanced-broadcaster-settings.md` for R12 (advanced broadcaster
+  `docs/18-advanced-broadcaster-settings.md` for R13 (advanced broadcaster
   settings, **supersedes R7**: `isConfigSupported` probe matrix, HW-aware
   auto ceiling + 'auto' framerate default resolving framerate-first (60 fps
   when hardware probes it, else 30 — consciously revising item 11's fan-out
@@ -419,8 +419,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    available; **pre-registered kill criteria** — a documented rejection of
    T5 is a valid completion.
 18. Advanced broadcaster settings — **implemented 2026-07-15 (L1–L5);
-   automated gates green, manual browser verify pending** (R12,
-   `docs/17-advanced-broadcaster-settings.md`; supersedes R7; UI/pipeline
+   automated gates green, manual browser verify pending** (R13,
+   `docs/18-advanced-broadcaster-settings.md`; supersedes R7; UI/pipeline
    only, zero server/wire changes). `VideoEncoder.isConfigSupported` **probe
    matrix** (`media/probe.ts`; prefer-hardware supported=true is Chromium's
    HW commitment — advisory only, runtime `configure()` wins); **HW-aware

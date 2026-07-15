@@ -8,7 +8,7 @@ export interface CaptureConfig {
   height: number;
   bitrate: number;
   framerate: number;
-  // R12 (docs/17): acceleration tri-state. Absent means 'auto' — the
+  // R13 (docs/18): acceleration tri-state. Absent means 'auto' — the
   // historical prefer-hardware-then-fall-back cascade.
   hwPreference?: HwPreference;
   // Time-based (docs/08): frame-count cadence would stretch the GOP to 24s

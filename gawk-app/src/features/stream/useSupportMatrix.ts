@@ -1,4 +1,4 @@
-// R12 (docs/17 L4): the UI-side probe matrix backing picker annotations.
+// R13 (docs/18 L4): the UI-side probe matrix backing picker annotations.
 // Probes at the pre-capture 4K upper bound (annotations are advisory —
 // runtime acceleration is truth, Decision 13) and re-probes when the
 // acceleration mode or codec pin changes. Scopes without WebCodecs (jsdom,

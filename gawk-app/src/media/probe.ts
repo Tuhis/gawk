@@ -1,4 +1,4 @@
-// R12 (docs/17): the encoder-capability probe matrix. Probes
+// R13 (docs/18): the encoder-capability probe matrix. Probes
 // (resolution rung × framerate × codec preference × acceleration hint) via
 // VideoEncoder.isConfigSupported() into a support map the picker annotates
 // from and the auto ceiling / auto-fps default resolve against.
@@ -7,7 +7,7 @@
 // 'prefer-hardware' probe answering supported=true is a commitment to
 // hardware — Chromium returns false when it can't do HW. There is no
 // spec-level "require hardware"; this probe is as close as it gets. The
-// probe is *advisory*: the live configure() result wins (docs/17 Decision
+// probe is *advisory*: the live configure() result wins (docs/18 Decision
 // 13). On Firefox every prefer-hardware probe is rejected (its
 // VideoEncoder is software-only) and the matrix degrades to all-software.
 
@@ -58,8 +58,8 @@ export type IsConfigSupportedFn = (
 
 // Whether this scope can probe at all. When it can't (no WebCodecs — jsdom,
 // exotic browsers) the pipeline skips the matrix entirely and keeps the
-// pre-R12 optimistic defaults: an unavailable probe must not clamp behavior
-// (docs/17 Decision 13 — runtime truth over probe truth).
+// pre-R13 optimistic defaults: an unavailable probe must not clamp behavior
+// (docs/18 Decision 13 — runtime truth over probe truth).
 export function probeSupported(): boolean {
   return typeof VideoEncoder !== 'undefined' && typeof VideoEncoder.isConfigSupported === 'function';
 }

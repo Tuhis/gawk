@@ -1,4 +1,4 @@
-# R12 — Advanced broadcaster settings
+# R13 — Advanced broadcaster settings
 
 **Status**: implemented 2026-07-15 (chunks L1–L5); all automated gates green
 (40 test files / 399 tests, tsc build, lint; zero server changes). **Manual
@@ -11,7 +11,7 @@ ships either way: the preprocessor safety net covers under-delivery, so a
 
 **Implementation notes (2026-07-15)**:
 - The probe-unavailable case (no `VideoEncoder` in scope — jsdom, exotic
-  browsers) keeps the pre-R12 optimistic defaults (`probeSupported()` gate:
+  browsers) keeps the pre-R13 optimistic defaults (`probeSupported()` gate:
   ceiling native, auto fps 30) — an unavailable probe must not clamp
   behavior (Decision 13 applied one level up).
 - Matrix refinement from real frame dims is **upward-only** (monotonic max):
@@ -24,7 +24,7 @@ ships either way: the preprocessor safety net covers under-delivery, so a
   sees the ceiling; refinements and mode/codec re-probes are fire-and-forget
   with a generation guard.
 - The store keeps the `gawk.framerateRung` localStorage key for the widened
-  `framerateSelection` field, so persisted explicit rungs survive the R12
+  `framerateSelection` field, so persisted explicit rungs survive the R13
   upgrade byte-for-byte.
 
 ## Goal
@@ -35,7 +35,7 @@ about resolution and framerate — the capture (`getDisplayMedia` +
 `MediaStreamTrackProcessor`) and the encoder — and today they are only
 loosely coupled: capture always runs at native/4K@60 while the encoder chews
 whatever the preprocessor hands it. In the ideal session both run at the same
-resolution and framerate with hardware encoding. After R12:
+resolution and framerate with hardware encoding. After R13:
 
 - The browser's encoder capabilities are **probed up front** (a support
   matrix over resolution × framerate × codec × acceleration), and the default
@@ -67,7 +67,7 @@ resolution and framerate with hardware encoding. After R12:
 
 ## Locked decisions
 
-1. **R12 supersedes R7.** Both R7 bullets — hardware-aware UI controls and
+1. **R13 supersedes R7.** Both R7 bullets — hardware-aware UI controls and
    capture-constraint propagation — live here; R7 is marked superseded in
    the ROADMAP. R7's third bullet (request the rung's resolution directly in
    `getDisplayMedia`) is **rejected** in favor of Decision 6's
@@ -300,7 +300,7 @@ Encode row (actual codec + HW/SW) on the production broadcaster surface.
 
 ### L5 — docs + verification sync
 
-ROADMAP R12 status, CLAUDE.md build-order + docs list, README gotchas
+ROADMAP R13 status, CLAUDE.md build-order + docs list, README gotchas
 (prefer-hardware commitment; clone constraints are per-track and applied
 worker-side; annotations are advisory — runtime acceleration is truth),
 manual verification pass below.

@@ -31,7 +31,7 @@ export type BroadcastWorkerCommand =
       broadcastId?: string;
       selection: ResolutionSelection;
       framerate: FramerateSelection;
-      // R12: the advanced encoder settings ride the start command (and the
+      // R13: the advanced encoder settings ride the start command (and the
       // dedicated command below for live changes).
       encoderSettings?: EncoderSettings;
     }

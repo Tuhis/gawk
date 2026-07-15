@@ -126,14 +126,14 @@ describe('computeTargetSize', () => {
   });
 });
 
-describe('FRAMERATE_SELECTIONS (R12)', () => {
+describe('FRAMERATE_SELECTIONS (R13)', () => {
   it('leads with auto as the default, followed by the explicit rungs', () => {
     expect(FRAMERATE_SELECTIONS[0]).toBe('auto');
     expect(FRAMERATE_SELECTIONS).toEqual(['auto', ...FRAMERATE_RUNGS]);
   });
 });
 
-describe('resolveAutoFps (docs/17 Decision 4)', () => {
+describe('resolveAutoFps (docs/18 Decision 4)', () => {
   it('resolves framerate-first: 60 when any rung probes hardware at 60', () => {
     // Only 720p does HW at 60 — fps still wins over resolution.
     expect(resolveAutoFps(lookupWhere((rung, fps) => rung === 720 && fps === 60))).toBe(60);
@@ -148,7 +148,7 @@ describe('resolveAutoFps (docs/17 Decision 4)', () => {
   });
 });
 
-describe('hardwareCeiling (docs/17 Decision 3)', () => {
+describe('hardwareCeiling (docs/18 Decision 3)', () => {
   it('picks the highest rung that probes hardware at the effective fps', () => {
     expect(hardwareCeiling(lookupWhere((rung) => rung !== 'native'), 60)).toBe(1080);
     expect(hardwareCeiling(lookupWhere((rung) => rung === 720 || rung === 480), 60)).toBe(720);
@@ -191,7 +191,7 @@ describe('rungCapWidth', () => {
   });
 });
 
-describe('clampBitrateOverride (docs/17 Decision 11)', () => {
+describe('clampBitrateOverride (docs/18 Decision 11)', () => {
   it('clamps to the [0.5, 50] Mbps override band', () => {
     expect(clampBitrateOverride(1)).toBe(500_000);
     expect(clampBitrateOverride(80_000_000)).toBe(50_000_000);
