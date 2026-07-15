@@ -252,6 +252,53 @@ func TestStalledKeyframeIsSupersededByTheNext(t *testing.T) {
 	s.wait()
 }
 
+// teardown() calls wait() while the pump goroutine may still be inside
+// send(): cancelling the session context does not synchronously stop the
+// pump. A keyframe write spawned in that window must either be waited for or
+// not started at all — never started *behind* a Wait that has already
+// returned, which is what "let in-flight writes settle before closing the
+// session out from under them" exists to prevent.
+//
+// Concretely this is the sync.WaitGroup contract: a positive Add that starts
+// from a zero counter must happen-before Wait. CI's race detector caught the
+// violation (Add at send.go's keyframe spawn vs. Wait in sender.wait()).
+func TestWaitDoesNotRaceAKeyframeArrivingDuringTeardown(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		sess := newFakeSession()
+		// The write stalls, so the keyframe is genuinely in flight when
+		// teardown arrives: with instant writes the counter is never above
+		// zero, wait() never parks, and the interleaving can't arise.
+		sess.nextStreamStalls = true
+		s := newTestSender(sess)
+
+		// The pump delivers a keyframe. Nothing below synchronises with this
+		// goroutine before wait() — that is the point: a channel receive or a
+		// second spawn here would order the two and hide the bug.
+		go s.send(AccessUnit{Data: keyframeAU(), Keyframe: true, TimestampUs: 1})
+		waitForCond(t, func() bool { return len(sess.sendStreams()) == 1 }, "the keyframe stream to open")
+		first := sess.sendStreams()[0]
+		time.Sleep(time.Millisecond) // let the write goroutine register
+
+		// The uplink comes unstuck a moment into teardown, so wait() returns.
+		go func() {
+			time.Sleep(2 * time.Millisecond)
+			first.CancelWrite(keyframeSupersededCode)
+		}()
+
+		s.wait()
+
+		// Whatever wait() decided, no write may still be running once it has
+		// returned and the caller has closed the session.
+		s.wait()
+		s.kfMu.Lock()
+		inflight := s.inflight
+		s.kfMu.Unlock()
+		if inflight != nil {
+			t.Fatalf("iteration %d: a keyframe stream is still in flight after wait()", i)
+		}
+	}
+}
+
 func TestKeyframeStreamOpenFailureIsCountedNotFatal(t *testing.T) {
 	sess := newFakeSession()
 	sess.openErr = errors.New("stream credit exhausted")

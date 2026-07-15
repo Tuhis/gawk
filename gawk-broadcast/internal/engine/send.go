@@ -64,9 +64,12 @@ type sender struct {
 	configDatagram []byte
 	codec          string
 
-	// inflight is the single keyframe stream allowed to be open.
+	// inflight is the single keyframe stream allowed to be open. closed is set
+	// by wait() to stop new writes being spawned behind it; both guard kfWG,
+	// whose Add must happen-before Wait (sync.WaitGroup's contract).
 	kfMu     sync.Mutex
 	inflight SendStream
+	closed   bool
 	kfWG     sync.WaitGroup
 
 	mu sync.Mutex
@@ -162,6 +165,15 @@ func (s *sender) sendKeyframe(frameID uint32, au AccessUnit) {
 
 	// Supersede any keyframe still writing: newest wins, ≤1 in flight.
 	s.kfMu.Lock()
+	if s.closed {
+		// teardown is waiting for in-flight writes before closing the session.
+		// Spawning another here would write to a session about to close, and
+		// its Add would race the Wait that is already parked.
+		s.kfMu.Unlock()
+		str.CancelWrite(keyframeSupersededCode)
+		s.countKeyframeFailed()
+		return
+	}
 	if old := s.inflight; old != nil {
 		old.CancelWrite(keyframeSupersededCode)
 		s.mu.Lock()
@@ -169,11 +181,13 @@ func (s *sender) sendKeyframe(frameID uint32, au AccessUnit) {
 		s.mu.Unlock()
 	}
 	s.inflight = str
+	// Under kfMu, so it is ordered against wait()'s close: a positive Add from
+	// a zero counter must happen-before Wait, or the two race.
+	s.kfWG.Add(1)
 	s.kfMu.Unlock()
 
 	// Write off the frame path: a stalled uplink must not block the next
 	// frame's arrival from the child.
-	s.kfWG.Add(1)
 	go func() {
 		defer s.kfWG.Done()
 		s.writeKeyframe(str, msg)
@@ -319,6 +333,17 @@ func (s *sender) stats() Stats {
 	return st
 }
 
-// wait blocks until in-flight keyframe writes finish, so teardown does not
-// race them.
-func (s *sender) wait() { s.kfWG.Wait() }
+// wait closes the sender to new keyframe writes, then blocks until the
+// in-flight ones finish, so teardown does not race them.
+//
+// Closing first is what makes the wait meaningful: the pump goroutine can
+// still be inside send() when teardown starts (cancelling the context does not
+// stop it synchronously), and a keyframe spawned after Wait had already
+// returned would be writing to a session teardown is about to close — the
+// exact thing waiting is for.
+func (s *sender) wait() {
+	s.kfMu.Lock()
+	s.closed = true
+	s.kfMu.Unlock()
+	s.kfWG.Wait()
+}
