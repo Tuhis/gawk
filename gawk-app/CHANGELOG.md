@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.20.1...gawk-app-v0.21.0) (2026-07-15)
+
+
+### Features
+
+* default the viewer to adaptive paced playback + interpolation ([3d0f5e3](https://github.com/Tuhis/gawk/commit/3d0f5e365beaf2ecc247dd580b28fa061134c784))
+
 ## [0.20.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.20.0...gawk-app-v0.20.1) (2026-07-15)
 
 
