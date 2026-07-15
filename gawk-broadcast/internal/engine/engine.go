@@ -182,7 +182,13 @@ func New(cfg Config, cb Callbacks, opts Options) *Session {
 		s.dial = dialRelay
 	}
 	if s.mediaFactory == nil {
-		s.mediaFactory = DefaultMediaFactory
+		// The engine deliberately knows nothing about GStreamer, PipeWire or
+		// D-Bus: the shells compose the platform half (gst.NewFactory) and
+		// inject it here. That layering is what keeps everything above this
+		// line testable without a GPU, a portal or a child process.
+		s.mediaFactory = func(MediaConfig, Clock, *slog.Logger) (MediaSource, error) {
+			return nil, errors.New("engine: no MediaFactory configured")
+		}
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
