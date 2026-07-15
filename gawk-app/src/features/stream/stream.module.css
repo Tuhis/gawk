@@ -85,6 +85,25 @@
   min-width: 140px;
 }
 
+/* R13 advanced encoder settings: stacked vertically like the dev settings —
+   three fields (incl. full codec strings) don't fit as a row in the side
+   panel. */
+.stackedPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+
+.stackedPicker .field select,
+.stackedPicker .field input {
+  width: 100%;
+  min-width: 0;
+}
+
 .controls {
   display: flex;
   align-items: center;
