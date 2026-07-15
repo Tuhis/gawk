@@ -28,7 +28,7 @@
 // Pure and timer-free: the pipeline injects the clock and calls tick()
 // periodically (e.g. once per rendered frame). Fully unit-testable in node.
 
-import { WindowedMinTracker } from './live-edge';
+import { WindowedMinTracker, WindowedQuantileTracker } from './live-edge';
 import { getPlayoutOffsetMs } from './playout';
 import { frameIdAhead, nextFrameId, type DecoderConfigMessage } from './wire';
 
@@ -116,6 +116,9 @@ export class ReorderBuffer {
   // Windowed min of (arrivalMs − timestampMs): the pacing anchor (R5 Q3).
   // Reset with the restart signal — new session, new timestamp timeline.
   private arrivalBaseline = new WindowedMinTracker();
+  // Windowed quantile of the same delta (R12 T1): p95 − min is the arrival
+  // jitter, and the same estimator feeds the adaptive playout offset (T3).
+  private arrivalQuantile = new WindowedQuantileTracker();
 
   private buffer = new Map<number, Entry>();
   // frameId of the last frame released to the decoder; null before the first.
@@ -164,6 +167,7 @@ export class ReorderBuffer {
       this.decodePosition !== null && !frameIdAhead(kf.frameId, this.decodePosition);
     if (backwards) {
       this.arrivalBaseline.reset();
+      this.arrivalQuantile.reset();
       this.onRestart?.();
     }
     if (backwards && !this.waitingForKeyframe) {
@@ -217,15 +221,28 @@ export class ReorderBuffer {
     return { ...this.stats, buffered: this.buffer.size };
   }
 
+  // R12 T1: how much later than the session-best delta the slow tail arrives
+  // (windowed p95 − windowed min, ms). Null before any frame.
+  arrivalJitterMs(): number | null {
+    const nowMs = this.now();
+    const p95 = this.arrivalQuantile.quantile(0.95, nowMs);
+    const min = this.arrivalBaseline.min(nowMs);
+    if (p95 === null || min === null) return null;
+    return Math.max(0, p95 - min);
+  }
+
   reset(): void {
     this.buffer.clear();
     this.decodePosition = null;
     this.waitingForKeyframe = true;
     this.arrivalBaseline.reset();
+    this.arrivalQuantile.reset();
   }
 
   private insert(e: Entry): void {
-    this.arrivalBaseline.observe(e.receivedAtMs - Number(e.timestampUs) / 1000, e.receivedAtMs);
+    const arrivalDelta = e.receivedAtMs - Number(e.timestampUs) / 1000;
+    this.arrivalBaseline.observe(arrivalDelta, e.receivedAtMs);
+    this.arrivalQuantile.observe(arrivalDelta, e.receivedAtMs);
     const existing = this.buffer.get(e.frameId);
     // Keep a keyframe over a duplicate delta for the same id; otherwise ignore
     // a duplicate.

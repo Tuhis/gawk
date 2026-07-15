@@ -60,6 +60,12 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         // R5 Q3: the playout mode, from the pipeline's own context (ground
         // truth — a toggle that failed to cross the worker shows here).
         ['Playout', stats == null ? '—' : stats.playoutOffsetMs > 0 ? `smoothed (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
+        // R12 T1: the jitter trio (docs/17 Decision 1). Render cadence σ is
+        // what T2's paced presentation must move; arrival jitter sizes T3's
+        // adaptive offset; decode jitter sizes the decode lead.
+        ['Render cadence σ', stats?.renderCadenceStdDevMs == null ? '—' : `${fmt(stats.renderCadenceStdDevMs)} ms`],
+        ['Arrival jitter (p95−min)', stats?.arrivalJitterMs == null ? '—' : `${fmtInt(stats.arrivalJitterMs)} ms`],
+        ['Decode jitter σ', stats?.decodeJitterMs == null ? '—' : `${fmt(stats.decodeJitterMs)} ms`],
       ],
     },
     {

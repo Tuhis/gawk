@@ -85,6 +85,16 @@ export interface ViewerStats extends ReassemblerStats {
   // opt-in smoothed mode. Ground truth from the context the pipeline runs in,
   // so a toggle that failed to cross the worker boundary is visible.
   playoutOffsetMs: number;
+  // R12 T1 (docs/17): jitter, per stats window. Render cadence = how much the
+  // paint intervals deviate from the frames' capture intervals (σ + p95 of
+  // |err|; ≡0 for perfect pacing at any fps) — worker path only, null on the
+  // main-thread path like renderedFps. Arrival jitter = windowed p95 − min of
+  // the reorder buffer's arrival delta. Decode jitter = σ of per-frame decode
+  // time. These are the numbers T2/T3's pacing must move.
+  renderCadenceStdDevMs: number | null;
+  renderCadenceP95Ms: number | null;
+  arrivalJitterMs: number | null;
+  decodeJitterMs: number | null;
   // R9 connection health for this leg (relay→viewer); null when the browser
   // doesn't implement WebTransport.getStats().
   connection: TransportConnectionStats | null;
@@ -164,6 +174,8 @@ export class ViewerPipeline {
   // invalidated by a broadcaster restart) and the newest absolute latency.
   private broadcastClockOffsetUs: bigint | null = null;
   private lastCapToRenderMs: number | null = null;
+  // R12 T1: per-stats-window decode latencies (σ published as decodeJitterMs).
+  private decodeLatencies: number[] = [];
 
   private broadcastId: string;
 
@@ -446,6 +458,7 @@ export class ViewerPipeline {
     this.decodedFrames++;
     this.decodedSinceStats++;
     this.lastDecodeLatencyMs = decoded.decodeEndMs - decoded.decodeStartMs;
+    this.decodeLatencies.push(this.lastDecodeLatencyMs);
     if (decoded.frame.displayWidth) {
       this.lastFrameWidth = decoded.frame.displayWidth;
       this.lastFrameHeight = decoded.frame.displayHeight;
@@ -495,6 +508,17 @@ export class ViewerPipeline {
       renderedFps = dt > 0 ? (drawn - this.lastRenderedTotal) / dt : 0;
       this.lastRenderedTotal = drawn;
     }
+    // R12 T1: this window's jitter numbers.
+    const cadence = this.renderSink?.drainCadence?.() ?? null;
+    const lats = this.decodeLatencies;
+    this.decodeLatencies = [];
+    let decodeJitterMs: number | null = null;
+    if (lats.length >= 2) {
+      const mean = lats.reduce((a, b) => a + b, 0) / lats.length;
+      decodeJitterMs = Math.sqrt(
+        lats.reduce((a, b) => a + (b - mean) * (b - mean), 0) / lats.length,
+      );
+    }
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -527,6 +551,10 @@ export class ViewerPipeline {
       capToRenderMs: this.lastCapToRenderMs,
       timeSyncRttMs: this.transport?.sampleTimeSync()?.rttMs ?? null,
       playoutOffsetMs: getPlayoutOffsetMs(),
+      renderCadenceStdDevMs: cadence?.stdDevMs ?? null,
+      renderCadenceP95Ms: cadence?.p95Ms ?? null,
+      arrivalJitterMs: this.reorder?.arrivalJitterMs() ?? null,
+      decodeJitterMs,
       connection: this.transport?.sampleConnectionStats() ?? null,
     });
   }

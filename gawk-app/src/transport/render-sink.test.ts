@@ -7,6 +7,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CadenceRecorder,
   CoalescingRenderSink,
   OffscreenCanvasRenderSink,
   WebGLRenderSink,
@@ -41,8 +42,8 @@ function fakeCanvas(getContext: (type: string) => unknown = () => ({ drawImage: 
   return { canvas: canvas as unknown as OffscreenCanvas, ctx, writes: () => writes };
 }
 
-function fakeFrame(w: number, h: number) {
-  return { displayWidth: w, displayHeight: h, close: vi.fn() } as unknown as VideoFrame;
+function fakeFrame(w: number, h: number, timestampUs = 0) {
+  return { displayWidth: w, displayHeight: h, timestamp: timestampUs, close: vi.fn() } as unknown as VideoFrame;
 }
 
 // Minimal WebGL fake: constants the sink touches, truthy handles, passing
@@ -221,6 +222,93 @@ describe('CoalescingRenderSink (R10 P1)', () => {
     expect(coalescing.drawnFrames()).toBe(0); // pending, not painted
     sched.fire();
     expect(coalescing.drawnFrames()).toBe(drawn.length);
+  });
+});
+
+describe('CadenceRecorder (R12 T1)', () => {
+  it('reads zero error for perfectly paced draws', () => {
+    const r = new CadenceRecorder();
+    // 30 fps source presented exactly on its capture cadence.
+    for (let i = 0; i < 10; i++) r.record(i * 33_333, 1000 + i * 33.333);
+    const s = r.drain();
+    expect(s).not.toBeNull();
+    expect(s!.samples).toBe(9);
+    expect(s!.stdDevMs).toBeCloseTo(0, 3);
+    expect(s!.p95Ms).toBeCloseTo(0, 3);
+  });
+
+  it('measures jitter as the excess of draw-interval over timestamp-interval', () => {
+    const r = new CadenceRecorder();
+    // Constant 33.333 ms source cadence, but draws alternate early/late by
+    // ±16.667 ms (the classic 1-vsync/3-vsync beat on a 60 Hz display).
+    let wall = 1000;
+    for (let i = 0; i < 12; i++) {
+      r.record(i * 33_333, wall);
+      wall += i % 2 === 0 ? 16.667 : 50;
+    }
+    const s = r.drain()!;
+    expect(s.stdDevMs).toBeGreaterThan(15);
+    expect(s.p95Ms).toBeGreaterThan(15);
+  });
+
+  it('does not conflate a source cadence change with jitter', () => {
+    const r = new CadenceRecorder();
+    // An fps rung switch: 60 fps → 30 fps, every frame drawn exactly on time.
+    let wall = 1000;
+    let ts = 0;
+    for (let i = 0; i < 6; i++) {
+      r.record(ts, wall);
+      ts += 16_667;
+      wall += 16.667;
+    }
+    for (let i = 0; i < 6; i++) {
+      r.record(ts, wall);
+      ts += 33_333;
+      wall += 33.333;
+    }
+    expect(r.drain()!.stdDevMs).toBeCloseTo(0, 2);
+  });
+
+  it('drains destructively and is null with fewer than two draws', () => {
+    const r = new CadenceRecorder();
+    expect(r.drain()).toBeNull();
+    r.record(0, 1000);
+    expect(r.drain()).toBeNull(); // one draw = no interval yet
+    r.record(33_333, 1040);
+    expect(r.drain()).not.toBeNull();
+    expect(r.drain()).toBeNull(); // drained
+  });
+
+  it('treats a timestamp discontinuity (broadcaster restart) as a fresh pairing', () => {
+    const r = new CadenceRecorder();
+    r.record(1_000_000, 1000);
+    r.record(0, 1033); // timestamps jumped backwards: new timeline, not a sample
+    r.record(33_333, 1066);
+    const s = r.drain()!;
+    expect(s.samples).toBe(1); // only the post-restart pair
+    expect(Math.abs(s.stdDevMs)).toBeLessThan(1);
+  });
+});
+
+describe('CoalescingRenderSink cadence (R12 T1)', () => {
+  it('records presentation cadence at the inner draw and drains it', () => {
+    const drawn: VideoFrame[] = [];
+    const inner: RenderSink = { kind: '2d', draw: (f) => drawn.push(f), drawnFrames: () => drawn.length };
+    const pending: (() => void)[] = [];
+    const clock = { t: 1000 };
+    const sink = new CoalescingRenderSink(inner, (cb) => pending.push(cb), () => clock.t);
+
+    sink.draw(fakeFrame(640, 480, 0));
+    pending.splice(0).forEach((cb) => cb());
+    clock.t += 40; // 33.333 ms of content presented 40 ms apart → ~6.7 ms error
+    sink.draw(fakeFrame(640, 480, 33_333));
+    pending.splice(0).forEach((cb) => cb());
+
+    const s = sink.drainCadence();
+    expect(s).not.toBeNull();
+    expect(s!.samples).toBe(1);
+    expect(s!.p95Ms).toBeCloseTo(6.667, 2);
+    expect(sink.drainCadence()).toBeNull();
   });
 });
 

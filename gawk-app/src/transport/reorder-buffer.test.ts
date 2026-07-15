@@ -12,6 +12,7 @@ import {
   MAX_BUFFERED_FRAMES,
   type ReleasedFrame,
 } from './reorder-buffer';
+import { QUANTILE_BIN_MS } from './live-edge';
 
 function harness() {
   const released: ReleasedFrame[] = [];
@@ -389,5 +390,75 @@ describe('ReorderBuffer smoothed playout (R5 Q3)', () => {
     rb.tick();
     // The resync jumped to keyframe 2; delta 1 was dropped, not decoded.
     expect(ids()).toEqual([0, 2]);
+  });
+});
+
+// R12 T1 (docs/17): arrival jitter — windowed p95 of the arrival delta minus
+// the windowed min, observed on every insert. The measurement shares the
+// estimator the adaptive playout controller (T3) reads.
+describe('ReorderBuffer arrival jitter (R12 T1)', () => {
+  const tsKf = (frameId: number, tsMs: number) => ({
+    frameId,
+    timestampUs: BigInt(Math.round(tsMs * 1000)),
+    config: null,
+    data: new Uint8Array([frameId & 0xff]),
+  });
+  const tsDelta = (frameId: number, tsMs: number) => ({
+    frameId,
+    timestampUs: BigInt(Math.round(tsMs * 1000)),
+    data: new Uint8Array([frameId & 0xff]),
+  });
+
+  function jitterHarness() {
+    const released: ReleasedFrame[] = [];
+    const clock = { t: 1000 };
+    const rb = new ReorderBuffer((f) => released.push(f), () => clock.t);
+    return { rb, clock };
+  }
+
+  it('is null before any frame', () => {
+    const { rb } = jitterHarness();
+    expect(rb.arrivalJitterMs()).toBeNull();
+  });
+
+  it('reads ~0 for a perfectly steady arrival delta', () => {
+    const { rb, clock } = jitterHarness();
+    rb.pushKeyframe(tsKf(0, 0)); // delta 1000
+    for (let i = 1; i <= 10; i++) {
+      clock.t = 1000 + i * 1000;
+      rb.pushDelta(tsDelta(i, i * 1000)); // delta 1000, every time
+    }
+    expect(rb.arrivalJitterMs()).toBeLessThan(QUANTILE_BIN_MS);
+  });
+
+  it('reads the late tail as p95 − min', () => {
+    const { rb, clock } = jitterHarness();
+    rb.pushKeyframe(tsKf(0, 0));
+    for (let i = 1; i <= 9; i++) {
+      clock.t = 1000 + i * 1000;
+      rb.pushDelta(tsDelta(i, i * 1000)); // 10 samples at delta 1000
+    }
+    for (let i = 10; i <= 11; i++) {
+      clock.t = 1100 + i * 1000;
+      rb.pushDelta(tsDelta(i, i * 1000)); // 2 samples arriving 100 ms late
+    }
+    const j = rb.arrivalJitterMs();
+    expect(j).not.toBeNull();
+    expect(j!).toBeGreaterThanOrEqual(100 - QUANTILE_BIN_MS);
+    expect(j!).toBeLessThanOrEqual(100 + QUANTILE_BIN_MS);
+  });
+
+  it('resets with the broadcaster-restart signal', () => {
+    const { rb, clock } = jitterHarness();
+    rb.pushKeyframe(tsKf(0, 0));
+    clock.t = 2100;
+    rb.pushDelta(tsDelta(1, 1000)); // delta 1100: some jitter on record
+    // Restart: a keyframe serially behind the decode position, on a fresh
+    // timestamp timeline with a completely different arrival delta.
+    clock.t = 20_000;
+    rb.pushKeyframe(tsKf(0, 5000));
+    const j = rb.arrivalJitterMs();
+    expect(j).not.toBeNull();
+    expect(j!).toBeLessThan(QUANTILE_BIN_MS); // single fresh sample, old ones gone
   });
 });

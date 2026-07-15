@@ -43,6 +43,10 @@ function fullStats(): ViewerStats {
     capToRenderMs: 384,
     timeSyncRttMs: 8.4,
     playoutOffsetMs: 0,
+    renderCadenceStdDevMs: 3.2,
+    renderCadenceP95Ms: 9.1,
+    arrivalJitterMs: 12,
+    decodeJitterMs: 1.4,
     connection: {
       rttMs: 24.5,
       rttVarMs: 3.1,
@@ -86,6 +90,10 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('384 ms');
     expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('8.4 ms');
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
+    // R12 T1: the jitter rows.
+    expect(screen.getByText('Render cadence σ').nextSibling?.textContent).toBe('3.2 ms');
+    expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('12 ms');
+    expect(screen.getByText('Decode jitter σ').nextSibling?.textContent).toBe('1.4 ms');
 
     cleanup();
     render(
@@ -112,6 +120,9 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Live-edge drift').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Render cadence σ').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Decode jitter σ').nextSibling?.textContent).toBe('—');
 
     cleanup();
     // Connection-less stats (Firefox: no getStats) degrade only the network rows.

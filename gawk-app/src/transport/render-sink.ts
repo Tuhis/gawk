@@ -22,6 +22,66 @@ export interface RenderSink {
   draw(frame: VideoFrame): void;
   // Cumulative frames drawn (R9 M6): feeds the viewer funnel's renderedFps.
   drawnFrames(): number;
+  // R12 T1: presentation-cadence jitter since the last drain; implemented by
+  // the scheduling sink (the paint is the phenomenon under measurement), null
+  // elsewhere and before two draws.
+  drainCadence?(): RenderCadence | null;
+}
+
+// Presentation-cadence error per stats window (R12 T1, docs/17 Decision 1).
+export interface RenderCadence {
+  stdDevMs: number;
+  p95Ms: number; // p95 of |error|
+  samples: number;
+}
+
+// How much each draw interval deviated from its frames' capture interval:
+// err = (draw-wall delta) − (frame-timestamp delta). Perfect pacing reads 0
+// regardless of source fps — subtracting the timestamp delta is what makes
+// this a jitter metric instead of conflating fps rung changes with judder.
+// Coalescing skips are fine: both deltas span the same skipped frames.
+const CADENCE_MAX_INTERVAL_MS = 5000; // beyond this, timestamps jumped timelines (restart)
+const CADENCE_MAX_SAMPLES = 240; // bound if nothing drains (~4 s at 60 Hz)
+
+export class CadenceRecorder {
+  private lastTsMs: number | null = null;
+  private lastWallMs: number | null = null;
+  private errs: number[] = [];
+
+  record(timestampUs: number, nowMs: number): void {
+    const tsMs = timestampUs / 1000;
+    if (!Number.isFinite(tsMs)) return;
+    if (this.lastTsMs !== null && this.lastWallMs !== null) {
+      const tsDelta = tsMs - this.lastTsMs;
+      // A non-positive or absurd timestamp delta is a timeline discontinuity
+      // (broadcaster restart): start a fresh pairing, don't record an outlier.
+      if (tsDelta > 0 && tsDelta <= CADENCE_MAX_INTERVAL_MS) {
+        this.errs.push(nowMs - this.lastWallMs - tsDelta);
+        if (this.errs.length > CADENCE_MAX_SAMPLES) this.errs.shift();
+      }
+    }
+    this.lastTsMs = tsMs;
+    this.lastWallMs = nowMs;
+  }
+
+  // Destructive read: stats for the window since the last drain. The last
+  // draw's timestamp survives so intervals stay continuous across drains.
+  drain(): RenderCadence | null {
+    const errs = this.errs;
+    if (errs.length === 0) return null;
+    this.errs = [];
+    const mean = errs.reduce((a, b) => a + b, 0) / errs.length;
+    const variance = errs.reduce((a, b) => a + (b - mean) * (b - mean), 0) / errs.length;
+    const sortedAbs = errs.map(Math.abs).sort((a, b) => a - b);
+    const p95 = sortedAbs[Math.max(0, Math.ceil(0.95 * sortedAbs.length) - 1)];
+    return { stdDevMs: Math.sqrt(variance), p95Ms: p95, samples: errs.length };
+  }
+
+  reset(): void {
+    this.lastTsMs = null;
+    this.lastWallMs = null;
+    this.errs = [];
+  }
 }
 
 // Draws to an OffscreenCanvas transferred once from the main thread. The
@@ -177,13 +237,21 @@ export class CoalescingRenderSink implements RenderSink {
   readonly kind: RenderSinkKind;
   private inner: RenderSink;
   private schedule: RenderSchedule;
+  private now: () => number;
   private pending: VideoFrame | null = null;
   private flushScheduled = false;
+  // R12 T1: cadence is recorded at the inner draw — the actual paint.
+  private cadence = new CadenceRecorder();
 
-  constructor(inner: RenderSink, schedule: RenderSchedule = defaultSchedule) {
+  constructor(
+    inner: RenderSink,
+    schedule: RenderSchedule = defaultSchedule,
+    now: () => number = () => performance.now(),
+  ) {
     this.inner = inner;
     this.kind = inner.kind;
     this.schedule = schedule;
+    this.now = now;
   }
 
   draw(frame: VideoFrame): void {
@@ -199,11 +267,18 @@ export class CoalescingRenderSink implements RenderSink {
     this.flushScheduled = false;
     const frame = this.pending;
     this.pending = null;
-    if (frame) this.inner.draw(frame);
+    if (frame) {
+      this.cadence.record(frame.timestamp, this.now());
+      this.inner.draw(frame);
+    }
   }
 
   drawnFrames(): number {
     return this.inner.drawnFrames();
+  }
+
+  drainCadence(): RenderCadence | null {
+    return this.cadence.drain();
   }
 }
 
