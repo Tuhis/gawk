@@ -32,7 +32,7 @@ feature set exists).
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
-| R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 📋 designed 2026-07-15; revised same day after design review (V0–V7 + V8 direct Vulkan Video, gated), not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
+| R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 🚧 V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC pending**; V8 (direct Vulkan Video) gated on V2's on-hardware result ([docs/19](docs/19-linux-native-broadcaster.md)) |
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 
@@ -814,8 +814,22 @@ browser.
 Vulkan-first cascade with browser refusal, own module + public wire, MPEG-TS
 framing, critical-urgency notifications, viewer-count features dropped;
 chunks now **V0–V7 + V8** — V0 module split, engine V1–V3, CLI shell V4, GUI
-V5–V6, docs V7, V8 direct Vulkan Video encode gated on V2's Stage-1 result),
-not started.
+V5–V6, docs V7, V8 direct Vulkan Video encode gated on V2's Stage-1 result).
+
+**V0–V7 implemented 2026-07-15**; automated gates green (both Go modules:
+gofmt, `go vet`, `go test -race`; frontend untouched). The engine's
+integration tests build and run the **real `gawk-server`** and publish a
+committed H.264 fixture through it, attaching a real subscriber — a fake
+relay would only test our belief about the relay, which is the belief most
+worth doubting in a second implementation. **Manual verification on the
+gaming PC is pending** and is the gate that matters: everything about
+hardware encode, the portal picker + restore token, the V4 latency-bias
+measurement and the no-hardware refusal is unobservable from a WSL2 box with
+no GPU encode block and no desktop portal. **V8 is not started** and stays
+hard-gated on V2's on-hardware Stage-1 Vulkan result. Three recorded
+deviations from the doc (see docs/19): the announce read is detached, the
+mpegts fixture is ffmpeg-generated rather than pipeline-captured, and the
+integration tests run the real relay binary.
 
 ---
 

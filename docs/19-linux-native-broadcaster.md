@@ -1,8 +1,14 @@
 # R14 — Native Linux broadcaster (`gawk-broadcast`)
 
-**Status**: design revised 2026-07-15 (post-review), not started (chunks
-V0–V7, plus **V8 direct Vulkan Video encode**, gated on V2). Doc-only pickup —
-each chunk lands later as its own task.
+**Status**: design revised 2026-07-15 (post-review). **V0–V7 implemented
+2026-07-15**; automated gates green (both Go modules), **manual verification
+on the Linux gaming PC pending** — see [Verification plan](#verification-plan-manual),
+which is the gate that matters here: nothing about hardware encode, the
+portal, or the V4 timestamp-bias measurement is observable from the
+development box (WSL2, no GPU encode block, no desktop portal). **V8 (direct
+Vulkan Video encode) is not started** and remains hard-gated on V2's
+on-hardware Stage-1 result. Three implementation deviations from this design
+are recorded in [Implementation notes](#implementation-notes-deviations-from-this-design).
 
 **Revision note (2026-07-15, recorded rather than quietly edited).** The
 original same-day design was reviewed against the codebase and the outside
@@ -650,6 +656,23 @@ Gio's header list (Decision 14). `godbus` is pure Go.
 
 ## Chunks
 
+| Chunk | Status |
+|---|---|
+| V0 — module split + wire promotion + CI/release wiring | ✅ implemented 2026-07-15 |
+| V1 — engine: session surface + transport | ✅ implemented 2026-07-15 (announce read detached — see [Implementation notes](#implementation-notes-deviations-from-this-design)) |
+| V2 — engine: portal + capture + encode cascade | ✅ implemented 2026-07-15; **the cascade itself is unverified until it runs on the gaming PC** |
+| V3 — engine: bitstream + send policy | ✅ implemented 2026-07-15 |
+| V4 — CLI shell + end-to-end + the timestamp-bias gate | ✅ shell implemented 2026-07-15; **the bias gate is a manual measurement, still pending** |
+| V5 — GUI shell: window | ✅ implemented 2026-07-15 |
+| V6 — GUI: stats panel, copy diagnostics, notifications | ✅ implemented 2026-07-15 |
+| V7 — docs + escape hatches | ✅ implemented 2026-07-15 |
+| V8 — direct Vulkan Video encode (Stage 2) | 📋 not started — hard-gated on V2's on-hardware result |
+
+Automated gates are green for V0–V7, but read that narrowly: **an automated
+gate on this engine cannot see a GPU, a portal, or a desktop.** The criteria
+marked `manual` below, and the [Verification plan](#verification-plan-manual),
+are the ones that decide whether R14 works.
+
 ### V0 — module split + wire promotion + CI/release wiring
 
 Promote `internal/wire` → `gawk-server/wire` (public; it keeps importing
@@ -835,14 +858,8 @@ the Gio build dependencies from Decision 14, the Linux broadcaster section,
 and the **Annex-B/AVCC gotcha** — a native publisher exercises the viewer's
 Annex-B branch, which the browser never does), CLAUDE.md build-order entry +
 docs list, ROADMAP R14 status. Record the escape hatches evaluated but not
-built, so a future reader doesn't rediscover them: **kmsgrab** (mainline
-ffmpeg, X11 + Wayland, zero-copy dmabuf → VAAPI, needs `CAP_SYS_ADMIN` and
-misses hardware-cursor planes — the portal-less fallback if PipeWire capture
-proves untenable); **NvFBC** (NVIDIA/X11, fastest, needs the well-known
-driver patch on GeForce); **gpu-screen-recorder** as a capture+encode front
-end — it solves exactly this problem better than raw pipelines do, but piping
-its output to stdout is *not* documented (it targets files and RTMP), so
-adopting it means first establishing whether a pipe is possible at all.
+built — kmsgrab, NvFBC, gpu-screen-recorder — so a future reader doesn't
+rediscover them: see [Escape hatches](#escape-hatches-evaluated-not-built).
 
 | Acceptance criterion | Verified by |
 |---|---|
@@ -900,6 +917,54 @@ reference-list management; rate control; drain coded buffers to Annex-B.
 | GPU encode-engine activity confirms hardware use (not a software fallback inside the driver) | manual |
 | Game fps is no worse than the V4 delegated baseline at the same rung | manual — if it is, the whole exercise lost its point |
 
+## Implementation notes (deviations from this design)
+
+Three places where the implementation departs from what is written above.
+Recorded rather than quietly absorbed, so the doc stays trustworthy as the
+account of what was built.
+
+**1. The announce read is detached, not inline in `Start` (V1).** The design
+says `Start` reads the first uni stream → `ParseBroadcastAnnounce` →
+`OnBroadcastID`, and V1's criterion says "a relay that never sends one fails
+`Start` cleanly". It doesn't: `Start` returns once the session is dialed, and
+a goroutine reads the announce and fires `OnBroadcastID` when it arrives. The
+reason is the rule docs/06 already established for the browser and the R1
+review re-confirmed: the announce is *not* part of connect success — waiting
+on it would make a slow-to-announce relay indistinguishable from a refused
+connect, and collapse `StartError.Phase` (Decision 10), which the reclaim→
+mint rule depends on. The bound and the deadline are kept
+(`announceReadLimit` 258 B, `announceReadTimeout` 10 s) and the failure
+surfaces via `OnError` instead. This bit back once: `Stop()` hung waiting on
+the detached goroutine parked in `io.ReadAll`, fixed with a
+`context.AfterFunc` that sets a past read deadline — covered by
+`TestStopIsPromptWhileAnnounceReadIsPending`.
+
+**2. The MPEG-TS fixture is ffmpeg-generated, not pipeline-captured (V2/V3).**
+`internal/mpegts/testdata/sample.ts` comes from `videotestsrc`'s ffmpeg
+equivalent (`testsrc2` → `libx264` → `mpegts`, 60 frames, GOP 15, no
+B-frames, `repeat-headers=1`), not from a real capture+encode run. CI has no
+GPU and no portal, so a live-pipeline fixture could not be regenerated or
+trusted there. This is honest for what the fixture tests — TS/PES demuxing
+and SPS parsing are container- and bitstream-level, not vendor-specific — and
+the parts that *are* vendor-specific (dmabuf import, encode-block use,
+in-band SPS/PPS from the real `h264parse`) are exactly what the manual
+verification plan below covers. The fixture's provenance command is recorded
+in `testdata/README.md`; its SPS was independently checked to be
+`67 42 c0 0d` → `avc1.42C00D`.
+
+**3. Integration tests run the real `gawk-server` binary, not an in-process
+`transport.Server` (V1/V4).** V1's criteria name an in-process server, which
+Decision 1 then made impossible: the module split puts `gawk-server`'s
+`internal/transport` out of reach by Go's own rule. Building and running the
+real relay binary (plus `gawk-devcert`) is not a workaround but the better
+test: a hand-written fake would only assert the engine against *our belief
+about the relay*, which is the belief most worth doubting in a second
+implementation of a protocol. The tests attach a real subscriber and check
+what actually comes out — self-sufficient keyframe, `avc1.42C00D` with empty
+extradata, Annex-B start codes, IDR present, deltas flowing, ClockMapping
+delivered — and cover reclaim/409 and secret/401 against real HTTP statuses.
+They are skipped under `go test -short`.
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker
@@ -949,6 +1014,31 @@ redoing:
   viewer joined" for both broadcasters): a real wire+relay change, benefiting
   the browser broadcaster equally — a future roadmap item, not an R14
   smuggle-in (Decision 18).
+
+### Escape hatches (evaluated, not built)
+
+If PipeWire capture proves untenable on real hardware, these are the routes
+already surveyed — recorded with their prices so the evaluation isn't redone
+from scratch. None is a free win; each trades away something the portal path
+has:
+
+- **kmsgrab** (mainline ffmpeg, X11 *and* Wayland, zero-copy dmabuf → VAAPI).
+  The portal-less fallback. Price: needs `CAP_SYS_ADMIN` (a setcap on the
+  binary — a real ask for a hobby app) and misses hardware-cursor planes, so
+  the cursor disappears unless it's composited back in.
+- **NvFBC** (NVIDIA, X11 only). The fastest path that exists. Price:
+  X11-only, and on GeForce it needs the well-known driver patch — i.e. every
+  friend patching their driver, which Decision 4's own premise rules out.
+- **gpu-screen-recorder** as a capture+encode front end. It solves exactly
+  this problem, and better than raw pipelines do. Price: **piping its output
+  to stdout is not documented** (it targets files and RTMP), so adopting it
+  starts with establishing whether a pipe is possible at all — a research
+  task before it's an integration task.
+
+**`pipewiregrab` is not on this list and is not an escape hatch** — it is
+rejected outright (see the revision note at the top and the Rejected
+section). It is not in mainline FFmpeg; mainline ffmpeg has no PipeWire input
+at all. Verify it actually merged before re-proposing it.
 
 ## Rejected
 
