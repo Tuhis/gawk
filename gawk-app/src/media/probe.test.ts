@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_PROBE_SOURCE,
   EncoderSupportProber,
+  MAX_CONCURRENT_PROBES,
   probeDims,
   probeSupportMatrix,
   type IsConfigSupportedFn,
@@ -166,6 +167,49 @@ describe('robustness', () => {
       fpsValues: [60],
     });
     expect(matrix.get('native', 60).acceleration).toBe('unsupported');
+  });
+});
+
+describe('probe concurrency bound', () => {
+  // Field bug (2026-07-15): the broadcaster surface fires the main matrix
+  // plus 13 per-codec matrices at load; every isConfigSupported call ran in
+  // parallel (nested Promise.all, no bound). On Chrome each pending call
+  // holds a real encoder instance — hundreds of simultaneous 4K encoder
+  // initializations OOM-crashed the tab. The prober must gate its probe
+  // calls through a small fixed-size slot pool.
+  it('never exceeds MAX_CONCURRENT_PROBES in-flight isConfigSupported calls', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fn: IsConfigSupportedFn = async (config) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 0));
+      inFlight--;
+      return { supported: config.hardwareAcceleration !== 'prefer-hardware', config };
+    };
+    const prober = new EncoderSupportProber(fn);
+    // The broadcaster-surface load shape: one preference-list matrix plus a
+    // single-codec matrix per preference codec, all requested at once.
+    const codecs = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'c9', 'c10', 'c11', 'c12', 'c13'];
+    await Promise.all([
+      probeSupportMatrix(prober, { codecs, hwPreference: 'auto' }),
+      ...codecs.map((codec) => probeSupportMatrix(prober, { codecs: [codec], hwPreference: 'auto' })),
+    ]);
+    expect(maxInFlight).toBeGreaterThan(0);
+    expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_PROBES);
+  });
+
+  it('releases slots when a probe throws', async () => {
+    let calls = 0;
+    const fn: IsConfigSupportedFn = () => {
+      calls++;
+      return Promise.reject(new Error('boom'));
+    };
+    const prober = new EncoderSupportProber(fn);
+    const matrix = await probeSupportMatrix(prober, { codecs: CODECS, hwPreference: 'auto' });
+    // Every combo still resolved (slots were not leaked by rejections).
+    expect(matrix.get('native', 60).acceleration).toBe('unsupported');
+    expect(calls).toBeGreaterThan(0);
   });
 });
 

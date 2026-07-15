@@ -71,6 +71,13 @@ const defaultIsConfigSupported: IsConfigSupportedFn = (config) => {
   return VideoEncoder.isConfigSupported(config);
 };
 
+// Upper bound on simultaneous isConfigSupported calls per prober. On Chrome
+// every pending call holds a real encoder instance (software probes at 4K
+// allocate full encoder contexts) — the broadcaster surface requests ~170
+// combos at load, and unbounded parallelism OOM-crashed the tab (field bug,
+// 2026-07-15).
+export const MAX_CONCURRENT_PROBES = 4;
+
 export function matrixKey(rung: ResolutionRung, framerate: number): string {
   return `${rung}@${framerate}`;
 }
@@ -93,9 +100,29 @@ const UNSUPPORTED: SupportEntry = { acceleration: 'unsupported', codec: null };
 export class EncoderSupportProber {
   private cache = new Map<string, Promise<SupportEntry>>();
   private isSupported: IsConfigSupportedFn;
+  // Slot pool bounding concurrent isConfigSupported calls (see
+  // MAX_CONCURRENT_PROBES): matrices may request combos all at once, but
+  // only this many probes are ever in flight — the rest queue.
+  private inFlight = 0;
+  private waiters: Array<() => void> = [];
 
   constructor(isSupported: IsConfigSupportedFn = defaultIsConfigSupported) {
     this.isSupported = isSupported;
+  }
+
+  private async probeLimited(
+    config: VideoEncoderConfig,
+  ): Promise<{ supported?: boolean; config?: VideoEncoderConfig }> {
+    while (this.inFlight >= MAX_CONCURRENT_PROBES) {
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+    this.inFlight++;
+    try {
+      return await this.isSupported(config);
+    } finally {
+      this.inFlight--;
+      this.waiters.shift()?.();
+    }
   }
 
   probeCombo(
@@ -151,7 +178,7 @@ export class EncoderSupportProber {
 
   private async hardwareSupported(config: VideoEncoderConfig): Promise<boolean> {
     try {
-      const support = await this.isSupported({
+      const support = await this.probeLimited({
         ...config,
         hardwareAcceleration: 'prefer-hardware',
       });
@@ -165,7 +192,7 @@ export class EncoderSupportProber {
 
   private async softwareSupported(config: VideoEncoderConfig): Promise<boolean> {
     try {
-      const support = await this.isSupported(config);
+      const support = await this.probeLimited(config);
       return support.supported === true;
     } catch {
       return false;

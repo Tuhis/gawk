@@ -60,8 +60,10 @@ export function BroadcasterScreen() {
 
   // R13 (docs/18 L4): probe matrices for picker + codec-pin annotations —
   // advisory only; the overlay's Encode mode row shows the runtime truth.
+  // The per-codec set is the expensive one and only probes once the
+  // settings panel is open (lazy — see useCodecMatrices).
   const supportMatrix = useSupportMatrix();
-  const codecMatrices = useCodecMatrices();
+  const codecMatrices = useCodecMatrices(settingsOpen);
 
   // Developer-only settings (localhost). Wired straight to the transport store.
   const showDevSettings = isDevEnvironment();

@@ -335,6 +335,15 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   and the overlay's "Encode mode" row shows the runtime truth — picker
   badges are predictions, not guarantees.
   ([docs/18](docs/18-advanced-broadcaster-settings.md))
+- **`isConfigSupported` is not free on Chrome — never fire probes
+  unbounded.** Every *pending* call holds a real encoder instance (software
+  probes at 4K allocate full encoder contexts), so requesting the
+  broadcaster surface's ~170 matrix combos in parallel OOM-crashed the tab.
+  `EncoderSupportProber` gates all probes through a fixed slot pool
+  (`MAX_CONCURRENT_PROBES`, 4) and the per-codec matrices only probe once
+  the settings panel opens — route any new probe callers through the
+  prober, never `VideoEncoder.isConfigSupported` directly in a loop.
+  ([docs/18](docs/18-advanced-broadcaster-settings.md))
 - **Track-clone constraints are per-track and must be applied worker-side
   (R13).** Capture alignment (`track.applyConstraints` on the sticky
   resolution/fps target) lands on whichever track feeds MSTP: the

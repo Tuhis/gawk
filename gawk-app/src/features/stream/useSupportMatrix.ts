@@ -43,15 +43,19 @@ export function useSupportMatrix(): SupportMatrix | null {
 
 // Per-codec matrices for the advanced codec-pin annotations: each codec gets
 // its own single-codec matrix, so 'auto' axes resolve *per codec* (one codec
-// may do HW at 60 where another only manages 30). The prober memoizes every
-// combo, so this shares work with the main matrix and re-renders are free;
-// only an acceleration-mode change re-probes.
-export function useCodecMatrices(): Map<string, SupportMatrix> | null {
+// may do HW at 60 where another only manages 30). This is the expensive
+// probe set (~13 codecs × 12 combos), so it is **lazy**: `enabled` should be
+// the settings panel's open state — nothing is probed until the codec list
+// can actually be seen (the tab-OOM field bug, 2026-07-15, was this whole
+// set firing at surface load; the prober's slot pool bounds it now, but not
+// probing at all is still better). Probed combos stay memoized in the
+// prober, so reopening the panel is free.
+export function useCodecMatrices(enabled: boolean): Map<string, SupportMatrix> | null {
   const hwPreference = useBroadcastSettingsStore((s) => s.hwPreference);
   const [matrices, setMatrices] = useState<Map<string, SupportMatrix> | null>(null);
 
   useEffect(() => {
-    if (!probeSupported()) return;
+    if (!enabled || !probeSupported()) return;
     let cancelled = false;
     void Promise.all(
       DEFAULT_CODEC_PREFERENCES.map(
@@ -64,7 +68,7 @@ export function useCodecMatrices(): Map<string, SupportMatrix> | null {
     return () => {
       cancelled = true;
     };
-  }, [hwPreference]);
+  }, [enabled, hwPreference]);
 
   return matrices;
 }

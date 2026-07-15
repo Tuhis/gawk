@@ -26,6 +26,16 @@ ships either way: the preprocessor safety net covers under-delivery, so a
 - The store keeps the `gawk.framerateRung` localStorage key for the widened
   `framerateSelection` field, so persisted explicit rungs survive the R13
   upgrade byte-for-byte.
+- **Field bug (2026-07-15, fixed same day): unbounded parallel probes
+  OOM-crashed the broadcaster tab on Chrome.** The surface fires the main
+  matrix plus a per-codec matrix for each of the 13 preference codecs
+  (codec-pin annotations); every `isConfigSupported` call launched in
+  parallel (~170 at once), and Chrome holds a real encoder instance per
+  pending call — software probes at 4K allocate full encoder contexts.
+  Fix: `EncoderSupportProber` gates all probes through a fixed slot pool
+  (`MAX_CONCURRENT_PROBES` = 4; the regression test asserts the bound —
+  the red run measured 168 in flight), and the per-codec matrices probe
+  lazily, only once the settings panel opens (`useCodecMatrices(enabled)`).
 
 ## Goal
 
