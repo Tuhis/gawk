@@ -138,7 +138,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `docs/16-broadcaster-worker-offload.md` for R11 (broadcaster worker
   offload: broadcast pipeline in a Web Worker fed by a transferred
   `MediaStreamTrack` clone, K1–K4 chunks; implemented 2026-07-14, manual
-  verify pending).
+  verify pending),
+  `docs/17-viewer-playback-smoothing.md` for R12 (viewer playback smoothing:
+  jitter measurement, paced presentation + adaptive offset behind a new
+  separate "Paced playback (adaptive)" toggle, experimental frame
+  interpolation with pre-registered kill criteria, T1–T6 chunks; **T1–T4
+  implemented 2026-07-15, manual verify pending; T5/T6 not started**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -373,6 +378,36 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    placement. **Note**: a worker does *not* escape Chrome's process-level
    backgrounding (same renderer process) — this removes main-thread
    contention from the frame path, nothing more.
+17. Viewer playback smoothing — **T1–T4 implemented 2026-07-15; automated
+   gates green, manual browser verify pending; T5 (motion-estimated
+   interpolation) + T6 (findings pass) not started** (R12,
+   `docs/17-viewer-playback-smoothing.md`; viewer-client only, zero
+   server/wire changes). (a) **Jitter measurement** (T1):
+   presentation-cadence error recorded at the actual paint (draw-interval
+   minus timestamp-interval — ≡0 for perfect pacing at any fps), arrival
+   jitter as windowed p95−min via a new `WindowedQuantileTracker`
+   (live-edge.ts sibling), decode jitter σ; new `ViewerStats` fields +
+   Delivery overlay rows. (b) **Paced presentation** (T2):
+   `PacedPresentationSink` subsumes the R10 `CoalescingRenderSink` (no
+   target ⇒ identical coalescing; with targets it holds ≤3 decoded frames
+   and presents each in its vsync slot); playout is now a three-mode
+   setting — `'off' | 'fixed' (the R5 150 ms toggle, unchanged) |
+   'adaptive'` — with a **separate, mutually-exclusive "Paced playback
+   (adaptive)" right-click toggle** (user decision: never repurpose an
+   existing toggle), persisted as `gawk:playout-mode` (legacy boolean key
+   migrates to `'fixed'`); in adaptive mode the reorder buffer releases at
+   `target − DECODE_LEAD_MS` (35 ms) so the decoder frame pool stays
+   bounded. (c) **Adaptive offset** (T3): `PlayoutController` —
+   clamp(p95−min + 34 ms headroom, [50, 350]), seed 150 until ~5 s of
+   window, slew up 50 ms/s / down 5 ms/s after a 15 s dwell; live value on
+   the overlay. (d) **Experimental interpolation scaffold** (T4, droppable):
+   `InterpolatingWebGLRenderSink` (ping-pong textures, upload/present(α)
+   blend shader, WebGL2-only) + opportunistic α=0.5 mid-slots (30→60, no
+   added latency — synthesized only when the next frame is already in
+   hand, never across >100 ms gaps); own default-off "Frame interpolation
+   (experimental)" toggle, offered only where the pipeline reports it
+   available; **pre-registered kill criteria** — a documented rejection of
+   T5 is a valid completion.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

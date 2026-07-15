@@ -30,7 +30,7 @@ feature set exists).
 | R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
-| R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 📐 designed 2026-07-15 (T1–T6), not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
+| R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 
 ---
 
@@ -619,7 +619,14 @@ default; every drop/resync policy fires unchanged in every mode. Chunks
 T1–T6 (T4/T5 interpolation droppable as a unit). Full design in
 [`docs/17-viewer-playback-smoothing.md`](docs/17-viewer-playback-smoothing.md).
 
-**Status**: designed 2026-07-15, not started.
+**Status**: designed 2026-07-15; **T1–T4 implemented the same day**
+(jitter measurement, `PacedPresentationSink` + three-mode playout with the
+new "Paced playback (adaptive)" toggle, `PlayoutController` adaptive offset,
+opportunistic blend-interpolation scaffold behind its own experimental
+toggle). All automated gates green (390 vitest tests, build, lint); manual
+browser verify pending — see the doc's verification plan. T5
+(motion-estimated interpolation, droppable) and T6 (measurement findings +
+constant verdicts) not started.
 
 ---
 

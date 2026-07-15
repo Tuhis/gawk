@@ -1,7 +1,9 @@
 # R12 — Viewer Playback Smoothing: Paced Presentation + Adaptive Offset + Experimental Interpolation
 
 Design doc for [ROADMAP R12](../ROADMAP.md#r12--viewer-playback-smoothing)
-(designed 2026-07-15, not yet implemented). This deliberately re-opens a
+(designed 2026-07-15; **T1–T4 implemented the same day** — all automated
+gates green, manual browser verify pending; T5/T6 not started — see
+Status and Implementation notes). This deliberately re-opens a
 docs/15 non-goal: *"Sub-frame-accurate presentation pacing … only worth
 revisiting if Q4 measures visible judder with smoothing on."* We are
 revisiting it with the measurement foundation built in first (T1), so every
@@ -138,7 +140,7 @@ final sub-frame alignment (Decision 4 below).
    **"Paced playback (adaptive)"**, enables the new machinery: sub-frame
    presentation pacing + adaptive offset + decode-lead retarget. The two
    are mutually exclusive in the menu (checking one unchecks the other).
-   Internally `transport/playout.ts` grows into a `PlayoutScheduler` with
+   Internally `transport/playout.ts` grows a `PlayoutController` (name amended at implementation from the sketch's `PlayoutScheduler`) plus module mode state, with
    mode `'off' | 'fixed' | 'adaptive'` — still a module-scoped instance per
    JS context, read live per advance, so the existing mid-session toggle
    semantics carry over; the worker `playout` command widens from a boolean
@@ -196,11 +198,14 @@ final sub-frame alignment (Decision 4 below).
      sink is WebGL2 on the worker path *and* paced mode is on. Firefox/2D/
      main-thread never see the menu item; there is no 2D implementation,
      ever.
-   - **Latency cost, stated**: presenting interval N needs frame N+1
-     decoded ⇒ inherent **+1 source interval (+33 ms at 30 fps)** on top of
-     the adaptive offset. Fits the 500 ms glass-to-glass budget except near
-     the offset ceiling; `capToRenderMs` makes the total visible and T4's
-     criteria require recording it.
+   - **Latency cost** (amended at implementation): the scaffold synthesizes
+     **opportunistically** — a mid frame is produced only when the next real
+     frame is *already in hand* (the decode lead + adaptive offset make that
+     the common case at 30 fps), so it adds **no latency of its own**;
+     an interval whose next frame hasn't arrived simply isn't interpolated.
+     The design sketch's "+1 source interval" applied to guaranteed
+     synthesis, which was not implemented. `capToRenderMs` is unchanged by
+     the toggle.
    - **Kill criteria (pre-registered, evaluated in T5)** — interpolation is
      removed (toggle deleted, findings kept) if any of: (i) T1's
      render-cadence σ with interpolation on is **worse** than with pacing
@@ -227,10 +232,10 @@ final sub-frame alignment (Decision 4 below).
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| T1 | **Jitter measurement foundation** — `WindowedQuantileTracker` (`transport/live-edge.ts`); presentation-cadence recorder at the inner draw; decode-jitter window in `handleDecoded()`; `ViewerStats` fields `renderCadenceStdDevMs`, `renderCadenceP95Ms`, `arrivalJitterMs`, `decodeJitterMs` + Delivery overlay rows + Copy-diagnostics | Unit tests (fake clock/schedule, written first): quantile tracker returns correct p95 on known distributions, ages buckets out, resets on the restart signal; cadence error ≡ 0 for perfectly paced synthetic draws and nonzero for jittered ones; fields forward through the worker unchanged; overlay renders the rows; zero server/wire diffs; **baseline judder numbers recorded** (Chrome + Firefox, 30 fps source on a 60+ Hz display) | not started |
-| T2 | **Paced presentation sink + mode plumbing** — `PacedPresentationSink` replacing `CoalescingRenderSink`; `draw(frame, targetDisplayMs?)`; ≤3 held frames; display-interval estimator; `flush()` wiring (restart/resync/toggle-off/stop); reorder release retarget to `target − DECODE_LEAD_MS`; `presentation` stat + overlay row; new "Paced playback (adaptive)" toggle with `'off'/'fixed'/'adaptive'` mode enum (worker `playout` command widened, mutual exclusion in the menu, persisted) | No-target mode reproduces all existing coalescing tests; `'off'` and `'fixed'` paths behaviorally identical to today (existing smoothing untouched — its tests still pass); slot semantics unit-tested with fake schedule + clock (due frame presented in its slot, early frame held, stale frame closed + counted); queue never exceeds 3 (oldest closed); `flush()` closes all; toggling the mode off mid-session presents newest immediately; reorder tests: release at `target − lead` in `'adaptive'` only; with `'adaptive'` on, measured render-cadence σ (T1) drops vs baseline on a jittered synthetic source | not started |
-| T3 | **Adaptive playout offset** — `PlayoutScheduler` in `transport/playout.ts` (owns the min + quantile trackers and the offset controller); clamp [50, 350], seed 150, `HEADROOM_MS = 34`, asymmetric slew/dwell; reorder buffer + pipeline consume the shared scheduler; overlay `adaptive (+NNN ms)`; `playoutOffsetMs` reports the live value | Fake-clock unit tests (written first): converges to p95 − min + headroom on synthetic jitter; clamps at both bounds; increases fast / decreases only after the dwell period; every change is slew-bounded (no step > rate × dt); restart re-seeds at 150; mode off → 0 immediately; `'fixed'` mode still returns the constant 150; worker `playout` command round-trips the mode | not started |
-| T4 | **Interpolation scaffold (experimental)** — `InterpolatingWebGLRenderSink` (previous-frame texture, `drawInterpolated(alpha)`, linear-blend shader); α-slot scheduling in the paced sink (mid-slot at α=0.5, 30→60); "Frame interpolation (experimental)" toggle (worker command, persisted, gated WebGL2 + worker + `'adaptive'` mode); `interpolation` stat + overlay row | Pure slot/α scheduling unit-tested (fake clock): mid-slot emitted only when both frames are in hand, real frames always presented at α=0, teardown closes textures/frames; toggle absent on 2D sink / main-thread / fixed-or-off mode; measured `capToRenderMs` rises by ≈ one source interval; crossfade ghosting **observed and recorded** (the expected outcome — it validates the A/B harness) | not started (droppable) |
+| T1 | **Jitter measurement foundation** — `WindowedQuantileTracker` (`transport/live-edge.ts`); presentation-cadence recorder at the inner draw; decode-jitter window in `handleDecoded()`; `ViewerStats` fields `renderCadenceStdDevMs`, `renderCadenceP95Ms`, `arrivalJitterMs`, `decodeJitterMs` + Delivery overlay rows + Copy-diagnostics | Unit tests (fake clock/schedule, written first): quantile tracker returns correct p95 on known distributions, ages buckets out, resets on the restart signal; cadence error ≡ 0 for perfectly paced synthetic draws and nonzero for jittered ones; fields forward through the worker unchanged; overlay renders the rows; zero server/wire diffs; **baseline judder numbers recorded** (Chrome + Firefox, 30 fps source on a 60+ Hz display) | ✅ implemented 2026-07-15; baseline numbers pending manual verify |
+| T2 | **Paced presentation sink + mode plumbing** — `PacedPresentationSink` replacing `CoalescingRenderSink`; `draw(frame, targetDisplayMs?)`; ≤3 held frames; display-interval estimator; `flush()` wiring (restart/resync/toggle-off/stop); reorder release retarget to `target − DECODE_LEAD_MS`; `presentation` stat + overlay row; new "Paced playback (adaptive)" toggle with `'off'/'fixed'/'adaptive'` mode enum (worker `playout` command widened, mutual exclusion in the menu, persisted) | No-target mode reproduces all existing coalescing tests; `'off'` and `'fixed'` paths behaviorally identical to today (existing smoothing untouched — its tests still pass); slot semantics unit-tested with fake schedule + clock (due frame presented in its slot, early frame held, stale frame closed + counted); queue never exceeds 3 (oldest closed); `flush()` closes all; toggling the mode off mid-session presents newest immediately; reorder tests: release at `target − lead` in `'adaptive'` only; with `'adaptive'` on, measured render-cadence σ (T1) drops vs baseline on a jittered synthetic source | ✅ implemented 2026-07-15; σ-drop measurement pending manual verify |
+| T3 | **Adaptive playout offset** — `PlayoutController` in `transport/playout.ts` (fed the shared jitter estimate from the reorder buffer's trackers via the pipeline's stats tick); clamp [50, 350], seed 150, `HEADROOM_MS = 34`, asymmetric slew/dwell; reorder buffer + pipeline consume the shared scheduler; overlay `adaptive (+NNN ms)`; `playoutOffsetMs` reports the live value | Fake-clock unit tests (written first): converges to p95 − min + headroom on synthetic jitter; clamps at both bounds; increases fast / decreases only after the dwell period; every change is slew-bounded (no step > rate × dt); restart re-seeds at 150; mode off → 0 immediately; `'fixed'` mode still returns the constant 150; worker `playout` command round-trips the mode | ✅ implemented 2026-07-15 |
+| T4 | **Interpolation scaffold (experimental)** — `InterpolatingWebGLRenderSink` (ping-pong prev/curr textures, `upload()` decoupled from `present(alpha)`, linear-blend shader); α-slot scheduling in the paced sink (opportunistic mid-slot at α=0.5, 30→60); "Frame interpolation (experimental)" toggle (worker command, persisted, gated WebGL2 + worker + `'adaptive'` mode); `interpolation` stat + overlay row | Pure slot/α scheduling unit-tested (fake clock): mid-slot emitted only when both frames are in hand, real frames always presented at α=1 from the uploaded texture, frames closed on upload; no synthesis across gaps > 100 ms or across flush/resync; toggle absent on 2D sink / main-thread / fixed-or-off mode; `capToRenderMs` unchanged (opportunistic — see Decision 7 as amended); crossfade ghosting **observed and recorded** in manual verify (the expected outcome — it validates the A/B harness) | ✅ implemented 2026-07-15 (droppable); ghosting observation pending manual verify |
 | T5 | **Motion-estimated interpolation** — block-match luma pyramid + MV smoothing + bidirectional warp/occlusion shaders replacing the blend; GPU-time budget check | Shader pipeline behind the same toggle; kill criteria (i)–(iii) from Decision 7 evaluated on the reference hardware (render-cadence σ, side-by-side judgment on real game footage, g2g < 500 ms on the reference LAN); GPU cost measured at 1080p and native; **an explicit keep/kill verdict recorded in this doc** | not started (droppable) |
 | T6 | **Findings + sync pass** — measurement findings section in this doc (before/after tables from T1 metrics across T2–T5, Chrome + Firefox, LAN + one remote peer); keep/change verdicts for `DECODE_LEAD_MS`, the clamp bounds, `HEADROOM_MS`, the seed; README gotchas + ROADMAP status sync | Findings section with numbers from both browsers incl. one remote peer; every named constant gets a recorded verdict (changes land test-first as usual); README gotcha list updated if any landed; ROADMAP R12 row synced | not started |
 
@@ -238,6 +243,38 @@ Ordering: T1 → T2 → T3 → (T4 → T5) → T6. T4+T5 are independently dropp
 as a unit; nothing after them depends on them. T3 could technically land
 before T2, but measuring adaptivity without sub-frame pacing understates its
 benefit.
+
+## Implementation notes (2026-07-15)
+
+T1–T4 implemented test-first the same day the doc landed; all automated
+gates green (390 vitest tests, `tsc -b` via build, oxlint). Deviations from
+the sketch, each folded back into the decisions above:
+
+- **`PlayoutController`, not `PlayoutScheduler`** (Decision 5, amended): the
+  controller class lives in `transport/playout.ts` beside the module mode
+  state; the arrival min/quantile trackers **stayed in the reorder buffer**
+  (they need its injected clock and restart signal) and the pipeline feeds
+  the controller the same `arrivalJitterMs()` estimate the overlay shows,
+  once per stats tick — measurement and control still read one estimator.
+- **Descent arming vs. continuing** (Decision 6): the 30 ms margin only
+  *arms* a descent; once armed and past the dwell, the offset slews all the
+  way to the target (a red test caught the offset flooring at
+  target + margin otherwise).
+- **Interpolation is opportunistic** (Decision 7, amended): no +1-interval
+  latency — a mid frame is synthesized only when the next real frame is
+  already in hand; `capToRenderMs` is unchanged by the toggle.
+- **The interpolating sink serves all WebGL2 rendering**: plain `draw()` is
+  `upload()` + `present(1)`, so the two-texture path costs nothing when the
+  toggle is off, and the toggle's visibility comes from
+  `ViewerStats.interpolation` (`'on' | 'off' | null`) — ground truth from
+  the pipeline, not UI guesswork.
+- **Cadence discontinuity guard instead of restart plumbing** (Decision 1):
+  the recorder drops any sample whose timestamp delta is non-positive or
+  > 5 s (a broadcaster restart moves timelines), so no restart signal needs
+  to reach the render sink for the metric's sake.
+- **Persistence**: one mode key (`gawk:playout-mode`) replaces the legacy
+  boolean (`gawk:smoothed-playout`, migrated to `'fixed'` on load);
+  interpolation persists under `gawk:interpolation`.
 
 ## Verification plan (manual, per chunk — summarized)
 
