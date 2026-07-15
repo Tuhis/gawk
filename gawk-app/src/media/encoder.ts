@@ -114,6 +114,7 @@ export class Encoder {
 
   async configure(): Promise<EncoderConfigured> {
     const attempts: string[] = [];
+    let hwRejected = false;
     for (const codec of this.config.codecPreferences) {
       for (const variant of CONFIG_VARIANTS) {
         const encoderConfig: VideoEncoderConfig = {
@@ -132,6 +133,14 @@ export class Encoder {
             this.encoder.configure(finalConfig);
             this.chosenCodec = codec;
             const acceleration = classifyAcceleration(variant, finalConfig.hardwareAcceleration);
+            if (hwRejected && acceleration !== 'hardware') {
+              // Firefox's WebCodecs VideoEncoder is software-only — browser
+              // HW-acceleration settings don't change this. Say so once here
+              // so a software session is explainable from the console alone.
+              log.info(
+                'Hardware encoding unavailable (every prefer-hardware config was rejected); encoding in software.',
+              );
+            }
             log.info(
               `Encoder accepted ${codec} with variant "${variant.label}" (${acceleration}); resolved config:`,
               finalConfig,
@@ -147,8 +156,10 @@ export class Encoder {
             };
           }
           attempts.push(`${codec}/${variant.label}: unsupported`);
+          if (variant.hardwareAcceleration === 'prefer-hardware') hwRejected = true;
         } catch (e) {
           attempts.push(`${codec}/${variant.label}: ${e instanceof Error ? e.message : String(e)}`);
+          if (variant.hardwareAcceleration === 'prefer-hardware') hwRejected = true;
         }
       }
     }

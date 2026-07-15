@@ -35,11 +35,11 @@ export async function connectWebTransport(url: string, opts: ConnectOptions = {}
   const wt = new WebTransport(url, init);
   await wt.ready;
   if (wt.datagrams.maxDatagramSize < MAX_DATAGRAM_SIZE) {
-    // Wire chunks are sized to MAX_DATAGRAM_SIZE; a smaller path MTU would
-    // make the browser drop our biggest datagrams. Loud warning over hard
-    // failure: most frames' final chunk is smaller and still flows.
-    log.warn(
-      `Path maxDatagramSize ${wt.datagrams.maxDatagramSize} < wire MAX_DATAGRAM_SIZE ${MAX_DATAGRAM_SIZE}; full-size chunks will be dropped`,
+    // Handled condition, not a fault: packetizeFrame sizes chunks to the
+    // actual path limit (docs/11 — Firefox negotiates 1024), so nothing is
+    // dropped; smaller datagrams just mean more chunks per frame.
+    log.info(
+      `Path maxDatagramSize ${wt.datagrams.maxDatagramSize} < wire MAX_DATAGRAM_SIZE ${MAX_DATAGRAM_SIZE}; video chunks will be sized to the path limit (more datagrams per frame)`,
     );
   }
   log.info(`WebTransport connected: ${url} (maxDatagramSize ${wt.datagrams.maxDatagramSize})`);
