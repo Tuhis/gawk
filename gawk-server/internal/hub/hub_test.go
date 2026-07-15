@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/wire"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))

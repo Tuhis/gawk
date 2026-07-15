@@ -24,6 +24,11 @@
           "path": "deploy/charts/gawk-app/Chart.yaml"
         }
       ]
+    },
+    "gawk-broadcast": {
+      "release-type": "go",
+      "component": "gawk-broadcast",
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }

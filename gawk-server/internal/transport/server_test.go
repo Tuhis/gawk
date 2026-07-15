@@ -27,7 +27,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
-	"github.com/Tuhis/gawk/gawk-server/internal/wire"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))

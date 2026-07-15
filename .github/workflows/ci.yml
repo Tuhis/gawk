@@ -1,6 +1,7 @@
 # Validation on every PR and main push: Go tests (with -race, which needs
-# CGO), frontend lint/test/build, chart lint/render, and docker builds
-# (no push — publishing happens in release-please.yml on release).
+# CGO) for both Go modules, frontend lint/test/build, chart lint/render, and
+# docker builds (no push — publishing happens in release-please.yml on
+# release).
 #
 # No path filters on purpose: the whole matrix takes a few minutes, and
 # skipped-vs-required check semantics aren't worth it at this repo size.
@@ -30,6 +31,39 @@ jobs:
       - run: go test -race ./...
         env:
           CGO_ENABLED: "1"
+
+  # The native Linux broadcaster (R14, docs/19). Separate from the `server`
+  # job on purpose (Decision 1): the GUI shell imports Gio, so this job — and
+  # only this job — pays for the cgo/Wayland/X11/EGL/Vulkan headers. The
+  # relay's job must stay header-free.
+  broadcast:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gawk-broadcast
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gawk-broadcast/go.mod
+          cache-dependency-path: gawk-broadcast/go.sum
+      # Gio's build dependencies (docs/19 Decision 14) — the honest price of
+      # a native Wayland GUI. Keep in sync with gawk-broadcast/README.md.
+      - name: Install Gio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
+            libffi-dev libxcursor-dev libvulkan-dev
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+      # The GUI is cgo + Gio: `go test` alone never compiles it on a machine
+      # without a display, so build the shells explicitly.
+      - run: go build ./cmd/...
 
   app:
     runs-on: ubuntu-latest

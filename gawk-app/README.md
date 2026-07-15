@@ -40,6 +40,6 @@ npm install @rolldown/binding-linux-x64-gnu @oxlint/binding-linux-x64-gnu --no-s
 ## Invariant worth knowing
 
 `src/transport/wire.ts` must stay byte-compatible with
-`gawk-server/internal/wire`. The golden hex vectors in `wire.test.ts` are
+`gawk-server/wire`. The golden hex vectors in `wire.test.ts` are
 copied verbatim from `wire_test.go` — never regenerate them from code; if
 they fail, the wire format drifted and that's the bug.

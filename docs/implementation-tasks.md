@@ -103,7 +103,7 @@ func CertHashHex(cert *x509.Certificate) string      // hex(SHA-256(cert DER)) �
 
 `cmd/gawk-devcert`: `-out dir -hosts ... -days 13`; writes `cert.pem`/`key.pem`, prints SPKI hash, cert hash, ready-to-paste Chrome launch line, and a JS `serverCertificateHashes` snippet. Server's `-dev-cert` mode reuses `GenerateDevCert` in-memory and logs the same hashes.
 
-## Wire format (`internal/wire`) — frozen contract
+## Wire format (`gawk-server/wire`) — frozen contract
 
 All integers **big-endian** (natural for TS `DataView`). Common 2-byte prefix: `byte0 version=0x01` (unknown → drop+count), `byte1 type` (0x01 VideoChunk, 0x02 DecoderConfig).
 
@@ -199,7 +199,7 @@ Nothing in A is throwaway.
 
 | # | Chunk | Deps | Acceptance criteria |
 |---|-------|------|---------------------|
-| B1 | `internal/wire` complete | A1 | Round-trip tests both types; golden hex vectors; error cases (short dgram, bad version, index ≥ count, oversized payload, codecLen overrun); fuzz test (`testing.F`) — parse never panics |
+| B1 | `gawk-server/wire` complete | A1 | Round-trip tests both types; golden hex vectors; error cases (short dgram, bad version, index ≥ count, oversized payload, codecLen overrun); fuzz test (`testing.F`) — parse never panics |
 | B2 | `internal/hub` core: caches, priming, per-sub queue+drop | B1 | Fake-sender tests: verbatim forwarding; 2nd publisher → ErrPublisherActive; late sub gets [config, kf chunks 0..n-1] before live data; incomplete keyframe never cached; blocked sender drops while healthy peer gets 100%; `-race` clean |
 | B3 | Wire `/publish` + `/subscribe` in transport; 409/429; session cleanup | B2, A4 | Go integration test: synthetic chunked frames relay pub→sub, ≥95% frames intact on loopback; 2nd publisher gets 409; disconnect frees slot |
 | B4 | Frontend touchpoint (noted, not planned here): `gawk-app/src/transport/` TS mirror of `wire` (DataView big-endian, golden vectors from B1), `serverCertificateHashes` plumbing, Broadcaster/Viewer pipeline split | B3 | Out of server scope; §Wire format is the interface |

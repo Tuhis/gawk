@@ -78,7 +78,7 @@ session or a running 5-minute grace timer.
   session upgrade. Client-side input is uppercased and charset-validated
   before dialing.
 
-## Wire additions (`gawk-server/internal/wire` + TS mirror)
+## Wire additions (`gawk-server/wire` + TS mirror)
 
 The **datagram** format (VideoChunk `0x01`, DecoderConfig `0x02`) is frozen
 and unchanged — broadcast IDs live in URLs. Two additions:

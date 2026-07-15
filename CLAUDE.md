@@ -55,7 +55,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   (`BroadcastStartError.phase`); post-connect failures tear the session
   down internally (no zombie publisher). BroadcastPage falls back from
   reclaim to mint **only** on `phase === 'connect'`.
-- Framing protocol is **implemented** (`gawk-server/internal/wire`): VideoChunk
+- Framing protocol is **implemented** (`gawk-server/wire`): VideoChunk
   datagrams carry frameID + chunkIndex/chunkCount + keyframe flag + timestamp
   (20-byte header, big-endian); a separate DecoderConfig message carries
   codec string + AVCC extradata. Golden test vectors for the future TS mirror
@@ -494,7 +494,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    candidate accepted only by **real trial encode** (`videotestsrc`, never
    the portal; last-good cached; the live start is the final probe — R13's
    probe-matrix instinct one layer down, incl. its advisory-only caveat).
-   Design notes worth knowing before touching either end: **V0 promotes
+   Design notes worth knowing before touching either end: **V0 promoted
    `internal/wire` to a public `gawk-server/wire`** so the new module can
    import it (the original same-module plan coupled relay CI to Gio's cgo
    headers and made broadcaster commits auto-redeploy the relay; instead:

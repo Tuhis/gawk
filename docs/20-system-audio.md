@@ -85,7 +85,7 @@ on both ends.
    fits the 1184-byte payload budget; the constant stays far under it.
 
 2. **Wire: `TypeAudioFrame` = 0x07, `TypeAudioConfig` = 0x08** (0x01–0x06
-   are taken), mirrored byte-identically in Go (`internal/wire`) and TS
+   are taken), mirrored byte-identically in Go (`gawk-server/wire`) and TS
    (`transport/wire.ts`) with golden test vectors on both sides, like every
    existing message.
 

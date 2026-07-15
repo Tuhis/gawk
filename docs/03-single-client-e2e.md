@@ -62,7 +62,7 @@ config + full cached keyframe with no publisher traffic after its join;
 
 ### B4 — frontend transport (`gawk-app/src/transport/`)
 
-- **`wire.ts`** — DataView-based mirror of `internal/wire`: same constants,
+- **`wire.ts`** — DataView-based mirror of `gawk-server/wire`: same constants,
   same validation rules, parse-never-copies (payload/extradata are
   `subarray` views). The golden hex vectors from `wire_test.go` are copied
   verbatim into `wire.test.ts` (vitest, `npm test`) — the cross-language

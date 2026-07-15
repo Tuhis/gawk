@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
-	"github.com/Tuhis/gawk/gawk-server/internal/wire"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // Sentinel errors. Check with errors.Is.
