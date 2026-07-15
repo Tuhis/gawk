@@ -153,7 +153,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   sticky selection via live `applyConstraints` so **no settings change ever
   restarts the stream** while R4 auto-stepping stays encode-only,
   bitrate/codec overrides + probe-annotated pickers, L1–L5 chunks;
-  implemented 2026-07-15, manual browser verify pending).
+  implemented 2026-07-15, manual browser verify pending),
+  `docs/19-linux-native-broadcaster.md` for R14 (native Linux broadcaster:
+  Gio GUI app + CLI over a shared Go engine, publishing with hardware
+  encode; Vulkan Video as the target encode API; V1–V7 chunks + V8 direct
+  Vulkan Video encode; **designed 2026-07-15, not started**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -440,6 +444,51 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    >1080p@>30 force-caps are removed (explicit choices honored, annotated
    instead); probe-annotated pickers (badge/disable, never remove) +
    Advanced settings panel + overlay Auto ceiling/Auto fps rows.
+19. Native Linux broadcaster — **designed 2026-07-15 (V1–V7 + V8), not
+   started** (R14, `docs/19-linux-native-broadcaster.md`). A **Gio GUI app**
+   (`cmd/gawk-broadcast-gui`) + a CLI (`cmd/gawk-broadcast`) over a shared
+   engine (`internal/broadcast`), publishing with **hardware encode** from
+   Linux, because the browser structurally cannot: WebCodecs `VideoEncoder`
+   HW encode ships on Windows/macOS/Android only (Linux gets HW *decode*
+   only), Chromium's VA-API doc disclaims Linux support, and on NVIDIA it is
+   impossible in principle — Chromium's Linux encode path is VA-API only and
+   `nvidia-vaapi-driver` is decode-only by design. **Don't go flag-hunting
+   for browser HW encode on Linux; it isn't there.** Design notes worth
+   knowing before touching either end: it all lives *inside* the
+   `gawk-server` module because Go's directory-based `internal/` rule forbids
+   a separate top-level module from importing `internal/wire`, and reusing
+   `wire` unchanged (never mirroring it) is what keeps a second broadcaster
+   from rotting; the engine's `Session`/`Callbacks` deliberately mirror the TS
+   `BroadcastSessionLike`/`BroadcastCallbacks` (incl. `StartError.Phase`, so
+   Resume applies the same reclaim→mint-only-on-`connect` rule); the viewer
+   **already auto-detects Annex-B vs AVCC** (`viewer.ts:352`), so the engine
+   emits raw Annex-B with empty extradata and builds no avcC record. ffmpeg
+   subprocess: `pipewiregrab` on Wayland (the portal picker replaces
+   `getDisplayMedia`, so the GUI needs no source picker) → encoder cascade
+   `h264_vulkan` → `h264_nvenc` → `h264_vaapi` → `libx264`, **probed per user
+   at every startup by real trial encode** (R13's probe-matrix instinct one
+   layer down, incl. its advisory-only caveat) — R1 means friends publish
+   from GPUs we can't survey, so **the fallbacks are permanent, never
+   scaffolding**. **Vulkan Video (`VK_KHR_video_encode_h264`) is the target
+   encode API** (V8 = direct Vulkan in Go), because it's the only one
+   spanning RADV + ANV + NVIDIA with no asterisk. **Direct VAAPI is rejected
+   and don't re-propose it**: Chromium's Linux backend is VA-API only and
+   that is *precisely why* it can't encode on NVIDIA — building on VAAPI
+   reproduces the limitation R14 exists to escape. V8 is **gated on V2**
+   proving `h264_vulkan` works and archiving a reference bitstream to diff
+   against (no oracle ⇒ undebuggable), and V8 adds a top-of-cascade candidate
+   rather than retiring the rest. Subprocess rationale is crash isolation +
+   version tolerance, *not* "no cgo" (Gio already requires cgo — that
+   original rationale was void and the doc records the correction). Fixed
+   rung (1080p60 per R13's framerate-first rule — this engine is HW by
+   construction; 500 ms GOP); R4's `FallbackController` deliberately **not**
+   ported (its `encodeQueueSize` trigger is the one R4 found never fires on
+   HW encode). GUI: Gio (native Wayland; Wails rejected — WebKitGTK DMA-BUF
+   crashes on Wayland+NVIDIA); the window **is** the app (closing it ends the
+   broadcast), no preview, no source picker, desktop notifications as the
+   only mid-game signal. **Tray and global hotkeys deferred 2026-07-15** —
+   research kept in the doc's Deferred section; don't re-derive it. Not a
+   container/chart/CI-deploy component — binaries you run on your own PC.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

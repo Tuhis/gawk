@@ -32,6 +32,7 @@ feature set exists).
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
+| R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 📋 designed 2026-07-15 (V1–V7 + V8 direct Vulkan Video, gated), not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
 
 ---
 
@@ -688,6 +689,92 @@ toggle). All automated gates green (390 vitest tests, build, lint); manual
 browser verify pending — see the doc's verification plan. T5
 (motion-estimated interpolation, droppable) and T6 (measurement findings +
 constant verdicts) not started.
+
+---
+
+## R14 — Native Linux broadcaster
+
+**Goal**: a standalone native broadcaster for Linux with **hardware encode**,
+bypassing the browser — a Gio **GUI app** for normal use, plus a CLI over the
+same engine for headless/debug use. Speaks the existing publisher protocol
+byte-for-byte: zero server, wire and viewer changes. The browser broadcaster
+is untouched and stays the path for Windows/macOS.
+
+**Why**: the browser cannot do hardware encode on Linux, and this is a
+platform gap rather than a tuning problem. WebCodecs `VideoEncoder` hardware
+encode ships on Windows/macOS/Android only — Linux gets hardware *decode*
+only — and Chromium's VA-API doc disclaims Linux support outright. On NVIDIA
+it is structurally impossible: Chromium's Linux encode path is VA-API only,
+and `nvidia-vaapi-driver` is decode-only by design. So a Linux broadcaster
+means software x264 (and the game fps that costs) unless it stops being a
+browser.
+
+**Scope sketch** (full design in
+[`docs/19-linux-native-broadcaster.md`](docs/19-linux-native-broadcaster.md)):
+
+- **One engine, two shells** — `internal/broadcast` exposes a `Session`
+  (`Start`/`Stop`/`SetLadder`) + `Callbacks`, deliberately mirroring the TS
+  `BroadcastSessionLike`/`BroadcastCallbacks` so the two broadcasters stay
+  legible to each other. `cmd/gawk-broadcast` (CLI) and
+  `cmd/gawk-broadcast-gui` are thin shells over it. The GUI requirement is
+  what forces this shape: a `main` full of flags and globals would have to be
+  dismantled to grow a window. The CLI isn't scaffolding — it proves the
+  engine end-to-end (V4 gates the protocol *and* the latency bias) and stays
+  as the headless path, the analogue of the frozen `#/debug/broadcast` page.
+- **Reuses `internal/wire`, never mirrors it** — everything lives in the
+  `gawk-server/` tree because Go's directory-based `internal/` rule means a
+  separate top-level module could not import it. This is the reason it's Go
+  and not Rust: protocol drift becomes a compile error rather than a hope.
+- **The viewer already auto-detects Annex-B vs AVCC** (`viewer.ts:352`), so
+  the engine emits raw Annex-B with empty extradata and never builds an avcC
+  record — the nastiest interop risk is designed out before it exists.
+- **Vulkan Video (`VK_KHR_video_encode_h264`) is the target encode API**, in
+  two stages. It is the only encode API spanning all three vendors — RADV,
+  ANV and NVIDIA proprietary all implement it — with no
+  `nvidia-vaapi-driver`-shaped asterisk. **Direct VAAPI is rejected**, and the
+  reason is the whole point of R14: Chromium's Linux backend is VA-API only,
+  which is *exactly why* it can't encode on NVIDIA — building on it would
+  reproduce the limitation we're escaping. Stage 1 (V2) puts `h264_vulkan`
+  first in the ffmpeg cascade: proves the API on real hardware in minutes and
+  archives a **reference bitstream**. Stage 2 (V8) is direct Vulkan Video in
+  Go, gated on Stage 1 and using that reference as a differential oracle —
+  without it, "my encoder emits garbage" is near-undebuggable.
+- **The encoder cascade is a per-user runtime probe, and the fallbacks are
+  permanent** — R1 made this multi-broadcaster, so friends publish from GPUs
+  we can't survey. `h264_vulkan` → `h264_nvenc` → `h264_vaapi` → `libx264`,
+  each accepted only after a **real trial encode**. V8 adds a
+  top-of-cascade candidate for capable machines; it never retires the rest.
+- **Media delegated to an ffmpeg subprocess for V1–V7**: `pipewiregrab`
+  (Wayland, does the XDG portal handshake itself — the desktop's own picker
+  replaces `getDisplayMedia`, so our GUI needs no source picker). Rationale is
+  **crash isolation** (a segfaulting child is a notification; in-process it
+  takes the GUI down) and version tolerance — *not* "no cgo", which Gio
+  already spent.
+- **GUI is Gio** (native Wayland, no XWayland, no webview). Rejected: Fyne
+  (XWayland by default), **Wails v3** (WebKitGTK's DMA-BUF renderer has
+  documented crashes on Wayland+NVIDIA — our exact target — and it puts a
+  browser engine back in the binary we exist to avoid), GTK4/gotk4. **The
+  window is the app**: closing it ends the broadcast, no background state. No
+  preview (you're looking at your own screen). Desktop notifications are the
+  only mid-game signal, so an ffmpeg death still reaches you. **Tray and
+  global hotkeys are deferred**, with the research recorded in the doc.
+- **No ladder, no auto-fallback**: fixed rung (1080p30, 500 ms GOP, matching
+  the browser's settled defaults). R4's `FallbackController` is deliberately
+  not ported — its `encodeQueueSize` trigger is exactly the one R4's own
+  hardware finding showed never fires on HW encode. No auto-reconnect either;
+  **Resume** applies the browser's existing reclaim→mint-only-on-`connect`
+  rule, so the Go engine carries the same `StartError.Phase` distinction.
+- **Known open risks**, both with acceptance gates in the doc: raw Annex-B
+  over a pipe carries no PTS (arrival-stamping biases R5's absolute latency
+  low; V4 measures it and mandates an `-f mpegts` PTS path if it exceeds
+  15 ms), and `pipewiregrab` needs `--enable-libpipewire` at *build* time, so
+  "ffmpeg is already installed" guarantees nothing.
+- Not a container/chart/CI-deploy component: binaries you run on your own PC,
+  outside the cluster deployment model.
+
+**Status**: designed 2026-07-15 (chunks V1–V7: engine V1–V3, CLI shell V4,
+GUI V5–V6, docs V7; plus **V8 direct Vulkan Video encode**, gated on V2's
+Stage-1 result), not started.
 
 ---
 
