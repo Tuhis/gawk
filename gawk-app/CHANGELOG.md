@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.19.0...gawk-app-v0.20.0) (2026-07-15)
+
+
+### Features
+
+* annotate codec pin options with per-codec HW support ([ed4445c](https://github.com/Tuhis/gawk/commit/ed4445cba82d132338ff1c1bfbbc0e31cd7b4462))
+
+
+### Bug Fixes
+
+* stack the advanced encoder settings vertically ([919e9da](https://github.com/Tuhis/gawk/commit/919e9da2d4d20867e04b6b6783128aaf5e4512b2))
+
 ## [0.19.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.18.0...gawk-app-v0.19.0) (2026-07-15)
 
 
