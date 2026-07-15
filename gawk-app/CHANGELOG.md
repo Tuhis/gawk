@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.19.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.18.0...gawk-app-v0.19.0) (2026-07-15)
+
+
+### Features
+
+* adaptive playout offset controller (R12 T3) ([30aae8a](https://github.com/Tuhis/gawk/commit/30aae8aefe49515a64991228362449082cc0935d))
+* experimental frame-interpolation scaffold (R12 T4) ([92f9409](https://github.com/Tuhis/gawk/commit/92f940917756def4de04d0eef308ddbcfe1e9771))
+* paced presentation sink + adaptive playout mode plumbing (R12 T2) ([d1fd7c7](https://github.com/Tuhis/gawk/commit/d1fd7c737cab19231847b496ecaa16e9fbc7d7c6))
+* R13 advanced broadcaster settings (supersedes R7) ([#39](https://github.com/Tuhis/gawk/issues/39)) ([e5619dc](https://github.com/Tuhis/gawk/commit/e5619dcaecadfcc843f94ea00d89d43ee73f65ab))
+* show stream resolution + framerate in the viewer stats overlay ([24882ef](https://github.com/Tuhis/gawk/commit/24882ef87420f41668cadb1ebc27c99ecd176882))
+* viewer jitter measurement foundation (R12 T1) ([4d11c8f](https://github.com/Tuhis/gawk/commit/4d11c8f8f0863deac4222f5590ff581dba8c7217))
+
+
+### Bug Fixes
+
+* truthful path-MTU log + explicit software-encoding hint ([a17ab35](https://github.com/Tuhis/gawk/commit/a17ab3548fcec3a9a98e6362c86af33b0457987d))
+
 ## [0.18.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.17.2...gawk-app-v0.18.0) (2026-07-14)
 
 
