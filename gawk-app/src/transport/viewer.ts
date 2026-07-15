@@ -33,6 +33,11 @@ export interface ViewerStats extends ReassemblerStats {
   framesDiscardedAwaitingKey: number;
   lastDecodeLatencyMs: number;
   isHardwareAccelerated: boolean | null;
+  // Dimensions of the newest decoded frame — the stream as actually decoded
+  // (trust the VideoFrame in hand, not metadata — docs/01). Mid-stream ladder
+  // changes (R3/R4) update on the next decoded frame. Null before the first.
+  frameWidth: number | null;
+  frameHeight: number | null;
   // R8 keyframe-stream + reorder observability.
   keyframeStreamsReceived: number;
   reorderGapResyncs: number;
@@ -132,6 +137,8 @@ export class ViewerPipeline {
   private configsApplied = 0;
   private framesDiscardedAwaitingKey = 0;
   private lastDecodeLatencyMs = 0;
+  private lastFrameWidth: number | null = null;
+  private lastFrameHeight: number | null = null;
   private lastStatsAt = 0;
   private statsTimer: number | null = null;
   // R9 funnel + stall tracking.
@@ -439,6 +446,10 @@ export class ViewerPipeline {
     this.decodedFrames++;
     this.decodedSinceStats++;
     this.lastDecodeLatencyMs = decoded.decodeEndMs - decoded.decodeStartMs;
+    if (decoded.frame.displayWidth) {
+      this.lastFrameWidth = decoded.frame.displayWidth;
+      this.lastFrameHeight = decoded.frame.displayHeight;
+    }
     this.liveEdge.observe(decoded.frame.timestamp);
     this.observeCapToRender(decoded.frame.timestamp);
     // Worker path: draw + close in place so the frame never crosses a boundary.
@@ -499,6 +510,8 @@ export class ViewerPipeline {
       framesDiscardedAwaitingKey: this.framesDiscardedAwaitingKey,
       lastDecodeLatencyMs: this.lastDecodeLatencyMs,
       isHardwareAccelerated: this.decoder?.isHardwareAccelerated ?? null,
+      frameWidth: this.lastFrameWidth,
+      frameHeight: this.lastFrameHeight,
       keyframeStreamsReceived: this.keyframeStreamsReceived,
       reorderGapResyncs: reorder?.gapResyncs ?? 0,
       reorderKeyframeWaitDrops: reorder?.keyframeWaitDrops ?? 0,

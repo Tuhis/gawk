@@ -25,6 +25,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
       title: 'Video',
       rows: [
         ['Codec', codec ?? '—'],
+        // The decoded frames' own dimensions @ the measured incoming frame
+        // rate — what the stream actually carries, not what was requested.
+        ['Resolution', stats?.frameWidth != null && stats.frameHeight != null ? `${stats.frameWidth}×${stats.frameHeight} @ ${fmtInt(stats.receivedFps)}` : '—'],
         ['Decode mode', stats?.isHardwareAccelerated === true ? 'Hardware' : stats?.isHardwareAccelerated === false ? 'Software' : '—'],
         ['Renderer', stats?.renderer === 'webgl' ? 'WebGL' : stats?.renderer === '2d' ? 'Canvas 2D' : '—'],
         ['Pipeline', stats?.pipelineContext === 'worker' ? 'Worker' : stats?.pipelineContext === 'main-thread' ? 'Main thread' : '—'],

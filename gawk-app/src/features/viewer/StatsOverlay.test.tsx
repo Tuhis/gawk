@@ -26,6 +26,8 @@ function fullStats(): ViewerStats {
     framesDiscardedAwaitingKey: 4,
     lastDecodeLatencyMs: 2.5,
     isHardwareAccelerated: true,
+    frameWidth: 1920,
+    frameHeight: 1080,
     keyframeStreamsReceived: 12,
     reorderGapResyncs: 1,
     reorderKeyframeWaitDrops: 0,
@@ -71,6 +73,7 @@ describe('StatsOverlay', () => {
       />,
     );
     expect(screen.getByText('avc1.42E01F')).toBeTruthy();
+    expect(screen.getByText('Resolution').nextSibling?.textContent).toBe('1920×1080 @ 30');
     expect(screen.getByText('Received fps').nextSibling?.textContent).toBe('30.2');
     expect(screen.getByText('Rendered fps').nextSibling?.textContent).toBe('29.5');
     expect(screen.getByText('Renderer').nextSibling?.textContent).toBe('WebGL');
@@ -103,6 +106,7 @@ describe('StatsOverlay', () => {
       <StatsOverlay stats={null} codec={null} bitrateBps={null} onClose={() => {}} onCopy={() => {}} copied={false} />,
     );
     expect(screen.getByText('Codec').nextSibling?.textContent).toBe('—');
+    expect(screen.getByText('Resolution').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('RTT').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Rendered fps').nextSibling?.textContent).toBe('—');
     expect(screen.getByText('Live-edge drift').nextSibling?.textContent).toBe('—');

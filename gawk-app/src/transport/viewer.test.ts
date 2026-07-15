@@ -226,6 +226,9 @@ describe('ViewerPipeline', () => {
       // R5 Q1: the drift metric is null before any decoded frame (the mocked
       // decoder never emits), and the field must ride every stats tick.
       expect(last!.liveEdgeDriftMs).toBeNull();
+      // Frame dimensions come from decoded frames, so they're null here too.
+      expect(last!.frameWidth).toBeNull();
+      expect(last!.frameHeight).toBeNull();
       // R5 Q2: absolute latency + self-owned RTT stay null against a relay /
       // transport that never answers time sync (older server: no regression).
       expect(last!.capToRenderMs).toBeNull();
@@ -275,7 +278,7 @@ describe('ViewerPipeline', () => {
       const nowUsV = BigInt(Math.round(performance.now() * 1000));
       const ts = Number(nowUsV + 1_000_000n - 2_000_000n - 250_000n);
       decoderCbs.value!.onDecoded({
-        frame: { timestamp: ts },
+        frame: { timestamp: ts, displayWidth: 1920, displayHeight: 1080 },
         captureTimestampUs: ts,
         decodeStartMs: 0,
         decodeEndMs: 1,
@@ -286,6 +289,10 @@ describe('ViewerPipeline', () => {
       expect(last.capToRenderMs).toBeCloseTo(250, 0);
       expect(last.timeSyncRttMs).toBe(5);
       expect(last.liveEdgeDriftMs).toBe(0); // single sample IS the baseline
+      // The decoded frame's own dimensions ride the stats (docs/01: trust the
+      // VideoFrame in hand, not track metadata).
+      expect(last.frameWidth).toBe(1920);
+      expect(last.frameHeight).toBe(1080);
 
       await pipeline.stop();
     } finally {
