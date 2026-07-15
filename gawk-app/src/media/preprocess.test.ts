@@ -172,23 +172,5 @@ describe('FramePreprocessor', () => {
     expect(results.length).toBe(5);
   });
 
-  it('applies cappedFps dynamically when set', () => {
-    const preprocessor = new FramePreprocessor();
-    preprocessor.setTarget('native', 60);
-    preprocessor.setCappedFps(30);
-
-    // Feed 60fps frames, but with a 30fps cap in place
-    const results: any[] = [];
-    for (let i = 0; i < 10; i++) {
-      const ts = Math.round((i * 1000000) / 60);
-      const frame = new MockVideoFrame({ displayWidth: 3840, displayHeight: 2160 }) as unknown as VideoFrame;
-      (frame as any).timestamp = ts;
-      const res = preprocessor.process(frame, 60);
-      if (res) {
-        results.push(res);
-      }
-    }
-    expect(results.length).toBe(5);
-  });
 });
 

@@ -1,3 +1,5 @@
+import type { HwPreference } from './probe';
+
 export type PipelineStatus = 'idle' | 'starting' | 'capturing' | 'stopping' | 'error';
 
 export interface CaptureConfig {
@@ -6,6 +8,9 @@ export interface CaptureConfig {
   height: number;
   bitrate: number;
   framerate: number;
+  // R12 (docs/17): acceleration tri-state. Absent means 'auto' — the
+  // historical prefer-hardware-then-fall-back cascade.
+  hwPreference?: HwPreference;
   // Time-based (docs/08): frame-count cadence would stretch the GOP to 24s
   // at the ladder's 5 fps rung. A short 500ms GOP bounds recovery from a lost
   // or gap-discarded frame to <=0.5s (a delta referencing a missing frame

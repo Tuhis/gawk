@@ -1,4 +1,5 @@
 import { log } from '../lib/logger';
+import type { HwPreference } from './probe';
 import type { CaptureConfig } from './types';
 
 type ConfigVariant = {
@@ -13,12 +14,33 @@ type ConfigVariant = {
 // returns false when it can't). So probing with prefer-hardware FIRST gives
 // us a reasonable answer. If that fails, we drop the hint and the browser
 // falls back to whatever it can do — usually software.
-const CONFIG_VARIANTS: ConfigVariant[] = [
+const HW_VARIANTS: ConfigVariant[] = [
   { label: 'prefer-hw + realtime', hardwareAcceleration: 'prefer-hardware', latencyMode: 'realtime' },
   { label: 'prefer-hw',            hardwareAcceleration: 'prefer-hardware' },
+];
+const HINT_FREE_VARIANTS: ConfigVariant[] = [
   { label: 'realtime',             latencyMode: 'realtime' },
   { label: 'default' },
 ];
+const SW_VARIANTS: ConfigVariant[] = [
+  { label: 'prefer-sw + realtime', hardwareAcceleration: 'prefer-software', latencyMode: 'realtime' },
+  { label: 'prefer-sw',            hardwareAcceleration: 'prefer-software' },
+];
+
+// R12 (docs/17 Decision 5): the acceleration tri-state selects which
+// variants the cascade may try. 'auto' is the historical behavior (prefer
+// hardware, silently fall back); 'hardware' refuses to run software;
+// 'software' forces it.
+export function configVariantsFor(hwPreference: HwPreference): ConfigVariant[] {
+  switch (hwPreference) {
+    case 'hardware':
+      return HW_VARIANTS;
+    case 'software':
+      return SW_VARIANTS;
+    default:
+      return [...HW_VARIANTS, ...HINT_FREE_VARIANTS];
+  }
+}
 
 export type Acceleration = 'hardware' | 'software' | 'unknown';
 
@@ -54,6 +76,7 @@ function classifyAcceleration(
   // No resolved answer. Fall back to what we asked for: if we asked for HW
   // and got 'supported: true', Chrome does commit to HW.
   if (variant.hardwareAcceleration === 'prefer-hardware') return 'hardware';
+  if (variant.hardwareAcceleration === 'prefer-software') return 'software';
   return 'unknown';
 }
 
@@ -115,8 +138,10 @@ export class Encoder {
   async configure(): Promise<EncoderConfigured> {
     const attempts: string[] = [];
     let hwRejected = false;
+    const hwPreference = this.config.hwPreference ?? 'auto';
+    const variants = configVariantsFor(hwPreference);
     for (const codec of this.config.codecPreferences) {
-      for (const variant of CONFIG_VARIANTS) {
+      for (const variant of variants) {
         const encoderConfig: VideoEncoderConfig = {
           codec,
           width: this.config.width,
@@ -130,9 +155,15 @@ export class Encoder {
           const support = await VideoEncoder.isConfigSupported(encoderConfig);
           if (support.supported) {
             const finalConfig = support.config ?? encoderConfig;
+            const acceleration = classifyAcceleration(variant, finalConfig.hardwareAcceleration);
+            // Hardware-only mode: a supported=true that the browser resolved
+            // to software is a refusal, not a fallback (docs/17 Decision 5).
+            if (hwPreference === 'hardware' && acceleration !== 'hardware') {
+              attempts.push(`${codec}/${variant.label}: resolved software under hardware-only`);
+              continue;
+            }
             this.encoder.configure(finalConfig);
             this.chosenCodec = codec;
-            const acceleration = classifyAcceleration(variant, finalConfig.hardwareAcceleration);
             if (hwRejected && acceleration !== 'hardware') {
               // Firefox's WebCodecs VideoEncoder is software-only — browser
               // HW-acceleration settings don't change this. Say so once here
@@ -164,8 +195,16 @@ export class Encoder {
       }
     }
     log.error('All encoder configs rejected. Attempts:', attempts);
+    const at = `${this.config.width}x${this.config.height}@${this.config.framerate}`;
+    if (hwPreference === 'hardware') {
+      // The refusal is the point of hardware-only mode: never silently run
+      // software against it — tell the broadcaster what to change instead.
+      throw new Error(
+        `Hardware encoding required, but no codec resolved hardware at ${at}. Pick a lower resolution/framerate or switch acceleration back to auto.`,
+      );
+    }
     throw new Error(
-      `No codec / config combination supported at ${this.config.width}x${this.config.height}@${this.config.framerate}. See console for full list.`,
+      `No codec / config combination supported at ${at}. See console for full list.`,
     );
   }
 

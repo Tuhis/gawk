@@ -10,6 +10,7 @@ import { createBroadcastSession, WorkerBroadcastSession, type WorkerLike } from 
 import {
   BroadcastPipeline,
   BroadcastStartError,
+  DEFAULT_ENCODER_SETTINGS,
   type BroadcastCallbacks,
   type BroadcastStats,
 } from '../../transport/broadcaster';
@@ -103,6 +104,7 @@ describe('WorkerBroadcastSession start + ladder', () => {
         broadcastId: 'K7XQ2M',
         selection: 720,
         framerate: 30,
+        encoderSettings: DEFAULT_ENCODER_SETTINGS,
       },
     ]);
   });

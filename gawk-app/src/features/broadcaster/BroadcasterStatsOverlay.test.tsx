@@ -48,6 +48,8 @@ function fullStats(): BroadcastStats {
     autoStepDowns: 0,
     autoStepUps: 0,
     encoderPressure: false,
+    autoCeiling: null,
+    autoFps: null,
     pipelineContext: 'worker',
   };
 }

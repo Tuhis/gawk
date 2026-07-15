@@ -9,7 +9,7 @@
 
 import { trackMediaSource, type BroadcastMediaSourceFactory } from '../media/capture';
 import type { EncoderConfigured } from '../media/encoder';
-import type { FramerateRung, ResolutionSelection } from '../media/ladder';
+import type { FramerateSelection, ResolutionSelection } from '../media/ladder';
 import type { CaptureConfig } from '../media/types';
 import {
   BroadcastPipeline,
@@ -17,6 +17,7 @@ import {
   type BroadcastCallbacks,
   type BroadcastStartPhase,
   type BroadcastStats,
+  type EncoderSettings,
 } from './broadcaster';
 import type { ConnectOptions } from './connection';
 
@@ -29,12 +30,16 @@ export type BroadcastWorkerCommand =
       connectOpts: ConnectOptions;
       broadcastId?: string;
       selection: ResolutionSelection;
-      framerate: FramerateRung;
+      framerate: FramerateSelection;
+      // R12: the advanced encoder settings ride the start command (and the
+      // dedicated command below for live changes).
+      encoderSettings?: EncoderSettings;
     }
   // The capture track (transferred), in response to 'awaitingCapture'.
   | { type: 'capture'; track: MediaStreamTrack; nativeFps: number | null }
   | { type: 'captureFailed'; message: string }
-  | { type: 'setLadder'; selection: ResolutionSelection; framerate: FramerateRung }
+  | { type: 'setLadder'; selection: ResolutionSelection; framerate: FramerateSelection }
+  | { type: 'setEncoderSettings'; settings: EncoderSettings }
   | { type: 'stop' };
 
 // Worker → main thread. Small control/telemetry messages only — VideoFrames
@@ -70,7 +75,8 @@ export interface BroadcastWorkerHost {
 export type BroadcastPipelineLike = {
   start(): Promise<void>;
   stop(): Promise<void>;
-  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void;
+  setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void;
+  setEncoderSettings(settings: EncoderSettings): void;
 };
 export type BroadcastPipelineFactory = (
   config: CaptureConfig,
@@ -110,7 +116,8 @@ export class BroadcastWorkerCore {
     connectOpts: ConnectOptions;
     broadcastId?: string;
     selection: ResolutionSelection;
-    framerate: FramerateRung;
+    framerate: FramerateSelection;
+    encoderSettings?: EncoderSettings;
   }): void {
     const prev = this.pipeline;
     const gen = ++this.generation;
@@ -169,6 +176,7 @@ export class BroadcastWorkerCore {
       mediaSource,
     );
     pipeline.setLadder(params.selection, params.framerate);
+    if (params.encoderSettings) pipeline.setEncoderSettings(params.encoderSettings);
     this.pipeline = pipeline;
 
     pipeline.start().then(
@@ -200,8 +208,12 @@ export class BroadcastWorkerCore {
     this.rejectPendingCapture(new Error(message));
   }
 
-  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void {
+  setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void {
     this.pipeline?.setLadder(selection, framerate);
+  }
+
+  setEncoderSettings(settings: EncoderSettings): void {
+    this.pipeline?.setEncoderSettings(settings);
   }
 
   // Stops the live pipeline and always answers with 'ended' — the pipeline's
