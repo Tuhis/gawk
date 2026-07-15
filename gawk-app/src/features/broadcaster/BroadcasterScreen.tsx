@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './broadcaster.module.css';
 import { LadderPicker } from '../stream/LadderPicker';
 import { EncoderSettingsPanel } from '../stream/EncoderSettingsPanel';
-import { useSupportMatrix } from '../stream/useSupportMatrix';
+import { useCodecMatrices, useSupportMatrix } from '../stream/useSupportMatrix';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
@@ -58,9 +58,10 @@ export function BroadcasterScreen() {
 
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
 
-  // R13 (docs/18 L4): probe matrix for picker annotations — advisory only;
-  // the overlay's Encode mode row shows the runtime truth.
+  // R13 (docs/18 L4): probe matrices for picker + codec-pin annotations —
+  // advisory only; the overlay's Encode mode row shows the runtime truth.
   const supportMatrix = useSupportMatrix();
+  const codecMatrices = useCodecMatrices();
 
   // Developer-only settings (localhost). Wired straight to the transport store.
   const showDevSettings = isDevEnvironment();
@@ -255,6 +256,7 @@ export function BroadcasterScreen() {
         <section className={styles.group}>
           <h3 className={styles.groupTitle}>Advanced</h3>
           <EncoderSettingsPanel
+            codecMatrices={codecMatrices}
             onChange={(settings) => pipelineRef.current?.setEncoderSettings(settings)}
           />
         </section>

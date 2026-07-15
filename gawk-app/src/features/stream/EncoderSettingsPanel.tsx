@@ -8,16 +8,20 @@ import {
   BITRATE_OVERRIDE_MAX,
   BITRATE_OVERRIDE_MIN,
 } from '../../media/ladder';
-import type { HwPreference } from '../../media/probe';
+import type { HwPreference, SupportMatrix } from '../../media/probe';
 import { DEFAULT_CODEC_PREFERENCES } from '../../media/types';
 import {
   encoderSettingsFromStore,
   useBroadcastSettingsStore,
 } from '../../state/broadcastSettingsStore';
 import type { EncoderSettings } from '../../transport/broadcaster';
+import { annotate, codecAcceleration } from './supportAnnotations';
 
 interface Props {
   onChange?: (settings: EncoderSettings) => void;
+  // R13 Decision 9 for the codec pin: per-codec probe matrices backing the
+  // option annotations (see useCodecMatrices). null renders unannotated.
+  codecMatrices?: Map<string, SupportMatrix> | null;
 }
 
 const HW_OPTIONS: Array<{ value: HwPreference; label: string }> = [
@@ -33,18 +37,24 @@ function codecLabel(codec: string): string {
   return codec;
 }
 
-export function EncoderSettingsPanel({ onChange }: Props) {
+export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
   const hwPreference = useBroadcastSettingsStore((s) => s.hwPreference);
   const bitrateOverride = useBroadcastSettingsStore((s) => s.bitrateOverride);
   const codecOverride = useBroadcastSettingsStore((s) => s.codecOverride);
+  // The codec annotations answer "what would pinning this codec get at the
+  // *current* resolution/fps selections" — so they follow the pickers live.
+  const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
+  const framerateSelection = useBroadcastSettingsStore((s) => s.framerateSelection);
   const setHwPreference = useBroadcastSettingsStore((s) => s.setHwPreference);
   const setBitrateOverride = useBroadcastSettingsStore((s) => s.setBitrateOverride);
   const setCodecOverride = useBroadcastSettingsStore((s) => s.setCodecOverride);
 
   const emit = () => onChange?.(encoderSettingsFromStore());
 
+  // Stacked, full-width (like the dev settings) — three fields with full
+  // codec strings overflow the side panel as a row.
   return (
-    <div className={styles.ladderPicker}>
+    <div className={styles.stackedPicker}>
       <div className={styles.field}>
         <label htmlFor="hw-preference">Acceleration</label>
         <select
@@ -91,11 +101,17 @@ export function EncoderSettingsPanel({ onChange }: Props) {
           }}
         >
           <option value="auto">auto (negotiate)</option>
-          {DEFAULT_CODEC_PREFERENCES.map((codec) => (
-            <option key={codec} value={codec}>
-              {codecLabel(codec)}
-            </option>
-          ))}
+          {DEFAULT_CODEC_PREFERENCES.map((codec) => {
+            const { label, disabled } = annotate(
+              codecLabel(codec),
+              codecAcceleration(codecMatrices?.get(codec), resolutionSelection, framerateSelection),
+            );
+            return (
+              <option key={codec} value={codec} disabled={disabled}>
+                {label}
+              </option>
+            );
+          })}
         </select>
       </div>
     </div>

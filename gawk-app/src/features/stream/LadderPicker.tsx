@@ -1,14 +1,13 @@
 import styles from './stream.module.css';
 import {
   FRAMERATE_SELECTIONS,
-  RESOLUTION_RUNGS,
   RESOLUTION_SELECTIONS,
-  resolveAutoFps,
   type FramerateSelection,
   type ResolutionSelection,
 } from '../../media/ladder';
-import type { ProbeAcceleration, SupportMatrix } from '../../media/probe';
+import type { SupportMatrix } from '../../media/probe';
 import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
+import { annotate, framerateAcceleration, resolutionAcceleration } from './supportAnnotations';
 
 interface Props {
   // Invoked after the store updates so a live pipeline can apply the change.
@@ -28,54 +27,8 @@ function framerateLabel(selection: FramerateSelection): string {
   return selection === 'native' ? 'native' : `${selection} fps`;
 }
 
-// docs/18 Decision 9: options are annotated, never removed — an explicit
-// software rung is allowed (R4's "explicit choices are honored"); only
-// genuinely unsupported combos disable.
-function annotate(label: string, acceleration: ProbeAcceleration | null): {
-  label: string;
-  disabled: boolean;
-} {
-  if (acceleration === 'software') return { label: `${label} · software`, disabled: false };
-  if (acceleration === 'unsupported') return { label: `${label} · unsupported`, disabled: true };
-  return { label, disabled: false };
-}
-
-// The fps a resolution option is annotated at: explicit rungs speak for
-// themselves, 'auto' uses the matrix's framerate-first resolution, 'native'
-// probes at the 60 upper bound (no matrix column for arbitrary refresh
-// rates).
-function annotationFps(matrix: SupportMatrix, fpsSelection: FramerateSelection): number {
-  if (fpsSelection === 'auto') return resolveAutoFps(matrix.get);
-  return fpsSelection === 'native' ? 60 : fpsSelection;
-}
-
-function resolutionAcceleration(
-  matrix: SupportMatrix | null | undefined,
-  selection: ResolutionSelection,
-  fpsSelection: FramerateSelection,
-): ProbeAcceleration | null {
-  if (!matrix || selection === 'auto') return null; // auto always works — it adapts
-  return matrix.get(selection, annotationFps(matrix, fpsSelection)).acceleration;
-}
-
-function framerateAcceleration(
-  matrix: SupportMatrix | null | undefined,
-  selection: FramerateSelection,
-  resolutionSelection: ResolutionSelection,
-): ProbeAcceleration | null {
-  if (!matrix || selection === 'auto') return null;
-  const fps = selection === 'native' ? 60 : selection;
-  if (resolutionSelection !== 'auto') return matrix.get(resolutionSelection, fps).acceleration;
-  // Auto resolution adapts the rung — annotate with the best any rung offers
-  // at this fps (that's what auto would pick).
-  let best: ProbeAcceleration = 'unsupported';
-  for (const rung of RESOLUTION_RUNGS) {
-    const acc = matrix.get(rung, fps).acceleration;
-    if (acc === 'hardware') return 'hardware';
-    if (acc === 'software') best = 'software';
-  }
-  return best;
-}
+// Annotation logic (badge/disable per docs/18 Decision 9) is shared with the
+// advanced codec pin — see ./supportAnnotations.ts.
 
 // Deliberately never disabled as a whole: changing rungs mid-broadcast is a
 // supported, designed-for operation (docs/08) — and the mechanism R4

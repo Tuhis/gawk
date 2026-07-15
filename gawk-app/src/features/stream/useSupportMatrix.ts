@@ -40,3 +40,31 @@ export function useSupportMatrix(): SupportMatrix | null {
 
   return matrix;
 }
+
+// Per-codec matrices for the advanced codec-pin annotations: each codec gets
+// its own single-codec matrix, so 'auto' axes resolve *per codec* (one codec
+// may do HW at 60 where another only manages 30). The prober memoizes every
+// combo, so this shares work with the main matrix and re-renders are free;
+// only an acceleration-mode change re-probes.
+export function useCodecMatrices(): Map<string, SupportMatrix> | null {
+  const hwPreference = useBroadcastSettingsStore((s) => s.hwPreference);
+  const [matrices, setMatrices] = useState<Map<string, SupportMatrix> | null>(null);
+
+  useEffect(() => {
+    if (!probeSupported()) return;
+    let cancelled = false;
+    void Promise.all(
+      DEFAULT_CODEC_PREFERENCES.map(
+        async (codec) =>
+          [codec, await probeSupportMatrix(prober, { codecs: [codec], hwPreference })] as const,
+      ),
+    ).then((entries) => {
+      if (!cancelled) setMatrices(new Map(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hwPreference]);
+
+  return matrices;
+}
