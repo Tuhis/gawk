@@ -9,14 +9,28 @@ import {
   type BroadcastMediaSource,
   type BroadcastMediaSourceFactory,
 } from '../media/capture';
-import { Encoder, probeHardwareSupport, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
+import { Encoder, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
 import {
+  applyCeiling,
   autoLadder,
+  clampBitrateOverride,
   computeBitrate,
+  hardwareCeiling,
+  resolveAutoFps,
+  rungCapWidth,
   type FramerateRung,
+  type FramerateSelection,
   type ResolutionRung,
   type ResolutionSelection,
 } from '../media/ladder';
+import {
+  EncoderSupportProber,
+  probeSupportMatrix,
+  probeSupported,
+  type HwPreference,
+  type SourceDims,
+  type SupportMatrix,
+} from '../media/probe';
 import { FallbackController } from '../media/fallback';
 import { FramePreprocessor } from '../media/preprocess';
 import type { CaptureConfig } from '../media/types';
@@ -65,6 +79,11 @@ export interface BroadcastStats {
   autoStepDowns: number;
   autoStepUps: number;
   encoderPressure: boolean;
+  // R13 (docs/18): the HW-aware auto ceiling (null in explicit resolution
+  // mode) and the resolved 'auto' framerate (null when the fps selection is
+  // an explicit rung).
+  autoCeiling: ResolutionRung | null;
+  autoFps: number | null;
   // R11 (docs/16): where the pipeline runs, detected via `window` absence
   // (the viewer's R10 convention) — 'worker' on the offloaded path.
   pipelineContext: 'worker' | 'main-thread';
@@ -93,6 +112,8 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   autoStepDowns: 0,
   autoStepUps: 0,
   encoderPressure: false,
+  autoCeiling: null,
+  autoFps: null,
   pipelineContext: 'main-thread',
 };
 
@@ -112,13 +133,31 @@ function roundDownToEven(n: number): number {
 
 export type BroadcastStartPhase = 'connect' | 'capture';
 
+// R13 (docs/18): the advanced encoder settings. hwPreference selects the
+// variant cascade (Decision 5); bitrateOverride (bps, clamped by
+// clampBitrateOverride) replaces the ladder math while set; codecOverride
+// pins the preference list to one codec. All three take effect via encoder
+// recreate on the next frame — never a stream restart.
+export interface EncoderSettings {
+  hwPreference: HwPreference;
+  bitrateOverride: number | null;
+  codecOverride: string | null;
+}
+
+export const DEFAULT_ENCODER_SETTINGS: EncoderSettings = {
+  hwPreference: 'auto',
+  bitrateOverride: null,
+  codecOverride: null,
+};
+
 // R11 (docs/16): the surface BroadcasterScreen drives. Implemented by
 // BroadcastPipeline (main thread) and WorkerBroadcastSession (worker path),
 // so the screen's reclaim/mint/error logic is path-agnostic.
 export interface BroadcastSessionLike {
   start(): Promise<void>;
   stop(): Promise<void>;
-  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void;
+  setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void;
+  setEncoderSettings(settings: EncoderSettings): void;
 }
 
 // Default media source: the existing main-thread capture path, unchanged.
@@ -136,6 +175,9 @@ const captureMediaSource: BroadcastMediaSourceFactory = async (config) => {
     onEnded: (cb) => handle.track.addEventListener('ended', cb),
     startFrames: (onFrame) => handle.startFrames(onFrame),
     stop: () => stopCapture(handle),
+    ...(typeof handle.track.applyConstraints === 'function'
+      ? { applyConstraints: (c: MediaTrackConstraints) => handle.track.applyConstraints(c) }
+      : {}),
   };
 };
 
@@ -173,17 +215,33 @@ export class BroadcastPipeline {
   // recreated — not reconfigured — whenever the preprocessed frames stop
   // matching its configured size, or a ladder change is flagged.
   private preprocessor = new FramePreprocessor();
-  private ladderFps: FramerateRung = 'native';
+  private ladderFps: FramerateSelection = 'native';
   private pendingEncoderReset = false;
   private encoderIniting = false;
   private encoderDims: { width: number; height: number } | null = null;
   private nativeFps: number | null = null;
+
+  // R13 probe matrix state (docs/18). The matrix is probed once at start
+  // (pre-capture 4K upper bound) and refined from real frame dims — but only
+  // upward (monotonic max): our own applyConstraints shrinks the frames, and
+  // re-probing at constrained dims would feed the ceiling its own output
+  // (constrain → smaller frames → "source is smaller" → different ceiling →
+  // constrain…). A null prober (no WebCodecs in scope) keeps the pre-R13
+  // optimistic defaults: ceiling native, auto fps 30.
+  private prober: EncoderSupportProber | null;
+  private matrix: SupportMatrix | null = null;
+  private matrixGen = 0;
+  private resolvedAutoFps: 60 | 30 = 30;
+  private autoCeiling: ResolutionRung = 'native';
+  private probedSourceDims: SourceDims | null = null;
+  private lastConstraintsKey: string | null = null;
 
   // R4 automatic fallback (docs/09). The controller is pure and timer-free;
   // the pipeline resolves its direction decisions against a per-source
   // effective ladder. Auto state is runtime-only — reset to the ceiling on
   // every start and on any resolution-selection change (Decision 6).
   private resolutionSelection: ResolutionSelection = 'auto';
+  private encoderSettings: EncoderSettings = DEFAULT_ENCODER_SETTINGS;
   private controller = new FallbackController();
   private autoRungs: ResolutionRung[] | null = null;
   private autoIndex = 0;
@@ -224,6 +282,9 @@ export class BroadcastPipeline {
     // getDisplayMedia capture; the broadcast worker injects a source built
     // around a transferred track.
     mediaSource: BroadcastMediaSourceFactory = captureMediaSource,
+    // R13 (docs/18): injectable for tests; null (no WebCodecs in scope)
+    // disables the matrix and keeps optimistic defaults.
+    prober?: EncoderSupportProber,
   ) {
     this.config = config;
     this.serverUrl = serverUrl;
@@ -232,6 +293,7 @@ export class BroadcastPipeline {
     this.broadcastId = broadcastId;
     this.now = now;
     this.mediaSource = mediaSource;
+    this.prober = prober ?? (probeSupported() ? new EncoderSupportProber() : null);
     this.stats.pipelineContext = typeof window === 'undefined' ? 'worker' : 'main-thread';
   }
 
@@ -272,6 +334,11 @@ export class BroadcastPipeline {
       this.timeSync?.handleDatagram(dgram);
     }).catch(() => {});
     this.clockMappingTimer = setInterval(() => this.maybeSendClockMapping(), 1000);
+
+    // R13: probe the support matrix before media starts, so the first
+    // encoder init already resolves the auto ceiling / auto fps (docs/18
+    // Decision 3). Never throws; a probe-less scope keeps the defaults.
+    await this.refreshMatrix();
 
     try {
       await this.startMedia();
@@ -335,10 +402,14 @@ export class BroadcastPipeline {
   // the ladder on its own; an explicit rung is honored unconditionally (never
   // auto-stepped). A resolution-selection change resets auto state to the
   // ceiling (Decision 6); a framerate-only change keeps the current auto rung.
-  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void {
+  setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void {
     const selectionChanged = selection !== this.resolutionSelection;
     this.resolutionSelection = selection;
     this.ladderFps = framerate;
+    // Both R13 'auto' resolutions are matrix lookups — sync, no re-probe
+    // (the matrix covers every fps rung).
+    this.resolveFromMatrix();
+    const fps = this.effectiveFpsRung();
 
     if (selection === 'auto') {
       if (selectionChanged) {
@@ -349,9 +420,9 @@ export class BroadcastPipeline {
         this.stats.autoAtFloor = false;
         this.stats.encoderPressure = false;
       }
-      // 'native' is always the ceiling; a framerate-only change keeps the
-      // rung the auto ladder had already settled on.
-      this.preprocessor.setTarget(this.currentAutoRung() ?? 'native', framerate);
+      // The HW-aware ceiling (pre-frames), or the rung the auto ladder had
+      // already settled on — a framerate-only change keeps it.
+      this.preprocessor.setTarget(this.currentAutoRung() ?? this.autoCeiling, fps);
     } else {
       // Explicit rung: drives the preprocessor directly, forever.
       this.autoRungs = null;
@@ -359,7 +430,7 @@ export class BroadcastPipeline {
       this.autoIndex = 0;
       this.stats.autoAtFloor = false;
       this.stats.encoderPressure = false;
-      this.preprocessor.setTarget(selection, framerate);
+      this.preprocessor.setTarget(selection, fps);
     }
 
     this.pendingEncoderReset = true;
@@ -369,12 +440,152 @@ export class BroadcastPipeline {
     // startup cooldown would needlessly blind the controller to the first
     // seconds of the stream.
     if (this.encoder) this.controller.noteReset(this.now());
+    this.syncCaptureConstraints();
+  }
+
+  // R13 (docs/18): advanced encoder settings — acceleration tri-state,
+  // bitrate override, codec pin. Like setLadder, safe any time; takes
+  // effect via encoder recreate on the next captured frame. A change resets
+  // the fallback controller for the same reason a ladder change does: the
+  // new encoder config deserves a fresh evaluation window.
+  setEncoderSettings(settings: EncoderSettings): void {
+    if (
+      settings.hwPreference === this.encoderSettings.hwPreference &&
+      settings.bitrateOverride === this.encoderSettings.bitrateOverride &&
+      settings.codecOverride === this.encoderSettings.codecOverride
+    ) {
+      return;
+    }
+    const probeAxesChanged =
+      settings.hwPreference !== this.encoderSettings.hwPreference ||
+      settings.codecOverride !== this.encoderSettings.codecOverride;
+    this.encoderSettings = settings;
+    this.pendingEncoderReset = true;
+    if (this.encoder) this.controller.noteReset(this.now());
+    // Acceleration mode / codec pin shift what the matrix means — re-probe
+    // and recompute the ceiling when it lands (bitrate never affects it).
+    if (probeAxesChanged) void this.refreshMatrix(this.matrix?.source);
   }
 
   private currentAutoRung(): ResolutionRung | null {
     if (this.resolutionSelection !== 'auto') return null;
-    if (this.autoRungs === null) return 'native'; // ceiling, before the first frame
+    if (this.autoRungs === null) return this.autoCeiling; // before the first frame
     return this.autoRungs[this.autoIndex];
+  }
+
+  // R13 (docs/18 Decision 4): the effective framerate rung — 'auto' resolves
+  // to the matrix's framerate-first answer (conservative 30 until probed).
+  private effectiveFpsRung(): FramerateRung {
+    return this.ladderFps === 'auto' ? this.resolvedAutoFps : this.ladderFps;
+  }
+
+  // The fps the ceiling is evaluated at. 'native' has no matrix column —
+  // probe at 60, the upper bound (a rung must do HW at 60 to be the ceiling
+  // for a native-fps stream).
+  private ceilingProbeFps(): number {
+    const fps = this.effectiveFpsRung();
+    return fps === 'native' ? 60 : fps;
+  }
+
+  private resolveFromMatrix(): void {
+    this.resolvedAutoFps = this.matrix ? resolveAutoFps(this.matrix.get) : 30;
+    this.autoCeiling = this.matrix
+      ? hardwareCeiling(this.matrix.get, this.ceilingProbeFps())
+      : 'native';
+  }
+
+  // Probes (or re-probes) the matrix and recomputes the auto targets when it
+  // lands. Awaited once in start() so the first encoder init sees it; later
+  // refreshes are fire-and-forget with a generation guard. Never rejects.
+  private async refreshMatrix(source?: SourceDims): Promise<void> {
+    if (!this.prober || this.stopping) return;
+    const gen = ++this.matrixGen;
+    try {
+      const matrix = await probeSupportMatrix(this.prober, {
+        codecs: this.encoderSettings.codecOverride
+          ? [this.encoderSettings.codecOverride]
+          : this.config.codecPreferences,
+        hwPreference: this.encoderSettings.hwPreference,
+        ...(source ? { source } : {}),
+      });
+      if (gen !== this.matrixGen || this.stopping) return;
+      this.matrix = matrix;
+      this.recomputeAutoTargets();
+    } catch (e) {
+      log.warn('Support-matrix probe failed; keeping previous targets:', e);
+    }
+  }
+
+  // Refines the matrix from real frame dimensions — upward only (see the
+  // field comment: constrained capture must not feed the ceiling its own
+  // output).
+  private maybeRefineMatrix(width: number, height: number): void {
+    if (!this.prober) return;
+    if (
+      this.probedSourceDims &&
+      width * height <= this.probedSourceDims.width * this.probedSourceDims.height
+    ) {
+      return;
+    }
+    this.probedSourceDims = { width, height };
+    void this.refreshMatrix({ width, height });
+  }
+
+  // Re-resolves fps + ceiling after a matrix change and re-anchors the auto
+  // ladder at the new ceiling if anything effective moved. Explicit rungs
+  // only react to the resolved fps (the ceiling never binds them).
+  private recomputeAutoTargets(): void {
+    const prevFps = this.effectiveFpsRung();
+    const prevCeiling = this.autoCeiling;
+    this.resolveFromMatrix();
+    const fps = this.effectiveFpsRung();
+    const fpsChanged = fps !== prevFps;
+    const ceilingChanged = this.autoCeiling !== prevCeiling;
+
+    if (this.resolutionSelection === 'auto' && (ceilingChanged || fpsChanged)) {
+      if (this.autoSrcLongerDim !== null) {
+        this.autoRungs = applyCeiling(
+          autoLadder(this.autoSrcLongerDim),
+          this.autoCeiling,
+          this.autoSrcLongerDim,
+        );
+        this.autoIndex = 0;
+        this.stats.autoAtFloor = false;
+      }
+      this.preprocessor.setTarget(this.currentAutoRung() ?? this.autoCeiling, fps);
+      this.pendingEncoderReset = true;
+      if (this.encoder) this.controller.noteReset(this.now());
+    } else if (fpsChanged) {
+      // Explicit resolution + 'auto' fps: the rung stays, the rate follows.
+      this.preprocessor.setTarget(this.resolutionSelection as ResolutionRung, fps);
+      this.pendingEncoderReset = true;
+      if (this.encoder) this.controller.noteReset(this.now());
+    }
+    this.syncCaptureConstraints();
+  }
+
+  // docs/18 Decision 6: capture follows the *sticky* target — the explicit
+  // rung, or the auto ceiling — never the current auto step (up-probes need
+  // the higher-res source still flowing). Failures are non-fatal by
+  // construction: the preprocessor keeps scaling whatever actually arrives.
+  private syncCaptureConstraints(): void {
+    const media = this.media;
+    if (!media?.applyConstraints) return;
+    const rung = this.resolutionSelection === 'auto' ? this.autoCeiling : this.resolutionSelection;
+    const fps = this.effectiveFpsRung();
+    const constraints: MediaTrackConstraints = {
+      width: { max: rungCapWidth(rung) ?? this.config.width },
+      ...(fps === 'native' ? {} : { frameRate: { max: fps } }),
+    };
+    const key = JSON.stringify(constraints);
+    if (key === this.lastConstraintsKey) return;
+    this.lastConstraintsKey = key;
+    // Promise-wrapped so a synchronous throw is contained like a rejection.
+    void Promise.resolve()
+      .then(() => media.applyConstraints!(constraints))
+      .catch((e) => {
+        log.warn('applyConstraints rejected; the preprocessor remains the safety net:', e);
+      });
   }
 
   private async startMedia(): Promise<void> {
@@ -387,6 +598,11 @@ export class BroadcastPipeline {
     if (media.stream) this.cb.onSourceStream(media.stream);
 
     this.nativeFps = media.nativeFps;
+
+    // Initial capture alignment with the sticky target (explicit rung, or
+    // the pre-capture auto ceiling); later matrix refinements and setting
+    // changes re-sync as they land (docs/18 Decision 6).
+    this.syncCaptureConstraints();
 
     media.onEnded(() => {
       log.info('Capture source ended (user stopped sharing).');
@@ -408,7 +624,7 @@ export class BroadcastPipeline {
       // (captured) dimensions determine which rungs actually shrink the
       // picture. Read them from the raw frame before preprocessing consumes it.
       if (this.resolutionSelection === 'auto') {
-        this.updateAutoLadder(Math.max(frame.displayWidth, frame.displayHeight));
+        this.updateAutoLadder(frame.displayWidth, frame.displayHeight);
       }
 
       const processed = this.preprocessor.process(frame, this.nativeFps);
@@ -448,21 +664,27 @@ export class BroadcastPipeline {
   // Recomputes the auto ladder when the source dimensions first appear or
   // change (a window-share resize). A change resets to the ceiling and a
   // fresh baseline — rare, and better than guessing an equivalent index.
-  private updateAutoLadder(srcLongerDim: number): void {
+  // R13: the ladder is sliced at the HW-aware ceiling, and real dims refine
+  // the probe matrix (upward only — see maybeRefineMatrix).
+  private updateAutoLadder(srcWidth: number, srcHeight: number): void {
+    const srcLongerDim = Math.max(srcWidth, srcHeight);
     if (this.autoRungs === null) {
-      this.autoRungs = autoLadder(srcLongerDim);
+      this.autoRungs = applyCeiling(autoLadder(srcLongerDim), this.autoCeiling, srcLongerDim);
       this.autoSrcLongerDim = srcLongerDim;
       this.autoIndex = 0;
+      this.preprocessor.setTarget(this.autoRungs[0], this.effectiveFpsRung());
+      this.maybeRefineMatrix(srcWidth, srcHeight);
       return;
     }
     if (srcLongerDim === this.autoSrcLongerDim) return;
-    this.autoRungs = autoLadder(srcLongerDim);
+    this.autoRungs = applyCeiling(autoLadder(srcLongerDim), this.autoCeiling, srcLongerDim);
     this.autoSrcLongerDim = srcLongerDim;
     this.autoIndex = 0;
     this.stats.autoAtFloor = false;
-    this.preprocessor.setTarget('native', this.ladderFps);
+    this.preprocessor.setTarget(this.autoRungs[0], this.effectiveFpsRung());
     this.pendingEncoderReset = true;
     this.controller.noteReset(this.now());
+    this.maybeRefineMatrix(srcWidth, srcHeight);
   }
 
   // Acts on a controller decision. In auto mode it walks the ladder; in
@@ -497,7 +719,9 @@ export class BroadcastPipeline {
     this.stats.autoAtFloor = false;
     if (delta > 0) this.stats.autoStepDowns++;
     else this.stats.autoStepUps++;
-    this.preprocessor.setTarget(this.autoRungs[this.autoIndex], this.ladderFps);
+    // Auto steps are encode-only (docs/18 Decision 7): no
+    // syncCaptureConstraints here — capture stays at the sticky target.
+    this.preprocessor.setTarget(this.autoRungs[this.autoIndex], this.effectiveFpsRung());
     this.pendingEncoderReset = true;
   }
 
@@ -520,33 +744,30 @@ export class BroadcastPipeline {
     );
     const width = roundDownToEven(firstFrame.displayWidth);
     const height = roundDownToEven(firstFrame.displayHeight);
-    let framerate = this.ladderFps === 'native' ? (this.nativeFps ?? this.config.framerate) : this.ladderFps;
+    const fpsRung = this.effectiveFpsRung();
+    const framerate = fpsRung === 'native' ? (this.nativeFps ?? this.config.framerate) : fpsRung;
 
     const proceedInit = async () => {
-      let cappedFps: number | null = null;
-      if ((width > 1920 || height > 1080) && framerate > 30) {
-        const hwSupported = await probeHardwareSupport(
-          this.config.codecPreferences,
-          width,
-          height,
-          framerate,
-        );
-        if (!hwSupported) {
-          log.info(
-            `HW encoding not supported for encoder target ${width}x${height}@${framerate}fps. Capping to 30fps.`,
-          );
-          framerate = 30;
-          cappedFps = 30;
-        }
-      }
-      this.preprocessor.setCappedFps(cappedFps);
-
+      // R13: the advanced settings shape the negotiation — codec pin narrows
+      // the preference walk to one, the bitrate override replaces the ladder
+      // math, and the tri-state selects the variant cascade. The old
+      // >1080p@>30 force-cap is gone (docs/18 Decision 10): the HW-aware
+      // auto ceiling covers the default path, and an explicit high rung is
+      // honored (and merely annotated), never silently capped.
+      const settings = this.encoderSettings;
       const negotiatedConfig: CaptureConfig = {
         ...this.config,
+        codecPreferences: settings.codecOverride
+          ? [settings.codecOverride]
+          : this.config.codecPreferences,
+        hwPreference: settings.hwPreference,
         width,
         height,
         framerate,
-        bitrate: computeBitrate(width, height, framerate),
+        bitrate:
+          settings.bitrateOverride !== null
+            ? clampBitrateOverride(settings.bitrateOverride)
+            : computeBitrate(width, height, framerate),
       };
       const enc = new Encoder(negotiatedConfig, {
         onEncoded: (encoded) => this.handleEncoded(encoded),
@@ -737,6 +958,8 @@ export class BroadcastPipeline {
     this.lastStatsAt = now;
     this.stats.fpsGateDropped = this.preprocessor.getStats().gateDropped;
     this.stats.autoRung = this.currentAutoRung();
+    this.stats.autoCeiling = this.resolutionSelection === 'auto' ? this.autoCeiling : null;
+    this.stats.autoFps = this.ladderFps === 'auto' ? this.resolvedAutoFps : null;
     // Async refresh; the latest completed sample rides this (or the next) tick.
     this.connSampler?.tick();
     this.stats.connection = this.connSampler?.latest() ?? null;

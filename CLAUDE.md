@@ -143,7 +143,17 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   jitter measurement, paced presentation + adaptive offset behind a new
   separate "Paced playback (adaptive)" toggle, experimental frame
   interpolation with pre-registered kill criteria, T1–T6 chunks; **T1–T4
-  implemented 2026-07-15, manual verify pending; T5/T6 not started**).
+  implemented 2026-07-15, manual verify pending; T5/T6 not started**),
+  `docs/18-advanced-broadcaster-settings.md` for R13 (advanced broadcaster
+  settings, **supersedes R7**: `isConfigSupported` probe matrix, HW-aware
+  auto ceiling + 'auto' framerate default resolving framerate-first (60 fps
+  when hardware probes it, else 30 — consciously revising item 11's fan-out
+  default; software path keeps 30), acceleration
+  tri-state (auto/hardware-only/software-only), capture aligned to the
+  sticky selection via live `applyConstraints` so **no settings change ever
+  restarts the stream** while R4 auto-stepping stays encode-only,
+  bitrate/codec overrides + probe-annotated pickers, L1–L5 chunks;
+  implemented 2026-07-15, manual browser verify pending).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -408,6 +418,28 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    (experimental)" toggle, offered only where the pipeline reports it
    available; **pre-registered kill criteria** — a documented rejection of
    T5 is a valid completion.
+18. Advanced broadcaster settings — **implemented 2026-07-15 (L1–L5);
+   automated gates green, manual browser verify pending** (R13,
+   `docs/18-advanced-broadcaster-settings.md`; supersedes R7; UI/pipeline
+   only, zero server/wire changes). `VideoEncoder.isConfigSupported` **probe
+   matrix** (`media/probe.ts`; prefer-hardware supported=true is Chromium's
+   HW commitment — advisory only, runtime `configure()` wins); **HW-aware
+   auto ceiling** (auto resolution starts at the highest rung probing
+   hardware; 1080p software floor-ceiling) + **'auto' framerate default**
+   resolving framerate-first (60 when any rung probes HW at 60, else 30 —
+   consciously revising item 11's fixed-30 fan-out default; software path
+   keeps 30; never 'native'); **acceleration tri-state**
+   (auto/hardware-only-refuses-software/software-only) + bitrate override
+   ([0.5, 50] Mbps) + codec pin, all persisted, all applied via encoder
+   recreate; **capture aligned to the sticky target** (explicit rung or auto
+   ceiling — never auto steps) via live `track.applyConstraints` on the
+   media-source seam (broad `getDisplayMedia` grant kept; matrix refined
+   from real frame dims **upward only** to avoid the constrain→shrink→
+   re-ceiling feedback loop; worker path constrains the transferred clone
+   worker-side) — **no settings change ever restarts the stream**; the old
+   >1080p@>30 force-caps are removed (explicit choices honored, annotated
+   instead); probe-annotated pickers (badge/disable, never remove) +
+   Advanced settings panel + overlay Auto ceiling/Auto fps rows.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

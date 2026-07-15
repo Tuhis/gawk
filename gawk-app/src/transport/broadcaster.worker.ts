@@ -55,6 +55,9 @@ ctx.onmessage = (e: MessageEvent) => {
     case 'setLadder':
       core.setLadder(cmd.selection, cmd.framerate);
       break;
+    case 'setEncoderSettings':
+      core.setEncoderSettings(cmd.settings);
+      break;
     case 'stop':
       void core.stop();
       break;

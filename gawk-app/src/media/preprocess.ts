@@ -58,15 +58,10 @@ export class FramePreprocessor {
   private canvas: OffscreenCanvas | null = null;
   private ctx: OffscreenCanvasRenderingContext2D | null = null;
   private scaledFrames = 0;
-  private cappedFps: number | null = null;
 
   setTarget(resolution: ResolutionRung, framerate: FramerateRung): void {
     this.resolutionRung = resolution;
     this.framerateRung = framerate;
-  }
-
-  setCappedFps(fps: number | null): void {
-    this.cappedFps = fps;
   }
 
   getStats(): PreprocessStats {
@@ -82,12 +77,6 @@ export class FramePreprocessor {
       targetFps = this.framerateRung;
     } else if (nativeFps !== null) {
       targetFps = nativeFps;
-    }
-
-    if (this.cappedFps !== null) {
-      if (targetFps === null || targetFps > this.cappedFps) {
-        targetFps = this.cappedFps;
-      }
     }
 
     this.gate.setTargetFps(targetFps);

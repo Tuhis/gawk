@@ -48,7 +48,6 @@ vi.mock('../media/capture', () => ({
 vi.mock('../media/preprocess', () => ({
   FramePreprocessor: class {
     setTarget() {}
-    setCappedFps() {}
     process(frame: unknown) {
       return frame;
     }
@@ -59,7 +58,6 @@ vi.mock('../media/preprocess', () => ({
 }));
 
 vi.mock('../media/encoder', () => ({
-  probeHardwareSupport: vi.fn(() => Promise.resolve(true)),
   Encoder: class {
     config: { width: number; height: number; framerate: number; bitrate: number };
     constructor(

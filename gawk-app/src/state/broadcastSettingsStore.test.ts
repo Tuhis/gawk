@@ -65,30 +65,83 @@ describe('broadcastSettingsStore resolution selection', () => {
 
 });
 
-describe('broadcastSettingsStore framerate rung', () => {
-  // The fan-out is capped to 30fps by default (halves the datagram rate and
-  // viewer decode load; spectators watch smoothly at 30). An explicit choice
-  // still wins and persists.
-  it('defaults to 30 when nothing is persisted', async () => {
+describe('broadcastSettingsStore framerate selection (R13)', () => {
+  // docs/18 Decision 4: the default is 'auto' (probe-resolved — 60 when
+  // hardware supports it, else 30). A previously persisted explicit rung
+  // keeps its exact meaning across the widening.
+  it('defaults to auto when nothing is persisted', async () => {
     const s = await loadStore();
-    expect(s.framerateRung).toBe(30);
+    expect(s.framerateSelection).toBe('auto');
   });
 
-  it('defaults to 30 for a garbage persisted value', async () => {
+  it('defaults to auto for a garbage persisted value', async () => {
     localStorage.setItem(LS_FRAMERATE, 'garbage');
     const s = await loadStore();
-    expect(s.framerateRung).toBe(30);
+    expect(s.framerateSelection).toBe('auto');
   });
 
-  it('loads a persisted native rung unchanged', async () => {
-    localStorage.setItem(LS_FRAMERATE, 'native');
-    const s = await loadStore();
-    expect(s.framerateRung).toBe('native');
-  });
-
-  it('loads a persisted 60 rung unchanged', async () => {
+  it('a persisted explicit rung survives the widening unchanged', async () => {
+    localStorage.setItem(LS_FRAMERATE, '30');
+    expect((await loadStore()).framerateSelection).toBe(30);
     localStorage.setItem(LS_FRAMERATE, '60');
+    expect((await loadStore()).framerateSelection).toBe(60);
+    localStorage.setItem(LS_FRAMERATE, 'native');
+    expect((await loadStore()).framerateSelection).toBe('native');
+  });
+
+  it('persists auto on set', async () => {
     const s = await loadStore();
-    expect(s.framerateRung).toBe(60);
+    s.setFramerateSelection('auto');
+    expect(localStorage.getItem(LS_FRAMERATE)).toBe('auto');
+  });
+});
+
+describe('broadcastSettingsStore advanced axes (R13 L4)', () => {
+  it('hwPreference defaults to auto and validates persisted values', async () => {
+    expect((await loadStore()).hwPreference).toBe('auto');
+    localStorage.setItem('gawk.hwPreference', 'hardware');
+    expect((await loadStore()).hwPreference).toBe('hardware');
+    localStorage.setItem('gawk.hwPreference', 'turbo');
+    expect((await loadStore()).hwPreference).toBe('auto');
+  });
+
+  it('hwPreference persists on set', async () => {
+    const s = await loadStore();
+    s.setHwPreference('software');
+    expect(localStorage.getItem('gawk.hwPreference')).toBe('software');
+  });
+
+  it('bitrateOverride defaults to null, persists clamped, and clears', async () => {
+    expect((await loadStore()).bitrateOverride).toBeNull();
+    const s = await loadStore();
+    s.setBitrateOverride(80_000_000);
+    expect(localStorage.getItem('gawk.bitrateOverride')).toBe('50000000');
+    s.setBitrateOverride(null);
+    expect(localStorage.getItem('gawk.bitrateOverride')).toBeNull();
+  });
+
+  it('bitrateOverride rejects garbage persisted values', async () => {
+    localStorage.setItem('gawk.bitrateOverride', 'lots');
+    expect((await loadStore()).bitrateOverride).toBeNull();
+    localStorage.setItem('gawk.bitrateOverride', '-5');
+    expect((await loadStore()).bitrateOverride).toBeNull();
+    localStorage.setItem('gawk.bitrateOverride', '2000000');
+    expect((await loadStore()).bitrateOverride).toBe(2_000_000);
+  });
+
+  it('codecOverride only accepts codecs from the preference list', async () => {
+    expect((await loadStore()).codecOverride).toBeNull();
+    localStorage.setItem('gawk.codecOverride', 'vp8');
+    expect((await loadStore()).codecOverride).toBe('vp8');
+    localStorage.setItem('gawk.codecOverride', 'h265-dreams');
+    expect((await loadStore()).codecOverride).toBeNull();
+  });
+
+  it('codecOverride persists and clears on set', async () => {
+    const s = await loadStore();
+    s.setCodecOverride('vp8');
+    expect(localStorage.getItem('gawk.codecOverride')).toBe('vp8');
+    s.setCodecOverride(null);
+    expect(localStorage.getItem('gawk.codecOverride')).toBeNull();
   });
 });

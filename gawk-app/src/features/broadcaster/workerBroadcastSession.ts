@@ -13,12 +13,14 @@
 
 import { acquireDisplayStream } from '../../media/capture';
 import type { CaptureConfig } from '../../media/types';
-import type { FramerateRung, ResolutionSelection } from '../../media/ladder';
+import type { FramerateSelection, ResolutionSelection } from '../../media/ladder';
 import {
   BroadcastPipeline,
   BroadcastStartError,
+  DEFAULT_ENCODER_SETTINGS,
   type BroadcastCallbacks,
   type BroadcastSessionLike,
+  type EncoderSettings,
 } from '../../transport/broadcaster';
 import type {
   BroadcastWorkerCommand,
@@ -54,10 +56,11 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
 
   // Matches BroadcastPipeline's constructor defaults; BroadcasterScreen
   // always calls setLadder before start anyway.
-  private ladder: { selection: ResolutionSelection; framerate: FramerateRung } = {
+  private ladder: { selection: ResolutionSelection; framerate: FramerateSelection } = {
     selection: 'auto',
     framerate: 'native',
   };
+  private encoderSettings: EncoderSettings = DEFAULT_ENCODER_SETTINGS;
 
   private localStream: MediaStream | null = null;
   private started = false;
@@ -86,9 +89,14 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     worker.onmessage = (e: MessageEvent) => this.onMessage(e.data as BroadcastWorkerOutbound);
   }
 
-  setLadder(selection: ResolutionSelection, framerate: FramerateRung): void {
+  setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void {
     this.ladder = { selection, framerate };
     if (this.started) this.post({ type: 'setLadder', selection, framerate });
+  }
+
+  setEncoderSettings(settings: EncoderSettings): void {
+    this.encoderSettings = settings;
+    if (this.started) this.post({ type: 'setEncoderSettings', settings });
   }
 
   start(): Promise<void> {
@@ -102,6 +110,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
       broadcastId: this.broadcastId,
       selection: this.ladder.selection,
       framerate: this.ladder.framerate,
+      encoderSettings: this.encoderSettings,
     });
     return new Promise((resolve, reject) => {
       this.startResolve = resolve;

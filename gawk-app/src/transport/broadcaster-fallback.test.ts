@@ -42,9 +42,6 @@ vi.mock('../media/preprocess', () => ({
     setTarget(res: unknown, fps: unknown) {
       this.targets.push({ res, fps });
     }
-    setCappedFps(_fps: number | null) {
-      // no-op in mock
-    }
     process(frame: unknown) {
       return frame;
     }
@@ -55,7 +52,6 @@ vi.mock('../media/preprocess', () => ({
 }));
 
 vi.mock('../media/encoder', () => ({
-  probeHardwareSupport: vi.fn(() => Promise.resolve(true)),
   Encoder: class {
     disposed = false;
     config: { width: number; height: number; framerate: number; bitrate: number };

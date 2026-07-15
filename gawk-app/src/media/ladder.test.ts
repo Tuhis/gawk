@@ -2,12 +2,26 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FRAMERATE_RUNGS,
+  FRAMERATE_SELECTIONS,
   RESOLUTION_RUNGS,
   RESOLUTION_SELECTIONS,
+  applyCeiling,
   autoLadder,
+  clampBitrateOverride,
   computeBitrate,
   computeTargetSize,
+  hardwareCeiling,
+  resolveAutoFps,
+  rungCapWidth,
+  type ResolutionRung,
+  type SupportLookup,
 } from './ladder';
+
+// Lookup factory: hardware for combos the predicate approves, software
+// otherwise (the probe matrix's all-software degradation shape).
+function lookupWhere(hw: (rung: ResolutionRung, fps: number) => boolean): SupportLookup {
+  return (rung, fps) => ({ acceleration: hw(rung, fps) ? 'hardware' : 'software' });
+}
 
 describe('RESOLUTION_RUNGS / FRAMERATE_RUNGS', () => {
   it('lead with native as the default', () => {
@@ -109,6 +123,79 @@ describe('computeTargetSize', () => {
     expect(target).not.toBeNull();
     expect(target!.height).toBeGreaterThanOrEqual(2);
     expect(target!.width % 2).toBe(0);
+  });
+});
+
+describe('FRAMERATE_SELECTIONS (R13)', () => {
+  it('leads with auto as the default, followed by the explicit rungs', () => {
+    expect(FRAMERATE_SELECTIONS[0]).toBe('auto');
+    expect(FRAMERATE_SELECTIONS).toEqual(['auto', ...FRAMERATE_RUNGS]);
+  });
+});
+
+describe('resolveAutoFps (docs/18 Decision 4)', () => {
+  it('resolves framerate-first: 60 when any rung probes hardware at 60', () => {
+    // Only 720p does HW at 60 — fps still wins over resolution.
+    expect(resolveAutoFps(lookupWhere((rung, fps) => rung === 720 && fps === 60))).toBe(60);
+  });
+
+  it('falls back to 30 when nothing probes hardware at 60', () => {
+    expect(resolveAutoFps(lookupWhere((_rung, fps) => fps === 30))).toBe(30);
+  });
+
+  it('an all-software matrix (Firefox shape) resolves 30 — never native', () => {
+    expect(resolveAutoFps(lookupWhere(() => false))).toBe(30);
+  });
+});
+
+describe('hardwareCeiling (docs/18 Decision 3)', () => {
+  it('picks the highest rung that probes hardware at the effective fps', () => {
+    expect(hardwareCeiling(lookupWhere((rung) => rung !== 'native'), 60)).toBe(1080);
+    expect(hardwareCeiling(lookupWhere((rung) => rung === 720 || rung === 480), 60)).toBe(720);
+  });
+
+  it('native wins when it probes hardware', () => {
+    expect(hardwareCeiling(lookupWhere(() => true), 60)).toBe('native');
+  });
+
+  it('an all-software matrix yields the 1080p software ceiling', () => {
+    expect(hardwareCeiling(lookupWhere(() => false), 60)).toBe(1080);
+  });
+});
+
+describe('applyCeiling', () => {
+  it('passes the full ladder through a native ceiling', () => {
+    expect(applyCeiling(autoLadder(3840), 'native', 3840)).toEqual(['native', 1080, 720, 480]);
+  });
+
+  it('slices a 4K ladder at a 1080p ceiling (native excluded — 4K exceeds the cap)', () => {
+    expect(applyCeiling(autoLadder(3840), 1080, 3840)).toEqual([1080, 720, 480]);
+  });
+
+  it('keeps native for a source already under the ceiling cap (720p source, 1080p ceiling)', () => {
+    // The ceiling bounds pixel count, not the rung label: native === 1280 wide here.
+    expect(applyCeiling(autoLadder(1280), 1080, 1280)).toEqual(['native', 480]);
+  });
+
+  it('never returns empty', () => {
+    expect(applyCeiling(['native'], 480, 3840)).toEqual(['native']);
+  });
+});
+
+describe('rungCapWidth', () => {
+  it('maps rungs to their longer-dimension caps, null for native', () => {
+    expect(rungCapWidth('native')).toBeNull();
+    expect(rungCapWidth(1080)).toBe(1920);
+    expect(rungCapWidth(720)).toBe(1280);
+    expect(rungCapWidth(480)).toBe(854);
+  });
+});
+
+describe('clampBitrateOverride (docs/18 Decision 11)', () => {
+  it('clamps to the [0.5, 50] Mbps override band', () => {
+    expect(clampBitrateOverride(1)).toBe(500_000);
+    expect(clampBitrateOverride(80_000_000)).toBe(50_000_000);
+    expect(clampBitrateOverride(12_000_000)).toBe(12_000_000);
   });
 });
 

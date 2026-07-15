@@ -16,6 +16,12 @@ export const FRAMERATE_RUNGS: readonly FramerateRung[] = ['native', 60, 30, 5];
 export type ResolutionSelection = 'auto' | ResolutionRung;
 export const RESOLUTION_SELECTIONS: readonly ResolutionSelection[] = ['auto', ...RESOLUTION_RUNGS];
 
+// R13 (docs/18 Decision 4): the framerate axis gets the same shape. 'auto'
+// resolves at probe time (framerate-first, resolveAutoFps below) and never
+// runtime-steps — R4 stepping stays resolution-only.
+export type FramerateSelection = 'auto' | FramerateRung;
+export const FRAMERATE_SELECTIONS: readonly FramerateSelection[] = ['auto', ...FRAMERATE_RUNGS];
+
 export interface TargetSize {
   width: number;
   height: number;
@@ -76,7 +82,76 @@ export function autoLadder(srcLongerDim: number): ResolutionRung[] {
   return rungs;
 }
 
+// R13 (docs/18 Decisions 3+4): structural mirror of the probe matrix's
+// lookup — declared here (not imported) because probe.ts imports this
+// module; the extra SupportEntry fields are structurally compatible.
+export type SupportLookup = (
+  rung: ResolutionRung,
+  framerate: number,
+) => { acceleration: 'hardware' | 'software' | 'unsupported' };
+
+// Decision 4: 'auto' fps resolves framerate-first — 60 when any rung probes
+// hardware at 60, else the conservative 30 (the software path keeps the old
+// fan-out default). Never 'native': a 144 Hz monitor would multiply the
+// fan-out for no viewer-visible benefit.
+export function resolveAutoFps(lookup: SupportLookup): 60 | 30 {
+  for (const rung of RESOLUTION_RUNGS) {
+    if (lookup(rung, 60).acceleration === 'hardware') return 60;
+  }
+  return 30;
+}
+
+// Decision 3: when nothing probes hardware (Firefox; software-only mode)
+// the auto ceiling is 1080p — a sane software starting point; R4 stepping
+// handles the rest.
+export const SOFTWARE_CEILING: ResolutionRung = 1080;
+
+// The auto ceiling: the highest rung that probes hardware at the effective
+// fps. RESOLUTION_RUNGS is ordered native-first, so the first hit wins.
+export function hardwareCeiling(lookup: SupportLookup, framerate: number): ResolutionRung {
+  for (const rung of RESOLUTION_RUNGS) {
+    if (lookup(rung, framerate).acceleration === 'hardware') return rung;
+  }
+  return SOFTWARE_CEILING;
+}
+
+// Slices an autoLadder() result at the ceiling. 'native' survives a
+// non-native ceiling only when the source itself fits under the ceiling's
+// cap (a 720p source at a 1080p ceiling encodes native — the ceiling bounds
+// pixel count, not the rung label). Never returns empty: the ladder's floor
+// (480) fits under every ceiling, but guard anyway.
+export function applyCeiling(
+  rungs: ResolutionRung[],
+  ceiling: ResolutionRung,
+  srcLongerDim: number,
+): ResolutionRung[] {
+  if (ceiling === 'native') return rungs;
+  const cap = LONGER_DIM_CAP[ceiling];
+  const out = rungs.filter((rung) =>
+    rung === 'native' ? srcLongerDim <= cap : LONGER_DIM_CAP[rung] <= cap,
+  );
+  return out.length > 0 ? out : [rungs[rungs.length - 1]];
+}
+
+// Capture-constraint width cap for a sticky rung (docs/18 Decision 6): null
+// for native — the broad grant, no cap beyond the original request.
+export function rungCapWidth(rung: ResolutionRung): number | null {
+  return rung === 'native' ? null : LONGER_DIM_CAP[rung];
+}
+
 export function computeBitrate(width: number, height: number, fps: number): number {
   const base = BITS_PER_PIXEL_AT_60 * width * height * 60 * Math.sqrt(fps / 60);
   return Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, Math.round(base)));
+}
+
+// R13 (docs/18 Decision 11): the advanced bitrate override is absolute —
+// it replaces the ladder math until reset — but clamped to a wider band
+// than the ladder's: the 1 Gbps homelab uplink allows experiments past the
+// 10 Mbps ladder cap (15 viewers × 50 Mbps stays within egress), while the
+// floor matches the ladder's.
+export const BITRATE_OVERRIDE_MIN = 500_000;
+export const BITRATE_OVERRIDE_MAX = 50_000_000;
+
+export function clampBitrateOverride(bps: number): number {
+  return Math.min(BITRATE_OVERRIDE_MAX, Math.max(BITRATE_OVERRIDE_MIN, Math.round(bps)));
 }

@@ -34,6 +34,7 @@ function makeFakePipeline() {
     start: vi.fn(() => outcome),
     stop: vi.fn(() => Promise.resolve()),
     setLadder: vi.fn(),
+    setEncoderSettings: vi.fn(),
   };
   return { pipeline, resolveStart, rejectStart };
 }
@@ -88,6 +89,24 @@ describe('BroadcastWorkerCore start', () => {
     fake.resolveStart();
     await flush();
     expect(events).toContainEqual({ type: 'started' });
+  });
+
+  it('forwards encoder settings on start and via the live command (R13 L3)', () => {
+    const { core, fake } = makeCore();
+    const settings = { hwPreference: 'software' as const, bitrateOverride: 2_000_000, codecOverride: null };
+    core.start({ ...START_PARAMS, encoderSettings: settings });
+    expect(fake.pipeline.setEncoderSettings).toHaveBeenCalledWith(settings);
+    const changed = { ...settings, codecOverride: 'vp8' };
+    core.setEncoderSettings(changed);
+    expect(fake.pipeline.setEncoderSettings).toHaveBeenCalledWith(changed);
+  });
+
+  it('accepts the R13 FramerateSelection auto on both ladder paths', () => {
+    const { core, fake } = makeCore();
+    core.start({ ...START_PARAMS, framerate: 'auto' });
+    expect(fake.pipeline.setLadder).toHaveBeenCalledWith('auto', 'auto');
+    core.setLadder(720, 'auto');
+    expect(fake.pipeline.setLadder).toHaveBeenCalledWith(720, 'auto');
   });
 
   it('preserves BroadcastStartError.phase in startError', async () => {

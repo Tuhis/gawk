@@ -10,6 +10,7 @@ import { createBroadcastSession, WorkerBroadcastSession, type WorkerLike } from 
 import {
   BroadcastPipeline,
   BroadcastStartError,
+  DEFAULT_ENCODER_SETTINGS,
   type BroadcastCallbacks,
   type BroadcastStats,
 } from '../../transport/broadcaster';
@@ -103,6 +104,7 @@ describe('WorkerBroadcastSession start + ladder', () => {
         broadcastId: 'K7XQ2M',
         selection: 720,
         framerate: 30,
+        encoderSettings: DEFAULT_ENCODER_SETTINGS,
       },
     ]);
   });
@@ -112,6 +114,14 @@ describe('WorkerBroadcastSession start + ladder', () => {
     void session.start().catch(() => {});
     session.setLadder('auto', 60);
     expect(worker.commands()).toContainEqual({ type: 'setLadder', selection: 'auto', framerate: 60 });
+  });
+
+  it('posts setEncoderSettings for changes after start (R13 L4 — no restart)', () => {
+    const { session, worker } = makeSession();
+    void session.start().catch(() => {});
+    const settings = { hwPreference: 'software' as const, bitrateOverride: 2_000_000, codecOverride: 'vp8' };
+    session.setEncoderSettings(settings);
+    expect(worker.commands()).toContainEqual({ type: 'setEncoderSettings', settings });
   });
 
   it('resolves start() on the started event', async () => {
