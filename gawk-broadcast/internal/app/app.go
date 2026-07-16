@@ -376,14 +376,17 @@ func Message(err error) string {
 	if err == nil {
 		return ""
 	}
-	if se, ok := engine.AsStartError(err); ok {
-		// Decision 10's payoff: the browser cannot tell 401 from 404 from 409
-		// from a typo, because WebTransportError hides the status. We can.
-		return se.Message()
-	}
+	// The sentinel checks run before StartError rendering on purpose: the
+	// engine wraps every capture-phase failure in a StartError, and rendering
+	// the wrapper first would shadow each curated sentence below behind
+	// "Could not start capture: <Go error chain>". errors.Is unwraps through
+	// the StartError, and none of the sentinels collide with the HTTP-status
+	// cases StartError.Message renders.
 	switch {
 	case errors.Is(err, engine.ErrNoHardwareEncoder):
 		return gst.NoHardwareMessage
+	case errors.Is(err, engine.ErrCaptureFormat):
+		return gst.CaptureFormatMessage
 	case errors.Is(err, portal.ErrCancelled):
 		return "Screen sharing was cancelled."
 	case errors.Is(err, portal.ErrUnavailable):
@@ -392,6 +395,11 @@ func Message(err error) string {
 	case errors.Is(err, gst.ErrNoLaunchBinary):
 		return "GStreamer is not installed. Install gst-launch-1.0 " +
 			"(gstreamer1.0-tools on Debian/Ubuntu, gstreamer on Arch, gstreamer1-tools on Fedora)."
+	}
+	if se, ok := engine.AsStartError(err); ok {
+		// Decision 10's payoff: the browser cannot tell 401 from 404 from 409
+		// from a typo, because WebTransportError hides the status. We can.
+		return se.Message()
 	}
 	return err.Error()
 }

@@ -89,3 +89,11 @@ func AsStartError(err error) (*StartError, bool) {
 // broadcaster already covers software encode on Linux, so the engine refuses
 // and points there instead of quietly degrading.
 var ErrNoHardwareEncoder = errors.New("no working hardware H.264 encoder found")
+
+// ErrCaptureFormat is returned when every live pipeline died inside
+// pipewiresrc — the compositor's screencast stream and the GStreamer chain
+// could not agree on a frame format, so no frame ever reached an encoder.
+// Distinct from ErrNoHardwareEncoder for the same reason ErrNoLaunchBinary
+// is: reporting it as "no working hardware encoder" would send the user
+// chasing GPU drivers over a portal/compositor negotiation problem.
+var ErrCaptureFormat = errors.New("screen capture format negotiation failed")

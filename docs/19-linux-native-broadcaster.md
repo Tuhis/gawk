@@ -931,9 +931,9 @@ reference-list management; rate control; drain coded buffers to Annex-B.
 
 ## Implementation notes (deviations from this design)
 
-Three places where the implementation departs from what is written above.
-Recorded rather than quietly absorbed, so the doc stays trustworthy as the
-account of what was built.
+Three places where the implementation departs from what is written above,
+plus field findings from real hardware. Recorded rather than quietly
+absorbed, so the doc stays trustworthy as the account of what was built.
 
 **1. The announce read is detached, not inline in `Start` (V1).** The design
 says `Start` reads the first uni stream → `ParseBroadcastAnnounce` →
@@ -976,6 +976,30 @@ what actually comes out — self-sufficient keyframe, `avc1.42C00D` with empty
 extradata, Annex-B start codes, IDR present, deltas flowing, ClockMapping
 delivered — and cover reclaim/409 and secret/401 against real HTTP statuses.
 They are skipped under `go test -short`.
+
+**4. Live capture walks a two-rung capture ladder per encoder (field finding,
+2026-07-16).** First real-hardware run (AMD, `vah264enc` trial-passed): the
+live pipeline died during preroll inside `pipewiresrc` — `stream error:
+unhandled format`, before a single frame reached the encoder. That error is
+the PipeWire GStreamer plugin's own: the format the compositor chose for the
+screencast stream could not be mapped back onto the downstream caps (known
+field causes: DMA-BUF modifier / DRM-caps version skew between
+`gst-plugin-pipewire` and the encoder's converter, and 10-bit formats from
+HDR desktops). Two consequences in code: (a) `BuildPipeline` takes a
+`CaptureMode` — `auto` (free negotiation, DMA-BUF zero-copy when healthy)
+then `system-memory` (bare `video/x-raw` pinned at the source, forcing
+modifier-less formats and CPU-visible buffers, plus a `videoconvert` after
+the rate gate), and the live start tries both rungs per candidate before
+advancing the cascade; (b) when *every* rung dies inside `pipewiresrc`, the
+failure surfaces as `engine.ErrCaptureFormat` → `CaptureFormatMessage`, not
+`ErrNoHardwareEncoder` — blaming the encoder would send the user chasing GPU
+drivers over a compositor negotiation problem (the `ErrNoLaunchBinary`
+lesson again). The sentinel checks in `app.Message`/the CLI's `userMessage`
+were also moved ahead of `StartError` rendering: capture-phase failures
+arrive `StartError`-wrapped, and the wrapper was shadowing every curated
+message behind "Could not start capture: <Go error chain>". Diagnosis knob:
+`GST_DEBUG=pipewire*:5` in the environment reaches the child (env is
+inherited) and its stderr lands in the debug log.
 
 ## Verification plan (manual)
 

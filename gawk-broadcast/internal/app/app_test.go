@@ -242,9 +242,16 @@ func TestMessageProducesSentences(t *testing.T) {
 		{"already publishing", &engine.StartError{Phase: engine.PhaseConnect, Status: http.StatusConflict}, "already publishing"},
 		{"relay full", &engine.StartError{Phase: engine.PhaseConnect, Status: http.StatusTooManyRequests}, "capacity"},
 		{"no hardware", engine.ErrNoHardwareEncoder, "browser"},
+		{"capture format", engine.ErrCaptureFormat, "pipewiresrc"},
 		{"cancelled", portal.ErrCancelled, "cancelled"},
 		{"no portal", portal.ErrUnavailable, "xdg-desktop-portal"},
 		{"no gstreamer", gst.ErrNoLaunchBinary, "gstreamer1.0-tools"},
+		// The production shape: the engine wraps every capture-phase failure
+		// in a StartError, and the curated sentences must survive the wrapper
+		// rather than degrade to "Could not start capture: <Go error chain>".
+		{"no hardware, wrapped", &engine.StartError{Phase: engine.PhaseCapture, Err: engine.ErrNoHardwareEncoder}, "browser"},
+		{"capture format, wrapped", &engine.StartError{Phase: engine.PhaseCapture, Err: engine.ErrCaptureFormat}, "pipewiresrc"},
+		{"cancelled, wrapped", &engine.StartError{Phase: engine.PhaseCapture, Err: portal.ErrCancelled}, "cancelled"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Message(tc.err)

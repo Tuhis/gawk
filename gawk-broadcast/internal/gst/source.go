@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,51 +121,77 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 	return s.frames, nil
 }
 
-// startWithCascade starts the child, and on an immediate death advances the
-// cascade and retries — reusing the already-granted portal session, so a retry
-// costs seconds rather than another share dialog.
+// startWithCascade starts the child, and on an immediate death retries —
+// first with the capture pinned to system memory (a pipewiresrc negotiation
+// death is not the encoder's fault, and the same encoder deserves a second
+// try with CPU-visible frames), then by advancing the cascade. Every retry
+// reuses the already-granted portal session, so it costs seconds rather than
+// another share dialog.
 func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, first Candidate) error {
 	order := candidatesFrom(first, s.cfg.Encoder != "")
 	var failures []string
 
 	for _, cand := range order {
-		kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, stream.NodeID), stream.FD, s.log)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", cand.Element, err))
-			continue
-		}
+		for _, mode := range CaptureModes {
+			kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, stream.NodeID, mode), stream.FD, s.log)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s (capture %s): %v", cand.Element, mode, err))
+				continue
+			}
 
-		// The live probe: did it survive long enough to believe?
-		if err := liveProbe(kid, s.opts.LiveProbeWindow); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", cand.Element, err))
-			s.log.Warn("encoder failed on the live pipeline, advancing the cascade",
-				"encoder", cand.Element, "err", err)
-			continue
-		}
+			// The live probe: did it survive long enough to believe?
+			if err := liveProbe(kid, s.opts.LiveProbeWindow); err != nil {
+				failures = append(failures, fmt.Sprintf("%s (capture %s): %v", cand.Element, mode, err))
+				s.log.Warn("live pipeline died inside its probe window, trying the next rung",
+					"encoder", cand.Element, "capture", mode, "err", err)
+				continue
+			}
 
-		s.mu.Lock()
-		s.kid = kid
-		s.encoder = cand.Name
-		s.mu.Unlock()
-		if s.opts.OnEncoderChosen != nil {
-			s.opts.OnEncoderChosen(cand.Element)
-		}
-		s.log.Info("encoding in hardware",
-			"encoder", cand.Element, "width", s.cfg.Width, "height", s.cfg.Height,
-			"fps", s.cfg.Fps, "bitrate_bps", s.cfg.BitrateBps, "gop_ms", s.cfg.GOPMs)
+			s.mu.Lock()
+			s.kid = kid
+			s.encoder = cand.Name
+			s.mu.Unlock()
+			if s.opts.OnEncoderChosen != nil {
+				s.opts.OnEncoderChosen(cand.Element)
+			}
+			s.log.Info("encoding in hardware",
+				"encoder", cand.Element, "capture", mode.String(),
+				"width", s.cfg.Width, "height", s.cfg.Height,
+				"fps", s.cfg.Fps, "bitrate_bps", s.cfg.BitrateBps, "gop_ms", s.cfg.GOPMs)
 
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.pump(kid)
-		}()
-		return nil
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.pump(kid)
+			}()
+			return nil
+		}
 	}
 
+	if allFailuresInsidePipeWireSrc(failures) {
+		return fmt.Errorf("%w: every pipeline died inside pipewiresrc before frames reached an encoder\n  %s",
+			engine.ErrCaptureFormat, strings.Join(failures, "\n  "))
+	}
 	if len(order) == 1 {
-		return fmt.Errorf("encoder %s failed to start: %s", order[0].Element, failures[0])
+		return fmt.Errorf("encoder %s failed to start:\n  %s", order[0].Element, strings.Join(failures, "\n  "))
 	}
 	return fmt.Errorf("%w\n  tried: %v", engine.ErrNoHardwareEncoder, failures)
+}
+
+// allFailuresInsidePipeWireSrc reports whether every live failure died inside
+// the portal capture element. When that is true the encoders are innocent —
+// no frame ever reached one — and "no working hardware encoder" would be the
+// wrong diagnosis (see engine.ErrCaptureFormat).
+func allFailuresInsidePipeWireSrc(failures []string) bool {
+	if len(failures) == 0 {
+		return false
+	}
+	for _, f := range failures {
+		if !strings.Contains(strings.ToLower(f), "pipewiresrc") {
+			return false
+		}
+	}
+	return true
 }
 
 // liveProbe waits out the probe window, returning the child's error if it died

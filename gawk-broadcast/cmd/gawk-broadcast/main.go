@@ -221,11 +221,14 @@ func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {
 // CLI's half of Decision 10's payoff: webtransport-go gives us the HTTP status
 // the browser cannot see, so 401/404/409/429 become sentences.
 func userMessage(err error) string {
-	if se, ok := engine.AsStartError(err); ok {
-		return se.Message()
-	}
+	// Sentinels before the StartError wrapper, for the same reason as
+	// app.Message: capture-phase failures arrive StartError-wrapped, and the
+	// wrapper must not shadow the curated messages.
 	if errors.Is(err, engine.ErrNoHardwareEncoder) {
 		return gst.NoHardwareMessage + "\n\ndetail: " + err.Error()
+	}
+	if errors.Is(err, engine.ErrCaptureFormat) {
+		return gst.CaptureFormatMessage + "\n\ndetail: " + err.Error()
 	}
 	if errors.Is(err, portal.ErrCancelled) {
 		return "Screen sharing was cancelled."
@@ -238,6 +241,9 @@ func userMessage(err error) string {
 	}
 	if errors.Is(err, gst.ErrNoLaunchBinary) {
 		return err.Error()
+	}
+	if se, ok := engine.AsStartError(err); ok {
+		return se.Message()
 	}
 	return err.Error()
 }

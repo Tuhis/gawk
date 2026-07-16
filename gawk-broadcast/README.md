@@ -186,7 +186,8 @@ the actual device. Trials encode `videotestsrc`, never the portal — probing mu
 not pop share dialogs. The last-good encoder is cached and *re-verified* (not
 trusted) on the next run, and because a `videotestsrc` trial can't prove the real
 path's dmabuf import, **the live start is the final probe**: a child that dies
-immediately advances the cascade and retries, reusing the portal grant.
+immediately retries with the capture pinned to system memory, then advances the
+cascade — every retry reusing the portal grant.
 
 ## Fixed rung
 
@@ -210,6 +211,16 @@ encoders drain frames without that signal ever firing.
   see nothing while everyone already watching is fine — the worst kind of bug.
 - **Don't gate on Wayland.** The portal works on X11 GNOME sessions too. Gate on
   the portal call succeeding.
+- **`pipewiresrc` dying in preroll with `stream error: unhandled format` is a
+  capture problem, not an encoder problem.** The compositor's chosen screencast
+  format sometimes can't be mapped onto the downstream caps (DMA-BUF
+  modifier/DRM-caps skew between `gst-plugin-pipewire` and the encoder's
+  converter, or 10-bit HDR desktop formats). The live start retries each
+  encoder with system-memory capture (bare `video/x-raw` pinned at the source)
+  before advancing, and an all-`pipewiresrc` failure reports as a capture
+  error, never "no hardware encoder". Diagnose with `GST_DEBUG=pipewire*:5` in
+  the environment — the child inherits it and its stderr lands in the debug
+  log.
 - **`pipewiregrab` is not in mainline FFmpeg** — an unmerged patchset carried
   downstream by Jami. Mainline ffmpeg has no PipeWire input at all. Don't
   re-propose it without checking it actually merged.

@@ -14,6 +14,60 @@ const childPipeWireFD = 3
 // (gstreamer1.0-tools); nothing here is built from source.
 const LaunchBinary = "gst-launch-1.0"
 
+// CaptureMode selects how frames may travel across the pipewiresrc boundary.
+//
+// CaptureAuto lets PipeWire negotiate freely, which on a healthy stack picks
+// DMA-BUF and keeps the frame on the GPU end to end. That negotiation has a
+// real-world failure mode, though: pipewiresrc dies during preroll with
+// "stream error: unhandled format" when the format the compositor chose cannot
+// be mapped back onto the downstream caps — DMA-BUF modifier / DRM-caps
+// version skew between gst-plugin-pipewire and the encoder's converter, or a
+// 10-bit format from an HDR desktop. Seen live 2026-07-16 (AMD, vah264enc;
+// docs/19 gotchas).
+//
+// CaptureSystemMemory is the fallback rung: it pins the boundary to plain
+// system-memory video/x-raw, so pipewiresrc only offers modifier-less formats
+// and the compositor has to export CPU-visible buffers. One copy per frame,
+// but immune to the modifier dance.
+type CaptureMode int
+
+const (
+	CaptureAuto CaptureMode = iota
+	CaptureSystemMemory
+)
+
+func (m CaptureMode) String() string {
+	if m == CaptureSystemMemory {
+		return "system-memory"
+	}
+	return "auto"
+}
+
+// CaptureModes is the in-order ladder the live start walks per encoder:
+// zero-copy first, system memory when the free negotiation fails.
+var CaptureModes = []CaptureMode{CaptureAuto, CaptureSystemMemory}
+
+// CaptureFormatMessage is what a user sees when every live pipeline died
+// inside pipewiresrc. Deliberately distinct from NoHardwareMessage: no frame
+// ever reached an encoder, so "no working hardware encoder, use the browser"
+// would send the user chasing GPU drivers over a compositor negotiation
+// problem — the same misdiagnosis ErrNoLaunchBinary exists to prevent.
+const CaptureFormatMessage = `Screen capture failed: your compositor's screencast stream and GStreamer's
+pipewiresrc could not agree on a frame format. The GPU encoder is fine — the
+pipeline died before any frame reached it.
+
+This is a compositor / PipeWire / GStreamer combination problem (typically
+DMA-BUF modifier negotiation, or a 10-bit HDR desktop format). gawk-broadcast
+already retried with plain system-memory capture, and that failed too.
+
+Things worth checking:
+  - pipewire and gstreamer packages from the same era (a new compositor with
+    an old gst-plugin-pipewire is the classic culprit)
+  - whether another portal capture works on this machine (OBS, Kooha)
+
+To capture the negotiation detail for a bug report, rerun with
+GST_DEBUG=pipewire*:5 set in the environment and save the log output.`
+
 // BuildPipeline returns the gst-launch-1.0 arguments for a live capture.
 //
 // The shape, and why each link is what it is:
@@ -40,7 +94,7 @@ const LaunchBinary = "gst-launch-1.0"
 // keyframe can only decode if the parameter sets are inside the keyframe AU
 // itself. Without this, late joiners see nothing and everyone already watching
 // is fine — the worst kind of bug.
-func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32) []string {
+func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode CaptureMode) []string {
 	args := []string{"-q"}
 	args = append(args,
 		"pipewiresrc",
@@ -58,8 +112,21 @@ func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32) []string 
 		// about are stamped on arrival at our end anyway.
 		"do-timestamp=true",
 	)
+	if mode == CaptureSystemMemory {
+		// Pin the boundary before anything else sees caps: bare video/x-raw
+		// (no memory feature) makes pipewiresrc offer only modifier-less
+		// formats, which the compositor satisfies with CPU-visible buffers.
+		args = append(args, "!", "video/x-raw")
+	}
 	args = append(args, "!")
 	args = append(args, rateGate(cfg)...)
+	if mode == CaptureSystemMemory {
+		// After the rate gate on purpose — dropped frames are never converted.
+		// videoconvert covers a compositor whose system-memory format the
+		// encoder's own converter cannot import (10-bit HDR desktops); it is
+		// passthrough whenever the downstream already accepts the format.
+		args = append(args, "!", "videoconvert")
+	}
 	args = append(args, "!")
 	args = append(args, c.convert(cfg)...)
 	args = append(args, "!", scaleCaps(cfg))

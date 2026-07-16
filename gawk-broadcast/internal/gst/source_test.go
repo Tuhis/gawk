@@ -127,6 +127,72 @@ func TestLiveFailureAdvancesCascadeWithoutANewPicker(t *testing.T) {
 	}
 }
 
+// unhandledFormatStderr is the exact dying complaint from the field failure
+// this reproduces (2026-07-16, AMD + vah264enc): pipewiresrc could not map the
+// compositor's chosen screencast format onto the downstream caps, so the
+// pipeline died during preroll before any frame reached the encoder.
+const unhandledFormatStderr = "ERROR: from element /GstPipeline:pipeline0/GstPipeWireSrc:pipewiresrc0: stream error: unhandled format"
+
+// A pipewiresrc negotiation death is not the encoder's fault. The retry must
+// pin the capture to system memory and stay on the same encoder — advancing
+// the cascade would burn candidates that never saw a frame, and land on
+// "no working hardware encoder" with a working encoder in hand.
+func TestUnhandledFormatRetriesSystemMemoryCapture(t *testing.T) {
+	fp := &fakePortal{}
+	// Free negotiation (no videoconvert in the args) dies exactly like the
+	// field failure; the system-memory pipeline streams.
+	bin := fakeBinary(t, `case "$*" in
+*videoconvert*) cat `+mustAbs(t, "../mpegts/testdata/sample.ts")+`
+sleep 30 ;;
+*) echo '`+unhandledFormatStderr+`' >&2
+exit 1 ;;
+esac
+`)
+	s := newSource(t, Options{Binary: bin, OpenPortal: fp.open})
+
+	frames, err := s.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v — a pipewiresrc death must fall back to system-memory capture, not fail", err)
+	}
+	defer s.Stop()
+	if _, ok := <-frames; !ok {
+		t.Fatalf("no frames from the system-memory pipeline: %v", s.Err())
+	}
+	if s.Encoder() != Cascade[0].Name {
+		t.Errorf("Encoder() = %q, want %q — a capture-side failure advanced the encoder cascade", s.Encoder(), Cascade[0].Name)
+	}
+	if n := fp.openCount(); n != 1 {
+		t.Errorf("portal opened %d times, want 1 — the capture retry must reuse the grant", n)
+	}
+}
+
+// When every rung of every candidate dies inside pipewiresrc, the encoders are
+// innocent: no frame ever reached one. Reporting ErrNoHardwareEncoder would
+// show NoHardwareMessage and send the user to the browser over a compositor
+// negotiation problem — the same misdiagnosis ErrNoLaunchBinary guards against.
+func TestAllPipeWireSrcDeathsReportCaptureNotEncoder(t *testing.T) {
+	fp := &fakePortal{}
+	s := newSource(t, Options{
+		Binary:     failingBinary(t, unhandledFormatStderr),
+		OpenPortal: fp.open,
+	})
+
+	_, err := s.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start succeeded with a pipeline that always dies in pipewiresrc")
+	}
+	if !errors.Is(err, engine.ErrCaptureFormat) {
+		t.Errorf("error = %v, want ErrCaptureFormat", err)
+	}
+	if errors.Is(err, engine.ErrNoHardwareEncoder) {
+		t.Error("a capture-format failure is reported as missing hardware — the user would be sent to the browser for nothing")
+	}
+	// The child's own words still surface.
+	if !strings.Contains(err.Error(), "unhandled format") {
+		t.Errorf("error lost the child's stderr: %v", err)
+	}
+}
+
 // A working pipeline produces access units, stamped from the engine's clock
 // and classified by their own bitstream.
 func TestSourceEmitsAccessUnits(t *testing.T) {

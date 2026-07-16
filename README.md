@@ -428,6 +428,15 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   publisher about subscribers, so the native app can't show one either.
   That's parity with the browser, not an omission.
   ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`pipewiresrc` can die during preroll with `stream error: unhandled
+  format` — that's capture, not the encoder.** The compositor's chosen
+  screencast format sometimes can't be mapped onto the downstream caps
+  (DMA-BUF modifier/DRM-caps skew, 10-bit HDR desktops). The live start
+  walks a two-rung capture ladder per encoder (free negotiation, then
+  system-memory pinned `video/x-raw`) before advancing the cascade, and an
+  all-pipewiresrc failure reports as `ErrCaptureFormat`, never "no hardware
+  encoder". Diagnose with `GST_DEBUG=pipewire*:5` (the child inherits env).
+  ([docs/19](docs/19-linux-native-broadcaster.md))
 - **`gawk-broadcast` is its own Go module and its CI job needs cgo + Gio
   headers** (`libwayland-dev`, `libvulkan-dev`, …) and `CGO_ENABLED=1` —
   with cgo off, the GUI fails as "build constraints exclude all Go files in
