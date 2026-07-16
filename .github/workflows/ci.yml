@@ -80,10 +80,17 @@ jobs:
           # -trimpath keeps build paths out of the binary handed to someone else.
           go build -trimpath -o dist/ ./cmd/...
       # Recorded, not guessed: INSTALL.md's library list has to match what the
-      # binary actually links, and the glibc line is what decides whether it
-      # starts at all on the tester's distro.
+      # binary actually links, and the glibc floor decides whether it starts at
+      # all on the tester's distro.
       - name: Record build provenance and runtime dependencies
         run: |
+          # The floor is the newest glibc symbol version the binary actually
+          # references — NOT the builder's glibc, which is only an upper bound
+          # and overstates the requirement badly (2.39 vs. the real 2.34,
+          # i.e. "rebuild on Ubuntu 22.04" vs. "just run it").
+          glibc_floor() {
+            objdump -T "$1" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          }
           {
             echo "gawk-broadcast — prebuilt test binaries"
             echo
@@ -94,11 +101,15 @@ jobs:
             echo "go:      $(go version)"
             # sed, not head: head closes the pipe early and ldd reports the
             # SIGPIPE as an error into the file we're generating.
-            echo "glibc:   $(ldd --version | sed -n 1p)"
+            echo "builder glibc: $(ldd --version | sed -n 1p)"
             echo
-            echo "The binary is dynamically linked: it will not start on a distro"
-            echo "with an older glibc than the runner's. Build from source there"
-            echo "instead — see INSTALL.md."
+            echo "Minimum glibc to RUN these (check yours with 'ldd --version'):"
+            echo "  gawk-broadcast-gui: $(glibc_floor dist/gawk-broadcast-gui)"
+            echo "  gawk-broadcast:     $(glibc_floor dist/gawk-broadcast)"
+            echo
+            echo "Below that they won't start. Above it, a missing shared library"
+            echo "is the likelier failure — see INSTALL.md, and check with:"
+            echo "  ldd ./gawk-broadcast-gui | grep 'not found'"
             echo
             echo "=== gawk-broadcast-gui links against ==="
             ldd dist/gawk-broadcast-gui

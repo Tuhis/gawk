@@ -47,12 +47,13 @@ linkage). Grab it from the run's Artifacts, or:
 gh run download --name gawk-broadcast-linux-amd64-<sha>
 ```
 
-The binaries are built on Ubuntu 24.04, so they need **glibc ≥ 2.39**: fine on
-Ubuntu 24.04+/Fedora 40+/Arch, won't start on Debian 12 or Ubuntu 22.04, where
-a tester has to build from source instead. Two linkage facts worth knowing
-before someone reports a bug: the GUI links **both** window backends, so X11
-libraries must be present even on a Wayland-only session, and **Vulkan is
-`dlopen`ed, not linked** — nothing to install for it.
+Built on Ubuntu 24.04, but that is **not** the floor: the binaries reference
+glibc symbols only up to **2.34** (measured per build into `BUILD-INFO.txt`,
+never assumed from the builder), so Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora
+and Arch all run them. Two linkage facts worth knowing before someone reports a
+bug: the GUI links **both** window backends, so X11 libraries must be present
+even on a Wayland-only session (`libxkbcommon-x11` is the one that bites
+first), and **Vulkan is `dlopen`ed, not linked** — nothing to install for it.
 
 **Wayland or X11?** Use Wayland. Capture goes through the XDG ScreenCast
 portal, and portal screencast support is what varies: Wayland works everywhere

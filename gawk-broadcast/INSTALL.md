@@ -15,17 +15,24 @@ Three things decide it. Check them before anything else:
 | Requirement | Check | If not |
 |---|---|---|
 | **Linux, x86-64** | `uname -m` → `x86_64` | No build for you yet |
-| **glibc ≥ 2.39** | `ldd --version` | Build from source (below) — a prebuilt binary can't be made to work |
+| **glibc ≥ 2.34** | `ldd --version` | Build from source (below) — a prebuilt binary can't be made to work |
+| **The libraries it links** | `ldd ./gawk-broadcast-gui \| grep "not found"` — silence is good | Install them (below) |
 | **A hardware H.264 encoder** | just run it; it tells you | Use the browser broadcaster instead — this app has no software fallback, on purpose |
 
-The glibc one is the common trap. These are built on GitHub's Ubuntu 24.04
-runner (glibc 2.39), so:
+glibc 2.34 means **Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora, Arch** — i.e.
+almost certainly you. The binaries are built on Ubuntu 24.04, but that's not
+the floor: they only reference the glibc symbols they actually use, and the
+newest of those is 2.34. `BUILD-INFO.txt` records the measured floor for the
+exact build you were given.
 
-- **Fine**: Ubuntu 24.04+, Fedora 40+, Arch and other rolling distros.
-- **Won't start**: Debian 12 (glibc 2.36), Ubuntu 22.04 (2.35) — you get
-  `GLIBC_2.38 not found` or similar. Not a bug to report; build from source.
+If it *does* fail to start, read the error before assuming it's glibc — a
+missing shared library is the likelier cause, and it says so plainly:
 
-`BUILD-INFO.txt` has the authoritative numbers for the build you were given.
+```
+error while loading shared libraries: libxkbcommon-x11.so.0: cannot open shared object file
+```
+
+That's the next section, not a rebuild.
 
 ## Wayland or X11?
 
@@ -97,10 +104,11 @@ What each is for:
 
 **The GUI needs X11 libraries even on Wayland.** Both window backends are
 compiled in — the app picks Wayland at runtime and only falls back to X11 — but
-the binary links against both, so `libX11`, `libX11-xcb`, `libXcursor` and
-`libXfixes` must be *present* even in a session that never uses them. Any
-normal desktop install already has them; a deliberately X11-free Wayland setup
-is the one place this bites:
+the binary links against both, so `libX11`, `libX11-xcb`, `libXcursor`,
+`libXfixes` and `libxkbcommon-x11` must be *present* even in a session that
+never uses them. Any normal desktop install already has them; a minimal or
+X11-free setup is where this bites (it's the first thing that broke when we
+tested the artifact on a bare box):
 
 ```sh
 # Debian/Ubuntu, only if something below reports "not found":
@@ -183,7 +191,7 @@ Useful facts when something looks wrong:
 
 ## Building from source instead
 
-Needed if your glibc is older than the build's, or you're not on x86-64.
+Needed if your glibc is older than 2.34, or you're not on x86-64.
 
 ```sh
 # Go ≥ 1.23, plus Gio's build headers (Debian/Ubuntu):
