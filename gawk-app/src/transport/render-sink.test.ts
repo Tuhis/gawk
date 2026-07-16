@@ -15,6 +15,7 @@ import {
   OffscreenCanvasRenderSink,
   PacedPresentationSink,
   WebGLRenderSink,
+  createContextSink,
   createRenderSink,
   type RenderSink,
 } from './render-sink';
@@ -538,6 +539,32 @@ describe('createRenderSink (R10 P2)', () => {
     const { canvas } = fakeCanvas((type) => (type === 'webgl2' ? gl : null));
     const sink = createRenderSink(canvas, (cb) => cb());
     expect(sink.kind).toBe('2d');
+  });
+});
+
+describe('createContextSink GL options (R16 U4)', () => {
+  it('requests preserveDrawingBuffer when asked — the tee reads the canvas back post-draw', () => {
+    const gl = fakeGL();
+    const { canvas } = fakeCanvas((type) => (type === 'webgl2' ? gl : null));
+    createContextSink(canvas, { preserveDrawingBuffer: true });
+    const getContext = (canvas as unknown as { getContext: ReturnType<typeof vi.fn> }).getContext;
+    expect(getContext).toHaveBeenCalledWith(
+      'webgl2',
+      expect.objectContaining({ preserveDrawingBuffer: true, alpha: false }),
+    );
+  });
+
+  it('passes byte-identical context options when no overrides are given', () => {
+    const gl = fakeGL();
+    const { canvas } = fakeCanvas((type) => (type === 'webgl2' ? gl : null));
+    createContextSink(canvas);
+    const getContext = (canvas as unknown as { getContext: ReturnType<typeof vi.fn> }).getContext;
+    expect(getContext).toHaveBeenCalledWith('webgl2', {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      stencil: false,
+    });
   });
 });
 

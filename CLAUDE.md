@@ -179,7 +179,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `Element.requestFullscreen` so **non-iPhone devices are byte-identical**
   (sole overlay-only exception: the new **Feature Gates** stats section —
   UpperCamelCase gate names, first gate `NativeVideoFullscreen`);
-  U1–U4 chunks; **U1–U3 implemented 2026-07-16, U4 on-device verify
+  U1–U4 chunks; **U1–U3 implemented 2026-07-16; U4 first pass found native
+  fullscreen black — three-way defenses shipped 2026-07-16, re-verify
   pending**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
@@ -587,7 +588,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    construction. Non-goals: mic mixing, R14-native audio (wire types are
    ready — follow-up there), FEC, DTX, audio-only mode.
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
-   green); U4 on-device verification pending**
+   green); U4 in progress — first on-device pass found native fullscreen
+   black, defenses shipped 2026-07-16 (below), re-verify pending**
    (R16, `docs/21-ios-video-fullscreen.md`; viewer-client only, zero
    server/wire changes). The viewer fullscreen button is a **silent no-op
    on iPhone**: no Element Fullscreen API exists there (iPad has it since
@@ -620,6 +622,20 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `NativeVideoFullscreen`; the section renders only where gates are
    reported (broadcaster overlay untouched) and appears on every viewer —
    the one deliberate, overlay-only R16 change on non-gated devices.
+   **U4 first pass (2026-07-16): native fullscreen enters but shows black.**
+   Diagnosis narrowed to three WebKit candidates (black WebGL-canvas
+   readback / foreign broadcaster-clock PTS never presenting / paused
+   autoplay-rejected element); defenses for all three shipped 2026-07-16 —
+   tee stamps generator frames from its **own zero-based monotonic clock**
+   (never source timestamps), `preserveDrawingBuffer: true` on the tee'd
+   GL context only, gesture-context `play()` before
+   `webkitEnterFullscreen`, imperative `video.muted = true`, plus a
+   gated-only overlay **Native Fullscreen** section (tee + element
+   readyState/paused/size/rVFC-presented-frames) that localizes any
+   remaining blackness — see docs/21 "U4 findings" for the
+   observation→verdict table and the pre-registered next step
+   (decoded-frame clone tee) before the pseudo-only fallback. On-device
+   re-verify pending (BUGS.md entry tracks it).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

@@ -2,7 +2,7 @@ import { StatsPanel, type StatsRow, type StatsSection } from '../../ui/StatsPane
 import { formatHotkey } from '../../lib/useHotkey';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { fmt, fmtBits, fmtInt, fmtOr } from '../../lib/format';
-import type { FeatureGate } from '../../lib/featureGates';
+import type { FeatureGate, PresentationSurfaceStats } from '../../lib/featureGates';
 import type { ViewerStats } from '../../transport/viewer';
 
 interface Props {
@@ -17,6 +17,10 @@ interface Props {
   // section renders only when the surface reports at least one gate — the
   // broadcaster overlay reports none and stays section-less.
   featureGates?: FeatureGate[];
+  // R16 U4: tee + presentation-<video> diagnostics, passed on gated (iPhone)
+  // devices only — details must be visible rows there, since the Feature
+  // Gates tooltips need hover and iPhones have none. Absent ⇒ no section.
+  presentationSurface?: PresentationSurfaceStats;
   onClose: () => void;
   onCopy: () => void;
   copied: boolean;
@@ -25,8 +29,9 @@ interface Props {
 // The viewer stats overlay (docs/10 J4, extended by R9 M7) — "is it the
 // stream or my machine". Sections follow the docs/13 funnel: video (decode),
 // delivery (frames arriving/dropping), network (this leg's health).
-export function StatsOverlay({ stats, codec, bitrateBps, featureGates, onClose, onCopy, copied }: Props) {
+export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentationSurface, onClose, onCopy, copied }: Props) {
   const conn = stats?.connection ?? null;
+  const surface = presentationSurface ?? null;
   const sections: StatsSection[] = [
     {
       title: 'Video',
@@ -107,6 +112,33 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, onClose, 
           {
             title: 'Feature Gates',
             rows: featureGates.map((g): StatsRow => [g.name, g.active ? '✓' : '✗', g.detail]),
+          },
+        ]
+      : []),
+    // R16 U4: the native-fullscreen debugging section (gated devices only) —
+    // "is the tee writing frames" vs "is the <video> receiving/playing them".
+    ...(surface
+      ? [
+          {
+            title: 'Native Fullscreen',
+            rows: [
+              ['Fullscreen tier', surface.tier ?? '—'],
+              [
+                'Tee',
+                `${surface.armed ? 'armed' : 'idle'} · ${surface.teedFrames} frames · ${surface.teeErrors} err`,
+              ],
+              [
+                'Video element',
+                surface.elementReadyState == null
+                  ? '—'
+                  : `readyState ${surface.elementReadyState} · ${surface.elementPaused ? 'paused' : 'playing'}`,
+              ],
+              [
+                'Element size',
+                surface.elementWidth ? `${surface.elementWidth}×${surface.elementHeight}` : '—',
+              ],
+              ['Element frames', surface.elementFrames == null ? '—' : String(surface.elementFrames)],
+            ] as StatsRow[],
           },
         ]
       : []),

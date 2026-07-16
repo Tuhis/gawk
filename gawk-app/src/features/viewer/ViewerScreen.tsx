@@ -9,6 +9,7 @@ import { StatsOverlay } from './StatsOverlay';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import type { FeatureGate, PresentationSurfaceStats } from '../../lib/featureGates';
+import { log } from '../../lib/logger';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
@@ -173,14 +174,46 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   useEffect(() => {
     const video = presentationVideo;
     if (!video || !teeTrack) return;
+    // Imperative on purpose: React's `muted` prop does not reliably reach the
+    // DOM property, and an unmuted autoplay rejects on iOS — leaving exactly
+    // the paused video that renders black in the native player (U4 finding).
+    video.muted = true;
     video.srcObject = new MediaStream([teeTrack]);
     // Defensive: autoplay+muted should start it, but a paused hidden video
-    // would fail webkitEnterFullscreen's readiness check.
-    void video.play()?.catch?.(() => {});
+    // would fail webkitEnterFullscreen's readiness check. A rejection here is
+    // recoverable (the fullscreen toggle retries play() in the gesture) but
+    // worth seeing in a remote Safari inspector.
+    void video.play()?.catch?.((e) => log.warn('presentation video play() rejected:', e));
     return () => {
       video.srcObject = null;
     };
   }, [presentationVideo, teeTrack]);
+
+  // U4: count frames the element actually presents (rVFC). A ref, not state —
+  // sampled into presentationSurface on each stats-tick render.
+  const elementFramesRef = useRef<number | null>(null);
+  useEffect(() => {
+    const video = presentationVideo as
+      | (HTMLVideoElement & {
+          requestVideoFrameCallback?: (cb: () => void) => number;
+          cancelVideoFrameCallback?: (handle: number) => void;
+        })
+      | null;
+    if (!video || typeof video.requestVideoFrameCallback !== 'function') return;
+    elementFramesRef.current = 0;
+    let live = true;
+    let handle = 0;
+    const onFrame = () => {
+      if (!live) return;
+      elementFramesRef.current = (elementFramesRef.current ?? 0) + 1;
+      handle = video.requestVideoFrameCallback!(onFrame);
+    };
+    handle = video.requestVideoFrameCallback(onFrame);
+    return () => {
+      live = false;
+      video.cancelVideoFrameCallback?.(handle);
+    };
+  }, [presentationVideo]);
   // Track teardown lives with the controller (useViewerConnection's deferred
   // dispose): stopping it here on effect cleanup would kill it for good
   // across a StrictMode remount.
@@ -209,6 +242,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     armed,
     teedFrames: stats?.presentationTee?.teedFrames ?? 0,
     teeErrors: stats?.presentationTee?.teeErrors ?? 0,
+    elementReadyState: presentationVideo?.readyState ?? null,
+    elementPaused: presentationVideo?.paused ?? null,
+    elementWidth: presentationVideo?.videoWidth ?? null,
+    elementHeight: presentationVideo?.videoHeight ?? null,
+    elementFrames: elementFramesRef.current,
   };
 
   // R9 M7: rolling stat-sample window backing "Copy diagnostics" and the
@@ -368,6 +406,9 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
             return bytesRate == null ? null : bytesRate * 8;
           })()}
           featureGates={featureGates}
+          // U4: the tee/element diagnostics section — gated devices only, so
+          // every other viewer's overlay stays exactly as before.
+          presentationSurface={gated ? presentationSurface : undefined}
           onClose={() => setShowStats(false)}
           onCopy={copyDiagnostics}
           copied={statsCopied}

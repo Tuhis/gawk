@@ -112,6 +112,11 @@ export function useFullscreen(
       video.readyState >= HAVE_METADATA
     ) {
       try {
+        // A paused MediaStream video is exactly a black native player (U4
+        // finding). This play() runs inside the user gesture, so it succeeds
+        // even where the muted autoplay at arm time was blocked (e.g. iOS
+        // Low Power Mode).
+        if (video.paused) void video.play()?.catch?.(() => {});
         video.webkitEnterFullscreen();
         setState({ fullscreen: true, tier: 'video' });
         return;

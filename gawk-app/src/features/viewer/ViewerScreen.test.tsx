@@ -311,6 +311,13 @@ describe('ViewerScreen R16 presentation surface', () => {
       armed: false,
       teedFrames: 0,
       teeErrors: 0,
+      // U4: element-side fields are null while no presentation <video> exists
+      // (main-thread fallback ⇒ no track ⇒ no element).
+      elementReadyState: null,
+      elementPaused: null,
+      elementWidth: null,
+      elementHeight: null,
+      elementFrames: null,
     });
   });
 });

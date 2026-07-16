@@ -1,8 +1,9 @@
 // R16 (docs/21 U2): the presentation tee. An idle tee delegates
 // byte-identically (the paced sink behaves exactly as with a bare context
 // sink); an armed tee writes only *presented* frames to the generator writer
-// (coalesced/superseded frames never cross), with midpoint timestamps for
-// synthesized present(0.5) frames; write failures count teeErrors and never
+// (coalesced/superseded frames never cross), stamped from the tee's own
+// zero-based clock (U4 black-screen finding: WebKit must never see the
+// broadcaster's foreign PTS values); write failures count teeErrors and never
 // throw into the paint path.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -162,23 +163,29 @@ describe('TeeRenderSink idle (unarmed)', () => {
 });
 
 describe('TeeRenderSink armed', () => {
-  it('captures the canvas after each draw with the frame timestamp', () => {
+  it('captures the canvas after each draw, stamped from its own zero-based clock', () => {
+    // U4 finding: source-frame timestamps are broadcaster-clock µs — foreign,
+    // huge, and backwards-jumping on restarts. The generator stream gets the
+    // tee's local capture clock instead: zero-based, monotonic, restart-proof.
     const { inner } = plainInner();
-    const tee = new TeeRenderSink(inner, canvas);
+    let nowMs = 5_000;
+    const tee = new TeeRenderSink(inner, canvas, () => nowMs);
     const { writer, written } = fakeWriter();
     tee.arm(writer);
 
     tee.draw(frame(1_000_000));
-    tee.draw(frame(1_033_000));
+    nowMs = 5_033;
+    tee.draw(frame(900_000)); // source timestamps jumped backwards (restart)
 
-    expect(written.map((w) => w.timestamp)).toEqual([1_000_000, 1_033_000]);
+    expect(written.map((w) => w.timestamp)).toEqual([0, 33_000]);
     expect(written.every((w) => w.source === canvas)).toBe(true);
     expect(tee.teeStats()).toEqual({ armed: true, teedFrames: 2, teeErrors: 0 });
   });
 
-  it('captures real presents with the uploaded timestamp and mids with the midpoint', () => {
+  it('captures every present (real and mid) on the local clock, strictly monotonic', () => {
     const { inner, uploads } = interpolatingInner();
-    const tee = new TeeRenderSink(inner, canvas);
+    let nowMs = 100;
+    const tee = new TeeRenderSink(inner, canvas, () => nowMs);
     const { writer, written } = fakeWriter();
     tee.arm(writer);
 
@@ -186,16 +193,18 @@ describe('TeeRenderSink armed', () => {
     tee.upload!(frame(1_000_000));
     tee.present!(1);
     // The paced sink uploads the NEXT real frame early, presents the mid…
+    nowMs = 116;
     tee.upload!(frame(1_033_000));
     tee.present!(0.5);
-    // …then presents the real frame from its already-uploaded texture.
+    // …then presents the real frame from its already-uploaded texture — the
+    // clock stalled, so monotonicity comes from the +1 tie-break.
     tee.present!(1);
 
     expect(uploads).toEqual([1_000_000, 1_033_000]);
     expect(written.map((w) => w.timestamp)).toEqual([
-      1_000_000, // A's slot
-      1_016_500, // synthesized mid: midpoint of A and B
-      1_033_000, // B's slot
+      0, // A's slot: first capture defines the epoch
+      16_000, // synthesized mid, at its own capture time
+      16_001, // B's slot: stalled clock still yields a strictly-later stamp
     ]);
     expect(tee.teeStats().teedFrames).toBe(3);
   });
@@ -211,7 +220,7 @@ describe('TeeRenderSink armed', () => {
     paced.draw(frame(33_000)); // supersedes the first before any tick
     ticks.shift()!();
 
-    expect(written.map((w) => w.timestamp)).toEqual([33_000]);
+    expect(written).toHaveLength(1); // only the surviving frame's paint crossed
   });
 
   it('a rejected write counts teeErrors, closes the frame, and never throws', async () => {

@@ -4,22 +4,25 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
-## Viewer fullscreen button is a silent no-op on iPhone
+## iPhone native fullscreen enters but shows a black video
 
-- **Found**: 2026-07-15, iOS viewer field report ("the full screen button
-  doesn't do anything").
-- **Impact**: every iPhone viewer (all iOS browsers are WebKit) — the
-  button and menu item do nothing, with no error or feedback.
-- **Cause** (confirmed): `useFullscreen.ts` calls
-  `ref.current?.requestFullscreen?.()`; iPhone Safari has no
-  `Element.requestFullscreen` at all, so the optional chaining silently
-  swallows the call. Not fixable by prefixing — iPhone's only native
-  fullscreen is `HTMLVideoElement.webkitEnterFullscreen()`, and the viewer
-  renders to a canvas.
-- **Fix designed**: R16 ([`docs/21-ios-video-fullscreen.md`](docs/21-ios-video-fullscreen.md)) —
-  canvas tee → `VideoTrackGenerator` → hidden `<video>` +
-  `webkitEnterFullscreen()`, with CSS pseudo-fullscreen as the fallback
-  tier (chunk U1 alone already removes the silent no-op). Not started.
+- **Found**: 2026-07-16, first R16 U4 on-device pass (the predecessor bug —
+  the button being a *silent no-op* — was fixed by R16 U1–U3 the same day:
+  the tap now enters real native fullscreen).
+- **Impact**: iPhone viewers using the fullscreen button get the system
+  player over black instead of the stream; exiting returns to the working
+  inline viewer.
+- **Cause** (narrowed to three WebKit candidates, not yet distinguishable
+  on-device — see the U4 findings section of
+  [`docs/21-ios-video-fullscreen.md`](docs/21-ios-video-fullscreen.md)):
+  black `VideoFrame`-from-WebGL-canvas readback, foreign broadcaster-clock
+  PTS never presenting, or a paused (autoplay-rejected) element.
+- **Fix shipped, unverified**: defenses for all three landed 2026-07-16
+  (tee-local zero-based PTS, `preserveDrawingBuffer` on the tee'd context,
+  gesture-context `play()` in the fullscreen toggle, plus an overlay
+  "Native Fullscreen" diagnostics section that localizes any remaining
+  blackness). Awaiting the on-device re-verify; remove this entry when it
+  passes.
 
 ## Viewer "Streamer offline" card is misleading when the relay rejects the join
 

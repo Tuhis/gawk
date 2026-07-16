@@ -47,52 +47,42 @@ export class TeeRenderSink implements RenderSink {
   private writer: TeeFrameWriter | null = null;
   private teed = 0;
   private errors = 0;
-  // The last presented REAL frame's timestamp and the last uploaded frame's —
-  // a synthesized present(0.5) sits between them (the paced sink uploads the
-  // next real frame just before presenting the mid blend).
-  private prevRealTsUs: number | null = null;
-  private uploadedTsUs: number | null = null;
+  // U4 black-screen finding: the generator stream is stamped from this
+  // clock — zero-based at the first capture, strictly monotonic — never from
+  // source-frame timestamps, which sit on the *broadcaster's* clock (huge
+  // foreign values, backwards jumps on restarts). WebKit schedules a locally
+  // generated track's samples by PTS; foreign PTS ⇒ frames that never
+  // present ⇒ a black native-fullscreen player. Capture time IS the paced
+  // presentation time, so it is also the truthful PTS for this stream.
+  private now: () => number;
+  private baseMs: number | null = null;
+  private lastTsUs = -1;
 
-  constructor(inner: RenderSink, canvas: OffscreenCanvas) {
+  constructor(
+    inner: RenderSink,
+    canvas: OffscreenCanvas,
+    now: () => number = () => performance.now(),
+  ) {
     this.inner = inner;
     this.canvas = canvas;
     this.kind = inner.kind;
+    this.now = now;
 
     const interp = inner as RenderSink & Partial<InterpolatingInner>;
     if (typeof interp.upload === 'function' && typeof interp.present === 'function') {
-      this.upload = (frame: VideoFrame) => {
-        // Record before delegating — the inner sink closes the frame.
-        this.uploadedTsUs = frame.timestamp;
-        interp.upload!(frame);
-      };
+      this.upload = (frame: VideoFrame) => interp.upload!(frame);
+      // Every present paints — a real frame's own slot (alpha 1) or a
+      // synthesized mid blend — so every present captures.
       this.present = (alpha: number) => {
         interp.present!(alpha);
-        if (alpha >= 1) {
-          // A real frame's own slot, presented from its uploaded texture.
-          const ts = this.uploadedTsUs;
-          if (ts !== null) {
-            this.prevRealTsUs = ts;
-            this.capture(ts);
-          }
-        } else {
-          // Synthesized mid frame: midpoint of the two real timestamps around
-          // it. The element renders live srcObject frames on arrival, so this
-          // only needs to be sane and monotonic, not load-bearing.
-          const ts = this.midTimestampUs();
-          if (ts !== null) this.capture(ts);
-        }
+        this.capture();
       };
     }
   }
 
   draw(frame: VideoFrame, targetDisplayMs?: number): void {
-    const ts = frame.timestamp;
     this.inner.draw(frame, targetDisplayMs);
-    // draw() ≡ upload + present(1): this frame is now both the newest real
-    // frame on screen and the newest uploaded one.
-    this.prevRealTsUs = ts;
-    this.uploadedTsUs = ts;
-    this.capture(ts);
+    this.capture();
   }
 
   drawnFrames(): number {
@@ -107,22 +97,26 @@ export class TeeRenderSink implements RenderSink {
     return { armed: this.writer !== null, teedFrames: this.teed, teeErrors: this.errors };
   }
 
-  private midTimestampUs(): number | null {
-    if (this.uploadedTsUs === null) return null;
-    if (this.prevRealTsUs === null) return this.uploadedTsUs;
-    return Math.round((this.prevRealTsUs + this.uploadedTsUs) / 2);
+  // Zero-based local capture time in µs; the +1 tie-break keeps stamps
+  // strictly increasing even when two captures land in the same clock tick.
+  private nextTimestampUs(): number {
+    const nowMs = this.now();
+    this.baseMs ??= nowMs;
+    const ts = Math.max(Math.round((nowMs - this.baseMs) * 1000), this.lastTsUs + 1);
+    this.lastTsUs = ts;
+    return ts;
   }
 
   // Capture the just-painted canvas into the generator. Failures count
   // teeErrors and never throw into the paint path — the inline canvas must
   // keep working even if the tee dies.
-  private capture(timestampUs: number): void {
+  private capture(): void {
     const writer = this.writer;
     if (!writer) return;
     let frame: VideoFrame | null = null;
     try {
       frame = new VideoFrame(this.canvas as unknown as CanvasImageSource, {
-        timestamp: timestampUs,
+        timestamp: this.nextTimestampUs(),
       });
       const f = frame;
       writer.write(f).catch(() => {

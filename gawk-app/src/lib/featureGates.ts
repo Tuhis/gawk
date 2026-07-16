@@ -20,10 +20,23 @@ export type FullscreenTier = 'element' | 'video' | 'pseudo';
 // R16: raw presentation-surface diagnostics for Copy diagnostics; the
 // NativeVideoFullscreen gate row is derived from these. (Named
 // presentationSurface in ViewerStats — `presentation` was already taken by
-// the R12 pacing-placement field.)
+// the R12 pacing-placement field.) The element* fields (U4 black-screen
+// finding) report the presentation <video>'s own view of the tee stream, so
+// a black native fullscreen localizes remotely: tee writing but element
+// starved (elementFrames stuck) vs element presenting black content
+// (elementFrames climbing) vs a paused element (black by definition).
 export interface PresentationSurfaceStats {
   tier: FullscreenTier | null;
   armed: boolean;
   teedFrames: number;
   teeErrors: number;
+  // HTMLMediaElement.readyState (0–4); null until the element exists.
+  elementReadyState: number | null;
+  elementPaused: boolean | null;
+  // videoWidth×videoHeight — 0×0 until the element decodes a first frame.
+  elementWidth: number | null;
+  elementHeight: number | null;
+  // Frames the element actually presented, counted via
+  // requestVideoFrameCallback; null where rVFC (or the element) is absent.
+  elementFrames: number | null;
 }

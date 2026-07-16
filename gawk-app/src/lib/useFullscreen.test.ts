@@ -38,13 +38,16 @@ function installElementFullscreen() {
 }
 
 // A stub of the iPhone presentation <video> — jsdom's video element plus the
-// WebKit-prefixed fullscreen API and a settable readyState.
-function fakeVideo({ readyState = 1, enterThrows = false } = {}) {
+// WebKit-prefixed fullscreen API, a settable readyState/paused, and a play()
+// mock (jsdom's own play() is unimplemented).
+function fakeVideo({ readyState = 1, enterThrows = false, paused = false } = {}) {
   const video = document.createElement('video') as HTMLVideoElement & {
     webkitEnterFullscreen: () => void;
     webkitExitFullscreen: () => void;
   };
   Object.defineProperty(video, 'readyState', { configurable: true, get: () => readyState });
+  Object.defineProperty(video, 'paused', { configurable: true, get: () => paused });
+  video.play = vi.fn(() => Promise.resolve());
   video.webkitEnterFullscreen = vi.fn(() => {
     if (enterThrows) throw new DOMException('not ready', 'InvalidStateError');
     video.dispatchEvent(new Event('webkitbeginfullscreen'));
@@ -121,6 +124,26 @@ describe('useFullscreen tier 2 (gated, native video fullscreen)', () => {
     act(() => void video.dispatchEvent(new Event('webkitendfullscreen')));
     expect(result.current.isFullscreen).toBe(false);
     expect(result.current.tier).toBeNull();
+  });
+
+  it('plays a paused video inside the gesture before entering (U4 black-screen finding)', () => {
+    // A paused MediaStream video is exactly a black native player; the toggle
+    // runs in the user gesture, so play() succeeds even where muted autoplay
+    // was blocked (e.g. iOS Low Power Mode).
+    const video = fakeVideo({ paused: true });
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    expect(video.play).toHaveBeenCalledTimes(1);
+    expect(video.webkitEnterFullscreen).toHaveBeenCalledTimes(1);
+    expect(result.current.tier).toBe('video');
+  });
+
+  it('does not call play() when the video is already playing', () => {
+    const video = fakeVideo({ paused: false });
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    expect(video.play).not.toHaveBeenCalled();
+    expect(result.current.tier).toBe('video');
   });
 
   it('exits native fullscreen from the toggle', () => {

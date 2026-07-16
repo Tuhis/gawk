@@ -2,7 +2,9 @@
 
 Design doc for [ROADMAP R16](../ROADMAP.md#r16--ios-native-fullscreen)
 (designed 2026-07-16; U1–U3 implemented 2026-07-16, automated gates green;
-U4 on-device verification pending). Makes the viewer's fullscreen button
+U4 in progress — the first on-device pass found native fullscreen entering
+but showing **black**; three-way diagnosis + defenses shipped 2026-07-16,
+re-verify pending — see “U4 findings”). Makes the viewer's fullscreen button
 actually work on iPhone — today it is a **silent no-op** — by teeing the
 already-presented canvas output into a `MediaStreamTrack` (via the
 worker-only `VideoTrackGenerator` API) that feeds a hidden, pre-armed
@@ -248,7 +250,7 @@ is the entire feature, as today.
 | U1 | **Gate + tiered fullscreen + pseudo-fullscreen + probe + Feature Gates section** — gate util (element-fullscreen absence); `useFullscreen` rework to the three tiers with per-tier state tracking; pseudo-fullscreen CSS on the viewer root; worker capability probe (`VideoTrackGenerator` + trial `VideoFrame`-from-canvas) surfaced to the main thread; the overlay's new **Feature Gates** section (`FeatureGateName` union, `ViewerStats.featureGates` + `presentation`) with its first entry `NativeVideoFullscreen` | Non-gated devices: `requestFullscreen` called exactly as today, **no video element in the DOM, no new worker messages** (explicit tests; the Feature Gates row reading `✗ — element fullscreen available` is the sole visible delta, per Decision 9); gated devices: the button always visibly does something (pseudo-fullscreen works with no worker support at all); jsdom tests cover tier selection + state tracking incl. `webkitbeginfullscreen`/`webkitendfullscreen`; Feature Gates section renders only when ≥1 gate is reported (broadcaster overlay unchanged — test), gate active/detail correct for each tier/probe outcome, names type-checked UpperCamelCase; Copy diagnostics includes `featureGates` + `presentation` | ✅ implemented 2026-07-16 (note: the raw tee diagnostics landed as `ViewerStats.presentationSurface` — `presentation` was already taken by the R12 pacing-placement field) |
 | U2 | **Worker tee** — `TeeRenderSink` decorator (idle/armed, interpolation `upload`/`present` passthrough, synthesized-frame midpoint timestamps, `teedFrames`/`teeErrors` counters); generator creation + track transfer on `arm`; `init.presentationTee` flag; host-level lifecycle across reconnects | Unit tests with a fake generator/writer: idle tee delegates byte-identically (paced-sink + interpolation tests re-run wrapped, unchanged results); armed tee writes **only presented** frames (coalesced/superseded never cross); `present(0.5)` frames carry midpoint timestamps; write failure counts `teeErrors`, never throws into the paint path; sink construction without the flag is exactly today's (assertion on the non-gated path); arm across a reconnect keeps one generator/track | ✅ implemented 2026-07-16 (`transport/tee-render-sink.ts`; the tee + generator live at the worker-shell level beside the sink, arm is idempotent there and in the controller) |
 | U3 | **Main-thread video surface + native fullscreen** — hidden pre-armed `<video>` on gated devices at `watching` (Decision 6 hiding rules); `srcObject`/`play()` wiring on the `presentationTrack` event; arm command dispatch; tier-2 `webkitEnterFullscreen` with try/fall-through; StrictMode-safe teardown (track/element released with the controller) | Gated + capable: tap → `webkitEnterFullscreen` called synchronously in the gesture handler (test via stubbed video); not-ready video falls through to pseudo without a dead tap; non-gated DOM snapshot has no video element; teardown closes the writer and detaches `srcObject` (no leaked track); menu item + button + `f` hotkey all route through the same tiered toggle | ✅ implemented 2026-07-16 (track teardown rides the controller's *deferred* dispose — a plain effect-cleanup `track.stop()` would kill it for good across a StrictMode remount) |
-| U4 | **On-device verification + findings + docs sync** — real-iPhone pass (below); record the `VideoFrame`-from-canvas verdict (Decision 7's pre-registered fallback fires here if needed); latency/battery sanity; README gotcha list + ROADMAP/CLAUDE status sync | The manual verification plan executed and findings recorded in this doc; explicit verdicts on: tee works on iOS (or documented rejection → pseudo ships), smoothing visibly preserved in fullscreen, added latency acceptable (compare live-edge drift inline vs fullscreen), no thermal/battery red flags in a ~20 min session; gotchas (iPhone fullscreen facts, `display:none` trap) added to README | 📋 not started |
+| U4 | **On-device verification + findings + docs sync** — real-iPhone pass (below); record the `VideoFrame`-from-canvas verdict (Decision 7's pre-registered fallback fires here if needed); latency/battery sanity; README gotcha list + ROADMAP/CLAUDE status sync | The manual verification plan executed and findings recorded in this doc; explicit verdicts on: tee works on iOS (or documented rejection → pseudo ships), smoothing visibly preserved in fullscreen, added latency acceptable (compare live-edge drift inline vs fullscreen), no thermal/battery red flags in a ~20 min session; gotchas (iPhone fullscreen facts, `display:none` trap) added to README | 🚧 in progress — first pass 2026-07-16: enters native fullscreen but **black**; defenses shipped (tee-local PTS, preserveDrawingBuffer, gesture play(), element-side overlay diagnostics — see “U4 findings”); re-verify pending |
 
 Ordering: U1 alone already kills the silent no-op (pseudo-fullscreen tier)
 and is independently shippable; U2 → U3 build the native path; U4 gates
@@ -291,6 +293,99 @@ against the homelab deployment:
    deferred-arm optimization.
 7. Record findings + verdicts in this doc; sync README/ROADMAP/CLAUDE and
    remove the BUGS.md entry.
+
+## U4 findings
+
+### First on-device pass (2026-07-16): native fullscreen enters, but black
+
+**Symptom**: the fullscreen tap enters real native fullscreen (system player
+UI), but the video shows nothing — black. What the symptom already proves:
+tier 2 fired (a tier-3 fall-through would show the working canvas
+pseudo-fullscreen, not black), so `webkitEnterFullscreen` ran against a
+video at `readyState ≥ HAVE_METADATA` — the probe passed, the arm
+succeeded, the track reached the element, and *something* (at least
+metadata) flowed. The blackness enters after that point.
+
+Decision 7 pre-registered `VideoFrame`-from-canvas as the one unverified
+load-bearing fact, with probe-failure → pseudo as the fallback. The actual
+failure mode is subtler than the pre-registered one: the probe *passes*
+(construction works) but the presented result is black. Three candidate
+causes survive analysis, each with real WebKit history, and they are not
+distinguishable from the symptom alone:
+
+1. **Black readback** — `new VideoFrame(WebGL-backed OffscreenCanvas)`
+   reading a discarded or GPU-process-mediated drawing buffer returns
+   black. WebKit class-mates: [237424](https://bugs.webkit.org/show_bug.cgi?id=237424)
+   (video→canvas black under GPU-process canvas rendering),
+   [181663](https://bugs.webkit.org/show_bug.cgi?id=181663) (canvas
+   captureStream → `<video>` blank on iOS for four years, fixed in 15.4).
+   Note the U1 probe canvas is **2D**; the production canvas is **WebGL** —
+   exactly the gap a construction probe can't see.
+2. **PTS scheduling** — the tee stamped generator frames with the
+   *source frames'* timestamps, i.e. the **broadcaster's**
+   `performance.now()` µs: huge foreign values, backwards jumps on
+   broadcaster restarts. If WebKit schedules a locally generated track's
+   samples by PTS against the element's media clock (rather than
+   display-immediately), such frames never present — black, while
+   dimensions/metadata still arrive.
+3. **Paused element** — a paused MediaStream `<video>` is black in the
+   native player by definition, and `readyState` still reaches
+   HAVE_METADATA. The arm-time `play()` is an out-of-gesture muted
+   autoplay; iOS **Low Power Mode** (among others) rejects even those, and
+   the rejection was silently swallowed.
+
+**Defenses shipped 2026-07-16** (all three, plus instrumentation — they are
+small, orthogonal, and confined to the gated path; non-gated devices stay
+byte-identical, re-verified by test + headless-Chrome pass):
+
+- **Tee-local PTS** (`tee-render-sink.ts`): generator frames are stamped
+  from the tee's own clock — zero-based at first capture, strictly
+  monotonic (+1 µs tie-break on clock stalls), restart-proof. Capture time
+  *is* the paced presentation time, so it is also the truthful PTS for this
+  stream. Source timestamps never reach the generator anymore; the old
+  midpoint bookkeeping went with them.
+- **`preserveDrawingBuffer: true`** for the tee'd GL context only
+  (`createContextSink` now takes GL-option overrides; every other caller
+  passes none and gets byte-identical options — pinned by test).
+- **Gesture-context `play()`** (`useFullscreen.ts` tier 2): a paused video
+  is played *inside the user gesture* right before `webkitEnterFullscreen`
+  — gesture-context play succeeds where muted autoplay is blocked. The
+  arm-time effect also force-sets `video.muted = true` imperatively
+  (React's `muted` prop famously may not reach the DOM property) and now
+  logs a `play()` rejection instead of swallowing it.
+- **Element-side diagnostics**: `PresentationSurfaceStats` gained
+  `elementReadyState`, `elementPaused`, `elementWidth/Height`, and
+  `elementFrames` (a `requestVideoFrameCallback` counter — frames the
+  element actually *presented*); a new overlay **Native Fullscreen**
+  section renders these as visible rows on gated devices only (the Feature
+  Gates detail is a hover tooltip — useless on a phone). All of it rides
+  Copy diagnostics.
+
+### How to read the next on-device pass
+
+Open the overlay (right-click is unreachable on iPhone — use the stats
+button) and check the Native Fullscreen section *inline, before* going
+fullscreen:
+
+| Observation | Verdict |
+|---|---|
+| Fullscreen works, video visible | Done — record which defense mattered if discernible, close U4 |
+| `Tee … N frames` climbing, `Element frames` climbing, `playing`, still black in fullscreen | Frame *content* is black (readback, cause 1, `preserveDrawingBuffer` didn't cure it) → next step below |
+| `Element frames` stuck at 0, tee climbing | Element never presents (cause 2 variant / generator→element hand-off) → next step below |
+| `paused` after the fullscreen tap | Cause 3 persists — gesture play() rejected; check the logged reason via remote inspector |
+| `Tee … 0 frames` or `err` climbing | Capture itself fails post-probe on real hardware — Decision 7's fallback fires: drop U2/U3, ship pseudo |
+
+**Pre-registered next step if still black with tee+element both flowing**:
+replace the canvas-wrap capture with a **decoded-frame clone tee** — write
+`new VideoFrame(decodedFrame, { timestamp: localTs })` clones into the
+generator at present time instead of reading the canvas back. That is the
+canonical WebCodecs→MediaStream path (no canvas readback at all, also
+cheaper per frame — relevant to the item-6 thermal check), at the cost of
+interpolated mid-frames not appearing in fullscreen (real frames at paced
+cadence only). It deliberately trades a little of constraint 2 for a path
+WebKit demonstrably exercises. If *that* still shows black, the native
+player itself can't present locally generated MediaStreams on this WebKit —
+Decision 7's fallback fires for good: tier 2 is removed and pseudo ships.
 
 ## Non-goals
 
