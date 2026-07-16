@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.22.0...gawk-app-v0.22.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* iOS native fullscreen black screen — tee-local PTS, preserveDrawingBuffer, gesture play(), element diagnostics (R16 U4) ([8e2ee56](https://github.com/Tuhis/gawk/commit/8e2ee561037b478003ba04f56831fe8215cc6ce3))
+
 ## [0.22.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.21.1...gawk-app-v0.22.0) (2026-07-16)
 
 
