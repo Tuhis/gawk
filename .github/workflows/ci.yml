@@ -68,7 +68,50 @@ jobs:
       # `go test` type-checks the GUI package but never links it. Building the
       # shells is what proves the Gio window actually compiles and links —
       # this job is the only place that happens automatically.
-      - run: go build ./cmd/...
+      #
+      # The binaries are also uploaded as an artifact: R14's claims (hardware
+      # encode, the portal, game fps) are unverifiable in CI by construction —
+      # no GPU, no portal, no desktop — so a build someone can run on real
+      # hardware is how this gets tested at all, and it must be available
+      # before merge, not after.
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          # -trimpath keeps build paths out of the binary handed to someone else.
+          go build -trimpath -o dist/ ./cmd/...
+      # Recorded, not guessed: INSTALL.md's library list has to match what the
+      # binary actually links, and the glibc line is what decides whether it
+      # starts at all on the tester's distro.
+      - name: Record build provenance and runtime dependencies
+        run: |
+          {
+            echo "gawk-broadcast — prebuilt test binaries"
+            echo
+            echo "commit:  ${{ github.sha }}"
+            echo "branch:  ${{ github.ref_name }}"
+            echo "built:   $(date -u +%FT%TZ)"
+            echo "runner:  $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m))"
+            echo "go:      $(go version)"
+            echo "glibc:   $(ldd --version | head -1)"
+            echo
+            echo "The binary is dynamically linked: it will not start on a distro"
+            echo "with an older glibc than the runner's. Build from source there"
+            echo "instead — see INSTALL.md."
+            echo
+            echo "=== gawk-broadcast-gui links against ==="
+            ldd dist/gawk-broadcast-gui
+            echo
+            echo "=== gawk-broadcast (CLI) links against ==="
+            ldd dist/gawk-broadcast
+          } | tee dist/BUILD-INFO.txt
+      - name: Include install instructions with the binaries
+        run: cp INSTALL.md dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gawk-broadcast-linux-amd64-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
 
   app:
     runs-on: ubuntu-latest

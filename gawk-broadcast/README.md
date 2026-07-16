@@ -36,7 +36,30 @@ is unchanged.
 
 ## Install
 
-Everything is a stock distro package. Nothing is built from source.
+Handing a build to someone else to test? Point them at
+[`INSTALL.md`](INSTALL.md) — it's written for a tester with a binary and no
+context, and CI ships a copy of it inside the artifact. Every green CI run on a
+branch or PR uploads `gawk-broadcast-linux-amd64-<sha>` (both binaries +
+`BUILD-INFO.txt` recording the commit, the glibc floor and the exact library
+linkage). Grab it from the run's Artifacts, or:
+
+```sh
+gh run download --name gawk-broadcast-linux-amd64-<sha>
+```
+
+The binaries are dynamically linked against the runner's glibc, so a tester on
+an older distro (Debian 12, Ubuntu 22.04) has to build from source instead —
+`BUILD-INFO.txt` states the floor.
+
+**Wayland or X11?** Use Wayland. Capture goes through the XDG ScreenCast
+portal, and portal screencast support is what varies: Wayland works everywhere
+(GNOME/KDE/wlroots), X11 works on GNOME but generally not on KDE, whose portal
+offers no screencast backend there. The app gates on the portal call
+succeeding, never on the session type (docs/19 Decision 5) — so it doesn't
+refuse X11, it just reports what the portal says. The Gio window itself prefers
+Wayland and falls back to X11 on its own.
+
+Everything below is a stock distro package. Nothing is built from source.
 
 **Runtime:**
 
