@@ -28,20 +28,31 @@ export interface WorkerViewerCallbacks {
   onUnsupported: () => void;
 }
 
+export interface WorkerViewerOptions {
+  // R16 (docs/21): request the presentation tee at init. Set only on gated
+  // (element-fullscreen-less) devices — when false, the init message is
+  // byte-identical to before R16 and no tee/probe code runs in the worker.
+  presentationTee?: boolean;
+}
+
 export class WorkerViewerController {
   private worker: Worker;
   private canvas: HTMLCanvasElement;
   private cb: WorkerViewerCallbacks;
+  private presentationTee: boolean;
 
   private booted = false;
   private supported = false;
   private canvasTransferred = false;
   private disposed = false;
   private pendingStart: StartParams | null = null;
+  private armRequested = false;
+  private armSent = false;
 
-  constructor(canvas: HTMLCanvasElement, cb: WorkerViewerCallbacks) {
+  constructor(canvas: HTMLCanvasElement, cb: WorkerViewerCallbacks, opts: WorkerViewerOptions = {}) {
     this.canvas = canvas;
     this.cb = cb;
+    this.presentationTee = opts.presentationTee ?? false;
     this.worker = new Worker(new URL('../../transport/viewer.worker.ts', import.meta.url), {
       type: 'module',
     });
@@ -73,9 +84,18 @@ export class WorkerViewerController {
     if (!this.canvasTransferred) {
       const offscreen = this.canvas.transferControlToOffscreen();
       this.canvasTransferred = true;
-      this.post({ type: 'init', canvas: offscreen }, [offscreen]);
+      // The tee flag is spread in only when set, keeping non-gated init
+      // messages byte-identical to pre-R16 (docs/21 Decision 1).
+      this.post(
+        { type: 'init', canvas: offscreen, ...(this.presentationTee ? { presentationTee: true } : {}) },
+        [offscreen],
+      );
     }
     this.post({ type: 'start', ...params });
+    if (this.armRequested && !this.armSent) {
+      this.post({ type: 'arm' });
+      this.armSent = true;
+    }
   }
 
   // (Re)start a session. Buffered until the boot handshake completes; a repeat
@@ -103,6 +123,18 @@ export class WorkerViewerController {
   setInterpolation(enabled: boolean): void {
     if (this.disposed) return;
     this.post({ type: 'interpolation', enabled });
+  }
+
+  // R16: activate the presentation tee (gated devices, at `watching`). Sent
+  // at most once — the worker's generator/track are session-long and survive
+  // reconnects (docs/21 Decision 4). Buffered until the canvas/init exist.
+  armPresentation(): void {
+    if (this.disposed || this.armRequested) return;
+    this.armRequested = true;
+    if (this.canvasTransferred && !this.armSent) {
+      this.post({ type: 'arm' });
+      this.armSent = true;
+    }
   }
 
   dispose(): void {

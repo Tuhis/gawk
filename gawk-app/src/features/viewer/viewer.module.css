@@ -6,6 +6,26 @@
   cursor: default;
 }
 
+/* R16 tier 3: CSS pseudo-fullscreen on element-fullscreen-less devices
+   (iPhone). The root is already fixed inset 0; 100dvh rides over the dynamic
+   URL-bar viewport and the z-index lifts it above app chrome. */
+.pseudoFullscreen {
+  height: 100dvh;
+  z-index: 100;
+}
+
+/* R16: the hidden native-fullscreen <video> (gated devices only). Hidden by
+   size/position — never display:none, which breaks webkitEnterFullscreen. */
+.presentationVideo {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  width: 2px;
+  height: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* The stream is the background: fill the viewport, letterbox, never crop. */
 .canvas {
   position: absolute;

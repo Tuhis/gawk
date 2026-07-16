@@ -5,12 +5,20 @@
 //
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
+import { log } from '../lib/logger';
 import { setInterpolationEnabled } from './interpolation';
 import { setPlayoutMode } from './playout';
-import { createRenderSink, type RenderSink } from './render-sink';
+import {
+  PacedPresentationSink,
+  createContextSink,
+  createRenderSink,
+  type RenderSink,
+} from './render-sink';
+import { TeeRenderSink, getVideoTrackGenerator, probePresentationTee } from './tee-render-sink';
 import {
   ViewerWorkerCore,
   type ViewerWorkerCommand,
+  type ViewerWorkerEvent,
   type ViewerWorkerOutbound,
 } from './viewer-worker-core';
 import type { ViewerTransportFactory } from './viewer-transport';
@@ -48,6 +56,21 @@ const transportFactory: ViewerTransportFactory | undefined =
 
 let core: ViewerWorkerCore | null = null;
 let sink: RenderSink | null = null;
+// R16: the presentation tee + its generator live here at the host level,
+// beside the sink — they survive pipeline attempts/reconnects, so the track
+// keeps flowing across a reconnect without re-arming (docs/21 Decision 4).
+let tee: TeeRenderSink | null = null;
+let teeArmed = false;
+
+// R16: the tee's counters ride the existing stats events (only when a tee
+// exists — non-gated stats are byte-identical).
+const post = (ev: ViewerWorkerEvent): void => {
+  if (ev.type === 'stats' && tee) {
+    ctx.postMessage({ ...ev, stats: { ...ev.stats, presentationTee: tee.teeStats() } });
+  } else {
+    ctx.postMessage(ev);
+  }
+};
 
 ctx.onmessage = (e: MessageEvent) => {
   const cmd = e.data as ViewerWorkerCommand;
@@ -55,12 +78,39 @@ ctx.onmessage = (e: MessageEvent) => {
     case 'init': {
       // WebGL (2D fallback) wrapped in the paced presentation sink — R10 P1
       // semantics by default, display-slot pacing in adaptive mode (R12).
-      sink = createRenderSink(cmd.canvas);
+      // R16 (gated devices only): probe the tee capability, and when it holds,
+      // slip the idle TeeRenderSink between the paced sink and the context
+      // sink — pass-through-only until armed.
+      if (cmd.presentationTee) {
+        const supported = probePresentationTee();
+        ctx.postMessage({ type: 'presentationProbe', supported });
+        if (supported) {
+          tee = new TeeRenderSink(createContextSink(cmd.canvas), cmd.canvas);
+          sink = new PacedPresentationSink(tee);
+        }
+      }
+      sink ??= createRenderSink(cmd.canvas);
       core = new ViewerWorkerCore({
-        post: (ev) => ctx.postMessage(ev),
+        post,
         renderSink: sink,
         transportFactory,
       });
+      break;
+    }
+    case 'arm': {
+      // Idempotent: one generator/track per worker, ever — a repeat arm (or
+      // one after a reconnect) must not mint a second track.
+      if (!tee || teeArmed) break;
+      try {
+        const Generator = getVideoTrackGenerator();
+        if (!Generator) break; // probe said no; arm should never arrive
+        const generator = new Generator();
+        tee.arm(generator.writable.getWriter());
+        teeArmed = true;
+        ctx.postMessage({ type: 'presentationTrack', track: generator.track }, [generator.track]);
+      } catch (e) {
+        log.warn('presentation tee arm failed:', e);
+      }
       break;
     }
     case 'start':

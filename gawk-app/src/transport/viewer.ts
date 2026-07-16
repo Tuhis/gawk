@@ -23,6 +23,8 @@ import {
   type PlayoutMode,
 } from './playout';
 import { Reassembler, type ReassemblerStats } from './reassembler';
+import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates';
+import type { TeeStats } from './tee-render-sink';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
 import type { DecoderConfigMessage } from './wire';
@@ -122,6 +124,14 @@ export interface ViewerStats extends ReassemblerStats {
   // counter because WebTransport.getStats() ships in no browser (docs/13 D7).
   // Undercounts wire truth: no QUIC/UDP overhead, lost datagrams invisible.
   videoBytesReceived: number;
+  // R16 (docs/21 Decision 9). The pipeline itself never sets these three:
+  // presentationTee is merged in by the viewer *worker shell* when the
+  // presentation tee exists (gated devices only); featureGates and
+  // presentationSurface are attached on the main thread by the viewer screen
+  // before stats reach the overlay / Copy diagnostics.
+  presentationTee?: TeeStats;
+  featureGates?: FeatureGate[];
+  presentationSurface?: PresentationSurfaceStats;
 }
 
 export interface ViewerCallbacks {

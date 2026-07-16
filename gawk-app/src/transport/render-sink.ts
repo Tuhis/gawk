@@ -618,7 +618,10 @@ export function createRenderSink(
   return new PacedPresentationSink(createContextSink(canvas), schedule, undefined, scheduleKind);
 }
 
-function createContextSink(canvas: OffscreenCanvas): RenderSink {
+// Exported for R16 (docs/21): the viewer worker composes
+// PacedPresentationSink(TeeRenderSink(createContextSink(canvas))) on gated
+// devices; createRenderSink() stays the everything-else path.
+export function createContextSink(canvas: OffscreenCanvas): RenderSink {
   const opts = { alpha: false, antialias: false, depth: false, stencil: false };
   // WebGL2 gets the interpolation-capable sink (R12 T4 — WebGL2-only by
   // policy); its plain draw() path is identical to WebGLRenderSink, so this

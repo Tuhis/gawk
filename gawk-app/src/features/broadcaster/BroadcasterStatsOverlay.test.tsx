@@ -137,6 +137,22 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('At capacity').nextSibling?.textContent).toBe('—');
   });
 
+  // R16 (docs/21 Decision 9): the Feature Gates section is reported-gates-only
+  // and the broadcaster reports none — its overlay must stay unchanged.
+  it('has no Feature Gates section', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={fullStats()}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.queryByText('Feature Gates')).toBeNull();
+  });
+
   it('fires onCopy and closes via the close button', () => {
     const onCopy = vi.fn();
     const onClose = vi.fn();

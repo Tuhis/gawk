@@ -197,3 +197,84 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 });
+
+// R16 (docs/21): the device gate, the hidden presentation video, and the
+// Feature Gates overlay section. jsdom has no Element Fullscreen API, so a
+// bare render is a *gated* device on the main-thread pipeline (worker
+// unavailable in jsdom ⇒ probe false, tier 3 only); the non-gated cases
+// install document.documentElement.requestFullscreen first.
+describe('ViewerScreen R16 presentation surface', () => {
+  const installElementFullscreen = () => {
+    (document.documentElement as { requestFullscreen?: unknown }).requestFullscreen = vi.fn();
+  };
+  afterEach(() => {
+    delete (document.documentElement as { requestFullscreen?: unknown }).requestFullscreen;
+  });
+
+  const openStats = () => {
+    fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
+    fireEvent.click(screen.getByText('Stats'));
+  };
+
+  it('non-gated: no video element in the DOM, gate row reads element fullscreen available', async () => {
+    installElementFullscreen();
+    const { container } = render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    expect(container.querySelector('video')).toBeNull();
+
+    openStats();
+    expect(screen.getByText('Feature Gates')).toBeTruthy();
+    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe(
+      '✗ — element fullscreen available',
+    );
+  });
+
+  it('gated without worker support: no video element, gate row reads probe failed → pseudo', async () => {
+    const { container } = render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    expect(container.querySelector('video')).toBeNull();
+
+    openStats();
+    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe(
+      '✗ — probe failed → pseudo',
+    );
+  });
+
+  it('gated: the fullscreen button falls back to pseudo-fullscreen (never a dead tap)', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    fireEvent.click(screen.getByLabelText('Fullscreen'));
+    expect(screen.getByLabelText('Exit fullscreen')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Exit fullscreen'));
+    expect(screen.getByLabelText('Fullscreen')).toBeTruthy();
+  });
+
+  it('Copy diagnostics includes featureGates and presentationSurface', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onStats({ interpolation: null }));
+
+    openStats();
+    fireEvent.click(screen.getByText('Copy diagnostics'));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const blob = JSON.parse((writeText.mock.calls[0] as unknown as [string])[0]);
+    expect(blob.samples).toHaveLength(1);
+    expect(blob.samples[0].stats.featureGates).toEqual([
+      { name: 'NativeVideoFullscreen', active: false, detail: 'probe failed → pseudo' },
+    ]);
+    expect(blob.samples[0].stats.presentationSurface).toEqual({
+      tier: null,
+      armed: false,
+      teedFrames: 0,
+      teeErrors: 0,
+    });
+  });
+});

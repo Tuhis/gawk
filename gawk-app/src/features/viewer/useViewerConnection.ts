@@ -17,6 +17,16 @@ import { log } from '../../lib/logger';
 
 export type ViewerStatus = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'error';
 
+// R16 (docs/21): the presentation-tee surface for the screen. `probe` is
+// null until known ('not applicable' on non-gated devices, 'pending' on the
+// worker path before init) — false covers both a failed worker probe and the
+// main-thread pipeline fallback, which is tier-3-only by design (Decision 8).
+export interface PresentationState {
+  probe: boolean | null;
+  track: MediaStreamTrack | null;
+  arm: () => void;
+}
+
 export interface ViewerConnectionState {
   status: ViewerStatus;
   stats: ViewerStats | null;
@@ -24,6 +34,7 @@ export interface ViewerConnectionState {
   error: string | null;
   errorFatal: boolean;
   retryNote: string | null;
+  presentation: PresentationState;
 }
 
 // Whether we can even attempt the worker path. In jsdom (tests) and any browser
@@ -43,6 +54,10 @@ export function useViewerConnection(
   // R12 T4: the experimental frame-interpolation toggle (only effective on a
   // WebGL2 worker sink in adaptive mode; harmless elsewhere).
   interpolation = false,
+  // R16: request the presentation tee. True only on gated (element-
+  // fullscreen-less) devices — false keeps every worker message byte-
+  // identical to pre-R16 (docs/21 Decision 1).
+  presentationTee = false,
 ): ViewerConnectionState {
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [stats, setStats] = useState<ViewerStats | null>(null);
@@ -50,6 +65,10 @@ export function useViewerConnection(
   const [error, setError] = useState<string | null>(null);
   const [errorFatal, setErrorFatal] = useState(false);
   const [retryNote, setRetryNote] = useState<string | null>(null);
+  // R16: the worker's tee-capability verdict and (post-arm) the generator's
+  // track. Both are session-long — never reset by reconnects/broadcast changes.
+  const [presentationProbe, setPresentationProbe] = useState<boolean | null>(null);
+  const [presentationTrack, setPresentationTrack] = useState<MediaStreamTrack | null>(null);
   // Flips true if a would-be worker reports (at boot, before any canvas
   // transfer) that it lacks the codecs/transport — then we use the main thread.
   const [workerUnsupported, setWorkerUnsupported] = useState(false);
@@ -93,12 +112,26 @@ export function useViewerConnection(
         // A drop before we ever connected is an error, not a clean end.
         setStatus((prev) => (prev === 'connecting' || prev === 'error' ? 'error' : 'ended'));
         break;
+      // R16: gated-device-only events (the worker emits them only when init
+      // carried the presentationTee flag).
+      case 'presentationProbe':
+        setPresentationProbe(ev.supported);
+        break;
+      case 'presentationTrack':
+        setPresentationTrack(ev.track);
+        break;
     }
   }, []);
 
   // ---- Worker path ---------------------------------------------------------
   const controllerRef = useRef<WorkerViewerController | null>(null);
   const disposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // R16: the track is released with the controller (same deferred timing) —
+  // stopping it in a plain effect cleanup would kill it for good on
+  // StrictMode's synchronous cleanup→remount, since a stopped
+  // MediaStreamTrack cannot restart.
+  const trackRef = useRef<MediaStreamTrack | null>(null);
+  trackRef.current = presentationTrack;
 
   // Controller lifetime: constructed once (it needs the mounted <canvas>), and
   // disposed on real unmount. Dispose is deferred a macrotask so StrictMode's
@@ -111,10 +144,14 @@ export function useViewerConnection(
       disposeTimerRef.current = null;
     }
     if (!controllerRef.current && canvasRef.current) {
-      controllerRef.current = new WorkerViewerController(canvasRef.current, {
-        onEvent: applyEvent,
-        onUnsupported: () => setWorkerUnsupported(true),
-      });
+      controllerRef.current = new WorkerViewerController(
+        canvasRef.current,
+        {
+          onEvent: applyEvent,
+          onUnsupported: () => setWorkerUnsupported(true),
+        },
+        { presentationTee },
+      );
     }
     return () => {
       const c = controllerRef.current;
@@ -122,9 +159,13 @@ export function useViewerConnection(
         c?.dispose();
         if (controllerRef.current === c) controllerRef.current = null;
         disposeTimerRef.current = null;
+        // Real teardown (the timer survived the StrictMode remount window):
+        // the worker-side generator died with the worker; end its track too.
+        trackRef.current?.stop();
+        trackRef.current = null;
       }, 0);
     };
-  }, [useWorker, applyEvent, canvasRef]);
+  }, [useWorker, applyEvent, canvasRef, presentationTee]);
 
   // Session start/stop per broadcast id (worker path).
   useEffect(() => {
@@ -224,5 +265,26 @@ export function useViewerConnection(
     };
   }, [useWorker, broadcastId, applyEvent, canvasRef, resetState]);
 
-  return { status, stats, codec, error, errorFatal, retryNote };
+  // R16: arm the tee (screen calls this at `watching` on gated devices, after
+  // a positive probe). Idempotent down the whole chain.
+  const armPresentation = useCallback(() => {
+    controllerRef.current?.armPresentation();
+  }, []);
+
+  return {
+    status,
+    stats,
+    codec,
+    error,
+    errorFatal,
+    retryNote,
+    presentation: {
+      // The main-thread fallback pipeline can't host the worker-only
+      // VideoTrackGenerator — tier 3 by design (docs/21 Decision 8), reported
+      // as a failed probe so the gate detail reads correctly.
+      probe: presentationTee && !useWorker ? false : presentationProbe,
+      track: presentationTrack,
+      arm: armPresentation,
+    },
+  };
 }

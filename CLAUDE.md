@@ -179,7 +179,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `Element.requestFullscreen` so **non-iPhone devices are byte-identical**
   (sole overlay-only exception: the new **Feature Gates** stats section —
   UpperCamelCase gate names, first gate `NativeVideoFullscreen`);
-  U1–U4 chunks; **designed 2026-07-16, not started**).
+  U1–U4 chunks; **U1–U3 implemented 2026-07-16, U4 on-device verify
+  pending**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -585,7 +586,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    arrival-baseline fallback); frame interpolation unaffected by
    construction. Non-goals: mic mixing, R14-native audio (wire types are
    ready — follow-up there), FEC, DTX, audio-only mode.
-21. iOS native fullscreen — **designed 2026-07-16 (U1–U4), not started**
+21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
+   green); U4 on-device verification pending**
    (R16, `docs/21-ios-video-fullscreen.md`; viewer-client only, zero
    server/wire changes). The viewer fullscreen button is a **silent no-op
    on iPhone**: no Element Fullscreen API exists there (iPad has it since

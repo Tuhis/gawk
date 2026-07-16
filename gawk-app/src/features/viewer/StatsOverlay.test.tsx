@@ -158,6 +158,54 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Received fps').nextSibling?.textContent).toBe('30.2');
   });
 
+  // R16 (docs/21 Decision 9): the Feature Gates section renders only when the
+  // surface reports at least one gate, with the active/detail readout.
+  it('renders the Feature Gates section only when gates are reported', () => {
+    render(
+      <StatsOverlay
+        stats={fullStats()}
+        codec="vp8"
+        bitrateBps={null}
+        featureGates={[{ name: 'NativeVideoFullscreen', active: true, detail: 'armed' }]}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Feature Gates')).toBeTruthy();
+    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe('✓ — armed');
+
+    cleanup();
+    render(
+      <StatsOverlay
+        stats={fullStats()}
+        codec="vp8"
+        bitrateBps={null}
+        featureGates={[
+          { name: 'NativeVideoFullscreen', active: false, detail: 'element fullscreen available' },
+        ]}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe(
+      '✗ — element fullscreen available',
+    );
+
+    cleanup();
+    // No gates reported (prop absent or empty) ⇒ no section.
+    render(
+      <StatsOverlay stats={fullStats()} codec="vp8" bitrateBps={null} onClose={() => {}} onCopy={() => {}} copied={false} />,
+    );
+    expect(screen.queryByText('Feature Gates')).toBeNull();
+    cleanup();
+    render(
+      <StatsOverlay stats={fullStats()} codec="vp8" bitrateBps={null} featureGates={[]} onClose={() => {}} onCopy={() => {}} copied={false} />,
+    );
+    expect(screen.queryByText('Feature Gates')).toBeNull();
+  });
+
   it('wires the copy-diagnostics button and the copied flash', () => {
     const onCopy = vi.fn();
     const { rerender } = render(

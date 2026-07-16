@@ -1,7 +1,8 @@
-import { StatsPanel, type StatsSection } from '../../ui/StatsPanel';
+import { StatsPanel, type StatsRow, type StatsSection } from '../../ui/StatsPanel';
 import { formatHotkey } from '../../lib/useHotkey';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { fmt, fmtBits, fmtInt, fmtOr } from '../../lib/format';
+import type { FeatureGate } from '../../lib/featureGates';
 import type { ViewerStats } from '../../transport/viewer';
 
 interface Props {
@@ -12,6 +13,10 @@ interface Props {
   // keyframe stream messages, no transport overhead); null until two
   // samples exist.
   bitrateBps: number | null;
+  // R16 (docs/21 Decision 9): gate-controlled features by name + state. The
+  // section renders only when the surface reports at least one gate — the
+  // broadcaster overlay reports none and stays section-less.
+  featureGates?: FeatureGate[];
   onClose: () => void;
   onCopy: () => void;
   copied: boolean;
@@ -20,7 +25,7 @@ interface Props {
 // The viewer stats overlay (docs/10 J4, extended by R9 M7) — "is it the
 // stream or my machine". Sections follow the docs/13 funnel: video (decode),
 // delivery (frames arriving/dropping), network (this leg's health).
-export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied }: Props) {
+export function StatsOverlay({ stats, codec, bitrateBps, featureGates, onClose, onCopy, copied }: Props) {
   const conn = stats?.connection ?? null;
   const sections: StatsSection[] = [
     {
@@ -93,6 +98,19 @@ export function StatsOverlay({ stats, codec, bitrateBps, onClose, onCopy, copied
         ['Bad datagrams', String(stats?.badDatagrams ?? '—')],
       ],
     },
+    // R16: which conditional features are live on this client — rendered on
+    // every viewer (a desktop reading "✗ — element fullscreen available" is
+    // exactly the remote-diagnosis win).
+    ...(featureGates && featureGates.length > 0
+      ? [
+          {
+            title: 'Feature Gates',
+            rows: featureGates.map(
+              (g): StatsRow => [g.name, `${g.active ? '✓' : '✗'}${g.detail ? ` — ${g.detail}` : ''}`],
+            ),
+          },
+        ]
+      : []),
   ];
 
   return (

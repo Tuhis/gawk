@@ -18,7 +18,11 @@ import { LocalViewerTransport, type ViewerTransportFactory } from './viewer-tran
 
 // Main thread → worker.
 export type ViewerWorkerCommand =
-  | { type: 'init'; canvas: OffscreenCanvas }
+  // R16: `presentationTee` is sent ONLY on gated (element-fullscreen-less)
+  // devices — non-gated devices' init messages are byte-identical to before
+  // (docs/21 Decision 1). It makes the worker probe the tee capability and,
+  // if supported, build the sink chain with the (idle) TeeRenderSink inside.
+  | { type: 'init'; canvas: OffscreenCanvas; presentationTee?: boolean }
   | { type: 'start'; serverUrl: string; broadcastId: string; connectOpts: ConnectOptions }
   | { type: 'stop' }
   // R5 Q3 + R12 T2: set the playout mode in the worker's context (the reorder
@@ -26,7 +30,11 @@ export type ViewerWorkerCommand =
   // reconnects).
   | { type: 'playout'; mode: PlayoutMode }
   // R12 T4: the experimental frame-interpolation toggle, same crossing.
-  | { type: 'interpolation'; enabled: boolean };
+  | { type: 'interpolation'; enabled: boolean }
+  // R16 Decision 4: activate the tee — create the VideoTrackGenerator in the
+  // worker, post its track back (transferred), start capturing presented
+  // frames. Idempotent; a no-op when init carried no tee or the probe failed.
+  | { type: 'arm' };
 
 // Worker → main thread. Small control/telemetry messages only — decoded frames
 // are drawn in the worker and never appear here.
@@ -36,7 +44,14 @@ export type ViewerWorkerEvent =
   | { type: 'codec'; codec: string }
   | { type: 'stats'; stats: ViewerStats }
   | { type: 'error'; message: string; fatal: boolean }
-  | { type: 'ended' };
+  | { type: 'ended' }
+  // R16 (gated devices only, in response to init.presentationTee): whether
+  // VideoTrackGenerator + VideoFrame-from-canvas work in this worker. False ⇒
+  // the screen never arms and fullscreen stays tier 3 (pseudo).
+  | { type: 'presentationProbe'; supported: boolean }
+  // R16: the generator's track, transferred once on arm. Host-level in the
+  // worker — it survives pipeline attempts/reconnects (docs/21 Decision 4).
+  | { type: 'presentationTrack'; track: MediaStreamTrack };
 
 // Shell-level boot handshake (posted by viewer.worker.ts on load, before any
 // command): reports whether this worker's global scope actually has the codecs

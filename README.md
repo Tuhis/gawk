@@ -39,7 +39,7 @@ getDisplayMedia
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R16), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`20`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`21`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
@@ -363,6 +363,15 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   dims **upward only**: re-probing at our own constrained dims would feed
   the ceiling its own output (constrain → smaller frames → lower ceiling →
   constrain…). ([docs/18](docs/18-advanced-broadcaster-settings.md))
+- **iPhone has no Element Fullscreen API** — `Element.requestFullscreen`
+  ships on iPadOS (16.4+) but not iPhone, in every iOS browser (all WebKit),
+  so an optional-chained call is a silent no-op there. The only native
+  fullscreen is `HTMLVideoElement.webkitEnterFullscreen()`: it needs a user
+  gesture and a video with loaded media (hence R16's pre-armed hidden
+  `<video>` fed by the worker-side canvas tee), it does **not** fire
+  `fullscreenchange` (track `webkitbeginfullscreen`/`webkitendfullscreen`
+  instead), and **`display: none` on the video breaks it** — hide by
+  size/position. ([docs/21](docs/21-ios-video-fullscreen.md))
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
 - **Raising the QUIC idle timeout does not keep idle viewers alive** — the

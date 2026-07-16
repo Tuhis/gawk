@@ -34,7 +34,7 @@ feature set exists).
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 📋 designed 2026-07-15; revised same day after design review (V0–V7 + V8 direct Vulkan Video, gated), not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
-| R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 📋 designed 2026-07-16 (U1–U4), not started ([docs/21](docs/21-ios-video-fullscreen.md)) |
+| R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16, automated gates green; U4 on-device verify pending ([docs/21](docs/21-ios-video-fullscreen.md)) |
 
 ---
 
@@ -938,9 +938,13 @@ the system player UI is the UI); an iOS-reachable stats-overlay opener
 (real gap, separate item); audio through the element (R15's business);
 offering the video surface on non-gated devices.
 
-**Status**: designed 2026-07-16 (chunks U1–U4), not started. Known
-unverified fact: `new VideoFrame(OffscreenCanvas)` in a worker on iOS
-WebKit — U1 probes it first.
+**Status**: U1–U3 implemented 2026-07-16 (gate + tiered fullscreen +
+Feature Gates section; worker tee + generator/track transfer; hidden video
+surface + native-fullscreen wiring); automated gates green. U4 (real-iPhone
+verification pass) pending — it settles the one known unverified fact,
+`new VideoFrame(OffscreenCanvas)` in a worker on iOS WebKit, which the
+runtime probe checks before any arm (probe failure ⇒ pseudo-fullscreen
+tier, the pre-registered fallback).
 
 ---
 

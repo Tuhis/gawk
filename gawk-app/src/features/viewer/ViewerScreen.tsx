@@ -8,8 +8,9 @@ import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
 import { StatsOverlay } from './StatsOverlay';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
+import type { FeatureGate, PresentationSurfaceStats } from '../../lib/featureGates';
 import { useAutoHide } from '../../lib/useAutoHide';
-import { useFullscreen } from '../../lib/useFullscreen';
+import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
 import type { PlayoutMode } from '../../transport/playout';
@@ -105,11 +106,18 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     });
   }, []);
 
-  const { status, stats, codec, error, errorFatal, retryNote } = useViewerConnection(
+  // R16 (docs/21 Decision 1): the device gate — absence of the Element
+  // Fullscreen API (effectively an iPhone signature). On non-gated devices no
+  // R16 code path activates: no tee flag, no video element, tier-1 fullscreen
+  // exactly as before. Sampled once per mount.
+  const [gated] = useState(() => !elementFullscreenAvailable());
+
+  const { status, stats, codec, error, errorFatal, retryNote, presentation } = useViewerConnection(
     broadcastId,
     canvasRef,
     playoutMode,
     interpolation,
+    gated,
   );
 
   const [showStats, setShowStats] = useState(false);
@@ -117,13 +125,70 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const [copied, setCopied] = useState(false);
   const [statsCopied, setStatsCopied] = useState(false);
 
-  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen(rootRef);
+  const { probe: teeProbe, track: teeTrack, arm: armTee } = presentation;
+
+  // R16 Decision 5: pre-arm at `watching`, not lazily on the fullscreen tap —
+  // webkitEnterFullscreen must run synchronously inside the gesture on a
+  // video that already has media, and the arm chain is async.
+  useEffect(() => {
+    if (gated && status === 'watching' && teeProbe === true) armTee();
+  }, [gated, status, teeProbe, armTee]);
+
+  // R16 Decision 6: the hidden presentation <video>, rendered only on gated
+  // devices once the track exists. State (not a ref) so the effects and
+  // useFullscreen re-run when it mounts.
+  const [presentationVideo, setPresentationVideo] = useState<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    const video = presentationVideo;
+    if (!video || !teeTrack) return;
+    video.srcObject = new MediaStream([teeTrack]);
+    // Defensive: autoplay+muted should start it, but a paused hidden video
+    // would fail webkitEnterFullscreen's readiness check.
+    void video.play()?.catch?.(() => {});
+    return () => {
+      video.srcObject = null;
+    };
+  }, [presentationVideo, teeTrack]);
+  // Track teardown lives with the controller (useViewerConnection's deferred
+  // dispose): stopping it here on effect cleanup would kill it for good
+  // across a StrictMode remount.
+
+  const { isFullscreen, tier, toggle: toggleFullscreen } = useFullscreen(rootRef, presentationVideo);
+
+  // R16 Decision 9: the Feature Gates readout — derived state, rendered on
+  // every viewer (the one deliberate overlay-only R16 change on non-gated
+  // devices). Active ⇔ the native path would actually be used on the next tap.
+  const armed = teeTrack != null;
+  const featureGates: FeatureGate[] = [
+    {
+      name: 'NativeVideoFullscreen',
+      active: gated && teeProbe === true && armed,
+      detail: !gated
+        ? 'element fullscreen available'
+        : teeProbe === false
+          ? 'probe failed → pseudo'
+          : armed
+            ? 'armed'
+            : 'arming',
+    },
+  ];
+  const presentationSurface: PresentationSurfaceStats = {
+    tier,
+    armed,
+    teedFrames: stats?.presentationTee?.teedFrames ?? 0,
+    teeErrors: stats?.presentationTee?.teeErrors ?? 0,
+  };
 
   // R9 M7: rolling stat-sample window backing "Copy diagnostics" and the
   // derived receive bitrate. A ref, not state — it must not cause renders.
+  // R16: gates + presentation surface ride along into the diagnostics JSON.
   const diagRef = useRef(new DiagnosticsBuffer<ViewerStats>());
+  // Keyed on stats alone: the R16 fields are derived fresh every render, and
+  // a sample should land per pipeline stats tick, not per gate-state change.
+  const gatesRef = useRef({ featureGates, presentationSurface });
+  gatesRef.current = { featureGates, presentationSurface };
   useEffect(() => {
-    if (stats) diagRef.current.push(stats);
+    if (stats) diagRef.current.push({ ...stats, ...gatesRef.current });
   }, [stats]);
 
   const leave = useCallback(() => {
@@ -186,13 +251,30 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   return (
     <div
       ref={rootRef}
-      className={styles.root}
+      className={[
+        styles.root,
+        isFullscreen && tier === 'pseudo' ? styles.pseudoFullscreen : '',
+      ].join(' ')}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
       <canvas ref={canvasRef} className={styles.canvas} />
+
+      {/* R16: the hidden native-fullscreen surface — exists only on gated
+          devices once the tee's track arrived. Hidden by size/position, never
+          display:none (that breaks webkitEnterFullscreen). */}
+      {gated && teeTrack != null && (
+        <video
+          ref={setPresentationVideo}
+          className={styles.presentationVideo}
+          playsInline
+          muted
+          autoPlay
+          aria-hidden="true"
+        />
+      )}
 
       {(status === 'connecting' || status === 'ended' || status === 'error') && (
         <div className={styles.center}>
@@ -250,6 +332,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
             const bytesRate = diagRef.current.rate((s) => s.videoBytesReceived);
             return bytesRate == null ? null : bytesRate * 8;
           })()}
+          featureGates={featureGates}
           onClose={() => setShowStats(false)}
           onCopy={copyDiagnostics}
           copied={statsCopied}
