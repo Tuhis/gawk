@@ -92,7 +92,9 @@ jobs:
             echo "built:   $(date -u +%FT%TZ)"
             echo "runner:  $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m))"
             echo "go:      $(go version)"
-            echo "glibc:   $(ldd --version | head -1)"
+            # sed, not head: head closes the pipe early and ldd reports the
+            # SIGPIPE as an error into the file we're generating.
+            echo "glibc:   $(ldd --version | sed -n 1p)"
             echo
             echo "The binary is dynamically linked: it will not start on a distro"
             echo "with an older glibc than the runner's. Build from source there"
@@ -109,7 +111,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: gawk-broadcast-linux-amd64-${{ github.sha }}
-          path: dist/
+          # Repo-relative, not job-relative: `defaults.run.working-directory`
+          # applies to `run:` steps only, never to an action's inputs.
+          path: gawk-broadcast/dist/
           retention-days: 30
           if-no-files-found: error
 

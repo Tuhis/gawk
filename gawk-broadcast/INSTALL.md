@@ -15,13 +15,17 @@ Three things decide it. Check them before anything else:
 | Requirement | Check | If not |
 |---|---|---|
 | **Linux, x86-64** | `uname -m` → `x86_64` | No build for you yet |
-| **glibc at least as new as the build's** | `ldd --version` vs. the `glibc:` line in `BUILD-INFO.txt` | Build from source (below) — a prebuilt binary can't be made to work |
+| **glibc ≥ 2.39** | `ldd --version` | Build from source (below) — a prebuilt binary can't be made to work |
 | **A hardware H.264 encoder** | just run it; it tells you | Use the browser broadcaster instead — this app has no software fallback, on purpose |
 
-The glibc one is the common trap: these binaries are built on the CI runner's
-Ubuntu, so a distro with an older glibc (Debian 12, Ubuntu 22.04) refuses to
-start them with a `GLIBC_2.xx not found` error. That's not a bug to report,
-it's a rebuild.
+The glibc one is the common trap. These are built on GitHub's Ubuntu 24.04
+runner (glibc 2.39), so:
+
+- **Fine**: Ubuntu 24.04+, Fedora 40+, Arch and other rolling distros.
+- **Won't start**: Debian 12 (glibc 2.36), Ubuntu 22.04 (2.35) — you get
+  `GLIBC_2.38 not found` or similar. Not a bug to report; build from source.
+
+`BUILD-INFO.txt` has the authoritative numbers for the build you were given.
 
 ## Wayland or X11?
 
@@ -91,10 +95,34 @@ What each is for:
 | `-plugins-base`, `-good` | scaling, conversion, rate limiting |
 | `xdg-desktop-portal` + backend | the share dialog. Your desktop almost certainly has one already |
 
-The GUI's own libraries (Wayland, X11, EGL, Vulkan, xkbcommon) are part of any
-desktop install — you should not need to install any of them. `BUILD-INFO.txt`
-lists them all if something turns out to be missing; a `not found` line in its
-`ldd` output is the smoking gun.
+**The GUI needs X11 libraries even on Wayland.** Both window backends are
+compiled in — the app picks Wayland at runtime and only falls back to X11 — but
+the binary links against both, so `libX11`, `libX11-xcb`, `libXcursor` and
+`libXfixes` must be *present* even in a session that never uses them. Any
+normal desktop install already has them; a deliberately X11-free Wayland setup
+is the one place this bites:
+
+```sh
+# Debian/Ubuntu, only if something below reports "not found":
+sudo apt install libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+  libx11-6 libx11-xcb1 libxcursor1 libxfixes3 libxkbcommon0 \
+  libxkbcommon-x11-0 libegl1 libffi8
+```
+
+To check your machine rather than guess:
+
+```sh
+ldd ./gawk-broadcast-gui | grep "not found"    # silence is good
+```
+
+`BUILD-INFO.txt` lists the full linkage of the exact build you were given.
+**Vulkan is not in it**: the GUI loads it at runtime if present and uses
+OpenGL/EGL otherwise, so there's nothing to install. (The *encoder* cascade
+tries Vulkan first, but that's GStreamer's business, and it comes from the
+plugin packages above.)
+
+The CLI (`gawk-broadcast`) links against nothing but libc — no desktop
+libraries at all.
 
 **On NVIDIA**: nothing extra. The encoder library ships with your driver and is
 loaded at runtime.
