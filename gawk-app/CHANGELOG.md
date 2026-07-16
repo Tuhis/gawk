@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.22.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.21.1...gawk-app-v0.22.0) (2026-07-16)
+
+
+### Features
+
+* Feature Gates rows show bare ✓/✗ with the detail as a hover tooltip ([b4313a1](https://github.com/Tuhis/gawk/commit/b4313a18fbecdb1488da9f07dae3ce02279f34ba))
+* iOS native fullscreen — canvas tee to &lt;video&gt;, tiered useFullscreen, Feature Gates (R16 U1–U3) ([ada0d27](https://github.com/Tuhis/gawk/commit/ada0d278f83fb8a2e45655a036b1ccb013134c8b))
+* viewer error cards show friendly copy keyed on a structured error kind ([a500629](https://github.com/Tuhis/gawk/commit/a500629c2d11456b156ff3906216d49643af9b4b))
+
 ## [0.21.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.21.0...gawk-app-v0.21.1) (2026-07-15)
 
 
