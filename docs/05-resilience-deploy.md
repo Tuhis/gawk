@@ -237,13 +237,18 @@ delta for `replicas: 2+`:
    kubectl -n gawk create secret generic gawk-fleet \
      --from-literal=statelessResetKey=$(openssl rand -hex 32) \
      --from-literal=statsKey=$(openssl rand -hex 32) \
-     --from-literal=internalPsk=$(openssl rand -hex 32)
+     --from-literal=internalPsk=$(openssl rand -hex 32) \
+     --from-literal=resumeTokenKey=$(openssl rand -hex 32)
    ```
 
-2. Values: `replicas: 2`, `config.clusterMode: true`, the three `*Ref`
+2. Values: `replicas: 2`, `config.clusterMode: true`, the four `*Ref`
    entries pointing at the Secret, `config.trustedCidrs` = the cluster's
-   node/pod CIDRs, and a `publishSecret` (it doubles as the resume-token
-   key). `config.internalServerName` defaults to `certificate.dnsNames[0]`.
+   node/pod CIDRs, and a `publishSecret`. Set `resumeTokenKeyRef` — the
+   explicit key wins over the publish-secret derivation and is what keeps
+   one broadcaster from computing another's resume token (a secret-derived
+   key is computable by every secret-holder; PR #47 security review).
+   Confirm `resume_token_key_mode=explicit-key` in the startup log.
+   `config.internalServerName` defaults to `certificate.dnsNames[0]`.
    The chart refuses `replicas > 1` without `clusterMode`.
 
 3. Upgrades are RollingUpdate (surge 1 / unavailable 0): pods drain one at

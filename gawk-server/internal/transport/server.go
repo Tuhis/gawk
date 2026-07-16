@@ -112,8 +112,11 @@ type Server struct {
 
 	// testHookRateLimitLoopback disables the loopback bypass of the
 	// connection rate limiter, so tests (which dial from 127.0.0.1) can
-	// exercise the 429 path. Always false in production.
-	testHookRateLimitLoopback bool
+	// exercise the 429 path. Always false in production. Atomic because
+	// tests set it while the server is already accepting — in-process
+	// localhost UDP gives the race detector no happens-before edge between
+	// that write and a handler's read (caught by -race in the PR #47 pass).
+	testHookRateLimitLoopback atomic.Bool
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun:
@@ -138,7 +141,7 @@ func (s *Server) rateLimited(r *http.Request) bool {
 	if s.limiter == nil {
 		return false
 	}
-	if isLoopbackAddr(r.RemoteAddr) && !s.testHookRateLimitLoopback {
+	if isLoopbackAddr(r.RemoteAddr) && !s.testHookRateLimitLoopback.Load() {
 		return false
 	}
 	if isTrustedAddr(r.RemoteAddr, s.cfg.TrustedCIDRs) {

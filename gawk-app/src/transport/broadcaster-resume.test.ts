@@ -404,4 +404,65 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     expect(cbs.onError).toHaveBeenCalledTimes(1);
     expect(cbs.onReconnecting).not.toHaveBeenCalled();
   });
+
+  // R17 post-review fix (PR #47; CODE-REVIEW.md: error paths release what
+  // they acquired — a leaked WebTransport session is a zombie publisher
+  // holding the broadcast ID hostage until the tab closes). stop() racing
+  // the in-flight resume dial must close the fresh session, not adopt and
+  // abandon it.
+  it('stop() during an in-flight resume dial closes the fresh session', async () => {
+    const cbs = makeCallbacks();
+    const { pipeline, first } = await startBroadcast(cbs);
+
+    let resolveDial!: (wt: WebTransport) => void;
+    connectWebTransport.mockReturnValueOnce(
+      new Promise<WebTransport>((res) => {
+        resolveDial = res;
+      }),
+    );
+
+    first.die(new Error('connection lost'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    await flush();
+    expect(connectWebTransport).toHaveBeenCalledTimes(2); // dial in flight
+
+    await pipeline.stop();
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+
+    // The dial resolves after stop(): the fresh session must be torn down.
+    const second = makeFakeWT();
+    resolveDial(second.wt);
+    await flush();
+    expect(vi.mocked(second.wt.close)).toHaveBeenCalled(); // no zombie publisher
+    expect(cbs.onResumed).not.toHaveBeenCalled();
+  });
+
+  it('a resume dial failing after stop() stays silent (no late callbacks or timers)', async () => {
+    const cbs = makeCallbacks();
+    const { pipeline, first } = await startBroadcast(cbs);
+
+    let rejectDial!: (e: Error) => void;
+    connectWebTransport.mockReturnValueOnce(
+      new Promise<WebTransport>((_res, rej) => {
+        rejectDial = rej;
+      }),
+    );
+
+    first.die(new Error('connection lost'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    await flush();
+    const reconnects = cbs.onReconnecting.mock.calls.length;
+
+    await pipeline.stop();
+    rejectDial(new Error('relay unreachable'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flush();
+
+    expect(cbs.onReconnecting).toHaveBeenCalledTimes(reconnects); // nothing rescheduled
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(connectWebTransport).toHaveBeenCalledTimes(2); // never redialed
+  });
 });

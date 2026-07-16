@@ -435,3 +435,56 @@ func TestInformerCallbacks(t *testing.T) {
 		t.Errorf("OnLeaseDeleted = %q, want K7XQ2M", got)
 	}
 }
+
+// R17 post-review fix (PR #47, the 5-minute time bomb): a pod whose lease
+// was force-taken reaches its local grace expiry later and calls Delete with
+// a stale opinion — it must NOT delete the new origin's actively-renewed
+// lease (that would end the live broadcast cluster-wide under the new
+// holder). Only the holder-of-record — or anyone, once a drain Release
+// cleared the holder — may delete.
+func TestDeleteOnlyRemovesOwnLease(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	b := newTestCoordinator(t, cs, "pod-b", clock, nil)
+	ctx := context.Background()
+
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("A claim: %v", err)
+	}
+	if _, err := b.Claim(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("B force-take: %v", err)
+	}
+
+	// A's stale grace-expiry Delete: silent no-op, the lease survives at B.
+	if err := a.Delete(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("stale Delete errored (want silent no-op): %v", err)
+	}
+	origin, err := a.Resolve(ctx, "K7XQ2M")
+	if err != nil {
+		t.Fatalf("lease deleted by a non-holder: %v", err)
+	}
+	if origin.Holder != "pod-b" {
+		t.Errorf("holder after stale delete = %q, want pod-b", origin.Holder)
+	}
+
+	// The holder-of-record deletes fine.
+	if err := b.Delete(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("holder Delete: %v", err)
+	}
+	if _, err := b.Resolve(ctx, "K7XQ2M"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("holder's Delete did not remove the lease: %v", err)
+	}
+
+	// A drain-released lease (empty holder) is anyone's to GC.
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	a.ReleaseAll(ctx)
+	if err := b.Delete(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("Delete of released lease: %v", err)
+	}
+	if _, err := b.Resolve(ctx, "K7XQ2M"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("released lease not deletable: %v", err)
+	}
+}

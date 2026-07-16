@@ -217,13 +217,17 @@ func buildCoordinator(cfg config.Config, onLeaseDeleted func(string), onLeaseLos
 
 // resumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
 // logged so a fleet misconfiguration (per-process keys on multiple pods,
-// which silently breaks cross-pod resume) is visible at startup.
+// which silently breaks cross-pod resume) is visible at startup. Order
+// mirrors newResumeTokens: the explicit key wins over the publish-secret
+// derivation (PR #47 security review — a secret-derived key is computable
+// by every broadcaster holding the secret; "explicit-key" is the mode that
+// actually closes the graced-ID hijack between broadcasters).
 func resumeTokenKeyMode(cfg config.Config) string {
 	switch {
-	case cfg.PublishSecret != "":
-		return "derived-from-publish-secret"
 	case len(cfg.ResumeTokenKey) > 0:
 		return "explicit-key"
+	case cfg.PublishSecret != "":
+		return "derived-from-publish-secret"
 	default:
 		return "per-process-random"
 	}

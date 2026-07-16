@@ -519,3 +519,41 @@ func TestInternalSubscribeGuards(t *testing.T) {
 		})
 	}
 }
+
+// R17 post-review fix (PR #47): a lingered-out edge pull must DELETE its
+// derived hub, not leave it idling through the ordinary 5-minute grace — a
+// viewer joining that window would attach to a hub with no upstream pull
+// behind it (handleSubscribe runs EnsureEdge only on ErrNotFound) and
+// eventually receive a wrong terminal 4000 while the broadcast is still live
+// at the origin. Docs/22 Decision 10: the Lease is the liveness truth; edge
+// hubs never idle in grace.
+func TestEdgeLingerOutDeletesDerivedHub(t *testing.T) {
+	h := newEdgeHarness(t)
+	h.manager.linger = time.Millisecond // linger out at the first viewerless check
+	up := newFakeUpstream()
+	h.queue(up)
+	ctx := context.Background()
+
+	if err := h.manager.EnsureEdge(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge: %v", err)
+	}
+	if err := h.registry.CheckSubscribe("K7XQ2M"); err != nil {
+		t.Fatalf("edge hub not live after attach: %v", err)
+	}
+
+	// No viewer ever joins: the pull lingers out (the viewerless check ticks
+	// at 1 Hz) and the derived hub must be gone WITH it — ErrNotFound is what
+	// routes the next viewer through EnsureEdge for a fresh pull.
+	waitFor(t, 10*time.Second, func() bool {
+		return errors.Is(h.registry.CheckSubscribe("K7XQ2M"), hub.ErrNotFound)
+	}, "derived hub deleted on linger-out")
+
+	// And the next viewer demand-creates a fresh pull as usual.
+	h.queue(newFakeUpstream())
+	if err := h.manager.EnsureEdge(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge after linger-out: %v", err)
+	}
+	if h.dialCount() != 2 {
+		t.Errorf("dials = %d, want 2 (fresh pull after linger-out)", h.dialCount())
+	}
+}

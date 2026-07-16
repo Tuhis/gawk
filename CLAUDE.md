@@ -199,14 +199,17 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   conntrack on endpoint removal — never "unready-then-linger"), a **shared
   QUIC `StatelessResetKey`** gives ~1 RTT death detection, clients reconnect
   at 0 ms on 4002, broadcaster auto-resume + **resume tokens** (wire 0x09,
-  required for all `/publish/{id}` claims — also closes the graced-ID
-  hijack); allocations 0x09+/4002/4003 only (0x07/0x08 are R15's); W1–W6
+  required for all `/publish/{id}` claims — closes the graced-ID hijack
+  **when the explicit fleet `resumeTokenKey` is set**; it wins over the
+  publish-secret derivation, which every secret-holder can compute);
+  allocations 0x09+/4002/4003 only (0x07/0x08 are R15's); W1–W6
   chunks; **W1–W6 implemented 2026-07-16, automated gates green; homelab
   drills (rollout/crash/rebind blips, conntrack empiricism, kind smoke,
   load-tool scale proof) pending — see docs/22 findings, incl. the
-  deviations: replicas defaults to 1 with a chart guard requiring
-  clusterMode for >1, and single-pod upgrades are RollingUpdate ≤1 s blips
-  now**).
+  deviations (replicas defaults to 1 with a chart guard requiring
+  clusterMode for >1; single-pod upgrades are RollingUpdate ≤1 s blips
+  now) and the PR #47 post-review fixes (lingered-out edge hubs deleted,
+  holder-gated lease Delete, resume-token key precedence)**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -693,11 +696,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    **broadcaster auto-resume** (capture + encoder kept, transport-only
    reconnect, forced keyframe on re-attach via a new `KeyframeCadence`
    hook — config already rides every keyframe stream); **resume tokens**
-   (HMAC over the ID, HKDF from the publish secret, in-band as new wire
+   (HMAC over the ID, keyed by the explicit fleet resume-token key when set
+   — it **wins** over the HKDF-from-publish-secret fallback, which every
+   secret-holder can compute (PR #47 review) — in-band as new wire
    type **0x09** — browsers can't read response headers) required for
    **all** `/publish/{id}` claims incl. unknown-ID claims which now create
-   the hub — this is what lets relay restarts keep broadcast IDs, and it
-   closes the old graced-ID hijack. **Resume vs restart is frameID
+   the hub — this is what lets relay restarts keep broadcast IDs, and with
+   the explicit key it closes the old graced-ID hijack. **Resume vs restart is frameID
    continuity — no server-side epoch** (`generation` never leaves the
    process; R10's gap/backwards-keyframe machinery covers both). Then
    **federation** (W3–W5, dormant behind `-cluster-mode`, default off ⇒

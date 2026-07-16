@@ -152,8 +152,10 @@ spec:
               {{- else }}
               value: {{ .Values.config.statsKey | quote }}
               {{- end }}
-            # R17 W2: resume-token HMAC key — only consulted when no publish
-            # secret is set (the secret derives the key otherwise).
+            # R17 W2: resume-token HMAC key — WINS over the publish-secret
+            # derivation when set (recommended: the publish secret is
+            # broadcaster-distributed, so a key derived from it is computable
+            # by every broadcaster; this key stays server-side — PR #47).
             - name: GAWK_RESUME_TOKEN_KEY
               {{- if .Values.config.resumeTokenKeyRef }}
               valueFrom:

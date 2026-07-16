@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net/url"
 	"sync"
 	"time"
 
@@ -362,7 +363,21 @@ func (es *edgeSession) run() {
 		pub.Close()
 		es.m.registry.InvalidatePrimes(es.id)
 		up.Close()
-		if lingered || es.ctx.Err() != nil {
+		if lingered {
+			// Linger-out: take the derived hub with us — atomically, and
+			// only if it is still viewer-less (post-review fix, PR #47).
+			// Left in the ordinary grace, the hub would keep satisfying
+			// CheckSubscribe, so a viewer joining that window would attach
+			// with no pull behind it and end at a wrong terminal 4000. A
+			// viewer that raced the linger window keeps the hub — re-attach
+			// for it instead.
+			if !es.m.registry.ExpireEdgeIfViewerless(es.id) && es.ctx.Err() == nil {
+				attempt = 0
+				continue
+			}
+			break
+		}
+		if es.ctx.Err() != nil {
 			break
 		}
 		attempt = 0 // a successful attach resets the backoff ladder
@@ -575,8 +590,10 @@ func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Log
 				KeepAlivePeriod:                  edgeKeepAlive,
 			},
 		}
-		url := "https://" + addr + path + "&psk=" + psk
-		rsp, sess, err := d.Dial(ctx, url, nil)
+		// QueryEscape so an arbitrary PSK can never break (or smuggle params
+		// into) the query string; the origin's Query().Get decodes it back.
+		target := "https://" + addr + path + "&psk=" + url.QueryEscape(psk)
+		rsp, sess, err := d.Dial(ctx, target, nil)
 		if err != nil {
 			_ = d.Close()
 			// The dialer is Go: HTTP statuses ARE readable here (unlike the

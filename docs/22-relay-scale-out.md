@@ -244,11 +244,16 @@ speaks the same protocol over WAN.
    *every* non-mint claim — reclaim of a live/graced hub *and* claim of an
    ID unknown to the receiving pod (which now **creates** the hub instead of
    404ing; this is what makes broadcasts survive restarts and re-home across
-   pods). Token = HMAC-SHA256 over the normalized broadcast ID, truncated,
-   keyed by `K_resume = HKDF(publish-secret, "gawk-resume-v1")` when
-   `-publish-secret` is set (rotating the secret revokes all tokens — the
-   rotation story), else by a chart-managed random key; dev fallback:
-   per-process random (parity with today's process-lifetime reclaim).
+   pods). Token = HMAC-SHA256 over the normalized broadcast ID, truncated.
+   Key precedence (**revised in the PR #47 security review** — the original
+   put the secret derivation first): the chart-managed `-resume-token-key`
+   **wins** when set — the publish secret is distributed to every
+   broadcaster, so a key derived from it is computable by every
+   broadcaster and would gate nothing *between* secret-holders, while the
+   explicit key stays server-side (rotating it revokes all tokens); else
+   `K_resume = HKDF(publish-secret, "gawk-resume-v1")` (zero-config;
+   rotating the secret revokes); dev fallback: per-process random (parity
+   with today's process-lifetime reclaim).
    Stateless: any pod can mint and verify with no shared storage.
    Constant-time compare; never logged. Delivery is **in-band** — the
    browser WebTransport API exposes no response headers — as a new wire
@@ -257,11 +262,13 @@ speaks the same protocol over WAN.
    with golden vectors. **0x07/0x08 are reserved by R15 (docs/20); R17
    allocates 0x09+ and close codes 4002/4003 only.** The client holds the
    token in memory next to `broadcastId` (in-memory reclaim is today's
-   behavior too; sessionStorage persistence is Deferred). This **closes the
-   existing graced-ID hijack** (Background) — sold as a security fix, not
-   just a scale feature. Residual risk, accepted at product-v1 scope: a
-   holder of both the publish secret and one broadcast's token can squat
-   that specific ID until secret rotation.
+   behavior too; sessionStorage persistence is Deferred). Hijack scope,
+   stated honestly: with the explicit key this **closes the graced-ID
+   hijack** (Background) for real; in secret-derived mode it stops everyone
+   who lacks the publish secret but *no one who holds it* (any
+   secret-holder can compute any ID's token offline — the fleet runbook in
+   docs/05 therefore provisions the explicit key). Residual risk in both
+   modes: any token holder can squat that specific ID until key rotation.
 
 8. **Per-broadcast origin registry = one Kubernetes Lease per broadcast**
    (`coordination.k8s.io/v1`, name `gawk-bc-<id>`, in-namespace; new
@@ -672,6 +679,54 @@ Findings and deviations from the design as written:
    re-homing onto a pod that is currently an *edge* for its broadcast would
    409 against the edge's own upstream pull. `/publish/{id}` stops the local
    edge pull (synchronously) before claiming the hub.
+
+### Post-implementation review fixes (2026-07-16, PR #47)
+
+The PR #47 review found six issues; all are fixed on the branch, each bug
+test-first (red → green) per CODE-REVIEW.md:
+
+9. **A lingered-out edge pull left its derived hub in the ordinary 5-minute
+   grace.** A viewer joining that window attached to a hub with no upstream
+   behind it (`handleSubscribe` runs `EnsureEdge` only on `ErrNotFound`) and
+   after up to 5 minutes received a wrong terminal 4000 while the broadcast
+   was still live at the origin — violating Decision 10's "the Lease is the
+   liveness truth". The linger-out now deletes the hub atomically-if-still-
+   viewerless (`Registry.ExpireEdgeIfViewerless`); a viewer that races the
+   ≤1 s linger window keeps the hub and the pull re-attaches for it.
+10. **`stop()` racing an in-flight resume dial leaked a zombie publisher**
+    — the CODE-REVIEW.md bug class verbatim: `tryResume`'s post-dial code
+    re-armed wt/sender/TimeSync after `teardown()` had already run, then
+    abandoned them. The fresh transport is now torn down when the dial
+    lands after stop, and a dial *failure* after stop schedules nothing.
+11. **A demoted origin's grace expiry deleted the NEW origin's lease** ~5
+    minutes after any re-home where the old origin had no local viewers
+    (its hub stayed `role=origin`, so grace-GC fired `OnBroadcastExpired` →
+    `Coordinator.Delete`, which deleted unconditionally) — ending the live
+    broadcast cluster-wide and silently dropping the new origin's
+    holdership via every informer's DeleteFunc. `Delete` is now
+    **holder-gated + CAS-fenced**: only the holder-of-record (or anyone,
+    once a drain `Release` cleared the holder) deletes, with a
+    resourceVersion precondition so a racing claim wins.
+12. **`EdgePublish` set `edge=true` before a claim that can fail**,
+    mislabeling whatever hub it raced (role metrics, loss attribution,
+    lease lifecycle hooks). The role now flips only on a successful claim.
+13. **Role flips leaked ingress-loss counts across metric families**: the
+    per-hub cumulative counters are attributed by *current* role at scrape
+    time, so a demote/come-home moved everything accumulated on one leg
+    under the other family. Every role flip now folds the counters into the
+    old leg's lifetime totals first (`setRoleLocked`) — the families stay
+    unmixed across transitions (Decision 14 holds for the hub's whole life).
+14. **Resume-token key precedence flipped — the security fix** (Decision 7
+    revised in place): the explicit `-resume-token-key` now wins over the
+    publish-secret derivation. A key derived from the broadcaster-
+    distributed publish secret is computable by every secret-holder, so the
+    original "closes the graced-ID hijack" claim held only against
+    non-secret-holders — exactly the actors who couldn't publish anyway.
+    The explicit server-side key makes the token a real per-broadcast
+    ownership proof between broadcasters; the docs/05 fleet runbook now
+    provisions it, and `resume_token_key_mode=explicit-key` in the startup
+    log is the deployment check. (Also from the review, no behavior change:
+    the internal-subscribe PSK is now query-escaped in the edge dialer.)
 
 ## Verification plan (manual, after W5/W6)
 

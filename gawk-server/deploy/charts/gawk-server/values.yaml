@@ -95,9 +95,14 @@ config:
   statsKey: ""
   statsKeyRef: {}
   # R17 W2: resume-token HMAC key — 64 hex chars (32 bytes), shared by all
-  # relay pods. Only used when publishSecret is UNSET (a publish secret
-  # always derives the token key from itself, so rotating it revokes all
-  # resume tokens). Same generation recipe as the reset key below.
+  # relay pods. RECOMMENDED for any real deployment: when set it WINS over
+  # the publish-secret derivation. The publish secret is handed to every
+  # broadcaster, so a token key derived from it can be computed by every
+  # broadcaster — only this independent server-side key stops one
+  # broadcaster from taking over another's broadcast ID (PR #47 security
+  # review); rotating it revokes all resume tokens. Empty: derive from the
+  # publish secret (protects only against non-secret-holders). Same
+  # generation recipe as the reset key below.
   resumeTokenKey: ""
   resumeTokenKeyRef: {}
   # R17 W1: QUIC stateless reset key — 64 hex chars (32 bytes), SHARED by

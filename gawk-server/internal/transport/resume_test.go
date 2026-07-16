@@ -72,10 +72,15 @@ func TestResumeTokenKeyModes(t *testing.T) {
 		t.Error("shared resume-token key: token not portable across instances")
 	}
 
-	// A publish secret always wins over the explicit key.
+	// An explicitly-provisioned key WINS over the publish secret (PR #47
+	// security review): the publish secret is distributed to every
+	// broadcaster, so a key derived from it is computable by every
+	// broadcaster — tokens would gate nothing between secret-holders. The
+	// chart key never leaves the server side, which is what makes the token
+	// a real per-broadcast ownership proof.
 	c := newResumeTokens(config.Config{PublishSecret: "s", ResumeTokenKey: key})
-	if c.verify("K7XQ2M", tok) {
-		t.Error("explicit-key token accepted despite a publish secret being set")
+	if !c.verify("K7XQ2M", tok) {
+		t.Error("explicit resume-token key ignored when a publish secret is set")
 	}
 
 	// Dev fallback: per-process random — instances don't agree.

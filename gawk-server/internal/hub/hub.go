@@ -300,8 +300,11 @@ type broadcastHub struct {
 	graceStart      time.Time
 	// edge marks a hub as derived state (R17 W4): its "publisher" is this
 	// pod's upstream pull from the broadcast's origin, it is exempt from
-	// MaxBroadcasts, and it never enters grace (the Lease is the liveness
-	// truth, docs/22 Decision 10).
+	// MaxBroadcasts, and it never idles in grace — the Lease is the liveness
+	// truth (docs/22 Decision 10): a lingered-out pull deletes the hub via
+	// ExpireEdgeIfViewerless, and the grace timer a mid-stream upstream loss
+	// arms is cancelled by the re-attach's claim. Flipped only through
+	// setRoleLocked so ingress-loss counts never cross legs.
 	edge bool
 
 	subs map[*Subscriber]struct{}
@@ -478,7 +481,7 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	}
 	// A real publisher claim makes (or re-makes) this hub the origin — a
 	// prior demote-to-edge is over when the broadcaster comes home (W5).
-	b.edge = false
+	r.setRoleLocked(b, false)
 	return id, pub, nil
 }
 
@@ -508,7 +511,7 @@ func (r *Registry) ResumePublish(id string) (string, *Publisher, error) {
 		return "", nil, err
 	}
 	// The broadcaster re-homed onto this pod: origin again (W5 un-demote).
-	b.edge = false
+	r.setRoleLocked(b, false)
 	return normID, pub, nil
 }
 
@@ -530,11 +533,15 @@ func (r *Registry) EdgePublish(id string) (string, *Publisher, error) {
 	if !exists {
 		b = r.newHubLocked(normID)
 	}
-	b.edge = true
 	pub, err := r.claimPublisherLocked(b)
 	if err != nil {
 		return "", nil, err
 	}
+	// The role flips only on a SUCCESSFUL claim (post-review fix, PR #47):
+	// on ErrPublisherActive the hub belongs to whoever holds the slot —
+	// possibly a live origin publisher — and must keep its role, and with it
+	// the origin's lease lifecycle hooks at close/expiry.
+	r.setRoleLocked(b, true)
 	return normID, pub, nil
 }
 
@@ -651,6 +658,27 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	b.ingress.reset()
 
 	return &Publisher{hub: b}, nil
+}
+
+// setRoleLocked flips the hub's federation role (post-review fix, PR #47).
+// The per-hub ingress-loss counters are attributed to the hub's CURRENT role
+// at scrape time (broadcaster leg for origin, edge leg for edge — never
+// mixed, docs/22 Decision 14), so counts accumulated under the old role are
+// folded into that leg's lifetime totals before the flip. Caller holds r.mu.
+func (r *Registry) setRoleLocked(b *broadcastHub, edge bool) {
+	if b.edge == edge {
+		return
+	}
+	if b.edge {
+		r.totalEdgeIngressFramesLost += b.ingressFramesLost
+		r.totalEdgeIngressChunksLost += b.ingressChunksLost
+	} else {
+		r.totalIngressFramesLost += b.ingressFramesLost
+		r.totalIngressChunksLost += b.ingressChunksLost
+	}
+	b.ingressFramesLost = 0
+	b.ingressChunksLost = 0
+	b.edge = edge
 }
 
 // CheckPublishNew is the read-only pre-upgrade check for minting a new
@@ -949,15 +977,43 @@ func (r *Registry) EndBroadcast(id string) {
 	r.expireBroadcast(normID, func(*broadcastHub) bool { return true })
 }
 
+// ExpireEdgeIfViewerless deletes an EDGE hub that has no local viewers — the
+// linger-out path (post-review fix, PR #47). A lingered-out pull must take
+// its derived hub with it: left in the ordinary grace, the hub would keep
+// satisfying CheckSubscribe, so a viewer joining inside that window would
+// attach with no upstream pull behind it (handleSubscribe runs EnsureEdge
+// only on ErrNotFound) and eventually receive a wrong terminal 4000 while
+// the broadcast is still live at the origin. Atomic with Subscribe under the
+// registry lock: returns true when the hub is gone (deleted now, or already
+// absent) and false when it must be kept — a viewer raced the linger window,
+// or a publisher claimed the slot. Origin hubs are never expired here; their
+// lifecycle belongs to the grace timer.
+func (r *Registry) ExpireEdgeIfViewerless(id string) bool {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return true
+	}
+	if r.expireBroadcast(normID, func(b *broadcastHub) bool {
+		return b.edge && b.externalSubsLocked() == 0
+	}) {
+		return true
+	}
+	r.mu.Lock()
+	_, exists := r.hubs[normID]
+	r.mu.Unlock()
+	return !exists
+}
+
 // expireBroadcast removes the hub (when it exists, has no active publisher,
 // and passes ok), folds its counters, closes its subscribers with the
-// terminal code, and fires OnBroadcastExpired.
-func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) {
+// terminal code, and fires OnBroadcastExpired. Returns whether the hub was
+// actually removed.
+func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool {
 	r.mu.Lock()
 	b, exists := r.hubs[id]
 	if !exists || b.publisherActive || !ok(b) {
 		r.mu.Unlock()
-		return
+		return false
 	}
 
 	delete(r.hubs, id)
@@ -1017,6 +1073,7 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) {
 	if !edge && r.opts.OnBroadcastExpired != nil {
 		r.opts.OnBroadcastExpired(id)
 	}
+	return true
 }
 
 // Publisher is the active publisher session's handle.

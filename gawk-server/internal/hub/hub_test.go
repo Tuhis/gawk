@@ -1454,3 +1454,84 @@ func TestEndBroadcastAndClusterHooks(t *testing.T) {
 	r.EndBroadcast("AAAAAA")
 	r.EndBroadcast("!!!")
 }
+
+// R17 post-review fix (PR #47): ExpireEdgeIfViewerless is the linger-out
+// deletion — atomic with Subscribe under the registry lock, so a viewer that
+// raced the linger window keeps the hub (the caller re-attaches for it)
+// instead of being stranded on a pull-less hub or 4000'd mid-broadcast.
+func TestExpireEdgeIfViewerless(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxSubscribers: 4})
+
+	// Unknown / malformed IDs: nothing to keep — report the hub gone.
+	if !r.ExpireEdgeIfViewerless("AAAAAA") || !r.ExpireEdgeIfViewerless("!!!") {
+		t.Error("unknown/malformed ID should report the hub gone")
+	}
+
+	// An edge hub with an ACTIVE publisher (upstream pull mid-claim, or a
+	// come-home racing the linger-out) is kept.
+	id, epub, err := r.EdgePublish("K7XQ2M")
+	if err != nil {
+		t.Fatalf("EdgePublish: %v", err)
+	}
+	if r.ExpireEdgeIfViewerless(id) {
+		t.Error("edge hub with an active publisher reported gone")
+	}
+
+	// A viewer that raced the linger window keeps the hub, untouched.
+	epub.Close()
+	f := &fakeSender{}
+	sub, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if r.ExpireEdgeIfViewerless(id) {
+		t.Error("edge hub with a live viewer reported gone")
+	}
+	if _, closed := f.getCloseInfo(); closed {
+		t.Error("viewer was closed by an expire that must keep the hub")
+	}
+
+	// Viewer-less and publisher-less: deleted, so the next viewer's
+	// CheckSubscribe 404s into a fresh EnsureEdge.
+	sub.Close()
+	if !r.ExpireEdgeIfViewerless(id) {
+		t.Error("viewerless edge hub not expired")
+	}
+	if err := r.CheckSubscribe(id); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CheckSubscribe after linger expire = %v, want ErrNotFound", err)
+	}
+
+	// Origin hubs are NEVER expired here — their lifecycle belongs to the
+	// grace timer.
+	originID, opub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	opub.Close() // graced, viewerless — still not this path's business
+	if r.ExpireEdgeIfViewerless(originID) {
+		t.Error("origin hub expired by the edge linger path")
+	}
+	if err := r.CheckSubscribe(originID); err != nil {
+		t.Errorf("origin hub gone after ExpireEdgeIfViewerless: %v", err)
+	}
+}
+
+// R17 post-review fix (PR #47): a failed EdgePublish must not relabel the
+// hub. The old order set edge=true before the claim, so racing a live origin
+// publisher mislabeled it — flipping role metrics and loss attribution, and
+// skipping the origin's lease lifecycle hooks at close/expiry.
+func TestEdgePublishFailureKeepsOriginRole(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, pub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	defer pub.Close()
+
+	if _, _, err := r.EdgePublish(id); !errors.Is(err, ErrPublisherActive) {
+		t.Fatalf("EdgePublish on a live origin = %v, want ErrPublisherActive", err)
+	}
+	if role := r.Stats().Broadcasts[r.ObfuscateID(id)].Role; role != "origin" {
+		t.Errorf("role after failed EdgePublish = %q, want origin (hub must not be relabeled)", role)
+	}
+}

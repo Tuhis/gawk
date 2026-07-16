@@ -84,11 +84,15 @@ type Config struct {
 	// per-process random (the pre-R17 single-pod behavior).
 	StatsKey []byte
 
-	// ResumeTokenKey keys the resume-token HMAC (R17 W2, docs/22 Decision 7)
-	// when no publish secret is set (a publish secret always wins — rotating
-	// it revokes all tokens). 32 bytes from 64 hex chars, shared across all
-	// relay pods. Empty (and no publish secret) falls back to a per-process
-	// random key: dev parity with the old process-lifetime reclaim.
+	// ResumeTokenKey keys the resume-token HMAC (R17 W2, docs/22 Decision 7).
+	// When set it WINS over the publish-secret derivation (PR #47 security
+	// review): the publish secret is distributed to every broadcaster, so a
+	// key derived from it is computable by every broadcaster — only this
+	// independent, server-side key makes the resume token a real
+	// per-broadcast ownership proof between secret-holders. Rotating it
+	// revokes all tokens. 32 bytes from 64 hex chars, shared across all
+	// relay pods. Empty: HKDF from the publish secret when one is set, else
+	// a per-process random key (dev parity with process-lifetime reclaim).
 	ResumeTokenKey []byte
 
 	// StatelessResetKey is the 32-byte QUIC stateless reset key (R17 W1,
@@ -170,7 +174,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
 		"QUIC stateless reset key as 64 hex chars (32 bytes), shared across all relay pods; empty disables")
 	resumeTokenKey := fs.String("resume-token-key", env("GAWK_RESUME_TOKEN_KEY", ""),
-		"resume-token HMAC key as 64 hex chars (32 bytes), used only when no publish secret is set; empty = per-process random")
+		"resume-token HMAC key as 64 hex chars (32 bytes), shared across relay pods; wins over the publish-secret derivation when set; empty = derive from the publish secret, else per-process random")
 	clusterMode := fs.Bool("cluster-mode",
 		env("GAWK_CLUSTER_MODE", "") == "true" || env("GAWK_CLUSTER_MODE", "") == "1",
 		"enable multi-pod federation (per-broadcast k8s origin Leases, edge pulls); off = single-pod behavior")

@@ -852,7 +852,7 @@ func TestRateLimitBlockLogsOrigin(t *testing.T) {
 		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, log, sm)
 	// Test requests come from 127.0.0.1-style addrs; disable the loopback
 	// bypass so the limiter actually engages (as production does off-pod).
-	srv.testHookRateLimitLoopback = true
+	srv.testHookRateLimitLoopback.Store(true)
 
 	req := httptest.NewRequest(http.MethodConnect, "https://gawk.example.com/subscribe/abc", nil)
 	req.RemoteAddr = "203.0.113.9:5000"
@@ -1311,7 +1311,7 @@ func TestConnRateLimit429OverNetwork(t *testing.T) {
 		ConnRateLimit:   0.001, // effectively no refill within the test
 		ConnBurstLimit:  2,
 	}, discardLog)
-	srv.testHookRateLimitLoopback = true
+	srv.testHookRateLimitLoopback.Store(true)
 
 	url := fmt.Sprintf("https://127.0.0.1:%d/echo", port)
 	for i := range 2 {

@@ -404,10 +404,28 @@ func (c *Coordinator) EnterGrace(ctx context.Context, broadcastID string) error 
 // Delete removes the broadcast's lease (local grace-GC expired, or the
 // broadcast ended for good). Cluster-wide "broadcast ended": every pod's
 // informer sees the deletion.
+// Holder-gated (post-review fix, PR #47): only the holder-of-record — or
+// anyone, once a drain Release cleared the holder — may delete. A pod whose
+// lease was force-taken reaches its local grace expiry later with a stale
+// opinion, and deleting here would end the LIVE broadcast cluster-wide under
+// the new origin. The delete is additionally CAS-fenced on resourceVersion
+// so a claim racing between the Get and the Delete wins over the deletion.
 func (c *Coordinator) Delete(ctx context.Context, broadcastID string) error {
 	c.stopRenew(broadcastID)
-	err := c.leases().Delete(ctx, leaseName(broadcastID), metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
+	lease, err := c.leases().Get(ctx, leaseName(broadcastID), metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if h := parseOrigin(lease).Holder; h != "" && h != c.opts.PodName {
+		return nil // not ours to end — the broadcast lives on elsewhere
+	}
+	err = c.leases().Delete(ctx, leaseName(broadcastID), metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{ResourceVersion: &lease.ResourceVersion},
+	})
+	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 		return nil
 	}
 	return err

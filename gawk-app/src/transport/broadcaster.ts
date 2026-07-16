@@ -1068,6 +1068,9 @@ export class BroadcastPipeline {
   }
 
   private scheduleResumeAttempt(closeCode: number | null, reason: string): void {
+    // stop() may race a dial that is already in flight; its failure must not
+    // schedule anything (or surface errors) after onEnded (PR #47 review).
+    if (this.stopping) return;
     this.reconnectAttempt += 1;
     if (this.reconnectAttempt > RECONNECT_MAX_ATTEMPTS) {
       this.fail(new Error(`broadcast resume failed after ${RECONNECT_MAX_ATTEMPTS} attempts: ${reason}`));
@@ -1094,7 +1097,14 @@ export class BroadcastPipeline {
       this.scheduleResumeAttempt(null, e instanceof Error ? e.message : String(e));
       return;
     }
-    if (this.stopping) return;
+    if (this.stopping) {
+      // stop() raced the dial: connectTransport just re-armed a live session
+      // (wt, sender, TimeSync) after teardown() already ran. Release it — an
+      // abandoned session is a zombie publisher holding the broadcast ID
+      // hostage until the tab closes (CODE-REVIEW.md; PR #47 review).
+      this.teardownTransport();
+      return;
+    }
     this.reconnectAttempt = 0;
     // Prime the (possibly fresh) pod immediately: the next encoded frame
     // becomes a keyframe stream with the embedded config, so join-priming

@@ -463,6 +463,12 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   `resume` query param) — including reclaims that used to work bare. An old
   client's tokenless reclaim gets 403 and falls back to minting; that's the
   designed hijack fix, not a bug. ([docs/22](docs/22-relay-scale-out.md))
+- **The hijack fix needs an explicit `resumeTokenKey` to hold between
+  broadcasters** — a token key derived from the broadcaster-distributed
+  publish secret is computable by every broadcaster, so it only stops
+  non-secret-holders. Set the independent server-side key (it wins over the
+  secret derivation; `resume_token_key_mode=explicit-key` in the startup
+  log confirms). ([docs/22](docs/22-relay-scale-out.md))
 - **Fleet-shared Secrets are load-bearing**: without a shared resume-token
   key (or publish secret), re-homing 403s on every pod except the minting
   one; without a shared `statsKey`, one broadcast has N metric identities;

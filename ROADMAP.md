@@ -1010,10 +1010,13 @@ revisit-if triggers recorded in docs/22) and over per-broadcast sharding
   today's 1 s floor.
 - **Restart-survivable broadcasts**: broadcaster auto-resume (capture +
   encoder kept alive, transport-only reconnect, forced keyframe on re-attach)
-  plus **resume tokens** — HMAC over the broadcast ID, HKDF-derived from the
-  publish secret, delivered in-band as new wire message **0x09**, required
-  for every `/publish/{id}` claim including IDs unknown to the receiving pod
-  (which now create the hub). Also closes today's graced-ID hijack hole.
+  plus **resume tokens** — HMAC over the broadcast ID, keyed by the fleet
+  `resumeTokenKey` when set (it wins over the HKDF-from-publish-secret
+  fallback, which every secret-holder can compute — PR #47 review),
+  delivered in-band as new wire message **0x09**, required for every
+  `/publish/{id}` claim including IDs unknown to the receiving pod (which
+  now create the hub). With the explicit key this also closes today's
+  graced-ID hijack hole.
 - **Federation (W3–W5, dormant behind `-cluster-mode`)**: per-broadcast Lease
   origin registry (force-take fencing via an `originGeneration`, leaderless
   janitor GC, lease deletion = cluster-wide "broadcast ended");
