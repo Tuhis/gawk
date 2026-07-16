@@ -168,7 +168,18 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   decode with a main-thread AudioWorklet sink, good-enough A/V sync
   (shared capture clock, adaptive audio jitter buffer, audio-master pacing
   in R12 paced modes); N1–N6 chunks; **designed 2026-07-15, not
-  started**).
+  started**),
+  `docs/21-ios-video-fullscreen.md` for R16 (iOS native fullscreen:
+  iPhone has **no Element Fullscreen API** — today's viewer fullscreen
+  button is a silent no-op there; a `TeeRenderSink` decorator wraps each
+  *presented* canvas frame (R12 smoothing preserved, interpolated frames
+  included) into a worker-side `VideoTrackGenerator` whose track feeds a
+  hidden pre-armed `<video>` for `webkitEnterFullscreen()`, with CSS
+  pseudo-fullscreen as the fallback tier; gated on the *absence* of
+  `Element.requestFullscreen` so **non-iPhone devices are byte-identical**
+  (sole overlay-only exception: the new **Feature Gates** stats section —
+  UpperCamelCase gate names, first gate `NativeVideoFullscreen`);
+  U1–U4 chunks; **designed 2026-07-16, not started**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -574,6 +585,39 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    arrival-baseline fallback); frame interpolation unaffected by
    construction. Non-goals: mic mixing, R14-native audio (wire types are
    ready — follow-up there), FEC, DTX, audio-only mode.
+21. iOS native fullscreen — **designed 2026-07-16 (U1–U4), not started**
+   (R16, `docs/21-ios-video-fullscreen.md`; viewer-client only, zero
+   server/wire changes). The viewer fullscreen button is a **silent no-op
+   on iPhone**: no Element Fullscreen API exists there (iPad has it since
+   16.4; every iOS browser is WebKit), and the only native fullscreen is
+   `HTMLVideoElement.webkitEnterFullscreen()` — which needs a `<video>`,
+   while the viewer paints a canvas. Design: keep the whole pipeline +
+   R12 smoothing untouched and add a **presentation tee** — a
+   `TeeRenderSink` decorator around the context sink (inside
+   `PacedPresentationSink`, passing through the interpolation
+   `upload`/`present` surface) that, once armed, wraps each **presented**
+   frame as `new VideoFrame(canvas, {timestamp})` into a worker-side
+   `VideoTrackGenerator` (worker-only API — Safari 18; iOS's WebTransport
+   floor is Safari 26.4, so it's guaranteed present, and iOS was confirmed
+   on-device 2026-07-15 to run the worker pipeline); the track transfers
+   to the main thread once and feeds a hidden **pre-armed**
+   `<video playsinline muted>` (armed at `watching` — a lazy arm risks
+   leaving the user gesture; `display:none` breaks the API, hide by
+   size/position). `useFullscreen` becomes three tiers: element fullscreen
+   (unchanged where it exists) → `webkitEnterFullscreen` → CSS
+   pseudo-fullscreen. **Gate = absence of `Element.requestFullscreen`**
+   (iPhone signature) checked once main-thread: non-gated devices are
+   **byte-identical** (no tee construction, no worker messages, no video
+   element — hard requirement). Pre-registered fallback: if U1's probe
+   (`VideoTrackGenerator` + trial `VideoFrame`-from-OffscreenCanvas — the
+   one unverified load-bearing fact) fails on real hardware, U2/U3 drop
+   and pseudo-fullscreen ships. Native fullscreen shows the system player
+   UI — overlay/menu unreachable there by construction. Also ships the
+   overlay's new **Feature Gates section** (UpperCamelCase gate names as a
+   TS string-literal union; `ViewerStats.featureGates`), first/only gate
+   `NativeVideoFullscreen`; the section renders only where gates are
+   reported (broadcaster overlay untouched) and appears on every viewer —
+   the one deliberate, overlay-only R16 change on non-gated devices.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

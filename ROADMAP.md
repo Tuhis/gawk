@@ -34,6 +34,7 @@ feature set exists).
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 📋 designed 2026-07-15; revised same day after design review (V0–V7 + V8 direct Vulkan Video, gated), not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
+| R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 📋 designed 2026-07-16 (U1–U4), not started ([docs/21](docs/21-ios-video-fullscreen.md)) |
 
 ---
 
@@ -875,6 +876,71 @@ R14 native broadcaster (wire messages are ready; noted as an R14 follow-up),
 FEC/PLC, DTX, audio-only mode.
 
 **Status**: designed 2026-07-15 (chunks N1–N6), not started.
+
+---
+
+## R16 — iOS native fullscreen
+
+**Goal**: the viewer's fullscreen button works on iPhone. Today it is a
+**silent no-op**: iPhone Safari (and therefore every iOS browser — all
+WebKit) has no Element Fullscreen API, and the viewer paints to a canvas,
+so there is nothing to call iPhone's only native fullscreen —
+`HTMLVideoElement.webkitEnterFullscreen()` — on. **Hard requirement: on
+every device that has Element Fullscreen (desktop, Android, iPad ≥ 16.4),
+nothing changes** — no video element, no new worker messages, byte-identical
+behavior.
+
+**Why now**: found while diagnosing iOS viewer reports (2026-07-15); the
+on-device confirmation that iOS Safari runs the full worker pipeline
+(transport + rendering in workers) resolved the design's one blocking
+unknown. WebTransport shipped on iOS in Safari 26.4 (2026-03), and since
+`VideoTrackGenerator` shipped in Safari 18, every iPhone that can watch a
+stream at all has the API this design needs — no capability tiers among
+connectable iPhones.
+
+**Scope sketch** (full design in
+[`docs/21-ios-video-fullscreen.md`](docs/21-ios-video-fullscreen.md)):
+
+- **Canvas tee, not a new render path**: the R12 paced/interpolating WebGL
+  sinks keep painting the OffscreenCanvas exactly as today; a new
+  `TeeRenderSink` decorator wraps the context sink and, once armed, wraps
+  each **presented** frame (interpolated mid-frames included) as
+  `new VideoFrame(canvas, {timestamp})` into a worker-side
+  `VideoTrackGenerator` — so the smoothed output, not raw decode, is what
+  fullscreen shows.
+- The generator's `MediaStreamTrack` transfers to the main thread once and
+  feeds a hidden, **pre-armed** `<video playsinline muted>` (armed at
+  `watching` — `webkitEnterFullscreen` needs an in-gesture call on a video
+  that already has media, so lazy arming risks a dead tap).
+- **Tiered `useFullscreen`**: element fullscreen where it exists (today's
+  behavior, untouched) → `webkitEnterFullscreen()` on the armed video →
+  CSS pseudo-fullscreen as the universal fallback — a silent no-op stops
+  being reachable on any device.
+- Gate: absence of `Element.requestFullscreen` (an iPhone signature),
+  checked once on the main thread; capability probe
+  (`VideoTrackGenerator` + trial `VideoFrame`-from-canvas) before any
+  protocol change, with a **pre-registered fallback**: if the probe fails
+  on real iPhone hardware, the native path is dropped and pseudo-fullscreen
+  ships (documented rejection = valid completion, R12 pattern).
+- **New "Feature Gates" stats-overlay section** (R16 is its first
+  consumer): gate-controlled features listed by **UpperCamelCase** name
+  (TS string-literal union) with active state + detail;
+  `ViewerStats.featureGates`. First and only gate for now:
+  `NativeVideoFullscreen`. The section renders only where gates are
+  reported (broadcaster overlay untouched); it appears on every *viewer*,
+  including non-gated ones (`✗ — element fullscreen available`) — the one
+  deliberate, overlay-only R16-visible change outside iPhone.
+- Viewer-client only: zero server/wire/broadcaster changes; `#/debug/*`
+  untouched; main-thread pipeline fallback gets the pseudo tier only.
+
+**Non-goals**: custom UI inside native fullscreen (structurally impossible —
+the system player UI is the UI); an iOS-reachable stats-overlay opener
+(real gap, separate item); audio through the element (R15's business);
+offering the video surface on non-gated devices.
+
+**Status**: designed 2026-07-16 (chunks U1–U4), not started. Known
+unverified fact: `new VideoFrame(OffscreenCanvas)` in a worker on iOS
+WebKit — U1 probes it first.
 
 ---
 

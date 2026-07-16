@@ -36,7 +36,7 @@ getDisplayMedia
 
 | Path | What |
 |------|------|
-| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R15), with ordering rationale and per-item scope sketches |
+| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R16), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `docs/` | Per-milestone design notes and gotchas (`01`–`20`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
@@ -128,10 +128,11 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 18. 🚧 Advanced broadcaster settings (R13): `isConfigSupported` probe matrix, HW-aware auto ceiling + probe-driven 'auto' framerate default (60 when hardware probes it, else 30), acceleration tri-state, bitrate/codec overrides, probe-annotated pickers, and capture aligned to the sticky selection via live `applyConstraints` — **no settings change ever restarts the stream**. Supersedes R7; UI/pipeline only — zero server/wire changes — `docs/18` (L1–L5 implemented 2026-07-15; automated gates green, manual browser verify pending)
 19. 📋 Native Linux broadcaster (R14): a Gio GUI app + CLI over a shared Go engine (inside the `gawk-server` module, reusing `internal/wire`), publishing with hardware encode from Linux via an ffmpeg subprocess (`pipewiregrab` → `h264_vulkan` → `h264_nvenc` → `h264_vaapi` → `libx264`, per-user trial-encode probing); Vulkan Video is the target encode API with direct-in-Go encode as a gated follow-up — `docs/19` (designed 2026-07-15, not started)
 20. 📋 System audio (R15, experimental): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), new wire types 0x07/0x08 + a hub audio-config cache, viewer-worker decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock (adaptive audio jitter buffer; audio-master video pacing in the R12 paced modes). Default-off "Enable audio (experimental)" broadcaster toggle; viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, not started)
+21. 📋 iOS native fullscreen (R16): the viewer's fullscreen button is a silent no-op on iPhone (no Element Fullscreen API there — every iOS browser is WebKit; the only native fullscreen is `webkitEnterFullscreen()` on a `<video>`, and the viewer paints a canvas). Fix: a `TeeRenderSink` decorator wraps each **presented** canvas frame (R12 pacing/interpolation preserved) into a worker-side `VideoTrackGenerator` feeding a hidden pre-armed `<video>`; tiered `useFullscreen` (element → video → CSS pseudo-fullscreen) so the button always does something; plus a new stats-overlay **Feature Gates** section (UpperCamelCase names, first gate `NativeVideoFullscreen`). Gated on the *absence* of `Element.requestFullscreen` — non-iPhone devices unchanged (overlay section aside). Viewer-only — zero server/wire changes — `docs/21` (designed 2026-07-16, not started)
 
 What comes next (the R11/R12/R13 manual browser verifies, then the R14
-native broadcaster and R15 system audio builds) is laid out in
-[`ROADMAP.md`](ROADMAP.md).
+native broadcaster, R15 system audio, and R16 iOS native fullscreen
+builds) is laid out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
 
