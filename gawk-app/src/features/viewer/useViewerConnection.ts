@@ -6,7 +6,11 @@
 // any worker whose boot handshake reports missing WebCodecs/WebTransport.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
-import { RECONNECT_MAX_ATTEMPTS, ViewerSession } from '../../transport/viewer-session';
+import {
+  RECONNECT_MAX_ATTEMPTS,
+  ViewerSession,
+  type ViewerErrorKind,
+} from '../../transport/viewer-session';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
 import { setPlayoutMode as setLocalPlayoutMode, type PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
@@ -32,6 +36,10 @@ export interface ViewerConnectionState {
   stats: ViewerStats | null;
   codec: string | null;
   error: string | null;
+  // What the failure means to the user; drives the error-card copy. The raw
+  // `error` message is console-only detail (users found "handshake failed"
+  // meaningless).
+  errorKind: ViewerErrorKind | null;
   errorFatal: boolean;
   retryNote: string | null;
   presentation: PresentationState;
@@ -63,6 +71,7 @@ export function useViewerConnection(
   const [stats, setStats] = useState<ViewerStats | null>(null);
   const [codec, setCodec] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorKind, setErrorKind] = useState<ViewerErrorKind | null>(null);
   const [errorFatal, setErrorFatal] = useState(false);
   const [retryNote, setRetryNote] = useState<string | null>(null);
   // R16: the worker's tee-capability verdict and (post-arm) the generator's
@@ -79,6 +88,7 @@ export function useViewerConnection(
     setStats(null);
     setCodec(null);
     setError(null);
+    setErrorKind(null);
     setErrorFatal(false);
     setRetryNote(null);
   }, []);
@@ -103,7 +113,12 @@ export function useViewerConnection(
         setStats(ev.stats);
         break;
       case 'error':
+        // The one place every surfaced error (worker or main-thread path)
+        // passes through — the detailed message lives here in the console,
+        // the card renders friendly copy keyed on `kind`.
+        log.error(`viewer error (${ev.kind}):`, ev.message);
         setError(ev.message);
+        setErrorKind(ev.kind);
         setErrorFatal(ev.fatal);
         setStatus('error');
         break;
@@ -237,10 +252,15 @@ export function useViewerConnection(
         },
         onError: (err) => {
           if (active) {
+            // Same structural mapping as the worker core: ViewerSession fires
+            // onError only for a fatal pipeline verdict or an exhausted
+            // reconnect budget.
+            const fatal = Boolean((err as { fatal?: boolean }).fatal);
             applyEvent({
               type: 'error',
               message: err.message,
-              fatal: Boolean((err as { fatal?: boolean }).fatal),
+              fatal,
+              kind: fatal ? 'unplayable' : 'lost',
             });
           }
           void session.stop();
@@ -251,11 +271,11 @@ export function useViewerConnection(
       },
     );
     session.start().catch((e) => {
+      // First-connect failure is fatal by ViewerSession policy and fires no
+      // callbacks — we never reached the stream.
       const err = e instanceof Error ? e : new Error(String(e));
-      log.error(err);
       if (active) {
-        setError(err.message);
-        setStatus('error');
+        applyEvent({ type: 'error', message: err.message, fatal: false, kind: 'unreachable' });
       }
     });
 
@@ -276,6 +296,7 @@ export function useViewerConnection(
     stats,
     codec,
     error,
+    errorKind,
     errorFatal,
     retryNote,
     presentation: {

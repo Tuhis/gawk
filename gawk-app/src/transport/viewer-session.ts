@@ -16,6 +16,17 @@ import type { DecodedFrame } from '../media/decoder';
 
 export const RECONNECT_MAX_ATTEMPTS = 10;
 
+// The user-facing classification of a viewer failure. Derived structurally
+// (which callback/rejection fired), never by sniffing error messages:
+// - 'unreachable': the first connect failed — we never saw the stream. A
+//   WebTransportError hides the HTTP status, so "no such broadcast" (404),
+//   "full" (429), a bad cert and a dead relay all land here (see the policy
+//   note above); the UI copy hedges toward the common case (see BUGS.md).
+// - 'lost': we were watching and the reconnect budget ran out.
+// - 'unplayable': fatal by pipeline verdict (e.g. undecodable codec) —
+//   retrying would fail identically.
+export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable';
+
 // 1s, 2s, 4s, 8s, then capped at 15s — ~100s total before giving up,
 // comfortably covering a relay restart.
 export function reconnectDelayMs(attempt: number): number {

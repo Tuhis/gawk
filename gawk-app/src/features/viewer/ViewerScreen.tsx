@@ -13,6 +13,7 @@ import { useAutoHide } from '../../lib/useAutoHide';
 import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
+import type { ViewerErrorKind } from '../../transport/viewer-session';
 import type { PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import { HOME } from '../../routing';
@@ -52,6 +53,37 @@ function loadPlayoutMode(): PlayoutMode {
     return 'adaptive';
   } catch {
     return 'adaptive';
+  }
+}
+
+// Error-card copy per failure kind. Deliberately decoupled from the raw
+// transport error, which goes to the console instead (useViewerConnection
+// logs it) — "Opening handshake failed." means nothing to a viewer. Caveat
+// on 'unreachable': a WebTransportError hides the HTTP status, so "no such
+// broadcast", "relay full" (max subscribers) and "relay down" are
+// indistinguishable client-side — this copy hedges toward the common case
+// and is knowingly misleading on a full relay (see BUGS.md).
+function errorCardCopy(
+  kind: ViewerErrorKind,
+  broadcastId: string,
+  codec: string | null,
+): { title: string; body: string } {
+  switch (kind) {
+    case 'unreachable':
+      return {
+        title: 'Streamer offline',
+        body: `No one is streaming at “${broadcastId}” right now. Check that the code is right, or try again once the streamer is live.`,
+      };
+    case 'lost':
+      return {
+        title: 'Lost the stream',
+        body: 'The stream stopped and we couldn’t reconnect. The streamer may have gone offline — try again in a moment.',
+      };
+    case 'unplayable':
+      return {
+        title: 'Can’t play this stream',
+        body: `Your browser can’t decode this stream’s video format${codec ? ` (codec ${codec})` : ''}. Try a different browser — Chrome works best.`,
+      };
   }
 }
 
@@ -112,7 +144,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // exactly as before. Sampled once per mount.
   const [gated] = useState(() => !elementFullscreenAvailable());
 
-  const { status, stats, codec, error, errorFatal, retryNote, presentation } = useViewerConnection(
+  const { status, stats, codec, errorKind, errorFatal, retryNote, presentation } = useViewerConnection(
     broadcastId,
     canvasRef,
     playoutMode,
@@ -214,6 +246,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
   useHotkey({ key: 'f' }, () => toggleFullscreen());
 
+  // A kind-less error only happens on a drop before we ever connected
+  // ('ended' while 'connecting') — read it as the stream being unreachable.
+  const errorCopy =
+    status === 'error' ? errorCardCopy(errorKind ?? 'unreachable', broadcastId, codec) : null;
+
   const controlsVisible = useAutoHide(CONTROL_IDLE_MS, status === 'watching' && !menu);
   const showControls = controlsVisible || status !== 'watching' || showStats || !!menu;
 
@@ -292,12 +329,10 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
                 <Button onClick={leave}>Back to home</Button>
               </>
             )}
-            {status === 'error' && (
+            {status === 'error' && errorCopy && (
               <>
-                <h2 className={styles.cardTitle}>
-                  {errorFatal ? 'Can’t play this stream' : 'Can’t reach the stream'}
-                </h2>
-                <p className={styles.cardText}>{error ?? 'The connection was lost.'}</p>
+                <h2 className={styles.cardTitle}>{errorCopy.title}</h2>
+                <p className={styles.cardText}>{errorCopy.body}</p>
                 <div className={styles.cardActions}>
                   {/* Retry is pointless for an unplayable codec — reloading in
                       the same browser fails identically. */}

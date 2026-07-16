@@ -6,27 +6,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-const { sessions, FakeViewerSession } = vi.hoisted(() => {
+const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
   interface Cbs {
     onConnected: () => void;
     onReconnecting: (i: { attempt: number; reason: string }) => void;
+    onConfig: (c: { codec: string; extradata: Uint8Array }) => void;
     onStats: (s: unknown) => void;
     onError: (e: Error) => void;
     onEnded: () => void;
   }
+  // failStartWith: makes the next sessions' start() reject — the
+  // never-connected path (fatal by ViewerSession policy, no callbacks fire).
+  const sessionState = { failStartWith: null as Error | null };
   class FakeViewerSession {
     cbs: Cbs;
     constructor(_url: string, _id: string, _opts: unknown, cbs: Cbs) {
       this.cbs = cbs;
       sessions.push(this);
     }
-    async start(): Promise<void> {}
+    async start(): Promise<void> {
+      if (sessionState.failStartWith) throw sessionState.failStartWith;
+    }
     async stop(): Promise<void> {
       this.cbs.onEnded();
     }
   }
   const sessions: FakeViewerSession[] = [];
-  return { sessions, FakeViewerSession };
+  return { sessions, sessionState, FakeViewerSession };
 });
 
 vi.mock('../../transport/viewer-session', () => ({
@@ -44,6 +50,7 @@ import {
 
 beforeEach(() => {
   sessions.length = 0;
+  sessionState.failStartWith = null;
   window.location.hash = '';
 });
 afterEach(cleanup);
@@ -67,12 +74,41 @@ describe('ViewerScreen states', () => {
     expect(screen.getByText('Broadcast ended')).toBeTruthy();
   });
 
-  it('shows the error card on a fatal error', async () => {
+  // Error-card copy is keyed on the structured kind, never the raw transport
+  // message — that goes to the console only (users found "handshake failed"
+  // and friends meaningless).
+
+  it('shows the streamer-offline card when the first connect fails', async () => {
+    sessionState.failStartWith = new Error('WebTransportError: Opening handshake failed.');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(screen.getByText('Streamer offline')).toBeTruthy());
+    expect(screen.getByText(/No one is streaming at “AB2CD3”/)).toBeTruthy();
+    expect(screen.queryByText(/handshake/i)).toBeNull();
+    expect(screen.getByText('Retry')).toBeTruthy();
+  });
+
+  it('shows the lost-stream card when reconnects are exhausted', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
-    act(() => sessions[0].cbs.onError(new Error('boom')));
-    expect(screen.getByText('Can’t reach the stream')).toBeTruthy();
-    expect(screen.getByText('boom')).toBeTruthy();
+    act(() => sessions[0].cbs.onConnected());
+    act(() => sessions[0].cbs.onError(new Error('reconnect failed after 10 attempts: boom')));
+    expect(screen.getByText('Lost the stream')).toBeTruthy();
+    expect(screen.getByText(/couldn’t reconnect/)).toBeTruthy();
+    expect(screen.queryByText(/boom/)).toBeNull();
+    expect(screen.getByText('Retry')).toBeTruthy();
+  });
+
+  it('shows the unplayable card (with codec, without Retry) on a fatal error', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    act(() => sessions[0].cbs.onConfig({ codec: 'avc1.42E02A', extradata: new Uint8Array() }));
+    act(() => sessions[0].cbs.onError(Object.assign(new Error('decoder exploded'), { fatal: true })));
+    expect(screen.getByText('Can’t play this stream')).toBeTruthy();
+    expect(screen.getByText(/can’t decode this stream’s video format \(codec avc1\.42E02A\)/)).toBeTruthy();
+    expect(screen.queryByText(/decoder exploded/)).toBeNull();
+    // Retry is pointless for an unplayable codec.
+    expect(screen.queryByText('Retry')).toBeNull();
   });
 });
 

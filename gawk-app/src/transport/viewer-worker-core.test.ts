@@ -153,8 +153,22 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     new ViewerWorkerCore(host, factory).start(startParams);
     const err = Object.assign(new Error('bad codec'), { fatal: true });
     sessions[0].cbs.onError(err);
-    expect(events).toContainEqual({ type: 'error', message: 'bad codec', fatal: true });
+    expect(events).toContainEqual({ type: 'error', message: 'bad codec', fatal: true, kind: 'unplayable' });
     expect(sessions[0].stopCalls).toBe(1);
+  });
+
+  it('marks a non-fatal session error as a lost stream', () => {
+    const { sink } = fakeSink();
+    const { host, events } = fakeHost(sink);
+    const { factory, sessions } = fakeFactory();
+    new ViewerWorkerCore(host, factory).start(startParams);
+    sessions[0].cbs.onError(new Error('reconnect failed after 10 attempts: gone'));
+    expect(events).toContainEqual({
+      type: 'error',
+      message: 'reconnect failed after 10 attempts: gone',
+      fatal: false,
+      kind: 'lost',
+    });
   });
 
   it('emits ended for the current session', () => {
@@ -195,7 +209,7 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     setNextStart(() => Promise.reject(Object.assign(new Error('unreachable'), { fatal: false })));
     new ViewerWorkerCore(host, factory).start(startParams);
     await flush();
-    expect(events).toContainEqual({ type: 'error', message: 'unreachable', fatal: false });
+    expect(events).toContainEqual({ type: 'error', message: 'unreachable', fatal: false, kind: 'unreachable' });
   });
 });
 

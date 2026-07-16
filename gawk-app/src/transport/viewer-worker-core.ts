@@ -13,7 +13,7 @@ import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
 import { ViewerPipeline } from './viewer';
 import type { ViewerStats } from './viewer';
-import { ViewerSession, type ViewerSessionCallbacks } from './viewer-session';
+import { ViewerSession, type ViewerErrorKind, type ViewerSessionCallbacks } from './viewer-session';
 import { LocalViewerTransport, type ViewerTransportFactory } from './viewer-transport';
 
 // Main thread → worker.
@@ -43,7 +43,8 @@ export type ViewerWorkerEvent =
   | { type: 'reconnecting'; attempt: number; reason: string }
   | { type: 'codec'; codec: string }
   | { type: 'stats'; stats: ViewerStats }
-  | { type: 'error'; message: string; fatal: boolean }
+  // `message` is console-only detail; the screen renders copy keyed on `kind`.
+  | { type: 'error'; message: string; fatal: boolean; kind: ViewerErrorKind }
   | { type: 'ended' }
   // R16 (gated devices only, in response to init.presentationTee): whether
   // VideoTrackGenerator + VideoFrame-from-canvas work in this worker. False ⇒
@@ -134,7 +135,10 @@ export class ViewerWorkerCore {
       },
       onError: (err) => {
         if (!current()) return;
-        this.host.post({ type: 'error', message: err.message, fatal: Boolean((err as { fatal?: boolean }).fatal) });
+        // ViewerSession fires onError only for a fatal pipeline verdict or an
+        // exhausted reconnect budget — fatal is what distinguishes the two.
+        const fatal = Boolean((err as { fatal?: boolean }).fatal);
+        this.host.post({ type: 'error', message: err.message, fatal, kind: fatal ? 'unplayable' : 'lost' });
         // Mirrors the main-thread ViewerScreen: ensure teardown/onEnded runs
         // after a terminal error (e.g. reconnect budget exhausted, which does
         // not fire onEnded on its own).
@@ -162,7 +166,12 @@ export class ViewerWorkerCore {
       if (!current()) return;
       this.session = null;
       const err = e instanceof Error ? e : new Error(String(e));
-      this.host.post({ type: 'error', message: err.message, fatal: Boolean((err as { fatal?: boolean }).fatal) });
+      this.host.post({
+        type: 'error',
+        message: err.message,
+        fatal: Boolean((err as { fatal?: boolean }).fatal),
+        kind: 'unreachable',
+      });
     });
   }
 
