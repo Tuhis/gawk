@@ -221,6 +221,10 @@ encoders drain frames without that signal ever firing.
   error, never "no hardware encoder". Diagnose with `GST_DEBUG=pipewire*:5` in
   the environment — the child inherits it and its stderr lands in the debug
   log.
+- **`GAWK_DUMP_TS=<path>` tees the raw MPEG-TS to disk** while broadcasting.
+  Play it with `mpv`/`ffplay` — it is exactly what the encoder produced, so it
+  splits "the capture is black at the source" from "the viewer can't decode
+  it" in one step.
 - **`pipewiregrab` is not in mainline FFmpeg** — an unmerged patchset carried
   downstream by Jami. Mainline ffmpeg has no PipeWire input at all. Don't
   re-propose it without checking it actually merged.

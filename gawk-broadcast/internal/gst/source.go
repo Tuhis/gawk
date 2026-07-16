@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
@@ -84,6 +86,26 @@ type Source struct {
 
 	frames chan engine.AccessUnit
 	wg     sync.WaitGroup
+
+	// dump tees every child's MPEG-TS output to disk when GAWK_DUMP_TS is
+	// set — the ground-truth instrument for "is the picture black at the
+	// source or broken on the viewer?". Written only by the (sequential)
+	// pumps; opened in Start, closed in Stop.
+	dump *os.File
+}
+
+// pumpHandle tracks one child's demux goroutine. Every child gets a pump the
+// moment it starts: a stdout pipe nobody reads fills at ~64 kB, fdsink
+// blocks, and the whole encode pipeline stalls for the probe window — then
+// bursts the stale backlog when the tap finally opens (field finding,
+// 2026-07-17). Until the child is adopted its frames still enter the channel
+// (nobody is listening yet, and the bounded channel simply fills), but drops
+// stay silent and the pump neither reports an error nor closes the channel —
+// a cascade attempt that dies in its probe window is the cascade's failure to
+// report, not the session's.
+type pumpHandle struct {
+	done    chan struct{}
+	adopted atomic.Bool
 }
 
 // Start runs the portal handshake, picks an encoder, and starts the child.
@@ -113,9 +135,23 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 		return nil, err
 	}
 
+	if path := os.Getenv("GAWK_DUMP_TS"); path != "" {
+		f, err := os.Create(path)
+		if err != nil {
+			s.log.Warn("GAWK_DUMP_TS set but the file could not be created", "path", path, "err", err)
+		} else {
+			s.dump = f
+			s.log.Info("dumping the raw MPEG-TS stream", "path", path)
+		}
+	}
+
 	s.frames = make(chan engine.AccessUnit, 8)
 	if err := s.startWithCascade(ctx, stream, cand); err != nil {
 		stream.Close()
+		if s.dump != nil {
+			s.dump.Close()
+			s.dump = nil
+		}
 		return nil, err
 	}
 	return s.frames, nil
@@ -139,14 +175,37 @@ func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, fi
 				continue
 			}
 
+			// The pump starts with the child, not after the probe: an unread
+			// stdout pipe blocks fdsink at ~64 kB and stalls the encoder for
+			// the whole probe window (see pumpHandle).
+			h := &pumpHandle{done: make(chan struct{})}
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.pump(kid, h)
+			}()
+
 			// The live probe: did it survive long enough to believe?
 			if err := liveProbe(kid, s.opts.LiveProbeWindow); err != nil {
 				failures = append(failures, fmt.Sprintf("%s (capture %s): %v", cand.Element, mode, err))
 				s.log.Warn("live pipeline died inside its probe window, trying the next rung",
 					"encoder", cand.Element, "capture", mode, "err", err)
+				// The child is dead; let its pump drain and exit, then flush
+				// whatever it buffered — the next attempt may run a different
+				// encoder, and its viewers must never see two SPS lineages
+				// interleaved.
+				<-h.done
+				for drained := false; !drained; {
+					select {
+					case <-s.frames:
+					default:
+						drained = true
+					}
+				}
 				continue
 			}
 
+			h.adopted.Store(true)
 			s.mu.Lock()
 			s.kid = kid
 			s.encoder = cand.Name
@@ -158,12 +217,6 @@ func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, fi
 				"encoder", cand.Element, "capture", mode.String(),
 				"width", s.cfg.Width, "height", s.cfg.Height,
 				"fps", s.cfg.Fps, "bitrate_bps", s.cfg.BitrateBps, "gop_ms", s.cfg.GOPMs)
-
-			s.wg.Add(1)
-			go func() {
-				defer s.wg.Done()
-				s.pump(kid)
-			}()
 			return nil
 		}
 	}
@@ -233,8 +286,8 @@ func candidatesFrom(first Candidate, override bool) []Candidate {
 }
 
 // pump demuxes the child's stdout into access units.
-func (s *Source) pump(kid *child) {
-	defer close(s.frames)
+func (s *Source) pump(kid *child, h *pumpHandle) {
+	defer close(h.done)
 
 	// The AU bound is the relay's: an access unit larger than it would accept
 	// is useless to us anyway.
@@ -258,17 +311,34 @@ func (s *Source) pump(kid *child) {
 			// The sender is behind. Dropping here is consistent with the whole
 			// project: frames over stalls. Blocking would stall the demuxer,
 			// then the pipe, then the encoder — backpressure all the way into
-			// the GPU.
-			s.log.Debug("dropping access unit: sender is behind")
+			// the GPU. Before adoption the drop is expected (nobody is
+			// listening during the probe window), so it stays silent.
+			if h.adopted.Load() {
+				s.log.Debug("dropping access unit: sender is behind")
+			}
 			return nil
 		}
 	})
 
-	_, copyErr := io.Copy(demux, kid.stdout)
+	var src io.Reader = kid.stdout
+	if s.dump != nil {
+		// Debug tee (GAWK_DUMP_TS). A write failure here fails the copy and
+		// with it the capture — acceptable for a debugging knob.
+		src = io.TeeReader(src, s.dump)
+	}
+	_, copyErr := io.Copy(demux, src)
 	if copyErr == nil {
 		copyErr = demux.Close()
 	}
 	waitErr := kid.wait()
+
+	if !h.adopted.Load() {
+		// A cascade attempt that lost its probe: its post-mortem is the
+		// cascade's failure list, and the frame channel belongs to whoever
+		// wins.
+		return
+	}
+	defer close(s.frames)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,6 +370,10 @@ func (s *Source) Stop() error {
 		kid.stop()
 	}
 	s.wg.Wait()
+	if s.dump != nil {
+		s.dump.Close()
+		s.dump = nil
+	}
 	if stream != nil {
 		return stream.Close()
 	}

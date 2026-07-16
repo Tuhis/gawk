@@ -237,6 +237,65 @@ func TestSourceEmitsAccessUnits(t *testing.T) {
 	}
 }
 
+// Every child's stdout is drained from the moment it starts. Before this fix,
+// nothing read the pipe until the probe window elapsed: it filled at ~64 kB,
+// fdsink blocked, and the encoder spent the whole window stalled — every
+// broadcast began with a frozen, stale backlog burst (field finding,
+// 2026-07-17: three seconds of "dropping access unit: sender is behind" at
+// every start).
+func TestStdoutIsDrainedDuringTheProbeWindow(t *testing.T) {
+	fp := &fakePortal{}
+	sentinel := filepath.Join(t.TempDir(), "wrote-everything")
+	// Write far more than a pipe buffers (the fixture alone is ~230 kB
+	// against a 64 kB pipe), then leave a sentinel. With a blocked pipe the
+	// sentinel appears only after the probe window opens the tap; with a
+	// drained one it appears immediately.
+	fixture := mustAbs(t, "../mpegts/testdata/sample.ts")
+	script := "for i in 1 2 3 4 5; do cat " + fixture + "; done\ntouch " + sentinel + "\nsleep 30\n"
+	s := newSource(t, Options{
+		Binary:          fakeBinary(t, script),
+		OpenPortal:      fp.open,
+		LiveProbeWindow: 1500 * time.Millisecond,
+	})
+	start := time.Now()
+	if _, err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	fi, err := os.Stat(sentinel)
+	if err != nil {
+		t.Fatalf("the child never finished writing — its stdout sat unread: %v", err)
+	}
+	if wrote := fi.ModTime().Sub(start); wrote > 750*time.Millisecond {
+		t.Errorf("child finished writing %v after start — stdout was not drained during the probe window", wrote)
+	}
+}
+
+// GAWK_DUMP_TS tees the child's MPEG-TS output to disk — the ground-truth
+// instrument for "is the picture black at the source or broken on the
+// viewer?" (field finding, 2026-07-17). Playable with mpv/ffplay.
+func TestDumpTSTeesTheStreamToDisk(t *testing.T) {
+	fp := &fakePortal{}
+	path := filepath.Join(t.TempDir(), "dump.ts")
+	t.Setenv("GAWK_DUMP_TS", path)
+	s := newSource(t, Options{Binary: streamingBinary(t), OpenPortal: fp.open})
+	frames, err := s.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-frames
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no dump written: %v", err)
+	}
+	if len(b) == 0 || b[0] != 0x47 {
+		t.Errorf("dump does not look like MPEG-TS (%d bytes)", len(b))
+	}
+}
+
 // A child that dies *after* the probe window was working: that is a genuine
 // failure, and it must surface with its stderr rather than hang or go quiet.
 func TestChildDeathSurfacesWithStderr(t *testing.T) {

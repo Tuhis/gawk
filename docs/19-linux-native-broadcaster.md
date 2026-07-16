@@ -999,7 +999,36 @@ were also moved ahead of `StartError` rendering: capture-phase failures
 arrive `StartError`-wrapped, and the wrapper was shadowing every curated
 message behind "Could not start capture: <Go error chain>". Diagnosis knob:
 `GST_DEBUG=pipewire*:5` in the environment reaches the child (env is
-inherited) and its stderr lands in the debug log.
+inherited) and its stderr lands in the debug log. On-device confirmation
+(2026-07-17, KDE-era compositor on a 240 Hz monitor): the compositor answers
+the auto rung with `video/x-raw(memory:DMABuf), format=DMA_DRM,
+drm-format=AR24, 2560x1440` — the caps map fine ("we got format") and then
+`handle_format_change` still finishes with the error, so the failure is in
+the finish/allocation step with `videorate` sitting between `pipewiresrc`
+and `vapostproc`, not in the format mapping; the system-memory rung
+negotiates `BGRA` over MemFd on the same machine and streams. Recovering
+zero-copy (likely: rate-gate placement vs DMA_DRM caps) is a follow-up, not
+a blocker.
+
+**5. Pumps start with the child, not after the probe window (field finding,
+2026-07-17).** The first successful on-device stream began with three
+seconds of "dropping access unit: sender is behind": nothing read the
+child's stdout until `liveProbe` returned, a pipe buffers ~64 kB ≈ 64 ms of
+video, and `fdsink` then blocked — stalling the entire encode pipeline for
+the probe window and bursting the stale backlog when the tap opened. The
+demux pump now starts the moment the child does (`pumpHandle`); frames
+entering the bounded channel before adoption are dropped silently (nobody is
+listening until `Start` returns), a losing cascade attempt's pump neither
+reports an error nor closes the frame channel, and the channel is flushed
+between attempts so two SPS lineages never interleave. Two debugging
+by-products: **`GAWK_DUMP_TS=<path>` tees the child's raw MPEG-TS to disk**
+(play it with mpv/ffplay — the ground-truth instrument for "black at the
+source vs broken on the viewer"), and the child's stderr moved to our own
+`os.Pipe` with a reap-then-bounded-wait in `wait()` — `cmd.StderrPipe` is
+closed by `Wait` out from under a still-running drain, which truncated the
+dying words the capture-vs-encoder attribution reads (a race the `-race`
+suite caught), while an unbounded wait deadlocks on a grandchild holding the
+write end.
 
 ## Verification plan (manual)
 

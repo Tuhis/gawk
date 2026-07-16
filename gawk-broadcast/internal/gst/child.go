@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // stderrKeepLines is how many trailing stderr lines we keep. GStreamer's fatal
@@ -70,6 +71,16 @@ type child struct {
 
 	mu     sync.Mutex
 	stderr []string
+	// stderrDone closes when drainStderr has read its pipe to EOF. The
+	// stderr pipe is our own os.Pipe, not cmd.StderrPipe: Wait closes a
+	// StderrPipe out from under a still-running drain, and an error message
+	// built from a truncated drain loses the child's dying words — which the
+	// cascade's capture-vs-encoder attribution reads (a race the -race suite
+	// caught). wait() reaps first and then waits, briefly and bounded, for
+	// the drain — bounded because a grandchild holding the write end open
+	// (sleep in a test script, in principle a forked helper) would otherwise
+	// deadlock the reap.
+	stderrDone chan struct{}
 
 	waitOnce sync.Once
 	waitErr  error
@@ -89,19 +100,27 @@ func startChild(ctx context.Context, binary string, args []string, extraFD *os.F
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
+	// Our own pipe, deliberately not cmd.StderrPipe — see child.stderrDone.
+	stderr, stderrW, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	cmd.Stderr = stderrW
 
 	if err := cmd.Start(); err != nil {
+		stderr.Close()
+		stderrW.Close()
 		if missingBinary(err) {
 			return nil, missingBinaryErr(binary)
 		}
 		return nil, err
 	}
+	// The child holds its own copy of the write end; keeping ours would stop
+	// the drain from ever seeing EOF.
+	stderrW.Close()
 
-	c := &child{cmd: cmd, stdout: stdout, log: log, done: make(chan struct{})}
+	c := &child{cmd: cmd, stdout: stdout, log: log,
+		done: make(chan struct{}), stderrDone: make(chan struct{})}
 	go c.drainStderr(stderr)
 	log.Debug("gst child started", "args", strings.Join(args, " "))
 	return c, nil
@@ -110,7 +129,9 @@ func startChild(ctx context.Context, binary string, args []string, extraFD *os.F
 // drainStderr keeps the tail of the child's stderr. It must run: a child whose
 // stderr pipe fills would block forever, which is the silent hang this whole
 // package is written to avoid.
-func (c *child) drainStderr(r io.Reader) {
+func (c *child) drainStderr(r io.ReadCloser) {
+	defer close(c.stderrDone)
+	defer r.Close()
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -138,6 +159,14 @@ func (c *child) wait() error {
 	c.waitOnce.Do(func() {
 		err := c.cmd.Wait()
 		if err != nil {
+			// The child dying closes its write end, so the drain hits EOF
+			// promptly — wait for it so the message carries the child's last
+			// words rather than a truncated prefix. Bounded, because a
+			// grandchild holding the write end open must not block the reap.
+			select {
+			case <-c.stderrDone:
+			case <-time.After(500 * time.Millisecond):
+			}
 			if tail := c.stderrTail(); tail != "" {
 				err = fmt.Errorf("%s exited: %w\n%s", LaunchBinary, err, tail)
 			} else {
