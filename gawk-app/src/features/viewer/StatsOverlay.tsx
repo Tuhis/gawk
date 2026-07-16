@@ -99,15 +99,14 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, onClose, 
       ],
     },
     // R16: which conditional features are live on this client — rendered on
-    // every viewer (a desktop reading "✗ — element fullscreen available" is
-    // exactly the remote-diagnosis win).
+    // every viewer. The value stays a bare ✓/✗ (the full detail string
+    // overflowed the grid); the detail shows as a hover tooltip on the value
+    // and always travels in Copy diagnostics.
     ...(featureGates && featureGates.length > 0
       ? [
           {
             title: 'Feature Gates',
-            rows: featureGates.map(
-              (g): StatsRow => [g.name, `${g.active ? '✓' : '✗'}${g.detail ? ` — ${g.detail}` : ''}`],
-            ),
+            rows: featureGates.map((g): StatsRow => [g.name, g.active ? '✓' : '✗', g.detail]),
           },
         ]
       : []),

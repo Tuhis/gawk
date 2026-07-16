@@ -159,7 +159,8 @@ describe('StatsOverlay', () => {
   });
 
   // R16 (docs/21 Decision 9): the Feature Gates section renders only when the
-  // surface reports at least one gate, with the active/detail readout.
+  // surface reports at least one gate. The value is a bare ✓/✗; the detail is
+  // the value's hover tooltip (title attribute).
   it('renders the Feature Gates section only when gates are reported', () => {
     render(
       <StatsOverlay
@@ -173,7 +174,9 @@ describe('StatsOverlay', () => {
       />,
     );
     expect(screen.getByText('Feature Gates')).toBeTruthy();
-    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe('✓ — armed');
+    let value = screen.getByText('NativeVideoFullscreen').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✓');
+    expect(value.getAttribute('title')).toBe('armed');
 
     cleanup();
     render(
@@ -189,9 +192,9 @@ describe('StatsOverlay', () => {
         copied={false}
       />,
     );
-    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe(
-      '✗ — element fullscreen available',
-    );
+    value = screen.getByText('NativeVideoFullscreen').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✗');
+    expect(value.getAttribute('title')).toBe('element fullscreen available');
 
     cleanup();
     // No gates reported (prop absent or empty) ⇒ no section.

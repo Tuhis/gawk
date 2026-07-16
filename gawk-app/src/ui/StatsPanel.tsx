@@ -8,7 +8,9 @@ import { CloseIcon } from './Icons';
 // broadcaster overlays are both thin row-builders over this. Values arrive
 // pre-formatted ("—" for unavailable) so the panel stays purely presentational.
 
-export type StatsRow = [label: string, value: string];
+// The optional third element renders as a hover tooltip on the value (R16:
+// the Feature Gates rows keep their value to ✓/✗ and put the detail here).
+export type StatsRow = [label: string, value: string, title?: string];
 
 export interface StatsSection {
   title: string;
@@ -41,10 +43,10 @@ export function StatsPanel({ ariaLabel, sections, footer, onClose, onCopy, copie
           <section key={s.title} className={styles.section}>
             <h3 className={styles.sectionTitle}>{s.title}</h3>
             <dl className={styles.grid}>
-              {s.rows.map(([label, value]) => (
+              {s.rows.map(([label, value, title]) => (
                 <div key={label} className={styles.row}>
                   <dt>{label}</dt>
-                  <dd>{value}</dd>
+                  <dd title={title}>{value}</dd>
                 </div>
               ))}
             </dl>

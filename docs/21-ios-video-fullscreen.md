@@ -199,6 +199,9 @@ Platform facts the design rests on (researched 2026-07-15):
    `presentation: { tier: 'element' | 'video' | 'pseudo' | null,
    armed: boolean, teedFrames: number, teeErrors: number }` — stay in
    `ViewerStats` for Copy diagnostics; the gate row is derived from them.
+   (Follow-up, 2026-07-16: the row's *value* is just ✓/✗ — the full
+   `✗ — detail` string overflowed the overlay grid; `detail` renders as a
+   hover tooltip on the value and always travels in Copy diagnostics.)
 
    Scope note: the section appears on **every** viewer (a desktop viewer
    shows `NativeVideoFullscreen ✗ — element fullscreen available`, which
@@ -273,15 +276,16 @@ against the homelab deployment:
    across attempts, Decision 4).
 4. **Probe-failure tier**: with the probe artificially failed (dev build),
    the tap produces pseudo-fullscreen, no arm command, no video element;
-   Feature Gates reads `NativeVideoFullscreen ✗ — probe failed → pseudo`.
+   Feature Gates reads `NativeVideoFullscreen ✗` (tooltip / Copy
+   diagnostics: `probe failed → pseudo`).
 5. **Regression, non-gated**: desktop Chrome + Firefox — fullscreen
    behavior unchanged, DOM has no video element, worker message traffic
    unchanged (assert via logging); the overlay's Feature Gates section
-   shows `NativeVideoFullscreen ✗ — element fullscreen available` (the
-   sole visible delta) and the broadcaster overlay has no such section;
-   iPad — tier 1 element fullscreen, R16 inert.
-   On the iPhone happy path, Feature Gates reads
-   `NativeVideoFullscreen ✓ — armed`.
+   shows `NativeVideoFullscreen ✗` with `element fullscreen available` as
+   the value's tooltip (the sole visible delta) and the broadcaster
+   overlay has no such section; iPad — tier 1 element fullscreen, R16
+   inert. On the iPhone happy path, Feature Gates reads
+   `NativeVideoFullscreen ✓` (tooltip: `armed`).
 6. **Cost sanity**: ~20 min fullscreen session on the iPhone — battery/
    thermal observation; if concerning, record and consider the Decision 5
    deferred-arm optimization.

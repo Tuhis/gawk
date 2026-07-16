@@ -225,9 +225,9 @@ describe('ViewerScreen R16 presentation surface', () => {
 
     openStats();
     expect(screen.getByText('Feature Gates')).toBeTruthy();
-    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe(
-      '✗ — element fullscreen available',
-    );
+    const value = screen.getByText('NativeVideoFullscreen').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✗');
+    expect(value.getAttribute('title')).toBe('element fullscreen available');
   });
 
   it('gated without worker support: no video element, gate row reads probe failed → pseudo', async () => {
@@ -237,9 +237,9 @@ describe('ViewerScreen R16 presentation surface', () => {
     expect(container.querySelector('video')).toBeNull();
 
     openStats();
-    expect(screen.getByText('NativeVideoFullscreen').nextSibling?.textContent).toBe(
-      '✗ — probe failed → pseudo',
-    );
+    const value = screen.getByText('NativeVideoFullscreen').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✗');
+    expect(value.getAttribute('title')).toBe('probe failed → pseudo');
   });
 
   it('gated: the fullscreen button falls back to pseudo-fullscreen (never a dead tap)', async () => {

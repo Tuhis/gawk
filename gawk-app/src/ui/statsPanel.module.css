@@ -89,6 +89,11 @@
   color: var(--text);
 }
 
+/* R16: values carrying a tooltip (e.g. a Feature Gates detail) hint at it. */
+.row dd[title] {
+  cursor: help;
+}
+
 .foot {
   margin-top: 0.6rem;
   padding-top: 0.5rem;
