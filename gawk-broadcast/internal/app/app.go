@@ -229,13 +229,6 @@ func (a *App) run(ctx context.Context, id string) {
 		engine.Options{
 			Log: a.log,
 			MediaFactory: gst.NewFactory(gst.Options{
-				RestoreToken: a.cfg.RestoreToken,
-				OnRestoreToken: func(tok string) {
-					a.mu.Lock()
-					a.cfg.RestoreToken = tok
-					a.mu.Unlock()
-					saveCfg()
-				},
 				LastGoodEncoder: a.cfg.LastGoodEncoder,
 				OnEncoderChosen: func(enc string) {
 					a.mu.Lock()

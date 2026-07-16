@@ -516,9 +516,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `WebTransportError` can't); the viewer **already auto-detects Annex-B vs
    AVCC** (the `isAnnexB` sniff in `viewer.ts`), so the engine emits raw
    Annex-B with empty extradata and builds no avcC record. **Capture:
-   Go-owned XDG ScreenCast portal handshake** (`godbus`, **restore token —
-   pick the screen once, ever**; cursor embedded; works on X11 GNOME too,
-   gate on the portal not on Wayland) **feeding a GStreamer subprocess**
+   Go-owned XDG ScreenCast portal handshake** (`godbus`, **the share picker
+   appears on every start — the choice is deliberately never persisted, so
+   `persist_mode`/`restore_token` are never sent** (reversed 2026-07-16 — the
+   original "pick once, ever" restore-token design was dropped by user
+   decision: always ask what to share on restart); cursor embedded; works on
+   X11 GNOME too, gate on the portal not on Wayland) **feeding a GStreamer
+   subprocess**
    (`pipewiresrc fd=…` → encoder → `h264parse config-interval=-1` →
    `mpegtsmux` → stdout pipe; one PES = one AU, in-band SPS/PPS at every
    IDR — load-bearing because the DecoderConfig extradata is empty).

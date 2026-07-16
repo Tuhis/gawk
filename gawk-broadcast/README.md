@@ -130,9 +130,9 @@ Without one of these, the relay rejects the dial and the broadcaster reports it
 could not connect. (Loopback connections bypass the check, so this only bites
 over a real network — the homelab case.)
 
-**The file is 0600 for a reason.** It holds the publish secret *and* the portal
-restore token — and the token grants screen capture with no picker, so it is a
-capability, not a preference.
+**The file is 0600 for a reason.** It holds the publish secret, which is a
+credential — anything that can read it can publish to the relay under your
+broadcaster identity.
 
 ## How it works
 
@@ -145,8 +145,8 @@ simple.
    wrong secret, code taken, at capacity — no share dialog ever appears.
 2. **It asks your desktop for a screen, over D-Bus.** The XDG ScreenCast portal
    shows *your* desktop's share dialog. We don't draw it, we don't theme it.
-   **On every later run the persisted restore token skips this step: you pick
-   your screen once, ever.**
+   **The picker appears on every start — we never persist the choice, so you
+   pick what to share each run.**
 3. **The portal returns a PipeWire fd.** Frames are dmabufs — handles to GPU
    memory, not pixels. Nothing has been copied.
 4. **GStreamer runs as a child process**, given that fd, writing to our pipe.
@@ -225,7 +225,7 @@ encoders drain frames without that signal ever firing.
 
 ```
 internal/engine    Session{Start,Stop} + Callbacks + StartError{Phase,Status}
-internal/portal    XDG ScreenCast handshake (godbus) + restore token
+internal/portal    XDG ScreenCast handshake (godbus); picker every start
 internal/gst       subprocess supervision + pipeline construction + cascade
 internal/mpegts    TS/PES demux → one AU per PES
 internal/config    ~/.config/gawk/broadcast.json (0600)

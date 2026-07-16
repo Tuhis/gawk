@@ -24,7 +24,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		PublishSecret:   "hunter2",
 		LastBroadcastID: "K7M2QP",
 		LastGoodEncoder: "nvh264enc",
-		RestoreToken:    "portal-token",
 		Width:           1920,
 		Height:          1080,
 		Fps:             60,
@@ -42,19 +41,18 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if *got != (Config{
 		RelayURL: c.RelayURL, AppURL: c.AppURL, PublishSecret: c.PublishSecret,
 		LastBroadcastID: c.LastBroadcastID, LastGoodEncoder: c.LastGoodEncoder,
-		RestoreToken: c.RestoreToken, Width: c.Width, Height: c.Height,
+		Width: c.Width, Height: c.Height,
 		Fps: c.Fps, BitrateBps: c.BitrateBps, path: path,
 	}) {
 		t.Errorf("round trip lost fields:\n got %+v\nwant %+v", *got, *c)
 	}
 }
 
-// The file holds the publish secret and — more importantly — the portal
-// restore token, which grants screen capture with no picker. Anything that can
-// read this file can silently capture the screen.
+// The file holds the publish secret, a credential. Anything that can read this
+// file can publish to the relay under this broadcaster's identity.
 func TestSaveIs0600(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "broadcast.json")
-	c := &Config{RestoreToken: "capability"}
+	c := &Config{PublishSecret: "hunter2"}
 	c.SetPath(path)
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
@@ -64,7 +62,7 @@ func TestSaveIs0600(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fi.Mode().Perm() != FileMode {
-		t.Errorf("mode = %v, want %v — the restore token is a screen-capture capability", fi.Mode().Perm(), FileMode)
+		t.Errorf("mode = %v, want %v — the publish secret is a credential", fi.Mode().Perm(), FileMode)
 	}
 }
 

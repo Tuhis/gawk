@@ -118,8 +118,8 @@ func run() error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	// The config file is the only place the restore token and the last-good
-	// encoder live, so the engine writes back through these.
+	// The config file is where the last-good encoder and last broadcast ID are
+	// remembered, so the engine writes back through these.
 	saveCfg := func() {
 		if err := cfg.Save(); err != nil {
 			log.Warn("could not save config", "path", cfg.Path(), "err", err)
@@ -168,8 +168,6 @@ func run() error {
 		engine.Options{
 			Log: log,
 			MediaFactory: gst.NewFactory(gst.Options{
-				RestoreToken:    cfg.RestoreToken,
-				OnRestoreToken:  func(tok string) { cfg.RestoreToken = tok; saveCfg() },
 				LastGoodEncoder: cfg.LastGoodEncoder,
 				OnEncoderChosen: func(enc string) { cfg.LastGoodEncoder = enc; saveCfg() },
 			}),

@@ -145,8 +145,8 @@ chmod +x gawk-broadcast-gui gawk-broadcast
 Then: **Start** → your desktop shows its own share dialog → pick a screen → you
 get a 6-character code and a join link to share.
 
-**You pick your screen once, ever.** The app stores the portal's restore token,
-so later runs skip the dialog entirely.
+**You pick what to share every time you Start.** We deliberately don't persist
+the choice, so the desktop's share dialog appears on each run.
 
 You'll need the relay URL (and the publish secret, if it's set) from whoever
 sent you this. Either put them in the GUI's fields, or use the CLI:
@@ -161,8 +161,8 @@ with `-origin <an-already-allowed-origin>` — see the README's "If the relay
 restricts origins".
 
 Settings persist to `~/.config/gawk/broadcast.json`, mode `0600` — it holds the
-publish secret *and* the restore token, and that token grants screen capture
-with no dialog, so treat the file as a credential rather than a preference.
+publish secret, a credential that lets anyone who reads it publish under your
+broadcaster identity, so treat the file accordingly.
 
 ## When it doesn't work
 

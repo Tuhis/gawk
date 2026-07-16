@@ -48,21 +48,19 @@ func streamingBinary(t *testing.T) string {
 	return fakeBinary(t, "cat "+fixture+"\nsleep 30\n")
 }
 
-// fakePortal counts handshakes so a test can prove the picker did not return.
+// fakePortal counts handshakes so a test can prove the picker appears on every
+// Start (we never persist the choice — docs/19).
 type fakePortal struct {
-	mu        sync.Mutex
-	opens     int
-	lastToken string
-	token     string
-	err       error
-	files     []*os.File
+	mu    sync.Mutex
+	opens int
+	err   error
+	files []*os.File
 }
 
 func (f *fakePortal) open(ctx context.Context, opts portal.Options) (*portal.Stream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opens++
-	f.lastToken = opts.RestoreToken
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -72,7 +70,7 @@ func (f *fakePortal) open(ctx context.Context, opts portal.Options) (*portal.Str
 	}
 	w.Close()
 	f.files = append(f.files, r)
-	return &portal.Stream{NodeID: 7, FD: r, RestoreToken: f.token, Version: 4}, nil
+	return &portal.Stream{NodeID: 7, FD: r, Version: 4}, nil
 }
 
 func (f *fakePortal) openCount() int {
@@ -215,39 +213,32 @@ func TestStopIsNotAnError(t *testing.T) {
 	}
 }
 
-// The token is the whole point of owning the handshake: persist it as soon as
-// the portal issues it, or the dialog comes back next run.
-func TestRestoreTokenIsPersistedAndReused(t *testing.T) {
-	fp := &fakePortal{token: "fresh-token"}
-	var saved string
+// We deliberately do not persist the screen choice: every capture start opens a
+// fresh portal handshake, so the desktop's picker appears each run (docs/19).
+func TestPickerAppearsOnEveryStart(t *testing.T) {
+	fp := &fakePortal{}
 	s := newSource(t, Options{
-		Binary:         streamingBinary(t),
-		OpenPortal:     fp.open,
-		OnRestoreToken: func(tok string) { saved = tok },
+		Binary:     streamingBinary(t),
+		OpenPortal: fp.open,
 	})
 	if _, err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	s.Stop()
-	if saved != "fresh-token" {
-		t.Errorf("persisted token = %q, want fresh-token", saved)
-	}
 
-	// Second run: the stored token goes back to the portal, so no picker.
-	fp2 := &fakePortal{token: "fresh-token"}
+	// A second, independent Source (a restart) hits the portal again — there is
+	// no stored grant to short-circuit the picker with.
 	s2 := newSource(t, Options{
-		Binary:       streamingBinary(t),
-		OpenPortal:   fp2.open,
-		RestoreToken: saved,
+		Binary:     streamingBinary(t),
+		OpenPortal: fp.open,
 	})
 	if _, err := s2.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	s2.Stop()
-	fp2.mu.Lock()
-	defer fp2.mu.Unlock()
-	if fp2.lastToken != "fresh-token" {
-		t.Errorf("second run sent restore_token %q, want fresh-token — the picker would reappear", fp2.lastToken)
+
+	if got := fp.openCount(); got != 2 {
+		t.Errorf("portal opened %d times across two starts, want 2 — the picker must appear each run", got)
 	}
 }
 

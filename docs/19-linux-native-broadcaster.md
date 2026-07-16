@@ -51,8 +51,8 @@ A standalone native broadcaster for Linux with **hardware encode**, bypassing
 the browser entirely: a Gio **GUI app** for normal use, plus a CLI over the
 same engine for headless/debug use. Easy to use, minimal dependencies — every
 runtime dependency is a stock distro package, nothing is built from source,
-and you pick your screen **once, ever** (the portal's restore token survives
-across sessions).
+and **the desktop's share picker appears every time you start** (the choice is
+deliberately never persisted — see Decision 5, reversed 2026-07-16).
 
 ```
 gawk-broadcast-gui                     # the app you actually use
@@ -95,9 +95,9 @@ precisely so nobody re-litigates it with a flag hunt:
 
 Going native also sheds three problems we already know about, for free: the
 process-level backgrounding caveat recorded in R11, the `getDisplayMedia`
-picker (replaced by the portal, now with a restore token the browser can't
-have), and R4's field finding that observed low fps was 4K-capture-source
-limited.
+picker (replaced by the portal — still shown every start, but it is the
+desktop's own dialog, not a browser tab chooser), and R4's field finding that
+observed low fps was 4K-capture-source limited.
 
 ## Why this is much cheaper than "write a second broadcaster" sounds
 
@@ -139,8 +139,9 @@ datagrams).
 
 - **Does**: hardware encode on Linux at all (the browser cannot); removes
   capture→encode from the renderer process; replaces `getDisplayMedia` with
-  the desktop's own portal picker *plus* a restore token (pick once, ever); a
-  broadcaster that survives having no browser open.
+  the desktop's own portal picker (shown every start — the choice is never
+  persisted, Decision 5 reversed 2026-07-16); a broadcaster that survives
+  having no browser open.
 - **Does not**: help Windows/macOS broadcasters (already fine), improve the
   viewer, serve machines without hardware encoders (that's the browser's
   job now, by decision), or change end-to-end latency by itself — the win is
@@ -160,7 +161,7 @@ CLI is its first shell, not its home:
 ```
 gawk-broadcast/                        top-level Go module (V0)
   internal/engine    Session{Start,Stop} + Callbacks + StartError{Phase,Status}
-  internal/portal    XDG ScreenCast handshake (godbus) + restore token
+  internal/portal    XDG ScreenCast handshake (godbus); picker every start
   internal/gst       subprocess supervision + pipeline construction + cascade
   internal/mpegts    TS/PES demux → one AU per PES (V3)
   cmd/gawk-broadcast     CLI shell — headless, harness, debug
@@ -253,8 +254,9 @@ frozen `#/debug/broadcast` page next to the production UI.
    serial probes before every session); and a `videotestsrc` trial cannot
    prove the *real* path's dmabuf import, so **the live pipeline start is the
    final probe** — on live failure the cascade advances and retries, which
-   re-uses the already-granted portal session (Decision 5's restore token),
-   so retries cost seconds, not share dialogs. This is the native-side cousin
+   re-uses the portal session already granted for *this* Start (held in
+   memory, not persisted — Decision 5), so retries cost seconds, not share
+   dialogs. This is the native-side cousin
    of **R13's probe matrix**, one layer down, and it inherits R13's caveat —
    the probe's answer is advisory, runtime wins — which is the project's
    standing `getSettings()` rule in another costume: *trust the thing
@@ -265,29 +267,33 @@ frozen `#/debug/broadcast` page next to the production UI.
    cannot survey. The three hardware backends are **permanent
    infrastructure**, not scaffolding on the way to V8 — and the floor under
    them is the browser broadcaster, not a software rung here.
-5. **Capture = Go-owned XDG ScreenCast portal handshake + `pipewiresrc`.**
-   *Revised 2026-07-15.* The original design had `pipewiregrab` do the portal
-   dance and recorded "owning the portal" as a deferred future option
-   (old Decision 19) that "does not compose with ffmpeg". Both halves are now
-   void: the vehicle changed, and `pipewiresrc` **requires** someone else to
-   do the portal handshake (screen content is only reachable through a
-   portal-granted PipeWire fd). So the engine does it: ~250 lines of pure Go
-   over `godbus` — `CreateSession` → `SelectSources` (cursor mode
-   **embedded**, so the pointer is visible like the browser path;
-   `persist_mode` persistent) → `Start` → collect the stream node id and
-   **`restore_token`** → `OpenPipeWireRemote` → fd, passed to the child via
-   `ExtraFiles` (`pipewiresrc fd=3 path=<node>` — the node id from `Start` is a
-   PipeWire *global object id*, which `path` selects; `target-object` matches a
-   node name/serial instead and fails at runtime with "target not found",
-   found on first hardware bring-up 2026-07-17). The deferral's
-   prize arrives with the obligation: the token is persisted (Decision 19),
-   so **no re-picking your screen every session** — Start, Resume, cascade
-   retries and future encoder restarts all reuse the grant. The user still
-   gets their own desktop's share picker on first run (KDE, GNOME — we don't
-   draw it, we don't theme it), which is why **the GUI needs no source picker
-   of its own**. Portal version is feature-detected: ScreenCast v4 is needed
-   for restore tokens; older portals degrade to picking each session
-   (browser parity), never to failure. **Do not hard-gate on Wayland**: the
+5. **Capture = Go-owned XDG ScreenCast portal handshake + `pipewiresrc`; the
+   picker appears on every start (the choice is never persisted).**
+   *Revised 2026-07-15* (vehicle) *and reversed 2026-07-16* (persistence).
+   The original design had `pipewiregrab` do the portal dance and recorded
+   "owning the portal" as a deferred future option (old Decision 19) that
+   "does not compose with ffmpeg". Both halves are void: the vehicle changed,
+   and `pipewiresrc` **requires** someone else to do the portal handshake
+   (screen content is only reachable through a portal-granted PipeWire fd). So
+   the engine does it: ~250 lines of pure Go over `godbus` — `CreateSession` →
+   `SelectSources` (cursor mode **embedded**, so the pointer is visible like
+   the browser path; **`persist_mode` and `restore_token` are deliberately
+   never sent**) → `Start` → collect the stream node id → `OpenPipeWireRemote`
+   → fd, passed to the child via `ExtraFiles` (`pipewiresrc fd=3 path=<node>` —
+   the node id from `Start` is a PipeWire *global object id*, which `path`
+   selects; `target-object` matches a node name/serial instead and fails at
+   runtime with "target not found", found on first hardware bring-up
+   2026-07-17). **Persisting the choice was dropped by user decision
+   (2026-07-16): the broadcaster asks what to share on every start rather than
+   silently reusing a prior grant.** The earlier design persisted the portal's
+   restore token so you would "pick once, ever"; that is gone — no token is
+   requested, kept, or replayed, so the desktop's own share picker (KDE, GNOME
+   — we don't draw it, we don't theme it) reappears each run, and a cancelled
+   picker is the typed `ErrCancelled` outcome. Within a single Start the
+   already-granted session is still reused for cascade retries (in memory), so
+   a live-probe failure does not re-pop the dialog. The GUI still needs **no
+   source picker of its own** — the desktop's is the picker. There is no
+   restore-token version gating any more; **do not hard-gate on Wayland**: the
    portal also works on X11 GNOME sessions — gate on the portal call
    succeeding and let the error message name the portal when it doesn't.
    (kmsgrab and gpu-screen-recorder remain V7 escape hatches; `x11grab` does
@@ -356,16 +362,17 @@ frozen `#/debug/broadcast` page next to the production UI.
    engine surface entirely** (*revised*: the original kept it "for symmetry"
    with the GUI disabling it while live — a dead-code footgun, since a rung
    change means restarting the child and the original design's restart
-   re-ran the portal picker). With Decision 5's restore token a restart is a
-   ~1 s hiccup with **no** dialog, so a restart-based `SetRung` is cheaply
-   addable later — as its own task, with frameId continuity and config
-   re-emit specified. Not v1.
+   re-ran the portal picker). Per Decision 5 (as reversed) a rung change that
+   restarts the whole capture *does* re-pop the picker, so a restart-based
+   `SetRung` is still cheaply addable later — as its own task, with frameId
+   continuity and config re-emit specified, and noting it costs a share
+   dialog. Not v1.
 10. **No auto-reconnect; reclaim is one click, and errors carry the HTTP
     status.** This matches the browser broadcaster exactly —
     `BroadcasterScreen` doesn't auto-reconnect either (only the viewer does,
     via `ViewerSession`). The GUI remembers the last code and offers
-    **Resume broadcast** (which, per Decision 5, no longer re-prompts the
-    picker), dialing `/publish/{id}`; on failure it applies the existing
+    **Resume broadcast** (which, per Decision 5 as reversed, re-prompts the
+    share picker like any other start), dialing `/publish/{id}`; on failure it applies the existing
     rule — **fall back to minting only when `phase == 'connect'`** — so the
     engine's `StartError` carries the same `Phase` distinction (`connect` vs
     `capture`): a capture-phase failure had a live publisher session and must
@@ -485,13 +492,13 @@ frozen `#/debug/broadcast` page next to the production UI.
 19. **Settings persist to `~/.config/gawk/broadcast.json`** (mode 0600):
     relay URL, **app URL** (the frontend origin for "join:" links and Copy
     link — it is *not derivable* from the relay URL, they are different
-    hosts), publish secret, rung, encoder override, last broadcast code,
-    last-good encoder (Decision 4), and the portal **restore token**
-    (Decision 5 — it grants screen capture without a picker, which is
-    exactly why the file was already 0600). The GUI writes it; CLI flags
-    override it. A pre-shared secret in a local file is consistent with how
-    it already travels (a query param, per R2 — the WebTransport JS API
-    can't set headers).
+    hosts), publish secret, rung, encoder override, last broadcast code, and
+    last-good encoder (Decision 4). **No portal restore token is stored**
+    (Decision 5, as reversed 2026-07-16 — the choice of screen is deliberately
+    never persisted). The file is still 0600 because the publish secret is a
+    credential. The GUI writes it; CLI flags override it. A pre-shared secret
+    in a local file is consistent with how it already travels (a query param,
+    per R2 — the WebTransport JS API can't set headers).
 20. **Stats parity where it's honest, `n/a` where it isn't.** The engine
     reports what it can see: chosen encoder, encoder fps, sent fps,
     datagrams, keyframe streams sent/failed/superseded, frames dropped at
@@ -547,7 +554,7 @@ gaming PC (Linux)                                              relay
      internal/engine — Session{Start,Stop} + Callbacks + StartError{Phase,Status}
         │
         ├─ internal/portal (godbus): CreateSession → SelectSources(cursor=embedded,
-        │      persist) → Start → node id + restore_token (persisted) →
+        │      no persist) → Start → node id → picker every start →
         │      OpenPipeWireRemote → fd ──┐
         │                                ▼ (ExtraFiles → child fd 3)
         ├─ internal/gst: gst-launch-1.0 subprocess
@@ -594,9 +601,9 @@ why it can be simple.
    relay refuses, no share dialog should ever have appeared.
 2. **The app asks your desktop for a screen — in Go, over D-Bus.** The XDG
    ScreenCast portal shows **your** desktop's own share dialog (KDE, GNOME).
-   We don't draw it, we don't theme it. On every later run the persisted
-   restore token skips this step entirely: **you pick your screen once,
-   ever** (Decision 5).
+   We don't draw it, we don't theme it. **This happens on every start — the
+   choice is never persisted, so you pick what to share each run** (Decision 5,
+   as reversed 2026-07-16).
 3. **The portal returns a PipeWire stream** (a node id and an fd). Frames
    arrive as **dmabufs** — handles to GPU memory, not pixels. Nothing has
    been copied anywhere yet.
@@ -728,8 +735,9 @@ nothing before the first pong.
 ### V2 — engine: portal + capture + encode cascade
 
 `internal/portal`: the ScreenCast handshake over `godbus` (Decision 5) —
-session, source selection (cursor embedded, persist), start, restore token
-persistence, `OpenPipeWireRemote`, portal-version feature detection.
+session, source selection (cursor embedded, **no persist**), start,
+`OpenPipeWireRemote`. The picker appears every start; no restore token is
+requested or stored.
 `internal/gst`: pipeline construction per encoder; the **Vulkan-first
 hardware-only cascade** (`vulkanh264enc` → `nvh264enc` → `vah264enc` →
 refusal, Decision 4) with `videotestsrc` trial encodes, last-good caching,
@@ -755,11 +763,11 @@ the offline `h264_vulkan` reference for V8.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| Portal handshake yields a stream fd + node id; restore token round-trips the config file; second run **shows no picker** | manual on KDE + GNOME; unit tests over a fake D-Bus for the state machine |
-| Portal < v4 degrades to per-session picking, never to failure | unit test (feature-detect path) |
+| Portal handshake yields a stream fd + node id; **`persist_mode`/`restore_token` are never sent, and the picker appears on every start** | manual on KDE + GNOME; unit tests over a fake D-Bus (`TestNeverRequestsPersistence`, `TestPickerAppearsOnEveryStart`) |
+| A cancelled picker is the typed `ErrCancelled` outcome, distinguishable from any other failure | unit test over a fake D-Bus |
 | Cascade picks the first candidate that *actually encodes*; a listed-but-broken element is rejected and the next tried; trials use `videotestsrc`, never the portal | unit test over an injected trial-encode runner |
 | Cached last-good encoder is re-verified first; full cascade only on its failure or first run | unit test |
-| Live-start failure advances the cascade and retries **without a new picker** (restore token reused) | manual + unit test over a fake child |
+| Live-start failure advances the cascade and retries **without a new picker** (the in-memory portal session granted for this Start is reused) | manual + unit test over a fake child |
 | **No hardware candidate ⇒ refusal with a sentence pointing at the browser broadcaster** — never a software fallback, never a stack trace | unit test (all candidates fail) + manual copy review |
 | Every invariant in Decision 13's table holds for every accepted candidate (no B-frames, all-IDR 500 ms GOP, SPS/PPS per IDR, ≤1-frame latency, drop-only gating) | V2 trial checks + V3 fixture assertions |
 | Chosen encoder + rung logged once and surfaced on `Callbacks`; child death surfaces as `OnError` with its last stderr, never hangs | unit test with a fake failing child |
@@ -819,15 +827,16 @@ gate must test what ships).
 URL, app URL, secret, resolution, fps, encoder override) loaded from and
 saved to `~/.config/gawk/broadcast.json` (Decision 19); big Start/Stop; the
 broadcast code with **Copy link** (built from the app URL); **Resume
-broadcast** using the remembered code (Decision 10's reclaim→mint rule — and
-no picker, per Decision 5); live state and errors in plain language (the
-`StartError.Status` distinctions surfaced as sentences). No source picker
-(Decision 5), no preview (Decision 16), no tray (Decision 15 — closing the
-window stops the broadcast), no viewer count (Decision 18).
+broadcast** using the remembered code (Decision 10's reclaim→mint rule — which,
+per Decision 5 as reversed, re-shows the share picker like any start); live
+state and errors in plain language (the `StartError.Status` distinctions
+surfaced as sentences). No source picker of its own — the desktop's portal is
+the picker (Decision 5), no preview (Decision 16), no tray (Decision 15 —
+closing the window stops the broadcast), no viewer count (Decision 18).
 
 | Acceptance criterion | Verified by |
 |---|---|
-| First run: Start → portal picker → code shown → viewer joins. Second run: Start → **no picker** → live | manual |
+| Start → portal picker → code shown → viewer joins. Restart or Resume → picker **again** (never persisted, Decision 5 as reversed) → live | manual |
 | Engine consumed unmodified from V1 (no engine changes needed to add a GUI) | review of the diff: `internal/engine` untouched |
 | Settings round-trip the config file; file is 0600; flags still override in the CLI | unit test + manual |
 | Resume dials `/publish/{id}`; a `connect`-phase failure offers minting, a `capture`-phase failure does not | unit test over a fake engine |
@@ -971,13 +980,14 @@ They are skipped under `go test -short`.
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker
-appears (first run only — restart the app and confirm **no picker** on the
-second run) → code shown → join from a Chrome viewer on another machine.
+appears (**every start** — restart the app and confirm the picker appears
+**again**, since the choice is never persisted, Decision 5 as reversed) →
+code shown → join from a Chrome viewer on another machine.
 Then, in order: hardware encode confirmed on the GPU's **own** encode counter
 (not the pipeline's claim); game fps against the browser-broadcaster baseline
 at the same rung; the V4 latency-bias gate at 1080p60; cursor visible;
 keyframe streams vs delta datagrams in `/statusz`; Resume across a relay
-restart (again: no picker); closing the window mid-broadcast leaves no
+restart (the picker appears again, as on any start); closing the window mid-broadcast leaves no
 publisher behind; a heavy-motion scene for corruption/freeze behavior (the
 500 ms GOP and the viewer's freeze-on-gap policy should behave exactly as
 with the browser broadcaster — if they don't, the TS demux is the first

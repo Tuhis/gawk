@@ -703,7 +703,8 @@ T6 (measurement findings + constant verdicts) not started.
 as a hard requirement, bypassing the browser — a Gio **GUI app** for normal
 use, plus a CLI over the same engine for headless/debug use. Easy to use,
 minimal dependencies: every runtime dependency is a stock distro package, and
-you pick your screen once, ever (portal restore token). Speaks the existing
+the desktop's share picker appears on every start (the choice is never
+persisted — reversed 2026-07-16). Speaks the existing
 publisher protocol byte-for-byte: zero server, wire and viewer changes. The
 browser broadcaster is untouched and stays the path for Windows/macOS — and
 for Linux machines without a usable hardware encoder (there is deliberately
@@ -745,9 +746,11 @@ browser.
   risk is designed out before it exists.
 - **Capture = Go-owned XDG ScreenCast portal + GStreamer subprocess.** The
   engine does the portal handshake itself (~250 lines of `godbus`): the
-  desktop's own share picker, cursor embedded, and a **restore token** — pick
-  your screen once, ever; Resume, cascade retries and restarts never
-  re-prompt. Capture/encode runs in a `gst-launch-1.0` child
+  desktop's own share picker, cursor embedded. **The picker appears on every
+  start — the choice is never persisted (reversed 2026-07-16; no restore
+  token is requested or stored), so Start, Resume and restarts all re-prompt.**
+  Within a single Start, cascade retries reuse the in-memory grant (no
+  re-prompt). Capture/encode runs in a `gst-launch-1.0` child
   (`pipewiresrc fd=…`), preserving crash isolation; every runtime dependency
   is a stock distro package. **`pipewiregrab` was rejected on review
   (2026-07-15): it is not in mainline FFmpeg** — an unmerged patchset carried
@@ -791,8 +794,8 @@ browser.
 - **No ladder, no auto-fallback**: fixed rung — **1080p60**, 500 ms GOP —
   now coherent because the engine is hardware-only by construction (tracks
   R13's framerate-first rule). `SetLadder` is cut from the v1 surface
-  entirely (a rung change restarts the child; cheap to add later since the
-  restore token makes restarts picker-free). R4's `FallbackController` is
+  entirely (a rung change restarts the child; cheap to add later, though a
+  restart now costs a share dialog since the choice is never persisted). R4's `FallbackController` is
   deliberately not ported — its `encodeQueueSize` trigger is exactly the one
   R4's own hardware finding showed never fires on HW encode. No
   auto-reconnect; **Resume** applies the browser's existing
@@ -823,8 +826,8 @@ committed H.264 fixture through it, attaching a real subscriber — a fake
 relay would only test our belief about the relay, which is the belief most
 worth doubting in a second implementation. **Manual verification on the
 gaming PC is pending** and is the gate that matters: everything about
-hardware encode, the portal picker + restore token, the V4 latency-bias
-measurement and the no-hardware refusal is unobservable from a WSL2 box with
+hardware encode, the portal picker (shown every start — never persisted), the
+V4 latency-bias measurement and the no-hardware refusal is unobservable from a WSL2 box with
 no GPU encode block and no desktop portal. **V8 is not started** and stays
 hard-gated on V2's on-hardware Stage-1 Vulkan result. Three recorded
 deviations from the doc (see docs/19): the announce read is detached, the

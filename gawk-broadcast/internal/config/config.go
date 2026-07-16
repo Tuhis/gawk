@@ -1,9 +1,7 @@
-// Package config is the broadcaster's persisted settings (R14 Decision 19,
-// docs/19).
+// Package config is the broadcaster's persisted settings (R14, docs/19).
 //
-// The file is 0600 and it matters: it holds the publish secret *and* the
-// portal restore token, and the token grants screen capture with no picker —
-// it is a capability, not a preference.
+// The file is 0600 and it matters: it holds the publish secret, which is a
+// credential, not a preference.
 package config
 
 import (
@@ -17,8 +15,8 @@ import (
 
 // FileMode is the config file's permission. A pre-shared secret in a local
 // file is consistent with how it already travels (a query param, per R2 — the
-// WebTransport JS API cannot set headers), but the restore token raises the
-// stakes: anything that can read this file can silently capture the screen.
+// WebTransport JS API cannot set headers); 0600 keeps it from being read by
+// other users on the machine.
 const FileMode fs.FileMode = 0o600
 
 // Config is the persisted settings. Everything is optional; the zero value is
@@ -43,8 +41,6 @@ type Config struct {
 	// LastGoodEncoder is the cached cascade winner (Decision 4). Re-verified
 	// on use, never trusted.
 	LastGoodEncoder string `json:"lastGoodEncoder,omitempty"`
-	// RestoreToken is the portal grant (Decision 5) — the reason for 0600.
-	RestoreToken string `json:"restoreToken,omitempty"`
 
 	// Rung.
 	Width      int `json:"width,omitempty"`
@@ -87,9 +83,9 @@ func Load(path string) (*Config, error) {
 
 // Save writes the config atomically, 0600.
 //
-// Atomic because a crash mid-write would otherwise lose the restore token, and
-// losing the token means the share picker comes back — the one thing the whole
-// portal handshake exists to avoid.
+// Atomic because a crash mid-write would otherwise corrupt the file (the
+// "unexpected end of JSON input" a truncated write produces), losing the relay
+// URL, secret and last-good encoder in one go.
 func (c *Config) Save() error {
 	if c.path == "" {
 		return errors.New("config: no path to save to")
@@ -110,8 +106,8 @@ func (c *Config) Save() error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op once the rename succeeds
 
-	// Chmod before writing: the secret and the token must never exist on disk
-	// world-readable, not even briefly.
+	// Chmod before writing: the secret must never exist on disk world-readable,
+	// not even briefly.
 	if err := tmp.Chmod(FileMode); err != nil {
 		tmp.Close()
 		return err

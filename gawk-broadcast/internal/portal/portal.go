@@ -1,16 +1,18 @@
 // Package portal performs the XDG ScreenCast portal handshake and hands back a
-// PipeWire fd (R14 Decision 5, docs/19).
+// PipeWire fd (R14, docs/19).
 //
 // The engine owns this rather than delegating it because `pipewiresrc` cannot:
 // screen content is only reachable through a portal-granted PipeWire fd, so
-// somebody has to do the D-Bus dance, and doing it ourselves is what buys the
-// prize — a **restore token**. Pick your screen once, ever: Start, Resume,
-// cascade retries and future encoder restarts all reuse the grant, and the
-// share dialog never appears again.
+// somebody has to do the D-Bus dance, and doing it ourselves keeps the whole
+// capture path in our hands.
 //
-// The user still gets their own desktop's share picker on first run (KDE,
-// GNOME — we don't draw it, we don't theme it), which is precisely why the GUI
-// needs no source picker of its own.
+// The share picker appears **every time capture starts** — by decision: we ask
+// what to share on every Start rather than persisting the choice. (The portal
+// supports a restore token that would skip the picker on later runs; we
+// deliberately do not request one, so persist_mode is never set.) The user
+// gets their own desktop's share picker (KDE, GNOME — we don't draw it, we
+// don't theme it), which is precisely why the GUI needs no source picker of its
+// own.
 //
 // Do not gate any of this on Wayland: the portal works on X11 GNOME sessions
 // too. Gate on the portal call succeeding, and let the error name the portal
@@ -32,11 +34,6 @@ const (
 	busName    = "org.freedesktop.portal.Desktop"
 	objectPath = "/org/freedesktop/portal/desktop"
 	scIface    = "org.freedesktop.portal.ScreenCast"
-
-	// MinVersionRestoreToken is the ScreenCast interface version that
-	// introduced persist_mode/restore_token. Below it we degrade to picking
-	// each session — browser parity — never to failure.
-	MinVersionRestoreToken = 4
 )
 
 // Source types (SelectSources `types` bitmask).
@@ -49,12 +46,6 @@ const (
 const (
 	cursorHidden   = 1 << 0
 	cursorEmbedded = 1 << 1
-)
-
-// Persist modes.
-const (
-	persistNone       = 0
-	persistPersistent = 2
 )
 
 // Portal Request response codes.
@@ -83,9 +74,6 @@ type Stream struct {
 	// FD is the PipeWire remote fd. The caller owns it and must Close it —
 	// it is passed to the child via ExtraFiles.
 	FD *os.File
-	// RestoreToken is the grant to persist for next time. Empty on portals
-	// older than v4, which is not an error — just a picker every session.
-	RestoreToken string
 	// Version is the portal's ScreenCast interface version, for diagnostics.
 	Version uint32
 
@@ -126,9 +114,6 @@ type Caller interface {
 
 // Options configure Open.
 type Options struct {
-	// RestoreToken, when set, asks the portal to restore a previous grant —
-	// no picker. Portals below v4 ignore it.
-	RestoreToken string
 	// Caller is injectable for tests; nil dials the session bus.
 	Caller Caller
 }
@@ -160,12 +145,12 @@ func Open(ctx context.Context, opts Options) (*Stream, error) {
 		return nil, err
 	}
 
-	if err := selectSources(ctx, caller, session, version, opts.RestoreToken); err != nil {
+	if err := selectSources(ctx, caller, session); err != nil {
 		caller.Close()
 		return nil, err
 	}
 
-	nodeID, token, err := start(ctx, caller, session)
+	nodeID, err := start(ctx, caller, session)
 	if err != nil {
 		caller.Close()
 		return nil, err
@@ -178,12 +163,11 @@ func Open(ctx context.Context, opts Options) (*Stream, error) {
 	}
 
 	return &Stream{
-		NodeID:       nodeID,
-		FD:           fd,
-		RestoreToken: token,
-		Version:      version,
-		session:      session,
-		caller:       caller,
+		NodeID:  nodeID,
+		FD:      fd,
+		Version: version,
+		session: session,
+		caller:  caller,
 	}, nil
 }
 
@@ -220,8 +204,8 @@ func createSession(ctx context.Context, c Caller) (dbus.ObjectPath, error) {
 	return handle, nil
 }
 
-func selectSources(ctx context.Context, c Caller, session dbus.ObjectPath, version uint32, restoreToken string) error {
-	opts := SelectSourcesOptions(version, restoreToken)
+func selectSources(ctx context.Context, c Caller, session dbus.ObjectPath) error {
+	opts := SelectSourcesOptions()
 	resp, _, err := c.Call(ctx, "SelectSources", opts, session)
 	if err != nil {
 		return fmt.Errorf("portal: SelectSources failed: %w", err)
@@ -230,10 +214,14 @@ func selectSources(ctx context.Context, c Caller, session dbus.ObjectPath, versi
 }
 
 // SelectSourcesOptions builds the SelectSources vardict. Exported for tests:
-// the cursor and persistence choices here are user-visible decisions, not
-// incidental arguments.
-func SelectSourcesOptions(version uint32, restoreToken string) map[string]dbus.Variant {
-	opts := map[string]dbus.Variant{
+// the cursor choice here is a user-visible decision, not an incidental
+// argument.
+//
+// persist_mode is deliberately never set: we ask what to share on every Start
+// rather than persisting the choice, so no restore token is ever requested and
+// the picker appears every session (docs/19).
+func SelectSourcesOptions() map[string]dbus.Variant {
+	return map[string]dbus.Variant{
 		"types":    dbus.MakeVariant(uint32(sourceMonitor | sourceWindow)),
 		"multiple": dbus.MakeVariant(false),
 		// Embedded, because the browser path embeds the cursor and silently
@@ -241,56 +229,40 @@ func SelectSourcesOptions(version uint32, restoreToken string) map[string]dbus.V
 		"cursor_mode":  dbus.MakeVariant(uint32(cursorEmbedded)),
 		"handle_token": dbus.MakeVariant(newToken("gawk_sources")),
 	}
-	if version >= MinVersionRestoreToken {
-		opts["persist_mode"] = dbus.MakeVariant(uint32(persistPersistent))
-		if restoreToken != "" {
-			opts["restore_token"] = dbus.MakeVariant(restoreToken)
-		}
-	}
-	return opts
 }
 
-func start(ctx context.Context, c Caller, session dbus.ObjectPath) (uint32, string, error) {
+func start(ctx context.Context, c Caller, session dbus.ObjectPath) (uint32, error) {
 	opts := map[string]dbus.Variant{}
 	// parent_window is empty: we have no window to parent the dialog to at
 	// this point, and the portal handles that fine.
 	resp, results, err := c.Call(ctx, "Start", opts, session, "")
 	if err != nil {
-		return 0, "", fmt.Errorf("portal: Start failed: %w", err)
+		return 0, fmt.Errorf("portal: Start failed: %w", err)
 	}
 	if err := responseErr(resp, "Start"); err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	return ParseStartResults(results)
 }
 
-// ParseStartResults extracts the node id and restore token from Start's
-// results. Exported for tests.
-func ParseStartResults(results map[string]dbus.Variant) (uint32, string, error) {
+// ParseStartResults extracts the node id from Start's results. Exported for
+// tests.
+func ParseStartResults(results map[string]dbus.Variant) (uint32, error) {
 	v, ok := results["streams"]
 	if !ok {
-		return 0, "", errors.New("portal: Start returned no streams")
+		return 0, errors.New("portal: Start returned no streams")
 	}
 	var streams []struct {
 		NodeID uint32
 		Props  map[string]dbus.Variant
 	}
 	if err := v.Store(&streams); err != nil {
-		return 0, "", fmt.Errorf("portal: cannot decode streams: %w", err)
+		return 0, fmt.Errorf("portal: cannot decode streams: %w", err)
 	}
 	if len(streams) == 0 {
-		return 0, "", errors.New("portal: Start returned an empty stream list")
+		return 0, errors.New("portal: Start returned an empty stream list")
 	}
-
-	// A restore token is optional: older portals don't issue one, and that is
-	// a picker every session rather than a failure.
-	var token string
-	if tv, ok := results["restore_token"]; ok {
-		if s, ok := tv.Value().(string); ok {
-			token = s
-		}
-	}
-	return streams[0].NodeID, token, nil
+	return streams[0].NodeID, nil
 }
 
 func responseErr(resp uint32, method string) error {

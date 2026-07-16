@@ -109,9 +109,6 @@ func TestOpenHappyPath(t *testing.T) {
 	if s.NodeID != 42 {
 		t.Errorf("NodeID = %d, want 42", s.NodeID)
 	}
-	if s.RestoreToken != "token-from-portal" {
-		t.Errorf("RestoreToken = %q, want the portal's", s.RestoreToken)
-	}
 	if s.FD == nil {
 		t.Error("no PipeWire fd")
 	}
@@ -130,60 +127,44 @@ func TestOpenHappyPath(t *testing.T) {
 // Decision 13: the browser path embeds the cursor, so silently losing the
 // pointer would be a viewer-visible regression.
 func TestCursorIsAlwaysEmbedded(t *testing.T) {
-	for _, version := range []uint32{3, 4, 5} {
-		opts := SelectSourcesOptions(version, "")
-		mode, ok := opts["cursor_mode"].Value().(uint32)
-		if !ok || mode != cursorEmbedded {
-			t.Errorf("version %d: cursor_mode = %v, want embedded (%d)", version, opts["cursor_mode"].Value(), cursorEmbedded)
-		}
+	opts := SelectSourcesOptions()
+	mode, ok := opts["cursor_mode"].Value().(uint32)
+	if !ok || mode != cursorEmbedded {
+		t.Errorf("cursor_mode = %v, want embedded (%d)", opts["cursor_mode"].Value(), cursorEmbedded)
 	}
 }
 
-// The restore token is the whole prize of owning the portal handshake: pick
-// your screen once, ever.
-func TestRestoreTokenIsRequestedAndSentBack(t *testing.T) {
-	opts := SelectSourcesOptions(4, "my-token")
-	if got, _ := opts["persist_mode"].Value().(uint32); got != persistPersistent {
-		t.Errorf("persist_mode = %v, want persistent (%d)", opts["persist_mode"].Value(), persistPersistent)
-	}
-	if got, _ := opts["restore_token"].Value().(string); got != "my-token" {
-		t.Errorf("restore_token = %q, want my-token", got)
-	}
-
-	// First run: no token yet, but still ask to persist so we get one.
-	fresh := SelectSourcesOptions(4, "")
-	if _, present := fresh["restore_token"]; present {
-		t.Error("sent an empty restore_token; the key should be absent on first run")
-	}
-	if got, _ := fresh["persist_mode"].Value().(uint32); got != persistPersistent {
-		t.Error("first run does not request persistence, so no token would ever be issued")
-	}
-}
-
-// Decision 5: portals below v4 degrade to picking each session (browser
-// parity), never to failure.
-func TestOldPortalDegradesRatherThanFails(t *testing.T) {
-	opts := SelectSourcesOptions(3, "a-token-we-happen-to-have")
+// We ask what to share on every Start rather than persisting the choice
+// (docs/19): persist_mode and restore_token are never sent, so the desktop's
+// picker appears each session — even if a portal happens to hand back a token,
+// we never keep or replay it.
+func TestNeverRequestsPersistence(t *testing.T) {
+	opts := SelectSourcesOptions()
 	if _, present := opts["persist_mode"]; present {
-		t.Error("sent persist_mode to a portal that predates it")
+		t.Error("persist_mode is set; we must not ask the portal to persist the choice")
 	}
 	if _, present := opts["restore_token"]; present {
-		t.Error("sent restore_token to a portal that predates it")
+		t.Error("restore_token is set; we must not replay a previous grant")
 	}
 
-	// And the handshake still completes end to end.
-	f := newFakeCaller(3)
-	f.responses["Start"] = fakeResponse{results: map[string]dbus.Variant{"streams": streamsVariant(7)}}
-	s, err := Open(context.Background(), Options{Caller: f, RestoreToken: "ignored"})
+	// End to end: even a portal that returns a restore_token (the fake does)
+	// produces a Stream with no notion of one — the field is gone, and the
+	// handshake carries nothing forward.
+	f := newFakeCaller(4)
+	s, err := Open(context.Background(), Options{Caller: f})
 	if err != nil {
-		t.Fatalf("Open on a v3 portal failed: %v — it must degrade, not fail", err)
+		t.Fatalf("Open: %v", err)
 	}
 	defer s.Close()
-	if s.NodeID != 7 {
-		t.Errorf("NodeID = %d, want 7", s.NodeID)
+	call, ok := f.callFor("SelectSources")
+	if !ok {
+		t.Fatal("SelectSources was never called")
 	}
-	if s.RestoreToken != "" {
-		t.Errorf("RestoreToken = %q, want empty from a v3 portal", s.RestoreToken)
+	if _, present := call.opts["persist_mode"]; present {
+		t.Error("SelectSources was sent persist_mode on the wire")
+	}
+	if _, present := call.opts["restore_token"]; present {
+		t.Error("SelectSources was sent restore_token on the wire")
 	}
 }
 
@@ -268,18 +249,19 @@ func TestSessionHandleAcceptsStringOrObjectPath(t *testing.T) {
 }
 
 func TestParseStartResults(t *testing.T) {
-	nodeID, token, err := ParseStartResults(map[string]dbus.Variant{
+	// A restore_token in the results is ignored, not an error.
+	nodeID, err := ParseStartResults(map[string]dbus.Variant{
 		"streams":       streamsVariant(99),
 		"restore_token": dbus.MakeVariant("tok"),
 	})
 	if err != nil {
 		t.Fatalf("ParseStartResults: %v", err)
 	}
-	if nodeID != 99 || token != "tok" {
-		t.Errorf("= (%d, %q), want (99, \"tok\")", nodeID, token)
+	if nodeID != 99 {
+		t.Errorf("nodeID = %d, want 99", nodeID)
 	}
 
-	if _, _, err := ParseStartResults(map[string]dbus.Variant{}); err == nil {
+	if _, err := ParseStartResults(map[string]dbus.Variant{}); err == nil {
 		t.Error("accepted results with no streams")
 	}
 }

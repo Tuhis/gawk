@@ -27,13 +27,6 @@ const liveProbeWindow = 3 * time.Second
 
 // Options configure the capture factory.
 type Options struct {
-	// RestoreToken is the persisted portal grant ("pick your screen once,
-	// ever"). Empty on first run.
-	RestoreToken string
-	// OnRestoreToken persists a newly issued token. Without it the picker
-	// returns every session, which is the one thing Decision 5 exists to
-	// prevent.
-	OnRestoreToken func(string)
 	// LastGoodEncoder is the cached cascade winner, re-verified before use.
 	LastGoodEncoder string
 	// OnEncoderChosen persists the winner.
@@ -102,24 +95,16 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 		return nil, err
 	}
 
-	stream, err := s.opts.OpenPortal(ctx, portal.Options{RestoreToken: s.opts.RestoreToken})
+	// The picker appears on every Start, by decision (docs/19): we ask what to
+	// share each time rather than persisting the choice, so no restore token is
+	// passed and none is kept.
+	stream, err := s.opts.OpenPortal(ctx, portal.Options{})
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	s.stream = stream
 	s.mu.Unlock()
-
-	// Persist the grant immediately: the token is what makes every later run
-	// picker-free, and losing it because a later step failed would silently
-	// bring the dialog back.
-	if stream.RestoreToken != "" && stream.RestoreToken != s.opts.RestoreToken && s.opts.OnRestoreToken != nil {
-		s.opts.OnRestoreToken(stream.RestoreToken)
-	}
-	if stream.Version < portal.MinVersionRestoreToken {
-		s.log.Info("portal predates restore tokens; you will pick your screen each session",
-			"version", stream.Version, "want", portal.MinVersionRestoreToken)
-	}
 
 	cand, err := SelectEncoder(ctx, s.cfg, s.opts.LastGoodEncoder, s.opts.Trial)
 	if err != nil {
