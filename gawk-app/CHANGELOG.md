@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.22.1...gawk-app-v0.22.2) (2026-07-16)
+
+
+### Bug Fixes
+
+* iOS fullscreen tee writes decoded-frame clones — canvas readback is black on iOS WebKit (R16 U4 pass 2) ([f6301b6](https://github.com/Tuhis/gawk/commit/f6301b652587bfbeb6980d581eca83c4ce4d44fa))
+
 ## [0.22.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.22.0...gawk-app-v0.22.1) (2026-07-16)
 
 
