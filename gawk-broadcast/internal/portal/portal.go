@@ -76,7 +76,9 @@ var ErrUnavailable = errors.New("portal: no ScreenCast portal available")
 
 // Stream is a granted screen-capture stream.
 type Stream struct {
-	// NodeID is the PipeWire node to consume (pipewiresrc target-object).
+	// NodeID is the PipeWire node's global object id, to consume via
+	// `pipewiresrc path=<NodeID>` (not target-object, which matches a node
+	// name/serial rather than the global id — see internal/gst/pipeline.go).
 	NodeID uint32
 	// FD is the PipeWire remote fd. The caller owns it and must Close it —
 	// it is passed to the child via ExtraFiles.

@@ -46,8 +46,17 @@ func TestEveryCandidatePinsTheEncoderInvariants(t *testing.T) {
 			if !strings.Contains(p, "pipewiresrc fd=3") {
 				t.Errorf("does not read the portal fd on 3:\n%s", p)
 			}
-			if !strings.Contains(p, "target-object=42") {
-				t.Errorf("does not target the granted node:\n%s", p)
+			// The node is selected with `path=<global id>`, NOT `target-object`.
+			// The portal's Start response gives the node's global object id;
+			// pipewiresrc's newer target-object property matches a node *name* or
+			// *object.serial* instead, so target-object=<global id> fails at
+			// runtime with "stream error: target not found". path takes the
+			// global id directly.
+			if !strings.Contains(p, "path=42") {
+				t.Errorf("does not select the granted node by path=<global id>:\n%s", p)
+			}
+			if strings.Contains(p, "target-object=") {
+				t.Errorf("uses target-object (matches name/serial, not the portal's global node id):\n%s", p)
 			}
 		})
 	}

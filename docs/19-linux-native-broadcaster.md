@@ -276,7 +276,10 @@ frozen `#/debug/broadcast` page next to the production UI.
    **embedded**, so the pointer is visible like the browser path;
    `persist_mode` persistent) → `Start` → collect the stream node id and
    **`restore_token`** → `OpenPipeWireRemote` → fd, passed to the child via
-   `ExtraFiles` (`pipewiresrc fd=3 target-object=<node>`). The deferral's
+   `ExtraFiles` (`pipewiresrc fd=3 path=<node>` — the node id from `Start` is a
+   PipeWire *global object id*, which `path` selects; `target-object` matches a
+   node name/serial instead and fails at runtime with "target not found",
+   found on first hardware bring-up 2026-07-17). The deferral's
    prize arrives with the obligation: the token is persisted (Decision 19),
    so **no re-picking your screen every session** — Start, Resume, cascade
    retries and future encoder restarts all reuse the grant. The user still
@@ -548,7 +551,7 @@ gaming PC (Linux)                                              relay
         │      OpenPipeWireRemote → fd ──┐
         │                                ▼ (ExtraFiles → child fd 3)
         ├─ internal/gst: gst-launch-1.0 subprocess
-        │      pipewiresrc fd=3 target-object=N
+        │      pipewiresrc fd=3 path=N                          (path, not target-object)
         │        ! videorate drop-only=true max-rate=60      (gate, never CFR)
         │        ! <hw convert/scale>                        (stays on GPU)
         │        ! vulkanh264enc | nvh264enc | vah264enc     ← trial-probed cascade
@@ -737,7 +740,7 @@ job):
 
 ```
 gst-launch-1.0 -q \
-  pipewiresrc fd=3 target-object=<node> \
+  pipewiresrc fd=3 path=<node> \
   ! videorate drop-only=true max-rate=60 \
   ! vapostproc ! 'video/x-raw(memory:VAMemory),format=NV12,width=1920,height=1080' \
   ! vah264enc rate-control=cbr bitrate=8000 key-int-max=30 b-frames=0 \

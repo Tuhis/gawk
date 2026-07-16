@@ -18,7 +18,7 @@ const LaunchBinary = "gst-launch-1.0"
 //
 // The shape, and why each link is what it is:
 //
-//	pipewiresrc fd=3 target-object=N   the portal's granted stream (Decision 5)
+//	pipewiresrc fd=3 path=N            the portal's granted stream (Decision 5)
 //	! videorate drop-only=true         VFR pass-through — see below
 //	! <hw convert/scale>               stays on the GPU
 //	! <hw encoder>                     the GPU's encode block (Decision 4)
@@ -45,7 +45,15 @@ func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32) []string 
 	args = append(args,
 		"pipewiresrc",
 		fmt.Sprintf("fd=%d", childPipeWireFD),
-		fmt.Sprintf("target-object=%d", nodeID),
+		// Select the granted node by its global object id via `path`, NOT
+		// `target-object`. The ScreenCast portal's Start response gives the
+		// node's global id (streams[].node_id); pipewiresrc's newer
+		// target-object property matches a node *name* or *object.serial*
+		// instead, so target-object=<global id> fails at runtime with
+		// "stream error: target not found". `path` is deprecated in favour of
+		// target-object but is the property that still takes the global id —
+		// and it is what portal-screencast pipelines universally use.
+		fmt.Sprintf("path=%d", nodeID),
 		// Damage-driven capture with no clock slaving: the timestamps we care
 		// about are stamped on arrival at our end anyway.
 		"do-timestamp=true",
