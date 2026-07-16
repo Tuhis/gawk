@@ -179,8 +179,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `Element.requestFullscreen` so **non-iPhone devices are byte-identical**
   (sole overlay-only exception: the new **Feature Gates** stats section —
   UpperCamelCase gate names, first gate `NativeVideoFullscreen`);
-  U1–U4 chunks; **U1–U3 implemented 2026-07-16; U4 first pass found native
-  fullscreen black — three-way defenses shipped 2026-07-16, re-verify
+  U1–U4 chunks; **U1–U3 implemented 2026-07-16; U4: two on-device passes
+  black → tee reworked to decoded-frame clones 2026-07-16, third pass
   pending**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
@@ -588,8 +588,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    construction. Non-goals: mic mixing, R14-native audio (wire types are
    ready — follow-up there), FEC, DTX, audio-only mode.
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
-   green); U4 in progress — first on-device pass found native fullscreen
-   black, defenses shipped 2026-07-16 (below), re-verify pending**
+   green); U4 in progress — two on-device passes found native fullscreen
+   black; the tee was reworked to decoded-frame clones 2026-07-16 (below),
+   third pass pending**
    (R16, `docs/21-ios-video-fullscreen.md`; viewer-client only, zero
    server/wire changes). The viewer fullscreen button is a **silent no-op
    on iPhone**: no Element Fullscreen API exists there (iPad has it since
@@ -622,20 +623,26 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `NativeVideoFullscreen`; the section renders only where gates are
    reported (broadcaster overlay untouched) and appears on every viewer —
    the one deliberate, overlay-only R16 change on non-gated devices.
-   **U4 first pass (2026-07-16): native fullscreen enters but shows black.**
-   Diagnosis narrowed to three WebKit candidates (black WebGL-canvas
-   readback / foreign broadcaster-clock PTS never presenting / paused
-   autoplay-rejected element); defenses for all three shipped 2026-07-16 —
-   tee stamps generator frames from its **own zero-based monotonic clock**
-   (never source timestamps), `preserveDrawingBuffer: true` on the tee'd
-   GL context only, gesture-context `play()` before
-   `webkitEnterFullscreen`, imperative `video.muted = true`, plus a
-   gated-only overlay **Native Fullscreen** section (tee + element
-   readyState/paused/size/rVFC-presented-frames) that localizes any
-   remaining blackness — see docs/21 "U4 findings" for the
-   observation→verdict table and the pre-registered next step
-   (decoded-frame clone tee) before the pseudo-only fallback. On-device
-   re-verify pending (BUGS.md entry tracks it).
+   **U4 (2026-07-16): two on-device passes showed native fullscreen
+   entering but black.** Pass-1 defenses (tee-local zero-based monotonic
+   PTS — never broadcaster-clock source timestamps; `preserveDrawingBuffer`;
+   gesture-context `play()` before `webkitEnterFullscreen` + imperative
+   `video.muted = true`; gated-only overlay **Native Fullscreen** section)
+   didn't cure it; pass 2 showed frames flowing end-to-end (tee climbing,
+   element playing + presenting) → **`VideoFrame`-from-WebGL-canvas
+   readback content is black on iOS WebKit even with preserveDrawingBuffer;
+   don't build on canvas readback there.** The tee now writes **clones of
+   the decoded frames it presents** (`new VideoFrame(frame, {timestamp:
+   localTs})`; `draw()` clones pre-consume, `upload()` holds the clone
+   until its `present(1)`, superseding uploads close it unseen; probe
+   trials clone-with-timestamp; canvas readback + preserveDrawingBuffer
+   removed) — interpolated mid-blends no longer cross, fullscreen shows
+   real frames at paced cadence. New overlay **Content sample** row
+   (periodic 4×4 peak-RGB of the element) separates black frame content
+   from a black native player. Third pass pending; pre-registered verdicts
+   in docs/21 "U4 findings" (high sample + still black ⇒ the native player
+   can't present locally generated MediaStreams ⇒ remove tier 2, ship
+   pseudo). BUGS.md entry tracks it.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

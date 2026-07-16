@@ -85,14 +85,7 @@ ctx.onmessage = (e: MessageEvent) => {
         const supported = probePresentationTee();
         ctx.postMessage({ type: 'presentationProbe', supported });
         if (supported) {
-          // preserveDrawingBuffer: the tee wraps the canvas in a VideoFrame
-          // after each paint, and WebKit may otherwise read back a discarded
-          // (black) GL buffer (U4 finding). Gated devices only — everyone
-          // else takes createRenderSink() below, options untouched.
-          tee = new TeeRenderSink(
-            createContextSink(cmd.canvas, { preserveDrawingBuffer: true }),
-            cmd.canvas,
-          );
+          tee = new TeeRenderSink(createContextSink(cmd.canvas));
           sink = new PacedPresentationSink(tee);
         }
       }

@@ -34,7 +34,7 @@ feature set exists).
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 📋 designed 2026-07-15; revised same day after design review (V0–V7 + V8 direct Vulkan Video, gated), not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
-| R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4 first pass found native fullscreen black — defenses shipped 2026-07-16, re-verify pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
+| R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 
 ---
 

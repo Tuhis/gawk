@@ -620,16 +620,11 @@ export function createRenderSink(
 
 // Exported for R16 (docs/21): the viewer worker composes
 // PacedPresentationSink(TeeRenderSink(createContextSink(canvas))) on gated
-// devices; createRenderSink() stays the everything-else path. The tee's
-// caller passes preserveDrawingBuffer — it reads the canvas back after each
-// draw (VideoFrame-from-canvas), and WebKit may otherwise hand back a
-// discarded (black) buffer. Callers passing no overrides get byte-identical
-// context options.
-export function createContextSink(
-  canvas: OffscreenCanvas,
-  glOpts?: { preserveDrawingBuffer?: boolean },
-): RenderSink {
-  const opts = { alpha: false, antialias: false, depth: false, stencil: false, ...glOpts };
+// devices; createRenderSink() stays the everything-else path. (A U4
+// preserveDrawingBuffer override lived here briefly for the canvas-readback
+// tee; it went with the readback — the tee clones decoded frames now.)
+export function createContextSink(canvas: OffscreenCanvas): RenderSink {
+  const opts = { alpha: false, antialias: false, depth: false, stencil: false };
   // WebGL2 gets the interpolation-capable sink (R12 T4 — WebGL2-only by
   // policy); its plain draw() path is identical to WebGLRenderSink, so this
   // costs nothing when the experimental toggle is off.

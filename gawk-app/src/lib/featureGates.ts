@@ -39,4 +39,8 @@ export interface PresentationSurfaceStats {
   // Frames the element actually presented, counted via
   // requestVideoFrameCallback; null where rVFC (or the element) is absent.
   elementFrames: number | null;
+  // Max RGB channel (0–255) from a periodic 4×4 pixel sample of the element —
+  // 0 with a bright inline stream ⇒ the element is presenting black frames;
+  // high ⇒ content is fine and any black fullscreen is the player itself.
+  elementContentPeak: number | null;
 }

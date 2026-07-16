@@ -12,17 +12,25 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Impact**: iPhone viewers using the fullscreen button get the system
   player over black instead of the stream; exiting returns to the working
   inline viewer.
-- **Cause** (narrowed to three WebKit candidates, not yet distinguishable
-  on-device — see the U4 findings section of
+- **Cause** (narrowed over two on-device passes — see the U4 findings
+  section of
   [`docs/21-ios-video-fullscreen.md`](docs/21-ios-video-fullscreen.md)):
-  black `VideoFrame`-from-WebGL-canvas readback, foreign broadcaster-clock
-  PTS never presenting, or a paused (autoplay-rejected) element.
-- **Fix shipped, unverified**: defenses for all three landed 2026-07-16
-  (tee-local zero-based PTS, `preserveDrawingBuffer` on the tee'd context,
-  gesture-context `play()` in the fullscreen toggle, plus an overlay
-  "Native Fullscreen" diagnostics section that localizes any remaining
-  blackness). Awaiting the on-device re-verify; remove this entry when it
-  passes.
+  pass 1 shipped defenses for three WebKit candidates (tee-local PTS,
+  `preserveDrawingBuffer`, gesture-context `play()` + element diagnostics);
+  pass 2 showed frames flowing end-to-end (tee climbing, element playing
+  and presenting) yet still black — ruling the `VideoFrame`-from-WebGL-
+  canvas readback content the operative cause (black even with
+  `preserveDrawingBuffer`).
+- **Fix shipped, unverified**: the pre-registered next step landed
+  2026-07-16 — the tee now writes **clones of the decoded frames it
+  presents** (`new VideoFrame(frame, { timestamp })`, no canvas readback
+  anywhere; interpolated mid-blends no longer cross — fullscreen shows real
+  frames at paced cadence), plus an overlay "Content sample" (peak-RGB)
+  row that finally separates black frame content from a black native
+  player. Awaiting the third on-device pass; if *still* black with a high
+  Content sample, the pre-registered verdict is: the native player can't
+  present locally generated MediaStreams on this WebKit → remove tier 2,
+  ship pseudo-fullscreen. Remove this entry when either lands.
 
 ## Viewer "Streamer offline" card is misleading when the relay rejects the join
 

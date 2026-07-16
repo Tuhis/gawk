@@ -542,19 +542,8 @@ describe('createRenderSink (R10 P2)', () => {
   });
 });
 
-describe('createContextSink GL options (R16 U4)', () => {
-  it('requests preserveDrawingBuffer when asked — the tee reads the canvas back post-draw', () => {
-    const gl = fakeGL();
-    const { canvas } = fakeCanvas((type) => (type === 'webgl2' ? gl : null));
-    createContextSink(canvas, { preserveDrawingBuffer: true });
-    const getContext = (canvas as unknown as { getContext: ReturnType<typeof vi.fn> }).getContext;
-    expect(getContext).toHaveBeenCalledWith(
-      'webgl2',
-      expect.objectContaining({ preserveDrawingBuffer: true, alpha: false }),
-    );
-  });
-
-  it('passes byte-identical context options when no overrides are given', () => {
+describe('createContextSink (R16)', () => {
+  it('requests the standard context options (no per-caller overrides)', () => {
     const gl = fakeGL();
     const { canvas } = fakeCanvas((type) => (type === 'webgl2' ? gl : null));
     createContextSink(canvas);

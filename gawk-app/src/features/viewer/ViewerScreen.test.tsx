@@ -318,6 +318,7 @@ describe('ViewerScreen R16 presentation surface', () => {
       elementWidth: null,
       elementHeight: null,
       elementFrames: null,
+      elementContentPeak: null,
     });
   });
 });

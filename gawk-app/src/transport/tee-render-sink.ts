@@ -1,12 +1,21 @@
-// R16 (docs/21 Decision 3/4): the presentation tee — a RenderSink decorator
-// around the context sink, inside the paced sink:
-// PacedPresentationSink(TeeRenderSink(contextSink)). The canvas is painted
-// exactly as today; after every paint that reaches the screen (plain draw(),
-// present(1), AND present(0.5) synthesized mid-frames) the armed tee wraps
-// the canvas in a VideoFrame and writes it to a VideoTrackGenerator, whose
-// track feeds the hidden iPhone presentation <video>. Only *presented* frames
-// cross — coalesced/superseded frames were never painted — so the track
-// carries the exact smoothed output, interpolated frames included.
+// R16 (docs/21 Decision 3/4, reworked per the U4 findings): the presentation
+// tee — a RenderSink decorator around the context sink, inside the paced
+// sink: PacedPresentationSink(TeeRenderSink(contextSink)). The canvas is
+// painted exactly as today; the armed tee writes a *clone of each decoded
+// frame it presents* (via new VideoFrame(frame, { timestamp })) to a
+// VideoTrackGenerator, whose track feeds the hidden iPhone presentation
+// <video>. Only presented frames cross — coalesced/superseded frames were
+// never painted — so the track carries the paced real frames.
+//
+// U4 second on-device pass (2026-07-16): the original design wrapped the
+// *canvas* in a VideoFrame after each paint, carrying interpolated mid
+// frames too — but VideoFrame-from-WebGL-canvas content is **black** on iOS
+// WebKit (frames flowed end-to-end, element presented them, screen stayed
+// black; preserveDrawingBuffer didn't cure it). Cloning the decoded frame is
+// the canonical WebCodecs→MediaStream path (no canvas readback anywhere,
+// cheaper per frame); the cost is that synthesized present(0.5) blends exist
+// only on the canvas and don't cross — fullscreen shows real frames at the
+// paced cadence.
 //
 // Idle until armed: constructed only when the worker init carries
 // `presentationTee: true` (gated devices), and even then pass-through-only
@@ -43,46 +52,59 @@ export class TeeRenderSink implements RenderSink {
   present?: (alpha: number) => void;
 
   private inner: RenderSink;
-  private canvas: OffscreenCanvas;
   private writer: TeeFrameWriter | null = null;
   private teed = 0;
   private errors = 0;
+  // A clone taken at upload(), written when its frame's own slot presents
+  // (present(1)); a superseding upload closes it unseen — mirrors the paced
+  // sink's supersession, where an uploaded frame's slot can be overtaken by
+  // a newer real frame before it ever presents.
+  private heldClone: VideoFrame | null = null;
   // U4 black-screen finding: the generator stream is stamped from this
-  // clock — zero-based at the first capture, strictly monotonic — never from
+  // clock — zero-based at the first clone, strictly monotonic — never from
   // source-frame timestamps, which sit on the *broadcaster's* clock (huge
   // foreign values, backwards jumps on restarts). WebKit schedules a locally
   // generated track's samples by PTS; foreign PTS ⇒ frames that never
-  // present ⇒ a black native-fullscreen player. Capture time IS the paced
-  // presentation time, so it is also the truthful PTS for this stream.
+  // present ⇒ a black native-fullscreen player.
   private now: () => number;
   private baseMs: number | null = null;
   private lastTsUs = -1;
 
-  constructor(
-    inner: RenderSink,
-    canvas: OffscreenCanvas,
-    now: () => number = () => performance.now(),
-  ) {
+  constructor(inner: RenderSink, now: () => number = () => performance.now()) {
     this.inner = inner;
-    this.canvas = canvas;
     this.kind = inner.kind;
     this.now = now;
 
     const interp = inner as RenderSink & Partial<InterpolatingInner>;
     if (typeof interp.upload === 'function' && typeof interp.present === 'function') {
-      this.upload = (frame: VideoFrame) => interp.upload!(frame);
-      // Every present paints — a real frame's own slot (alpha 1) or a
-      // synthesized mid blend — so every present captures.
+      this.upload = (frame: VideoFrame) => {
+        // Clone before delegating — the inner sink closes the frame.
+        if (this.writer) {
+          this.heldClone?.close();
+          this.heldClone = this.cloneForTee(frame);
+        }
+        interp.upload!(frame);
+      };
       this.present = (alpha: number) => {
         interp.present!(alpha);
-        this.capture();
+        // A real frame's own slot: its held clone crosses now. Synthesized
+        // mid blends (alpha < 1) exist only on the canvas — nothing to tee
+        // without a canvas readback, which is exactly what U4 ruled out.
+        if (alpha >= 1) {
+          const clone = this.heldClone;
+          this.heldClone = null;
+          if (clone) this.writeTeed(clone);
+        }
       };
     }
   }
 
   draw(frame: VideoFrame, targetDisplayMs?: number): void {
+    // draw() ≡ upload + present(1): clone before the inner sink closes the
+    // frame, write after the paint so presented order is preserved.
+    const clone = this.writer ? this.cloneForTee(frame) : null;
     this.inner.draw(frame, targetDisplayMs);
-    this.capture();
+    if (clone) this.writeTeed(clone);
   }
 
   drawnFrames(): number {
@@ -98,7 +120,7 @@ export class TeeRenderSink implements RenderSink {
   }
 
   // Zero-based local capture time in µs; the +1 tie-break keeps stamps
-  // strictly increasing even when two captures land in the same clock tick.
+  // strictly increasing even when two clones land in the same clock tick.
   private nextTimestampUs(): number {
     const nowMs = this.now();
     this.baseMs ??= nowMs;
@@ -107,22 +129,31 @@ export class TeeRenderSink implements RenderSink {
     return ts;
   }
 
-  // Capture the just-painted canvas into the generator. Failures count
-  // teeErrors and never throw into the paint path — the inline canvas must
-  // keep working even if the tee dies.
-  private capture(): void {
-    const writer = this.writer;
-    if (!writer) return;
-    let frame: VideoFrame | null = null;
+  // Clone a decoded frame for the generator (shares the media resource — no
+  // pixel copy). Failures count teeErrors and never throw into the paint
+  // path — the inline canvas must keep working even if the tee dies.
+  private cloneForTee(frame: VideoFrame): VideoFrame | null {
     try {
-      frame = new VideoFrame(this.canvas as unknown as CanvasImageSource, {
+      return new VideoFrame(frame as unknown as CanvasImageSource, {
         timestamp: this.nextTimestampUs(),
       });
-      const f = frame;
-      writer.write(f).catch(() => {
+    } catch {
+      this.errors++;
+      return null;
+    }
+  }
+
+  private writeTeed(clone: VideoFrame): void {
+    const writer = this.writer;
+    if (!writer) {
+      clone.close();
+      return;
+    }
+    try {
+      writer.write(clone).catch(() => {
         this.errors++;
         try {
-          f.close();
+          clone.close();
         } catch {
           // already consumed by the sink
         }
@@ -131,9 +162,9 @@ export class TeeRenderSink implements RenderSink {
     } catch {
       this.errors++;
       try {
-        frame?.close();
+        clone.close();
       } catch {
-        // never constructed / already closed
+        // already consumed
       }
     }
   }
@@ -152,18 +183,24 @@ export function getVideoTrackGenerator(): VideoTrackGeneratorCtor | undefined {
   return (globalThis as { VideoTrackGenerator?: VideoTrackGeneratorCtor }).VideoTrackGenerator;
 }
 
-// R16 Decision 7 (U1): the worker capability probe, run when init carries the
-// presentationTee flag — VideoTrackGenerator present AND a trial
-// VideoFrame-from-OffscreenCanvas (the tee's one unverified load-bearing
-// operation on iOS WebKit). Failure ⇒ tier 3 and no arm command is ever sent.
+// R16 Decision 7 (U1, updated in U4): the worker capability probe, run when
+// init carries the presentationTee flag — VideoTrackGenerator present AND a
+// trial clone-with-timestamp from a VideoFrame (the reworked tee's one
+// load-bearing operation; the canvas is only scaffolding to mint the base
+// frame). Failure ⇒ tier 3 and no arm command is ever sent.
 export function probePresentationTee(): boolean {
   try {
     if (!getVideoTrackGenerator()) return false;
     const canvas = new OffscreenCanvas(2, 2);
     // Paint something so the canvas has a real drawing buffer to wrap.
     canvas.getContext('2d')?.fillRect(0, 0, 2, 2);
-    const frame = new VideoFrame(canvas as unknown as CanvasImageSource, { timestamp: 0 });
-    frame.close();
+    const base = new VideoFrame(canvas as unknown as CanvasImageSource, { timestamp: 0 });
+    try {
+      const clone = new VideoFrame(base as unknown as CanvasImageSource, { timestamp: 1 });
+      clone.close();
+    } finally {
+      base.close();
+    }
     return true;
   } catch {
     return false;

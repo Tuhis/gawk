@@ -138,6 +138,10 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                 surface.elementWidth ? `${surface.elementWidth}×${surface.elementHeight}` : '—',
               ],
               ['Element frames', surface.elementFrames == null ? '—' : String(surface.elementFrames)],
+              [
+                'Content sample',
+                surface.elementContentPeak == null ? '—' : `peak ${surface.elementContentPeak}/255`,
+              ],
             ] as StatsRow[],
           },
         ]

@@ -189,9 +189,14 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     };
   }, [presentationVideo, teeTrack]);
 
-  // U4: count frames the element actually presents (rVFC). A ref, not state —
-  // sampled into presentationSurface on each stats-tick render.
+  // U4: count frames the element actually presents (rVFC), and periodically
+  // sample their content — the max RGB channel of a 4×4 downscale. This is
+  // the discriminator the first two passes lacked: rVFC climbing proves
+  // frames present, but only a pixel sample tells "presenting black frames"
+  // from "the native player renders black". Refs, not state — sampled into
+  // presentationSurface on each stats-tick render.
   const elementFramesRef = useRef<number | null>(null);
+  const elementContentPeakRef = useRef<number | null>(null);
   useEffect(() => {
     const video = presentationVideo as
       | (HTMLVideoElement & {
@@ -201,11 +206,33 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       | null;
     if (!video || typeof video.requestVideoFrameCallback !== 'function') return;
     elementFramesRef.current = 0;
+    elementContentPeakRef.current = null;
     let live = true;
     let handle = 0;
+    let sampleCanvas: HTMLCanvasElement | null = null;
+    const samplePeak = () => {
+      try {
+        sampleCanvas ??= document.createElement('canvas');
+        sampleCanvas.width = 4;
+        sampleCanvas.height = 4;
+        const ctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+        ctx.drawImage(video, 0, 0, 4, 4);
+        const d = ctx.getImageData(0, 0, 4, 4).data;
+        let peak = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          peak = Math.max(peak, d[i], d[i + 1], d[i + 2]);
+        }
+        elementContentPeakRef.current = peak;
+      } catch {
+        // Best-effort diagnostics — never let sampling break the counter.
+      }
+    };
     const onFrame = () => {
       if (!live) return;
-      elementFramesRef.current = (elementFramesRef.current ?? 0) + 1;
+      const n = (elementFramesRef.current ?? 0) + 1;
+      elementFramesRef.current = n;
+      if (n % 60 === 1) samplePeak();
       handle = video.requestVideoFrameCallback!(onFrame);
     };
     handle = video.requestVideoFrameCallback(onFrame);
@@ -247,6 +274,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     elementWidth: presentationVideo?.videoWidth ?? null,
     elementHeight: presentationVideo?.videoHeight ?? null,
     elementFrames: elementFramesRef.current,
+    elementContentPeak: elementContentPeakRef.current,
   };
 
   // R9 M7: rolling stat-sample window backing "Copy diagnostics" and the
