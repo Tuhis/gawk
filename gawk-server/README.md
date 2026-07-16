@@ -78,7 +78,15 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-allowed-origins` | `GAWK_ALLOWED_ORIGINS` | (empty = allow all) |
 | `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
 | `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |
+| `-broadcast-grace` | `GAWK_BROADCAST_GRACE` | `5m` |
 | `-quiet-probe-logs` | `GAWK_QUIET_PROBE_LOGS` | `false` |
+| `-stateless-reset-key` | `GAWK_STATELESS_RESET_KEY` | (empty = disabled; 64 hex chars, shared fleet-wide) |
+| `-resume-token-key` | `GAWK_RESUME_TOKEN_KEY` | (empty; only used when no publish secret — R17) |
+| `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars — R17) |
+| `-cluster-mode` | `GAWK_CLUSTER_MODE` | `false` |
+| `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
+| `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |
+| `-trusted-cidrs` | `GAWK_TRUSTED_CIDRS` | (empty) |
 
 The keepalive is what keeps idle viewers connected while the broadcaster is
 away: QUIC PINGs reset both endpoints' idle timers. Raising
@@ -97,7 +105,24 @@ usual); the Helm chart sets it `true` by default (`config.quietProbeLogs`).
 Real, off-pod echo diagnostic use is never affected — only loopback traffic
 is quieted.
 
-The server exits cleanly on SIGINT/SIGTERM.
+The R17 flags (`-cluster-mode` and the shared keys/PSK) enable the
+multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod
+edge pulls, and resume tokens. Off (the default) the server never touches
+the Kubernetes API and behaves exactly like the single-pod relay; see
+[docs/22](../docs/22-relay-scale-out.md) for the design and
+[docs/05](../docs/05-resilience-deploy.md) for the multi-replica runbook.
+
+On SIGINT/SIGTERM the server drains before exiting (R17 W1): every open
+session gets close code 4002 (clients reconnect immediately), cluster mode
+releases this pod's Leases, and the process exits within ~1.5 s.
+
+`cmd/gawk-loadgen` is the synthetic-viewer load tool (R17 W6): N subscribe
+sessions against one broadcast, reporting frames/s, keyframes, frameID gaps
+and aggregate bitrate:
+
+```sh
+go run ./cmd/gawk-loadgen -url https://api.gawk.ioio.fi:4433 -id K7XQ2M -viewers 200 -duration 60s
+```
 
 ## Docker
 

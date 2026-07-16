@@ -61,6 +61,8 @@ type RegistryCollector struct {
 	publisherActive   *prometheus.Desc
 	graceRemaining    *prometheus.Desc
 	subscribers       *prometheus.Desc
+	edgeSessions      *prometheus.Desc
+	role              *prometheus.Desc
 	cachedKeyframe    *prometheus.Desc
 
 	framesRelayed    desc
@@ -70,6 +72,8 @@ type RegistryCollector struct {
 	sendErrors       desc
 	ingressLostF     desc
 	ingressLostC     desc
+	edgeIngressLostF desc
+	edgeIngressLostC desc
 	ingressBytes     desc
 	egressBytes      desc
 	bwDroppedBytes   desc
@@ -95,7 +99,12 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"Seconds until an abandoned broadcast is garbage-collected; 0 while the publisher is active.",
 			[]string{"broadcast"}, nil),
 		subscribers: prometheus.NewDesc("gawk_broadcast_subscribers",
-			"Subscribers currently connected to the broadcast.", []string{"broadcast"}, nil),
+			"Local viewers currently connected to the broadcast (edge sessions excluded).", []string{"broadcast"}, nil),
+		edgeSessions: prometheus.NewDesc("gawk_broadcast_edge_sessions",
+			"Downstream edge pods attached via the internal subscribe route (R17).", []string{"broadcast"}, nil),
+		role: prometheus.NewDesc("gawk_broadcast_role",
+			"This pod's role for the broadcast (R17): origin hosts the publisher, edge re-fans an upstream pull. Value is always 1; join on(broadcast) group_left(role).",
+			[]string{"broadcast", "role"}, nil),
 		cachedKeyframe: prometheus.NewDesc("gawk_broadcast_cached_keyframe_bytes",
 			"Size of the cached keyframe used to prime late joiners.", []string{"broadcast"}, nil),
 
@@ -110,9 +119,13 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 		sendErrors: newDesc("send_errors_total",
 			"Datagram write failures to subscribers."),
 		ingressLostF: newDesc("ingress_frames_lost_total",
-			"Frames the publisher sent that never reached the relay (broadcaster-to-relay loss)."),
+			"Frames the publisher sent that never reached the relay (broadcaster-to-relay loss; origin hubs only)."),
 		ingressLostC: newDesc("ingress_chunks_lost_total",
-			"Missing chunks of frames that arrived incomplete (partial broadcaster-to-relay loss)."),
+			"Missing chunks of frames that arrived incomplete (partial broadcaster-to-relay loss; origin hubs only)."),
+		edgeIngressLostF: newDesc("edge_ingress_frames_lost_total",
+			"Frames lost on the origin-to-edge leg (R17; edge hubs only — a separate family from the broadcaster-leg window, never mixed)."),
+		edgeIngressLostC: newDesc("edge_ingress_chunks_lost_total",
+			"Chunks lost on the origin-to-edge leg (R17; edge hubs only)."),
 		ingressBytes: newDesc("ingress_bytes_total",
 			"Bytes received from the publisher.", "kind"),
 		egressBytes: newDesc("egress_bytes_total",
@@ -137,6 +150,8 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.publisherActive
 	ch <- c.graceRemaining
 	ch <- c.subscribers
+	ch <- c.edgeSessions
+	ch <- c.role
 	ch <- c.cachedKeyframe
 	for _, d := range c.counterDescs() {
 		ch <- d.broadcast
@@ -147,7 +162,8 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *RegistryCollector) counterDescs() []desc {
 	return []desc{
 		c.framesRelayed, c.datagramsRelayed, c.datagramsDropped, c.badDatagrams,
-		c.sendErrors, c.ingressLostF, c.ingressLostC, c.ingressBytes,
+		c.sendErrors, c.ingressLostF, c.ingressLostC, c.edgeIngressLostF,
+		c.edgeIngressLostC, c.ingressBytes,
 		c.egressBytes, c.bwDroppedBytes, c.kfIn, c.kfSent, c.kfDropped, c.kfOversize,
 	}
 }
@@ -175,6 +191,8 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(c.publisherActive, active, id)
 		gauge(c.graceRemaining, float64(s.GraceRemainingSeconds), id)
 		gauge(c.subscribers, float64(s.Subscribers), id)
+		gauge(c.edgeSessions, float64(s.EdgeSessions), id)
+		gauge(c.role, 1, id, s.Role)
 		gauge(c.cachedKeyframe, float64(s.CachedKeyframeBytes), id)
 
 		counter(c.framesRelayed.broadcast, s.FramesRelayed-s.KeyframeStreamsIn, id, "delta")
@@ -184,8 +202,15 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.datagramsDropped.broadcast, s.BandwidthDroppedDatagrams, id, "bandwidth")
 		counter(c.badDatagrams.broadcast, s.BadDatagrams, id)
 		counter(c.sendErrors.broadcast, s.SendErrors, id)
-		counter(c.ingressLostF.broadcast, s.IngressFramesLost, id)
-		counter(c.ingressLostC.broadcast, s.IngressChunksLost, id)
+		// Loss attribution by leg (R17 W6): an edge hub's ingress window is
+		// origin→edge loss; an origin hub's is broadcaster→relay loss.
+		if s.Role == "edge" {
+			counter(c.edgeIngressLostF.broadcast, s.IngressFramesLost, id)
+			counter(c.edgeIngressLostC.broadcast, s.IngressChunksLost, id)
+		} else {
+			counter(c.ingressLostF.broadcast, s.IngressFramesLost, id)
+			counter(c.ingressLostC.broadcast, s.IngressChunksLost, id)
+		}
 		counter(c.ingressBytes.broadcast, s.IngressDatagramBytes, id, "delta")
 		counter(c.ingressBytes.broadcast, s.KeyframeBytesIn, id, "keyframe")
 		counter(c.egressBytes.broadcast, s.EgressDatagramBytes, id, "delta")
@@ -210,6 +235,8 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.sendErrors.relay, t.SendErrors)
 	counter(c.ingressLostF.relay, t.IngressFramesLost)
 	counter(c.ingressLostC.relay, t.IngressChunksLost)
+	counter(c.edgeIngressLostF.relay, t.EdgeIngressFramesLost)
+	counter(c.edgeIngressLostC.relay, t.EdgeIngressChunksLost)
 	counter(c.ingressBytes.relay, t.IngressDatagramBytes, "delta")
 	counter(c.ingressBytes.relay, t.KeyframeBytesIn, "keyframe")
 	counter(c.egressBytes.relay, t.EgressDatagramBytes, "delta")
@@ -241,6 +268,9 @@ const (
 	OutcomeLimitRejected = "limit_rejected"
 	OutcomeUpgradeFailed = "upgrade_failed"
 	OutcomeError         = "error"
+	// OutcomeDraining marks CONNECTs rejected 503 during the SIGTERM drain
+	// (R17 W1) — the pod is exiting and must not accept new sessions.
+	OutcomeDraining = "draining"
 )
 
 // NewServerMetrics builds and registers the transport counters.

@@ -1351,3 +1351,106 @@ func TestClockMappingMalformedDropped(t *testing.T) {
 		t.Errorf("malformed mapping was fanned out: %d datagrams", len(s.received()))
 	}
 }
+
+// R17 W2: ResumePublish creates the hub for an unknown ID (the caller has
+// verified a resume token), counting the create against MaxBroadcasts;
+// existing hubs behave exactly like StartPublish reclaim.
+func TestResumePublishCreatesAndLimits(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxBroadcasts: 2})
+
+	id, pub, err := r.ResumePublish("K7XQ2M")
+	if err != nil {
+		t.Fatalf("ResumePublish unknown ID: %v", err)
+	}
+	if id != "K7XQ2M" {
+		t.Fatalf("ResumePublish id = %q, want K7XQ2M", id)
+	}
+	// The created hub is live: a second claim conflicts.
+	if _, _, err := r.ResumePublish("K7XQ2M"); !errors.Is(err, ErrPublisherActive) {
+		t.Fatalf("second claim err = %v, want ErrPublisherActive", err)
+	}
+	// Graced hub reclaims fine.
+	pub.Close()
+	if _, _, err := r.ResumePublish("K7XQ2M"); err != nil {
+		t.Fatalf("reclaim of graced hub: %v", err)
+	}
+
+	// Creates count against MaxBroadcasts.
+	if _, _, err := r.ResumePublish("ABC234"); err != nil {
+		t.Fatalf("second broadcast create: %v", err)
+	}
+	if _, _, err := r.ResumePublish("DEF567"); !errors.Is(err, ErrMaxBroadcasts) {
+		t.Fatalf("third create err = %v, want ErrMaxBroadcasts", err)
+	}
+
+	// Malformed IDs never create anything.
+	if _, _, err := r.ResumePublish("!!!!"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("malformed ID err = %v, want ErrNotFound", err)
+	}
+}
+
+// R17 W3: EndBroadcast (the lease-deletion callback) force-expires a
+// publisher-less broadcast — subscribers get the terminal 4000 exactly like
+// a local grace expiry — but never touches one with a live publisher (we
+// are its origin; a racing janitor must not kill a live broadcast). The
+// lifecycle hooks fire outside the registry lock.
+func TestEndBroadcastAndClusterHooks(t *testing.T) {
+	var closedIDs []string
+	var expiredIDs []string
+	var mu sync.Mutex
+	r := NewRegistry(discardLog, Options{
+		OnPublisherClosed: func(id string) {
+			mu.Lock()
+			closedIDs = append(closedIDs, id)
+			mu.Unlock()
+		},
+		OnBroadcastExpired: func(id string) {
+			mu.Lock()
+			expiredIDs = append(expiredIDs, id)
+			mu.Unlock()
+		},
+	})
+
+	id, pub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	if _, err := r.Subscribe(id, f); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Live publisher: EndBroadcast is a no-op (we host the origin).
+	r.EndBroadcast(id)
+	if _, closed := f.getCloseInfo(); closed {
+		t.Fatal("EndBroadcast closed subscribers of a live broadcast")
+	}
+
+	pub.Close() // grace begins; the OnPublisherClosed hook fires
+	mu.Lock()
+	gotClosed := append([]string(nil), closedIDs...)
+	mu.Unlock()
+	if len(gotClosed) != 1 || gotClosed[0] != id {
+		t.Fatalf("OnPublisherClosed calls = %v, want [%s]", gotClosed, id)
+	}
+
+	// The lease vanished cluster-wide: local viewers get the terminal 4000.
+	r.EndBroadcast(id)
+	code, closed := f.getCloseInfo()
+	if !closed || code != uint32(wire.CloseCodeBroadcastEnded) {
+		t.Fatalf("subscriber close = (%d, %v), want (4000, true)", code, closed)
+	}
+	if err := r.CheckSubscribe(id); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CheckSubscribe after EndBroadcast = %v, want ErrNotFound", err)
+	}
+	mu.Lock()
+	gotExpired := append([]string(nil), expiredIDs...)
+	mu.Unlock()
+	if len(gotExpired) != 1 || gotExpired[0] != id {
+		t.Errorf("OnBroadcastExpired calls = %v, want [%s]", gotExpired, id)
+	}
+
+	// Unknown / malformed IDs are silently ignored.
+	r.EndBroadcast("AAAAAA")
+	r.EndBroadcast("!!!")
+}

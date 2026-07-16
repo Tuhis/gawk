@@ -36,9 +36,9 @@ getDisplayMedia
 
 | Path | What |
 |------|------|
-| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R16), with ordering rationale and per-item scope sketches |
+| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R18), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`21`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`22`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `wire/` is public so the native broadcaster can import it. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `gawk-broadcast/` | Go native Linux broadcaster (R14): Gio GUI + CLI over a shared engine, hardware encode via portal + GStreamer. Own module, own release; no image or chart — a binary you run on your own PC. See its [README](gawk-broadcast/README.md) |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
@@ -130,11 +130,13 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 19. 🚧 Native Linux broadcaster (R14): a Gio GUI app + CLI over a shared Go engine in the new top-level [`gawk-broadcast/`](gawk-broadcast/) module (importing the relay's now-public `gawk-server/wire` — reused, never mirrored), publishing with **hardware encode** from Linux, which the browser structurally cannot do there. Go-owned XDG ScreenCast portal handshake (the share picker appears on every start — the choice is never persisted) feeding a GStreamer subprocess; hardware-only cascade `vulkanh264enc` → `nvh264enc` → `vah264enc` → **refusal pointing at the browser** (no software rung), each accepted only by real trial encode; MPEG-TS over the pipe for structural AU boundaries; raw Annex-B with empty extradata (the only thing exercising the viewer's Annex-B branch). Zero server/wire/viewer changes — `docs/19` (V0–V7 implemented 2026-07-15; automated gates green including end-to-end tests against the real relay binary; **manual verification on the Linux gaming PC pending** — hardware encode, the latency-bias gate, portal + notifications on KDE/GNOME. V8 direct Vulkan Video encode is gated on V2's on-hardware Stage-1 result and not started)
 20. 📋 System audio (R15, experimental): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), new wire types 0x07/0x08 + a hub audio-config cache, viewer-worker decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock (adaptive audio jitter buffer; audio-master video pacing in the R12 paced modes). Default-off "Enable audio (experimental)" broadcaster toggle; viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, not started)
 21. 📋 iOS native fullscreen (R16): the viewer's fullscreen button is a silent no-op on iPhone (no Element Fullscreen API there — every iOS browser is WebKit; the only native fullscreen is `webkitEnterFullscreen()` on a `<video>`, and the viewer paints a canvas). Fix: a `TeeRenderSink` decorator wraps each **presented** canvas frame (R12 pacing/interpolation preserved) into a worker-side `VideoTrackGenerator` feeding a hidden pre-armed `<video>`; tiered `useFullscreen` (element → video → CSS pseudo-fullscreen) so the button always does something; plus a new stats-overlay **Feature Gates** section (UpperCamelCase names, first gate `NativeVideoFullscreen`). Gated on the *absence* of `Element.requestFullscreen` — non-iPhone devices unchanged (overlay section aside). Viewer-only — zero server/wire changes — `docs/21` (designed 2026-07-16, not started)
+22. 🚧 Relay scale-out & high availability (R17): the relay becomes N homogeneous pods behind the existing UDP LoadBalancer via a **self-federating origin/edge cascade** over the existing WebTransport protocol — the publisher's pod claims a per-broadcast k8s Lease as origin, other pods edge-pull on demand and re-fan-out (depth ≤ 2), so one hot broadcast's audience spans pods. Version rollouts stop breaking streams: drains send a new 4002 close code (clients reconnect with zero delay), a shared QUIC stateless-reset key makes abrupt deaths detectable in ~1 RTT, and the broadcaster auto-resumes with in-band resume tokens (wire 0x09) so relay restarts keep the broadcast ID and viewer URLs — worst rollout artifact ≤ 1 s freeze, vs today’s orphaned streams — `docs/22` (W1–W6 implemented 2026-07-16, automated gates green; homelab drills pending)
 
 What comes next (the R11/R12/R13 manual browser verifies and R14's manual
 verify on the gaming PC, then R14's V8 direct Vulkan Video encode if that
 verify says the hardware is there, plus the R15 system audio and R16 iOS
-native fullscreen builds) is laid out in [`ROADMAP.md`](ROADMAP.md).
+native fullscreen builds and the R17 relay scale-out homelab drills) is
+laid out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
 
@@ -454,6 +456,31 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   scrambled queued frames to reference soup; a static screen (drained
   channel) stayed sharp. `-race` catches it outright.
   ([docs/19](docs/19-linux-native-broadcaster.md))
+
+**Relay fleet (R17)**
+
+- **Every `/publish/{id}` claim needs a resume token** (wire 0x09, the
+  `resume` query param) — including reclaims that used to work bare. An old
+  client's tokenless reclaim gets 403 and falls back to minting; that's the
+  designed hijack fix, not a bug. ([docs/22](docs/22-relay-scale-out.md))
+- **Fleet-shared Secrets are load-bearing**: without a shared resume-token
+  key (or publish secret), re-homing 403s on every pod except the minting
+  one; without a shared `statsKey`, one broadcast has N metric identities;
+  without the shared `StatelessResetKey`, abrupt pod deaths cost the ~30 s
+  idle timeout instead of ~1 RTT. Check `resume_token_key_mode` in the
+  startup log. ([docs/22](docs/22-relay-scale-out.md))
+- **Drain is close-first-while-Ready, never "unready then linger"** —
+  kube-proxy flushes UDP conntrack on endpoint removal, so an
+  established flow can be re-DNAT'd mid-stream at an unspecified time; the
+  4002 close must go out while the conntrack entries still point at the
+  draining pod. Don't re-derive this. ([docs/22](docs/22-relay-scale-out.md))
+- **`replicas > 1` requires `config.clusterMode: true`** — the chart
+  refuses to render otherwise (two pods without federation split the
+  publisher from the subscribers). ([docs/22](docs/22-relay-scale-out.md))
+- **The ClockMapping is rewritten per hop, never forwarded verbatim** across
+  an edge pull — each pod's monotonic clock has an arbitrary epoch, so a
+  forwarded mapping would corrupt viewers' capture→render latency by that
+  epoch difference. ([docs/22](docs/22-relay-scale-out.md))
 
 **CI / deployment**
 

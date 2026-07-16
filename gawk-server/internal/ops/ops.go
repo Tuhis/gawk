@@ -32,10 +32,21 @@ func StatuszHandler(r *hub.Registry, log *slog.Logger) http.HandlerFunc {
 	}
 }
 
-// Handler builds the ops mux.
-func Handler(r *hub.Registry, g prometheus.Gatherer, log *slog.Logger) http.Handler {
+// Handler builds the ops mux. ready reports whether the relay is accepting
+// new work (false once the SIGTERM drain has begun — R17 W1); nil means
+// always ready. /readyz is the kubelet readiness target and matters for
+// scale-down/HPA hygiene; rollout correctness comes from the active drain,
+// not from readiness (docs/22 Decision 2).
+func Handler(r *hub.Registry, g prometheus.Gatherer, log *slog.Logger, ready func() bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if ready != nil && !ready() {
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			return
+		}
 		w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /statusz", StatuszHandler(r, log))

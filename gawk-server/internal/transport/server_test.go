@@ -128,47 +128,28 @@ func dialOnce(t *testing.T, ctx context.Context, url string, clientTLS *tls.Conf
 	return d.Dial(ctx, url, nil)
 }
 
-func dialPublisherAndGetID(t *testing.T, ctx context.Context, port int, clientTLS *tls.Config) (*webtransport.Session, string) {
+// dialPublisherHandshake mints a broadcast and returns the session, its ID
+// and the resume token (R17 W2: announce + token arrive on two uni streams
+// in unspecified order — readPublisherHandshake dispatches by type).
+func dialPublisherHandshake(t *testing.T, ctx context.Context, port int, clientTLS *tls.Config) (*webtransport.Session, string, string) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
 	pub := dial(t, ctx, url, clientTLS)
-	str, err := pub.AcceptUniStream(ctx)
-	if err != nil {
-		pub.CloseWithError(0, "")
-		t.Fatalf("AcceptUniStream failed: %v", err)
-	}
-	data, err := io.ReadAll(str)
-	if err != nil {
-		pub.CloseWithError(0, "")
-		t.Fatalf("failed to read announce stream: %v", err)
-	}
-	id, err := wire.ParseBroadcastAnnounce(data)
-	if err != nil {
-		pub.CloseWithError(0, "")
-		t.Fatalf("failed to parse announce: %v", err)
-	}
+	id, tokenHex := readPublisherHandshake(t, ctx, pub)
+	return pub, id, tokenHex
+}
+
+func dialPublisherAndGetID(t *testing.T, ctx context.Context, port int, clientTLS *tls.Config) (*webtransport.Session, string) {
+	t.Helper()
+	pub, id, _ := dialPublisherHandshake(t, ctx, port, clientTLS)
 	return pub, id
 }
 
-func dialPublisherReclaim(t *testing.T, ctx context.Context, port int, id string, clientTLS *tls.Config) *webtransport.Session {
+func dialPublisherReclaim(t *testing.T, ctx context.Context, port int, id, tokenHex string, clientTLS *tls.Config) *webtransport.Session {
 	t.Helper()
-	url := fmt.Sprintf("https://127.0.0.1:%d/publish/%s", port, id)
+	url := fmt.Sprintf("https://127.0.0.1:%d/publish/%s?resume=%s", port, id, tokenHex)
 	pub := dial(t, ctx, url, clientTLS)
-	str, err := pub.AcceptUniStream(ctx)
-	if err != nil {
-		pub.CloseWithError(0, "")
-		t.Fatalf("AcceptUniStream reclaim failed: %v", err)
-	}
-	data, err := io.ReadAll(str)
-	if err != nil {
-		pub.CloseWithError(0, "")
-		t.Fatalf("failed to read reclaim announce: %v", err)
-	}
-	gotID, err := wire.ParseBroadcastAnnounce(data)
-	if err != nil {
-		pub.CloseWithError(0, "")
-		t.Fatalf("failed to parse reclaim announce: %v", err)
-	}
+	gotID, _ := readPublisherHandshake(t, ctx, pub)
 	if gotID != id {
 		pub.CloseWithError(0, "")
 		t.Fatalf("reclaim announce got ID %q, want %q", gotID, id)
@@ -420,10 +401,12 @@ func TestSecondPublisherConflict(t *testing.T) {
 	defer cancel()
 	port, clientTLS, _, _ := startTestServer(t, ctx, 15)
 
-	first, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	first, id, token := dialPublisherHandshake(t, ctx, port, clientTLS)
 	_ = first
 
-	reclaimURL := fmt.Sprintf("https://127.0.0.1:%d/publish/%s", port, id)
+	// Even with a valid resume token (W2), a live publisher slot is a 409 —
+	// the token authenticates ownership, it doesn't evict the live session.
+	reclaimURL := fmt.Sprintf("https://127.0.0.1:%d/publish/%s?resume=%s", port, id, token)
 	rsp, sess, err := dialOnce(t, ctx, reclaimURL, clientTLS)
 	if err == nil {
 		sess.CloseWithError(0, "")
@@ -439,12 +422,12 @@ func TestPublisherDisconnectFreesSlot(t *testing.T) {
 	defer cancel()
 	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
-	first, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	first, id, token := dialPublisherHandshake(t, ctx, port, clientTLS)
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher registered")
 	first.CloseWithError(0, "done")
 	waitFor(t, 5*time.Second, func() bool { return !r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive }, "publisher slot freed")
 
-	second := dialPublisherReclaim(t, ctx, port, id, clientTLS)
+	second := dialPublisherReclaim(t, ctx, port, id, token, clientTLS)
 	_ = second
 }
 
@@ -601,7 +584,7 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 	defer cancel()
 	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
-	pub1, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	pub1, id, token := dialPublisherHandshake(t, ctx, port, clientTLS)
 	sendKeyframeStream(t, pub1, buildStreamKeyframe(t, 7, "avc1.42E02A", 1000))
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
@@ -614,7 +597,7 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 		t.Fatal("caches must persist while the broadcaster is away")
 	}
 
-	pub2 := dialPublisherReclaim(t, ctx, port, id, clientTLS)
+	pub2 := dialPublisherReclaim(t, ctx, port, id, token, clientTLS)
 	waitFor(t, 5*time.Second, func() bool {
 		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 		return st.PublisherActive && !st.HasConfig && st.CachedKeyframeBytes == 0
@@ -656,7 +639,7 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 		KeepAlivePeriod: 250 * time.Millisecond,
 	})
 
-	pub1, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	pub1, id, token := dialPublisherHandshake(t, ctx, port, clientTLS)
 	sub := dialSubscriber(t, ctx, port, id, clientTLS)
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
@@ -682,7 +665,7 @@ func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
 	default:
 	}
 
-	pub2 := dialPublisherReclaim(t, ctx, port, id, clientTLS)
+	pub2 := dialPublisherReclaim(t, ctx, port, id, token, clientTLS)
 	const newCodec = "vp09.00.40.08"
 	newKf := buildStreamKeyframe(t, 0, newCodec, 1200)
 	sendKeyframeStream(t, pub2, newKf)

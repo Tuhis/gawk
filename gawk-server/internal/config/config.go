@@ -6,9 +6,11 @@
 package config
 
 import (
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -41,10 +43,62 @@ type Config struct {
 	KeyframeWriteTimeout time.Duration
 
 	// MetricsAddr is the TCP listen address of the plain-HTTP ops endpoint
-	// (/metrics, /healthz, /statusz). Empty disables it. This is separate from
-	// Addr because the WebTransport server is HTTP/3-over-UDP only — Prometheus
-	// (and curl) need a TCP listener. Never expose this port publicly.
+	// (/metrics, /healthz, /readyz, /statusz). Empty disables it. This is
+	// separate from Addr because the WebTransport server is HTTP/3-over-UDP
+	// only — Prometheus (and curl) need a TCP listener. Never expose this
+	// port publicly.
 	MetricsAddr string
+
+	// ClusterMode enables the R17 federation layer (docs/22 Decision 1):
+	// per-broadcast origin Leases in Kubernetes, edge pulls, drain lease
+	// release. Off (the default) constructs no Kubernetes client at all —
+	// single-pod behavior is byte-identical to pre-R17. Requires POD_NAME,
+	// POD_IP and POD_NAMESPACE in the environment (downward API), plus
+	// InternalPSK and InternalServerName below.
+	ClusterMode bool
+
+	// InternalPSK gates the pod-to-pod /internal/subscribe route (R17 W4,
+	// docs/22 Decision 9). The route rides the same public UDP port as
+	// viewers (there is only one listener), so the PSK is what keeps
+	// non-fleet clients out. Required when ClusterMode is on.
+	InternalPSK string
+
+	// InternalServerName is the TLS server name edge pods verify when
+	// dialing an origin's pod IP (docs/22 Decision 9): the public cert
+	// hostname — no per-pod certs, no InsecureSkipVerify. Required when
+	// ClusterMode is on.
+	InternalServerName string
+
+	// TrustedCIDRs bypass the per-IP connection rate limiter (R17 W5,
+	// docs/22 Decision 13): under MetalLB L2 + externalTrafficPolicy:
+	// Cluster, cross-node traffic is SNAT'd to node IPs — at a rollout an
+	// entire pod's audience reconnects within ~1 s through a handful of
+	// those, and the 3/s bucket would fail fresh joiners fatally. List the
+	// node/pod CIDRs here; per-IP limiting is honestly best-effort under
+	// etp=Cluster (real client IPs return with BGP/ECMP — deferred).
+	TrustedCIDRs []*net.IPNet
+
+	// StatsKey keys the /statusz + metrics broadcast-ID obfuscation (R17 W6,
+	// docs/22 Decision 14): 32 bytes from 64 hex chars, shared fleet-wide so
+	// one broadcast keeps one obfuscated identity across pods. Empty =
+	// per-process random (the pre-R17 single-pod behavior).
+	StatsKey []byte
+
+	// ResumeTokenKey keys the resume-token HMAC (R17 W2, docs/22 Decision 7)
+	// when no publish secret is set (a publish secret always wins — rotating
+	// it revokes all tokens). 32 bytes from 64 hex chars, shared across all
+	// relay pods. Empty (and no publish secret) falls back to a per-process
+	// random key: dev parity with the old process-lifetime reclaim.
+	ResumeTokenKey []byte
+
+	// StatelessResetKey is the 32-byte QUIC stateless reset key (R17 W1,
+	// docs/22 Decision 3), decoded from 64 hex chars. Shared across every
+	// relay pod, it lets ANY pod answer packets for a connection it doesn't
+	// know with a stateless reset the client accepts — turning an abrupt pod
+	// death (or a kube-proxy conntrack re-DNAT) into ~1 RTT of detection
+	// instead of the ~30 s idle timeout. Empty disables (today's behavior).
+	// Never logged.
+	StatelessResetKey []byte
 
 	// Suppresses the INFO "session started"/"session ended" logs for /echo
 	// sessions from loopback (the k8s exec probe hitting 127.0.0.1, which
@@ -113,6 +167,21 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	// and would silently fall back to the default instead of disabling.
 	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
+	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
+		"QUIC stateless reset key as 64 hex chars (32 bytes), shared across all relay pods; empty disables")
+	resumeTokenKey := fs.String("resume-token-key", env("GAWK_RESUME_TOKEN_KEY", ""),
+		"resume-token HMAC key as 64 hex chars (32 bytes), used only when no publish secret is set; empty = per-process random")
+	clusterMode := fs.Bool("cluster-mode",
+		env("GAWK_CLUSTER_MODE", "") == "true" || env("GAWK_CLUSTER_MODE", "") == "1",
+		"enable multi-pod federation (per-broadcast k8s origin Leases, edge pulls); off = single-pod behavior")
+	internalPSK := fs.String("internal-psk", env("GAWK_INTERNAL_PSK", ""),
+		"pre-shared key gating the pod-to-pod /internal/subscribe route; required with -cluster-mode")
+	internalServerName := fs.String("internal-server-name", env("GAWK_INTERNAL_SERVER_NAME", ""),
+		"TLS server name edge pods verify when dialing an origin's pod IP (the public cert hostname); required with -cluster-mode")
+	trustedCIDRs := fs.String("trusted-cidrs", env("GAWK_TRUSTED_CIDRS", ""),
+		"comma-separated CIDRs that bypass the per-IP connection rate limiter (node/pod CIDRs under SNAT)")
+	statsKey := fs.String("stats-key", env("GAWK_STATS_KEY", ""),
+		"statusz/metrics broadcast-ID obfuscation key as 64 hex chars (32 bytes), shared fleet-wide; empty = per-process random")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -179,6 +248,25 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if strings.EqualFold(mAddr, "off") {
 		mAddr = ""
 	}
+	resetKey, err := parseHexKey32("stateless-reset-key", *statelessResetKey)
+	if err != nil {
+		return Config{}, err
+	}
+	resumeKey, err := parseHexKey32("resume-token-key", *resumeTokenKey)
+	if err != nil {
+		return Config{}, err
+	}
+	if *clusterMode && (*internalPSK == "" || *internalServerName == "") {
+		return Config{}, fmt.Errorf("cluster-mode requires -internal-psk and -internal-server-name")
+	}
+	cidrs, err := parseCIDRs(*trustedCIDRs)
+	if err != nil {
+		return Config{}, err
+	}
+	statsKeyBytes, err := parseHexKey32("stats-key", *statsKey)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Addr:           *addr,
@@ -202,7 +290,14 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		MaxKeyframeBytes:     kfBytes,
 		KeyframeWriteTimeout: kfWriteTimeout,
 
-		MetricsAddr: mAddr,
+		MetricsAddr:        mAddr,
+		ClusterMode:        *clusterMode,
+		InternalPSK:        *internalPSK,
+		InternalServerName: *internalServerName,
+		TrustedCIDRs:       cidrs,
+		StatsKey:           statsKeyBytes,
+		ResumeTokenKey:     resumeKey,
+		StatelessResetKey:  resetKey,
 
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,
@@ -232,6 +327,36 @@ func splitNonEmpty(s string) []string {
 		}
 	}
 	return out
+}
+
+// parseCIDRs parses a comma-separated CIDR list ("" = none).
+func parseCIDRs(s string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, part := range splitNonEmpty(s) {
+		_, ipnet, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted-cidrs entry %q: %w", part, err)
+		}
+		out = append(out, ipnet)
+	}
+	return out, nil
+}
+
+// parseHexKey32 decodes a 32-byte hex-encoded key flag: empty (disabled) or
+// exactly 64 hex chars. The decoded bytes are never logged.
+func parseHexKey32(name, s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	key, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: want 64 hex chars: %w", name, err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("invalid %s: got %d bytes, want exactly 32", name, len(key))
+	}
+	return key, nil
 }
 
 func parseBandwidth(s string) (int64, error) {

@@ -5,12 +5,24 @@ metadata:
   labels:
     {{- include "gawk-server.labels" . | nindent 4 }}
 spec:
-  # The hub is an in-memory single-publisher pub/sub: a second live pod
-  # behind the same Service would split the publisher and the subscribers.
-  # Recreate (not RollingUpdate) so two pods never overlap.
-  replicas: 1
+  # R17 (docs/22 Decision 15): replicas is a real value now. Multi-replica
+  # REQUIRES config.clusterMode (the origin/edge federation) — without it a
+  # second pod behind the Service would split the publisher from the
+  # subscribers, so the chart refuses to render that combination.
+  {{- if and (gt (int .Values.replicas) 1) (not .Values.config.clusterMode) }}
+  {{- fail "replicas > 1 requires config.clusterMode: true (see docs/22-relay-scale-out.md)" }}
+  {{- end }}
+  replicas: {{ .Values.replicas }}
+  # RollingUpdate with surge 1 / unavailable 0: pods drain one at a time and
+  # a reconnecting client always has a ready pod to land on. At replicas: 1
+  # this is strictly better than the old Recreate — the new pod is Ready
+  # before the old one drains, so even a single-pod upgrade is a ≤1 s blip
+  # instead of a full restart gap (W1 drain + W2 resume tokens).
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       {{- include "gawk-server.selectorLabels" . | nindent 6 }}
@@ -19,6 +31,13 @@ spec:
       labels:
         {{- include "gawk-server.selectorLabels" . | nindent 8 }}
     spec:
+      # The SIGTERM drain (R17 W1, docs/22 Decision 2) closes every session
+      # with 4002 inside ~1.25s and exits — 10s is generous headroom, and a
+      # hung pod must not linger into the next rollout step.
+      terminationGracePeriodSeconds: 10
+      {{- if .Values.config.clusterMode }}
+      serviceAccountName: {{ include "gawk-server.fullname" . }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -61,6 +80,37 @@ spec:
           env:
             - name: GAWK_ADDR
               value: ":4433"
+            {{- if .Values.config.clusterMode }}
+            # R17 W3: federation needs the k8s API (origin Leases) and this
+            # pod's identity — the lease advertises <podIP>:4433 for edge
+            # pulls (never the Service VIP, docs/22 Decision 9).
+            - name: GAWK_CLUSTER_MODE
+              value: "true"
+            # R17 W4: pod-to-pod route gate + the TLS name edges verify.
+            - name: GAWK_INTERNAL_PSK
+              {{- if .Values.config.internalPskRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.internalPskRef.name | quote }}
+                  key: {{ .Values.config.internalPskRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.config.internalPsk | quote }}
+              {{- end }}
+            - name: GAWK_INTERNAL_SERVER_NAME
+              value: {{ .Values.config.internalServerName | default (first .Values.certificate.dnsNames) | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
             # "off" (not empty) disables: an empty env var reads as unset and
             # would fall back to the flag default.
             - name: GAWK_METRICS_ADDR
@@ -92,10 +142,49 @@ spec:
               {{- else }}
               value: {{ .Values.config.publishSecret | quote }}
               {{- end }}
+            # R17 W6: fleet-wide statusz/metrics obfuscation key.
+            - name: GAWK_STATS_KEY
+              {{- if .Values.config.statsKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.statsKeyRef.name | quote }}
+                  key: {{ .Values.config.statsKeyRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.config.statsKey | quote }}
+              {{- end }}
+            # R17 W2: resume-token HMAC key — only consulted when no publish
+            # secret is set (the secret derives the key otherwise).
+            - name: GAWK_RESUME_TOKEN_KEY
+              {{- if .Values.config.resumeTokenKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.resumeTokenKeyRef.name | quote }}
+                  key: {{ .Values.config.resumeTokenKeyRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.config.resumeTokenKey | quote }}
+              {{- end }}
+            # R17 W1: the QUIC stateless reset key (docs/22 Decision 3) —
+            # SHARED across all relay pods (that is the whole point), so it
+            # belongs in a Secret via statelessResetKeyRef in any multi-pod
+            # deploy. Empty disables (abrupt pod death then costs the ~30s
+            # idle timeout instead of ~1 RTT).
+            - name: GAWK_STATELESS_RESET_KEY
+              {{- if .Values.config.statelessResetKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.statelessResetKeyRef.name | quote }}
+                  key: {{ .Values.config.statelessResetKeyRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.config.statelessResetKey | quote }}
+              {{- end }}
             - name: GAWK_CONN_RATE_LIMIT
               value: {{ .Values.config.connRateLimit | quote }}
             - name: GAWK_CONN_BURST_LIMIT
               value: {{ .Values.config.connBurstLimit | quote }}
+            {{- with .Values.config.trustedCidrs }}
+            - name: GAWK_TRUSTED_CIDRS
+              value: {{ join "," . | quote }}
+            {{- end }}
             - name: GAWK_MAX_BANDWIDTH
               value: {{ .Values.config.maxBandwidth | quote }}
             - name: GAWK_MAX_KEYFRAME_BYTES
@@ -134,9 +223,20 @@ spec:
             exec:
               command: *probe
             {{- toYaml .Values.probes.liveness | nindent 12 }}
+          # Readiness is drain-aware since R17 W1: /readyz on the TCP ops
+          # port flips 503 the moment the SIGTERM drain begins (scale-down /
+          # HPA hygiene — rollout correctness comes from the active drain,
+          # docs/22 Decision 2). Startup/liveness keep the exec probe: the
+          # HTTP/3 UDP port itself still can't be probed by kubelet.
           readinessProbe:
+            {{- if .Values.metrics.enabled }}
+            httpGet:
+              path: /readyz
+              port: metrics
+            {{- else }}
             exec:
               command: *probe
+            {{- end }}
             {{- toYaml .Values.probes.readiness | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

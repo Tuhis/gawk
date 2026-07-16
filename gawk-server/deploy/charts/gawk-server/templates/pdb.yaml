@@ -1,0 +1,16 @@
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicas) 1) }}
+# R17 (docs/22 Decision 15): with minAvailable 1, voluntary disruptions
+# (node drains) can never take the last relay pod. Rendered only at
+# replicas >= 2 — at 1 replica it would block node maintenance entirely.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gawk-server.fullname" . }}
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "gawk-server.selectorLabels" . | nindent 6 }}
+{{- end }}

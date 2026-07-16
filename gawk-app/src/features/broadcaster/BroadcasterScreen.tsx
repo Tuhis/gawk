@@ -23,7 +23,7 @@ import { fmt } from '../../lib/format';
 import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
 
-type Status = 'idle' | 'connecting' | 'broadcasting' | 'stopping' | 'error';
+type Status = 'idle' | 'connecting' | 'broadcasting' | 'reconnecting' | 'stopping' | 'error';
 
 function selectionLabel(selection: ResolutionSelection): string {
   if (selection === 'auto') return 'auto';
@@ -46,6 +46,10 @@ export function BroadcasterScreen() {
   const [error, setError] = useState<string | null>(null);
   const [broadcastId, setBroadcastId] = useState<string | null>(null);
   const [reclaimFailedNote, setReclaimFailedNote] = useState<string | null>(null);
+  const [resumeAttempt, setResumeAttempt] = useState<number | null>(null);
+  // R17 W2: the relay-minted resume token, kept next to the broadcast ID (a
+  // ref, not state — nothing renders it) so a manual restart can reclaim.
+  const resumeTokenRef = useRef<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [secretPrompt, setSecretPrompt] = useState(false);
@@ -106,6 +110,19 @@ export function BroadcasterScreen() {
           afterFailedReclaim ? 'Reclaim failed (expired/taken); started a new broadcast.' : null,
         );
       },
+      onResumeToken: (token: string) => {
+        resumeTokenRef.current = token;
+      },
+      // R17 W2 auto-resume: session death mid-broadcast is no longer
+      // terminal — amber "reconnecting" until the transport re-attaches.
+      onReconnecting: (info: { attempt: number }) => {
+        setResumeAttempt(info.attempt);
+        setStatus('reconnecting');
+      },
+      onResumed: () => {
+        setResumeAttempt(null);
+        setStatus('broadcasting');
+      },
       onError: (err: Error) => {
         setError(err.message);
         setStatus('error');
@@ -127,7 +144,8 @@ export function BroadcasterScreen() {
       const pipeline = await createBroadcastSession(
         { ...DEFAULT_CAPTURE_CONFIG },
         serverUrl,
-        { certHashHex, publishSecret },
+        // R17 W2: the reclaim needs the resume token from the prior session.
+        { certHashHex, publishSecret, resumeToken: resumeTokenRef.current ?? undefined },
         makeCallbacks(false),
         activeId,
       );
@@ -148,6 +166,7 @@ export function BroadcasterScreen() {
         }
         log.warn('Reclaim failed, falling back to mint:', e);
         setBroadcastId(null);
+        resumeTokenRef.current = null;
         activeId = null;
       }
     }
@@ -233,7 +252,11 @@ export function BroadcasterScreen() {
 
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
 
-  const running = status === 'connecting' || status === 'broadcasting' || status === 'stopping';
+  const running =
+    status === 'connecting' ||
+    status === 'broadcasting' ||
+    status === 'reconnecting' ||
+    status === 'stopping';
   const onStage = sourceStream != null;
 
   const settingsPanel = settingsOpen && (
@@ -311,6 +334,11 @@ export function BroadcasterScreen() {
                 <IconButton label={copied ? 'Copied' : 'Copy join link'} onClick={handleCopy}>
                   <CopyIcon />
                 </IconButton>
+              </span>
+            )}
+            {status === 'reconnecting' && (
+              <span className={`${styles.badge} ${styles.warnBadge}`}>
+                Reconnecting{resumeAttempt != null ? ` (attempt ${resumeAttempt})` : ''}…
               </span>
             )}
             {renderAutoBadge(stats)}

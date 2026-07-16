@@ -19,6 +19,10 @@ export interface ConnectOptions {
   // empty for a real (publicly trusted) certificate.
   certHashHex?: string;
   publishSecret?: string;
+  // R17 W2: the hex resume token from a previous session of this broadcast
+  // (wire 0x09). Required for every /publish/{id} claim; travels as the
+  // `resume` query param (the WebTransport JS API can't set headers).
+  resumeToken?: string;
 }
 
 export async function connectWebTransport(url: string, opts: ConnectOptions = {}): Promise<WebTransport> {
@@ -44,6 +48,12 @@ export async function connectWebTransport(url: string, opts: ConnectOptions = {}
   }
   log.info(`WebTransport connected: ${url} (maxDatagramSize ${wt.datagrams.maxDatagramSize})`);
   return wt;
+}
+
+export function bytesToHex(bytes: Uint8Array): string {
+  let out = '';
+  for (const b of bytes) out += b.toString(16).padStart(2, '0');
+  return out;
 }
 
 export function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {

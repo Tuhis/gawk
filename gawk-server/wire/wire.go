@@ -74,6 +74,19 @@ const (
 	// (relayClockUs = timestampUs + offsetUs) so a viewer holding its own
 	// TimeSync offset can compute absolute capture→render latency.
 	TypeClockMapping = 0x06
+
+	// 0x07 (AudioFrame) and 0x08 (AudioConfig) are reserved by R15 system
+	// audio (docs/20) — do not allocate them here.
+
+	// TypeResumeToken identifies a ResumeToken message (R17 W2, docs/22
+	// Decision 7): server→publisher on its own unidirectional stream right
+	// after the session upgrade (the browser WebTransport API exposes no
+	// response headers, so delivery must be in-band). The token is what a
+	// publisher presents (as the `resume` query param) to claim /publish/{id}
+	// — reclaim of a graced hub AND claim of an ID unknown to the receiving
+	// pod, which then creates the hub. Stateless HMAC: any pod can mint and
+	// verify. Never sent by clients as a wire message.
+	TypeResumeToken = 0x09
 )
 
 // CloseCodeBroadcastEnded is the WebTransport application close code sent
@@ -87,6 +100,21 @@ const CloseCodeBroadcastEnded = 4000
 // client: the viewer's reconnect policy retries, and a fresh session
 // restores the stream credit.
 const CloseCodeSubscriberUnresponsive = 4001
+
+// CloseCodeServerDraining is sent to every open session when the relay
+// drains on SIGTERM (R17 W1, docs/22 Decision 2): the pod is shutting down
+// for a planned rollout while still Ready, so its conntrack entries still
+// point at it and the close frame actually reaches the peer. Non-terminal
+// and explicitly fast: clients reconnect immediately (0 ms first retry) —
+// a ready replacement pod is behind the same Service by construction.
+const CloseCodeServerDraining = 4002
+
+// CloseCodeOriginMoved is sent on INTERNAL edge sessions only (R17 W5,
+// docs/22 Decision 11): the origin lost its Lease (force-take — the
+// broadcaster re-homed) and is demoting itself. The Go edge client
+// re-resolves the lease on any close; 4003 exists for log clarity, never
+// for browsers.
+const CloseCodeOriginMoved = 4003
 
 // Size constants for the wire format.
 const (
@@ -145,6 +173,9 @@ var (
 	// ErrBadLength indicates a fixed-size message (TimeSync, ClockMapping)
 	// whose length is not exactly the expected size.
 	ErrBadLength = errors.New("wire: unexpected message length")
+	// ErrBadResumeToken indicates a ResumeToken message with an invalid
+	// (empty, oversized, or length-mismatched) token.
+	ErrBadResumeToken = errors.New("wire: invalid resume token")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -382,6 +413,38 @@ func ParseClockMapping(dgram []byte) (offsetUs int64, err error) {
 			ErrBadType, dgram[1], TypeClockMapping)
 	}
 	return int64(binary.BigEndian.Uint64(dgram[2:10])), nil
+}
+
+// AppendResumeToken appends a ResumeToken message (R17 W2) to dst and returns
+// the extended slice. Layout: version, type 0x09, uint8 tokenLen, then the
+// token bytes. The token is opaque on the wire (the server mints truncated
+// HMACs, but the format doesn't care).
+func AppendResumeToken(dst []byte, token []byte) ([]byte, error) {
+	if len(token) == 0 || len(token) > 255 {
+		return nil, fmt.Errorf("%w: %d bytes, want 1-255", ErrBadResumeToken, len(token))
+	}
+	dst = append(dst, Version, TypeResumeToken, uint8(len(token)))
+	dst = append(dst, token...)
+	return dst, nil
+}
+
+// ParseResumeToken parses a ResumeToken message. Strict: the declared token
+// length must account for the entire message. The returned slice aliases msg.
+func ParseResumeToken(msg []byte) ([]byte, error) {
+	if len(msg) < 3 {
+		return nil, fmt.Errorf("%w: %d bytes, need at least 3 for resume token", ErrShortDatagram, len(msg))
+	}
+	if msg[0] != Version {
+		return nil, fmt.Errorf("%w: 0x%02x", ErrBadVersion, msg[0])
+	}
+	if msg[1] != TypeResumeToken {
+		return nil, fmt.Errorf("%w: got 0x%02x, want resume token 0x%02x", ErrBadType, msg[1], TypeResumeToken)
+	}
+	tokenLen := int(msg[2])
+	if tokenLen == 0 || 3+tokenLen != len(msg) {
+		return nil, fmt.Errorf("%w: declared %d bytes in %d-byte message", ErrBadResumeToken, tokenLen, len(msg))
+	}
+	return msg[3:], nil
 }
 
 // StreamFrameHeader is the parsed 24-byte header of a StreamFrame message

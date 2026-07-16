@@ -769,3 +769,86 @@ func TestClockMappingParseErrors(t *testing.T) {
 		})
 	}
 }
+
+// ResumeToken (R17 W2, docs/22 Decision 7).
+
+func TestResumeTokenRoundTrip(t *testing.T) {
+	tokens := [][]byte{
+		{0x42},
+		mustHex(t, "000102030405060708090a0b0c0d0e0f"),
+		bytes.Repeat([]byte{0xAB}, 255),
+	}
+	for _, token := range tokens {
+		msg, err := AppendResumeToken(nil, token)
+		if err != nil {
+			t.Fatalf("AppendResumeToken(%d bytes): %v", len(token), err)
+		}
+		ver, typ, err := PeekType(msg)
+		if err != nil || ver != Version || typ != TypeResumeToken {
+			t.Fatalf("PeekType = (%d, %d, %v), want (%d, %d, nil)", ver, typ, err, Version, TypeResumeToken)
+		}
+		got, err := ParseResumeToken(msg)
+		if err != nil {
+			t.Fatalf("ParseResumeToken: %v", err)
+		}
+		if !bytes.Equal(got, token) {
+			t.Errorf("round trip got %x, want %x", got, token)
+		}
+	}
+}
+
+// NOTE: copy-pasted into the TypeScript mirror's golden test (wire.test.ts).
+const goldenResumeTokenHex = "010910000102030405060708090a0b0c0d0e0f"
+
+func TestGoldenResumeToken(t *testing.T) {
+	token := mustHex(t, "000102030405060708090a0b0c0d0e0f")
+	wantBytes := mustHex(t, goldenResumeTokenHex)
+
+	msg, err := AppendResumeToken(nil, token)
+	if err != nil {
+		t.Fatalf("AppendResumeToken: %v", err)
+	}
+	if !bytes.Equal(msg, wantBytes) {
+		t.Errorf("AppendResumeToken produced %x, want %x", msg, wantBytes)
+	}
+
+	got, err := ParseResumeToken(wantBytes)
+	if err != nil {
+		t.Fatalf("ParseResumeToken: %v", err)
+	}
+	if !bytes.Equal(got, token) {
+		t.Errorf("ParseResumeToken got %x, want %x", got, token)
+	}
+}
+
+func TestParseResumeTokenErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  []byte
+		want error
+	}{
+		{"empty", nil, ErrShortDatagram},
+		{"2 bytes", []byte{0x01, 0x09}, ErrShortDatagram},
+		{"bad version", []byte{0x02, 0x09, 0x01, 0x42}, ErrBadVersion},
+		{"bad type", []byte{0x01, 0x03, 0x01, 0x42}, ErrBadType},
+		{"zero-length token", []byte{0x01, 0x09, 0x00}, ErrBadResumeToken},
+		{"declared overrun", []byte{0x01, 0x09, 0x05, 0x42}, ErrBadResumeToken},
+		{"declared underrun", []byte{0x01, 0x09, 0x01, 0x42, 0x43}, ErrBadResumeToken},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseResumeToken(tc.msg); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendResumeTokenErrors(t *testing.T) {
+	if _, err := AppendResumeToken(nil, nil); !errors.Is(err, ErrBadResumeToken) {
+		t.Errorf("empty token error = %v, want ErrBadResumeToken", err)
+	}
+	if _, err := AppendResumeToken(nil, bytes.Repeat([]byte{1}, 256)); !errors.Is(err, ErrBadResumeToken) {
+		t.Errorf("256-byte token error = %v, want ErrBadResumeToken", err)
+	}
+}

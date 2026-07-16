@@ -188,7 +188,25 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   UpperCamelCase gate names, first gate `NativeVideoFullscreen`);
   U1–U4 chunks; **U1–U3 implemented 2026-07-16; U4: two on-device passes
   black → tee reworked to decoded-frame clones 2026-07-16, third pass
-  pending**).
+  pending**),
+  `docs/22-relay-scale-out.md` for R17 (relay scale-out & high availability:
+  N homogeneous relay pods, **self-federating origin/edge cascade over the
+  existing WebTransport protocol** — per-broadcast **k8s Lease** origin
+  registry with force-take fencing, `/internal/subscribe/{id}` edge pull
+  that dials the lease's pod IP only (cascade depth ≤ 2), per-hop
+  ClockMapping rewrite (no cluster clock); rollout drains send new close
+  code **4002 while the pod is still Ready** (kube-proxy flushes UDP
+  conntrack on endpoint removal — never "unready-then-linger"), a **shared
+  QUIC `StatelessResetKey`** gives ~1 RTT death detection, clients reconnect
+  at 0 ms on 4002, broadcaster auto-resume + **resume tokens** (wire 0x09,
+  required for all `/publish/{id}` claims — also closes the graced-ID
+  hijack); allocations 0x09+/4002/4003 only (0x07/0x08 are R15's); W1–W6
+  chunks; **W1–W6 implemented 2026-07-16, automated gates green; homelab
+  drills (rollout/crash/rebind blips, conntrack empiricism, kind smoke,
+  load-tool scale proof) pending — see docs/22 findings, incl. the
+  deviations: replicas defaults to 1 with a chart guard requiring
+  clusterMode for >1, and single-pod upgrades are RollingUpdate ≤1 s blips
+  now**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -655,6 +673,57 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    in docs/21 "U4 findings" (high sample + still black ⇒ the native player
    can't present locally generated MediaStreams ⇒ remove tier 2, ship
    pseudo). BUGS.md entry tracks it.
+22. Relay scale-out & high availability — **W1–W6 implemented 2026-07-16
+   (automated gates green; homelab drills + kind smoke + scale proof
+   pending — docs/22 "Implementation status & findings")**
+   (R17, `docs/22-relay-scale-out.md`). Product prep: N homogeneous relay
+   pods behind the existing UDP LoadBalancer;
+   **self-federating origin/edge cascade over the existing wire protocol**
+   (chosen over a NATS backplane — runner-up, revisit-if triggers recorded —
+   and over per-broadcast sharding, which caps a hot broadcast at one pod;
+   targets: hundreds of broadcasts, 500–1k viewers on a hot one, single
+   region, no new stateful infra). Two layers. **Rollout resilience first**
+   (W1–W2, valuable at replicas:1): SIGTERM drain sends new non-terminal
+   close code **4002 while the pod is still Ready** — kube-proxy flushes
+   UDP conntrack on endpoint removal, so "unready-then-linger" draining is
+   wrong, don't re-derive it; a **shared QUIC `StatelessResetKey`** (absent
+   before W1) is what makes abrupt deaths detectable in ~1 RTT instead of
+   the ~30 s idle timeout; clients reconnect at 0 ms on 4002 / ≤250 ms on
+   abrupt errors (the old 1 s backoff floor ate the whole blip budget);
+   **broadcaster auto-resume** (capture + encoder kept, transport-only
+   reconnect, forced keyframe on re-attach via a new `KeyframeCadence`
+   hook — config already rides every keyframe stream); **resume tokens**
+   (HMAC over the ID, HKDF from the publish secret, in-band as new wire
+   type **0x09** — browsers can't read response headers) required for
+   **all** `/publish/{id}` claims incl. unknown-ID claims which now create
+   the hub — this is what lets relay restarts keep broadcast IDs, and it
+   closes the old graced-ID hijack. **Resume vs restart is frameID
+   continuity — no server-side epoch** (`generation` never leaves the
+   process; R10's gap/backwards-keyframe machinery covers both). Then
+   **federation** (W3–W5, dormant behind `-cluster-mode`, default off ⇒
+   byte-identical single-pod behavior): per-broadcast **k8s Lease** (holder
+   + pod-IP addr + originGeneration, CAS force-take — the
+   broadcaster-in-hand resume token makes re-homing event-driven, TTL only
+   covers crashes; leaderless janitor; lease deletion = cluster-wide 4000);
+   `/internal/subscribe/{id}` edge pull (PSK + generation params, HTTP
+   status rejections — the dialer is Go; **edges dial the lease's pod IP,
+   never the Service VIP** — with generation fencing that bounds cascade
+   depth ≤ 2); edge prime caches **invalidated on upstream loss** (stale
+   prime + new-origin deltas structurally impossible); origin
+   **self-demotes to edge** on lease loss (edges closed with **4003**);
+   per-hop ClockMapping rewrite via a Go TimeSync-estimator port (**no
+   cluster clock**). Fleet plumbing (W5–W6): shared statsKey Secret (one
+   obfuscated metrics identity per broadcast across pods), origin/edge role
+   labels + separate edge-leg ingress-loss family, per-IP limiter
+   **trusted-CIDR bypass** (MetalLB L2 + etp=Cluster SNAT means rollout
+   reconnect herds hit the 3/s bucket; **etp=Local rejected** — L2 pins all
+   traffic to the announcing node), chart flip to replicas ≥ 2 +
+   RollingUpdate maxSurge 1/maxUnavailable 0 + PDB + drain-aware `/readyz`.
+   Allocations: **0x09+/4002/4003 only** (0x07/0x08 reserved by R15);
+   version skew during rolling updates makes internal-protocol changes
+   skew-tolerance-mandatory. Non-goals: zero-blip (QUIC session handoff not
+   implementable on quic-go, unneeded at ≤1 s), crash RTO ≤ ~15 s
+   best-effort, geo edges, HPA, MoQ.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

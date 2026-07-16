@@ -111,6 +111,21 @@ type Options struct {
 	// subscriber may block on flow control before the stream is cancelled and
 	// the subscriber recovers at the next keyframe. Defaults to 1s.
 	KeyframeWriteTimeout time.Duration
+
+	// Cluster-mode lifecycle hooks (R17 W3, docs/22 Decision 8) — nil in
+	// single-pod mode. Both are invoked OUTSIDE the registry lock (they do
+	// Kubernetes API I/O): OnPublisherClosed when a publisher disconnects and
+	// the grace timer starts (the origin stops renewing its Lease and stamps
+	// the grace deadline); OnBroadcastExpired when grace-GC deletes the hub
+	// (the Lease is deleted — cluster-wide "broadcast ended").
+	OnPublisherClosed  func(broadcastID string)
+	OnBroadcastExpired func(broadcastID string)
+
+	// StatsKey keys ObfuscateID (R17 W6, docs/22 Decision 14): 32 bytes,
+	// shared across the fleet so one broadcast keeps ONE obfuscated identity
+	// in every pod's /statusz and gawk_broadcast_* series. Empty falls back
+	// to a fresh per-process key — exactly the pre-R17 single-pod behavior.
+	StatsKey []byte
 }
 
 // KeyframeDrops breaks keyframe-stream drops down by cause (R9 M2). The
@@ -149,13 +164,26 @@ type SubscriberStats struct {
 	SendErrors       uint64 `json:"sendErrors"`
 	KeyframesSent    uint64 `json:"keyframesSent"`
 	KeyframesDropped uint64 `json:"keyframesDropped"`
+	// Internal marks a downstream edge session (R17 W4) — plumbing, not a
+	// viewer; excluded from the Subscribers counts.
+	Internal bool `json:"internal,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
 // GET /statusz endpoint (the json tags are its response shape).
 type Stats struct {
-	PublisherActive           bool   `json:"publisherActive"`
-	Subscribers               int    `json:"subscribers"`
+	PublisherActive bool `json:"publisherActive"`
+	// Role of this hub in the R17 federation: "origin" (hosts the real
+	// publisher — the only role in single-pod mode) or "edge" (derived state
+	// fed by an upstream pull, docs/22 Decision 10).
+	Role string `json:"role"`
+	// Subscribers counts local viewers only; internal edge sessions are
+	// accounted separately (EdgeSessions) — an edge is fan-out plumbing, not
+	// an audience member (docs/22 Decision 10/14).
+	Subscribers int `json:"subscribers"`
+	// EdgeSessions counts downstream edge pods attached via the internal
+	// subscribe route.
+	EdgeSessions              int    `json:"edgeSessions"`
 	FramesRelayed             uint64 `json:"framesRelayed"`    // deltas (datagram, chunk 0) + keyframes (stream)
 	DatagramsRelayed          uint64 `json:"datagramsRelayed"` // delta datagrams fanned out (before per-sub drops)
 	DatagramsDropped          uint64 `json:"datagramsDropped"` // per-subscriber datagram drops: queue overflows + bandwidth-limit drops
@@ -209,6 +237,13 @@ type TotalStats struct {
 	EgressKeyframeBytes  uint64        `json:"egressKeyframeBytes"`
 	IngressFramesLost    uint64        `json:"ingressFramesLost"`
 	IngressChunksLost    uint64        `json:"ingressChunksLost"`
+
+	// R17 W6 (docs/22 Decision 14): the edge-leg (origin→edge) loss windows,
+	// accumulated from EDGE hubs only — kept apart from the broadcaster-leg
+	// numbers above (origin hubs), never mixed: the two legs have different
+	// owners and different fixes.
+	EdgeIngressFramesLost uint64 `json:"edgeIngressFramesLost"`
+	EdgeIngressChunksLost uint64 `json:"edgeIngressChunksLost"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -242,6 +277,8 @@ type Registry struct {
 	totalEgressKeyframeBytes       uint64
 	totalIngressFramesLost         uint64
 	totalIngressChunksLost         uint64
+	totalEdgeIngressFramesLost     uint64
+	totalEdgeIngressChunksLost     uint64
 
 	limiter *bandwidthLimiter
 
@@ -261,6 +298,11 @@ type broadcastHub struct {
 	generation      uint64
 	graceTimer      *time.Timer
 	graceStart      time.Time
+	// edge marks a hub as derived state (R17 W4): its "publisher" is this
+	// pod's upstream pull from the broadcast's origin, it is exempt from
+	// MaxBroadcasts, and it never enters grace (the Lease is the liveness
+	// truth, docs/22 Decision 10).
+	edge bool
 
 	subs map[*Subscriber]struct{}
 
@@ -373,9 +415,12 @@ func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	if opts.MaxBandwidthBytes > 0 {
 		limiter = newBandwidthLimiter(float64(opts.MaxBandwidthBytes))
 	}
-	statsKey := make([]byte, 32)
-	if _, err := rand.Read(statsKey); err != nil {
-		panic("hub: crypto/rand unavailable: " + err.Error())
+	statsKey := opts.StatsKey
+	if len(statsKey) != 32 {
+		statsKey = make([]byte, 32)
+		if _, err := rand.Read(statsKey); err != nil {
+			panic("hub: crypto/rand unavailable: " + err.Error())
+		}
 	}
 	return &Registry{
 		log:      log,
@@ -420,20 +465,165 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 			return "", nil, errors.New("hub: collision limits exceeded minting ID")
 		}
 		id = newID
-		r.hubs[id] = &broadcastHub{
-			registry: r,
-			id:       id,
-			log:      r.log.With("broadcast_id", id),
-			subs:     make(map[*Subscriber]struct{}),
-		}
+		r.newHubLocked(id)
 	}
 
 	b, exists := r.hubs[id]
 	if !exists {
 		return "", nil, ErrNotFound
 	}
+	pub, err := r.claimPublisherLocked(b)
+	if err != nil {
+		return "", nil, err
+	}
+	// A real publisher claim makes (or re-makes) this hub the origin — a
+	// prior demote-to-edge is over when the broadcaster comes home (W5).
+	b.edge = false
+	return id, pub, nil
+}
+
+// ResumePublish claims the publisher slot of a specific broadcast ID,
+// creating the hub when this process doesn't know it (R17 W2, docs/22
+// Decision 7). The caller MUST have verified a resume token first — the
+// token is the proof of ownership that makes an unknown ID a legitimate
+// resume (a relay restart, or a different pod) rather than a 404. Creating
+// counts against MaxBroadcasts like a mint.
+func (r *Registry) ResumePublish(id string) (string, *Publisher, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return "", nil, ErrNotFound
+	}
+	b, exists := r.hubs[normID]
+	if !exists {
+		if r.opts.MaxBroadcasts > 0 && len(r.hubs) >= r.opts.MaxBroadcasts {
+			return "", nil, ErrMaxBroadcasts
+		}
+		b = r.newHubLocked(normID)
+	}
+	pub, err := r.claimPublisherLocked(b)
+	if err != nil {
+		return "", nil, err
+	}
+	// The broadcaster re-homed onto this pod: origin again (W5 un-demote).
+	b.edge = false
+	return normID, pub, nil
+}
+
+// EdgePublish claims the publisher slot of an EDGE hub for a broadcast this
+// pod serves via an upstream pull (R17 W4). Creating an edge hub is exempt
+// from MaxBroadcasts — edge hubs are derived state, not broadcasts (docs/22
+// Decision 10). The claim resets the prime caches exactly like a real
+// publisher claim, which is one half of the "stale prime impossible"
+// guarantee (the other is InvalidatePrimes on upstream loss).
+func (r *Registry) EdgePublish(id string) (string, *Publisher, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return "", nil, ErrNotFound
+	}
+	b, exists := r.hubs[normID]
+	if !exists {
+		b = r.newHubLocked(normID)
+	}
+	b.edge = true
+	pub, err := r.claimPublisherLocked(b)
+	if err != nil {
+		return "", nil, err
+	}
+	return normID, pub, nil
+}
+
+// InvalidatePrimes clears the cached keyframe/config/clock-mapping NOW
+// (R17 W4): called when an edge's upstream session ends, so a viewer joining
+// between the drop and the re-attach waits for the fresh join-prime instead
+// of being served origin A's prime alongside origin B's deltas (docs/22
+// Decision 10). keyframeSeq is not reset — same supersede rule as a
+// publisher restart.
+func (r *Registry) InvalidatePrimes(id string) {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, exists := r.hubs[normID]
+	if !exists {
+		return
+	}
+	b.cachedKeyframe = nil
+	b.cachedKeyframeID = 0
+	b.cachedKeyframeHasConfig = false
+	b.cachedClockMapping = nil
+}
+
+// CloseInternalSubscribers closes every downstream edge session of a
+// broadcast with the given code (R17 W5: 4003 on demote — the Go edge
+// clients re-resolve the lease and re-attach at the new origin). Local
+// viewers are untouched: nobody chases viewers across pods.
+func (r *Registry) CloseInternalSubscribers(id string, code uint32, reason string) {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	b, exists := r.hubs[normID]
+	if !exists {
+		r.mu.Unlock()
+		return
+	}
+	var internal []*Subscriber
+	for s := range b.subs {
+		if s.internal {
+			internal = append(internal, s)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, s := range internal {
+		_ = s.sender.CloseWithError(code, reason)
+		s.Close()
+	}
+}
+
+// ExternalSubscribers reports the local (non-internal) viewer count for a
+// broadcast — the edge linger signal (R17 W4).
+func (r *Registry) ExternalSubscribers(id string) int {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, exists := r.hubs[normID]
+	if !exists {
+		return 0
+	}
+	return b.externalSubsLocked()
+}
+
+// newHubLocked creates and registers an empty hub. Caller holds r.mu.
+func (r *Registry) newHubLocked(id string) *broadcastHub {
+	b := &broadcastHub{
+		registry: r,
+		id:       id,
+		log:      r.log.With("broadcast_id", id),
+		subs:     make(map[*Subscriber]struct{}),
+	}
+	r.hubs[id] = b
+	return b
+}
+
+// claimPublisherLocked takes the hub's publisher slot: cancels a running
+// grace timer, bumps the generation, and resets the per-session caches.
+// Caller holds r.mu.
+func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	if b.publisherActive {
-		return "", nil, ErrPublisherActive
+		return nil, ErrPublisherActive
 	}
 
 	// Cancel grace timer if running
@@ -449,6 +639,8 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	// Reset the keyframe cache on a new publisher session (frameIDs reset, the
 	// codec may differ). keyframeSeq is intentionally NOT reset so a keyframe
 	// from the new session always outranks any stale prime still in flight.
+	// (On a broadcaster auto-resume the frameIDs actually continue — R17 W2 —
+	// but the reset stays correct: the forced keyframe refills within ~RTT.)
 	b.cachedKeyframe = nil
 	b.cachedKeyframeID = 0
 	b.cachedKeyframeHasConfig = false
@@ -458,7 +650,7 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	// cumulative counters live on the hub and survive).
 	b.ingress.reset()
 
-	return id, &Publisher{hub: b}, nil
+	return &Publisher{hub: b}, nil
 }
 
 // CheckPublishNew is the read-only pre-upgrade check for minting a new
@@ -471,6 +663,27 @@ func (r *Registry) CheckPublishNew() error {
 		return ErrMaxBroadcasts
 	}
 	return nil
+}
+
+// externalSubsLocked counts local viewers (internal edge sessions excluded).
+// Caller holds r.mu.
+func (b *broadcastHub) externalSubsLocked() int {
+	n := 0
+	for s := range b.subs {
+		if !s.internal {
+			n++
+		}
+	}
+	return n
+}
+
+// totalExternalSubsLocked counts local viewers across all hubs. Caller holds r.mu.
+func (r *Registry) totalExternalSubsLocked() int {
+	n := 0
+	for _, b := range r.hubs {
+		n += b.externalSubsLocked()
+	}
+	return n
 }
 
 // CheckSubscribe is the read-only pre-upgrade check: ErrNotFound / ErrFull / nil.
@@ -486,17 +699,11 @@ func (r *Registry) CheckSubscribe(id string) error {
 	if !exists {
 		return ErrNotFound
 	}
-	if len(b.subs) >= r.opts.MaxSubscribers {
+	if b.externalSubsLocked() >= r.opts.MaxSubscribers {
 		return ErrFull
 	}
-	if r.opts.MaxTotalSubscribers > 0 {
-		totalSubs := 0
-		for _, hub := range r.hubs {
-			totalSubs += len(hub.subs)
-		}
-		if totalSubs >= r.opts.MaxTotalSubscribers {
-			return ErrTotalSubscribers
-		}
+	if r.opts.MaxTotalSubscribers > 0 && r.totalExternalSubsLocked() >= r.opts.MaxTotalSubscribers {
+		return ErrTotalSubscribers
 	}
 	return nil
 }
@@ -506,6 +713,18 @@ func (r *Registry) CheckSubscribe(id string) error {
 // is released, so it can show a first picture without waiting for the next
 // keyframe.
 func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
+	return r.subscribe(id, conn, false)
+}
+
+// SubscribeInternal registers a downstream EDGE session (R17 W4): exempt
+// from MaxSubscribers/MaxTotalSubscribers (capacity guards protect viewers;
+// an edge is fan-out plumbing) and excluded from the viewer counts — the
+// internal route is the edge marker (docs/22 Decision 10).
+func (r *Registry) SubscribeInternal(id string, conn Conn) (*Subscriber, error) {
+	return r.subscribe(id, conn, true)
+}
+
+func (r *Registry) subscribe(id string, conn Conn, internal bool) (*Subscriber, error) {
 	r.mu.Lock()
 
 	normID, err := broadcastid.Normalize(id)
@@ -518,16 +737,12 @@ func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
 		r.mu.Unlock()
 		return nil, ErrNotFound
 	}
-	if len(b.subs) >= r.opts.MaxSubscribers {
-		r.mu.Unlock()
-		return nil, ErrFull
-	}
-	if r.opts.MaxTotalSubscribers > 0 {
-		totalSubs := 0
-		for _, hub := range r.hubs {
-			totalSubs += len(hub.subs)
+	if !internal {
+		if b.externalSubsLocked() >= r.opts.MaxSubscribers {
+			r.mu.Unlock()
+			return nil, ErrFull
 		}
-		if totalSubs >= r.opts.MaxTotalSubscribers {
+		if r.opts.MaxTotalSubscribers > 0 && r.totalExternalSubsLocked() >= r.opts.MaxTotalSubscribers {
 			r.mu.Unlock()
 			return nil, ErrTotalSubscribers
 		}
@@ -536,6 +751,7 @@ func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
 	s := &Subscriber{
 		hub:      b,
 		sender:   conn,
+		internal: internal,
 		queue:    make(chan []byte, r.opts.QueueDepth),
 		done:     make(chan struct{}),
 		statsKey: newSubscriberStatsKey(),
@@ -584,7 +800,7 @@ func (r *Registry) Stats() RegistryStats {
 	totals.Broadcasts = len(r.hubs)
 
 	for id, b := range r.hubs {
-		totals.Subscribers += len(b.subs)
+		totals.Subscribers += b.externalSubsLocked()
 		totals.FramesRelayed += b.framesRelayed
 		totals.DatagramsRelayed += b.datagramsRelayed
 		totals.BadDatagrams += b.badDatagrams
@@ -594,8 +810,16 @@ func (r *Registry) Stats() RegistryStats {
 		totals.KeyframeBytesIn += b.keyframeBytesIn
 		totals.KeyframeStreamsOversize += b.keyframeStreamsOversize
 		totals.IngressDatagramBytes += b.ingressDatagramBytes
-		totals.IngressFramesLost += b.ingressFramesLost
-		totals.IngressChunksLost += b.ingressChunksLost
+		// Loss attribution by leg (R17 W6): an edge hub's ingress window
+		// measures origin→edge loss; an origin hub's measures
+		// broadcaster→relay loss. Never mixed.
+		if b.edge {
+			totals.EdgeIngressFramesLost += b.ingressFramesLost
+			totals.EdgeIngressChunksLost += b.ingressChunksLost
+		} else {
+			totals.IngressFramesLost += b.ingressFramesLost
+			totals.IngressChunksLost += b.ingressChunksLost
+		}
 
 		// Per-subscriber counters are folded into the hub only when the
 		// subscriber closes; sum the live ones here for a current view.
@@ -606,7 +830,11 @@ func (r *Registry) Stats() RegistryStats {
 		egressDgram := b.egressDatagramBytes
 		egressKf := b.egressKeyframeBytes
 		details := make([]SubscriberStats, 0, len(b.subs))
+		edgeSessions := 0
 		for s := range b.subs {
+			if s.internal {
+				edgeSessions++
+			}
 			subDrops := s.keyframeDrops()
 			dropped += s.dropped.Load()
 			kfSent += s.keyframesSent.Load()
@@ -621,6 +849,7 @@ func (r *Registry) Stats() RegistryStats {
 				SendErrors:       s.sendErrors.Load(),
 				KeyframesSent:    s.keyframesSent.Load(),
 				KeyframesDropped: subDrops.Total(),
+				Internal:         s.internal,
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -638,10 +867,16 @@ func (r *Registry) Stats() RegistryStats {
 			}
 		}
 
+		role := "origin"
+		if b.edge {
+			role = "edge"
+		}
 		obf := r.ObfuscateID(id)
 		broadcasts[obf] = Stats{
 			PublisherActive:           b.publisherActive,
-			Subscribers:               len(b.subs),
+			Role:                      role,
+			Subscribers:               b.externalSubsLocked(),
+			EdgeSessions:              edgeSessions,
 			FramesRelayed:             b.framesRelayed,
 			DatagramsRelayed:          b.datagramsRelayed,
 			DatagramsDropped:          dropped,
@@ -686,6 +921,8 @@ func (r *Registry) Stats() RegistryStats {
 	totals.EgressKeyframeBytes += r.totalEgressKeyframeBytes
 	totals.IngressFramesLost += r.totalIngressFramesLost
 	totals.IngressChunksLost += r.totalIngressChunksLost
+	totals.EdgeIngressFramesLost += r.totalEdgeIngressFramesLost
+	totals.EdgeIngressChunksLost += r.totalEdgeIngressChunksLost
 	totals.KeyframeStreamsDropped = totals.KeyframeDrops.Total()
 
 	return RegistryStats{
@@ -696,9 +933,29 @@ func (r *Registry) Stats() RegistryStats {
 
 // handleGraceExpiry deletes the hub, shuts down viewers and records metrics.
 func (r *Registry) handleGraceExpiry(id string, gen uint64) {
+	r.expireBroadcast(id, func(b *broadcastHub) bool { return b.generation == gen })
+}
+
+// EndBroadcast force-expires a broadcast immediately (R17 W3): its cluster
+// Lease disappeared, meaning the broadcast ended somewhere in the fleet —
+// local viewers get the terminal 4000 exactly as if the local grace expired.
+// A no-op when this pod has an ACTIVE publisher for the ID (we are origin;
+// a racing janitor must not kill a live broadcast) or doesn't know the ID.
+func (r *Registry) EndBroadcast(id string) {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return
+	}
+	r.expireBroadcast(normID, func(*broadcastHub) bool { return true })
+}
+
+// expireBroadcast removes the hub (when it exists, has no active publisher,
+// and passes ok), folds its counters, closes its subscribers with the
+// terminal code, and fires OnBroadcastExpired.
+func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) {
 	r.mu.Lock()
 	b, exists := r.hubs[id]
-	if !exists || b.publisherActive || b.generation != gen {
+	if !exists || b.publisherActive || !ok(b) {
 		r.mu.Unlock()
 		return
 	}
@@ -720,8 +977,20 @@ func (r *Registry) handleGraceExpiry(id string, gen uint64) {
 	r.totalIngressDatagramBytes += b.ingressDatagramBytes
 	r.totalEgressDatagramBytes += b.egressDatagramBytes
 	r.totalEgressKeyframeBytes += b.egressKeyframeBytes
-	r.totalIngressFramesLost += b.ingressFramesLost
-	r.totalIngressChunksLost += b.ingressChunksLost
+	if b.edge {
+		r.totalEdgeIngressFramesLost += b.ingressFramesLost
+		r.totalEdgeIngressChunksLost += b.ingressChunksLost
+	} else {
+		r.totalIngressFramesLost += b.ingressFramesLost
+		r.totalIngressChunksLost += b.ingressChunksLost
+	}
+
+	// A pending grace timer must not fire against the next hub registered
+	// under this ID (EndBroadcast can expire ahead of the timer).
+	if b.graceTimer != nil {
+		b.graceTimer.Stop()
+		b.graceTimer = nil
+	}
 
 	var subs []*Subscriber
 	for s := range b.subs {
@@ -731,6 +1000,7 @@ func (r *Registry) handleGraceExpiry(id string, gen uint64) {
 		// totals because the hub is no longer registered.
 		subs = append(subs, s)
 	}
+	edge := b.edge
 	r.mu.Unlock()
 
 	r.log.Info("broadcast expired and garbage collected", "broadcast_id", id, "subscribers", len(subs))
@@ -738,6 +1008,14 @@ func (r *Registry) handleGraceExpiry(id string, gen uint64) {
 	for _, s := range subs {
 		_ = s.sender.CloseWithError(uint32(wire.CloseCodeBroadcastEnded), "broadcast ended")
 		s.Close()
+	}
+
+	// Outside the lock: cluster mode deletes the broadcast's Lease here —
+	// ORIGIN hubs only. An edge hub is derived state that never owns the
+	// lease; its expiry deleting the origin's lease would kill the broadcast
+	// fleet-wide (R17 W4).
+	if !edge && r.opts.OnBroadcastExpired != nil {
+		r.opts.OnBroadcastExpired(id)
 	}
 }
 
@@ -884,9 +1162,9 @@ func (p *Publisher) Close() {
 	b := p.hub
 	r := b.registry
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if p.closed {
+		r.mu.Unlock()
 		return
 	}
 	p.closed = true
@@ -899,6 +1177,16 @@ func (p *Publisher) Close() {
 		b.graceTimer = time.AfterFunc(r.opts.BroadcastGrace, func() {
 			r.handleGraceExpiry(id, gen)
 		})
+	}
+	id := b.id
+	edge := b.edge
+	r.mu.Unlock()
+
+	// Outside the lock (k8s API I/O): cluster mode stops renewing the Lease
+	// and stamps its grace deadline here. ORIGIN hubs only — an edge's
+	// upstream pull ending has no business touching the origin's lease.
+	if !edge && r.opts.OnPublisherClosed != nil {
+		r.opts.OnPublisherClosed(id)
 	}
 }
 
@@ -965,6 +1253,9 @@ type Subscriber struct {
 	// per-session, so a slow viewer can be watched across polls without
 	// exposing anything identifying or joinable.
 	statsKey string
+	// internal marks a downstream edge session (R17 W4): exempt from viewer
+	// caps and counted as an edge, not an audience member.
+	internal bool
 
 	// closed is set (atomically) by Close before it cancels the in-flight
 	// keyframe stream; sendKeyframe reads it without the registry lock to avoid

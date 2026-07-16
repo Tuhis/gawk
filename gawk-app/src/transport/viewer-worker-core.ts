@@ -40,7 +40,7 @@ export type ViewerWorkerCommand =
 // are drawn in the worker and never appear here.
 export type ViewerWorkerEvent =
   | { type: 'connected' }
-  | { type: 'reconnecting'; attempt: number; reason: string }
+  | { type: 'reconnecting'; attempt: number; reason: string; closeCode?: number | null }
   | { type: 'codec'; codec: string }
   | { type: 'stats'; stats: ViewerStats }
   // `message` is console-only detail; the screen renders copy keyed on `kind`.
@@ -130,8 +130,8 @@ export class ViewerWorkerCore {
       onConnected: () => {
         if (current()) this.host.post({ type: 'connected' });
       },
-      onReconnecting: ({ attempt, reason }) => {
-        if (current()) this.host.post({ type: 'reconnecting', attempt, reason });
+      onReconnecting: ({ attempt, reason, closeCode }) => {
+        if (current()) this.host.post({ type: 'reconnecting', attempt, reason, closeCode });
       },
       onError: (err) => {
         if (!current()) return;

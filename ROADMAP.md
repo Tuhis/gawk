@@ -35,7 +35,8 @@ feature set exists).
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 🚧 V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC pending**; V8 (direct Vulkan Video) gated on V2's on-hardware result ([docs/19](docs/19-linux-native-broadcaster.md)) |
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
-| R17 | [Live viewer count](#r17--live-viewer-count) | 📋 not started (design doc TBD) |
+| R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
+| R18 | [Live viewer count](#r18--live-viewer-count) | 📋 not started (design doc TBD) |
 
 ---
 
@@ -966,7 +967,91 @@ tier, the pre-registered fallback).
 
 ---
 
-## R17 — Live viewer count
+## R17 — Relay scale-out & high availability
+
+**Goal**: the relay runs as N homogeneous pods behind the existing UDP
+LoadBalancer — any pod can ingest or serve any broadcast, one hot broadcast's
+audience spreads across pods (design target: hundreds of concurrent
+broadcasts, ~500–1k viewers on a hot one), and a **version rollout never
+breaks a stream**: the broadcaster auto-resumes (same ID, same viewer URLs,
+no `getDisplayMedia` re-prompt) and every viewer's worst artifact is a ≤1 s
+freeze. Pod crashes recover automatically within a few seconds (best-effort,
+explicitly looser than the rollout bound). Single-pod deployments keep
+byte-identical behavior behind a `-cluster-mode` flag.
+
+**Why now**: product prep — this is the load-bearing gap between "homelab
+toy" and "something friends-of-friends could use". Today a relay restart
+doesn't blip streams, it **orphans** them: `/publish/{id}` on an unknown ID
+returns 404 (no re-claim path), so every deploy forces a new broadcast ID and
+kills every viewer URL; the broadcaster has no auto-reconnect at all (terminal
+error UI + capture re-prompt); the chart hard-pins `replicas: 1` +
+`strategy: Recreate`; and clients of an abruptly killed pod hang until the
+~30 s QUIC idle timeout because no `StatelessResetKey` is configured.
+
+**Direction (settled 2026-07-16 after an options survey)**: a
+**self-federating origin/edge cascade over the existing WebTransport wire
+protocol** — the publisher's pod claims a per-broadcast Kubernetes Lease and
+becomes that broadcast's *origin*; other pods *edge-pull* on demand via an
+internal subscribe route and re-fan-out locally. Join-prime, store-and-forward
+keyframes, and drop-newest queues all compose per hop, and cascade depth is
+structurally ≤ 2. Chosen over a NATS-backplane design (runner-up: a new
+stateful system to operate and a TCP hop in the datagram media path —
+revisit-if triggers recorded in docs/22) and over per-broadcast sharding
+(caps a hot broadcast at one pod — fails the audience requirement).
+
+**Scope sketch** (full design in [`docs/22-relay-scale-out.md`](docs/22-relay-scale-out.md)):
+
+- **Rollout resilience first (W1–W2, valuable at replicas:1)**: SIGTERM drain
+  sends a new non-terminal close code **4002** to every session *while the
+  pod is still Ready* (kube-proxy flushes UDP conntrack on endpoint removal,
+  so "unready then linger" is the wrong order); a **shared QUIC
+  `StatelessResetKey`** makes abrupt deaths detectable in ~1 RTT; clients
+  reconnect with 0 ms delay on 4002 (≤250 ms on abrupt errors) instead of
+  today's 1 s floor.
+- **Restart-survivable broadcasts**: broadcaster auto-resume (capture +
+  encoder kept alive, transport-only reconnect, forced keyframe on re-attach)
+  plus **resume tokens** — HMAC over the broadcast ID, HKDF-derived from the
+  publish secret, delivered in-band as new wire message **0x09**, required
+  for every `/publish/{id}` claim including IDs unknown to the receiving pod
+  (which now create the hub). Also closes today's graced-ID hijack hole.
+- **Federation (W3–W5, dormant behind `-cluster-mode`)**: per-broadcast Lease
+  origin registry (force-take fencing via an `originGeneration`, leaderless
+  janitor GC, lease deletion = cluster-wide "broadcast ended");
+  `/internal/subscribe/{id}` edge pull (PSK-gated, generation-fenced, dials
+  the lease's pod IP only — never the Service VIP); per-hop ClockMapping
+  rewrite via a Go port of the client TimeSync estimator (no cluster-wide
+  clock); edge prime caches invalidated on upstream loss; an origin losing
+  its lease self-demotes to edge (closing edge sessions with **4003**).
+- **Fleet plumbing (W5–W6)**: shared `statsKey` so a broadcast keeps one
+  obfuscated metrics identity across pods; origin/edge role labels + a
+  separate edge-leg ingress-loss window; per-IP limiter trusted-CIDR bypass
+  (MetalLB L2 + `externalTrafficPolicy: Cluster` SNAT would throttle rollout
+  reconnect herds; `Local` is rejected — L2 would pin all traffic to the
+  announcing node); chart flips to `replicas: 2` + RollingUpdate
+  maxSurge 1 / maxUnavailable 0 + PDB + a drain-aware `/readyz`.
+
+**Key design questions (answered in docs/22)**: why drain must be
+close-first (UDP conntrack semantics), why no server-side resume epoch is
+needed (frameID continuity — R10's machinery already covers both resume and
+restart), how deep the cascade can get (structurally 2), what happens on NAT
+rebind split-brain (lease force-take + self-demotion), and which R2 limits
+stay per-pod vs become cluster-wide.
+
+**Non-goals**: zero-blip rollouts (QUIC session handoff isn't implementable
+on quic-go and ≤1 s doesn't need it), crash RTO under the rollout bound
+(~2–10 s typical, ≤ ~15 s target), geo edges (the cascade extends there
+later), HPA (manual replicas in v1), cross-pod `/statusz` aggregation,
+multi-tenant auth, MoQ.
+
+**Status**: designed 2026-07-16 (chunks W1–W6); W1–W6 implemented
+2026-07-16 with all automated gates green. The homelab drills (rollout /
+crash / rebind blip measurements, conntrack empiricism, kind smoke, load
+proof) are pending — per-chunk status and implementation findings in
+[docs/22](docs/22-relay-scale-out.md).
+
+---
+
+## R18 — Live viewer count
 
 **Goal**: both the broadcaster and every viewer of a stream see how many people
 are currently watching it — a live "N watching" figure that updates promptly as
@@ -986,8 +1071,8 @@ precisely because it's a shared change that benefits **both** broadcasters
 
 - **Wire**: a new relay-originated message type (small fixed size: version +
   type + count). Its type byte must be **coordinated with R15's reserved
-  0x07/0x08 audio types** — allocate the next genuinely free byte at
-  implementation time. Golden vectors added to all three mirrors
+  0x07/0x08 audio types and R17's 0x09 resume token** — allocate the next
+  genuinely free byte at implementation time. Golden vectors added to all three mirrors
   (`wire_test.go`, `wire.test.ts`, `wirecheck_test.go`).
 - **Relay — the one genuinely new piece**: a **relay→publisher push channel**.
   The relay is a one-way byte forwarder today (it only reads from the publisher
@@ -1030,7 +1115,7 @@ historical/peak analytics (that stays `/statusz` + Prometheus territory);
 per-viewer adaptation.
 
 **Status**: not started — backlog item promoted from R14 Decision 18. Its own
-design doc (`docs/22`) + chunk breakdown to be written when picked up.
+design doc (`docs/23`) + chunk breakdown to be written when picked up.
 
 ---
 

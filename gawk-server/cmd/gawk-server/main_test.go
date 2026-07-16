@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,7 +28,10 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 		MaxTotalSubscribers: 33,
 		MaxBandwidthBytes:   1250000,
 	}
-	if got := registryOptions(cfg); got != want {
+	// DeepEqual, not ==: Options grew func-typed cluster hooks in R17 W3
+	// (nil here on both sides — registryOptions never sets them; main wires
+	// them separately when -cluster-mode is on).
+	if got := registryOptions(cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("registryOptions(cfg) = %+v, want %+v", got, want)
 	}
 }

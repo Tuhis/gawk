@@ -11,6 +11,7 @@ import {
   ViewerSession,
   type ViewerErrorKind,
 } from '../../transport/viewer-session';
+import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
 import { setPlayoutMode as setLocalPlayoutMode, type PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
@@ -103,7 +104,13 @@ export function useViewerConnection(
         break;
       case 'reconnecting':
         setStatus('reconnecting');
-        setRetryNote(`Reconnecting — attempt ${ev.attempt}/${RECONNECT_MAX_ATTEMPTS}`);
+        // A 4002 drain is a planned relay rollout with an instant retry —
+        // show calmer copy than the generic attempt counter (R17 W1).
+        setRetryNote(
+          ev.closeCode === CLOSE_CODE_SERVER_DRAINING
+            ? 'Stream server is updating — reconnecting…'
+            : `Reconnecting — attempt ${ev.attempt}/${RECONNECT_MAX_ATTEMPTS}`,
+        );
         log.info('viewer reconnecting:', ev.reason);
         break;
       case 'codec':
@@ -247,8 +254,8 @@ export function useViewerConnection(
         onConnected: () => {
           if (active) applyEvent({ type: 'connected' });
         },
-        onReconnecting: ({ attempt, reason }) => {
-          if (active) applyEvent({ type: 'reconnecting', attempt, reason });
+        onReconnecting: ({ attempt, reason, closeCode }) => {
+          if (active) applyEvent({ type: 'reconnecting', attempt, reason, closeCode });
         },
         onError: (err) => {
           if (active) {

@@ -174,6 +174,20 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
       case 'broadcastId':
         this.cb.onBroadcastId?.(msg.id);
         return;
+      case 'resumeToken':
+        this.cb.onResumeToken?.(msg.token);
+        return;
+      case 'reconnecting':
+        this.cb.onReconnecting?.({
+          attempt: msg.attempt,
+          delayMs: msg.delayMs,
+          reason: msg.reason,
+          closeCode: msg.closeCode,
+        });
+        return;
+      case 'resumed':
+        this.cb.onResumed?.();
+        return;
       case 'stats':
         this.cb.onStats(msg.stats);
         return;
