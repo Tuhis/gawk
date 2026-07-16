@@ -66,6 +66,25 @@ var Cascade = []Candidate{
 		convert: func(cfg engine.MediaConfig) []string {
 			return []string{"vulkanupload", "vulkancolorconvert"}
 		},
+		// Two Decision 13 invariants are deliberately not pinned as args here,
+		// and this is the one candidate where that is a live question rather
+		// than a settled one:
+		//
+		//   - No b-frames property: vulkanh264enc's H.264 Vulkan Video encode is
+		//     I+P only in the GStreamer versions we target, so there is no
+		//     B-frame knob to set to 0 (TestBFramesAreDisabled… checks nv/va
+		//     only, for exactly this reason).
+		//   - No GOP / key-int property: vulkanh264enc's keyframe-interval
+		//     property surface varies across driver and GStreamer versions, so
+		//     pinning a name we cannot verify here would fail the pipeline
+		//     launch and reject Vulkan — the *lead* candidate — outright.
+		//
+		// So the 500 ms all-IDR GOP invariant on the Vulkan path is verified on
+		// real hardware (V2 trial + V3 fixture: keyframe cadence ≈ 500 ms, every
+		// keyframe IDR), not asserted in args — the standing "advisory probe,
+		// runtime/fixture wins" rule. It is the first thing to check when
+		// validating Vulkan on the gaming PC: if the default GOP is wrong, this
+		// candidate needs a version-specific arg, or drops below nv/va.
 		encArgs: func(cfg engine.MediaConfig) []string {
 			return []string{
 				"vulkanh264enc",

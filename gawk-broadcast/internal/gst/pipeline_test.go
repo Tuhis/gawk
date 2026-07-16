@@ -74,6 +74,13 @@ func TestBFramesAreDisabledWhereTheEncoderHasThem(t *testing.T) {
 }
 
 // The GOP reaches the encoder as frames derived from the time-based interval.
+//
+// vulkanh264enc is deliberately omitted: its keyframe-interval property surface
+// varies across driver/GStreamer versions, so no arg is pinned for it here (see
+// the candidate's comment in cascade.go). The 500 ms all-IDR GOP invariant on
+// the Vulkan path is therefore a V3-fixture/on-hardware check, not an args
+// assertion — the one Decision 13 invariant that is verified rather than
+// asserted for the lead candidate.
 func TestGOPReachesTheEncoder(t *testing.T) {
 	cfg := engine.DefaultMediaConfig() // 60fps, 500ms → 30 frames
 	for _, tc := range []struct{ element, want string }{
