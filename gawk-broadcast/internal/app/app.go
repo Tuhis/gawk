@@ -198,6 +198,7 @@ func (a *App) run(ctx context.Context, id string) {
 			RelayURL:      a.cfg.RelayURL,
 			BroadcastID:   id,
 			PublishSecret: a.cfg.PublishSecret,
+			Origin:        a.cfg.Origin,
 			Media:         a.mediaConfig(),
 		},
 		engine.Callbacks{

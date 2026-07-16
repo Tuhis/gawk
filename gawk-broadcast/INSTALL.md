@@ -155,6 +155,11 @@ sent you this. Either put them in the GUI's fields, or use the CLI:
 GAWK_SECRET=… ./gawk-broadcast -url https://relay.example:4433 -app-url https://gawk.example
 ```
 
+If the relay restricts origins (`-allowed-origins`) and rejects the connection,
+either whitelist `gawk-broadcast://native` on the relay or run the broadcaster
+with `-origin <an-already-allowed-origin>` — see the README's "If the relay
+restricts origins".
+
 Settings persist to `~/.config/gawk/broadcast.json`, mode `0600` — it holds the
 publish secret *and* the restore token, and that token grants screen capture
 with no dialog, so treat the file as a credential rather than a preference.

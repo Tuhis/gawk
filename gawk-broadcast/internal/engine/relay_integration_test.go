@@ -570,6 +570,38 @@ func TestReclaimAndConflictAgainstRealRelay(t *testing.T) {
 	}
 }
 
+// Sending a custom-scheme Origin end to end does not break the dial.
+//
+// This does NOT test origin *rejection*: the relay bypasses CheckOrigin for
+// loopback (transport/server.go, for in-pod health probes), and this harness
+// runs both ends on 127.0.0.1, so the whitelist is never consulted here. That
+// enforcement is the relay's own concern and is verified over a real network
+// (the field bug this fixes appeared gaming-PC → homelab, not on loopback); the
+// engine's half — that it sends the configured/default Origin at all — is the
+// unit test TestDialSendsOrigin. What this adds is the interop assurance that a
+// gawk-broadcast://native Origin header is one the QUIC/H3 stack transmits and
+// a real relay accepts, rather than choking on the unusual scheme.
+func TestCustomOriginDoesNotBreakTheDial(t *testing.T) {
+	relayURL, _ := startRelay(t, "-allowed-origins", engine.DefaultOrigin)
+
+	src := newFixtureSource(t, engine.NewClock())
+	gotID := make(chan string, 1)
+	sess := engine.New(
+		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
+		engine.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		engine.Options{MediaFactory: src.factory()},
+	)
+	if err := sess.Start(context.Background()); err != nil {
+		t.Fatalf("Start while sending %q as Origin: %v", engine.DefaultOrigin, err)
+	}
+	defer sess.Stop()
+	select {
+	case <-gotID:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no code: sending the native Origin header broke the dial")
+	}
+}
+
 // R2's publish secret, end to end: the query param the browser is forced to
 // use, and the 401 the browser cannot see.
 func TestPublishSecretAgainstRealRelay(t *testing.T) {

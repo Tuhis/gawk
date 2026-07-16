@@ -100,6 +100,7 @@ gawk-broadcast -url https://relay.example:4433 [flags]
   -url         relay URL                       (env GAWK_URL)
   -app-url     frontend URL, for join links    (env GAWK_APP_URL)
   -secret      publish secret, if required     (env GAWK_SECRET)
+  -origin      Origin header to send           (env GAWK_ORIGIN)
   -id          reclaim this broadcast code instead of minting a new one
   -resolution  1920x1080     -fps 60     -bitrate 8   (Mbps)
   -encoder     force one of vulkanh264enc, nvh264enc, vah264enc
@@ -110,6 +111,24 @@ gawk-broadcast -url https://relay.example:4433 [flags]
 Settings live in `~/.config/gawk/broadcast.json` (mode 0600); flags and env
 override them. The GUI writes the same file. Prefer the env vars for the secret:
 a command line is visible in `ps`.
+
+### If the relay restricts origins
+
+If your relay runs with `-allowed-origins` / `GAWK_ALLOWED_ORIGINS` set (the
+"safe by default" install), it checks the `Origin` header on every connection.
+A browser sends the frontend's origin automatically; this native broadcaster
+sends **`gawk-broadcast://native`** by default. Either whitelist that on the
+relay —
+
+```
+GAWK_ALLOWED_ORIGINS=https://gawk.example,gawk-broadcast://native
+```
+
+— or point the broadcaster at an origin the relay already allows, with
+`-origin https://gawk.example` (env `GAWK_ORIGIN`), and add no relay entry.
+Without one of these, the relay rejects the dial and the broadcaster reports it
+could not connect. (Loopback connections bypass the check, so this only bites
+over a real network — the homelab case.)
 
 **The file is 0600 for a reason.** It holds the publish secret *and* the portal
 restore token — and the token grants screen capture with no picker, so it is a

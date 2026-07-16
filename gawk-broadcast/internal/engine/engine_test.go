@@ -16,7 +16,7 @@ import (
 func testOpts(sess RelaySession, media *fakeMedia, clock Clock) Options {
 	return Options{
 		Clock: clock,
-		Dial: func(ctx context.Context, rawURL string, insecure bool) (RelaySession, int, error) {
+		Dial: func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
 			return sess, http.StatusOK, nil
 		},
 		MediaFactory:  media.factory(),
@@ -53,6 +53,54 @@ func TestPublishURL(t *testing.T) {
 	}
 }
 
+// The native broadcaster sends an Origin header on the dial (the browser sends
+// one automatically and can't change it; a native client sends none by default,
+// which a relay with -allowed-origins rejects). Default when unset, and the
+// override wins when set — so an operator can reuse an already-whitelisted
+// origin instead of adding a relay entry.
+func TestDialSendsOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cfgOrigin  string
+		wantOrigin string
+	}{
+		{"default when unset", "", DefaultOrigin},
+		{"override wins", "https://gawk.example", "https://gawk.example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newFakeSession()
+			media := newFakeMedia()
+			gotOrigin := make(chan string, 1)
+			s := New(
+				Config{RelayURL: "https://relay.example", Origin: tc.cfgOrigin},
+				Callbacks{},
+				Options{
+					Clock: &FakeClock{},
+					Dial: func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
+						gotOrigin <- origin
+						return sess, http.StatusOK, nil
+					},
+					MediaFactory:  media.factory(),
+					Log:           testLog,
+					StatsInterval: time.Hour,
+				},
+			)
+			if err := s.Start(context.Background()); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer s.Stop()
+			select {
+			case got := <-gotOrigin:
+				if got != tc.wantOrigin {
+					t.Errorf("dial Origin = %q, want %q", got, tc.wantOrigin)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("dial was never called")
+			}
+		})
+	}
+}
+
 // The secret travels as a query param because the browser's WebTransport API
 // cannot set headers (R2) and the relay reads it from the query. A native
 // client could send a header — and would then authenticate differently from
@@ -79,7 +127,7 @@ func TestStartConnectPhaseCarriesStatus(t *testing.T) {
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			s := New(Config{RelayURL: "https://relay.example"}, Callbacks{}, Options{
-				Dial: func(ctx context.Context, rawURL string, insecure bool) (RelaySession, int, error) {
+				Dial: func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
 					return nil, tc.status, errors.New("received status")
 				},
 				Log: testLog,
@@ -108,7 +156,7 @@ func TestStartConnectPhaseCarriesStatus(t *testing.T) {
 // message must still be a sentence rather than a bare Go error.
 func TestStartConnectPhaseWithoutStatus(t *testing.T) {
 	s := New(Config{RelayURL: "https://relay.example"}, Callbacks{}, Options{
-		Dial: func(ctx context.Context, rawURL string, insecure bool) (RelaySession, int, error) {
+		Dial: func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
 			return nil, 0, errors.New("connection refused")
 		},
 		Log: testLog,
@@ -152,7 +200,7 @@ func TestStartCapturePhaseTearsDownSession(t *testing.T) {
 func TestNoHardwareEncoderIsCapturePhaseAndReleases(t *testing.T) {
 	sess := newFakeSession()
 	s := New(Config{RelayURL: "https://relay.example"}, Callbacks{}, Options{
-		Dial: func(ctx context.Context, rawURL string, insecure bool) (RelaySession, int, error) {
+		Dial: func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
 			return sess, http.StatusOK, nil
 		},
 		MediaFactory: func(cfg MediaConfig, clock Clock, log *slog.Logger) (MediaSource, error) {

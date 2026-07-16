@@ -33,6 +33,11 @@ type Config struct {
 	AppURL string `json:"appUrl,omitempty"`
 	// PublishSecret is R2's pre-shared publish secret.
 	PublishSecret string `json:"publishSecret,omitempty"`
+	// Origin overrides the Origin header sent on the CONNECT dial. Empty uses
+	// engine.DefaultOrigin. Set it to reuse an already-whitelisted origin (e.g.
+	// the frontend's) instead of adding a new -allowed-origins entry on the
+	// relay.
+	Origin string `json:"origin,omitempty"`
 	// LastBroadcastID backs the GUI's Resume.
 	LastBroadcastID string `json:"lastBroadcastId,omitempty"`
 	// LastGoodEncoder is the cached cascade winner (Decision 4). Re-verified

@@ -50,6 +50,7 @@ func run() error {
 		appURL     = fs.String("app-url", "", "frontend URL for join links, e.g. https://gawk.example (env GAWK_APP_URL)")
 		id         = fs.String("id", "", "reclaim this broadcast code instead of minting a new one")
 		secret     = fs.String("secret", "", "publish secret, if the relay requires one (env GAWK_SECRET)")
+		origin     = fs.String("origin", "", "Origin header to send; must be whitelisted in the relay's -allowed-origins (default "+engine.DefaultOrigin+", env GAWK_ORIGIN)")
 		insecure   = fs.Bool("insecure", false, "skip TLS verification (development certificates only)")
 		resolution = fs.String("resolution", "", "capture resolution, e.g. 1920x1080 (default 1920x1080)")
 		fpsFlag    = fs.Int("fps", 0, "frames per second (default 60)")
@@ -79,6 +80,7 @@ func run() error {
 	applyString(&cfg.RelayURL, *relayURL, os.Getenv("GAWK_URL"))
 	applyString(&cfg.AppURL, *appURL, os.Getenv("GAWK_APP_URL"))
 	applyString(&cfg.PublishSecret, *secret, os.Getenv("GAWK_SECRET"))
+	applyString(&cfg.Origin, *origin, os.Getenv("GAWK_ORIGIN"))
 	applyString(&cfg.Encoder, *encoder, os.Getenv("GAWK_ENCODER"))
 	if cfg.RelayURL == "" {
 		fs.Usage()
@@ -134,6 +136,7 @@ func run() error {
 			RelayURL:      cfg.RelayURL,
 			BroadcastID:   *id,
 			PublishSecret: cfg.PublishSecret,
+			Origin:        cfg.Origin,
 			Insecure:      *insecure,
 			Media:         media,
 		},

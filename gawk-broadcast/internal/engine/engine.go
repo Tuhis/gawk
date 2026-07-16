@@ -52,6 +52,10 @@ type Config struct {
 	BroadcastID string
 	// PublishSecret is R2's pre-shared publish secret, sent as a query param.
 	PublishSecret string
+	// Origin is the Origin header sent on the CONNECT dial. Empty uses
+	// DefaultOrigin. A relay configured with -allowed-origins must whitelist
+	// whichever value is sent.
+	Origin string
 	// Insecure skips TLS verification (the dev cert only).
 	Insecure bool
 	// Media is the capture/encode configuration.
@@ -220,7 +224,11 @@ func (s *Session) Start(ctx context.Context) error {
 		return &StartError{Phase: PhaseConnect, Err: fmt.Errorf("bad relay URL: %w", err)}
 	}
 
-	relay, status, err := s.dial(ctx, url, s.cfg.Insecure)
+	origin := s.cfg.Origin
+	if origin == "" {
+		origin = DefaultOrigin
+	}
+	relay, status, err := s.dial(ctx, url, origin, s.cfg.Insecure)
 	if err != nil {
 		return &StartError{Phase: PhaseConnect, Status: status, Err: err}
 	}
