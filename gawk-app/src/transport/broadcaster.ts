@@ -34,11 +34,26 @@ import {
 import { FallbackController } from '../media/fallback';
 import { FramePreprocessor } from '../media/preprocess';
 import type { CaptureConfig } from '../media/types';
-import { connectWebTransport, DatagramSender, readDatagrams, type ConnectOptions } from './connection';
+import {
+  bytesToHex,
+  connectWebTransport,
+  DatagramSender,
+  readDatagrams,
+  type ConnectOptions,
+} from './connection';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import { packetizeDecoderConfig, packetizeFrame, packetizeStreamKeyframe } from './packetizer';
+import { RECONNECT_MAX_ATTEMPTS, reconnectDelayMs, type ReconnectInfo } from './reconnect';
 import { CLOCK_MAPPING_INTERVAL_MS, TimeSyncClient } from './time-sync';
-import { encodeClockMapping, nextFrameId, parseBroadcastAnnounce } from './wire';
+import {
+  encodeClockMapping,
+  nextFrameId,
+  parseBroadcastAnnounce,
+  parseResumeToken,
+  peekType,
+  TYPE_BROADCAST_ANNOUNCE,
+  TYPE_RESUME_TOKEN,
+} from './wire';
 
 export interface BroadcastStats {
   encodedFrames: number;
@@ -125,6 +140,14 @@ export interface BroadcastCallbacks {
   onError: (err: Error) => void;
   onEnded: () => void;
   onBroadcastId?: (id: string) => void;
+  // R17 W2: the hex resume token minted by the relay (wire 0x09). The UI
+  // keeps it next to the broadcast ID so a manual restart can reclaim.
+  onResumeToken?: (token: string) => void;
+  // R17 W2 auto-resume: the session died mid-broadcast and a transport-only
+  // reconnect is scheduled (capture + encoder stay alive, frames drop).
+  onReconnecting?: (info: ReconnectInfo) => void;
+  // The transport reconnected; the pipeline forced a fresh keyframe.
+  onResumed?: () => void;
 }
 
 function roundDownToEven(n: number): number {
@@ -254,6 +277,17 @@ export class BroadcastPipeline {
   // keyframe (the relay additionally caches and re-emits it).
   private configDatagram: Uint8Array<ArrayBuffer> | null = null;
 
+  // R17 W2 auto-resume state. resumeToken is minted by the relay (0x09) and
+  // presented on every /publish/{id} claim; connGeneration invalidates
+  // callbacks from a torn-down transport so a stale wt.closed can't disturb
+  // its successor; the frameId counter deliberately survives resumes —
+  // frameID continuity IS the viewer's resume-vs-restart signal (docs/22
+  // Decision 6).
+  private resumeToken: string | null = null;
+  private connGeneration = 0;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
   private stats: BroadcastStats = { ...EMPTY_BROADCAST_STATS };
   private lastStatsAt = 0;
   private encodedSinceStats = 0;
@@ -301,38 +335,15 @@ export class BroadcastPipeline {
     // Connect before prompting for screen capture: if the publisher slot is
     // taken (409) or the server is unreachable, fail without the share
     // picker ever appearing.
-    const path = this.broadcastId ? `/publish/${this.broadcastId}` : '/publish';
-    const urlObj = new URL(path, this.serverUrl);
-    if (this.connectOpts.publishSecret) {
-      urlObj.searchParams.set('secret', this.connectOpts.publishSecret);
-    }
-    const url = urlObj.toString();
+    this.resumeToken = this.connectOpts.resumeToken ?? null;
     try {
-      this.wt = await connectWebTransport(url, this.connectOpts);
+      await this.connectTransport();
     } catch (e) {
       throw new BroadcastStartError('connect', e);
     }
-    this.sender = new DatagramSender(this.wt);
-    this.connSampler = new ConnectionStatsSampler(this.wt);
-    void this.wt.closed
-      .then(() => this.handleSessionGone(null))
-      .catch((e) => this.handleSessionGone(e instanceof Error ? e : new Error(String(e))));
-
-    // The announce read is detached: media flow must never wait on the
-    // announce — only the UI code display consumes it (docs/06).
-    void this.readAnnounce(this.wt);
-
-    // Relay clock sync (R5 Q2). Pings ride the ordinary datagram sender; the
-    // read loop exists solely to catch replies (the relay sends the publisher
-    // nothing else as datagrams). Failures are the session's problem, not the
-    // ping loop's. The mapping check runs on a 1s timer so the first mapping
-    // goes out promptly after the first pong, then refreshes on the cadence.
-    const sender = this.sender;
-    this.timeSync = new TimeSyncClient((d) => void sender.send([d]).catch(() => {}));
-    this.timeSync.start();
-    void readDatagrams(this.wt, (dgram) => {
-      this.timeSync?.handleDatagram(dgram);
-    }).catch(() => {});
+    // The mapping check runs on a 1s timer so the first mapping goes out
+    // promptly after the first pong, then refreshes on the cadence. One
+    // timer for the pipeline's life — it survives transport resumes.
     this.clockMappingTimer = setInterval(() => this.maybeSendClockMapping(), 1000);
 
     // R13: probe the support matrix before media starts, so the first
@@ -351,21 +362,81 @@ export class BroadcastPipeline {
     }
   }
 
-  // Reads the server's BroadcastAnnounce from the first server-initiated
-  // unidirectional stream, buffering to EOF (the 9 bytes may arrive in
-  // multiple chunks). Failures are logged, never fatal: the broadcast runs
-  // fine without the code being displayed.
-  private async readAnnounce(wt: WebTransport): Promise<void> {
+  // The /publish dial URL. Auth crosses as query params — the WebTransport
+  // JS API can't set headers: the publish secret (R2), and for any
+  // /publish/{id} claim the resume token (R17 W2, required by the relay).
+  private publishUrl(): string {
+    const path = this.broadcastId ? `/publish/${this.broadcastId}` : '/publish';
+    const urlObj = new URL(path, this.serverUrl);
+    if (this.connectOpts.publishSecret) {
+      urlObj.searchParams.set('secret', this.connectOpts.publishSecret);
+    }
+    if (this.broadcastId && this.resumeToken) {
+      urlObj.searchParams.set('resume', this.resumeToken);
+    }
+    return urlObj.toString();
+  }
+
+  // Establishes one WebTransport session and everything scoped to it: the
+  // datagram sender, connection sampler, TimeSync client, closed-handler and
+  // server-message reader. Called by start() and by every resume attempt.
+  private async connectTransport(): Promise<void> {
+    const wt = await connectWebTransport(this.publishUrl(), this.connectOpts);
+    const gen = ++this.connGeneration;
+    this.wt = wt;
+    this.sender = new DatagramSender(wt);
+    this.connSampler = new ConnectionStatsSampler(wt);
+    void wt.closed
+      .then((info) => {
+        const closeInfo = info as { closeCode?: number } | undefined;
+        this.handleSessionGone(gen, null, closeInfo?.closeCode ?? null);
+      })
+      .catch((e) => {
+        const err = e instanceof Error ? e : new Error(String(e));
+        this.handleSessionGone(gen, err, (e as { closeCode?: number })?.closeCode ?? null);
+      });
+
+    // The server-message read is detached: media flow must never wait on the
+    // announce (docs/06) — only the UI code display and the resume token
+    // consume it.
+    void this.readServerMessages(wt);
+
+    // Relay clock sync (R5 Q2). Pings ride the ordinary datagram sender; the
+    // read loop exists solely to catch replies (the relay sends the publisher
+    // nothing else as datagrams). Failures are the session's problem, not the
+    // ping loop's. Fresh estimator per session — the new pod has a new clock.
+    const sender = this.sender;
+    this.timeSync = new TimeSyncClient((d) => void sender.send([d]).catch(() => {}));
+    this.timeSync.start();
+    void readDatagrams(wt, (dgram) => {
+      this.timeSync?.handleDatagram(dgram);
+    }).catch(() => {});
+  }
+
+  // Reads server-initiated unidirectional streams for the session's life,
+  // dispatching each message by wire type: BroadcastAnnounce (0x03) and, per
+  // R17 W2, the ResumeToken (0x09) — arrival order is not guaranteed.
+  // Failures are logged, never fatal: the broadcast runs fine without the
+  // code being displayed.
+  private async readServerMessages(wt: WebTransport): Promise<void> {
     try {
       const reader = wt.incomingUnidirectionalStreams.getReader();
-      let stream: ReadableStream<Uint8Array>;
       try {
-        const { value, done } = await reader.read();
-        if (done || !value) return;
-        stream = value;
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) return;
+          if (value) void this.readServerMessage(value);
+        }
       } finally {
         reader.releaseLock();
       }
+    } catch (e) {
+      if (!this.stopping) log.warn('Server message stream ended:', e);
+    }
+  }
+
+  private async readServerMessage(stream: ReadableStream<Uint8Array>): Promise<void> {
+    try {
       const chunks: Uint8Array[] = [];
       const streamReader = stream.getReader();
       try {
@@ -385,10 +456,26 @@ export class BroadcastPipeline {
         data.set(c, offset);
         offset += c.length;
       }
-      const id = parseBroadcastAnnounce(data);
-      if (!this.stopping) this.cb.onBroadcastId?.(id);
+      const { msgType } = peekType(data);
+      switch (msgType) {
+        case TYPE_BROADCAST_ANNOUNCE: {
+          const id = parseBroadcastAnnounce(data);
+          // The pipeline keeps its own ID so a resume can target it even if
+          // no UI ever consumed the announce.
+          this.broadcastId = id;
+          if (!this.stopping) this.cb.onBroadcastId?.(id);
+          break;
+        }
+        case TYPE_RESUME_TOKEN: {
+          this.resumeToken = bytesToHex(parseResumeToken(data));
+          if (!this.stopping) this.cb.onResumeToken?.(this.resumeToken);
+          break;
+        }
+        default:
+          log.warn(`Unexpected server uni-stream message type 0x${msgType.toString(16)}`);
+      }
     } catch (e) {
-      if (!this.stopping) log.warn('Broadcast announce read failed:', e);
+      if (!this.stopping) log.warn('Server uni-stream message read failed:', e);
     }
   }
 
@@ -869,8 +956,12 @@ export class BroadcastPipeline {
         // Funnel stage 4 (R9): the whole frame actually left, without error.
         this.sentSinceStats++;
       })
-      .catch((e) => {
-        if (!this.stopping) this.fail(e instanceof Error ? e : new Error(String(e)));
+      .catch(() => {
+        // A send failure means the session is dying (or dead): drop the
+        // frame and let wt.closed drive the state change — it is the one
+        // signal that carries the close code, and auto-resume (R17 W2)
+        // hangs off it. Failing here would kill a resumable broadcast.
+        if (!this.stopping) this.stats.droppedFrames++;
       });
   }
 
@@ -939,9 +1030,88 @@ export class BroadcastPipeline {
     this.sender.send([encodeClockMapping(sync.offsetUs)]).catch(() => {});
   }
 
-  private handleSessionGone(err: Error | null): void {
-    if (this.stopping) return;
+  // The one authoritative session-death signal (wt.closed — datagram send
+  // failures defer to it). Mid-broadcast, with an ID + resume token in hand,
+  // the pipeline auto-resumes: capture and encoder stay alive (frames drop
+  // while disconnected — live-edge, no buffering) and only the transport
+  // reconnects (R17 W2, docs/22 Decision 5). Anything earlier (no media yet,
+  // or the announce/token never landed) fails as before.
+  private handleSessionGone(gen: number, err: Error | null, closeCode: number | null): void {
+    if (this.stopping || gen !== this.connGeneration) return;
+    if (this.media && this.broadcastId && this.resumeToken) {
+      this.teardownTransport();
+      this.scheduleResumeAttempt(closeCode, err?.message ?? 'session closed by server');
+      return;
+    }
     this.fail(err ?? new Error('WebTransport session closed by server'));
+  }
+
+  // Tears down everything scoped to the current WebTransport session,
+  // leaving media/encoder untouched. Bumps the generation so stale session
+  // callbacks are ignored.
+  private teardownTransport(): void {
+    this.connGeneration++;
+    this.timeSync?.stop();
+    this.timeSync = null;
+    this.sender?.close();
+    this.sender = null;
+    this.connSampler = null;
+    try {
+      this.wt?.close();
+    } catch {
+      // already closed — fine
+    }
+    this.wt = null;
+    // Re-publish the mapping promptly on the next session: the new pod's
+    // hub cache starts empty, and viewers need it for absolute latency.
+    this.lastMappingSentAt = null;
+  }
+
+  private scheduleResumeAttempt(closeCode: number | null, reason: string): void {
+    // stop() may race a dial that is already in flight; its failure must not
+    // schedule anything (or surface errors) after onEnded (PR #47 review).
+    if (this.stopping) return;
+    this.reconnectAttempt += 1;
+    if (this.reconnectAttempt > RECONNECT_MAX_ATTEMPTS) {
+      this.fail(new Error(`broadcast resume failed after ${RECONNECT_MAX_ATTEMPTS} attempts: ${reason}`));
+      return;
+    }
+    // Same policy as the viewer (reconnect.ts): 4002 drain ⇒ now, abrupt ⇒
+    // 250 ms, then the ladder. Dial failures re-enter at attempt 2+.
+    const delayMs = reconnectDelayMs(this.reconnectAttempt, closeCode);
+    log.info(
+      `Broadcast resume attempt ${this.reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS} in ${delayMs}ms (${reason})`,
+    );
+    this.cb.onReconnecting?.({ attempt: this.reconnectAttempt, delayMs, reason, closeCode });
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.tryResume();
+    }, delayMs);
+  }
+
+  private async tryResume(): Promise<void> {
+    if (this.stopping) return;
+    try {
+      await this.connectTransport();
+    } catch (e) {
+      this.scheduleResumeAttempt(null, e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (this.stopping) {
+      // stop() raced the dial: connectTransport just re-armed a live session
+      // (wt, sender, TimeSync) after teardown() already ran. Release it — an
+      // abandoned session is a zombie publisher holding the broadcast ID
+      // hostage until the tab closes (CODE-REVIEW.md; PR #47 review).
+      this.teardownTransport();
+      return;
+    }
+    this.reconnectAttempt = 0;
+    // Prime the (possibly fresh) pod immediately: the next encoded frame
+    // becomes a keyframe stream with the embedded config, so join-priming
+    // works within ~RTT instead of up to one GOP. frameIDs continue — the
+    // viewer sees an ordinary forward gap and recovers at this keyframe.
+    this.encoder?.forceNextKeyframe();
+    this.cb.onResumed?.();
   }
 
   private publishStats(): void {
@@ -984,6 +1154,10 @@ export class BroadcastPipeline {
   // failure path, which must not fire onEnded — the start() rejection is the
   // caller's error surface there.
   private async teardown(): Promise<void> {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.statsTimer !== null) {
       clearInterval(this.statsTimer);
       this.statsTimer = null;

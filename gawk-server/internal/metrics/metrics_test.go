@@ -227,3 +227,205 @@ func TestServerMetricsCounts(t *testing.T) {
 		t.Errorf("rate_limited = %v, want 1", got)
 	}
 }
+
+// R17 W6 (docs/22 Decision 14): loss attribution stays clean — an origin
+// hub's ingress window feeds the broadcaster-leg family, an edge hub's feeds
+// the SEPARATE edge-leg family, and neither ever appears in the other. Role
+// and edge-session gauges ride along.
+func TestLossAttributionByLeg(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{})
+
+	// The ingress window declares loss only when an unseen frame AGES OUT of
+	// its 1024-frame ring (reordering robustness): create the gap, then
+	// advance far enough to evict the missing slots.
+	// Origin hub: frames 1, 4 seen; 2 and 3 age out ⇒ 2 lost.
+	originID, originPub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	defer originPub.Close()
+	originPub.HandleDatagram(deltaDgram(t, 1))
+	originPub.HandleDatagram(deltaDgram(t, 4))
+	originPub.HandleDatagram(deltaDgram(t, 4+1024))
+
+	// Edge hub: frames 1, 3 seen; 2 ages out ⇒ 1 lost.
+	edgeID, edgePub, err := r.EdgePublish("K7XQ2M")
+	if err != nil {
+		t.Fatalf("EdgePublish: %v", err)
+	}
+	defer edgePub.Close()
+	edgePub.HandleDatagram(deltaDgram(t, 1))
+	edgePub.HandleDatagram(deltaDgram(t, 3))
+	edgePub.HandleDatagram(deltaDgram(t, 3+1024))
+
+	collector := NewRegistryCollector(r)
+	if _, err := testutil.CollectAndLint(collector); err != nil {
+		t.Errorf("CollectAndLint: %v", err)
+	}
+	promReg := prometheus.NewPedanticRegistry()
+	promReg.MustRegister(collector)
+	mfs, err := promReg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	obfOrigin := r.ObfuscateID(originID)
+	obfEdge := r.ObfuscateID(edgeID)
+
+	get := func(family string, labels map[string]string) float64 {
+		for _, mf := range mfs {
+			if mf.GetName() != family {
+				continue
+			}
+		metric:
+			for _, m := range mf.GetMetric() {
+				got := map[string]string{}
+				for _, lp := range m.GetLabel() {
+					got[lp.GetName()] = lp.GetValue()
+				}
+				for k, v := range labels {
+					if got[k] != v {
+						continue metric
+					}
+				}
+				if m.GetCounter() != nil {
+					return m.GetCounter().GetValue()
+				}
+				return m.GetGauge().GetValue()
+			}
+		}
+		return -1
+	}
+
+	// Broadcaster-leg family: origin's 2 lost frames, and NO edge series.
+	if v := get("gawk_broadcast_ingress_frames_lost_total", map[string]string{"broadcast": obfOrigin}); v != 2 {
+		t.Errorf("origin broadcaster-leg loss = %v, want 2", v)
+	}
+	if v := get("gawk_broadcast_ingress_frames_lost_total", map[string]string{"broadcast": obfEdge}); v != -1 {
+		t.Errorf("edge hub leaked into the broadcaster-leg family: %v", v)
+	}
+	// Edge-leg family: edge's 1 lost frame, and NO origin series.
+	if v := get("gawk_broadcast_edge_ingress_frames_lost_total", map[string]string{"broadcast": obfEdge}); v != 1 {
+		t.Errorf("edge-leg loss = %v, want 1", v)
+	}
+	if v := get("gawk_broadcast_edge_ingress_frames_lost_total", map[string]string{"broadcast": obfOrigin}); v != -1 {
+		t.Errorf("origin hub leaked into the edge-leg family: %v", v)
+	}
+	// Relay-lifetime totals keep the split too.
+	if v := get("gawk_relay_ingress_frames_lost_total", nil); v != 2 {
+		t.Errorf("relay broadcaster-leg total = %v, want 2", v)
+	}
+	if v := get("gawk_relay_edge_ingress_frames_lost_total", nil); v != 1 {
+		t.Errorf("relay edge-leg total = %v, want 1", v)
+	}
+	// Role labels.
+	if v := get("gawk_broadcast_role", map[string]string{"broadcast": obfOrigin, "role": "origin"}); v != 1 {
+		t.Errorf("origin role gauge = %v, want 1", v)
+	}
+	if v := get("gawk_broadcast_role", map[string]string{"broadcast": obfEdge, "role": "edge"}); v != 1 {
+		t.Errorf("edge role gauge = %v, want 1", v)
+	}
+}
+
+// metricValue finds one counter/gauge value in gathered families; -1 when
+// no metric matches all the given labels.
+func metricValue(mfs []*dto.MetricFamily, family string, labels map[string]string) float64 {
+	for _, mf := range mfs {
+		if mf.GetName() != family {
+			continue
+		}
+	metric:
+		for _, m := range mf.GetMetric() {
+			got := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				got[lp.GetName()] = lp.GetValue()
+			}
+			for k, v := range labels {
+				if got[k] != v {
+					continue metric
+				}
+			}
+			if m.GetCounter() != nil {
+				return m.GetCounter().GetValue()
+			}
+			return m.GetGauge().GetValue()
+		}
+	}
+	return -1
+}
+
+// R17 post-review fix (PR #47): the per-hub ingress-loss counters are
+// attributed to the hub's CURRENT role at scrape time, so a role flip
+// (demote to edge, or come-home to origin) must fold the accumulated counts
+// into the OLD leg's lifetime totals first — losses counted on one leg must
+// never resurface under the other family (docs/22 Decision 14: never mixed).
+func TestLossAttributionSurvivesRoleFlip(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{})
+
+	// Origin life: frames 1, 4 seen; 2 and 3 age out ⇒ 2 lost on the
+	// broadcaster leg.
+	id, pub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	pub.HandleDatagram(deltaDgram(t, 1))
+	pub.HandleDatagram(deltaDgram(t, 4))
+	pub.HandleDatagram(deltaDgram(t, 4+1024))
+	pub.Close()
+
+	// The pod demotes: the SAME hub becomes an edge; frames 1, 3 seen ⇒ 1
+	// lost on the edge leg (the claim resets the ingress window).
+	edgeID, edgePub, err := r.EdgePublish(id)
+	if err != nil {
+		t.Fatalf("EdgePublish: %v", err)
+	}
+	if edgeID != id {
+		t.Fatalf("EdgePublish id = %q, want %q", edgeID, id)
+	}
+	defer edgePub.Close()
+	edgePub.HandleDatagram(deltaDgram(t, 1))
+	edgePub.HandleDatagram(deltaDgram(t, 3))
+	edgePub.HandleDatagram(deltaDgram(t, 3+1024))
+
+	promReg := prometheus.NewPedanticRegistry()
+	promReg.MustRegister(NewRegistryCollector(r))
+	mfs, err := promReg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	obf := r.ObfuscateID(id)
+
+	// The edge-leg family shows ONLY the edge-leg loss…
+	if v := metricValue(mfs, "gawk_broadcast_edge_ingress_frames_lost_total", map[string]string{"broadcast": obf}); v != 1 {
+		t.Errorf("edge-leg loss after flip = %v, want 1 (origin-leg counts leaked across the role flip)", v)
+	}
+	// …and the origin-leg counts survive the flip on the broadcaster leg
+	// (folded into the relay lifetime totals when the role changed).
+	if v := metricValue(mfs, "gawk_relay_ingress_frames_lost_total", nil); v != 2 {
+		t.Errorf("relay broadcaster-leg total after flip = %v, want 2", v)
+	}
+	if v := metricValue(mfs, "gawk_relay_edge_ingress_frames_lost_total", nil); v != 1 {
+		t.Errorf("relay edge-leg total after flip = %v, want 1", v)
+	}
+}
+
+// R17 W6: a shared StatsKey gives one broadcast ONE obfuscated identity on
+// every pod (metrics aggregate across the fleet); without it, per-process
+// keys keep today's single-pod behavior.
+func TestSharedStatsKeyFleetIdentity(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i * 3)
+	}
+	a := hub.NewRegistry(discardLog, hub.Options{StatsKey: key})
+	b := hub.NewRegistry(discardLog, hub.Options{StatsKey: key})
+	if a.ObfuscateID("K7XQ2M") != b.ObfuscateID("K7XQ2M") {
+		t.Error("shared stats key produced different obfuscated IDs across registries")
+	}
+
+	c := hub.NewRegistry(discardLog, hub.Options{})
+	d := hub.NewRegistry(discardLog, hub.Options{})
+	if c.ObfuscateID("K7XQ2M") == d.ObfuscateID("K7XQ2M") {
+		t.Error("per-process stats keys unexpectedly collide")
+	}
+}

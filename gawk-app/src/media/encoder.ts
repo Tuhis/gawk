@@ -51,13 +51,27 @@ export type Acceleration = 'hardware' | 'software' | 'unknown';
 export class KeyframeCadence {
   private intervalUs: number;
   private lastKeyframeTsUs: number | null = null;
+  private forced = false;
 
   constructor(intervalMs: number) {
     this.intervalUs = intervalMs * 1000;
   }
 
+  // R17 W2 (docs/22 Decision 5): make the next frame a keyframe regardless
+  // of cadence. Used on broadcast auto-resume re-attach: the keyframe stream
+  // embeds the current DecoderConfig, so one forced keyframe primes a fresh
+  // relay pod's caches within ~RTT instead of up to one GOP.
+  forceNext(): void {
+    this.forced = true;
+  }
+
   shouldKeyframe(timestampUs: number): boolean {
-    if (this.lastKeyframeTsUs === null || timestampUs - this.lastKeyframeTsUs >= this.intervalUs) {
+    if (
+      this.forced ||
+      this.lastKeyframeTsUs === null ||
+      timestampUs - this.lastKeyframeTsUs >= this.intervalUs
+    ) {
+      this.forced = false;
       this.lastKeyframeTsUs = timestampUs;
       return true;
     }
@@ -210,6 +224,12 @@ export class Encoder {
 
   get codec(): string | null {
     return this.chosenCodec;
+  }
+
+  // R17 W2: force the next encoded frame to be a keyframe (auto-resume
+  // re-attach priming — see KeyframeCadence.forceNext).
+  forceNextKeyframe(): void {
+    this.cadence.forceNext();
   }
 
   encode(frame: VideoFrame): boolean {

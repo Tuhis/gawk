@@ -12,13 +12,18 @@ import {
   TYPE_BROADCAST_ANNOUNCE,
   TYPE_TIME_SYNC,
   TYPE_CLOCK_MAPPING,
+  TYPE_RESUME_TOKEN,
   TIME_SYNC_SIZE,
   CLOCK_MAPPING_SIZE,
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_SERVER_DRAINING,
+  CLOSE_CODE_ORIGIN_MOVED,
   VIDEO_CHUNK_HEADER_SIZE,
   WIRE_VERSION,
   WireError,
   encodeClockMapping,
+  encodeResumeToken,
+  parseResumeToken,
   encodeDecoderConfig,
   encodeStreamFrame,
   encodeStreamFrameHeader,
@@ -112,8 +117,11 @@ describe('constants', () => {
     expect(CLOSE_CODE_BROADCAST_ENDED).toBe(4000);
     expect(TYPE_TIME_SYNC).toBe(0x05);
     expect(TYPE_CLOCK_MAPPING).toBe(0x06);
+    expect(TYPE_RESUME_TOKEN).toBe(0x09);
     expect(TIME_SYNC_SIZE).toBe(18);
     expect(CLOCK_MAPPING_SIZE).toBe(10);
+    expect(CLOSE_CODE_SERVER_DRAINING).toBe(4002);
+    expect(CLOSE_CODE_ORIGIN_MOVED).toBe(4003);
   });
 });
 
@@ -364,5 +372,41 @@ describe('error cases', () => {
     expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03, 0x01, 0x6b]))).toThrow(/invalid character/); // lowercase 'k'
     expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03, 0x01, 0x30]))).toThrow(/invalid character/); // '0'
     expect(() => parseBroadcastAnnounce(new Uint8Array([0x01, 0x03, 0x01, 0x4f]))).toThrow(/invalid character/); // 'O'
+  });
+});
+
+// ResumeToken (R17 W2, docs/22). Golden vector copied verbatim from
+// wire_test.go goldenResumeTokenHex.
+const GOLDEN_RESUME_TOKEN_HEX = '010910000102030405060708090a0b0c0d0e0f';
+
+describe('resume token (R17 W2)', () => {
+  const goldenToken = fromHex('000102030405060708090a0b0c0d0e0f');
+
+  it('encodes the golden resume token byte-for-byte', () => {
+    expect(toHex(encodeResumeToken(goldenToken))).toBe(GOLDEN_RESUME_TOKEN_HEX);
+  });
+
+  it('parses the golden resume token', () => {
+    expect(Array.from(parseResumeToken(fromHex(GOLDEN_RESUME_TOKEN_HEX)))).toEqual(
+      Array.from(goldenToken),
+    );
+  });
+
+  it('round-trips arbitrary tokens', () => {
+    for (const token of [new Uint8Array([0x42]), new Uint8Array(255).fill(0xab)]) {
+      expect(Array.from(parseResumeToken(encodeResumeToken(token)))).toEqual(Array.from(token));
+    }
+  });
+
+  it('rejects malformed resume tokens', () => {
+    expect(() => parseResumeToken(new Uint8Array(0))).toThrow(/too short/);
+    expect(() => parseResumeToken(new Uint8Array([0x01, 0x09]))).toThrow(/too short/);
+    expect(() => parseResumeToken(new Uint8Array([0x02, 0x09, 0x01, 0x42]))).toThrow(/version/);
+    expect(() => parseResumeToken(new Uint8Array([0x01, 0x03, 0x01, 0x42]))).toThrow(/type/);
+    expect(() => parseResumeToken(new Uint8Array([0x01, 0x09, 0x00]))).toThrow(/resume token/);
+    expect(() => parseResumeToken(new Uint8Array([0x01, 0x09, 0x05, 0x42]))).toThrow(/resume token/);
+    expect(() => parseResumeToken(new Uint8Array([0x01, 0x09, 0x01, 0x42, 0x43]))).toThrow(/resume token/);
+    expect(() => encodeResumeToken(new Uint8Array(0))).toThrow(WireError);
+    expect(() => encodeResumeToken(new Uint8Array(256))).toThrow(WireError);
   });
 });

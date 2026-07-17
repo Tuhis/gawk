@@ -47,6 +47,12 @@ export const TYPE_TIME_SYNC = 0x05;
 // like the keyframe prime. Maps frame timestamps onto the relay clock so a
 // viewer (with its own TimeSync offset) can compute absolute capture→render.
 export const TYPE_CLOCK_MAPPING = 0x06;
+// 0x07/0x08 are reserved by R15 system audio (docs/20).
+// ResumeToken (R17 W2, docs/22): server→publisher on its own uni stream right
+// after the session upgrade. The broadcaster presents it (hex, as the
+// `resume` query param) to claim /publish/{id} on any pod — auto-resume,
+// manual reclaim, and relay restarts all ride it.
+export const TYPE_RESUME_TOKEN = 0x09;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -55,6 +61,14 @@ export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // applies (a fresh session restores stream credit), so no special handling —
 // mirrored from Go wire.CloseCodeSubscriberUnresponsive for namespace parity.
 export const CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE = 4001;
+// The relay pod is shutting down for a planned rollout (R17 W1, docs/22):
+// sent while the pod is still Ready, so it reliably reaches the peer.
+// Non-terminal and explicitly fast — the client reconnects immediately
+// (0 ms first retry); a ready replacement pod is behind the same Service.
+export const CLOSE_CODE_SERVER_DRAINING = 4002;
+// Internal edge sessions only (R17 W5): the origin lost its Lease and is
+// demoting. Browsers never receive it — mirrored for namespace parity.
+export const CLOSE_CODE_ORIGIN_MOVED = 4003;
 
 // Wire frameIds are uint32 and wrap; consumers must compare them with serial
 // arithmetic (RFC 1982 flavored), not `<`/`>`. `a` is ahead of `b` when the
@@ -356,6 +370,38 @@ export function parseClockMapping(dgram: Uint8Array): bigint {
   }
   const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
   return view.getBigInt64(2);
+}
+
+// ResumeToken (R17 W2): version, type 0x09, uint8 tokenLen, token bytes.
+// The token is opaque on the wire (the server mints truncated HMACs).
+
+export function encodeResumeToken(token: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (token.length === 0 || token.length > 255) {
+    throw new WireError(`invalid resume token: ${token.length} bytes, want 1-255`);
+  }
+  const msg = new Uint8Array(3 + token.length);
+  msg[0] = WIRE_VERSION;
+  msg[1] = TYPE_RESUME_TOKEN;
+  msg[2] = token.length;
+  msg.set(token, 3);
+  return msg;
+}
+
+export function parseResumeToken(msg: Uint8Array): Uint8Array {
+  if (msg.length < 3) {
+    throw new WireError(`message too short: ${msg.length} bytes, need at least 3 for resume token`);
+  }
+  if (msg[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${msg[0].toString(16)}`);
+  }
+  if (msg[1] !== TYPE_RESUME_TOKEN) {
+    throw new WireError(`unexpected message type 0x${msg[1].toString(16)}, want resume token`);
+  }
+  const tokenLen = msg[2];
+  if (tokenLen === 0 || 3 + tokenLen !== msg.length) {
+    throw new WireError(`invalid resume token: declared ${tokenLen} bytes in ${msg.length}-byte message`);
+  }
+  return msg.subarray(3);
 }
 
 // The 31 allowed broadcast-ID symbols (no 0/O, 1/I/L) — mirrors

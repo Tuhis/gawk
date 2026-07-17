@@ -7,6 +7,7 @@ package transport
 
 import (
 	"crypto/tls"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,15 +48,31 @@ func TestPublishOutcomeUnauthorized(t *testing.T) {
 	}
 }
 
-func TestPublishOutcomeNotFoundOnBadReclaim(t *testing.T) {
+// A malformed broadcast ID is a 404 pre-token-check (there is nothing to
+// verify a token against).
+func TestPublishOutcomeNotFoundOnMalformedID(t *testing.T) {
 	srv, sm, _ := newOutcomeServer(t, config.Config{}, hub.Options{})
 	w := httptest.NewRecorder()
-	srv.handlePublish(w, connectReq("https://relay/publish/zzzzzz", map[string]string{"id": "zzzzzz"}))
+	srv.handlePublish(w, connectReq("https://relay/publish/!!!!!!", map[string]string{"id": "!!!!!!"}))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
 	}
 	if got := sm.ConnectionCount("publish", metrics.OutcomeNotFound); got != 1 {
 		t.Errorf("publish/not_found = %v, want 1", got)
+	}
+}
+
+// R17 W2: any /publish/{id} claim without a valid resume token — known or
+// unknown ID — is 403/unauthorized (the token gate runs before hub state).
+func TestPublishOutcomeUnauthorizedOnTokenlessClaim(t *testing.T) {
+	srv, sm, _ := newOutcomeServer(t, config.Config{}, hub.Options{})
+	w := httptest.NewRecorder()
+	srv.handlePublish(w, connectReq("https://relay/publish/ZZZZZZ", map[string]string{"id": "ZZZZZZ"}))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	if got := sm.ConnectionCount("publish", metrics.OutcomeUnauthorized); got != 1 {
+		t.Errorf("publish/unauthorized = %v, want 1", got)
 	}
 }
 
@@ -67,8 +84,11 @@ func TestPublishOutcomeConflictOnActiveReclaim(t *testing.T) {
 	}
 	defer pub.Close()
 
+	// The 409 sits behind the token gate (W2): the owner's valid token on a
+	// still-active slot is the conflict case.
+	token := hex.EncodeToString(srv.resume.mint(id))
 	w := httptest.NewRecorder()
-	srv.handlePublish(w, connectReq("https://relay/publish/"+id, map[string]string{"id": id}))
+	srv.handlePublish(w, connectReq("https://relay/publish/"+id+"?resume="+token, map[string]string{"id": id}))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", w.Code)
 	}

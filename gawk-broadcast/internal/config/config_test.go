@@ -23,6 +23,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		AppURL:          "https://gawk.example",
 		PublishSecret:   "hunter2",
 		LastBroadcastID: "K7M2QP",
+		LastResumeToken: "abab1212abab1212abab1212abab1212",
 		LastGoodEncoder: "nvh264enc",
 		Width:           1920,
 		Height:          1080,
@@ -40,8 +41,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if *got != (Config{
 		RelayURL: c.RelayURL, AppURL: c.AppURL, PublishSecret: c.PublishSecret,
-		LastBroadcastID: c.LastBroadcastID, LastGoodEncoder: c.LastGoodEncoder,
-		Width: c.Width, Height: c.Height,
+		LastBroadcastID: c.LastBroadcastID, LastResumeToken: c.LastResumeToken,
+		LastGoodEncoder: c.LastGoodEncoder,
+		Width:           c.Width, Height: c.Height,
 		Fps: c.Fps, BitrateBps: c.BitrateBps, path: path,
 	}) {
 		t.Errorf("round trip lost fields:\n got %+v\nwant %+v", *got, *c)

@@ -56,6 +56,12 @@ export type BroadcastWorkerEvent =
   | { type: 'capturePath'; path: string }
   | { type: 'encoderConfigured'; info: EncoderConfigured }
   | { type: 'broadcastId'; id: string }
+  // R17 W2: the relay-minted resume token (hex) — the main thread keeps it
+  // next to the broadcast ID for manual-restart reclaims.
+  | { type: 'resumeToken'; token: string }
+  // R17 W2 auto-resume progress: transport died / transport re-attached.
+  | { type: 'reconnecting'; attempt: number; delayMs: number; reason: string; closeCode?: number | null }
+  | { type: 'resumed' }
   | { type: 'stats'; stats: BroadcastStats }
   | { type: 'error'; message: string }
   | { type: 'ended' };
@@ -156,6 +162,15 @@ export class BroadcastWorkerCore {
       },
       onBroadcastId: (id) => {
         if (current()) this.host.post({ type: 'broadcastId', id });
+      },
+      onResumeToken: (token) => {
+        if (current()) this.host.post({ type: 'resumeToken', token });
+      },
+      onReconnecting: ({ attempt, delayMs, reason, closeCode }) => {
+        if (current()) this.host.post({ type: 'reconnecting', attempt, delayMs, reason, closeCode });
+      },
+      onResumed: () => {
+        if (current()) this.host.post({ type: 'resumed' });
       },
       onError: (err) => {
         if (current()) this.host.post({ type: 'error', message: err.message });

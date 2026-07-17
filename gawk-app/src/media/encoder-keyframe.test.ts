@@ -41,4 +41,15 @@ describe('KeyframeCadence', () => {
     // 10s stall — the next frame must be a keyframe.
     expect(cadence.shouldKeyframe(11 * US)).toBe(true);
   });
+  // R17 W2: forceNext() makes exactly the next frame a keyframe, regardless
+  // of cadence, then normal spacing resumes from it (auto-resume re-attach).
+  it('forceNext keys the very next frame once, then resumes the cadence', () => {
+    const cadence = new KeyframeCadence(2000);
+    expect(cadence.shouldKeyframe(0)).toBe(true);
+    expect(cadence.shouldKeyframe(0.5 * US)).toBe(false);
+    cadence.forceNext();
+    expect(cadence.shouldKeyframe(1 * US)).toBe(true); // forced, mid-GOP
+    expect(cadence.shouldKeyframe(1.5 * US)).toBe(false); // one-shot
+    expect(cadence.shouldKeyframe(3 * US)).toBe(true); // 2s after the forced key
+  });
 });

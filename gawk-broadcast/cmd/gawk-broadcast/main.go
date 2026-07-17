@@ -128,6 +128,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The persisted resume token only fits the ID it was minted for (R17);
+	// reclaiming any other ID with it would just be refused.
+	resumeToken := ""
+	if *id != "" && *id == cfg.LastBroadcastID {
+		resumeToken = cfg.LastResumeToken
+	}
+
 	ended := make(chan struct{})
 	var endOnce = make(chan struct{}, 1)
 	sess := engine.New(
@@ -135,6 +142,7 @@ func run() error {
 			RelayURL:      cfg.RelayURL,
 			BroadcastID:   *id,
 			PublishSecret: cfg.PublishSecret,
+			ResumeToken:   resumeToken,
 			Origin:        cfg.Origin,
 			Insecure:      *insecure,
 			Media:         media,
@@ -148,6 +156,10 @@ func run() error {
 					fmt.Fprintf(os.Stderr, "   join: %s", link)
 				}
 				fmt.Fprintln(os.Stderr)
+			},
+			OnResumeToken: func(token string) {
+				cfg.LastResumeToken = token
+				saveCfg()
 			},
 			OnEncoderChosen: func(enc string) {
 				fmt.Fprintf(os.Stderr, "Encoding with %s (%s, hardware) at %dx%d@%d, %.1f Mbps\n",

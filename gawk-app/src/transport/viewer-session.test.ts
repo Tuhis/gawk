@@ -5,12 +5,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ViewerCallbacks } from './viewer';
 import {
+  ABRUPT_DROP_RETRY_DELAY_MS,
   RECONNECT_MAX_ATTEMPTS,
   reconnectDelayMs,
   ViewerSession,
   type PipelineHandle,
   type ViewerSessionCallbacks,
 } from './viewer-session';
+import { CLOSE_CODE_SERVER_DRAINING } from './wire';
 
 class FakePipeline implements PipelineHandle {
   stopped = false;
@@ -97,10 +99,27 @@ afterEach(() => {
 });
 
 describe('reconnectDelayMs', () => {
-  it('doubles from 1s and caps at 15s', () => {
-    expect([1, 2, 3, 4, 5, 6, 10].map(reconnectDelayMs)).toEqual([
+  it('doubles from 1s and caps at 15s (coded non-drain close)', () => {
+    // 4001 stands in for any coded, non-drain close — the ladder base case.
+    expect([1, 2, 3, 4, 5, 6, 10].map((a) => reconnectDelayMs(a, 4001))).toEqual([
       1000, 2000, 4000, 8000, 15000, 15000, 15000,
     ]);
+  });
+
+  // R17 W1 (docs/22 Decision 4): the close-code-aware first-retry table.
+  it('applies the fast first-retry policy per close code', () => {
+    // 4002 planned drain ⇒ reconnect now.
+    expect(reconnectDelayMs(1, CLOSE_CODE_SERVER_DRAINING)).toBe(0);
+    // Abrupt drop (no close code — crash / stateless reset) ⇒ ≤ 250 ms.
+    expect(reconnectDelayMs(1, null)).toBe(ABRUPT_DROP_RETRY_DELAY_MS);
+    expect(reconnectDelayMs(1, undefined)).toBe(ABRUPT_DROP_RETRY_DELAY_MS);
+    expect(ABRUPT_DROP_RETRY_DELAY_MS).toBeLessThanOrEqual(250);
+    // Coded, non-drain closes (4001 eviction, 429/500) keep the 1 s ladder.
+    expect(reconnectDelayMs(1, 4001)).toBe(1000);
+    expect(reconnectDelayMs(1, 429)).toBe(1000);
+    // The fast path is first-attempt-only: attempt 2+ is the ladder.
+    expect(reconnectDelayMs(2, CLOSE_CODE_SERVER_DRAINING)).toBe(2000);
+    expect(reconnectDelayMs(2, null)).toBe(2000);
   });
 });
 
@@ -113,20 +132,46 @@ describe('ViewerSession', () => {
     expect(events).toEqual([]);
   });
 
-  it('reconnects after an unexpected drop, only once the delay elapses', async () => {
+  it('reconnects after an abrupt drop after the fast 250ms retry delay', async () => {
     const { session, pipelines, events } = makeHarness();
     await session.start();
     expect(events).toEqual(['connected']);
 
+    // No close code — an abrupt drop (crash / stateless reset): fast retry.
     pipelines[0].crash('session closed by server');
-    expect(events).toEqual(['connected', 'reconnecting:1:1000']);
+    expect(events).toEqual(['connected', `reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`]);
     expect(pipelines).toHaveLength(1); // not before the delay
+
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS - 1);
+    expect(pipelines).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pipelines).toHaveLength(2);
+    expect(events).toEqual(['connected', `reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`, 'connected']);
+  });
+
+  it('reconnects immediately (0ms) after a 4002 server drain', async () => {
+    const { session, pipelines, events } = makeHarness();
+    await session.start();
+
+    pipelines[0].crash('server draining', CLOSE_CODE_SERVER_DRAINING);
+    expect(events).toEqual(['connected', 'reconnecting:1:0']);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipelines).toHaveLength(2);
+    expect(events).toEqual(['connected', 'reconnecting:1:0', 'connected']);
+  });
+
+  it('keeps the 1s ladder for a coded non-drain close (4001 eviction)', async () => {
+    const { session, pipelines, events } = makeHarness();
+    await session.start();
+
+    pipelines[0].crash('subscriber unresponsive', 4001);
+    expect(events).toEqual(['connected', 'reconnecting:1:1000']);
 
     await vi.advanceTimersByTimeAsync(999);
     expect(pipelines).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(pipelines).toHaveLength(2);
-    expect(events).toEqual(['connected', 'reconnecting:1:1000', 'connected']);
   });
 
   it('resets the attempt counter after a successful reconnect', async () => {
@@ -136,20 +181,21 @@ describe('ViewerSession', () => {
     await vi.advanceTimersByTimeAsync(1000);
 
     pipelines[1].crash('drop 2');
-    // A fresh drop after a successful reconnect starts over at attempt 1.
-    expect(events.at(-1)).toBe('reconnecting:1:1000');
+    // A fresh drop after a successful reconnect starts over at attempt 1
+    // (abrupt drop ⇒ the fast 250ms first retry again).
+    expect(events.at(-1)).toBe(`reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`);
   });
 
   it('backs off exponentially across consecutive failed attempts', async () => {
     const { session, pipelines, events } = makeHarness(['ok', 'fail', 'fail', 'ok']);
     await session.start();
     pipelines[0].crash('drop');
-    await vi.advanceTimersByTimeAsync(1000); // attempt 1 fails
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS); // attempt 1 (fast) fails
     await vi.advanceTimersByTimeAsync(2000); // attempt 2 fails
     await vi.advanceTimersByTimeAsync(4000); // attempt 3 connects
     expect(events).toEqual([
       'connected',
-      'reconnecting:1:1000',
+      `reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`,
       'reconnecting:2:2000',
       'reconnecting:3:4000',
       'connected',
@@ -176,7 +222,7 @@ describe('ViewerSession', () => {
     const { session, pipelines, events } = makeHarness();
     await session.start();
     pipelines[0].crash('drop');
-    expect(events.at(-1)).toBe('reconnecting:1:1000');
+    expect(events.at(-1)).toBe(`reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`);
 
     await session.stop();
     expect(events.at(-1)).toBe('ended');
@@ -229,10 +275,11 @@ describe('ViewerSession', () => {
     await session.start();
 
     pipelines[0].crash('drop');
-    expect(events).toEqual(['connected', 'reconnecting:1:1000']);
+    const retry = `reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`;
+    expect(events).toEqual(['connected', retry]);
 
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(events).toEqual(['connected', 'reconnecting:1:1000', 'ended']);
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    expect(events).toEqual(['connected', retry, 'ended']);
     expect(pipelines).toHaveLength(2);
   });
 });

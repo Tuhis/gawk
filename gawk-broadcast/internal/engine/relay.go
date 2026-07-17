@@ -112,7 +112,7 @@ type DialFunc func(ctx context.Context, rawURL, origin string, insecure bool) (s
 // and the relay reads r.URL.Query().Get("secret"). A native client could send
 // a header, but then the two broadcasters would authenticate differently and
 // the relay would need two paths.
-func PublishURL(relayURL, broadcastID, secret string) (string, error) {
+func PublishURL(relayURL, broadcastID, secret, resumeToken string) (string, error) {
 	base, err := url.Parse(relayURL)
 	if err != nil {
 		return "", err
@@ -125,9 +125,17 @@ func PublishURL(relayURL, broadcastID, secret string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	q := u.Query()
 	if secret != "" {
-		q := u.Query()
 		q.Set("secret", secret)
+	}
+	// R17: a /publish/{id} claim carries the resume token minted at first
+	// publish. A mint has no ID to verify against, so the param stays off
+	// there even when a stale token is lying around in config.
+	if broadcastID != "" && resumeToken != "" {
+		q.Set("resume", resumeToken)
+	}
+	if len(q) > 0 {
 		u.RawQuery = q.Encode()
 	}
 	return u.String(), nil

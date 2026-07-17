@@ -303,3 +303,74 @@ func TestHardeningConfig(t *testing.T) {
 		}
 	})
 }
+
+// R17 W1: the shared QUIC stateless reset key — empty disables, anything
+// else must be exactly 32 bytes of hex (docs/22 Decision 3).
+func TestStatelessResetKey(t *testing.T) {
+	key64 := "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+	cfg, err := ParseFlags([]string{"-stateless-reset-key", key64}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if len(cfg.StatelessResetKey) != 32 || cfg.StatelessResetKey[1] != 0x01 {
+		t.Errorf("StatelessResetKey = %x, want decoded 32 bytes", cfg.StatelessResetKey)
+	}
+
+	cfg, err = ParseFlags(nil, envMap(map[string]string{"GAWK_STATELESS_RESET_KEY": key64}))
+	if err != nil {
+		t.Fatalf("ParseFlags env: %v", err)
+	}
+	if len(cfg.StatelessResetKey) != 32 {
+		t.Errorf("env StatelessResetKey = %x, want 32 bytes", cfg.StatelessResetKey)
+	}
+
+	cfg, err = ParseFlags(nil, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags default: %v", err)
+	}
+	if cfg.StatelessResetKey != nil {
+		t.Errorf("default StatelessResetKey = %x, want nil (disabled)", cfg.StatelessResetKey)
+	}
+
+	for _, bad := range []string{"zz", "0102", key64 + "00"} {
+		if _, err := ParseFlags([]string{"-stateless-reset-key", bad}, noEnv); err == nil {
+			t.Errorf("ParseFlags accepted invalid stateless-reset-key %q", bad)
+		}
+	}
+}
+
+// R17 W3: -cluster-mode (default off ⇒ single-pod behavior byte-identical).
+func TestClusterModeFlag(t *testing.T) {
+	cfg, err := ParseFlags(nil, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.ClusterMode {
+		t.Error("ClusterMode default = true, want false")
+	}
+	clusterArgs := []string{"-internal-psk", "fleet-secret", "-internal-server-name", "relay.example.com"}
+	cfg, err = ParseFlags(append([]string{"-cluster-mode"}, clusterArgs...), noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags flag: %v", err)
+	}
+	if !cfg.ClusterMode || cfg.InternalPSK != "fleet-secret" || cfg.InternalServerName != "relay.example.com" {
+		t.Errorf("cluster flags not applied: %+v", cfg)
+	}
+	cfg, err = ParseFlags(clusterArgs, envMap(map[string]string{"GAWK_CLUSTER_MODE": "true"}))
+	if err != nil {
+		t.Fatalf("ParseFlags env: %v", err)
+	}
+	if !cfg.ClusterMode {
+		t.Error("GAWK_CLUSTER_MODE=true not applied")
+	}
+
+	// Cluster mode without the internal PSK / server name is a startup
+	// error, not a silently insecure fleet (W4, docs/22 Decision 9).
+	if _, err := ParseFlags([]string{"-cluster-mode"}, noEnv); err == nil {
+		t.Error("cluster-mode without internal-psk/server-name accepted")
+	}
+	if _, err := ParseFlags([]string{"-cluster-mode", "-internal-psk", "x"}, noEnv); err == nil {
+		t.Error("cluster-mode without internal-server-name accepted")
+	}
+}

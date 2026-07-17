@@ -20,10 +20,15 @@ var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func testHandler(t *testing.T) (http.Handler, *hub.Registry) {
 	t.Helper()
+	return testHandlerReady(t, nil)
+}
+
+func testHandlerReady(t *testing.T, ready func() bool) (http.Handler, *hub.Registry) {
+	t.Helper()
 	r := hub.NewRegistry(discardLog, hub.Options{})
 	promReg := metrics.NewBaseRegistry("test-version")
 	promReg.MustRegister(metrics.NewRegistryCollector(r))
-	return Handler(r, promReg, discardLog), r
+	return Handler(r, promReg, discardLog, ready), r
 }
 
 func TestHandlerServesAllRoutes(t *testing.T) {
@@ -40,6 +45,11 @@ func TestHandlerServesAllRoutes(t *testing.T) {
 
 	if w := get("/healthz"); w.Code != http.StatusOK || w.Body.String() != "ok" {
 		t.Errorf("/healthz = %d %q, want 200 ok", w.Code, w.Body.String())
+	}
+
+	// A nil ready func means always ready.
+	if w := get("/readyz"); w.Code != http.StatusOK || w.Body.String() != "ok" {
+		t.Errorf("/readyz = %d %q, want 200 ok", w.Code, w.Body.String())
 	}
 
 	w := get("/statusz")
@@ -68,6 +78,30 @@ func TestHandlerServesAllRoutes(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("/metrics missing %q", want)
 		}
+	}
+}
+
+// /readyz follows the injected readiness (R17 W1): 200 while ready, 503 once
+// the drain has begun — the kubelet readiness contract for rolling updates.
+func TestReadyzFollowsDrainState(t *testing.T) {
+	ready := true
+	h, _ := testHandlerReady(t, func() bool { return ready })
+
+	get := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return w
+	}
+
+	if w := get(); w.Code != http.StatusOK {
+		t.Errorf("/readyz while ready = %d, want 200", w.Code)
+	}
+	ready = false
+	if w := get(); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz while draining = %d, want 503", w.Code)
+	}
+	if w := get(); !strings.Contains(w.Body.String(), "draining") {
+		t.Errorf("/readyz draining body = %q, want to mention draining", w.Body.String())
 	}
 }
 

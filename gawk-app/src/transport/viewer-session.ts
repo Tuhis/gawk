@@ -13,8 +13,16 @@ import type { ConnectOptions } from './connection';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import { CLOSE_CODE_BROADCAST_ENDED, type DecoderConfigMessage } from './wire';
 import type { DecodedFrame } from '../media/decoder';
+import { RECONNECT_MAX_ATTEMPTS, reconnectDelayMs, type ReconnectInfo } from './reconnect';
 
-export const RECONNECT_MAX_ATTEMPTS = 10;
+// The reconnect policy lives in reconnect.ts (shared with the broadcaster's
+// auto-resume since R17 W2); re-exported so existing importers keep working.
+export {
+  ABRUPT_DROP_RETRY_DELAY_MS,
+  RECONNECT_MAX_ATTEMPTS,
+  reconnectDelayMs,
+  type ReconnectInfo,
+} from './reconnect';
 
 // The user-facing classification of a viewer failure. Derived structurally
 // (which callback/rejection fired), never by sniffing error messages:
@@ -26,18 +34,6 @@ export const RECONNECT_MAX_ATTEMPTS = 10;
 // - 'unplayable': fatal by pipeline verdict (e.g. undecodable codec) —
 //   retrying would fail identically.
 export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable';
-
-// 1s, 2s, 4s, 8s, then capped at 15s — ~100s total before giving up,
-// comfortably covering a relay restart.
-export function reconnectDelayMs(attempt: number): number {
-  return Math.min(1000 * 2 ** (attempt - 1), 15_000);
-}
-
-export interface ReconnectInfo {
-  attempt: number;
-  delayMs: number;
-  reason: string;
-}
 
 export interface ViewerSessionCallbacks {
   onDecodedFrame: (decoded: DecodedFrame) => void;
@@ -200,9 +196,17 @@ export class ViewerSession {
       );
       return;
     }
-    const delayMs = reconnectDelayMs(this.attempt);
+    // attempt === 1 here always means a *connected* session just died (a
+    // failed reconnect dial re-schedules at attempt 2+), so the close-code
+    // fast paths (4002 ⇒ 0 ms, abrupt ⇒ 250 ms) never apply to dial failures.
+    const delayMs = reconnectDelayMs(this.attempt, this.lastCloseCode);
     log.info(`Viewer reconnect attempt ${this.attempt}/${RECONNECT_MAX_ATTEMPTS} in ${delayMs}ms (${this.lastReason})`);
-    this.cb.onReconnecting({ attempt: this.attempt, delayMs, reason: this.lastReason });
+    this.cb.onReconnecting({
+      attempt: this.attempt,
+      delayMs,
+      reason: this.lastReason,
+      closeCode: this.lastCloseCode,
+    });
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.tryReconnect();

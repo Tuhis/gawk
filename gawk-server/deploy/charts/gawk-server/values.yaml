@@ -15,10 +15,13 @@ image:
 # then set: imagePullSecrets: [{name: ghcr-pull}]
 imagePullSecrets: []
 
-# Replicas are deliberately not configurable: the hub is an in-memory
-# single-publisher pub/sub — two pods behind one Service would split the
-# publisher and the subscribers. The Deployment is hardcoded to
-# replicas: 1 with strategy Recreate.
+# R17 (docs/22): relay pod count. Anything above 1 REQUIRES
+# config.clusterMode: true (per-broadcast origin Leases + edge pulls) plus
+# the shared Secrets (statelessResetKey, internalPsk, and publishSecret or
+# resumeTokenKey) — the chart refuses replicas > 1 without clusterMode.
+# The default stays 1 so existing single-pod installs upgrade unchanged;
+# the design's product topology is replicas: 2+.
+replicas: 1
 
 service:
   type: LoadBalancer
@@ -68,8 +71,57 @@ config:
   maxTotalSubscribers: 50
   publishSecret: ""
   publishSecretKeyRef: {}
+  # R17 W3: multi-pod federation (per-broadcast k8s origin Leases, edge
+  # pulls, drain lease release). Off = single-pod behavior byte-identical to
+  # pre-R17 (no k8s API client at all). Turning it on also creates a
+  # ServiceAccount + Role (Leases only) + RoleBinding and injects the pod
+  # identity via the downward API. Multi-replica deploys REQUIRE it — and
+  # shared statelessResetKey/resumeTokenKey (or publishSecret) Secrets.
+  clusterMode: false
+  # R17 W4: pre-shared key gating the pod-to-pod /internal/subscribe route
+  # (it rides the same public UDP port as viewers). Required with
+  # clusterMode; use the secret ref in real deploys:
+  #   kubectl -n gawk create secret generic gawk-internal-psk \
+  #     --from-literal=psk=$(openssl rand -hex 32)
+  internalPsk: ""
+  internalPskRef: {}
+  # R17 W4: the TLS server name edge pods verify when dialing an origin's
+  # pod IP — the relay's public cert hostname (certificate.dnsNames[0]).
+  # Defaults to the first certificate dnsName when left empty.
+  internalServerName: ""
+  # R17 W6: statusz/metrics obfuscation key — 64 hex chars (32 bytes),
+  # shared fleet-wide so one broadcast keeps ONE obfuscated identity across
+  # pods (Prometheus can aggregate). Same generation recipe as below.
+  statsKey: ""
+  statsKeyRef: {}
+  # R17 W2: resume-token HMAC key — 64 hex chars (32 bytes), shared by all
+  # relay pods. RECOMMENDED for any real deployment: when set it WINS over
+  # the publish-secret derivation. The publish secret is handed to every
+  # broadcaster, so a token key derived from it can be computed by every
+  # broadcaster — only this independent server-side key stops one
+  # broadcaster from taking over another's broadcast ID (PR #47 security
+  # review); rotating it revokes all resume tokens. Empty: derive from the
+  # publish secret (protects only against non-secret-holders). Same
+  # generation recipe as the reset key below.
+  resumeTokenKey: ""
+  resumeTokenKeyRef: {}
+  # R17 W1: QUIC stateless reset key — 64 hex chars (32 bytes), SHARED by
+  # every relay pod so any pod can reject packets for a dead pod's
+  # connections in ~1 RTT (docs/22 Decision 3). Generate once:
+  #   kubectl -n gawk create secret generic gawk-reset-key \
+  #     --from-literal=key=$(openssl rand -hex 32)
+  # then set: statelessResetKeyRef: {name: gawk-reset-key, key: key}.
+  # Empty disables (abrupt pod death costs the ~30s idle timeout).
+  statelessResetKey: ""
+  statelessResetKeyRef: {}
   connRateLimit: 3.0
   connBurstLimit: 10
+  # R17 W5: CIDRs that bypass the per-IP rate limiter. Under MetalLB L2 +
+  # externalTrafficPolicy: Cluster the relay sees SNAT'd NODE IPs — a
+  # rollout's reconnect herd through those would trip the 3/s bucket and
+  # fail fresh joiners fatally. List the cluster's node/pod CIDRs, e.g.
+  # ["10.42.0.0/16", "10.12.0.0/24"].
+  trustedCidrs: []
   maxBandwidth: "0"
   # R8 reliable keyframes: cap on a single keyframe stream (memory-inflation
   # defense) and how long a keyframe write to one subscriber may block before
@@ -111,6 +163,13 @@ probes:
   readiness:
     periodSeconds: 10
     timeoutSeconds: 3
+
+# R17: a PodDisruptionBudget so node drains never take the last relay pod.
+# Rendered only when replicas > 1 (at 1 replica it would block node
+# maintenance outright), so it is safe to leave enabled.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 resources:
   requests:

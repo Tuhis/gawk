@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,12 +21,54 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
+	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
+
+// drainWindow bounds the SIGTERM drain (R17 W1, docs/22 Decision 2): every
+// open session is closed with wire.CloseCodeServerDraining, staggered evenly
+// across this window so the reconnect herd doesn't land as one spike. The
+// drain runs while the pod is still Ready — its conntrack entries still point
+// here, so the close frames actually reach the peers; that is why it must be
+// active and immediate rather than "unready, then linger" (kube-proxy flushes
+// UDP conntrack on endpoint removal at an unspecified time). A constant, not
+// a knob: it must stay comfortably inside terminationGracePeriodSeconds.
+const drainWindow = time.Second
+
+// drainFlushDelay gives the last 4002 close frames time to reach their peers
+// before Run tears the QUIC connections down: a CONNECTION_CLOSE racing the
+// session-close capsule onto the wire would turn the clean drain signal into
+// an anonymous drop (still recovered, but on the slower abrupt-error path).
+const drainFlushDelay = 250 * time.Millisecond
+
+// drainSession is the slice of a webtransport.Session the drain needs;
+// narrowed to an interface so the drain logic is unit-testable with fakes.
+type drainSession interface {
+	CloseWithError(code webtransport.SessionErrorCode, reason string) error
+}
+
+// ClusterCoordinator is the transport's slice of *cluster.Coordinator
+// (R17 W3/W4, docs/22 Decision 8). Nil = single-pod mode: no claims, no
+// releases, no edge pulls — behavior byte-identical to pre-R17.
+type ClusterCoordinator interface {
+	// Claim acquires the broadcast's origin Lease for this pod. force is set
+	// when the claimant presented a valid resume token (every /publish/{id});
+	// mint-path claims are create-only (never steal a live holder).
+	Claim(ctx context.Context, broadcastID string, force bool) (int64, error)
+	// ReleaseAll clears this pod's lease holderships (the SIGTERM drain) so
+	// the broadcaster's instant reconnect can claim on another pod.
+	ReleaseAll(ctx context.Context)
+	// Resolve returns the broadcast's current origin (edge pull, W4).
+	Resolve(ctx context.Context, broadcastID string) (cluster.Origin, error)
+	// OriginGeneration reports whether this pod holds the broadcast's lease
+	// and at which generation — the internal route's 404/409 fence (W4).
+	OriginGeneration(broadcastID string) (int64, bool)
+}
 
 // Server wraps a webtransport.Server with the gawk routes.
 type Server struct {
@@ -33,9 +77,30 @@ type Server struct {
 	log      *slog.Logger
 	wt       *webtransport.Server
 	limiter  *ipRateLimiter
+	// resume mints/verifies the /publish/{id} resume tokens (R17 W2).
+	resume *resumeTokens
+	// cluster is the origin-Lease coordinator; nil when -cluster-mode is off.
+	cluster ClusterCoordinator
+	// edges owns this pod's upstream pulls (R17 W4); nil when cluster is.
+	edges *EdgeManager
 	// metrics carries the R9 connection-outcome counters; nil is safe (all
 	// methods are nil-receiver no-ops) so tests can run the server unwired.
 	metrics *metrics.ServerMetrics
+
+	// Open-session tracking for the SIGTERM drain (R17 W1): every upgraded
+	// session registers here and unregisters when its handler returns.
+	sessMu   sync.Mutex
+	sessions map[drainSession]struct{}
+	// Live publisher sessions by broadcast ID (R17 W5): the demote path
+	// closes the stale one when the broadcast's Lease is force-taken.
+	publishers map[string]drainSession
+	draining   atomic.Bool
+	// onDrain runs after the 4002s have been sent, before Run returns — the
+	// seam where W3 releases this pod's broadcast Leases. Nil-safe.
+	onDrain func()
+	// drainSleep staggers the per-session closes; injectable so the drain
+	// unit test asserts exact timing without wall-clock sleeps.
+	drainSleep func(time.Duration)
 
 	// testHookPostUpgradeSubscribe runs between the session upgrade and the
 	// authoritative Subscribe, letting tests deterministically widen the
@@ -47,18 +112,39 @@ type Server struct {
 
 	// testHookRateLimitLoopback disables the loopback bypass of the
 	// connection rate limiter, so tests (which dial from 127.0.0.1) can
-	// exercise the 429 path. Always false in production.
-	testHookRateLimitLoopback bool
+	// exercise the 429 path. Always false in production. Atomic because
+	// tests set it while the server is already accepting — in-process
+	// localhost UDP gives the race detector no happens-before edge between
+	// that write and a handler's read (caught by -race in the PR #47 pass).
+	testHookRateLimitLoopback atomic.Bool
+}
+
+// rejectedDraining rejects a new CONNECT with 503 once the drain has begun:
+// this pod is about to exit, so accepting a session only to 4002 it
+// milliseconds later would burn a client reconnect attempt for nothing.
+func (s *Server) rejectedDraining(w http.ResponseWriter, route string) bool {
+	if !s.draining.Load() {
+		return false
+	}
+	s.metrics.Connection(route, metrics.OutcomeDraining)
+	w.WriteHeader(http.StatusServiceUnavailable)
+	return true
 }
 
 // rateLimited reports whether a connection attempt should be rejected with
 // 429. Loopback bypasses the limiter (k8s exec probes hit /echo on every
-// probe cycle) unless the test hook forces it.
+// probe cycle) unless the test hook forces it; trusted CIDRs bypass it too
+// (R17 W5, docs/22 Decision 13: under MetalLB L2 + etp=Cluster the relay
+// sees SNAT'd node IPs, and a rollout's reconnect herd through those must
+// not burn viewers' fatal-on-first-connect budget).
 func (s *Server) rateLimited(r *http.Request) bool {
 	if s.limiter == nil {
 		return false
 	}
-	if isLoopbackAddr(r.RemoteAddr) && !s.testHookRateLimitLoopback {
+	if isLoopbackAddr(r.RemoteAddr) && !s.testHookRateLimitLoopback.Load() {
+		return false
+	}
+	if isTrustedAddr(r.RemoteAddr, s.cfg.TrustedCIDRs) {
 		return false
 	}
 	if s.limiter.Allow(r.RemoteAddr) {
@@ -78,7 +164,17 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 	if cfg.ConnRateLimit > 0 {
 		limiter = newIPRateLimiter(cfg.ConnRateLimit, cfg.ConnBurstLimit)
 	}
-	s := &Server{cfg: cfg, registry: r, log: log, limiter: limiter, metrics: m}
+	s := &Server{
+		cfg:        cfg,
+		registry:   r,
+		log:        log,
+		limiter:    limiter,
+		metrics:    m,
+		resume:     newResumeTokens(cfg),
+		sessions:   make(map[drainSession]struct{}),
+		publishers: make(map[string]drainSession),
+		drainSleep: time.Sleep,
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +186,8 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)
 	mux.HandleFunc("CONNECT /publish/{id}", s.handlePublish)
 	mux.HandleFunc("CONNECT /subscribe/{id}", s.handleSubscribe)
+	// Pod-to-pod edge pull (R17 W4); 404s outright unless -cluster-mode is on.
+	mux.HandleFunc("CONNECT /internal/subscribe/{id}", s.handleInternalSubscribe)
 
 	s.wt = &webtransport.Server{
 		H3: &http3.Server{
@@ -151,13 +249,52 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 	return s
 }
 
-// Run serves until ctx is cancelled, then closes the server. It always
-// returns a non-nil listen error, or nil after a graceful shutdown.
+// Run serves until ctx is cancelled, then drains (4002 to every open
+// session, staggered ≤ drainWindow — R17 W1) and closes the server. It
+// always returns a non-nil listen error, or nil after a graceful shutdown.
+//
+// The QUIC transport is constructed explicitly (not via wt.ListenAndServe,
+// which builds its own) so the shared StatelessResetKey can be set: with the
+// key, any pod receiving packets for an unknown connection ID answers with a
+// stateless reset the client accepts — abrupt pod death is detected in ~1 RTT
+// instead of the ~30 s idle timeout (docs/22 Decision 3).
 func (s *Server) Run(ctx context.Context) error {
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.wt.ListenAndServe() }()
+	udpAddr, err := net.ResolveUDPAddr("udp", s.cfg.Addr)
+	if err != nil {
+		return err
+	}
+	udpConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return err
+	}
+	tr := &quic.Transport{Conn: udpConn}
+	if len(s.cfg.StatelessResetKey) == 32 {
+		key := quic.StatelessResetKey(s.cfg.StatelessResetKey)
+		tr.StatelessResetKey = &key
+	}
+	// Mirror webtransport-go's serve(): clone the H3 QUIC config and force
+	// the two capabilities it would force itself.
+	quicConf := s.wt.H3.QUICConfig.Clone()
+	quicConf.EnableDatagrams = true
+	quicConf.EnableStreamResetPartialDelivery = true
+	ln, err := tr.ListenEarly(s.wt.H3.TLSConfig, quicConf)
+	if err != nil {
+		tr.Close()
+		udpConn.Close()
+		return err
+	}
 
-	s.log.Info("listening", "addr", s.cfg.Addr)
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.acceptLoop(ln) }()
+
+	s.log.Info("listening", "addr", s.cfg.Addr,
+		"stateless_reset_key_set", tr.StatelessResetKey != nil)
+	closeAll := func() {
+		s.wt.Close()
+		ln.Close()
+		tr.Close()
+		udpConn.Close()
+	}
 	defer func() {
 		if s.limiter != nil {
 			s.limiter.Close()
@@ -165,12 +302,159 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 	select {
 	case <-ctx.Done():
-		s.wt.Close()
-		<-errCh // wait for ListenAndServe to return
+		s.drain()
+		closeAll()
+		<-errCh // wait for the accept loop to return
 		return nil
 	case err := <-errCh:
+		closeAll()
 		return err
 	}
+}
+
+// acceptLoop hands every accepted QUIC connection to the WebTransport server.
+// It returns when the listener is closed.
+func (s *Server) acceptLoop(ln *quic.EarlyListener) error {
+	for {
+		qconn, err := ln.Accept(context.Background())
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := s.wt.ServeQUICConn(qconn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.log.Debug("QUIC connection ended", "err", err)
+			}
+		}()
+	}
+}
+
+// trackSession registers an upgraded session for the SIGTERM drain; the
+// returned func unregisters it (deferred by every session handler).
+func (s *Server) trackSession(sess drainSession) func() {
+	s.sessMu.Lock()
+	s.sessions[sess] = struct{}{}
+	s.sessMu.Unlock()
+	return func() {
+		s.sessMu.Lock()
+		delete(s.sessions, sess)
+		s.sessMu.Unlock()
+	}
+}
+
+// trackPublisher additionally indexes a publisher session by broadcast ID
+// so the W5 demote path can close the stale one on lease loss.
+func (s *Server) trackPublisher(id string, sess drainSession) func() {
+	s.sessMu.Lock()
+	s.publishers[id] = sess
+	s.sessMu.Unlock()
+	return func() {
+		s.sessMu.Lock()
+		if s.publishers[id] == sess {
+			delete(s.publishers, id)
+		}
+		s.sessMu.Unlock()
+	}
+}
+
+// HandleLeaseLost is the demote path (R17 W5, docs/22 Decision 11): this
+// pod's Lease for the broadcast was force-taken — the broadcaster re-homed
+// (NAT rebind / rollout reconnect) while our publisher session still looks
+// half-alive. (a) Close that stale session (its client already abandoned it;
+// only the new session drives resume, so no ping-pong). (b) Close downstream
+// edge sessions with 4003 — the Go edge clients re-resolve to the new
+// origin. (c) Become an edge ourselves for any still-connected local
+// viewers: nobody chases viewers across pods, and depth stays ≤ 2 because
+// the new origin serves us directly.
+func (s *Server) HandleLeaseLost(broadcastID string, _ cluster.Origin) {
+	s.sessMu.Lock()
+	stale := s.publishers[broadcastID]
+	delete(s.publishers, broadcastID)
+	s.sessMu.Unlock()
+	if stale != nil {
+		s.log.Info("origin lease lost: closing stale publisher session", "broadcast_id", broadcastID)
+		_ = stale.CloseWithError(0, "origin moved")
+	}
+
+	s.registry.CloseInternalSubscribers(broadcastID, uint32(wire.CloseCodeOriginMoved), "origin moved")
+
+	if s.edges != nil && s.registry.ExternalSubscribers(broadcastID) > 0 {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), edgeAttachTimeout)
+			defer cancel()
+			if err := s.edges.EnsureEdge(ctx, broadcastID); err != nil {
+				s.log.Warn("self-demote to edge failed", "broadcast_id", broadcastID, "err", err)
+			} else {
+				s.log.Info("demoted to edge after lease loss", "broadcast_id", broadcastID)
+			}
+		}()
+	}
+}
+
+// drain implements the close-first-while-Ready shutdown (docs/22 Decision 2):
+// flip readiness, send wire.CloseCodeServerDraining to every open session
+// staggered evenly over drainWindow, then run the onDrain hook (W3: release
+// this pod's broadcast Leases). New CONNECTs are rejected 503 once draining.
+func (s *Server) drain() {
+	s.draining.Store(true)
+	s.sessMu.Lock()
+	sessions := make([]drainSession, 0, len(s.sessions))
+	for sess := range s.sessions {
+		sessions = append(sessions, sess)
+	}
+	s.sessMu.Unlock()
+
+	if len(sessions) > 0 {
+		s.log.Info("draining: closing open sessions", "sessions", len(sessions), "window", drainWindow)
+		interval := drainWindow / time.Duration(len(sessions))
+		for i, sess := range sessions {
+			if i > 0 {
+				s.drainSleep(interval)
+			}
+			_ = sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeServerDraining), "server draining")
+		}
+		s.drainSleep(drainFlushDelay)
+	}
+	if s.onDrain != nil {
+		s.onDrain()
+	}
+}
+
+// Ready reports whether the server is accepting new work — false once the
+// drain has begun. Served as /readyz on the ops endpoint; per docs/22
+// Decision 2 this is scale-down/HPA hygiene, not the rollout-correctness
+// mechanism (that is the active drain above).
+func (s *Server) Ready() bool {
+	return !s.draining.Load()
+}
+
+// SetCluster wires the origin-Lease coordinator (R17 W3/W4): /publish claims
+// acquire the broadcast's Lease, the SIGTERM drain releases this pod's
+// holderships right after the 4002s go out — the broadcaster's instant
+// reconnect then claims an empty-holder lease on a ready pod, no force or
+// TTL wait needed — and viewers landing here for broadcasts we don't host
+// trigger an edge pull from the lease's origin pod. podName is this pod's
+// identity (the self-dial guard). Call before Run.
+func (s *Server) SetCluster(c ClusterCoordinator, podName string) {
+	s.cluster = c
+	s.edges = newEdgeManager(s.registry, c,
+		newEdgeDialer(s.cfg.InternalServerName, s.cfg.InternalPSK, nil, s.log),
+		podName, s.log)
+	s.onDrain = func() {
+		s.edges.Stop()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c.ReleaseAll(ctx)
+	}
+}
+
+// HandleLeaseDeleted is the cluster informer's lease-deletion dispatch
+// (cluster-wide "broadcast ended"): stop any edge pull for the broadcast,
+// then expire the local hub so viewers get the terminal 4000.
+func (s *Server) HandleLeaseDeleted(broadcastID string) {
+	if s.edges != nil {
+		s.edges.OnLeaseDeleted(broadcastID)
+	}
+	s.registry.EndBroadcast(broadcastID)
 }
 
 // handlePublish claims a publisher slot, upgrades the session and feeds received
@@ -178,6 +462,9 @@ func (s *Server) Run(ctx context.Context) error {
 // reclaim the slot. If "id" is empty, it upgrades first, then mints a new ID,
 // starts publishing, and announces the ID to the publisher over a unidirectional stream.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
+	if s.rejectedDraining(w, "publish") {
+		return
+	}
 	if s.rateLimited(r) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		return
@@ -198,24 +485,68 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	var sess *webtransport.Session
 
 	if id != "" {
-		// Reclaim path: pre-upgrade checks
-		id, pub, err = s.registry.StartPublish(id)
+		// Claim path (R17 W2): every /publish/{id} — reclaim of a graced hub
+		// AND claim of an ID this pod has never seen — requires the resume
+		// token minted at first publish. The token gate is what closes the
+		// graced-ID hijack, and the unknown-ID create below is what makes
+		// broadcasts survive relay restarts. Pre-upgrade checks.
+		normID, err := broadcastid.Normalize(id)
 		if err != nil {
-			s.log.Warn("publish reclaim rejected",
-				"id", id, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
-			if errors.Is(err, hub.ErrNotFound) {
-				s.metrics.Connection("publish", metrics.OutcomeNotFound)
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
+			s.metrics.Connection("publish", metrics.OutcomeNotFound)
+			s.log.Warn("publish claim rejected: invalid broadcast ID",
+				"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if !s.resume.verify(normID, r.URL.Query().Get("resume")) {
+			// The token value itself is never logged.
+			s.metrics.Connection("publish", metrics.OutcomeUnauthorized)
+			s.log.Warn("publish claim rejected: invalid or missing resume token",
+				"id", normID, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		// W5 come-home: if this pod is currently EDGE for the ID, its
+		// upstream pull holds the hub's publisher slot — stop it (and wait)
+		// so the broadcaster's claim below succeeds instead of 409ing
+		// against our own plumbing. The hub and its viewers survive; the
+		// role flips back to origin on the claim.
+		if s.edges != nil {
+			s.edges.StopEdge(normID)
+		}
+
+		id, pub, err = s.registry.ResumePublish(normID)
+		if err != nil {
+			s.log.Warn("publish claim rejected",
+				"id", normID, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 			if errors.Is(err, hub.ErrPublisherActive) {
 				s.metrics.Connection("publish", metrics.OutcomeConflict)
 				w.WriteHeader(http.StatusConflict)
 				return
 			}
+			if errors.Is(err, hub.ErrMaxBroadcasts) {
+				s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
 			s.metrics.Connection("publish", metrics.OutcomeError)
 			w.WriteHeader(http.StatusBadRequest)
 			return
+		}
+
+		// Cluster mode (R17 W3): the verified resume token is the proof of
+		// ownership that force-takes the origin Lease — even from a live
+		// holder (NAT rebind / re-home; the old origin's watch fires and it
+		// demotes, W5). The hub claim above is released on failure so no
+		// zombie slot survives a lost lease race.
+		if s.cluster != nil {
+			if _, err := s.cluster.Claim(r.Context(), id, true); err != nil {
+				pub.Close()
+				s.metrics.Connection("publish", metrics.OutcomeError)
+				s.log.Warn("origin lease claim failed", "id", id, "err", err)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 		}
 
 		sess, err = s.wt.Upgrade(w, r)
@@ -257,17 +588,40 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+
+		// Cluster mode (R17 W3): a freshly minted ID gets its origin Lease
+		// created here — also where the CLUSTER-wide MaxBroadcasts binds
+		// (docs/22 Decision 13; the local registry limit above is per-pod).
+		// On rejection the fresh hub is released into grace and GC'd; nobody
+		// ever learned this ID, so nothing can reach it meanwhile.
+		if s.cluster != nil {
+			if _, cerr := s.cluster.Claim(r.Context(), id, false); cerr != nil {
+				pub.Close()
+				s.log.Warn("origin lease create failed for minted broadcast", "id", id, "err", cerr)
+				if errors.Is(cerr, cluster.ErrMaxBroadcasts) {
+					s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
+					sess.CloseWithError(429, "max concurrent broadcasts reached")
+				} else {
+					s.metrics.Connection("publish", metrics.OutcomeError)
+					sess.CloseWithError(500, "failed to claim origin lease")
+				}
+				return
+			}
+		}
 	}
 	defer pub.Close()
+	defer s.trackSession(sess)()
+	defer s.trackPublisher(id, sess)()
 
-	// Send BroadcastAnnounce on a server-initiated uni stream
-	stream, err := sess.OpenUniStream()
-	if err != nil {
-		s.metrics.Connection("publish", metrics.OutcomeError)
-		s.log.Warn("failed to open uni stream for broadcast announce", "err", err)
-		sess.CloseWithError(500, "failed to open announce stream")
-		return
-	}
+	// Send BroadcastAnnounce, then the ResumeToken (R17 W2), each on its own
+	// server-initiated uni stream. Separate streams keep old *browser*
+	// clients working across a version skew: they read one stream, parse it
+	// strictly as the announce, and leave the token stream unread. That
+	// story leans on the client seeing the announce stream first, which is
+	// NOT a transport guarantee — webtransport-go accepts incoming streams
+	// in nondeterministic order (docs/22 finding 9: the native engine saw
+	// the token first in ~half of dials), so every current client dispatches
+	// server uni streams by wire type instead of trusting arrival order.
 	announceBytes, err := wire.AppendBroadcastAnnounce(nil, id)
 	if err != nil {
 		s.metrics.Connection("publish", metrics.OutcomeError)
@@ -275,18 +629,26 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		sess.CloseWithError(500, "failed to build announce")
 		return
 	}
-	_, err = stream.Write(announceBytes)
-	if err != nil {
+	if err := sendUniMessage(sess, announceBytes); err != nil {
 		s.metrics.Connection("publish", metrics.OutcomeError)
-		s.log.Warn("failed to write broadcast announce to uni stream", "err", err)
-		sess.CloseWithError(500, "failed to write announce")
+		s.log.Warn("failed to send broadcast announce", "err", err)
+		sess.CloseWithError(500, "failed to send announce")
 		return
 	}
-	err = stream.Close()
+	// The token is what lets this publisher claim the ID again on any pod
+	// (auto-resume, relay restarts). Deterministic per ID, so re-minting on
+	// reclaim hands back the same token. Never logged.
+	tokenBytes, err := wire.AppendResumeToken(nil, s.resume.mint(id))
 	if err != nil {
 		s.metrics.Connection("publish", metrics.OutcomeError)
-		s.log.Warn("failed to close uni stream for broadcast announce", "err", err)
-		sess.CloseWithError(500, "failed to close announce stream")
+		s.log.Warn("failed to build resume token message", "err", err)
+		sess.CloseWithError(500, "failed to build resume token")
+		return
+	}
+	if err := sendUniMessage(sess, tokenBytes); err != nil {
+		s.metrics.Connection("publish", metrics.OutcomeError)
+		s.log.Warn("failed to send resume token", "err", err)
+		sess.CloseWithError(500, "failed to send resume token")
 		return
 	}
 
@@ -314,6 +676,20 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		}
 		pub.HandleDatagram(dgram)
 	}
+}
+
+// sendUniMessage writes one complete wire message on a fresh server-initiated
+// unidirectional stream and closes it.
+func sendUniMessage(sess *webtransport.Session, msg []byte) error {
+	stream, err := sess.OpenUniStream()
+	if err != nil {
+		return err
+	}
+	if _, err := stream.Write(msg); err != nil {
+		stream.CancelWrite(0)
+		return err
+	}
+	return stream.Close()
 }
 
 // TimeSync (R5 Q2, docs/15): clients ping over their existing session and the
@@ -417,6 +793,9 @@ func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.S
 // ID-less requests or non-existent broadcast IDs return 404 pre-upgrade.
 // Full broadcasts return 429.
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
+	if s.rejectedDraining(w, "subscribe") {
+		return
+	}
 	if s.rateLimited(r) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		return
@@ -429,7 +808,16 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.registry.CheckSubscribe(id); err != nil {
+	err := s.registry.CheckSubscribe(id)
+	if errors.Is(err, hub.ErrNotFound) && s.edges != nil {
+		// Cluster mode (R17 W4): we don't host this broadcast, but its
+		// origin may be another pod — demand-create the edge pull, then
+		// re-check (the pull creates the local hub on attach).
+		if edgeErr := s.edges.EnsureEdge(r.Context(), id); edgeErr == nil {
+			err = s.registry.CheckSubscribe(id)
+		}
+	}
+	if err != nil {
 		s.log.Warn("subscribe rejected pre-upgrade",
 			"id", id, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
 		if errors.Is(err, hub.ErrNotFound) {
@@ -453,6 +841,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("subscribe upgrade failed", "err", err)
 		return
 	}
+	defer s.trackSession(sess)()
 
 	if hook := s.testHookPostUpgradeSubscribe.Load(); hook != nil {
 		(*hook)(id)
@@ -495,6 +884,96 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleInternalSubscribe serves a downstream EDGE pod pulling this
+// broadcast (R17 W4, docs/22 Decision 9). Rejections are plain HTTP statuses
+// — the dialer is Go and can read them (browsers never dial this route):
+// 401 bad PSK, 404 not-origin (or cluster mode off), 409 stale generation,
+// 426 protocol version skew (pods of version N and N+1 coexist mid-rollout;
+// the edge retries until the rollout completes). Generation fencing is
+// guard 2 against cascade loops: a pod serves the route only while it
+// believes it is origin for exactly that originGeneration — an edge can
+// never feed another edge, bounding depth at 2 structurally.
+//
+// No per-IP rate limiting here: the PSK is the gate, and under etp=Cluster
+// SNAT the limiter would see node IPs anyway (docs/22 Decision 13).
+func (s *Server) handleInternalSubscribe(w http.ResponseWriter, r *http.Request) {
+	if s.rejectedDraining(w, "internal") {
+		return
+	}
+	if s.cluster == nil {
+		s.metrics.Connection("internal", metrics.OutcomeNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("psk")), []byte(s.cfg.InternalPSK)) != 1 {
+		s.metrics.Connection("internal", metrics.OutcomeUnauthorized)
+		s.log.Warn("internal subscribe unauthorized: bad PSK", "remote", r.RemoteAddr)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if r.URL.Query().Get("proto") != strconv.Itoa(wire.Version) {
+		s.metrics.Connection("internal", metrics.OutcomeError)
+		s.log.Warn("internal subscribe protocol skew",
+			"remote", r.RemoteAddr, "proto", r.URL.Query().Get("proto"))
+		w.WriteHeader(http.StatusUpgradeRequired)
+		return
+	}
+	normID, err := broadcastid.Normalize(r.PathValue("id"))
+	if err != nil {
+		s.metrics.Connection("internal", metrics.OutcomeNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	heldGen, held := s.cluster.OriginGeneration(normID)
+	if !held {
+		s.metrics.Connection("internal", metrics.OutcomeNotFound)
+		s.log.Warn("internal subscribe rejected: not origin", "id", normID, "remote", r.RemoteAddr)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	gen, err := strconv.ParseInt(r.URL.Query().Get("gen"), 10, 64)
+	if err != nil || gen != heldGen {
+		s.metrics.Connection("internal", metrics.OutcomeConflict)
+		s.log.Warn("internal subscribe rejected: stale generation",
+			"id", normID, "remote", r.RemoteAddr, "got", r.URL.Query().Get("gen"), "held", heldGen)
+		w.WriteHeader(http.StatusConflict)
+		return
+	}
+
+	sess, err := s.wt.Upgrade(w, r)
+	if err != nil {
+		s.metrics.Connection("internal", metrics.OutcomeUpgradeFailed)
+		s.log.Warn("internal subscribe upgrade failed", "err", err)
+		return
+	}
+	defer s.trackSession(sess)()
+
+	sub, err := s.registry.SubscribeInternal(normID, &webtransportSessionAdapter{sess})
+	if err != nil {
+		// The hub vanished between the fence and now (GC race): 4000 tells
+		// the edge the broadcast is over (its own lease watch will agree).
+		s.metrics.Connection("internal", metrics.OutcomeNotFound)
+		sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
+		return
+	}
+	defer sub.Close()
+
+	s.metrics.Connection("internal", metrics.OutcomeAccepted)
+	log := s.log.With("remote", sess.RemoteAddr(), "route", "internal", "broadcast_id", normID)
+	log.Info("edge session attached")
+	tsLimiter := newTimeSyncLimiter()
+	for {
+		dgram, err := sess.ReceiveDatagram(r.Context())
+		if err != nil {
+			log.Info("edge session ended", "reason", err, "dropped", sub.Dropped())
+			return
+		}
+		// The edge's TimeSync pings (per-hop ClockMapping rewrite) are
+		// answered against THIS pod's clock, exactly like a viewer's.
+		maybeAnswerTimeSync(sess, dgram, tsLimiter)
+	}
+}
+
 // isLoopbackAddr reports whether addr (an http.Request.RemoteAddr-style
 // "host:port" string) resolves to a loopback IP.
 func isLoopbackAddr(addr string) bool {
@@ -506,11 +985,35 @@ func isLoopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// isTrustedAddr reports whether addr falls in any trusted CIDR (R17 W5).
+func isTrustedAddr(addr string, cidrs []*net.IPNet) bool {
+	if len(cidrs) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, c := range cidrs {
+		if c.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // handleEcho upgrades the CONNECT request and echoes every datagram back.
 // Kept permanently as a connectivity diagnostic; it also doubles as the k8s
 // exec probe target, so its routine session logs are quietable — see
 // QuietProbeLogs.
 func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
+	if s.rejectedDraining(w, "echo") {
+		return
+	}
 	if s.rateLimited(r) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		return
@@ -523,6 +1026,7 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	defer s.trackSession(sess)()
 	s.metrics.Connection("echo", metrics.OutcomeAccepted)
 	// The k8s startup/liveness/readiness probes exec gawk-echo against
 	// 127.0.0.1 on a tight period, forever; quiet that specific traffic
