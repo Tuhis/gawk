@@ -500,7 +500,7 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					}),
 					layout.Rigid(spacer(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return u.bitrate.Layout(gtx, u.th, "Peak bitrate in Mbps (blank = 16; typical motion averages ~75% of it)")
+						return u.bitrate.Layout(gtx, u.th, "Peak bitrate in Mbps (blank = 16)")
 					}),
 					layout.Rigid(spacer(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
