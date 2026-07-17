@@ -239,6 +239,16 @@ encoders drain frames without that signal ever firing.
   and a keyframe arriving into a full queue flushes the stale backlog rather
   than being dropped. Under sustained backpressure the stream degrades to a
   clean keyframe cadence, never to artifacts.
+- **Demuxed AUs must be cloned before they outlive the demux callback.**
+  `mpegts.AU.Data` aliases the demuxer's internal buffer and is rewritten by
+  the next AU; a frame handed to the channel un-cloned gets scrambled while
+  it waits for the sender. In the field this produced clean dumps (both taps
+  read the bytes while still valid) with a black viewer: the SPS parse ran on
+  recycled bytes, no DecoderConfig was ever derived, and an unconfigured
+  `VideoDecoder` swallows chunks silently. Motion scrambled queued frames
+  into reference soup while a static screen (drained channel) stayed sharp.
+  `-race` catches the aliasing outright; the pump clones at the callback
+  boundary.
 - **`pipewiregrab` is not in mainline FFmpeg** — an unmerged patchset carried
   downstream by Jami. Mainline ffmpeg has no PipeWire input at all. Don't
   re-propose it without checking it actually merged.

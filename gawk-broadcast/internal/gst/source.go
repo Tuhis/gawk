@@ -1,6 +1,7 @@
 package gst
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -338,7 +339,11 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 			_, _ = s.dumpES.Write(au.Data)
 		}
 		s.offer(engine.AccessUnit{
-			Data:        au.Data,
+			// Cloned because the demuxer reclaims au.Data the moment this
+			// callback returns (mpegts.AU: "copy to retain"), while the frame
+			// outlives it in the channel — an aliased slice gets rewritten by
+			// the AUs demuxed behind it.
+			Data:        bytes.Clone(au.Data),
 			Keyframe:    engine.HasIDR(au.Data),
 			TimestampUs: s.clock.NowUs(),
 			PTSUs:       au.PTS,

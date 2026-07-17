@@ -1056,6 +1056,30 @@ demuxed Annex-B elementary stream (pre-policy, playable) — against
 `GAWK_DUMP_TS` it isolates the demuxer, and against the viewer it isolates
 drops/wire/decode.
 
+**7. Demuxed AUs are cloned before they cross the frame channel (field
+finding, 2026-07-17).** The dump comparison from note 6 paid off on its
+first outing: both dumps clean, viewer black, and the viewer's Copy
+diagnostics showing `configsApplied: 0` with `configLen == 0` on every
+keyframe stream. Root cause: the pump handed `au.Data` into the frame
+channel as-is, but the demuxer's documented contract (`mpegts.AU`) is that
+the slice aliases its internal buffer and is only valid until the callback
+returns — the next AU is appended into the *same backing array*. Every
+frame the sender had not consumed yet was silently rewritten by the AUs
+demuxed behind it. Consequences, all observed in the field: `ensureConfig`
+parses the SPS from the *sender's* view of the bytes, found none (the bytes
+were by then a later delta), and never derived a DecoderConfig — the viewer
+sat on an unconfigured decoder, which swallows chunks silently
+(`decoder.ts` guards `state !== 'configured'`), hence black with zero
+errors; under motion the recycling scrambled queued frames into reference
+soup (a second, independent source of the note-6 artifacts); a static
+screen kept the channel drained, so each frame was consumed before its
+buffer recycled — "static sharp, motion ruined". Both dumps were clean
+because each taps the bytes at a moment they are still valid (TS pre-demux,
+ES inside the callback). The fix is `bytes.Clone` at the callback boundary;
+the regression test (`TestQueuedFramesSurviveTheDemuxersBufferReuse`)
+streams the fixture without consuming, then byte-compares the queued frames
+against a standalone demux — the aliasing also trips `-race` outright.
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker

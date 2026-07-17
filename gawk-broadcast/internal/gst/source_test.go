@@ -1,6 +1,7 @@
 package gst
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -12,7 +13,9 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/mpegts"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 var testLog = slog.New(slog.DiscardHandler)
@@ -321,6 +324,92 @@ func TestDumpH264TeesTheElementaryStream(t *testing.T) {
 	// Annex-B: the stream must open with a start code (00 00 00 01 or 00 00 01).
 	if len(b) < 4 || !(b[0] == 0 && b[1] == 0 && (b[2] == 1 || (b[2] == 0 && b[3] == 1))) {
 		t.Errorf("dump does not start with an Annex-B start code (% x…)", b[:min(len(b), 8)])
+	}
+}
+
+// The demuxer reuses its AU buffer as soon as its callback returns (mpegts.AU:
+// "copy to retain"), but frames wait in the channel far longer — the sender
+// spends whole milliseconds per frame writing datagrams. A frame not consumed
+// instantly had its bytes silently rewritten by the AUs demuxed behind it:
+// busy scenes turned to reference soup on the viewer while both debug dumps
+// looked clean (each taps the bytes at a moment they are still valid), and
+// when the recycling replaced the keyframes' SPS the sender never derived a
+// DecoderConfig at all — every keyframe stream went out with configLen 0 and
+// the viewer sat on an unconfigured decoder showing black (field finding,
+// 2026-07-17).
+func TestQueuedFramesSurviveTheDemuxersBufferReuse(t *testing.T) {
+	// Ground truth: the fixture demuxed standalone, every AU copied.
+	raw, err := os.ReadFile(mustAbs(t, "../mpegts/testdata/sample.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	truth := map[uint64][]byte{}
+	ref := mpegts.NewDemuxer(wire.MaxKeyframeBytes, func(au mpegts.AU) error {
+		if au.HasPTS {
+			truth[au.PTS] = bytes.Clone(au.Data)
+		}
+		return nil
+	})
+	if _, err := ref.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := ref.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(truth) < 3 {
+		t.Fatalf("fixture yielded only %d AUs — not enough to exercise buffer reuse", len(truth))
+	}
+
+	fp := &fakePortal{}
+	sentinel := filepath.Join(t.TempDir(), "streamed")
+	script := "cat " + mustAbs(t, "../mpegts/testdata/sample.ts") + "\ntouch " + sentinel + "\nsleep 30\n"
+	s := newSource(t, Options{Binary: fakeBinary(t, script), OpenPortal: fp.open})
+	frames, err := s.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	// Do not read a single frame until the whole fixture has streamed: a slow
+	// consumer is the production condition, and the queued frames' bytes must
+	// survive everything demuxed after them.
+	deadline := time.After(5 * time.Second)
+	for {
+		if _, err := os.Stat(sentinel); err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("child never finished streaming the fixture")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // let the demuxer finish the pipe's tail
+
+	checked := 0
+	for {
+		var got engine.AccessUnit
+		select {
+		case got = <-frames:
+		default:
+			if checked < 2 {
+				t.Fatalf("only %d queued frames to check — the harness lost its premise", checked)
+			}
+			return
+		}
+		if !got.HasPTS {
+			continue
+		}
+		want, ok := truth[got.PTSUs]
+		if !ok {
+			t.Errorf("queued frame carries PTS %d the fixture never produced", got.PTSUs)
+			continue
+		}
+		checked++
+		if !bytes.Equal(got.Data, want) {
+			t.Fatalf("queued frame (PTS %d) no longer matches the AU the demuxer emitted (%d bytes vs %d) — its buffer was recycled for later AUs",
+				got.PTSUs, len(got.Data), len(want))
+		}
 	}
 }
 

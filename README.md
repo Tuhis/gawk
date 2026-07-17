@@ -444,6 +444,15 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   need no headers: `go test ./internal/...` works bare. The relay's CI job
   must stay header-free (Decision 1).
   ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`mpegts.AU.Data` aliases the demuxer's buffer — clone before it outlives
+  the callback.** A frame handed to the channel un-cloned is rewritten by
+  the AUs demuxed behind it: in the field this meant clean debug dumps (both
+  taps read the bytes while still valid) but a black viewer — the SPS parse
+  ran on recycled bytes, so no DecoderConfig was ever derived, and an
+  unconfigured `VideoDecoder` swallows chunks with zero errors. Motion
+  scrambled queued frames to reference soup; a static screen (drained
+  channel) stayed sharp. `-race` catches it outright.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
 
 **CI / deployment**
 
