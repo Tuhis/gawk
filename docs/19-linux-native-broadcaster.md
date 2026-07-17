@@ -1170,6 +1170,32 @@ ladder falls to plain auto — the exact pipeline verified on device.
 `CapturePath` distinguishes the rungs ("zero-copy (capped)" vs
 "zero-copy"); on-device verify pending.
 
+**11. Frame timestamps are clock-anchored PES PTS — Decision 6's upgrade
+path, taken (2026-07-17).** Field finding: native streams *intermittently*
+cratered viewer decode fps while browser streams at higher rungs decoded
+fine on the same devices. Mechanism: arrival stamping read the clock as AUs
+came off the child's stdout — after encode, mux and ~64 kB of pipe
+buffering — so timestamps clumped. The viewer trusts timestamps for pacing
+(R12): clumped stamps inflate its arrival-jitter measure (observed
+54–156 ms on a native stream vs ~5–20 ms for a paced browser one) and the
+adaptive playout offset, and schedule decode *bursts* that spike the
+decoder queue past its bound of 10 — whereupon the viewer's backpressure
+resyncs and discards every delta until the next keyframe (~500–750 ms of
+cratered decode, repeating sporadically; worst on slow-decoding devices).
+Fix: `ptsAnchor` (internal/gst/pts.go) maps the PES PTS — stamped by
+pipewiresrc's `do-timestamp=true` at *capture delivery*, upstream of all
+the buffering — onto the engine clock via the minimum observed
+(arrival − pts), so stamps carry the capture cadence, stay on the TimeSync
+clock (capture→render math intact — and now more honest, since the stamp
+sits at capture rather than post-mux), never exceed their own arrival, and
+re-anchor on a backwards PTS jump (33-bit wrap / child restart). Per-pump
+state: a cascade attempt's fresh child gets a fresh anchor. `HasPTS=false`
+falls back to arrival stamping. Note for any future decode-fps hunt that
+survives this fix: the remaining structural difference vs the browser is
+Annex-B (no avcC description) — if a viewer's diagnostics show software
+decode (`isHardwareAccelerated: false`) only on native streams, the AVCC
+question reopens with evidence, not before.
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker

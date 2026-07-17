@@ -120,6 +120,11 @@ type pumpHandle struct {
 	done    chan struct{}
 	adopted atomic.Bool
 
+	// anchor maps this child's PES PTS onto the engine clock (see ptsAnchor).
+	// Pump-goroutine only; a fresh attempt gets a fresh handle, so a fresh
+	// PTS timeline never inherits a stale offset.
+	anchor ptsAnchor
+
 	// droppingGOP is the drop-until-keyframe gate, touched only by the pump
 	// goroutine. Drops at the frame channel happen *before* the sender
 	// assigns frameIds, so the wire shows contiguous ids and the viewer's
@@ -333,11 +338,11 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 	// The AU bound is the relay's: an access unit larger than it would accept
 	// is useless to us anyway.
 	demux := mpegts.NewDemuxer(wire.MaxKeyframeBytes, func(au mpegts.AU) error {
-		// Stamped on arrival, from the engine's clock — the same one TimeSync
-		// reads (Decision 6). The bias this introduces (capture + encode + mux)
-		// is small and roughly constant because every candidate is pinned to
-		// ≤1 frame of internal latency; V4 measures it against a physical
-		// reference, and clock-anchored PES PTS is the fix if it fails.
+		// Timestamps are clock-anchored PES PTS (Decision 6's upgrade path,
+		// taken 2026-07-17 — see ptsAnchor): capture cadence on the engine
+		// clock, the same one TimeSync reads. Arrival stamping clumped
+		// timestamps behind the encode/mux/pipe buffering and intermittently
+		// cratered viewer decode fps via the R12 pacing path.
 		if s.dumpES != nil {
 			// Debug tee (GAWK_DUMP_H264): pre-policy, so the file is the
 			// demuxer's exact output. Best-effort — a dump problem must not
@@ -351,7 +356,7 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 			// the AUs demuxed behind it.
 			Data:        bytes.Clone(au.Data),
 			Keyframe:    engine.HasIDR(au.Data),
-			TimestampUs: s.clock.NowUs(),
+			TimestampUs: h.anchor.stamp(s.clock.NowUs(), au.PTS, au.HasPTS),
 			PTSUs:       au.PTS,
 			HasPTS:      au.HasPTS,
 		}, h)

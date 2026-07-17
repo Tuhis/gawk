@@ -249,6 +249,14 @@ encoders drain frames without that signal ever firing.
   between a GPU converter and a GPU encoder means *system memory* — pin the
   memory feature (`video/x-raw(memory:VAMemory)`) or pay a download +
   re-upload per frame.
+- **Frame timestamps are clock-anchored PES PTS, never arrival stamps.**
+  Arrival stamping (post-encode/mux/pipe) clumps timestamps, and the viewer
+  trusts timestamps for pacing — clumped stamps inflate its adaptive
+  playout offset and schedule decode bursts that trip its
+  discard-until-keyframe backpressure: decode fps intermittently craters
+  on native streams while browser streams decode fine. `ptsAnchor` maps
+  pipewiresrc's capture-time PTS onto the engine clock (min observed
+  arrival−pts; re-anchors on PTS wrap/restart).
 - **The keyframe cadence stretches when capture runs under the nominal
   fps.** `key-int-max`/`gop-size` count *frames*; at 40 fps real rate a
   30-frame GOP is 750 ms, not 500. gst-launch cannot inject force-key-unit
