@@ -2,7 +2,10 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 )
 
 // MediaConfig is the session's fixed rung (Decision 9: no ladder, no
@@ -45,6 +48,25 @@ func DefaultMediaConfig() MediaConfig {
 		BitrateBps: 16_000_000,
 		GOPMs:      500,
 	}
+}
+
+// ParseResolution parses a user-facing "WIDTHxHEIGHT" string. Shared by the
+// CLI flag and the GUI settings field so the two shells cannot drift on what
+// "1920x1080" means.
+func ParseResolution(s string) (int, int, error) {
+	parts := strings.SplitN(strings.ToLower(s), "x", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("bad resolution %q: want WIDTHxHEIGHT, e.g. 1920x1080", s)
+	}
+	w, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || w <= 0 {
+		return 0, 0, fmt.Errorf("bad resolution width in %q", s)
+	}
+	h, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || h <= 0 {
+		return 0, 0, fmt.Errorf("bad resolution height in %q", s)
+	}
+	return w, h, nil
 }
 
 // AccessUnit is one encoded frame, already compressed, as it comes off the

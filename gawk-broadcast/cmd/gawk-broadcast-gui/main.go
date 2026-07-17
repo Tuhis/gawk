@@ -45,6 +45,7 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 )
@@ -140,10 +141,12 @@ type ui struct {
 	copyDia widget.Clickable
 	details widget.Bool
 
-	relay   component.TextField
-	appURL  component.TextField
-	secret  component.TextField
-	bitrate component.TextField
+	relay      component.TextField
+	appURL     component.TextField
+	secret     component.TextField
+	bitrate    component.TextField
+	resolution component.TextField
+	framerate  component.TextField
 
 	list   widget.List
 	copied string
@@ -167,6 +170,12 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	u.secret.Mask = '•'
 	if cfg.BitrateBps > 0 {
 		u.bitrate.SetText(strconv.FormatFloat(float64(cfg.BitrateBps)/1e6, 'f', -1, 64))
+	}
+	if cfg.Width > 0 && cfg.Height > 0 {
+		u.resolution.SetText(fmt.Sprintf("%dx%d", cfg.Width, cfg.Height))
+	}
+	if cfg.Fps > 0 {
+		u.framerate.SetText(strconv.Itoa(cfg.Fps))
 	}
 	return u
 }
@@ -233,11 +242,44 @@ func (u *ui) save() {
 	u.cfg.AppURL = strings.TrimSpace(u.appURL.Text())
 	u.cfg.PublishSecret = u.secret.Text()
 	u.cfg.BitrateBps = parseBitrateMbps(u.bitrate.Text())
+	u.cfg.Width, u.cfg.Height = parseResolutionField(u.resolution.Text())
+	u.cfg.Fps = parseFramerateField(u.framerate.Text())
 	if err := u.cfg.Save(); err != nil {
 		// Non-fatal: the broadcast can still run, the settings just won't
 		// survive a restart.
 		fmt.Fprintln(os.Stderr, "could not save settings:", err)
 	}
+}
+
+// parseResolutionField turns the resolution field into a rung. Blank or
+// unparseable means "use the default" (0,0), like the other fields; the
+// parser itself is the engine's, shared with the CLI's -resolution flag.
+func parseResolutionField(s string) (int, int) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0
+	}
+	w, h, err := engine.ParseResolution(s)
+	if err != nil {
+		return 0, 0
+	}
+	return w, h
+}
+
+// parseFramerateField turns the framerate field into fps. Blank or
+// unparseable means "use the default" (0); clamped to [1, 240] — the highest
+// refresh rate any of our displays actually has, and beyond it the number is
+// a typo.
+func parseFramerateField(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return min(n, 240)
 }
 
 // parseBitrateMbps turns the bitrate field into bps. Blank or unparseable
@@ -459,6 +501,14 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					layout.Rigid(spacer(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return u.bitrate.Layout(gtx, u.th, "Peak bitrate in Mbps (blank = 16; typical motion averages ~75% of it)")
+					}),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.resolution.Layout(gtx, u.th, "Stream resolution WxH (blank = 1920x1080)")
+					}),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.framerate.Layout(gtx, u.th, "Framerate cap in fps (blank = 60)")
 					}),
 				)
 			}),

@@ -1147,6 +1147,22 @@ today — so `vaav1enc`-based AV1 is a plausible future roadmap item, needing
 its own config-derivation path since the SPS parse is H.264-specific), not
 an H.264 profile change.
 
+**10. Resolution + framerate in the GUI; the 240 Hz observation
+(2026-07-17).** The GUI settings card gained stream resolution
+("WxH", blank = 1920x1080) and framerate-cap (blank = 60, clamped ≤240)
+fields beside bitrate — same blank-means-default semantics, persisted to the
+same config the CLI flags override; the WxH parser moved to
+`engine.ParseResolution` so the two shells share it. Context that prompted
+it: the broadcaster's display is 2560×1440@240 — the compositor advertises
+`max-framerate=239/1` and delivers damage at up to that rate, so in auto
+capture (converter before the rate gate, the price of zero-copy adjacency)
+`vapostproc` may convert up to ~4× the frames the 60 fps gate keeps. That
+cost lands on the GPU's video block and is accepted for now; if it ever
+shows up in GPU utilization, the lever is negotiating `max-framerate` down
+in pipewiresrc's caps (untried — a source-side caps constraint is exactly
+what broke DMA-BUF once already, so it wants its own on-device experiment,
+possibly as a third ladder rung rather than a change to a working one).
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker

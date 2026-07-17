@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -99,7 +98,7 @@ func run() error {
 	}
 	media.Encoder = cfg.Encoder
 	if *resolution != "" {
-		w, h, err := parseResolution(*resolution)
+		w, h, err := engine.ParseResolution(*resolution)
 		if err != nil {
 			return err
 		}
@@ -269,22 +268,6 @@ func joinLink(appURL, id string) string {
 		return ""
 	}
 	return strings.TrimSuffix(appURL, "/") + "/#/view/" + id
-}
-
-func parseResolution(s string) (int, int, error) {
-	parts := strings.SplitN(strings.ToLower(s), "x", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("bad resolution %q: want WIDTHxHEIGHT, e.g. 1920x1080", s)
-	}
-	w, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil || w <= 0 {
-		return 0, 0, fmt.Errorf("bad resolution width in %q", s)
-	}
-	h, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err != nil || h <= 0 {
-		return 0, 0, fmt.Errorf("bad resolution height in %q", s)
-	}
-	return w, h, nil
 }
 
 // applyString sets dst to the first non-empty override, leaving the config
