@@ -42,6 +42,32 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if not (has .Values.podAntiAffinity (list "soft" "hard" "none")) }}
+      {{- fail "podAntiAffinity must be one of: soft, hard, none" }}
+      {{- end }}
+      {{- if ne .Values.podAntiAffinity "none" }}
+      # Spread pods across nodes (docs/22 finding 10): with
+      # service.externalTrafficPolicy: Local a node without a relay pod
+      # serves no external traffic, and even under Cluster one node failure
+      # shouldn't take every replica. soft = preferred, hard = required.
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "gawk-server.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "gawk-server.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+          {{- end }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:

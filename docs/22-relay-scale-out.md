@@ -110,6 +110,12 @@ it — cluster egress is capped by that node's NIC regardless of replica count.
 The v1 target (≲ 8 Gbps) fits a 10/25 GbE announcing node; BGP/ECMP or a
 dedicated LB tier is the documented growth path (Deferred), not an R17 goal.
 
+> **Corrected 2026-07-18 (finding 10): the homelab is MetalLB BGP mode, not
+> L2** — MetalLB peers with the router over BGP, so the single-announcing-
+> node funnel above does not apply there, and
+> `externalTrafficPolicy: Local` is viable today (per-node routes + ECMP).
+> The L2 analysis stands for L2 deployments.
+
 ## Options survey (settled 2026-07-16)
 
 | Option | Sketch | Verdict |
@@ -377,6 +383,11 @@ speaks the same protocol over WAN.
     rejected as the fix**: under MetalLB L2 it would pin all service traffic
     to the one announcing node's pods, defeating scale-out. Real client IPs
     return with BGP/ECMP or a CID-aware LB tier (Deferred).
+    *2026-07-18 note: the rejection is L2-scoped. The homelab runs MetalLB
+    BGP mode (finding 10), where `Local` is the recommended setting — the
+    chart exposes `service.externalTrafficPolicy` and `podAntiAffinity`
+    for it; the SNAT trap and `trustedCidrs` remain correct for
+    `etp=Cluster` under any LB mode.*
 
 14. **Fleet observability.** `statsKey` becomes a chart-provided shared
     secret (per-process random stays the dev fallback) so a broadcast keeps
@@ -697,6 +708,24 @@ Findings and deviations from the design as written:
    and app/CLI persist it as `lastResumeToken` beside `lastBroadcastId`
    (0600 config — it is a credential). Never assume accept order equals
    open order on any WebTransport client.
+10. **The homelab is MetalLB BGP mode, not L2** (2026-07-18, user-reported —
+    the design's "L2 reality check" premise was wrong for this cluster).
+    Consequences: the single-announcing-node egress funnel does not apply,
+    and `externalTrafficPolicy: Local` — rejected in Decision 13 *under L2*
+    — is the recommended setting here: per-node BGP routes + router ECMP
+    give both pod spread and **real client IPs** (exact per-IP rate
+    limiting; `trustedCidrs` demoted to covering in-cluster hairpin-SNAT
+    dials only). The chart now exposes `service.externalTrafficPolicy`
+    (empty = k8s default Cluster; existing installs unchanged) and
+    `podAntiAffinity` (`soft`/`hard`/`none`, default soft) — with `Local`,
+    a node without a relay pod serves no external traffic, so replicas
+    must actually spread. Known cost: when the ECMP path set changes (a
+    rollout withdrawing a node's route), the router re-hashes flows and
+    live QUIC connections can land on a different pod mid-stream — the
+    shared `StatelessResetKey` turns that into a ~1 RTT reset + fast
+    reconnect instead of an idle-timeout hang; measure it in the drills
+    (below). Router-side resilient hashing is the mitigation if the blip
+    reads ugly.
 
 ### Post-implementation review fixes (2026-07-16, PR #47)
 
@@ -758,6 +787,15 @@ an established flow, then delete the pod, and record what actually happened
 on this cluster's kube-proxy mode — the design tolerates either outcome, but
 the doc should state which one is real here.
 
+With `externalTrafficPolicy: Local` on the BGP homelab (finding 10), add the
+**ECMP re-hash drill**: under a live broadcast spread over both pods, roll
+one pod and watch the viewers attached to the *surviving* pod — a route
+withdrawal re-hashes flows at the router, and any connection re-hashed onto
+the other pod should show a ~1 RTT stateless-reset reconnect, not a hang.
+Record that blip in the measured-blip table alongside the drain numbers,
+and verify real client IPs appear in the relay logs (the limiter bypass no
+longer masking them).
+
 ## Non-goals
 
 - **Zero-blip rollouts / QUIC session migration.** quic-go cannot serialize
@@ -786,6 +824,10 @@ the doc should state which one is real here.
 - **BGP/ECMP (or cloud NLB) + real client IPs** — lifts the MetalLB-L2
   single-node egress funnel and restores exact per-IP rate limiting
   (etp=Local becomes viable under BGP with pod-local announcement).
+  *Partially landed 2026-07-18: the homelab turned out to already run BGP
+  mode, and the chart now exposes `service.externalTrafficPolicy` +
+  `podAntiAffinity` (finding 10). What stays deferred is router-side
+  resilient hashing and any LB tier beyond MetalLB.*
 - **QUIC-CID-aware routing tier** (QUIC-LB draft; e.g. quilkin) — survives
   client NAT rebinds without a reconnect and makes LB→pod affinity explicit
   instead of conntrack-shaped.
@@ -813,7 +855,9 @@ the doc should state which one is real here.
 - **"NotReady, then drain" rollout sequencing** — wrong under kube-proxy's
   UDP conntrack flush semantics (Decision 2). Close-first while Ready.
 - **`externalTrafficPolicy: Local` to fix limiter SNAT** — under MetalLB L2
-  it pins all traffic to the announcing node (Decision 13).
+  it pins all traffic to the announcing node (Decision 13). *L2-scoped:
+  under the homelab's actual BGP mode it is the recommended setting
+  (finding 10).*
 - **A cluster-wide clock** (NTP-derived wall clock for TimeSync) — the
   per-process monotonic epoch was chosen deliberately (NTP steps must not
   jump every client's offset, `server.go:321-322`); per-hop offset

@@ -720,9 +720,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    cluster clock**). Fleet plumbing (W5–W6): shared statsKey Secret (one
    obfuscated metrics identity per broadcast across pods), origin/edge role
    labels + separate edge-leg ingress-loss family, per-IP limiter
-   **trusted-CIDR bypass** (MetalLB L2 + etp=Cluster SNAT means rollout
-   reconnect herds hit the 3/s bucket; **etp=Local rejected** — L2 pins all
-   traffic to the announcing node), chart flip to replicas ≥ 2 +
+   **trusted-CIDR bypass** (etp=Cluster SNAT means rollout reconnect herds
+   hit the 3/s bucket; **etp=Local was rejected only under MetalLB L2** —
+   the homelab turned out to run **BGP mode**, where Local is the
+   recommended setting: real client IPs + ECMP spread, exposed via chart
+   `service.externalTrafficPolicy` + `podAntiAffinity` since 2026-07-18,
+   docs/22 finding 10), chart flip to replicas ≥ 2 +
    RollingUpdate maxSurge 1/maxUnavailable 0 + PDB + drain-aware `/readyz`.
    Allocations: **0x09+/4002/4003 only** (0x07/0x08 reserved by R15);
    version skew during rolling updates makes internal-protocol changes

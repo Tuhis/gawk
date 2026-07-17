@@ -29,6 +29,16 @@ service:
   # Pin a MetalLB address if the relay's DNS record points at a fixed IP:
   # loadBalancerIP: 10.12.0.40
   loadBalancerIP: ""
+  # Empty renders nothing (Kubernetes defaults to Cluster). Cluster: any
+  # node forwards to any pod — cross-node hops are SNAT'd, the relay sees
+  # node IPs (why config.trustedCidrs exists) and per-IP rate limiting is
+  # best-effort. Local: only nodes with a ready relay pod receive traffic,
+  # real client IPs are preserved and the per-IP limiter is exact — viable
+  # ONLY when the LB advertises per-node routes (MetalLB BGP mode with
+  # ECMP on the router; under L2 it pins all traffic to the one announcing
+  # node — docs/22 Decision 13 + finding 10). With Local, keep
+  # podAntiAffinity on so the replicas actually spread across nodes.
+  externalTrafficPolicy: ""
   # e.g. metallb.universe.tf/address-pool: default
   annotations: {}
 
@@ -116,11 +126,14 @@ config:
   statelessResetKeyRef: {}
   connRateLimit: 3.0
   connBurstLimit: 10
-  # R17 W5: CIDRs that bypass the per-IP rate limiter. Under MetalLB L2 +
-  # externalTrafficPolicy: Cluster the relay sees SNAT'd NODE IPs — a
+  # R17 W5: CIDRs that bypass the per-IP rate limiter. Under
+  # externalTrafficPolicy: Cluster (any LB mode — the SNAT is kube-proxy's,
+  # not MetalLB's) the relay sees SNAT'd NODE IPs for cross-node hops — a
   # rollout's reconnect herd through those would trip the 3/s bucket and
   # fail fresh joiners fatally. List the cluster's node/pod CIDRs, e.g.
-  # ["10.42.0.0/16", "10.12.0.0/24"].
+  # ["10.42.0.0/16", "10.12.0.0/24"]. With service.externalTrafficPolicy:
+  # Local the client IPs are real and this is unnecessary — but keep it:
+  # in-cluster dials of the VIP (e.g. a loadgen pod) still hairpin-SNAT.
   trustedCidrs: []
   maxBandwidth: "0"
   # R8 reliable keyframes: cap on a single keyframe stream (memory-inflation
@@ -170,6 +183,14 @@ probes:
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
+
+# Spread relay pods across nodes. soft (default) = preferred — never blocks
+# scheduling on a small cluster; hard = required — guarantees the spread but
+# leaves pods Pending when ready nodes < replicas; none = no anti-affinity.
+# Matters most with service.externalTrafficPolicy: Local, where a node
+# without a relay pod serves no external traffic at all; even under Cluster
+# it keeps one node failure from taking every replica.
+podAntiAffinity: soft
 
 resources:
   requests:

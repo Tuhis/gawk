@@ -261,7 +261,21 @@ delta for `replicas: 2+`:
 
 4. MetalLB L2 reality: all service traffic funnels through the announcing
    node regardless of replica count — replicas add fan-out CPU and
-   redundancy, not NIC bandwidth, until BGP/ECMP (deferred).
+   redundancy, not NIC bandwidth, until BGP/ECMP. **The homelab is BGP
+   mode** (docs/22 finding 10), so this funnel does not apply there —
+   instead set:
+
+   ```yaml
+   service:
+     externalTrafficPolicy: Local   # per-node BGP routes + router ECMP
+   podAntiAffinity: soft            # default; hard guarantees the spread
+   ```
+
+   `Local` preserves real client IPs (exact per-IP rate limiting;
+   `trustedCidrs` then only covers in-cluster hairpin dials) and only
+   nodes hosting a ready relay pod advertise the route. Keep
+   `trustedCidrs` set anyway, and run the ECMP re-hash drill from the
+   docs/22 verification plan after flipping it.
 
 ## Gotchas hit in this milestone
 
