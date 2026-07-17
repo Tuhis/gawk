@@ -225,6 +225,12 @@ encoders drain frames without that signal ever firing.
   Play it with `mpv`/`ffplay` — it is exactly what the encoder produced, so it
   splits "the capture is black at the source" from "the viewer can't decode
   it" in one step.
+- **`GAWK_DUMP_H264=<path>` tees the demuxed Annex-B elementary stream** —
+  every access unit exactly as the MPEG-TS demuxer reconstructed it, before
+  any drop policy (also playable with `mpv`/`ffplay`). Against the TS dump it
+  isolates the demuxer: identical quality convicts the encoder, damage only
+  here convicts AU reconstruction, damage only on the viewer convicts
+  drops/wire/decode.
 - **A dropped delta drops the rest of its GOP.** The pump's channel-full
   drops happen before frameIds are assigned, so the wire stays contiguous and
   the viewer's freeze-on-gap cannot see them — sending the GOP remainder

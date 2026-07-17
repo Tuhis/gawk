@@ -92,6 +92,13 @@ type Source struct {
 	// source or broken on the viewer?". Written only by the (sequential)
 	// pumps; opened in Start, closed in Stop.
 	dump *os.File
+	// dumpES tees the demuxed Annex-B elementary stream (GAWK_DUMP_H264):
+	// every access unit exactly as the MPEG-TS demuxer reconstructed it,
+	// before any drop policy. Against GAWK_DUMP_TS it isolates the demuxer —
+	// identical quality convicts the encoder, damage only here convicts AU
+	// reconstruction, damage only on the viewer convicts drops/wire/decode.
+	// Same lifecycle as dump.
+	dumpES *os.File
 }
 
 // pumpHandle tracks one child's demux goroutine. Every child gets a pump the
@@ -146,26 +153,42 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 		return nil, err
 	}
 
-	if path := os.Getenv("GAWK_DUMP_TS"); path != "" {
-		f, err := os.Create(path)
-		if err != nil {
-			s.log.Warn("GAWK_DUMP_TS set but the file could not be created", "path", path, "err", err)
-		} else {
-			s.dump = f
-			s.log.Info("dumping the raw MPEG-TS stream", "path", path)
-		}
-	}
+	s.dump = s.openDump("GAWK_DUMP_TS", "the raw MPEG-TS stream")
+	s.dumpES = s.openDump("GAWK_DUMP_H264", "the demuxed H.264 elementary stream")
 
 	s.frames = make(chan engine.AccessUnit, 8)
 	if err := s.startWithCascade(ctx, stream, cand); err != nil {
 		stream.Close()
-		if s.dump != nil {
-			s.dump.Close()
-			s.dump = nil
-		}
+		s.closeDumps()
 		return nil, err
 	}
 	return s.frames, nil
+}
+
+// openDump opens one debug-dump file named by env, or nil when unset.
+func (s *Source) openDump(env, what string) *os.File {
+	path := os.Getenv(env)
+	if path == "" {
+		return nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		s.log.Warn(env+" set but the file could not be created", "path", path, "err", err)
+		return nil
+	}
+	s.log.Info("dumping "+what, "path", path)
+	return f
+}
+
+func (s *Source) closeDumps() {
+	if s.dump != nil {
+		s.dump.Close()
+		s.dump = nil
+	}
+	if s.dumpES != nil {
+		s.dumpES.Close()
+		s.dumpES = nil
+	}
 }
 
 // startWithCascade starts the child, and on an immediate death retries —
@@ -308,6 +331,12 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 		// is small and roughly constant because every candidate is pinned to
 		// ≤1 frame of internal latency; V4 measures it against a physical
 		// reference, and clock-anchored PES PTS is the fix if it fails.
+		if s.dumpES != nil {
+			// Debug tee (GAWK_DUMP_H264): pre-policy, so the file is the
+			// demuxer's exact output. Best-effort — a dump problem must not
+			// take the capture down.
+			_, _ = s.dumpES.Write(au.Data)
+		}
 		s.offer(engine.AccessUnit{
 			Data:        au.Data,
 			Keyframe:    engine.HasIDR(au.Data),
@@ -426,10 +455,7 @@ func (s *Source) Stop() error {
 		kid.stop()
 	}
 	s.wg.Wait()
-	if s.dump != nil {
-		s.dump.Close()
-		s.dump = nil
-	}
+	s.closeDumps()
 	if stream != nil {
 		return stream.Close()
 	}

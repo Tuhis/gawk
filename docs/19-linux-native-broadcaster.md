@@ -1051,6 +1051,10 @@ gst-plugins-bad source: `vah264enc` takes `bitrate` in kbps (8000 == 8 Mbps
 is correct) but **assumes 30 fps for rate control when caps carry
 `framerate=0/1`** — which this VFR pipeline always does; rate-control
 calibration under VFR is an open follow-up alongside the zero-copy rung.
+Second debug tap for exactly this hunt: **`GAWK_DUMP_H264=<path>`** tees the
+demuxed Annex-B elementary stream (pre-policy, playable) — against
+`GAWK_DUMP_TS` it isolates the demuxer, and against the viewer it isolates
+drops/wire/decode.
 
 ## Verification plan (manual)
 

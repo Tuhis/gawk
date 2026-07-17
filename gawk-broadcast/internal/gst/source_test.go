@@ -296,6 +296,34 @@ func TestDumpTSTeesTheStreamToDisk(t *testing.T) {
 	}
 }
 
+// GAWK_DUMP_H264 tees the demuxed Annex-B elementary stream — every access
+// unit exactly as our MPEG-TS demuxer reconstructed it, before any drop
+// policy. Compared against GAWK_DUMP_TS it isolates the demuxer: identical
+// quality convicts the encoder, damage only here convicts AU reconstruction,
+// and damage only on the viewer convicts drops/wire/decode.
+func TestDumpH264TeesTheElementaryStream(t *testing.T) {
+	fp := &fakePortal{}
+	path := filepath.Join(t.TempDir(), "dump.h264")
+	t.Setenv("GAWK_DUMP_H264", path)
+	s := newSource(t, Options{Binary: streamingBinary(t), OpenPortal: fp.open})
+	frames, err := s.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-frames
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no elementary-stream dump written: %v", err)
+	}
+	// Annex-B: the stream must open with a start code (00 00 00 01 or 00 00 01).
+	if len(b) < 4 || !(b[0] == 0 && b[1] == 0 && (b[2] == 1 || (b[2] == 0 && b[3] == 1))) {
+		t.Errorf("dump does not start with an Annex-B start code (% x…)", b[:min(len(b), 8)])
+	}
+}
+
 // au builds a minimal access unit for offer tests.
 func au(keyframe bool) engine.AccessUnit {
 	return engine.AccessUnit{Keyframe: keyframe}
