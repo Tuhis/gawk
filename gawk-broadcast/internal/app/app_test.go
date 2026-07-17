@@ -364,3 +364,45 @@ func TestResumeUsesTheRememberedCode(t *testing.T) {
 		t.Errorf("engine got BroadcastID %q, want K7M2QP (Resume must reclaim, not mint)", fs.cfg.BroadcastID)
 	}
 }
+
+// R17: a reclaim must carry the token the relay minted for that ID — the
+// relay refuses it otherwise — and must NOT carry a token minted for some
+// other ID (it would only turn "unknown ID" into "403").
+func TestResumeCarriesThePersistedTokenOnlyForItsID(t *testing.T) {
+	const token = "abab1212abab1212abab1212abab1212"
+
+	fs := &fakeSession{}
+	a, cfg := testApp(t, fs, notify.Discard{})
+	cfg.LastBroadcastID, cfg.LastResumeToken = "K7M2QP", token
+	a.Start(context.Background(), "K7M2QP")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+	if fs.cfg.ResumeToken != token {
+		t.Errorf("engine got ResumeToken %q, want %q (reclaim of the token's own ID)", fs.cfg.ResumeToken, token)
+	}
+
+	fs2 := &fakeSession{}
+	a2, cfg2 := testApp(t, fs2, notify.Discard{})
+	cfg2.LastBroadcastID, cfg2.LastResumeToken = "K7M2QP", token
+	a2.Start(context.Background(), "OTHERID")
+	waitFor(t, func() bool { s, _ := a2.State(); return s == StateLive }, "live")
+	if fs2.cfg.ResumeToken != "" {
+		t.Errorf("engine got ResumeToken %q for a different ID, want none", fs2.cfg.ResumeToken)
+	}
+}
+
+// The relay-minted token must survive an app restart, or the very next
+// Resume is refused: OnResumeToken persists it to the config file.
+func TestResumeTokenIsPersistedOnReceipt(t *testing.T) {
+	const token = "cdcd3434cdcd3434cdcd3434cdcd3434"
+
+	fs := &fakeSession{}
+	a, cfg := testApp(t, fs, notify.Discard{})
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+
+	fs.cb.OnResumeToken(token)
+	waitFor(t, func() bool {
+		saved, err := config.Load(cfg.Path())
+		return err == nil && saved.LastResumeToken == token
+	}, "resume token persisted to the config file")
+}

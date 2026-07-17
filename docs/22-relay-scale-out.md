@@ -679,6 +679,24 @@ Findings and deviations from the design as written:
    re-homing onto a pod that is currently an *edge* for its broadcast would
    409 against the edge's own upstream pull. `/publish/{id}` stops the local
    edge pull (synchronously) before claiming the hub.
+9. **Server uni-stream accept order is NOT open order — the rebase onto R14
+   proved it** (2026-07-18). The announce (0x03) and resume token (0x09)
+   ride two server-initiated uni streams, and the design assumed old clients
+   "read only the first stream" safely. webtransport-go demultiplexes
+   incoming streams concurrently, so the native engine (`gawk-broadcast`,
+   merged to main after this PR forked) saw the token beat the announce in
+   roughly half of real dials — its single-accept strict-parse read then
+   reported "no broadcast code". The browser is *probably* order-preserving
+   in practice (and the R17 `broadcaster.ts` dispatches by type anyway), so
+   the old-browser skew story stands, but the guarantee is weaker than the
+   comment claimed. Adaptation (in this PR, on top of the rebase): the
+   engine reads server uni streams for the session's life and dispatches by
+   wire type (unknown types ignored — the same rule as `broadcaster.ts`),
+   `engine.Config.ResumeToken` rides every `/publish/{id}` claim as the
+   `resume` param, `Callbacks.OnResumeToken` hands the token to the shells,
+   and app/CLI persist it as `lastResumeToken` beside `lastBroadcastId`
+   (0600 config — it is a credential). Never assume accept order equals
+   open order on any WebTransport client.
 
 ### Post-implementation review fixes (2026-07-16, PR #47)
 

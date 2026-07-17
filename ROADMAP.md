@@ -1047,10 +1047,13 @@ later), HPA (manual replicas in v1), cross-pod `/statusz` aggregation,
 multi-tenant auth, MoQ.
 
 **Status**: designed 2026-07-16 (chunks W1–W6); W1–W6 implemented
-2026-07-16 with all automated gates green. The homelab drills (rollout /
-crash / rebind blip measurements, conntrack empiricism, kind smoke, load
-proof) are pending — per-chunk status and implementation findings in
-[docs/22](docs/22-relay-scale-out.md).
+2026-07-16 with all automated gates green. Rebased onto R14 2026-07-18,
+which surfaced and fixed a real interop bug: the native engine read only
+the "first" server uni stream, but accept order is not open order — it now
+dispatches by wire type and persists the resume token (docs/22 finding 9).
+The homelab drills (rollout / crash / rebind blip measurements, conntrack
+empiricism, kind smoke, load proof) are pending — per-chunk status and
+implementation findings in [docs/22](docs/22-relay-scale-out.md).
 
 ---
 

@@ -728,7 +728,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    version skew during rolling updates makes internal-protocol changes
    skew-tolerance-mandatory. Non-goals: zero-blip (QUIC session handoff not
    implementable on quic-go, unneeded at ≤1 s), crash RTO ≤ ~15 s
-   best-effort, geo edges, HPA, MoQ.
+   best-effort, geo edges, HPA, MoQ. **Rebase onto R14 (2026-07-18)
+   adapted the native broadcaster in-PR**: server uni-stream accept order
+   is NOT open order (webtransport-go — the token beat the announce in
+   ~half of dials, docs/22 finding 9), so the engine dispatches server
+   messages by wire type and persists the resume token as
+   `lastResumeToken` for reclaim.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

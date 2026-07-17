@@ -614,9 +614,14 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	defer s.trackPublisher(id, sess)()
 
 	// Send BroadcastAnnounce, then the ResumeToken (R17 W2), each on its own
-	// server-initiated uni stream. Separate streams keep old clients working
-	// across a version skew: they read only the first stream and parse it
-	// strictly as the announce; the unread token stream is harmless.
+	// server-initiated uni stream. Separate streams keep old *browser*
+	// clients working across a version skew: they read one stream, parse it
+	// strictly as the announce, and leave the token stream unread. That
+	// story leans on the client seeing the announce stream first, which is
+	// NOT a transport guarantee — webtransport-go accepts incoming streams
+	// in nondeterministic order (docs/22 finding 9: the native engine saw
+	// the token first in ~half of dials), so every current client dispatches
+	// server uni streams by wire type instead of trusting arrival order.
 	announceBytes, err := wire.AppendBroadcastAnnounce(nil, id)
 	if err != nil {
 		s.metrics.Connection("publish", metrics.OutcomeError)

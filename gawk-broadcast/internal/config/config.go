@@ -38,6 +38,12 @@ type Config struct {
 	Origin string `json:"origin,omitempty"`
 	// LastBroadcastID backs the GUI's Resume.
 	LastBroadcastID string `json:"lastBroadcastId,omitempty"`
+	// LastResumeToken is the relay-minted resume token for LastBroadcastID
+	// (R17, hex). A reclaim without it is refused by an R17 relay, so it is
+	// persisted — and like the publish secret it is a credential (whoever
+	// holds it can take over the broadcast ID), which the 0600 file mode
+	// already covers.
+	LastResumeToken string `json:"lastResumeToken,omitempty"`
 	// LastGoodEncoder is the cached cascade winner (Decision 4). Re-verified
 	// on use, never trusted.
 	LastGoodEncoder string `json:"lastGoodEncoder,omitempty"`

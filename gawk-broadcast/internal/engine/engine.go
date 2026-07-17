@@ -19,6 +19,7 @@ package engine
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -31,14 +32,15 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// announceReadLimit bounds the announce read. The message is at most 3 + 255
-// bytes by construction (wire.AppendBroadcastAnnounce), so anything larger is
-// a misbehaving or hostile relay and must not be able to grow our heap.
+// announceReadLimit bounds each server-message read. Both messages the relay
+// sends a publisher — BroadcastAnnounce and ResumeToken — are at most 3 + 255
+// bytes by construction (wire.AppendBroadcastAnnounce/AppendResumeToken), so
+// anything larger is a misbehaving or hostile relay and must not be able to
+// grow our heap.
 const announceReadLimit = 258
 
-// announceReadTimeout bounds how long we wait for the announce. A relay that
-// accepts the session and then never announces must not hang Start forever
-// (Decision 10).
+// announceReadTimeout bounds each server-message read. A relay that opens a
+// stream and then says nothing must not pin the reader forever (Decision 10).
 const announceReadTimeout = 10 * time.Second
 
 // Config is a session's fixed configuration. Everything here is decided before
@@ -52,6 +54,11 @@ type Config struct {
 	BroadcastID string
 	// PublishSecret is R2's pre-shared publish secret, sent as a query param.
 	PublishSecret string
+	// ResumeToken is the hex token the relay minted at first publish (R17
+	// W2, wire 0x09), sent as the `resume` query param. An R17 relay refuses
+	// every /publish/{id} claim without it, so Resume needs the token
+	// persisted beside the broadcast ID. Ignored when BroadcastID is empty.
+	ResumeToken string
 	// Origin is the Origin header sent on the CONNECT dial. Empty uses
 	// DefaultOrigin. A relay configured with -allowed-origins must whitelist
 	// whichever value is sent.
@@ -74,6 +81,11 @@ type Config struct {
 type Callbacks struct {
 	// OnBroadcastID fires once, when the relay announces the code.
 	OnBroadcastID func(id string)
+	// OnResumeToken fires when the relay hands over the broadcast's resume
+	// token (hex — the relay's own query-param encoding). The shell must
+	// persist it beside the broadcast ID: without it an R17 relay refuses
+	// the reclaim. Pre-R17 relays never send one.
+	OnResumeToken func(token string)
 	// OnStats fires on the stats cadence while live.
 	OnStats func(Stats)
 	// OnError reports a session-fatal problem. Always followed by OnEnded.
@@ -89,6 +101,12 @@ type Callbacks struct {
 func (c Callbacks) broadcastID(id string) {
 	if c.OnBroadcastID != nil {
 		c.OnBroadcastID(id)
+	}
+}
+
+func (c Callbacks) resumeToken(token string) {
+	if c.OnResumeToken != nil {
+		c.OnResumeToken(token)
 	}
 }
 
@@ -219,7 +237,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.started = true
 	s.mu.Unlock()
 
-	url, err := PublishURL(s.cfg.RelayURL, s.cfg.BroadcastID, s.cfg.PublishSecret)
+	url, err := PublishURL(s.cfg.RelayURL, s.cfg.BroadcastID, s.cfg.PublishSecret, s.cfg.ResumeToken)
 	if err != nil {
 		return &StartError{Phase: PhaseConnect, Err: fmt.Errorf("bad relay URL: %w", err)}
 	}
@@ -256,14 +274,14 @@ func (s *Session) Start(ctx context.Context) error {
 
 // startLive brings up everything that runs for the session's lifetime.
 func (s *Session) startLive(ctx context.Context, relay RelaySession) error {
-	// The announce read is detached on purpose: media must never wait on it
-	// (docs/06 says so twice, and R1's review found an implementation that
-	// awaited it before capture and could hang forever). Only the UI consumes
-	// the code.
+	// The server-message read (announce + resume token) is detached on
+	// purpose: media must never wait on it (docs/06 says so twice, and R1's
+	// review found an implementation that awaited it before capture and
+	// could hang forever). Only the UI consumes the code and the token.
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.readAnnounce(ctx, relay)
+		s.readServerMessages(ctx, relay)
 	}()
 
 	// Relay clock sync (R5 Q2). Pings ride the ordinary datagram path; the
@@ -329,19 +347,34 @@ func (s *Session) startLive(ctx context.Context, relay RelaySession) error {
 	return nil
 }
 
-// readAnnounce reads the broadcast code off the first server-initiated uni
-// stream. Bounded and deadlined: a relay that accepts and never announces, or
-// announces a megabyte, must not hang or grow us.
-func (s *Session) readAnnounce(ctx context.Context, relay RelaySession) {
-	str, err := relay.AcceptUniStream(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			s.log.Warn("announce stream not accepted", "err", err)
+// readServerMessages reads the relay's server-initiated uni streams for the
+// session's life. An R17 relay sends two — BroadcastAnnounce (0x03) and
+// ResumeToken (0x09), each on its own stream — and the client sees them in
+// NO guaranteed order: webtransport-go demultiplexes incoming streams
+// concurrently, so accept order is not the server's open order (the PR #47
+// rebase measured the token beating the announce in about half of real
+// dials). Every stream is therefore read bounded and dispatched by wire
+// type, exactly like broadcaster.ts; unknown types are ignored so a newer
+// relay (version skew during a rolling upgrade) cannot break us.
+func (s *Session) readServerMessages(ctx context.Context, relay RelaySession) {
+	for {
+		str, err := relay.AcceptUniStream(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Warn("server message stream not accepted", "err", err)
+			}
+			return
 		}
-		return
+		s.readServerMessage(ctx, str)
 	}
+}
+
+// readServerMessage reads one server message to completion and dispatches it
+// by type. Bounded and deadlined: a relay that opens a stream and never
+// speaks, or speaks a megabyte, must not hang or grow us.
+func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 	// A pending Read does not watch ctx, so ending the session must actively
-	// unblock it: without this, Stop() waits out the full announce timeout
+	// unblock it: without this, Stop() waits out the full read timeout
 	// before returning — closing the GUI window would appear to hang.
 	stopWatch := context.AfterFunc(ctx, func() {
 		_ = str.SetReadDeadline(time.Now().Add(-time.Second))
@@ -350,18 +383,38 @@ func (s *Session) readAnnounce(ctx context.Context, relay RelaySession) {
 	_ = str.SetReadDeadline(time.Now().Add(announceReadTimeout))
 	buf, err := io.ReadAll(io.LimitReader(str, announceReadLimit))
 	if err != nil {
-		s.log.Warn("announce read failed", "err", err)
+		s.log.Warn("server message read failed", "err", err)
 		return
 	}
-	id, err := wire.ParseBroadcastAnnounce(buf)
-	if err != nil {
-		s.log.Warn("announce parse failed", "err", err)
+	if len(buf) < 2 {
+		s.log.Warn("server message ignored: truncated", "len", len(buf))
 		return
 	}
-	s.mu.Lock()
-	s.cfg.BroadcastID = id
-	s.mu.Unlock()
-	s.cb.broadcastID(id)
+	switch buf[1] {
+	case wire.TypeBroadcastAnnounce:
+		id, err := wire.ParseBroadcastAnnounce(buf)
+		if err != nil {
+			s.log.Warn("announce parse failed", "err", err)
+			return
+		}
+		s.mu.Lock()
+		s.cfg.BroadcastID = id
+		s.mu.Unlock()
+		s.cb.broadcastID(id)
+	case wire.TypeResumeToken:
+		raw, err := wire.ParseResumeToken(buf)
+		if err != nil {
+			s.log.Warn("resume token parse failed", "err", err)
+			return
+		}
+		token := hex.EncodeToString(raw)
+		s.mu.Lock()
+		s.cfg.ResumeToken = token
+		s.mu.Unlock()
+		s.cb.resumeToken(token)
+	default:
+		s.log.Debug("server message ignored: unknown type", "type", buf[1])
+	}
 }
 
 // readDatagrams drains the session's incoming datagrams. The relay sends a

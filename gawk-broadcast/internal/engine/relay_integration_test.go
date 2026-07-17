@@ -504,33 +504,47 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 	}
 }
 
-// Decision 10: the reclaim path, and the status that makes it legible.
+// Decision 10: the reclaim path, and the status that makes it legible —
+// under R17 rules: every /publish/{id} claim carries the relay-minted resume
+// token (a bare claim is 403, the designed graced-ID-hijack fix), and only a
+// token-bearing claim can even reach the 409 that means "someone is already
+// publishing".
 func TestReclaimAndConflictAgainstRealRelay(t *testing.T) {
 	relayURL, _ := startRelay(t)
 
 	src := newFixtureSource(t, engine.NewClock())
 	gotID := make(chan string, 1)
+	gotToken := make(chan string, 1)
 	sess := engine.New(
 		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		engine.Callbacks{
+			OnBroadcastID: func(id string) { gotID <- id },
+			OnResumeToken: func(token string) { gotToken <- token },
+		},
 		engine.Options{MediaFactory: src.factory()},
 	)
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	var id string
+	var id, token string
 	select {
 	case id = <-gotID:
 	case <-time.After(10 * time.Second):
 		t.Fatal("no broadcast code")
 	}
+	select {
+	case token = <-gotToken:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no resume token — an R17 relay mints one on every publish")
+	}
 
-	// A second publisher on the same live ID is a conflict — and the browser
-	// cannot tell this from any other dial failure. We can.
+	// A second publisher on the same live ID, holding the token, is a
+	// conflict — and the browser cannot tell this from any other dial
+	// failure. We can.
 	src2 := newFixtureSource(t, engine.NewClock())
 	sess2 := engine.New(
-		engine.Config{RelayURL: relayURL, BroadcastID: id, Insecure: true, Media: engine.DefaultMediaConfig()},
+		engine.Config{RelayURL: relayURL, BroadcastID: id, ResumeToken: token, Insecure: true, Media: engine.DefaultMediaConfig()},
 		engine.Callbacks{},
 		engine.Options{MediaFactory: src2.factory()},
 	)
@@ -546,14 +560,32 @@ func TestReclaimAndConflictAgainstRealRelay(t *testing.T) {
 		t.Errorf("phase = %q, want connect (so the GUI may fall back to minting)", se.Phase)
 	}
 
-	// Now the first publisher leaves, and the ID becomes reclaimable.
+	// Without the token the same claim never reaches the conflict check:
+	// 403, the R17 hijack fix working as designed.
+	src2b := newFixtureSource(t, engine.NewClock())
+	sess2b := engine.New(
+		engine.Config{RelayURL: relayURL, BroadcastID: id, Insecure: true, Media: engine.DefaultMediaConfig()},
+		engine.Callbacks{},
+		engine.Options{MediaFactory: src2b.factory()},
+	)
+	err = sess2b.Start(context.Background())
+	se, ok = engine.AsStartError(err)
+	if !ok {
+		t.Fatalf("tokenless claim error = %v, want *StartError", err)
+	}
+	if se.Status != http.StatusForbidden {
+		t.Errorf("tokenless claim status = %d, want 403 (resume token required)", se.Status)
+	}
+
+	// Now the first publisher leaves, and the ID becomes reclaimable — with
+	// the token.
 	sess.Stop()
 	src.Stop()
 
 	src3 := newFixtureSource(t, engine.NewClock())
 	reclaimed := make(chan string, 1)
 	sess3 := engine.New(
-		engine.Config{RelayURL: relayURL, BroadcastID: id, Insecure: true, Media: engine.DefaultMediaConfig()},
+		engine.Config{RelayURL: relayURL, BroadcastID: id, ResumeToken: token, Insecure: true, Media: engine.DefaultMediaConfig()},
 		engine.Callbacks{OnBroadcastID: func(id string) { reclaimed <- id }},
 		engine.Options{MediaFactory: src3.factory()},
 	)

@@ -193,11 +193,22 @@ func (a *App) run(ctx context.Context, id string) {
 		}
 	}
 
+	// The persisted resume token is only valid for the ID it was minted for
+	// (R17): on a reclaim of that ID it must travel, on any other claim it
+	// would just be refused.
+	a.mu.Lock()
+	resumeToken := ""
+	if id != "" && id == a.cfg.LastBroadcastID {
+		resumeToken = a.cfg.LastResumeToken
+	}
+	a.mu.Unlock()
+
 	sess := a.newSess(
 		engine.Config{
 			RelayURL:      a.cfg.RelayURL,
 			BroadcastID:   id,
 			PublishSecret: a.cfg.PublishSecret,
+			ResumeToken:   resumeToken,
 			Origin:        a.cfg.Origin,
 			Media:         a.mediaConfig(),
 		},
@@ -209,6 +220,12 @@ func (a *App) run(ctx context.Context, id string) {
 				a.mu.Unlock()
 				saveCfg()
 				a.invalidate()
+			},
+			OnResumeToken: func(token string) {
+				a.mu.Lock()
+				a.cfg.LastResumeToken = token
+				a.mu.Unlock()
+				saveCfg()
 			},
 			OnEncoderChosen: func(enc string) {
 				// The API name first: "VA-API" answers "which driver stack am

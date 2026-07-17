@@ -462,7 +462,16 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 - **Every `/publish/{id}` claim needs a resume token** (wire 0x09, the
   `resume` query param) — including reclaims that used to work bare. An old
   client's tokenless reclaim gets 403 and falls back to minting; that's the
-  designed hijack fix, not a bug. ([docs/22](docs/22-relay-scale-out.md))
+  designed hijack fix, not a bug. The native broadcaster persists the token
+  as `lastResumeToken` beside `lastBroadcastId`.
+  ([docs/22](docs/22-relay-scale-out.md))
+- **Server uni-stream accept order is NOT open order.** The relay sends the
+  announce (0x03) and the resume token (0x09) on two uni streams;
+  webtransport-go delivers them to `AcceptUniStream` in nondeterministic
+  order — the native engine saw the token first in ~half of dials, and its
+  old "read the first stream, strict-parse as announce" turned that into
+  "no broadcast code". Dispatch server messages by wire type, never by
+  arrival order. ([docs/22](docs/22-relay-scale-out.md) finding 9)
 - **The hijack fix needs an explicit `resumeTokenKey` to hold between
   broadcasters** — a token key derived from the broadcaster-distributed
   publish secret is computable by every broadcaster, so it only stops

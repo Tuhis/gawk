@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -31,23 +33,31 @@ func TestPublishURL(t *testing.T) {
 		relay  string
 		id     string
 		secret string
+		resume string
 		want   string
 	}{
-		{"mint", "https://relay.example:4433", "", "", "https://relay.example:4433/publish"},
-		{"reclaim", "https://relay.example:4433", "K7M2QP", "", "https://relay.example:4433/publish/K7M2QP"},
-		{"mint with secret", "https://relay.example:4433", "", "hunter2", "https://relay.example:4433/publish?secret=hunter2"},
-		{"reclaim with secret", "https://relay.example:4433", "K7M2QP", "hunter2", "https://relay.example:4433/publish/K7M2QP?secret=hunter2"},
+		{"mint", "https://relay.example:4433", "", "", "", "https://relay.example:4433/publish"},
+		{"reclaim", "https://relay.example:4433", "K7M2QP", "", "", "https://relay.example:4433/publish/K7M2QP"},
+		{"mint with secret", "https://relay.example:4433", "", "hunter2", "", "https://relay.example:4433/publish?secret=hunter2"},
+		{"reclaim with secret", "https://relay.example:4433", "K7M2QP", "hunter2", "", "https://relay.example:4433/publish/K7M2QP?secret=hunter2"},
+		// R17: every /publish/{id} claim needs the resume token minted at
+		// first publish, as the `resume` query param (hex).
+		{"reclaim with token", "https://relay.example:4433", "K7M2QP", "", "abab", "https://relay.example:4433/publish/K7M2QP?resume=abab"},
+		{"reclaim with secret and token", "https://relay.example:4433", "K7M2QP", "hunter2", "abab", "https://relay.example:4433/publish/K7M2QP?resume=abab&secret=hunter2"},
+		// A mint has no ID for the relay to verify a token against; the
+		// param is meaningless there and must not leak into the URL.
+		{"mint ignores stale token", "https://relay.example:4433", "", "", "abab", "https://relay.example:4433/publish"},
 		// A relay URL carrying a path is a plausible reverse-proxy setup; the
 		// join must not silently drop it.
-		{"trailing slash", "https://relay.example/", "", "", "https://relay.example/publish"},
+		{"trailing slash", "https://relay.example/", "", "", "", "https://relay.example/publish"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := PublishURL(tc.relay, tc.id, tc.secret)
+			got, err := PublishURL(tc.relay, tc.id, tc.secret, tc.resume)
 			if err != nil {
 				t.Fatalf("PublishURL: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("PublishURL(%q, %q, %q) = %q, want %q", tc.relay, tc.id, tc.secret, got, tc.want)
+				t.Errorf("PublishURL(%q, %q, %q, %q) = %q, want %q", tc.relay, tc.id, tc.secret, tc.resume, got, tc.want)
 			}
 		})
 	}
@@ -106,7 +116,7 @@ func TestDialSendsOrigin(t *testing.T) {
 // client could send a header — and would then authenticate differently from
 // the browser, which is the point of pinning this.
 func TestSecretIsAQueryParamNotAHeader(t *testing.T) {
-	got, err := PublishURL("https://relay.example", "", "s3cret")
+	got, err := PublishURL("https://relay.example", "", "s3cret", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +261,83 @@ func TestStartAnnouncesBroadcastID(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no broadcast ID announced")
+	}
+}
+
+// R17 (relay scale-out) sends BroadcastAnnounce (0x03) and ResumeToken (0x09)
+// on two separate server-initiated uni streams — and webtransport-go delivers
+// incoming streams in no guaranteed order (the PR #47 rebase measured the
+// token stream beating the announce in roughly half of real dials). Server
+// messages are dispatched by wire type, never by arrival order (the same rule
+// as broadcaster.ts).
+func TestServerStreamDispatchIsByTypeNotArrivalOrder(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	tokenMsg, err := wire.AppendResumeToken(nil, bytes.Repeat([]byte{0xab}, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	announce, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Token first: the arrival order that broke the single-accept read.
+	sess.incoming <- announceStream(tokenMsg)
+	sess.incoming <- announceStream(announce)
+
+	got := make(chan string, 1)
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{OnBroadcastID: func(id string) { got <- id }},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	select {
+	case id := <-got:
+		if id != "K7M2QP" {
+			t.Errorf("id = %q, want K7M2QP", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no broadcast ID: a resume-token stream arriving first must not eat the announce")
+	}
+}
+
+// The captured token is surfaced (hex, the relay's query-param encoding) so
+// the app can persist it beside the broadcast ID — an R17 relay refuses every
+// /publish/{id} claim without it.
+func TestResumeTokenIsCapturedAndReported(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	raw := bytes.Repeat([]byte{0xcd}, 16)
+	tokenMsg, err := wire.AppendResumeToken(nil, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	announce, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.incoming <- announceStream(announce)
+	sess.incoming <- announceStream(tokenMsg)
+
+	got := make(chan string, 1)
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{OnResumeToken: func(token string) { got <- token }},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	select {
+	case token := <-got:
+		if want := hex.EncodeToString(raw); token != want {
+			t.Errorf("token = %q, want %q", token, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no resume token reported")
 	}
 }
 
