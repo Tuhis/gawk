@@ -1,8 +1,15 @@
-# Release automation: release-please maintains one release PR per component
-# (gawk-server, gawk-app) computing the next SemVer from conventional
-# commits; merging a release PR tags (e.g. gawk-server-v0.5.0) and the
-# publish jobs below push the docker image and OCI Helm chart to GHCR with
-# matching versions.
+# Release automation: release-please maintains ONE combined release PR
+# covering every component (gawk-server, gawk-app, gawk-broadcast),
+# computing each one's next SemVer from conventional commits; merging it
+# tags per component (e.g. gawk-server-v0.5.0) and the publish jobs below
+# push the docker image and OCI Helm chart to GHCR with matching versions.
+#
+# gawk-broadcast has NO publish job on purpose (R14 Decision 2, docs/19):
+# it is a native binary you build and run on your own PC, deliberately
+# outside the "chart version == appVersion == image tag" model that exists
+# for cluster-side components. Its component exists for versioning and
+# changelog only — which is also what keeps broadcaster commits from
+# bumping, rebuilding and auto-redeploying the relay (Decision 1).
 #
 # The publish jobs MUST live in this workflow, gated on release-please
 # outputs: tags created with GITHUB_TOKEN do not trigger other workflows,

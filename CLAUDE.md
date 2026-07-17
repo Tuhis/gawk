@@ -55,7 +55,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   (`BroadcastStartError.phase`); post-connect failures tear the session
   down internally (no zombie publisher). BroadcastPage falls back from
   reclaim to mint **only** on `phase === 'connect'`.
-- Framing protocol is **implemented** (`gawk-server/internal/wire`): VideoChunk
+- Framing protocol is **implemented** (`gawk-server/wire`): VideoChunk
   datagrams carry frameID + chunkIndex/chunkCount + keyframe flag + timestamp
   (20-byte header, big-endian); a separate DecoderConfig message carries
   codec string + AVCC extradata. Golden test vectors for the future TS mirror
@@ -88,7 +88,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   → R6 production UI), with per-item status and design links.**
 - `gawk-app` is the folder for the frontend application
 - `gawk-server` is the folder for the backend (the Relay server) — Go module,
-  see `gawk-server/README.md` for build/run
+  see `gawk-server/README.md` for build/run. Its `wire` package is **public**
+  (not `internal/`) so `gawk-broadcast` can import it — see R14 Decision 1.
+- `gawk-broadcast` is the native Linux broadcaster (R14) — a **separate** Go
+  module (GUI + CLI over a shared `internal/engine`), importing
+  `gawk-server/wire` unchanged rather than mirroring it; see
+  `gawk-broadcast/README.md`. Not a container/chart/deploy component: it's a
+  binary you run on your own PC.
 - `docs/` — per-build-step design notes and gotchas. **Every design doc must
   define explicit acceptance criteria for its milestones and chunks of work**
   (a per-chunk criteria table à la `docs/implementation-tasks.md`, or a
@@ -160,8 +166,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   Gio GUI app + CLI over a shared Go engine in a new top-level
   `gawk-broadcast/` module, hardware-only encode via a Go-owned ScreenCast
   portal handshake + GStreamer subprocess; Vulkan Video as the target
-  encode API; V0–V7 chunks + V8 direct Vulkan Video encode; **designed
-  2026-07-15, revised the same day after design review, not started**),
+  encode API; V0–V7 chunks + V8 direct Vulkan Video encode; **V0–V7
+  implemented 2026-07-15, automated gates green, manual verify on the
+  gaming PC pending; V8 gated on V2's on-hardware Vulkan result**),
   `docs/20-system-audio.md` for R15 (system audio, **experimental,
   default-off**: Opus/WebCodecs over datagrams — one Opus packet per
   datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
@@ -476,9 +483,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    >1080p@>30 force-caps are removed (explicit choices honored, annotated
    instead); probe-annotated pickers (badge/disable, never remove) +
    Advanced settings panel + overlay Auto ceiling/Auto fps rows.
-19. Native Linux broadcaster — **designed 2026-07-15, revised 2026-07-15
-   after design review (V0–V7 + V8), not started** (R14,
-   `docs/19-linux-native-broadcaster.md`). A **Gio GUI app**
+19. Native Linux broadcaster — **V0–V7 implemented 2026-07-15; automated
+   gates green (both Go modules), manual verify on the gaming PC pending;
+   V8 not started — it is hard-gated on V2's on-hardware Vulkan result**
+   (R14, `docs/19-linux-native-broadcaster.md`). A **Gio GUI app**
    (`cmd/gawk-broadcast-gui`) + a CLI (`cmd/gawk-broadcast`) over a shared
    engine (`internal/engine`) in a **new top-level `gawk-broadcast/` Go
    module**, publishing with **hardware encode** from Linux, because the
@@ -494,7 +502,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    candidate accepted only by **real trial encode** (`videotestsrc`, never
    the portal; last-good cached; the live start is the final probe — R13's
    probe-matrix instinct one layer down, incl. its advisory-only caveat).
-   Design notes worth knowing before touching either end: **V0 promotes
+   Design notes worth knowing before touching either end: **V0 promoted
    `internal/wire` to a public `gawk-server/wire`** so the new module can
    import it (the original same-module plan coupled relay CI to Gio's cgo
    headers and made broadcaster commits auto-redeploy the relay; instead:
@@ -508,9 +516,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `WebTransportError` can't); the viewer **already auto-detects Annex-B vs
    AVCC** (the `isAnnexB` sniff in `viewer.ts`), so the engine emits raw
    Annex-B with empty extradata and builds no avcC record. **Capture:
-   Go-owned XDG ScreenCast portal handshake** (`godbus`, **restore token —
-   pick the screen once, ever**; cursor embedded; works on X11 GNOME too,
-   gate on the portal not on Wayland) **feeding a GStreamer subprocess**
+   Go-owned XDG ScreenCast portal handshake** (`godbus`, **the share picker
+   appears on every start — the choice is deliberately never persisted, so
+   `persist_mode`/`restore_token` are never sent** (reversed 2026-07-16 — the
+   original "pick once, ever" restore-token design was dropped by user
+   decision: always ask what to share on restart); cursor embedded; works on
+   X11 GNOME too, gate on the portal not on Wayland) **feeding a GStreamer
+   subprocess**
    (`pipewiresrc fd=…` → encoder → `h264parse config-interval=-1` →
    `mpegtsmux` → stdout pipe; one PES = one AU, in-band SPS/PPS at every
    IDR — load-bearing because the DecoderConfig extradata is empty).

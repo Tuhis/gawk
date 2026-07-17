@@ -81,7 +81,7 @@ fixes below). Acceptance per goal:
   - `-max-bandwidth` / `GAWK_MAX_BANDWIDTH` (default: "0", support unit suffixes: `mbps`, `kbps`, `m`, `k`)
 - Validate inputs during `ParseFlags`. Add helper `parseBandwidth` to handle bandwidth suffix strings.
 
-#### [MODIFY] gawk-server/internal/wire/wire.go
+#### [MODIFY] gawk-server/wire/wire.go
 - Add constant `MaxChunkCount = 1000`.
 - Update `ParseVideoChunk` to reject `h.ChunkCount > MaxChunkCount` with `ErrBadChunkCount`.
 

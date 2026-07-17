@@ -27,7 +27,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
-	"github.com/Tuhis/gawk/gawk-server/internal/wire"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -1014,13 +1014,14 @@ func TestSubscribeLostRaceToGCClosesWithBroadcastEnded(t *testing.T) {
 	// Between the subscriber's upgrade and its registry.Subscribe, kill the
 	// publisher and wait for the grace timer to GC the broadcast. No t.Fatalf
 	// here: this runs on the server's handler goroutine.
-	srv.testHookPostUpgradeSubscribe = func(string) {
+	hook := func(string) {
 		pubSess.CloseWithError(0, "")
 		deadline := time.Now().Add(5 * time.Second)
 		for !errors.Is(r.CheckSubscribe(id), hub.ErrNotFound) && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+	srv.testHookPostUpgradeSubscribe.Store(&hook)
 
 	subSess := dialSubscriber(t, ctx, port, id, clientTLS)
 

@@ -1,5 +1,13 @@
 // Package wire implements the frozen datagram wire format shared by the
-// relay server, the broadcaster, and the viewers.
+// relay server, the broadcasters, and the viewers.
+//
+// This package is deliberately public (R14 Decision 1, docs/19): the native
+// Linux broadcaster lives in its own top-level module (gawk-broadcast/) and
+// imports it, because a second hand-written implementation of the format is
+// exactly what the golden vectors below exist to prevent. Go's internal/ rule
+// forbids that import from another module, so wire sits outside internal/.
+// It may still import internal/broadcastid — the rule restricts importers by
+// path prefix, and gawk-server/wire qualifies.
 //
 // Every datagram starts with a common 2-byte prefix: byte 0 is the protocol
 // version (Version) and byte 1 is the message type (TypeVideoChunk or

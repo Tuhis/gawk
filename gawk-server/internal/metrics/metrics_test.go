@@ -13,7 +13,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
-	"github.com/Tuhis/gawk/gawk-server/internal/wire"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))

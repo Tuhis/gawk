@@ -1,0 +1,539 @@
+// Package engine is the native Linux broadcaster's engine (R14, docs/19): it
+// captures the screen through the XDG ScreenCast portal, encodes it in
+// hardware via a GStreamer child, and publishes the result to the relay using
+// the same publisher protocol the browser broadcaster speaks — byte for byte,
+// via the shared gawk-server/wire package.
+//
+// The surface deliberately mirrors the TypeScript BroadcastSessionLike
+// (start/stop) and BroadcastCallbacks (onBroadcastId/onStats/onError/onEnded)
+// from gawk-app/src/transport/broadcaster.ts. Same idea, same names, other
+// language: a second broadcaster only stays survivable if the two remain
+// legible to each other.
+//
+// It is a package rather than a main package because the GUI requirement
+// determines the shape — a main full of flags and globals would have to be
+// dismantled to grow a window. Both shells (cmd/gawk-broadcast,
+// cmd/gawk-broadcast-gui) are thin consumers of what follows. Accordingly:
+// no package globals, no os.Exit, no direct stdio anywhere in this package.
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/quic-go/webtransport-go"
+
+	"github.com/Tuhis/gawk/gawk-server/wire"
+)
+
+// announceReadLimit bounds the announce read. The message is at most 3 + 255
+// bytes by construction (wire.AppendBroadcastAnnounce), so anything larger is
+// a misbehaving or hostile relay and must not be able to grow our heap.
+const announceReadLimit = 258
+
+// announceReadTimeout bounds how long we wait for the announce. A relay that
+// accepts the session and then never announces must not hang Start forever
+// (Decision 10).
+const announceReadTimeout = 10 * time.Second
+
+// Config is a session's fixed configuration. Everything here is decided before
+// Start and never changes during a session (Decision 9: no ladder, no
+// mid-session rung changes in v1).
+type Config struct {
+	// RelayURL is the relay's https:// origin.
+	RelayURL string
+	// BroadcastID empty mints a new broadcast; non-empty reclaims that ID
+	// (the Resume path).
+	BroadcastID string
+	// PublishSecret is R2's pre-shared publish secret, sent as a query param.
+	PublishSecret string
+	// Origin is the Origin header sent on the CONNECT dial. Empty uses
+	// DefaultOrigin. A relay configured with -allowed-origins must whitelist
+	// whichever value is sent.
+	Origin string
+	// Insecure skips TLS verification (the dev cert only).
+	Insecure bool
+	// Media is the capture/encode configuration.
+	Media MediaConfig
+}
+
+// Callbacks mirror the browser's BroadcastCallbacks. All are optional; all are
+// invoked from engine goroutines, so a GUI shell must marshal them onto its
+// own loop.
+//
+// Deliberately absent: any viewer count or "first viewer joined" signal.
+// Nothing on the wire tells a publisher about subscribers — the browser
+// broadcaster doesn't know its viewer count either, and inventing one here
+// would need a relay→publisher wire message that R14 explicitly rules out
+// (Decision 18).
+type Callbacks struct {
+	// OnBroadcastID fires once, when the relay announces the code.
+	OnBroadcastID func(id string)
+	// OnStats fires on the stats cadence while live.
+	OnStats func(Stats)
+	// OnError reports a session-fatal problem. Always followed by OnEnded.
+	OnError func(error)
+	// OnEnded fires exactly once per successful Start, when the session is
+	// over — whether by Stop, relay close, or child death.
+	OnEnded func()
+	// OnEncoderChosen fires once the cascade settles on a candidate
+	// (Decision 4: the chosen encoder is reported at startup and in stats).
+	OnEncoderChosen func(encoder string)
+}
+
+func (c Callbacks) broadcastID(id string) {
+	if c.OnBroadcastID != nil {
+		c.OnBroadcastID(id)
+	}
+}
+
+func (c Callbacks) stats(s Stats) {
+	if c.OnStats != nil {
+		c.OnStats(s)
+	}
+}
+
+func (c Callbacks) err(e error) {
+	if c.OnError != nil {
+		c.OnError(e)
+	}
+}
+
+func (c Callbacks) ended() {
+	if c.OnEnded != nil {
+		c.OnEnded()
+	}
+}
+
+func (c Callbacks) encoderChosen(name string) {
+	if c.OnEncoderChosen != nil {
+		c.OnEncoderChosen(name)
+	}
+}
+
+// Options are the injection points. Zero values give the production wiring.
+type Options struct {
+	// Clock defaults to NewClock(). Tests inject FakeClock.
+	Clock Clock
+	// Dial defaults to dialRelay. Tests inject a fake session.
+	Dial DialFunc
+	// MediaFactory defaults to the portal+GStreamer source. Tests inject a
+	// fake. The engine always calls it with its own Clock (Decision 6).
+	MediaFactory MediaSourceFactory
+	// Log defaults to a discard logger — the engine never writes to stdio of
+	// its own accord (a GUI has no stderr worth speaking of).
+	Log *slog.Logger
+	// StatsInterval defaults to 1s.
+	StatsInterval time.Duration
+}
+
+// Session is one broadcast. Start/Stop mirror BroadcastSessionLike.
+//
+// Deliberately absent: SetLadder/SetEncoderSettings (Decision 9). A rung
+// change means restarting the GStreamer child, and keeping a dead-code setter
+// "for symmetry" is a footgun. The restore token makes a restart-based SetRung
+// cheap to add later, as its own task.
+type Session struct {
+	cfg          Config
+	cb           Callbacks
+	clock        Clock
+	dial         DialFunc
+	mediaFactory MediaSourceFactory
+	log          *slog.Logger
+
+	statsInterval time.Duration
+
+	mu      sync.Mutex
+	started bool
+	stopped bool
+	cancel  context.CancelFunc
+	relay   RelaySession
+	media   MediaSource
+
+	wg      sync.WaitGroup
+	endOnce sync.Once
+
+	sender *sender
+	ts     *TimeSyncClient
+
+	// Windowing state for the fps rates in Stats.
+	rateMu      sync.Mutex
+	lastRateUs  uint64
+	lastEncoded uint64
+	lastSent    uint64
+}
+
+// New builds a Session. It performs no I/O; Start does.
+func New(cfg Config, cb Callbacks, opts Options) *Session {
+	s := &Session{
+		cfg:           cfg,
+		cb:            cb,
+		clock:         opts.Clock,
+		dial:          opts.Dial,
+		mediaFactory:  opts.MediaFactory,
+		log:           opts.Log,
+		statsInterval: opts.StatsInterval,
+	}
+	if s.clock == nil {
+		s.clock = NewClock()
+	}
+	if s.dial == nil {
+		s.dial = dialRelay
+	}
+	if s.mediaFactory == nil {
+		// The engine deliberately knows nothing about GStreamer, PipeWire or
+		// D-Bus: the shells compose the platform half (gst.NewFactory) and
+		// inject it here. That layering is what keeps everything above this
+		// line testable without a GPU, a portal or a child process.
+		s.mediaFactory = func(MediaConfig, Clock, *slog.Logger) (MediaSource, error) {
+			return nil, errors.New("engine: no MediaFactory configured")
+		}
+	}
+	if s.log == nil {
+		s.log = slog.New(slog.DiscardHandler)
+	}
+	if s.statsInterval <= 0 {
+		s.statsInterval = time.Second
+	}
+	return s
+}
+
+// Start connects, then captures. It returns a *StartError on failure.
+//
+// The order is not incidental (Decision 10 / connect-before-picker, mirroring
+// the browser): dial first, so that if the relay refuses — wrong secret, ID
+// taken, at capacity — no share dialog ever appears. Being asked to pick a
+// screen and only then told "someone is already publishing" is the exact
+// experience this ordering exists to prevent.
+func (s *Session) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return errors.New("engine: session already started")
+	}
+	s.started = true
+	s.mu.Unlock()
+
+	url, err := PublishURL(s.cfg.RelayURL, s.cfg.BroadcastID, s.cfg.PublishSecret)
+	if err != nil {
+		return &StartError{Phase: PhaseConnect, Err: fmt.Errorf("bad relay URL: %w", err)}
+	}
+
+	origin := s.cfg.Origin
+	if origin == "" {
+		origin = DefaultOrigin
+	}
+	relay, status, err := s.dial(ctx, url, origin, s.cfg.Insecure)
+	if err != nil {
+		return &StartError{Phase: PhaseConnect, Status: status, Err: err}
+	}
+
+	// From here on every failure must tear down what we hold, or we leak a
+	// zombie publisher holding the broadcast ID hostage (CODE-REVIEW.md:
+	// "Error paths must release what they acquired"). One shared teardown,
+	// reached by success and failure alike.
+	sessCtx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.relay = relay
+	s.cancel = cancel
+	s.mu.Unlock()
+
+	if err := s.startLive(sessCtx, relay); err != nil {
+		s.teardown()
+		var se *StartError
+		if errors.As(err, &se) {
+			return se
+		}
+		return &StartError{Phase: PhaseCapture, Err: err}
+	}
+	return nil
+}
+
+// startLive brings up everything that runs for the session's lifetime.
+func (s *Session) startLive(ctx context.Context, relay RelaySession) error {
+	// The announce read is detached on purpose: media must never wait on it
+	// (docs/06 says so twice, and R1's review found an implementation that
+	// awaited it before capture and could hang forever). Only the UI consumes
+	// the code.
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.readAnnounce(ctx, relay)
+	}()
+
+	// Relay clock sync (R5 Q2). Pings ride the ordinary datagram path; the
+	// read loop exists solely to catch replies, since the relay sends a
+	// publisher nothing else as datagrams.
+	s.ts = NewTimeSyncClient(relay.SendDatagram, s.clock)
+	s.sender = newSender(relay, s.clock, s.log)
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.readDatagrams(ctx, relay)
+	}()
+
+	// Capture + encode. Everything past this point is the capture phase: a
+	// failure here had a live publisher session, so the caller must not treat
+	// it as licence to mint a different ID.
+	//
+	// The source is built with the session's own clock — the mechanism behind
+	// Decision 6's shared-clock requirement.
+	media, err := s.mediaFactory(s.cfg.Media, s.clock, s.log)
+	if err != nil {
+		return &StartError{Phase: PhaseCapture, Err: err}
+	}
+	s.mu.Lock()
+	s.media = media
+	s.mu.Unlock()
+
+	frames, err := media.Start(ctx)
+	if err != nil {
+		return &StartError{Phase: PhaseCapture, Err: err}
+	}
+	if name := media.Encoder(); name != "" {
+		s.cb.encoderChosen(name)
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.pump(ctx, frames)
+	}()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.periodic(ctx, relay)
+	}()
+
+	// The session ending — for any reason — is one event with one
+	// authoritative signal (CODE-REVIEW.md: "One event, one authoritative
+	// signal"). The relay's context is it; Stop cancels ours, the relay
+	// cancels theirs, and both land here exactly once.
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		select {
+		case <-relay.Context().Done():
+			s.log.Info("relay session ended", "err", context.Cause(relay.Context()))
+			s.finish()
+		case <-ctx.Done():
+		}
+	}()
+	return nil
+}
+
+// readAnnounce reads the broadcast code off the first server-initiated uni
+// stream. Bounded and deadlined: a relay that accepts and never announces, or
+// announces a megabyte, must not hang or grow us.
+func (s *Session) readAnnounce(ctx context.Context, relay RelaySession) {
+	str, err := relay.AcceptUniStream(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Warn("announce stream not accepted", "err", err)
+		}
+		return
+	}
+	// A pending Read does not watch ctx, so ending the session must actively
+	// unblock it: without this, Stop() waits out the full announce timeout
+	// before returning — closing the GUI window would appear to hang.
+	stopWatch := context.AfterFunc(ctx, func() {
+		_ = str.SetReadDeadline(time.Now().Add(-time.Second))
+	})
+	defer stopWatch()
+	_ = str.SetReadDeadline(time.Now().Add(announceReadTimeout))
+	buf, err := io.ReadAll(io.LimitReader(str, announceReadLimit))
+	if err != nil {
+		s.log.Warn("announce read failed", "err", err)
+		return
+	}
+	id, err := wire.ParseBroadcastAnnounce(buf)
+	if err != nil {
+		s.log.Warn("announce parse failed", "err", err)
+		return
+	}
+	s.mu.Lock()
+	s.cfg.BroadcastID = id
+	s.mu.Unlock()
+	s.cb.broadcastID(id)
+}
+
+// readDatagrams drains the session's incoming datagrams. The relay sends a
+// publisher only TimeSync replies, but anything else is drained and ignored
+// rather than left to fill a queue.
+func (s *Session) readDatagrams(ctx context.Context, relay RelaySession) {
+	for {
+		dgram, err := relay.ReceiveDatagram(ctx)
+		if err != nil {
+			return
+		}
+		s.ts.HandleDatagram(dgram)
+	}
+}
+
+// pump moves access units from the media source to the relay.
+func (s *Session) pump(ctx context.Context, frames <-chan AccessUnit) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case au, ok := <-frames:
+			if !ok {
+				// The media source ended: the child died or capture stopped.
+				// That is session-fatal — there is no software fallback to
+				// degrade to (Decision 4).
+				if err := s.mediaSource().Err(); err != nil && ctx.Err() == nil {
+					s.cb.err(fmt.Errorf("capture ended: %w", err))
+				}
+				s.finish()
+				return
+			}
+			s.sender.send(au)
+		}
+	}
+}
+
+// periodic drives the two cadences that are not frame-driven: TimeSync pings
+// and the ClockMapping publication, plus the stats callback.
+func (s *Session) periodic(ctx context.Context, relay RelaySession) {
+	pinger := time.NewTicker(TimeSyncInterval)
+	defer pinger.Stop()
+	// The mapping check runs faster than the mapping cadence so the first
+	// mapping goes out promptly after the first pong rather than up to a full
+	// interval later; clockMappingPublisher owns the actual timing.
+	mapper := time.NewTicker(time.Second)
+	defer mapper.Stop()
+	stats := time.NewTicker(s.statsInterval)
+	defer stats.Stop()
+
+	pub := newClockMappingPublisher()
+	s.ts.Ping()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-pinger.C:
+			s.ts.Ping()
+		case <-mapper.C:
+			sample, ok := s.ts.Sample()
+			if pub.due(s.clock.NowUs(), ok) {
+				if err := relay.SendDatagram(wire.AppendClockMapping(nil, sample.OffsetUs)); err != nil {
+					s.log.Debug("clock mapping send failed", "err", err)
+				}
+			}
+		case <-stats.C:
+			s.cb.stats(s.Stats())
+		}
+	}
+}
+
+// Stats snapshots the session. The fps figures are windowed over the interval
+// since the previous call, exactly as the browser derives encoderFps/sentFps
+// from encodedSinceStats/dt — so a native diagnostics dump and a browser one
+// mean the same thing when read side by side.
+func (s *Session) Stats() Stats {
+	st := Stats{}
+	if s.sender != nil {
+		st = s.sender.stats()
+	}
+	s.rateMu.Lock()
+	nowUs := s.clock.NowUs()
+	if s.lastRateUs != 0 {
+		if dt := float64(nowUs-s.lastRateUs) / 1e6; dt > 0 {
+			st.EncoderFps = float64(st.EncodedFrames-s.lastEncoded) / dt
+			st.SentFps = float64(st.SentFrames-s.lastSent) / dt
+		}
+	}
+	s.lastRateUs = nowUs
+	s.lastEncoded = st.EncodedFrames
+	s.lastSent = st.SentFrames
+	s.rateMu.Unlock()
+	if s.ts != nil {
+		if sample, ok := s.ts.Sample(); ok {
+			st.TimeSyncAvailable = true
+			st.TimeSyncRttMs = sample.RttMs
+			st.TimeSyncOffsetUs = sample.OffsetUs
+		}
+	}
+	if m := s.mediaSource(); m != nil {
+		st.Encoder = m.Encoder()
+		st.CapturePath = m.CapturePath()
+	}
+	st.Width = s.cfg.Media.Width
+	st.Height = s.cfg.Media.Height
+	st.Fps = s.cfg.Media.Fps
+	st.BitrateBps = s.cfg.Media.BitrateBps
+	// Decision 20: the child owns capture, so this stage is genuinely
+	// unobservable from here. Never fabricated from the requested rate.
+	st.CaptureFpsAvailable = false
+	return st
+}
+
+// mediaSource returns the live source, or nil before the capture phase.
+func (s *Session) mediaSource() MediaSource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.media
+}
+
+// BroadcastID returns the session's code once announced.
+func (s *Session) BroadcastID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.BroadcastID
+}
+
+// Stop ends the session. Idempotent, and safe to call before Start.
+func (s *Session) Stop() error {
+	s.teardown()
+	s.wg.Wait()
+	s.finish()
+	return nil
+}
+
+// teardown releases everything the session holds. Reached by Stop and by every
+// failure path in Start — the single shared teardown the browser's
+// BroadcastPipeline.teardown() is, for the same reason.
+func (s *Session) teardown() {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.stopped = true
+	cancel, relay, media := s.cancel, s.relay, s.media
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if media != nil {
+		if err := media.Stop(); err != nil {
+			s.log.Warn("media stop failed", "err", err)
+		}
+	}
+	if s.sender != nil {
+		// Let in-flight keyframe writes settle before closing the session out
+		// from under them.
+		s.sender.wait()
+	}
+	if relay != nil {
+		// Closing the session releases the publisher slot server-side. Without
+		// it the relay holds the broadcast ID until its grace period expires.
+		if err := relay.CloseWithError(webtransport.SessionErrorCode(0), ""); err != nil {
+			s.log.Debug("relay close failed", "err", err)
+		}
+	}
+}
+
+// finish fires OnEnded exactly once per session.
+func (s *Session) finish() {
+	s.endOnce.Do(func() { s.cb.ended() })
+}

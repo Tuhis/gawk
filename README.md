@@ -26,7 +26,7 @@ getDisplayMedia
   every newly-joined viewer with them — late joiners get a picture
   immediately instead of waiting for the next keyframe.
 - One frozen **wire format** (20-byte VideoChunk header + DecoderConfig
-  message, big-endian) implemented twice — Go (`gawk-server/internal/wire`)
+  message, big-endian) implemented twice — Go (`gawk-server/wire`)
   and TypeScript (`gawk-app/src/transport/wire.ts`) — kept byte-compatible
   by shared golden test vectors.
 - Codec is **negotiated**, not fixed: H.264 hardware realtime is the happy
@@ -38,8 +38,9 @@ getDisplayMedia
 |------|------|
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R16), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
-| `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `docs/` | Per-milestone design notes and gotchas (`01`–`21`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `wire/` is public so the native broadcaster can import it. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
+| `gawk-broadcast/` | Go native Linux broadcaster (R14): Gio GUI + CLI over a shared engine, hardware encode via portal + GStreamer. Own module, own release; no image or chart — a binary you run on your own PC. See its [README](gawk-broadcast/README.md) |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
 | `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
@@ -126,13 +127,14 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 16. 🚧 Broadcaster worker offload (R11): the broadcast pipeline (MSTP capture pump, scaling/gating, encode, packetize, WebTransport send) runs in a Web Worker fed by a transferred `MediaStreamTrack` clone; `getDisplayMedia` + preview stay on main, connect-before-picker ordering and `BroadcastStartError.phase` semantics preserved, capability probe + main-thread fallback (Firefox), overlay "Pipeline" row shows placement. UI/pipeline only — zero server/wire changes — `docs/16` (implemented 2026-07-14; automated gates green, manual browser verify pending)
 17. 🚧 Viewer playback smoothing (R12): jitter measurement at the actual paint (presentation-cadence error, arrival p95−min, decode σ), a separate opt-in **"Paced playback (adaptive)"** mode (`PacedPresentationSink` holding ≤3 decoded frames to vsync-aligned targets, subsuming the R10 coalescing sink) with a jitter-tracked adaptive playout offset (clamp p95−min+34 ms to [50, 350]), and an experimental opportunistic frame-interpolation scaffold (WebGL2 blend, own default-off toggle). Viewer-only — zero server/wire changes — `docs/17` (T1–T4 implemented 2026-07-15; automated gates green, manual browser verify pending; T5 motion-estimated interpolation + T6 findings not started)
 18. 🚧 Advanced broadcaster settings (R13): `isConfigSupported` probe matrix, HW-aware auto ceiling + probe-driven 'auto' framerate default (60 when hardware probes it, else 30), acceleration tri-state, bitrate/codec overrides, probe-annotated pickers, and capture aligned to the sticky selection via live `applyConstraints` — **no settings change ever restarts the stream**. Supersedes R7; UI/pipeline only — zero server/wire changes — `docs/18` (L1–L5 implemented 2026-07-15; automated gates green, manual browser verify pending)
-19. 📋 Native Linux broadcaster (R14): a Gio GUI app + CLI over a shared Go engine (inside the `gawk-server` module, reusing `internal/wire`), publishing with hardware encode from Linux via an ffmpeg subprocess (`pipewiregrab` → `h264_vulkan` → `h264_nvenc` → `h264_vaapi` → `libx264`, per-user trial-encode probing); Vulkan Video is the target encode API with direct-in-Go encode as a gated follow-up — `docs/19` (designed 2026-07-15, not started)
+19. 🚧 Native Linux broadcaster (R14): a Gio GUI app + CLI over a shared Go engine in the new top-level [`gawk-broadcast/`](gawk-broadcast/) module (importing the relay's now-public `gawk-server/wire` — reused, never mirrored), publishing with **hardware encode** from Linux, which the browser structurally cannot do there. Go-owned XDG ScreenCast portal handshake (the share picker appears on every start — the choice is never persisted) feeding a GStreamer subprocess; hardware-only cascade `vulkanh264enc` → `nvh264enc` → `vah264enc` → **refusal pointing at the browser** (no software rung), each accepted only by real trial encode; MPEG-TS over the pipe for structural AU boundaries; raw Annex-B with empty extradata (the only thing exercising the viewer's Annex-B branch). Zero server/wire/viewer changes — `docs/19` (V0–V7 implemented 2026-07-15; automated gates green including end-to-end tests against the real relay binary; **manual verification on the Linux gaming PC pending** — hardware encode, the latency-bias gate, portal + notifications on KDE/GNOME. V8 direct Vulkan Video encode is gated on V2's on-hardware Stage-1 result and not started)
 20. 📋 System audio (R15, experimental): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), new wire types 0x07/0x08 + a hub audio-config cache, viewer-worker decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock (adaptive audio jitter buffer; audio-master video pacing in the R12 paced modes). Default-off "Enable audio (experimental)" broadcaster toggle; viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, not started)
 21. 📋 iOS native fullscreen (R16): the viewer's fullscreen button is a silent no-op on iPhone (no Element Fullscreen API there — every iOS browser is WebKit; the only native fullscreen is `webkitEnterFullscreen()` on a `<video>`, and the viewer paints a canvas). Fix: a `TeeRenderSink` decorator wraps each **presented** canvas frame (R12 pacing/interpolation preserved) into a worker-side `VideoTrackGenerator` feeding a hidden pre-armed `<video>`; tiered `useFullscreen` (element → video → CSS pseudo-fullscreen) so the button always does something; plus a new stats-overlay **Feature Gates** section (UpperCamelCase names, first gate `NativeVideoFullscreen`). Gated on the *absence* of `Element.requestFullscreen` — non-iPhone devices unchanged (overlay section aside). Viewer-only — zero server/wire changes — `docs/21` (designed 2026-07-16, not started)
 
-What comes next (the R11/R12/R13 manual browser verifies, then the R14
-native broadcaster, R15 system audio, and R16 iOS native fullscreen
-builds) is laid out in [`ROADMAP.md`](ROADMAP.md).
+What comes next (the R11/R12/R13 manual browser verifies and R14's manual
+verify on the gaming PC, then R14's V8 direct Vulkan Video encode if that
+verify says the hardware is there, plus the R15 system audio and R16 iOS
+native fullscreen builds) is laid out in [`ROADMAP.md`](ROADMAP.md).
 
 ## Important gotchas
 
@@ -386,6 +388,72 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   (source)` flat). Reproduce real backpressure with DevTools CPU throttling,
   which forces the software encode path.
   ([docs/09](docs/09-automatic-fallback.md))
+
+**Native Linux broadcaster (R14)**
+
+- **The browser cannot hardware-encode on Linux — don't go flag-hunting.**
+  WebCodecs `VideoEncoder` HW encode ships on Windows/macOS/Android only
+  (Linux gets HW *decode*), Chromium's own VA-API doc disclaims Linux, and
+  on NVIDIA it's impossible in principle: Chromium's Linux encode path is
+  VA-API only and `nvidia-vaapi-driver` is decode-only by design. That gap
+  is the entire reason `gawk-broadcast/` exists.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`gawk-broadcast` is the *only* Annex-B publisher — and the only thing
+  exercising the viewer's Annex-B branch.** It emits raw Annex-B with
+  **empty DecoderConfig extradata** and builds no avcC record; the viewer's
+  `isAnnexB` start-code sniff (`viewer.ts`) routes it into the branch that
+  ignores extradata. The browser broadcaster always sends AVCC, so a
+  regression there breaks native broadcasts while browser ones stay green.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`h264parse config-interval=-1` is load-bearing, not cosmetic.** Empty
+  extradata means a late joiner primed with the relay's cached keyframe can
+  only decode if SPS/PPS travel *inside* the keyframe AU. Drop the flag and
+  late joiners see nothing while everyone already watching is fine.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **Don't gate the native broadcaster on Wayland** — the XDG ScreenCast
+  portal works on X11 GNOME sessions too. Gate on the portal call
+  succeeding, never on the session type.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`pipewiregrab` is NOT in mainline FFmpeg** — it's an unmerged patchset
+  carried downstream by Jami; mainline ffmpeg has no PipeWire input at all.
+  This is why capture is a GStreamer subprocess. Don't re-propose it
+  without verifying it actually merged.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **Notifications must be critical urgency or the broadcaster never sees
+  them** — KDE's portal inhibits normal notifications *while screen
+  casting*, so the act of broadcasting suppresses exactly the notifications
+  a fullscreen broadcaster needs. Failures use critical; going live doesn't.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **No viewer count, in any broadcaster** — nothing on the wire tells a
+  publisher about subscribers, so the native app can't show one either.
+  That's parity with the browser, not an omission.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`pipewiresrc` can die during preroll with `stream error: unhandled
+  format` — that's capture, not the encoder.** The compositor's chosen
+  screencast format sometimes can't be mapped onto the downstream caps
+  (DMA-BUF modifier/DRM-caps skew, 10-bit HDR desktops). The live start
+  walks a three-rung capture ladder per encoder (rate-capped zero-copy —
+  `max-framerate` asked of the compositor — then free negotiation, then
+  system-memory pinned `video/x-raw`) before advancing the cascade, and an
+  all-pipewiresrc failure reports as `ErrCaptureFormat`, never "no hardware
+  encoder". Diagnose with `GST_DEBUG=pipewire*:5` (the child inherits env).
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`gawk-broadcast` is its own Go module and its CI job needs cgo + Gio
+  headers** (`libwayland-dev`, `libvulkan-dev`, …) and `CGO_ENABLED=1` —
+  with cgo off, the GUI fails as "build constraints exclude all Go files in
+  `gioui.org/internal/vk`", which says nothing about cgo. The engine and CLI
+  need no headers: `go test ./internal/...` works bare. The relay's CI job
+  must stay header-free (Decision 1).
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **`mpegts.AU.Data` aliases the demuxer's buffer — clone before it outlives
+  the callback.** A frame handed to the channel un-cloned is rewritten by
+  the AUs demuxed behind it: in the field this meant clean debug dumps (both
+  taps read the bytes while still valid) but a black viewer — the SPS parse
+  ran on recycled bytes, so no DecoderConfig was ever derived, and an
+  unconfigured `VideoDecoder` swallows chunks with zero errors. Motion
+  scrambled queued frames to reference soup; a static screen (drained
+  channel) stayed sharp. `-race` catches it outright.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
 
 **CI / deployment**
 

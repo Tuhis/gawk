@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -22,7 +23,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
-	"github.com/Tuhis/gawk/gawk-server/internal/wire"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // Server wraps a webtransport.Server with the gawk routes.
@@ -38,8 +39,11 @@ type Server struct {
 
 	// testHookPostUpgradeSubscribe runs between the session upgrade and the
 	// authoritative Subscribe, letting tests deterministically widen the
-	// CheckSubscribe→Subscribe race window. Always nil in production.
-	testHookPostUpgradeSubscribe func(id string)
+	// CheckSubscribe→Subscribe race window. Never stored in production.
+	// Atomic because tests install it while handler goroutines are already
+	// serving, and the in-process UDP loopback between test client and
+	// server provides no happens-before edge for a plain field write.
+	testHookPostUpgradeSubscribe atomic.Pointer[func(id string)]
 
 	// testHookRateLimitLoopback disables the loopback bypass of the
 	// connection rate limiter, so tests (which dial from 127.0.0.1) can
@@ -450,8 +454,8 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.testHookPostUpgradeSubscribe != nil {
-		s.testHookPostUpgradeSubscribe(id)
+	if hook := s.testHookPostUpgradeSubscribe.Load(); hook != nil {
+		(*hook)(id)
 	}
 
 	sub, err := s.registry.Subscribe(id, &webtransportSessionAdapter{sess})

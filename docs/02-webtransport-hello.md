@@ -129,7 +129,7 @@ resolution note above). Steps:
 
 ## Wire format golden vectors (for the TS mirror, chunk B4)
 
-From `internal/wire/wire_test.go`:
+From `gawk-server/wire/wire_test.go`:
 
 - VideoChunk (keyframe, frameID `0x01020304`, chunkIndex 5, chunkCount 130,
   timestampUs `0x5D21DBA5F0`, payload `"abc"`):

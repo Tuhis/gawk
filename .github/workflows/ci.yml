@@ -1,6 +1,7 @@
 # Validation on every PR and main push: Go tests (with -race, which needs
-# CGO), frontend lint/test/build, chart lint/render, and docker builds
-# (no push — publishing happens in release-please.yml on release).
+# CGO) for both Go modules, frontend lint/test/build, chart lint/render, and
+# docker builds (no push — publishing happens in release-please.yml on
+# release).
 #
 # No path filters on purpose: the whole matrix takes a few minutes, and
 # skipped-vs-required check semantics aren't worth it at this repo size.
@@ -30,6 +31,102 @@ jobs:
       - run: go test -race ./...
         env:
           CGO_ENABLED: "1"
+
+  # The native Linux broadcaster (R14, docs/19). Separate from the `server`
+  # job on purpose (Decision 1): the GUI shell imports Gio, so this job — and
+  # only this job — pays for the cgo/Wayland/X11/EGL/Vulkan headers. The
+  # relay's job must stay header-free.
+  broadcast:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gawk-broadcast
+    env:
+      # Explicit, not inherited: Gio's window backend is cgo, so with
+      # CGO_ENABLED=0 the GUI package fails to build with a confusing
+      # "build constraints exclude all Go files in gioui.org/internal/vk"
+      # rather than anything about cgo.
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gawk-broadcast/go.mod
+          cache-dependency-path: gawk-broadcast/go.sum
+      # Gio's build dependencies (docs/19 Decision 14) — the honest price of
+      # a native Wayland GUI. Keep in sync with gawk-broadcast/README.md.
+      - name: Install Gio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
+            libffi-dev libxcursor-dev libvulkan-dev
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+      # `go test` type-checks the GUI package but never links it. Building the
+      # shells is what proves the Gio window actually compiles and links —
+      # this job is the only place that happens automatically.
+      #
+      # The binaries are also uploaded as an artifact: R14's claims (hardware
+      # encode, the portal, game fps) are unverifiable in CI by construction —
+      # no GPU, no portal, no desktop — so a build someone can run on real
+      # hardware is how this gets tested at all, and it must be available
+      # before merge, not after.
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          # -trimpath keeps build paths out of the binary handed to someone else.
+          go build -trimpath -o dist/ ./cmd/...
+      # Recorded, not guessed: INSTALL.md's library list has to match what the
+      # binary actually links, and the glibc floor decides whether it starts at
+      # all on the tester's distro.
+      - name: Record build provenance and runtime dependencies
+        run: |
+          # The floor is the newest glibc symbol version the binary actually
+          # references — NOT the builder's glibc, which is only an upper bound
+          # and overstates the requirement badly (2.39 vs. the real 2.34,
+          # i.e. "rebuild on Ubuntu 22.04" vs. "just run it").
+          glibc_floor() {
+            objdump -T "$1" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          }
+          {
+            echo "gawk-broadcast — prebuilt test binaries"
+            echo
+            echo "commit:  ${{ github.sha }}"
+            echo "branch:  ${{ github.ref_name }}"
+            echo "built:   $(date -u +%FT%TZ)"
+            echo "runner:  $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m))"
+            echo "go:      $(go version)"
+            # sed, not head: head closes the pipe early and ldd reports the
+            # SIGPIPE as an error into the file we're generating.
+            echo "builder glibc: $(ldd --version | sed -n 1p)"
+            echo
+            echo "Minimum glibc to RUN these (check yours with 'ldd --version'):"
+            echo "  gawk-broadcast-gui: $(glibc_floor dist/gawk-broadcast-gui)"
+            echo "  gawk-broadcast:     $(glibc_floor dist/gawk-broadcast)"
+            echo
+            echo "Below that they won't start. Above it, a missing shared library"
+            echo "is the likelier failure — see INSTALL.md, and check with:"
+            echo "  ldd ./gawk-broadcast-gui | grep 'not found'"
+            echo
+            echo "=== gawk-broadcast-gui links against ==="
+            ldd dist/gawk-broadcast-gui
+            echo
+            echo "=== gawk-broadcast (CLI) links against ==="
+            ldd dist/gawk-broadcast
+          } | tee dist/BUILD-INFO.txt
+      - name: Include install instructions with the binaries
+        run: cp INSTALL.md dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gawk-broadcast-linux-amd64-${{ github.sha }}
+          # Repo-relative, not job-relative: `defaults.run.working-directory`
+          # applies to `run:` steps only, never to an action's inputs.
+          path: gawk-broadcast/dist/
+          retention-days: 30
+          if-no-files-found: error
 
   app:
     runs-on: ubuntu-latest
