@@ -74,6 +74,11 @@ type sender struct {
 
 	mu sync.Mutex
 	st Stats
+	// lastKeyframeUs and the EMA behind Stats.KeyframeIntervalMs (guarded by
+	// mu). Measured on AU arrival stamps — the same clock TimeSync reads.
+	lastKeyframeUs uint64
+	kfIntervalMs   float64
+	kfIntervalOK   bool
 }
 
 func newSender(relay RelaySession, clock Clock, log *slog.Logger) *sender {
@@ -94,6 +99,17 @@ func (s *sender) send(au AccessUnit) {
 	s.st.EncodedFrames++
 	if au.Keyframe {
 		s.st.Keyframes++
+		if s.lastKeyframeUs != 0 && au.TimestampUs > s.lastKeyframeUs {
+			gap := float64(au.TimestampUs-s.lastKeyframeUs) / 1000
+			if s.kfIntervalOK {
+				// EMA, α=0.3: settles within a few GOPs, still smooths the
+				// jitter damage-driven capture puts on individual gaps.
+				s.kfIntervalMs = 0.7*s.kfIntervalMs + 0.3*gap
+			} else {
+				s.kfIntervalMs, s.kfIntervalOK = gap, true
+			}
+		}
+		s.lastKeyframeUs = au.TimestampUs
 	}
 	s.mu.Unlock()
 
@@ -330,6 +346,8 @@ func (s *sender) stats() Stats {
 	defer s.mu.Unlock()
 	st := s.st
 	st.Codec = s.codec
+	st.KeyframeIntervalAvailable = s.kfIntervalOK
+	st.KeyframeIntervalMs = s.kfIntervalMs
 	return st
 }
 

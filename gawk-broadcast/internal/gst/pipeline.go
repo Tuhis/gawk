@@ -73,13 +73,17 @@ GST_DEBUG=pipewire*:5 set in the environment and save the log output.`
 // The shape, and why each link is what it is:
 //
 //	pipewiresrc fd=3 path=N            the portal's granted stream (Decision 5)
-//	! videorate drop-only=true         VFR pass-through — see below
-//	! <hw convert/scale>               stays on the GPU
+//	auto:   ! <hw convert/scale>       directly on the source — see below
+//	        ! videorate drop-only=true VFR pass-through — see below
+//	sysmem: ! video/x-raw              CPU-visible formats only
+//	        ! videorate drop-only=true
+//	        ! videoconvert ! <hw convert/scale>
+//	! caps WxH + framerate             scale target + nominal rate — see below
 //	! <hw encoder>                     the GPU's encode block (Decision 4)
 //	! h264parse config-interval=-1     SPS/PPS before every IDR (load-bearing)
 //	! mpegtsmux ! fdsink fd=1          one PES = one AU (Decision 7)
 //
-// Two of those are easy to get subtly wrong:
+// The parts that are easy to get subtly wrong:
 //
 // **videorate drop-only=true** and never a plain CFR conversion. Portal
 // capture is damage-driven: nothing arrives while the screen is static. A CFR
@@ -87,6 +91,25 @@ GST_DEBUG=pipewire*:5 set in the environment and save the log output.`
 // still screen — then emits a burst of stale duplicates, which arrival
 // stamping would cheerfully timestamp "now". Dropping is the only rate control
 // compatible with stamping frames as they arrive (Decision 13).
+//
+// **The encoder caps carry framerate=<fps>/1** even though the stream is VFR.
+// The nominal rate is what the encoder budgets rate control against; without
+// it the caps say 0/1 and vah264enc silently assumes 30 fps (verified in
+// gst-plugins-bad source) — at 60 fps that halves the effective bitrate and
+// motion turns to mush (field finding 2026-07-17). With drop-only upstream
+// this is signalling, not CFR: no frame is ever synthesized, and when capture
+// runs under the nominal rate the encoder simply underruns the bitrate.
+//
+// **Auto mode puts the converter directly on pipewiresrc.** The 2026-07-17
+// zero-copy failure died in pipewiresrc's finish/allocation step with
+// videorate sitting between it and vapostproc: the caps mapped, the DMA-BUF
+// buffer-pool negotiation did not. With the converter adjacent, the
+// allocation query flows to the one element that can actually provide a
+// GPU-importing pool. The rate gate then runs on converted frames — a GPU
+// convert of a frame that is later dropped is the price of zero-copy import,
+// and it is the GPU's video block paying it, not the CPU. System-memory mode
+// keeps the gate first: there the convert is CPU work, and dropped frames
+// must never be converted.
 //
 // **h264parse config-interval=-1** puts SPS/PPS in front of every IDR. On this
 // path the DecoderConfig extradata is empty (we emit raw Annex-B and never
@@ -117,19 +140,23 @@ func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode Capt
 		// (no memory feature) makes pipewiresrc offer only modifier-less
 		// formats, which the compositor satisfies with CPU-visible buffers.
 		args = append(args, "!", "video/x-raw")
-	}
-	args = append(args, "!")
-	args = append(args, rateGate(cfg)...)
-	if mode == CaptureSystemMemory {
-		// After the rate gate on purpose — dropped frames are never converted.
-		// videoconvert covers a compositor whose system-memory format the
-		// encoder's own converter cannot import (10-bit HDR desktops); it is
-		// passthrough whenever the downstream already accepts the format.
+		args = append(args, "!")
+		args = append(args, rateGate(cfg)...)
+		// videoconvert after the rate gate on purpose — dropped frames are
+		// never CPU-converted. It covers a compositor whose system-memory
+		// format the encoder's own converter cannot import (10-bit HDR
+		// desktops); it is passthrough whenever downstream already accepts
+		// the format.
 		args = append(args, "!", "videoconvert")
+		args = append(args, "!")
+		args = append(args, c.convert(cfg)...)
+	} else {
+		args = append(args, "!")
+		args = append(args, c.convert(cfg)...)
+		args = append(args, "!")
+		args = append(args, rateGate(cfg)...)
 	}
-	args = append(args, "!")
-	args = append(args, c.convert(cfg)...)
-	args = append(args, "!", scaleCaps(cfg))
+	args = append(args, "!", encoderCaps(c, cfg, mode))
 	args = append(args, "!")
 	args = append(args, c.encArgs(cfg)...)
 	args = append(args, "!", "h264parse", "config-interval=-1")
@@ -176,11 +203,22 @@ func rateGate(cfg engine.MediaConfig) []string {
 	}
 }
 
-func scaleCaps(cfg engine.MediaConfig) string {
+// encoderCaps is the capsfilter in front of the encoder: the scale target,
+// the nominal framerate (rate-control budget — see BuildPipeline), and, in
+// auto mode, the candidate's GPU memory feature so the converter→encoder
+// handoff never drops to system memory (a bare video/x-raw capsfilter means
+// exactly system memory, which forces a download + re-upload round trip per
+// frame). System-memory capture keeps bare caps: it is the proven fallback
+// rung and its negotiation semantics stay untouched.
+func encoderCaps(c Candidate, cfg engine.MediaConfig, mode CaptureMode) string {
 	// H.264 wants even dimensions; the ladder math elsewhere in the project
 	// makes the same guarantee (docs/08).
 	w, h := cfg.Width&^1, cfg.Height&^1
-	return fmt.Sprintf("video/x-raw,width=%d,height=%d", w, h)
+	media := "video/x-raw"
+	if mode == CaptureAuto && c.memory != "" {
+		media = fmt.Sprintf("video/x-raw(%s)", c.memory)
+	}
+	return fmt.Sprintf("%s,width=%d,height=%d,framerate=%d/1", media, w, h, cfg.Fps)
 }
 
 // withLinks inserts the "!" separators gst-launch needs between elements while

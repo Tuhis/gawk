@@ -23,12 +23,15 @@ func TestEveryCandidatePinsTheEncoderInvariants(t *testing.T) {
 				// VFR pass-through, drop-only. A CFR converter would hold the last
 				// frame until the next arrives (unbounded on a static screen) then
 				// burst stale duplicates that arrival-stamping would timestamp
-				// "now" — silently wrecking the latency measurement.
+				// "now" — silently wrecking the latency measurement. A framerate
+				// pin on the encoder caps is fine — with drop-only=true it is
+				// nominal-rate signalling, not CFR (no frame is ever synthesized) —
+				// but a videorate without drop-only would be the real thing.
 				if !strings.Contains(p, "videorate drop-only=true") {
 					t.Errorf("no drop-only rate gate:\n%s", p)
 				}
-				if strings.Contains(p, "videorate ! ") || strings.Contains(p, "framerate=60/1 !") {
-					t.Errorf("looks like a CFR conversion:\n%s", p)
+				if strings.Contains(p, "videorate ! ") {
+					t.Errorf("bare videorate — looks like a CFR conversion:\n%s", p)
 				}
 
 				// SPS/PPS before every IDR. Load-bearing: the DecoderConfig
@@ -102,6 +105,72 @@ func TestAutoCaptureKeepsZeroCopyNegotiation(t *testing.T) {
 	}
 }
 
+// The encoder caps must carry the nominal framerate. The portal's caps are
+// framerate=0/1 (variable — damage-driven capture), and vah264enc budgets its
+// rate control for an assumed 30 fps when it sees 0/1 (verified in
+// gst-plugins-bad source, field finding 2026-07-17): at 60 fps that halves the
+// effective bitrate and motion turns to mush. Pinning framerate=<fps>/1 after
+// the drop-only gate tells the encoder the true budget without ever
+// synthesizing a frame.
+func TestEncoderCapsCarryTheNominalFramerate(t *testing.T) {
+	cfg := engine.DefaultMediaConfig() // 60 fps
+	for _, c := range Cascade {
+		for _, mode := range CaptureModes {
+			p := pipelineString(BuildPipeline(c, cfg, 1, mode))
+			if !strings.Contains(p, "framerate=60/1") {
+				t.Errorf("%s/%s: encoder caps carry no framerate — vah264enc will budget for 30 fps:\n%s",
+					c.Element, mode, p)
+			}
+		}
+	}
+}
+
+// In auto mode the candidate's converter sits directly on pipewiresrc: the
+// DMA-BUF allocation query must flow between them with no element in between.
+// The 2026-07-17 field failure died in pipewiresrc's finish/allocation step
+// with videorate sitting in the middle — the caps mapped fine, the buffer
+// pool negotiation did not. The rate gate moves after the converter (a GPU
+// convert of a frame that is then dropped is the price of zero-copy import).
+func TestAutoCapturePutsTheConverterOnThePortalBoundary(t *testing.T) {
+	cfg := engine.DefaultMediaConfig()
+	for _, c := range Cascade {
+		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto))
+		first := c.convert(cfg)[0]
+		if !strings.Contains(p, "do-timestamp=true ! "+first) {
+			t.Errorf("%s: auto mode does not put %s directly on pipewiresrc:\n%s", c.Element, first, p)
+		}
+	}
+}
+
+// In auto mode the converter→encoder handoff stays in the candidate's GPU
+// memory. A bare video/x-raw capsfilter means system memory: the converter
+// would download every frame for the encoder to re-upload — a round trip per
+// frame that silently costs more than the conversion itself.
+func TestAutoCaptureEncoderCapsStayOnTheGpu(t *testing.T) {
+	cfg := engine.DefaultMediaConfig()
+	for _, tc := range []struct{ element, feature string }{
+		{"vulkanh264enc", "memory:VulkanImage"},
+		{"nvh264enc", "memory:CUDAMemory"},
+		{"vah264enc", "memory:VAMemory"},
+	} {
+		c, ok := FindCandidate(tc.element)
+		if !ok {
+			t.Fatalf("%s is not in the cascade", tc.element)
+		}
+		p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto))
+		if !strings.Contains(p, "video/x-raw("+tc.feature+")") {
+			t.Errorf("%s: encoder caps do not pin %s — the handoff drops to system memory:\n%s",
+				tc.element, tc.feature, p)
+		}
+		// System-memory capture keeps bare caps on purpose: it is the proven
+		// fallback rung, and its negotiation semantics stay untouched.
+		ps := pipelineString(BuildPipeline(c, cfg, 1, CaptureSystemMemory))
+		if strings.Contains(ps, "video/x-raw(") {
+			t.Errorf("%s: system-memory mode pins a GPU memory feature:\n%s", tc.element, ps)
+		}
+	}
+}
+
 // No B-frames: the whole viewer pipeline assumes decode order == presentation
 // order (frameId ordering, the reorder buffer, live-edge and pacing math).
 // vulkanh264enc has no B-frame support to disable, which is why this checks
@@ -167,10 +236,13 @@ func TestTrialsNeverTouchThePortal(t *testing.T) {
 }
 
 // H.264 wants even dimensions (docs/08 makes the same guarantee in the ladder).
-func TestScaleCapsRoundsToEvenDimensions(t *testing.T) {
+func TestEncoderCapsRoundToEvenDimensions(t *testing.T) {
 	cfg := engine.MediaConfig{Width: 1921, Height: 1081, Fps: 60, GOPMs: 500}
-	if got := scaleCaps(cfg); !strings.Contains(got, "width=1920") || !strings.Contains(got, "height=1080") {
-		t.Errorf("scaleCaps = %q, want even dimensions", got)
+	for _, mode := range CaptureModes {
+		got := encoderCaps(Cascade[len(Cascade)-1], cfg, mode)
+		if !strings.Contains(got, "width=1920") || !strings.Contains(got, "height=1080") {
+			t.Errorf("encoderCaps (%s) = %q, want even dimensions", mode, got)
+		}
 	}
 }
 

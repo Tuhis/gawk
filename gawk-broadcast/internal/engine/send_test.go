@@ -28,6 +28,36 @@ func newTestSender(sess RelaySession) *sender {
 	return newSender(sess, &FakeClock{}, testLog)
 }
 
+// The keyframe cadence is measured, not assumed: key-int-max is a *frame*
+// count derived from the nominal fps, so when damage-driven capture runs
+// under the nominal rate the wall-clock GOP stretches proportionally
+// (observed 2026-07-17: ~650 ms at ~40 fps against the 500 ms target). The
+// stat is what lets a broadcaster see that without instrumenting a viewer.
+func TestKeyframeCadenceIsMeasured(t *testing.T) {
+	sess := newFakeSession()
+	s := newTestSender(sess)
+
+	if st := s.stats(); st.KeyframeIntervalAvailable {
+		t.Fatal("cadence available before any keyframe interval exists")
+	}
+	// Three keyframes, 700 ms apart on the arrival clock.
+	for i, ts := range []uint64{1_000_000, 1_700_000, 2_400_000} {
+		s.send(AccessUnit{Data: keyframeAU(), Keyframe: true, TimestampUs: ts})
+		if i == 0 {
+			if st := s.stats(); st.KeyframeIntervalAvailable {
+				t.Fatal("one keyframe is not an interval")
+			}
+		}
+	}
+	st := s.stats()
+	if !st.KeyframeIntervalAvailable {
+		t.Fatal("cadence not available after three keyframes")
+	}
+	if st.KeyframeIntervalMs < 699 || st.KeyframeIntervalMs > 701 {
+		t.Errorf("KeyframeIntervalMs = %.1f, want ≈700", st.KeyframeIntervalMs)
+	}
+}
+
 // Deltas must round-trip: what the viewer's reassembler puts back together has
 // to be exactly what the encoder produced.
 func TestDeltaChunkingRoundTrips(t *testing.T) {

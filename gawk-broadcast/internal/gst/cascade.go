@@ -42,6 +42,26 @@ type Candidate struct {
 	convert func(cfg engine.MediaConfig) []string
 	// encArgs returns the encoder element plus its properties.
 	encArgs func(cfg engine.MediaConfig) []string
+	// memory is the GstCapsFeatures name of the candidate's GPU memory type,
+	// pinned on the encoder caps in auto capture so the converter→encoder
+	// handoff never falls to system memory (see encoderCaps).
+	memory string
+}
+
+// EncoderAPI names the encode API behind a cascade element, for humans: this
+// is what the GUI's indicator shows, because "VA-API" answers "which driver
+// stack am I debugging?" where "vah264enc" answers only "which element".
+func EncoderAPI(element string) string {
+	switch element {
+	case "vulkanh264enc":
+		return "Vulkan Video"
+	case "nvh264enc":
+		return "NVENC"
+	case "vah264enc":
+		return "VA-API"
+	default:
+		return element
+	}
 }
 
 // Cascade is the ordered preference list.
@@ -85,6 +105,7 @@ var Cascade = []Candidate{
 		// runtime/fixture wins" rule. It is the first thing to check when
 		// validating Vulkan on the gaming PC: if the default GOP is wrong, this
 		// candidate needs a version-specific arg, or drops below nv/va.
+		memory: "memory:VulkanImage",
 		encArgs: func(cfg engine.MediaConfig) []string {
 			return []string{
 				"vulkanh264enc",
@@ -103,6 +124,7 @@ var Cascade = []Candidate{
 			// driver, and the risk V2 exists to settle on real hardware.
 			return []string{"cudaupload", "cudaconvertscale"}
 		},
+		memory: "memory:CUDAMemory",
 		encArgs: func(cfg engine.MediaConfig) []string {
 			return []string{
 				"nvh264enc",
@@ -121,6 +143,7 @@ var Cascade = []Candidate{
 		convert: func(cfg engine.MediaConfig) []string {
 			return []string{"vapostproc"}
 		},
+		memory: "memory:VAMemory",
 		encArgs: func(cfg engine.MediaConfig) []string {
 			return []string{
 				"vah264enc",

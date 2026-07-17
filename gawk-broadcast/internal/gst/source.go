@@ -80,10 +80,15 @@ type Source struct {
 
 	mu      sync.Mutex
 	encoder string
-	err     error
-	stream  *portal.Stream
-	kid     *child
-	stopped bool
+	// captureMode is the ladder rung the live start settled on, valid once
+	// captureModeSet — feeds Stats.CapturePath so a broadcaster can see
+	// whether zero-copy actually won without reading child logs.
+	captureMode    CaptureMode
+	captureModeSet bool
+	err            error
+	stream         *portal.Stream
+	kid            *child
+	stopped        bool
 
 	frames chan engine.AccessUnit
 	wg     sync.WaitGroup
@@ -244,6 +249,7 @@ func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, fi
 			s.mu.Lock()
 			s.kid = kid
 			s.encoder = cand.Name
+			s.captureMode, s.captureModeSet = mode, true
 			s.mu.Unlock()
 			if s.opts.OnEncoderChosen != nil {
 				s.opts.OnEncoderChosen(cand.Element)
@@ -472,6 +478,21 @@ func (s *Source) Encoder() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.encoder
+}
+
+// CapturePath reports the ladder rung the live start settled on: "zero-copy"
+// (auto negotiation, DMA-BUF stays on the GPU) or "system-memory" (one CPU
+// copy per frame); "" until capture is live.
+func (s *Source) CapturePath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.captureModeSet {
+		return ""
+	}
+	if s.captureMode == CaptureSystemMemory {
+		return "system-memory"
+	}
+	return "zero-copy"
 }
 
 // Err returns why capture ended, or nil for a clean stop.

@@ -164,6 +164,9 @@ esac
 	if s.Encoder() != Cascade[0].Name {
 		t.Errorf("Encoder() = %q, want %q — a capture-side failure advanced the encoder cascade", s.Encoder(), Cascade[0].Name)
 	}
+	if got := s.CapturePath(); got != "system-memory" {
+		t.Errorf("CapturePath() = %q, want system-memory — the stat must name the rung that actually won", got)
+	}
 	if n := fp.openCount(); n != 1 {
 		t.Errorf("portal opened %d times, want 1 — the capture retry must reuse the grant", n)
 	}
@@ -237,6 +240,12 @@ func TestSourceEmitsAccessUnits(t *testing.T) {
 	}
 	if s.Encoder() != Cascade[0].Name {
 		t.Errorf("Encoder() = %q, want %q", s.Encoder(), Cascade[0].Name)
+	}
+	// The auto rung won (the fake child streams on the first attempt), so the
+	// capture path reads zero-copy — the stat a broadcaster checks to see
+	// which ladder rung they are actually on.
+	if got := s.CapturePath(); got != "zero-copy" {
+		t.Errorf("CapturePath() = %q, want zero-copy", got)
 	}
 }
 

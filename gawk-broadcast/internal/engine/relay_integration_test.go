@@ -121,8 +121,9 @@ func (s *fixtureSource) Stop() error {
 	return nil
 }
 
-func (s *fixtureSource) Encoder() string { return "fixture" }
-func (s *fixtureSource) Err() error      { return nil }
+func (s *fixtureSource) Encoder() string     { return "fixture" }
+func (s *fixtureSource) CapturePath() string { return "fixture" }
+func (s *fixtureSource) Err() error          { return nil }
 
 // statusz mirrors the fields this test reads (names from hub.BroadcastStats —
 // they are the relay's, not ours to invent).

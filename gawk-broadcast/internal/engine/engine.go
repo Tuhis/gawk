@@ -464,6 +464,7 @@ func (s *Session) Stats() Stats {
 	}
 	if m := s.mediaSource(); m != nil {
 		st.Encoder = m.Encoder()
+		st.CapturePath = m.CapturePath()
 	}
 	st.Width = s.cfg.Media.Width
 	st.Height = s.cfg.Media.Height

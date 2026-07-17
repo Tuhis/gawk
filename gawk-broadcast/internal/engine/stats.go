@@ -26,9 +26,23 @@ type Stats struct {
 	// reader might mistake for zero.
 	CaptureFpsAvailable bool
 
+	// CapturePath says how frames cross the pipewiresrc boundary:
+	// "zero-copy" (DMA-BUF stays on the GPU) or "system-memory" (one CPU
+	// copy per frame); "" before capture starts.
+	CapturePath string
+
 	// EncodedFrames counts access units demuxed from the child.
 	EncodedFrames uint64
 	Keyframes     uint64
+
+	// KeyframeIntervalMs is an EMA of the wall-clock spacing between
+	// keyframes leaving the encoder, measured on AU arrival stamps.
+	// GOPMs is the *target*; the encoders take a frame count derived from
+	// the nominal fps, so damage-driven capture running under that rate
+	// stretches the real cadence proportionally — this stat is what makes
+	// that visible. Available is false until two keyframes have arrived.
+	KeyframeIntervalAvailable bool
+	KeyframeIntervalMs        float64
 	// SentFrames counts frames whose bytes reached the transport without
 	// error — R9's funnel stage 4, "actually sent".
 	SentFrames uint64

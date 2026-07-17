@@ -318,6 +318,8 @@ func (m *fakeMedia) Stop() error {
 
 func (m *fakeMedia) Encoder() string { return m.encoder }
 
+func (m *fakeMedia) CapturePath() string { return "fake" }
+
 func (m *fakeMedia) Err() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

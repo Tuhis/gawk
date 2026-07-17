@@ -1080,6 +1080,45 @@ the regression test (`TestQueuedFramesSurviveTheDemuxersBufferReuse`)
 streams the fixture without consuming, then byte-compares the queued frames
 against a standalone demux — the aliasing also trips `-race` outright.
 
+**8. Pipeline v2: nominal-rate caps, GPU-memory handoff, converter on the
+portal boundary; default bitrate 16 Mbps (2026-07-17).** Field data (dumps
+clean at 24 Mbps, garbage at the default 8) plus the vah264enc source
+finding from note 6 led to three deliberate pipeline revisions. (a) **The
+encoder caps now carry `framerate=<fps>/1`** even though the stream is VFR:
+the portal's caps say `0/1` and vah264enc silently budgets rate control for
+30 fps when it sees that — at 60 fps that halves the effective bitrate.
+With `videorate drop-only=true` upstream this is *signalling, not CFR*: no
+frame is ever synthesized, and capture running under the nominal rate makes
+the encoder underrun its bitrate (correct direction — per-frame quality
+stays at the 60 fps budget). The old pipeline-test guard treating any
+`framerate=` caps as a CFR smell was revised accordingly (drop-only is the
+invariant, the caps pin is not the violation). (b) **Auto capture puts the
+candidate's converter directly on `pipewiresrc`** (rate gate after it): the
+zero-copy rung died in finish/allocation with `videorate` between
+`pipewiresrc` and `vapostproc` — the caps mapped, the DMA-BUF buffer-pool
+negotiation did not. A GPU convert of a frame that is later dropped is the
+price of the direct adjacency, paid by the GPU's video block. Auto mode
+also pins the candidate's **GPU memory feature on the encoder caps**
+(`memory:VAMemory` / `memory:CUDAMemory` / `memory:VulkanImage`): a bare
+`video/x-raw` capsfilter means *system memory*, which silently forced a
+download + re-upload round trip between converter and encoder.
+System-memory capture keeps its proven shape (gate first — CPU converts
+must never touch dropped frames — and bare caps) plus only the framerate
+pin. (c) **Default bitrate 8 → 16 Mbps** (GUI/CLI-overridable). Also new:
+`Stats.CapturePath` ("zero-copy"/"system-memory") via a `MediaSource`
+method so a broadcaster can see which ladder rung won; measured **keyframe
+cadence** (`Stats.KeyframeIntervalMs`, EMA over AU arrival stamps) on the
+CLI stats line, GUI and diagnostics — `key-int-max` is a *frame* count
+derived from the nominal fps, so damage-driven capture running under 60 fps
+stretches the wall-clock GOP proportionally (observed ~650 ms at ~40 fps
+against the 500 ms target; gst-launch cannot inject force-key-unit events,
+so the honest answer is to measure and display, not to pretend). GUI:
+proper dark `material.Palette` (the stock theme is light — text fields and
+checkbox labels rendered near-black on the dark background), a bitrate
+setting (Mbps, blank = default, clamped [1,100]), and an encode-path
+indicator (Vulkan Video / NVENC / VA-API + capture path + rung) visible
+without opening Details.
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker

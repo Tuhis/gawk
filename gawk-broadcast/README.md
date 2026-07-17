@@ -102,7 +102,7 @@ gawk-broadcast -url https://relay.example:4433 [flags]
   -secret      publish secret, if required     (env GAWK_SECRET)
   -origin      Origin header to send           (env GAWK_ORIGIN)
   -id          reclaim this broadcast code instead of minting a new one
-  -resolution  1920x1080     -fps 60     -bitrate 8   (Mbps)
+  -resolution  1920x1080     -fps 60     -bitrate 16   (Mbps)
   -encoder     force one of vulkanh264enc, nvh264enc, vah264enc
   -insecure    skip TLS verification (development certificates only)
   -v           verbose, including the GStreamer child's stderr
@@ -239,6 +239,20 @@ encoders drain frames without that signal ever firing.
   and a keyframe arriving into a full queue flushes the stale backlog rather
   than being dropped. Under sustained backpressure the stream degrades to a
   clean keyframe cadence, never to artifacts.
+- **The encoder caps must carry `framerate=<fps>/1` even though the stream
+  is VFR.** The portal's caps say `0/1` (damage-driven capture) and
+  `vah264enc` silently budgets rate control for 30 fps when it sees that —
+  at 60 fps that halves the effective bitrate and motion turns to mush.
+  With `videorate drop-only=true` upstream the pin is signalling, not CFR:
+  no frame is ever synthesized. Related: a bare `video/x-raw` capsfilter
+  between a GPU converter and a GPU encoder means *system memory* — pin the
+  memory feature (`video/x-raw(memory:VAMemory)`) or pay a download +
+  re-upload per frame.
+- **The keyframe cadence stretches when capture runs under the nominal
+  fps.** `key-int-max`/`gop-size` count *frames*; at 40 fps real rate a
+  30-frame GOP is 750 ms, not 500. gst-launch cannot inject force-key-unit
+  events, so the cadence is measured (stats line `keyframes every ~…`,
+  GUI "Keyframe interval") rather than silently assumed.
 - **Demuxed AUs must be cloned before they outlive the demux callback.**
   `mpegts.AU.Data` aliases the demuxer's internal buffer and is rewritten by
   the next AU; a frame handed to the channel un-cloned gets scrambled while

@@ -30,12 +30,19 @@ type MediaConfig struct {
 }
 
 // DefaultMediaConfig is the shipped rung.
+//
+// 16 Mbps: 1080p60 game content over H.264 with a 500 ms GOP spends a third
+// of its budget on keyframes, and the field test (2026-07-17) put the
+// default-8 picture at "garbage" while 24 was clean — 16 is the comfortable
+// middle that still leaves 15 viewers at ~240 Mbps on the homelab's 1 Gbps
+// uplink. Local-streaming peers land in the same range (Sunshine defaults to
+// 20). The GUI and -bitrate override it per broadcast.
 func DefaultMediaConfig() MediaConfig {
 	return MediaConfig{
 		Width:      1920,
 		Height:     1080,
 		Fps:        60,
-		BitrateBps: 8_000_000,
+		BitrateBps: 16_000_000,
 		GOPMs:      500,
 	}
 }
@@ -87,6 +94,11 @@ type MediaSource interface {
 	Stop() error
 	// Encoder names the cascade candidate in use, or "" before Start.
 	Encoder() string
+	// CapturePath says how frames cross the capture boundary ("zero-copy",
+	// "system-memory"), or "" before capture starts. Stats-only — nothing
+	// branches on it; it exists so a broadcaster can see which rung of the
+	// capture ladder actually won without reading child logs.
+	CapturePath() string
 	// Err returns the failure that ended capture, or nil for a clean stop.
 	Err() error
 }

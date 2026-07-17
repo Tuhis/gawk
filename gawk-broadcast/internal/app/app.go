@@ -211,7 +211,9 @@ func (a *App) run(ctx context.Context, id string) {
 				a.invalidate()
 			},
 			OnEncoderChosen: func(enc string) {
-				a.setStatus(fmt.Sprintf("Live — encoding with %s", enc))
+				// The API name first: "VA-API" answers "which driver stack am
+				// I on?" where the element name answers only "which element".
+				a.setStatus(fmt.Sprintf("Live — %s hardware encode (%s)", gst.EncoderAPI(enc), enc))
 			},
 			OnStats: func(s engine.Stats) {
 				a.mu.Lock()
@@ -420,9 +422,11 @@ type Diagnostics struct {
 	State     string    `json:"state"`
 	Error     string    `json:"error,omitempty"`
 
-	Encoder string `json:"encoder,omitempty"`
-	Codec   string `json:"codec,omitempty"`
-	Rung    string `json:"rung"`
+	Encoder     string `json:"encoder,omitempty"`
+	EncoderAPI  string `json:"encoderApi,omitempty"`
+	CapturePath string `json:"capturePath,omitempty"`
+	Codec       string `json:"codec,omitempty"`
+	Rung        string `json:"rung"`
 
 	// CaptureFps is deliberately a string: the GStreamer child owns that
 	// stage, so it is "n/a" rather than a fabricated number (Decision 20).
@@ -442,6 +446,10 @@ type Diagnostics struct {
 	KeyframeStreamsSuperseded uint64 `json:"keyframeStreamsSuperseded"`
 	FramesDroppedAtSend       uint64 `json:"framesDroppedAtSend"`
 
+	// KeyframeIntervalMs is the measured cadence (EMA); null until two
+	// keyframes have left the encoder. The target is the rung's 500 ms GOP.
+	KeyframeIntervalMs *float64 `json:"keyframeIntervalMs"`
+
 	TimeSyncRttMs    *float64 `json:"timeSyncRttMs"`
 	TimeSyncOffsetUs *int64   `json:"timeSyncOffsetUs"`
 }
@@ -460,6 +468,10 @@ func (a *App) Diagnostics() string {
 	a.mu.Unlock()
 
 	d.Encoder = s.Encoder
+	if s.Encoder != "" {
+		d.EncoderAPI = gst.EncoderAPI(s.Encoder)
+	}
+	d.CapturePath = s.CapturePath
 	d.Codec = s.Codec
 	d.Rung = fmt.Sprintf("%dx%d@%d %.1fMbps", s.Width, s.Height, s.Fps, float64(s.BitrateBps)/1e6)
 	d.CaptureFps = "n/a"
@@ -474,6 +486,10 @@ func (a *App) Diagnostics() string {
 	d.KeyframeStreamsFailed = s.KeyframeStreamsFailed
 	d.KeyframeStreamsSuperseded = s.KeyframeStreamsSuperseded
 	d.FramesDroppedAtSend = s.FramesDroppedAtSend
+	if s.KeyframeIntervalAvailable {
+		kf := s.KeyframeIntervalMs
+		d.KeyframeIntervalMs = &kf
+	}
 	if s.TimeSyncAvailable {
 		rtt, off := s.TimeSyncRttMs, s.TimeSyncOffsetUs
 		d.TimeSyncRttMs, d.TimeSyncOffsetUs = &rtt, &off

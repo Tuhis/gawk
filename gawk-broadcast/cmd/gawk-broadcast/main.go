@@ -54,7 +54,7 @@ func run() error {
 		insecure   = fs.Bool("insecure", false, "skip TLS verification (development certificates only)")
 		resolution = fs.String("resolution", "", "capture resolution, e.g. 1920x1080 (default 1920x1080)")
 		fpsFlag    = fs.Int("fps", 0, "frames per second (default 60)")
-		bitrate    = fs.Float64("bitrate", 0, "bitrate in Mbps (default 8)")
+		bitrate    = fs.Float64("bitrate", 0, "bitrate in Mbps (default 16)")
 		encoder    = fs.String("encoder", "", "force an encoder ("+strings.Join(gst.CandidateNames(), ", ")+"); default probes them in order")
 		verbose    = fs.Bool("v", false, "verbose logging (the GStreamer child's stderr included)")
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
@@ -151,8 +151,8 @@ func run() error {
 				fmt.Fprintln(os.Stderr)
 			},
 			OnEncoderChosen: func(enc string) {
-				fmt.Fprintf(os.Stderr, "Encoding with %s (hardware) at %dx%d@%d, %.1f Mbps\n",
-					enc, media.Width, media.Height, media.Fps, float64(media.BitrateBps)/1e6)
+				fmt.Fprintf(os.Stderr, "Encoding with %s (%s, hardware) at %dx%d@%d, %.1f Mbps\n",
+					gst.EncoderAPI(enc), enc, media.Width, media.Height, media.Fps, float64(media.BitrateBps)/1e6)
 			},
 			OnError: func(err error) {
 				fmt.Fprintln(os.Stderr, "\n"+userMessage(err))
@@ -194,6 +194,13 @@ func run() error {
 	}
 }
 
+func orNA(s string) string {
+	if s == "" {
+		return "n/a"
+	}
+	return s
+}
+
 func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -209,9 +216,16 @@ func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {
 			if s.TimeSyncAvailable {
 				rtt = fmt.Sprintf("%.1fms", s.TimeSyncRttMs)
 			}
+			// The measured keyframe cadence next to its target: key-int-max is
+			// a frame count, so capture running under the nominal fps
+			// stretches the wall-clock GOP — this is where that shows.
+			kf := "n/a"
+			if s.KeyframeIntervalAvailable {
+				kf = fmt.Sprintf("%.0fms", s.KeyframeIntervalMs)
+			}
 			fmt.Fprintf(os.Stderr,
-				"encode %.1f fps · sent %.1f fps · %s · %d keyframes (%d failed, %d superseded) · %d dropped at send · %.1f MB · rtt %s\n",
-				s.EncoderFps, s.SentFps, s.Codec, s.KeyframeStreamsSent, s.KeyframeStreamsFailed,
+				"encode %.1f fps · sent %.1f fps · %s · %s capture · %d keyframes every ~%s (%d failed, %d superseded) · %d dropped at send · %.1f MB · rtt %s\n",
+				s.EncoderFps, s.SentFps, s.Codec, orNA(s.CapturePath), s.KeyframeStreamsSent, kf, s.KeyframeStreamsFailed,
 				s.KeyframeStreamsSuperseded, s.FramesDroppedAtSend, float64(s.BytesSent)/1e6, rtt)
 		}
 	}

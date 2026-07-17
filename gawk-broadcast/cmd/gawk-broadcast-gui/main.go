@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"gioui.org/app"
@@ -44,7 +45,27 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
+)
+
+// The window's palette: the web app's monochrome-restrained design system
+// (R6) in Gio form — dark surfaces, light text, a light *inverted* primary
+// button, green reserved for "live" and red for danger. These feed the Gio
+// theme too: material.NewTheme() is a light theme, and any widget that takes
+// its color from the theme (text fields, checkbox labels, button text) used
+// to render near-black on the dark background.
+var (
+	colBg     = rgb(0x14, 0x15, 0x18) // window
+	colCard   = rgb(0x1c, 0x1e, 0x23) // cards
+	colText   = rgb(0xdc, 0xe0, 0xe8) // body text
+	colBright = rgb(0xf2, 0xf3, 0xf5) // headings, values
+	colMuted  = rgb(0x8a, 0x90, 0x9c) // secondary text
+	colFaint  = rgb(0x6b, 0x70, 0x7a) // labels, hints
+	colButton = rgb(0x2a, 0x2d, 0x34) // secondary buttons
+	colLive   = rgb(0x3d, 0xd6, 0x8c) // the heartbeat dot
+	colDanger = rgb(0x8b, 0x2c, 0x2c) // stop
+	colError  = rgb(0xff, 0xa5, 0x9e) // error text
 )
 
 func main() {
@@ -119,9 +140,10 @@ type ui struct {
 	copyDia widget.Clickable
 	details widget.Bool
 
-	relay  component.TextField
-	appURL component.TextField
-	secret component.TextField
+	relay   component.TextField
+	appURL  component.TextField
+	secret  component.TextField
+	bitrate component.TextField
 
 	list   widget.List
 	copied string
@@ -129,18 +151,30 @@ type ui struct {
 
 func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	u := &ui{app: a, cfg: cfg, th: material.NewTheme()}
+	// A dark theme, not a dark rectangle: every themed widget (text fields,
+	// checkbox, button text) draws from this palette, and the material
+	// default is a light theme — black-on-dark without it.
+	u.th.Palette = material.Palette{
+		Bg:         colBg,
+		Fg:         colText,
+		ContrastBg: colBright, // primary button: light surface…
+		ContrastFg: colBg,     // …with dark text (R6's inverted monochrome)
+	}
 	u.list.Axis = layout.Vertical
 	u.relay.SetText(cfg.RelayURL)
 	u.appURL.SetText(cfg.AppURL)
 	u.secret.SetText(cfg.PublishSecret)
 	u.secret.Mask = '•'
+	if cfg.BitrateBps > 0 {
+		u.bitrate.SetText(strconv.FormatFloat(float64(cfg.BitrateBps)/1e6, 'f', -1, 64))
+	}
 	return u
 }
 
 func (u *ui) layout(gtx layout.Context) layout.Dimensions {
 	// A plain dark background: this window is a control panel, not a design
 	// exercise — the production UI (R6) is where taste lives.
-	paint.FillShape(gtx.Ops, rgb(0x14, 0x15, 0x18), clip.Rect{Max: gtx.Constraints.Max}.Op())
+	paint.FillShape(gtx.Ops, colBg, clip.Rect{Max: gtx.Constraints.Max}.Op())
 
 	u.handleEvents(gtx)
 
@@ -198,6 +232,7 @@ func (u *ui) save() {
 	u.cfg.RelayURL = strings.TrimSpace(u.relay.Text())
 	u.cfg.AppURL = strings.TrimSpace(u.appURL.Text())
 	u.cfg.PublishSecret = u.secret.Text()
+	u.cfg.BitrateBps = parseBitrateMbps(u.bitrate.Text())
 	if err := u.cfg.Save(); err != nil {
 		// Non-fatal: the broadcast can still run, the settings just won't
 		// survive a restart.
@@ -205,12 +240,29 @@ func (u *ui) save() {
 	}
 }
 
+// parseBitrateMbps turns the bitrate field into bps. Blank or unparseable
+// means "use the default" (0), mirroring the CLI's -bitrate; values are
+// clamped to [1, 100] Mbps — outside that range the number is a typo, and a
+// 1600 Mbps broadcast would only fail somewhere less obvious.
+func parseBitrateMbps(s string) int {
+	s = strings.TrimSpace(strings.ReplaceAll(s, ",", "."))
+	if s == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 {
+		return 0
+	}
+	f = min(max(f, 1), 100)
+	return int(f * 1e6)
+}
+
 func (u *ui) header(gtx layout.Context) layout.Dimensions {
 	state, status := u.app.State()
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			t := material.H6(u.th, "gawk broadcast")
-			t.Color = rgb(0xf2, 0xf3, 0xf5)
+			t.Color = colBright
 			return t.Layout(gtx)
 		}),
 		layout.Rigid(spacer(4)),
@@ -219,9 +271,9 @@ func (u *ui) header(gtx layout.Context) layout.Dimensions {
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					// The heartbeat: "am I live" at a glance (Decision 16 —
 					// this is what a preview would have been for).
-					c := rgb(0x6b, 0x70, 0x7a)
+					c := colFaint
 					if state == gawkapp.StateLive {
-						c = rgb(0x3d, 0xd6, 0x8c)
+						c = colLive
 					}
 					return dot(gtx, c)
 				}),
@@ -233,15 +285,45 @@ func (u *ui) header(gtx layout.Context) layout.Dimensions {
 				}),
 			)
 		}),
+		// The encode line: which API is doing the work (Vulkan Video / NVENC /
+		// VA-API — the status already says so, but this one adds *how frames
+		// travel* and at what rung), visible without opening Details.
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			s := u.app.Stats()
+			if state != gawkapp.StateLive || s.Encoder == "" {
+				return layout.Dimensions{}
+			}
+			line := fmt.Sprintf("%dx%d@%d · %.0f Mbps", s.Width, s.Height, s.Fps, float64(s.BitrateBps)/1e6)
+			if s.CapturePath != "" {
+				line += " · " + s.CapturePath + " capture"
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(spacer(4)),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					t := material.Body2(u.th, line)
+					t.Color = colMuted
+					return t.Layout(gtx)
+				}),
+			)
+		}),
 	)
+}
+
+// secondaryBtn is a dark button with light text. The theme's ContrastFg is
+// dark (the primary button is light-inverted), so any button with a dark
+// background must say so about its text too.
+func (u *ui) secondaryBtn(c *widget.Clickable, label string, bg color.NRGBA) material.ButtonStyle {
+	b := material.Button(u.th, c, label)
+	b.Background = bg
+	b.Color = colBright
+	return b
 }
 
 func (u *ui) controls(gtx layout.Context) layout.Dimensions {
 	state, _ := u.app.State()
 	switch state {
 	case gawkapp.StateLive, gawkapp.StateStarting:
-		btn := material.Button(u.th, &u.stop, "Stop broadcast")
-		btn.Background = rgb(0x8b, 0x2c, 0x2c)
+		btn := u.secondaryBtn(&u.stop, "Stop broadcast", colDanger)
 		if state == gawkapp.StateStarting {
 			btn.Text = "Starting…"
 		}
@@ -260,9 +342,7 @@ func (u *ui) controls(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{}.Layout(gtx,
 					layout.Rigid(spacerW(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						b := material.Button(u.th, &u.resume, "Resume "+u.cfg.LastBroadcastID)
-						b.Background = rgb(0x2a, 0x2d, 0x34)
-						return b.Layout(gtx)
+						return u.secondaryBtn(&u.resume, "Resume "+u.cfg.LastBroadcastID, colButton).Layout(gtx)
 					}),
 				)
 			}),
@@ -280,7 +360,7 @@ func (u *ui) code(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(label(u.th, "Broadcast code")),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				t := material.H4(u.th, id)
-				t.Color = rgb(0xf2, 0xf3, 0xf5)
+				t.Color = colBright
 				// Monospace: this is read aloud and typed in by hand.
 				t.Font.Typeface = "monospace"
 				return t.Layout(gtx)
@@ -289,20 +369,18 @@ func (u *ui) code(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				if link := u.app.JoinLink(); link != "" {
 					t := material.Body2(u.th, link)
-					t.Color = rgb(0x8a, 0x90, 0x9c)
+					t.Color = colMuted
 					return t.Layout(gtx)
 				}
 				t := material.Body2(u.th, "Set the app URL below to get a join link.")
-				t.Color = rgb(0x6b, 0x70, 0x7a)
+				t.Color = colFaint
 				return t.Layout(gtx)
 			}),
 			layout.Rigid(spacer(8)),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						b := material.Button(u.th, &u.copyLnk, "Copy link")
-						b.Background = rgb(0x2a, 0x2d, 0x34)
-						return b.Layout(gtx)
+						return u.secondaryBtn(&u.copyLnk, "Copy link", colButton).Layout(gtx)
 					}),
 					layout.Rigid(spacerW(10)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -310,7 +388,7 @@ func (u *ui) code(gtx layout.Context) layout.Dimensions {
 							return layout.Dimensions{}
 						}
 						t := material.Body2(u.th, u.copied)
-						t.Color = rgb(0x3d, 0xd6, 0x8c)
+						t.Color = colLive
 						return t.Layout(gtx)
 					}),
 				)
@@ -331,7 +409,7 @@ func (u *ui) errorBox(gtx layout.Context) layout.Dimensions {
 				// mapping, including the HTTP-status distinctions the browser
 				// broadcaster structurally cannot make.
 				t := material.Body2(u.th, msg)
-				t.Color = rgb(0xff, 0xa5, 0x9e)
+				t.Color = colError
 				return t.Layout(gtx)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -378,6 +456,10 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return u.secret.Layout(gtx, u.th, "Publish secret (if the relay needs one)")
 					}),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.bitrate.Layout(gtx, u.th, "Bitrate in Mbps (blank = 16)")
+					}),
 				)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -388,7 +470,7 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					layout.Rigid(spacer(6)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						t := material.Caption(u.th, "Settings apply to the next broadcast.")
-						t.Color = rgb(0x6b, 0x70, 0x7a)
+						t.Color = colFaint
 						return t.Layout(gtx)
 					}),
 				)
@@ -412,8 +494,17 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 				if s.TimeSyncAvailable {
 					rtt = fmt.Sprintf("%.1f ms", s.TimeSyncRttMs)
 				}
+				kf := "n/a"
+				if s.KeyframeIntervalAvailable {
+					kf = fmt.Sprintf("%.0f ms (target 500)", s.KeyframeIntervalMs)
+				}
+				encoder := "—"
+				if s.Encoder != "" {
+					encoder = gst.EncoderAPI(s.Encoder) + " (" + s.Encoder + ")"
+				}
 				rows := [][2]string{
-					{"Encoder", orDash(s.Encoder)},
+					{"Encoder", encoder},
+					{"Capture path", orDash(s.CapturePath)},
 					{"Codec", orDash(s.Codec)},
 					{"Rung", fmt.Sprintf("%dx%d@%d · %.1f Mbps", s.Width, s.Height, s.Fps, float64(s.BitrateBps)/1e6)},
 					// Decision 20: the GStreamer child owns capture, so this
@@ -425,6 +516,7 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 					{"Sent fps", fmt.Sprintf("%.1f", s.SentFps)},
 					{"Keyframes", fmt.Sprintf("%d sent · %d failed · %d superseded",
 						s.KeyframeStreamsSent, s.KeyframeStreamsFailed, s.KeyframeStreamsSuperseded)},
+					{"Keyframe interval", kf},
 					{"Dropped at send", fmt.Sprintf("%d", s.FramesDroppedAtSend)},
 					{"Datagrams", fmt.Sprintf("%d · %.1f MB", s.DatagramsSent, float64(s.BytesSent)/1e6)},
 					{"RTT (time-sync)", rtt},
@@ -437,9 +529,7 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 				children = append(children,
 					layout.Rigid(spacer(10)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						b := material.Button(u.th, &u.copyDia, "Copy diagnostics")
-						b.Background = rgb(0x2a, 0x2d, 0x34)
-						return b.Layout(gtx)
+						return u.secondaryBtn(&u.copyDia, "Copy diagnostics", colButton).Layout(gtx)
 					}),
 				)
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
@@ -455,12 +545,12 @@ func statRow(th *material.Theme, k, v string) layout.Widget {
 		return layout.Flex{}.Layout(gtx,
 			layout.Flexed(0.45, func(gtx layout.Context) layout.Dimensions {
 				t := material.Body2(th, k)
-				t.Color = rgb(0x8a, 0x90, 0x9c)
+				t.Color = colMuted
 				return t.Layout(gtx)
 			}),
 			layout.Flexed(0.55, func(gtx layout.Context) layout.Dimensions {
 				t := material.Body2(th, v)
-				t.Color = rgb(0xdc, 0xe0, 0xe8)
+				t.Color = colText
 				t.Alignment = text.End
 				return t.Layout(gtx)
 			}),
@@ -471,7 +561,7 @@ func statRow(th *material.Theme, k, v string) layout.Widget {
 func label(th *material.Theme, s string) layout.Widget {
 	return func(gtx layout.Context) layout.Dimensions {
 		t := material.Caption(th, strings.ToUpper(s))
-		t.Color = rgb(0x6b, 0x70, 0x7a)
+		t.Color = colFaint
 		return t.Layout(gtx)
 	}
 }
@@ -483,7 +573,7 @@ func card(gtx layout.Context, w layout.Widget) layout.Dimensions {
 
 	rr := gtx.Dp(unit.Dp(10))
 	defer clip.RRect{Rect: image.Rect(0, 0, gtx.Constraints.Max.X, dims.Size.Y), SE: rr, SW: rr, NW: rr, NE: rr}.Push(gtx.Ops).Pop()
-	paint.Fill(gtx.Ops, rgb(0x1c, 0x1e, 0x23))
+	paint.Fill(gtx.Ops, colCard)
 	call.Add(gtx.Ops)
 	return layout.Dimensions{Size: image.Pt(gtx.Constraints.Max.X, dims.Size.Y)}
 }
