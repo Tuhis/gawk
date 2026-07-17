@@ -480,19 +480,24 @@ func (s *Source) Encoder() string {
 	return s.encoder
 }
 
-// CapturePath reports the ladder rung the live start settled on: "zero-copy"
-// (auto negotiation, DMA-BUF stays on the GPU) or "system-memory" (one CPU
-// copy per frame); "" until capture is live.
+// CapturePath reports the ladder rung the live start settled on:
+// "zero-copy (capped)" (DMA-BUF with the compositor throttled to the stream
+// rate), "zero-copy" (DMA-BUF, compositor delivers at its own rate) or
+// "system-memory" (one CPU copy per frame); "" until capture is live.
 func (s *Source) CapturePath() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.captureModeSet {
 		return ""
 	}
-	if s.captureMode == CaptureSystemMemory {
+	switch s.captureMode {
+	case CaptureAutoCapped:
+		return "zero-copy (capped)"
+	case CaptureSystemMemory:
 		return "system-memory"
+	default:
+		return "zero-copy"
 	}
-	return "zero-copy"
 }
 
 // Err returns why capture ended, or nil for a clean stop.

@@ -241,11 +241,11 @@ func TestSourceEmitsAccessUnits(t *testing.T) {
 	if s.Encoder() != Cascade[0].Name {
 		t.Errorf("Encoder() = %q, want %q", s.Encoder(), Cascade[0].Name)
 	}
-	// The auto rung won (the fake child streams on the first attempt), so the
-	// capture path reads zero-copy — the stat a broadcaster checks to see
-	// which ladder rung they are actually on.
-	if got := s.CapturePath(); got != "zero-copy" {
-		t.Errorf("CapturePath() = %q, want zero-copy", got)
+	// The leading rung won (the fake child streams on the first attempt), so
+	// the capture path reads the rate-capped zero-copy path — the stat a
+	// broadcaster checks to see which ladder rung they are actually on.
+	if got := s.CapturePath(); got != "zero-copy (capped)" {
+		t.Errorf("CapturePath() = %q, want zero-copy (capped)", got)
 	}
 }
 

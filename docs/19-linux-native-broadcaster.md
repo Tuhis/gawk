@@ -1157,11 +1157,18 @@ it: the broadcaster's display is 2560×1440@240 — the compositor advertises
 `max-framerate=239/1` and delivers damage at up to that rate, so in auto
 capture (converter before the rate gate, the price of zero-copy adjacency)
 `vapostproc` may convert up to ~4× the frames the 60 fps gate keeps. That
-cost lands on the GPU's video block and is accepted for now; if it ever
-shows up in GPU utilization, the lever is negotiating `max-framerate` down
-in pipewiresrc's caps (untried — a source-side caps constraint is exactly
-what broke DMA-BUF once already, so it wants its own on-device experiment,
-possibly as a third ladder rung rather than a change to a working one).
+cost lands on the GPU's video block; the lever is negotiating
+`max-framerate` down in pipewiresrc's caps. **Implemented same day as a new
+leading ladder rung** (`CaptureAutoCapped`, ladder now auto-capped → auto →
+system-memory): a capsfilter directly on pipewiresrc pinning
+`video/x-raw(ANY),max-framerate=<fps>/1` — features ANY so DMA-BUF stays
+negotiable, and a passthrough capsfilter proxies the allocation query that
+videorate once swallowed. pipewiresrc translates the field into the SPA
+format's maxFramerate, which KWin/Mutter honor by throttling delivery at
+the source; a compositor that refuses fails the rung's preroll and the
+ladder falls to plain auto — the exact pipeline verified on device.
+`CapturePath` distinguishes the rungs ("zero-copy (capped)" vs
+"zero-copy"); on-device verify pending.
 
 ## Verification plan (manual)
 

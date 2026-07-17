@@ -432,7 +432,8 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   format` — that's capture, not the encoder.** The compositor's chosen
   screencast format sometimes can't be mapped onto the downstream caps
   (DMA-BUF modifier/DRM-caps skew, 10-bit HDR desktops). The live start
-  walks a two-rung capture ladder per encoder (free negotiation, then
+  walks a three-rung capture ladder per encoder (rate-capped zero-copy —
+  `max-framerate` asked of the compositor — then free negotiation, then
   system-memory pinned `video/x-raw`) before advancing the cascade, and an
   all-pipewiresrc failure reports as `ErrCaptureFormat`, never "no hardware
   encoder". Diagnose with `GST_DEBUG=pipewire*:5` (the child inherits env).

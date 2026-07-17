@@ -16,6 +16,19 @@ const LaunchBinary = "gst-launch-1.0"
 
 // CaptureMode selects how frames may travel across the pipewiresrc boundary.
 //
+// CaptureAutoCapped is CaptureAuto plus a max-framerate request at the
+// source: a capsfilter pinning `max-framerate=<fps>/1` (features left ANY, so
+// DMA-BUF negotiation stays free) that pipewiresrc translates into the SPA
+// video format's maxFramerate. A compositor that honors it — KWin and Mutter
+// both do, it exists for screen-recorder power saving — throttles delivery to
+// the stream rate *before* capture, so a 240 Hz desktop stops costing ~4x the
+// GPU converts the rate gate keeps (auto mode converts before it drops — the
+// price of allocation adjacency, docs/19 note 8). A compositor that rejects
+// the field fails this rung's preroll and the ladder falls through to plain
+// auto, which is exactly the pipeline verified on device 2026-07-17. A
+// capsfilter is safe where videorate was not: in passthrough it proxies the
+// DMA-BUF allocation query instead of swallowing it.
+//
 // CaptureAuto lets PipeWire negotiate freely, which on a healthy stack picks
 // DMA-BUF and keeps the frame on the GPU end to end. That negotiation has a
 // real-world failure mode, though: pipewiresrc dies during preroll with
@@ -25,27 +38,33 @@ const LaunchBinary = "gst-launch-1.0"
 // 10-bit format from an HDR desktop. Seen live 2026-07-16 (AMD, vah264enc;
 // docs/19 gotchas).
 //
-// CaptureSystemMemory is the fallback rung: it pins the boundary to plain
+// CaptureSystemMemory is the last rung: it pins the boundary to plain
 // system-memory video/x-raw, so pipewiresrc only offers modifier-less formats
 // and the compositor has to export CPU-visible buffers. One copy per frame,
 // but immune to the modifier dance.
 type CaptureMode int
 
 const (
-	CaptureAuto CaptureMode = iota
+	CaptureAutoCapped CaptureMode = iota
+	CaptureAuto
 	CaptureSystemMemory
 )
 
 func (m CaptureMode) String() string {
-	if m == CaptureSystemMemory {
+	switch m {
+	case CaptureAutoCapped:
+		return "auto-capped"
+	case CaptureSystemMemory:
 		return "system-memory"
+	default:
+		return "auto"
 	}
-	return "auto"
 }
 
 // CaptureModes is the in-order ladder the live start walks per encoder:
-// zero-copy first, system memory when the free negotiation fails.
-var CaptureModes = []CaptureMode{CaptureAuto, CaptureSystemMemory}
+// rate-capped zero-copy first, free zero-copy negotiation second, system
+// memory when both fail.
+var CaptureModes = []CaptureMode{CaptureAutoCapped, CaptureAuto, CaptureSystemMemory}
 
 // CaptureFormatMessage is what a user sees when every live pipeline died
 // inside pipewiresrc. Deliberately distinct from NoHardwareMessage: no frame
@@ -151,6 +170,12 @@ func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode Capt
 		args = append(args, "!")
 		args = append(args, c.convert(cfg)...)
 	} else {
+		if mode == CaptureAutoCapped {
+			// Ask the compositor to deliver at most the stream rate (see
+			// CaptureAutoCapped). Features ANY on purpose: a memory-type
+			// constraint here is what forbids DMA-BUF.
+			args = append(args, "!", fmt.Sprintf("video/x-raw(ANY),max-framerate=%d/1", cfg.Fps))
+		}
 		args = append(args, "!")
 		args = append(args, c.convert(cfg)...)
 		args = append(args, "!")
@@ -215,7 +240,7 @@ func encoderCaps(c Candidate, cfg engine.MediaConfig, mode CaptureMode) string {
 	// makes the same guarantee (docs/08).
 	w, h := cfg.Width&^1, cfg.Height&^1
 	media := "video/x-raw"
-	if mode == CaptureAuto && c.memory != "" {
+	if mode != CaptureSystemMemory && c.memory != "" {
 		media = fmt.Sprintf("video/x-raw(%s)", c.memory)
 	}
 	return fmt.Sprintf("%s,width=%d,height=%d,framerate=%d/1", media, w, h, cfg.Fps)

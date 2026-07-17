@@ -95,12 +95,14 @@ func TestSystemMemoryCapturePinsThePortalBoundary(t *testing.T) {
 func TestAutoCaptureKeepsZeroCopyNegotiation(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
-		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto))
-		if strings.Contains(p, "do-timestamp=true ! video/x-raw !") {
-			t.Errorf("%s: auto mode pins caps at the source, which forbids DMA-BUF:\n%s", c.Element, p)
-		}
-		if strings.Contains(p, "videoconvert") {
-			t.Errorf("%s: auto mode inserts a CPU converter:\n%s", c.Element, p)
+		for _, mode := range []CaptureMode{CaptureAutoCapped, CaptureAuto} {
+			p := pipelineString(BuildPipeline(c, cfg, 42, mode))
+			if strings.Contains(p, "do-timestamp=true ! video/x-raw !") {
+				t.Errorf("%s/%s: pins bare caps at the source, which forbids DMA-BUF:\n%s", c.Element, mode, p)
+			}
+			if strings.Contains(p, "videoconvert") {
+				t.Errorf("%s/%s: inserts a CPU converter:\n%s", c.Element, mode, p)
+			}
 		}
 	}
 }
@@ -121,6 +123,42 @@ func TestEncoderCapsCarryTheNominalFramerate(t *testing.T) {
 				t.Errorf("%s/%s: encoder caps carry no framerate — vah264enc will budget for 30 fps:\n%s",
 					c.Element, mode, p)
 			}
+		}
+	}
+}
+
+// The rate-capped rung leads the ladder: it asks the *compositor* to deliver
+// at most the stream fps (PipeWire's maxFramerate, spelled max-framerate in
+// pipewiresrc caps), so a 240 Hz desktop stops costing ~4x the GPU converts
+// the 60 fps gate keeps. It is a separate leading rung, never a change to the
+// proven plain-auto rung: a compositor that rejects or ignores the request
+// drops us to exactly the behavior verified on device 2026-07-17.
+func TestRateCappedCaptureLeadsTheLadder(t *testing.T) {
+	if len(CaptureModes) != 3 {
+		t.Fatalf("CaptureModes = %v, want the three-rung ladder", CaptureModes)
+	}
+	if CaptureModes[0] != CaptureAutoCapped || CaptureModes[1] != CaptureAuto || CaptureModes[2] != CaptureSystemMemory {
+		t.Fatalf("ladder order = %v, want auto-capped → auto → system-memory", CaptureModes)
+	}
+}
+
+// The cap is a bare capsfilter directly on pipewiresrc: features stay ANY (a
+// memory-type constraint at the source is what forbids DMA-BUF), only
+// max-framerate is pinned, and — being a passthrough element — a capsfilter
+// proxies the allocation query that videorate once broke. The plain-auto rung
+// must stay byte-identical to the on-device-verified pipeline: no
+// max-framerate anywhere.
+func TestRateCappedCaptureRequestsMaxFramerateAtTheSource(t *testing.T) {
+	cfg := engine.DefaultMediaConfig() // 60 fps
+	for _, c := range Cascade {
+		first := c.convert(cfg)[0]
+		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAutoCapped))
+		want := "do-timestamp=true ! video/x-raw(ANY),max-framerate=60/1 ! " + first
+		if !strings.Contains(p, want) {
+			t.Errorf("%s: capped rung does not request max-framerate on the source boundary:\n%s", c.Element, p)
+		}
+		if plain := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto)); strings.Contains(plain, "max-framerate") {
+			t.Errorf("%s: plain auto rung grew a max-framerate — it must stay the verified fallback:\n%s", c.Element, plain)
 		}
 	}
 }
@@ -157,10 +195,12 @@ func TestAutoCaptureEncoderCapsStayOnTheGpu(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s is not in the cascade", tc.element)
 		}
-		p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto))
-		if !strings.Contains(p, "video/x-raw("+tc.feature+")") {
-			t.Errorf("%s: encoder caps do not pin %s — the handoff drops to system memory:\n%s",
-				tc.element, tc.feature, p)
+		for _, mode := range []CaptureMode{CaptureAutoCapped, CaptureAuto} {
+			p := pipelineString(BuildPipeline(c, cfg, 1, mode))
+			if !strings.Contains(p, "video/x-raw("+tc.feature+")") {
+				t.Errorf("%s/%s: encoder caps do not pin %s — the handoff drops to system memory:\n%s",
+					tc.element, mode, tc.feature, p)
+			}
 		}
 		// System-memory capture keeps bare caps on purpose: it is the proven
 		// fallback rung, and its negotiation semantics stay untouched.
