@@ -225,6 +225,14 @@ encoders drain frames without that signal ever firing.
   Play it with `mpv`/`ffplay` — it is exactly what the encoder produced, so it
   splits "the capture is black at the source" from "the viewer can't decode
   it" in one step.
+- **A dropped delta drops the rest of its GOP.** The pump's channel-full
+  drops happen before frameIds are assigned, so the wire stays contiguous and
+  the viewer's freeze-on-gap cannot see them — sending the GOP remainder
+  would decode as reference-broken garbage (the first real viewer session
+  did exactly that). `Source.offer` gates deltas until the next keyframe,
+  and a keyframe arriving into a full queue flushes the stale backlog rather
+  than being dropped. Under sustained backpressure the stream degrades to a
+  clean keyframe cadence, never to artifacts.
 - **`pipewiregrab` is not in mainline FFmpeg** — an unmerged patchset carried
   downstream by Jami. Mainline ffmpeg has no PipeWire input at all. Don't
   re-propose it without checking it actually merged.

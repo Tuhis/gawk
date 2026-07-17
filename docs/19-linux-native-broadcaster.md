@@ -1030,6 +1030,28 @@ dying words the capture-vs-encoder attribution reads (a race the `-race`
 suite caught), while an unbounded wait deadlocks on a grandchild holding the
 write end.
 
+**6. A dropped delta drops the rest of its GOP (field finding, 2026-07-17).**
+First real viewer session: video, but unusably corrupted, flashing
+recognizable at each IDR — while a `GAWK_DUMP_TS` capture of the same
+session played clean. The mechanism: the pump's channel-full drops happen
+*before* `sender.send` assigns frameIds, so the wire carries contiguous ids
+across the loss and the viewer's freeze-on-gap policy — which polices every
+loss *after* frameId assignment (send failures, ingress loss, relay drops,
+reassembly) — structurally cannot see the one loss point before it. The
+viewer then decodes deltas whose references were never sent: reference-soup
+artifacts until the next IDR flashes clean. `Source.offer` now enforces
+freeze-over-corruption on that edge: once a delta is dropped, everything
+until the next keyframe is dropped too (it would decode against a missing
+reference), and a keyframe arriving into a full queue flushes the stale
+backlog and takes its place rather than being the thing dropped — under
+sustained backpressure the stream degrades to a clean keyframe cadence
+instead of garbage. Frames already queued stay: their references were
+consumed and sent, so they are connected. Related quality note, verified in
+gst-plugins-bad source: `vah264enc` takes `bitrate` in kbps (8000 == 8 Mbps
+is correct) but **assumes 30 fps for rate control when caps carry
+`framerate=0/1`** — which this VFR pipeline always does; rate-control
+calibration under VFR is an open follow-up alongside the zero-copy rung.
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker

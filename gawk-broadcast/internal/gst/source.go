@@ -106,6 +106,17 @@ type Source struct {
 type pumpHandle struct {
 	done    chan struct{}
 	adopted atomic.Bool
+
+	// droppingGOP is the drop-until-keyframe gate, touched only by the pump
+	// goroutine. Drops at the frame channel happen *before* the sender
+	// assigns frameIds, so the wire shows contiguous ids and the viewer's
+	// freeze-on-gap cannot see them — a single dropped delta silently turns
+	// every later delta in its GOP into reference-broken garbage (field
+	// finding, 2026-07-17: a viewer full of artifacts, flashing recognizable
+	// at each IDR). Once one delta is dropped, the rest of the GOP is
+	// dropped too: freeze over corruption, enforced on the one edge the
+	// viewer cannot police.
+	droppingGOP bool
 }
 
 // Start runs the portal handshake, picks an encoder, and starts the child.
@@ -297,27 +308,14 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 		// is small and roughly constant because every candidate is pinned to
 		// ≤1 frame of internal latency; V4 measures it against a physical
 		// reference, and clock-anchored PES PTS is the fix if it fails.
-		frame := engine.AccessUnit{
+		s.offer(engine.AccessUnit{
 			Data:        au.Data,
 			Keyframe:    engine.HasIDR(au.Data),
 			TimestampUs: s.clock.NowUs(),
 			PTSUs:       au.PTS,
 			HasPTS:      au.HasPTS,
-		}
-		select {
-		case s.frames <- frame:
-			return nil
-		default:
-			// The sender is behind. Dropping here is consistent with the whole
-			// project: frames over stalls. Blocking would stall the demuxer,
-			// then the pipe, then the encoder — backpressure all the way into
-			// the GPU. Before adoption the drop is expected (nobody is
-			// listening during the probe window), so it stays silent.
-			if h.adopted.Load() {
-				s.log.Debug("dropping access unit: sender is behind")
-			}
-			return nil
-		}
+		}, h)
+		return nil
 	})
 
 	var src io.Reader = kid.stdout
@@ -352,6 +350,64 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 		s.err = copyErr
 	default:
 		s.err = errors.New("capture ended: the GStreamer pipeline stopped unexpectedly")
+	}
+}
+
+// offer applies the drop policy and hands one access unit to the frame
+// channel. Dropping (never blocking) is the project's standing answer to a
+// slow consumer — blocking would stall the demuxer, then the pipe, then the
+// encoder, backpressure all the way into the GPU — but a drop here is
+// invisible to the viewer (see pumpHandle.droppingGOP), so it must take the
+// GOP remainder with it:
+//
+//   - a delta that does not fit ends its GOP: everything until the next
+//     keyframe is dropped too, because it would decode against a reference
+//     the sender never saw;
+//   - a keyframe always wins: if the queue is full, the stale frames ahead
+//     of it are flushed — they all predate it, the decoder resets at an IDR
+//     anyway, and jumping to the fresh keyframe is a latency win.
+//
+// Single producer (the pump goroutine); the engine is the only consumer, so
+// the flush loop can only ever race the queue *emptier*, never fuller.
+func (s *Source) offer(frame engine.AccessUnit, h *pumpHandle) {
+	if h.droppingGOP && !frame.Keyframe {
+		return // poisoned GOP: the reference chain is already broken
+	}
+	if frame.Keyframe {
+		for flushed := false; ; {
+			select {
+			case s.frames <- frame:
+				h.droppingGOP = false
+				return
+			default:
+			}
+			if flushed {
+				// Still no room after a flush: the consumer is wedged mid-
+				// receive. Drop the keyframe; the gate stays up until the
+				// next one.
+				break
+			}
+			for drained := false; !drained; {
+				select {
+				case <-s.frames:
+				default:
+					drained = true
+				}
+			}
+			flushed = true
+		}
+	} else {
+		select {
+		case s.frames <- frame:
+			return
+		default:
+		}
+	}
+	h.droppingGOP = true
+	// Before adoption the drop is expected (nobody is listening during the
+	// probe window), so it stays silent.
+	if h.adopted.Load() {
+		s.log.Debug("sender is behind, dropping until the next keyframe", "keyframe", frame.Keyframe)
 	}
 }
 

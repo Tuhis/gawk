@@ -296,6 +296,77 @@ func TestDumpTSTeesTheStreamToDisk(t *testing.T) {
 	}
 }
 
+// au builds a minimal access unit for offer tests.
+func au(keyframe bool) engine.AccessUnit {
+	return engine.AccessUnit{Keyframe: keyframe}
+}
+
+// A dropped delta poisons the rest of its GOP: every later delta references a
+// frame the sender never saw, and — crucially — the drop happens *before*
+// frameIds are assigned, so the wire shows contiguous ids and the viewer's
+// freeze-on-gap cannot fire. It decodes garbage instead (field finding,
+// 2026-07-17: a viewer full of artifacts with a recognizable flash at each
+// IDR). Once one delta is dropped, everything until the next keyframe must be
+// dropped too — freeze over corruption, enforced on the one invisible edge.
+func TestDroppedDeltaPoisonsTheGOPUntilAKeyframe(t *testing.T) {
+	s := &Source{frames: make(chan engine.AccessUnit, 2), log: testLog}
+	h := &pumpHandle{done: make(chan struct{})}
+
+	s.offer(au(true), h)  // K0 — queued
+	s.offer(au(false), h) // D1 — queued, channel now full
+	s.offer(au(false), h) // D2 — dropped: channel full
+
+	<-s.frames // the consumer frees a slot (reads K0)
+
+	// D3 references the dropped D2. There is space now (only D1 is queued),
+	// but sending it would hand the viewer a delta with a missing reference
+	// and no frameId gap.
+	s.offer(au(false), h)
+	if n := len(s.frames); n != 1 {
+		t.Fatalf("channel holds %d frames after a poisoned delta was offered, want 1 — the delta reached the channel and the viewer would decode against a missing reference", n)
+	}
+
+	// The next keyframe ends the drop spell. D1 stays: it was legitimately
+	// queued — its reference (K0) was already consumed and sent, so it is
+	// connected, and only a keyframe with no room flushes the queue.
+	s.offer(au(true), h) // K4 — fits behind D1, clears the gate
+
+	got := make([]engine.AccessUnit, 0, 2)
+	for done := false; !done; {
+		select {
+		case f := <-s.frames:
+			got = append(got, f)
+		default:
+			done = true
+		}
+	}
+	if len(got) != 2 || got[0].Keyframe || !got[1].Keyframe {
+		t.Fatalf("channel after the keyframe = %d frames (want exactly [connected delta, keyframe])", len(got))
+	}
+}
+
+// A keyframe arriving into a full queue must never be the thing dropped: it
+// is what ends a drop spell, and everything queued ahead of it is stale the
+// moment it exists.
+func TestKeyframeSupersedesAFullQueue(t *testing.T) {
+	s := &Source{frames: make(chan engine.AccessUnit, 2), log: testLog}
+	h := &pumpHandle{done: make(chan struct{})}
+
+	s.offer(au(true), h)  // K0
+	s.offer(au(false), h) // D1 — full
+	s.offer(au(true), h)  // K2 — must flush [K0, D1] and take their place
+
+	f := <-s.frames
+	if !f.Keyframe {
+		t.Fatal("first queued frame after a full-queue keyframe is not a keyframe")
+	}
+	select {
+	case <-s.frames:
+		t.Fatal("stale frames survived the keyframe flush")
+	default:
+	}
+}
+
 // A child that dies *after* the probe window was working: that is a genuine
 // failure, and it must surface with its stderr rather than hang or go quiet.
 func TestChildDeathSurfacesWithStderr(t *testing.T) {
