@@ -1,0 +1,4 @@
+# go build ./cmd/... drops the binaries here; they are CI artifacts, never
+# repo content.
+/gawk-broadcast
+/gawk-broadcast-gui
