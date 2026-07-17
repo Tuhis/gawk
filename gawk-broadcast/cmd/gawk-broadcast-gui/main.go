@@ -45,7 +45,6 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 )
@@ -57,16 +56,17 @@ import (
 // its color from the theme (text fields, checkbox labels, button text) used
 // to render near-black on the dark background.
 var (
-	colBg     = rgb(0x14, 0x15, 0x18) // window
-	colCard   = rgb(0x1c, 0x1e, 0x23) // cards
-	colText   = rgb(0xdc, 0xe0, 0xe8) // body text
-	colBright = rgb(0xf2, 0xf3, 0xf5) // headings, values
-	colMuted  = rgb(0x8a, 0x90, 0x9c) // secondary text
-	colFaint  = rgb(0x6b, 0x70, 0x7a) // labels, hints
-	colButton = rgb(0x2a, 0x2d, 0x34) // secondary buttons
-	colLive   = rgb(0x3d, 0xd6, 0x8c) // the heartbeat dot
-	colDanger = rgb(0x8b, 0x2c, 0x2c) // stop
-	colError  = rgb(0xff, 0xa5, 0x9e) // error text
+	colBg      = rgb(0x14, 0x15, 0x18) // window
+	colCard    = rgb(0x1c, 0x1e, 0x23) // cards
+	colText    = rgb(0xdc, 0xe0, 0xe8) // body text
+	colBright  = rgb(0xf2, 0xf3, 0xf5) // headings, values
+	colMuted   = rgb(0x8a, 0x90, 0x9c) // secondary text
+	colFaint   = rgb(0x6b, 0x70, 0x7a) // labels, hints
+	colButton  = rgb(0x2a, 0x2d, 0x34) // secondary buttons
+	colPrimary = rgb(0x3f, 0x51, 0xb5) // Gio's stock material blue — Start wore it before the dark-palette rework, and it was missed
+	colLive    = rgb(0x3d, 0xd6, 0x8c) // the heartbeat dot
+	colDanger  = rgb(0x8b, 0x2c, 0x2c) // stop
+	colError   = rgb(0xff, 0xa5, 0x9e) // error text
 )
 
 func main() {
@@ -141,12 +141,13 @@ type ui struct {
 	copyDia widget.Clickable
 	details widget.Bool
 
-	relay      component.TextField
-	appURL     component.TextField
-	secret     component.TextField
-	bitrate    component.TextField
-	resolution component.TextField
-	framerate  component.TextField
+	relay   component.TextField
+	appURL  component.TextField
+	secret  component.TextField
+	bitrate component.TextField
+
+	resPick dropdown
+	fpsPick dropdown
 
 	list   widget.List
 	copied string
@@ -160,8 +161,8 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	u.th.Palette = material.Palette{
 		Bg:         colBg,
 		Fg:         colText,
-		ContrastBg: colBright, // primary button: light surface…
-		ContrastFg: colBg,     // …with dark text (R6's inverted monochrome)
+		ContrastBg: colPrimary, // the stock material blue, back by request
+		ContrastFg: colBright,
 	}
 	u.list.Axis = layout.Vertical
 	u.relay.SetText(cfg.RelayURL)
@@ -171,13 +172,83 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	if cfg.BitrateBps > 0 {
 		u.bitrate.SetText(strconv.FormatFloat(float64(cfg.BitrateBps)/1e6, 'f', -1, 64))
 	}
-	if cfg.Width > 0 && cfg.Height > 0 {
-		u.resolution.SetText(fmt.Sprintf("%dx%d", cfg.Width, cfg.Height))
+	u.resPick = newDropdown("Resolution", resLabels(), resIndex(cfg.Width, cfg.Height))
+	if cfg.Width > 0 && u.resPick.sel < 0 {
+		// A rung the CLI set that the picker does not offer: show it honestly
+		// until the user picks one of ours.
+		u.resPick.custom = fmt.Sprintf("%d×%d (custom)", cfg.Width, cfg.Height)
 	}
-	if cfg.Fps > 0 {
-		u.framerate.SetText(strconv.Itoa(cfg.Fps))
+	u.fpsPick = newDropdown("Framerate", fpsLabels(), fpsIndex(cfg.Fps))
+	if cfg.Fps > 0 && u.fpsPick.sel < 0 {
+		u.fpsPick.custom = fmt.Sprintf("%d fps (custom)", cfg.Fps)
 	}
 	return u
+}
+
+// The rungs mirror the browser broadcaster's pickers (R3), minus its
+// auto/native entries — auto by request, native because this pipeline pins
+// concrete encoder caps. 120 is the one addition: 240 Hz-class displays make
+// it a real choice here where the browser's "native" used to cover it.
+var resRungs = []struct {
+	label string
+	w, h  int
+}{
+	{"2560×1440", 2560, 1440},
+	{"1920×1080 (default)", 1920, 1080},
+	{"1280×720", 1280, 720},
+	{"854×480", 854, 480},
+}
+
+var fpsRungs = []struct {
+	label string
+	fps   int
+}{
+	{"120 fps", 120},
+	{"60 fps (default)", 60},
+	{"30 fps", 30},
+	{"5 fps", 5},
+}
+
+func resLabels() []string {
+	out := make([]string, len(resRungs))
+	for i, r := range resRungs {
+		out[i] = r.label
+	}
+	return out
+}
+
+func fpsLabels() []string {
+	out := make([]string, len(fpsRungs))
+	for i, r := range fpsRungs {
+		out[i] = r.label
+	}
+	return out
+}
+
+// resIndex maps a configured rung back to a picker entry; 0,0 (the default)
+// selects 1920×1080, anything unlisted returns -1 (custom).
+func resIndex(w, h int) int {
+	if w == 0 && h == 0 {
+		return 1
+	}
+	for i, r := range resRungs {
+		if r.w == w && r.h == h {
+			return i
+		}
+	}
+	return -1
+}
+
+func fpsIndex(fps int) int {
+	if fps == 0 {
+		return 1
+	}
+	for i, r := range fpsRungs {
+		if r.fps == fps {
+			return i
+		}
+	}
+	return -1
 }
 
 func (u *ui) layout(gtx layout.Context) layout.Dimensions {
@@ -242,44 +313,17 @@ func (u *ui) save() {
 	u.cfg.AppURL = strings.TrimSpace(u.appURL.Text())
 	u.cfg.PublishSecret = u.secret.Text()
 	u.cfg.BitrateBps = parseBitrateMbps(u.bitrate.Text())
-	u.cfg.Width, u.cfg.Height = parseResolutionField(u.resolution.Text())
-	u.cfg.Fps = parseFramerateField(u.framerate.Text())
+	if i := u.resPick.sel; i >= 0 {
+		u.cfg.Width, u.cfg.Height = resRungs[i].w, resRungs[i].h
+	}
+	if i := u.fpsPick.sel; i >= 0 {
+		u.cfg.Fps = fpsRungs[i].fps
+	}
 	if err := u.cfg.Save(); err != nil {
 		// Non-fatal: the broadcast can still run, the settings just won't
 		// survive a restart.
 		fmt.Fprintln(os.Stderr, "could not save settings:", err)
 	}
-}
-
-// parseResolutionField turns the resolution field into a rung. Blank or
-// unparseable means "use the default" (0,0), like the other fields; the
-// parser itself is the engine's, shared with the CLI's -resolution flag.
-func parseResolutionField(s string) (int, int) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, 0
-	}
-	w, h, err := engine.ParseResolution(s)
-	if err != nil {
-		return 0, 0
-	}
-	return w, h
-}
-
-// parseFramerateField turns the framerate field into fps. Blank or
-// unparseable means "use the default" (0); clamped to [1, 240] — the highest
-// refresh rate any of our displays actually has, and beyond it the number is
-// a typo.
-func parseFramerateField(s string) int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		return 0
-	}
-	return min(n, 240)
 }
 
 // parseBitrateMbps turns the bitrate field into bps. Blank or unparseable
@@ -502,13 +546,13 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return u.bitrate.Layout(gtx, u.th, "Peak bitrate in Mbps (blank = 16)")
 					}),
-					layout.Rigid(spacer(8)),
+					layout.Rigid(spacer(10)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return u.resolution.Layout(gtx, u.th, "Stream resolution WxH (blank = 1920x1080)")
+						return u.dropdownRow(gtx, &u.resPick)
 					}),
 					layout.Rigid(spacer(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return u.framerate.Layout(gtx, u.th, "Framerate cap in fps (blank = 60)")
+						return u.dropdownRow(gtx, &u.fpsPick)
 					}),
 				)
 			}),
@@ -586,6 +630,68 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 			}),
 		)
 	})
+}
+
+// dropdown is a picker built from stock buttons: the field toggles an inline
+// list of options (Gio has no combobox, and an overlay menu is a lot of
+// machinery for a settings card — inline expansion behaves the same and
+// cannot mis-anchor). sel is the chosen index, or -1 for a value configured
+// outside the picker's rungs, shown via custom.
+type dropdown struct {
+	title  string
+	labels []string
+	custom string
+	sel    int
+	open   bool
+	field  widget.Clickable
+	items  []widget.Clickable
+}
+
+func newDropdown(title string, labels []string, sel int) dropdown {
+	return dropdown{title: title, labels: labels, sel: sel, items: make([]widget.Clickable, len(labels))}
+}
+
+func (u *ui) dropdownRow(gtx layout.Context, d *dropdown) layout.Dimensions {
+	if d.field.Clicked(gtx) {
+		d.open = !d.open
+	}
+	for i := range d.items {
+		if d.items[i].Clicked(gtx) {
+			d.sel, d.open = i, false
+		}
+	}
+	current := d.custom
+	if d.sel >= 0 {
+		current = d.labels[d.sel]
+	}
+	arrow := "▾"
+	if d.open {
+		arrow = "▴"
+	}
+	children := []layout.FlexChild{
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return u.secondaryBtn(&d.field, d.title+": "+current+"  "+arrow, colButton).Layout(gtx)
+		}),
+	}
+	if d.open {
+		for i := range d.labels {
+			children = append(children,
+				layout.Rigid(spacer(4)),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Left: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						b := u.secondaryBtn(&d.items[i], d.labels[i], colCard)
+						if i == d.sel {
+							b.Color = colBright
+						} else {
+							b.Color = colMuted
+						}
+						return b.Layout(gtx)
+					})
+				}),
+			)
+		}
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
 // --- small helpers -------------------------------------------------------

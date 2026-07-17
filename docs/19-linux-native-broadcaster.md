@@ -1170,6 +1170,17 @@ ladder falls to plain auto — the exact pipeline verified on device.
 `CapturePath` distinguishes the rungs ("zero-copy (capped)" vs
 "zero-copy"); on-device verify pending.
 
+**10b. Picker rungs + blue primary (2026-07-17, user request).** The GUI's
+resolution and framerate fields became inline-expanding dropdowns (Gio has
+no combobox; inline expansion behaves the same without overlay machinery)
+with the browser broadcaster's rungs minus auto/native: 2560×1440 /
+1920×1080 / 1280×720 / 854×480 and 120 / 60 / 30 / 5 fps — 120 added
+because 240 Hz-class displays make it a real choice where the browser's
+"native" used to cover it. A rung the CLI configured that the picker does
+not offer shows as "(custom)" until replaced. The primary button returned
+to Gio's stock material blue (the dark-palette rework had made it
+light-inverted; the blue was missed).
+
 **11. Frame timestamps are clock-anchored PES PTS — Decision 6's upgrade
 path, taken (2026-07-17).** Field finding: native streams *intermittently*
 cratered viewer decode fps while browser streams at higher rungs decoded
