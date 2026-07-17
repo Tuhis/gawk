@@ -1104,7 +1104,14 @@ also pins the candidate's **GPU memory feature on the encoder caps**
 download + re-upload round trip between converter and encoder.
 System-memory capture keeps its proven shape (gate first — CPU converts
 must never touch dropped frames — and bare caps) plus only the framerate
-pin. (c) **Default bitrate 8 → 16 Mbps** (GUI/CLI-overridable). Also new:
+pin. **On-device confirmation (2026-07-17, GST_DEBUG=pipewire*:5):** with
+the converter adjacent, the same compositor that previously died at
+finish/allocation negotiates `DMA_DRM AR24 2560×1440` end to end —
+`handle_format_change` finishes, `pipewirepool` wraps real DmaBuf fds
+(14 745 600 bytes = 2560×1440×4), and the stream reaches `streaming`. The
+zero-copy follow-up from note 4 is resolved; the system-memory rung stays
+as the ladder's fallback. (c) **Default bitrate 8 → 16 Mbps**
+(GUI/CLI-overridable). Also new:
 `Stats.CapturePath` ("zero-copy"/"system-memory") via a `MediaSource`
 method so a broadcaster can see which ladder rung won; measured **keyframe
 cadence** (`Stats.KeyframeIntervalMs`, EMA over AU arrival stamps) on the
