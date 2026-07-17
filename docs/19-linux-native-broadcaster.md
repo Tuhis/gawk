@@ -1119,6 +1119,27 @@ setting (Mbps, blank = default, clamped [1,100]), and an encode-path
 indicator (Vulkan Video / NVENC / VA-API + capture path + rung) visible
 without opening Details.
 
+**9. VBR against a bitrate ceiling (2026-07-17).** Field feedback after the
+note-8 build: quality good, default bandwidth "a bit too high". The fix is
+rate control, not the codec: `avc1.64002A` is already **High profile**
+(0x64 = 100) — the profiles above it (High 10, 4:2:2, 4:4:4) change bit
+depth/chroma rather than compressing 8-bit 4:2:0 better, and B-frames, the
+one big H.264 tool we don't use, are structurally forbidden (Decision 13).
+So `vah264enc`/`nvh264enc` moved CBR → **VBR with the configured bitrate as
+the ceiling** and a 75% target (`vbrTargetPercentage`): typical motion
+averages ~12 Mbps of the 16 default, complex scenes still burst to the cap,
+static screens spend ~nothing (damage-driven capture already sends no
+frames). Property spelling differs per element and is easy to invert:
+va's `bitrate` is the **max** with `target-percentage` the fraction; nv's
+`bitrate` is the **target** with `max-bitrate` the cap. `vulkanh264enc`
+stays CBR deliberately — its property surface is unverified on hardware
+(same reason it pins no GOP arg) and a wrong enum would reject the lead
+candidate at launch. The real next step in compression efficiency is a
+codec change (the wire is codec-agnostic — the browser negotiates VP8/VP9
+today — so `vaav1enc`-based AV1 is a plausible future roadmap item, needing
+its own config-derivation path since the SPS parse is H.264-specific), not
+an H.264 profile change.
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker

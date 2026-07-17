@@ -102,7 +102,8 @@ gawk-broadcast -url https://relay.example:4433 [flags]
   -secret      publish secret, if required     (env GAWK_SECRET)
   -origin      Origin header to send           (env GAWK_ORIGIN)
   -id          reclaim this broadcast code instead of minting a new one
-  -resolution  1920x1080     -fps 60     -bitrate 16   (Mbps)
+  -resolution  1920x1080     -fps 60     -bitrate 16   (Mbps, the VBR peak;
+                                            typical motion averages ~75% of it)
   -encoder     force one of vulkanh264enc, nvh264enc, vah264enc
   -insecure    skip TLS verification (development certificates only)
   -v           verbose, including the GStreamer child's stderr

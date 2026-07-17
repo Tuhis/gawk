@@ -274,10 +274,49 @@ func TestPipelineLinksAreWellFormed(t *testing.T) {
 func TestBitrateIsConvertedToKbps(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	cfg.BitrateBps = 8_000_000
-	for _, c := range Cascade {
-		p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto))
-		if !strings.Contains(p, "bitrate=8000") {
-			t.Errorf("%s: want bitrate=8000 (kbps) for 8 Mbps:\n%s", c.Element, p)
+	for _, tc := range []struct{ element, want string }{
+		// vulkan: CBR at the configured rate (see the VBR test for why).
+		{"vulkanh264enc", "bitrate=8000"},
+		// nv: VBR — bitrate is the *target* (75%), max-bitrate the ceiling.
+		{"nvh264enc", "bitrate=6000"},
+		{"nvh264enc", "max-bitrate=8000"},
+		// va: VBR — bitrate is the *ceiling*, target-percentage the target.
+		{"vah264enc", "bitrate=8000"},
+	} {
+		c, _ := FindCandidate(tc.element)
+		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto)); !strings.Contains(p, tc.want) {
+			t.Errorf("%s: want %q (kbps) for 8 Mbps:\n%s", tc.element, tc.want, p)
+		}
+	}
+}
+
+// The configured bitrate is a *ceiling*, not a constant spend: CBR poured the
+// full rate into any sustained motion whether the scene needed it or not
+// (field report 2026-07-17: "default bandwidth a bit too high"). VBR with a
+// 75% target keeps typical motion around three quarters of the cap, lets
+// complex scenes burst to it, and — with damage-driven capture — spends next
+// to nothing on a static screen. The two elements spell it differently:
+// vah264enc's `bitrate` is the max and `target-percentage` the target
+// fraction; nvh264enc's `bitrate` is the target and `max-bitrate` the max.
+// vulkanh264enc stays CBR on purpose — its rate-control property surface is
+// unverified on hardware (the same reason it pins no GOP arg), and a wrong
+// enum value would reject the *lead* candidate at launch.
+func TestRateControlIsVBRWithABitrateCeiling(t *testing.T) {
+	cfg := engine.DefaultMediaConfig() // 16 Mbps ceiling
+	for _, tc := range []struct{ element, want string }{
+		{"vah264enc", "rate-control=vbr"},
+		{"vah264enc", "target-percentage=75"},
+		{"nvh264enc", "rc-mode=vbr"},
+		{"nvh264enc", "bitrate=12000"},
+		{"nvh264enc", "max-bitrate=16000"},
+		{"vulkanh264enc", "rate-control=cbr"},
+	} {
+		c, ok := FindCandidate(tc.element)
+		if !ok {
+			t.Fatalf("%s is not in the cascade", tc.element)
+		}
+		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto)); !strings.Contains(p, tc.want) {
+			t.Errorf("%s: want %q:\n%s", tc.element, tc.want, p)
 		}
 	}
 }

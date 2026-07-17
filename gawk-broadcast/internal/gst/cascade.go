@@ -128,9 +128,13 @@ var Cascade = []Candidate{
 		encArgs: func(cfg engine.MediaConfig) []string {
 			return []string{
 				"nvh264enc",
-				"rc-mode=cbr",
+				// VBR against the configured ceiling (see vah264enc below for
+				// the rationale). nvh264enc spells it the other way round from
+				// va: `bitrate` is the *target*, `max-bitrate` the ceiling.
+				"rc-mode=vbr",
 				"zerolatency=true",
-				fmt.Sprintf("bitrate=%d", cfg.BitrateBps/1000), // kbps
+				fmt.Sprintf("bitrate=%d", cfg.BitrateBps*vbrTargetPercentage/100/1000), // kbps, target
+				fmt.Sprintf("max-bitrate=%d", cfg.BitrateBps/1000),                     // kbps, ceiling
 				fmt.Sprintf("gop-size=%d", gopFrames(cfg)),
 				"bframes=0", // Decision 13: decode order == presentation order
 			}
@@ -147,14 +151,29 @@ var Cascade = []Candidate{
 		encArgs: func(cfg engine.MediaConfig) []string {
 			return []string{
 				"vah264enc",
-				"rate-control=cbr",
-				fmt.Sprintf("bitrate=%d", cfg.BitrateBps/1000), // kbps
+				// VBR, not CBR: the configured bitrate is a *ceiling*. CBR
+				// poured the full rate into any sustained motion whether the
+				// scene needed it or not; VBR keeps typical motion around the
+				// 75% target, bursts to the ceiling for complex scenes, and —
+				// capture being damage-driven — spends next to nothing on a
+				// static screen. va semantics: `bitrate` is the max,
+				// `target-percentage` the target fraction of it.
+				"rate-control=vbr",
+				fmt.Sprintf("bitrate=%d", cfg.BitrateBps/1000), // kbps, ceiling
+				fmt.Sprintf("target-percentage=%d", vbrTargetPercentage),
 				fmt.Sprintf("key-int-max=%d", gopFrames(cfg)),
 				"b-frames=0", // Decision 13
 			}
 		},
 	},
 }
+
+// vbrTargetPercentage is the VBR target as a fraction of the configured
+// ceiling: typical motion averages ~75% of the cap, complex scenes burst to
+// 100%. vulkanh264enc is deliberately left CBR — its rate-control property
+// surface is unverified on hardware (the same reason it pins no GOP arg),
+// and a wrong enum value would reject the *lead* candidate at launch.
+const vbrTargetPercentage = 75
 
 // gopFrames converts the GOP interval in milliseconds to frames.
 //

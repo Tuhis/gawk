@@ -54,7 +54,7 @@ func run() error {
 		insecure   = fs.Bool("insecure", false, "skip TLS verification (development certificates only)")
 		resolution = fs.String("resolution", "", "capture resolution, e.g. 1920x1080 (default 1920x1080)")
 		fpsFlag    = fs.Int("fps", 0, "frames per second (default 60)")
-		bitrate    = fs.Float64("bitrate", 0, "bitrate in Mbps (default 16)")
+		bitrate    = fs.Float64("bitrate", 0, "peak bitrate in Mbps (default 16; VBR targets ~75% of it)")
 		encoder    = fs.String("encoder", "", "force an encoder ("+strings.Join(gst.CandidateNames(), ", ")+"); default probes them in order")
 		verbose    = fs.Bool("v", false, "verbose logging (the GStreamer child's stderr included)")
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
