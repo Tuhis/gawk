@@ -35,6 +35,7 @@ feature set exists).
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 🚧 V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC pending**; V8 (direct Vulkan Video) gated on V2's on-hardware result ([docs/19](docs/19-linux-native-broadcaster.md)) |
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
+| R17 | [Live viewer count](#r17--live-viewer-count) | 📋 not started (design doc TBD) |
 
 ---
 
@@ -962,6 +963,74 @@ verification pass) pending — it settles the one known unverified fact,
 `new VideoFrame(OffscreenCanvas)` in a worker on iOS WebKit, which the
 runtime probe checks before any arm (probe failure ⇒ pseudo-fullscreen
 tier, the pre-registered fallback).
+
+---
+
+## R17 — Live viewer count
+
+**Goal**: both the broadcaster and every viewer of a stream see how many people
+are currently watching it — a live "N watching" figure that updates promptly as
+viewers join and leave. The broadcaster's production UI finally fills the
+viewer-count slot `docs/10` already reserved (it renders nothing today); each
+viewer sees the same count.
+
+**Why**: this is the `SubscriberCount` message deliberately deferred from R14
+(Decision 18) and named as future work in `docs/19`, `docs/10`, `CLAUDE.md` and
+this roadmap. The count itself already exists server-side (`len(b.subs)`,
+surfaced in `/statusz` and the `gawk_broadcast_subscribers` metric); what's
+missing is a wire path to push it to clients. R14 refused to smuggle it in
+precisely because it's a shared change that benefits **both** broadcasters
+(browser + native) — so it lands once, for both, as its own wire+relay item.
+
+**Scope sketch**:
+
+- **Wire**: a new relay-originated message type (small fixed size: version +
+  type + count). Its type byte must be **coordinated with R15's reserved
+  0x07/0x08 audio types** — allocate the next genuinely free byte at
+  implementation time. Golden vectors added to all three mirrors
+  (`wire_test.go`, `wire.test.ts`, `wirecheck_test.go`).
+- **Relay — the one genuinely new piece**: a **relay→publisher push channel**.
+  The relay is a one-way byte forwarder today (it only reads from the publisher
+  session; `hub.Publisher` holds no session handle). The count source already
+  exists at the two mutation points — `Registry.Subscribe` and
+  `Subscriber.Close`/`evict`, both under `r.mu` with the fresh `len(b.subs)` in
+  hand. Fan-out **to subscribers** reuses the `ClockMapping` template
+  (`fanOutLocked` + a cached value primed to late joiners + cache-invalidate on
+  new publisher session). Pushing **to the publisher** needs new plumbing: give
+  the hub a sender onto the publisher's `webtransport.Session`.
+  Debounce/coalesce join/leave churn so a reconnect storm can't spam either end.
+- **Browser broadcaster**: intercept the message in the existing publisher read
+  loop (`broadcaster.ts`, which today only catches TimeSync replies); add a
+  `viewerCount` field to `BroadcastStats`; render it in the reserved production
+  slot + a Delivery overlay row.
+- **Native broadcaster (R14)**: same interception in `engine.go`
+  `readDatagrams`; add the count to the engine `Stats` + a `Callbacks` field;
+  surface it in the Gio GUI. Removes the two "deliberately absent" comments
+  (`engine.go`, GUI `main.go`).
+- **Viewer**: add a case to the reassembler `switch` (mirroring
+  `pushClockMapping`) → new `onSubscriberCount` callback → `viewerCount` in
+  `ViewerStats` → overlay row, with an optional prominent "N watching" badge in
+  `ViewerScreen`.
+
+**Key design questions** (for the design doc):
+
+- Push mechanism to the publisher: periodic datagram (simplest; matches the
+  TimeSync-reply precedent, lossy → pair with periodic re-emit + cache) vs a
+  persistent server→publisher uni stream vs reusing the announce stream.
+- Exactly what counts: subscribers only (the broadcaster's own preview is not a
+  viewer); whether a connecting-but-not-yet-subscribed session is included.
+- Debounce window / max update rate; whether to also emit the current value
+  immediately on a new join and on a new publisher session.
+- Whether to bundle a "first viewer joined" signal (R14 mentioned it alongside)
+  or keep v1 to a bare count.
+- Whether the viewer sees a production-prominent badge or an overlay-only row.
+
+**Non-goals**: viewer identity/names or a presence list (just a number);
+historical/peak analytics (that stays `/statusz` + Prometheus territory);
+per-viewer adaptation.
+
+**Status**: not started — backlog item promoted from R14 Decision 18. Its own
+design doc (`docs/22`) + chunk breakdown to be written when picked up.
 
 ---
 
