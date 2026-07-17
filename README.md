@@ -273,6 +273,17 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   is now **evicted** after 10 consecutive failures with non-terminal close
   code 4001, so it reconnects if live and stops costing fan-out if dead.
   ([docs/14](docs/14-viewer-render-performance.md))
+- **A silently-dead publisher session holds its slot for up to the QUIC idle
+  timeout (~30 s), and rejecting the broadcaster's own reclaim in that window
+  killed live broadcasts.** The reclaim got 409 from its own zombie session,
+  clients fell back to minting a new ID (the browser can't tell 409 from
+  404), and the old broadcast — with every viewer — was GC'd mid-stream.
+  Since 2026-07-18 a resume-token-bearing claim that completes its upgrade
+  **supersedes** the incumbent instead ("newest publisher wins" — the
+  same-pod counterpart of R17's lease force-take; deposed session gets close
+  code 4004, `CloseCodePublisherSuperseded`); a malformed request that fails
+  the upgrade still deposes nothing.
+  ([docs/06](docs/06-multi-broadcaster.md))
 - **frameIds are uint32 serial numbers — every comparison must be wrap- and
   restart-aware, and moving keyframes off datagrams (R8) silently broke the
   restart path (R10).** The reassembler drops "late" deltas against a

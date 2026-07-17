@@ -76,7 +76,12 @@ func TestPublishOutcomeUnauthorizedOnTokenlessClaim(t *testing.T) {
 	}
 }
 
-func TestPublishOutcomeConflictOnActiveReclaim(t *testing.T) {
+// A token-bearing claim of a still-active slot is no longer a pre-upgrade
+// 409 (docs/06 revision 2026-07-18): the slot holder may be a zombie, so
+// takeover is allowed — but only for a session that completes the upgrade.
+// A malformed (non-WebTransport) request must die at the upgrade WITHOUT
+// deposing the incumbent, so stray requests can't kill a healthy broadcast.
+func TestPublishActiveReclaimUpgradeFailureLeavesIncumbent(t *testing.T) {
 	srv, sm, r := newOutcomeServer(t, config.Config{}, hub.Options{})
 	id, pub, err := r.StartPublish("")
 	if err != nil {
@@ -84,16 +89,23 @@ func TestPublishOutcomeConflictOnActiveReclaim(t *testing.T) {
 	}
 	defer pub.Close()
 
-	// The 409 sits behind the token gate (W2): the owner's valid token on a
-	// still-active slot is the conflict case.
+	// The takeover sits behind the token gate (W2): the owner's valid token
+	// on a still-active slot is the case that used to 409.
 	token := hex.EncodeToString(srv.resume.mint(id))
 	w := httptest.NewRecorder()
 	srv.handlePublish(w, connectReq("https://relay/publish/"+id+"?resume="+token, map[string]string{"id": id}))
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", w.Code)
+	if got := sm.ConnectionCount("publish", metrics.OutcomeUpgradeFailed); got != 1 {
+		t.Errorf("publish/upgrade_failed = %v, want 1", got)
 	}
-	if got := sm.ConnectionCount("publish", metrics.OutcomeConflict); got != 1 {
-		t.Errorf("publish/conflict = %v, want 1", got)
+	if got := sm.ConnectionCount("publish", metrics.OutcomeConflict); got != 0 {
+		t.Errorf("publish/conflict = %v, want 0 (no pre-upgrade 409 anymore)", got)
+	}
+	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if !st.PublisherActive {
+		t.Fatal("incumbent publisher deposed by a request that failed its upgrade")
+	}
+	if st.GraceRemainingSeconds != 0 {
+		t.Fatalf("grace timer armed (%ds) by a failed reclaim upgrade", st.GraceRemainingSeconds)
 	}
 }
 

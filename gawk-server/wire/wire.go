@@ -116,6 +116,17 @@ const CloseCodeServerDraining = 4002
 // for browsers.
 const CloseCodeOriginMoved = 4003
 
+// CloseCodePublisherSuperseded is sent to a publisher session when a newer
+// session claims its broadcast ID with a verified resume token (docs/06
+// revision 2026-07-18). The relay cannot tell a silently-dead publisher from
+// a live one inside the QUIC idle window, so a token-bearing claim that
+// completes its upgrade deposes the incumbent — newest publisher wins, the
+// same-pod counterpart of R17 W3's force-take of the origin Lease. In
+// practice this lands on the broadcaster's own zombie session; a live client
+// receiving it has been replaced and must NOT auto-resume back (terminal for
+// resume, like CloseCodeBroadcastEnded is for viewers).
+const CloseCodePublisherSuperseded = 4004
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen

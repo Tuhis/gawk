@@ -38,6 +38,18 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
 - Routes: `CONNECT /publish` (mint ID), `CONNECT /publish/{id}` (reclaim ID),
   `CONNECT /subscribe/{id}` (subscribe to ID), `/echo` diagnostic, `GET /healthz`,
   `GET /statusz` (JSON RegistryStats snapshot)
+- **A token-bearing reclaim supersedes an active publisher session**
+  ("newest publisher wins", since 2026-07-18 — docs/06 revision): a
+  silently-dead publisher session holds its slot until the ~30s QUIC idle
+  timeout, and the old 409 there made the broadcaster's own reclaim fall
+  back to minting a new ID, orphaning every viewer (the old broadcast was
+  GC'd mid-stream — seen in production logs). `Registry.TakeOverPublish`
+  deposes the incumbent (close code **4004 `CloseCodePublisherSuperseded`**,
+  non-flapping: neither broadcaster client auto-reconnects) — the same-pod
+  counterpart of R17 W3's lease force-take — but only **after** the R17
+  resume-token gate passes AND the claiming session completes its upgrade,
+  so tokenless or malformed requests can't kill a healthy broadcast; 403
+  (no token) and 404 stay pre-upgrade rejections.
 - **QUIC keepalive keeps idle viewers connected while the broadcaster is
   away** (`-keepalive-period`, default 10s; `-max-idle-timeout`, default
   30s). Raising the idle timeout alone is a no-op — the effective timeout is

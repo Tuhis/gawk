@@ -74,6 +74,14 @@ type Conn interface {
 	CloseWithError(code uint32, reason string) error
 }
 
+// SessionCloser is the slice of a publisher's session the hub needs to depose
+// it when a newer publisher session takes over the broadcast (docs/06
+// revision 2026-07-18). The transport layer binds it after the session
+// upgrade via Publisher.BindConn.
+type SessionCloser interface {
+	CloseWithError(code uint32, reason string) error
+}
+
 // KeyframeStream is the minimal write side of a unidirectional stream the hub
 // uses to deliver one keyframe. The transport layer's adapter maps it onto a
 // webtransport SendStream.
@@ -295,9 +303,12 @@ type broadcastHub struct {
 	log      *slog.Logger
 
 	publisherActive bool
-	generation      uint64
-	graceTimer      *time.Timer
-	graceStart      time.Time
+	// publisher is the handle currently holding the slot (nil when inactive).
+	// TakeOverPublish needs it to depose the incumbent.
+	publisher  *Publisher
+	generation uint64
+	graceTimer *time.Timer
+	graceStart time.Time
 	// edge marks a hub as derived state (R17 W4): its "publisher" is this
 	// pod's upstream pull from the broadcast's origin, it is exempt from
 	// MaxBroadcasts, and it never idles in grace — the Lease is the liveness
@@ -657,7 +668,9 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	// cumulative counters live on the hub and survive).
 	b.ingress.reset()
 
-	return &Publisher{hub: b}, nil
+	p := &Publisher{hub: b}
+	b.publisher = p
+	return p, nil
 }
 
 // setRoleLocked flips the hub's federation role (post-review fix, PR #47).
@@ -679,6 +692,59 @@ func (r *Registry) setRoleLocked(b *broadcastHub, edge bool) {
 	b.ingressFramesLost = 0
 	b.ingressChunksLost = 0
 	b.edge = edge
+}
+
+// TakeOverPublish claims the publisher slot for id even when another
+// publisher holds it, deposing the incumbent — newest publisher wins
+// (docs/06 revision 2026-07-18). It exists for the zombie lockout: a
+// publisher whose session dies silently keeps the slot until the QUIC idle
+// timeout notices, and 409ing its own reclaim in that window forced clients
+// into a mint fallback that orphaned every viewer. It is the same-pod
+// counterpart of R17 W3's lease force-take: the caller MUST have verified
+// the resume token (the proof of ownership), and MUST call this only after
+// the claiming session has completed its upgrade, so a malformed request
+// can never depose a healthy publisher. A deposed session (when one is
+// bound) is closed with wire.CloseCodePublisherSuperseded, outside the
+// lock. The only error is ErrNotFound.
+func (r *Registry) TakeOverPublish(id string) (string, *Publisher, error) {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return "", nil, ErrNotFound
+	}
+
+	r.mu.Lock()
+	b, exists := r.hubs[normID]
+	if !exists {
+		r.mu.Unlock()
+		return "", nil, ErrNotFound
+	}
+	var deposed SessionCloser
+	if old := b.publisher; b.publisherActive && old != nil {
+		// Depose the incumbent: mark it closed so its late datagrams and
+		// keyframes drop and its handler's deferred Close is a no-op (no
+		// grace timer, no OnPublisherClosed lease release — the slot and
+		// the lease now belong to the new publisher).
+		old.closed = true
+		deposed = old.conn
+		b.publisherActive = false
+		b.publisher = nil
+	}
+	pub, err := r.claimPublisherLocked(b)
+	if err != nil {
+		// Unreachable after the depose above; guards a future refactor.
+		r.mu.Unlock()
+		return "", nil, err
+	}
+	// A real publisher claim makes (or re-makes) this hub the origin, same
+	// as StartPublish/ResumePublish (W5 un-demote).
+	r.setRoleLocked(b, false)
+	r.mu.Unlock()
+
+	if deposed != nil {
+		b.log.Info("active publisher superseded by token-bearing claim")
+		_ = deposed.CloseWithError(uint32(wire.CloseCodePublisherSuperseded), "superseded by a new publisher session")
+	}
+	return normID, pub, nil
 }
 
 // CheckPublishNew is the read-only pre-upgrade check for minting a new
@@ -1080,6 +1146,25 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool 
 type Publisher struct {
 	hub    *broadcastHub
 	closed bool
+	// conn is the session close handle bound after the upgrade (BindConn);
+	// nil until then. Guarded by the registry lock, like closed.
+	conn SessionCloser
+}
+
+// BindConn attaches the publisher's session close handle so a later
+// TakeOverPublish can depose this session. It reports false when the
+// publisher has already been superseded (deposed between its pre-upgrade
+// claim and this bind) — the caller must then end its session rather than
+// continue publishing into a deposed broadcast.
+func (p *Publisher) BindConn(c SessionCloser) bool {
+	r := p.hub.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	p.conn = c
+	return true
 }
 
 // HandleDatagram processes and relays one publisher delta datagram. Keyframes
@@ -1214,7 +1299,10 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 	}
 }
 
-// Close releases the publisher slot and schedules the GC grace timer.
+// Close releases the publisher slot and schedules the GC grace timer. On a
+// publisher that was deposed by TakeOverPublish it is a no-op — the slot
+// belongs to the new publisher, and arming the grace timer here is exactly
+// the bug that garbage-collected live broadcasts.
 func (p *Publisher) Close() {
 	b := p.hub
 	r := b.registry
@@ -1226,6 +1314,7 @@ func (p *Publisher) Close() {
 	}
 	p.closed = true
 	b.publisherActive = false
+	b.publisher = nil
 
 	if r.opts.BroadcastGrace > 0 {
 		gen := b.generation
