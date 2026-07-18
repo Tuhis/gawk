@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/Tuhis/gawk/compare/gawk-server-v0.16.1...gawk-server-v0.16.2) (2026-07-18)
+
+
+### Bug Fixes
+
+* hardcode Origin header for internal edge connections ([d626e85](https://github.com/Tuhis/gawk/commit/d626e85f049bbc3d55ebba4ff931551b3c8be73f))
+
 ## [0.16.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.16.0...gawk-server-v0.16.1) (2026-07-18)
 
 
