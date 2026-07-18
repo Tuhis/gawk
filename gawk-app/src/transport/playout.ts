@@ -10,10 +10,17 @@
 //   'adaptive' — R12: sub-frame paced presentation with a jitter-tracked
 //                offset (T3; until then the seed constant) and a decode lead.
 //
+// R19 (docs/24 Decision 7): while Resilient mode is on, the *effective* mode
+// is 'adaptive' with a wider controller profile ([150, 2000] ms, seed 500) —
+// the stored mode keeps its value and its semantics and regains effect the
+// moment Resilient mode turns off.
+//
 // The setting is a module-scoped value in whichever JS context the pipeline
 // runs (main thread, or the viewer worker via the 'playout' worker command),
 // read live by the reorder buffer on every advance — so switching mode
 // mid-session re-paces without touching the pipeline.
+
+import { getResilientMode, setResilientModeFlag } from './resilient';
 
 export type PlayoutMode = 'off' | 'fixed' | 'adaptive';
 
@@ -30,7 +37,7 @@ export const PLAYOUT_OFFSET_MS = 150;
 export const DECODE_LEAD_MS = 35;
 
 // R12 T3 (docs/17 Decision 6): the adaptive offset controller. Target =
-// clamp(arrival jitter (p95 − min) + headroom, [MIN, MAX]); the current
+// clamp(arrival jitter (p95 − min) + headroom, [min, max]); the current
 // offset slews toward it asymmetrically — up fast (under-buffering means
 // visible drops NOW), down slowly and only after the target has sat well
 // below the current value for a dwell period (fallback.ts's step-down-fast /
@@ -46,11 +53,50 @@ export const OFFSET_DOWN_MARGIN_MS = 30; // target must sit this far below to ar
 export const OFFSET_DOWN_DWELL_MS = 15_000;
 export const OFFSET_WARMUP_MS = 5000; // seed holds until the jitter window has data
 
+// The clamp/seed/slew envelope of the adaptive controller (R19 made it a
+// profile). The formula is shared; only these numbers widen in resilient
+// mode — retransmit stalls inflate arrival p95, so the offset grows exactly
+// when loss is happening and shrinks (slowly, dwell-gated) when the link
+// cleans up.
+export interface PlayoutProfile {
+  seedMs: number;
+  minMs: number;
+  maxMs: number;
+  slewUpMsPerS: number;
+  slewDownMsPerS: number;
+}
+
+export const DEFAULT_PLAYOUT_PROFILE: PlayoutProfile = {
+  seedMs: PLAYOUT_OFFSET_MS,
+  minMs: MIN_PLAYOUT_OFFSET_MS,
+  maxMs: MAX_PLAYOUT_OFFSET_MS,
+  slewUpMsPerS: OFFSET_SLEW_UP_MS_PER_S,
+  slewDownMsPerS: OFFSET_SLEW_DOWN_MS_PER_S,
+};
+
+// R19 resilient profile (docs/24 Decision 7): clamp [150, 2000] ms, seed 500,
+// slew up 100 ms/s / down 10 ms/s. Provisional until X6's measurement pass.
+export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
+  seedMs: 500,
+  minMs: 150,
+  maxMs: 2000,
+  slewUpMsPerS: 100,
+  slewDownMsPerS: 10,
+};
+
 export class PlayoutController {
-  private current = PLAYOUT_OFFSET_MS;
+  private profile: () => PlayoutProfile;
+  private current: number;
   private firstJitterAt: number | null = null;
   private lastUpdateAt: number | null = null;
   private belowSince: number | null = null;
+
+  // The profile is a live getter so the module singleton follows the
+  // resilient flag; tests may pass a fixed profile.
+  constructor(profile: PlayoutProfile | (() => PlayoutProfile) = DEFAULT_PLAYOUT_PROFILE) {
+    this.profile = typeof profile === 'function' ? profile : () => profile;
+    this.current = this.profile().seedMs;
+  }
 
   // Feed the current arrival jitter (null = no data yet). Cadence is the
   // caller's (the pipeline's stats tick); slew is rate × dt, so the exact
@@ -62,13 +108,11 @@ export class PlayoutController {
     if (this.firstJitterAt === null) this.firstJitterAt = nowMs;
     if (nowMs - this.firstJitterAt < OFFSET_WARMUP_MS) return;
 
-    const target = Math.min(
-      MAX_PLAYOUT_OFFSET_MS,
-      Math.max(MIN_PLAYOUT_OFFSET_MS, jitterMs + HEADROOM_MS),
-    );
+    const p = this.profile();
+    const target = Math.min(p.maxMs, Math.max(p.minMs, jitterMs + HEADROOM_MS));
     if (target > this.current) {
       this.belowSince = null;
-      this.current = Math.min(target, this.current + (OFFSET_SLEW_UP_MS_PER_S * dtMs) / 1000);
+      this.current = Math.min(target, this.current + (p.slewUpMsPerS * dtMs) / 1000);
     } else if (target < this.current) {
       // Arm a descent only on a clear gap; once armed, keep descending all
       // the way to the target even as the gap narrows below the margin —
@@ -77,7 +121,7 @@ export class PlayoutController {
         this.belowSince = nowMs;
       }
       if (this.belowSince !== null && nowMs - this.belowSince >= OFFSET_DOWN_DWELL_MS) {
-        this.current = Math.max(target, this.current - (OFFSET_SLEW_DOWN_MS_PER_S * dtMs) / 1000);
+        this.current = Math.max(target, this.current - (p.slewDownMsPerS * dtMs) / 1000);
       }
     } else {
       this.belowSince = null;
@@ -90,7 +134,7 @@ export class PlayoutController {
 
   // Broadcaster restart / mode re-entry: new timestamp timeline, stale jitter.
   reset(): void {
-    this.current = PLAYOUT_OFFSET_MS;
+    this.current = this.profile().seedMs;
     this.firstJitterAt = null;
     this.lastUpdateAt = null;
     this.belowSince = null;
@@ -98,34 +142,57 @@ export class PlayoutController {
 }
 
 let mode: PlayoutMode = 'off';
-const controller = new PlayoutController();
+const controller = new PlayoutController(() =>
+  getResilientMode() ? RESILIENT_PLAYOUT_PROFILE : DEFAULT_PLAYOUT_PROFILE,
+);
 
 export function setPlayoutMode(m: PlayoutMode): void {
   // Entering adaptive re-seeds: jitter observed under another mode's pacing
-  // (or a previous session) shouldn't preload the controller.
-  if (m === 'adaptive' && mode !== 'adaptive') controller.reset();
+  // (or a previous session) shouldn't preload the controller. While resilient
+  // mode is live the controller belongs to it — a stored-mode change must not
+  // reset the running resilient offset (it has no live effect anyway).
+  if (m === 'adaptive' && mode !== 'adaptive' && !getResilientMode()) controller.reset();
   mode = m;
 }
 
-export function getPlayoutMode(): PlayoutMode {
+// The stored playout mode, as toggled by the user (docs/24 Decision 7 keeps
+// its semantics untouched while resilient mode overrides the effective mode).
+export function getStoredPlayoutMode(): PlayoutMode {
   return mode;
 }
 
+// The effective mode: resilient mode implies adaptive pacing with the
+// resilient profile while active.
+export function getPlayoutMode(): PlayoutMode {
+  return getResilientMode() ? 'adaptive' : mode;
+}
+
 export function getPlayoutOffsetMs(): number {
-  if (mode === 'off') return 0;
-  if (mode === 'fixed') return PLAYOUT_OFFSET_MS;
+  const m = getPlayoutMode();
+  if (m === 'off') return 0;
+  if (m === 'fixed') return PLAYOUT_OFFSET_MS;
   return controller.offsetMs();
 }
 
 // Driven by the pipeline's stats tick with the reorder buffer's arrival
-// jitter; no-op outside adaptive mode.
+// jitter; no-op outside (effective) adaptive mode.
 export function updatePlayoutController(jitterMs: number | null, nowMs: number): void {
-  if (mode !== 'adaptive') return;
+  if (getPlayoutMode() !== 'adaptive') return;
   controller.update(jitterMs, nowMs);
 }
 
 // Broadcaster restart: the arrival-jitter window resets with the baseline,
 // and so must the controller reading it.
 export function resetPlayoutController(): void {
+  controller.reset();
+}
+
+// R19 (docs/24 Decision 9): the one entry point for flipping resilient mode
+// in this JS context. Resets the controller across the flip so the offset
+// re-seeds on the incoming profile (500 ms entering resilient, 150 ms
+// leaving it) instead of carrying a value from the other profile's envelope.
+export function setResilientMode(on: boolean): void {
+  if (on === getResilientMode()) return;
+  setResilientModeFlag(on);
   controller.reset();
 }

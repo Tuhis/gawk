@@ -8,8 +8,10 @@
 import { log } from '../lib/logger';
 import {
   connectWebTransport,
+  newCarrierCounters,
   readDatagrams,
-  readKeyframeStreams,
+  readServerStreams,
+  type CarrierCounters,
   type ConnectOptions,
   type KeyframeStreamFrame,
 } from './connection';
@@ -50,6 +52,10 @@ export interface ViewerTransport {
   // session can't send datagrams). Lives in the transport because it owns the
   // reply timing — on the worker path a postMessage hop would add jitter.
   sampleTimeSync(): TimeSyncStats | null;
+  // R19: the reliable-carrier tallies (docs/24 Decision 10) — how the mode
+  // row tells `reliable` from `requested but datagrams served`. Optional so
+  // test fakes without a carrier path keep compiling; null before connect.
+  sampleCarrierStats?(): CarrierCounters | null;
   close(): void;
 }
 
@@ -65,6 +71,7 @@ export class LocalViewerTransport implements ViewerTransport {
   private sampler: ConnectionStatsSampler | null = null;
   private timeSync: TimeSyncClient | null = null;
   private timeSyncWriter: WritableStreamDefaultWriter<BufferSource> | null = null;
+  private carrier = newCarrierCounters();
   private abort = new AbortController();
   private closing = false; // close() called — suppress onClosed
   private closedReported = false;
@@ -115,11 +122,18 @@ export class LocalViewerTransport implements ViewerTransport {
       .then(() => this.handleReadLoopEnd(cb, wt, null))
       .catch((e) => this.handleReadLoopEnd(cb, wt, e instanceof Error ? e : new Error(String(e))));
 
-    // Keyframe streams: failures here are not fatal to the session (the next
-    // keyframe recovers, and a real drop surfaces via the datagram loop /
-    // wt.closed), so they are logged, not propagated.
-    void readKeyframeStreams(wt, cb.onKeyframe, this.abort.signal).catch((e) => {
-      if (!this.closing) log.warn('Keyframe stream loop ended:', e);
+    // Server streams (keyframes + R19 carriers): failures here are not fatal
+    // to the session (the next keyframe recovers, and a real drop surfaces
+    // via the datagram loop / wt.closed), so they are logged, not propagated.
+    // Carrier records are verbatim datagrams — they feed the same handler,
+    // and the pipeline never learns which transport delivered the bytes.
+    void readServerStreams(
+      wt,
+      { onKeyframe: cb.onKeyframe, onCarrierRecord: (record) => cb.onDatagram(record) },
+      this.carrier,
+      this.abort.signal,
+    ).catch((e) => {
+      if (!this.closing) log.warn('Server stream loop ended:', e);
     });
   }
 
@@ -173,6 +187,10 @@ export class LocalViewerTransport implements ViewerTransport {
 
   sampleTimeSync(): TimeSyncStats | null {
     return this.timeSync?.sample() ?? null;
+  }
+
+  sampleCarrierStats(): CarrierCounters | null {
+    return { ...this.carrier };
   }
 
   close(): void {

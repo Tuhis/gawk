@@ -46,6 +46,9 @@ func (fakeConn) SendDatagram([]byte) error { return nil }
 func (fakeConn) OpenKeyframeStream() (hub.KeyframeStream, error) {
 	return nil, errors.New("open failed")
 }
+func (fakeConn) OpenCarrierStream() (hub.KeyframeStream, error) {
+	return nil, errors.New("open failed")
+}
 func (fakeConn) CloseWithError(uint32, string) error { return nil }
 
 func deltaDgram(t *testing.T, frameID uint32) []byte {

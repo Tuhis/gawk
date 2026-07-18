@@ -914,7 +914,17 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		(*hook)(id)
 	}
 
-	sub, err := s.registry.Subscribe(id, &webtransportSessionAdapter{sess})
+	// R19 (docs/24 Decision 6): ?delivery=reliable opts this subscriber into
+	// carrier delivery — the query param is the negotiation surface because
+	// the WebTransport JS API can't set headers (publish-secret precedent).
+	// Unknown values fall back to datagram delivery; a mode change is a
+	// reconnect, never an in-session morph.
+	reliable := r.URL.Query().Get("delivery") == "reliable"
+	subscribe := s.registry.Subscribe
+	if reliable {
+		subscribe = s.registry.SubscribeReliable
+	}
+	sub, err := subscribe(id, &webtransportSessionAdapter{sess})
 	if err != nil {
 		s.log.Warn("subscribe rejected after upgrade", "id", id, "remote", sess.RemoteAddr(), "err", err)
 		if errors.Is(err, hub.ErrNotFound) {
@@ -937,6 +947,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.Connection("subscribe", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)
+	if reliable {
+		log = log.With("delivery", "reliable")
+	}
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
 	for {
@@ -1138,6 +1151,13 @@ func (w *webtransportSessionAdapter) OpenKeyframeStream() (hub.KeyframeStream, e
 		return nil, err
 	}
 	return keyframeSendStream{s}, nil
+}
+
+// OpenCarrierStream opens a server-initiated unidirectional stream used as a
+// reliable delta carrier (R19). Transport-identical to a keyframe stream —
+// the viewer tells the two apart by the stream's first two bytes.
+func (w *webtransportSessionAdapter) OpenCarrierStream() (hub.KeyframeStream, error) {
+	return w.OpenKeyframeStream()
 }
 
 // keyframeSendStream adapts a webtransport SendStream to hub.KeyframeStream.

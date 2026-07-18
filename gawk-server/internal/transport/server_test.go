@@ -1573,3 +1573,165 @@ func TestTimeSyncReplyRateLimited(t *testing.T) {
 		t.Errorf("replies = %d for a %d-ping flood, want <= 10 (rate limited)", replies, flood)
 	}
 }
+
+// R19 (docs/24): a subscriber dialing with ?delivery=reliable receives its
+// deltas as length-prefixed records on carrier uni streams (discriminated
+// from keyframe streams by the two-byte prologue) and no video datagrams;
+// keyframe streams are untouched.
+func TestSubscribeReliableDeliversCarrierRecords(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
+
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s?delivery=reliable", port, id)
+	sub := dial(t, ctx, url, clientTLS)
+	defer sub.CloseWithError(0, "")
+
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+
+	// One GOP: a stream keyframe (which rotates the carrier), then deltas.
+	sendKeyframeStream(t, pub, buildStreamKeyframe(t, 0, "avc1.42E02A", 512))
+	delta := encodeFrame(t, 1, false, 1)[0]
+	delta2 := encodeFrame(t, 2, false, 1)[0]
+	if err := pub.SendDatagram(delta); err != nil {
+		t.Fatalf("SendDatagram: %v", err)
+	}
+	if err := pub.SendDatagram(delta2); err != nil {
+		t.Fatalf("SendDatagram: %v", err)
+	}
+
+	// Accept server uni streams and dispatch by prologue type until both the
+	// keyframe and the two carrier records have arrived.
+	type result struct {
+		keyframes int
+		records   [][]byte
+		err       error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		var res result
+		defer func() { resultCh <- res }()
+		acceptCtx, acceptCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer acceptCancel()
+		for res.keyframes < 1 || len(res.records) < 2 {
+			str, err := sub.AcceptUniStream(acceptCtx)
+			if err != nil {
+				res.err = err
+				return
+			}
+			prologue := make([]byte, 2)
+			if _, err := io.ReadFull(str, prologue); err != nil {
+				res.err = err
+				return
+			}
+			switch prologue[1] {
+			case wire.TypeStreamFrame:
+				// Keyframe stream: drain it (header already partially read).
+				if _, err := io.ReadAll(str); err != nil {
+					res.err = err
+					return
+				}
+				res.keyframes++
+			case wire.TypeReliableCarrier:
+				if err := wire.ParseCarrierPrologue(prologue); err != nil {
+					res.err = err
+					return
+				}
+				// Read records off the live carrier until we have enough (the
+				// stream stays open until the next rotation).
+				buf := make([]byte, 0, 4096)
+				tmp := make([]byte, 2048)
+				for len(res.records) < 2 {
+					n, err := str.Read(tmp)
+					if n > 0 {
+						buf = append(buf, tmp[:n]...)
+						for {
+							record, rest, err := wire.ParseCarrierRecord(buf)
+							if err != nil {
+								break // incomplete — read more
+							}
+							res.records = append(res.records, append([]byte(nil), record...))
+							buf = append(buf[:0], rest...)
+						}
+					}
+					if err != nil {
+						break
+					}
+				}
+			default:
+				res.err = fmt.Errorf("unexpected stream type 0x%02x", prologue[1])
+				return
+			}
+		}
+	}()
+
+	// No video datagrams may reach a reliable subscriber. TimeSync replies
+	// are the only datagrams it could legitimately see; we send none.
+	dgramCtx, dgramCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer dgramCancel()
+	dgramCh := make(chan []byte, 1)
+	go func() {
+		if d, err := sub.ReceiveDatagram(dgramCtx); err == nil {
+			dgramCh <- d
+		}
+	}()
+
+	res := <-resultCh
+	if res.err != nil {
+		t.Fatalf("subscriber stream read: %v", res.err)
+	}
+	if res.keyframes != 1 {
+		t.Errorf("keyframe streams = %d, want 1", res.keyframes)
+	}
+	if len(res.records) != 2 || !bytes.Equal(res.records[0], delta) || !bytes.Equal(res.records[1], delta2) {
+		t.Errorf("carrier records mismatch: got %d records", len(res.records))
+	}
+	select {
+	case d := <-dgramCh:
+		t.Errorf("reliable subscriber received a datagram (type 0x%02x)", d[1])
+	default:
+	}
+
+	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if stats.ReliableSubscribers != 1 {
+		t.Errorf("ReliableSubscribers = %d, want 1", stats.ReliableSubscribers)
+	}
+	if stats.CarrierRecords < 2 {
+		t.Errorf("CarrierRecords = %d, want >= 2", stats.CarrierRecords)
+	}
+}
+
+// An unknown delivery value falls back to datagram delivery (docs/24
+// Decision 6) — never an error, never reliable.
+func TestSubscribeUnknownDeliveryFallsBackToDatagrams(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
+
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s?delivery=carrier-pigeon", port, id)
+	sub := dial(t, ctx, url, clientTLS)
+	defer sub.CloseWithError(0, "")
+
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+	if n := r.Stats().Broadcasts[r.ObfuscateID(id)].ReliableSubscribers; n != 0 {
+		t.Fatalf("ReliableSubscribers = %d, want 0", n)
+	}
+
+	delta := encodeFrame(t, 1, false, 1)[0]
+	if err := pub.SendDatagram(delta); err != nil {
+		t.Fatalf("SendDatagram: %v", err)
+	}
+	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer recvCancel()
+	got, err := sub.ReceiveDatagram(recvCtx)
+	if err != nil {
+		t.Fatalf("ReceiveDatagram: %v", err)
+	}
+	if !bytes.Equal(got, delta) {
+		t.Errorf("datagram mismatch")
+	}
+}

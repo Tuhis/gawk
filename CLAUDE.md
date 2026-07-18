@@ -244,13 +244,15 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   existing datagram pipeline; keyframe streams untouched; rotation at
   keyframe fan-out is the drop point) + an **extended adaptive playout
   profile** (clamp [150, 2000] ms, seed 500) with wider reorder capacity and
-  RTT-scale gap patience; one new stream-kind discriminator byte (allocated
-  at implementation time — 0x09 is R17's, 0x07/0x08 are R15's), zero new
+  RTT-scale gap patience; one new stream-kind discriminator byte (**0x0A
+  `TypeReliableCarrier`** — 0x09 is R17's, 0x07/0x08 are R15's), zero new
   datagram messages, zero broadcaster changes; manual right-click toggle
   first (default off, mode change = deliberate reconnect), auto-detect
   deferred as a suggest-banner sketch; supersedes docs/12 Decision 1 **for
   this opt-in mode only**; docs/23 is R18 (designed 2026-07-18); X1–X6 chunks;
-  **designed 2026-07-18, not started**),
+  **X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser
+  baseline + X6 verification pending — ordering deviation recorded in the
+  doc's "Implementation status"**),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →
@@ -796,8 +798,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    ~half of dials, docs/22 finding 9), so the engine dispatches server
    messages by wire type and persists the resume token as
    `lastResumeToken` for reclaim.
-23. Resilient viewer mode for lossy networks — **designed 2026-07-18
-   (X1–X6), not started** (R19, `docs/24-viewer-network-resilience.md`;
+23. Resilient viewer mode for lossy networks — **X2–X5 implemented
+   2026-07-18, automated gates green (both Go modules + app); X1 netem
+   baseline/browser spike + X6 verification pending — a recorded ordering
+   deviation, see docs/24 "Implementation status"** (R19,
+   `docs/24-viewer-network-resilience.md`;
    `docs/23` is R18 live viewer count, designed 2026-07-18). Opt-in per-viewer
    mode for LTE/5G mobile viewers: smooth video at 0.5–2 s behind live
    instead of freeze-until-keyframe stutter under packet loss. Mechanism
@@ -806,23 +811,36 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    datagram records on **per-GOP reliable uni carrier streams** (QUIC
    retransmission recovers loss; relay stays a byte forwarder — no frame
    reassembly; existing keyframe-stream, supersede and 4001-eviction
-   machinery untouched; carrier rotation at keyframe fan-out = the drop
-   point, drops-over-stalls at GOP granularity; egress cap charged per
+   machinery untouched — carrier opens feed the same eviction streak;
+   carrier rotation at keyframe fan-out = the drop
+   point, drops-over-stalls at GOP granularity — a stalled record write is
+   deadline-cancelled and the GOP tail dropped; egress cap charged per
    record), negotiated via `?delivery=reliable` (publish-secret
    query-param precedent), paired with a resilient viewer profile:
    `PlayoutController` clamp **[150, 2000] ms** seed 500, reorder capacity
-   64→256, RTT-scale gap patience — same adaptive formula, wider profile,
+   64→256, RTT-scale gap patience (250 ms) — same adaptive formula, wider
+   profile (`transport/resilient.ts` + profile-carrying `PlayoutController`),
    so a clean mobile link sits well under 1 s. Zero broadcaster changes
-   (the lossy leg is relay→viewer); one new stream-kind discriminator
-   byte + record framing golden-vectored in all three wire mirrors
-   (allocated at implementation time — next free after R17's 0x09);
-   graceful degradation against an old relay (buffer-only). **R17
+   (the lossy leg is relay→viewer); the stream-kind discriminator is
+   **0x0A `TypeReliableCarrier`** + record framing (`uint16 len ‖ datagram`)
+   golden-vectored in all three wire mirrors; the viewer's uni-stream
+   reader (`readServerStreams`) dispatches by the two-byte prologue and
+   feeds records into the existing datagram path; zero new relay knobs
+   (KeyframeWriteTimeout/QueueDepth/caps reused). Graceful degradation
+   against an old relay (buffer-only; overlay reports "reliable requested /
+   datagrams served"). **R17
    interop**: reliable conversion happens at the subscriber's serving pod;
    origin→edge stays datagram-based, the param never propagates upstream.
-   Manual toggle first ("Resilient mode (mobile networks)", persisted,
-   default off; mode change = deliberate reconnect); auto-detect deferred
+   Manual toggle first ("Resilient mode (mobile networks)", persisted
+   `gawk:resilient-mode`, default off; mode change = deliberate reconnect;
+   while on, the paced/smooth entries are annotated as governed by it and
+   the stored playout mode survives untouched); auto-detect deferred
    as a suggest-banner design sketch. Supersedes docs/12 Decision 1 for
-   this opt-in mode only; default mode keeps datagrams.
+   this opt-in mode only; default mode keeps datagrams. Observability:
+   overlay Delivery-mode + carrier rows, `/statusz`
+   `subscriberDetails.reliable` + carrier counters, Prometheus
+   `gawk_broadcast_reliable_subscribers` + `carrier_*_total` +
+   `egress_bytes_total{kind="carrier"}`, docs/13 playbook row.
 24. E2E testing in CI — **designed 2026-07-18 (Z1–Z5; `Y` is R18's,
    claimed by the concurrent docs/23 design), not started**
    (R20, `docs/25-e2e-testing-in-ci.md`). GitHub Actions proof that

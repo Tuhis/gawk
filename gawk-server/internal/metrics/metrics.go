@@ -56,14 +56,15 @@ func newDesc(name, help string, extraLabels ...string) desc {
 type RegistryCollector struct {
 	registry *hub.Registry
 
-	broadcastsActive  *prometheus.Desc
-	subscribersActive *prometheus.Desc
-	publisherActive   *prometheus.Desc
-	graceRemaining    *prometheus.Desc
-	subscribers       *prometheus.Desc
-	edgeSessions      *prometheus.Desc
-	role              *prometheus.Desc
-	cachedKeyframe    *prometheus.Desc
+	broadcastsActive    *prometheus.Desc
+	subscribersActive   *prometheus.Desc
+	publisherActive     *prometheus.Desc
+	graceRemaining      *prometheus.Desc
+	subscribers         *prometheus.Desc
+	reliableSubscribers *prometheus.Desc
+	edgeSessions        *prometheus.Desc
+	role                *prometheus.Desc
+	cachedKeyframe      *prometheus.Desc
 
 	framesRelayed    desc
 	datagramsRelayed desc
@@ -81,6 +82,9 @@ type RegistryCollector struct {
 	kfSent           desc
 	kfDropped        desc
 	kfOversize       desc
+	carrierStreams   desc
+	carrierRecords   desc
+	carrierDropped   desc
 }
 
 // NewRegistryCollector builds the collector over a hub registry.
@@ -100,6 +104,8 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			[]string{"broadcast"}, nil),
 		subscribers: prometheus.NewDesc("gawk_broadcast_subscribers",
 			"Local viewers currently connected to the broadcast (edge sessions excluded).", []string{"broadcast"}, nil),
+		reliableSubscribers: prometheus.NewDesc("gawk_broadcast_reliable_subscribers",
+			"Local viewers in R19 reliable (resilient) delivery mode.", []string{"broadcast"}, nil),
 		edgeSessions: prometheus.NewDesc("gawk_broadcast_edge_sessions",
 			"Downstream edge pods attached via the internal subscribe route (R17).", []string{"broadcast"}, nil),
 		role: prometheus.NewDesc("gawk_broadcast_role",
@@ -140,6 +146,12 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"Keyframe streams dropped per subscriber; superseded is benign, slow is a stalling viewer.", "reason"),
 		kfOversize: newDesc("keyframe_streams_oversize_total",
 			"Publisher keyframe streams rejected over max-keyframe-bytes."),
+		carrierStreams: newDesc("carrier_streams_total",
+			"R19 reliable carrier streams opened to resilient subscribers (~2/GOP each)."),
+		carrierRecords: newDesc("carrier_records_total",
+			"Delta datagrams delivered as reliable carrier records (R19)."),
+		carrierDropped: newDesc("carrier_records_dropped_total",
+			"Carrier records dropped: dead carrier after a stall/cancel, or stream-open failure (R19). Bandwidth-cap drops count as datagram bandwidth drops instead."),
 	}
 }
 
@@ -150,6 +162,7 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.publisherActive
 	ch <- c.graceRemaining
 	ch <- c.subscribers
+	ch <- c.reliableSubscribers
 	ch <- c.edgeSessions
 	ch <- c.role
 	ch <- c.cachedKeyframe
@@ -165,6 +178,7 @@ func (c *RegistryCollector) counterDescs() []desc {
 		c.sendErrors, c.ingressLostF, c.ingressLostC, c.edgeIngressLostF,
 		c.edgeIngressLostC, c.ingressBytes,
 		c.egressBytes, c.bwDroppedBytes, c.kfIn, c.kfSent, c.kfDropped, c.kfOversize,
+		c.carrierStreams, c.carrierRecords, c.carrierDropped,
 	}
 }
 
@@ -191,6 +205,7 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(c.publisherActive, active, id)
 		gauge(c.graceRemaining, float64(s.GraceRemainingSeconds), id)
 		gauge(c.subscribers, float64(s.Subscribers), id)
+		gauge(c.reliableSubscribers, float64(s.ReliableSubscribers), id)
 		gauge(c.edgeSessions, float64(s.EdgeSessions), id)
 		gauge(c.role, 1, id, s.Role)
 		gauge(c.cachedKeyframe, float64(s.CachedKeyframeBytes), id)
@@ -215,6 +230,7 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.ingressBytes.broadcast, s.KeyframeBytesIn, id, "keyframe")
 		counter(c.egressBytes.broadcast, s.EgressDatagramBytes, id, "delta")
 		counter(c.egressBytes.broadcast, s.EgressKeyframeBytes, id, "keyframe")
+		counter(c.egressBytes.broadcast, s.EgressCarrierBytes, id, "carrier")
 		counter(c.bwDroppedBytes.broadcast, s.BandwidthDroppedBytes, id)
 		counter(c.kfIn.broadcast, s.KeyframeStreamsIn, id)
 		counter(c.kfSent.broadcast, s.KeyframeStreamsSent, id)
@@ -223,6 +239,9 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.kfDropped.broadcast, s.KeyframeDrops.Bandwidth, id, "bandwidth")
 		counter(c.kfDropped.broadcast, s.KeyframeDrops.OpenFailed, id, "open_failed")
 		counter(c.kfOversize.broadcast, s.KeyframeStreamsOversize, id)
+		counter(c.carrierStreams.broadcast, s.CarrierStreams, id)
+		counter(c.carrierRecords.broadcast, s.CarrierRecords, id)
+		counter(c.carrierDropped.broadcast, s.CarrierRecordsDropped, id)
 	}
 
 	t := snap.Totals
@@ -241,6 +260,7 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.ingressBytes.relay, t.KeyframeBytesIn, "keyframe")
 	counter(c.egressBytes.relay, t.EgressDatagramBytes, "delta")
 	counter(c.egressBytes.relay, t.EgressKeyframeBytes, "keyframe")
+	counter(c.egressBytes.relay, t.EgressCarrierBytes, "carrier")
 	counter(c.bwDroppedBytes.relay, t.BandwidthDroppedBytes)
 	counter(c.kfIn.relay, t.KeyframeStreamsIn)
 	counter(c.kfSent.relay, t.KeyframeStreamsSent)
@@ -249,6 +269,9 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.kfDropped.relay, t.KeyframeDrops.Bandwidth, "bandwidth")
 	counter(c.kfDropped.relay, t.KeyframeDrops.OpenFailed, "open_failed")
 	counter(c.kfOversize.relay, t.KeyframeStreamsOversize)
+	counter(c.carrierStreams.relay, t.CarrierStreams)
+	counter(c.carrierRecords.relay, t.CarrierRecords)
+	counter(c.carrierDropped.relay, t.CarrierRecordsDropped)
 }
 
 // ServerMetrics are the transport-layer connection counters (R9 M4). All

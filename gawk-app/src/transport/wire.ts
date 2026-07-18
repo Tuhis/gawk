@@ -53,6 +53,14 @@ export const TYPE_CLOCK_MAPPING = 0x06;
 // `resume` query param) to claim /publish/{id} on any pod — auto-resume,
 // manual reclaim, and relay restarts all ride it.
 export const TYPE_RESUME_TOKEN = 0x09;
+// ReliableCarrier (R19, docs/24 Decision 3): the stream-kind discriminator of
+// a relay→subscriber uni stream carrying delta datagrams reliably to an
+// opted-in resilient subscriber. Never a datagram. The stream opens with the
+// two-byte prologue version‖type (a keyframe stream starts version‖0x04, so a
+// bare length prefix would be ambiguous), then records of
+// uint16 length (BE) ‖ verbatim datagram bytes — each record a complete
+// datagram the relay would otherwise have sent unreliably.
+export const TYPE_RELIABLE_CARRIER = 0x0a;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -410,6 +418,81 @@ export function parseResumeToken(msg: Uint8Array): Uint8Array {
     throw new WireError(`invalid resume token: declared ${tokenLen} bytes in ${msg.length}-byte message`);
   }
   return msg.subarray(3);
+}
+
+// Reliable-carrier framing (R19). The viewer only ever parses carriers (the
+// relay writes them), but the encoders exist for tests and golden vectors.
+
+export const CARRIER_PROLOGUE_SIZE = 2;
+export const CARRIER_RECORD_HEADER_SIZE = 2;
+
+export function encodeCarrierPrologue(): Uint8Array<ArrayBuffer> {
+  return new Uint8Array([WIRE_VERSION, TYPE_RELIABLE_CARRIER]);
+}
+
+export function encodeCarrierRecord(dgram: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (dgram.length === 0 || dgram.length > MAX_DATAGRAM_SIZE) {
+    throw new WireError(`invalid carrier record: ${dgram.length} bytes, want 1-${MAX_DATAGRAM_SIZE}`);
+  }
+  const out = new Uint8Array(CARRIER_RECORD_HEADER_SIZE + dgram.length);
+  new DataView(out.buffer).setUint16(0, dgram.length);
+  out.set(dgram, CARRIER_RECORD_HEADER_SIZE);
+  return out;
+}
+
+export function parseCarrierPrologue(buf: Uint8Array): void {
+  if (buf.length < CARRIER_PROLOGUE_SIZE) {
+    throw new WireError(`carrier prologue too short: ${buf.length} bytes, need ${CARRIER_PROLOGUE_SIZE}`);
+  }
+  if (buf[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${buf[0].toString(16)}`);
+  }
+  if (buf[1] !== TYPE_RELIABLE_CARRIER) {
+    throw new WireError(`unexpected message type 0x${buf[1].toString(16)}, want reliable carrier`);
+  }
+}
+
+// Incremental record framing for a carrier stream: push() arbitrary read
+// chunks (records span chunk boundaries), get back complete records. Each
+// returned record is a fresh copy owning its buffer — safe to retain in the
+// reassembler and to transfer across a worker boundary. Throws WireError on a
+// zero or oversize declared length (framing corruption — the caller must
+// abandon the stream; there is no way to resynchronize a length-prefixed
+// stream after a bad length).
+export class CarrierRecordParser {
+  private pending: Uint8Array = new Uint8Array(0);
+
+  // True while a partial record is buffered — clean EOF with hasPartial()
+  // means the stream was truncated mid-record.
+  hasPartial(): boolean {
+    return this.pending.length > 0;
+  }
+
+  push(chunk: Uint8Array): Uint8Array<ArrayBuffer>[] {
+    let buf: Uint8Array;
+    if (this.pending.length === 0) {
+      buf = chunk;
+    } else {
+      buf = new Uint8Array(this.pending.length + chunk.length);
+      buf.set(this.pending, 0);
+      buf.set(chunk, this.pending.length);
+    }
+
+    const records: Uint8Array<ArrayBuffer>[] = [];
+    let offset = 0;
+    while (buf.length - offset >= CARRIER_RECORD_HEADER_SIZE) {
+      const len = (buf[offset] << 8) | buf[offset + 1];
+      if (len === 0 || len > MAX_DATAGRAM_SIZE) {
+        throw new WireError(`invalid carrier record: declared ${len} bytes, want 1-${MAX_DATAGRAM_SIZE}`);
+      }
+      if (buf.length - offset < CARRIER_RECORD_HEADER_SIZE + len) break;
+      records.push(new Uint8Array(buf.subarray(offset + CARRIER_RECORD_HEADER_SIZE, offset + CARRIER_RECORD_HEADER_SIZE + len)));
+      offset += CARRIER_RECORD_HEADER_SIZE + len;
+    }
+    // Copy the remainder: `chunk` may be reused by the caller's reader.
+    this.pending = new Uint8Array(buf.subarray(offset));
+    return records;
+  }
 }
 
 // The 31 allowed broadcast-ID symbols (no 0/O, 1/I/L) — mirrors

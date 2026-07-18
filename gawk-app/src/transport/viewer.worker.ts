@@ -7,7 +7,7 @@
 
 import { log } from '../lib/logger';
 import { setInterpolationEnabled } from './interpolation';
-import { setPlayoutMode } from './playout';
+import { getPlayoutMode, setPlayoutMode, setResilientMode } from './playout';
 import {
   PacedPresentationSink,
   createContextSink,
@@ -130,6 +130,14 @@ ctx.onmessage = (e: MessageEvent) => {
     case 'interpolation':
       // R12 T4: read live by the paced sink on every tick.
       setInterpolationEnabled(cmd.enabled);
+      break;
+    case 'resilient':
+      // R19: module state for the resilient reorder/playout profile. The
+      // controller sends it before 'start', so the profile is active from
+      // the session's first frame. Turning it off can drop the effective
+      // mode out of adaptive — present any held frame now, like 'playout'.
+      setResilientMode(cmd.enabled);
+      if (getPlayoutMode() !== 'adaptive') sink?.flush?.(true);
       break;
   }
 };

@@ -6,7 +6,7 @@
 // datagrams and keyframes without the transport thread ever doing decode or
 // render work. DOM-free and unit-testable with a fake host + fake transport.
 
-import type { ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { CarrierCounters, ConnectOptions, KeyframeStreamFrame } from './connection';
 import type { TransportConnectionStats } from './net-stats';
 import type { TimeSyncStats } from './time-sync';
 import type { DecoderConfigMessage } from './wire';
@@ -38,8 +38,14 @@ export type TransportWorkerEvent =
   | { type: 'closed'; closeCode?: number; reason?: string; message: string }
   // Pushed at the stats cadence: connection health + the relay clock-sync
   // sample (R5 Q2 — measured in this worker, where the reply timing is jitter-
-  // free; bigint crosses postMessage via structured clone).
-  | { type: 'connStats'; stats: TransportConnectionStats | null; timeSync: TimeSyncStats | null };
+  // free; bigint crosses postMessage via structured clone) + the R19 carrier
+  // tallies.
+  | {
+      type: 'connStats';
+      stats: TransportConnectionStats | null;
+      timeSync: TimeSyncStats | null;
+      carrier: CarrierCounters | null;
+    };
 
 export interface TransportWorkerHost {
   post(event: TransportWorkerEvent, transfer?: Transferable[]): void;
@@ -93,6 +99,7 @@ export class TransportWorkerCore {
             type: 'connStats',
             stats: transport.sampleConnectionStats(),
             timeSync: transport.sampleTimeSync(),
+            carrier: transport.sampleCarrierStats?.() ?? null,
           });
         }, CONN_STATS_INTERVAL_MS) as unknown as number;
       })

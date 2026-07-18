@@ -119,13 +119,17 @@ describe('WorkerViewerTransport', () => {
 
     expect(transport.sampleConnectionStats()).toBeNull();
     expect(transport.sampleTimeSync()).toBeNull();
+    expect(transport.sampleCarrierStats()).toBeNull();
     const stats = { rttMs: 12 } as never;
     const timeSync = { offsetUs: 5_000n, rttMs: 3 };
-    worker.emit({ type: 'connStats', stats, timeSync });
+    const carrier = { streamsOpened: 2, recordsReceived: 40, streamsAborted: 0, malformed: 0 };
+    worker.emit({ type: 'connStats', stats, timeSync, carrier });
     expect(transport.sampleConnectionStats()).toBe(stats);
     // R5 Q2: the clock-sync sample rides the same push (bigint survives the
     // structured-clone boundary in the real pair).
     expect(transport.sampleTimeSync()).toBe(timeSync);
+    // R19: the carrier tallies ride the same push.
+    expect(transport.sampleCarrierStats()).toBe(carrier);
   });
 
   it('close() requests a graceful close, suppresses further events, then reaps', async () => {

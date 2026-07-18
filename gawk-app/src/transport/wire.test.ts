@@ -13,8 +13,11 @@ import {
   TYPE_TIME_SYNC,
   TYPE_CLOCK_MAPPING,
   TYPE_RESUME_TOKEN,
+  TYPE_RELIABLE_CARRIER,
   TIME_SYNC_SIZE,
   CLOCK_MAPPING_SIZE,
+  CARRIER_PROLOGUE_SIZE,
+  CARRIER_RECORD_HEADER_SIZE,
   CLOSE_CODE_BROADCAST_ENDED,
   CLOSE_CODE_SERVER_DRAINING,
   CLOSE_CODE_ORIGIN_MOVED,
@@ -22,6 +25,10 @@ import {
   VIDEO_CHUNK_HEADER_SIZE,
   WIRE_VERSION,
   WireError,
+  CarrierRecordParser,
+  encodeCarrierPrologue,
+  encodeCarrierRecord,
+  parseCarrierPrologue,
   encodeClockMapping,
   encodeResumeToken,
   parseResumeToken,
@@ -55,6 +62,9 @@ const GOLDEN_TIME_SYNC_HEX = '01050102030405060708090a0b0c0d0e0f10';
 const GOLDEN_TIME_SYNC_REQUEST_HEX = '010500000000000f42400000000000000000';
 const GOLDEN_CLOCK_MAPPING_HEX = '0106000000000016e360';
 const GOLDEN_CLOCK_MAPPING_NEGATIVE_HEX = '0106fffffffffff0bdc0';
+// R19 reliable-carrier framing (docs/24 Decision 3).
+const GOLDEN_CARRIER_PROLOGUE_HEX = '010a';
+const GOLDEN_CARRIER_RECORD_HEX = '0017' + GOLDEN_VIDEO_CHUNK_HEX;
 
 const goldenStreamFrameHeader: StreamFrameHeader = {
   keyframe: true,
@@ -124,6 +134,9 @@ describe('constants', () => {
     expect(CLOCK_MAPPING_SIZE).toBe(10);
     expect(CLOSE_CODE_SERVER_DRAINING).toBe(4002);
     expect(CLOSE_CODE_ORIGIN_MOVED).toBe(4003);
+    expect(TYPE_RELIABLE_CARRIER).toBe(0x0a);
+    expect(CARRIER_PROLOGUE_SIZE).toBe(2);
+    expect(CARRIER_RECORD_HEADER_SIZE).toBe(2);
   });
 });
 
@@ -195,6 +208,73 @@ describe('golden vectors', () => {
 
   it('parses the golden stream frame header', () => {
     expect(parseStreamFrameHeader(fromHex(GOLDEN_STREAM_FRAME_HEADER_HEX))).toEqual(goldenStreamFrameHeader);
+  });
+
+  it('encodes and parses the golden carrier prologue + record byte-for-byte (R19)', () => {
+    expect(toHex(encodeCarrierPrologue())).toBe(GOLDEN_CARRIER_PROLOGUE_HEX);
+    expect(() => parseCarrierPrologue(fromHex(GOLDEN_CARRIER_PROLOGUE_HEX))).not.toThrow();
+
+    const dgram = fromHex(GOLDEN_VIDEO_CHUNK_HEX);
+    expect(toHex(encodeCarrierRecord(dgram))).toBe(GOLDEN_CARRIER_RECORD_HEX);
+
+    const parser = new CarrierRecordParser();
+    const records = parser.push(fromHex(GOLDEN_CARRIER_RECORD_HEX));
+    expect(records.length).toBe(1);
+    expect(toHex(records[0])).toBe(GOLDEN_VIDEO_CHUNK_HEX);
+    expect(parser.hasPartial()).toBe(false);
+  });
+});
+
+describe('carrier record parser (R19)', () => {
+  it('reassembles records split across arbitrary chunk boundaries', () => {
+    const a = encodeCarrierRecord(fromHex(GOLDEN_VIDEO_CHUNK_HEX));
+    const b = encodeCarrierRecord(fromHex(GOLDEN_DECODER_CONFIG_AVC_HEX));
+    const stream = new Uint8Array(a.length + b.length);
+    stream.set(a, 0);
+    stream.set(b, a.length);
+
+    // Every possible split point yields the same two records.
+    for (let split = 0; split <= stream.length; split++) {
+      const parser = new CarrierRecordParser();
+      const records = [
+        ...parser.push(stream.subarray(0, split)),
+        ...parser.push(stream.subarray(split)),
+      ];
+      expect(records.map(toHex)).toEqual([GOLDEN_VIDEO_CHUNK_HEX, GOLDEN_DECODER_CONFIG_AVC_HEX]);
+      expect(parser.hasPartial()).toBe(false);
+    }
+  });
+
+  it('returns copies that own their buffers (transfer-safe)', () => {
+    const parser = new CarrierRecordParser();
+    const [record] = parser.push(encodeCarrierRecord(new Uint8Array([1, 2, 3])));
+    expect(record.byteOffset).toBe(0);
+    expect(record.buffer.byteLength).toBe(3);
+  });
+
+  it('reports a partial record buffered at a truncation point', () => {
+    const parser = new CarrierRecordParser();
+    const record = encodeCarrierRecord(fromHex(GOLDEN_VIDEO_CHUNK_HEX));
+    expect(parser.push(record.subarray(0, 5))).toEqual([]);
+    expect(parser.hasPartial()).toBe(true);
+  });
+
+  it('throws on a zero or oversize declared length', () => {
+    expect(() => new CarrierRecordParser().push(new Uint8Array([0x00, 0x00, 0x42]))).toThrow(WireError);
+    const oversize = new Uint8Array(2);
+    new DataView(oversize.buffer).setUint16(0, MAX_DATAGRAM_SIZE + 1);
+    expect(() => new CarrierRecordParser().push(oversize)).toThrow(WireError);
+  });
+
+  it('rejects oversize and empty datagrams at encode', () => {
+    expect(() => encodeCarrierRecord(new Uint8Array(0))).toThrow(WireError);
+    expect(() => encodeCarrierRecord(new Uint8Array(MAX_DATAGRAM_SIZE + 1))).toThrow(WireError);
+  });
+
+  it('rejects a bad prologue', () => {
+    expect(() => parseCarrierPrologue(new Uint8Array([0x01]))).toThrow(WireError);
+    expect(() => parseCarrierPrologue(new Uint8Array([0x02, 0x0a]))).toThrow(WireError);
+    expect(() => parseCarrierPrologue(new Uint8Array([0x01, 0x04]))).toThrow(WireError);
   });
 });
 

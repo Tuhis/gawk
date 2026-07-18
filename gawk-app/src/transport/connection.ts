@@ -4,9 +4,15 @@
 
 import { log } from '../lib/logger';
 import {
+  CARRIER_PROLOGUE_SIZE,
+  CarrierRecordParser,
   MAX_DATAGRAM_SIZE,
   MAX_KEYFRAME_BYTES,
   STREAM_FRAME_HEADER_SIZE,
+  TYPE_RELIABLE_CARRIER,
+  TYPE_STREAM_FRAME,
+  WIRE_VERSION,
+  WireError,
   parseDecoderConfig,
   parseStreamFrameHeader,
   type DecoderConfigMessage,
@@ -23,6 +29,10 @@ export interface ConnectOptions {
   // (wire 0x09). Required for every /publish/{id} claim; travels as the
   // `resume` query param (the WebTransport JS API can't set headers).
   resumeToken?: string;
+  // R19 (docs/24 Decision 6): request reliable delta delivery at subscribe
+  // time (`?delivery=reliable`). Viewer-only; ignored by the connect itself —
+  // ViewerPipeline appends the query param when building the subscribe URL.
+  deliveryMode?: 'reliable';
 }
 
 export async function connectWebTransport(url: string, opts: ConnectOptions = {}): Promise<WebTransport> {
@@ -105,14 +115,41 @@ export interface KeyframeStreamFrame {
   streamBytes: number;
 }
 
+// Per-session tallies of the R19 reliable-carrier streams, owned by the
+// transport and surfaced in ViewerStats (docs/24 Decision 10). streamsAborted
+// counts carriers ending in a reset — the relay CancelWrite-ing a stalled or
+// superseded GOP tail; malformed counts framing violations (bad prologue,
+// bad record length, truncated mid-record).
+export interface CarrierCounters {
+  streamsOpened: number;
+  recordsReceived: number;
+  streamsAborted: number;
+  malformed: number;
+}
+
+export function newCarrierCounters(): CarrierCounters {
+  return { streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 };
+}
+
+export interface ServerStreamCallbacks {
+  onKeyframe: (kf: KeyframeStreamFrame) => void;
+  // R19: one verbatim datagram record off a reliable carrier stream. The
+  // transport feeds it into the same handler as a received datagram — the
+  // whole point of the carrier design (docs/24 Decision 2).
+  onCarrierRecord: (record: Uint8Array<ArrayBuffer>) => void;
+}
+
 // Reads server-initiated unidirectional streams for the life of the session,
-// each carrying exactly one keyframe StreamFrame message. Each stream is read
-// to EOF (bounded by MAX_KEYFRAME_BYTES) and processed on its own task so a
-// stalled or superseded stream never blocks the next. Returns normally on
-// session end or abort; connection errors reject.
-export async function readKeyframeStreams(
+// dispatching each by its stream-kind bytes: a keyframe StreamFrame message
+// (version‖0x04 — read to EOF, bounded by MAX_KEYFRAME_BYTES) or, since R19,
+// a reliable carrier (version‖0x0A — a long-lived record loop). Each stream
+// is processed on its own task so a stalled or superseded stream never blocks
+// the next. Returns normally on session end or abort; connection errors
+// reject.
+export async function readServerStreams(
   wt: WebTransport,
-  onKeyframe: (kf: KeyframeStreamFrame) => void,
+  cb: ServerStreamCallbacks,
+  carrier: CarrierCounters,
   signal?: AbortSignal,
 ): Promise<void> {
   const reader = wt.incomingUnidirectionalStreams.getReader();
@@ -123,7 +160,11 @@ export async function readKeyframeStreams(
     for (;;) {
       const { value, done } = await reader.read();
       if (done) return;
-      if (value) tasks.push(readOneKeyframe(value, onKeyframe).catch((e) => log.warn('keyframe stream read failed:', e)));
+      if (value) {
+        tasks.push(
+          readOneServerStream(value, cb, carrier).catch((e) => log.warn('server stream read failed:', e)),
+        );
+      }
     }
   } catch (e) {
     if (signal?.aborted) return;
@@ -135,37 +176,107 @@ export async function readKeyframeStreams(
   }
 }
 
-async function readOneKeyframe(
+async function readOneServerStream(
   stream: ReadableStream<Uint8Array>,
-  onKeyframe: (kf: KeyframeStreamFrame) => void,
+  cb: ServerStreamCallbacks,
+  carrier: CarrierCounters,
 ): Promise<void> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!value) continue;
+  const readMore = async (): Promise<boolean> => {
+    const { value, done } = await reader.read();
+    if (done) return false;
+    if (value && value.length > 0) {
+      chunks.push(value);
       total += value.length;
-      if (total > MAX_KEYFRAME_BYTES) {
+    }
+    return true;
+  };
+
+  try {
+    // Accumulate the two stream-kind bytes (they may span reads).
+    while (total < CARRIER_PROLOGUE_SIZE) {
+      if (!(await readMore())) return; // ended before declaring a kind
+    }
+    const head0 = chunks[0][0];
+    const head1 = chunks[0].length > 1 ? chunks[0][1] : chunks[1][0];
+    if (head0 !== WIRE_VERSION || (head1 !== TYPE_STREAM_FRAME && head1 !== TYPE_RELIABLE_CARRIER)) {
+      // Unknown stream kind or version: cancel without wedging the accept
+      // loop. Counted as malformed so it is visible in stats.
+      carrier.malformed++;
+      log.warn(`unknown server stream kind 0x${head0.toString(16)} 0x${head1.toString(16)}; cancelling`);
+      void reader.cancel().catch(() => {});
+      return;
+    }
+
+    if (head1 === TYPE_STREAM_FRAME) {
+      // Keyframe: read to EOF, bounded, then parse the whole message.
+      for (;;) {
+        if (total > MAX_KEYFRAME_BYTES) {
+          void reader.cancel().catch(() => {});
+          log.warn(`keyframe stream exceeds ${MAX_KEYFRAME_BYTES} bytes; dropping`);
+          return;
+        }
+        if (!(await readMore())) break;
+      }
+      emitKeyframe(concatChunks(chunks, total), cb.onKeyframe);
+      return;
+    }
+
+    // Reliable carrier (R19): a record loop for the life of the stream. The
+    // relay closes it at a rotation (clean EOF at a record boundary) or
+    // resets it to shed a stalled GOP tail.
+    carrier.streamsOpened++;
+    const parser = new CarrierRecordParser();
+    const deliver = (records: Uint8Array<ArrayBuffer>[]): void => {
+      for (const record of records) {
+        carrier.recordsReceived++;
+        cb.onCarrierRecord(record);
+      }
+    };
+    try {
+      deliver(parser.push(concatChunks(chunks, total).subarray(CARRIER_PROLOGUE_SIZE)));
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) {
+          // A clean FIN mid-record is a framing violation — the relay only
+          // ever closes at record boundaries.
+          if (parser.hasPartial()) carrier.malformed++;
+          return;
+        }
+        if (value && value.length > 0) deliver(parser.push(value));
+      }
+    } catch (e) {
+      if (e instanceof WireError) {
+        // Corrupt length prefix: there is no resynchronizing a
+        // length-prefixed stream — abandon it; the next rotation recovers.
+        carrier.malformed++;
+        log.warn('carrier stream framing error:', e);
         void reader.cancel().catch(() => {});
-        log.warn(`keyframe stream exceeds ${MAX_KEYFRAME_BYTES} bytes; dropping`);
         return;
       }
-      chunks.push(value);
+      // A reset (relay CancelWrite of a stalled/superseded GOP): expected
+      // under backpressure. The reorder buffer resyncs at the next keyframe.
+      carrier.streamsAborted++;
+      return;
     }
   } finally {
     reader.releaseLock();
   }
+}
 
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array<ArrayBuffer> {
   const data = new Uint8Array(total);
   let offset = 0;
   for (const c of chunks) {
     data.set(c, offset);
     offset += c.length;
   }
+  return data;
+}
 
+function emitKeyframe(data: Uint8Array, onKeyframe: (kf: KeyframeStreamFrame) => void): void {
   const header = parseStreamFrameHeader(data);
   const body = data.subarray(STREAM_FRAME_HEADER_SIZE);
   const configBytes = body.subarray(0, header.configLen);
@@ -176,7 +287,7 @@ async function readOneKeyframe(
     timestampUs: header.timestampUs,
     config,
     data: payload,
-    streamBytes: total,
+    streamBytes: data.length,
   });
 }
 

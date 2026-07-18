@@ -4,7 +4,7 @@
 // reaps it, so a reconnect gets a fresh session and nothing outlives the
 // pipeline that owns it.
 
-import type { ConnectOptions } from './connection';
+import type { CarrierCounters, ConnectOptions } from './connection';
 import type { TransportConnectionStats } from './net-stats';
 import type { TimeSyncStats } from './time-sync';
 import type { TransportWorkerCommand, TransportWorkerEvent } from './transport-worker-core';
@@ -34,6 +34,7 @@ export class WorkerViewerTransport implements ViewerTransport {
   private worker: TransportWorkerLike | null = null;
   private latestStats: TransportConnectionStats | null = null;
   private latestTimeSync: TimeSyncStats | null = null;
+  private latestCarrier: CarrierCounters | null = null;
   private closing = false;
 
   constructor(createWorker: () => TransportWorkerLike, url: string, opts: ConnectOptions) {
@@ -92,6 +93,7 @@ export class WorkerViewerTransport implements ViewerTransport {
           case 'connStats':
             this.latestStats = ev.stats;
             this.latestTimeSync = ev.timeSync;
+            this.latestCarrier = ev.carrier;
             break;
         }
       };
@@ -115,6 +117,10 @@ export class WorkerViewerTransport implements ViewerTransport {
 
   sampleTimeSync(): TimeSyncStats | null {
     return this.latestTimeSync;
+  }
+
+  sampleCarrierStats(): CarrierCounters | null {
+    return this.latestCarrier;
   }
 
   close(): void {

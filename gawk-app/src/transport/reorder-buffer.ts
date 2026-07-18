@@ -30,6 +30,12 @@
 
 import { WindowedMinTracker, WindowedQuantileTracker } from './live-edge';
 import { DECODE_LEAD_MS, getPlayoutMode, getPlayoutOffsetMs } from './playout';
+import {
+  RESILIENT_DELTA_GAP_GRACE_MS,
+  RESILIENT_KEYFRAME_WAIT_MS,
+  RESILIENT_MAX_BUFFERED_FRAMES,
+  getResilientMode,
+} from './resilient';
 import { frameIdAhead, nextFrameId, type DecoderConfigMessage } from './wire';
 
 // Tunables, named in one place (à la media/fallback.ts) for later real-world
@@ -49,6 +55,18 @@ export const DELTA_GAP_GRACE_MS = 60;
 // straggler above the decode position after a broadcaster restart) growing the
 // buffer without bound. Oldest-received entries are dropped past this.
 export const MAX_BUFFERED_FRAMES = 64;
+
+// R19 (docs/24 Decision 7): the three bounds widen while resilient mode is
+// on — read live per use so the defaults stay byte-identical when it's off.
+function keyframeWaitMs(): number {
+  return getResilientMode() ? RESILIENT_KEYFRAME_WAIT_MS : KEYFRAME_WAIT_MS;
+}
+function deltaGapGraceMs(): number {
+  return getResilientMode() ? RESILIENT_DELTA_GAP_GRACE_MS : DELTA_GAP_GRACE_MS;
+}
+function maxBufferedFrames(): number {
+  return getResilientMode() ? RESILIENT_MAX_BUFFERED_FRAMES : MAX_BUFFERED_FRAMES;
+}
 
 export interface ReorderKeyframe {
   frameId: number;
@@ -261,7 +279,7 @@ export class ReorderBuffer {
   }
 
   private evictIfOverCap(): void {
-    while (this.buffer.size > MAX_BUFFERED_FRAMES) {
+    while (this.buffer.size > maxBufferedFrames()) {
       // Drop the oldest-received entry (Map preserves insertion order, which is
       // arrival order).
       const oldest = this.buffer.keys().next();
@@ -371,11 +389,11 @@ export class ReorderBuffer {
       if (e.receivedAtMs < oldest) oldest = e.receivedAtMs;
     }
     if (oldest === Infinity) return false; // nothing buffered; just wait
-    return this.now() - oldest >= DELTA_GAP_GRACE_MS;
+    return this.now() - oldest >= deltaGapGraceMs();
   }
 
   private dropStaleWhileWaiting(): void {
-    const cutoff = this.now() - KEYFRAME_WAIT_MS;
+    const cutoff = this.now() - keyframeWaitMs();
     for (const [id, e] of this.buffer) {
       if (e.keyframe) continue; // keyframes are always useful to resync on
       if (e.receivedAtMs < cutoff) {

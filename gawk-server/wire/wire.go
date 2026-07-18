@@ -87,6 +87,19 @@ const (
 	// pod, which then creates the hub. Stateless HMAC: any pod can mint and
 	// verify. Never sent by clients as a wire message.
 	TypeResumeToken = 0x09
+
+	// TypeReliableCarrier identifies a reliable carrier stream (R19, docs/24
+	// Decision 3): the stream-kind discriminator byte of a relay→subscriber
+	// unidirectional stream that conveys delta datagrams reliably to an
+	// opted-in resilient subscriber. Never a datagram. The stream opens with
+	// the two-byte prologue Version‖TypeReliableCarrier (a keyframe stream's
+	// first two bytes are Version‖TypeStreamFrame, so a bare length prefix
+	// would be ambiguous), followed by records of
+	// uint16 length (BE) ‖ verbatim datagram bytes — each record a complete,
+	// already-golden-vectored datagram the relay would otherwise have sent
+	// via SendDatagram. The relay stays a byte forwarder: it never
+	// reassembles frames for this path.
+	TypeReliableCarrier = 0x0A
 )
 
 // CloseCodeBroadcastEnded is the WebTransport application close code sent
@@ -151,6 +164,12 @@ const (
 	TimeSyncSize = 18
 	// ClockMappingSize is the exact size of a ClockMapping datagram (R5 Q2).
 	ClockMappingSize = 10
+	// CarrierPrologueSize is the size of the reliable-carrier stream prologue
+	// (Version + TypeReliableCarrier), written once when the stream opens.
+	CarrierPrologueSize = 2
+	// CarrierRecordHeaderSize is the size of the uint16 length prefix in front
+	// of every carrier record.
+	CarrierRecordHeaderSize = 2
 )
 
 // flagKeyframe is bit 0 of the VideoChunk flags byte.
@@ -187,6 +206,10 @@ var (
 	// ErrBadResumeToken indicates a ResumeToken message with an invalid
 	// (empty, oversized, or length-mismatched) token.
 	ErrBadResumeToken = errors.New("wire: invalid resume token")
+	// ErrBadCarrierRecord indicates a carrier record whose declared length is
+	// zero or exceeds MaxDatagramSize (R19) — records carry verbatim
+	// datagrams, so any other length is a framing corruption.
+	ErrBadCarrierRecord = errors.New("wire: invalid carrier record")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -456,6 +479,66 @@ func ParseResumeToken(msg []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: declared %d bytes in %d-byte message", ErrBadResumeToken, tokenLen, len(msg))
 	}
 	return msg[3:], nil
+}
+
+// AppendCarrierPrologue appends the two-byte reliable-carrier stream prologue
+// (R19): Version, then TypeReliableCarrier. Written exactly once per carrier
+// stream, before the first record.
+func AppendCarrierPrologue(dst []byte) []byte {
+	return append(dst, Version, TypeReliableCarrier)
+}
+
+// ParseCarrierPrologue validates the two-byte carrier prologue at the start of
+// buf. Like ParseStreamFrameHeader it does not require buf to hold anything
+// beyond the prologue — records follow on the stream.
+func ParseCarrierPrologue(buf []byte) error {
+	if len(buf) < CarrierPrologueSize {
+		return fmt.Errorf("%w: %d bytes, need at least %d for carrier prologue",
+			ErrShortDatagram, len(buf), CarrierPrologueSize)
+	}
+	if buf[0] != Version {
+		return fmt.Errorf("%w: 0x%02x", ErrBadVersion, buf[0])
+	}
+	if buf[1] != TypeReliableCarrier {
+		return fmt.Errorf("%w: got 0x%02x, want reliable carrier 0x%02x",
+			ErrBadType, buf[1], TypeReliableCarrier)
+	}
+	return nil
+}
+
+// AppendCarrierRecord appends one carrier record (uint16 big-endian length,
+// then the datagram verbatim) to dst and returns the extended slice. It
+// returns ErrBadCarrierRecord for an empty datagram or one exceeding
+// MaxDatagramSize — the record framing carries exactly what SendDatagram
+// would have.
+func AppendCarrierRecord(dst []byte, dgram []byte) ([]byte, error) {
+	if len(dgram) == 0 || len(dgram) > MaxDatagramSize {
+		return nil, fmt.Errorf("%w: %d bytes, want 1-%d", ErrBadCarrierRecord, len(dgram), MaxDatagramSize)
+	}
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(dgram)))
+	dst = append(dst, dgram...)
+	return dst, nil
+}
+
+// ParseCarrierRecord parses one carrier record at the start of buf, returning
+// the record's datagram bytes (aliasing buf) and the remainder after it. An
+// incomplete record returns ErrShortDatagram (the caller reads more from the
+// stream); a zero or oversize declared length returns ErrBadCarrierRecord
+// (framing corruption — the caller must abandon the stream).
+func ParseCarrierRecord(buf []byte) (record, rest []byte, err error) {
+	if len(buf) < CarrierRecordHeaderSize {
+		return nil, nil, fmt.Errorf("%w: %d bytes, need at least %d for carrier record header",
+			ErrShortDatagram, len(buf), CarrierRecordHeaderSize)
+	}
+	n := int(binary.BigEndian.Uint16(buf))
+	if n == 0 || n > MaxDatagramSize {
+		return nil, nil, fmt.Errorf("%w: declared %d bytes, want 1-%d", ErrBadCarrierRecord, n, MaxDatagramSize)
+	}
+	if len(buf) < CarrierRecordHeaderSize+n {
+		return nil, nil, fmt.Errorf("%w: %d bytes, need %d for declared record",
+			ErrShortDatagram, len(buf), CarrierRecordHeaderSize+n)
+	}
+	return buf[CarrierRecordHeaderSize : CarrierRecordHeaderSize+n], buf[CarrierRecordHeaderSize+n:], nil
 }
 
 // StreamFrameHeader is the parsed 24-byte header of a StreamFrame message

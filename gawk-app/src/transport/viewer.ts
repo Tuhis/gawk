@@ -124,6 +124,19 @@ export interface ViewerStats extends ReassemblerStats {
   // counter because WebTransport.getStats() ships in no browser (docs/13 D7).
   // Undercounts wire truth: no QUIC/UDP overhead, lost datagrams invisible.
   videoBytesReceived: number;
+  // R19 (docs/24 Decision 10): how deltas actually arrive. 'datagrams' is
+  // the default mode; 'reliable' means carrier streams are observed;
+  // 'reliable-requested' is the Decision 8 degradation — reliable was
+  // requested but no carrier has appeared (old relay, or none rotated in
+  // yet), so buffering is resilient while delivery stays datagrams.
+  deliveryMode: 'datagrams' | 'reliable' | 'reliable-requested';
+  // R19 carrier tallies from the transport (null before connect / where the
+  // transport can't report them).
+  carrierStreams: number | null;
+  carrierRecords: number | null;
+  // Carriers ending in a reset — the relay shedding a stalled/superseded GOP
+  // tail; each costs at most one resync at the next keyframe.
+  carrierStreamsAborted: number | null;
   // R16 (docs/21 Decision 9). The pipeline itself never sets these three:
   // presentationTee is merged in by the viewer *worker shell* when the
   // presentation tee exists (gated devices only); featureGates and
@@ -282,8 +295,13 @@ export class ViewerPipeline {
       },
     });
 
-    const url = new URL(`/subscribe/${this.broadcastId}`, this.serverUrl).toString();
-    const transport = this.transportFactory(url, this.connectOpts);
+    const url = new URL(`/subscribe/${this.broadcastId}`, this.serverUrl);
+    // R19 (docs/24 Decision 6): reliable delivery is negotiated at subscribe
+    // time via the query param — the WebTransport JS API can't set headers.
+    if (this.connectOpts.deliveryMode === 'reliable') {
+      url.searchParams.set('delivery', 'reliable');
+    }
+    const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
     try {
       await transport.connect({
@@ -580,6 +598,16 @@ export class ViewerPipeline {
         lats.reduce((a, b) => a + (b - mean) * (b - mean), 0) / lats.length,
       );
     }
+    // R19 delivery-mode ground truth (docs/24 Decisions 8/10): requested is
+    // what this pipeline asked for; carriers observed is what the relay
+    // actually serves.
+    const carrier = this.transport?.sampleCarrierStats?.() ?? null;
+    const deliveryMode: ViewerStats['deliveryMode'] =
+      this.connectOpts.deliveryMode === 'reliable'
+        ? carrier && carrier.streamsOpened > 0
+          ? 'reliable'
+          : 'reliable-requested'
+        : 'datagrams';
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -632,6 +660,10 @@ export class ViewerPipeline {
       decodeJitterMs,
       connection: this.transport?.sampleConnectionStats() ?? null,
       videoBytesReceived: this.videoBytesReceived,
+      deliveryMode,
+      carrierStreams: carrier?.streamsOpened ?? null,
+      carrierRecords: carrier?.recordsReceived ?? null,
+      carrierStreamsAborted: carrier?.streamsAborted ?? null,
     });
   }
 
