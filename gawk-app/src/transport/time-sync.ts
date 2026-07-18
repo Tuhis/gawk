@@ -26,13 +26,35 @@ export const TIME_SYNC_SAMPLE_WINDOW = 8;
 // How often the broadcaster re-publishes its ClockMapping (skew refresh).
 export const CLOCK_MAPPING_INTERVAL_MS = 5000;
 
-export interface TimeSyncStats {
+export interface TimeSyncMeasurement {
   // relayClockUs ≈ localPerformanceUs + offsetUs (signed).
   offsetUs: bigint;
   // Round-trip of the winning sample — also a self-owned RTT for this leg,
   // independent of WebTransport.getStats() (which no browser ships today —
   // Chromium removed its pre-spec impl in 152; see docs/13 D7).
   rttMs: number;
+}
+
+export interface TimeSyncStats extends TimeSyncMeasurement {
+  // performance.timeOrigin of the context that measured this sample. The
+  // offset maps THAT context's performance.now() onto the relay clock, and
+  // every worker gets its own timeOrigin (its creation moment) — so a
+  // consumer in a different context (the viewer worker reading a sample from
+  // the nested transport worker) must rebase its own now() onto the sample's
+  // timeline via this value before applying offsetUs. Applying the offset to
+  // a foreign now() inflates the result by the age gap between the two
+  // contexts — minutes, once a reconnect has spawned a fresh transport
+  // worker mid-view.
+  timeOriginMs: number;
+}
+
+// This context's performance.timeOrigin — the anchor that makes a
+// TimeSyncMeasurement portable across worker boundaries. Falls back to 0
+// where the environment reports none (some fake-timer setups); consumers
+// only ever difference two of these, so any consistent anchor works.
+export function timeOriginMs(): number {
+  const origin = performance.timeOrigin;
+  return Number.isFinite(origin) ? origin : 0;
 }
 
 interface Sample {
@@ -51,7 +73,7 @@ export class TimeSyncEstimator {
     if (this.samples.length > TIME_SYNC_SAMPLE_WINDOW) this.samples.shift();
   }
 
-  best(): TimeSyncStats | null {
+  best(): TimeSyncMeasurement | null {
     if (this.samples.length === 0) return null;
     let best = this.samples[0];
     for (const s of this.samples) {
@@ -109,7 +131,11 @@ export class TimeSyncClient {
   }
 
   sample(): TimeSyncStats | null {
-    return this.estimator.best();
+    const best = this.estimator.best();
+    if (!best) return null;
+    // Stamped at sample time, but constant for this context's whole life —
+    // it identifies the clock domain the estimator's t0/t1 came from.
+    return { ...best, timeOriginMs: timeOriginMs() };
   }
 
   private ping(): void {

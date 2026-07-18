@@ -36,6 +36,7 @@ vi.mock('../media/decoder', () => ({
   },
 }));
 
+import { timeOriginMs } from './time-sync';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import { CLOSE_CODE_BROADCAST_ENDED, encodeClockMapping, encodeDecoderConfig, encodeVideoChunk } from './wire';
@@ -384,7 +385,7 @@ describe('ViewerPipeline', () => {
           tcb = cb;
         },
         sampleConnectionStats: () => null,
-        sampleTimeSync: () => ({ offsetUs: 1_000_000n, rttMs: 5 }),
+        sampleTimeSync: () => ({ offsetUs: 1_000_000n, rttMs: 5, timeOriginMs: timeOriginMs() }),
         close: () => {},
       };
       const { cbs } = makeCallbacks();
@@ -423,6 +424,73 @@ describe('ViewerPipeline', () => {
       // VideoFrame in hand, not track metadata).
       expect(last.frameWidth).toBe(1920);
       expect(last.frameHeight).toBe(1080);
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('translates a TimeSync sample from another clock domain (nested transport worker)', async () => {
+    // The TimeSync estimator runs inside the nested transport worker, whose
+    // performance.now() counts from its own timeOrigin — set at worker
+    // creation. A reconnect mid-view (the resilient-mode toggle, a 4002
+    // rollout drain, any auto-reconnect) spawns a fresh transport worker
+    // minutes after the viewer worker, and applying its offset to the viewer
+    // worker's now() inflated capture→render by exactly that gap (field
+    // report: ~3 minutes after ~3 minutes of watching).
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const WORKER_AGE_GAP_MS = 180_000; // transport worker born 3 min into the view
+      let tcb: ViewerTransportCallbacks | null = null;
+      const fakeTransport: ViewerTransport = {
+        kind: 'worker',
+        connect: async (cb) => {
+          tcb = cb;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => ({
+          offsetUs: 1_000_000n,
+          rttMs: 5,
+          timeOriginMs: timeOriginMs() + WORKER_AGE_GAP_MS,
+        }),
+        close: () => {},
+      };
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      // Broadcaster leg: relayUs = timestampUs + 2_000_000.
+      (tcb as unknown as ViewerTransportCallbacks).onDatagram(encodeClockMapping(2_000_000n));
+
+      // The offset maps the TRANSPORT WORKER's clock to the relay clock:
+      //   relayUs = (viewerNowUs − gapUs) + offsetUs
+      // Choose the frame timestamp so the true latency is exactly 250 ms.
+      const nowUsV = BigInt(Math.round(performance.now() * 1000));
+      const relayNowUs = nowUsV - BigInt(WORKER_AGE_GAP_MS) * 1000n + 1_000_000n;
+      const ts = Number(relayNowUs - 2_000_000n - 250_000n);
+      decoderCbs.value!.onDecoded({
+        frame: { timestamp: ts, displayWidth: 1920, displayHeight: 1080 },
+        captureTimestampUs: ts,
+        decodeStartMs: 0,
+        decodeEndMs: 1,
+      });
+
+      await vi.advanceTimersByTimeAsync(500); // one stats tick
+      const last = stats.at(-1)!;
+      // Buggy cross-domain math read ≈ WORKER_AGE_GAP_MS + 250 here.
+      expect(last.capToRenderMs).toBeCloseTo(250, 0);
 
       await pipeline.stop();
     } finally {

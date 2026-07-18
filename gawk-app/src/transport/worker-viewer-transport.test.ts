@@ -121,7 +121,9 @@ describe('WorkerViewerTransport', () => {
     expect(transport.sampleTimeSync()).toBeNull();
     expect(transport.sampleCarrierStats()).toBeNull();
     const stats = { rttMs: 12 } as never;
-    const timeSync = { offsetUs: 5_000n, rttMs: 3 };
+    // timeOriginMs is the transport worker's own clock anchor — it must cross
+    // untouched so the pipeline can rebase onto the sample's clock domain.
+    const timeSync = { offsetUs: 5_000n, rttMs: 3, timeOriginMs: 1_234.5 };
     const carrier = { streamsOpened: 2, recordsReceived: 40, streamsAborted: 0, malformed: 0 };
     worker.emit({ type: 'connStats', stats, timeSync, carrier });
     expect(transport.sampleConnectionStats()).toBe(stats);

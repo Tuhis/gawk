@@ -8,6 +8,7 @@ import {
   TimeSyncClient,
   TimeSyncEstimator,
   nowUs,
+  timeOriginMs,
 } from './time-sync';
 import { encodeClockMapping, encodeTimeSync, parseTimeSync } from './wire';
 
@@ -84,6 +85,9 @@ describe('TimeSyncClient', () => {
     expect(s!.rttMs).toBeCloseTo(5);
     // offset = 42_000_000 − (t0 + rtt/2) = 42_000_000 − 10_002_500
     expect(s!.offsetUs).toBe(42_000_000n - 10_002_500n);
+    // The sample names its clock domain: this context's timeOrigin. A
+    // consumer in another worker rebases via this before applying offsetUs.
+    expect(s!.timeOriginMs).toBe(timeOriginMs());
 
     vi.advanceTimersByTime(2_000);
     expect(sent).toHaveLength(2);

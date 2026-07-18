@@ -23,6 +23,7 @@ import {
   type PlayoutMode,
 } from './playout';
 import { Reassembler, type ReassemblerStats } from './reassembler';
+import { timeOriginMs } from './time-sync';
 import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates';
 import type { TeeStats } from './tee-render-sink';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
@@ -566,7 +567,14 @@ export class ViewerPipeline {
   private observeCapToRender(timestampUs: number): void {
     const sync = this.transport?.sampleTimeSync();
     if (!sync || this.broadcastClockOffsetUs === null) return;
-    const nowU = BigInt(Math.round(performance.now() * 1000));
+    // The sample's offset maps the MEASURING context's performance.now() to
+    // the relay clock, and that context can be the nested transport worker —
+    // whose timeOrigin is its own creation moment, minutes after this
+    // worker's once a reconnect has spawned a fresh one mid-view. Rebase this
+    // context's now onto the sample's timeline first, or the metric inflates
+    // by the age gap between the two workers.
+    const nowOnSampleClockMs = timeOriginMs() + performance.now() - sync.timeOriginMs;
+    const nowU = BigInt(Math.round(nowOnSampleClockMs * 1000));
     const raw =
       Number(nowU + sync.offsetUs - (BigInt(Math.round(timestampUs)) + this.broadcastClockOffsetUs)) /
       1000;
