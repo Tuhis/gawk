@@ -514,7 +514,9 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool)
 		}
 	}()
 
-	// TimeSync pings (2 s cadence, mirror of the TS client) + linger check.
+	// TimeSync pings (2 s cadence, mirror of the TS client) + linger check +
+	// the R18 viewer-count report up (docs/23 Decision 5a — piggybacked on
+	// the linger ticker: no new goroutine, no new cadence).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -523,6 +525,9 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool)
 		lingerTick := time.NewTicker(time.Second)
 		defer lingerTick.Stop()
 		var viewerlessSince time.Time
+		var reported bool
+		var lastReport uint32
+		var lastReportAt time.Time
 		// First ping immediately: the sooner the estimator has a sample, the
 		// sooner the primed ClockMapping can be served.
 		_ = up.SendDatagram(wire.AppendTimeSync(nil, relayNowUs(), 0))
@@ -533,7 +538,19 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool)
 			case <-ping.C:
 				_ = up.SendDatagram(wire.AppendTimeSync(nil, relayNowUs(), 0))
 			case <-lingerTick.C:
-				if es.m.registry.ExternalSubscribers(es.id) > 0 {
+				n := es.m.registry.ExternalSubscribers(es.id)
+				// Report our local count upstream, change-driven with the
+				// pump's keepalive — a lost report datagram heals on re-send.
+				// n is bounded by the subscriber caps, far below uint32.
+				count := uint32(n)
+				if !reported || count != lastReport || time.Since(lastReportAt) >= hub.ViewerCountKeepalive {
+					if up.SendDatagram(wire.AppendViewerCount(nil, count)) == nil {
+						reported = true
+						lastReport = count
+						lastReportAt = time.Now()
+					}
+				}
+				if n > 0 {
 					viewerlessSince = time.Time{}
 					continue
 				}

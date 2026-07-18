@@ -138,6 +138,11 @@ func run() error {
 		srv.SetCluster(coord, podName)
 	}
 
+	// The R18 viewer-count pump (docs/23 Decision 4): one registry-wide
+	// goroutine, started explicitly here — never inside NewRegistry — so
+	// tests drive PumpViewerCounts ticks directly.
+	go r.RunViewerCountPump(runCtx)
+
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(runCtx) }()
 	go func() { errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, promReg, log, srv.Ready), log) }()

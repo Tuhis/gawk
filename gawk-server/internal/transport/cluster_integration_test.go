@@ -369,6 +369,58 @@ deltaDone:
 		t.Errorf("pod-b hub = role %q, %d subscribers; want edge/1", stB.Role, stB.Subscribers)
 	}
 
+	// R18 (docs/23 Decision 5): the origin aggregates G = 2 — its own zero
+	// locals plus each edge's report of one real viewer; the edge sessions
+	// themselves are never counted. G is pushed to the broadcaster's session
+	// and fanned through B's edge hub to the real viewer. The pump tick is
+	// driven manually here (production starts RunViewerCountPump); datagram
+	// loss is repaired by the keepalive re-emit inside the wait window.
+	pubGotCount := make(chan struct{})
+	go func() {
+		for {
+			d, err := pub.ReceiveDatagram(ctx)
+			if err != nil {
+				return
+			}
+			if len(d) == wire.ViewerCountSize && d[1] == wire.TypeViewerCount {
+				if count, err := wire.ParseViewerCount(d); err == nil && count == 2 {
+					close(pubGotCount)
+					return
+				}
+			}
+		}
+	}()
+	viewerGotCount := make(chan struct{})
+	go func() {
+		for {
+			d, err := viewerB.ReceiveDatagram(ctx)
+			if err != nil {
+				return
+			}
+			if len(d) == wire.ViewerCountSize && d[1] == wire.TypeViewerCount {
+				if count, err := wire.ParseViewerCount(d); err == nil && count == 2 {
+					close(viewerGotCount)
+					return
+				}
+			}
+		}
+	}()
+	closed := func(ch chan struct{}) bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+	waitFor(t, 15*time.Second, func() bool {
+		podA.registry.PumpViewerCounts(time.Now())
+		if podA.registry.Stats().Broadcasts[podA.registry.ObfuscateID(id)].ViewersGlobal != 2 {
+			return false
+		}
+		return closed(pubGotCount) && closed(viewerGotCount)
+	}, "G=2 aggregated on the origin, pushed to the broadcaster, forwarded to the edge viewer")
+
 	// Depth bound (guard 2): B is an edge, not the origin — another pod
 	// asking B for the broadcast gets 404 regardless of credentials, so an
 	// edge can never feed another edge.

@@ -407,6 +407,74 @@ func TestEdgePumpRewritesClockMappingAndForwardsVerbatim(t *testing.T) {
 	}
 }
 
+// R18 (docs/23 Decisions 5a/5c): the edge reports its local viewer count up
+// the existing session — change-driven, on the linger ticker — and forwards
+// an upstream global count G to its local viewers verbatim (no per-hop
+// rewrite: a count is pod-independent, unlike the ClockMapping above).
+func TestEdgeReportsViewerCountUpAndForwardsGlobalDown(t *testing.T) {
+	h := newEdgeHarness(t)
+	up := newFakeUpstream()
+	h.queue(up)
+	ctx := context.Background()
+
+	if err := h.manager.EnsureEdge(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge: %v", err)
+	}
+	v := &edgeConn{}
+	sub, err := h.registry.Subscribe("K7XQ2M", v)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	// Reports ride the linger ticker (1 s), so the first count=1 report
+	// lands within a tick or two.
+	reports := func() []uint32 {
+		up.mu.Lock()
+		defer up.mu.Unlock()
+		var out []uint32
+		for _, d := range up.sent {
+			if len(d) == wire.ViewerCountSize && d[1] == wire.TypeViewerCount {
+				if count, err := wire.ParseViewerCount(d); err == nil {
+					out = append(out, count)
+				}
+			}
+		}
+		return out
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		r := reports()
+		return len(r) >= 1 && r[len(r)-1] == 1
+	}, "edge reported local count 1 upstream")
+
+	// A second local viewer changes the report on the next tick.
+	v2 := &edgeConn{}
+	sub2, err := h.registry.Subscribe("K7XQ2M", v2)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub2.Close()
+	waitFor(t, 5*time.Second, func() bool {
+		r := reports()
+		return len(r) >= 2 && r[len(r)-1] == 2
+	}, "edge reported local count 2 upstream")
+
+	// The origin's global G arrives as a datagram: forwarded verbatim to the
+	// local viewers (and cached — the hub-level prime test covers that).
+	g := wire.AppendViewerCount(nil, 42)
+	up.dgrams <- g
+	waitFor(t, 5*time.Second, func() bool {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		for _, d := range v.dgrams {
+			if len(d) == wire.ViewerCountSize && d[1] == wire.TypeViewerCount {
+				return bytes.Equal(d, g)
+			}
+		}
+		return false
+	}, "viewer received the forwarded global count")
+}
+
 // Lease deletion tears the edge down and 4000-closes its local viewers.
 func TestEdgeLeaseDeletionEndsViewers(t *testing.T) {
 	h := newEdgeHarness(t)

@@ -18,6 +18,7 @@
 package hub
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -26,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +63,20 @@ var (
 // reconnects (the code is non-terminal). A constant, not a knob: this is
 // correctness (leak cleanup), not capacity tuning.
 const KeyframeOpenFailEvictThreshold = 10
+
+// ViewerCountInterval paces the R18 count pump (docs/23 Decision 4): one
+// recompute-and-emit pass per tick, which is also what makes a reconnect
+// storm structurally unable to spam clients — emits can never exceed
+// 1/s/broadcast. ViewerCountKeepalive bounds how long an *unchanged* count
+// goes unrepeated: datagrams are lossy, and the periodic re-emit repairs a
+// dropped update for already-connected clients (new joiners are covered by
+// the join-prime cache). Constants like timeSyncReplyRate, not knobs.
+// Exported because the transport's edge pump reports its local count
+// upstream on the same change-driven + keepalive discipline (Decision 5a).
+const (
+	ViewerCountInterval  = time.Second
+	ViewerCountKeepalive = 5 * time.Second
+)
 
 // Conn is the connection interface required by subscribers.
 // *webtransport.Session is wrapped in an adapter by the transport layer to
@@ -204,7 +220,12 @@ type Stats struct {
 	Subscribers int `json:"subscribers"`
 	// EdgeSessions counts downstream edge pods attached via the internal
 	// subscribe route.
-	EdgeSessions              int    `json:"edgeSessions"`
+	EdgeSessions int `json:"edgeSessions"`
+	// ViewersGlobal is the R18 global viewer count this pod computes as
+	// origin (local viewers + Σ edge downstream reports — the G it pushes to
+	// clients); always 0 on edge hubs, which receive the number from
+	// upstream instead of computing it (docs/23 Decision 9).
+	ViewersGlobal             uint32 `json:"viewersGlobal"`
 	FramesRelayed             uint64 `json:"framesRelayed"`    // deltas (datagram, chunk 0) + keyframes (stream)
 	DatagramsRelayed          uint64 `json:"datagramsRelayed"` // delta datagrams fanned out (before per-sub drops)
 	DatagramsDropped          uint64 `json:"datagramsDropped"` // per-subscriber datagram drops: queue overflows + bandwidth-limit drops
@@ -368,6 +389,19 @@ type broadcastHub struct {
 	// timestamps live on the publisher's clock timeline, so a new session's
 	// mapping is a different mapping.
 	cachedClockMapping []byte
+
+	// cachedViewerCount holds the latest global ViewerCount datagram verbatim
+	// (R18, docs/23 Decision 3 — the ClockMapping template): fanned out live,
+	// replayed to prime late joiners, cleared alongside the other caches. On
+	// an origin the count pump produces it; on an edge it arrives from
+	// upstream and is forwarded verbatim (Decision 5c — counts are
+	// pod-independent, no per-hop rewrite).
+	cachedViewerCount []byte
+	// Count-pump emit tracking (origin hubs only): the last count pushed and
+	// when, making emits change-driven with a keepalive re-send (Decision 4).
+	lastViewerCount        uint32
+	lastViewerCountEmitAt  time.Time
+	viewerCountEverEmitted bool
 
 	framesRelayed             uint64
 	datagramsRelayed          uint64
@@ -613,6 +647,9 @@ func (r *Registry) InvalidatePrimes(id string) {
 	b.cachedKeyframeID = 0
 	b.cachedKeyframeHasConfig = false
 	b.cachedClockMapping = nil
+	// A count from the lost origin may be stale by the time we re-attach;
+	// the fresh origin's fan-out (or the next report round-trip) replaces it.
+	b.cachedViewerCount = nil
 }
 
 // CloseInternalSubscribers closes every downstream edge session of a
@@ -700,6 +737,11 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	b.cachedKeyframeHasConfig = false
 	// New session, new clock timeline: the old mapping is meaningless (R5 Q2).
 	b.cachedClockMapping = nil
+	// The count itself isn't tied to the session, but clearing it keeps the
+	// cache lifecycle uniform (R18 Decision 3) — and resetting the emit
+	// tracking guarantees the new session a fresh emit on the next tick.
+	b.cachedViewerCount = nil
+	b.viewerCountEverEmitted = false
 	// New session, new frameID space: reset the ingress-loss window (its
 	// cumulative counters live on the hub and survive).
 	b.ingress.reset()
@@ -807,6 +849,87 @@ func (b *broadcastHub) externalSubsLocked() int {
 	return n
 }
 
+// globalViewersLocked computes an origin hub's global viewer count G (R18,
+// docs/23 Decision 5): local real viewers, plus each attached edge's
+// last-reported downstream count. An edge that hasn't reported yet
+// contributes 0 — a brief undercount on fresh attach that heals within a
+// tick or two. Edge sessions themselves are never counted (they are
+// internal — fan-out plumbing, not audience). Caller holds r.mu.
+func (b *broadcastHub) globalViewersLocked() uint32 {
+	g := uint64(0)
+	for s := range b.subs {
+		if s.internal {
+			g += s.downstreamViewers.Load()
+		} else {
+			g++
+		}
+	}
+	if g > math.MaxUint32 {
+		g = math.MaxUint32
+	}
+	return uint32(g)
+}
+
+// PumpViewerCounts runs one tick of the R18 count pump (docs/23 Decision 4):
+// for every ORIGIN hub with an active publisher it computes the global
+// viewer count G and — when G changed since the last emit or the keepalive
+// elapsed — builds the ViewerCount datagram once, caches it, fans it to
+// every subscriber (local viewers and edge sessions alike) and pushes it to
+// the publisher. Edge hubs are skipped: they neither aggregate nor host a
+// real broadcaster — they receive G from upstream and forward it (Decision
+// 5c). Exported as the test seam; RunViewerCountPump drives it on the
+// production cadence.
+func (r *Registry) PumpViewerCounts(now time.Time) {
+	type push struct {
+		send  func([]byte)
+		dgram []byte
+	}
+	var pushes []push
+	r.mu.Lock()
+	for _, b := range r.hubs {
+		if b.edge || !b.publisherActive {
+			continue
+		}
+		g := b.globalViewersLocked()
+		if b.viewerCountEverEmitted && g == b.lastViewerCount &&
+			now.Sub(b.lastViewerCountEmitAt) < ViewerCountKeepalive {
+			continue
+		}
+		b.lastViewerCount = g
+		b.lastViewerCountEmitAt = now
+		b.viewerCountEverEmitted = true
+		dgram := wire.AppendViewerCount(nil, g)
+		b.cacheAndFanViewerCountLocked(dgram)
+		if p := b.publisher; p != nil && p.send != nil {
+			pushes = append(pushes, push{send: p.send, dgram: dgram})
+		}
+	}
+	r.mu.Unlock()
+
+	// The publisher pushes are network I/O — done off the registry lock,
+	// like keyframe writes.
+	for _, p := range pushes {
+		p.send(p.dgram)
+	}
+}
+
+// RunViewerCountPump ticks PumpViewerCounts every ViewerCountInterval until
+// ctx ends. One goroutine for the whole registry, started explicitly from
+// main — never from NewRegistry — so existing tests (and the transport test
+// helper) stay goroutine-free and drive ticks directly.
+func (r *Registry) RunViewerCountPump(ctx context.Context) {
+	t := time.NewTicker(ViewerCountInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			r.PumpViewerCounts(now)
+		}
+	}
+}
+
 // totalExternalSubsLocked counts local viewers across all hubs. Caller holds r.mu.
 func (r *Registry) totalExternalSubsLocked() int {
 	n := 0
@@ -905,6 +1028,12 @@ func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Su
 	// plain enqueue: it rides the normal datagram queue.
 	if b.cachedClockMapping != nil {
 		s.enqueueLocked(b.cachedClockMapping)
+	}
+
+	// Prime the cached viewer count the same way (R18 Decision 3): the badge
+	// shows immediately on join instead of waiting for the next pump tick.
+	if b.cachedViewerCount != nil {
+		s.enqueueLocked(b.cachedViewerCount)
 	}
 
 	// Snapshot the cached keyframe under the lock; prime over a stream outside
@@ -1030,14 +1159,18 @@ func (r *Registry) Stats() RegistryStats {
 		}
 
 		role := "origin"
+		var viewersGlobal uint32
 		if b.edge {
 			role = "edge"
+		} else {
+			viewersGlobal = b.globalViewersLocked()
 		}
 		obf := r.ObfuscateID(id)
 		broadcasts[obf] = Stats{
 			PublisherActive:           b.publisherActive,
 			Role:                      role,
 			Subscribers:               b.externalSubsLocked(),
+			ViewersGlobal:             viewersGlobal,
 			ReliableSubscribers:       reliableSubs,
 			CarrierStreams:            carStreams,
 			CarrierRecords:            carRecords,
@@ -1230,6 +1363,12 @@ type Publisher struct {
 	// conn is the session close handle bound after the upgrade (BindConn);
 	// nil until then. Guarded by the registry lock, like closed.
 	conn SessionCloser
+	// send pushes a relay-originated datagram to this publisher's session —
+	// the R18 viewer-count push (docs/23 Decision 4), the one place the relay
+	// *initiates* a datagram to a broadcaster. Nil until BindSend, cleared on
+	// Close; a deposed publisher is unreachable via b.publisher anyway.
+	// Guarded by the registry lock, like conn.
+	send func([]byte)
 }
 
 // BindConn attaches the publisher's session close handle so a later
@@ -1246,6 +1385,21 @@ func (p *Publisher) BindConn(c SessionCloser) bool {
 	}
 	p.conn = c
 	return true
+}
+
+// BindSend attaches the relay→publisher datagram sender (R18): the count
+// pump pushes ViewerCount datagrams through it. Registered by the transport
+// after the session upgrade; sess.SendDatagram is goroutine-safe in quic-go,
+// so the pump may call it concurrently with the read loop's TimeSync
+// replies. A no-op on a publisher that was already closed or deposed.
+func (p *Publisher) BindSend(send func([]byte)) {
+	r := p.hub.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.send = send
 }
 
 // HandleDatagram processes and relays one publisher delta datagram. Keyframes
@@ -1282,9 +1436,43 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 			return
 		}
 		p.relayClockMapping(dgram)
+	case wire.TypeViewerCount:
+		if _, err := wire.ParseViewerCount(dgram); err != nil {
+			b.countBad()
+			return
+		}
+		p.relayViewerCount(dgram)
 	default:
 		b.countBad()
 	}
+}
+
+// relayViewerCount forwards an upstream origin's global viewer count to this
+// EDGE hub's local viewers (R18, docs/23 Decision 5c) — a count is
+// pod-independent, so unlike ClockMapping there is no per-hop rewrite. On an
+// origin hub the "publisher" is a real broadcaster, which has no business
+// announcing an audience number: dropped silently (Decision 6 spoof guard).
+func (p *Publisher) relayViewerCount(dgram []byte) {
+	b := p.hub
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed || !b.edge {
+		return
+	}
+	b.ingressDatagramBytes += uint64(len(dgram))
+	b.cacheAndFanViewerCountLocked(dgram)
+}
+
+// cacheAndFanViewerCountLocked caches one ViewerCount datagram (copied — the
+// caller's buffer may be reused) and fans it out. The fan-out reaches local
+// viewers AND edge sessions — which is how edges receive the global total
+// they forward down (R18 Decision 3). Caller holds r.mu.
+func (b *broadcastHub) cacheAndFanViewerCountLocked(dgram []byte) {
+	msg := make([]byte, len(dgram))
+	copy(msg, dgram)
+	b.cachedViewerCount = msg
+	b.fanOutLocked(msg)
 }
 
 // relayClockMapping forwards a ClockMapping datagram to all subscribers and
@@ -1394,6 +1582,7 @@ func (p *Publisher) Close() {
 		return
 	}
 	p.closed = true
+	p.send = nil
 	b.publisherActive = false
 	b.publisher = nil
 
@@ -1487,6 +1676,13 @@ type Subscriber struct {
 	// queued datagrams as records on per-GOP carrier streams and never calls
 	// SendDatagram. Fixed at subscribe time — changing mode is a reconnect.
 	reliable bool
+
+	// downstreamViewers is the local viewer count this INTERNAL (edge)
+	// subscriber last reported up (R18, docs/23 Decision 5b); always 0 for
+	// real viewers. Written by the origin's internal-subscribe read loop
+	// (which holds no lock), summed by the count pump under the registry
+	// lock — hence atomic.
+	downstreamViewers atomic.Uint64
 
 	// closed is set (atomically) by Close before it cancels the in-flight
 	// keyframe stream; sendKeyframe reads it without the registry lock to avoid
@@ -1901,6 +2097,14 @@ func (s *Subscriber) Close() {
 		r.totalCarrierRecordsDropped += s.carrierRecordsDropped.Load()
 		r.totalEgressCarrierBytes += s.egressCarrierBytes.Load()
 	}
+}
+
+// RecordDownstreamViewers stores an edge's reported local viewer count
+// (R18): called from the origin's internal-subscribe read loop — the ONLY
+// place a client-sent ViewerCount is trusted, because the peer there is a
+// PSK-authenticated, generation-fenced edge (docs/23 Decision 6).
+func (s *Subscriber) RecordDownstreamViewers(count uint32) {
+	s.downstreamViewers.Store(uint64(count))
 }
 
 // Dropped reports dropped datagrams count.

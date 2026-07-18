@@ -679,6 +679,12 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R18 (docs/23 Decision 4): bind the relay→publisher push channel so the
+	// count pump can deliver the live viewer count. SendDatagram is
+	// goroutine-safe, so the pump writing concurrently with this read loop's
+	// TimeSync replies is fine; a failed push is repaired by the keepalive.
+	pub.BindSend(func(b []byte) { _ = sess.SendDatagram(b) })
+
 	// Send BroadcastAnnounce, then the ResumeToken (R17 W2), each on its own
 	// server-initiated uni stream. Separate streams keep old *browser*
 	// clients working across a version skew: they read one stream, parse it
@@ -1053,7 +1059,19 @@ func (s *Server) handleInternalSubscribe(w http.ResponseWriter, r *http.Request)
 		}
 		// The edge's TimeSync pings (per-hop ClockMapping rewrite) are
 		// answered against THIS pod's clock, exactly like a viewer's.
-		maybeAnswerTimeSync(sess, dgram, tsLimiter)
+		if maybeAnswerTimeSync(sess, dgram, tsLimiter) {
+			continue
+		}
+		// R18 (docs/23 Decisions 5b/6): the edge's viewer-count report — the
+		// ONLY route where a client-sent ViewerCount is accepted, because the
+		// peer here is a PSK-authenticated, generation-fenced edge. Stored on
+		// this edge's subscriber; the count pump sums it into the origin's
+		// global total.
+		if len(dgram) == wire.ViewerCountSize && dgram[1] == wire.TypeViewerCount {
+			if count, err := wire.ParseViewerCount(dgram); err == nil {
+				sub.RecordDownstreamViewers(count)
+			}
+		}
 	}
 }
 
