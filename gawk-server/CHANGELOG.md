@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.3](https://github.com/Tuhis/gawk/compare/gawk-server-v0.16.2...gawk-server-v0.16.3) (2026-07-18)
+
+
+### Bug Fixes
+
+* **gawk-server:** honor the internal edge origin on internal routes — no allowlist entry, no implicit 200 on rejected upgrades ([a37f82f](https://github.com/Tuhis/gawk/commit/a37f82f45fee1faff6489a5f8a7b3d3c45fb0d71))
+* **gawk-server:** token-bearing reclaim supersedes a zombie publisher instead of 409ing ([#53](https://github.com/Tuhis/gawk/issues/53)) ([a20fa67](https://github.com/Tuhis/gawk/commit/a20fa6712e2976c0fb32e27650ac82fae768a8c0))
+
 ## [0.16.2](https://github.com/Tuhis/gawk/compare/gawk-server-v0.16.1...gawk-server-v0.16.2) (2026-07-18)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.0.0...gawk-broadcast-v1.0.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **gawk-server:** token-bearing reclaim supersedes a zombie publisher instead of 409ing ([#53](https://github.com/Tuhis/gawk/issues/53)) ([a20fa67](https://github.com/Tuhis/gawk/commit/a20fa6712e2976c0fb32e27650ac82fae768a8c0))
+
 ## 1.0.0 (2026-07-17)
 
 

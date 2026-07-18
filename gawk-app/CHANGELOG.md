@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.23.0...gawk-app-v0.23.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **gawk-server:** token-bearing reclaim supersedes a zombie publisher instead of 409ing ([#53](https://github.com/Tuhis/gawk/issues/53)) ([a20fa67](https://github.com/Tuhis/gawk/commit/a20fa6712e2976c0fb32e27650ac82fae768a8c0))
+
 ## [0.23.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.22.2...gawk-app-v0.23.0) (2026-07-17)
 
 
