@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.18.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.17.0...gawk-server-v0.18.0) (2026-07-18)
+
+
+### Features
+
+* **gawk-server:** origin-only gawk_broadcast_viewers_global gauge (R18 Y6) ([1855bc8](https://github.com/Tuhis/gawk/commit/1855bc8618f261f8af1d8f48ded07d70b367c48f))
+* **gawk-server:** pinnable service.nodePort + cluster-mode E2E on kind (R20 Z3) ([1a5cef2](https://github.com/Tuhis/gawk/commit/1a5cef2b078b0ccf83075aebbfc11cb50cf7d051))
+* **gawk-server:** viewer-count pump, publisher push + cluster aggregation (R18 Y2+Y3) ([f7e496d](https://github.com/Tuhis/gawk/commit/f7e496d75db757a4afe8e1b16ffd567432f197e3))
+* **wire:** TypeViewerCount 0x0B datagram in all three mirrors (R18 Y1) ([938ce28](https://github.com/Tuhis/gawk/commit/938ce2882c708530873c6ea7a79017f4387bf2f8))
+
 ## [0.17.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.16.3...gawk-server-v0.17.0) (2026-07-18)
 
 

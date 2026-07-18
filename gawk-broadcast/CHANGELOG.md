@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.1.0...gawk-broadcast-v1.2.0) (2026-07-18)
+
+
+### Features
+
+* **gawk-broadcast:** viewer count in engine + GUI, first-viewer notification (R18 Y5) ([05ea0f7](https://github.com/Tuhis/gawk/commit/05ea0f7d41d24dd33982085a0c614016244fac0f))
+* gawk-pubsim synthetic fixture publisher + browser E2E harness (R20 Z1) ([54e62e5](https://github.com/Tuhis/gawk/commit/54e62e5875c22ba5ec28057adc207218f857e99b))
+* **wire:** TypeViewerCount 0x0B datagram in all three mirrors (R18 Y1) ([938ce28](https://github.com/Tuhis/gawk/commit/938ce2882c708530873c6ea7a79017f4387bf2f8))
+
 ## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.0.1...gawk-broadcast-v1.1.0) (2026-07-18)
 
 
