@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.16.0...gawk-server-v0.16.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **gawk-server:** lowercase Lease names — uppercase broadcast IDs failed API validation on the first on-cluster mint ([af6aa28](https://github.com/Tuhis/gawk/commit/af6aa28361663321331fb198a9b298de40545931))
+
 ## [0.16.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.15.0...gawk-server-v0.16.0) (2026-07-17)
 
 
