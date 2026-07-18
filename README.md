@@ -529,3 +529,10 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   ([docs/05](docs/05-resilience-deploy.md))
 - **release-please `extra-files` paths are package-relative** — a repo-
   relative path silently leaves Chart.yaml unbumped.
+
+## License
+
+Proprietary — copyright (c) 2026 Juho Kuusisto, all rights reserved; see
+[LICENSE](LICENSE). Not open source (may be relicensed in the future).
+Outside contributions are not accepted without an explicit license grant —
+relicensing must remain a sole-copyright-holder decision.
