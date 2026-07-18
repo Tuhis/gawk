@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.23.1...gawk-app-v0.24.0) (2026-07-18)
+
+
+### Features
+
+* resilient viewer mode — reliable carrier delivery + extended buffering (R19 X2–X5) ([#55](https://github.com/Tuhis/gawk/issues/55)) ([e02bf19](https://github.com/Tuhis/gawk/commit/e02bf194d44fe7fd77cd262ac87b979cb95b9a1c))
+
 ## [0.23.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.23.0...gawk-app-v0.23.1) (2026-07-18)
 
 
