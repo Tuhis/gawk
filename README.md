@@ -344,6 +344,18 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   "Renderer" / "Pipeline" / "Transport" read **WebGL / Worker / Worker** on
   the fast path (— / Main thread / In-process on the no-worker fallback).
   ([docs/14](docs/14-viewer-render-performance.md))
+- **Every worker has its own `performance.timeOrigin` (its creation moment) —
+  a `performance.now()` reading is meaningless in another worker.** Field bug
+  (2026-07-19): the TimeSync offset is measured inside the *nested transport
+  worker*, but capture→render latency applied it to the *viewer worker's*
+  `now()`. Identical origins on first connect masked it; any mid-view
+  reconnect (resilient-mode toggle, 4002 rollout drain, auto-reconnect)
+  spawns a fresh transport worker minutes after the viewer worker, and the
+  latency row inflated by exactly that age gap (~3 min after ~3 min of
+  watching). `TimeSyncStats` now carries `timeOriginMs` and consumers rebase
+  onto the sample's clock domain before applying the offset. When timing data
+  crosses a worker boundary, ship its `timeOrigin` with it.
+  ([docs/15](docs/15-viewer-live-edge.md))
 - **Transferring a `MediaStreamTrack` detaches it — the broadcast worker gets
   a *clone*, the original stays for the preview (R11).** The broadcaster
   pipeline runs in a Web Worker fed by a transferred `track.clone()` (MSTP is

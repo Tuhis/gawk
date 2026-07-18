@@ -288,6 +288,35 @@ The remaining per-browser detail numbers (keyframe transit vs.
 delta) were checked during the pass and judged OK but not recorded — if a
 future live session captures exact figures, add them here.
 
+## Field finding: cross-worker clock domains (2026-07-19)
+
+**Symptom**: enabling R19 resilient mode made `Latency (capture→render)`
+read minutes (e.g. ~3 min) while actual latency stayed low. Not
+resilient-specific — any mid-view reconnect reproduced it.
+
+**Cause**: the Q2 TimeSync estimator runs inside the R10 nested transport
+worker (`LocalViewerTransport` in `transport.worker.ts`), so `offsetUs`
+maps *that worker's* `performance.now()` onto the relay clock — but
+`observeCapToRender` applied it to the *viewer worker's* `now()`. Each
+worker's `performance.timeOrigin` is its own creation moment, so the two
+clocks agree only when the workers are born together (first connect —
+which is why Q2's original verification passed). A reconnect spawns a
+fresh transport worker (one per pipeline attempt) inside the long-lived
+viewer worker, and the metric inflated by exactly the workers' age gap:
+watch 3 minutes, reconnect, read +3 minutes. The resilient toggle is a
+guaranteed deliberate reconnect, hence the report. `RTT (time-sync)`
+stayed correct (computed wholly in-domain), as did the mapping itself.
+
+**Fix** (test-first; the reproducing test drives a fake transport whose
+sample carries a 180 s-later origin): `TimeSyncStats` now includes
+`timeOriginMs` — the measuring context's `performance.timeOrigin` —
+and `observeCapToRender` rebases this context's now onto the sample's
+timeline (`timeOriginMs() + performance.now() − sync.timeOriginMs`)
+before applying the offset. Same-context paths rebase by zero, so
+main-thread and in-process-transport behavior is unchanged. Rule for
+future timing work: **a `performance.now()` reading crossing a worker
+boundary must travel with its `timeOrigin`.**
+
 ## Non-goals
 
 - **A keyframe-request back-channel** — rejected for good (Decision 6).
