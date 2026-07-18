@@ -79,6 +79,10 @@ type App struct {
 	// canMint records whether a failed Resume may fall back to minting. It is
 	// set only for connect-phase failures (Decision 10).
 	canMint bool
+	// firstViewerSeen latches the R18 first-viewer notification: exactly one
+	// ring per broadcast, on the count's first 0 → ≥1 transition. Reset on
+	// every Start.
+	firstViewerSeen bool
 }
 
 // Options configure the app.
@@ -179,6 +183,7 @@ func (a *App) Start(ctx context.Context, id string) {
 	a.status = "Connecting to the relay…"
 	a.lastErr = ""
 	a.canMint = false
+	a.firstViewerSeen = false
 	a.id = id
 	a.mu.Unlock()
 	a.invalidate()
@@ -243,6 +248,9 @@ func (a *App) run(ctx context.Context, id string) {
 			},
 			OnEnded: func() {
 				a.ended()
+			},
+			OnViewerCount: func(count uint32) {
+				a.onViewerCount(count)
 			},
 		},
 		engine.Options{
@@ -331,6 +339,26 @@ func (a *App) ended() {
 		a.notifier.Notify("Broadcast ended", "Your screen is no longer being shared.", notify.UrgencyNormal)
 	} else if wasLive && hadErr {
 		a.notifier.Notify("Broadcast ended unexpectedly", "Your screen is no longer being shared.", notify.UrgencyCritical)
+	}
+}
+
+// onViewerCount tracks the audience number (the stats card renders it from
+// engine.Stats) and rings the first-viewer notification docs/19 asked for —
+// R18 supplies the signal, this latch turns it into exactly one ring per
+// broadcast on the 0 → ≥1 transition. Critical urgency on purpose: KDE's
+// portal inhibits normal notifications while screen casting (Decision 17's
+// trap), and "someone is now watching" is precisely what a fullscreen
+// broadcaster wants to hear about.
+func (a *App) onViewerCount(count uint32) {
+	a.mu.Lock()
+	first := count > 0 && !a.firstViewerSeen && a.state == StateLive
+	if first {
+		a.firstViewerSeen = true
+	}
+	a.mu.Unlock()
+	a.invalidate()
+	if first {
+		a.notifier.Notify("First viewer joined", "Someone is watching your stream.", notify.UrgencyCritical)
 	}
 }
 
@@ -469,6 +497,10 @@ type Diagnostics struct {
 
 	TimeSyncRttMs    *float64 `json:"timeSyncRttMs"`
 	TimeSyncOffsetUs *int64   `json:"timeSyncOffsetUs"`
+
+	// ViewerCount is the relay's R18 "N watching" push; null until the first
+	// push lands (an old relay never sends one).
+	ViewerCount *uint32 `json:"viewerCount"`
 }
 
 // Diagnostics builds the JSON dump.
@@ -510,6 +542,10 @@ func (a *App) Diagnostics() string {
 	if s.TimeSyncAvailable {
 		rtt, off := s.TimeSyncRttMs, s.TimeSyncOffsetUs
 		d.TimeSyncRttMs, d.TimeSyncOffsetUs = &rtt, &off
+	}
+	if s.ViewerCountAvailable {
+		count := s.ViewerCount
+		d.ViewerCount = &count
 	}
 
 	b, err := json.MarshalIndent(d, "", "  ")

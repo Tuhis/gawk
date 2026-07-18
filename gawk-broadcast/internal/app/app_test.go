@@ -320,6 +320,82 @@ func TestDiagnosticsIncludesTimeSyncWhenAvailable(t *testing.T) {
 	}
 }
 
+// R18 (docs/23 Decision 7): the "first viewer joined" ring docs/19 asked for —
+// derived from the pushed count's 0 → ≥1 transition, exactly once per
+// broadcast, at critical urgency (KDE inhibits normal notifications while
+// screen casting). Steady-state changes never ring again.
+func TestFirstViewerNotifiesOnceAtCriticalUrgency(t *testing.T) {
+	n := &recordingNotifier{}
+	fs := &fakeSession{}
+	a, _ := testApp(t, fs, n)
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+
+	rings := func() []sentNotification {
+		var out []sentNotification
+		for _, s := range n.all() {
+			if s.summary == "First viewer joined" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+
+	// A zero count (nobody yet) never rings; 0 → 1 rings exactly once.
+	fs.cb.OnViewerCount(0)
+	fs.cb.OnViewerCount(1)
+	waitFor(t, func() bool { return len(rings()) == 1 }, "the first-viewer ring")
+	if got := rings()[0]; got.urgency != notify.UrgencyCritical {
+		t.Errorf("first-viewer urgency = %d, want critical (%d) — KDE would swallow it while casting",
+			got.urgency, notify.UrgencyCritical)
+	}
+
+	// ≥1 → ≥1 changes don't ring, and neither does a dip through zero within
+	// the same broadcast — one ring per broadcast, not per join.
+	fs.cb.OnViewerCount(2)
+	fs.cb.OnViewerCount(0)
+	fs.cb.OnViewerCount(3)
+	time.Sleep(20 * time.Millisecond)
+	if got := len(rings()); got != 1 {
+		t.Errorf("first-viewer rings = %d, want exactly 1", got)
+	}
+
+	// A new broadcast re-arms the latch.
+	fs.cb.OnEnded()
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateIdle }, "idle")
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live again")
+	fs.cb.OnViewerCount(1)
+	waitFor(t, func() bool { return len(rings()) == 2 }, "the second broadcast's ring")
+}
+
+func TestDiagnosticsIncludesViewerCountWhenAvailable(t *testing.T) {
+	fs := &fakeSession{stats: engine.Stats{ViewerCountAvailable: true, ViewerCount: 4}}
+	a, _ := testApp(t, fs, notify.Discard{})
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+	fs.cb.OnStats(fs.stats)
+	waitFor(t, func() bool { return a.Stats().ViewerCountAvailable }, "stats")
+
+	var d map[string]any
+	if err := json.Unmarshal([]byte(a.Diagnostics()), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d["viewerCount"] != 4.0 {
+		t.Errorf("viewerCount = %v, want 4", d["viewerCount"])
+	}
+
+	// Absent (old relay): null, not 0 — zero viewers is a claim, null a gap.
+	fs.cb.OnStats(engine.Stats{})
+	waitFor(t, func() bool { return !a.Stats().ViewerCountAvailable }, "stats reset")
+	if err := json.Unmarshal([]byte(a.Diagnostics()), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d["viewerCount"] != nil {
+		t.Errorf("viewerCount = %v, want null when no push has landed", d["viewerCount"])
+	}
+}
+
 // Closing the window ends the broadcast (Decision 15): if the window is gone,
 // nothing is publishing. No tray, no background presence, no hidden state.
 func TestQuitStopsTheBroadcast(t *testing.T) {

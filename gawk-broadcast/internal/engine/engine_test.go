@@ -469,6 +469,58 @@ func TestOneClockFeedsFramesAndTimeSync(t *testing.T) {
 	}, "a TimeSync ping stamped from the session clock")
 }
 
+// R18 (docs/23 Decision 7): the relay pushes the live viewer count as a
+// datagram; the engine surfaces it in Stats and fires OnViewerCount, without
+// disturbing the TimeSync replies sharing the read loop. A malformed push is
+// dropped, keeping the last good count.
+func TestViewerCountPushUpdatesStatsAndFiresCallback(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+
+	var mu sync.Mutex
+	var counts []uint32
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{OnViewerCount: func(count uint32) {
+			mu.Lock()
+			counts = append(counts, count)
+			mu.Unlock()
+		}},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	if st := s.Stats(); st.ViewerCountAvailable {
+		t.Error("ViewerCountAvailable = true before any push")
+	}
+
+	sess.receiveDatagrams <- wire.AppendViewerCount(nil, 2)
+	waitFor(t, func() bool {
+		st := s.Stats()
+		return st.ViewerCountAvailable && st.ViewerCount == 2
+	}, "the pushed count in Stats")
+	mu.Lock()
+	gotFirst := len(counts) == 1 && counts[0] == 2
+	mu.Unlock()
+	if !gotFirst {
+		t.Fatalf("OnViewerCount calls = %v, want [2]", counts)
+	}
+
+	// Malformed (bad version): dropped, count unchanged.
+	bad := wire.AppendViewerCount(nil, 9)
+	bad[0] = 0x02
+	sess.receiveDatagrams <- bad
+	// A subsequent valid push still lands.
+	sess.receiveDatagrams <- wire.AppendViewerCount(nil, 3)
+	waitFor(t, func() bool { return s.Stats().ViewerCount == 3 }, "the second count")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(counts) != 2 || counts[1] != 3 {
+		t.Errorf("OnViewerCount calls = %v, want [2 3]", counts)
+	}
+}
+
 func TestStopIsIdempotentAndEndsOnce(t *testing.T) {
 	sess := newFakeSession()
 	media := newFakeMedia()

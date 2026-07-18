@@ -72,12 +72,6 @@ type Config struct {
 // Callbacks mirror the browser's BroadcastCallbacks. All are optional; all are
 // invoked from engine goroutines, so a GUI shell must marshal them onto its
 // own loop.
-//
-// Deliberately absent: any viewer count or "first viewer joined" signal.
-// Nothing on the wire tells a publisher about subscribers — the browser
-// broadcaster doesn't know its viewer count either, and inventing one here
-// would need a relay→publisher wire message that R14 explicitly rules out
-// (Decision 18).
 type Callbacks struct {
 	// OnBroadcastID fires once, when the relay announces the code.
 	OnBroadcastID func(id string)
@@ -96,6 +90,12 @@ type Callbacks struct {
 	// OnEncoderChosen fires once the cascade settles on a candidate
 	// (Decision 4: the chosen encoder is reported at startup and in stats).
 	OnEncoderChosen func(encoder string)
+	// OnViewerCount fires whenever the relay pushes the live "N watching"
+	// number (R18, docs/23 — the SubscriberCount R14 deferred as Decision
+	// 18; the wire message exists now, TypeViewerCount 0x0B). The count is
+	// fleet-global in cluster mode; ~1 s cadence, change-driven. The "first
+	// viewer joined" moment is the 0 → ≥1 transition, derived by the shell.
+	OnViewerCount func(count uint32)
 }
 
 func (c Callbacks) broadcastID(id string) {
@@ -131,6 +131,12 @@ func (c Callbacks) ended() {
 func (c Callbacks) encoderChosen(name string) {
 	if c.OnEncoderChosen != nil {
 		c.OnEncoderChosen(name)
+	}
+}
+
+func (c Callbacks) viewerCount(count uint32) {
+	if c.OnViewerCount != nil {
+		c.OnViewerCount(count)
 	}
 }
 
@@ -184,6 +190,11 @@ type Session struct {
 	lastRateUs  uint64
 	lastEncoded uint64
 	lastSent    uint64
+
+	// R18 viewer-count state, written by the datagram read loop (guarded by
+	// mu; known stays false until the relay's first push lands).
+	viewerCount      uint32
+	viewerCountKnown bool
 }
 
 // New builds a Session. It performs no I/O; Start does.
@@ -417,17 +428,33 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 	}
 }
 
-// readDatagrams drains the session's incoming datagrams. The relay sends a
-// publisher only TimeSync replies, but anything else is drained and ignored
-// rather than left to fill a queue.
+// readDatagrams drains the session's incoming datagrams: the R18 viewer-count
+// push is dispatched by wire type, TimeSync replies go to the sync client, and
+// anything else is drained and ignored rather than left to fill a queue.
 func (s *Session) readDatagrams(ctx context.Context, relay RelaySession) {
 	for {
 		dgram, err := relay.ReceiveDatagram(ctx)
 		if err != nil {
 			return
 		}
+		// R18 (docs/23 Decision 7): the relay pushes the live "N watching"
+		// number on this session (~1 s cadence, change-driven).
+		if len(dgram) == wire.ViewerCountSize && dgram[1] == wire.TypeViewerCount {
+			if count, err := wire.ParseViewerCount(dgram); err == nil {
+				s.setViewerCount(count)
+			}
+			continue
+		}
 		s.ts.HandleDatagram(dgram)
 	}
+}
+
+func (s *Session) setViewerCount(count uint32) {
+	s.mu.Lock()
+	s.viewerCount = count
+	s.viewerCountKnown = true
+	s.mu.Unlock()
+	s.cb.viewerCount(count)
 }
 
 // pump moves access units from the media source to the relay.
@@ -519,6 +546,10 @@ func (s *Session) Stats() Stats {
 		st.Encoder = m.Encoder()
 		st.CapturePath = m.CapturePath()
 	}
+	s.mu.Lock()
+	st.ViewerCountAvailable = s.viewerCountKnown
+	st.ViewerCount = s.viewerCount
+	s.mu.Unlock()
 	st.Width = s.cfg.Media.Width
 	st.Height = s.cfg.Media.Height
 	st.Fps = s.cfg.Media.Fps

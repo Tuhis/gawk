@@ -16,8 +16,6 @@
 //     answer (Decision 16).
 //   - **A tray.** The window *is* the app: close it and nothing is publishing.
 //     No background presence, no hidden state (Decision 15).
-//   - **A viewer count.** Nothing on the wire tells a publisher about
-//     subscribers — the browser broadcaster doesn't know either (Decision 18).
 package main
 
 import (
@@ -392,6 +390,22 @@ func (u *ui) header(gtx layout.Context) layout.Dimensions {
 				}),
 			)
 		}),
+		// R18: the live audience figure — the relay pushes it (~1 s cadence);
+		// hidden until the first push (an old relay never sends one).
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			s := u.app.Stats()
+			if state != gawkapp.StateLive || !s.ViewerCountAvailable {
+				return layout.Dimensions{}
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(spacer(4)),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					t := material.Body2(u.th, fmt.Sprintf("%d watching", s.ViewerCount))
+					t.Color = colText
+					return t.Layout(gtx)
+				}),
+			)
+		}),
 	)
 }
 
@@ -596,7 +610,12 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 				if s.Encoder != "" {
 					encoder = gst.EncoderAPI(s.Encoder) + " (" + s.Encoder + ")"
 				}
+				watching := "n/a (relay predates R18)"
+				if s.ViewerCountAvailable {
+					watching = fmt.Sprintf("%d", s.ViewerCount)
+				}
 				rows := [][2]string{
+					{"Watching", watching},
 					{"Encoder", encoder},
 					{"Capture path", orDash(s.CapturePath)},
 					{"Codec", orDash(s.Codec)},

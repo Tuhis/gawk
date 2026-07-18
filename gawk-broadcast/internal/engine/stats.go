@@ -75,4 +75,10 @@ type Stats struct {
 	TimeSyncAvailable bool
 	TimeSyncRttMs     float64
 	TimeSyncOffsetUs  int64
+
+	// ViewerCount is the live "N watching" number the relay pushes (R18,
+	// docs/23 — fleet-global in cluster mode). Available is false until the
+	// first push lands (an old relay never sends one).
+	ViewerCountAvailable bool
+	ViewerCount          uint32
 }
