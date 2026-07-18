@@ -354,6 +354,20 @@ build). Notes and deviations:
 6. **Prologue peek.** The uni-stream reader accumulates the two stream-kind
    bytes before dispatching (they may span reads); unknown kinds are counted
    as malformed and cancelled without wedging the accept loop.
+7. **CI finding (2026-07-19): carrier tests must deadline-bound their reads
+   and tolerate delta loss.** `TestSubscribeReliableDeliversCarrierRecords`
+   hung for the full 10-minute package timeout on a GitHub runner (run
+   29663246454): a delta datagram was lost publisher→relay (runners cap
+   `net.core.rmem_max` at 2 MiB vs the ~7 MiB quic-go asks for — the
+   warning is right there in the job log), so the carrier legitimately sat
+   one record short with the stream open, and the test's carrier `Read`
+   had no deadline (the accept-context timeout bounds only
+   `AcceptUniStream`). Reproduced locally by skipping one delta send —
+   identical stack. The test now sets `SetReadDeadline` on every accepted
+   stream, resends the deltas at 250 ms until both are observed, and
+   matches records by byte equality instead of position (resends
+   duplicate; the relay forwards verbatim). CI additionally raises the UDP
+   buffer sysctls in every job that pushes QUIC over loopback.
 
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
