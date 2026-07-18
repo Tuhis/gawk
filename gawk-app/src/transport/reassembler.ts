@@ -20,7 +20,7 @@
 // - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
 //   the relay re-emits the config before every keyframe by design.
 
-import { frameIdAhead, parseClockMapping, parseDecoderConfig, parseVideoChunk, peekType, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, WIRE_VERSION, type DecoderConfigMessage } from './wire';
+import { frameIdAhead, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type DecoderConfigMessage } from './wire';
 
 const MAX_ASSEMBLIES = 8;
 
@@ -38,6 +38,9 @@ export interface ReassemblerCallbacks {
   // R5 Q2: the broadcaster's clock mapping (relayClockUs = timestampUs +
   // offsetUs), relayed + cached by the relay. Last one wins.
   onClockMapping?: (offsetUs: bigint) => void;
+  // R18 (docs/23 Decision 8): the relay's live "N watching" push (global
+  // across the fleet in cluster mode). Last one wins, like the mapping.
+  onSubscriberCount?: (count: number) => void;
 }
 
 export interface ReassemblerStats {
@@ -123,9 +126,23 @@ export class Reassembler {
       case TYPE_CLOCK_MAPPING:
         this.pushClockMapping(dgram);
         break;
+      case TYPE_VIEWER_COUNT:
+        this.pushViewerCount(dgram);
+        break;
       default:
         this.stats.badDatagrams++;
     }
+  }
+
+  private pushViewerCount(dgram: Uint8Array): void {
+    let count: number;
+    try {
+      count = parseViewerCount(dgram);
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    this.cb.onSubscriberCount?.(count);
   }
 
   private pushClockMapping(dgram: Uint8Array): void {

@@ -83,6 +83,16 @@ export function StatsIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function EyeIcon(props: SVGProps<SVGSVGElement>) {
+  // The R18 "N watching" glyph.
+  return (
+    <svg {...base} {...props}>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 export function CloseIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>

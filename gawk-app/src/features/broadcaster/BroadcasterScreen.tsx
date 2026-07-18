@@ -6,7 +6,7 @@ import { useCodecMatrices, useSupportMatrix } from '../stream/useSupportMatrix';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
-import { CopyIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
+import { CopyIcon, EyeIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
 import { BroadcasterStatsOverlay } from './BroadcasterStatsOverlay';
 import { BroadcastStartError, type BroadcastSessionLike, type BroadcastStats } from '../../transport/broadcaster';
 import { createBroadcastSession } from './workerBroadcastSession';
@@ -19,7 +19,7 @@ import { isDevEnvironment, requiresPublishSecret } from '../../config';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
-import { fmt } from '../../lib/format';
+import { fmt, fmtWatching } from '../../lib/format';
 import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
 
@@ -339,6 +339,13 @@ export function BroadcasterScreen() {
             {status === 'reconnecting' && (
               <span className={`${styles.badge} ${styles.warnBadge}`}>
                 Reconnecting{resumeAttempt != null ? ` (attempt ${resumeAttempt})` : ''}…
+              </span>
+            )}
+            {/* R18 (docs/23 Decision 7): the live audience figure, in the
+                topbar slot docs/10 reserved for it. */}
+            {stats?.viewerCount != null && (
+              <span className={`${styles.badge} ${styles.watchingBadge}`}>
+                <EyeIcon /> {fmtWatching(stats.viewerCount)}
               </span>
             )}
             {renderAutoBadge(stats)}

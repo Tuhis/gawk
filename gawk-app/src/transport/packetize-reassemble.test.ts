@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
 import { Reassembler, type AssembledFrame } from './reassembler';
-import { MAX_CHUNK_PAYLOAD, encodeClockMapping, type DecoderConfigMessage } from './wire';
+import { MAX_CHUNK_PAYLOAD, encodeClockMapping, encodeViewerCount, type DecoderConfigMessage } from './wire';
 
 function patternBytes(length: number, seed: number): Uint8Array {
   const out = new Uint8Array(length);
@@ -201,6 +201,39 @@ describe('clock mapping (R5 Q2)', () => {
   it('tolerates a ClockMapping with no callback wired', () => {
     const r = new Reassembler({ onConfig: () => {}, onFrame: () => {} });
     r.push(encodeClockMapping(5n)); // must not throw or count bad
+    expect(r.getStats().badDatagrams).toBe(0);
+  });
+});
+
+describe('viewer count (R18)', () => {
+  it('routes a ViewerCount datagram to the callback, last one wins', () => {
+    const counts: number[] = [];
+    const r = new Reassembler({
+      onConfig: () => {},
+      onFrame: () => {},
+      onSubscriberCount: (count) => counts.push(count),
+    });
+    r.push(encodeViewerCount(1));
+    r.push(encodeViewerCount(4));
+    expect(counts).toEqual([1, 4]);
+    expect(r.getStats().badDatagrams).toBe(0);
+  });
+
+  it('drops a malformed ViewerCount as a bad datagram', () => {
+    const counts: number[] = [];
+    const r = new Reassembler({
+      onConfig: () => {},
+      onFrame: () => {},
+      onSubscriberCount: (count) => counts.push(count),
+    });
+    r.push(encodeViewerCount(7).subarray(0, 4)); // truncated
+    expect(counts).toEqual([]);
+    expect(r.getStats().badDatagrams).toBe(1);
+  });
+
+  it('tolerates a ViewerCount with no callback wired', () => {
+    const r = new Reassembler({ onConfig: () => {}, onFrame: () => {} });
+    r.push(encodeViewerCount(5)); // must not throw or count bad
     expect(r.getStats().badDatagrams).toBe(0);
   });
 });

@@ -13,6 +13,14 @@ export function fmtInt(n: number | null | undefined): string {
   return n == null || !Number.isFinite(n) ? '—' : String(Math.round(n));
 }
 
+// R18: the "N watching" badge text on both production surfaces. The wire
+// carries the honest total — a lone viewer reads "1 watching" (any
+// "besides you" presentation would be a client-side subtraction; docs/23
+// Decision 1 keeps the raw number).
+export function fmtWatching(count: number): string {
+  return `${count} watching`;
+}
+
 // Bits per second, human-scaled ("4.2 Mbps"). Callers with bytes/s multiply
 // by 8 themselves so the unit at the call site is explicit.
 export function fmtBits(bitsPerSec: number | null | undefined): string {

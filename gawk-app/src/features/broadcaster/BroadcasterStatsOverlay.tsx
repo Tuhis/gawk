@@ -46,6 +46,8 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
     {
       title: 'Delivery',
       rows: [
+        // R18: the relay's live audience push (fleet-global in cluster mode).
+        ['Watching', stats?.viewerCount == null ? '—' : String(stats.viewerCount)],
         ['Encoded', String(stats?.encodedFrames ?? '—')],
         ['Keyframes', String(stats?.keyframes ?? '—')],
         ['Datagrams sent', String(stats?.datagramsSent ?? '—')],

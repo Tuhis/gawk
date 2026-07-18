@@ -216,3 +216,20 @@
   align-items: center;
   gap: 0.25rem;
 }
+
+/* R18: the "N watching" pill beside the live status — understated, per the
+   cinematic viewer's restraint. */
+.watching {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

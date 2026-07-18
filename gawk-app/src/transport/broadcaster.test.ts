@@ -41,6 +41,7 @@ import {
   TYPE_CLOCK_MAPPING,
   TYPE_TIME_SYNC,
   encodeTimeSync,
+  encodeViewerCount,
   parseClockMapping,
   parseTimeSync,
 } from './wire';
@@ -339,6 +340,60 @@ describe('BroadcastPipeline time sync + clock mapping', () => {
       await vi.advanceTimersByTimeAsync(500);
       const synced = cbs.onStats.mock.calls.at(-1)?.[0];
       expect(synced?.timeSyncRttMs).not.toBeNull();
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// R18 (docs/23 Decision 7): the relay pushes the live viewer count as a
+// datagram on the publisher session; the read loop surfaces it in stats
+// without disturbing the TimeSync replies sharing that loop.
+describe('BroadcastPipeline viewer count (R18)', () => {
+  it('surfaces the pushed count in stats, ignores malformed, keeps time sync working', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      startCapture.mockResolvedValue(makeCaptureHandle());
+      let deliver: ((d: Uint8Array) => void) | null = null;
+      readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+        deliver = onDatagram;
+        return new Promise(() => {});
+      });
+
+      const cbs = makeCallbacks();
+      const pipeline = makePipeline(cbs);
+      await pipeline.start();
+
+      await vi.advanceTimersByTimeAsync(500); // one stats tick, no push yet
+      expect(cbs.onStats.mock.calls.at(-1)?.[0].viewerCount).toBeNull();
+
+      (deliver as unknown as (d: Uint8Array) => void)(encodeViewerCount(3));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(cbs.onStats.mock.calls.at(-1)?.[0].viewerCount).toBe(3);
+
+      // A malformed push (right type, wrong version) is dropped, keeping the
+      // last good count.
+      const bad = encodeViewerCount(9);
+      bad[0] = 0x02;
+      (deliver as unknown as (d: Uint8Array) => void)(bad);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(cbs.onStats.mock.calls.at(-1)?.[0].viewerCount).toBe(3);
+
+      // The TimeSync reply sharing this read loop still lands.
+      const ping = parseTimeSync(sentDatagrams.flat().filter((d) => d[1] === TYPE_TIME_SYNC)[0]);
+      (deliver as unknown as (d: Uint8Array) => void)(
+        encodeTimeSync({ clientTimeUs: ping.clientTimeUs, serverTimeUs: 1_000_000n }),
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      const last = cbs.onStats.mock.calls.at(-1)?.[0];
+      expect(last?.timeSyncRttMs).not.toBeNull();
+      expect(last?.viewerCount).toBe(3);
 
       await pipeline.stop();
     } finally {

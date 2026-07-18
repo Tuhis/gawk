@@ -103,6 +103,17 @@
   background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 
+/* R18: the "N watching" figure — quiet monochrome, like the sending readout. */
+.watchingBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  border-color: var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
 .sending {
   font-size: var(--fs-xs);
   color: var(--muted);

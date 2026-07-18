@@ -51,6 +51,7 @@ function fullStats(): BroadcastStats {
     autoCeiling: null,
     autoFps: null,
     pipelineContext: 'worker',
+    viewerCount: 4,
   };
 }
 
@@ -87,6 +88,8 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Dgrams lost (out)').nextSibling?.textContent).toBe('15');
     expect(screen.getByText('Video bitrate (sent)').nextSibling?.textContent).toBe('12.0 Mbps');
     expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
+    // R18: the relay's live audience push.
+    expect(screen.getByText('Watching').nextSibling?.textContent).toBe('4');
   });
 
   it('renders the R13 auto ceiling + auto fps rows when in auto mode', () => {

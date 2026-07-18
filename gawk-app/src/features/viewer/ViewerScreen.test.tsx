@@ -98,6 +98,21 @@ describe('ViewerScreen states', () => {
     expect(screen.getByText('Retry')).toBeTruthy();
   });
 
+  // R18 (docs/23 Decision 8): the live audience badge beside the status. The
+  // wire carries the honest total, so a lone viewer reads "1 watching".
+  it('renders the watching badge from the pushed viewer count', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    expect(screen.queryByText(/watching/)).toBeNull();
+
+    act(() => sessions[0].cbs.onStats({ viewerCount: 1 }));
+    expect(screen.getByText(/1 watching/)).toBeTruthy();
+
+    act(() => sessions[0].cbs.onStats({ viewerCount: 5 }));
+    expect(screen.getByText(/5 watching/)).toBeTruthy();
+  });
+
   it('shows the unplayable card (with codec, without Retry) on a fatal error', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));

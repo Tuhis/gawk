@@ -130,6 +130,10 @@ export interface ViewerStats extends ReassemblerStats {
   // requested but no carrier has appeared (old relay, or none rotated in
   // yet), so buffering is resilient while delivery stays datagrams.
   deliveryMode: 'datagrams' | 'reliable' | 'reliable-requested';
+  // R18 (docs/23 Decision 8): the live "N watching" number the relay fans
+  // out (~1 s cadence; the fleet-global total in cluster mode). Null until
+  // the first push — usually the join-prime — lands.
+  viewerCount: number | null;
   // R19 carrier tallies from the transport (null before connect / where the
   // transport can't report them).
   carrierStreams: number | null;
@@ -222,6 +226,8 @@ export class ViewerPipeline {
   // invalidated by a broadcaster restart) and the newest absolute latency.
   private broadcastClockOffsetUs: bigint | null = null;
   private lastCapToRenderMs: number | null = null;
+  // R18: the relay's latest "N watching" push (last one wins).
+  private viewerCount: number | null = null;
   // R12 T1: per-stats-window decode latencies (σ published as decodeJitterMs).
   private decodeLatencies: number[] = [];
 
@@ -270,6 +276,10 @@ export class ViewerPipeline {
       // late joiners by the relay's cache.
       onClockMapping: (offsetUs) => {
         this.broadcastClockOffsetUs = offsetUs;
+      },
+      // R18: the relay's live viewer count (join-primed, then ~1 s cadence).
+      onSubscriberCount: (count) => {
+        this.viewerCount = count;
       },
       // Reassembled datagram frames feed the reorder buffer. Keyframes only
       // arrive over streams in practice, but routing a keyframe-flagged
@@ -660,6 +670,7 @@ export class ViewerPipeline {
       decodeJitterMs,
       connection: this.transport?.sampleConnectionStats() ?? null,
       videoBytesReceived: this.videoBytesReceived,
+      viewerCount: this.viewerCount,
       deliveryMode,
       carrierStreams: carrier?.streamsOpened ?? null,
       carrierRecords: carrier?.recordsReceived ?? null,

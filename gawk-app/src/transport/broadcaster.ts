@@ -50,9 +50,12 @@ import {
   nextFrameId,
   parseBroadcastAnnounce,
   parseResumeToken,
+  parseViewerCount,
   peekType,
   TYPE_BROADCAST_ANNOUNCE,
   TYPE_RESUME_TOKEN,
+  TYPE_VIEWER_COUNT,
+  VIEWER_COUNT_SIZE,
 } from './wire';
 
 export interface BroadcastStats {
@@ -102,6 +105,11 @@ export interface BroadcastStats {
   // R11 (docs/16): where the pipeline runs, detected via `window` absence
   // (the viewer's R10 convention) — 'worker' on the offloaded path.
   pipelineContext: 'worker' | 'main-thread';
+  // R18 (docs/23 Decision 7): the live "N watching" number the relay pushes
+  // to this publisher session (~1 s cadence, change-driven). Null until the
+  // first push lands; survives transport resumes (the new session re-pushes
+  // within a tick).
+  viewerCount: number | null;
 }
 
 const EMPTY_BROADCAST_STATS: BroadcastStats = {
@@ -130,6 +138,7 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   autoCeiling: null,
   autoFps: null,
   pipelineContext: 'main-thread',
+  viewerCount: null,
 };
 
 export interface BroadcastCallbacks {
@@ -409,6 +418,16 @@ export class BroadcastPipeline {
     this.timeSync = new TimeSyncClient((d) => void sender.send([d]).catch(() => {}));
     this.timeSync.start();
     void readDatagrams(wt, (dgram) => {
+      // R18 (docs/23 Decision 7): the relay pushes the live viewer count on
+      // this session; everything else stays TimeSync's.
+      if (dgram.length === VIEWER_COUNT_SIZE && dgram[1] === TYPE_VIEWER_COUNT) {
+        try {
+          this.stats.viewerCount = parseViewerCount(dgram);
+        } catch {
+          // Malformed — drop it and keep the previous count.
+        }
+        return;
+      }
       this.timeSync?.handleDatagram(dgram);
     }).catch(() => {});
   }

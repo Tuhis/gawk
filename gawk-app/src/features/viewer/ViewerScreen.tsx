@@ -3,7 +3,7 @@ import styles from './viewer.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
 import { Button } from '../../ui/Button';
-import { FullscreenExitIcon, FullscreenIcon, LeaveIcon, StatsIcon } from '../../ui/Icons';
+import { EyeIcon, FullscreenExitIcon, FullscreenIcon, LeaveIcon, StatsIcon } from '../../ui/Icons';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
 import { StatsOverlay } from './StatsOverlay';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
@@ -13,6 +13,7 @@ import { log } from '../../lib/logger';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
+import { fmtWatching } from '../../lib/format';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
 import type { ViewerErrorKind } from '../../transport/viewer-session';
 import type { PlayoutMode } from '../../transport/playout';
@@ -495,6 +496,13 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
             aria-hidden="true"
           />
           <span className={styles.statusText}>{STATUS_LABEL[status]}</span>
+          {/* R18 (docs/23 Decision 8): the live audience badge — the relay's
+              fleet-global count, honest total (includes this viewer). */}
+          {status === 'watching' && stats?.viewerCount != null && (
+            <span className={styles.watching}>
+              <EyeIcon /> {fmtWatching(stats.viewerCount)}
+            </span>
+          )}
         </div>
         <div className={styles.actions}>
           <IconButton label={showStats ? 'Hide stats' : 'Show stats'} onClick={() => setShowStats((s) => !s)}>

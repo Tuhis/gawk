@@ -60,6 +60,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
     {
       title: 'Delivery',
       rows: [
+        // R18: the relay's live audience push (fleet-global; includes this
+        // viewer). "—" until the join-prime lands.
+        ['Watching', stats?.viewerCount == null ? '—' : String(stats.viewerCount)],
         // R19 (docs/24 Decision 10): how deltas actually arrive — the
         // truthful mode row, incl. the Decision 8 degradation state.
         ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],

@@ -51,6 +51,7 @@ function fullStats(): ViewerStats {
     arrivalJitterMs: 12,
     decodeJitterMs: 1.4,
     videoBytesReceived: 6_000_000,
+    viewerCount: 3,
     deliveryMode: 'datagrams',
     carrierStreams: null,
     carrierRecords: null,
@@ -104,6 +105,8 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Render cadence σ').nextSibling?.textContent).toBe('3.2 ms');
     expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('12 ms');
     expect(screen.getByText('Decode jitter σ').nextSibling?.textContent).toBe('1.4 ms');
+    // R18: the relay's live audience push.
+    expect(screen.getByText('Watching').nextSibling?.textContent).toBe('3');
 
     cleanup();
     render(
