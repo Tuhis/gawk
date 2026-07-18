@@ -209,7 +209,22 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   deviations (replicas defaults to 1 with a chart guard requiring
   clusterMode for >1; single-pod upgrades are RollingUpdate ≤1 s blips
   now) and the PR #47 post-review fixes (lingered-out edge hubs deleted,
-  holder-gated lease Delete, resume-token key precedence)**).
+  holder-gated lease Delete, resume-token key precedence)**),
+  `docs/24-viewer-network-resilience.md` for R19 (resilient viewer mode for
+  lossy networks — LTE/5G mobile viewers: opt-in per-subscriber **reliable
+  delivery** (`?delivery=reliable`; relay writes delta datagrams as
+  length-prefixed verbatim records on per-GOP reliable uni "carrier"
+  streams — relay stays a byte forwarder, viewer feeds records into its
+  existing datagram pipeline; keyframe streams untouched; rotation at
+  keyframe fan-out is the drop point) + an **extended adaptive playout
+  profile** (clamp [150, 2000] ms, seed 500) with wider reorder capacity and
+  RTT-scale gap patience; one new stream-kind discriminator byte (allocated
+  at implementation time — 0x09 is R17's, 0x07/0x08 are R15's), zero new
+  datagram messages, zero broadcaster changes; manual right-click toggle
+  first (default off, mode change = deliberate reconnect), auto-detect
+  deferred as a suggest-banner sketch; supersedes docs/12 Decision 1 **for
+  this opt-in mode only**; docs/23 stays reserved for R18; X1–X6 chunks;
+  **designed 2026-07-18, not started**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -737,6 +752,33 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    ~half of dials, docs/22 finding 9), so the engine dispatches server
    messages by wire type and persists the resume token as
    `lastResumeToken` for reclaim.
+23. Resilient viewer mode for lossy networks — **designed 2026-07-18
+   (X1–X6), not started** (R19, `docs/24-viewer-network-resilience.md`;
+   `docs/23` stays reserved for R18 live viewer count). Opt-in per-viewer
+   mode for LTE/5G mobile viewers: smooth video at 0.5–2 s behind live
+   instead of freeze-until-keyframe stutter under packet loss. Mechanism
+   (user decision over buffer-only, relay-cache+NACK, and FEC): the relay
+   delivers the opted-in subscriber's deltas as length-prefixed verbatim
+   datagram records on **per-GOP reliable uni carrier streams** (QUIC
+   retransmission recovers loss; relay stays a byte forwarder — no frame
+   reassembly; existing keyframe-stream, supersede and 4001-eviction
+   machinery untouched; carrier rotation at keyframe fan-out = the drop
+   point, drops-over-stalls at GOP granularity; egress cap charged per
+   record), negotiated via `?delivery=reliable` (publish-secret
+   query-param precedent), paired with a resilient viewer profile:
+   `PlayoutController` clamp **[150, 2000] ms** seed 500, reorder capacity
+   64→256, RTT-scale gap patience — same adaptive formula, wider profile,
+   so a clean mobile link sits well under 1 s. Zero broadcaster changes
+   (the lossy leg is relay→viewer); one new stream-kind discriminator
+   byte + record framing golden-vectored in all three wire mirrors
+   (allocated at implementation time — next free after R17's 0x09);
+   graceful degradation against an old relay (buffer-only). **R17
+   interop**: reliable conversion happens at the subscriber's serving pod;
+   origin→edge stays datagram-based, the param never propagates upstream.
+   Manual toggle first ("Resilient mode (mobile networks)", persisted,
+   default off; mode change = deliberate reconnect); auto-detect deferred
+   as a suggest-banner design sketch. Supersedes docs/12 Decision 1 for
+   this opt-in mode only; default mode keeps datagrams.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

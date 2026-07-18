@@ -37,6 +37,7 @@ feature set exists).
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | 📋 not started (design doc TBD) |
+| R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 📋 designed 2026-07-18 (X1–X6), not started ([docs/24](docs/24-viewer-network-resilience.md)) |
 
 ---
 
@@ -1122,6 +1123,71 @@ per-viewer adaptation.
 
 **Status**: not started — backlog item promoted from R14 Decision 18. Its own
 design doc (`docs/23`) + chunk breakdown to be written when picked up.
+
+---
+
+## R19 — Resilient viewer mode for lossy networks
+
+*(Numbering: `docs/23` is reserved for R18 above — hence `docs/24`.)*
+
+**Goal**: a viewer on a lossy network (LTE/5G mobile, hotel Wi-Fi) enables a
+new opt-in **"Resilient mode (mobile networks)"** and gets smooth,
+artifact-free video at 0.5–2 s behind live instead of the freeze-and-stutter
+the default live-edge mode produces under packet loss. Everyone else —
+default-mode viewers, both broadcasters, the relay's behavior for
+non-resilient subscribers — stays byte-identical.
+
+**Why**: today a single lost delta datagram means freeze-until-next-keyframe
+(up to ~500 ms), which at mobile-typical bursty loss rates fires several
+times a second; and the R12 adaptive playout offset is clamped at 350 ms —
+sized for LAN jitter, not cellular spikes. Every defense so far assumes loss
+is rare; mobile viewers need a mode where loss is *expected* and paid for
+with latency instead of stutter.
+
+**Scope sketch** (full design in
+[`docs/24-viewer-network-resilience.md`](docs/24-viewer-network-resilience.md)):
+
+- **Opt-in per-subscriber reliable delivery** (survey verdict over
+  buffer-only, relay-cache+NACK, and FEC): the viewer subscribes with
+  `?delivery=reliable` (publish-secret query-param precedent) and the relay
+  delivers its delta datagrams as length-prefixed **verbatim records on
+  per-GOP reliable uni "carrier" streams** — QUIC retransmission recovers
+  loss for free, the relay stays a byte forwarder (no frame reassembly), and
+  the viewer feeds records into its existing datagram pipeline unchanged.
+  Keyframe streams, store-and-forward, supersede and the 4001 eviction are
+  untouched. Carrier rotation at keyframe fan-out is the drop point —
+  drops-over-stalls preserved at GOP granularity. This deliberately
+  supersedes docs/12 Decision 1 ("deltas stay on datagrams — permanently")
+  **for this opt-in mode only**; the default mode keeps the founding choice.
+- **One new stream-kind discriminator byte + record framing** (golden
+  vectors in all three wire mirrors; the byte is allocated at implementation
+  time — 0x09 is R17's resume token, 0x07/0x08 are R15's), zero new
+  datagram messages, zero broadcaster changes (the lossy leg fixed is
+  relay→viewer).
+- **Extended adaptive buffering**: a resilient `PlayoutController` profile —
+  clamp **[150, 2000] ms**, seed 500 — plus wider reorder-buffer capacity
+  and RTT-scale gap patience; the same adaptive formula, so a clean mobile
+  link sits well under 1 s. Pacing/interpolation/tee machinery all unchanged
+  by construction. Degrades gracefully against an old relay (buffer-only).
+- **Manual toggle first** (own right-click toggle, persisted, default off;
+  mode change = deliberate reconnect); auto-detection is a designed-but-
+  deferred suggest-banner keyed off existing loss/jitter stats — never a
+  silent flip.
+- Observability: Delivery-mode overlay row + carrier counters, `/statusz`
+  and Prometheus reliable-subscriber dimensions, a bottleneck-playbook row.
+- **R17 interop**: reliable conversion happens at the pod serving the
+  subscriber; origin→edge internal subscriptions stay datagram-based
+  (in-cluster links are effectively lossless) and the `delivery` param is
+  never propagated upstream.
+
+**Non-goals**: FEC and NACK/ARQ (rejected in the survey), auto-switching in
+v1, broadcaster-side anything, per-viewer quality adaptation, audio (R15 —
+one-paragraph amendment there when it lands), DVR/rewind.
+
+**Status**: designed 2026-07-18 (chunks X1–X6 with per-chunk acceptance
+criteria), not started. User decisions anchoring scope: reliable-streams +
+extended-buffer mechanism; ~2 s adaptive latency budget; manual toggle
+first.
 
 ---
 
