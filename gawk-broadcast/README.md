@@ -290,11 +290,16 @@ internal/engine    Session{Start,Stop} + Callbacks + StartError{Phase,Status}
 internal/portal    XDG ScreenCast handshake (godbus); picker every start
 internal/gst       subprocess supervision + pipeline construction + cascade
 internal/mpegts    TS/PES demux → one AU per PES
+internal/fixture   the committed H.264 MPEG-TS test stream, embedded (fixture.TS)
+internal/pubsim    fixture demux + looping live-timestamped MediaSource
 internal/config    ~/.config/gawk/broadcast.json (0600)
 internal/notify    D-Bus notifications with urgency
 internal/app       the GUI's logic, without the GUI
 cmd/gawk-broadcast      CLI shell — headless, harness, debug
 cmd/gawk-broadcast-gui  GUI shell — Gio window + notifications
+cmd/gawk-pubsim         synthetic publisher (R20): loops the embedded fixture
+                        through the real engine — CI E2E + manual drills; no
+                        Gio, no cgo, prints GAWK_PUBSIM_ID=<code> on stdout
 ```
 
 `Session`/`Callbacks` deliberately mirror the TypeScript

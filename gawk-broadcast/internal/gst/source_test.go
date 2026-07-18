@@ -44,7 +44,7 @@ func failingBinary(t *testing.T, msg string) string {
 // A child that streams the TS fixture and then stays alive, like a working
 // pipeline.
 func streamingBinary(t *testing.T) string {
-	fixture, err := filepath.Abs("../mpegts/testdata/sample.ts")
+	fixture, err := filepath.Abs("../fixture/sample.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestUnhandledFormatRetriesSystemMemoryCapture(t *testing.T) {
 	// Free negotiation (no videoconvert in the args) dies exactly like the
 	// field failure; the system-memory pipeline streams.
 	bin := fakeBinary(t, `case "$*" in
-*videoconvert*) cat `+mustAbs(t, "../mpegts/testdata/sample.ts")+`
+*videoconvert*) cat `+mustAbs(t, "../fixture/sample.ts")+`
 sleep 30 ;;
 *) echo '`+unhandledFormatStderr+`' >&2
 exit 1 ;;
@@ -262,7 +262,7 @@ func TestStdoutIsDrainedDuringTheProbeWindow(t *testing.T) {
 	// against a 64 kB pipe), then leave a sentinel. With a blocked pipe the
 	// sentinel appears only after the probe window opens the tap; with a
 	// drained one it appears immediately.
-	fixture := mustAbs(t, "../mpegts/testdata/sample.ts")
+	fixture := mustAbs(t, "../fixture/sample.ts")
 	script := "for i in 1 2 3 4 5; do cat " + fixture + "; done\ntouch " + sentinel + "\nsleep 30\n"
 	s := newSource(t, Options{
 		Binary:          fakeBinary(t, script),
@@ -348,7 +348,7 @@ func TestDumpH264TeesTheElementaryStream(t *testing.T) {
 // 2026-07-17).
 func TestQueuedFramesSurviveTheDemuxersBufferReuse(t *testing.T) {
 	// Ground truth: the fixture demuxed standalone, every AU copied.
-	raw, err := os.ReadFile(mustAbs(t, "../mpegts/testdata/sample.ts"))
+	raw, err := os.ReadFile(mustAbs(t, "../fixture/sample.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestQueuedFramesSurviveTheDemuxersBufferReuse(t *testing.T) {
 
 	fp := &fakePortal{}
 	sentinel := filepath.Join(t.TempDir(), "streamed")
-	script := "cat " + mustAbs(t, "../mpegts/testdata/sample.ts") + "\ntouch " + sentinel + "\nsleep 30\n"
+	script := "cat " + mustAbs(t, "../fixture/sample.ts") + "\ntouch " + sentinel + "\nsleep 30\n"
 	s := newSource(t, Options{Binary: fakeBinary(t, script), OpenPortal: fp.open})
 	frames, err := s.Start(context.Background())
 	if err != nil {
@@ -498,7 +498,7 @@ func TestKeyframeSupersedesAFullQueue(t *testing.T) {
 func TestChildDeathSurfacesWithStderr(t *testing.T) {
 	fp := &fakePortal{}
 	// Streams briefly, then dies complaining.
-	bin := fakeBinary(t, "cat "+mustAbs(t, "../mpegts/testdata/sample.ts")+"\necho 'ERROR: device disappeared' >&2\nexit 1\n")
+	bin := fakeBinary(t, "cat "+mustAbs(t, "../fixture/sample.ts")+"\necho 'ERROR: device disappeared' >&2\nexit 1\n")
 	s := newSource(t, Options{Binary: bin, OpenPortal: fp.open, LiveProbeWindow: time.Millisecond})
 
 	frames, err := s.Start(context.Background())

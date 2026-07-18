@@ -1,0 +1,14 @@
+{
+  "name": "gawk-e2e",
+  "private": true,
+  "type": "module",
+  "description": "R20 browser E2E harness (docs/25): drives the production viewer in headless system Chrome against a real relay fed by gawk-pubsim, and asserts flow from the viewer's own diagnostics.",
+  "scripts": {
+    "e2e": "node run.mjs",
+    "e2e:external": "node run.mjs --external"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.54.0",
+    "pngjs": "^7.0.0"
+  }
+}

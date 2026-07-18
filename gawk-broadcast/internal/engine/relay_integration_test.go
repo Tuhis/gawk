@@ -35,6 +35,7 @@ import (
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/mpegts"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -51,10 +52,7 @@ type fixtureSource struct {
 
 func newFixtureSource(t *testing.T, clock engine.Clock) *fixtureSource {
 	t.Helper()
-	ts, err := os.ReadFile("../mpegts/testdata/sample.ts")
-	if err != nil {
-		t.Skipf("fixture unavailable: %v", err)
-	}
+	ts := fixture.TS
 	var aus []engine.AccessUnit
 	d := mpegts.NewDemuxer(wire.MaxKeyframeBytes, func(au mpegts.AU) error {
 		aus = append(aus, engine.AccessUnit{

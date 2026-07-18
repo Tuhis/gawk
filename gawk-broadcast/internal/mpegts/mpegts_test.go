@@ -3,16 +3,15 @@ package mpegts
 import (
 	"bytes"
 	"errors"
-	"os"
 	"testing"
+
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
 )
 
 // The fixture is a real H.264 MPEG-TS stream, not hand-rolled bytes:
 // 320x240, 30 fps, 2 s (60 frames), GOP 15 (= the shipped 500 ms cadence at
 // 30 fps), no B-frames, SPS/PPS repeated before every IDR. See
-// testdata/README.md for the exact command.
-const fixturePath = "testdata/sample.ts"
-
+// internal/fixture/README.md for the exact command.
 const (
 	fixtureFrames    = 60
 	fixtureGOPFrames = 15
@@ -20,11 +19,7 @@ const (
 
 func loadFixture(t *testing.T) []byte {
 	t.Helper()
-	b, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
-	return b
+	return bytes.Clone(fixture.TS)
 }
 
 // collect runs the fixture through the demuxer at a given write size and

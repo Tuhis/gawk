@@ -2,17 +2,16 @@ package engine
 
 import (
 	"bytes"
-	"os"
 	"testing"
 
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/mpegts"
 )
 
 // The same real fixture the demuxer tests use (see
-// internal/mpegts/testdata/README.md, including why it is ffmpeg-generated
+// internal/fixture/README.md, including why it is ffmpeg-generated
 // rather than captured from the live pipeline).
 const (
-	fixturePath      = "../mpegts/testdata/sample.ts"
 	fixtureFrames    = 60
 	fixtureGOPFrames = 15
 	// What ffprobe reports for the fixture: Constrained Baseline, level 1.3.
@@ -22,10 +21,7 @@ const (
 
 func fixtureAUs(t *testing.T) [][]byte {
 	t.Helper()
-	ts, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
+	ts := fixture.TS
 	var aus [][]byte
 	d := mpegts.NewDemuxer(8<<20, func(au mpegts.AU) error {
 		aus = append(aus, bytes.Clone(au.Data))

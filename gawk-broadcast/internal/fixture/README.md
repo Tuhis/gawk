@@ -1,6 +1,8 @@
-# mpegts test fixture
+# H.264 MPEG-TS test fixture
 
-`sample.ts` is a real H.264 MPEG-TS stream, regenerated with:
+`sample.ts` is a real H.264 MPEG-TS stream, embedded as `fixture.TS` and
+shared by the mpegts/engine/gst tests and by the `gawk-pubsim` synthetic
+publisher (R20, docs/25). Regenerated with:
 
 ```sh
 ffmpeg -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2" \
