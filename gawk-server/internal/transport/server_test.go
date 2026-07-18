@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -97,17 +98,30 @@ func startTestServerCfgLogSrv(t *testing.T, ctx context.Context, cfg config.Conf
 
 func dial(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) *webtransport.Session {
 	t.Helper()
+	return dialWithOrigin(t, ctx, url, clientTLS, "")
+}
+
+// dialWithOrigin is dial with an explicit Origin header — for tests running
+// the production config shape (AllowedOrigins set + the loopback origin
+// bypass hook-disabled), where a browser-shaped client must present a
+// listed origin.
+func dialWithOrigin(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config, origin string) *webtransport.Session {
+	t.Helper()
 	d := webtransport.Dialer{
 		TLSClientConfig: clientTLS,
 		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}
 	t.Cleanup(func() { d.Close() })
 
+	var hdr http.Header
+	if origin != "" {
+		hdr = http.Header{"Origin": []string{origin}}
+	}
 	var sess *webtransport.Session
 	var err error
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, sess, err = d.Dial(ctx, url, nil)
+		_, sess, err = d.Dial(ctx, url, hdr)
 		if err == nil {
 			return sess
 		}
@@ -744,6 +758,48 @@ func TestCheckOriginLoopbackBypassesAllowlist(t *testing.T) {
 			}
 			if got := srv.wt.CheckOrigin(req); got != tc.want {
 				t.Errorf("CheckOrigin(remote=%s, origin=%q) = %v, want %v", tc.remoteAddr, tc.origin, got, tc.want)
+			}
+		})
+	}
+}
+
+// R17 W4 + docs/22 finding 12: pod-to-pod edge pulls announce
+// internalEdgeOrigin, and no deployment should have to whitelist it — but
+// it must buy nothing outside the PSK-gated /internal/* routes, and the
+// origin check stays live on those routes: a wrong (or missing — the
+// pre-0.16.2 field bug) origin is still rejected and logged.
+func TestCheckOriginInternalEdgeOrigin(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
+	srv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, discardLog, nil)
+
+	cases := []struct {
+		name   string
+		path   string
+		origin string
+		want   bool
+	}{
+		{"edge origin on internal route", "/internal/subscribe/NSTMWB", internalEdgeOrigin, true},
+		{"edge origin buys nothing on a public route", "/subscribe/NSTMWB", internalEdgeOrigin, false},
+		{"wrong origin on internal route still rejected", "/internal/subscribe/NSTMWB", "https://evil.example.com", false},
+		{"no origin on internal route (the pre-0.16.2 field bug)", "/internal/subscribe/NSTMWB", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Built by hand, not httptest.NewRequest: that helper parses a
+			// CONNECT target in authority form and mangles URL.Path, while
+			// http3's extended CONNECT populates it from :path — the same
+			// URL.Path the "CONNECT /publish" mux patterns route on.
+			u, err := url.Parse("https://relay.example" + tc.path + "?proto=1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &http.Request{Method: http.MethodConnect, URL: u, Header: http.Header{}, RemoteAddr: "10.11.2.91:33035"}
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			if got := srv.wt.CheckOrigin(req); got != tc.want {
+				t.Errorf("CheckOrigin(path=%s, origin=%q) = %v, want %v", tc.path, tc.origin, got, tc.want)
 			}
 		})
 	}

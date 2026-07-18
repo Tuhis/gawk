@@ -36,6 +36,15 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
+// internalEdgeOrigin is the Origin header announced on pod-to-pod
+// /internal/subscribe dials, so the fleet's own traffic is legible in
+// origin logs. CheckOrigin honors it only on the PSK-gated /internal/*
+// routes — it buys nothing on client-facing paths, and browsers cannot
+// send it at all (a page's Origin header is browser-controlled). Keep the
+// string stable across versions: during a rolling update, old pods dial
+// new pods with it.
+const internalEdgeOrigin = "gawk-server://native-internal-edge"
+
 // Internal-session QUIC timing (docs/22 Decision 10): in-cluster keepalives
 // are cheap, and a dead origin must be detected fast even without the lease
 // watch. Constants, not knobs.
@@ -595,12 +604,12 @@ func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Log
 		// into) the query string; the origin's Query().Get decodes it back.
 		target := "https://" + addr + path + "&psk=" + url.QueryEscape(psk)
 
-		// Send the Origin header. This is hardcoded for now..
-		// TODO: Make this configurable and nice.
-		var reqHdr http.Header
-		reqHdr = http.Header{"Origin": []string{"gawk-server://native-internal-edge"}}
-
-		rsp, sess, err := d.Dial(ctx, target, reqHdr)
+		// The Origin header names this dial for what it is. CheckOrigin
+		// accepts internalEdgeOrigin on /internal/* routes only, so no
+		// -allowed-origins entry is needed and the origin check (with its
+		// rejection logging) stays live on the internal route for anything
+		// else that knocks (docs/22 finding 12).
+		rsp, sess, err := d.Dial(ctx, target, http.Header{"Origin": []string{internalEdgeOrigin}})
 		if err != nil {
 			_ = d.Close()
 			// The dialer is Go: HTTP statuses ARE readable here (unlike the

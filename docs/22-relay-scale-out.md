@@ -741,6 +741,26 @@ Findings and deviations from the design as written:
     rules. Lesson for every fake-clientset suite: the fake validates
     nothing — admission, name syntax, field immutability all pass; enforce
     what you rely on with reactors.
+12. **The origin allowlist silently killed every edge pull — W4 shipped
+    without an Origin header on internal dials** (2026-07-18, field; every
+    real deployment sets `-allowed-origins`, so the first multi-pod test
+    was also the first time W4 ran under it). Hotfixed in 0.16.2 by
+    sending a hardcoded origin that then had to be whitelisted in values;
+    finished properly the same day: `internalEdgeOrigin`
+    (`gawk-server://native-internal-edge`, keep the string stable across
+    versions — old pods dial new pods during rollouts) is now honored by
+    `CheckOrigin` **only on the PSK-gated `/internal/*` routes** — no
+    allowlist entry needed (deployments that added one can drop it), the
+    check plus its rejection logging stay live on the internal route, and
+    the origin buys nothing on client-facing paths. Two test-shaped
+    lessons folded in: (a) the origin check's **loopback bypass hid the
+    bug from every in-process test** (everything dials 127.0.0.1) — a
+    `testHookOriginCheckLoopback` now lets cluster tests run the
+    production config shape, finding 11's reactor lesson again; (b)
+    `webtransport.Server.Upgrade` **writes nothing on failure**, so a
+    rejected client saw an implicit 200 and believed it connected — every
+    upgrade-failure branch now writes 403, which also restores the edge
+    dialer's legible-status story on the internal route.
 
 ### Post-implementation review fixes (2026-07-16, PR #47)
 

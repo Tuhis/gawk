@@ -74,7 +74,9 @@ config:
   # Origins allowed to CONNECT, checked against the Origin header. MUST
   # include the frontend's origin (the gawk-app ingress host), e.g.
   # ["https://gawk.example.com"]. Empty allows all — fine for dev, don't
-  # ship it to prod.
+  # ship it to prod. The fleet's own pod-to-pod edge origin
+  # (gawk-server://native-internal-edge) is built in and honored only on
+  # the PSK-gated internal route — never list it here (docs/22 finding 12).
   allowedOrigins: []
   maxSubscribers: 15
   maxBroadcasts: 5

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,6 +118,14 @@ type Server struct {
 	// localhost UDP gives the race detector no happens-before edge between
 	// that write and a handler's read (caught by -race in the PR #47 pass).
 	testHookRateLimitLoopback atomic.Bool
+
+	// testHookOriginCheckLoopback disables the loopback bypass of the
+	// origin allowlist, so in-process cluster tests can run the production
+	// config shape (AllowedOrigins set): the pre-0.16.2 internal-edge
+	// rejection was invisible to every test precisely because of this
+	// bypass (docs/22 finding 12). Always false in production; atomic for
+	// the same reason as testHookRateLimitLoopback.
+	testHookOriginCheckLoopback atomic.Bool
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun:
@@ -224,10 +233,20 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 			// probes and crash-loops. Loopback can't be spoofed over QUIC
 			// (it requires a full handshake), so this doesn't weaken the
 			// check against real, off-pod clients.
-			if isLoopbackAddr(r.RemoteAddr) {
+			if isLoopbackAddr(r.RemoteAddr) && !s.testHookOriginCheckLoopback.Load() {
 				return true
 			}
 			origin := r.Header.Get("Origin")
+			// Pod-to-pod edge pulls announce a fixed origin no deployment
+			// should have to whitelist (docs/22 finding 12: with
+			// -allowed-origins set — every real deployment — W4's edge
+			// dials were silently rejected). Honored only on the PSK-gated
+			// internal route, so the allowlist still governs every
+			// client-facing path and a wrong origin on /internal/* is
+			// still rejected and logged below.
+			if origin == internalEdgeOrigin && strings.HasPrefix(r.URL.Path, "/internal/") {
+				return true
+			}
 			if slices.Contains(allowed, origin) {
 				return true
 			}
@@ -554,6 +573,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			pub.Close() // Release on upgrade failure
 			s.metrics.Connection("publish", metrics.OutcomeUpgradeFailed)
 			s.log.Warn("publish upgrade failed", "err", err)
+			// Upgrade never writes on failure (checked v0.11.1) — without
+			// an explicit status the client would see an implicit 200 and
+			// believe it connected (docs/22 finding 12).
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 	} else {
@@ -573,6 +596,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.metrics.Connection("publish", metrics.OutcomeUpgradeFailed)
 			s.log.Warn("publish upgrade failed", "err", err)
+			w.WriteHeader(http.StatusForbidden) // no implicit 200 (finding 12)
 			return
 		}
 
@@ -839,6 +863,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.metrics.Connection("subscribe", metrics.OutcomeUpgradeFailed)
 		s.log.Warn("subscribe upgrade failed", "err", err)
+		w.WriteHeader(http.StatusForbidden) // no implicit 200 (finding 12)
 		return
 	}
 	defer s.trackSession(sess)()
@@ -944,6 +969,9 @@ func (s *Server) handleInternalSubscribe(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		s.metrics.Connection("internal", metrics.OutcomeUpgradeFailed)
 		s.log.Warn("internal subscribe upgrade failed", "err", err)
+		// A legible status instead of an implicit 200: the edge dialer
+		// surfaces upstream statuses in its logs (finding 12).
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 	defer s.trackSession(sess)()

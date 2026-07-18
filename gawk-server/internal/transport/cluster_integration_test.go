@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
@@ -49,8 +50,9 @@ func (p *clusteredPod) addr() string { return fmt.Sprintf("127.0.0.1:%d", p.port
 
 // startClusteredPod boots one pod. All pods share cert+pool (standing in for
 // the fleet's one public certificate) and the fake clientset (the control
-// plane). The internal PSK is fixed: "fleet-psk".
-func startClusteredPod(t *testing.T, ctx context.Context, cs *fake.Clientset, podName string, cert tls.Certificate, pool *x509.CertPool, clusterMax int) *clusteredPod {
+// plane). The internal PSK is fixed: "fleet-psk". Optional mutators adjust
+// the config before boot (e.g. AllowedOrigins for the production shape).
+func startClusteredPod(t *testing.T, ctx context.Context, cs *fake.Clientset, podName string, cert tls.Certificate, pool *x509.CertPool, clusterMax int, mutate ...func(*config.Config)) *clusteredPod {
 	t.Helper()
 
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -72,6 +74,9 @@ func startClusteredPod(t *testing.T, ctx context.Context, cs *fake.Clientset, po
 		// on EVERY pod, or re-homing 403s — share the key like the chart's
 		// Secret does.
 		ResumeTokenKey: bytes.Repeat([]byte{0x42}, 32),
+	}
+	for _, m := range mutate {
+		m(&cfg)
 	}
 	// The lease callbacks close over the late-bound server, exactly like
 	// main.go's wiring (the coordinator and server reference each other).
@@ -200,6 +205,70 @@ func TestMintRejectedAtClusterBroadcastLimit(t *testing.T) {
 	}
 	if len(list.Items) != 1 {
 		t.Errorf("leases after rejected mint = %d, want 1", len(list.Items))
+	}
+}
+
+// The production config shape W4 shipped without (docs/22 finding 12):
+// -allowed-origins set. Every real deployment sets it, and until 0.16.2 it
+// silently rejected every pod-to-pod edge pull — invisible to this suite
+// because the origin check has a loopback bypass and everything here dials
+// 127.0.0.1. The bypass is hook-disabled, browser-shaped clients present
+// the listed frontend origin, and the edge pull must clear the check with
+// internalEdgeOrigin — which no deployment has to whitelist.
+func TestEdgePullUnderAllowedOrigins(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs := fake.NewClientset()
+
+	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateDevCert: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	clientTLS := &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}}
+
+	const frontend = "https://gawk.example"
+	allowFrontend := func(c *config.Config) { c.AllowedOrigins = []string{frontend} }
+	podA := startClusteredPod(t, ctx, cs, "pod-a", cert, pool, 0, allowFrontend)
+	podB := startClusteredPod(t, ctx, cs, "pod-b", cert, pool, 0, allowFrontend)
+	podA.srv.testHookOriginCheckLoopback.Store(true)
+	podB.srv.testHookOriginCheckLoopback.Store(true)
+
+	// Publisher (browser-shaped: the listed frontend origin) lands on A.
+	pub := dialWithOrigin(t, ctx, fmt.Sprintf("https://%s/publish", podA.addr()), clientTLS, frontend)
+	defer pub.CloseWithError(0, "")
+	id, _ := readPublisherHandshake(t, ctx, pub)
+
+	kf := buildStreamKeyframe(t, 0, "avc1.42E02A", 3000)
+	sendKeyframeStream(t, pub, kf)
+	waitFor(t, 5*time.Second, func() bool {
+		return podA.registry.Stats().Broadcasts[podA.registry.ObfuscateID(id)].CachedKeyframeBytes == len(kf)
+	}, "keyframe cached on origin")
+
+	// A viewer on B demand-creates the edge pull; its internal dial must
+	// clear A's origin check without an allowlist entry.
+	viewerB := dialWithOrigin(t, ctx, fmt.Sprintf("https://%s/subscribe/%s", podB.addr(), id), clientTLS, frontend)
+	defer viewerB.CloseWithError(0, "")
+	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
+	hdrB, dataB := readNextKeyframeStream(t, recvCtx, viewerB)
+	recvCancel()
+	if hdrB.FrameID != 0 || !bytes.Equal(dataB, kf) {
+		t.Fatalf("edge viewer prime under allowlist: frameID %d, byte-identical=%v", hdrB.FrameID, bytes.Equal(dataB, kf))
+	}
+
+	// And a disallowed browser origin is still turned away at the door.
+	d := webtransport.Dialer{
+		TLSClientConfig: clientTLS,
+		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
+	}
+	defer d.Close()
+	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
+	_, _, err = d.Dial(dialCtx, fmt.Sprintf("https://%s/subscribe/%s", podB.addr(), id),
+		http.Header{"Origin": []string{"https://evil.example"}})
+	dialCancel()
+	if err == nil {
+		t.Fatal("disallowed origin was accepted")
 	}
 }
 
