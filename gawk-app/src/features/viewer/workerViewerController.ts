@@ -125,6 +125,14 @@ export class WorkerViewerController {
     this.post({ type: 'interpolation', enabled });
   }
 
+  // R19: resilient mode for the worker context. Callers send it before
+  // start() (worker messages process in order), so the wider profile is live
+  // before the session's first frame.
+  setResilientMode(enabled: boolean): void {
+    if (this.disposed) return;
+    this.post({ type: 'resilient', enabled });
+  }
+
   // R16: activate the presentation tee (gated devices, at `watching`). Sent
   // at most once — the worker's generator/track are session-long and survive
   // reconnects (docs/21 Decision 4). Buffered until the canvas/init exist.

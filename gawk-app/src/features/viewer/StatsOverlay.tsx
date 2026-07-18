@@ -60,6 +60,15 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
     {
       title: 'Delivery',
       rows: [
+        // R19 (docs/24 Decision 10): how deltas actually arrive — the
+        // truthful mode row, incl. the Decision 8 degradation state.
+        ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
+        ...(stats?.deliveryMode !== 'datagrams' && stats != null
+          ? ([
+              ['Carrier streams', stats.carrierStreams == null ? '—' : `${stats.carrierStreams} (${stats.carrierStreamsAborted ?? 0} aborted)`],
+              ['Carrier records', stats.carrierRecords == null ? '—' : String(stats.carrierRecords)],
+            ] as StatsRow[])
+          : []),
         ['Completed', String(stats?.framesCompleted ?? '—')],
         ['Dropped (incomplete)', String(stats?.framesDroppedIncomplete ?? '—')],
         ['Dropped (late)', String(stats?.framesDroppedLate ?? '—')],

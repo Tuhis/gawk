@@ -18,6 +18,11 @@ const (
 	goldenStreamFrameHeaderHex = "01040100010203040000005d21dba5f00000000600000003"
 	goldenTimeSyncRequestHex   = "010500000000000f42400000000000000000"
 	goldenClockMappingHex      = "0106000000000016e360"
+	// R19 reliable-carrier framing (docs/24 Decision 3). The native
+	// broadcaster never sends or receives carriers — they are relay→viewer —
+	// but the vector is mirrored in all three wire implementations by rule.
+	goldenCarrierPrologueHex = "010a"
+	goldenCarrierRecordHex   = "0017" + goldenVideoChunkHex
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -91,6 +96,20 @@ func TestGoldenClockMapping(t *testing.T) {
 	}
 }
 
+func TestGoldenCarrierPrologueAndRecord(t *testing.T) {
+	prologue := wire.AppendCarrierPrologue(nil)
+	if want := mustHex(t, goldenCarrierPrologueHex); !bytes.Equal(prologue, want) {
+		t.Errorf("carrier prologue drifted from the golden vector\n got %x\nwant %x", prologue, want)
+	}
+	record, err := wire.AppendCarrierRecord(nil, mustHex(t, goldenVideoChunkHex))
+	if err != nil {
+		t.Fatalf("AppendCarrierRecord: %v", err)
+	}
+	if want := mustHex(t, goldenCarrierRecordHex); !bytes.Equal(record, want) {
+		t.Errorf("carrier record drifted from the golden vector\n got %x\nwant %x", record, want)
+	}
+}
+
 // The announce is the one message the broadcaster receives.
 func TestBroadcastAnnounceRoundTrip(t *testing.T) {
 	msg, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
@@ -129,6 +148,10 @@ func TestWireConstants(t *testing.T) {
 		{"TypeStreamFrame", wire.TypeStreamFrame, 0x04},
 		{"TypeTimeSync", wire.TypeTimeSync, 0x05},
 		{"TypeClockMapping", wire.TypeClockMapping, 0x06},
+		{"TypeResumeToken", wire.TypeResumeToken, 0x09},
+		{"TypeReliableCarrier", wire.TypeReliableCarrier, 0x0A},
+		{"CarrierPrologueSize", wire.CarrierPrologueSize, 2},
+		{"CarrierRecordHeaderSize", wire.CarrierRecordHeaderSize, 2},
 	} {
 		if c.got != c.want {
 			t.Errorf("wire.%s = %d, want %d — wire format changed; update the relay, both broadcasters and the viewer together", c.name, c.got, c.want)

@@ -1,7 +1,9 @@
 # R19 — Resilient Viewer Mode: Reliable Delivery + Extended Buffering for Lossy Networks
 
 Design doc for [ROADMAP R19](../ROADMAP.md#r19--resilient-viewer-mode-for-lossy-networks)
-(designed 2026-07-18, not started). Adds an **opt-in, per-viewer "Resilient
+(designed 2026-07-18; **X2–X5 implemented 2026-07-18**, automated gates green;
+X1 measurement baseline + browser spike and X6 verification/tuning pending —
+see "Implementation status" below). Adds an **opt-in, per-viewer "Resilient
 mode"** for viewers on lossy networks (LTE/5G mobile connections): the relay
 delivers that viewer's delta frames over **reliable WebTransport uni streams**
 instead of unreliable datagrams (QUIC retransmission recovers loss for free),
@@ -135,7 +137,8 @@ throughput, ugly loss/jitter.
    a complete, already-golden-vectored `VideoChunk` datagram ≤ ~1220 B —
    uint16 is ample). The type byte is **allocated at implementation time as
    the next genuinely free value** (0x07/0x08 are reserved by R15 audio,
-   0x09 is R17's resume token — 0x0A as of this writing), mirrored in all
+   0x09 is R17's resume token — **allocated as 0x0A, `TypeReliableCarrier`,
+   2026-07-18**), mirrored in all
    three wire implementations
    (`gawk-server/wire/wire_test.go`, `gawk-app/.../wire.test.ts`,
    `gawk-broadcast/internal/wirecheck`) with golden vectors for the
@@ -303,12 +306,54 @@ Viewer (worker pipeline):
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| X1 | **Measurement baseline + spike** — reproducible lossy-link harness (`tc netem` loss 1/3/5/10 % × jitter 0/50/100 ms on the viewer leg, docs/12 precedent); record default-mode failure signatures (gap resyncs/min, renderCadence p95, freeze visibility vs loss rate); browser spike for the carrier reader (sustained uni-stream accept + in-worker read throughput on Chrome, Firefox, iOS Safari — the primary resilient audience is a phone) | Findings table in this doc: default-mode signature per netem cell; measured stream-accept behavior confirming per-GOP rotation (~4 streams/s incl. keyframes) is comfortably inside browser limits on all three engines (else the granularity decision is revisited **here, before X2**); harness commands recorded verbatim | 📋 not started |
-| X2 | **Wire + relay** — carrier prologue + record framing (type byte allocated per Decision 3) with golden vectors in all three mirrors; `?delivery=reliable` parsing in `handleSubscribe` → per-`Subscriber` mode; carrier writer drain, per-GOP rotation, ≤2-open + deadline `CancelWrite`, eviction-streak reuse, datagram suppression; bandwidth-cap accounting; `/statusz` + metrics per Decision 10 | Golden vectors byte-identical Go↔TS↔wirecheck; hub tests: resilient sub receives every enqueued delta byte-identically and in order across a rotation; datagram path proven silent for resilient subs; mixed audience (resilient + normal subs on one broadcast) each get their own delivery untouched; stalled carrier `CancelWrite`-ed after deadline and playback story resumes at next GOP; carrier opens feed the eviction streak; cap counts carrier bytes (test: over-cap drops recorded under the right reason); zero new knobs confirmed or any new knob traced flag→env→`registryOptions`→Helm | 📋 not started |
-| X3 | **Viewer ingestion + resilient reorder profile** — stream-kind peek in the uni-stream reader (`connection.ts`), carrier record loop feeding the existing datagram handler (nested transport worker + in-process transport both); `RESILIENT_MAX_BUFFERED_FRAMES` / `RESILIENT_DELTA_GAP_GRACE_MS` / `RESILIENT_KEYFRAME_WAIT_MS` applied via mode, defaults untouched | Unit tests: carrier records traverse reassembler → reorder identically to datagram delivery (same bytes in, same frames out); keyframe streams still parse unchanged; interleaved carrier + keyframe arrival resolves by frameId; a `CancelWrite`-truncated carrier yields exactly one resync at the next keyframe (no corruption feed); profile constants active only in resilient mode (default-mode tests all pass unmodified); malformed prologue/record counts bad + closes stream without wedging the read loop | 📋 not started |
-| X4 | **Mode toggle + playout profile** — "Resilient mode (mobile networks)" context-menu toggle, `gawk:resilient-mode` persistence, deliberate reconnect with/without the query param via `ViewerSession`; worker mode command; `PlayoutController` resilient profile (`[150, 2000]`, seed 500, slew 100/10) selected by mode; paced/smooth menu-entry annotation while active | Toggle flips reconnect with the correct subscribe URL (test at the session/URL seam); controller tests for the resilient profile (clamp, seed-until-warmup, asymmetric slew — same test shape as R12 T3); mode off ⇒ behavior byte-identical to today (existing suites untouched); playout-mode setting value survives resilient on/off round-trip; Decision 8 fallback state reported when no carrier appears | 📋 not started |
-| X5 | **Observability** — Delivery-mode overlay row + carrier counters + resilient offset surfaced (viewer); Copy-diagnostics fields; relay `/statusz` `subscriberDetails.reliable` + carrier counters; Prometheus `gawk_broadcast_reliable_subscribers` + carrier families via the snapshot collector | Overlay renders mode truthfully in all three states (datagrams / reliable / requested-but-datagrams); diagnostics JSON round-trips the new fields; metrics visible on `/metrics` with bounded cardinality (no per-subscriber labels — R9 rule); docs/13 bottleneck playbook gains a resilient-mode signature row | 📋 not started |
-| X6 | **Verification + tuning pass** — the X1 harness re-run in resilient mode; real-phone LTE/5G session against the homelab; every provisional constant (Decision 7) confirmed or amended; findings + auto-detect thresholds recorded in this doc; README gotchas + ROADMAP/CLAUDE status sync | **Headline criterion**: at 5 % loss + 50 ms jitter, resilient mode plays with ≈0 gap resyncs/min and renderCadence p95 within the R12 clean-link envelope at ≤ 2 s capture→render latency, where default mode measurably stutters (X1 baseline) — measured with the existing latency + cadence instruments, no new measurement code; phone-on-LTE session verdict recorded; constants table updated with final values; auto-detect banner thresholds proposed from data | 📋 not started |
+| X1 | **Measurement baseline + spike** — reproducible lossy-link harness (`tc netem` loss 1/3/5/10 % × jitter 0/50/100 ms on the viewer leg, docs/12 precedent); record default-mode failure signatures (gap resyncs/min, renderCadence p95, freeze visibility vs loss rate); browser spike for the carrier reader (sustained uni-stream accept + in-worker read throughput on Chrome, Firefox, iOS Safari — the primary resilient audience is a phone) | Findings table in this doc: default-mode signature per netem cell; measured stream-accept behavior confirming per-GOP rotation (~4 streams/s incl. keyframes) is comfortably inside browser limits on all three engines (else the granularity decision is revisited **here, before X2**); harness commands recorded verbatim | 📋 pending — needs real browsers + netem; see "Implementation status" for the ordering deviation |
+| X2 | **Wire + relay** — carrier prologue + record framing (type byte allocated per Decision 3) with golden vectors in all three mirrors; `?delivery=reliable` parsing in `handleSubscribe` → per-`Subscriber` mode; carrier writer drain, per-GOP rotation, ≤2-open + deadline `CancelWrite`, eviction-streak reuse, datagram suppression; bandwidth-cap accounting; `/statusz` + metrics per Decision 10 | Golden vectors byte-identical Go↔TS↔wirecheck; hub tests: resilient sub receives every enqueued delta byte-identically and in order across a rotation; datagram path proven silent for resilient subs; mixed audience (resilient + normal subs on one broadcast) each get their own delivery untouched; stalled carrier `CancelWrite`-ed after deadline and playback story resumes at next GOP; carrier opens feed the eviction streak; cap counts carrier bytes (test: over-cap drops recorded under the right reason); zero new knobs confirmed or any new knob traced flag→env→`registryOptions`→Helm | ✅ implemented 2026-07-18 — all criteria covered by `hub_test.go` + `server_test.go` + wire tests; **zero new knobs** (`QueueDepth`/`KeyframeWriteTimeout`/caps reused) |
+| X3 | **Viewer ingestion + resilient reorder profile** — stream-kind peek in the uni-stream reader (`connection.ts`), carrier record loop feeding the existing datagram handler (nested transport worker + in-process transport both); `RESILIENT_MAX_BUFFERED_FRAMES` / `RESILIENT_DELTA_GAP_GRACE_MS` / `RESILIENT_KEYFRAME_WAIT_MS` applied via mode, defaults untouched | Unit tests: carrier records traverse reassembler → reorder identically to datagram delivery (same bytes in, same frames out); keyframe streams still parse unchanged; interleaved carrier + keyframe arrival resolves by frameId; a `CancelWrite`-truncated carrier yields exactly one resync at the next keyframe (no corruption feed); profile constants active only in resilient mode (default-mode tests all pass unmodified); malformed prologue/record counts bad + closes stream without wedging the read loop | ✅ implemented 2026-07-18 — `readServerStreams` dispatches by prologue; records enter `cb.onDatagram` (both transports by construction: the nested worker runs the same `LocalViewerTransport`); resilient constants live in `transport/resilient.ts` |
+| X4 | **Mode toggle + playout profile** — "Resilient mode (mobile networks)" context-menu toggle, `gawk:resilient-mode` persistence, deliberate reconnect with/without the query param via `ViewerSession`; worker mode command; `PlayoutController` resilient profile (`[150, 2000]`, seed 500, slew 100/10) selected by mode; paced/smooth menu-entry annotation while active | Toggle flips reconnect with the correct subscribe URL (test at the session/URL seam); controller tests for the resilient profile (clamp, seed-until-warmup, asymmetric slew — same test shape as R12 T3); mode off ⇒ behavior byte-identical to today (existing suites untouched); playout-mode setting value survives resilient on/off round-trip; Decision 8 fallback state reported when no carrier appears | ✅ implemented 2026-07-18 — mode rides `ConnectOptions.deliveryMode` into the subscribe URL; worker `resilient` command sent before `start`; `PlayoutController` takes a profile (`RESILIENT_PLAYOUT_PROFILE`) |
+| X5 | **Observability** — Delivery-mode overlay row + carrier counters + resilient offset surfaced (viewer); Copy-diagnostics fields; relay `/statusz` `subscriberDetails.reliable` + carrier counters; Prometheus `gawk_broadcast_reliable_subscribers` + carrier families via the snapshot collector | Overlay renders mode truthfully in all three states (datagrams / reliable / requested-but-datagrams); diagnostics JSON round-trips the new fields; metrics visible on `/metrics` with bounded cardinality (no per-subscriber labels — R9 rule); docs/13 bottleneck playbook gains a resilient-mode signature row | ✅ implemented 2026-07-18 — overlay "Delivery mode" + carrier rows; `ViewerStats` fields ride Copy diagnostics; Prometheus `gawk_broadcast_reliable_subscribers`, `carrier_streams_total`, `carrier_records_total`, `carrier_records_dropped_total`, `egress_bytes_total{kind="carrier"}`; playbook row added |
+| X6 | **Verification + tuning pass** — the X1 harness re-run in resilient mode; real-phone LTE/5G session against the homelab; every provisional constant (Decision 7) confirmed or amended; findings + auto-detect thresholds recorded in this doc; README gotchas + ROADMAP/CLAUDE status sync | **Headline criterion**: at 5 % loss + 50 ms jitter, resilient mode plays with ≈0 gap resyncs/min and renderCadence p95 within the R12 clean-link envelope at ≤ 2 s capture→render latency, where default mode measurably stutters (X1 baseline) — measured with the existing latency + cadence instruments, no new measurement code; phone-on-LTE session verdict recorded; constants table updated with final values; auto-detect banner thresholds proposed from data | 📋 pending — needs the X1 harness + real devices |
+
+## Implementation status & findings (2026-07-18)
+
+X2–X5 were implemented together on 2026-07-18 with all automated gates green
+(both Go modules `-race`, the full vitest suite, tsc, lint, production
+build). Notes and deviations:
+
+1. **Ordering deviation — X2 landed before X1.** X1's netem baseline and the
+   three-engine browser spike need real browsers and a lossy-link rig, which
+   the implementation environment didn't have. The carrier granularity
+   therefore follows the design default (per-GOP, Decision 4) without X1's
+   empirical confirmation. The risk is contained: the rotation trigger is a
+   single hook in `Subscriber.sendKeyframe` and the drop point is isolated in
+   `drainReliable`, so if X1/X6 find per-GOP rotation problematic on any
+   engine, revisiting the granularity touches only the relay drain. **X1
+   remains a gate for X6's verdict, not for merging the dormant code** — with
+   the toggle off every path is byte-identical to before.
+2. **Carrier concurrency shape.** The implementation is stricter than the
+   "≤ 2 open carriers" bound: the drain goroutine owns all carrier stream
+   I/O sequentially (open/write/close), so at most one carrier is ever being
+   written; a rotation gracefully closes the predecessor before the next
+   record. Each record write carries a `KeyframeWriteTimeout` deadline — a
+   stalled write cancels the carrier (a half-written record is unrecoverable
+   framing) and the GOP's remaining records are dropped until the next
+   rotation. `Subscriber.Close` cancels the current carrier under its own
+   mutex so a blocked drain unblocks immediately.
+3. **Eviction-streak cadence.** Carrier opens share the keyframe streak, and
+   at most one carrier open is attempted per rotation (an open failure marks
+   the GOP dead), so the streak grows at GOP cadence — a zombie with both
+   stream kinds failing evicts at ~2.5 s (10 combined failures at 500 ms
+   GOP), same order as the keyframe-only path.
+4. **Bandwidth-cap accounting.** Over-cap carrier records count as
+   *datagram* bandwidth drops (same counters as the datagram drain), keeping
+   R9's queue_full-by-subtraction intact; `carrier_records_dropped_total` is
+   reserved for dead-carrier/open-failure drops.
+5. **Delivery-mode ground truth.** The viewer reports
+   `reliable-requested` (Decision 8) until the first carrier stream is
+   actually observed — which also covers the first instants after connect,
+   before the prime keyframe rotates carrier #1 in.
+6. **Prologue peek.** The uni-stream reader accumulates the two stream-kind
+   bytes before dispatching (they may span reads); unknown kinds are counted
+   as malformed and cancelled without wedging the accept loop.
 
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a

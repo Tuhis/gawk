@@ -418,6 +418,7 @@ The point of the whole design: symptom → discriminating signals → verdict.
 | Viewer: smooth then freezes | `timeSinceLastFrameMs` grows while connection RTT still updates → upstream stopped (check `gawk_broadcast_publisher_active`); RTT also dead → leg B outage (reconnect logic's territory) | **Stall attribution** |
 | Frequent "Awaiting keyframe" / gap resyncs on one viewer | Viewer `framesDroppedIncomplete`/`reorderGapResyncs` up; relay keyframe `slow` drops for that subscriber; `lastKeyframeAgeMs` spiking ≫ GOP | **Delta loss on leg B** eating GOPs; keyframe cadence + reliable streams bound recovery — if age ≫ 500 ms GOP something is wrong at the relay |
 | Nothing plays for anyone | `gawk_connections_total{outcome!="accepted"}` — 401 (secret), 404 (bad/expired ID), 429 (limits/rate limiter), `origin_rejected` (CORS config) | **Config/limits, not media** |
+| Resilient-mode viewer (R19) stutters anyway | Overlay Delivery mode says `reliable (resilient)` and Playout offset is climbing toward its 2000 ms clamp, yet `renderCadence` p95 stays high; relay `gawk_broadcast_carrier_records_dropped_total` and per-sub `carrierRecordsDropped` climbing, or overlay `Carrier streams` shows aborts every GOP | **Sustained undersupply, not loss** — the link can't carry the stream bitrate; reliable delivery can't create bandwidth (docs/24), lower the rung/bitrate. If the mode row instead says `reliable requested / datagrams served`, the relay predates R19 X2 — buffering still widened, loss recovery didn't |
 
 ## Verification plan
 

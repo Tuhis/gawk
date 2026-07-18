@@ -71,6 +71,11 @@ type Conn interface {
 	// OpenKeyframeStream opens a fresh server-initiated unidirectional stream
 	// to this subscriber for one keyframe (reliable).
 	OpenKeyframeStream() (KeyframeStream, error)
+	// OpenCarrierStream opens a fresh server-initiated unidirectional stream
+	// used as a reliable delta carrier for a resilient subscriber (R19,
+	// docs/24). Identical transport mechanics to a keyframe stream; the
+	// distinct method keeps the two stream kinds visible in fakes and stats.
+	OpenCarrierStream() (KeyframeStream, error)
 	CloseWithError(code uint32, reason string) error
 }
 
@@ -83,8 +88,9 @@ type SessionCloser interface {
 }
 
 // KeyframeStream is the minimal write side of a unidirectional stream the hub
-// uses to deliver one keyframe. The transport layer's adapter maps it onto a
-// webtransport SendStream.
+// uses to deliver one keyframe — and, since R19, to carry a resilient
+// subscriber's delta records (the write surface is identical). The transport
+// layer's adapter maps it onto a webtransport SendStream.
 type KeyframeStream interface {
 	SetWriteDeadline(t time.Time) error
 	Write(p []byte) (int, error)
@@ -175,6 +181,13 @@ type SubscriberStats struct {
 	// Internal marks a downstream edge session (R17 W4) — plumbing, not a
 	// viewer; excluded from the Subscribers counts.
 	Internal bool `json:"internal,omitempty"`
+	// Reliable marks an R19 resilient subscriber: deltas are delivered as
+	// records on carrier streams instead of datagrams (docs/24). The carrier
+	// counters below are zero (and omitted) for datagram subscribers.
+	Reliable              bool   `json:"reliable,omitempty"`
+	CarrierStreams        uint64 `json:"carrierStreams,omitempty"`
+	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
+	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
@@ -219,6 +232,13 @@ type Stats struct {
 	IngressFramesLost    uint64            `json:"ingressFramesLost"`    // frames the publisher sent that never arrived
 	IngressChunksLost    uint64            `json:"ingressChunksLost"`    // missing chunks of frames that did arrive
 	SubscriberDetails    []SubscriberStats `json:"subscriberDetails"`
+
+	// R19 reliable delivery (docs/24 Decision 10).
+	ReliableSubscribers   int    `json:"reliableSubscribers"`   // live local subscribers in reliable mode
+	CarrierStreams        uint64 `json:"carrierStreams"`        // carrier streams opened
+	CarrierRecords        uint64 `json:"carrierRecords"`        // records fully written to carriers
+	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"` // records dropped: dead carrier, open/write failure
+	EgressCarrierBytes    uint64 `json:"egressCarrierBytes"`    // carrier bytes written (prologues + records)
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
@@ -252,6 +272,13 @@ type TotalStats struct {
 	// owners and different fixes.
 	EdgeIngressFramesLost uint64 `json:"edgeIngressFramesLost"`
 	EdgeIngressChunksLost uint64 `json:"edgeIngressChunksLost"`
+
+	// R19 reliable delivery — see the Stats field comments.
+	ReliableSubscribers   int    `json:"reliableSubscribers"`
+	CarrierStreams        uint64 `json:"carrierStreams"`
+	CarrierRecords        uint64 `json:"carrierRecords"`
+	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"`
+	EgressCarrierBytes    uint64 `json:"egressCarrierBytes"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -287,6 +314,10 @@ type Registry struct {
 	totalIngressChunksLost         uint64
 	totalEdgeIngressFramesLost     uint64
 	totalEdgeIngressChunksLost     uint64
+	totalCarrierStreams            uint64
+	totalCarrierRecords            uint64
+	totalCarrierRecordsDropped     uint64
+	totalEgressCarrierBytes        uint64
 
 	limiter *bandwidthLimiter
 
@@ -360,6 +391,11 @@ type broadcastHub struct {
 	sendErrors          uint64
 	egressDatagramBytes uint64
 	egressKeyframeBytes uint64
+	// R19 carrier counters, folded like the above.
+	carrierStreams        uint64
+	carrierRecords        uint64
+	carrierRecordsDropped uint64
+	egressCarrierBytes    uint64
 }
 
 type bandwidthLimiter struct {
@@ -807,18 +843,28 @@ func (r *Registry) CheckSubscribe(id string) error {
 // is released, so it can show a first picture without waiting for the next
 // keyframe.
 func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
-	return r.subscribe(id, conn, false)
+	return r.subscribe(id, conn, false, false)
+}
+
+// SubscribeReliable registers an R19 resilient subscriber (docs/24): its
+// deltas are delivered as length-prefixed records on per-GOP reliable carrier
+// streams instead of datagrams, and datagram sends to it are suppressed
+// entirely. Everything else — queueing, keyframe streams, caps — is identical
+// to Subscribe.
+func (r *Registry) SubscribeReliable(id string, conn Conn) (*Subscriber, error) {
+	return r.subscribe(id, conn, false, true)
 }
 
 // SubscribeInternal registers a downstream EDGE session (R17 W4): exempt
 // from MaxSubscribers/MaxTotalSubscribers (capacity guards protect viewers;
 // an edge is fan-out plumbing) and excluded from the viewer counts — the
-// internal route is the edge marker (docs/22 Decision 10).
+// internal route is the edge marker (docs/22 Decision 10). Never reliable:
+// the in-cluster leg keeps datagrams (docs/24 scale-out interop).
 func (r *Registry) SubscribeInternal(id string, conn Conn) (*Subscriber, error) {
-	return r.subscribe(id, conn, true)
+	return r.subscribe(id, conn, true, false)
 }
 
-func (r *Registry) subscribe(id string, conn Conn, internal bool) (*Subscriber, error) {
+func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Subscriber, error) {
 	r.mu.Lock()
 
 	normID, err := broadcastid.Normalize(id)
@@ -846,6 +892,7 @@ func (r *Registry) subscribe(id string, conn Conn, internal bool) (*Subscriber, 
 		hub:      b,
 		sender:   conn,
 		internal: internal,
+		reliable: reliable,
 		queue:    make(chan []byte, r.opts.QueueDepth),
 		done:     make(chan struct{}),
 		statsKey: newSubscriberStatsKey(),
@@ -923,11 +970,19 @@ func (r *Registry) Stats() RegistryStats {
 		sendErrors := b.sendErrors
 		egressDgram := b.egressDatagramBytes
 		egressKf := b.egressKeyframeBytes
+		carStreams := b.carrierStreams
+		carRecords := b.carrierRecords
+		carDropped := b.carrierRecordsDropped
+		egressCar := b.egressCarrierBytes
+		reliableSubs := 0
 		details := make([]SubscriberStats, 0, len(b.subs))
 		edgeSessions := 0
 		for s := range b.subs {
 			if s.internal {
 				edgeSessions++
+			}
+			if s.reliable && !s.internal {
+				reliableSubs++
 			}
 			subDrops := s.keyframeDrops()
 			dropped += s.dropped.Load()
@@ -936,14 +991,22 @@ func (r *Registry) Stats() RegistryStats {
 			sendErrors += s.sendErrors.Load()
 			egressDgram += s.egressDatagramBytes.Load()
 			egressKf += s.egressKeyframeBytes.Load()
+			carStreams += s.carrierStreams.Load()
+			carRecords += s.carrierRecords.Load()
+			carDropped += s.carrierRecordsDropped.Load()
+			egressCar += s.egressCarrierBytes.Load()
 			details = append(details, SubscriberStats{
-				Key:              s.statsKey,
-				QueueDepth:       len(s.queue),
-				Dropped:          s.dropped.Load(),
-				SendErrors:       s.sendErrors.Load(),
-				KeyframesSent:    s.keyframesSent.Load(),
-				KeyframesDropped: subDrops.Total(),
-				Internal:         s.internal,
+				Key:                   s.statsKey,
+				QueueDepth:            len(s.queue),
+				Dropped:               s.dropped.Load(),
+				SendErrors:            s.sendErrors.Load(),
+				KeyframesSent:         s.keyframesSent.Load(),
+				KeyframesDropped:      subDrops.Total(),
+				Internal:              s.internal,
+				Reliable:              s.reliable,
+				CarrierStreams:        s.carrierStreams.Load(),
+				CarrierRecords:        s.carrierRecords.Load(),
+				CarrierRecordsDropped: s.carrierRecordsDropped.Load(),
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -952,6 +1015,11 @@ func (r *Registry) Stats() RegistryStats {
 		totals.SendErrors += sendErrors
 		totals.EgressDatagramBytes += egressDgram
 		totals.EgressKeyframeBytes += egressKf
+		totals.ReliableSubscribers += reliableSubs
+		totals.CarrierStreams += carStreams
+		totals.CarrierRecords += carRecords
+		totals.CarrierRecordsDropped += carDropped
+		totals.EgressCarrierBytes += egressCar
 
 		var graceRemaining int
 		if !b.publisherActive && !b.graceStart.IsZero() {
@@ -970,6 +1038,11 @@ func (r *Registry) Stats() RegistryStats {
 			PublisherActive:           b.publisherActive,
 			Role:                      role,
 			Subscribers:               b.externalSubsLocked(),
+			ReliableSubscribers:       reliableSubs,
+			CarrierStreams:            carStreams,
+			CarrierRecords:            carRecords,
+			CarrierRecordsDropped:     carDropped,
+			EgressCarrierBytes:        egressCar,
 			EdgeSessions:              edgeSessions,
 			FramesRelayed:             b.framesRelayed,
 			DatagramsRelayed:          b.datagramsRelayed,
@@ -1017,6 +1090,10 @@ func (r *Registry) Stats() RegistryStats {
 	totals.IngressChunksLost += r.totalIngressChunksLost
 	totals.EdgeIngressFramesLost += r.totalEdgeIngressFramesLost
 	totals.EdgeIngressChunksLost += r.totalEdgeIngressChunksLost
+	totals.CarrierStreams += r.totalCarrierStreams
+	totals.CarrierRecords += r.totalCarrierRecords
+	totals.CarrierRecordsDropped += r.totalCarrierRecordsDropped
+	totals.EgressCarrierBytes += r.totalEgressCarrierBytes
 	totals.KeyframeStreamsDropped = totals.KeyframeDrops.Total()
 
 	return RegistryStats{
@@ -1099,6 +1176,10 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool 
 	r.totalIngressDatagramBytes += b.ingressDatagramBytes
 	r.totalEgressDatagramBytes += b.egressDatagramBytes
 	r.totalEgressKeyframeBytes += b.egressKeyframeBytes
+	r.totalCarrierStreams += b.carrierStreams
+	r.totalCarrierRecords += b.carrierRecords
+	r.totalCarrierRecordsDropped += b.carrierRecordsDropped
+	r.totalEgressCarrierBytes += b.egressCarrierBytes
 	if b.edge {
 		r.totalEdgeIngressFramesLost += b.ingressFramesLost
 		r.totalEdgeIngressChunksLost += b.ingressChunksLost
@@ -1402,6 +1483,10 @@ type Subscriber struct {
 	// internal marks a downstream edge session (R17 W4): exempt from viewer
 	// caps and counted as an edge, not an audience member.
 	internal bool
+	// reliable marks an R19 resilient subscriber (docs/24): drain writes the
+	// queued datagrams as records on per-GOP carrier streams and never calls
+	// SendDatagram. Fixed at subscribe time — changing mode is a reconnect.
+	reliable bool
 
 	// closed is set (atomically) by Close before it cancels the in-flight
 	// keyframe stream; sendKeyframe reads it without the registry lock to avoid
@@ -1431,6 +1516,22 @@ type Subscriber struct {
 	kfDroppedSlow       atomic.Uint64
 	kfDroppedBandwidth  atomic.Uint64
 	kfDroppedOpenFailed atomic.Uint64
+
+	// Reliable carrier fan-out (R19, docs/24 Decisions 4/5). carRotations is
+	// bumped when a keyframe is fanned out to this subscriber; the drain
+	// goroutine retires its current carrier and opens a fresh one when it
+	// sees a new value — per-GOP rotation, with the rotation as the drop
+	// point. carMu guards carCurrent, which is otherwise owned by the drain
+	// goroutine; Close cancels it under carMu to unblock a stalled record
+	// write (CancelWrite is safe concurrently with Write).
+	carRotations atomic.Uint64
+	carMu        sync.Mutex
+	carCurrent   KeyframeStream
+
+	carrierStreams        atomic.Uint64
+	carrierRecords        atomic.Uint64
+	carrierRecordsDropped atomic.Uint64
+	egressCarrierBytes    atomic.Uint64
 }
 
 // keyframeDrops snapshots the per-cause drop atomics.
@@ -1453,6 +1554,10 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 
 func (s *Subscriber) drain() {
 	defer close(s.done)
+	if s.reliable {
+		s.drainReliable()
+		return
+	}
 	for dgram := range s.queue {
 		if !s.hub.registry.consumeBandwidth(len(dgram)) {
 			s.dropped.Add(1)
@@ -1464,6 +1569,152 @@ func (s *Subscriber) drain() {
 			continue
 		}
 		s.egressDatagramBytes.Add(uint64(len(dgram)))
+	}
+}
+
+// drainReliable is the R19 drain (docs/24 Decision 5): same bounded queue,
+// different sink — every dequeued datagram is written verbatim as a
+// length-prefixed record onto the current carrier stream, and SendDatagram is
+// never called. The keyframe fan-out rotates the carrier per GOP (a new
+// atomic value); a carrier whose write fails or times out is cancelled and
+// its GOP's remaining records are dropped until the next rotation —
+// drops-over-stalls at GOP granularity.
+func (s *Subscriber) drainReliable() {
+	defer s.retireCarrier()
+	var carSeen uint64
+	carDead := false
+	var scratch []byte
+	for dgram := range s.queue {
+		// The egress cap is charged per record as written (prefix + datagram)
+		// — reliable delivery must not become a cap bypass. Over-cap records
+		// count as bandwidth datagram drops exactly like the datagram path,
+		// so queue_full stays derivable by subtraction (R9).
+		n := wire.CarrierRecordHeaderSize + len(dgram)
+		if !s.hub.registry.consumeBandwidth(n) {
+			s.dropped.Add(1)
+			s.hub.countBandwidthDrop(n)
+			continue
+		}
+		if rot := s.carRotations.Load(); rot != carSeen {
+			// A keyframe fanned out since the last record: this GOP's carrier
+			// is done. Retire it and start the next one lazily below.
+			s.retireCarrier()
+			carSeen = rot
+			carDead = false
+		}
+		if carDead || s.closed.Load() {
+			s.carrierRecordsDropped.Add(1)
+			continue
+		}
+		if s.currentCarrier() == nil && !s.openCarrier() {
+			carDead = true
+			s.carrierRecordsDropped.Add(1)
+			continue
+		}
+		var err error
+		scratch, err = wire.AppendCarrierRecord(scratch[:0], dgram)
+		if err != nil {
+			// Unreachable for queue datagrams (all ≤ MaxDatagramSize); count
+			// rather than crash the drain if the invariant ever breaks.
+			s.carrierRecordsDropped.Add(1)
+			continue
+		}
+		if !s.writeCarrier(scratch) {
+			carDead = true
+			s.carrierRecordsDropped.Add(1)
+			continue
+		}
+		s.carrierRecords.Add(1)
+		s.egressCarrierBytes.Add(uint64(len(scratch)))
+	}
+}
+
+func (s *Subscriber) currentCarrier() KeyframeStream {
+	s.carMu.Lock()
+	defer s.carMu.Unlock()
+	return s.carCurrent
+}
+
+// openCarrier opens a fresh carrier stream and writes its prologue. Open
+// failures feed the same consecutive-failure eviction streak as keyframe
+// stream opens (docs/24 Decision 5): a zombie subscriber with exhausted
+// stream credit fails both kinds and is evicted with 4001. At most one open
+// is attempted per rotation (openCarrier failing marks the GOP dead), so the
+// streak grows at GOP cadence, not record cadence.
+func (s *Subscriber) openCarrier() bool {
+	st, err := s.sender.OpenCarrierStream()
+	if err != nil {
+		s.kfMu.Lock()
+		s.kfConsecOpenFailed++
+		evict := !s.evicting && s.kfConsecOpenFailed >= KeyframeOpenFailEvictThreshold
+		if evict {
+			s.evicting = true
+		}
+		s.kfMu.Unlock()
+		if evict {
+			go s.evict()
+		}
+		return false
+	}
+	s.kfMu.Lock()
+	s.kfConsecOpenFailed = 0
+	s.kfMu.Unlock()
+
+	s.carMu.Lock()
+	if s.closed.Load() {
+		s.carMu.Unlock()
+		st.CancelWrite()
+		return false
+	}
+	s.carCurrent = st
+	s.carMu.Unlock()
+	s.carrierStreams.Add(1)
+
+	if !s.writeCarrier(wire.AppendCarrierPrologue(nil)) {
+		return false
+	}
+	s.egressCarrierBytes.Add(wire.CarrierPrologueSize)
+	return true
+}
+
+// writeCarrier writes buf to the current carrier under the keyframe write
+// deadline. A failed or timed-out write leaves a half-written record on the
+// stream — unrecoverable framing for a length-prefixed protocol — so the
+// carrier is cancelled; the viewer loses the tail of this GOP and resyncs at
+// the keyframe it already reliably has.
+func (s *Subscriber) writeCarrier(buf []byte) bool {
+	s.carMu.Lock()
+	st := s.carCurrent
+	s.carMu.Unlock()
+	if st == nil {
+		return false // cancelled by Close between records
+	}
+	_ = st.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.KeyframeWriteTimeout))
+	if _, err := st.Write(buf); err != nil {
+		st.CancelWrite()
+		s.carMu.Lock()
+		if s.carCurrent == st {
+			s.carCurrent = nil
+		}
+		s.carMu.Unlock()
+		return false
+	}
+	return true
+}
+
+// retireCarrier gracefully closes the current carrier (its GOP is over). A
+// Close error means the peer reset it or the stream is wedged — cancel.
+func (s *Subscriber) retireCarrier() {
+	s.carMu.Lock()
+	st := s.carCurrent
+	s.carCurrent = nil
+	s.carMu.Unlock()
+	if st == nil {
+		return
+	}
+	_ = st.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.KeyframeWriteTimeout))
+	if err := st.Close(); err != nil {
+		st.CancelWrite()
 	}
 }
 
@@ -1494,6 +1745,16 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 		return
 	}
 	s.kfLastSeq = seq
+	if s.reliable {
+		// Per-GOP carrier rotation (R19, docs/24 Decision 4): the keyframe
+		// that starts a GOP also rotates this subscriber's carrier. The drain
+		// goroutine picks the new value up before its next record. Keyed on
+		// accepted keyframes only (a superseded stale prime doesn't rotate)
+		// and deliberately best-effort: a delta racing the keyframe may land
+		// on the predecessor carrier — the viewer's reorder buffer sorts by
+		// frameId regardless.
+		s.carRotations.Add(1)
+	}
 	if s.kfCurrent != nil {
 		// Supersede the stale in-flight keyframe; its writer goroutine's Write
 		// returns an error and accounts the drop.
@@ -1599,6 +1860,16 @@ func (s *Subscriber) Close() {
 	s.kfMu.Unlock()
 	s.kfWriters.Wait()
 
+	// Cancel the current carrier (R19) so a drain blocked in a record write
+	// unblocks now instead of waiting out its write deadline; the backlog it
+	// then consumes is dropped (drain checks closed before opening anew).
+	s.carMu.Lock()
+	if s.carCurrent != nil {
+		s.carCurrent.CancelWrite()
+		s.carCurrent = nil
+	}
+	s.carMu.Unlock()
+
 	<-s.done
 
 	// Fold the final counters only after drain has finished: drain keeps
@@ -1614,6 +1885,10 @@ func (s *Subscriber) Close() {
 		b.sendErrors += s.sendErrors.Load()
 		b.egressDatagramBytes += s.egressDatagramBytes.Load()
 		b.egressKeyframeBytes += s.egressKeyframeBytes.Load()
+		b.carrierStreams += s.carrierStreams.Load()
+		b.carrierRecords += s.carrierRecords.Load()
+		b.carrierRecordsDropped += s.carrierRecordsDropped.Load()
+		b.egressCarrierBytes += s.egressCarrierBytes.Load()
 	} else {
 		r.totalDatagramsDropped += s.dropped.Load()
 		r.totalKeyframeStreamsSent += s.keyframesSent.Load()
@@ -1621,6 +1896,10 @@ func (s *Subscriber) Close() {
 		r.totalSendErrors += s.sendErrors.Load()
 		r.totalEgressDatagramBytes += s.egressDatagramBytes.Load()
 		r.totalEgressKeyframeBytes += s.egressKeyframeBytes.Load()
+		r.totalCarrierStreams += s.carrierStreams.Load()
+		r.totalCarrierRecords += s.carrierRecords.Load()
+		r.totalCarrierRecordsDropped += s.carrierRecordsDropped.Load()
+		r.totalEgressCarrierBytes += s.egressCarrierBytes.Load()
 	}
 }
 

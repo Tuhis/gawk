@@ -11,12 +11,13 @@ const readDatagrams = vi.fn();
 // behavior: gapped deltas are never handed to decode()).
 const decodeSpy = vi.fn();
 
-const readKeyframeStreams = vi.fn();
+const readServerStreams = vi.fn();
 
 vi.mock('./connection', () => ({
   connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
   readDatagrams: (...args: unknown[]) => readDatagrams(...args),
-  readKeyframeStreams: (...args: unknown[]) => readKeyframeStreams(...args),
+  readServerStreams: (...args: unknown[]) => readServerStreams(...args),
+  newCarrierCounters: () => ({ streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 }),
 }));
 
 // The latest Decoder instance's callbacks, so a test can fire onDecoded (the
@@ -85,10 +86,10 @@ beforeEach(() => {
   );
   connectWebTransport.mockReset();
   readDatagrams.mockReset();
-  readKeyframeStreams.mockReset();
+  readServerStreams.mockReset();
   // No keyframe streams arrive in these tests (keyframes are driven via
   // datagrams); the loop just stays open for the life of the session.
-  readKeyframeStreams.mockReturnValue(new Promise(() => {}));
+  readServerStreams.mockReturnValue(new Promise(() => {}));
   decodeSpy.mockReset();
 });
 
@@ -124,6 +125,88 @@ describe('ViewerPipeline', () => {
       {},
     );
     await pipeline.stop();
+  });
+
+  it('appends ?delivery=reliable when resilient delivery is requested (R19)', async () => {
+    // The session/URL seam of docs/24 Decision 6: the toggle reaches the
+    // relay as a subscribe-time query param, nothing else changes.
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    const { cbs } = makeCallbacks();
+    const opts = { deliveryMode: 'reliable' as const };
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
+    await pipeline.start();
+    expect(connectWebTransport).toHaveBeenCalledWith(
+      'https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable',
+      opts,
+    );
+    await pipeline.stop();
+  });
+
+  it('reports the delivery mode truthfully, incl. the requested-but-datagrams fallback (R19)', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const carrier = { streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 };
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async () => {},
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        sampleCarrierStats: () => ({ ...carrier }),
+        close: () => {},
+      };
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        { deliveryMode: 'reliable' },
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      // Requested, but no carrier has appeared: the Decision 8 fallback state.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(stats.at(-1)!.deliveryMode).toBe('reliable-requested');
+      expect(stats.at(-1)!.carrierStreams).toBe(0);
+
+      // Carriers observed: the mode is truthfully reliable.
+      carrier.streamsOpened = 2;
+      carrier.recordsReceived = 40;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(stats.at(-1)!.deliveryMode).toBe('reliable');
+      expect(stats.at(-1)!.carrierStreams).toBe(2);
+      expect(stats.at(-1)!.carrierRecords).toBe(40);
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports datagram delivery when resilient mode was not requested (R19)', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      connectWebTransport.mockResolvedValue(makeFakeWT(600_000, {}));
+      readDatagrams.mockReturnValue(new Promise(() => {}));
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(stats.at(-1)!.deliveryMode).toBe('datagrams');
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('surfaces the close code even when the read loop settles before wt.closed', async () => {
@@ -255,8 +338,8 @@ describe('ViewerPipeline', () => {
         return new Promise(() => {});
       });
       let deliverKf: ((kf: unknown) => void) | null = null;
-      readKeyframeStreams.mockImplementation((_wt: unknown, onKeyframe: (kf: unknown) => void) => {
-        deliverKf = onKeyframe;
+      readServerStreams.mockImplementation((_wt: unknown, cb: { onKeyframe: (kf: unknown) => void }) => {
+        deliverKf = cb.onKeyframe;
         return new Promise(() => {});
       });
       const { cbs } = makeCallbacks();
@@ -360,8 +443,8 @@ describe('ViewerPipeline', () => {
       return new Promise(() => {});
     });
     let deliverKf: ((kf: unknown) => void) | null = null;
-    readKeyframeStreams.mockImplementation((_wt: unknown, onKeyframe: (kf: unknown) => void) => {
-      deliverKf = onKeyframe;
+    readServerStreams.mockImplementation((_wt: unknown, cb: { onKeyframe: (kf: unknown) => void }) => {
+      deliverKf = cb.onKeyframe;
       return new Promise(() => {});
     });
     const { cbs } = makeCallbacks();

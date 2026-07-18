@@ -186,6 +186,10 @@ func (c *edgeConn) OpenKeyframeStream() (hub.KeyframeStream, error) {
 	return &edgeConnStream{conn: c}, nil
 }
 
+func (c *edgeConn) OpenCarrierStream() (hub.KeyframeStream, error) {
+	return c.OpenKeyframeStream()
+}
+
 func (c *edgeConn) CloseWithError(code uint32, _ string) error {
 	c.mu.Lock()
 	c.closeCode = code

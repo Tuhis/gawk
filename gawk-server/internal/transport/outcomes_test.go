@@ -188,4 +188,7 @@ func (fakeMinimalConn) SendDatagram([]byte) error { return nil }
 func (fakeMinimalConn) OpenKeyframeStream() (hub.KeyframeStream, error) {
 	return nil, http.ErrNotSupported
 }
+func (fakeMinimalConn) OpenCarrierStream() (hub.KeyframeStream, error) {
+	return nil, http.ErrNotSupported
+}
 func (fakeMinimalConn) CloseWithError(uint32, string) error { return nil }

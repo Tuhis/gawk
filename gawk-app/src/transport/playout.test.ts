@@ -15,9 +15,12 @@ import {
   OFFSET_WARMUP_MS,
   PLAYOUT_OFFSET_MS,
   PlayoutController,
+  RESILIENT_PLAYOUT_PROFILE,
   getPlayoutMode,
   getPlayoutOffsetMs,
+  getStoredPlayoutMode,
   setPlayoutMode,
+  setResilientMode,
   updatePlayoutController,
 } from './playout';
 
@@ -170,5 +173,86 @@ describe('adaptive mode wiring (R12 T3)', () => {
     for (let t = 0; t <= 30_000; t += 1000) updatePlayoutController(250, t);
     setPlayoutMode('adaptive'); // entering adaptive re-seeds
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+  });
+});
+
+// R19 (docs/24 Decision 7): resilient mode implies adaptive pacing with a
+// wider controller profile ([150, 2000] ms, seed 500, slew 100/10). The
+// stored playout mode keeps its value + semantics and regains effect the
+// moment resilient mode turns off.
+describe('resilient playout profile (R19)', () => {
+  afterEach(() => {
+    setResilientMode(false);
+    setPlayoutMode('off');
+  });
+
+  function warmedResilient(jitterMs: number, seconds: number): PlayoutController {
+    const c = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
+    for (let t = 0; t <= seconds * 1000; t += 1000) c.update(jitterMs, t);
+    return c;
+  }
+
+  it('holds the 500 ms seed through the warmup window', () => {
+    const c = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
+    for (let t = 0; t < OFFSET_WARMUP_MS; t += 1000) {
+      c.update(1200, t);
+      expect(c.offsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.seedMs);
+    }
+  });
+
+  it('clamps at the widened bounds', () => {
+    expect(warmedResilient(5000, 60).offsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.maxMs);
+    const c = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
+    for (let t = 0; t <= OFFSET_WARMUP_MS + OFFSET_DOWN_DWELL_MS + 120_000; t += 1000) c.update(0, t);
+    expect(c.offsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.minMs);
+  });
+
+  it('slews up at the resilient rate (asymmetric, faster than default)', () => {
+    const c = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
+    let t = 0;
+    for (; t <= OFFSET_WARMUP_MS; t += 1000) c.update(150, t);
+    let prev = c.offsetMs();
+    for (let i = 0; i < 5; i++) {
+      c.update(1500, t);
+      const step = c.offsetMs() - prev;
+      expect(step).toBeLessThanOrEqual(RESILIENT_PLAYOUT_PROFILE.slewUpMsPerS + 1e-9);
+      prev = c.offsetMs();
+      t += 1000;
+    }
+    expect(c.offsetMs()).toBeGreaterThan(RESILIENT_PLAYOUT_PROFILE.seedMs);
+  });
+
+  it('implies adaptive pacing while active, seeded at 500', () => {
+    setPlayoutMode('off');
+    setResilientMode(true);
+    expect(getPlayoutMode()).toBe('adaptive');
+    expect(getPlayoutOffsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.seedMs);
+  });
+
+  it('the stored playout mode survives a resilient on/off round-trip', () => {
+    setPlayoutMode('fixed');
+    setResilientMode(true);
+    expect(getStoredPlayoutMode()).toBe('fixed');
+    expect(getPlayoutMode()).toBe('adaptive');
+    setResilientMode(false);
+    expect(getStoredPlayoutMode()).toBe('fixed');
+    expect(getPlayoutMode()).toBe('fixed');
+    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+  });
+
+  it('leaving resilient mode re-seeds the controller onto the default profile', () => {
+    setResilientMode(true);
+    setPlayoutMode('adaptive');
+    expect(getPlayoutOffsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.seedMs);
+    setResilientMode(false);
+    // Still adaptive by stored mode, but back on the default seed/envelope.
+    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+  });
+
+  it('updatePlayoutController runs under resilient mode even with stored mode off', () => {
+    setPlayoutMode('off');
+    setResilientMode(true);
+    for (let t = 0; t <= OFFSET_WARMUP_MS + 60_000; t += 1000) updatePlayoutController(1200, t);
+    expect(getPlayoutOffsetMs()).toBe(1200 + HEADROOM_MS);
   });
 });

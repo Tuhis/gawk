@@ -31,6 +31,11 @@ export type ViewerWorkerCommand =
   | { type: 'playout'; mode: PlayoutMode }
   // R12 T4: the experimental frame-interpolation toggle, same crossing.
   | { type: 'interpolation'; enabled: boolean }
+  // R19 (docs/24 Decision 9): resilient mode for this worker's context —
+  // wider reorder/playout profile. Sent before 'start' (the delivery
+  // negotiation itself rides connectOpts.deliveryMode into the subscribe
+  // URL); a mode change is a deliberate reconnect, not a live flip.
+  | { type: 'resilient'; enabled: boolean }
   // R16 Decision 4: activate the tee — create the VideoTrackGenerator in the
   // worker, post its track back (transferred), start capturing presented
   // frames. Idempotent; a no-op when init carried no tee or the probe failed.

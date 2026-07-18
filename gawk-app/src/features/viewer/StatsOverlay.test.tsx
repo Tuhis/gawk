@@ -51,6 +51,10 @@ function fullStats(): ViewerStats {
     arrivalJitterMs: 12,
     decodeJitterMs: 1.4,
     videoBytesReceived: 6_000_000,
+    deliveryMode: 'datagrams',
+    carrierStreams: null,
+    carrierRecords: null,
+    carrierStreamsAborted: null,
     connection: {
       rttMs: 24.5,
       rttVarMs: 3.1,
@@ -129,6 +133,46 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('adaptive (+187 ms)');
     expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('Paced (rAF)');
     expect(screen.getByText('Interpolation').nextSibling?.textContent).toBe('On (blend)');
+  });
+
+  // R19 (docs/24 Decision 10): the Delivery row tells the truth in all three
+  // states; carrier rows appear only outside plain datagram mode.
+  it('renders the delivery mode row truthfully in all three states', () => {
+    render(
+      <StatsOverlay stats={fullStats()} codec="vp8" bitrateBps={null} onClose={() => {}} onCopy={() => {}} copied={false} />,
+    );
+    expect(screen.getByText('Delivery mode').nextSibling?.textContent).toBe('datagrams (live-edge)');
+    expect(screen.queryByText('Carrier streams')).toBeNull();
+    expect(screen.queryByText('Carrier records')).toBeNull();
+
+    cleanup();
+    render(
+      <StatsOverlay
+        stats={{ ...fullStats(), deliveryMode: 'reliable', carrierStreams: 24, carrierRecords: 700, carrierStreamsAborted: 1 }}
+        codec="vp8"
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Delivery mode').nextSibling?.textContent).toBe('reliable (resilient)');
+    expect(screen.getByText('Carrier streams').nextSibling?.textContent).toBe('24 (1 aborted)');
+    expect(screen.getByText('Carrier records').nextSibling?.textContent).toBe('700');
+
+    cleanup();
+    // Decision 8 degradation: requested but the relay serves datagrams.
+    render(
+      <StatsOverlay
+        stats={{ ...fullStats(), deliveryMode: 'reliable-requested', carrierStreams: 0, carrierRecords: 0, carrierStreamsAborted: 0 }}
+        codec="vp8"
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Delivery mode').nextSibling?.textContent).toBe('reliable requested / datagrams served');
   });
 
   it('renders — for everything when stats are absent or degraded', () => {

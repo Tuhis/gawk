@@ -13,7 +13,11 @@ import {
 } from '../../transport/viewer-session';
 import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
-import { setPlayoutMode as setLocalPlayoutMode, type PlayoutMode } from '../../transport/playout';
+import {
+  setPlayoutMode as setLocalPlayoutMode,
+  setResilientMode as setLocalResilientMode,
+  type PlayoutMode,
+} from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import type { ViewerWorkerEvent } from '../../transport/viewer-worker-core';
 import { WorkerViewerController } from './workerViewerController';
@@ -67,6 +71,11 @@ export function useViewerConnection(
   // fullscreen-less) devices — false keeps every worker message byte-
   // identical to pre-R16 (docs/21 Decision 1).
   presentationTee = false,
+  // R19 (docs/24 Decision 9): resilient mode. Toggling it re-runs the
+  // session effect — a deliberate teardown + reconnect with (or without)
+  // ?delivery=reliable; the wider reorder/playout profile is applied to the
+  // pipeline's context before the session starts.
+  resilientMode = false,
 ): ViewerConnectionState {
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [stats, setStats] = useState<ViewerStats | null>(null);
@@ -189,16 +198,24 @@ export function useViewerConnection(
     };
   }, [useWorker, applyEvent, canvasRef, presentationTee]);
 
-  // Session start/stop per broadcast id (worker path).
+  // Session start/stop per broadcast id — and per resilient-mode flip, which
+  // is a deliberate reconnect with the delivery negotiation in the URL
+  // (docs/24 Decision 9). The mode command goes first: worker messages
+  // process in order, so the profile is live before the session starts.
   useEffect(() => {
     if (!useWorker) return;
     const { serverUrl, certHashHex } = useTransportStore.getState();
     resetState();
-    controllerRef.current?.start({ serverUrl, broadcastId, connectOpts: { certHashHex } });
+    controllerRef.current?.setResilientMode(resilientMode);
+    controllerRef.current?.start({
+      serverUrl,
+      broadcastId,
+      connectOpts: { certHashHex, ...(resilientMode ? { deliveryMode: 'reliable' as const } : {}) },
+    });
     return () => {
       controllerRef.current?.stop();
     };
-  }, [useWorker, broadcastId, resetState]);
+  }, [useWorker, broadcastId, resilientMode, resetState]);
 
   // R5 Q3 + R12 T2: the playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -224,11 +241,14 @@ export function useViewerConnection(
     let active = true;
     const { serverUrl, certHashHex } = useTransportStore.getState();
     resetState();
+    // R19: the profile lives in this (main-thread) context here; set it
+    // before the session starts so it is live from the first frame.
+    setLocalResilientMode(resilientMode);
 
     const session = new ViewerSession(
       serverUrl,
       broadcastId,
-      { certHashHex },
+      { certHashHex, ...(resilientMode ? { deliveryMode: 'reliable' as const } : {}) },
       {
         onDecodedFrame: ({ frame }) => {
           const canvas = canvasRef.current;
@@ -290,7 +310,7 @@ export function useViewerConnection(
       active = false;
       void session.stop();
     };
-  }, [useWorker, broadcastId, applyEvent, canvasRef, resetState]);
+  }, [useWorker, broadcastId, resilientMode, applyEvent, canvasRef, resetState]);
 
   // R16: arm the tee (screen calls this at `watching` on gated devices, after
   // a positive probe). Idempotent down the whole chain.

@@ -3,7 +3,7 @@
 // bounded waits and NO fixed playout offset. A controlled clock drives the
 // time-based decisions deterministically.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ReorderBuffer,
@@ -13,6 +13,12 @@ import {
   type ReleasedFrame,
 } from './reorder-buffer';
 import { QUANTILE_BIN_MS } from './live-edge';
+import {
+  RESILIENT_DELTA_GAP_GRACE_MS,
+  RESILIENT_KEYFRAME_WAIT_MS,
+  RESILIENT_MAX_BUFFERED_FRAMES,
+  setResilientModeFlag,
+} from './resilient';
 
 function harness() {
   const released: ReleasedFrame[] = [];
@@ -500,5 +506,72 @@ describe('ReorderBuffer decode lead (R12 T2)', () => {
     expect(rb.arrivalBaselineMs()).toBeNull();
     rb.pushKeyframe(tsKf(0, 0)); // arrival delta 1000
     expect(rb.arrivalBaselineMs()).toBe(1000);
+  });
+});
+
+// R19 (docs/24 Decision 7): the three bounds widen while resilient mode is
+// on and revert the moment it's off — the default-mode suites above run with
+// it off and are untouched.
+describe('ReorderBuffer resilient profile (R19)', () => {
+  afterEach(() => setResilientModeFlag(false));
+
+  it('waits out RTT-scale delta stragglers before declaring a gap', () => {
+    setResilientModeFlag(true);
+    const { rb, clock } = harness();
+    rb.pushKeyframe(kf(0));
+    rb.pushDelta(delta(2)); // next=1 missing
+
+    clock.t += DELTA_GAP_GRACE_MS + 5; // past the DEFAULT grace: still patient
+    rb.tick();
+    expect(rb.getStats().gapResyncs).toBe(0);
+
+    clock.t += RESILIENT_DELTA_GAP_GRACE_MS; // past the resilient grace
+    rb.tick();
+    expect(rb.getStats().gapResyncs).toBe(1);
+
+    // The cross-carrier straggler arriving inside the widened grace decodes.
+    const second = harness();
+    setResilientModeFlag(true);
+    second.rb.pushKeyframe(kf(0));
+    second.rb.pushDelta(delta(2));
+    second.clock.t += RESILIENT_DELTA_GAP_GRACE_MS - 10;
+    second.rb.pushDelta(delta(1));
+    expect(second.ids()).toEqual([0, 1, 2]);
+  });
+
+  it('holds undecodable frames up to the widened keyframe wait', () => {
+    setResilientModeFlag(true);
+    const { rb, clock } = harness();
+    rb.pushDelta(delta(5)); // no keyframe yet
+
+    clock.t += KEYFRAME_WAIT_MS + 100; // past the DEFAULT wait: still held
+    rb.tick();
+    expect(rb.getStats().keyframeWaitDrops).toBe(0);
+
+    clock.t += RESILIENT_KEYFRAME_WAIT_MS; // past the resilient wait
+    rb.tick();
+    expect(rb.getStats().keyframeWaitDrops).toBe(1);
+  });
+
+  it('bounds the buffer at the widened frame cap', () => {
+    setResilientModeFlag(true);
+    const { rb } = harness();
+    rb.pushKeyframe(kf(0));
+    // Skip frame 1 so everything above buffers.
+    for (let i = 2; i < 2 + RESILIENT_MAX_BUFFERED_FRAMES + 10; i++) rb.pushDelta(delta(i));
+    const buffered = rb.getStats().buffered;
+    expect(buffered).toBeGreaterThan(MAX_BUFFERED_FRAMES);
+    expect(buffered).toBeLessThanOrEqual(RESILIENT_MAX_BUFFERED_FRAMES);
+  });
+
+  it('reverts to the default bounds the moment resilient mode is off', () => {
+    setResilientModeFlag(true);
+    setResilientModeFlag(false);
+    const { rb, clock } = harness();
+    rb.pushKeyframe(kf(0));
+    rb.pushDelta(delta(2));
+    clock.t += DELTA_GAP_GRACE_MS + 5;
+    rb.tick();
+    expect(rb.getStats().gapResyncs).toBe(1);
   });
 });

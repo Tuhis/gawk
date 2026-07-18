@@ -83,6 +83,18 @@ const (
 
 	// ClockMapping: OffsetUs=-1_000_000 (two's complement).
 	goldenClockMappingNegativeHex = "0106fffffffffff0bdc0"
+
+	// Reliable-carrier stream prologue (R19, docs/24 Decision 3).
+	//
+	//   01   version
+	//   0a   type = ReliableCarrier
+	goldenCarrierPrologueHex = "010a"
+
+	// One carrier record framing the golden VideoChunk datagram (23 bytes).
+	//
+	//   00 17   record length = 23
+	//   01 01 01 00 ... 61 62 63   the golden VideoChunk datagram, verbatim
+	goldenCarrierRecordHex = "0017" + goldenVideoChunkHex
 )
 
 var (
@@ -850,5 +862,121 @@ func TestAppendResumeTokenErrors(t *testing.T) {
 	}
 	if _, err := AppendResumeToken(nil, bytes.Repeat([]byte{1}, 256)); !errors.Is(err, ErrBadResumeToken) {
 		t.Errorf("256-byte token error = %v, want ErrBadResumeToken", err)
+	}
+}
+
+func TestGoldenCarrierPrologue(t *testing.T) {
+	got := AppendCarrierPrologue(nil)
+	if want := mustHex(t, goldenCarrierPrologueHex); !bytes.Equal(got, want) {
+		t.Errorf("carrier prologue = %x, want %x", got, want)
+	}
+	if err := ParseCarrierPrologue(got); err != nil {
+		t.Errorf("ParseCarrierPrologue(golden) = %v, want nil", err)
+	}
+}
+
+func TestGoldenCarrierRecord(t *testing.T) {
+	dgram := mustHex(t, goldenVideoChunkHex)
+	got, err := AppendCarrierRecord(nil, dgram)
+	if err != nil {
+		t.Fatalf("AppendCarrierRecord: %v", err)
+	}
+	if want := mustHex(t, goldenCarrierRecordHex); !bytes.Equal(got, want) {
+		t.Errorf("carrier record = %x, want %x", got, want)
+	}
+
+	record, rest, err := ParseCarrierRecord(got)
+	if err != nil {
+		t.Fatalf("ParseCarrierRecord: %v", err)
+	}
+	if !bytes.Equal(record, dgram) {
+		t.Errorf("record = %x, want %x", record, dgram)
+	}
+	if len(rest) != 0 {
+		t.Errorf("rest = %x, want empty", rest)
+	}
+}
+
+func TestCarrierRecordSequence(t *testing.T) {
+	// Two records back to back, as they would land on one carrier stream.
+	first := mustHex(t, goldenVideoChunkHex)
+	second := mustHex(t, goldenDecoderConfigAVCHex)
+	buf := AppendCarrierPrologue(nil)
+	var err error
+	if buf, err = AppendCarrierRecord(buf, first); err != nil {
+		t.Fatalf("AppendCarrierRecord(first): %v", err)
+	}
+	if buf, err = AppendCarrierRecord(buf, second); err != nil {
+		t.Fatalf("AppendCarrierRecord(second): %v", err)
+	}
+
+	if err := ParseCarrierPrologue(buf); err != nil {
+		t.Fatalf("ParseCarrierPrologue: %v", err)
+	}
+	rest := buf[CarrierPrologueSize:]
+	record, rest, err := ParseCarrierRecord(rest)
+	if err != nil {
+		t.Fatalf("ParseCarrierRecord(first): %v", err)
+	}
+	if !bytes.Equal(record, first) {
+		t.Errorf("first record = %x, want %x", record, first)
+	}
+	record, rest, err = ParseCarrierRecord(rest)
+	if err != nil {
+		t.Fatalf("ParseCarrierRecord(second): %v", err)
+	}
+	if !bytes.Equal(record, second) {
+		t.Errorf("second record = %x, want %x", record, second)
+	}
+	if len(rest) != 0 {
+		t.Errorf("rest = %x, want empty", rest)
+	}
+}
+
+func TestCarrierPrologueErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		buf  []byte
+		want error
+	}{
+		{"empty", nil, ErrShortDatagram},
+		{"1 byte", []byte{0x01}, ErrShortDatagram},
+		{"bad version", []byte{0x02, 0x0A}, ErrBadVersion},
+		{"bad type", []byte{0x01, 0x04}, ErrBadType},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ParseCarrierPrologue(tc.buf); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCarrierRecordErrors(t *testing.T) {
+	if _, err := AppendCarrierRecord(nil, nil); !errors.Is(err, ErrBadCarrierRecord) {
+		t.Errorf("empty datagram error = %v, want ErrBadCarrierRecord", err)
+	}
+	if _, err := AppendCarrierRecord(nil, bytes.Repeat([]byte{1}, MaxDatagramSize+1)); !errors.Is(err, ErrBadCarrierRecord) {
+		t.Errorf("oversize datagram error = %v, want ErrBadCarrierRecord", err)
+	}
+
+	cases := []struct {
+		name string
+		buf  []byte
+		want error
+	}{
+		{"empty", nil, ErrShortDatagram},
+		{"1 byte", []byte{0x00}, ErrShortDatagram},
+		{"zero length", []byte{0x00, 0x00, 0x42}, ErrBadCarrierRecord},
+		{"oversize length", binary.BigEndian.AppendUint16(nil, MaxDatagramSize+1), ErrBadCarrierRecord},
+		{"incomplete record", []byte{0x00, 0x03, 0x61, 0x62}, ErrShortDatagram},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ParseCarrierRecord(tc.buf); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }

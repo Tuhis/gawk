@@ -37,7 +37,7 @@ feature set exists).
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | 📋 designed 2026-07-18 (Y1–Y6), not started ([docs/23](docs/23-live-viewer-count.md)) |
-| R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 📋 designed 2026-07-18 (X1–X6), not started ([docs/24](docs/24-viewer-network-resilience.md)) |
+| R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 🚧 X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification pending ([docs/24](docs/24-viewer-network-resilience.md)) |
 | R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 📋 designed 2026-07-18 (Z1–Z5), not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 
 ---
@@ -1194,9 +1194,15 @@ v1, broadcaster-side anything, per-viewer quality adaptation, audio (R15 —
 one-paragraph amendment there when it lands), DVR/rewind.
 
 **Status**: designed 2026-07-18 (chunks X1–X6 with per-chunk acceptance
-criteria), not started. User decisions anchoring scope: reliable-streams +
-extended-buffer mechanism; ~2 s adaptive latency budget; manual toggle
-first.
+criteria); **X2–X5 implemented 2026-07-18** — wire type 0x0A
+(`TypeReliableCarrier`), relay carrier drain + per-GOP rotation, viewer
+stream-kind dispatch + resilient profile, the toggle, and full observability;
+automated gates green on both Go modules and the app. X1 (netem baseline +
+three-engine browser spike — needs real browsers/hardware; implemented ahead
+of it as a recorded deviation, see docs/24 "Implementation status") and X6
+(verification + tuning, incl. the real-phone LTE session) pending. User
+decisions anchoring scope: reliable-streams + extended-buffer mechanism;
+~2 s adaptive latency budget; manual toggle first.
 
 ---
 

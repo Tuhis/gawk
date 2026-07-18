@@ -35,12 +35,24 @@ const LEGACY_SMOOTHED_KEY = 'gawk:smoothed-playout';
 // (same 2026-07-15 decision); a no-op wherever the pipeline can't
 // interpolate (main-thread path, non-WebGL2 sink, non-adaptive mode).
 const INTERPOLATION_KEY = 'gawk:interpolation';
+// R19 (docs/24 Decision 9): resilient mode for lossy (mobile) networks —
+// reliable delta delivery + a wider adaptive buffer, at 0.5–2 s behind live.
+// Default off; persisted; toggling is a deliberate reconnect.
+const RESILIENT_MODE_KEY = 'gawk:resilient-mode';
 
 function loadInterpolation(): boolean {
   try {
     return localStorage.getItem(INTERPOLATION_KEY) !== '0';
   } catch {
     return true;
+  }
+}
+
+function loadResilientMode(): boolean {
+  try {
+    return localStorage.getItem(RESILIENT_MODE_KEY) === '1';
+  } catch {
+    return false;
   }
 }
 
@@ -139,6 +151,21 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     });
   }, []);
 
+  // R19: resilient mode. Flipping it re-runs the connection effect — a
+  // visible, deliberate reconnect with (or without) reliable delivery.
+  const [resilientMode, setResilientMode] = useState(loadResilientMode);
+  const toggleResilientMode = useCallback(() => {
+    setResilientMode((on) => {
+      const next = !on;
+      try {
+        localStorage.setItem(RESILIENT_MODE_KEY, next ? '1' : '0');
+      } catch {
+        // private mode etc. — the toggle still works for this session
+      }
+      return next;
+    });
+  }, []);
+
   // R16 (docs/21 Decision 1): the device gate — absence of the Element
   // Fullscreen API (effectively an iPhone signature). On non-gated devices no
   // R16 code path activates: no tee flag, no video element, tier-1 fullscreen
@@ -151,6 +178,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     playoutMode,
     interpolation,
     gated,
+    resilientMode,
   );
 
   const [showStats, setShowStats] = useState(false);
@@ -325,14 +353,28 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     { label: isFullscreen ? 'Exit fullscreen' : 'Fullscreen', onSelect: () => toggleFullscreen() },
     // R5 Q3 + R12 T2: visibly costed opt-ins — the overlay's Playout/latency
     // rows show the added delay while either is on. Mutually exclusive.
+    // R19 (docs/24 Decision 7): while Resilient mode is on it governs pacing
+    // (adaptive, wider profile) — these entries are annotated but keep their
+    // stored value and regain effect the moment Resilient mode turns off.
     {
-      label: playoutMode === 'fixed' ? 'Smooth playback ✓' : 'Smooth playback',
+      label:
+        (playoutMode === 'fixed' ? 'Smooth playback ✓' : 'Smooth playback') +
+        (resilientMode ? ' — governed by Resilient mode' : ''),
       onSelect: () => togglePlayoutMode('fixed'),
     },
     {
       label:
-        playoutMode === 'adaptive' ? 'Paced playback (adaptive) ✓' : 'Paced playback (adaptive)',
+        (playoutMode === 'adaptive' ? 'Paced playback (adaptive) ✓' : 'Paced playback (adaptive)') +
+        (resilientMode ? ' — governed by Resilient mode' : ''),
       onSelect: () => togglePlayoutMode('adaptive'),
+    },
+    // R19: its own toggle (never a repurposed one — project rule). Toggling
+    // deliberately reconnects with/without reliable delivery.
+    {
+      label: resilientMode
+        ? 'Resilient mode (mobile networks) ✓'
+        : 'Resilient mode (mobile networks)',
+      onSelect: toggleResilientMode,
     },
     // R12 T4: only offered where the pipeline can actually interpolate
     // (stats.interpolation is null on the main-thread path, non-WebGL2 sinks,

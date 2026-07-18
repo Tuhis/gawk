@@ -30,6 +30,14 @@ type fakeSender struct {
 	closeCode  uint32
 	closed     bool
 	kfOpens    int
+
+	// R19 carrier support: every opened carrier stream is retained so tests
+	// can inspect its bytes/state at any point in its life (a carrier is
+	// long-lived, unlike a keyframe stream).
+	carriers   []*fakeCarrierStream
+	carOpenErr error         // if non-nil, OpenCarrierStream fails
+	carBlock   chan struct{} // if non-nil, every carrier Write blocks on it (until deadline/cancel)
+	carOpens   int
 }
 
 func (f *fakeSender) SendDatagram(d []byte) error {
@@ -54,6 +62,21 @@ func (f *fakeSender) OpenKeyframeStream() (KeyframeStream, error) {
 		return nil, oe
 	}
 	return &fakeKeyframeStream{parent: f, cancel: make(chan struct{})}, nil
+}
+
+func (f *fakeSender) OpenCarrierStream() (KeyframeStream, error) {
+	f.mu.Lock()
+	f.carOpens++
+	oe := f.carOpenErr
+	f.mu.Unlock()
+	if oe != nil {
+		return nil, oe
+	}
+	st := &fakeCarrierStream{parent: f, cancel: make(chan struct{})}
+	f.mu.Lock()
+	f.carriers = append(f.carriers, st)
+	f.mu.Unlock()
+	return st, nil
 }
 
 func (f *fakeSender) CloseWithError(code uint32, reason string) error {
@@ -135,6 +158,140 @@ func (k *fakeKeyframeStream) Close() error {
 
 func (k *fakeKeyframeStream) CancelWrite() {
 	k.once.Do(func() { close(k.cancel) })
+}
+
+// fakeCarrierStream is one R19 carrier stream: long-lived, written to
+// incrementally by the subscriber drain, closed on rotation. Write honors the
+// deadline set by SetWriteDeadline while blocked on the parent's carBlock —
+// mirroring how a real SendStream write unblocks with an error when its
+// deadline passes.
+type fakeCarrierStream struct {
+	parent    *fakeSender
+	mu        sync.Mutex
+	buf       []byte
+	deadline  time.Time
+	closed    bool
+	cancelled bool
+	cancel    chan struct{}
+	once      sync.Once
+}
+
+func (c *fakeCarrierStream) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.deadline = t
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *fakeCarrierStream) Write(p []byte) (int, error) {
+	c.parent.mu.Lock()
+	block := c.parent.carBlock
+	c.parent.mu.Unlock()
+	if block != nil {
+		c.mu.Lock()
+		deadline := c.deadline
+		c.mu.Unlock()
+		var timeout <-chan time.Time
+		if !deadline.IsZero() {
+			t := time.NewTimer(time.Until(deadline))
+			defer t.Stop()
+			timeout = t.C
+		}
+		select {
+		case <-c.parent.carBlock:
+		case <-c.cancel:
+			return 0, errors.New("carrier stream cancelled")
+		case <-timeout:
+			return 0, errors.New("carrier write deadline exceeded")
+		}
+	}
+	select {
+	case <-c.cancel:
+		return 0, errors.New("carrier stream cancelled")
+	default:
+	}
+	c.mu.Lock()
+	c.buf = append(c.buf, p...)
+	c.mu.Unlock()
+	return len(p), nil
+}
+
+func (f *fakeSender) setCarBlock(ch chan struct{}) {
+	f.mu.Lock()
+	f.carBlock = ch
+	f.mu.Unlock()
+}
+
+func (f *fakeSender) carrierOpens() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.carOpens
+}
+
+func (c *fakeCarrierStream) Close() error {
+	select {
+	case <-c.cancel:
+		return errors.New("carrier stream cancelled")
+	default:
+	}
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *fakeCarrierStream) CancelWrite() {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.cancelled = true
+		c.mu.Unlock()
+		close(c.cancel)
+	})
+}
+
+func (c *fakeCarrierStream) bytes() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.buf...)
+}
+
+func (c *fakeCarrierStream) state() (closed, cancelled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed, c.cancelled
+}
+
+func (f *fakeSender) carrierStreams() []*fakeCarrierStream {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*fakeCarrierStream(nil), f.carriers...)
+}
+
+// carrierRecords decodes every complete record across all carrier streams, in
+// open order — the byte-identical datagrams a resilient viewer would feed its
+// datagram path.
+func (f *fakeSender) carrierRecords(t *testing.T) [][]byte {
+	t.Helper()
+	var records [][]byte
+	for _, st := range f.carrierStreams() {
+		buf := st.bytes()
+		if len(buf) == 0 {
+			continue
+		}
+		if err := wire.ParseCarrierPrologue(buf); err != nil {
+			t.Fatalf("carrier stream prologue: %v", err)
+		}
+		rest := buf[wire.CarrierPrologueSize:]
+		for len(rest) > 0 {
+			record, remaining, err := wire.ParseCarrierRecord(rest)
+			if err != nil {
+				t.Fatalf("carrier record: %v", err)
+			}
+			records = append(records, append([]byte(nil), record...))
+			rest = remaining
+		}
+	}
+	return records
 }
 
 // keyframeMsg builds a full StreamFrame message (header + optional config +
@@ -1677,5 +1834,289 @@ func TestEdgePublishFailureKeepsOriginRole(t *testing.T) {
 	}
 	if role := r.Stats().Broadcasts[r.ObfuscateID(id)].Role; role != "origin" {
 		t.Errorf("role after failed EdgePublish = %q, want origin (hub must not be relabeled)", role)
+	}
+}
+
+// --- R19 reliable delivery (docs/24) ---------------------------------------
+
+// waitCarrierRecords blocks until the sender's carriers hold at least n
+// complete records (record writes happen on the subscriber's drain goroutine).
+func waitCarrierRecords(t *testing.T, f *fakeSender, n int) {
+	t.Helper()
+	waitFor(t, 5*time.Second, func() bool {
+		return len(f.carrierRecords(t)) >= n
+	}, fmt.Sprintf("%d carrier records", n))
+}
+
+// The core X2 criterion: a resilient subscriber receives every enqueued delta
+// byte-identically and in order across a per-GOP carrier rotation, its
+// datagram path stays silent, and keyframes keep their existing stream path.
+func TestReliableSubscriberCarrierDelivery(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer sub.Close()
+
+	// GOP 1: keyframe (rotation) + config + two deltas.
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0"))
+	cfg := configDgram(t, "vp8")
+	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
+	d2 := chunkDgram(t, false, 2, 0, 1, "d2")
+	p.HandleDatagram(cfg)
+	p.HandleDatagram(d1)
+	p.HandleDatagram(d2)
+	waitCarrierRecords(t, f, 3)
+
+	// GOP 2: next keyframe rotates the carrier; two more deltas.
+	ingestKeyframe(t, p, keyframeMsg(t, 3, "vp8", "KEY3"))
+	d4 := chunkDgram(t, false, 4, 0, 1, "d4")
+	d5 := chunkDgram(t, false, 5, 0, 1, "d5")
+	p.HandleDatagram(d4)
+	p.HandleDatagram(d5)
+	waitCarrierRecords(t, f, 5)
+
+	// Every datagram arrived as a record, byte-identical and in order.
+	records := f.carrierRecords(t)
+	want := [][]byte{cfg, d1, d2, d4, d5}
+	if len(records) != len(want) {
+		t.Fatalf("carrier records = %d, want %d", len(records), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(records[i], want[i]) {
+			t.Errorf("record %d = %x, want %x", i, records[i], want[i])
+		}
+	}
+
+	// The datagram path is silent for a resilient subscriber.
+	if got := f.received(); len(got) != 0 {
+		t.Errorf("SendDatagram was called %d times for a reliable subscriber", len(got))
+	}
+
+	// Keyframes still travel their own streams, untouched.
+	waitKeyframes(t, f, 2)
+
+	// The rotation happened: two carriers, the first gracefully closed.
+	carriers := f.carrierStreams()
+	if len(carriers) != 2 {
+		t.Fatalf("carrier streams = %d, want 2", len(carriers))
+	}
+	waitFor(t, time.Second, func() bool {
+		closed, _ := carriers[0].state()
+		return closed
+	}, "first carrier closed on rotation")
+	if closed, cancelled := carriers[1].state(); closed || cancelled {
+		t.Errorf("second carrier closed=%v cancelled=%v, want live", closed, cancelled)
+	}
+
+	// Stats (docs/24 Decision 10): live view.
+	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if stats.ReliableSubscribers != 1 {
+		t.Errorf("ReliableSubscribers = %d, want 1", stats.ReliableSubscribers)
+	}
+	if stats.CarrierStreams != 2 {
+		t.Errorf("CarrierStreams = %d, want 2", stats.CarrierStreams)
+	}
+	if stats.CarrierRecords != 5 {
+		t.Errorf("CarrierRecords = %d, want 5", stats.CarrierRecords)
+	}
+	if stats.EgressCarrierBytes == 0 {
+		t.Error("EgressCarrierBytes = 0, want > 0")
+	}
+	if len(stats.SubscriberDetails) != 1 || !stats.SubscriberDetails[0].Reliable {
+		t.Errorf("SubscriberDetails = %+v, want one reliable entry", stats.SubscriberDetails)
+	}
+
+	// Fold on close: the counters survive at the hub level.
+	sub.Close()
+	stats = r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if stats.ReliableSubscribers != 0 {
+		t.Errorf("ReliableSubscribers after close = %d, want 0", stats.ReliableSubscribers)
+	}
+	if stats.CarrierRecords != 5 {
+		t.Errorf("CarrierRecords after close = %d, want 5 (folded)", stats.CarrierRecords)
+	}
+	if total := r.Stats().Totals.CarrierRecords; total != 5 {
+		t.Errorf("Totals.CarrierRecords = %d, want 5", total)
+	}
+}
+
+// A mixed audience: the resilient subscriber gets records, the normal one
+// gets datagrams — neither delivery leaks into the other (X2 criterion).
+func TestMixedAudienceIndependentDelivery(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	reliable := &fakeSender{}
+	normal := &fakeSender{}
+	subR, err := r.SubscribeReliable(id, reliable)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer subR.Close()
+	subN, err := r.Subscribe(id, normal)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer subN.Close()
+
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0"))
+	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
+	d2 := chunkDgram(t, false, 2, 0, 1, "d2")
+	p.HandleDatagram(d1)
+	p.HandleDatagram(d2)
+
+	waitCarrierRecords(t, reliable, 2)
+	waitFor(t, 5*time.Second, func() bool { return len(normal.received()) == 2 }, "normal subscriber datagrams")
+
+	wantDatagrams(t, normal, [][]byte{d1, d2})
+	if len(normal.carrierStreams()) != 0 {
+		t.Errorf("normal subscriber got %d carrier streams, want 0", len(normal.carrierStreams()))
+	}
+	if got := reliable.received(); len(got) != 0 {
+		t.Errorf("reliable subscriber got %d datagrams, want 0", len(got))
+	}
+	records := reliable.carrierRecords(t)
+	if len(records) != 2 || !bytes.Equal(records[0], d1) || !bytes.Equal(records[1], d2) {
+		t.Errorf("reliable records = %d, want [d1 d2]", len(records))
+	}
+	waitKeyframes(t, reliable, 1)
+	waitKeyframes(t, normal, 1)
+
+	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if stats.Subscribers != 2 || stats.ReliableSubscribers != 1 {
+		t.Errorf("Subscribers = %d / ReliableSubscribers = %d, want 2 / 1",
+			stats.Subscribers, stats.ReliableSubscribers)
+	}
+}
+
+// A carrier whose write stalls past KeyframeWriteTimeout is cancelled; the
+// GOP's remaining records are dropped and delivery resumes on the next
+// rotation's fresh carrier (docs/24 Decision 5: drops-over-stalls at GOP
+// granularity).
+func TestStalledCarrierCancelledAfterDeadline(t *testing.T) {
+	r := NewRegistry(discardLog, Options{KeyframeWriteTimeout: 50 * time.Millisecond})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer sub.Close()
+
+	// Healthy GOP 1.
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0"))
+	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
+	p.HandleDatagram(d1)
+	waitCarrierRecords(t, f, 1)
+
+	// Stall the peer: the next record write blocks until its deadline.
+	f.setCarBlock(make(chan struct{}))
+	d2 := chunkDgram(t, false, 2, 0, 1, "d2")
+	p.HandleDatagram(d2)
+	waitFor(t, 5*time.Second, func() bool {
+		_, cancelled := f.carrierStreams()[0].state()
+		return cancelled
+	}, "stalled carrier cancelled after write deadline")
+	waitFor(t, time.Second, func() bool { return sub.carrierRecordsDropped.Load() >= 1 }, "stalled record dropped")
+
+	// The link recovers; the next GOP delivers on a fresh carrier.
+	f.setCarBlock(nil)
+	ingestKeyframe(t, p, keyframeMsg(t, 3, "vp8", "KEY3"))
+	d4 := chunkDgram(t, false, 4, 0, 1, "d4")
+	p.HandleDatagram(d4)
+	waitCarrierRecords(t, f, 2)
+
+	records := f.carrierRecords(t)
+	if !bytes.Equal(records[len(records)-1], d4) {
+		t.Errorf("last record = %x, want d4 %x", records[len(records)-1], d4)
+	}
+	if n := len(f.carrierStreams()); n != 2 {
+		t.Errorf("carrier streams = %d, want 2 (stalled + fresh)", n)
+	}
+}
+
+// Carrier stream-open failures feed the same consecutive-failure eviction
+// streak as keyframe opens: a zombie subscriber (all opens failing — the
+// exhausted-stream-credit signature) is evicted with 4001 (docs/24
+// Decision 5). One carrier open is attempted per rotation, so with both kinds
+// failing each GOP contributes two to the streak.
+func TestCarrierOpenFailuresFeedEvictionStreak(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	openErr := errors.New("stream credit exhausted")
+	f := &fakeSender{kfOpenErr: openErr, carOpenErr: openErr}
+	if _, err := r.SubscribeReliable(id, f); err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	for i := 0; i < KeyframeOpenFailEvictThreshold/2; i++ {
+		frameID := uint32(i * 2)
+		ingestKeyframe(t, p, keyframeMsg(t, frameID, "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, frameID+1, 0, 1, "d"))
+		// Each rotation permits exactly one carrier open attempt; wait for it
+		// so the next cycle's failure lands on a fresh rotation.
+		wantOpens := i + 1
+		waitFor(t, 5*time.Second, func() bool { return f.carrierOpens() >= wantOpens }, "carrier open attempt")
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		code, closed := f.getCloseInfo()
+		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
+	}, "zombie reliable subscriber evicted with 4001")
+	waitFor(t, 5*time.Second, func() bool {
+		return r.Stats().Broadcasts[r.ObfuscateID(id)].Subscribers == 0
+	}, "evicted subscriber removed from hub")
+}
+
+// The egress bandwidth cap charges carrier records like datagrams — reliable
+// delivery is not a cap bypass (docs/24 Decision 5). Over-cap records are
+// dropped at the drain and recorded under the bandwidth reason.
+func TestCarrierBandwidthCapDropsRecords(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxBandwidthBytes: 100})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer sub.Close()
+
+	// Exhaust the bucket so the next record can't pass.
+	r.limiter.mu.Lock()
+	r.limiter.tokens = 0
+	r.limiter.last = time.Now().Add(time.Hour) // no refill during the test
+	r.limiter.mu.Unlock()
+
+	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
+	p.HandleDatagram(d1)
+	waitFor(t, 5*time.Second, func() bool { return sub.Dropped() == 1 }, "over-cap record dropped")
+
+	if n := len(f.carrierStreams()); n != 0 {
+		t.Errorf("carrier streams = %d, want 0 (drop happens before any open)", n)
+	}
+	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if stats.BandwidthDroppedDatagrams != 1 {
+		t.Errorf("BandwidthDroppedDatagrams = %d, want 1", stats.BandwidthDroppedDatagrams)
+	}
+	if want := uint64(wire.CarrierRecordHeaderSize + len(d1)); stats.BandwidthDroppedBytes != want {
+		t.Errorf("BandwidthDroppedBytes = %d, want %d (record size incl. prefix)", stats.BandwidthDroppedBytes, want)
 	}
 }

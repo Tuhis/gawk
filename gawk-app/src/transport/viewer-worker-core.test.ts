@@ -9,11 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const connectWebTransport = vi.fn();
 const readDatagrams = vi.fn();
-const readKeyframeStreams = vi.fn();
+const readServerStreams = vi.fn();
 vi.mock('./connection', () => ({
   connectWebTransport: (...a: unknown[]) => connectWebTransport(...a),
   readDatagrams: (...a: unknown[]) => readDatagrams(...a),
-  readKeyframeStreams: (...a: unknown[]) => readKeyframeStreams(...a),
+  readServerStreams: (...a: unknown[]) => readServerStreams(...a),
+  newCarrierCounters: () => ({ streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 }),
 }));
 
 const decodeSpy = vi.fn();
@@ -229,9 +230,9 @@ describe('ViewerWorkerCore integration (real pipeline, mocked I/O)', () => {
     );
     connectWebTransport.mockReset();
     readDatagrams.mockReset();
-    readKeyframeStreams.mockReset();
+    readServerStreams.mockReset();
     decodeSpy.mockReset();
-    readKeyframeStreams.mockReturnValue(new Promise(() => {}));
+    readServerStreams.mockReturnValue(new Promise(() => {}));
   });
 
   it('renders decoded frames to the sink and posts no frame to the host', async () => {
