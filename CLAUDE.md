@@ -235,7 +235,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `internal`, excluded) and fans `G` down verbatim (no per-hop rewrite —
   counts are pod-independent); storm-proof by the fixed-cadence pump; "first
   viewer joined" derived client-side from the 0→1 transition, no separate
-  message; Y1–Y6 chunks; **designed 2026-07-18, not started**),
+  message (the native GUI rings it at critical urgency, once per broadcast);
+  Y1–Y6 chunks; **implemented 2026-07-18 (designed same day), automated
+  gates green in all three modules; manual verify (single-pod + 2-pod kind)
+  pending — deviations recorded in the doc's "Implementation status":
+  publisherSend lives on `hub.Publisher` (BindSend), a spoofed well-formed
+  count is dropped without counting bad, `#/debug/*` shows no count (frozen
+  pages), and the count is trusted only from relay peers**),
   `docs/24-viewer-network-resilience.md` for R19 (resilient viewer mode for
   lossy networks — LTE/5G mobile viewers: opt-in per-subscriber **reliable
   delivery** (`?delivery=reliable`; relay writes delta datagrams as
@@ -647,9 +653,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    picker; **notifications via `godbus` with critical urgency for
    failures** — KDE's portal **inhibits normal notifications while screen
    casting**, so only critical-urgency ones reach a fullscreen broadcaster;
-   **no viewer count / "first viewer joined"** (nothing on the wire tells a
-   publisher about subscribers — browser parity; a `SubscriberCount`
-   message is a possible future wire+relay change, not an R14 smuggle-in).
+   **no viewer count / "first viewer joined"** was an R14 non-goal (nothing
+   on the wire told a publisher about subscribers then; a `SubscriberCount`
+   message was named as a future wire+relay change, not an R14 smuggle-in) —
+   **delivered 2026-07-18 by R18 (docs/23)**: the engine now surfaces the
+   relay's `ViewerCount` push (`Stats.ViewerCount` + `OnViewerCount`) and
+   the GUI shows "N watching" and rings the first-viewer notification at
+   critical urgency, once per broadcast, on the 0→≥1 transition.
    **Tray and global hotkeys deferred 2026-07-15** — research kept in the
    doc's Deferred section; don't re-derive it. Not a
    container/chart/CI-deploy component — binaries you run on your own PC.

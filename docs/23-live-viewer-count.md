@@ -1,7 +1,8 @@
 # R18 — Live Viewer Count
 
 Design doc for [ROADMAP R18](../ROADMAP.md#r18--live-viewer-count)
-(designed 2026-07-18; **not yet implemented** — chunk breakdown Y1–Y6 below).
+(designed 2026-07-18; **Y1–Y6 implemented 2026-07-18** — automated gates
+green, manual verify pending; see "Implementation status" below).
 Both the broadcaster and every viewer of a stream see a live **"N watching"**
 figure that updates promptly as viewers join and leave. This is the
 `SubscriberCount` message deliberately deferred from R14 (Decision 18) and
@@ -350,12 +351,12 @@ Cluster (origin O, edges E1..Ek):
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| Y1 | **Wire** — `TypeViewerCount` (`0x0B`), `ViewerCountSize = 6`, `AppendViewerCount`/`ParseViewerCount` (strict fixed length, à la `ClockMapping`); golden vectors in all three mirrors | Byte-identical Go↔TS↔wirecheck golden vectors; parser rejects wrong length/version/type with `ErrBadLength`/`ErrBadVersion`/`ErrBadType`; round-trip property test | 📋 not started |
-| Y2 | **Relay single-pod** — `cachedViewerCount` + emit helper (ClockMapping template); registry count pump (1 s tick, 5 s keepalive, change-driven), started explicitly not in `NewRegistry`; `publisherSend` registered by `handlePublish`, cleared on `Publisher.Close`; join-prime in `subscribe()` | Hub test: single broadcaster + viewers, count reaches viewers (fan-out) and broadcaster (push) and equals `externalSubs`; join primes immediately; a reconnect storm (rapid subscribe/close) emits ≤ 1/s (storm resistance); keepalive re-emits an unchanged count within 5 s; broadcaster preview never counted; count excludes an evicted/closed sub | 📋 not started |
-| Y3 | **Relay cluster aggregation** — `Subscriber.downstreamViewers`; edge report on the `pump` linger ticker (change-driven + keepalive); origin `handleInternalSubscribe` records reports; pump `G = externalSubs + Σ downstream`; edge `HandleDatagram` `TypeViewerCount` case gated on `b.edge`, caches + fans down; `InvalidatePrimes`/`claimPublisherLocked` clear `cachedViewerCount` | Multi-pod (origin + ≥1 edge, fakes): `G` == total real viewers across pods; an edge session is **never** counted (add an edge, `G` unchanged; add a viewer behind it, `G` +1); every viewer (origin + edge) observes the same `G`; a `ViewerCount` from a broadcaster on an origin is a no-op (spoof guard); re-home re-reports within a tick and `G` reconverges; single-pod path byte-identical (no edges ⇒ Decision 5 dormant) | 📋 not started |
-| Y4 | **Browser broadcaster + viewer** — `broadcaster.ts` read-loop branch → `BroadcastStats.viewerCount` + `docs/10` reserved slot + overlay row; `reassembler.ts` `TypeViewerCount` case → `onSubscriberCount` → `ViewerStats.viewerCount` → `ViewerScreen` badge + overlay row | Unit: reassembler routes `ViewerCount` to `onSubscriberCount`, ignores malformed (counts bad, no crash); broadcaster read loop updates the stat without disturbing TimeSync; badge renders the live number; `#/debug/*` overlay-only; count of 1 renders "1 watching" | 📋 not started |
-| Y5 | **Native broadcaster (R14)** — `engine.go readDatagrams` branch → `engine.Stats.ViewerCount` + `Callbacks.OnViewerCount`; Gio GUI surface; remove the two "deliberately absent" comments; 0→1 critical-urgency "first viewer" notification (godbus) | Engine test: a `ViewerCount` datagram updates `Stats` + fires `OnViewerCount`; GUI shows the number; wirecheck golden vectors (from Y1) pass; 0→1 transition fires exactly one notification, ≥1→≥1 changes do not | 📋 not started |
-| Y6 | **Observability + verification** — origin `Stats.ViewersGlobal` + `gawk_broadcast_viewers_global` gauge + `/statusz` `viewersGlobal`; `docs/13` playbook row; manual single-pod + multi-pod (kind) verify; README/ROADMAP/CLAUDE status sync | Gauge emitted only on origin hubs, bounded cardinality (obfuscated broadcast label, no per-viewer labels — R9 rule); `/statusz` shows local `subscribers`, `edgeSessions`, and origin `viewersGlobal`; manual: browser + native broadcaster both show a correct live count as viewers join/leave, single-pod and across a 2-pod kind cluster (origin + edge), edge viewers counted, edge sessions not | 📋 not started |
+| Y1 | **Wire** — `TypeViewerCount` (`0x0B`), `ViewerCountSize = 6`, `AppendViewerCount`/`ParseViewerCount` (strict fixed length, à la `ClockMapping`); golden vectors in all three mirrors | Byte-identical Go↔TS↔wirecheck golden vectors; parser rejects wrong length/version/type with `ErrBadLength`/`ErrBadVersion`/`ErrBadType`; round-trip property test | ✅ 2026-07-18 |
+| Y2 | **Relay single-pod** — `cachedViewerCount` + emit helper (ClockMapping template); registry count pump (1 s tick, 5 s keepalive, change-driven), started explicitly not in `NewRegistry`; `publisherSend` registered by `handlePublish`, cleared on `Publisher.Close`; join-prime in `subscribe()` | Hub test: single broadcaster + viewers, count reaches viewers (fan-out) and broadcaster (push) and equals `externalSubs`; join primes immediately; a reconnect storm (rapid subscribe/close) emits ≤ 1/s (storm resistance); keepalive re-emits an unchanged count within 5 s; broadcaster preview never counted; count excludes an evicted/closed sub | ✅ 2026-07-18 |
+| Y3 | **Relay cluster aggregation** — `Subscriber.downstreamViewers`; edge report on the `pump` linger ticker (change-driven + keepalive); origin `handleInternalSubscribe` records reports; pump `G = externalSubs + Σ downstream`; edge `HandleDatagram` `TypeViewerCount` case gated on `b.edge`, caches + fans down; `InvalidatePrimes`/`claimPublisherLocked` clear `cachedViewerCount` | Multi-pod (origin + ≥1 edge, fakes): `G` == total real viewers across pods; an edge session is **never** counted (add an edge, `G` unchanged; add a viewer behind it, `G` +1); every viewer (origin + edge) observes the same `G`; a `ViewerCount` from a broadcaster on an origin is a no-op (spoof guard); re-home re-reports within a tick and `G` reconverges; single-pod path byte-identical (no edges ⇒ Decision 5 dormant) | ✅ 2026-07-18 |
+| Y4 | **Browser broadcaster + viewer** — `broadcaster.ts` read-loop branch → `BroadcastStats.viewerCount` + `docs/10` reserved slot + overlay row; `reassembler.ts` `TypeViewerCount` case → `onSubscriberCount` → `ViewerStats.viewerCount` → `ViewerScreen` badge + overlay row | Unit: reassembler routes `ViewerCount` to `onSubscriberCount`, ignores malformed (counts bad, no crash); broadcaster read loop updates the stat without disturbing TimeSync; badge renders the live number; `#/debug/*` overlay-only; count of 1 renders "1 watching" | ✅ 2026-07-18 |
+| Y5 | **Native broadcaster (R14)** — `engine.go readDatagrams` branch → `engine.Stats.ViewerCount` + `Callbacks.OnViewerCount`; Gio GUI surface; remove the two "deliberately absent" comments; 0→1 critical-urgency "first viewer" notification (godbus) | Engine test: a `ViewerCount` datagram updates `Stats` + fires `OnViewerCount`; GUI shows the number; wirecheck golden vectors (from Y1) pass; 0→1 transition fires exactly one notification, ≥1→≥1 changes do not | ✅ 2026-07-18 |
+| Y6 | **Observability + verification** — origin `Stats.ViewersGlobal` + `gawk_broadcast_viewers_global` gauge + `/statusz` `viewersGlobal`; `docs/13` playbook row; manual single-pod + multi-pod (kind) verify; README/ROADMAP/CLAUDE status sync | Gauge emitted only on origin hubs, bounded cardinality (obfuscated broadcast label, no per-viewer labels — R9 rule); `/statusz` shows local `subscribers`, `edgeSessions`, and origin `viewersGlobal`; manual: browser + native broadcaster both show a correct live count as viewers join/leave, single-pod and across a 2-pod kind cluster (origin + edge), edge viewers counted, edge sessions not | ✅ code + docs 2026-07-18; **manual verify pending** |
 
 **Ordering**: Y1 → Y2 give a working single-pod feature (verifiable end-to-end
 with the browser broadcaster once Y4 lands, or a hub test before it). Y3 adds
@@ -364,6 +365,42 @@ with fakes. Y4/Y5 are the client surfaces (parallelizable). Y6 rides last.
 Nothing here blocks or is blocked by R19 (merged/opt-in) — R18 touches the
 fan-out/emit path R19's carrier drain also touches, and allocates its type
 byte (`0x0B`) after R19's `0x0A`.
+
+## Implementation status (2026-07-18)
+
+Y1–Y6 implemented as designed; automated gates green in all three modules
+(`gawk-server` gofmt/vet/`-race` tests, `gawk-app` tsc/vitest/lint/build,
+`gawk-broadcast` internal packages `-race`). Notes and small deviations:
+
+- **`publisherSend` lives on `hub.Publisher` (`Publisher.BindSend`), not on
+  the hub struct.** Same lifecycle as `BindConn`: the transport registers it
+  post-upgrade, and the depose/Close paths clear it for free because the pump
+  reaches it only through `b.publisher`. Zero behavioral difference from the
+  Decision 4 sketch.
+- **The pump seam is `Registry.PumpViewerCounts(now)`** +
+  `RunViewerCountPump(ctx)` started from `main.go` (never `NewRegistry`), as
+  Decision 4 required. `ViewerCountInterval`/`ViewerCountKeepalive` are
+  exported constants because the transport's edge report (Decision 5a) shares
+  the keepalive value.
+- **A broadcaster-sent `ViewerCount` on an origin is dropped silently** (no
+  `badDatagrams` increment — it is well-formed, merely illegitimate); a
+  *malformed* one still counts bad. Matches Decision 6's "ignored".
+- **`#/debug/*` surfaces show no count at all** — they are frozen (docs/10)
+  and use their own `StatsGrid`, not the production overlay. The Decision 8
+  "overlay row only" intent (no badge outside production) holds; the row
+  itself is production-overlay-only.
+- **The first-viewer ring is gated on `StateLive`** in the native app: a
+  count push landing while the portal picker is still open doesn't ring; the
+  5 s keepalive re-push delivers the ring within seconds of going live.
+- **The two-pod E2E** (`TestMultiPodEdgePullE2E`) now asserts the full Y3
+  loop over real WebTransport: edge reports → origin `G` → publisher push +
+  edge-viewer fan-out, with pump ticks driven manually from the test.
+- **GUI compile is CI-gated**: this dev environment lacks the Wayland/xkb
+  headers Gio needs (pre-existing), so `cmd/gawk-broadcast-gui` was
+  gofmt/parse-checked here and compiles in CI, where the Gio deps install.
+- **Manual verification (the plan below) is pending** — single-pod browser +
+  native passes, the 2-pod kind cluster check, re-home reconvergence, and the
+  storm check.
 
 ## Verification plan (manual, Y6)
 

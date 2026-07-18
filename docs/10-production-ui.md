@@ -370,6 +370,8 @@ changes.
    broadcast IDs (R2) so the broadcaster can't locate its own row. Adding it is
    a protocol change of the same class as R5's keyframe-request question —
    explicitly outside a UI milestone. Revisit if a back-channel is ever added.
+   *(Delivered 2026-07-18 by R18, docs/23: the `ViewerCount` push now fills
+   the reserved slot and adds a viewer-side badge.)*
 
 8. **Motion is subtle and always reduced-motion-safe.** Short ease-out
    transitions (`--dur-fast`/`--dur`), the control auto-hide fade, and a slow,

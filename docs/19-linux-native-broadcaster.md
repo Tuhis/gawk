@@ -488,7 +488,11 @@ frozen `#/debug/broadcast` page next to the production UI.
     for browser parity (the browser broadcaster doesn't know its viewer count
     either). A `SubscriberCount` message is a fine *future* roadmap item —
     for both broadcasters at once, as its own wire+relay change — but it is
-    not smuggled in here.
+    not smuggled in here. *(Delivered 2026-07-18 by R18, docs/23, exactly on
+    those terms: `TypeViewerCount` 0x0B pushed by the relay to both
+    broadcasters and all viewers; the engine grew `Callbacks.OnViewerCount` +
+    `Stats.ViewerCount`, and the GUI rings the first-viewer notification at
+    critical urgency on the 0 → ≥1 transition.)*
 19. **Settings persist to `~/.config/gawk/broadcast.json`** (mode 0600):
     relay URL, **app URL** (the frontend origin for "join:" links and Copy
     link — it is *not derivable* from the relay URL, they are different

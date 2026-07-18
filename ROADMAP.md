@@ -36,7 +36,7 @@ feature set exists).
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
-| R18 | [Live viewer count](#r18--live-viewer-count) | 📋 designed 2026-07-18 (Y1–Y6), not started ([docs/23](docs/23-live-viewer-count.md)) |
+| R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; manual verify (single-pod + kind cluster) pending ([docs/23](docs/23-live-viewer-count.md)) |
 | R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 🚧 X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification pending ([docs/24](docs/24-viewer-network-resilience.md)) |
 | R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18 (spike: headless hash-pinned WebTransport works; tier-2 rehearsed on local kind = docs/22's two-pod smoke); first CI runs + Z4 burn-in pending; Z5 stretch not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 
@@ -1122,15 +1122,19 @@ precisely because it's a shared change that benefits **both** broadcasters
 historical/peak analytics (that stays `/statusz` + Prometheus territory);
 per-viewer adaptation.
 
-**Status**: **designed 2026-07-18** — full design doc
-[`docs/23-live-viewer-count.md`](23-live-viewer-count.md) with chunk breakdown
-Y1–Y6; **not yet implemented**. Anchored on the cluster-mode counting model
+**Status**: **implemented 2026-07-18 (Y1–Y6, same day as the design)**;
+automated gates green across all three modules; **manual verify pending**
+(single-pod browser + native passes, 2-pod kind cluster, re-home, storm — the
+docs/23 verification plan). Anchored on the cluster-mode counting model
 (only real viewers, counted once, summed across the origin/edge cascade —
 edges are plumbing, never counted): edges report their local viewer count up
 the existing internal-subscribe session, the origin aggregates and pushes the
 global total to the broadcaster + fans it to all viewers, and the whole thing
 reuses the R5 `ClockMapping` cache/prime/fan-out template + a new wire type
-`0x0B TypeViewerCount`. Backlog item promoted from R14 Decision 18.
+`0x0B TypeViewerCount`. Backlog item promoted from R14 Decision 18 — and its
+deferred "first viewer joined" notification ships with it (native GUI,
+critical urgency, derived client-side from the 0 → ≥1 transition). See
+docs/23's "Implementation status" for the recorded deviations.
 
 ---
 

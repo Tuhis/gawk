@@ -361,6 +361,7 @@ Per-broadcast gauges and server-wide metrics:
 | `gawk_broadcast_publisher_active` | gauge (0/1) | `broadcast` | is the broadcaster connected or in grace |
 | `gawk_broadcast_grace_remaining_seconds` | gauge | `broadcast` | time until GC while away |
 | `gawk_broadcast_subscribers` | gauge | `broadcast` | audience size per broadcast |
+| `gawk_broadcast_viewers_global` | gauge | `broadcast` | **R18**: the global count `G` the origin pushes to clients (local viewers + edge downstream reports); **origin hubs only** — the Prometheus-side truth stays `sum(gawk_broadcast_subscribers) by (broadcast)`, this gauge exists to debug the pushed value |
 | `gawk_broadcast_cached_keyframe_bytes` | gauge | `broadcast` | late-joiner prime size (also a bitrate proxy) |
 | `gawk_connections_total` | counter | `route`, `outcome` | connect/reject rates per route (M4); outcomes: `accepted`, `unauthorized`, `not_found`, `conflict`, `limit_rejected`, `upgrade_failed`, `error` |
 | `gawk_rate_limited_total` | counter | — | per-IP limiter hits (counted here only, not as a connection outcome) |
@@ -419,6 +420,7 @@ The point of the whole design: symptom → discriminating signals → verdict.
 | Frequent "Awaiting keyframe" / gap resyncs on one viewer | Viewer `framesDroppedIncomplete`/`reorderGapResyncs` up; relay keyframe `slow` drops for that subscriber; `lastKeyframeAgeMs` spiking ≫ GOP | **Delta loss on leg B** eating GOPs; keyframe cadence + reliable streams bound recovery — if age ≫ 500 ms GOP something is wrong at the relay |
 | Nothing plays for anyone | `gawk_connections_total{outcome!="accepted"}` — 401 (secret), 404 (bad/expired ID), 429 (limits/rate limiter), `origin_rejected` (CORS config) | **Config/limits, not media** |
 | Resilient-mode viewer (R19) stutters anyway | Overlay Delivery mode says `reliable (resilient)` and Playout offset is climbing toward its 2000 ms clamp, yet `renderCadence` p95 stays high; relay `gawk_broadcast_carrier_records_dropped_total` and per-sub `carrierRecordsDropped` climbing, or overlay `Carrier streams` shows aborts every GOP | **Sustained undersupply, not loss** — the link can't carry the stream bitrate; reliable delivery can't create bandwidth (docs/24), lower the rung/bitrate. If the mode row instead says `reliable requested / datagrams served`, the relay predates R19 X2 — buffering still widened, loss recovery didn't |
+| Broadcaster shows fewer viewers than expected (R18) | Compare `sum(gawk_broadcast_subscribers) by (broadcast)` (the fleet truth) against the origin's `gawk_broadcast_viewers_global` (what it pushes). Equal but low → viewers really left. Global < sum → an edge's report isn't reaching the origin: check the origin's `/statusz` `edgeSessions` vs the edges' `subscribers`, and the edge pods' logs for upstream re-attach churn. "—"/n/a on the client with viewers present → the relay predates R18 | **Edge report / aggregation gap vs. reality** — the two gauges split it |
 
 ## Verification plan
 

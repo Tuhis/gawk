@@ -36,7 +36,7 @@ getDisplayMedia
 
 | Path | What |
 |------|------|
-| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R18), with ordering rationale and per-item scope sketches |
+| `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R20), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
 | `docs/` | Per-milestone design notes and gotchas (`01`–`25`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `wire/` is public so the native broadcaster can import it. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
@@ -443,10 +443,14 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   casting*, so the act of broadcasting suppresses exactly the notifications
   a fullscreen broadcaster needs. Failures use critical; going live doesn't.
   ([docs/19](docs/19-linux-native-broadcaster.md))
-- **No viewer count, in any broadcaster** — nothing on the wire tells a
-  publisher about subscribers, so the native app can't show one either.
-  That's parity with the browser, not an omission.
-  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **The viewer count is relay-pushed and eventually-consistent (~1–2 s)** —
+  since R18 (2026-07-18) both broadcasters and every viewer show a live
+  "N watching" figure over a new relay-originated `ViewerCount` datagram
+  (0x0B). It is only ever trusted from a relay peer: a broadcaster-sent
+  count is dropped (spoof guard), and in cluster mode edges report their
+  local count up while the origin fans the global total down — edge
+  sessions themselves are never counted.
+  ([docs/23](docs/23-live-viewer-count.md))
 - **`pipewiresrc` can die during preroll with `stream error: unhandled
   format` — that's capture, not the encoder.** The compositor's chosen
   screencast format sometimes can't be mapped onto the downstream caps
