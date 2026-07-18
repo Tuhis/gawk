@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.24.0...gawk-app-v0.25.0) (2026-07-18)
+
+
+### Features
+
+* **gawk-app:** live "N watching" badge + overlay rows on both surfaces (R18 Y4) ([362da15](https://github.com/Tuhis/gawk/commit/362da15932fe2dfa9f98b09235ce3ae4a72d1dcd))
+* **wire:** TypeViewerCount 0x0B datagram in all three mirrors (R18 Y1) ([938ce28](https://github.com/Tuhis/gawk/commit/938ce2882c708530873c6ea7a79017f4387bf2f8))
+
 ## [0.24.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.23.1...gawk-app-v0.24.0) (2026-07-18)
 
 
