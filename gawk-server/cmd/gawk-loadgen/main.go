@@ -30,13 +30,18 @@ import (
 )
 
 type totals struct {
-	sessionsUp     atomic.Int64
-	dialErrors     atomic.Uint64
-	sessionDrops   atomic.Uint64
-	datagrams      atomic.Uint64
-	frames         atomic.Uint64 // delta frames (chunk 0 seen)
-	keyframes      atomic.Uint64 // keyframe streams fully read
-	frameGaps      atomic.Uint64 // frameID jumped by >1 (loss or reorder)
+	sessionsUp   atomic.Int64
+	dialErrors   atomic.Uint64
+	sessionDrops atomic.Uint64
+	datagrams    atomic.Uint64
+	frames       atomic.Uint64 // delta frames (chunk 0 seen)
+	keyframes    atomic.Uint64 // keyframe streams fully read
+	// frameGaps counts datagram frameID jumps > 1. NOTE: keyframes travel on
+	// reliable streams (R8), so the datagram sequence structurally skips one
+	// ID per GOP — expect a baseline of (keyframes/s × viewers) gaps/s on a
+	// healthy stream; only growth beyond that is loss or reorder (docs/25
+	// finding 8).
+	frameGaps      atomic.Uint64
 	bytesDatagrams atomic.Uint64
 	bytesKeyframes atomic.Uint64
 }

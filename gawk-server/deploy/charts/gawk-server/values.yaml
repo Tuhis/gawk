@@ -39,6 +39,10 @@ service:
   # node — docs/22 Decision 13 + finding 10). With Local, keep
   # podAntiAffinity on so the replicas actually spread across nodes.
   externalTrafficPolicy: ""
+  # Pin the node port (30000–32767) when service.type is NodePort — the R20
+  # cluster E2E (docs/25) maps a fixed kind hostPort onto it. Empty lets
+  # Kubernetes pick.
+  nodePort: ""
   # e.g. metallb.universe.tf/address-pool: default
   annotations: {}
 

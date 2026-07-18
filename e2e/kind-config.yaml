@@ -1,0 +1,15 @@
+# kind cluster for the R20 tier-2 cluster-mode E2E (docs/25 Decision 7).
+#
+# WebTransport is UDP and `kubectl port-forward` is TCP-only, so the browser
+# (and the Go clients) reach the relay through a fixed NodePort mapped onto a
+# host port here: 127.0.0.1:4433/udp → node:30443/udp → kube-proxy → pod.
+# The chart install pins service.nodePort=30443 to match.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30443
+        hostPort: 4433
+        protocol: UDP
+        listenAddress: "127.0.0.1"

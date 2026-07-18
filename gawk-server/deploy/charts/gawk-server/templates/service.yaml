@@ -23,3 +23,6 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: 4433
       protocol: UDP
+      {{- with .Values.service.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}

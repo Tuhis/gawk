@@ -212,6 +212,158 @@ jobs:
           path: e2e/out/
           retention-days: 7
 
+  # R20 tier 2 (docs/25 Decision 7): cluster-mode E2E — the real chart with
+  # 2 replicas + clusterMode on a fresh pinned kind cluster, reached over the
+  # kind UDP port mapping (kubectl port-forward is TCP-only and cannot carry
+  # WebTransport). Runs on release-please PRs only (docs/25 user decision 1;
+  # release-please refreshes that PR after every main merge, so it still
+  # re-checks each merged change) plus workflow_dispatch for cluster work.
+  # This is the automated successor to docs/22's two-pod smoke.
+  e2e-cluster:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: e2e-cluster-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      KIND_VERSION: v0.30.0
+      KIND_NODE_IMAGE: kindest/node:v1.34.0
+      HELM_VERSION: v3.19.0
+      KUBECTL_VERSION: v1.34.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-broadcast/go.sum
+      - name: Build the E2E toolchain (devcert, loadgen, pubsim)
+        run: |
+          mkdir -p e2e/bin e2e/out
+          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen)
+          (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the relay image (reusing the docker job's cache scope)
+        uses: docker/build-push-action@v6
+        with:
+          context: gawk-server
+          file: gawk-server/deploy/Dockerfile
+          push: false
+          load: true
+          tags: gawk-server:e2e
+          cache-from: type=gha,scope=gawk-server
+      - name: Install kind (pinned)
+        run: |
+          sudo curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          sudo chmod +x /usr/local/bin/kind
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+      - name: Create the kind cluster (UDP NodePort mapped to 127.0.0.1:4433)
+        run: |
+          kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s
+          kind load docker-image gawk-server:e2e
+      - name: Install the relay chart (replicas=2, clusterMode, NodePort)
+        run: |
+          ./e2e/bin/gawk-devcert -out e2e/out/certs -hosts localhost,127.0.0.1 > e2e/out/devcert.txt
+          CERT_HASH=$(openssl x509 -in e2e/out/certs/cert.pem -outform der | sha256sum | cut -d' ' -f1)
+          echo "CERT_HASH=$CERT_HASH" >> "$GITHUB_ENV"
+          kubectl create namespace gawk-e2e
+          kubectl -n gawk-e2e create secret tls gawk-server-tls \
+            --cert=e2e/out/certs/cert.pem --key=e2e/out/certs/key.pem
+          # Throwaway fleet secrets (exercises the chart's replicas>1-requires-
+          # clusterMode guard and the R17 shared-key plumbing). SSL_CERT_FILE
+          # points Go's system root pool at the mounted self-signed cert so
+          # edge pods can verify their internal dials to the origin pod — the
+          # edge dialer deliberately never skips TLS verification.
+          # connBurstLimit is raised because every session arrives SNAT'd from
+          # one host IP through the kind port mapping.
+          helm install relay gawk-server/deploy/charts/gawk-server -n gawk-e2e \
+            --set image.repository=gawk-server \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --set replicas=2 \
+            --set config.clusterMode=true \
+            --set service.type=NodePort \
+            --set service.nodePort=30443 \
+            --set certificate.enabled=false \
+            --set config.internalServerName=localhost \
+            --set config.internalPsk="$(openssl rand -hex 16)" \
+            --set config.statelessResetKey="$(openssl rand -hex 32)" \
+            --set config.resumeTokenKey="$(openssl rand -hex 32)" \
+            --set config.statsKey="$(openssl rand -hex 32)" \
+            --set config.connBurstLimit=50 \
+            --set-json 'extraEnv=[{"name":"SSL_CERT_FILE","value":"/tls/tls.crt"}]' \
+            --wait --timeout 180s
+      - name: Publish the fixture and spread synthetic viewers
+        run: |
+          ./e2e/bin/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 600s \
+            > e2e/out/pubsim.out 2> e2e/out/pubsim.err &
+          for i in $(seq 100); do
+            grep -q GAWK_PUBSIM_ID e2e/out/pubsim.out && break
+            sleep 0.2
+          done
+          ID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' e2e/out/pubsim.out | cut -d= -f2)
+          if [ -z "$ID" ]; then cat e2e/out/pubsim.err; exit 1; fi
+          echo "BROADCAST_ID=$ID" >> "$GITHUB_ENV"
+          # ~12 sessions so kube-proxy's per-5-tuple UDP conntrack spreads
+          # subscribers across both pods (P[all-on-one] ≈ 2⁻¹²). The duration
+          # must outlive the npm build + browser run that follow — sessions
+          # ending before cluster-assert would erase the edge pod's
+          # subscriber count.
+          ./e2e/bin/gawk-loadgen -url https://127.0.0.1:4433 -id "$ID" -viewers 12 \
+            -duration 600s -ramp-ms 150 -insecure > e2e/out/loadgen.log 2>&1 &
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            gawk-app/package-lock.json
+            e2e/package-lock.json
+      - run: npm ci
+        working-directory: gawk-app
+      - run: npm run build
+        working-directory: gawk-app
+      - run: npm ci
+        working-directory: e2e
+      - name: Run the browser E2E against the cluster
+        run: node run.mjs --external
+        working-directory: e2e
+        env:
+          GAWK_E2E_URL: https://127.0.0.1:4433
+          GAWK_E2E_CERT_HASH: ${{ env.CERT_HASH }}
+          GAWK_E2E_ID: ${{ env.BROADCAST_ID }}
+      - name: Assert the origin/edge split from per-pod ops endpoints
+        run: |
+          # One retry with a fresh spread if conntrack ever lands every
+          # session on the origin pod (docs/25 Decision 7).
+          ./e2e/cluster-assert.sh gawk-e2e 120 || {
+            echo "retrying with 12 more subscriber sessions"
+            ./e2e/bin/gawk-loadgen -url https://127.0.0.1:4433 -id "$BROADCAST_ID" \
+              -viewers 12 -duration 180s -ramp-ms 150 -insecure >> e2e/out/loadgen.log 2>&1 &
+            ./e2e/cluster-assert.sh gawk-e2e 120
+          }
+      - name: Export cluster state on failure
+        if: failure()
+        run: |
+          kubectl -n gawk-e2e get pods -o wide > e2e/out/pods.txt 2>&1 || true
+          kubectl -n gawk-e2e describe pods > e2e/out/describe.txt 2>&1 || true
+          kubectl -n gawk-e2e get leases -o yaml > e2e/out/leases.yaml 2>&1 || true
+          kind export logs e2e/out/kind-logs || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-cluster-${{ github.run_id }}
+          path: e2e/out/
+          retention-days: 7
+
   docker:
     runs-on: ubuntu-latest
     strategy:
