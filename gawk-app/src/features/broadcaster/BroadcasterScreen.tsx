@@ -160,6 +160,11 @@ export function BroadcasterScreen() {
         if (!(e instanceof BroadcastStartError) || e.phase !== 'connect') {
           const err = e instanceof Error ? e : new Error(String(e));
           log.error(err);
+          // A start() rejection fires no onEnded (the rejection is our error
+          // surface), and a capture-phase failure lands after onSourceStream
+          // already flipped the stage to LIVE — reset it here or the screen
+          // is stranded on a dead LIVE stage with the error card unreachable.
+          setSourceStream(null);
           setError(err.message);
           setStatus('error');
           return;
@@ -186,6 +191,9 @@ export function BroadcasterScreen() {
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       log.error(err);
+      // Same stage reset as the reclaim catch above: no onEnded follows a
+      // start() rejection.
+      setSourceStream(null);
       setError(err.message);
       setStatus('error');
       pipelineRef.current = null;
