@@ -59,6 +59,31 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   sides, and rate-limit thought (an upgraded-then-closed session is more
   expensive than a pre-upgrade 404).
 
+## Broadcaster screen shows LIVE indefinitely if the broadcast worker dies silently
+
+- **Found**: 2026-07-19, by inspection while fixing the start-failure
+  stranding bug (a `start()` rejection after capture left the LIVE stage
+  rendered with no error card — fixed the same day, test-first, in
+  `BroadcasterScreen.tsx` / `BroadcasterScreen.test.tsx`). This is the
+  rarer cousin; not yet reproduced.
+- **Impact**: if the broadcast Web Worker dies without delivering a message
+  (hard crash, renderer OOM kill), no `'error'`/`'ended'` ever reaches
+  `WorkerBroadcastSession`, so the screen keeps claiming LIVE with a frozen
+  preview while nothing is being sent. Not a hard strand: pressing Stop
+  recovers via the session's 3 s `STOP_TIMEOUT_MS` force-teardown — but
+  nothing tells the broadcaster to press it.
+- **Cause** (confirmed by inspection): `WorkerBroadcastSession` installs
+  only `worker.onmessage`; the `onerror` handler from `waitForBoot`
+  resolves an already-settled promise post-boot (a no-op). And a killed
+  worker fires no event at all — `onerror` only covers unhandled
+  exceptions — so detection needs a liveness signal, not just a handler.
+- **Fix would start**: `workerBroadcastSession.ts` — a post-boot
+  `worker.onerror` mapping to `onError` + teardown, plus a stats-silence
+  watchdog (the pipeline posts stats every 500 ms while started; several
+  seconds of silence ⇒ treat the worker as dead: surface the error,
+  terminate, fire `onEnded`). The screen's `onError`/`onEnded` handling
+  already lands on the right card.
+
 (The Chrome 152 `WebTransport.getStats()` entry was resolved 2026-07-14: not
 a gawk defect — Chromium removed the API entirely; see the gotcha in
 `docs/13-observability.md` D7 and the README gotcha list.)
