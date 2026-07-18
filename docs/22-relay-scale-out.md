@@ -726,6 +726,21 @@ Findings and deviations from the design as written:
     reconnect instead of an idle-timeout hang; measure it in the drills
     (below). Router-side resilient hashing is the mitigation if the blip
     reads ugly.
+11. **Lease names must be lowercase — the first on-cluster mint failed on
+    it** (2026-07-18, field). `leaseName` upcased the broadcast ID into
+    `gawk-bc-AG54Z4`, and the real API server rejects any uppercase in a
+    Lease's `metadata.name` (RFC 1123 subdomain) — every mint died with
+    `origin lease create failed`, surfacing to the broadcaster as a bare
+    WebTransport error. The W3 suite couldn't catch it: **the fake
+    clientset performs no name validation**, so invalid names round-trip
+    happily in tests. Fix: lowercase toward the API, canonical uppercase
+    back out via `broadcastIDFromLease` (injective — IDs are
+    case-insensitively unique by `broadcastid.Normalize`), plus a fake-
+    clientset **create reactor enforcing `IsDNS1123Subdomain`** in the test
+    helper so the entire suite now creates leases under production naming
+    rules. Lesson for every fake-clientset suite: the fake validates
+    nothing — admission, name syntax, field immutability all pass; enforce
+    what you rely on with reactors.
 
 ### Post-implementation review fixes (2026-07-16, PR #47)
 

@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -47,6 +48,19 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 func newTestCoordinator(t *testing.T, cs *fake.Clientset, pod string, clock *fakeClock, mutate func(*Options)) *Coordinator {
 	t.Helper()
+	// The real API server rejects non-RFC-1123 Lease names; the fake
+	// clientset validates nothing — exactly how the uppercase lease-name bug
+	// escaped this suite and surfaced on the first on-cluster mint (docs/22
+	// finding 11). Mirror the rejection so every test creates leases under
+	// production naming rules.
+	cs.PrependReactor("create", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		lease := action.(k8stesting.CreateAction).GetObject().(*coordv1.Lease)
+		if errs := validation.IsDNS1123Subdomain(lease.Name); len(errs) > 0 {
+			return true, nil, apierrors.NewInvalid(
+				schema.GroupKind{Group: "coordination.k8s.io", Kind: "Lease"}, lease.Name, nil)
+		}
+		return false, nil, nil
+	})
 	opts := Options{
 		Client:         cs,
 		Namespace:      "gawk",
@@ -79,6 +93,22 @@ func newTestCoordinator(t *testing.T, cs *fake.Clientset, pod string, clock *fak
 	return c
 }
 
+// The Kubernetes API accepts only lowercase RFC 1123 subdomain names, and
+// broadcast IDs are canonically uppercase — the first on-cluster mint failed
+// with metadata.name Invalid (field, 2026-07-18; docs/22 finding 11). The
+// mapping must be lowercase toward the API and canonical uppercase back out
+// (IDs are case-insensitively unique: broadcastid.Normalize upcases).
+func TestLeaseNameIsValidDNS1123AndRoundTrips(t *testing.T) {
+	name := leaseName("AG54Z4")
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		t.Errorf("leaseName(AG54Z4) = %q is not a valid Lease name: %v", name, errs)
+	}
+	id, ok := broadcastIDFromLease(name)
+	if !ok || id != "AG54Z4" {
+		t.Errorf("broadcastIDFromLease(%q) = %q, %v; want AG54Z4, true", name, id, ok)
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -104,7 +134,7 @@ func TestClaimCreatesLease(t *testing.T) {
 		t.Errorf("first claim generation = %d, want 1", gen)
 	}
 
-	lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-K7XQ2M", metav1.GetOptions{})
+	lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-k7xq2m", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("lease not created: %v", err)
 	}
@@ -201,7 +231,7 @@ func TestClaimRetriesThroughCASConflict(t *testing.T) {
 			conflicts--
 			return true, nil, apierrors.NewConflict(
 				schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"},
-				"gawk-bc-K7XQ2M", errors.New("simulated CAS loss"))
+				"gawk-bc-k7xq2m", errors.New("simulated CAS loss"))
 		}
 		return false, nil, nil
 	})
@@ -270,7 +300,7 @@ func TestRenewCadenceAndGraceStopsRenewals(t *testing.T) {
 	if err := a.EnterGrace(ctx, "K7XQ2M"); err != nil {
 		t.Fatalf("EnterGrace: %v", err)
 	}
-	lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-K7XQ2M", metav1.GetOptions{})
+	lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-k7xq2m", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,10 +396,10 @@ func TestJanitorDeletesOnlyStalePastGrace(t *testing.T) {
 		}
 	}
 
-	mk("gawk-bc-DEADAA", now.Add(-6*time.Minute), now.Add(-time.Minute).UTC().Format(time.RFC3339)) // grace expired
-	mk("gawk-bc-GRACEA", now.Add(-time.Minute), now.Add(4*time.Minute).UTC().Format(time.RFC3339))  // graced, not yet
-	mk("gawk-bc-LIVEAA", now.Add(-2*time.Second), "")                                               // renewing fine
-	mk("gawk-bc-CRASHA", now.Add(-10*time.Minute), "")                                              // crashed origin
+	mk("gawk-bc-deadaa", now.Add(-6*time.Minute), now.Add(-time.Minute).UTC().Format(time.RFC3339)) // grace expired
+	mk("gawk-bc-gracea", now.Add(-time.Minute), now.Add(4*time.Minute).UTC().Format(time.RFC3339))  // graced, not yet
+	mk("gawk-bc-liveaa", now.Add(-2*time.Second), "")                                               // renewing fine
+	mk("gawk-bc-crasha", now.Add(-10*time.Minute), "")                                              // crashed origin
 
 	a.JanitorSweep(ctx)
 
@@ -381,10 +411,10 @@ func TestJanitorDeletesOnlyStalePastGrace(t *testing.T) {
 	for _, l := range list.Items {
 		got[l.Name] = true
 	}
-	if got["gawk-bc-DEADAA"] || got["gawk-bc-CRASHA"] {
+	if got["gawk-bc-deadaa"] || got["gawk-bc-crasha"] {
 		t.Errorf("janitor kept stale leases: %v", got)
 	}
-	if !got["gawk-bc-GRACEA"] || !got["gawk-bc-LIVEAA"] {
+	if !got["gawk-bc-gracea"] || !got["gawk-bc-liveaa"] {
 		t.Errorf("janitor deleted healthy leases: %v", got)
 	}
 }
@@ -410,7 +440,7 @@ func TestInformerCallbacks(t *testing.T) {
 
 	// Simulate a force-take by another pod writing the lease directly.
 	waitFor(t, 5*time.Second, func() bool {
-		lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-K7XQ2M", metav1.GetOptions{})
+		lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-k7xq2m", metav1.GetOptions{})
 		if err != nil {
 			return false
 		}
@@ -427,7 +457,7 @@ func TestInformerCallbacks(t *testing.T) {
 	}
 
 	// Deletion → cluster-wide broadcast end.
-	if err := cs.CoordinationV1().Leases("gawk").Delete(ctx, "gawk-bc-K7XQ2M", metav1.DeleteOptions{}); err != nil {
+	if err := cs.CoordinationV1().Leases("gawk").Delete(ctx, "gawk-bc-k7xq2m", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 5*time.Second, func() bool { return deleted.Load() != nil }, "OnLeaseDeleted")

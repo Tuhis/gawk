@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,7 +142,7 @@ func TestPublishClaimsLeaseAndDrainReleasesIt(t *testing.T) {
 	id, _ := readPublisherHandshake(t, ctx, pub)
 
 	// Publish created the origin Lease with this pod as holder.
-	lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-"+id, metav1.GetOptions{})
+	lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-"+strings.ToLower(id), metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("lease for %s not created: %v", id, err)
 	}
@@ -157,7 +158,7 @@ func TestPublishClaimsLeaseAndDrainReleasesIt(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("server did not drain")
 	}
-	lease, err = cs.CoordinationV1().Leases("gawk").Get(context.Background(), "gawk-bc-"+id, metav1.GetOptions{})
+	lease, err = cs.CoordinationV1().Leases("gawk").Get(context.Background(), "gawk-bc-"+strings.ToLower(id), metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("lease gone after drain: %v", err)
 	}

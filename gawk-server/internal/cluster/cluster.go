@@ -151,11 +151,18 @@ func New(opts Options) (*Coordinator, error) {
 	return &Coordinator{opts: opts, held: make(map[string]*heldLease)}, nil
 }
 
-func leaseName(broadcastID string) string { return leasePrefix + strings.ToUpper(broadcastID) }
+// leaseName maps a broadcast ID onto a Lease name. Lease names must be
+// lowercase RFC 1123 subdomains — the API server rejects uppercase outright
+// (docs/22 finding 11) — while broadcast IDs are canonically uppercase.
+// The lowercase mapping is injective because IDs are case-insensitively
+// unique (broadcastid.Normalize upcases before validating).
+func leaseName(broadcastID string) string { return leasePrefix + strings.ToLower(broadcastID) }
 
+// broadcastIDFromLease is leaseName's inverse: canonical uppercase back out,
+// so janitor/informer comparisons match hub registry IDs.
 func broadcastIDFromLease(name string) (string, bool) {
 	id, ok := strings.CutPrefix(name, leasePrefix)
-	return id, ok
+	return strings.ToUpper(id), ok
 }
 
 func (c *Coordinator) leases() interface {
