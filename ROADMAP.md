@@ -36,7 +36,7 @@ feature set exists).
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
-| R18 | [Live viewer count](#r18--live-viewer-count) | 📋 not started (design doc TBD) |
+| R18 | [Live viewer count](#r18--live-viewer-count) | 📋 designed 2026-07-18 (Y1–Y6), not started ([docs/23](docs/23-live-viewer-count.md)) |
 | R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 📋 designed 2026-07-18 (X1–X6), not started ([docs/24](docs/24-viewer-network-resilience.md)) |
 
 ---
@@ -1121,14 +1121,22 @@ precisely because it's a shared change that benefits **both** broadcasters
 historical/peak analytics (that stays `/statusz` + Prometheus territory);
 per-viewer adaptation.
 
-**Status**: not started — backlog item promoted from R14 Decision 18. Its own
-design doc (`docs/23`) + chunk breakdown to be written when picked up.
+**Status**: **designed 2026-07-18** — full design doc
+[`docs/23-live-viewer-count.md`](23-live-viewer-count.md) with chunk breakdown
+Y1–Y6; **not yet implemented**. Anchored on the cluster-mode counting model
+(only real viewers, counted once, summed across the origin/edge cascade —
+edges are plumbing, never counted): edges report their local viewer count up
+the existing internal-subscribe session, the origin aggregates and pushes the
+global total to the broadcaster + fans it to all viewers, and the whole thing
+reuses the R5 `ClockMapping` cache/prime/fan-out template + a new wire type
+`0x0B TypeViewerCount`. Backlog item promoted from R14 Decision 18.
 
 ---
 
 ## R19 — Resilient viewer mode for lossy networks
 
-*(Numbering: `docs/23` is reserved for R18 above — hence `docs/24`.)*
+*(Numbering: `docs/23` is R18 above (live viewer count, designed 2026-07-18) —
+hence R19 and `docs/24`.)*
 
 **Goal**: a viewer on a lossy network (LTE/5G mobile, hotel Wi-Fi) enables a
 new opt-in **"Resilient mode (mobile networks)"** and gets smooth,

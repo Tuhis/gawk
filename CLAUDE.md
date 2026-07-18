@@ -210,6 +210,20 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   clusterMode for >1; single-pod upgrades are RollingUpdate ≤1 s blips
   now) and the PR #47 post-review fixes (lingered-out edge hubs deleted,
   holder-gated lease Delete, resume-token key precedence)**),
+  `docs/23-live-viewer-count.md` for R18 (live "N watching" count for both
+  broadcaster and viewers — the `SubscriberCount` deferred from R14: the
+  count already exists server-side (`externalSubsLocked`), what's new is a
+  **relay→publisher push channel** (hub-held sender + a 1 s registry count
+  pump) and relay→viewer fan-out reusing the R5 `ClockMapping`
+  cache/prime/invalidate template; new wire type **0x0B `TypeViewerCount`**
+  (6 B, uint32); **cluster mode is the crux — only real viewers count, never
+  edges**: each edge reports its local viewer count up the existing
+  `/internal/subscribe` session (TimeSync-ping precedent), the origin
+  aggregates `G = ownExternalSubs + Σ edge reports` (edge sessions are
+  `internal`, excluded) and fans `G` down verbatim (no per-hop rewrite —
+  counts are pod-independent); storm-proof by the fixed-cadence pump; "first
+  viewer joined" derived client-side from the 0→1 transition, no separate
+  message; Y1–Y6 chunks; **designed 2026-07-18, not started**),
   `docs/24-viewer-network-resilience.md` for R19 (resilient viewer mode for
   lossy networks — LTE/5G mobile viewers: opt-in per-subscriber **reliable
   delivery** (`?delivery=reliable`; relay writes delta datagrams as
@@ -223,7 +237,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   datagram messages, zero broadcaster changes; manual right-click toggle
   first (default off, mode change = deliberate reconnect), auto-detect
   deferred as a suggest-banner sketch; supersedes docs/12 Decision 1 **for
-  this opt-in mode only**; docs/23 stays reserved for R18; X1–X6 chunks;
+  this opt-in mode only**; docs/23 is R18 (designed 2026-07-18); X1–X6 chunks;
   **designed 2026-07-18, not started**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
@@ -754,7 +768,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `lastResumeToken` for reclaim.
 23. Resilient viewer mode for lossy networks — **designed 2026-07-18
    (X1–X6), not started** (R19, `docs/24-viewer-network-resilience.md`;
-   `docs/23` stays reserved for R18 live viewer count). Opt-in per-viewer
+   `docs/23` is R18 live viewer count, designed 2026-07-18). Opt-in per-viewer
    mode for LTE/5G mobile viewers: smooth video at 0.5–2 s behind live
    instead of freeze-until-keyframe stutter under packet loss. Mechanism
    (user decision over buffer-only, relay-cache+NACK, and FEC): the relay
