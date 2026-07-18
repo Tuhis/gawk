@@ -14,8 +14,10 @@ import {
   TYPE_CLOCK_MAPPING,
   TYPE_RESUME_TOKEN,
   TYPE_RELIABLE_CARRIER,
+  TYPE_VIEWER_COUNT,
   TIME_SYNC_SIZE,
   CLOCK_MAPPING_SIZE,
+  VIEWER_COUNT_SIZE,
   CARRIER_PROLOGUE_SIZE,
   CARRIER_RECORD_HEADER_SIZE,
   CLOSE_CODE_BROADCAST_ENDED,
@@ -38,6 +40,8 @@ import {
   encodeTimeSync,
   encodeVideoChunk,
   parseClockMapping,
+  encodeViewerCount,
+  parseViewerCount,
   parseDecoderConfig,
   parseStreamFrameHeader,
   parseTimeSync,
@@ -65,6 +69,9 @@ const GOLDEN_CLOCK_MAPPING_NEGATIVE_HEX = '0106fffffffffff0bdc0';
 // R19 reliable-carrier framing (docs/24 Decision 3).
 const GOLDEN_CARRIER_PROLOGUE_HEX = '010a';
 const GOLDEN_CARRIER_RECORD_HEX = '0017' + GOLDEN_VIDEO_CHUNK_HEX;
+// R18 viewer count (docs/23 Decision 2).
+const GOLDEN_VIEWER_COUNT_HEX = '010b00000003';
+const GOLDEN_VIEWER_COUNT_LARGE_HEX = '010b01020304';
 
 const goldenStreamFrameHeader: StreamFrameHeader = {
   keyframe: true,
@@ -137,6 +144,8 @@ describe('constants', () => {
     expect(TYPE_RELIABLE_CARRIER).toBe(0x0a);
     expect(CARRIER_PROLOGUE_SIZE).toBe(2);
     expect(CARRIER_RECORD_HEADER_SIZE).toBe(2);
+    expect(TYPE_VIEWER_COUNT).toBe(0x0b);
+    expect(VIEWER_COUNT_SIZE).toBe(6);
   });
 });
 
@@ -195,6 +204,29 @@ describe('golden vectors', () => {
     expect(() => parseClockMapping(fromHex(GOLDEN_CLOCK_MAPPING_HEX + '00'))).toThrow(WireError);
     expect(() => parseClockMapping(fromHex('02' + GOLDEN_CLOCK_MAPPING_HEX.slice(2)))).toThrow(WireError);
     expect(() => parseClockMapping(fromHex(GOLDEN_TIME_SYNC_HEX))).toThrow(WireError);
+  });
+
+  it('encodes and parses the golden viewer counts byte-for-byte (R18)', () => {
+    expect(toHex(encodeViewerCount(3))).toBe(GOLDEN_VIEWER_COUNT_HEX);
+    expect(toHex(encodeViewerCount(0x01020304))).toBe(GOLDEN_VIEWER_COUNT_LARGE_HEX);
+    expect(parseViewerCount(fromHex(GOLDEN_VIEWER_COUNT_HEX))).toBe(3);
+    expect(parseViewerCount(fromHex(GOLDEN_VIEWER_COUNT_LARGE_HEX))).toBe(0x01020304);
+  });
+
+  it('round-trips viewer counts including zero', () => {
+    for (const count of [0, 1, 15, 500, 0xffffffff]) {
+      expect(parseViewerCount(encodeViewerCount(count))).toBe(count);
+    }
+  });
+
+  it('rejects malformed viewer counts strictly', () => {
+    expect(() => parseViewerCount(fromHex(GOLDEN_VIEWER_COUNT_HEX.slice(0, -2)))).toThrow(WireError);
+    expect(() => parseViewerCount(fromHex(GOLDEN_VIEWER_COUNT_HEX + '00'))).toThrow(WireError);
+    expect(() => parseViewerCount(fromHex('02' + GOLDEN_VIEWER_COUNT_HEX.slice(2)))).toThrow(WireError);
+    // Right length, wrong type (a clock mapping truncated to 6 bytes).
+    expect(() => parseViewerCount(fromHex(GOLDEN_CLOCK_MAPPING_HEX.slice(0, VIEWER_COUNT_SIZE * 2)))).toThrow(
+      WireError,
+    );
   });
 
   it('parses the golden broadcast announce', () => {

@@ -23,6 +23,9 @@ const (
 	// but the vector is mirrored in all three wire implementations by rule.
 	goldenCarrierPrologueHex = "010a"
 	goldenCarrierRecordHex   = "0017" + goldenVideoChunkHex
+	// R18 viewer count (docs/23 Decision 2): the relay→publisher push the
+	// native broadcaster receives (engine readDatagrams → Stats.ViewerCount).
+	goldenViewerCountHex = "010b00000003"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -110,6 +113,22 @@ func TestGoldenCarrierPrologueAndRecord(t *testing.T) {
 	}
 }
 
+// ViewerCount is relay-originated; the native broadcaster only parses it,
+// but the vector pins the bytes from this side like every other message.
+func TestGoldenViewerCount(t *testing.T) {
+	want := mustHex(t, goldenViewerCountHex)
+	if got := wire.AppendViewerCount(nil, 3); !bytes.Equal(got, want) {
+		t.Errorf("ViewerCount bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	count, err := wire.ParseViewerCount(want)
+	if err != nil {
+		t.Fatalf("ParseViewerCount: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+}
+
 // The announce is the one message the broadcaster receives.
 func TestBroadcastAnnounceRoundTrip(t *testing.T) {
 	msg, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
@@ -150,8 +169,10 @@ func TestWireConstants(t *testing.T) {
 		{"TypeClockMapping", wire.TypeClockMapping, 0x06},
 		{"TypeResumeToken", wire.TypeResumeToken, 0x09},
 		{"TypeReliableCarrier", wire.TypeReliableCarrier, 0x0A},
+		{"TypeViewerCount", wire.TypeViewerCount, 0x0B},
 		{"CarrierPrologueSize", wire.CarrierPrologueSize, 2},
 		{"CarrierRecordHeaderSize", wire.CarrierRecordHeaderSize, 2},
+		{"ViewerCountSize", wire.ViewerCountSize, 6},
 	} {
 		if c.got != c.want {
 			t.Errorf("wire.%s = %d, want %d — wire format changed; update the relay, both broadcasters and the viewer together", c.name, c.got, c.want)

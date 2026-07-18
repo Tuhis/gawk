@@ -61,6 +61,11 @@ export const TYPE_RESUME_TOKEN = 0x09;
 // uint16 length (BE) ‖ verbatim datagram bytes — each record a complete
 // datagram the relay would otherwise have sent unreliably.
 export const TYPE_RELIABLE_CARRIER = 0x0a;
+// ViewerCount (R18, docs/23 Decision 2): relay-originated only — the live
+// "N watching" number pushed to viewers and the broadcaster (and, in cluster
+// mode, an edge's local count reported up to its origin — a leg browsers
+// never see). Clients parse it and never send it.
+export const TYPE_VIEWER_COUNT = 0x0b;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -386,6 +391,35 @@ export function parseClockMapping(dgram: Uint8Array): bigint {
   }
   const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
   return view.getBigInt64(2);
+}
+
+// ViewerCount (R18, docs/23): exactly 6 bytes — version, type 0x0b, then a
+// uint32 count. Strict fixed-length parse like TimeSync/ClockMapping. The
+// encoder exists for tests and golden vectors; browsers only ever parse it.
+
+export const VIEWER_COUNT_SIZE = 6;
+
+export function encodeViewerCount(count: number): Uint8Array<ArrayBuffer> {
+  const dgram = new Uint8Array(VIEWER_COUNT_SIZE);
+  const view = new DataView(dgram.buffer);
+  dgram[0] = WIRE_VERSION;
+  dgram[1] = TYPE_VIEWER_COUNT;
+  view.setUint32(2, count);
+  return dgram;
+}
+
+export function parseViewerCount(dgram: Uint8Array): number {
+  if (dgram.length !== VIEWER_COUNT_SIZE) {
+    throw new WireError(`viewer count must be exactly ${VIEWER_COUNT_SIZE} bytes, got ${dgram.length}`);
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_VIEWER_COUNT) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want viewer count`);
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  return view.getUint32(2);
 }
 
 // ResumeToken (R17 W2): version, type 0x09, uint8 tokenLen, token bytes.

@@ -100,6 +100,16 @@ const (
 	// via SendDatagram. The relay stays a byte forwarder: it never
 	// reassembles frames for this path.
 	TypeReliableCarrier = 0x0A
+
+	// TypeViewerCount identifies a ViewerCount datagram (R18, docs/23
+	// Decision 2): only ever produced by a relay, reused in both directions
+	// and disambiguated by which read loop receives it, exactly like
+	// TimeSync's ping/pong. Downstream (relay→viewers and relay→publisher)
+	// count is the broadcast's global viewer total G; upstream (edge→origin
+	// over the internal subscribe session) count is that edge's local
+	// external-subscriber count. Clients parse it and never send it — a
+	// ViewerCount arriving where a client is the sender is dropped.
+	TypeViewerCount = 0x0B
 )
 
 // CloseCodeBroadcastEnded is the WebTransport application close code sent
@@ -164,6 +174,8 @@ const (
 	TimeSyncSize = 18
 	// ClockMappingSize is the exact size of a ClockMapping datagram (R5 Q2).
 	ClockMappingSize = 10
+	// ViewerCountSize is the exact size of a ViewerCount datagram (R18).
+	ViewerCountSize = 6
 	// CarrierPrologueSize is the size of the reliable-carrier stream prologue
 	// (Version + TypeReliableCarrier), written once when the stream opens.
 	CarrierPrologueSize = 2
@@ -447,6 +459,33 @@ func ParseClockMapping(dgram []byte) (offsetUs int64, err error) {
 			ErrBadType, dgram[1], TypeClockMapping)
 	}
 	return int64(binary.BigEndian.Uint64(dgram[2:10])), nil
+}
+
+// AppendViewerCount appends a ViewerCount datagram (R18, docs/23) to dst and
+// returns the extended slice. count is uint32 by convention with the
+// codebase's frameID/counter integers — deliberate overkill for the audience
+// sizes involved, zero doubt about overflow.
+func AppendViewerCount(dst []byte, count uint32) []byte {
+	dst = append(dst, Version, TypeViewerCount)
+	dst = binary.BigEndian.AppendUint32(dst, count)
+	return dst
+}
+
+// ParseViewerCount parses a ViewerCount datagram. Strict: the datagram must
+// be exactly ViewerCountSize bytes with the right version and type.
+func ParseViewerCount(dgram []byte) (count uint32, err error) {
+	if len(dgram) != ViewerCountSize {
+		return 0, fmt.Errorf("%w: %d bytes, want exactly %d for viewer count",
+			ErrBadLength, len(dgram), ViewerCountSize)
+	}
+	if dgram[0] != Version {
+		return 0, fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeViewerCount {
+		return 0, fmt.Errorf("%w: got 0x%02x, want viewer count 0x%02x",
+			ErrBadType, dgram[1], TypeViewerCount)
+	}
+	return binary.BigEndian.Uint32(dgram[2:6]), nil
 }
 
 // AppendResumeToken appends a ResumeToken message (R17 W2) to dst and returns

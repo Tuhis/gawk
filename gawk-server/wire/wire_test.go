@@ -90,6 +90,16 @@ const (
 	//   0a   type = ReliableCarrier
 	goldenCarrierPrologueHex = "010a"
 
+	// ViewerCount: count=3 (R18, docs/23 Decision 2).
+	//
+	//   01            version
+	//   0b            type = ViewerCount
+	//   00 00 00 03   count (uint32, big-endian)
+	goldenViewerCountHex = "010b00000003"
+
+	// ViewerCount: count=0x01020304 (every byte distinct — endianness pin).
+	goldenViewerCountLargeHex = "010b01020304"
+
 	// One carrier record framing the golden VideoChunk datagram (23 bytes).
 	//
 	//   00 17   record length = 23
@@ -776,6 +786,70 @@ func TestClockMappingParseErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ParseClockMapping(tc.dgram); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestViewerCountGolden(t *testing.T) {
+	small := mustHex(t, goldenViewerCountHex)
+	if got := AppendViewerCount(nil, 3); !bytes.Equal(got, small) {
+		t.Errorf("AppendViewerCount = %x, want %x", got, small)
+	}
+	large := mustHex(t, goldenViewerCountLargeHex)
+	if got := AppendViewerCount(nil, 0x01020304); !bytes.Equal(got, large) {
+		t.Errorf("AppendViewerCount large = %x, want %x", got, large)
+	}
+
+	count, err := ParseViewerCount(small)
+	if err != nil {
+		t.Fatalf("ParseViewerCount: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+	count, err = ParseViewerCount(large)
+	if err != nil {
+		t.Fatalf("ParseViewerCount large: %v", err)
+	}
+	if count != 0x01020304 {
+		t.Errorf("count = %#x, want 0x01020304", count)
+	}
+}
+
+func TestViewerCountRoundTrip(t *testing.T) {
+	// Zero is legitimate (everyone left) and must round-trip like any other.
+	for _, count := range []uint32{0, 1, 15, 500, 0xFFFFFFFF} {
+		dgram := AppendViewerCount(nil, count)
+		if len(dgram) != ViewerCountSize {
+			t.Fatalf("len = %d, want %d", len(dgram), ViewerCountSize)
+		}
+		got, err := ParseViewerCount(dgram)
+		if err != nil {
+			t.Fatalf("ParseViewerCount(%d): %v", count, err)
+		}
+		if got != count {
+			t.Errorf("round trip = %d, want %d", got, count)
+		}
+	}
+}
+
+func TestViewerCountParseErrors(t *testing.T) {
+	good := mustHex(t, goldenViewerCountHex)
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"truncated", good[:ViewerCountSize-1], ErrBadLength},
+		{"oversize", append(append([]byte{}, good...), 0x00), ErrBadLength},
+		{"bad version", append([]byte{0x02}, good[1:]...), ErrBadVersion},
+		{"bad type (clock mapping sized down)", mustHex(t, goldenClockMappingHex)[:ViewerCountSize], ErrBadType},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseViewerCount(tc.dgram); !errors.Is(err, tc.want) {
 				t.Errorf("error = %v, want %v", err, tc.want)
 			}
 		})
