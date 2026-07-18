@@ -35,6 +35,12 @@ jobs:
         with:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: gawk-server/go.sum
+      # quic-go asks for ~7 MiB UDP buffers and the runner kernel caps them
+      # at 2 MiB — low enough that loopback datagrams drop under -race load
+      # (run 29663246454 lost a delta and hung a carrier test for the full
+      # package timeout). Applies to every job that pushes QUIC over loopback.
+      - name: Raise UDP buffer limits for quic-go
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
       - run: go vet ./...
       - run: go test -race ./...
         env:
@@ -70,6 +76,10 @@ jobs:
             gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
             libffi-dev libxcursor-dev libvulkan-dev
+      # See the server job — the relay integration tests here run QUIC over
+      # loopback too.
+      - name: Raise UDP buffer limits for quic-go
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
@@ -182,6 +192,10 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+      # See the server job — the relay↔pubsim↔browser leg is QUIC over
+      # loopback.
+      - name: Raise UDP buffer limits for quic-go
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
       - name: Build the relay and the fixture publisher
         run: |
           mkdir -p e2e/bin
@@ -241,6 +255,10 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+      # See the server job. net.core sysctls are host-global (not namespaced),
+      # so this also covers the relay pods inside the kind node.
+      - name: Raise UDP buffer limits for quic-go
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
       - name: Build the E2E toolchain (devcert, loadgen, pubsim)
         run: |
           mkdir -p e2e/bin e2e/out
