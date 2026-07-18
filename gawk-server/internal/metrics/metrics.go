@@ -63,6 +63,7 @@ type RegistryCollector struct {
 	subscribers         *prometheus.Desc
 	reliableSubscribers *prometheus.Desc
 	edgeSessions        *prometheus.Desc
+	viewersGlobal       *prometheus.Desc
 	role                *prometheus.Desc
 	cachedKeyframe      *prometheus.Desc
 
@@ -108,6 +109,9 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"Local viewers in R19 reliable (resilient) delivery mode.", []string{"broadcast"}, nil),
 		edgeSessions: prometheus.NewDesc("gawk_broadcast_edge_sessions",
 			"Downstream edge pods attached via the internal subscribe route (R17).", []string{"broadcast"}, nil),
+		viewersGlobal: prometheus.NewDesc("gawk_broadcast_viewers_global",
+			"Global viewer count the origin pushes to clients (R18: local viewers + edge downstream reports); origin hubs only. The Prometheus-side truth stays sum(gawk_broadcast_subscribers) by (broadcast) — this gauge exists to debug the pushed value.",
+			[]string{"broadcast"}, nil),
 		role: prometheus.NewDesc("gawk_broadcast_role",
 			"This pod's role for the broadcast (R17): origin hosts the publisher, edge re-fans an upstream pull. Value is always 1; join on(broadcast) group_left(role).",
 			[]string{"broadcast", "role"}, nil),
@@ -164,6 +168,7 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.subscribers
 	ch <- c.reliableSubscribers
 	ch <- c.edgeSessions
+	ch <- c.viewersGlobal
 	ch <- c.role
 	ch <- c.cachedKeyframe
 	for _, d := range c.counterDescs() {
@@ -207,6 +212,11 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(c.subscribers, float64(s.Subscribers), id)
 		gauge(c.reliableSubscribers, float64(s.ReliableSubscribers), id)
 		gauge(c.edgeSessions, float64(s.EdgeSessions), id)
+		// Origin hubs only (docs/23 Decision 9): an edge doesn't compute G,
+		// and a zero here would read as "no viewers" rather than "not mine".
+		if s.Role == "origin" {
+			gauge(c.viewersGlobal, float64(s.ViewersGlobal), id)
+		}
 		gauge(c.role, 1, id, s.Role)
 		gauge(c.cachedKeyframe, float64(s.CachedKeyframeBytes), id)
 

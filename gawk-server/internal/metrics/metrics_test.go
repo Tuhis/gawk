@@ -147,6 +147,8 @@ func TestRegistryCollectorScenario(t *testing.T) {
 		{"gawk_subscribers_active", nil, 1},
 		{"gawk_broadcast_publisher_active", b, 1},
 		{"gawk_broadcast_subscribers", b, 1},
+		// R18: the origin's pushed global count — one local viewer here.
+		{"gawk_broadcast_viewers_global", b, 1},
 		{"gawk_broadcast_frames_relayed_total", withKind(b, "delta"), 2},
 		{"gawk_broadcast_frames_relayed_total", withKind(b, "keyframe"), 1},
 		{"gawk_broadcast_datagrams_relayed_total", b, 2},
@@ -327,6 +329,14 @@ func TestLossAttributionByLeg(t *testing.T) {
 	}
 	if v := get("gawk_broadcast_role", map[string]string{"broadcast": obfEdge, "role": "edge"}); v != 1 {
 		t.Errorf("edge role gauge = %v, want 1", v)
+	}
+	// R18: viewers_global is an origin-only series — an edge hub doesn't
+	// compute G, and a zero would read as "no viewers" instead of "not mine".
+	if v := get("gawk_broadcast_viewers_global", map[string]string{"broadcast": obfOrigin}); v != 0 {
+		t.Errorf("origin viewers_global = %v, want 0 (no viewers attached)", v)
+	}
+	if v := get("gawk_broadcast_viewers_global", map[string]string{"broadcast": obfEdge}); v != -1 {
+		t.Errorf("edge hub emitted viewers_global: %v", v)
 	}
 }
 
