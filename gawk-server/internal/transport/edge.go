@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -593,7 +594,13 @@ func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Log
 		// QueryEscape so an arbitrary PSK can never break (or smuggle params
 		// into) the query string; the origin's Query().Get decodes it back.
 		target := "https://" + addr + path + "&psk=" + url.QueryEscape(psk)
-		rsp, sess, err := d.Dial(ctx, target, nil)
+
+		// Send the Origin header. This is hardcoded for now..
+		// TODO: Make this configurable and nice.
+		var reqHdr http.Header
+		reqHdr = http.Header{"Origin": []string{"gawk-server://native-internal-edge"}}
+
+		rsp, sess, err := d.Dial(ctx, target, reqHdr)
 		if err != nil {
 			_ = d.Close()
 			// The dialer is Go: HTTP statuses ARE readable here (unlike the
