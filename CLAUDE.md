@@ -238,6 +238,24 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   first (default off, mode change = deliberate reconnect), auto-detect
   deferred as a suggest-banner sketch; supersedes docs/12 Decision 1 **for
   this opt-in mode only**; docs/23 is R18 (designed 2026-07-18); X1–X6 chunks;
+  **designed 2026-07-18, not started**),
+  `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
+  Chromium viewer decoding real relayed frames as a GitHub Actions gate —
+  **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →
+  `serverCertificateHashes`, a new `gawk-pubsim` fixture-publisher CLI
+  reusing the native engine, playwright-core + preinstalled system Chrome
+  driving the production viewer, flow-shaped assertions on the R9
+  Copy-diagnostics JSON via the `clipboard.writeText` stub precedent);
+  **Tier 2** cluster-mode E2E **on release-please PRs only** (user
+  decision; fresh pinned kind cluster, real chart with 2 replicas +
+  clusterMode + NodePort over kind UDP `extraPortMappings` —
+  `kubectl port-forward` is TCP-only — origin/edge split proven from
+  per-pod `/statusz`/metrics; automates docs/22's pending two-pod smoke);
+  private-repo CI minutes (2,000 free/month, 2-core no-GPU runners) as a
+  design constraint — concurrency cancel-in-progress, timeout caps, no
+  push-to-main runs, advisory burn-in before checks become required;
+  browser-broadcaster tier is a droppable Z5 stretch with kill criteria;
+  Z1–Z5 chunks (`Y` is R18's — claimed by the concurrent docs/23 design);
   **designed 2026-07-18, not started**).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
@@ -793,6 +811,38 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    default off; mode change = deliberate reconnect); auto-detect deferred
    as a suggest-banner design sketch. Supersedes docs/12 Decision 1 for
    this opt-in mode only; default mode keeps datagrams.
+24. E2E testing in CI — **designed 2026-07-18 (Z1–Z5; `Y` is R18's,
+   claimed by the concurrent docs/23 design), not started**
+   (R20, `docs/25-e2e-testing-in-ci.md`). GitHub Actions proof that
+   streaming works before a release ships: **Tier 1** on every PR runs
+   the real relay (`-dev-cert`), publishes the committed H.264 fixture
+   through the real native engine via a new **`gawk-pubsim`** CLI
+   (`relay_integration_test.go`'s fixture source as a standalone tool —
+   no Gio imports, so no cgo/apt headers; also makes the manual
+   `gawk-loadgen` drills self-contained), and drives the **production
+   viewer in headless system Chromium** (playwright-core, the
+   `gawk-app:verify` recipes), asserting **flow-shaped** criteria from
+   the R9 Copy-diagnostics JSON captured via a `clipboard.writeText`
+   stub — never fps ceilings or latency numbers (2-core no-GPU runners).
+   **Tier 2** runs **only on release-please PRs** (user decision;
+   `workflow_dispatch` escape hatch): fresh pinned kind cluster, real
+   chart with `replicaCount=2` + `config.clusterMode=true` +
+   `service.type=NodePort` over kind UDP `extraPortMappings`
+   (`kubectl port-forward` is TCP-only and cannot carry WebTransport),
+   pubsim + ~12 loadgen sessions spreading across both pods, origin/edge
+   split asserted from per-pod `/statusz`/metrics — the automated
+   successor to docs/22's pending two-pod smoke (homelab drills and the
+   200-viewer scale proof stay manual). Private-repo minutes are a
+   design constraint (2,000 free/month): concurrency
+   cancel-in-progress, `timeout-minutes` caps, no push-to-main runs
+   (release PRs re-check every merged change), measured budget with a
+   trigger-narrowing-never-assertion-thinning fallback; both tiers land
+   advisory and flip to required after a flake-free burn-in.
+   Chromium-only v1 (Firefox deferred with a revisit-if); the
+   browser-broadcaster tier (getDisplayMedia automation) is a
+   pre-registered droppable stretch (Z5) whose documented rejection is a
+   valid completion. Z1's spike must confirm the one load-bearing
+   unknown: hash-pinned WebTransport in headless Chrome.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

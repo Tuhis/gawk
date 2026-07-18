@@ -38,6 +38,7 @@ feature set exists).
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | 📋 designed 2026-07-18 (Y1–Y6), not started ([docs/23](docs/23-live-viewer-count.md)) |
 | R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 📋 designed 2026-07-18 (X1–X6), not started ([docs/24](docs/24-viewer-network-resilience.md)) |
+| R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 📋 designed 2026-07-18 (Z1–Z5), not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 
 ---
 
@@ -1196,6 +1197,87 @@ one-paragraph amendment there when it lands), DVR/rewind.
 criteria), not started. User decisions anchoring scope: reliable-streams +
 extended-buffer mechanism; ~2 s adaptive latency budget; manual toggle
 first.
+
+---
+
+## R20 — E2E testing in CI
+
+**Goal**: a GitHub Actions pipeline that proves, before a release ships,
+that streaming actually works end-to-end — a real browser viewer decodes
+and renders real frames published through the real relay binary — in both
+**single-pod and cluster-mode** relay configurations. A regression that
+breaks streaming should fail checks on the release PR, not be discovered
+after the homelab auto-deploys the release.
+
+**Why**: every automated gate today stops below the browser. `go test
+-race` runs real in-process WebTransport servers, and
+`gawk-broadcast/internal/engine/relay_integration_test.go` even builds +
+runs the actual `gawk-server` binary and publishes a committed H.264
+fixture through the native engine — but nothing anywhere executes
+WebCodecs or a browser's WebTransport stack (the app's vitest suite is
+jsdom), which is exactly where field regressions keep surfacing: nearly
+every recent roadmap item carries a "manual browser verify pending" tail.
+Meanwhile deploys are automated cluster-side on release, so a broken
+release reaches the homelab unattended. R17 additionally left the
+kind/k3s two-pod smoke as a pending manual drill
+([docs/22](docs/22-relay-scale-out.md) "Verification plan") — the cluster
+tier here automates it. The repo being private makes CI minutes billable
+(2,000 free/month), so the pipeline is designed to a minutes budget.
+
+**Scope sketch** (full design in
+[`docs/25-e2e-testing-in-ci.md`](docs/25-e2e-testing-in-ci.md)):
+
+- **Tier 1 — single-pod browser E2E on every PR**: real relay with
+  `-dev-cert`, real video published by a new **`gawk-pubsim`** CLI (the
+  native engine replaying the committed H.264 fixture on loop — the
+  `relay_integration_test.go` pattern as a standalone tool, which also
+  makes the manual `gawk-loadgen` drills self-contained), and the
+  **production viewer page in headless system Chromium** via
+  playwright-core (the `gawk-app:verify` skill's recipes), TLS solved by
+  `cert_hash_hex` → the app's existing `serverCertificateHashes` support.
+- **Success signal = the viewer's own R9 diagnostics JSON** (captured via
+  the `clipboard.writeText` stub precedent), with **flow-shaped
+  assertions** sized for a contended 2-core runner — frames received /
+  decoded / rendered, no sustained stalls, ≈0 loopback ingress loss —
+  plus a composited-screenshot non-black check; never fps ceilings or
+  latency numbers.
+- **Tier 2 — cluster-mode E2E on release-please PRs only** (user
+  decision; `workflow_dispatch` escape hatch): fresh pinned **kind**
+  cluster per run, the real chart with `replicaCount=2` +
+  `config.clusterMode=true` + NodePort over kind `extraPortMappings`
+  UDP (`kubectl port-forward` is TCP-only), `gawk-pubsim` + ~12
+  `gawk-loadgen` sessions to spread across both pods, and per-pod
+  `/statusz`/metrics assertions proving the origin/edge split — the
+  automated successor to docs/22's pending two-pod smoke. Release-please
+  refreshes the release PR per main merge, so this still re-runs against
+  each merged change while a release is pending.
+- **Budget guardrails**: concurrency cancel-in-progress, hard
+  `timeout-minutes` caps, no push-to-main runs (every change arrives via
+  a PR and the release PR re-checks the aggregate), measured minutes
+  recorded with a trigger-narrowing (never assertion-thinning) fallback.
+- **Flake policy**: both tiers land advisory, flip to required after a
+  clean burn-in; every flake is a root-caused findings entry.
+- **Browser-broadcaster tier is a pre-registered droppable stretch**
+  (Z5): `getDisplayMedia` automation spike (`--auto-select-desktop-
+  capture-source` → Xvfb headful → injected `BroadcastMediaSource` hook)
+  with kill criteria — a documented rejection is a valid completion.
+
+**Non-goals**: replacing the hardware-bound manual verifies (gaming-PC
+hardware encode, iPhone native fullscreen — no CI runner has that
+hardware, or a GPU at all); performance/latency benchmarking (shared
+runners are far too noisy — functional "does it stream" only); the
+homelab-only drills (conntrack flush empiricism, ECMP/MetalLB behavior —
+kind has none of that physics); the 200-viewer scale proof (stays a
+manual drill); Firefox in v1 (deferred with a recorded revisit-if);
+CI-driven deploys (locked decision: CI publishes, the cluster deploys
+itself).
+
+**Status**: designed 2026-07-18 (chunks Z1–Z5 with per-chunk acceptance
+criteria — `Y` is R18's, claimed by the same-day docs/23 design), not
+started. User decisions anchoring scope: cluster-mode
+verification on release-please PRs only; free-tier CI minutes as a
+design constraint, held by trigger scoping rather than assertion
+thinning.
 
 ---
 
