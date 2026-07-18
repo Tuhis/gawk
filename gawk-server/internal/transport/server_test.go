@@ -1595,32 +1595,34 @@ func TestSubscribeReliableDeliversCarrierRecords(t *testing.T) {
 	sendKeyframeStream(t, pub, buildStreamKeyframe(t, 0, "avc1.42E02A", 512))
 	delta := encodeFrame(t, 1, false, 1)[0]
 	delta2 := encodeFrame(t, 2, false, 1)[0]
-	if err := pub.SendDatagram(delta); err != nil {
-		t.Fatalf("SendDatagram: %v", err)
-	}
-	if err := pub.SendDatagram(delta2); err != nil {
-		t.Fatalf("SendDatagram: %v", err)
-	}
 
 	// Accept server uni streams and dispatch by prologue type until both the
-	// keyframe and the two carrier records have arrived.
+	// keyframe and the two deltas (as carrier records) have arrived. Every
+	// read is bounded by `deadline`: deltas reach the relay as unreliable
+	// datagrams, so a carrier can legitimately sit one record short with the
+	// stream still open, and an unbounded Read then hangs the whole package
+	// (CI run 29663246454 — runners cap UDP buffers below what quic-go asks
+	// for and drop loopback datagrams under -race load).
+	deadline := time.Now().Add(10 * time.Second)
+	acceptCtx, acceptCancel := context.WithDeadline(ctx, deadline)
+	defer acceptCancel()
 	type result struct {
 		keyframes int
-		records   [][]byte
+		sawDelta  bool
+		sawDelta2 bool
 		err       error
 	}
 	resultCh := make(chan result, 1)
 	go func() {
 		var res result
 		defer func() { resultCh <- res }()
-		acceptCtx, acceptCancel := context.WithTimeout(ctx, 10*time.Second)
-		defer acceptCancel()
-		for res.keyframes < 1 || len(res.records) < 2 {
+		for res.keyframes < 1 || !res.sawDelta || !res.sawDelta2 {
 			str, err := sub.AcceptUniStream(acceptCtx)
 			if err != nil {
 				res.err = err
 				return
 			}
+			_ = str.SetReadDeadline(deadline)
 			prologue := make([]byte, 2)
 			if _, err := io.ReadFull(str, prologue); err != nil {
 				res.err = err
@@ -1639,20 +1641,30 @@ func TestSubscribeReliableDeliversCarrierRecords(t *testing.T) {
 					res.err = err
 					return
 				}
-				// Read records off the live carrier until we have enough (the
-				// stream stays open until the next rotation).
+				// Read records off the live carrier until both deltas are in
+				// hand (the stream stays open until the next rotation).
+				// Resends may duplicate a record — the relay forwards
+				// verbatim, so match by byte equality rather than position.
 				buf := make([]byte, 0, 4096)
 				tmp := make([]byte, 2048)
-				for len(res.records) < 2 {
+				for !res.sawDelta || !res.sawDelta2 {
 					n, err := str.Read(tmp)
 					if n > 0 {
 						buf = append(buf, tmp[:n]...)
 						for {
-							record, rest, err := wire.ParseCarrierRecord(buf)
-							if err != nil {
+							record, rest, perr := wire.ParseCarrierRecord(buf)
+							if perr != nil {
 								break // incomplete — read more
 							}
-							res.records = append(res.records, append([]byte(nil), record...))
+							switch {
+							case bytes.Equal(record, delta):
+								res.sawDelta = true
+							case bytes.Equal(record, delta2):
+								res.sawDelta2 = true
+							default:
+								res.err = fmt.Errorf("unexpected carrier record (%d bytes)", len(record))
+								return
+							}
 							buf = append(buf[:0], rest...)
 						}
 					}
@@ -1678,15 +1690,36 @@ func TestSubscribeReliableDeliversCarrierRecords(t *testing.T) {
 		}
 	}()
 
-	res := <-resultCh
+	// Send the deltas, and resend until the reader has both — datagrams are
+	// droppable even on loopback, and a drop must cost a resend, not the
+	// package timeout.
+	sendDeltas := func() {
+		if err := pub.SendDatagram(delta); err != nil {
+			t.Logf("SendDatagram delta: %v", err)
+		}
+		if err := pub.SendDatagram(delta2); err != nil {
+			t.Logf("SendDatagram delta2: %v", err)
+		}
+	}
+	sendDeltas()
+	var res result
+waitForRecords:
+	for {
+		select {
+		case res = <-resultCh:
+			break waitForRecords
+		case <-time.After(250 * time.Millisecond):
+			sendDeltas()
+		}
+	}
 	if res.err != nil {
 		t.Fatalf("subscriber stream read: %v", res.err)
 	}
 	if res.keyframes != 1 {
 		t.Errorf("keyframe streams = %d, want 1", res.keyframes)
 	}
-	if len(res.records) != 2 || !bytes.Equal(res.records[0], delta) || !bytes.Equal(res.records[1], delta2) {
-		t.Errorf("carrier records mismatch: got %d records", len(res.records))
+	if !res.sawDelta || !res.sawDelta2 {
+		t.Errorf("carrier records incomplete: sawDelta=%v sawDelta2=%v", res.sawDelta, res.sawDelta2)
 	}
 	select {
 	case d := <-dgramCh:
