@@ -632,8 +632,22 @@ findings), CLAUDE.md/ROADMAP status sync.
 
 **W1–W6 implemented 2026-07-16; all automated gates green.** The homelab
 drills (rollout/crash/rebind blip measurements, the W1 conntrack empiricism,
-the kind/k3s two-pod smoke, and the W6 load-tool scale proof against the real
-cluster) are **pending** — the in-process twins below stand in until then.
+and the W6 load-tool scale proof against the real cluster) are **pending** —
+the in-process twins below stand in until then.
+
+**The two-pod smoke is done and automated (2026-07-18)**: R20's tier-2 kind
+E2E (docs/25 Z3, the `e2e-cluster` job in `ci.yml`) installs the real chart
+with `replicas=2` + `clusterMode` on a pinned kind cluster, publishes via
+`gawk-pubsim`, spreads 12 `gawk-loadgen` viewers + a real headless-Chrome
+viewer across both pods over a UDP NodePort, and asserts the origin/edge
+split from per-pod `/statusz` (`e2e/cluster-assert.sh`). Its first full local
+run (docs/25 findings 4–5) showed origin `publisherActive` + `edgeSessions:
+1` and the edge pod serving real subscribers, with the browser viewer green
+against the cluster — the W3/W4 "kind/k3s" rows below are covered by that
+job from here on. It also surfaced one deploy gotcha: edge pods verify the
+internal dial's TLS against the **system root pool** (no
+`InsecureSkipVerify`, by design), so a non-cert-manager cluster needs
+`SSL_CERT_FILE` pointed at the mounted cert (docs/25 finding 5).
 
 Per-chunk status:
 

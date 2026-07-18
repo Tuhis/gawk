@@ -286,9 +286,9 @@ Tier 1 (every PR):                     Tier 2 (release PRs only):
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| Z1 | **`gawk-pubsim` + harness spike** — the fixture-publisher CLI (Decision 3); `e2e/` skeleton (Decision 4); local proof that headless system Chrome does WebTransport against `-dev-cert` via `serverCertificateHashes` (Decision 5 — the load-bearing unknown) and decodes the fixture | `gawk-pubsim` publishes the looping fixture against a local relay, visible in `/statusz` (Go test for the loop/timestamp logic; CLI smoke documented); harness run locally green end-to-end with the exact command recorded; diagnostics JSON captured via the clipboard stub with decoded frames > 0; **spike verdict recorded in this doc**: hash-pinned WebTransport in headless — works / needs SPKI flag / needs headful+Xvfb | 📋 not started |
-| Z2 | **Tier-1 CI job** — wire the harness into `ci.yml` (new `e2e` job, `pull_request` only); guardrails (concurrency cancel-in-progress, `timeout-minutes: 10`); assertions per Decision 6 | Job green on a real PR; deliberately-broken runs go red (kill `gawk-pubsim` mid-test → flow assertions fail; wrong broadcast ID → fails) — the test-the-test check; measured runtime ≤ 6 min recorded here; a force-push cancels the superseded run; job is advisory (not required yet) | 📋 not started |
-| Z3 | **Tier-2 kind job** — pinned kind + UDP `extraPortMappings`; image build (shared GHA cache scope) + `kind load`; real chart install (replicas=2, clusterMode, NodePort, test secrets); pubsim + loadgen + browser viewer; per-pod ops assertions (Decision 7); `release-please--*` gate + `workflow_dispatch` | Green on a release PR (or `workflow_dispatch`); chart's replicas>1-requires-clusterMode guard exercised; origin/edge split proven from per-pod `/statusz`/metrics with the browser viewer green; measured runtime ≤ 10 min recorded; docs/22 status updated to point at this as the automated two-pod smoke | 📋 not started |
+| Z1 | **`gawk-pubsim` + harness spike** — the fixture-publisher CLI (Decision 3); `e2e/` skeleton (Decision 4); local proof that headless system Chrome does WebTransport against `-dev-cert` via `serverCertificateHashes` (Decision 5 — the load-bearing unknown) and decodes the fixture | `gawk-pubsim` publishes the looping fixture against a local relay, visible in `/statusz` (Go test for the loop/timestamp logic; CLI smoke documented); harness run locally green end-to-end with the exact command recorded; diagnostics JSON captured via the clipboard stub with decoded frames > 0; **spike verdict recorded in this doc**: hash-pinned WebTransport in headless — works / needs SPKI flag / needs headful+Xvfb | ✅ done 2026-07-18 — **verdict: works, no flag, no Xvfb** (findings below) |
+| Z2 | **Tier-1 CI job** — wire the harness into `ci.yml` (new `e2e` job, `pull_request` only); guardrails (concurrency cancel-in-progress, `timeout-minutes: 10`); assertions per Decision 6 | Job green on a real PR; deliberately-broken runs go red (kill `gawk-pubsim` mid-test → flow assertions fail; wrong broadcast ID → fails) — the test-the-test check; measured runtime ≤ 6 min recorded here; a force-push cancels the superseded run; job is advisory (not required yet) | 🔧 implemented 2026-07-18; test-the-test passed locally (both breakages red); green-on-a-real-PR + measured runtime pending the first CI run |
+| Z3 | **Tier-2 kind job** — pinned kind + UDP `extraPortMappings`; image build (shared GHA cache scope) + `kind load`; real chart install (replicas=2, clusterMode, NodePort, test secrets); pubsim + loadgen + browser viewer; per-pod ops assertions (Decision 7); `release-please--*` gate + `workflow_dispatch` | Green on a release PR (or `workflow_dispatch`); chart's replicas>1-requires-clusterMode guard exercised; origin/edge split proven from per-pod `/statusz`/metrics with the browser viewer green; measured runtime ≤ 10 min recorded; docs/22 status updated to point at this as the automated two-pod smoke | 🔧 implemented 2026-07-18 **and the whole flow rehearsed locally on kind** (origin/edge split + browser green — findings below; this executed docs/22's pending two-pod smoke); green-on-a-release-PR + measured runtime pending |
 | Z4 | **Burn-in → required + budget findings** — flake log, minutes accounting, required-check flip; README/ROADMAP/CLAUDE status sync | ≥ 2 weeks / ~20 consecutive green release-PR runs with every flake root-caused in this doc's findings; measured monthly minutes projection recorded and within budget (Decision 2, incl. the trigger-narrowing fallback assessment); both tiers in the required set with tier 2 skipping cleanly on normal PRs; docs synced | 📋 not started |
 | Z5 | **Browser-broadcaster stretch (droppable)** — spike per Decision 9 order; if viable, a tier-1 variant where the browser publishes (pubsim retired from that scenario or kept as the cluster-tier publisher) | Either: browser-publisher scenario stable in CI at ≤ +3 min with capture path + encode funnel asserted from broadcaster diagnostics; **or** a documented rejection with per-path findings (flags/Xvfb/injection) and the kill criteria verdict — both are valid completions | 📋 not started |
 
@@ -298,6 +298,85 @@ Z5 and lands the release gate; Z4 runs as a calendar-time wrapper around
 normal development; Z5 is last and droppable. Nothing here blocks other
 roadmap work — R15/R18/R19 implementation PRs would simply start getting
 tier-1 verdicts once Z2 lands.
+
+## Implementation status & findings (2026-07-18)
+
+Z1 done, Z2/Z3 implemented and verified locally as far as a dev box can;
+what remains for their acceptance is CI's own half (green on a real PR /
+release PR, measured runtimes) plus Z4's calendar-gated burn-in. Z5 not
+started.
+
+1. **Z1 spike verdict: hash-pinned WebTransport in headless Chrome works
+   outright.** New-headless Chrome for Testing 149 (playwright-core driving
+   the playwright Chromium build locally; CI uses the runner's system
+   Chrome) connected to `gawk-server -dev-cert` purely via
+   `serverCertificateHashes` — the harness seeds the scraped
+   `cert_hash_hex` into the app's persisted `gawk.certHashHex` before
+   navigation. No `--ignore-certificate-errors-spki-list`, no headful, no
+   Xvfb. The full production pipeline ran in that browser: nested
+   transport/decode workers, WebCodecs, WebGL sink, adaptive pacing +
+   interpolation (rendered fps reads ≈2× received — the R12 α=0.5
+   mid-slots; the flow floors are unaffected).
+2. **Tier-1 local run is green end to end** — exact commands in
+   `e2e/README.md` (`node run.mjs` after building `e2e/bin/` + the app).
+   Measured flow on this dev box: received/decoded ≈ 30/30 fps, 140 frames
+   completed between the two captures, canvas luma stddev ≈ 71 (colorful),
+   relay `/statusz` zero ingress loss. The one local-env wrinkle (not a CI
+   concern): a distro with no system Chrome needs
+   `libnss3/libnspr4/libasound2t64`, extractable user-space via
+   `apt-get download` + `dpkg -x` + `LD_LIBRARY_PATH`.
+3. **Test-the-test passed (Z2's meta-criterion, run locally)**: a wrong
+   broadcast ID → red (timeout waiting for the first completed frame,
+   through the one in-harness retry); killing the publisher mid-run → red
+   (`last frame 4081 ms ago, want < 3000`, then the retry times out since
+   the publisher stays dead). A third breakage was observed by accident
+   during bring-up: a stale relay holding the port while the harness
+   pinned the fresh (dead) relay's hash → the viewer never connects — the
+   cert-mismatch failure mode fails closed as designed.
+4. **The tier-2 flow was rehearsed locally on a real kind cluster** with
+   exactly the workflow's pins (kind v0.30.0, `kindest/node:v1.34.0`,
+   helm v3.19.0) — this executed docs/22's pending **two-pod smoke** for
+   real: chart install with `replicas=2` + `clusterMode` + NodePort 30443 +
+   throwaway fleet secrets came up clean; pubsim + 12 `gawk-loadgen`
+   viewers + the browser all rode the kind UDP `extraPortMappings`;
+   per-pod `/statusz` showed the split (origin: `publisherActive`, 8 local
+   subscribers, `edgeSessions: 1`; edge: `role: "edge"`, 4 local
+   subscribers, framesRelayed within 5 of the origin's) and the browser
+   viewer stayed green against the cluster. The kubectl pin (v1.34.0) is
+   the one thing the rehearsal didn't exercise (local kubectl served); the
+   first CI run covers it.
+5. **Edge pods verify internal TLS against the system root pool** — the
+   R17 edge dialer deliberately never sets `InsecureSkipVerify`, so a
+   self-signed E2E cert would break the origin→edge pull. The fix needs
+   zero code: `SSL_CERT_FILE=/tls/tls.crt` via the chart's `extraEnv`
+   makes Go's root pool the mounted self-signed cert itself (a self-signed
+   cert verifies as its own root; SANs must cover
+   `config.internalServerName`, hence `-hosts localhost,127.0.0.1` and
+   `internalServerName=localhost`). Worth remembering for any
+   non-cert-manager cluster deploy.
+6. **Chart change**: `service.nodePort` (empty default renders nothing) so
+   kind can map a fixed host port; exercised by the rehearsal.
+   `config.connBurstLimit=50` in the tier-2 install because every session
+   arrives SNAT'd from one host IP through the kind portmap — the default
+   3/s bucket would reject part of the 13-session join herd.
+7. **The fixture moved** from `internal/mpegts/testdata/sample.ts` to a new
+   `internal/fixture` package (embedded as `fixture.TS`): `go:embed`
+   requires colocation, and embedding is what makes `gawk-pubsim` a
+   self-contained binary for the manual W6 drill. The mpegts/engine/gst
+   tests now read `fixture.TS`/the new path; provenance README moved with
+   it.
+8. **`gawk-loadgen`'s `gaps` counter over-counts by design since R8**:
+   keyframes ride reliable streams, so the datagram frameID sequence skips
+   one ID per GOP — exactly 2 gaps/s/viewer at the fixture cadence, which
+   the kind rehearsal reproduced (24 gaps/s, 12 viewers). Read `gaps` as a
+   delta over that structural baseline, never as absolute loss (comment
+   now also on the counter itself).
+9. **Advisory status**: both jobs land as non-required checks; the Z4
+   burn-in (≥ 2 weeks / ~20 green release-PR runs, every flake root-caused
+   here) gates the required flip. Runtime budget will be measured from the
+   first real runs (estimate from local timings: tier 1 well under the
+   6-minute target; tier 2's cluster bring-up was ~1 min on a warm image —
+   CI's cold node-image pull adds the documented ~1 min).
 
 ## Verification plan (the meta-question: how we know the E2E itself works)
 

@@ -38,11 +38,12 @@ getDisplayMedia
 |------|------|
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R18), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`22`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`25`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `wire/` is public so the native broadcaster can import it. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
-| `gawk-broadcast/` | Go native Linux broadcaster (R14): Gio GUI + CLI over a shared engine, hardware encode via portal + GStreamer. Own module, own release; no image or chart — a binary you run on your own PC. See its [README](gawk-broadcast/README.md) |
+| `gawk-broadcast/` | Go native Linux broadcaster (R14): Gio GUI + CLI over a shared engine, hardware encode via portal + GStreamer. Own module, own release; no image or chart — a binary you run on your own PC. Also home of `gawk-pubsim` (R20): the engine replaying the committed H.264 fixture as a deterministic synthetic publisher for CI and drills. See its [README](gawk-broadcast/README.md) |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
-| `.github/workflows/` | CI (test/lint/build on PR + main) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
+| `e2e/` | R20 browser E2E harness: headless-Chrome viewer against a real relay fed by `gawk-pubsim`, plus the kind cluster config + per-pod assertions for the cluster tier. See [`e2e/README.md`](e2e/README.md) and [docs/25](docs/25-e2e-testing-in-ci.md) |
+| `.github/workflows/` | CI (test/lint/build on PR + main; R20 browser E2E on PRs, cluster E2E on release PRs) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
 
 ## Quickstart (local dev)
 
@@ -82,6 +83,11 @@ go run ./cmd/gawk-echo -cert-hash <cert_hash_hex>   # datagram RTT test
 cd gawk-server && go vet ./... && CGO_ENABLED=1 go test -race ./...
 cd gawk-app    && npm test && npm run lint && npm run build
 ```
+
+Browser E2E (R20): a real headless-Chrome viewer decoding real relayed
+frames runs on every PR (`e2e` job), and a 2-replica cluster-mode variant on
+kind runs on release PRs (`e2e-cluster`). Locally: see
+[`e2e/README.md`](e2e/README.md).
 
 ### Containers & deployment
 
@@ -529,6 +535,19 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   ([docs/05](docs/05-resilience-deploy.md))
 - **release-please `extra-files` paths are package-relative** — a repo-
   relative path silently leaves Chart.yaml unbumped.
+- **Edge pods verify the internal origin dial against the system root
+  pool** — the R17 edge dialer deliberately never sets
+  `InsecureSkipVerify`, so on a cluster without cert-manager (the R20 kind
+  E2E, any self-signed install) the origin→edge pull fails TLS unless the
+  pods trust the cert: set `SSL_CERT_FILE=/tls/tls.crt` via the chart's
+  `extraEnv` (Go then uses the mounted self-signed cert as its root pool;
+  its SANs must cover `config.internalServerName`).
+  ([docs/25](docs/25-e2e-testing-in-ci.md))
+- **`gawk-loadgen`'s `gaps` counter has a structural baseline** — keyframes
+  ride reliable streams (R8), so the datagram frameID sequence skips one ID
+  per GOP: a healthy stream reads (keyframes/s × viewers) gaps/s. Only
+  growth beyond that baseline is loss/reorder.
+  ([docs/25](docs/25-e2e-testing-in-ci.md))
 
 ## License
 

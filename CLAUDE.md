@@ -270,7 +270,13 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   push-to-main runs, advisory burn-in before checks become required;
   browser-broadcaster tier is a droppable Z5 stretch with kill criteria;
   Z1–Z5 chunks (`Y` is R18's — claimed by the concurrent docs/23 design);
-  **designed 2026-07-18, not started**).
+  **Z1 done + Z2/Z3 implemented 2026-07-18** — spike verdict: hash-pinned
+  WebTransport works in headless Chrome as-is; `gawk-pubsim` lives in
+  `gawk-broadcast/cmd/` (fixture embedded via the new `internal/fixture`
+  package), the harness in top-level `e2e/`; test-the-test passed locally
+  and the tier-2 flow was rehearsed on a local kind cluster (= docs/22's
+  two-pod smoke, incl. the `SSL_CERT_FILE=/tls/tls.crt` edge-TLS-trust
+  finding); first CI runs + Z4 burn-in pending, Z5 not started).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -841,8 +847,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `subscriberDetails.reliable` + carrier counters, Prometheus
    `gawk_broadcast_reliable_subscribers` + `carrier_*_total` +
    `egress_bytes_total{kind="carrier"}`, docs/13 playbook row.
-24. E2E testing in CI — **designed 2026-07-18 (Z1–Z5; `Y` is R18's,
-   claimed by the concurrent docs/23 design), not started**
+24. E2E testing in CI — **Z1 done + Z2/Z3 implemented 2026-07-18 (first
+   CI runs + Z4 burn-in pending; Z5 stretch not started; `Y` is R18's,
+   claimed by the concurrent docs/23 design)**
    (R20, `docs/25-e2e-testing-in-ci.md`). GitHub Actions proof that
    streaming works before a release ships: **Tier 1** on every PR runs
    the real relay (`-dev-cert`), publishes the committed H.264 fixture
@@ -871,8 +878,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    Chromium-only v1 (Firefox deferred with a revisit-if); the
    browser-broadcaster tier (getDisplayMedia automation) is a
    pre-registered droppable stretch (Z5) whose documented rejection is a
-   valid completion. Z1's spike must confirm the one load-bearing
-   unknown: hash-pinned WebTransport in headless Chrome.
+   valid completion. Z1's spike confirmed the one load-bearing unknown:
+   **hash-pinned WebTransport works in headless Chrome as-is** (no SPKI
+   flag, no Xvfb — docs/25 findings).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

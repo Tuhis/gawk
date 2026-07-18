@@ -38,7 +38,7 @@ feature set exists).
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | 📋 designed 2026-07-18 (Y1–Y6), not started ([docs/23](docs/23-live-viewer-count.md)) |
 | R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 🚧 X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification pending ([docs/24](docs/24-viewer-network-resilience.md)) |
-| R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 📋 designed 2026-07-18 (Z1–Z5), not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
+| R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18 (spike: headless hash-pinned WebTransport works; tier-2 rehearsed on local kind = docs/22's two-pod smoke); first CI runs + Z4 burn-in pending; Z5 stretch not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 
 ---
 
@@ -1249,7 +1249,7 @@ tier here automates it. The repo being private makes CI minutes billable
   latency numbers.
 - **Tier 2 — cluster-mode E2E on release-please PRs only** (user
   decision; `workflow_dispatch` escape hatch): fresh pinned **kind**
-  cluster per run, the real chart with `replicaCount=2` +
+  cluster per run, the real chart with `replicas=2` +
   `config.clusterMode=true` + NodePort over kind `extraPortMappings`
   UDP (`kubectl port-forward` is TCP-only), `gawk-pubsim` + ~12
   `gawk-loadgen` sessions to spread across both pods, and per-pod
@@ -1278,9 +1278,17 @@ manual drill); Firefox in v1 (deferred with a recorded revisit-if);
 CI-driven deploys (locked decision: CI publishes, the cluster deploys
 itself).
 
-**Status**: designed 2026-07-18 (chunks Z1–Z5 with per-chunk acceptance
-criteria — `Y` is R18's, claimed by the same-day docs/23 design), not
-started. User decisions anchoring scope: cluster-mode
+**Status**: Z1 done + Z2/Z3 implemented 2026-07-18 (chunks Z1–Z5 with
+per-chunk acceptance criteria — `Y` is R18's, claimed by the same-day
+docs/23 design). The Z1 spike verdict: **hash-pinned WebTransport works in
+headless Chrome as-is** (no SPKI flag, no Xvfb). Test-the-test passed
+locally (publisher killed / wrong ID both go red), and the whole tier-2
+flow was rehearsed on a local kind cluster — executing docs/22's pending
+two-pod smoke (origin/edge split proven from per-pod `/statusz`, browser
+viewer green against the cluster). Pending: first real PR / release-PR CI
+runs with measured runtimes, then the Z4 burn-in → required flip; Z5
+stretch not started. See docs/25 "Implementation status & findings".
+User decisions anchoring scope: cluster-mode
 verification on release-please PRs only; free-tier CI minutes as a
 design constraint, held by trigger scoping rather than assertion
 thinning.
