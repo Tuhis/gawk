@@ -5,12 +5,20 @@
 #
 # No path filters on purpose: the whole matrix takes a few minutes, and
 # skipped-vs-required check semantics aren't worth it at this repo size.
+#
+# The R20 E2E jobs (docs/25) deviate from the rest of the matrix on purpose:
+# they run on pull_request ONLY, never on push to main — every change reaches
+# main through a PR, and the release-please PR re-runs them against the
+# merged aggregate, so a main-push re-run would double the billable minutes
+# for near-zero information (docs/25 Decision 1). workflow_dispatch exists as
+# the on-demand escape hatch for the cluster tier.
 name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -152,6 +160,57 @@ jobs:
       - run: helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
       - run: helm template gawk-server/deploy/charts/gawk-server > /dev/null
       - run: helm template gawk-app/deploy/charts/gawk-app > /dev/null
+
+  # R20 tier 1 (docs/25): browser E2E on every PR — the real relay
+  # (-dev-cert), the real native engine publishing the committed H.264
+  # fixture (gawk-pubsim), and the production viewer surface in headless
+  # system Chrome, with flow-shaped assertions read from the viewer's own
+  # Copy-diagnostics JSON. Advisory until the docs/25 Z4 burn-in completes.
+  e2e:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A force-push supersedes the previous run instead of paying for it.
+    concurrency:
+      group: e2e-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-broadcast/go.sum
+      - name: Build the relay and the fixture publisher
+        run: |
+          mkdir -p e2e/bin
+          (cd gawk-server && go build -o ../e2e/bin/gawk-server ./cmd/gawk-server)
+          # gawk-pubsim imports engine+wire only — no Gio, so unlike the
+          # broadcast job this needs no cgo or apt headers (docs/25 D3).
+          (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            gawk-app/package-lock.json
+            e2e/package-lock.json
+      - run: npm ci
+        working-directory: gawk-app
+      - run: npm run build
+        working-directory: gawk-app
+      - run: npm ci
+        working-directory: e2e
+      - name: Run the browser E2E (headless system Chrome)
+        run: node run.mjs
+        working-directory: e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-tier1-${{ github.run_id }}
+          path: e2e/out/
+          retention-days: 7
 
   docker:
     runs-on: ubuntu-latest
