@@ -504,22 +504,25 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 	}
 }
 
-// Decision 10: the reclaim path, and the status that makes it legible —
-// under R17 rules: every /publish/{id} claim carries the relay-minted resume
-// token (a bare claim is 403, the designed graced-ID-hijack fix), and only a
-// token-bearing claim can even reach the 409 that means "someone is already
-// publishing".
-func TestReclaimAndConflictAgainstRealRelay(t *testing.T) {
+// Decision 10's claim path under R17 rules, revised per docs/06 (2026-07-18):
+// every /publish/{id} claim carries the relay-minted resume token (a bare
+// claim is 403, the designed graced-ID-hijack fix), and a token-bearing claim
+// of a live ID now SUPERSEDES the incumbent session — the relay cannot tell a
+// zombie publisher from a live one inside the QUIC idle window, and the old
+// 409 there forced the mint fallback that orphaned every viewer.
+func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
 	relayURL, _ := startRelay(t)
 
 	src := newFixtureSource(t, engine.NewClock())
 	gotID := make(chan string, 1)
 	gotToken := make(chan string, 1)
+	ended := make(chan struct{}, 1)
 	sess := engine.New(
 		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
 		engine.Callbacks{
 			OnBroadcastID: func(id string) { gotID <- id },
 			OnResumeToken: func(token string) { gotToken <- token },
+			OnEnded:       func() { ended <- struct{}{} },
 		},
 		engine.Options{MediaFactory: src.factory()},
 	)
@@ -539,48 +542,59 @@ func TestReclaimAndConflictAgainstRealRelay(t *testing.T) {
 		t.Fatal("no resume token — an R17 relay mints one on every publish")
 	}
 
-	// A second publisher on the same live ID, holding the token, is a
-	// conflict — and the browser cannot tell this from any other dial
-	// failure. We can.
+	// A second publisher claiming the same live ID with the token wins the
+	// slot (newest publisher wins) and announces the same code.
 	src2 := newFixtureSource(t, engine.NewClock())
+	takenOver := make(chan string, 1)
 	sess2 := engine.New(
 		engine.Config{RelayURL: relayURL, BroadcastID: id, ResumeToken: token, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{},
+		engine.Callbacks{OnBroadcastID: func(id string) { takenOver <- id }},
 		engine.Options{MediaFactory: src2.factory()},
 	)
-	err := sess2.Start(context.Background())
-	se, ok := engine.AsStartError(err)
-	if !ok {
-		t.Fatalf("second publisher error = %v, want *StartError", err)
+	if err := sess2.Start(context.Background()); err != nil {
+		t.Fatalf("superseding publisher Start = %v, want success", err)
 	}
-	if se.Status != http.StatusConflict {
-		t.Errorf("status = %d, want 409 — the relay says someone is already publishing", se.Status)
-	}
-	if se.Phase != engine.PhaseConnect {
-		t.Errorf("phase = %q, want connect (so the GUI may fall back to minting)", se.Phase)
+	select {
+	case got := <-takenOver:
+		if got != id {
+			t.Errorf("takeover announced %q, want the original %q", got, id)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("takeover announced no code")
 	}
 
-	// Without the token the same claim never reaches the conflict check:
-	// 403, the R17 hijack fix working as designed.
+	// The deposed first session ends on its own — the relay closes it with
+	// CloseCodePublisherSuperseded — without Stop ever being called on it.
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first session did not end after being superseded")
+	}
+
+	// Without the token the same claim never reaches the takeover: 403, the
+	// R17 hijack fix working as designed — supersede is owner-only.
 	src2b := newFixtureSource(t, engine.NewClock())
 	sess2b := engine.New(
 		engine.Config{RelayURL: relayURL, BroadcastID: id, Insecure: true, Media: engine.DefaultMediaConfig()},
 		engine.Callbacks{},
 		engine.Options{MediaFactory: src2b.factory()},
 	)
-	err = sess2b.Start(context.Background())
-	se, ok = engine.AsStartError(err)
+	err := sess2b.Start(context.Background())
+	se, ok := engine.AsStartError(err)
 	if !ok {
 		t.Fatalf("tokenless claim error = %v, want *StartError", err)
 	}
 	if se.Status != http.StatusForbidden {
 		t.Errorf("tokenless claim status = %d, want 403 (resume token required)", se.Status)
 	}
-
-	// Now the first publisher leaves, and the ID becomes reclaimable — with
-	// the token.
-	sess.Stop()
+	// src2b is deliberately not Stop()ped: the claim failed at connect, so
+	// the engine never Start()ed the source, and fixtureSource.Stop blocks
+	// on a done channel only its (never-spawned) feeder goroutine closes.
 	src.Stop()
+
+	// A clean stop still leaves the ID reclaimable.
+	sess2.Stop()
+	src2.Stop()
 
 	src3 := newFixtureSource(t, engine.NewClock())
 	reclaimed := make(chan string, 1)

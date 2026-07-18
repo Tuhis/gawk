@@ -69,6 +69,14 @@ export const CLOSE_CODE_SERVER_DRAINING = 4002;
 // Internal edge sessions only (R17 W5): the origin lost its Lease and is
 // demoting. Browsers never receive it — mirrored for namespace parity.
 export const CLOSE_CODE_ORIGIN_MOVED = 4003;
+// The relay deposed this publisher session because a newer session claimed
+// its broadcast ID with a verified resume token (docs/06 revision
+// 2026-07-18: newest publisher wins — the relay can't tell a silently-dead
+// publisher from a live one inside the QUIC idle window, and 409ing the
+// reclaim orphaned every viewer). In practice it lands on the broadcaster's
+// own zombie session; a live session receiving it has been replaced and
+// must not resume back. Mirrored from Go wire.CloseCodePublisherSuperseded.
+export const CLOSE_CODE_PUBLISHER_SUPERSEDED = 4004;
 
 // Wire frameIds are uint32 and wrap; consumers must compare them with serial
 // arithmetic (RFC 1982 flavored), not `<`/`>`. `a` is ahead of `b` when the

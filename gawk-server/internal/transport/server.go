@@ -534,15 +534,19 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			s.edges.StopEdge(normID)
 		}
 
+		// ErrPublisherActive is NOT a rejection (docs/06 revision
+		// 2026-07-18): the slot holder may be this same broadcaster's
+		// silently-dead previous session, which the relay cannot tell from a
+		// live one until the QUIC idle timeout fires — and a 409 here forced
+		// clients into a mint fallback that orphaned every viewer. The
+		// verified resume token is proof of ownership, so newest publisher
+		// wins — the same-pod counterpart of the lease force-take below —
+		// but the depose happens only after a successful upgrade, so a
+		// malformed request can never take down a healthy publisher.
 		id, pub, err = s.registry.ResumePublish(normID)
-		if err != nil {
+		if err != nil && !errors.Is(err, hub.ErrPublisherActive) {
 			s.log.Warn("publish claim rejected",
 				"id", normID, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
-			if errors.Is(err, hub.ErrPublisherActive) {
-				s.metrics.Connection("publish", metrics.OutcomeConflict)
-				w.WriteHeader(http.StatusConflict)
-				return
-			}
 			if errors.Is(err, hub.ErrMaxBroadcasts) {
 				s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
 				w.WriteHeader(http.StatusTooManyRequests)
@@ -557,8 +561,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// ownership that force-takes the origin Lease — even from a live
 		// holder (NAT rebind / re-home; the old origin's watch fires and it
 		// demotes, W5). The hub claim above is released on failure so no
-		// zombie slot survives a lost lease race.
-		if s.cluster != nil {
+		// zombie slot survives a lost lease race. On the takeover path
+		// (pub == nil) this is deferred to after the upgrade, beside the
+		// local depose.
+		if pub != nil && s.cluster != nil {
 			if _, err := s.cluster.Claim(r.Context(), id, true); err != nil {
 				pub.Close()
 				s.metrics.Connection("publish", metrics.OutcomeError)
@@ -570,7 +576,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 		sess, err = s.wt.Upgrade(w, r)
 		if err != nil {
-			pub.Close() // Release on upgrade failure
+			if pub != nil {
+				pub.Close() // Release on upgrade failure
+			}
 			s.metrics.Connection("publish", metrics.OutcomeUpgradeFailed)
 			s.log.Warn("publish upgrade failed", "err", err)
 			// Upgrade never writes on failure (checked v0.11.1) — without
@@ -578,6 +586,29 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			// believe it connected (docs/22 finding 12).
 			w.WriteHeader(http.StatusForbidden)
 			return
+		}
+
+		if pub == nil {
+			// Another session holds the slot: depose it now that this
+			// session is real (docs/06 revision 2026-07-18).
+			id, pub, err = s.registry.TakeOverPublish(normID)
+			if err != nil {
+				// The broadcast was GC'd between the claim attempt and the
+				// takeover.
+				s.metrics.Connection("publish", metrics.OutcomeNotFound)
+				s.log.Warn("publish takeover failed", "id", normID, "err", err)
+				sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
+				return
+			}
+			if s.cluster != nil {
+				if _, cerr := s.cluster.Claim(r.Context(), id, true); cerr != nil {
+					pub.Close()
+					s.metrics.Connection("publish", metrics.OutcomeError)
+					s.log.Warn("origin lease claim failed", "id", id, "err", cerr)
+					sess.CloseWithError(webtransport.SessionErrorCode(http.StatusServiceUnavailable), "failed to claim origin lease")
+					return
+				}
+			}
 		}
 	} else {
 		// Mint path: reject at-capacity pre-upgrade so the browser sees a
@@ -636,6 +667,17 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	defer pub.Close()
 	defer s.trackSession(sess)()
 	defer s.trackPublisher(id, sess)()
+
+	// Bind the session so a later token-bearing claim can depose this
+	// publisher. A false return means a takeover already won while this
+	// session was between its pre-upgrade claim and here — end it rather
+	// than publish into a deposed broadcast.
+	if !pub.BindConn(&webtransportSessionAdapter{sess}) {
+		s.metrics.Connection("publish", metrics.OutcomeConflict)
+		s.log.Info("publisher superseded during setup", "broadcast_id", id)
+		sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodePublisherSuperseded), "superseded by a new publisher session")
+		return
+	}
 
 	// Send BroadcastAnnounce, then the ResumeToken (R17 W2), each on its own
 	// server-initiated uni stream. Separate streams keep old *browser*

@@ -410,24 +410,58 @@ func TestRelayPublishToSubscribe(t *testing.T) {
 	}
 }
 
-func TestSecondPublisherConflict(t *testing.T) {
+// The zombie-publisher lockout (docs/06 revision 2026-07-18): the field logs
+// showed reclaims 409ing against the broadcaster's own silently-dead previous
+// session — still holding the slot inside the QUIC idle window — which forced
+// the client into a mint fallback that orphaned every viewer (the old
+// broadcast was GC'd mid-stream). A reclaim that completes its upgrade must
+// instead depose the incumbent session: newest publisher wins.
+func TestReclaimSupersedesActivePublisher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	port, clientTLS, _, _ := startTestServer(t, ctx, 15)
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
 
 	first, id, token := dialPublisherHandshake(t, ctx, port, clientTLS)
-	_ = first
+	waitFor(t, 5*time.Second, func() bool {
+		return r.Stats().Broadcasts[r.ObfuscateID(id)].PublisherActive
+	}, "first publisher registered")
 
-	// Even with a valid resume token (W2), a live publisher slot is a 409 —
-	// the token authenticates ownership, it doesn't evict the live session.
-	reclaimURL := fmt.Sprintf("https://127.0.0.1:%d/publish/%s?resume=%s", port, id, token)
-	rsp, sess, err := dialOnce(t, ctx, reclaimURL, clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
+	defer sub.CloseWithError(0, "")
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+
+	// Token-bearing reclaim while the first session still holds the slot (the
+	// zombie shape: the relay cannot tell it apart from a live one).
+	second := dialPublisherReclaim(t, ctx, port, id, token, clientTLS)
+	defer second.CloseWithError(0, "")
+
+	// The first session is kicked with the superseded close code.
+	actx, acancel := context.WithTimeout(ctx, 5*time.Second)
+	defer acancel()
+	_, err := first.AcceptUniStream(actx)
 	if err == nil {
-		sess.CloseWithError(0, "")
-		t.Fatal("second publisher dial succeeded, want 409 rejection")
+		t.Fatal("first publisher session still alive after takeover, want superseded close")
 	}
-	if rsp == nil || rsp.StatusCode != http.StatusConflict {
-		t.Fatalf("second publisher response = %v (err %v), want status 409", rsp, err)
+	var serr *webtransport.SessionError
+	if !errors.As(err, &serr) || !serr.Remote || serr.ErrorCode != webtransport.SessionErrorCode(wire.CloseCodePublisherSuperseded) {
+		t.Fatalf("first publisher close = %v, want remote session error %d", err, wire.CloseCodePublisherSuperseded)
+	}
+
+	// The new session owns a working slot: its frames reach the subscriber
+	// that was attached before the takeover.
+	before := r.Stats().Broadcasts[r.ObfuscateID(id)].FramesRelayed
+	for _, d := range encodeFrame(t, 1, false, 1) {
+		if err := second.SendDatagram(d); err != nil {
+			t.Fatalf("SendDatagram from reclaimed session: %v", err)
+		}
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return r.Stats().Broadcasts[r.ObfuscateID(id)].FramesRelayed > before
+	}, "frame relayed from the reclaimed session")
+	rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+	defer rcancel()
+	if _, err := sub.ReceiveDatagram(rctx); err != nil {
+		t.Fatalf("subscriber did not receive the reclaimed session's frame: %v", err)
 	}
 }
 

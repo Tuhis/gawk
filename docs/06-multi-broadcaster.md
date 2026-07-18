@@ -408,3 +408,69 @@ counters of subscribers still live at GC time vanished from `/statusz`
 totals). Note the E3 criterion above originally read "caches intact" on
 reclaim — ambiguous; the implemented (and correct, v0.4-consistent) rule is
 that a reclaim resets the caches like any new publisher session.
+
+## Revision (2026-07-18): reclaim supersedes a zombie publisher
+
+**Field finding.** The production relay logs (2026-07-16 → 2026-07-17)
+showed the exact failure this design accepted as a corner case, firing
+repeatedly for the R14 native broadcaster: a publisher whose session dies
+*silently* (crash, network cut — no clean close) keeps holding the
+publisher slot until the relay's QUIC idle timeout (~30 s) notices. A
+restart inside that window reclaims its own ID, gets **409
+`ErrPublisherActive` from its own zombie session**, and — per the
+"zombie session ⇒ 409 ⇒ fall back to mint" rule above — mints a fresh ID.
+The old broadcast, with every viewer attached, is then GC'd at the end of
+its grace period **while the same broadcaster is actively streaming** under
+the new ID (log signature: `publish reclaim rejected … hub: a publisher is
+already active` → new-ID `publisher session started` → old-ID
+`timeout: no recent network activity` → old-ID `broadcast expired and
+garbage collected` with subscribers > 0). Viewers get close code 4000 and
+the shared link dies.
+
+**Change: newest publisher wins.** A claim (`CONNECT /publish/{id}`)
+arriving while the slot is held is no longer rejected — the relay cannot
+distinguish a zombie from a live publisher inside the idle window, and the
+claimant has proven ownership with the R17 W2 **resume token** (the token
+gate runs before any hub state is consulted; a tokenless claim stays 403).
+This is the same-pod counterpart of R17 W3's rule that a verified token
+force-takes the origin *Lease* even from a live holder — after this
+revision the local slot and the cluster lease agree. Mechanics:
+
+- `Registry.TakeOverPublish(id)` deposes the incumbent under the registry
+  lock (marks its `Publisher` handle closed so late datagrams/keyframes
+  drop and its handler's deferred `Close` is a no-op — **no grace timer,
+  no `OnPublisherClosed` lease release**; the slot and the lease stay with
+  the new publisher) and claims the slot exactly like a reclaim
+  (generation bump, cache + ingress-window reset, grace-timer cancel if
+  one was running, role flips to origin like any real publisher claim).
+- The deposed *session* is closed with new close code **4004
+  `CloseCodePublisherSuperseded`** (`CLOSE_CODE_PUBLISHER_SUPERSEDED` in
+  the TS mirror), outside the lock. In practice it lands on an
+  already-dead session; a live client receiving it has been replaced and
+  must not resume back (neither broadcaster client auto-reconnects on
+  session end, so no flapping is possible by construction).
+- **Takeover happens only after the claiming session completes its
+  WebTransport upgrade.** The pre-upgrade `ResumePublish` still runs (403
+  tokenless / 404 invalid-ID stay clean pre-upgrade rejections);
+  `ErrPublisherActive` now defers the decision to after `Upgrade`, so a
+  malformed request (not a real WebTransport client) dies at the upgrade
+  without deposing a healthy publisher. On the takeover path the cluster
+  Lease force-take is likewise deferred to after the upgrade.
+- The transport binds each publisher session to its `Publisher` via
+  `BindConn` after the upgrade; a `false` return means a takeover won the
+  race between claim and bind, and the session ends itself with 4004.
+
+The frontends need no change: the browser's reclaim→mint fallback and the
+engine's Resume rule (`phase === 'connect'` only) stay as-is — with the 409
+gone, the owner's claim simply succeeds in the zombie window, which was
+always the intent.
+
+| Goal | Verified by |
+|------|-------------|
+| Takeover deposes an active publisher: old session closed with 4004, old handle inert (late datagrams dropped, `Close` arms no grace timer), caches reset, new publisher's frames flow to pre-existing subscribers | `hub`: `TestTakeOverSupersedesActivePublisher` |
+| Takeover on an inactive broadcast behaves like a plain reclaim (grace timer cancelled) | `hub`: `TestTakeOverOnInactiveBehavesLikeReclaim` |
+| Unknown ID still `ErrNotFound` | `hub`: `TestTakeOverPublishNotFound` |
+| Claim→bind race detected (`BindConn` reports deposed) | `hub`: `TestBindConnAfterTakeOverReportsDeposed` |
+| End-to-end: token-bearing reclaim over a live session succeeds, first session sees remote 4004, subscriber attached before the takeover receives the new session's frames; tokenless claim stays 403 | `transport`: `TestReclaimSupersedesActivePublisher`; `engine`: `TestReclaimSupersedesAgainstRealRelay` |
+| A reclaim that fails its upgrade deposes nothing (incumbent stays active, no grace timer) | `transport`: `TestPublishActiveReclaimUpgradeFailureLeavesIncumbent` |
+| Constant parity Go ↔ TS | `wire.test.ts` constants test |

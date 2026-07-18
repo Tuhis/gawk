@@ -961,6 +961,150 @@ func TestGraceReclaim(t *testing.T) {
 	s.Close()
 }
 
+// fakePublisherConn records the takeover kick sent to a deposed publisher's
+// session. It implements hub.SessionCloser.
+type fakePublisherConn struct {
+	mu        sync.Mutex
+	closeCode uint32
+	closed    bool
+}
+
+func (f *fakePublisherConn) CloseWithError(code uint32, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeCode = code
+	f.closed = true
+	return nil
+}
+
+func (f *fakePublisherConn) getCloseInfo() (uint32, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeCode, f.closed
+}
+
+// The zombie-publisher lockout (docs/06 revision 2026-07-18): a publisher
+// whose session dies silently keeps the slot until the QUIC idle timeout,
+// and rejecting its reclaim in that window forced clients into a mint
+// fallback that orphaned every viewer — the old broadcast was GC'd while
+// the broadcaster streamed on under a fresh ID. TakeOverPublish must depose
+// the incumbent instead: newest publisher wins.
+func TestTakeOverSupersedesActivePublisher(t *testing.T) {
+	r := NewRegistry(discardLog, Options{BroadcastGrace: 50 * time.Millisecond})
+	id, p1, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	conn1 := &fakePublisherConn{}
+	if !p1.BindConn(conn1) {
+		t.Fatal("BindConn on the live publisher = false, want true")
+	}
+	// Prime the caches so the takeover's session reset is observable.
+	ingestKeyframe(t, p1, keyframeMsg(t, 7, "avc1.42E02A", "kf"))
+
+	f := &fakeSender{}
+	s, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	waitKeyframes(t, f, 1) // the join prime, from p1's session
+
+	gotID, p2, err := r.TakeOverPublish(id)
+	if err != nil {
+		t.Fatalf("TakeOverPublish: %v", err)
+	}
+	if gotID != id {
+		t.Fatalf("TakeOverPublish id = %q, want %q", gotID, id)
+	}
+
+	// The deposed session is kicked with the superseded close code.
+	if code, closed := conn1.getCloseInfo(); !closed || code != uint32(wire.CloseCodePublisherSuperseded) {
+		t.Fatalf("deposed publisher close = (%d, %v), want (%d, true)", code, closed, wire.CloseCodePublisherSuperseded)
+	}
+
+	// A new publisher session means new frameIDs and possibly a new config:
+	// the keyframe cache must have been invalidated, like any reclaim.
+	if st := r.Stats().Broadcasts[r.ObfuscateID(id)]; st.CachedKeyframeBytes != 0 {
+		t.Errorf("cached keyframe survived takeover (%d bytes), want invalidated", st.CachedKeyframeBytes)
+	}
+
+	// Late datagrams from the deposed handle must not reach subscribers;
+	// the new publisher's must.
+	p1.HandleDatagram(chunkDgram(t, false, 1, 0, 1, "stale"))
+	live := chunkDgram(t, false, 1, 0, 1, "live")
+	p2.HandleDatagram(live)
+	waitFor(t, 5*time.Second, func() bool { return len(f.received()) >= 1 }, "live datagram delivered")
+	wantDatagrams(t, f, [][]byte{live})
+
+	// The deposed handler's deferred Close must not free the slot or arm the
+	// GC grace timer — that is exactly what killed live broadcasts.
+	p1.Close()
+	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if !st.PublisherActive {
+		t.Fatal("publisher slot freed by the deposed publisher's Close")
+	}
+	if st.GraceRemainingSeconds != 0 {
+		t.Fatalf("grace timer armed by the deposed publisher's Close (%ds remaining)", st.GraceRemainingSeconds)
+	}
+	time.Sleep(100 * time.Millisecond) // past BroadcastGrace
+	if err := r.CheckSubscribe(id); err != nil {
+		t.Fatalf("broadcast GC'd while the new publisher is active: %v", err)
+	}
+	if code, closed := f.getCloseInfo(); closed {
+		t.Fatalf("subscriber closed (code %d) while the new publisher is active", code)
+	}
+
+	p2.Close()
+	s.Close()
+}
+
+// TakeOverPublish on a broadcast whose publisher already closed behaves like
+// a plain reclaim: it claims the slot and cancels the pending grace timer.
+func TestTakeOverOnInactiveBehavesLikeReclaim(t *testing.T) {
+	r := NewRegistry(discardLog, Options{BroadcastGrace: 50 * time.Millisecond})
+	id, p1, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	p1.Close() // arms the grace timer
+
+	_, p2, err := r.TakeOverPublish(id)
+	if err != nil {
+		t.Fatalf("TakeOverPublish: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond) // past the original grace deadline
+	if err := r.CheckSubscribe(id); err != nil {
+		t.Fatalf("broadcast GC'd despite takeover cancelling the grace timer: %v", err)
+	}
+	p2.Close()
+}
+
+func TestTakeOverPublishNotFound(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	if _, _, err := r.TakeOverPublish("AAAAAA"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("TakeOverPublish on unknown id = %v, want ErrNotFound", err)
+	}
+}
+
+// A publisher deposed between its pre-upgrade claim and its post-upgrade
+// BindConn learns about it from BindConn, so the transport layer can end the
+// session instead of continuing a deposed broadcast.
+func TestBindConnAfterTakeOverReportsDeposed(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p1, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	if _, p2, err := r.TakeOverPublish(id); err != nil {
+		t.Fatalf("TakeOverPublish: %v", err)
+	} else {
+		defer p2.Close()
+	}
+	if p1.BindConn(&fakePublisherConn{}) {
+		t.Fatal("BindConn on a deposed publisher = true, want false")
+	}
+}
+
 // The AfterFunc/reclaim race (design doc 06, E3): a grace callback armed for
 // an older publisher generation can fire concurrently with — or after — a
 // successful reclaim (Timer.Stop does not guarantee the callback hasn't
