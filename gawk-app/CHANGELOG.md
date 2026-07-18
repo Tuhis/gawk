@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.25.0...gawk-app-v0.25.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **gawk-app:** rebase TimeSync samples across worker clock domains ([c0b0b8f](https://github.com/Tuhis/gawk/commit/c0b0b8f71cf6d704d911597e3b114724c8714bbf))
+
 ## [0.25.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.24.0...gawk-app-v0.25.0) (2026-07-18)
 
 
