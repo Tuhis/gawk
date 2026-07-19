@@ -650,3 +650,98 @@ describe('ViewerPipeline audio lane', () => {
     expect(errors).toHaveLength(0);
   });
 });
+
+// CODE-REVIEW.md ("counters and stats survive their owner's deletion") +
+// docs/20 post-implementation review finding 2. The viewer used to read the
+// decode counters straight off the live lane, so nulling it on error left the
+// overlay reporting "State: Error, decoded 0, format —" — which reads as
+// "audio never worked" rather than "audio worked, then died", inverting the
+// diagnosis on the one screen used to debug it.
+describe('ViewerPipeline audio stats survive lane death', () => {
+  // A drivable AudioDecoder: configure succeeds, each decode emits one
+  // AudioData-like, and the test can fire the error callback on demand.
+  function stubAudioDecoder() {
+    const handles: { output: (d: unknown) => void; error: (e: Error) => void }[] = [];
+    class FakeAudioDecoder {
+      state = 'unconfigured';
+      private cbs: { output: (d: unknown) => void; error: (e: Error) => void };
+      constructor(cbs: { output: (d: unknown) => void; error: (e: Error) => void }) {
+        this.cbs = cbs;
+        handles.push(cbs);
+      }
+      configure() {
+        this.state = 'configured';
+      }
+      decode() {
+        this.cbs.output({
+          timestamp: 0,
+          sampleRate: 48000,
+          numberOfChannels: 2,
+          numberOfFrames: 960,
+          copyTo: () => {},
+          close: () => {},
+        });
+      }
+      close() {
+        this.state = 'closed';
+      }
+    }
+    vi.stubGlobal('AudioDecoder', FakeAudioDecoder);
+    vi.stubGlobal(
+      'EncodedAudioChunk',
+      class {
+        constructor(init: unknown) {
+          Object.assign(this, init);
+        }
+      },
+    );
+    return handles;
+  }
+
+  it('reports what a dead lane decoded, not zeros', async () => {
+    const handles = stubAudioDecoder();
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    let deliver: ((d: Uint8Array) => void) | null = null;
+    readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+      deliver = onDatagram;
+      return new Promise(() => {});
+    });
+
+    let latest: ViewerStats | null = null;
+    const { cbs } = makeCallbacks();
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, {
+      ...cbs,
+      onAudioChunk: () => {},
+      onStats: (s) => {
+        latest = s;
+      },
+    });
+    await pipeline.start();
+    const send = deliver as unknown as (d: Uint8Array) => void;
+
+    // Audio works: config + three packets decode cleanly.
+    send(encodeAudioConfig({ codec: 'opus', sampleRate: 48000, channels: 2, description: new Uint8Array(0) }));
+    for (let i = 0; i < 3; i++) {
+      send(encodeAudioFrame({ seq: i, timestampUs: BigInt(i * 20_000) }, new Uint8Array([1, 2, 3])));
+    }
+    await flush();
+    (pipeline as unknown as { publishStats(): void }).publishStats();
+    expect(latest!.audioState).toBe('active');
+    expect(latest!.audioPacketsDecoded).toBe(3);
+
+    // …then the decoder dies mid-stream.
+    expect(handles).toHaveLength(1);
+    handles[0].error(new Error('decoder exploded'));
+    await flush();
+    (pipeline as unknown as { publishStats(): void }).publishStats();
+
+    // The lane is gone and annotated — but what it DID must survive, or the
+    // overlay says "audio never worked".
+    expect(latest!.audioState).toBe('error');
+    expect(latest!.audioPacketsDecoded).toBe(3);
+    expect(latest!.audioCodec).toBe('opus');
+    expect(latest!.audioSampleRate).toBe(48000);
+    expect(latest!.audioChannels).toBe(2);
+    await pipeline.stop();
+  });
+});

@@ -190,22 +190,3 @@ describe('AudioJitterBuffer adaptive target', () => {
   });
 });
 
-// CODE-REVIEW.md: counters survive their owner's deletion. The viewer folds
-// the decode lane's stats before dropping it, so a lane that died reports
-// what it did rather than zeros — "audio worked then failed" must not read as
-// "audio never worked". This pins the AudioDecodeLane side of that contract:
-// its getStats() is a snapshot, safe to retain after stop().
-describe('AudioDecodeLane stats are a retainable snapshot', () => {
-  it('getStats() survives stop() as an independent object', async () => {
-    const { AudioDecodeLane } = await import('./audio-decode');
-    const lane = new AudioDecodeLane({ onChunk: () => {}, onError: () => {} });
-    const before = lane.getStats();
-    lane.stop();
-    const after = lane.getStats();
-    // Distinct objects (a snapshot, not a live view the caller can mutate).
-    expect(after).not.toBe(before);
-    expect(after).toEqual(before);
-    // And the retained copy is unaffected by later calls.
-    expect(before.packetsDecoded).toBe(0);
-  });
-});
