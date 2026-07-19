@@ -264,7 +264,11 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--'))
-    runs-on: ioio-k8s
+    # Disk-backed runner pool: kind needs Docker's data-root on a real
+    # filesystem (its inner containerd can't stack overlayfs on the tmpfs the
+    # default ioio-k8s pool uses for /var/lib/docker). Every other job stays on
+    # ioio-k8s. See ioio repo: clusters/baremetal/actions-runners/gawk-e2e.yaml.
+    runs-on: ioio-k8s-disk
     timeout-minutes: 15
     concurrency:
       group: e2e-cluster-${{ github.ref }}
