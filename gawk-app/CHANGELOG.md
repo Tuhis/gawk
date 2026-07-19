@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.25.2...gawk-app-v0.26.0) (2026-07-19)
+
+
+### Features
+
+* **r15:** system audio — Opus over datagrams (experimental) ([#64](https://github.com/Tuhis/gawk/issues/64)) ([8cefcb7](https://github.com/Tuhis/gawk/commit/8cefcb73b63f442c41a5b05421a99426feda4ee5))
+
 ## [0.25.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.25.1...gawk-app-v0.25.2) (2026-07-19)
 
 

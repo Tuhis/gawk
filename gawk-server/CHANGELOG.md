@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.18.0...gawk-server-v0.19.0) (2026-07-19)
+
+
+### Features
+
+* **r15:** system audio — Opus over datagrams (experimental) ([#64](https://github.com/Tuhis/gawk/issues/64)) ([8cefcb7](https://github.com/Tuhis/gawk/commit/8cefcb73b63f442c41a5b05421a99426feda4ee5))
+
 ## [0.18.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.17.0...gawk-server-v0.18.0) (2026-07-18)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.2.0...gawk-broadcast-v1.3.0) (2026-07-19)
+
+
+### Features
+
+* **r15:** system audio — Opus over datagrams (experimental) ([#64](https://github.com/Tuhis/gawk/issues/64)) ([8cefcb7](https://github.com/Tuhis/gawk/commit/8cefcb73b63f442c41a5b05421a99426feda4ee5))
+
 ## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.1.0...gawk-broadcast-v1.2.0) (2026-07-18)
 
 
