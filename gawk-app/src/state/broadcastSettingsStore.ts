@@ -28,6 +28,10 @@ const LS_FRAMERATE_RUNG = 'gawk.framerateRung';
 const LS_HW_PREFERENCE = 'gawk.hwPreference';
 const LS_BITRATE_OVERRIDE = 'gawk.bitrateOverride';
 const LS_CODEC_OVERRIDE = 'gawk.codecOverride';
+// R15 (docs/20): "Enable audio (experimental)" — default off; applies on the
+// next broadcast start (the one R13 live-apply exception, forced by
+// getDisplayMedia).
+const LS_AUDIO_ENABLED = 'gawk.audioEnabled';
 
 const HW_PREFERENCES: readonly HwPreference[] = ['auto', 'hardware', 'software'];
 
@@ -69,12 +73,14 @@ interface BroadcastSettingsState {
   hwPreference: HwPreference;
   bitrateOverride: number | null;
   codecOverride: string | null;
+  audioEnabled: boolean;
 
   setResolutionSelection: (selection: ResolutionSelection) => void;
   setFramerateSelection: (selection: FramerateSelection) => void;
   setHwPreference: (preference: HwPreference) => void;
   setBitrateOverride: (bps: number | null) => void;
   setCodecOverride: (codec: string | null) => void;
+  setAudioEnabled: (enabled: boolean) => void;
 }
 
 export const useBroadcastSettingsStore = create<BroadcastSettingsState>((set) => ({
@@ -83,6 +89,7 @@ export const useBroadcastSettingsStore = create<BroadcastSettingsState>((set) =>
   hwPreference: loadRung(LS_HW_PREFERENCE, HW_PREFERENCES),
   bitrateOverride: loadBitrateOverride(),
   codecOverride: loadCodecOverride(),
+  audioEnabled: localStorage.getItem(LS_AUDIO_ENABLED) === 'true',
 
   setResolutionSelection: (resolutionSelection) => {
     localStorage.setItem(LS_RESOLUTION_RUNG, String(resolutionSelection));
@@ -105,6 +112,10 @@ export const useBroadcastSettingsStore = create<BroadcastSettingsState>((set) =>
     const codecOverride = codec !== null && DEFAULT_CODEC_PREFERENCES.includes(codec) ? codec : null;
     setOrClear(LS_CODEC_OVERRIDE, codecOverride);
     set({ codecOverride });
+  },
+  setAudioEnabled: (audioEnabled) => {
+    localStorage.setItem(LS_AUDIO_ENABLED, String(audioEnabled));
+    set({ audioEnabled });
   },
 }));
 

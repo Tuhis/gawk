@@ -28,6 +28,10 @@ export interface BroadcastMediaSource {
   startFrames(onFrame: FrameHandler): Promise<void>;
   stop(): void;
   applyConstraints?(constraints: MediaTrackConstraints): Promise<void>;
+  // R15 (docs/20 Decision 6): the captured system-audio track, when the
+  // toggle requested one and the browser granted it. Absent/null is the
+  // graceful video-only state (toggle off, Firefox, unchecked picker box).
+  audioTrack?: MediaStreamTrack | null;
 }
 
 export type BroadcastMediaSourceFactory = (config: CaptureConfig) => Promise<BroadcastMediaSource>;
@@ -45,6 +49,13 @@ export async function acquireDisplayStream(
   // no re-prompt, ever. The old HW-probe fps cap here is gone (Decision 10):
   // the HW-aware auto ceiling covers the default path, and explicit choices
   // are honored, not silently capped.
+  //
+  // R15 (docs/20 Decision 6): with the audio toggle on, request system audio
+  // with processing off (game audio is program material, not voice) and keep
+  // the broadcaster hearing their own game. No audio track in the grant is a
+  // state, not an error — the pipeline runs video-only. systemAudio /
+  // suppressLocalAudioPlayback are Chromium extensions absent from the TS
+  // dom lib, hence the options cast.
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {
       frameRate: { ideal: config.framerate },
@@ -54,7 +65,17 @@ export async function acquireDisplayStream(
       // constrained box, which is not what we want for ultrawide displays.
       width: { max: config.width },
     },
-    audio: false,
+    ...(config.audio
+      ? ({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+          systemAudio: 'include',
+          suppressLocalAudioPlayback: false,
+        } as DisplayMediaStreamOptions)
+      : { audio: false }),
   });
 
   const track = stream.getVideoTracks()[0];
@@ -136,12 +157,16 @@ function createMstpHandle(stream: MediaStream, track: MediaStreamTrack): Capture
 export function trackMediaSource(
   track: MediaStreamTrack,
   nativeFps: number | null,
+  // R15/N3: the transferred audio clone, alongside the video clone. The
+  // source owns both clones — stop() ends them together.
+  audioTrack: MediaStreamTrack | null = null,
 ): BroadcastMediaSource {
   let pump: ReturnType<typeof createMstpPump> | null = null;
   return {
     capturePath: 'mstp-worker',
     stream: null,
     nativeFps,
+    audioTrack,
     onEnded: (cb) => track.addEventListener('ended', cb),
     async startFrames(onFrame) {
       pump = createMstpPump(track);
@@ -150,6 +175,7 @@ export function trackMediaSource(
     stop() {
       pump?.stop();
       track.stop();
+      audioTrack?.stop();
     },
     // R13: constraints land on the transferred clone, worker-side — clones
     // hold independent constraints, and this track is the encode source

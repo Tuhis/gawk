@@ -41,6 +41,8 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
   const hwPreference = useBroadcastSettingsStore((s) => s.hwPreference);
   const bitrateOverride = useBroadcastSettingsStore((s) => s.bitrateOverride);
   const codecOverride = useBroadcastSettingsStore((s) => s.codecOverride);
+  const audioEnabled = useBroadcastSettingsStore((s) => s.audioEnabled);
+  const setAudioEnabled = useBroadcastSettingsStore((s) => s.setAudioEnabled);
   // The codec annotations answer "what would pinning this codec get at the
   // *current* resolution/fps selections" — so they follow the pickers live.
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
@@ -113,6 +115,21 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
             );
           })}
         </select>
+      </div>
+      {/* R15 (docs/20): not part of EncoderSettings — the toggle is read at
+          broadcast start (getDisplayMedia can't add an audio track without
+          re-prompting), so no onChange emit. */}
+      <div className={styles.checkboxField}>
+        <label htmlFor="audio-enabled">
+          <input
+            id="audio-enabled"
+            type="checkbox"
+            checked={audioEnabled}
+            onChange={(e) => setAudioEnabled(e.target.checked)}
+          />
+          Enable audio (experimental)
+        </label>
+        <span className={styles.fieldNote}>Applies when the broadcast starts.</span>
       </div>
     </div>
   );

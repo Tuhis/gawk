@@ -4,6 +4,11 @@
 
 import { log } from '../lib/logger';
 import {
+  audioLaneSupported,
+  startAudioLane,
+  type RunningAudioLane,
+} from '../media/audio-lane';
+import {
   startCapture,
   stopCapture,
   type BroadcastMediaSource,
@@ -110,6 +115,22 @@ export interface BroadcastStats {
   // first push lands; survives transport resumes (the new session re-pushes
   // within a tick).
   viewerCount: number | null;
+  // R15 (docs/20 Decision 6): the audio lane. 'off' = toggle off (zero audio
+  // code paths ran); 'no-track' = requested but the grant had no audio track
+  // (Firefox, unchecked picker box) — a state, not an error; 'unsupported' =
+  // track present but this scope lacks AudioEncoder/MSTP; 'error' = the lane
+  // died mid-broadcast (video continues).
+  audioState: 'off' | 'no-track' | 'unsupported' | 'active' | 'error';
+  audioEncodedPackets: number;
+  audioPacketsSent: number;
+  audioBytesSent: number;
+  audioConfigsSent: number;
+  audioEncodedPerSec: number;
+  audioSentPerSec: number;
+  audioSampleRate: number | null;
+  audioChannels: number | null;
+  audioCodec: string | null;
+  audioBitrateBps: number | null;
 }
 
 const EMPTY_BROADCAST_STATS: BroadcastStats = {
@@ -139,6 +160,17 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   autoFps: null,
   pipelineContext: 'main-thread',
   viewerCount: null,
+  audioState: 'off',
+  audioEncodedPackets: 0,
+  audioPacketsSent: 0,
+  audioBytesSent: 0,
+  audioConfigsSent: 0,
+  audioEncodedPerSec: 0,
+  audioSentPerSec: 0,
+  audioSampleRate: null,
+  audioChannels: null,
+  audioCodec: null,
+  audioBitrateBps: null,
 };
 
 export interface BroadcastCallbacks {
@@ -204,6 +236,10 @@ const captureMediaSource: BroadcastMediaSourceFactory = async (config) => {
     // don't carry a rate, and it only seeds the encoder's rate-control hint
     // when the framerate rung is 'native'.
     nativeFps: handle.track.getSettings().frameRate ?? null,
+    // R15: the system-audio track when the toggle asked and the grant
+    // delivered; stopCapture stops every stream track, audio included. Never
+    // even inspected with the toggle off (also: fakes without audio APIs).
+    audioTrack: config.audio ? (handle.stream.getAudioTracks?.()[0] ?? null) : null,
     onEnded: (cb) => handle.track.addEventListener('ended', cb),
     startFrames: (onFrame) => handle.startFrames(onFrame),
     stop: () => stopCapture(handle),
@@ -302,6 +338,11 @@ export class BroadcastPipeline {
   private encodedSinceStats = 0;
   private capturedSinceStats = 0;
   private sentSinceStats = 0;
+  // R15 audio lane (docs/20 Decision 6): strictly subordinate — its errors
+  // annotate, never fail the broadcast.
+  private audioLane: RunningAudioLane | null = null;
+  private lastAudioEncoded = 0;
+  private lastAudioSent = 0;
   private connSampler: ConnectionStatsSampler | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -715,6 +756,8 @@ export class BroadcastPipeline {
       void this.stop();
     });
 
+    this.startAudioLane(media);
+
     this.lastStatsAt = this.now();
     this.statsTimer = setInterval(() => this.publishStats(), 500);
 
@@ -765,6 +808,40 @@ export class BroadcastPipeline {
       // are not encoder backpressure — so the ratio stays self-normalizing.
       this.applyDecision(this.controller.record(accepted, this.now()));
     });
+  }
+
+  // R15 (docs/20 Decision 6): starts the audio lane when the toggle asked
+  // for audio and the environment can run it. Every non-active outcome is a
+  // stats annotation, never an error — video-only is a first-class state.
+  private startAudioLane(media: BroadcastMediaSource): void {
+    if (!this.config.audio) return; // audioState stays 'off' — zero audio paths
+    const track = media.audioTrack ?? null;
+    if (!track) {
+      this.stats.audioState = 'no-track';
+      log.info('Audio requested but the grant carried no audio track; broadcasting video-only.');
+      return;
+    }
+    if (!audioLaneSupported()) {
+      this.stats.audioState = 'unsupported';
+      log.info('Audio track present but AudioEncoder/MSTP unavailable here; broadcasting video-only.');
+      return;
+    }
+    this.audioLane = startAudioLane(track, {
+      // Reads the live sender so the lane survives R17 transport resumes
+      // (packets during the gap reject and drop — live-edge, no buffering).
+      send: (datagrams) => {
+        const sender = this.sender;
+        if (!sender) return Promise.reject(new Error('no transport'));
+        return sender.send(datagrams);
+      },
+      onError: (err) => {
+        // Audio-lane-only teardown: annotate and keep broadcasting video.
+        this.stats.audioState = 'error';
+        this.audioLane = null;
+        log.warn('Audio lane failed; broadcast continues video-only:', err);
+      },
+    });
+    this.stats.audioState = 'active';
   }
 
   // Recomputes the auto ladder when the source dimensions first appear or
@@ -1146,6 +1223,23 @@ export class BroadcastPipeline {
     this.sentSinceStats = 0;
     this.lastStatsAt = now;
     this.stats.fpsGateDropped = this.preprocessor.getStats().gateDropped;
+    const audio = this.audioLane?.getStats();
+    if (audio) {
+      this.stats.audioEncodedPackets = audio.encodedPackets;
+      this.stats.audioPacketsSent = audio.packetsSent;
+      this.stats.audioBytesSent = audio.bytesSent;
+      this.stats.audioConfigsSent = audio.configsSent;
+      this.stats.audioSampleRate = audio.sampleRate;
+      this.stats.audioChannels = audio.channels;
+      this.stats.audioCodec = audio.codec;
+      this.stats.audioBitrateBps = audio.bitrateBps;
+      if (dt > 0) {
+        this.stats.audioEncodedPerSec = (audio.encodedPackets - this.lastAudioEncoded) / dt;
+        this.stats.audioSentPerSec = (audio.packetsSent - this.lastAudioSent) / dt;
+      }
+      this.lastAudioEncoded = audio.encodedPackets;
+      this.lastAudioSent = audio.packetsSent;
+    }
     this.stats.autoRung = this.currentAutoRung();
     this.stats.autoCeiling = this.resolutionSelection === 'auto' ? this.autoCeiling : null;
     this.stats.autoFps = this.ladderFps === 'auto' ? this.resolvedAutoFps : null;
@@ -1188,6 +1282,8 @@ export class BroadcastPipeline {
     this.timeSync?.stop();
     this.timeSync = null;
 
+    this.audioLane?.stop();
+    this.audioLane = null;
     if (this.encoder) await this.encoder.close();
     this.media?.stop();
     this.sender?.close();

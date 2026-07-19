@@ -134,7 +134,8 @@ export function BroadcasterScreen() {
       },
     });
 
-    const { resolutionSelection: res, framerateSelection } = useBroadcastSettingsStore.getState();
+    const { resolutionSelection: res, framerateSelection, audioEnabled } =
+      useBroadcastSettingsStore.getState();
     let activeId = broadcastId;
     let triedReclaim = false;
 
@@ -142,7 +143,9 @@ export function BroadcasterScreen() {
       triedReclaim = true;
       setStatus('connecting');
       const pipeline = await createBroadcastSession(
-        { ...DEFAULT_CAPTURE_CONFIG },
+        // R15: the audio toggle is snapshot here — applies on the next
+        // broadcast start, never mid-stream (docs/20 Decision 6).
+        { ...DEFAULT_CAPTURE_CONFIG, audio: audioEnabled },
         serverUrl,
         // R17 W2: the reclaim needs the resume token from the prior session.
         { certHashHex, publishSecret, resumeToken: resumeTokenRef.current ?? undefined },
@@ -178,7 +181,7 @@ export function BroadcasterScreen() {
 
     setStatus('connecting');
     const pipeline = await createBroadcastSession(
-      { ...DEFAULT_CAPTURE_CONFIG },
+      { ...DEFAULT_CAPTURE_CONFIG, audio: audioEnabled },
       serverUrl,
       { certHashHex, publishSecret },
       makeCallbacks(triedReclaim),

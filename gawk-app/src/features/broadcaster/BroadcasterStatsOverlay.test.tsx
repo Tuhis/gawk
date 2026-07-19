@@ -52,6 +52,17 @@ function fullStats(): BroadcastStats {
     autoFps: null,
     pipelineContext: 'worker',
     viewerCount: 4,
+    audioState: 'active',
+    audioEncodedPackets: 1500,
+    audioPacketsSent: 1498,
+    audioBytesSent: 500_000,
+    audioConfigsSent: 30,
+    audioEncodedPerSec: 50.1,
+    audioSentPerSec: 49.9,
+    audioSampleRate: 48000,
+    audioChannels: 2,
+    audioCodec: 'opus',
+    audioBitrateBps: 128_000,
   };
 }
 

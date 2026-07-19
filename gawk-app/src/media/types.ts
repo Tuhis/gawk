@@ -16,6 +16,11 @@ export interface CaptureConfig {
   // or gap-discarded frame to <=0.5s (a delta referencing a missing frame
   // corrupts everything until the next keyframe — see viewer freeze-on-gap).
   keyframeIntervalMs: number;
+  // R15 (docs/20 Decision 6): request system audio in the getDisplayMedia
+  // grant. Absent/false is byte-identical to the pre-audio capture call.
+  // Snapshot at broadcast start — the one R13 live-apply exception (an audio
+  // track can't be added without re-prompting).
+  audio?: boolean;
 }
 
 // Ordered by preference. Encoder walks this list and picks the first one
