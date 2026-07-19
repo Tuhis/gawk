@@ -48,6 +48,16 @@ import {
   parseVideoChunk,
   peekType,
   parseBroadcastAnnounce,
+  TYPE_AUDIO_FRAME,
+  TYPE_AUDIO_CONFIG,
+  AUDIO_FRAME_HEADER_SIZE,
+  MAX_AUDIO_PAYLOAD,
+  encodeAudioFrame,
+  parseAudioFrame,
+  encodeAudioConfig,
+  parseAudioConfig,
+  type AudioConfigMessage,
+  type AudioFrameHeader,
   type DecoderConfigMessage,
   type StreamFrameHeader,
   type TimeSyncMessage,
@@ -72,6 +82,10 @@ const GOLDEN_CARRIER_RECORD_HEX = '0017' + GOLDEN_VIDEO_CHUNK_HEX;
 // R18 viewer count (docs/23 Decision 2).
 const GOLDEN_VIEWER_COUNT_HEX = '010b00000003';
 const GOLDEN_VIEWER_COUNT_LARGE_HEX = '010b01020304';
+
+const GOLDEN_AUDIO_FRAME_HEX = '01070000010203040000005d21dba5f0616263';
+const GOLDEN_AUDIO_CONFIG_HEX = '010800046f7075730000bb8002';
+const GOLDEN_AUDIO_CONFIG_DESC_HEX = '010800046f7075730000bb8002010203';
 
 const goldenStreamFrameHeader: StreamFrameHeader = {
   keyframe: true,
@@ -122,6 +136,25 @@ const goldenTimeSyncRequest: TimeSyncMessage = {
 const GOLDEN_CLOCK_MAPPING_OFFSET_US = 1_500_000n;
 const GOLDEN_CLOCK_MAPPING_NEGATIVE_OFFSET_US = -1_000_000n;
 
+const goldenAudioFrameHeader: AudioFrameHeader = {
+  seq: 0x01020304,
+  timestampUs: 0x0000005d21dba5f0n,
+};
+const goldenAudioFramePayload = new TextEncoder().encode('abc');
+
+const goldenAudioConfig: AudioConfigMessage = {
+  codec: 'opus',
+  sampleRate: 48000,
+  channels: 2,
+  description: new Uint8Array(0),
+};
+const goldenAudioConfigDesc: AudioConfigMessage = {
+  codec: 'opus',
+  sampleRate: 48000,
+  channels: 2,
+  description: new Uint8Array([0x01, 0x02, 0x03]),
+};
+
 describe('constants', () => {
   it('match the Go package', () => {
     expect(MAX_DATAGRAM_SIZE).toBe(1200);
@@ -146,6 +179,10 @@ describe('constants', () => {
     expect(CARRIER_RECORD_HEADER_SIZE).toBe(2);
     expect(TYPE_VIEWER_COUNT).toBe(0x0b);
     expect(VIEWER_COUNT_SIZE).toBe(6);
+    expect(TYPE_AUDIO_FRAME).toBe(0x07);
+    expect(TYPE_AUDIO_CONFIG).toBe(0x08);
+    expect(AUDIO_FRAME_HEADER_SIZE).toBe(16);
+    expect(MAX_AUDIO_PAYLOAD).toBe(1184);
   });
 });
 
@@ -227,6 +264,78 @@ describe('golden vectors', () => {
     expect(() => parseViewerCount(fromHex(GOLDEN_CLOCK_MAPPING_HEX.slice(0, VIEWER_COUNT_SIZE * 2)))).toThrow(
       WireError,
     );
+  });
+
+  it('encodes the golden audio frame byte-for-byte (R15)', () => {
+    const dgram = encodeAudioFrame(goldenAudioFrameHeader, goldenAudioFramePayload);
+    expect(toHex(dgram)).toBe(GOLDEN_AUDIO_FRAME_HEX);
+  });
+
+  it('parses the golden audio frame', () => {
+    const { header, payload } = parseAudioFrame(fromHex(GOLDEN_AUDIO_FRAME_HEX));
+    expect(header).toEqual(goldenAudioFrameHeader);
+    expect(new TextDecoder().decode(payload)).toBe('abc');
+  });
+
+  it('encodes the golden audio configs byte-for-byte (R15)', () => {
+    expect(toHex(encodeAudioConfig(goldenAudioConfig))).toBe(GOLDEN_AUDIO_CONFIG_HEX);
+    expect(toHex(encodeAudioConfig(goldenAudioConfigDesc))).toBe(GOLDEN_AUDIO_CONFIG_DESC_HEX);
+  });
+
+  it('parses the golden audio configs', () => {
+    const cfg = parseAudioConfig(fromHex(GOLDEN_AUDIO_CONFIG_HEX));
+    expect(cfg.codec).toBe('opus');
+    expect(cfg.sampleRate).toBe(48000);
+    expect(cfg.channels).toBe(2);
+    expect(cfg.description.length).toBe(0);
+
+    const withDesc = parseAudioConfig(fromHex(GOLDEN_AUDIO_CONFIG_DESC_HEX));
+    expect(toHex(withDesc.description)).toBe('010203');
+  });
+
+  it('rejects malformed audio frames strictly', () => {
+    // Truncated header, empty payload, wrong version, wrong type.
+    expect(() => parseAudioFrame(fromHex(GOLDEN_AUDIO_FRAME_HEX.slice(0, (AUDIO_FRAME_HEADER_SIZE - 1) * 2)))).toThrow(
+      WireError,
+    );
+    expect(() => parseAudioFrame(fromHex(GOLDEN_AUDIO_FRAME_HEX.slice(0, AUDIO_FRAME_HEADER_SIZE * 2)))).toThrow(
+      WireError,
+    );
+    expect(() => parseAudioFrame(fromHex('02' + GOLDEN_AUDIO_FRAME_HEX.slice(2)))).toThrow(WireError);
+    expect(() => parseAudioFrame(fromHex(GOLDEN_VIDEO_CHUNK_HEX))).toThrow(WireError);
+    // Encoder refuses empty and oversize payloads.
+    expect(() => encodeAudioFrame(goldenAudioFrameHeader, new Uint8Array(0))).toThrow(WireError);
+    expect(() => encodeAudioFrame(goldenAudioFrameHeader, new Uint8Array(MAX_AUDIO_PAYLOAD + 1))).toThrow(
+      WireError,
+    );
+  });
+
+  it('rejects malformed audio configs strictly', () => {
+    // Truncated tail, wrong version, wrong type, empty codec, overrunning
+    // codecLen, zero sampleRate, zero channels.
+    expect(() => parseAudioConfig(fromHex(GOLDEN_AUDIO_CONFIG_HEX.slice(0, -2)))).toThrow(WireError);
+    expect(() => parseAudioConfig(fromHex('02' + GOLDEN_AUDIO_CONFIG_HEX.slice(2)))).toThrow(WireError);
+    expect(() => parseAudioConfig(fromHex(GOLDEN_DECODER_CONFIG_VP8_HEX))).toThrow(WireError);
+    expect(() => parseAudioConfig(fromHex('010800' + '00' + GOLDEN_AUDIO_CONFIG_HEX.slice(8)))).toThrow(
+      WireError,
+    );
+    expect(() => parseAudioConfig(fromHex('0108' + '00ff' + GOLDEN_AUDIO_CONFIG_HEX.slice(8)))).toThrow(
+      WireError,
+    );
+    expect(() => parseAudioConfig(fromHex('010800046f707573' + '00000000' + '02'))).toThrow(WireError);
+    expect(() => parseAudioConfig(fromHex('010800046f707573' + '0000bb80' + '00'))).toThrow(WireError);
+    expect(() => encodeAudioConfig({ ...goldenAudioConfig, sampleRate: 0 })).toThrow(WireError);
+    expect(() => encodeAudioConfig({ ...goldenAudioConfig, channels: 0 })).toThrow(WireError);
+    expect(() => encodeAudioConfig({ ...goldenAudioConfig, codec: '' })).toThrow(WireError);
+  });
+
+  it('round-trips a max-payload audio frame at exactly MAX_DATAGRAM_SIZE', () => {
+    const payload = new Uint8Array(MAX_AUDIO_PAYLOAD).fill(0x5a);
+    const dgram = encodeAudioFrame({ seq: 0xffffffff, timestampUs: 1n }, payload);
+    expect(dgram.length).toBe(MAX_DATAGRAM_SIZE);
+    const parsed = parseAudioFrame(dgram);
+    expect(parsed.header.seq).toBe(0xffffffff);
+    expect(parsed.payload.length).toBe(MAX_AUDIO_PAYLOAD);
   });
 
   it('parses the golden broadcast announce', () => {

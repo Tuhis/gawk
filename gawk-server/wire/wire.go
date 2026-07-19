@@ -75,8 +75,21 @@ const (
 	// TimeSync offset can compute absolute capture→render latency.
 	TypeClockMapping = 0x06
 
-	// 0x07 (AudioFrame) and 0x08 (AudioConfig) are reserved by R15 system
-	// audio (docs/20) — do not allocate them here.
+	// TypeAudioFrame identifies an AudioFrame datagram (R15, docs/20
+	// Decision 2): broadcaster→viewers, one complete Opus packet per
+	// datagram — audio has no keyframes, no chunking, and no reassembly.
+	// seq is audio's own uint32 sequence space (independent of video
+	// frameIDs, same serial arithmetic); timestampUs is on the broadcaster's
+	// performance.now() µs clock, the same clock video capture stamps, so
+	// A/V skew is a subtraction.
+	TypeAudioFrame = 0x07
+	// TypeAudioConfig identifies an AudioConfig datagram (R15, docs/20):
+	// broadcaster→viewers, relayed and cached by the hub like ClockMapping
+	// (join-primed, invalidated on a new publisher session and on edge
+	// upstream loss). Audio has no keyframe to anchor config re-emits to, so
+	// the broadcaster re-sends it at 1 Hz; both paths are idempotent on the
+	// viewer.
+	TypeAudioConfig = 0x08
 
 	// TypeResumeToken identifies a ResumeToken message (R17 W2, docs/22
 	// Decision 7): server→publisher on its own unidirectional stream right
@@ -182,6 +195,13 @@ const (
 	// CarrierRecordHeaderSize is the size of the uint16 length prefix in front
 	// of every carrier record.
 	CarrierRecordHeaderSize = 2
+	// AudioFrameHeaderSize is the fixed size of an AudioFrame header (R15),
+	// including the common 2-byte version/type prefix.
+	AudioFrameHeaderSize = 16
+	// MaxAudioPayload is the largest payload a single AudioFrame may carry —
+	// one Opus packet. 20 ms at 128 kbps is ~320 bytes; anything up to
+	// ~470 kbps fits, so a conforming encoder never comes near this.
+	MaxAudioPayload = MaxDatagramSize - AudioFrameHeaderSize
 )
 
 // flagKeyframe is bit 0 of the VideoChunk flags byte.
@@ -222,6 +242,13 @@ var (
 	// zero or exceeds MaxDatagramSize (R19) — records carry verbatim
 	// datagrams, so any other length is a framing corruption.
 	ErrBadCarrierRecord = errors.New("wire: invalid carrier record")
+	// ErrBadAudioPayload indicates an AudioFrame payload that is empty or
+	// exceeds MaxAudioPayload (R15) — a datagram carries exactly one Opus
+	// packet, and there is no such thing as a zero-byte one (DTX is off).
+	ErrBadAudioPayload = errors.New("wire: invalid audio payload")
+	// ErrBadAudioConfig indicates an AudioConfig with a zero sample rate or
+	// zero channels (R15).
+	ErrBadAudioConfig = errors.New("wire: invalid audio config")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -486,6 +513,139 @@ func ParseViewerCount(dgram []byte) (count uint32, err error) {
 			ErrBadType, dgram[1], TypeViewerCount)
 	}
 	return binary.BigEndian.Uint32(dgram[2:6]), nil
+}
+
+// AudioFrameHeader is the parsed header of an AudioFrame datagram (R15).
+type AudioFrameHeader struct {
+	// Seq is audio's own uint32 sequence space, monotonic per publisher
+	// session and independent of video frameIDs. Consumers compare with the
+	// same serial arithmetic as frameIDs (wrap-aware).
+	Seq uint32
+	// TimestampUs is the packet timestamp in microseconds on the
+	// broadcaster's performance.now() clock — the same clock video capture
+	// stamps, which is what makes A/V skew a subtraction.
+	TimestampUs uint64
+}
+
+// AudioConfig is the parsed contents of an AudioConfig datagram (R15).
+type AudioConfig struct {
+	// Codec is the WebCodecs codec string, e.g. "opus". Always 1-255 bytes
+	// on the wire.
+	Codec string
+	// SampleRate is the capture sample rate in Hz (48000 for opus).
+	SampleRate uint32
+	// Channels is the channel count (2 for the stereo default).
+	Channels uint8
+	// Description is codec-specific configuration. Empty for opus. When
+	// produced by ParseAudioConfig it aliases the input datagram.
+	Description []byte
+}
+
+// AppendAudioFrame appends an AudioFrame datagram (R15) to dst and returns
+// the extended slice. Layout: version, type 0x07, flags (0), reserved (0),
+// uint32 seq, uint64 timestampUs, then the payload — exactly one Opus packet.
+// It returns ErrBadAudioPayload if the payload is empty or exceeds
+// MaxAudioPayload.
+func AppendAudioFrame(dst []byte, h AudioFrameHeader, payload []byte) ([]byte, error) {
+	if len(payload) == 0 || len(payload) > MaxAudioPayload {
+		return nil, fmt.Errorf("%w: %d bytes, want 1-%d", ErrBadAudioPayload, len(payload), MaxAudioPayload)
+	}
+	dst = append(dst, Version, TypeAudioFrame, 0, 0)
+	dst = binary.BigEndian.AppendUint32(dst, h.Seq)
+	dst = binary.BigEndian.AppendUint64(dst, h.TimestampUs)
+	dst = append(dst, payload...)
+	return dst, nil
+}
+
+// ParseAudioFrame parses an AudioFrame datagram. The returned payload aliases
+// dgram (no copy). Strict: it returns an error if the datagram is shorter
+// than AudioFrameHeaderSize, has the wrong version or type, or carries an
+// empty payload (there is no zero-byte Opus packet).
+func ParseAudioFrame(dgram []byte) (h AudioFrameHeader, payload []byte, err error) {
+	if len(dgram) < AudioFrameHeaderSize {
+		return AudioFrameHeader{}, nil, fmt.Errorf("%w: %d bytes, need at least %d for audio frame",
+			ErrShortDatagram, len(dgram), AudioFrameHeaderSize)
+	}
+	if dgram[0] != Version {
+		return AudioFrameHeader{}, nil, fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeAudioFrame {
+		return AudioFrameHeader{}, nil, fmt.Errorf("%w: got 0x%02x, want audio frame 0x%02x",
+			ErrBadType, dgram[1], TypeAudioFrame)
+	}
+	if len(dgram) == AudioFrameHeaderSize {
+		return AudioFrameHeader{}, nil, fmt.Errorf("%w: empty", ErrBadAudioPayload)
+	}
+	h = AudioFrameHeader{
+		Seq:         binary.BigEndian.Uint32(dgram[4:8]),
+		TimestampUs: binary.BigEndian.Uint64(dgram[8:16]),
+	}
+	return h, dgram[AudioFrameHeaderSize:], nil
+}
+
+// AppendAudioConfig appends an AudioConfig datagram (R15) to dst and returns
+// the extended slice. Layout: version, type 0x08, reserved (0), uint8
+// codecLen, codec bytes, uint32 sampleRate, uint8 channels, then the
+// description (may be empty). It returns ErrBadCodec for an empty or oversize
+// codec string, ErrBadAudioConfig for a zero sample rate or zero channels,
+// and ErrDatagramTooLarge if the encoded datagram would exceed
+// MaxDatagramSize.
+func AppendAudioConfig(dst []byte, c AudioConfig) ([]byte, error) {
+	if len(c.Codec) == 0 {
+		return nil, fmt.Errorf("%w: empty", ErrBadCodec)
+	}
+	if len(c.Codec) > 255 {
+		return nil, fmt.Errorf("%w: %d bytes, max 255", ErrBadCodec, len(c.Codec))
+	}
+	if c.SampleRate == 0 || c.Channels == 0 {
+		return nil, fmt.Errorf("%w: sampleRate %d, channels %d", ErrBadAudioConfig, c.SampleRate, c.Channels)
+	}
+	total := 4 + len(c.Codec) + 5 + len(c.Description)
+	if total > MaxDatagramSize {
+		return nil, fmt.Errorf("%w: %d bytes, max %d", ErrDatagramTooLarge, total, MaxDatagramSize)
+	}
+	dst = append(dst, Version, TypeAudioConfig, 0, uint8(len(c.Codec)))
+	dst = append(dst, c.Codec...)
+	dst = binary.BigEndian.AppendUint32(dst, c.SampleRate)
+	dst = append(dst, c.Channels)
+	dst = append(dst, c.Description...)
+	return dst, nil
+}
+
+// ParseAudioConfig parses an AudioConfig datagram. The returned Description
+// aliases dgram (no copy). Strict: it returns an error if the datagram is
+// shorter than its declared layout, has the wrong version or type, has an
+// empty codec string, or declares a zero sample rate or zero channels.
+func ParseAudioConfig(dgram []byte) (AudioConfig, error) {
+	if len(dgram) < 4 {
+		return AudioConfig{}, fmt.Errorf("%w: %d bytes, need at least 4 for audio config",
+			ErrShortDatagram, len(dgram))
+	}
+	if dgram[0] != Version {
+		return AudioConfig{}, fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeAudioConfig {
+		return AudioConfig{}, fmt.Errorf("%w: got 0x%02x, want audio config 0x%02x",
+			ErrBadType, dgram[1], TypeAudioConfig)
+	}
+	codecLen := int(dgram[3])
+	if codecLen == 0 {
+		return AudioConfig{}, fmt.Errorf("%w: empty", ErrBadCodec)
+	}
+	if 4+codecLen+5 > len(dgram) {
+		return AudioConfig{}, fmt.Errorf("%w: codecLen %d overruns %d-byte datagram",
+			ErrBadCodec, codecLen, len(dgram))
+	}
+	c := AudioConfig{
+		Codec:       string(dgram[4 : 4+codecLen]),
+		SampleRate:  binary.BigEndian.Uint32(dgram[4+codecLen : 4+codecLen+4]),
+		Channels:    dgram[4+codecLen+4],
+		Description: dgram[4+codecLen+5:],
+	}
+	if c.SampleRate == 0 || c.Channels == 0 {
+		return AudioConfig{}, fmt.Errorf("%w: sampleRate %d, channels %d", ErrBadAudioConfig, c.SampleRate, c.Channels)
+	}
+	return c, nil
 }
 
 // AppendResumeToken appends a ResumeToken message (R17 W2) to dst and returns

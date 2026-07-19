@@ -390,6 +390,14 @@ type broadcastHub struct {
 	// mapping is a different mapping.
 	cachedClockMapping []byte
 
+	// cachedAudioConfig holds the latest AudioConfig datagram verbatim (R15,
+	// docs/20 Decision 4 — the ClockMapping lifecycle): fanned out live,
+	// replayed to prime late joiners, cleared alongside the other caches on a
+	// new publisher session and on edge upstream loss. The broadcaster
+	// re-sends it at 1 Hz (audio has no keyframe to anchor re-emits to), so a
+	// cleared cache heals within a second either way.
+	cachedAudioConfig []byte
+
 	// cachedViewerCount holds the latest global ViewerCount datagram verbatim
 	// (R18, docs/23 Decision 3 — the ClockMapping template): fanned out live,
 	// replayed to prime late joiners, cleared alongside the other caches. On
@@ -647,6 +655,10 @@ func (r *Registry) InvalidatePrimes(id string) {
 	b.cachedKeyframeID = 0
 	b.cachedKeyframeHasConfig = false
 	b.cachedClockMapping = nil
+	// Audio config follows the same rule (R15, docs/20 Decision 4): serving
+	// origin A's config beside origin B's packets is the staleness class this
+	// invalidation exists to close. The 1 Hz re-send refills it.
+	b.cachedAudioConfig = nil
 	// A count from the lost origin may be stale by the time we re-attach;
 	// the fresh origin's fan-out (or the next report round-trip) replaces it.
 	b.cachedViewerCount = nil
@@ -737,6 +749,9 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	b.cachedKeyframeHasConfig = false
 	// New session, new clock timeline: the old mapping is meaningless (R5 Q2).
 	b.cachedClockMapping = nil
+	// New session, possibly new audio config (or none at all — the toggle may
+	// have flipped between broadcasts). The 1 Hz re-send refills it (R15).
+	b.cachedAudioConfig = nil
 	// The count itself isn't tied to the session, but clearing it keeps the
 	// cache lifecycle uniform (R18 Decision 3) — and resetting the emit
 	// tracking guarantees the new session a fresh emit on the next tick.
@@ -1034,6 +1049,12 @@ func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Su
 	// shows immediately on join instead of waiting for the next pump tick.
 	if b.cachedViewerCount != nil {
 		s.enqueueLocked(b.cachedViewerCount)
+	}
+
+	// Prime the cached audio config (R15, docs/20 Decision 4): audio decode
+	// starts without waiting for the broadcaster's next 1 Hz re-send.
+	if b.cachedAudioConfig != nil {
+		s.enqueueLocked(b.cachedAudioConfig)
 	}
 
 	// Snapshot the cached keyframe under the lock; prime over a stream outside
@@ -1442,6 +1463,21 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 			return
 		}
 		p.relayViewerCount(dgram)
+	case wire.TypeAudioFrame:
+		if _, _, err := wire.ParseAudioFrame(dgram); err != nil {
+			b.countBad()
+			return
+		}
+		// Verbatim fan-out, no caching — and deliberately no ingress-loss
+		// observation: the window assumes a single frameID space, and audio
+		// loss is concealed (and counted) viewer-side (docs/20 Decision 4).
+		p.relayDatagram(dgram)
+	case wire.TypeAudioConfig:
+		if _, err := wire.ParseAudioConfig(dgram); err != nil {
+			b.countBad()
+			return
+		}
+		p.relayAudioConfig(dgram)
 	default:
 		b.countBad()
 	}
@@ -1489,6 +1525,27 @@ func (p *Publisher) relayClockMapping(dgram []byte) {
 		return
 	}
 	b.cachedClockMapping = msg
+	b.ingressDatagramBytes += uint64(len(msg))
+	b.fanOutLocked(msg)
+}
+
+// relayAudioConfig forwards an AudioConfig datagram to all subscribers and
+// caches it for late-joiner priming (R15, docs/20 Decision 4 — the
+// ClockMapping lifecycle). The cache holds a copy: the config outlives the
+// datagram buffer's turn. Unlike ViewerCount it is accepted on origin and
+// edge hubs alike — the source is the publisher (a real broadcaster, or the
+// upstream origin on an edge), which is exactly who should be speaking.
+func (p *Publisher) relayAudioConfig(dgram []byte) {
+	b := p.hub
+	r := b.registry
+	msg := make([]byte, len(dgram))
+	copy(msg, dgram)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed {
+		return
+	}
+	b.cachedAudioConfig = msg
 	b.ingressDatagramBytes += uint64(len(msg))
 	b.fanOutLocked(msg)
 }

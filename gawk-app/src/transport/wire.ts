@@ -47,7 +47,17 @@ export const TYPE_TIME_SYNC = 0x05;
 // like the keyframe prime. Maps frame timestamps onto the relay clock so a
 // viewer (with its own TimeSync offset) can compute absolute capture→render.
 export const TYPE_CLOCK_MAPPING = 0x06;
-// 0x07/0x08 are reserved by R15 system audio (docs/20).
+// AudioFrame (R15, docs/20 Decision 2): broadcaster→viewers, one complete
+// Opus packet per datagram — no chunking, no reassembly, no keyframes. seq is
+// audio's own uint32 sequence space (same serial arithmetic as frameIds);
+// timestampUs is on the broadcaster's performance.now() µs clock, the same
+// clock video capture stamps, so A/V skew is a subtraction.
+export const TYPE_AUDIO_FRAME = 0x07;
+// AudioConfig (R15, docs/20): broadcaster→viewers, relayed + cached by the
+// hub like ClockMapping (join-primed, invalidated with the other caches).
+// Re-sent at 1 Hz by the broadcaster — audio has no keyframe to anchor
+// config re-emits to; idempotent on the viewer.
+export const TYPE_AUDIO_CONFIG = 0x08;
 // ResumeToken (R17 W2, docs/22): server→publisher on its own uni stream right
 // after the session upgrade. The broadcaster presents it (hex, as the
 // `resume` query param) to claim /publish/{id} on any pod — auto-resume,
@@ -452,6 +462,119 @@ export function parseResumeToken(msg: Uint8Array): Uint8Array {
     throw new WireError(`invalid resume token: declared ${tokenLen} bytes in ${msg.length}-byte message`);
   }
   return msg.subarray(3);
+}
+
+// AudioFrame + AudioConfig (R15, docs/20). Mirrors gawk-server/wire; the
+// golden vectors in wire.test.ts pin byte compatibility.
+
+export const AUDIO_FRAME_HEADER_SIZE = 16;
+// One Opus packet per datagram; 20 ms at 128 kbps is ~320 bytes, so a
+// conforming encoder never comes near this ceiling.
+export const MAX_AUDIO_PAYLOAD = MAX_DATAGRAM_SIZE - AUDIO_FRAME_HEADER_SIZE;
+
+export interface AudioFrameHeader {
+  seq: number; // uint32, audio's own sequence space, monotonic per session
+  timestampUs: bigint; // uint64, broadcaster performance.now() µs clock
+}
+
+export interface AudioConfigMessage {
+  codec: string; // WebCodecs codec string ("opus"), 1-255 ASCII bytes
+  sampleRate: number; // uint32, Hz (48000 for opus)
+  channels: number; // uint8, >= 1 (2 for the stereo default)
+  description: Uint8Array; // codec-specific config; empty for opus
+}
+
+export function encodeAudioFrame(header: AudioFrameHeader, payload: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (payload.length === 0 || payload.length > MAX_AUDIO_PAYLOAD) {
+    throw new WireError(`invalid audio payload: ${payload.length} bytes, want 1-${MAX_AUDIO_PAYLOAD}`);
+  }
+  const dgram = new Uint8Array(AUDIO_FRAME_HEADER_SIZE + payload.length);
+  const view = new DataView(dgram.buffer);
+  dgram[0] = WIRE_VERSION;
+  dgram[1] = TYPE_AUDIO_FRAME;
+  dgram[2] = 0;
+  dgram[3] = 0;
+  view.setUint32(4, header.seq);
+  view.setBigUint64(8, header.timestampUs);
+  dgram.set(payload, AUDIO_FRAME_HEADER_SIZE);
+  return dgram;
+}
+
+export function parseAudioFrame(dgram: Uint8Array): { header: AudioFrameHeader; payload: Uint8Array } {
+  if (dgram.length < AUDIO_FRAME_HEADER_SIZE) {
+    throw new WireError(
+      `datagram too short: ${dgram.length} bytes, need at least ${AUDIO_FRAME_HEADER_SIZE} for audio frame`,
+    );
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_AUDIO_FRAME) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want audio frame`);
+  }
+  if (dgram.length === AUDIO_FRAME_HEADER_SIZE) {
+    throw new WireError('invalid audio payload: empty');
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  return {
+    header: { seq: view.getUint32(4), timestampUs: view.getBigUint64(8) },
+    payload: dgram.subarray(AUDIO_FRAME_HEADER_SIZE),
+  };
+}
+
+export function encodeAudioConfig(config: AudioConfigMessage): Uint8Array<ArrayBuffer> {
+  const codecBytes = new TextEncoder().encode(config.codec);
+  if (codecBytes.length === 0 || codecBytes.length > 255) {
+    throw new WireError(`invalid codec string: ${codecBytes.length} bytes, want 1-255`);
+  }
+  if (config.sampleRate === 0 || config.channels === 0) {
+    throw new WireError(`invalid audio config: sampleRate ${config.sampleRate}, channels ${config.channels}`);
+  }
+  const total = 4 + codecBytes.length + 5 + config.description.length;
+  if (total > MAX_DATAGRAM_SIZE) {
+    throw new WireError(`datagram ${total} bytes exceeds MAX_DATAGRAM_SIZE ${MAX_DATAGRAM_SIZE}`);
+  }
+  const dgram = new Uint8Array(total);
+  const view = new DataView(dgram.buffer);
+  dgram[0] = WIRE_VERSION;
+  dgram[1] = TYPE_AUDIO_CONFIG;
+  dgram[2] = 0;
+  dgram[3] = codecBytes.length;
+  dgram.set(codecBytes, 4);
+  view.setUint32(4 + codecBytes.length, config.sampleRate);
+  dgram[4 + codecBytes.length + 4] = config.channels;
+  dgram.set(config.description, 4 + codecBytes.length + 5);
+  return dgram;
+}
+
+export function parseAudioConfig(dgram: Uint8Array): AudioConfigMessage {
+  if (dgram.length < 4) {
+    throw new WireError(`datagram too short: ${dgram.length} bytes, need at least 4 for audio config`);
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_AUDIO_CONFIG) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want audio config`);
+  }
+  const codecLen = dgram[3];
+  if (codecLen === 0) {
+    throw new WireError('invalid codec string: empty');
+  }
+  if (4 + codecLen + 5 > dgram.length) {
+    throw new WireError(`codecLen ${codecLen} overruns ${dgram.length}-byte datagram`);
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  const config: AudioConfigMessage = {
+    codec: new TextDecoder().decode(dgram.subarray(4, 4 + codecLen)),
+    sampleRate: view.getUint32(4 + codecLen),
+    channels: dgram[4 + codecLen + 4],
+    description: dgram.subarray(4 + codecLen + 5),
+  };
+  if (config.sampleRate === 0 || config.channels === 0) {
+    throw new WireError(`invalid audio config: sampleRate ${config.sampleRate}, channels ${config.channels}`);
+  }
+  return config;
 }
 
 // Reliable-carrier framing (R19). The viewer only ever parses carriers (the
