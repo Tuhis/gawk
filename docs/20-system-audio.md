@@ -469,6 +469,37 @@ hardware. Deviations and decisions taken during implementation:
    scope without `AudioContext`/`AudioWorkletNode` shows no controls (they
    would be dead) and reports `audioState: 'unsupported'`.
 
+### Post-implementation review (2026-07-19)
+
+A self-review against `CODE-REVIEW.md` immediately after N6, before any
+manual verification. Both findings were invisible to the green test suite,
+which is the point worth keeping:
+
+1. **An audio-lane construction failure killed the whole broadcast.**
+   `startAudioLane()` builds a real `MediaStreamTrackProcessor`, which throws
+   synchronously on an ended track (or a scope whose MSTP rejects audio), and
+   it runs inside `startMedia()` — whose throw path tears the session down and
+   rejects `start()` with `BroadcastStartError{phase:'capture'}`. That is
+   exactly what Decision 6 forbids and what N2's own criterion claims. The
+   existing test covered encoder errors *via the callback*; construction is a
+   different path, so it stayed green. Found by CODE-REVIEW.md checklist item
+   3 ("walk the failure paths by hand"), fixed test-first. The viewer sink's
+   `postMessage`-with-transfer got the same guard for the same reason.
+2. **Audio stats inverted the diagnosis on lane death.** The viewer read the
+   decode counters straight off the live lane, so nulling it on error left the
+   overlay reporting *"State: Error, decoded 0, format —"* — which reads as
+   "audio never worked" rather than "audio worked, then died", on the one
+   screen someone would use to debug it. Counters are now folded into a
+   retained snapshot at both death sites (CODE-REVIEW.md: "counters and stats
+   survive their owner's deletion").
+
+Also closed here: the two N4 criteria that had no test behind them (a scope
+without `AudioDecoder` annotating `unsupported`; a consumer taking no audio
+never building a lane), and verification-by-reading that carrier records
+reach audio through `viewer-transport.ts`'s single
+`onCarrierRecord → onDatagram` seam, so Decision 12's viewer half needs no
+audio-specific code.
+
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
 | N1 | **Wire + relay** — Go `AudioFrame`/`AudioConfig` codecs (0x07/0x08, layouts above) + TS mirrors + golden vectors both sides; hub dispatch cases; `cachedAudioConfig` cache/prime/invalidate (**both** sites: `StartPublish` + `InvalidatePrimes`, Decision 4); strict-parse limits | Golden vectors byte-identical Go↔TS (new vectors in `wire_test.go` + `wire.test.ts`); hub tests: audio frame fans out verbatim to all subscribers, config cached + primed on subscribe + invalidated on new publisher session **and** on `InvalidatePrimes` (R17 edge upstream loss), malformed audio datagrams count bad and never panic (fuzz-style table like existing types); an edge-marked hub re-ingests + caches + fans audio through the same dispatch (cluster needs no other change — Decision 4); a reliable subscriber receives audio as carrier records with `SendDatagram` never called (Decision 12); audio seqs never perturb `ingressFramesLost`/`ingressChunksLost` or `framesRelayed`; `/statusz` + metrics unchanged except generic datagram counters; tier-1 `e2e` CI stays green (video-only pubsim = the no-audio path, now CI-asserted) | ✅ implemented 2026-07-19 |
