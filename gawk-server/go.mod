@@ -7,7 +7,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/quic-go/quic-go v0.60.0
 	github.com/quic-go/webtransport-go v0.11.1
-	k8s.io/api v0.35.0
+	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0
 )
