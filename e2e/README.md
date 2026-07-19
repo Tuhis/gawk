@@ -3,7 +3,9 @@
 A real Chromium viewer decoding real relayed frames, as a CI gate. Tier 1
 (every PR) runs the relay + `gawk-pubsim` + the production viewer on one
 machine; tier 2 (release-please PRs + `workflow_dispatch`) does the same
-against a 2-replica cluster-mode relay on kind. Assertions are **flow-shaped**
+against a 2-replica cluster-mode relay on kind; the Z5 browser-broadcaster
+mode replaces pubsim with a second Chromium publishing from the production
+broadcaster surface. Assertions are **flow-shaped**
 (frames arrive/decode/render, drops bounded, zero loopback ingress loss) —
 never fps ceilings or latency numbers; see docs/25 Decision 6.
 
@@ -39,6 +41,25 @@ playwright download (`npx playwright install chromium`). On a bare distro the
 browser may also need `libnss3 libnspr4 libasound2t64` (extractable per-user
 via `apt-get download` + `dpkg -x` + `LD_LIBRARY_PATH` if you can't install).
 
+## Browser broadcaster (Z5)
+
+```sh
+cd e2e && node run.mjs --browser-broadcast
+```
+
+No pubsim: a second headless Chromium drives the production `#/broadcast`
+surface. The capture picker is auto-granted by launching that browser with
+`--auto-select-tab-capture-source-by-title=gawk-e2e-motion-source`, pointing
+at an animated-canvas tab the harness opens first — **tab** capture, because
+headless *screen* capture grants but delivers solid black frames (docs/25
+finding 10). The harness scrapes the minted code from the LIVE topbar,
+asserts the encode funnel from the broadcaster's own Copy-diagnostics JSON
+(capture/encode/sent flowing, keyframes + streams growing, an `avc1.*`
+codec), then runs the normal viewer scenario against that broadcast. The
+worker offload path doesn't engage headlessly (no worker MSTP, no track
+transfer — finding 12), so the broadcaster runs the main-thread pipeline;
+the placement is recorded, not asserted.
+
 ## Tier 2 locally (kind)
 
 Mirror the `e2e-cluster` job in `.github/workflows/ci.yml` — it is written to
@@ -58,6 +79,7 @@ never skips verification), then pubsim + `gawk-loadgen -viewers 12` +
 | `GAWK_E2E_APP_DIR` | `../gawk-app` | built app checkout |
 | `GAWK_E2E_RELAY_PORT` / `GAWK_E2E_OPS_PORT` / `GAWK_E2E_PREVIEW_PORT` | 4433 / 2112 / 4173 | ports |
 | `GAWK_E2E_URL` / `GAWK_E2E_CERT_HASH` / `GAWK_E2E_ID` / `GAWK_E2E_OPS` | — | `--external` inputs |
+| `GAWK_E2E_OUT_DIR` | `out` | artifact directory (CI keeps the two tier-1 steps apart) |
 
 ## Flake policy
 

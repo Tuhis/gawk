@@ -13,6 +13,18 @@
 //                             + GAWK_E2E_ID, spawns only `vite preview` and
 //                             the browser. Relay-side assertions live in
 //                             cluster-assert.sh (per pod).
+//   node run.mjs --browser-broadcast
+//                             Z5 — the browser publishes instead of pubsim:
+//                             a second Chromium drives the production
+//                             broadcaster surface, capturing an animated tab
+//                             granted headlessly via
+//                             --auto-select-tab-capture-source-by-title
+//                             (the Z5 spike found screen capture works but
+//                             delivers black frames in headless — tab
+//                             capture delivers real pixels). Asserts the
+//                             encode funnel from the broadcaster's own
+//                             diagnostics, then runs the unchanged viewer
+//                             scenario against the minted ID.
 //
 // Environment (all optional in tier 1):
 //   GAWK_E2E_SERVER_BIN  path to gawk-server        (default e2e/bin/gawk-server)
@@ -36,8 +48,11 @@ import { chromium } from 'playwright-core';
 import { PNG } from 'pngjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const OUT = join(HERE, 'out');
+// Overridable so CI steps running both modes keep their failure artifacts
+// apart (the file names inside overlap).
+const OUT = join(HERE, process.env.GAWK_E2E_OUT_DIR ?? 'out');
 const EXTERNAL = process.argv.includes('--external');
+const BROWSER_BROADCAST = process.argv.includes('--browser-broadcast');
 
 const RELAY_PORT = Number(process.env.GAWK_E2E_RELAY_PORT ?? 4433);
 const OPS_PORT = Number(process.env.GAWK_E2E_OPS_PORT ?? 2112);
@@ -49,7 +64,34 @@ const APP_URL = `http://127.0.0.1:${PREVIEW_PORT}`;
 // ~5 s between the two diagnostics captures (Decision 6: "sustained").
 const SAMPLE_GAP_MS = 5000;
 // One hard cap on the whole run — a hung QUIC handshake must fail, not hang.
-const WATCHDOG_MS = EXTERNAL ? 180_000 : 240_000;
+// The browser-broadcast mode runs two browser scenarios back to back.
+const WATCHDOG_MS = EXTERNAL ? 180_000 : BROWSER_BROADCAST ? 300_000 : 240_000;
+
+// Z5: the tab the headless broadcaster captures. The flag matches by title
+// substring, so the value must never be a substring of the app's own title
+// ("gawk") — and it isn't, the match direction is tab-title-contains-flag.
+const ANIM_TITLE = 'gawk-e2e-motion-source';
+// A full-viewport animated canvas: tab capture is damage-driven, so the
+// captured tab must keep painting or captureFps reads ~0. Colorful and
+// moving so the viewer-side non-black/non-uniform screenshot check holds.
+const ANIM_HTML = `<!doctype html><title>${ANIM_TITLE}</title>
+<body style="margin:0"><canvas id="c" width="1280" height="720"></canvas>
+<script>
+const ctx = document.getElementById('c').getContext('2d');
+let t = 0;
+(function draw() {
+  t++;
+  const g = ctx.createLinearGradient(0, 0, 1280, 720);
+  g.addColorStop(0, 'hsl(' + (t * 3 % 360) + ',90%,55%)');
+  g.addColorStop(1, 'hsl(' + ((t * 3 + 180) % 360) + ',90%,45%)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 1280, 720);
+  ctx.fillStyle = '#fff';
+  ctx.font = '96px monospace';
+  ctx.fillText('frame ' + t, 80 + (t % 400), 360);
+  requestAnimationFrame(draw);
+})();
+</script>`;
 
 const children = [];
 let watchdog;
@@ -187,15 +229,20 @@ function medianRecent(diag, key) {
 
 // Decision 6's flow-shaped assertions. d1/d2 are the two diagnostics captures
 // ~5 s apart; every violation is collected so one run reports them all.
-function assertFlow(d1, d2) {
+// expectedCodec: exact string for the fixture publisher, RegExp for the
+// browser broadcaster (whose codec is negotiated, not fixed).
+function assertFlow(d1, d2, expectedCodec = 'avc1.42C00D') {
   const problems = [];
   const check = (ok, msg) => {
     if (!ok) problems.push(msg);
   };
 
-  // The codec is fully determined by the committed fixture's SPS — a
-  // mismatch means the config path (or the fixture) changed.
-  check(d2.codec === 'avc1.42C00D', `codec = ${d2.codec}, want the fixture's avc1.42C00D`);
+  // Pubsim: the codec is fully determined by the committed fixture's SPS — a
+  // mismatch means the config path (or the fixture) changed. Browser
+  // broadcaster: any H.264 variant from the negotiation cascade.
+  const codecOk =
+    expectedCodec instanceof RegExp ? expectedCodec.test(d2.codec) : d2.codec === expectedCodec;
+  check(codecOk, `codec = ${d2.codec}, want ${expectedCodec}`);
 
   for (const [name, d] of [
     ['capture 1', d1],
@@ -270,41 +317,58 @@ function assertNonBlack(pngBuffer) {
   if (stddev < 8) fail(`canvas is uniform (luma stddev ${stddev.toFixed(1)}) — not video`);
 }
 
-async function browserScenario({ relayUrl, certHash, id, attempt }) {
-  const browser = await chromium.launch({
+function launchBrowser(extraArgs = []) {
+  return chromium.launch({
     executablePath: chromePath(),
     headless: true,
     // The sandbox needs user namespaces the runner/container may not have;
     // this is a test harness, not a browsing session.
-    args: ['--no-sandbox'],
+    args: ['--no-sandbox', ...extraArgs],
   });
+}
+
+// A context with the persisted transport settings seeded (the keys
+// useTransportStore owns), the clipboard stubbed (the ViewerScreen.test.tsx
+// precedent), and the publish-secret prompt disabled (loopback hosts count as
+// dev environments, where the prompt defaults on) — all before any app code
+// runs.
+async function newAppContext(browser, { relayUrl, certHash }) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  await context.addInitScript(
+    ({ serverUrl, hash }) => {
+      localStorage.setItem('gawk.serverUrl', serverUrl);
+      if (hash) localStorage.setItem('gawk.certHashHex', hash);
+      // The shipped public/config.js assigns nothing, so this seed survives.
+      window.__GAWK_CONFIG__ = { requirePublishSecret: false };
+      window.__gawkClipboard = [];
+      Object.defineProperty(Navigator.prototype, 'clipboard', {
+        configurable: true,
+        get: () => ({
+          writeText: (text) => {
+            window.__gawkClipboard.push(text);
+            return Promise.resolve();
+          },
+        }),
+      });
+    },
+    { serverUrl: relayUrl, hash: certHash },
+  );
+  return context;
+}
+
+function wirePageLogs(page, name) {
+  const consoleLog = join(OUT, `${name}.log`);
+  writeFileSync(consoleLog, '');
+  page.on('console', (msg) => appendFileSync(consoleLog, `[${msg.type()}] ${msg.text()}\n`));
+  page.on('pageerror', (err) => appendFileSync(consoleLog, `[pageerror] ${err}\n`));
+}
+
+async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec }) {
+  const browser = await launchBrowser();
   try {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    // Seed the persisted transport settings (the keys useTransportStore owns)
-    // and stub the clipboard (the ViewerScreen.test.tsx precedent) before any
-    // app code runs.
-    await context.addInitScript(
-      ({ serverUrl, hash }) => {
-        localStorage.setItem('gawk.serverUrl', serverUrl);
-        if (hash) localStorage.setItem('gawk.certHashHex', hash);
-        window.__gawkClipboard = [];
-        Object.defineProperty(Navigator.prototype, 'clipboard', {
-          configurable: true,
-          get: () => ({
-            writeText: (text) => {
-              window.__gawkClipboard.push(text);
-              return Promise.resolve();
-            },
-          }),
-        });
-      },
-      { serverUrl: relayUrl, hash: certHash },
-    );
+    const context = await newAppContext(browser, { relayUrl, certHash });
     const page = await context.newPage();
-    const consoleLog = join(OUT, `console-${attempt}.log`);
-    writeFileSync(consoleLog, '');
-    page.on('console', (msg) => appendFileSync(consoleLog, `[${msg.type()}] ${msg.text()}\n`));
-    page.on('pageerror', (err) => appendFileSync(consoleLog, `[pageerror] ${err}\n`));
+    wirePageLogs(page, `console-${attempt}`);
 
     await page.goto(`${APP_URL}/#/view/${id}`);
 
@@ -339,13 +403,137 @@ async function browserScenario({ relayUrl, certHash, id, attempt }) {
     const diag1 = await captureDiagnostics(page, `diagnostics-${attempt}-1`);
     await sleep(SAMPLE_GAP_MS);
     const diag2 = await captureDiagnostics(page, `diagnostics-${attempt}-2`);
-    assertFlow(diag1, diag2);
+    assertFlow(diag1, diag2, expectedCodec);
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
     assertNonBlack(shot);
   } finally {
     await browser.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Browser broadcaster (Z5, docs/25 Decision 9)
+// ---------------------------------------------------------------------------
+
+// Z5's flow-shaped funnel assertions over the broadcaster's own diagnostics
+// (capture → encode → sent, docs/13 D5). Floors sit far below the 30 fps tab
+// capture rate — flow, not performance, same as the viewer side.
+function assertBroadcastFlow(d1, d2) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+
+  // Chromium always carries a software H.264 encoder, so the negotiation
+  // cascade must land on some avc1 variant; anything else means the config
+  // path changed.
+  check(
+    typeof d2.encoder?.codec === 'string' && /^avc1\./.test(d2.encoder.codec),
+    `encoder codec = ${d2.encoder?.codec}, want an avc1 variant`,
+  );
+
+  for (const [name, d] of [
+    ['capture 1', d1],
+    ['capture 2', d2],
+  ]) {
+    const capture = medianRecent(d, 'captureFps');
+    const encoder = medianRecent(d, 'encoderFps');
+    const sent = medianRecent(d, 'sentFps');
+    check(capture >= 10, `${name}: median capture fps = ${capture}, want >= 10`);
+    check(encoder >= 5, `${name}: median encoder fps = ${encoder}, want >= 5`);
+    check(sent > 0, `${name}: median sent fps = ${sent}, want > 0`);
+  }
+
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+  // Placement is recorded, not asserted: headless Chrome 149 exposes no
+  // MediaStreamTrackProcessor in workers and refuses MediaStreamTrack
+  // transfer, so the R11 capability probe correctly falls back to the
+  // main-thread pipeline here — a legitimate production path (Firefox always
+  // takes it), exercised end-to-end either way.
+  check(
+    s2.pipelineContext === 'worker' || s2.pipelineContext === 'main-thread',
+    `pipelineContext = ${s2.pipelineContext}, want a reported pipeline placement`,
+  );
+
+  const growth = (key) => s2[key] - s1[key];
+  const encoded = growth('encodedFrames');
+  check(encoded > 0, 'no frames encoded between the captures');
+  check(growth('keyframes') >= 1, 'no keyframe encoded between the captures (GOP is 500 ms)');
+  check(growth('datagramsSent') > 0, 'no datagrams sent between the captures');
+  check(growth('keyframeStreamsSent') >= 1, 'no keyframe streams sent between the captures');
+  check(growth('bytesSent') > 0, 'no bytes sent between the captures');
+  // Loopback link: a keyframe stream that fails to open here is a real bug,
+  // and encoder drops must not dominate the encode rate.
+  check(growth('keyframeStreamsFailed') === 0, `${growth('keyframeStreamsFailed')} keyframe streams failed between captures`);
+  check(
+    growth('droppedFrames') <= encoded,
+    `encoder dropped ${growth('droppedFrames')} vs encoded ${encoded} between captures — drops dominate`,
+  );
+
+  if (problems.length > 0) {
+    fail(`broadcast flow assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `broadcast flow ok: capture/encode/sent ≈ ${medianRecent(d2, 'captureFps')}/${medianRecent(d2, 'encoderFps')}/${medianRecent(d2, 'sentFps')} fps, ` +
+      `codec ${d2.encoder.codec} (${d2.encoder.acceleration}), ${encoded} frames encoded between captures, ` +
+      `pipeline ${s2.pipelineContext}`,
+  );
+}
+
+// Drives the production broadcaster surface in its own headless browser: an
+// animated tab is opened first, then the real "Start a stream" click's
+// getDisplayMedia picker auto-selects it via the launch flag (the Z5 spike:
+// headless *screen* capture grants but delivers black frames; *tab* capture
+// delivers real pixels — don't switch back to a desktop-source flag). Returns
+// the live browser (the broadcast must outlive this function) + the minted ID.
+async function broadcasterScenario({ relayUrl, certHash, attempt }) {
+  const browser = await launchBrowser([
+    `--auto-select-tab-capture-source-by-title=${ANIM_TITLE}`,
+  ]);
+  try {
+    const context = await newAppContext(browser, { relayUrl, certHash });
+
+    // The capture source. Tab capture keeps a captured background tab
+    // painting (spike-verified: full 30 fps with the tab unfocused).
+    const animPage = await context.newPage();
+    await animPage.setContent(ANIM_HTML);
+
+    const page = await context.newPage();
+    wirePageLogs(page, `console-broadcaster-${attempt}`);
+    await page.goto(`${APP_URL}/#/broadcast`);
+    await page.getByRole('button', { name: 'Start a stream' }).click();
+
+    // LIVE = the topbar shows the minted broadcast code. Covers connect +
+    // auto-granted capture + encoder init.
+    const code = page.locator('code').first();
+    await pollFor(
+      async () => /^[A-Z0-9]{6}$/.test(((await code.textContent().catch(() => '')) ?? '').trim()),
+      30_000,
+      500,
+      'the LIVE stage with a broadcast code',
+    );
+    const id = (await code.textContent()).trim();
+    log(`browser broadcaster is LIVE as ${id}`);
+
+    await page.getByRole('button', { name: 'Show stats' }).click();
+    await page
+      .locator('[role="dialog"][aria-label="Broadcast stats"]')
+      .waitFor({ state: 'visible', timeout: 5000 });
+
+    // Let the funnel settle past encoder warm-up before the first capture.
+    await sleep(2000);
+    const diag1 = await captureDiagnostics(page, `broadcast-diagnostics-${attempt}-1`);
+    await sleep(SAMPLE_GAP_MS);
+    const diag2 = await captureDiagnostics(page, `broadcast-diagnostics-${attempt}-2`);
+    assertBroadcastFlow(diag1, diag2);
+
+    return { browser, id };
+  } catch (err) {
+    await browser.close();
+    throw err;
   }
 }
 
@@ -357,11 +545,16 @@ async function assertRelaySide(opsUrl) {
   const rsp = await fetch(`${opsUrl}/statusz`);
   if (!rsp.ok) fail(`statusz: HTTP ${rsp.status}`);
   const st = await rsp.json();
+  // Exactly one *active* publisher. A retried browser-broadcaster attempt
+  // leaves its dead predecessor's hub in the GC grace period — inactive
+  // entries are expected there, never a second active one.
   const entries = Object.values(st.broadcasts ?? {});
-  if (entries.length !== 1) fail(`relay shows ${entries.length} broadcasts, want 1`);
-  const b = entries[0];
+  const active = entries.filter((b) => b.publisherActive);
+  if (active.length !== 1) {
+    fail(`relay shows ${active.length} active broadcasts (${entries.length} total), want 1`);
+  }
+  const b = active[0];
   const problems = [];
-  if (!b.publisherActive) problems.push('publisher not active');
   // Loopback link: loss here means our frame IDs disagree with the relay's
   // ingress window — a real bug, not network weather.
   if (b.ingressFramesLost !== 0 || b.ingressChunksLost !== 0) {
@@ -403,13 +596,15 @@ async function main() {
     certHash = await waitForLine(relay, /cert_hash_hex\W*"?([0-9a-f]{64})/, 15_000, 'the dev cert hash');
     await waitForHttp(`${opsUrl}/healthz`, 15_000, 'the relay ops endpoint');
 
-    const pubsim = launch('pubsim', PUBSIM_BIN, [
-      '-url', relayUrl,
-      '-insecure',
-      '-duration', '600s',
-    ]);
-    id = await waitForLine(pubsim, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'the broadcast code');
-    log(`pubsim publishing as ${id}`);
+    if (!BROWSER_BROADCAST) {
+      const pubsim = launch('pubsim', PUBSIM_BIN, [
+        '-url', relayUrl,
+        '-insecure',
+        '-duration', '600s',
+      ]);
+      id = await waitForLine(pubsim, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'the broadcast code');
+      log(`pubsim publishing as ${id}`);
+    }
   }
 
   const vite = join(APP_DIR, 'node_modules', '.bin', 'vite');
@@ -422,17 +617,40 @@ async function main() {
   });
   await waitForHttp(APP_URL, 20_000, 'vite preview');
 
-  // One in-harness retry, relaunching the browser but never the relay or the
-  // publisher (Decision 8) — and the retry is logged loudly: recurring
-  // attempt-1 failures are findings for docs/25, not noise.
-  try {
-    await browserScenario({ relayUrl, certHash, id, attempt: 1 });
-  } catch (err) {
-    log(`RETRY: browser scenario attempt 1 failed: ${err.message ?? err}`);
-    await browserScenario({ relayUrl, certHash, id, attempt: 2 });
+  // Z5: the browser publishes. Same one-retry policy as the viewer scenario
+  // (fresh browser, never the relay); a retry mints a fresh broadcast ID and
+  // the predecessor's hub sits out its GC grace period, which the relay-side
+  // assertion tolerates by keying on *active* publishers.
+  let publisherBrowser = null;
+  let expectedCodec = 'avc1.42C00D';
+  if (BROWSER_BROADCAST) {
+    expectedCodec = /^avc1\./;
+    let res;
+    try {
+      res = await broadcasterScenario({ relayUrl, certHash, attempt: 1 });
+    } catch (err) {
+      log(`RETRY: broadcaster scenario attempt 1 failed: ${err.message ?? err}`);
+      res = await broadcasterScenario({ relayUrl, certHash, attempt: 2 });
+    }
+    publisherBrowser = res.browser;
+    id = res.id;
   }
 
-  if (opsUrl) await assertRelaySide(opsUrl);
+  try {
+    // One in-harness retry, relaunching the browser but never the relay or the
+    // publisher (Decision 8) — and the retry is logged loudly: recurring
+    // attempt-1 failures are findings for docs/25, not noise.
+    try {
+      await browserScenario({ relayUrl, certHash, id, attempt: 1, expectedCodec });
+    } catch (err) {
+      log(`RETRY: browser scenario attempt 1 failed: ${err.message ?? err}`);
+      await browserScenario({ relayUrl, certHash, id, attempt: 2, expectedCodec });
+    }
+
+    if (opsUrl) await assertRelaySide(opsUrl);
+  } finally {
+    await publisherBrowser?.close();
+  }
 
   log('PASS');
 }
