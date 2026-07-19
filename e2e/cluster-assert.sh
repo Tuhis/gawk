@@ -4,8 +4,11 @@
 # relay pods by kube-proxy's UDP conntrack, exactly one pod must hold the
 # broadcast as origin (publisher active, downstream edges attached) and the
 # other must serve it as an edge (real local subscribers, fed by an internal
-# pull). Read from each pod's TCP ops endpoint via kubectl port-forward —
-# that side-channel is TCP and forwards fine.
+# pull). It also asserts the R18 (docs/23) live viewer count in cluster mode:
+# the origin's global count must equal the real viewers summed across both
+# pods (edge-pod viewers counted, edge sessions not). Read from each pod's TCP
+# ops endpoint via kubectl port-forward — that side-channel is TCP and
+# forwards fine.
 #
 # Usage: cluster-assert.sh <namespace> [deadline-seconds]
 set -euo pipefail
@@ -72,6 +75,35 @@ if ! statusz "$ORIGIN" | jq -e '[.broadcasts[] | select(.role == "origin" and .e
   statusz "$ORIGIN" >&2
   exit 1
 fi
+
+# R18 (docs/23) live viewer count in cluster mode: the origin's global count
+# (G = own local viewers + Σ edge downstream reports) must equal the total
+# real viewers summed across both pods — proving the edge pod's viewers ARE
+# counted while the edge session itself is NOT. ViewersGlobal is 0 on edges
+# (they receive G from upstream) and eventually-consistent on the origin
+# (1 Hz pump + edge keepalive reports), so poll to convergence.
+vsum() { statusz "$1" | jq '[.broadcasts[].subscribers] | add // 0'; }
+gend=$((SECONDS + 30))
+while true; do
+  total=0
+  for p in "${PODS[@]}"; do
+    n=$(vsum "$p" 2>/dev/null) || n=0
+    total=$((total + n))
+  done
+  origin_local=$(statusz "$ORIGIN" | jq '[.broadcasts[] | select(.role == "origin") | .subscribers] | add // 0') || origin_local=-1
+  viewers_global=$(statusz "$ORIGIN" | jq '[.broadcasts[] | select(.role == "origin") | .viewersGlobal] | add // 0') || viewers_global=-1
+  # vg == total proves the count aggregates across pods; total > origin_local
+  # proves edge-pod viewers (not just origin-local ones) are in the sum.
+  if [ "$viewers_global" -eq "$total" ] && [ "$total" -gt "$origin_local" ]; then
+    break
+  fi
+  if [ "$SECONDS" -ge "$gend" ]; then
+    echo "FAIL: R18 viewer count — origin viewersGlobal=$viewers_global, Σ real subscribers across pods=$total, origin-local=$origin_local (want viewersGlobal==total>origin-local)" >&2
+    exit 1
+  fi
+  sleep 2
+done
+echo "PASS: R18 viewers — origin viewersGlobal=$viewers_global == Σ real subscribers across pods ($total), > origin-local $origin_local (edge viewers counted, edge sessions excluded)"
 
 echo "PASS: origin=$ORIGIN edges=${edge_pods[*]}"
 for p in "${PODS[@]}"; do
