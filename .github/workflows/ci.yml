@@ -148,7 +148,7 @@ jobs:
           } | tee dist/BUILD-INFO.txt
       - name: Include install instructions with the binaries
         run: cp INSTALL.md dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gawk-broadcast-linux-amd64-${{ github.sha }}
           # Repo-relative, not job-relative: `defaults.run.working-directory`
@@ -244,7 +244,7 @@ jobs:
         working-directory: e2e
         env:
           GAWK_E2E_OUT_DIR: out-browser-broadcast
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-tier1-${{ github.run_id }}
@@ -414,7 +414,7 @@ jobs:
           kubectl -n gawk-e2e describe pods > e2e/out/describe.txt 2>&1 || true
           kubectl -n gawk-e2e get leases -o yaml > e2e/out/leases.yaml 2>&1 || true
           kind export logs e2e/out/kind-logs || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-cluster-${{ github.run_id }}
