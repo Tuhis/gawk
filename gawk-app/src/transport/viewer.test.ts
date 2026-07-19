@@ -39,7 +39,14 @@ vi.mock('../media/decoder', () => ({
 import { timeOriginMs } from './time-sync';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
-import { CLOSE_CODE_BROADCAST_ENDED, encodeClockMapping, encodeDecoderConfig, encodeVideoChunk } from './wire';
+import {
+  CLOSE_CODE_BROADCAST_ENDED,
+  encodeAudioConfig,
+  encodeAudioFrame,
+  encodeClockMapping,
+  encodeDecoderConfig,
+  encodeVideoChunk,
+} from './wire';
 
 function makeFakeWT(closedAfterMs: number, closeInfo: unknown) {
   const closed = new Promise((res) => {
@@ -554,5 +561,92 @@ describe('ViewerPipeline', () => {
     await vi.waitFor(() => expect(events).toContain('ended'), { timeout: 2000 });
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.every((e) => e.closeCode === undefined)).toBe(true);
+  });
+});
+
+// R15 N4 (docs/20 Decision 7): the viewer's audio lane is strictly additive.
+// It is built lazily on the first audio message, never built at all without
+// an audio consumer or an AudioDecoder, and its absence is annotated rather
+// than fatal — video is untouched in every case.
+describe('ViewerPipeline audio lane', () => {
+  function audioFrameDgram(seq: number): Uint8Array {
+    return encodeAudioFrame({ seq, timestampUs: BigInt(seq * 20_000) }, new Uint8Array([1, 2, 3]));
+  }
+  function audioConfigDgram(): Uint8Array {
+    return encodeAudioConfig({
+      codec: 'opus',
+      sampleRate: 48000,
+      channels: 2,
+      description: new Uint8Array(0),
+    });
+  }
+
+  async function runWith(
+    cbs: ViewerCallbacks,
+    feed: (deliver: (d: Uint8Array) => void) => void,
+  ): Promise<ViewerStats> {
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    let deliver: ((d: Uint8Array) => void) | null = null;
+    readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+      deliver = onDatagram;
+      return new Promise(() => {});
+    });
+    let latest: ViewerStats | null = null;
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, {
+      ...cbs,
+      onStats: (s) => {
+        latest = s;
+      },
+    });
+    await pipeline.start();
+    feed(deliver as unknown as (d: Uint8Array) => void);
+    await flush();
+    // Force a stats publication without waiting out the 500 ms timer.
+    (pipeline as unknown as { publishStats(): void }).publishStats();
+    await pipeline.stop();
+    return latest!;
+  }
+
+  it('stays absent for a video-only stream', async () => {
+    const { cbs } = makeCallbacks();
+    const stats = await runWith({ ...cbs, onAudioChunk: () => {} }, (deliver) => {
+      deliver(configDgram());
+      deliver(frameDgram(0, true));
+    });
+    expect(stats.audioState).toBe('absent');
+    expect(stats.audioPacketsReceived).toBe(0);
+  });
+
+  // The N4 criterion: a scope without AudioDecoder plays video-only and says
+  // so, rather than erroring or changing pipeline placement.
+  it('annotates unsupported when the scope has no AudioDecoder', async () => {
+    // jsdom has no AudioDecoder — exactly the shape being tested.
+    const { cbs, errors } = makeCallbacks();
+    const chunks: unknown[] = [];
+    const stats = await runWith({ ...cbs, onAudioChunk: (c) => chunks.push(c) }, (deliver) => {
+      deliver(audioConfigDgram());
+      deliver(audioFrameDgram(0));
+    });
+    expect(stats.audioState).toBe('unsupported');
+    // Audio still counted as received (it IS in the stream), just not decoded.
+    expect(stats.audioPacketsReceived).toBe(1);
+    expect(stats.audioPacketsDecoded).toBe(0);
+    expect(chunks).toHaveLength(0);
+    // Never an error: video plays on.
+    expect(errors).toHaveLength(0);
+  });
+
+  it('never builds a lane when the consumer takes no audio', async () => {
+    const { cbs, errors } = makeCallbacks();
+    // No onAudioChunk at all.
+    const stats = await runWith(cbs, (deliver) => {
+      deliver(audioConfigDgram());
+      deliver(audioFrameDgram(0));
+    });
+    expect(stats.audioState).toBe('absent');
+    // The reassembler still demuxes (cheap, and the counter is honest)…
+    expect(stats.audioPacketsReceived).toBe(1);
+    // …but nothing was built and nothing failed.
+    expect(errors).toHaveLength(0);
   });
 });
