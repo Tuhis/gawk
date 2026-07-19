@@ -213,6 +213,20 @@ describe('BroadcastPipeline audio lane wiring', () => {
     await pipeline.stop();
   });
 
+  it('toggle on + the browser refused the audio source: distinguishes unavailable from no-track', async () => {
+    // R15 field finding (2026-07-19): capture.ts retried video-only after
+    // Chromium rejected the audio-bearing grant. Reporting that as 'no-track'
+    // would read as "the user unchecked the box" — the overlay has to say the
+    // platform can't, or the next debug session starts from the wrong end.
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs, { ...makeMedia(null), audioUnavailable: true }, true);
+    await pipeline.start();
+    const stats = await lastStats(cbs);
+    expect(stats.audioState).toBe('unavailable');
+    expect(cbs.onError).not.toHaveBeenCalled();
+    await pipeline.stop();
+  });
+
   it('toggle on + track but no AudioEncoder in scope: unsupported annotation, video unaffected', async () => {
     // jsdom has neither AudioEncoder nor MediaStreamTrackProcessor — exactly
     // the worker-without-AudioEncoder shape (docs/20 N3): the pipeline keeps

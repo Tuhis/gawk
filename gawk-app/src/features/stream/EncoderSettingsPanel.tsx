@@ -129,7 +129,13 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
           />
           Enable audio (experimental)
         </label>
-        <span className={styles.fieldNote}>Applies when the broadcast starts.</span>
+        {/* Not decoration: when the browser can't start a system-audio source
+            it refuses the whole grant, video included (capture.ts retries
+            video-only). Sharing a tab is the path that works everywhere. */}
+        <span className={styles.fieldNote}>
+          Applies when the broadcast starts. If the browser can't capture system audio, the
+          broadcast continues video-only — sharing a tab with its audio is the reliable path.
+        </span>
       </div>
     </div>
   );

@@ -117,10 +117,13 @@ export interface BroadcastStats {
   viewerCount: number | null;
   // R15 (docs/20 Decision 6): the audio lane. 'off' = toggle off (zero audio
   // code paths ran); 'no-track' = requested but the grant had no audio track
-  // (Firefox, unchecked picker box) — a state, not an error; 'unsupported' =
-  // track present but this scope lacks AudioEncoder/MSTP; 'error' = the lane
-  // died mid-broadcast (video continues).
-  audioState: 'off' | 'no-track' | 'unsupported' | 'active' | 'error';
+  // (Firefox, unchecked picker box) — a state, not an error; 'unavailable' =
+  // the browser refused to start an audio source at all and capture fell back
+  // to a video-only grant (Chromium on Linux/macOS screen shares — R15 field
+  // finding); 'unsupported' = track present but this scope lacks
+  // AudioEncoder/MSTP; 'error' = the lane died mid-broadcast (video
+  // continues).
+  audioState: 'off' | 'no-track' | 'unavailable' | 'unsupported' | 'active' | 'error';
   audioEncodedPackets: number;
   audioPacketsSent: number;
   audioBytesSent: number;
@@ -240,6 +243,7 @@ const captureMediaSource: BroadcastMediaSourceFactory = async (config) => {
     // delivered; stopCapture stops every stream track, audio included. Never
     // even inspected with the toggle off (also: fakes without audio APIs).
     audioTrack: config.audio ? (handle.stream.getAudioTracks?.()[0] ?? null) : null,
+    audioUnavailable: handle.audioUnavailable,
     onEnded: (cb) => handle.track.addEventListener('ended', cb),
     startFrames: (onFrame) => handle.startFrames(onFrame),
     stop: () => stopCapture(handle),
@@ -817,6 +821,13 @@ export class BroadcastPipeline {
     if (!this.config.audio) return; // audioState stays 'off' — zero audio paths
     const track = media.audioTrack ?? null;
     if (!track) {
+      if (media.audioUnavailable) {
+        this.stats.audioState = 'unavailable';
+        log.info(
+          'Audio requested but this browser/OS could not start a system-audio source; broadcasting video-only.',
+        );
+        return;
+      }
       this.stats.audioState = 'no-track';
       log.info('Audio requested but the grant carried no audio track; broadcasting video-only.');
       return;

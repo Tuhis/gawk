@@ -43,7 +43,7 @@ export interface WorkerLike {
 
 export type AcquireDisplayStream = (
   config: CaptureConfig,
-) => Promise<{ stream: MediaStream; track: MediaStreamTrack }>;
+) => Promise<{ stream: MediaStream; track: MediaStreamTrack; audioUnavailable?: boolean }>;
 
 export class WorkerBroadcastSession implements BroadcastSessionLike {
   private worker: WorkerLike;
@@ -205,7 +205,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
   // the worker-side media factory turns into a phase-'capture' start error —
   // identical semantics to the main-thread path.
   private async provideCapture(): Promise<void> {
-    let acquired: { stream: MediaStream; track: MediaStreamTrack };
+    let acquired: Awaited<ReturnType<AcquireDisplayStream>>;
     try {
       acquired = await this.acquire(this.config);
     } catch (e) {
@@ -236,7 +236,15 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     try {
       clone = acquired.track.clone();
       this.post(
-        { type: 'capture', track: clone, nativeFps, audioTrack: audioClone },
+        {
+          type: 'capture',
+          track: clone,
+          nativeFps,
+          audioTrack: audioClone,
+          // R15 field finding: the pipeline reports 'audio unavailable here'
+          // rather than the indistinguishable 'no audio shared'.
+          audioUnavailable: acquired.audioUnavailable ?? false,
+        },
         audioClone
           ? [clone as unknown as Transferable, audioClone as unknown as Transferable]
           : [clone as unknown as Transferable],

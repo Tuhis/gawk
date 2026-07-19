@@ -50,7 +50,7 @@ ctx.onmessage = (e: MessageEvent) => {
       // R15 N3: the audio clone rides along when present. A worker without
       // AudioEncoder still annotates video-only inside the pipeline
       // (audioLaneSupported) — pipeline placement never changes for audio.
-      core.capture(cmd.track, cmd.nativeFps, cmd.audioTrack ?? null);
+      core.capture(cmd.track, cmd.nativeFps, cmd.audioTrack ?? null, cmd.audioUnavailable ?? false);
       break;
     case 'captureFailed':
       core.captureFailed(cmd.message);

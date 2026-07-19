@@ -1,3 +1,4 @@
+import { log } from '../lib/logger';
 import type { CaptureConfig } from './types';
 
 export type FrameHandler = (frame: VideoFrame) => void;
@@ -9,6 +10,9 @@ export interface CaptureHandle {
   stream: MediaStream;
   track: MediaStreamTrack;
   capturePath: CapturePath;
+  // R15 field finding: the audio-bearing grant was refused and this stream is
+  // the video-only retry (see acquireDisplayStream).
+  audioUnavailable: boolean;
   startFrames(onFrame: FrameHandler): Promise<void>;
   stop(): void;
 }
@@ -32,16 +36,74 @@ export interface BroadcastMediaSource {
   // toggle requested one and the browser granted it. Absent/null is the
   // graceful video-only state (toggle off, Firefox, unchecked picker box).
   audioTrack?: MediaStreamTrack | null;
+  // R15 field finding: audio was requested and the browser refused to start
+  // an audio source at all, so this source is the video-only retry. Distinct
+  // from a plain absent audioTrack (which is a choice, not a refusal) — the
+  // overlay says so, and it is the difference between "no audio shared" and
+  // "this OS/browser can't".
+  audioUnavailable?: boolean;
 }
 
 export type BroadcastMediaSourceFactory = (config: CaptureConfig) => Promise<BroadcastMediaSource>;
 
-// The pre-capture half of startCapture: HW-probe fps capping + the actual
-// getDisplayMedia call. Split out (R11) because on the worker path this must
-// run on the main thread (window scope + user gesture) while the frame pump
-// runs in the worker.
-export async function acquireDisplayStream(
+export interface DisplayStreamGrant {
+  stream: MediaStream;
+  track: MediaStreamTrack;
+  audioUnavailable: boolean;
+}
+
+// The pre-capture half of startCapture: the actual getDisplayMedia call.
+// Split out (R11) because on the worker path this must run on the main thread
+// (window scope + user gesture) while the frame pump runs in the worker.
+//
+// R15 field finding (2026-07-19): requesting system audio is not best-effort
+// in Chromium. Where the platform has no system-audio source for the chosen
+// surface — Linux and macOS screen/window shares; only Windows/ChromeOS and
+// tab shares have one — getDisplayMedia rejects the WHOLE request with
+// NotReadableError "Could not start audio source", taking video with it. That
+// made the experimental audio toggle a broadcast-killer, which docs/20
+// Decision 6 forbids ("audio may annotate, never abort"). So: ask again
+// without audio, and remember that we had to.
+export async function acquireDisplayStream(config: CaptureConfig): Promise<DisplayStreamGrant> {
+  if (!config.audio) return { ...(await requestDisplayStream(config, false)), audioUnavailable: false };
+
+  try {
+    return { ...(await requestDisplayStream(config, true)), audioUnavailable: false };
+  } catch (e) {
+    // Only an audio-source failure earns a second picker. A cancelled or
+    // denied picker (NotAllowedError) must never re-prompt — R1's lesson
+    // about telling "the server said no" from "the user said no" applies to
+    // capture too.
+    if (!isSourceStartFailure(e)) throw e;
+    log.warn('Capture with audio was refused; retrying video-only:', e);
+    try {
+      return { ...(await requestDisplayStream(config, false)), audioUnavailable: true };
+    } catch (retryError) {
+      // The usual landing spot: getDisplayMedia needs transient activation
+      // and the seconds the user spent in the picker have already spent it,
+      // so the retry cannot re-prompt. Surface the original cause plus the
+      // way out — the retry's activation complaint would only mislead.
+      log.warn('Video-only retry after the audio refusal also failed:', retryError);
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)} — capture was requested with audio. ` +
+          'Chromium can only capture system audio on Windows/ChromeOS, or from a shared tab ' +
+          'with "share tab audio" checked. Turn off "Enable audio (experimental)" in the ' +
+          'broadcaster settings and start again.',
+        { cause: e },
+      );
+    }
+  }
+}
+
+function isSourceStartFailure(e: unknown): boolean {
+  // Chromium's name for "a source in the grant would not start"; the audio
+  // one carries the message "Could not start audio source".
+  return (e as { name?: unknown } | null)?.name === 'NotReadableError';
+}
+
+async function requestDisplayStream(
   config: CaptureConfig,
+  audio: boolean,
 ): Promise<{ stream: MediaStream; track: MediaStreamTrack }> {
   // The grant is deliberately broad (docs/18 Decision 6): capture alignment
   // happens post-acquisition via track.applyConstraints on the sticky
@@ -65,7 +127,7 @@ export async function acquireDisplayStream(
       // constrained box, which is not what we want for ultrawide displays.
       width: { max: config.width },
     },
-    ...(config.audio
+    ...(audio
       ? ({
           audio: {
             echoCancellation: false,
@@ -84,12 +146,12 @@ export async function acquireDisplayStream(
 }
 
 export async function startCapture(config: CaptureConfig): Promise<CaptureHandle> {
-  const { stream, track } = await acquireDisplayStream(config);
+  const { stream, track, audioUnavailable } = await acquireDisplayStream(config);
 
   if (typeof (globalThis as unknown as { MediaStreamTrackProcessor?: unknown }).MediaStreamTrackProcessor === 'function') {
-    return createMstpHandle(stream, track);
+    return createMstpHandle(stream, track, audioUnavailable);
   }
-  return createVideoRvfcHandle(stream, track);
+  return createVideoRvfcHandle(stream, track, audioUnavailable);
 }
 
 // The MSTP read loop, shared by the main-thread handle and the worker-side
@@ -138,11 +200,16 @@ function createMstpPump(track: MediaStreamTrack): {
 
 // Preferred path: MediaStreamTrackProcessor. No DOM element, no compositor
 // roundtrip, not affected by tab-visibility throttling. Chromium-only today.
-function createMstpHandle(stream: MediaStream, track: MediaStreamTrack): CaptureHandle {
+function createMstpHandle(
+  stream: MediaStream,
+  track: MediaStreamTrack,
+  audioUnavailable: boolean,
+): CaptureHandle {
   const pump = createMstpPump(track);
   return {
     stream,
     track,
+    audioUnavailable,
     capturePath: 'mstp',
     startFrames: (onFrame) => pump.startFrames(onFrame),
     stop: () => pump.stop(),
@@ -160,6 +227,8 @@ export function trackMediaSource(
   // R15/N3: the transferred audio clone, alongside the video clone. The
   // source owns both clones — stop() ends them together.
   audioTrack: MediaStreamTrack | null = null,
+  // R15 field finding: the main thread's grant fell back to video-only.
+  audioUnavailable = false,
 ): BroadcastMediaSource {
   let pump: ReturnType<typeof createMstpPump> | null = null;
   return {
@@ -167,6 +236,7 @@ export function trackMediaSource(
     stream: null,
     nativeFps,
     audioTrack,
+    audioUnavailable,
     onEnded: (cb) => track.addEventListener('ended', cb),
     async startFrames(onFrame) {
       pump = createMstpPump(track);
@@ -187,7 +257,11 @@ export function trackMediaSource(
 // Fallback: hidden <video> + requestVideoFrameCallback. Works in Firefox
 // (and any browser where MediaStreamTrackProcessor isn't exposed) but pays
 // the compositor cost and is subject to tab-visibility throttling.
-function createVideoRvfcHandle(stream: MediaStream, track: MediaStreamTrack): CaptureHandle {
+function createVideoRvfcHandle(
+  stream: MediaStream,
+  track: MediaStreamTrack,
+  audioUnavailable: boolean,
+): CaptureHandle {
   const video = document.createElement('video');
   video.srcObject = stream;
   video.muted = true;
@@ -199,6 +273,7 @@ function createVideoRvfcHandle(stream: MediaStream, track: MediaStreamTrack): Ca
   return {
     stream,
     track,
+    audioUnavailable,
     capturePath: 'video-rvfc',
     async startFrames(onFrame) {
       if (typeof video.requestVideoFrameCallback !== 'function') {

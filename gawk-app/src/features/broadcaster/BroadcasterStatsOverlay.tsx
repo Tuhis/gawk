@@ -86,9 +86,11 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
                   ? 'Active'
                   : stats.audioState === 'no-track'
                     ? 'No audio shared'
-                    : stats.audioState === 'unsupported'
-                      ? 'Unsupported here'
-                      : 'Error',
+                    : stats.audioState === 'unavailable'
+                      ? 'Not capturable here'
+                      : stats.audioState === 'unsupported'
+                        ? 'Unsupported here'
+                        : 'Error',
               ],
               [
                 'Format',

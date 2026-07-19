@@ -43,6 +43,9 @@ export type BroadcastWorkerCommand =
       track: MediaStreamTrack;
       nativeFps: number | null;
       audioTrack?: MediaStreamTrack | null;
+      // R15 field finding: set when the main thread's audio-bearing grant was
+      // refused and it fell back to a video-only one.
+      audioUnavailable?: boolean;
     }
   | { type: 'captureFailed'; message: string }
   | { type: 'setLadder'; selection: ResolutionSelection; framerate: FramerateSelection }
@@ -108,6 +111,7 @@ interface PendingCapture {
     track: MediaStreamTrack;
     nativeFps: number | null;
     audioTrack: MediaStreamTrack | null;
+    audioUnavailable: boolean;
   }) => void;
   reject: (e: Error) => void;
 }
@@ -152,8 +156,8 @@ export class BroadcastWorkerCore {
           return;
         }
         this.pendingCapture = {
-          resolve: ({ track, nativeFps, audioTrack }) =>
-            resolve(trackMediaSource(track, nativeFps, audioTrack)),
+          resolve: ({ track, nativeFps, audioTrack, audioUnavailable }) =>
+            resolve(trackMediaSource(track, nativeFps, audioTrack, audioUnavailable)),
           reject,
         };
         this.host.post({ type: 'awaitingCapture' });
@@ -224,6 +228,7 @@ export class BroadcastWorkerCore {
     track: MediaStreamTrack,
     nativeFps: number | null,
     audioTrack: MediaStreamTrack | null = null,
+    audioUnavailable = false,
   ): void {
     const pending = this.pendingCapture;
     this.pendingCapture = null;
@@ -233,7 +238,7 @@ export class BroadcastWorkerCore {
       audioTrack?.stop();
       return;
     }
-    pending.resolve({ track, nativeFps, audioTrack });
+    pending.resolve({ track, nativeFps, audioTrack, audioUnavailable });
   }
 
   captureFailed(message: string): void {
