@@ -36,7 +36,7 @@ jobs:
       app_release: ${{ steps.rp.outputs['gawk-app--release_created'] }}
       app_version: ${{ steps.rp.outputs['gawk-app--version'] }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: rp
         with:
           config-file: release-please-config.json
