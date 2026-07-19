@@ -52,7 +52,7 @@ jobs:
     env:
       VERSION: ${{ needs.release-please.outputs.server_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Host networking on both levels: the ioio-k8s pod network MTU is 1480
       # and buildkit's default bridged networks assume 1500 — large downloads
       # inside RUN steps black-hole otherwise.
@@ -99,7 +99,7 @@ jobs:
     env:
       VERSION: ${{ needs.release-please.outputs.app_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Host networking on both levels: the ioio-k8s pod network MTU is 1480
       # and buildkit's default bridged networks assume 1500 — large downloads
       # inside RUN steps black-hole otherwise.
