@@ -1,7 +1,10 @@
 # R15 — System Audio: Opus over Datagrams (experimental)
 
 Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
-2026-07-15, not started). Adds the broadcaster's **system audio** to the
+2026-07-15; **design refreshed 2026-07-19** against everything landed since —
+R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
+and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
+not started). Adds the broadcaster's **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
 (Opus) on the broadcaster, one Opus packet per WebTransport datagram through
 the relay, WebCodecs `AudioDecoder` + an `AudioWorklet` ring buffer on the
@@ -85,7 +88,11 @@ on both ends.
    fits the 1184-byte payload budget; the constant stays far under it.
 
 2. **Wire: `TypeAudioFrame` = 0x07, `TypeAudioConfig` = 0x08** (0x01–0x06
-   are taken), mirrored byte-identically in Go (`gawk-server/wire`) and TS
+   were taken at design time; since then R17 took 0x09 `TypeResumeToken`,
+   R19 took 0x0A `TypeReliableCarrier` (a stream-kind discriminator) and R18
+   took 0x0B `TypeViewerCount` — all three honored the 0x07/0x08 reservation,
+   which `wire.go` records in a comment, so the allocation stands unchanged),
+   mirrored byte-identically in Go (`gawk-server/wire`) and TS
    (`transport/wire.ts`) with golden test vectors on both sides, like every
    existing message.
 
@@ -124,15 +131,43 @@ on both ends.
    clock. If anchor drift vs. `performance.now()` ever exceeds a bound
    (~50 ms), re-anchor and let the viewer buffer absorb the step (expected
    ~never within a session; the check is cheap insurance).
+   - *Cluster note (2026-07-19)*: broadcaster-clock timestamps are
+     pod-independent, so in R17 cluster mode audio needs **no per-hop
+     rewrite** — the edge re-ingests audio datagrams verbatim (like
+     ViewerCount, unlike ClockMapping, which is rewritten per hop). A/V skew
+     stays a broadcaster-clock subtraction on any serving pod, and the
+     per-hop ClockMapping rewrite serves audio's absolute-latency story
+     exactly as it serves video's.
 
 4. **Relay: two dispatch cases, one new cache slot, zero new mechanisms.**
    In `HandleDatagram`: `TypeAudioFrame` → strict-parse header + verbatim
    `relayDatagram` fan-out (payload opaque, like everything else);
    `TypeAudioConfig` → strict-parse + copy into a new `cachedAudioConfig` +
-   fan out. The cache is join-primed in `Subscribe` and invalidated in
-   `StartPublish`, byte-for-byte the `cachedClockMapping` lifecycle. Audio
-   rides the existing per-subscriber queues, bandwidth cap, and drop paths
-   untouched — they are media-agnostic.
+   fan out. The cache is join-primed in `subscribe` alongside
+   `cachedClockMapping` and `cachedViewerCount` (R18 turned the lifecycle
+   into a reusable template) and invalidated at **both** sites the lifecycle
+   now has *(amended 2026-07-19 — the second site postdates this design)*:
+   `StartPublish` (new publisher session) **and** `InvalidatePrimes` (R17
+   W4, edge upstream loss — skipping it would serve origin A's audio config
+   beside origin B's packets, exactly the staleness class docs/22
+   Decision 10 closes). Audio rides the existing per-subscriber queues,
+   bandwidth cap, and drop paths untouched — they are media-agnostic.
+   - **Cluster mode works with zero edge code** *(2026-07-19)*: the edge
+     pump (`transport/edge.go`) re-ingests every datagram it doesn't
+     special-case (TimeSync, ClockMapping) verbatim through the edge hub's
+     own `Publisher.HandleDatagram` — so N1's dispatch cases *are* the
+     cluster support; the edge then caches, primes, and fans audio for free.
+     Audio's trust model mirrors DecoderConfig (publisher-sourced, accepted
+     on origin and edge hubs alike), **not** ViewerCount's
+     relay-peers-only spoof guard — on an edge the "publisher" is the
+     upstream origin, which is exactly who should be speaking.
+   - **Version skew** *(2026-07-19; docs/22 makes skew tolerance mandatory)*:
+     a pre-N1 pod — an old relay behind a new broadcaster, or an old edge
+     pulling a new origin mid-rollout — drops each audio datagram as
+     unknown-type bad. Viewers there degrade to video-only (the designed
+     graceful state), but `datagramsBad` ticks at the audio packet rate
+     (~50/s). Accepted as transient rollout noise; know it before reading
+     that counter mid-upgrade.
    - **Audio never touches the video ingress-loss window** (`hub/ingress.go`
      assumes a single frameID space; interleaving audio seqs would read as
      massive loss). v1 adds no audio ingress window — the viewer's own gap
@@ -205,6 +240,19 @@ on both ends.
      packet-loss hook to exploit them, so FEC would spend bitrate nothing
      can read. Concealment = silence insertion. Revisit only if the gap
      counters say gaps are audible in practice (deferred, recorded here).
+   - **Restart/reconnect → flush + re-anchor** *(added 2026-07-19 — R17
+     made mid-view session churn routine, so this can't stay implicit)*:
+     the sink resets (flush the ring, drop the playhead anchor) on the same
+     restart/resync signal the video path already derives (R10's
+     backwards-keyframe / reorder-restart machinery). A broadcaster
+     **auto-resume** (R17 W2: capture + encoder kept, transport-only
+     reconnect) keeps both the seq space and the `performance.now()` origin
+     — audio flows through seamlessly, no reset. A genuine broadcaster
+     **restart** resets both, and without a flush every new packet would
+     read "older than the playhead" and be late-dropped forever. A *viewer*
+     reconnect (4002 drain, abrupt loss) rebuilds the transport: the new
+     session re-primes AudioConfig from the hub cache and the sink flushes
+     and re-anchors like any restart.
 
 9. **Autoplay + conditional controls.** The `AudioContext` is created on
    the viewer's join click (a real user gesture); if the context still
@@ -217,6 +265,15 @@ on both ends.
    exactly today's UI. Mute pauses the *sink output*, not the pipeline
    (stats keep flowing; unmute is instant). Volume is a `GainNode` on the
    main thread — no worker crossing.
+   - *iOS note (2026-07-19, post-R16)*: iPhone viewers are first-class now
+     (the worker pipeline was confirmed on-device), and the U4 verdict made
+     CSS **pseudo-fullscreen the shipping path** — good news for audio: the
+     fading controls and right-click menu (incl. mute/volume) stay reachable
+     in fullscreen, where the rejected native player would have hidden them
+     by construction. iOS autoplay policy is stricter than desktop: expect
+     **tap-to-unmute to be the normal first-play path there**, not a rare
+     edge — the affordance is mainline UI, and the manual verify gets an
+     iPhone pass.
 
 10. **A/V sync: shared clock + adaptive audio buffer + audio-master pacing
     where pacing already exists.** Good-enough, by construction, in three
@@ -244,7 +301,17 @@ on both ends.
       targets never step. Audio absent/suspended/muted-at-context → fall
       back to the arrival baseline (exactly today). `PacedPresentationSink`
       itself is untouched — only the *source of targets* changes, which is
-      precisely the seam R12 built.
+      precisely the seam R12 built. *(2026-07-19: the R12 defaults flip —
+      same day as this design, docs/17 Decision 8 as superseded — makes
+      `adaptive` + interpolation the production viewer's defaults, so
+      audio-master pacing is the **mainline** production path, not an
+      opt-in corner. Live-edge `off` remains reachable via the right-click
+      menu and stays the `#/debug/*` default; its never-delay-video
+      guarantee is unchanged. N5's manual measurement priorities follow:
+      default-mode skew first.)*
+    - **Resilient mode (R19) with audio present**: governed by Decision 12
+      — the audio buffer adopts the resilient envelope so audio-master
+      pacing works at resilient depth instead of collapsing it.
     - **Frame interpolation is unaffected by construction**: it synthesizes
       mid-slot frames below the pacing layer, so audio-derived targets feed
       it the same way arrival-derived targets do today. Stating this is an
@@ -258,6 +325,36 @@ on both ends.
     Audio datagrams count against the R2 global bandwidth cap and the
     generic datagram counters (they are datagrams; special-casing them out
     would falsify the cap). No new relay knobs.
+
+12. **R19 resilient-mode interplay** *(added 2026-07-19 — R19 postdates
+    this design)*. For a `?delivery=reliable` subscriber the drain writes
+    **everything its fan-out queue carries** as length-prefixed records on
+    the per-GOP carrier stream and never calls `SendDatagram`
+    (`drainReliable`, docs/24 Decision 5) — so audio automatically rides
+    the carrier with **zero additional relay code**, and that is the right
+    behavior, not an accident to defend against:
+    - Audio loss on the lossy leg is healed by QUIC retransmission —
+      resilient viewers get *fewer* concealment gaps, which is the mode's
+      entire point. In exchange audio shares the carrier's drop point: a
+      dead/rotated carrier drops its GOP tail *including* the audio records
+      in it (drops-over-stalls at GOP granularity, third medium).
+    - Viewer side: carrier records feed the existing datagram path
+      (`readServerStreams` → same demux), so N4's reassembler cases serve
+      both delivery modes unchanged. No audio-specific carrier code.
+    - **The audio jitter-buffer target becomes profile-carrying, like
+      `PlayoutController`** (same live-getter-on-the-resilient-flag pattern,
+      `transport/playout.ts` / `resilient.ts`): default clamp [40, 150] ms
+      as designed; resilient mode adopts the video playout envelope
+      (clamp **[150, 2000] ms, seed 500**) so the audio playhead sits at
+      resilient depth. Without this, Decision 10's audio-master pacing
+      would drag video targets back to the ≤150 ms audio playhead and
+      **structurally collapse the resilient buffer the moment audio
+      appears** — the one place the original design and R19 genuinely
+      conflict. Entering/leaving resilient mode is already a deliberate
+      reconnect (docs/24 Decision 9), which is exactly a sink
+      flush + re-seed boundary (Decision 8).
+    - Origin→edge stays datagrams (`SubscribeInternal` is never reliable —
+      docs/24 scale-out interop); nothing audio-specific there either.
 
 ## End-to-end path
 
@@ -274,7 +371,11 @@ Broadcaster (toggle on, Chromium):
 Relay:
   HandleDatagram: 0x07 validate → fan out verbatim
                   0x08 validate → cachedAudioConfig + fan out
-  Subscribe: prime cachedAudioConfig (after ClockMapping, before keyframe)
+  Subscribe: prime cachedAudioConfig (with the ClockMapping/ViewerCount
+             primes, before the keyframe)
+  Invalidate: StartPublish (new session) + InvalidatePrimes (edge upstream loss)
+  (R19 reliable subscriber: same bytes ride the per-GOP carrier as records;
+   cluster edge: re-ingested verbatim through the edge hub — Decisions 4/12)
 
 Viewer:
   transport worker (unchanged, opaque datagrams)
@@ -286,15 +387,56 @@ Viewer:
                                    clock for paced video modes)
 ```
 
+## Design refresh (2026-07-19)
+
+Review of this not-yet-started design against everything that landed after
+it was written (R16 U4, R17 W1–W6, R18, R19, R20, and the R12 defaults
+flip). The direction and chunk structure survive intact; the amendments are
+folded into the decisions above and the N-table criteria below:
+
+- **Wire allocations confirmed** (Decision 2): 0x09/0x0A/0x0B went to
+  R17/R19/R18 respectively; 0x07/0x08 stayed reserved for R15.
+- **Cluster mode (R17)** is nearly free (Decisions 3, 4): the edge
+  re-ingests unhandled datagrams verbatim through its own
+  `Publisher.HandleDatagram`, so N1's dispatch cases are the cluster
+  support; audio timestamps are pod-independent (no per-hop rewrite). The
+  one real addition: `cachedAudioConfig` must also be cleared in
+  `InvalidatePrimes` (edge upstream loss) — an invalidation site that did
+  not exist when Decision 4 said "invalidated in `StartPublish`". Plus a
+  recorded version-skew behavior (pre-N1 pods count audio bad at ~50/s,
+  viewers there degrade to video-only).
+- **Session churn is routine now (R17)** (Decision 8): explicit sink
+  flush/re-anchor policy on restart/resync and viewer reconnect;
+  broadcaster auto-resume needs no reset (seq + clock continue).
+- **R19 resilient mode** (new Decision 12): audio rides the reliable
+  carrier automatically (desired); the audio jitter buffer becomes
+  profile-carrying — resilient mode adopts the [150, 2000] ms / seed 500
+  envelope so audio-master pacing doesn't collapse the resilient buffer.
+  This was the only genuine conflict found.
+- **Defaults flip (R12, docs/17 Decision 8 superseded)** (Decision 10):
+  adaptive pacing + interpolation are the production defaults, so
+  audio-master pacing is the mainline path; verification re-ordered
+  accordingly.
+- **iOS (R16 U4)** (Decision 9): pseudo-fullscreen shipping keeps audio
+  controls reachable in fullscreen; tap-to-unmute is the expected normal
+  path on iPhone; manual verify gains an iPhone pass.
+- **Native broadcaster (R14 as shipped)**: the non-goal's "ffmpeg path"
+  wording corrected — R14 shipped a GStreamer subprocess, so the future
+  audio lane there is a GStreamer element chain emitting the same wire
+  messages from the engine.
+- **CI (R20)**: `gawk-pubsim` is video-only, so tier-1 `e2e` now
+  continuously asserts the no-audio path N1 must keep intact; an
+  audio-capable fixture is out of scope (possible later stretch).
+
 ## Status
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| N1 | **Wire + relay** — Go `AudioFrame`/`AudioConfig` codecs (0x07/0x08, layouts above) + TS mirrors + golden vectors both sides; hub dispatch cases; `cachedAudioConfig` cache/prime/invalidate; strict-parse limits | Golden vectors byte-identical Go↔TS (new vectors in `wire_test.go` + `wire.test.ts`); hub tests: audio frame fans out verbatim to all subscribers, config cached + primed on subscribe + invalidated on new publisher session, malformed audio datagrams count bad and never panic (fuzz-style table like existing types); audio seqs never perturb `ingressFramesLost`/`ingressChunksLost` or `framesRelayed`; `/statusz` + metrics unchanged except generic datagram counters | 📋 not started |
+| N1 | **Wire + relay** — Go `AudioFrame`/`AudioConfig` codecs (0x07/0x08, layouts above) + TS mirrors + golden vectors both sides; hub dispatch cases; `cachedAudioConfig` cache/prime/invalidate (**both** sites: `StartPublish` + `InvalidatePrimes`, Decision 4); strict-parse limits | Golden vectors byte-identical Go↔TS (new vectors in `wire_test.go` + `wire.test.ts`); hub tests: audio frame fans out verbatim to all subscribers, config cached + primed on subscribe + invalidated on new publisher session **and** on `InvalidatePrimes` (R17 edge upstream loss), malformed audio datagrams count bad and never panic (fuzz-style table like existing types); an edge-marked hub re-ingests + caches + fans audio through the same dispatch (cluster needs no other change — Decision 4); a reliable subscriber receives audio as carrier records with `SendDatagram` never called (Decision 12); audio seqs never perturb `ingressFramesLost`/`ingressChunksLost` or `framesRelayed`; `/statusz` + metrics unchanged except generic datagram counters; tier-1 `e2e` CI stays green (video-only pubsim = the no-audio path, now CI-asserted) | 📋 not started |
 | N2 | **Broadcaster main-thread path + toggle** — "Enable audio (experimental)" in `broadcastSettingsStore` (own LS key, default false) + advanced panel row with applies-on-next-start annotation; capture constraints per Decision 6; audio lane in `BroadcastPipeline` (MSTP → anchor → `AudioEncoder` wrapper → datagrams + 1 Hz config re-send); no-track graceful state; audio-lane-only error teardown; `BroadcastStats` audio fields | Toggle off ⇒ `getDisplayMedia` called with `audio: false` and zero audio code paths active (behavioral no-op vs. today, existing tests untouched); toggle on + no audio track ⇒ video-only + annotation, no error; unit tests (fake encoder/sender): anchor math produces monotone shared-clock timestamps, seq increments with wrap, config re-sent at 1 Hz, encoder error kills only the audio lane; encoded packets ≤ 1184 B asserted | 📋 not started |
 | N3 | **Broadcaster worker path** — audio clone transferred beside video in `provideCapture`; `capture` command + `BroadcastMediaSource` seam gain the audio track; worker handshake probes `AudioEncoder`; no-worker-audio ⇒ video-only annotation (placement never changes) | Worker path sends audio (integration test with fake worker scope, pattern of existing broadcast-worker-core tests); handshake-without-AudioEncoder falls back to video-only while video stays in the worker; teardown stops both clones; main-thread fallback path (Firefox) unaffected | 📋 not started |
-| N4 | **Viewer decode + playback + conditional UI** — reassembler demux cases; worker `AudioDecoder` + transferred `AudioData` event; main-thread `AudioWorklet` sink (ring buffer, gap/late/underrun/overflow policies + counters); `audioPresent` flag; mute/volume in fading controls + context menu (`gawk:muted`/`gawk:volume`); tap-to-unmute on suspended context; main-thread pipeline fallback decodes in place | Ring-buffer policies unit-tested pure (fake clock): gap ⇒ silence + counter, late ⇒ drop + counter, underrun ⇒ silence + counter, overflow ⇒ oldest dropped; demux tests route 0x07/0x08 and still count unknown types bad; `audioPresent` false ⇒ zero audio UI rendered (video-only streams pixel-identical to today), true ⇒ controls appear reactively mid-view; mute/volume persist and act on the sink only; worker-without-`AudioDecoder` ⇒ video-only viewer, annotated | 📋 not started |
-| N5 | **A/V sync** — 4 Hz playhead report channel; `avSkewMs` + audio-buffer stats in `ViewerStats`; adaptive buffer target (quantile tracker + clamp/slew per Decision 10); audio-master `displayTargetMs` source in paced modes with slew-limited mapping + arrival-baseline fallback | Unit tests (fake clocks): skew computation correct on synthetic clocks incl. wrap; buffer target converges/clamps/slews like `PlayoutController` (same test shape); paced-mode target source switches audio↔arrival without a step > slew bound; interpolation tests still pass with audio-derived targets (explicit criterion); live-edge mode never delays video (no video-target change when mode `off`); manual measurement: median \|avSkewMs\| ≤ 60 ms, p95 ≤ 120 ms on the reference LAN, both browsers | 📋 not started |
+| N4 | **Viewer decode + playback + conditional UI** — reassembler demux cases; worker `AudioDecoder` + transferred `AudioData` event; main-thread `AudioWorklet` sink (ring buffer, gap/late/underrun/overflow policies + counters, **flush/re-anchor on restart/resync + reconnect**, Decision 8); `audioPresent` flag; mute/volume in fading controls + context menu (`gawk:muted`/`gawk:volume`); tap-to-unmute on suspended context; main-thread pipeline fallback decodes in place | Ring-buffer policies unit-tested pure (fake clock): gap ⇒ silence + counter, late ⇒ drop + counter, underrun ⇒ silence + counter, overflow ⇒ oldest dropped; restart signal ⇒ ring flushed + re-anchored (a post-restart timestamp jump never late-drops forever); demux tests route 0x07/0x08 and still count unknown types bad — incl. fed as carrier records through the record path (same demux, Decision 12); `audioPresent` false ⇒ zero audio UI rendered (video-only streams pixel-identical to today), true ⇒ controls appear reactively mid-view; mute/volume persist and act on the sink only; worker-without-`AudioDecoder` ⇒ video-only viewer, annotated | 📋 not started |
+| N5 | **A/V sync** — 4 Hz playhead report channel; `avSkewMs` + audio-buffer stats in `ViewerStats`; adaptive buffer target (quantile tracker + clamp/slew per Decision 10, **profile-carrying per Decision 12** — resilient mode adopts [150, 2000] ms / seed 500 via the live-getter pattern); audio-master `displayTargetMs` source in paced modes with slew-limited mapping + arrival-baseline fallback | Unit tests (fake clocks): skew computation correct on synthetic clocks incl. wrap; buffer target converges/clamps/slews like `PlayoutController` (same test shape) **and widens/re-seeds on the resilient flag** (mirror of the playout profile test); audio-master targets under the resilient profile sit at resilient depth, never dragging video below the video playout envelope (the Decision 12 conflict, regression-tested); paced-mode target source switches audio↔arrival without a step > slew bound; interpolation tests still pass with audio-derived targets (explicit criterion); live-edge mode never delays video (no video-target change when mode `off`); manual measurement: median \|avSkewMs\| ≤ 60 ms, p95 ≤ 120 ms on the reference LAN, both browsers, **in the default adaptive mode first** (the mainline path since the defaults flip) | 📋 not started |
 | N6 | **Stats/overlay + docs + verify** — Audio sections on both overlays (broadcaster: codec/bitrate/encoded/s/sent/s; viewer: decoded/s, buffer ms, gaps/late/underruns, skew, muted) gated on audio presence; Copy-diagnostics includes audio; README gotchas + ROADMAP/CLAUDE status sync; manual verification pass below | Overlay sections render only when audio active; diagnostics JSON round-trips audio fields; docs synced; the full manual verification plan executed and findings recorded in this doc (incl. the graduation question: keep experimental or default-on) | 📋 not started |
 
 Ordering: N1 → N2 → N4 form the minimal audible path (N2's main-thread
@@ -312,23 +454,36 @@ Windows gaming PC sharing a screen with game audio:
    pressure; stream behaves byte-identically to today; viewer shows no
    audio UI. Flip the toggle mid-stream: nothing changes until the next
    broadcast start (annotation visible).
-2. **Toggle on, happy path**: Chrome + Firefox viewers hear game audio;
-   mute/volume work and persist; overlay Audio sections populate on both
-   surfaces; `avSkewMs` within targets (median ≤ 60 ms, p95 ≤ 120 ms) in
-   live-edge mode.
-3. **R12 interplay**: enable Smooth playback, then Paced (adaptive), then
-   interpolation — audio stays in sync (paced modes should *tighten* skew:
-   record before/after), no regressions in the R12 jitter metrics.
+2. **Toggle on, happy path**: Chrome + Firefox viewers hear game audio
+   **in the default mode (adaptive pacing + interpolation — the mainline
+   path since the R12 defaults flip)**; mute/volume work and persist;
+   overlay Audio sections populate on both surfaces; `avSkewMs` within
+   targets (median ≤ 60 ms, p95 ≤ 120 ms).
+3. **Playout-mode sweep (R12 interplay, inverted since the defaults
+   flip)**: from the default, right-click down through Smooth playback
+   (fixed) to live-edge (`off`), recording skew in each — live-edge must
+   never delay video (video leading audio by roughly the buffer depth is
+   the expected shape); re-enable adaptive + interpolation — paced modes
+   should *tighten* skew (record before/after), no regressions in the R12
+   jitter metrics.
 4. **Loss/stress**: throttle a viewer (existing playbook technique) —
    expect gap-concealment counters rising, silence blips, no growing delay,
    no video regression; recovery is immediate when throttling ends.
-5. **Graceful states**: uncheck "share audio" in the picker → video-only +
+5. **Resilient mode (R19, Decision 12)**: on a lossy link (netem, docs/24
+   X1 technique), toggle Resilient mode — audio arrives as carrier records
+   (overlay Delivery-mode row), concealment gaps near zero vs. the
+   datagram run, skew targets still met at resilient depth (~500 ms), a
+   carrier drop surfaces as a silence blip, never growing delay.
+6. **Graceful states**: uncheck "share audio" in the picker → video-only +
    broadcaster annotation; Firefox broadcaster → same; broadcaster restart
    mid-view with audio newly enabled → viewer's audio controls appear
-   reactively; with audio disabled → controls disappear.
-6. **Autoplay edge**: fresh profile / strict autoplay settings → the
-   tap-to-unmute affordance appears and works.
-7. Record findings + the experimental-graduation verdict in this doc.
+   reactively; with audio disabled → controls disappear. Broadcaster
+   auto-resume (R17) mid-audio → seamless, no sink reset artifacts.
+7. **Autoplay edge + iPhone**: fresh profile / strict autoplay settings →
+   the tap-to-unmute affordance appears and works. On an iPhone viewer
+   (expected to *require* the tap): audio plays, controls stay reachable in
+   pseudo-fullscreen (Decision 9's iOS note).
+8. Record findings + the experimental-graduation verdict in this doc.
 
 ## Non-goals
 
@@ -337,8 +492,12 @@ Windows gaming PC sharing a screen with game audio:
 - **Multiple audio tracks / per-viewer audio ladder** — one Opus stream for
   everyone, like video.
 - **Audio in the R14 native broadcaster** — the wire messages are
-  deliberately engine-agnostic and R14's ffmpeg path can produce Opus
-  later; noted as an R14 follow-up, not scoped here.
+  deliberately engine-agnostic; R14 as shipped runs a **GStreamer**
+  subprocess (docs/19 — the ffmpeg wording that stood here was stale:
+  ffmpeg/`pipewiregrab` was rejected 2026-07-15, not in mainline), so the
+  future lane there is a GStreamer audio chain (`pipewiresrc`/`pulsesrc` →
+  `opusenc`) emitting the same 0x07/0x08 messages from the engine; noted
+  as an R14 follow-up, not scoped here.
 - **Opus in-band FEC / decoder PLC** — no WebCodecs surface to exploit it
   (Decision 8); revisit only on evidence from the gap counters.
 - **Audio-only listening mode**, **bitrate setting in the panel** (v1 is a
@@ -354,8 +513,12 @@ Windows gaming PC sharing a screen with game audio:
   either way; transferring decoded `AudioData` is zero-copy).
 - **Audio as a hard master clock in live-edge mode** (full lip-sync v1) —
   would delay video by the audio buffer depth for all viewers, violating
-  the live-edge default; the paced modes are exactly the opt-in place for
-  audio-master timing, and that's where it went.
+  the live-edge philosophy; the paced modes are exactly the place for
+  audio-master timing, and that's where it went. *(2026-07-19: the R12
+  defaults flip made the paced modes the production default rather than an
+  opt-in, so audio-master timing is now the mainline path — the argument
+  stands unchanged: live-edge mode, wherever selected, never delays
+  video.)*
 - **Feeding audio seqs into the relay ingress-loss window** — corrupts the
   video loss signal (single-sequence-space assumption); audio loss is
   observable client-side where it's actually concealed.

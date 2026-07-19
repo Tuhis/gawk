@@ -187,8 +187,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
   decode with a main-thread AudioWorklet sink, good-enough A/V sync
   (shared capture clock, adaptive audio jitter buffer, audio-master pacing
-  in R12 paced modes); N1–N6 chunks; **designed 2026-07-15, not
-  started**),
+  in R12 paced modes); N1–N6 chunks; **designed 2026-07-15; design
+  refreshed 2026-07-19 post-R16–R20** (second cache-invalidation site for
+  cluster mode, R19 carrier interplay + resilient-widened audio buffer as
+  Decision 12, restart/reconnect sink resets — see the doc's "Design
+  refresh"); **not started**),
   `docs/21-ios-video-fullscreen.md` for R16 (iOS native fullscreen:
   iPhone has **no Element Fullscreen API** — today's viewer fullscreen
   button is a silent no-op there; a `TeeRenderSink` decorator wraps each
@@ -686,7 +689,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    **Tray and global hotkeys deferred 2026-07-15** — research kept in the
    doc's Deferred section; don't re-derive it. Not a
    container/chart/CI-deploy component — binaries you run on your own PC.
-20. System audio — **designed 2026-07-15 (N1–N6), not started** (R15,
+20. System audio — **designed 2026-07-15 (N1–N6); design refreshed
+   2026-07-19 against R16–R20 (docs/20 "Design refresh"); not started** (R15,
    `docs/20-system-audio.md`). **Experimental, default-off**: an "Enable
    audio (experimental)" toggle in the broadcaster's advanced settings
    (off ⇒ `audio: false`, byte-identical to today), and the viewer shows
