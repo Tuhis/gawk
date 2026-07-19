@@ -234,11 +234,23 @@ jobs:
       - name: Run the browser E2E (headless system Chrome)
         run: node run.mjs
         working-directory: e2e
+      # Z5 (docs/25 Decision 9): the browser publishes — the production
+      # broadcaster surface captures an animated tab, auto-granted via
+      # --auto-select-tab-capture-source-by-title. The Z5 spike found headless
+      # *screen* capture grants but delivers black frames; *tab* capture
+      # delivers real pixels — don't switch this to a desktop-source flag.
+      - name: Run the browser-broadcaster E2E (Z5)
+        run: node run.mjs --browser-broadcast
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-browser-broadcast
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: e2e-tier1-${{ github.run_id }}
-          path: e2e/out/
+          path: |
+            e2e/out/
+            e2e/out-browser-broadcast/
           retention-days: 7
 
   # R20 tier 2 (docs/25 Decision 7): cluster-mode E2E — the real chart with
