@@ -22,7 +22,7 @@ import type { ViewerStats } from '../../transport/viewer';
 import type { ViewerWorkerEvent } from '../../transport/viewer-worker-core';
 import { WorkerViewerController } from './workerViewerController';
 import { AudioSink, audioSinkSupported } from './audioSink';
-import { notePlayhead, resetAvSync } from '../../transport/av-sync';
+import { AudioRateController, notePlayhead, resetAvSync } from '../../transport/av-sync';
 import { timeOriginMs } from '../../transport/time-sync';
 import {
   DEFAULT_AUDIO_PROFILE,
@@ -151,8 +151,12 @@ export function useViewerConnection(
   const sinkRef = useRef<AudioSink | null>(null);
   // One-shot latch for the per-packet hot path (see handleAudioChunk).
   const audioStartedRef = useRef(false);
+  // Video-master drift trim (docs/20 Decision 10 revised): alignment is fixed
+  // at playback start, so this is the only lever left. Lives here because it
+  // drives the sink, and is fed the skew the pipeline measures.
+  const rateControllerRef = useRef(new AudioRateController());
   // Read live by the sink's jitter buffer: resilient mode widens the audio
-  // envelope too, or audio-master pacing would collapse the video buffer
+  // envelope too, so the fallback depth floor is sized for a lossy link
   // (docs/20 Decision 12).
   const resilientRef = useRef(resilientMode);
   resilientRef.current = resilientMode;
@@ -220,6 +224,9 @@ export function useViewerConnection(
 
   const handleAudioReset = useCallback(() => {
     sinkRef.current?.flush();
+    // A new timeline gets a fresh alignment *and* a fresh trim: the old rate
+    // was correcting drift that no longer exists.
+    rateControllerRef.current.reset();
     // On the main-thread path the A/V mapping lives in this context; the
     // worker path resets its own inside the pipeline.
     if (!useWorkerRef.current) resetAvSync();
@@ -300,7 +307,20 @@ export function useViewerConnection(
         // controller uses — one measurement, two consumers.
         const sink = sinkRef.current;
         if (sink) {
-          sink.updateTarget(ev.stats.arrivalJitterMs, performance.now());
+          const nowMs = performance.now();
+          sink.updateTarget(ev.stats.arrivalJitterMs, nowMs);
+          // Video-master (docs/20 Decision 10 revised): hand the sink the
+          // video presentation schedule, rebased from the pipeline context's
+          // epoch onto this thread's timeOrigin, and the drift trim derived
+          // from measured skew. The schedule only matters until playback
+          // starts; the trim runs for the session's life.
+          const baseEpochMs = ev.stats.videoScheduleBaseEpochMs;
+          sink.setVideoSchedule(
+            baseEpochMs === null
+              ? null
+              : (timestampUs: number) => timestampUs / 1000 + baseEpochMs - timeOriginMs(),
+          );
+          sink.setRate(rateControllerRef.current.update(ev.stats.avSkewMs, nowMs));
           // The context can be suspended by the browser at any time (not just
           // at start), so the tap-to-unmute affordance follows the stats
           // cadence rather than the 50/s packet path.

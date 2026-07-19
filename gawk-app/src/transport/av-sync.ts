@@ -1,14 +1,25 @@
-// R15 N5 (docs/20 Decision 10): A/V sync — "good-enough", in three layers.
+// A/V sync — "good-enough", **video-master** (docs/20 Decision 10, revised
+// 2026-07-20; the original made audio the master in paced modes).
+//
+// Video is the master clock and is never rescheduled for audio's sake. Audio
+// is the medium with slack to give: one Opus packet per datagram, no
+// chunking, no reassembly, no keyframe wait and a trivial decode, so it
+// arrives materially earlier than video, which pays all of those plus the
+// playout offset. So audio waits for video, not the reverse.
 //
 // 1. Skew is measured ALWAYS: avSkewMs = (video timestamp presented) −
 //    (audio timestamp at the playhead), both on the broadcaster's clock
 //    (Decision 3), so the metric is a subtraction and not a negotiation.
-// 2. Live-edge mode (playout 'off'): video is never delayed. The audio
-//    jitter buffer is the only adaptive knob (audio-buffer.ts).
-// 3. Paced modes ('fixed'/'adaptive'): audio becomes the master clock for
-//    video display targets — slew-limited so targets never step, with the
-//    reorder buffer's arrival baseline as the fallback the moment audio is
-//    absent, stale, or the context is suspended.
+//    Positive = audio behind video.
+// 2. Alignment is set ONCE, at the start of playback: audio-buffer.ts holds
+//    the first chunk until the video presentation schedule says it is due
+//    (docs/20 field finding 4). After that the worklet consumes exactly
+//    sampleRate samples per second at 1×, so *no amount of buffering can
+//    change when a given sample is heard* — holding chunks longer only
+//    changes queue depth. Alignment is a start-time decision.
+// 3. Which leaves drift (clock + soundcard, tens of ppm ≈ 100 ms/hour) to a
+//    slow playback-rate trim: AudioRateController below turns measured skew
+//    into a sub-audible rate, never a step, never a skip.
 //
 // Module state, like playout.ts: the pipeline reads it live, and the main
 // thread pushes playhead reports in (the sink owns an AudioContext, which
@@ -88,23 +99,6 @@ export function audioClockAvailable(nowMs: number = performance.now()): boolean 
   );
 }
 
-// The local time (this context's performance.now() ms) at which a frame with
-// this broadcaster timestamp should be displayed to sit with the audio.
-// Null whenever audio can't be the master — the caller then uses the arrival
-// baseline.
-export function audioDisplayTargetMs(
-  frameTimestampUs: number,
-  offsetMs: number,
-  nowMs: number = performance.now(),
-): number | null {
-  if (!audioClockAvailable(nowMs) || mapping === null) return null;
-  // Where the speaker is now, extrapolated from the anchor.
-  const playheadNowUs = mapping.anchorUs + (nowMs - mapping.anchorLocalMs) * 1000;
-  // A frame ahead of the playhead waits exactly that long, plus the playout
-  // offset the mode asked for.
-  return nowMs + (frameTimestampUs - playheadNowUs) / 1000 + offsetMs;
-}
-
 // avSkewMs at the moment a video frame is presented: positive = video ahead
 // of audio (the perceptually forgiving direction, and the expected sign in
 // live-edge mode, where video is undelayed and audio carries a jitter
@@ -132,4 +126,68 @@ export function resetAvSync(): void {
   mapping = null;
   lastReportLocalMs = null;
   lastSkewMs = null;
+}
+
+// ── Drift trim (docs/20 Decision 10 revised) ──────────────────────────────
+//
+// Alignment is fixed at playback start, so the only lever left is playback
+// *rate*. Clock and soundcard crystals differ by tens of ppm, which is ~100 ms
+// of drift per hour — slow, but a two-hour session ends visibly out of lip
+// sync without correction.
+//
+// The constraint is that the correction must be inaudible: no steps, no
+// skips, no resampling artifacts. Pitch shift is imperceptible well below
+// 0.5% (a semitone is ~6%), so the trim stays inside ±0.4% and slews there
+// over seconds. That absorbs 100 ms of skew in ~25 s at full trim — far
+// slower than the drift accumulates, which is the whole point.
+
+// Skew below this is left alone: hunting around zero would modulate pitch for
+// no perceptible gain.
+export const RATE_TRIM_DEADBAND_MS = 20;
+// Maximum |rate − 1|. Chosen for inaudibility, not for correction speed.
+export const RATE_TRIM_MAX = 0.004;
+// How fast the trim itself may change (per second). Slewing the *rate* keeps
+// even the onset of a correction from being heard as a pitch step.
+export const RATE_TRIM_SLEW_PER_S = 0.0008;
+// Skew this large is not drift — it's a re-anchor (restart, reconnect, a
+// device change). The trim gives up rather than grinding at max rate for
+// minutes; audio-buffer.ts's flush path owns that case.
+export const RATE_TRIM_GIVE_UP_MS = 2000;
+
+export class AudioRateController {
+  private rate = 1;
+
+  // Feed the latest measured skew (positive = audio behind video). Returns
+  // the rate the sink should play at.
+  update(skewMs: number | null, nowMs: number): number {
+    const dtMs = this.lastAtMs === null ? 0 : Math.max(0, nowMs - this.lastAtMs);
+    this.lastAtMs = nowMs;
+    if (skewMs === null || Math.abs(skewMs) > RATE_TRIM_GIVE_UP_MS) {
+      return this.slewToward(1, dtMs);
+    }
+    if (Math.abs(skewMs) <= RATE_TRIM_DEADBAND_MS) return this.slewToward(1, dtMs);
+    // Audio behind (skew > 0) ⇒ play faster to catch up, and vice versa.
+    // Proportional inside the clamp: a big skew earns the full trim, a small
+    // one a gentle nudge that settles instead of overshooting.
+    const desired = 1 + Math.max(-RATE_TRIM_MAX, Math.min(RATE_TRIM_MAX, skewMs / 250_000));
+    return this.slewToward(desired, dtMs);
+  }
+
+  private lastAtMs: number | null = null;
+
+  private slewToward(desired: number, dtMs: number): number {
+    const maxStep = (RATE_TRIM_SLEW_PER_S * dtMs) / 1000;
+    const delta = desired - this.rate;
+    this.rate += Math.max(-maxStep, Math.min(maxStep, delta));
+    return this.rate;
+  }
+
+  current(): number {
+    return this.rate;
+  }
+
+  reset(): void {
+    this.rate = 1;
+    this.lastAtMs = null;
+  }
 }

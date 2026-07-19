@@ -186,8 +186,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   default-off**: Opus/WebCodecs over datagrams — one Opus packet per
   datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
   decode with a main-thread AudioWorklet sink, good-enough A/V sync
-  (shared capture clock, adaptive audio jitter buffer, audio-master pacing
-  in R12 paced modes); N1–N6 chunks; designed 2026-07-15, refreshed
+  (shared capture clock, adaptive audio jitter buffer, **video-master**
+  pacing since 2026-07-20 — docs/20 field finding 4); N1–N6 chunks; designed 2026-07-15, refreshed
   2026-07-19 post-R16–R20; **N1–N6 implemented 2026-07-19, automated gates
   green in all three modules, manual browser verify pending** — deviations
   in the doc's "Implementation status"),
@@ -729,8 +729,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    (broadcaster: anchor → `AudioEncoder` → datagrams + 1 Hz config),
    `transport/audio-decode.ts` (viewer decode → planar PCM),
    `transport/audio-buffer.ts` (the live-edge ring-buffer policies, pure),
-   `transport/av-sync.ts` (skew + audio-master mapping, module state like
-   `playout.ts`), `features/viewer/audioSink.ts` (AudioContext +
+   `transport/av-sync.ts` (skew + the drift-trim controller, module state
+   like `playout.ts`), `features/viewer/audioSink.ts` (AudioContext +
    AudioWorklet + GainNode). Deviations worth knowing before touching it:
    decoded audio crosses the worker boundary as **planar Float32 buffers,
    not a transferred `AudioData`** (the worklet needs planar channels, so
@@ -742,7 +742,62 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the audio buffer's profile re-seed is keyed on **profile identity, not
    value range** (the default and resilient envelopes overlap at 150 ms).
    **Manual browser verification is pending** — audio has never played on
-   real hardware.
+   real hardware. **Field finding 1 (2026-07-19, docs/20)**: the first
+   real-hardware attempt never reached the audio code — `getDisplayMedia`
+   audio is **all-or-nothing in Chromium**: when the browser can't start a
+   system-audio source it rejects the *whole* request with
+   `NotReadableError: Could not start audio source` and the broadcast dies in
+   phase `'capture'`. Two failure classes, one identical exception —
+   **platform** (no loopback at all: Linux, macOS screen/window shares) and
+   **device state** (Windows supports it and still failed on the gaming PC —
+   exclusive-mode/asleep/virtual default output endpoint, or a window
+   selected; root cause there **not yet identified**, triage list in
+   docs/20). **Tab audio bypasses OS loopback** (internal mirroring), so it
+   both discriminates during triage and is the way to verify R15 today.
+   `acquireDisplayStream` now retries once without audio on `NotReadableError`
+   only (never on `NotAllowedError` — a cancelled picker must not re-prompt),
+   reports `audioState: 'unavailable'` (distinct from `'no-track'`, which
+   means the user unchecked the box), and when the retry has no transient
+   activation left throws the original audio cause plus the way out.
+   **Field findings 2 + 3 (2026-07-20, docs/20)** — first time audio actually
+   played (a standard-audio Windows machine; finding 1's box had a virtual
+   audio-device stack): video froze almost completely and audio broke up
+   constantly, two independent seam bugs. **(2)** N5 put the *display target*
+   on the audio playhead but left the reorder buffer's *release gate* on the
+   arrival baseline — the gap between the two schedules (audio's jitter buffer
+   + output latency) delivered every frame to `PacedPresentationSink` long
+   before its slot, and the sink drops the **oldest** past
+   `MAX_HELD_FRAMES: 3`, so it discarded each frame as it came due →
+   total freeze. Fixed by `av-sync.audioBaselineMs()` (audio analogue of
+   `arrivalBaselineMs()`), read by **both** the release gate and the display
+   target — one schedule per pipeline; live-edge mode unaffected (offset 0).
+   Accepted: in paced modes, audio-on now costs the audio path's depth in
+   video latency. **(3)** `AudioJitterBuffer` enforced its 40–150 ms target
+   only as an overflow *ceiling* and forwarded every chunk on arrival, so the
+   worklet played at ~0 ms depth and any jitter ran it dry; the target is now
+   a **floor** (prime to it, re-arm on a still-dry underrun report,
+   concealment silence through the same gate or it overtakes the audio it
+   fills behind). Both fixed test-first. **Field finding 4 (2026-07-20,
+   owner decision)** inverts Decision 10: **video is the master clock and is
+   never rescheduled for audio** — audio is the medium with slack (one Opus
+   packet per datagram, no reassembly/keyframe wait, so it arrives materially
+   earlier than video, which also pays the playout offset). av-sync no longer
+   exports any video-side lever (a test pins that absence). The
+   load-bearing constraint: the worklet consumes exactly sampleRate samples/s
+   at 1×, so **after playback starts, buffering can no longer change when a
+   sample is heard** — alignment is a start-time decision, drift is a rate
+   problem. So: (a) `AudioJitterBuffer` holds the first chunk until the video
+   presentation schedule (`ViewerStats.videoScheduleBaseEpochMs`, rebased per
+   context) says it is due, less `AudioContext.outputLatency` — that hold
+   becomes the sink's depth for the session, which also retires finding 3's
+   underruns; (b) `AudioRateController` absorbs clock/soundcard drift
+   (~100 ms/hour) with a sub-audible rate trim (±0.4%, slewed 0.0008/s,
+   20 ms deadband, give-up at 2 s) applied by a fractional-read resampler in
+   the worklet. Fallbacks: no schedule ⇒ depth floor; schedule never fires ⇒
+   released after `MAX_ALIGNMENT_HOLD_MS`; underrun re-prime ⇒ depth floor,
+   not a past schedule. `avMaster` now reads 'video' | 'free';
+   `alignmentHoldMs` is the lip-sync diagnostic. **Hardware re-verification
+   of all four findings pending.**
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
    green); U4 verdict 2026-07-19: the native path still does not work on
    iPhone — `webkitEnterFullscreen` enters but shows a black video across

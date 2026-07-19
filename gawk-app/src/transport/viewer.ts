@@ -21,7 +21,6 @@ import {
 import { getInterpolationEnabled } from './interpolation';
 import {
   audioClockAvailable,
-  audioDisplayTargetMs,
   getAvSkewMs,
   observeVideoPresented,
   resetAvSync,
@@ -171,10 +170,18 @@ export interface ViewerStats extends ReassemblerStats {
   // expected sign in live-edge mode). Null when there is no audio clock.
   // Target: median |skew| ≤ 60 ms, p95 ≤ 120 ms.
   avSkewMs: number | null;
-  // Whether audio is currently driving video display targets (paced modes
-  // with a fresh playhead) — ground truth, so a fallback to the arrival
-  // baseline is visible rather than inferred.
-  avMaster: 'audio' | 'arrival' | null;
+  // Which clock is in charge (docs/20 Decision 10, revised 2026-07-20). Video
+  // always is: 'video' means audio is aligned to the video presentation
+  // schedule as intended, 'free' means audio is playing without one (no video
+  // baseline yet, or it rebuilt depth after an underrun) and is holding sync
+  // on the drift trim alone. Ground truth, so a degraded alignment is visible
+  // rather than inferred.
+  avMaster: 'video' | 'free' | null;
+  // The video presentation schedule as an epoch base — a frame with
+  // broadcaster timestamp T is presented at T/1000 + (base − timeOrigin) in
+  // the reader's context. The audio sink aligns playback start to it; null
+  // until the arrival baseline exists.
+  videoScheduleBaseEpochMs: number | null;
   // R16 (docs/21 Decision 9). The pipeline itself never sets these three:
   // presentationTee is merged in by the viewer *worker shell* when the
   // presentation tee exists (gated devices only); featureGates and
@@ -652,16 +659,25 @@ export class ViewerPipeline {
     if (getPlayoutMode() !== 'adaptive') return undefined;
     const offset = getPlayoutOffsetMs();
     if (offset <= 0) return undefined;
-    // R15 N5 (docs/20 Decision 10): with audio present and its clock fresh,
-    // audio is the master — video display targets derive from the playhead
-    // mapping instead of the arrival baseline. The mapping is slew-limited
-    // inside av-sync, and returns null the moment audio goes absent/stale,
-    // which falls straight back to the arrival baseline (exactly today).
-    const fromAudio = audioDisplayTargetMs(timestampUs, offset);
-    if (fromAudio !== null) return fromAudio;
+    // Video is the master clock (docs/20 Decision 10, revised 2026-07-20):
+    // this schedule answers to the arrival baseline and nothing else, and it
+    // is the same one the reorder buffer's release gate uses. Audio aligns to
+    // it — see videoScheduleBaseEpochMs below.
     const base = this.reorder?.arrivalBaselineMs();
     if (base == null) return undefined;
     return timestampUs / 1000 + base + offset;
+  }
+
+  // The video presentation schedule, published for the audio sink: a frame
+  // with broadcaster timestamp T is presented at T/1000 + base local ms.
+  // Carried as an epoch so the main thread can rebase it off its own
+  // timeOrigin (every worker has its own — see the README gotcha). Null until
+  // the baseline exists. In live-edge mode the offset is 0 and frames present
+  // on release, so the same number describes both modes.
+  private videoScheduleBaseEpochMs(): number | null {
+    const base = this.reorder?.arrivalBaselineMs();
+    if (base == null) return null;
+    return base + getPlayoutOffsetMs() + timeOriginMs();
   }
 
   // R5 Q2: absolute capture→render, both sides translated to the relay clock:
@@ -799,10 +815,11 @@ export class ViewerPipeline {
       avSkewMs: getAvSkewMs(),
       avMaster:
         this.audioState === 'active'
-          ? audioClockAvailable() && getPlayoutMode() === 'adaptive'
-            ? 'audio'
-            : 'arrival'
+          ? audioClockAvailable() && this.reorder?.arrivalBaselineMs() != null
+            ? 'video'
+            : 'free'
           : null,
+      videoScheduleBaseEpochMs: this.videoScheduleBaseEpochMs(),
     });
   }
 

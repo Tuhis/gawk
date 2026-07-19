@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AudioJitterBuffer,
   DEFAULT_AUDIO_PROFILE,
+  MAX_ALIGNMENT_HOLD_MS,
   RESILIENT_AUDIO_PROFILE,
   type AudioChunk,
 } from './audio-buffer';
@@ -97,11 +98,12 @@ describe('AudioJitterBuffer policies', () => {
 
   it('bufferedMs tracks queue depth as the sink drains', () => {
     const { buffer } = collecting();
-    buffer.push(chunk(0));
-    buffer.push(chunk(FRAME_US));
-    expect(buffer.getStats().bufferedMs).toBeCloseTo(40, 5);
+    // Prime first (field finding 3): before that the sink holds nothing, so
+    // there is nothing for it to report draining.
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    expect(buffer.getStats().bufferedMs).toBeCloseTo(60, 5);
     buffer.notePlayed(20);
-    expect(buffer.getStats().bufferedMs).toBeCloseTo(20, 5);
+    expect(buffer.getStats().bufferedMs).toBeCloseTo(40, 5);
     // Never negative, even if the sink over-reports.
     buffer.notePlayed(500);
     expect(buffer.getStats().bufferedMs).toBe(0);
@@ -114,10 +116,13 @@ describe('AudioJitterBuffer policies', () => {
     for (let i = 0; i < 5; i++) buffer.push(chunk(1_000_000 + i * FRAME_US));
     const before = emitted.length;
 
-    // Broadcaster restart: timestamps jump back to a fresh timeline.
+    // Broadcaster restart: timestamps jump back to a fresh timeline. The
+    // re-anchor flushes, so the new timeline primes its cushion before playing
+    // (field finding 3) — three 20 ms chunks, then everything flows again.
     expect(buffer.push(chunk(0))).toBe('accepted');
     expect(buffer.push(chunk(FRAME_US))).toBe('accepted');
-    expect(emitted.length).toBe(before + 2);
+    expect(buffer.push(chunk(2 * FRAME_US))).toBe('accepted');
+    expect(emitted.length).toBe(before + 3);
     expect(buffer.getStats().lateDrops).toBe(0);
   });
 
@@ -134,6 +139,122 @@ describe('AudioJitterBuffer policies', () => {
     // A far-future timestamp after a flush is an anchor, not a giant gap.
     expect(buffer.push(chunk(9_000_000))).toBe('accepted');
     expect(buffer.getStats().gapsConcealed).toBe(0);
+  });
+});
+
+// Field findings 3 + 4 (docs/20). Finding 3: the target was implemented as an
+// overflow *ceiling* only — every chunk went to the worklet on arrival, so the
+// sink played at ~0 ms depth and any jitter ran it dry. Finding 4 (the
+// video-master revision) makes the release a scheduling decision instead: hold
+// audio until the video presentation schedule says it is due, because after
+// playback starts the worklet runs at 1x and the alignment can never be
+// changed again by buffering.
+describe('AudioJitterBuffer alignment', () => {
+  function scheduled(dueAt: (timestampUs: number) => number | null) {
+    const emitted: AudioChunk[] = [];
+    const clock = { t: 1000 };
+    const buffer = new AudioJitterBuffer((c) => emitted.push(c), DEFAULT_AUDIO_PROFILE, {
+      now: () => clock.t,
+      schedule: () => dueAt,
+    });
+    return { emitted, buffer, clock };
+  }
+
+  it('holds audio until the video schedule says it is due, then releases in order', () => {
+    // Audio for timestamp 0 arrives at t=1000 but its video frame is not
+    // presented until t=1300: the 300 ms hold IS the lip sync.
+    const { emitted, buffer, clock } = scheduled((ts) => 1300 + ts / 1000);
+
+    for (let i = 0; i < 5; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted).toHaveLength(0);
+
+    clock.t = 1299;
+    buffer.tick();
+    expect(emitted).toHaveLength(0);
+
+    clock.t = 1300;
+    buffer.tick();
+    expect(emitted).toHaveLength(5);
+    expect(emitted.map((c) => c.timestampUs)).toEqual([0, FRAME_US, 2 * FRAME_US, 3 * FRAME_US, 4 * FRAME_US]);
+    // That hold is now the sink's depth — the cushion finding 3 lacked.
+    expect(buffer.getStats().bufferedMs).toBeCloseTo(100, 5);
+    expect(buffer.getStats().alignmentHoldMs).toBeCloseTo(100, 5);
+  });
+
+  it('passes chunks straight through once aligned — the offset is fixed at start', () => {
+    const { emitted, buffer, clock } = scheduled(() => 1000);
+    buffer.push(chunk(0));
+    expect(emitted).toHaveLength(1); // due immediately
+
+    clock.t = 1020;
+    buffer.push(chunk(FRAME_US));
+    expect(emitted).toHaveLength(2);
+  });
+
+  it('falls back to a depth floor when no schedule is known', () => {
+    // A pipeline with no video baseline yet: still must not play at ~0 ms
+    // depth (finding 3), so the jitter target becomes the gate.
+    const emitted: AudioChunk[] = [];
+    const buffer = new AudioJitterBuffer((c) => emitted.push(c), DEFAULT_AUDIO_PROFILE, {
+      now: () => 1000,
+      schedule: () => null,
+    });
+    buffer.push(chunk(0));
+    buffer.push(chunk(FRAME_US));
+    expect(emitted).toHaveLength(0);
+    buffer.push(chunk(2 * FRAME_US)); // 60 ms = seed target
+    expect(emitted).toHaveLength(3);
+  });
+
+  it('never holds audio hostage to a schedule that never fires', () => {
+    const { emitted, buffer } = scheduled(() => 9_999_999);
+    for (let i = 0; i * 20 <= MAX_ALIGNMENT_HOLD_MS; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted.length).toBeGreaterThan(0);
+  });
+
+  it('re-primes on a dry underrun by depth, not by a schedule already past', () => {
+    // The schedule for the oldest pending chunk is in the past by definition
+    // at this point — that is why we ran dry. Honoring it would release
+    // instantly and rebuild no cushion at all.
+    const { emitted, buffer, clock } = scheduled((ts) => 1000 + ts / 1000);
+    buffer.push(chunk(0));
+    expect(emitted).toHaveLength(1);
+
+    buffer.notePlayed(20);
+    buffer.noteUnderrun(4);
+    const before = emitted.length;
+
+    clock.t = 5000; // long past every chunk's scheduled slot
+    buffer.push(chunk(FRAME_US));
+    buffer.push(chunk(2 * FRAME_US));
+    expect(emitted).toHaveLength(before); // rebuilding depth
+    buffer.push(chunk(3 * FRAME_US));
+    expect(emitted).toHaveLength(before + 3);
+  });
+
+  it('flush re-arms the alignment decision for the new timeline', () => {
+    const { emitted, buffer, clock } = scheduled((ts) => 2000 + ts / 1000);
+    buffer.push(chunk(0));
+    buffer.flush();
+    const before = emitted.length;
+
+    clock.t = 1500;
+    buffer.push(chunk(10 * FRAME_US));
+    expect(emitted).toHaveLength(before); // held again, against the schedule
+    clock.t = 2200;
+    buffer.tick();
+    expect(emitted.length).toBeGreaterThan(before);
+  });
+
+  it('a deliberate alignment hold does not read as overflow', () => {
+    // The hold is legitimately far deeper than the jitter target; the old
+    // ceiling would have dropped most of it as backlog.
+    const { emitted, buffer, clock } = scheduled((ts) => 1400 + ts / 1000);
+    for (let i = 0; i < 20; i++) buffer.push(chunk(i * FRAME_US));
+    clock.t = 1400;
+    buffer.tick();
+    expect(buffer.getStats().overflowDrops).toBe(0);
+    expect(emitted).toHaveLength(20);
   });
 });
 

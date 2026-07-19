@@ -59,11 +59,26 @@ export interface AudioBufferStats {
   underruns: number;
   bufferedMs: number;
   targetMs: number;
+  // How long audio was held to line up with the video schedule (docs/20
+  // field finding 4). Null until playback starts; the number to look at when
+  // lip sync is off.
+  alignmentHoldMs: number | null;
   // Wall-clock ms the buffer has been anchored (diagnostic for re-anchors).
   resets: number;
 }
 
 export type AudioChunkSink = (chunk: AudioChunk) => void;
+
+// Maps a broadcaster audio timestamp (µs) to the local ms at which that chunk
+// should be handed to the sink so it is *heard* alongside the video frame of
+// the same timestamp — i.e. the video presentation schedule, less whatever
+// latency the sink itself adds. Null while the video baseline is unknown.
+export type AudioScheduleFn = (timestampUs: number) => number | null;
+
+// A schedule that never fires would hold audio forever; release anyway past
+// this. Generous — it only exists so a broken/absent schedule degrades to
+// "audio plays, badly aligned" instead of "audio never plays".
+export const MAX_ALIGNMENT_HOLD_MS = 3000;
 
 export class AudioJitterBuffer {
   private profile: () => AudioBufferProfile;
@@ -82,6 +97,25 @@ export class AudioJitterBuffer {
   // Frames handed to the sink but not yet played, in ms (the sink reports
   // its drain back through notePlayed).
   private queuedMs = 0;
+  // Field findings 3 + 4 (docs/20): chunks accumulate here until playback is
+  // due, then release in order. Two ways to become due, in priority order:
+  //
+  //   1. The video presentation schedule says so — the alignment decision,
+  //      and the only one that produces lip sync (finding 4). Audio arrives
+  //      earlier than video, so this normally holds a few hundred ms, which
+  //      then *is* the sink's queue depth for the rest of the session.
+  //   2. No schedule available (video baseline not yet established, or a
+  //      pipeline that never presents video): fall back to a depth floor of
+  //      targetMs, so audio still plays with a cushion rather than at the
+  //      ~0 ms depth of finding 3.
+  //
+  // Re-armed on flush and on a still-dry underrun report.
+  private priming = true;
+  private pending: AudioChunk[] = [];
+  private pendingMs = 0;
+  // Local ms at which the oldest pending chunk should reach the sink, per the
+  // video schedule. Null while no schedule is known.
+  private dueAtMs: number | null = null;
 
   private stats = {
     gapsConcealed: 0,
@@ -91,14 +125,38 @@ export class AudioJitterBuffer {
     resets: 0,
   };
 
+  private now: () => number;
+  private schedule: () => AudioScheduleFn | null;
+  // True while the pending release is the *alignment* one (start, or after a
+  // flush). An underrun re-prime clears it: by then the schedule for the
+  // oldest pending chunk is already past — that's why we ran dry — so honoring
+  // it would release instantly and rebuild no cushion at all. Depth floor
+  // there instead, and let the rate trim walk the residual skew back out.
+  private alignOnSchedule = true;
+  // The hold actually applied at the alignment release, for the overlay.
+  private alignmentHoldMs: number | null = null;
+  // Depth established at release; the overflow ceiling rides this rather than
+  // the jitter target, since a deliberate alignment hold is legitimately far
+  // deeper than the target and must not read as backlog.
+  private establishedDepthMs = 0;
+
   constructor(
     emit: AudioChunkSink,
     profile: AudioBufferProfile | (() => AudioBufferProfile) = DEFAULT_AUDIO_PROFILE,
+    opts: { now?: () => number; schedule?: () => AudioScheduleFn | null } = {},
   ) {
     this.emit = emit;
     this.profile = typeof profile === 'function' ? profile : () => profile;
     this.targetMs = this.profile().seedMs;
     this.profileSeedMs = this.targetMs;
+    this.now = opts.now ?? (() => performance.now());
+    this.schedule = opts.schedule ?? (() => null);
+  }
+
+  // Lets the owner re-check the alignment gate when no chunk arrived to drive
+  // it (chunks come at 50/s, so this is a backstop, not the main path).
+  tick(): void {
+    this.maybeRelease();
   }
 
   // Feeds one decoded chunk. Returns what the buffer did with it — the
@@ -110,7 +168,15 @@ export class AudioJitterBuffer {
     // Drop the *incoming* chunk — dropping the oldest would mean clawing
     // back audio already handed to the worklet, and the newest data is what
     // keeps us at the live edge.
-    if (this.queuedMs > this.targetMs + OVERFLOW_SLACK_MS) {
+    // While aligning, the hold is *supposed* to be deep — deeper than any
+    // jitter target, since it spans audio's whole lead over video. Charging it
+    // against the steady-state ceiling drops the very audio being lined up,
+    // and (once the drops keep pendingMs under the cap) audio never starts at
+    // all. Once playing, the ceiling rides the depth alignment established.
+    const ceilingMs = this.priming
+      ? MAX_ALIGNMENT_HOLD_MS
+      : Math.max(this.targetMs, this.establishedDepthMs) + OVERFLOW_SLACK_MS;
+    if (this.bufferedMs() > ceilingMs) {
       this.stats.overflowDrops++;
       return 'overflow';
     }
@@ -157,22 +223,62 @@ export class AudioJitterBuffer {
     return 'accepted';
   }
 
+  // The one exit toward the sink. While priming, chunks (silence included, so
+  // the timeline stays honest across a gap) queue up here and leave in order
+  // once the alignment gate opens.
   private emitChunk(chunk: AudioChunk, durationMs: number): void {
-    this.queuedMs += durationMs;
-    this.emit(chunk);
+    if (!this.priming) {
+      this.queuedMs += durationMs;
+      this.emit(chunk);
+      return;
+    }
+    this.pending.push(chunk);
+    this.pendingMs += durationMs;
+    this.maybeRelease();
+  }
+
+  // The alignment decision, and the only moment audio's position relative to
+  // video is chosen: after this the worklet runs at 1× and the offset is
+  // fixed (drift aside — see av-sync's AudioRateController).
+  private maybeRelease(): void {
+    if (!this.priming || this.pending.length === 0) return;
+    const oldest = this.pending[0]!;
+    if (this.alignOnSchedule && this.dueAtMs === null) {
+      this.dueAtMs = this.schedule()?.(oldest.timestampUs) ?? null;
+    }
+    const nowMs = this.now();
+    const due =
+      this.alignOnSchedule && this.dueAtMs !== null
+        ? nowMs >= this.dueAtMs
+        : this.bufferedMs() >= this.targetMs;
+    // The cap keeps a missing or nonsensical schedule from muting audio.
+    if (!due && this.pendingMs < MAX_ALIGNMENT_HOLD_MS) return;
+
+    this.alignmentHoldMs = this.pendingMs;
+    this.priming = false;
+    this.dueAtMs = null;
+    this.queuedMs += this.pendingMs;
+    this.establishedDepthMs = this.queuedMs;
+    this.pendingMs = 0;
+    const ready = this.pending;
+    this.pending = [];
+    for (const c of ready) this.emit(c);
+  }
+
+  private bufferedMs(): number {
+    return this.queuedMs + this.pendingMs;
   }
 
   private emitSilence(gapMs: number, sampleRate: number, channelCount: number): void {
     const frameCount = Math.max(1, Math.round((gapMs / 1000) * sampleRate));
     const channels: Float32Array[] = [];
     for (let i = 0; i < channelCount; i++) channels.push(new Float32Array(frameCount));
-    this.queuedMs += gapMs;
-    this.emit({
-      timestampUs: this.nextExpectedUs ?? 0,
-      channels,
-      sampleRate,
-      frameCount,
-    });
+    // Through emitChunk, never straight to the sink: concealment silence that
+    // skips the priming gate arrives *before* the audio it was filling behind.
+    this.emitChunk(
+      { timestampUs: this.nextExpectedUs ?? 0, channels, sampleRate, frameCount },
+      gapMs,
+    );
   }
 
   // The sink drained this much audio (ms). Keeps bufferedMs honest.
@@ -180,9 +286,25 @@ export class AudioJitterBuffer {
     this.queuedMs = Math.max(0, this.queuedMs - ms);
   }
 
-  // The sink ran dry and emitted silence itself.
+  // The sink ran dry and emitted silence itself. Rebuild the cushion before
+  // playing on — at zero depth the next blip underruns too, and the next,
+  // which is exactly the "constant breaks" of field finding 3.
+  //
+  // Only when it is *still* dry, though: reports arrive on the sink's ~4 Hz
+  // cadence (notePlayed lands first, from the same report), so a buffer that
+  // already recovered would otherwise be sent back to priming — paying a
+  // second silence for a gap that had closed.
   noteUnderrun(count = 1): void {
     this.stats.underruns += count;
+    if (this.queuedMs > 0) return;
+    this.queuedMs = 0;
+    this.establishedDepthMs = 0;
+    this.priming = true;
+    this.dueAtMs = null;
+    // Alignment is already lost (the sink played silence): rebuild depth, and
+    // leave the residual skew to the rate trim rather than re-deciding the
+    // alignment against a schedule that has already gone past.
+    this.alignOnSchedule = false;
   }
 
   // Drops everything pending and forgets the timeline: a broadcaster restart
@@ -192,6 +314,15 @@ export class AudioJitterBuffer {
   flush(): void {
     this.nextExpectedUs = null;
     this.queuedMs = 0;
+    this.pending = [];
+    this.pendingMs = 0;
+    this.priming = true;
+    // A fresh timeline gets a fresh alignment decision — the one case where
+    // re-deciding against the video schedule is exactly right.
+    this.alignOnSchedule = true;
+    this.dueAtMs = null;
+    this.alignmentHoldMs = null;
+    this.establishedDepthMs = 0;
     this.stats.resets++;
     const p = this.profile();
     this.targetMs = p.seedMs;
@@ -232,8 +363,9 @@ export class AudioJitterBuffer {
   getStats(): AudioBufferStats {
     return {
       ...this.stats,
-      bufferedMs: this.queuedMs,
+      bufferedMs: this.bufferedMs(),
       targetMs: this.targetMs,
+      alignmentHoldMs: this.alignmentHoldMs,
     };
   }
 }

@@ -278,7 +278,15 @@ on both ends.
      iPhone pass.
 
 10. **A/V sync: shared clock + adaptive audio buffer + audio-master pacing
-    where pacing already exists.** Good-enough, by construction, in three
+    where pacing already exists.** **SUPERSEDED 2026-07-20 — see field
+    finding 4.** The audio-master half below was inverted by owner decision:
+    video is the master clock and is never rescheduled for audio; audio is
+    delayed at start to meet the video presentation schedule, and residual
+    drift is absorbed by a sub-audible rate trim. The shared capture clock,
+    the always-on skew measurement and the adaptive buffer envelope all
+    survive unchanged; every sentence below about audio driving
+    `displayTargetMs` does not. Kept as written for the record.
+    Good-enough, by construction, in three
     layers:
     - **Skew is measured, always**: `avSkewMs` = (video frame timestamp
       presented at the last paint) − (audio timestamp at the playhead),
@@ -436,7 +444,12 @@ folded into the decisions above and the N-table criteria below:
 green in all three modules (`gofmt`/`go vet`/`go test -race`, `npm test` +
 `lint` + `build`, `helm lint`). **Manual browser verification is pending** —
 the plan below has not been executed, and audio has never played on real
-hardware. Deviations and decisions taken during implementation:
+hardware as designed. Three field findings so far: **1** (the audio toggle
+failed the whole broadcast, before a single Opus packet was encoded) and,
+once audio did play, **2** (video froze — two clocks driving one pipeline)
+and **3** (the jitter buffer never buffered). All three are fixed; the
+verification pass has **not** been re-run since. Deviations and decisions
+taken during implementation:
 
 1. **Decoded audio crosses as planar PCM, not a transferred `AudioData`**
    (Decision 7 said the latter). The sink must reach an `AudioWorklet`,
@@ -468,6 +481,218 @@ hardware. Deviations and decisions taken during implementation:
 7. **Audio UI requires audio to be *playable*, not merely present**: a
    scope without `AudioContext`/`AudioWorkletNode` shows no controls (they
    would be dead) and reports `audioState: 'unsupported'`.
+
+### Field finding 1 (2026-07-19): the audio toggle killed the broadcast
+
+**First real-hardware attempt, and it never reached the audio code at all.**
+Broadcaster with the toggle on, "Share system audio" checked in the picker:
+
+```
+BroadcastStartError: Could not start audio source
+Caused by: NotReadableError: Could not start audio source
+```
+
+`getDisplayMedia` audio is **not best-effort in Chromium**. When the browser
+cannot start a system-audio source it does not hand back a video-only
+stream — it rejects the *entire* request with `NotReadableError`, video
+included. Decision 6 assumed the only degraded shapes were "toggle off" and
+"grant carried no audio track"; the grant *failing* was the unhandled third,
+and it turned an experimental, default-off toggle into a broadcast-killer
+(phase `'capture'`, so the publisher session was torn down and the broadcast
+never started).
+
+**This is the structural finding, and it is platform-independent.** The
+environment half is not: the first triage here assumed the signature meant
+Chromium-on-Linux (which genuinely has no loopback path, as do macOS
+screen/window shares) — but the affected machine is **Windows + Chrome
+sharing the entire screen**, the exact configuration the verification plan
+below targets and one where system audio *is* supported. So there are two
+independent failure classes behind one identical exception:
+
+| Class | Where | Fix |
+|---|---|---|
+| **Platform** — no OS loopback path at all | Linux, macOS (screen/window shares) | none; share a tab instead |
+| **Device state** — loopback path exists, the endpoint won't open | Windows | fix the default output endpoint |
+
+Windows candidates for the second class, roughly by likelihood: the audio
+checkbox was checked while a **window** (not the entire screen) was
+selected; the **default render endpoint can't be opened for loopback** —
+held in WASAPI exclusive mode by a game or audio app, disconnected or asleep
+(HDMI/TV endpoints on a multi-output gaming PC are the classic), or a
+virtual device (Voicemeeter, VB-Cable, streaming "speakers") that refuses
+loopback; or a wedged Chrome audio service. `chrome://media-internals`
+(Audio tab) while reproducing shows the actual device-open error, and
+**tab audio is the discriminator**: it rides Chrome's internal mirroring
+path rather than OS loopback, so tab-audio-works + system-audio-fails
+isolates it to the endpoint. Root cause on the affected machine is **not
+yet identified** — open item for the manual verification pass.
+
+(Signature matches jitsi/jitsi-meet#15417/#15418, closed stale, OS
+unspecified — with the same "sharing a tab works flawlessly" observation.)
+
+Fix (test-first, `src/media/capture.test.ts` red first):
+
+- `acquireDisplayStream` retries **once without audio** when an audio-bearing
+  grant fails with `NotReadableError` — and only then. A cancelled or denied
+  picker (`NotAllowedError`) must never re-prompt, the R1 lesson about
+  distinguishing "the server said no" from "the user said no" applied to
+  capture.
+- The retry needs its own transient activation, which the seconds spent in
+  the picker have usually already spent — so the retry commonly cannot
+  re-prompt either. That path throws the **original** audio cause plus the
+  way out ("turn off Enable audio (experimental)"), never the retry's
+  misleading activation complaint.
+- A grant that fell back reports `audioState: 'unavailable'` ("Not capturable
+  here" on the overlay), *not* `'no-track'` — the latter reads as "the user
+  left the picker's audio box unchecked" and would send the next debug
+  session down the wrong path. The flag rides the media-source seam, so the
+  worker path (`capture` command) reports it identically.
+- The advanced-settings note now states the platform matrix next to the
+  toggle, so the trap is visible before the picker.
+
+Verification-plan consequence: steps 2–4 need audio to actually flow, and on
+the affected machine a screen share cannot supply it yet. **Run them with a
+shared tab** ("share tab audio") — that exercises the entire R15 path
+(encode → 0x07/0x08 → viewer worklet) and is unblocked today; the endpoint
+triage above is a separate, environment-side task. A screen share that
+refuses audio is now a graceful video-only broadcast, itself worth
+confirming (`audioState: 'unavailable'`).
+
+### Field findings 2 & 3 (2026-07-20): the first time audio actually played
+
+Broadcaster on a Windows machine with a standard audio setup (the field
+finding 1 machine's virtual-audio-device stack was the reason nothing
+started there — environment, not gawk). Audio reached a viewer for the first
+time, and two things went wrong at once:
+
+> as soon as the viewer enabled the audio, video froze (almost) completely
+> AND the audio wasn't clean — there were frequent breaks.
+
+Two independent bugs, both invisible to a green suite because each lives in
+the seam between two components that were unit-tested apart.
+
+**Finding 2 — video froze: two clocks driving one pipeline.** N5 moved the
+*display target* onto the audio playhead (`audioDisplayTargetMs`) but left
+the reorder buffer's *release gate* on the arrival baseline. The two
+schedules differ by exactly the audio path's extra latency (jitter buffer +
+worklet queue + `AudioContext` output latency — a few hundred ms, and always
+positive: audio carries buffering the video *minimum* does not). So every
+frame reached `PacedPresentationSink` that far before its display slot. The
+sink holds `MAX_HELD_FRAMES = 3` and drops the **oldest** over capacity —
+i.e. it discarded each frame just as its slot was about to come due, forever.
+Not a partial stutter: a total freeze, starting the instant the audio clock
+went live, which is precisely when the viewer enabled audio.
+
+`reorder-buffer.ts` already carried the invariant in a comment — the display
+target must come "from the same baseline the release gate uses" — and R15
+broke it without the comment or a test noticing. The fix restores one
+schedule for the whole pipeline: `av-sync.ts` exposes `audioBaselineMs()` (the
+audio-derived analogue of `arrivalBaselineMs()`; algebraically identical to
+the old display-target formula, since the mapping extrapolates at 1× rate),
+and both the release gate and the display target read
+`audioBaseline ?? arrivalBaseline`. Live-edge mode is untouched (offset 0 ⇒
+release immediately ⇒ audio never delays video, Decision 10 layer 2).
+
+Known, accepted transition: when the audio clock appears or goes stale the
+release schedule steps by that same difference — a one-time hold or burst,
+bounded and self-healing. Consequence worth stating plainly: **in paced
+modes, enabling audio adds the audio path's depth to video latency.** That is
+what "audio is the master clock" means; a viewer who wants the old number
+switches to live-edge.
+
+**Finding 3 — audio broke up: the jitter buffer never buffered.** Decision 8
+specifies an adaptive target of 40–150 ms, and `AudioJitterBuffer` implements
+it — as an overflow **ceiling** only. `push()` forwarded every chunk to the
+worklet the moment it decoded, so the worklet's queue sat at ~0 ms: it drains
+in real time and was fed in real time, with a reflecting barrier at zero
+(underruns discard time and can never be won back). Any jitter at all ran it
+dry. A target that is only a ceiling is not a jitter buffer.
+
+The fix makes the target a floor as designed: chunks accumulate until the
+cushion reaches `targetMs`, then release in order; the sink starts playing
+with the target in hand. Re-armed on a genuine underrun (the sink is still
+dry when its ~4 Hz report lands — a buffer that already recovered must not
+pay a second silence). Concealment silence routes through the same gate, or
+it overtakes the audio it was filling behind — caught by the existing gap
+test, which is the second time this pass that a pre-existing test earned its
+keep.
+
+Both fixed test-first (red first: 4 failing tests across
+`reorder-buffer.test.ts` and `audio-buffer.test.ts`). Three existing tests
+asserted the *absence* of a cushion as an incidental detail and were updated
+to prime first, with their real assertions intact.
+
+**Still unverified**: this is a code-reading diagnosis matched to reported
+symptoms, fixed under unit tests. Re-verification on hardware is the next
+step — expect `avSkewMs` inside its targets, `underruns` near zero,
+`bufferedMs` sitting at the target rather than ~0, and video presenting at
+source fps. The overlay's Audio section separates the two remaining
+break causes that this fix does *not* address: `gapsConcealed` rising means
+datagram **loss** (no FEC in v1 — Decision 11), `underruns` rising means the
+cushion is still too thin.
+
+### Field finding 4 (2026-07-20): Decision 10 inverted — video is the master
+
+Owner decision, taken on the finding-2 fix: **video is the master clock and is
+never rescheduled for audio.** Audio waits for video, not the reverse.
+
+The reasoning is asymmetry of slack. Audio here is one Opus packet per
+datagram — no chunking, no reassembly, no keyframe wait, trivial decode.
+Video pays every one of those plus the playout offset, and its keyframes ride
+store-and-forward streams that can land hundreds of ms late. Audio therefore
+arrives materially earlier, and holding it is nearly free, while holding video
+costs the thing the project exists to minimize. Finding 2's fix made both ends
+of the video pipeline agree on the audio clock; this goes further and removes
+audio from the video schedule entirely, so the two-clock hazard cannot recur.
+`av-sync.ts` now exports no video-side lever at all, and a test asserts that
+absence at the module surface.
+
+**The load-bearing constraint** (worth stating because it is not obvious, and
+it dictates the whole design): the worklet consumes exactly `sampleRate`
+samples per second at 1×, so **once playback has started, buffering can no
+longer change when a given sample is heard.** Holding chunks longer only
+changes queue depth. Alignment is a *start-time* decision, and everything
+after it is a *rate* problem. Hence:
+
+1. **Alignment, once, at start.** `AudioJitterBuffer` holds the first chunk
+   until the video presentation schedule says it is due, less the device's own
+   `outputLatency`. The schedule is `T/1000 + arrivalBaseline + playoutOffset`,
+   published by the pipeline as `videoScheduleBaseEpochMs` and rebased onto the
+   main thread's `timeOrigin` (every context has its own — README gotcha). The
+   hold that results *is* the sink's queue depth for the rest of the session:
+   typically a few hundred ms, which also retires finding 3's underruns far
+   more robustly than a 60 ms jitter cushion did.
+2. **Drift, continuously, by rate.** Clock and soundcard crystals differ by
+   tens of ppm ≈ 100 ms/hour. `AudioRateController` turns measured `avSkewMs`
+   into a playback rate inside ±0.4% (a semitone is ~6%, so this is well under
+   audibility), slewed at 0.0008/s so the correction itself never steps, with a
+   deadband at 20 ms and a give-up bound at 2 s (that is a re-anchor, which the
+   flush path owns, not something to grind at max rate for minutes). The
+   worklet reads at a fractional position with linear interpolation.
+
+Fallbacks, all exercised by tests: no schedule yet ⇒ depth floor (finding 3's
+behavior, so audio still plays with a cushion); a schedule that never fires ⇒
+released anyway after `MAX_ALIGNMENT_HOLD_MS`; an underrun re-prime ⇒ depth
+floor rather than a schedule already in the past, with the residual skew left
+to the trim. `avMaster` now reads `'video'` (audio aligned) or `'free'` (audio
+running without a schedule), and `alignmentHoldMs` is the number to read when
+lip sync is off.
+
+Two bugs the tests caught during this work, both mine, both invisible to
+inspection:
+
+- The overflow ceiling charged the deliberate alignment hold as backlog, so it
+  dropped the very audio being lined up — and, once the drops kept the pending
+  depth under the release cap, audio never started at all. The ceiling is now
+  priming-aware.
+- The resampler clamped instead of interpolating at chunk edges, holding the
+  output flat for one sample every 20 ms. A periodic seam at the packet rate
+  is audible *because* it is periodic — the partner sample now comes from the
+  next chunk. Caught by a ramp-continuity assertion after the worklet source
+  (previously never executed under test, since it ships as a string) was
+  instantiated against stubbed worklet globals.
+
+**Still unverified on hardware.**
 
 ### Post-implementation review (2026-07-19)
 

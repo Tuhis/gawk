@@ -499,6 +499,29 @@ describe('ReorderBuffer decode lead (R12 T2)', () => {
     expect(released).toHaveLength(1);
   });
 
+  // Field findings 2 + 4 (docs/20): R15 briefly had the sink's display target
+  // on the audio playhead while this gate stayed on the arrival baseline, and
+  // the gap between the two schedules froze video wholesale. The revision made
+  // video the master outright — this gate answers to the arrival baseline and
+  // nothing else, and audio aligns to it. Pinned here because "audio is
+  // somewhere in the release decision" is the exact shape of that bug.
+  it('paces on the arrival baseline alone, whatever audio is doing', () => {
+    const released: ReleasedFrame[] = [];
+    const clock = { t: 1000 };
+    const rb = new ReorderBuffer((f) => released.push(f), () => clock.t, {
+      playoutOffsetMs: () => 150,
+      decodeLeadMs: () => 35,
+    });
+    rb.pushKeyframe(tsKf(0, 0)); // baseline 1000 ⇒ target 1150, release 1115
+
+    clock.t = 1114;
+    rb.tick();
+    expect(released).toHaveLength(0);
+    clock.t = 1115;
+    rb.tick();
+    expect(released).toHaveLength(1);
+  });
+
   it('exposes the arrival baseline for the pipeline to compute display targets', () => {
     const released: ReleasedFrame[] = [];
     const clock = { t: 1000 };

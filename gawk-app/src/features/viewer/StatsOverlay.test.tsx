@@ -79,6 +79,7 @@ function fullStats(): ViewerStats {
     audioChannels: null,
     avSkewMs: null,
     avMaster: null,
+  videoScheduleBaseEpochMs: null,
   };
 }
 
@@ -309,7 +310,7 @@ describe('StatsOverlay audio section (R15)', () => {
           audioPacketsReceived: 500,
           audioPacketsDecoded: 498,
           avSkewMs: 42.4,
-          avMaster: 'audio',
+          avMaster: 'video',
         }}
         codec="avc1.42E01F"
         bitrateBps={null}
@@ -321,6 +322,6 @@ describe('StatsOverlay audio section (R15)', () => {
     expect(screen.getByText('Audio')).toBeTruthy();
     expect(screen.getByText(/opus · 48000 Hz · 2ch/)).toBeTruthy();
     expect(screen.getByText('A/V skew')).toBeTruthy();
-    expect(screen.getByText('Audio clock')).toBeTruthy();
+    expect(screen.getByText('Video (audio aligned)')).toBeTruthy();
   });
 });

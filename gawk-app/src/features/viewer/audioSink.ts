@@ -18,62 +18,93 @@ import { AudioJitterBuffer, type AudioBufferProfile, type AudioChunk } from '../
 // The worklet: a dumb FIFO. Policy (gaps, late, overflow) is decided by
 // AudioJitterBuffer before anything reaches here; the worklet owns only the
 // drain and the underrun signal, and reports both back on its port.
-const PROCESSOR_SOURCE = `
+export const PROCESSOR_SOURCE = `
 class GawkAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.queue = [];
+    // Fractional: the drift trim advances it by \`rate\` per output frame.
     this.offset = 0;
     this.playedFrames = 0;
     this.underruns = 0;
     this.lastReportAt = 0;
     this.playheadUs = null;
+    this.rate = 1;
     this.port.onmessage = (e) => {
       const msg = e.data;
       if (msg.type === 'chunk') {
         this.queue.push(msg);
+      } else if (msg.type === 'rate') {
+        // Video-master drift correction (docs/20 Decision 10 revised): a
+        // sub-audible resample, never a step or a skip. The controller
+        // upstream owns the slew; this just honors it.
+        this.rate = msg.rate;
       } else if (msg.type === 'flush') {
         this.queue.length = 0;
         this.offset = 0;
         this.playheadUs = null;
+        this.rate = 1;
       }
     };
+  }
+
+  // Linearly interpolated read at the fractional position, so a rate that is
+  // not exactly 1 doesn't quantize to sample drops. At |rate − 1| ≤ 0.4% the
+  // interpolation error is far below the noise floor of the content.
+  //
+  // The partner sample is taken from the NEXT chunk at a chunk edge. Clamping
+  // to the last sample instead looks harmless but holds the output flat for
+  // one sample every 20 ms — a periodic seam at the packet rate, which is
+  // audible as a buzz precisely because it is periodic.
+  sampleAt(head, channelIndex, pos) {
+    const src = head.channels[Math.min(channelIndex, head.channels.length - 1)];
+    if (!src) return 0;
+    const i0 = Math.floor(pos);
+    const a = src[i0] ?? 0;
+    const frac = pos - i0;
+    if (frac === 0) return a;
+    let b;
+    if (i0 + 1 < head.frameCount) {
+      b = src[i0 + 1];
+    } else {
+      const next = this.queue[1];
+      if (!next) return a;
+      const nextSrc = next.channels[Math.min(channelIndex, next.channels.length - 1)];
+      b = nextSrc ? nextSrc[0] : a;
+    }
+    return a * (1 - frac) + b * frac;
   }
 
   process(_inputs, outputs) {
     const output = outputs[0];
     if (!output || output.length === 0) return true;
     const quantum = output[0].length;
-    let written = 0;
+    const rate = this.rate;
 
-    while (written < quantum) {
+    // Sample-at-a-time because the read position is fractional. The chunked
+    // bulk copy this replaced could only advance in whole samples, which is
+    // exactly the granularity a drift trim has to work below.
+    for (let i = 0; i < quantum; i++) {
       const head = this.queue[0];
       if (!head) {
         // Underrun: silence for the rest of the quantum (drops over stalls).
-        for (let c = 0; c < output.length; c++) output[c].fill(0, written);
+        for (let c = 0; c < output.length; c++) output[c].fill(0, i);
         this.underruns++;
-        written = quantum;
         break;
       }
-      const available = head.frameCount - this.offset;
-      const take = Math.min(available, quantum - written);
       for (let c = 0; c < output.length; c++) {
-        const src = head.channels[Math.min(c, head.channels.length - 1)];
-        if (src) {
-          output[c].set(src.subarray(this.offset, this.offset + take), written);
-        } else {
-          output[c].fill(0, written, written + take);
-        }
+        output[c][i] = this.sampleAt(head, c, this.offset);
       }
       if (head.timestampUs != null) {
         this.playheadUs = head.timestampUs + (this.offset / head.sampleRate) * 1e6;
       }
-      this.offset += take;
-      written += take;
-      this.playedFrames += take;
-      if (this.offset >= head.frameCount) {
+      this.offset += rate;
+      this.playedFrames += rate;
+      // The remainder carries across the boundary — dropping it would make
+      // every chunk edge a sub-sample skip.
+      while (this.queue.length > 0 && this.offset >= this.queue[0].frameCount) {
+        this.offset -= this.queue[0].frameCount;
         this.queue.shift();
-        this.offset = 0;
       }
     }
 
@@ -125,10 +156,63 @@ export class AudioSink {
   private lastPlayheadUs: number | null = null;
   private lastContextTime: number | null = null;
 
-  constructor(callbacks: AudioSinkCallbacks = {}, profile?: AudioBufferProfile | (() => AudioBufferProfile)) {
+  // Where the video pipeline says a frame with this timestamp will be
+  // presented, in this context's performance.now() ms. Set by the owner from
+  // the pipeline's stats; null until the video baseline exists.
+  private videoPresentationMs: ((timestampUs: number) => number | null) | null = null;
+
+  constructor(
+    callbacks: AudioSinkCallbacks = {},
+    profile?: AudioBufferProfile | (() => AudioBufferProfile),
+    opts: { now?: () => number } = {},
+  ) {
     this.cb = callbacks;
-    this.buffer = new AudioJitterBuffer((chunk) => this.forward(chunk), profile);
+    const now = opts.now ?? (() => performance.now());
+    this.buffer = new AudioJitterBuffer((chunk) => this.forward(chunk), profile, {
+      now,
+      // Video-master alignment (docs/20 field finding 4): hand a chunk to the
+      // worklet early by exactly the latency the device adds, so it is *heard*
+      // when the matching video frame is presented.
+      schedule: () => {
+        const present = this.videoPresentationMs;
+        if (!present) return null;
+        const lead = this.outputLatencyMs();
+        return (timestampUs: number) => {
+          const at = present(timestampUs);
+          return at === null ? null : at - lead;
+        };
+      },
+    });
   }
+
+  // The device's own contribution, measured where the browser reports it.
+  // outputLatency is the honest number (it includes the OS mixer); baseLatency
+  // is the fallback, and 20 ms a last resort for scopes with neither.
+  private outputLatencyMs(): number {
+    const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
+    const seconds = ctx?.outputLatency || ctx?.baseLatency || 0.02;
+    return seconds * 1000;
+  }
+
+  // The video schedule, refreshed by the owner as the pipeline's baseline
+  // settles. Only consulted while audio is still waiting to start.
+  setVideoSchedule(present: ((timestampUs: number) => number | null) | null): void {
+    this.videoPresentationMs = present;
+    this.buffer.tick();
+  }
+
+  // Drift trim (av-sync AudioRateController): a sub-audible playback rate.
+  setRate(rate: number): void {
+    if (Math.abs(rate - this.lastRate) < 1e-5) return;
+    this.lastRate = rate;
+    try {
+      this.node?.port.postMessage({ type: 'rate', rate });
+    } catch {
+      // Same rule as forward(): audio must never break video.
+    }
+  }
+
+  private lastRate = 1;
 
   // Creates the context. Must be called from a user gesture (the viewer's
   // join click) — a context created outside one starts 'suspended' and the
@@ -219,6 +303,7 @@ export class AudioSink {
   // as late forever.
   flush(): void {
     this.buffer.flush();
+    this.lastRate = 1;
     this.node?.port.postMessage({ type: 'flush' });
   }
 

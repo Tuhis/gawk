@@ -1,12 +1,15 @@
-// R15 N5 (docs/20 Decision 10): A/V sync — skew measurement on synthetic
-// clocks, the audio-master display-target mapping, its slew limit, and the
-// arrival-baseline fallback when audio goes absent or stale.
+// A/V sync (docs/20 Decision 10, revised 2026-07-20 to video-master): skew
+// measurement on synthetic clocks, the staleness bound, and the drift trim
+// that is the only lever left once playback has started.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  AudioRateController,
+  RATE_TRIM_DEADBAND_MS,
+  RATE_TRIM_GIVE_UP_MS,
+  RATE_TRIM_MAX,
   audioClockAvailable,
-  audioDisplayTargetMs,
   getAvSkewMs,
   notePlayhead,
   observeVideoPresented,
@@ -57,45 +60,12 @@ describe('av-sync playhead mapping', () => {
     }
   });
 
-  it('derives display targets from the playhead: a frame ahead waits that long', () => {
+  it('stops being a clock once reports go stale', () => {
     notePlayhead({ playheadUs: 1_000_000, atEpochMs: epochFor(0) }, 0);
-    // Frame 80 ms ahead of the playhead, 150 ms playout offset ⇒ display at
-    // now + 80 + 150.
-    expect(audioDisplayTargetMs(1_080_000, 150, 0)).toBeCloseTo(230, 3);
-    // A frame at the playhead waits only the offset.
-    expect(audioDisplayTargetMs(1_000_000, 150, 0)).toBeCloseTo(150, 3);
-  });
-
-  it('falls back (null) when audio is absent or the clock goes stale', () => {
-    // No reports at all.
-    expect(audioDisplayTargetMs(1_000_000, 150, 0)).toBeNull();
-
-    notePlayhead({ playheadUs: 1_000_000, atEpochMs: epochFor(0) }, 0);
-    expect(audioDisplayTargetMs(1_000_000, 150, 0)).not.toBeNull();
-
-    // Reports stop: after the staleness bound the audio clock is not a
-    // master any more and the caller uses the arrival baseline.
     expect(audioClockAvailable(1400)).toBe(true);
     expect(audioClockAvailable(2000)).toBe(false);
-    expect(audioDisplayTargetMs(1_000_000, 150, 2000)).toBeNull();
     expect(observeVideoPresented(1_000_000, 2000)).toBeNull();
     expect(getAvSkewMs()).toBeNull();
-  });
-
-  // The Decision 10 requirement: switching the target source must never
-  // step video. A re-anchored audio clock is absorbed gradually.
-  it('slew-limits a re-anchored audio clock instead of stepping targets', () => {
-    notePlayhead({ playheadUs: 1_000_000, atEpochMs: epochFor(0) }, 0);
-    const before = audioDisplayTargetMs(1_000_000, 0, 250)!;
-
-    // The sink re-anchors 500 ms forward (a flush + fresh timeline).
-    notePlayhead({ playheadUs: 1_750_000, atEpochMs: epochFor(250) }, 250);
-    const after = audioDisplayTargetMs(1_000_000, 0, 250)!;
-
-    // Without slew limiting this target would jump by the full 500 ms.
-    const jump = Math.abs(after - before);
-    expect(jump).toBeLessThan(30);
-    expect(jump).toBeGreaterThan(0);
   });
 
   it('reset clears the mapping (restart: the old anchor is a dead timeline)', () => {
@@ -104,20 +74,71 @@ describe('av-sync playhead mapping', () => {
     resetAvSync();
     expect(audioClockAvailable(0)).toBe(false);
     expect(getAvSkewMs()).toBeNull();
-    expect(audioDisplayTargetMs(1_000_000, 150, 0)).toBeNull();
   });
 });
 
-// The live-edge guarantee (docs/20 Decision 10): the audio clock exists and
-// is measured in every mode, but only the paced modes consult it for display
-// targets. This pins the *seam* — displayTargetMs is undefined outside
-// adaptive mode, so no audio state can delay video there.
-describe('av-sync does not bend the live-edge default', () => {
-  it('skew is measured even when the audio clock never drives targets', () => {
+// The video-master guarantee (docs/20 Decision 10 revised, field finding 4):
+// av-sync measures, and nothing more. It exports no way to reschedule video,
+// so no audio state — fresh, stale, or absent — can move a video frame. That
+// is the property the revision buys, and this pins it at the module surface.
+describe('av-sync cannot reschedule video', () => {
+  it('measures skew without exposing any video-side lever', async () => {
     notePlayhead({ playheadUs: 500_000, atEpochMs: epochFor(0) }, 0);
-    // Measurement is unconditional…
     expect(observeVideoPresented(560_000, 0)).toBeCloseTo(60, 3);
-    // …and asking for a target is the caller's separate, mode-gated choice.
-    expect(audioDisplayTargetMs(560_000, 0, 0)).not.toBeNull();
+
+    const surface = Object.keys(await import('./av-sync'));
+    expect(surface).not.toContain('audioDisplayTargetMs');
+    expect(surface).not.toContain('audioBaselineMs');
+  });
+});
+
+// Drift is what remains after the start-time alignment (field finding 4):
+// the worklet runs at 1×, so nothing else can move audio relative to video.
+describe('AudioRateController', () => {
+  const ctl = () => new AudioRateController();
+
+  it('leaves small skew alone rather than modulating pitch for nothing', () => {
+    const c = ctl();
+    for (let t = 0; t <= 20_000; t += 250) c.update(RATE_TRIM_DEADBAND_MS - 5, t);
+    expect(c.current()).toBe(1);
+  });
+
+  it('speeds up when audio is behind and slows when ahead, within the audible bound', () => {
+    const behind = ctl();
+    for (let t = 0; t <= 60_000; t += 250) behind.update(600, t);
+    expect(behind.current()).toBeGreaterThan(1);
+    expect(behind.current()).toBeLessThanOrEqual(1 + RATE_TRIM_MAX);
+
+    const ahead = ctl();
+    for (let t = 0; t <= 60_000; t += 250) ahead.update(-600, t);
+    expect(ahead.current()).toBeLessThan(1);
+    expect(ahead.current()).toBeGreaterThanOrEqual(1 - RATE_TRIM_MAX);
+  });
+
+  // The user requirement in one assertion: corrections are spread over a long
+  // period. A step would be audible as a pitch jump.
+  it('never steps — the rate itself is slew-limited', () => {
+    const c = ctl();
+    let prev = 1;
+    for (let t = 250; t <= 10_000; t += 250) {
+      const next = c.update(2000 - 1, t);
+      expect(Math.abs(next - prev)).toBeLessThan(0.0005);
+      prev = next;
+    }
+  });
+
+  it('gives up on a skew too large to be drift, and returns toward 1x', () => {
+    const c = ctl();
+    for (let t = 0; t <= 60_000; t += 250) c.update(500, t);
+    expect(c.current()).toBeGreaterThan(1);
+    // A re-anchor jump: audio-buffer's flush owns this, not a rate grind.
+    for (let t = 60_000; t <= 120_000; t += 250) c.update(RATE_TRIM_GIVE_UP_MS + 1, t);
+    expect(c.current()).toBeCloseTo(1, 5);
+  });
+
+  it('holds at 1x while skew is unmeasurable', () => {
+    const c = ctl();
+    for (let t = 0; t <= 10_000; t += 250) c.update(null, t);
+    expect(c.current()).toBe(1);
   });
 });

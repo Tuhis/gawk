@@ -134,7 +134,7 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 17. ✅ Viewer playback smoothing (R12): jitter measurement at the actual paint (presentation-cadence error, arrival p95−min, decode σ), a separate opt-in **"Paced playback (adaptive)"** mode (`PacedPresentationSink` holding ≤3 decoded frames to vsync-aligned targets, subsuming the R10 coalescing sink) with a jitter-tracked adaptive playout offset (clamp p95−min+34 ms to [50, 350]), and an experimental opportunistic frame-interpolation scaffold (WebGL2 blend, own default-off toggle). Viewer-only — zero server/wire changes — `docs/17` (T1–T4 implemented 2026-07-15; automated gates green, manual browser verify done 2026-07-19; the R20 `e2e` job also runs the adaptive+interpolated pipeline green on every PR; T5 motion-estimated interpolation + T6 findings not started)
 18. 🚧 Advanced broadcaster settings (R13): `isConfigSupported` probe matrix, HW-aware auto ceiling + probe-driven 'auto' framerate default (60 when hardware probes it, else 30), acceleration tri-state, bitrate/codec overrides, probe-annotated pickers, and capture aligned to the sticky selection via live `applyConstraints` — **no settings change ever restarts the stream**. Supersedes R7; UI/pipeline only — zero server/wire changes — `docs/18` (L1–L5 implemented 2026-07-15; automated gates green, manual browser verify pending)
 19. ✅ Native Linux broadcaster (R14): a Gio GUI app + CLI over a shared Go engine in the new top-level [`gawk-broadcast/`](gawk-broadcast/) module (importing the relay's now-public `gawk-server/wire` — reused, never mirrored), publishing with **hardware encode** from Linux, which the browser structurally cannot do there. Go-owned XDG ScreenCast portal handshake (the share picker appears on every start — the choice is never persisted) feeding a GStreamer subprocess; hardware-only cascade `vulkanh264enc` → `nvh264enc` → `vah264enc` → **refusal pointing at the browser** (no software rung), each accepted only by real trial encode; MPEG-TS over the pipe for structural AU boundaries; raw Annex-B with empty extradata (the only thing exercising the viewer's Annex-B branch). Zero server/wire/viewer changes — `docs/19` (V0–V7 implemented 2026-07-15; automated gates green including end-to-end tests against the real relay binary; **manual verification on the Linux gaming PC done 2026-07-19** — hardware encode, the latency-bias gate, portal + notifications on KDE/GNOME; not CI-reachable. V8 direct Vulkan Video encode is gated on V2's on-hardware Stage-1 result and not started)
-20. 🔧 System audio (R15, experimental): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), wire types 0x07/0x08 + a hub audio-config cache, viewer decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock (adaptive audio jitter buffer; audio-master video pacing in the R12 paced modes). Default-off "Enable audio (experimental)" broadcaster toggle; viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, refreshed + **N1–N6 implemented 2026-07-19**; automated gates green, **manual browser verification pending** — audio has never played on real hardware)
+20. 🔧 System audio (R15, experimental): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), wire types 0x07/0x08 + a hub audio-config cache, viewer decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock — **video-master** (docs/20 field finding 4): audio is held at start to meet the video presentation schedule, and residual clock drift is absorbed by a sub-audible playback-rate trim, because after playback begins no amount of buffering can change when a sample is heard. Default-off "Enable audio (experimental)" broadcaster toggle; viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, refreshed + **N1–N6 implemented 2026-07-19**; automated gates green, **manual browser verification pending** — audio has never played on real hardware)
 21. ⚠️ iOS native fullscreen (R16): the viewer's fullscreen button is a silent no-op on iPhone (no Element Fullscreen API there — every iOS browser is WebKit; the only native fullscreen is `webkitEnterFullscreen()` on a `<video>`, and the viewer paints a canvas). Attempted fix (**rejected after on-device testing — see status**): a `TeeRenderSink` decorator wraps each **presented** canvas frame (R12 pacing/interpolation preserved) into a worker-side `VideoTrackGenerator` feeding a hidden pre-armed `<video>`; tiered `useFullscreen` (element → video → CSS pseudo-fullscreen) so the button always does something; plus a new stats-overlay **Feature Gates** section (UpperCamelCase names, first gate `NativeVideoFullscreen`). Gated on the *absence* of `Element.requestFullscreen` — non-iPhone devices unchanged (overlay section aside). Viewer-only — zero server/wire changes — `docs/21` (U1–U3 implemented 2026-07-16; **U4 verdict 2026-07-19: native fullscreen still shows a black video on iPhone across three on-device passes → the native tier is rejected and pseudo-fullscreen (CSS) is the shipping path**; a code cleanup deleting the tee/generator/video path is the remaining follow-up — BUGS.md)
 22. ✅ Relay scale-out & high availability (R17): the relay becomes N homogeneous pods behind the existing UDP LoadBalancer via a **self-federating origin/edge cascade** over the existing WebTransport protocol — the publisher's pod claims a per-broadcast k8s Lease as origin, other pods edge-pull on demand and re-fan-out (depth ≤ 2), so one hot broadcast's audience spans pods. Version rollouts stop breaking streams: drains send a new 4002 close code (clients reconnect with zero delay), a shared QUIC stateless-reset key makes abrupt deaths detectable in ~1 RTT, and the broadcaster auto-resumes with in-band resume tokens (wire 0x09) so relay restarts keep the broadcast ID and viewer URLs — worst rollout artifact ≤ 1 s freeze, vs today’s orphaned streams — `docs/22` (W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + green in the R20 `e2e-cluster` CI job 2026-07-18; remaining homelab drills + 200-viewer scale proof owner-accepted 2026-07-19 as CI non-goals)
 
@@ -405,6 +405,47 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   `fullscreenchange` (track `webkitbeginfullscreen`/`webkitendfullscreen`
   instead), and **`display: none` on the video breaks it** — hide by
   size/position. ([docs/21](docs/21-ios-video-fullscreen.md))
+- **One pipeline, one pacing schedule.** The reorder buffer's release gate and
+  the paced sink's display target must derive from the *same* baseline. R15
+  moved the display target onto the audio playhead and left the release gate
+  on the arrival baseline; the difference (audio's jitter buffer + output
+  latency) landed every frame in `PacedPresentationSink` long before its slot,
+  and the sink drops the **oldest** past `MAX_HELD_FRAMES` — so it discarded
+  each frame just as it came due. Total video freeze, the instant audio
+  started. Video is now the master outright: both ends read the arrival
+  baseline, av-sync exports no video-side lever at all, and audio aligns to
+  video. ([docs/20](docs/20-system-audio.md) field findings 2 + 4)
+- **Audio alignment is a start-time decision, not a buffering one.** The
+  AudioWorklet consumes exactly `sampleRate` samples per second at 1×, so once
+  playback has begun, holding chunks longer changes queue *depth* and nothing
+  else — it cannot change when a given sample is heard. Lip sync is therefore
+  set by *when playback starts* (hold the first chunk until the video
+  presentation schedule says it is due), and everything after it is a **rate**
+  problem: drift is absorbed by a sub-audible ±0.4% playback trim, never a
+  step or a skip. ([docs/20](docs/20-system-audio.md) field finding 4)
+- **A jitter-buffer target that is only a ceiling is not a jitter buffer** —
+  R15's audio buffer enforced its 40–150 ms target on overflow but forwarded
+  every chunk to the worklet on arrival, so the sink played at ~0 ms depth and
+  any jitter ran it dry (zero is a reflecting barrier: underruns discard time
+  that can never be won back). The target must be a **floor**: prime to it
+  before playing, rebuild it after a genuine dry spell.
+  ([docs/20](docs/20-system-audio.md) field finding 3)
+- **`getDisplayMedia` audio is all-or-nothing, not best-effort** — if the
+  browser cannot start a system-audio source it rejects the **whole**
+  request with `NotReadableError: Could not start audio source`, taking video
+  down with it; it does *not* degrade to a video-only grant. Two independent
+  failure classes, and the exception is identical for both: **platform** (no
+  loopback path at all — Linux and macOS screen/window shares) and **device
+  state** (Windows *can* capture system audio, and still fails when the
+  default output endpoint won't open for loopback — exclusive-mode holders,
+  disconnected/asleep endpoints, some virtual devices). **Tab audio uses
+  Chrome's internal mirroring path, not OS loopback, so it works where system
+  audio doesn't** — it's the discriminator when triaging, and the fallback
+  when capturing. `capture.ts` retries once without audio, but that retry
+  needs its own transient activation, which the seconds spent in the picker
+  have usually already spent — so the actionable error ("turn off Enable
+  audio") is the common landing spot.
+  ([docs/20](docs/20-system-audio.md) field finding 1)
 - **~1200-byte safe datagram payload** drives the chunking design — don't
   assume larger datagrams survive the path.
 - **Raising the QUIC idle timeout does not keep idle viewers alive** — the

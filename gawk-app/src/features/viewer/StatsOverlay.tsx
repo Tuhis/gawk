@@ -143,10 +143,10 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               ['A/V skew', stats.avSkewMs == null ? '—' : `${fmt(stats.avSkewMs)} ms`],
               [
                 'Sync master',
-                stats.avMaster === 'audio'
-                  ? 'Audio clock'
-                  : stats.avMaster === 'arrival'
-                    ? 'Arrival baseline'
+                stats.avMaster === 'video'
+                  ? 'Video (audio aligned)'
+                  : stats.avMaster === 'free'
+                    ? 'Video (audio free-running)'
                     : '—',
               ],
             ] as StatsRow[],
