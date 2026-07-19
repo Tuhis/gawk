@@ -52,7 +52,7 @@ function makeCallbacks() {
   };
 }
 
-function makeAcquired() {
+function makeAcquired(withAudio = false) {
   const clone = { stop: vi.fn(), addEventListener: vi.fn() };
   const track = {
     clone: vi.fn(() => clone),
@@ -60,23 +60,35 @@ function makeAcquired() {
     addEventListener: vi.fn(),
     stop: vi.fn(),
   };
-  const stream = { getTracks: () => [track] } as unknown as MediaStream;
-  return { stream, track, clone };
+  const audioClone = { stop: vi.fn(), addEventListener: vi.fn() };
+  const audioTrack = {
+    clone: vi.fn(() => audioClone),
+    addEventListener: vi.fn(),
+    stop: vi.fn(),
+  };
+  const audioTracks = withAudio ? [audioTrack] : [];
+  const stream = {
+    getTracks: () => [track, ...audioTracks],
+    getAudioTracks: () => audioTracks,
+  } as unknown as MediaStream;
+  return { stream, track, clone, audioTrack, audioClone };
 }
 
 function makeSession(overrides?: {
   acquire?: () => Promise<{ stream: MediaStream; track: MediaStreamTrack }>;
   broadcastId?: string;
+  audio?: boolean;
+  acquiredAudio?: boolean;
 }) {
   const worker = new FakeWorker();
   const cbs = makeCallbacks();
-  const acquired = makeAcquired();
+  const acquired = makeAcquired(overrides?.acquiredAudio ?? false);
   const acquire =
     overrides?.acquire ??
     (() => Promise.resolve({ stream: acquired.stream, track: acquired.track as unknown as MediaStreamTrack }));
   const session = new WorkerBroadcastSession(
     worker,
-    { ...DEFAULT_CAPTURE_CONFIG },
+    { ...DEFAULT_CAPTURE_CONFIG, ...(overrides?.audio ? { audio: true } : {}) },
     'https://relay.test:4433',
     { certHashHex: 'ab' },
     cbs,
@@ -148,6 +160,45 @@ describe('WorkerBroadcastSession capture handoff', () => {
     expect(cbs.onSourceStream).toHaveBeenCalledWith(acquired.stream);
     // Main-side safety net for "Stop sharing".
     expect(acquired.track.addEventListener).toHaveBeenCalledWith('ended', expect.any(Function));
+  });
+
+  // R15 N3: the audio clone transfers beside the video clone when the config
+  // asked for audio and the grant delivered a track.
+  it('transfers the audio clone alongside the video clone when audio is enabled', async () => {
+    const { session, worker, acquired } = makeSession({ audio: true, acquiredAudio: true });
+    void session.start().catch(() => {});
+    worker.emit({ type: 'awaitingCapture' });
+    await flush();
+
+    const capture = worker.posted.find((p) => p.msg.type === 'capture');
+    expect(capture).toBeDefined();
+    expect((capture!.msg as { track: unknown }).track).toBe(acquired.clone);
+    expect((capture!.msg as { audioTrack: unknown }).audioTrack).toBe(acquired.audioClone);
+    expect(capture!.transfer).toEqual([acquired.clone, acquired.audioClone]);
+  });
+
+  it('audio enabled but no audio track in the grant transfers video only', async () => {
+    const { session, worker } = makeSession({ audio: true, acquiredAudio: false });
+    void session.start().catch(() => {});
+    worker.emit({ type: 'awaitingCapture' });
+    await flush();
+
+    const capture = worker.posted.find((p) => p.msg.type === 'capture');
+    expect(capture).toBeDefined();
+    expect((capture!.msg as { audioTrack: unknown }).audioTrack).toBeNull();
+    expect(capture!.transfer).toHaveLength(1);
+  });
+
+  it('audio disabled never inspects or clones audio tracks', async () => {
+    const { session, worker, acquired } = makeSession({ audio: false, acquiredAudio: true });
+    void session.start().catch(() => {});
+    worker.emit({ type: 'awaitingCapture' });
+    await flush();
+
+    const capture = worker.posted.find((p) => p.msg.type === 'capture');
+    expect(capture).toBeDefined();
+    expect((capture!.msg as { audioTrack: unknown }).audioTrack).toBeNull();
+    expect(acquired.audioTrack.clone).not.toHaveBeenCalled();
   });
 
   it('posts captureFailed when acquisition is denied', async () => {

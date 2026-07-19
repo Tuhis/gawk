@@ -35,8 +35,15 @@ export type BroadcastWorkerCommand =
       // dedicated command below for live changes).
       encoderSettings?: EncoderSettings;
     }
-  // The capture track (transferred), in response to 'awaitingCapture'.
-  | { type: 'capture'; track: MediaStreamTrack; nativeFps: number | null }
+  // The capture track (transferred), in response to 'awaitingCapture'. R15
+  // (docs/20 N3): the audio clone transfers alongside the video clone when
+  // the toggle asked for audio and the grant delivered a track.
+  | {
+      type: 'capture';
+      track: MediaStreamTrack;
+      nativeFps: number | null;
+      audioTrack?: MediaStreamTrack | null;
+    }
   | { type: 'captureFailed'; message: string }
   | { type: 'setLadder'; selection: ResolutionSelection; framerate: FramerateSelection }
   | { type: 'setEncoderSettings'; settings: EncoderSettings }
@@ -97,7 +104,11 @@ const defaultPipelineFactory: BroadcastPipelineFactory = (config, url, opts, cbs
   new BroadcastPipeline(config, url, opts, cbs, id, undefined, mediaSource);
 
 interface PendingCapture {
-  resolve: (m: { track: MediaStreamTrack; nativeFps: number | null }) => void;
+  resolve: (m: {
+    track: MediaStreamTrack;
+    nativeFps: number | null;
+    audioTrack: MediaStreamTrack | null;
+  }) => void;
   reject: (e: Error) => void;
 }
 
@@ -141,7 +152,8 @@ export class BroadcastWorkerCore {
           return;
         }
         this.pendingCapture = {
-          resolve: ({ track, nativeFps }) => resolve(trackMediaSource(track, nativeFps)),
+          resolve: ({ track, nativeFps, audioTrack }) =>
+            resolve(trackMediaSource(track, nativeFps, audioTrack)),
           reject,
         };
         this.host.post({ type: 'awaitingCapture' });
@@ -208,15 +220,20 @@ export class BroadcastWorkerCore {
     );
   }
 
-  capture(track: MediaStreamTrack, nativeFps: number | null): void {
+  capture(
+    track: MediaStreamTrack,
+    nativeFps: number | null,
+    audioTrack: MediaStreamTrack | null = null,
+  ): void {
     const pending = this.pendingCapture;
     this.pendingCapture = null;
     if (!pending) {
-      // Stray track (e.g. raced a stop): don't leave the capture indicator on.
+      // Stray tracks (e.g. raced a stop): don't leave the capture indicator on.
       track.stop();
+      audioTrack?.stop();
       return;
     }
-    pending.resolve({ track, nativeFps });
+    pending.resolve({ track, nativeFps, audioTrack });
   }
 
   captureFailed(message: string): void {
