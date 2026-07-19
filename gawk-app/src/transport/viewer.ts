@@ -4,6 +4,11 @@
 
 import { log } from '../lib/logger';
 import { Decoder, type DecodedFrame } from '../media/decoder';
+import {
+  AudioDecodeLane,
+  audioDecodeSupported,
+  type DecodedAudioChunk,
+} from './audio-decode';
 import type { ConnectOptions, KeyframeStreamFrame } from './connection';
 import type { TransportConnectionStats } from './net-stats';
 import {
@@ -14,6 +19,13 @@ import {
   type ViewerTransportKind,
 } from './viewer-transport';
 import { getInterpolationEnabled } from './interpolation';
+import {
+  audioClockAvailable,
+  audioDisplayTargetMs,
+  getAvSkewMs,
+  observeVideoPresented,
+  resetAvSync,
+} from './av-sync';
 import { LiveEdgeTracker } from './live-edge';
 import {
   getPlayoutMode,
@@ -142,6 +154,27 @@ export interface ViewerStats extends ReassemblerStats {
   // Carriers ending in a reset — the relay shedding a stalled/superseded GOP
   // tail; each costs at most one resync at the next keyframe.
   carrierStreamsAborted: number | null;
+  // R15 (docs/20): the audio lane, as observed by this pipeline. audioPresent
+  // flips true on the first AudioConfig/packet and is what gates every piece
+  // of viewer audio UI — a video-only stream renders exactly today's viewer.
+  // 'unsupported' means audio arrived but this scope has no AudioDecoder;
+  // 'error' means the lane died (video plays on).
+  audioState: 'absent' | 'active' | 'unsupported' | 'error';
+  audioPacketsReceived: number;
+  audioPacketsDecoded: number;
+  audioBytesReceived: number;
+  audioCodec: string | null;
+  audioSampleRate: number | null;
+  audioChannels: number | null;
+  // R15 N5 (docs/20 Decision 10): A/V skew at the last presented frame —
+  // positive = video ahead of audio (the forgiving direction, and the
+  // expected sign in live-edge mode). Null when there is no audio clock.
+  // Target: median |skew| ≤ 60 ms, p95 ≤ 120 ms.
+  avSkewMs: number | null;
+  // Whether audio is currently driving video display targets (paced modes
+  // with a fresh playhead) — ground truth, so a fallback to the arrival
+  // baseline is visible rather than inferred.
+  avMaster: 'audio' | 'arrival' | null;
   // R16 (docs/21 Decision 9). The pipeline itself never sets these three:
   // presentationTee is merged in by the viewer *worker shell* when the
   // presentation tee exists (gated devices only); featureGates and
@@ -158,6 +191,14 @@ export interface ViewerCallbacks {
   onStats: (stats: ViewerStats) => void;
   onError: (err: Error) => void;
   onEnded: () => void;
+  // R15 (docs/20 Decision 7): decoded planar PCM, headed for the main-thread
+  // AudioWorklet sink. On the worker path the host transfers it across; on
+  // the main-thread path it goes straight to the sink. Absent callback = the
+  // consumer doesn't do audio, and the lane is never built.
+  onAudioChunk?: (chunk: DecodedAudioChunk) => void;
+  // Broadcaster restart / resync: the sink must flush and re-anchor, or every
+  // packet on the new timeline is late forever (docs/20 Decision 8).
+  onAudioReset?: () => void;
 }
 
 export class ViewerPipeline {
@@ -229,6 +270,16 @@ export class ViewerPipeline {
   private lastCapToRenderMs: number | null = null;
   // R18: the relay's latest "N watching" push (last one wins).
   private viewerCount: number | null = null;
+  // R15 (docs/20): the audio lane. Built lazily on the first audio message —
+  // a video-only stream never constructs it, so nothing about this pipeline
+  // changes for broadcasts without audio.
+  private audioLane: AudioDecodeLane | null = null;
+  private audioState: ViewerStats['audioState'] = 'absent';
+  // The lane's last counters, retained across its death (CODE-REVIEW.md:
+  // counters survive their owner's deletion). Without this, an audio error
+  // reports "State: Error, decoded 0, format —", which reads as "audio never
+  // worked" instead of "audio worked, then died" — the opposite diagnosis.
+  private lastAudioStats: ReturnType<AudioDecodeLane['getStats']> | null = null;
   // R12 T1: per-stats-window decode latencies (σ published as decodeJitterMs).
   private decodeLatencies: number[] = [];
 
@@ -281,6 +332,17 @@ export class ViewerPipeline {
       // R18: the relay's live viewer count (join-primed, then ~1 s cadence).
       onSubscriberCount: (count) => {
         this.viewerCount = count;
+      },
+      // R15 (docs/20 Decision 7): the audio lane's demux points. Both are
+      // no-ops without an onAudioChunk consumer, so a viewer that can't play
+      // audio never builds a decoder.
+      onAudioConfig: (config) => {
+        const lane = this.ensureAudioLane();
+        lane?.configure(config);
+      },
+      onAudioFrame: (packet) => {
+        const lane = this.ensureAudioLane();
+        lane?.push(packet);
       },
       // Reassembled datagram frames feed the reorder buffer. Keyframes only
       // arrive over streams in practice, but routing a keyframe-flagged
@@ -342,6 +404,31 @@ export class ViewerPipeline {
     // Web Worker (R8 S6), where `window` is undefined.
     this.statsTimer = setInterval(() => this.publishStats(), 500) as unknown as number;
     this.reorderTimer = setInterval(() => this.reorderTick(), REORDER_TICK_MS) as unknown as number;
+  }
+
+  // R15: builds the audio lane on first use. Returns null when this viewer
+  // has no audio consumer (main-thread paths that don't render audio) or the
+  // scope lacks AudioDecoder — both annotate and keep video untouched.
+  private ensureAudioLane(): AudioDecodeLane | null {
+    if (this.audioLane) return this.audioLane;
+    if (this.stopping || !this.cb.onAudioChunk) return null;
+    if (!audioDecodeSupported()) {
+      this.audioState = 'unsupported';
+      return null;
+    }
+    this.audioLane = new AudioDecodeLane({
+      onChunk: (chunk) => this.cb.onAudioChunk?.(chunk),
+      onError: (err) => {
+        log.warn('Audio decode lane failed; the stream plays video-only:', err);
+        this.audioState = 'error';
+        // Fold the counters before dropping the lane, or the overlay reports
+        // a lane that died as one that never ran.
+        this.lastAudioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
+        this.audioLane = null;
+      },
+    });
+    this.audioState = 'active';
+    return this.audioLane;
   }
 
   private handleKeyframeStream(kf: KeyframeStreamFrame): void {
@@ -522,6 +609,12 @@ export class ViewerPipeline {
     this.liveEdge.reset();
     this.broadcastClockOffsetUs = null;
     this.lastCapToRenderMs = null;
+    // R15 (docs/20 Decision 8): audio timestamps live on the same restarted
+    // timeline — the sink must drop its queue and re-anchor, or every new
+    // packet reads as older than the playhead and is late-dropped forever.
+    // The A/V mapping anchored on the dead timeline goes with it.
+    resetAvSync();
+    this.cb.onAudioReset?.();
     // Held paced frames are from the old timeline — their targets are junk,
     // and so is any adaptive offset learned against it.
     this.renderSink?.flush?.();
@@ -539,6 +632,9 @@ export class ViewerPipeline {
     }
     this.liveEdge.observe(decoded.frame.timestamp);
     this.observeCapToRender(decoded.frame.timestamp);
+    // R15 N5: A/V skew is measured always — in every playout mode, whether or
+    // not audio is driving the targets (docs/20 Decision 10).
+    observeVideoPresented(decoded.frame.timestamp);
     // Worker path: draw + close in place so the frame never crosses a boundary.
     // Main-thread path: hand it to the callback, which draws and closes it.
     if (this.renderSink) {
@@ -554,9 +650,17 @@ export class ViewerPipeline {
   // else ⇒ the sink presents ASAP, exactly the pre-R12 behavior.
   private displayTargetMs(timestampUs: number): number | undefined {
     if (getPlayoutMode() !== 'adaptive') return undefined;
-    const base = this.reorder?.arrivalBaselineMs();
     const offset = getPlayoutOffsetMs();
-    if (base == null || offset <= 0) return undefined;
+    if (offset <= 0) return undefined;
+    // R15 N5 (docs/20 Decision 10): with audio present and its clock fresh,
+    // audio is the master — video display targets derive from the playhead
+    // mapping instead of the arrival baseline. The mapping is slew-limited
+    // inside av-sync, and returns null the moment audio goes absent/stale,
+    // which falls straight back to the arrival baseline (exactly today).
+    const fromAudio = audioDisplayTargetMs(timestampUs, offset);
+    if (fromAudio !== null) return fromAudio;
+    const base = this.reorder?.arrivalBaselineMs();
+    if (base == null) return undefined;
     return timestampUs / 1000 + base + offset;
   }
 
@@ -620,6 +724,8 @@ export class ViewerPipeline {
     // what this pipeline asked for; carriers observed is what the relay
     // actually serves.
     const carrier = this.transport?.sampleCarrierStats?.() ?? null;
+    // Live lane if it exists, else the folded snapshot from its death.
+    const audioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
     const deliveryMode: ViewerStats['deliveryMode'] =
       this.connectOpts.deliveryMode === 'reliable'
         ? carrier && carrier.streamsOpened > 0
@@ -683,6 +789,20 @@ export class ViewerPipeline {
       carrierStreams: carrier?.streamsOpened ?? null,
       carrierRecords: carrier?.recordsReceived ?? null,
       carrierStreamsAborted: carrier?.streamsAborted ?? null,
+      audioState: this.audioState,
+      audioPacketsReceived: reasm?.audioPacketsReceived ?? 0,
+      audioPacketsDecoded: audioStats?.packetsDecoded ?? 0,
+      audioBytesReceived: reasm?.audioBytesReceived ?? 0,
+      audioCodec: audioStats?.codec ?? null,
+      audioSampleRate: audioStats?.sampleRate ?? null,
+      audioChannels: audioStats?.channels ?? null,
+      avSkewMs: getAvSkewMs(),
+      avMaster:
+        this.audioState === 'active'
+          ? audioClockAvailable() && getPlayoutMode() === 'adaptive'
+            ? 'audio'
+            : 'arrival'
+          : null,
     });
   }
 
@@ -753,6 +873,10 @@ export class ViewerPipeline {
     }
     this.renderSink?.flush?.();
     this.transport?.close();
+    // Same fold as the error path: a final stats tick must still report what
+    // the lane did, not zeros.
+    this.lastAudioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
+    this.audioLane?.stop();
 
     if (this.decoder) await this.decoder.close();
 
@@ -760,6 +884,7 @@ export class ViewerPipeline {
     this.reassembler = null;
     this.reorder = null;
     this.transport = null;
+    this.audioLane = null;
 
     this.cb.onEnded();
   }

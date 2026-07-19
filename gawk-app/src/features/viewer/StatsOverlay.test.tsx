@@ -70,6 +70,15 @@ function fullStats(): ViewerStats {
       datagramsLostOutgoing: null,
       datagramsDroppedIncoming: 5,
     },
+    audioState: 'absent',
+    audioPacketsReceived: 0,
+    audioPacketsDecoded: 0,
+    audioBytesReceived: 0,
+    audioCodec: null,
+    audioSampleRate: null,
+    audioChannels: null,
+    avSkewMs: null,
+    avMaster: null,
   };
 }
 
@@ -267,5 +276,51 @@ describe('StatsOverlay', () => {
       <StatsOverlay stats={fullStats()} codec="vp8" bitrateBps={null} onClose={() => {}} onCopy={onCopy} copied={true} />,
     );
     expect(screen.getByText('Copied')).toBeTruthy();
+  });
+});
+
+// R15 N6 (docs/20): the Audio section is gated on audio actually being in
+// the stream — a video-only viewer's overlay is unchanged.
+describe('StatsOverlay audio section (R15)', () => {
+  it('renders no Audio section for a video-only stream', () => {
+    render(
+      <StatsOverlay
+        stats={fullStats()}
+        codec="avc1.42E01F"
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.queryByText('Audio')).toBeNull();
+    expect(screen.queryByText('A/V skew')).toBeNull();
+  });
+
+  it('renders format, counters and the sync rows once audio is active', () => {
+    render(
+      <StatsOverlay
+        stats={{
+          ...fullStats(),
+          audioState: 'active',
+          audioCodec: 'opus',
+          audioSampleRate: 48000,
+          audioChannels: 2,
+          audioPacketsReceived: 500,
+          audioPacketsDecoded: 498,
+          avSkewMs: 42.4,
+          avMaster: 'audio',
+        }}
+        codec="avc1.42E01F"
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Audio')).toBeTruthy();
+    expect(screen.getByText(/opus · 48000 Hz · 2ch/)).toBeTruthy();
+    expect(screen.getByText('A/V skew')).toBeTruthy();
+    expect(screen.getByText('Audio clock')).toBeTruthy();
   });
 });

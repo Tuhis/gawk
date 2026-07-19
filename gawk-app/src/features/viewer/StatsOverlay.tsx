@@ -115,6 +115,44 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Bad datagrams', String(stats?.badDatagrams ?? '—')],
       ],
     },
+    // R15 (docs/20 N6): the Audio section, rendered only when the stream
+    // actually carries audio — a video-only viewer's overlay is unchanged.
+    ...(stats && stats.audioState !== 'absent'
+      ? [
+          {
+            title: 'Audio',
+            rows: [
+              [
+                'State',
+                stats.audioState === 'active'
+                  ? 'Active'
+                  : stats.audioState === 'unsupported'
+                    ? 'Unsupported here'
+                    : 'Error',
+              ],
+              [
+                'Format',
+                stats.audioCodec
+                  ? `${stats.audioCodec} · ${stats.audioSampleRate ?? '—'} Hz · ${stats.audioChannels ?? '—'}ch`
+                  : '—',
+              ],
+              ['Packets received', String(stats.audioPacketsReceived)],
+              ['Packets decoded', String(stats.audioPacketsDecoded)],
+              // R15 N5: the sync numbers. Positive skew = video ahead of
+              // audio (the forgiving direction); target median ≤ 60 ms.
+              ['A/V skew', stats.avSkewMs == null ? '—' : `${fmt(stats.avSkewMs)} ms`],
+              [
+                'Sync master',
+                stats.avMaster === 'audio'
+                  ? 'Audio clock'
+                  : stats.avMaster === 'arrival'
+                    ? 'Arrival baseline'
+                    : '—',
+              ],
+            ] as StatsRow[],
+          },
+        ]
+      : []),
     // R16: which conditional features are live on this client — rendered on
     // every viewer. The value stays a bare ✓/✗ (the full detail string
     // overflowed the grid); the detail shows as a hover tooltip on the value

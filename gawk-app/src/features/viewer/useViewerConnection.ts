@@ -21,6 +21,14 @@ import {
 import type { ViewerStats } from '../../transport/viewer';
 import type { ViewerWorkerEvent } from '../../transport/viewer-worker-core';
 import { WorkerViewerController } from './workerViewerController';
+import { AudioSink, audioSinkSupported } from './audioSink';
+import { notePlayhead, resetAvSync } from '../../transport/av-sync';
+import { timeOriginMs } from '../../transport/time-sync';
+import {
+  DEFAULT_AUDIO_PROFILE,
+  RESILIENT_AUDIO_PROFILE,
+  type AudioBufferProfile,
+} from '../../transport/audio-buffer';
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
 
@@ -36,6 +44,20 @@ export interface PresentationState {
   arm: () => void;
 }
 
+// R15 (docs/20 Decision 9): the audio surface for the screen. `present` is
+// false until audio is actually observed in the stream — every piece of audio
+// UI hangs off it, so a video-only broadcast renders exactly today's viewer.
+// `needsGesture` drives the tap-to-unmute affordance (autoplay policy).
+export interface AudioState {
+  present: boolean;
+  muted: boolean;
+  volume: number;
+  needsGesture: boolean;
+  setMuted: (muted: boolean) => void;
+  setVolume: (volume: number) => void;
+  resume: () => void;
+}
+
 export interface ViewerConnectionState {
   status: ViewerStatus;
   stats: ViewerStats | null;
@@ -48,6 +70,32 @@ export interface ViewerConnectionState {
   errorFatal: boolean;
   retryNote: string | null;
   presentation: PresentationState;
+  audio: AudioState;
+}
+
+// R15 (docs/20 Decision 9): mute/volume persist per browser, filling the slot
+// R6 reserved. Default: unmuted at full volume — the toggle is the
+// broadcaster's experimental opt-in, not the viewer's.
+const MUTED_KEY = 'gawk:muted';
+const VOLUME_KEY = 'gawk:volume';
+
+function loadMuted(): boolean {
+  try {
+    return localStorage.getItem(MUTED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function loadVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_KEY);
+    if (raw === null) return 1;
+    const v = Number(raw);
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
+  } catch {
+    return 1;
+  }
 }
 
 // Whether we can even attempt the worker path. In jsdom (tests) and any browser
@@ -93,6 +141,126 @@ export function useViewerConnection(
   const [workerUnsupported, setWorkerUnsupported] = useState(false);
   const useWorker = canUseWorker && !workerUnsupported;
 
+  // R15 (docs/20 Decisions 7-9): the audio sink lives here — one per hook
+  // instance, created lazily on the first audio chunk so a video-only stream
+  // never constructs an AudioContext.
+  const [audioPresent, setAudioPresent] = useState(false);
+  const [audioNeedsGesture, setAudioNeedsGesture] = useState(false);
+  const [muted, setMutedState] = useState(loadMuted);
+  const [volume, setVolumeState] = useState(loadVolume);
+  const sinkRef = useRef<AudioSink | null>(null);
+  // One-shot latch for the per-packet hot path (see handleAudioChunk).
+  const audioStartedRef = useRef(false);
+  // Read live by the sink's jitter buffer: resilient mode widens the audio
+  // envelope too, or audio-master pacing would collapse the video buffer
+  // (docs/20 Decision 12).
+  const resilientRef = useRef(resilientMode);
+  resilientRef.current = resilientMode;
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+
+  const useWorkerRef = useRef(useWorker);
+  useWorkerRef.current = useWorker;
+
+  const ensureSink = useCallback((): AudioSink | null => {
+    if (sinkRef.current) return sinkRef.current;
+    if (!audioSinkSupported()) return null;
+    const profile = (): AudioBufferProfile =>
+      resilientRef.current ? RESILIENT_AUDIO_PROFILE : DEFAULT_AUDIO_PROFILE;
+    const sink = new AudioSink(
+      {
+        // R15 N5 (docs/20 Decision 10): the ~4 Hz playhead report reaches
+        // whichever context runs the pipeline — into the worker as a
+        // command, or into this context's module state on the fallback path.
+        onPlayhead: ({ playheadUs }) => {
+          const atEpochMs = timeOriginMs() + performance.now();
+          if (useWorkerRef.current) {
+            controllerRef.current?.sendAudioPlayhead(playheadUs, atEpochMs);
+          } else {
+            notePlayhead({ playheadUs, atEpochMs });
+          }
+        },
+      },
+      profile,
+    );
+    sink.setMuted(mutedRef.current);
+    sink.setVolume(volumeRef.current);
+    sinkRef.current = sink;
+    return sink;
+  }, []);
+
+  // Handles one decoded chunk from either pipeline path. The sink is started
+  // on the first chunk (its sample rate configures the context) and the
+  // audio UI appears reactively from that moment.
+  const handleAudioChunk = useCallback(
+    (chunk: { timestampUs: number; sampleRate: number; channels: Float32Array[]; frameCount: number }) => {
+      const sink = ensureSink();
+      if (!sink) return;
+      // This runs 50×/s (one Opus packet per 20 ms), so everything that only
+      // needs to happen once is hoisted behind the started latch — start() is
+      // idempotent internally, but attaching a fresh promise pair and calling
+      // two state setters per packet is churn on the hot path.
+      if (!audioStartedRef.current) {
+        audioStartedRef.current = true;
+        setAudioPresent(true);
+        void sink.start(chunk.sampleRate).then(
+          () => setAudioNeedsGesture(sink.needsGesture),
+          () => {
+            // Context/worklet failed — video plays on; no audio UI offered.
+            setAudioPresent(false);
+          },
+        );
+      }
+      sink.push(chunk);
+    },
+    [ensureSink],
+  );
+
+  const handleAudioReset = useCallback(() => {
+    sinkRef.current?.flush();
+    // On the main-thread path the A/V mapping lives in this context; the
+    // worker path resets its own inside the pipeline.
+    if (!useWorkerRef.current) resetAvSync();
+  }, []);
+
+  // The sink outlives individual sessions (reconnects re-anchor it via
+  // onAudioReset) but not the hook.
+  useEffect(() => {
+    return () => {
+      sinkRef.current?.dispose();
+      sinkRef.current = null;
+    };
+  }, []);
+
+  const setMuted = useCallback((next: boolean) => {
+    setMutedState(next);
+    sinkRef.current?.setMuted(next);
+    try {
+      localStorage.setItem(MUTED_KEY, next ? '1' : '0');
+    } catch {
+      // private mode etc. — the toggle still works for this session
+    }
+  }, []);
+
+  const setVolume = useCallback((next: number) => {
+    const v = Math.max(0, Math.min(1, next));
+    setVolumeState(v);
+    sinkRef.current?.setVolume(v);
+    try {
+      localStorage.setItem(VOLUME_KEY, String(v));
+    } catch {
+      // private mode etc.
+    }
+  }, []);
+
+  const resumeAudio = useCallback(() => {
+    const sink = sinkRef.current;
+    if (!sink) return;
+    void sink.resume().then(() => setAudioNeedsGesture(sink.needsGesture));
+  }, []);
+
   const resetState = useCallback(() => {
     setStatus('connecting');
     setStats(null);
@@ -125,9 +293,21 @@ export function useViewerConnection(
       case 'codec':
         setCodec(ev.codec);
         break;
-      case 'stats':
+      case 'stats': {
         setStats(ev.stats);
+        // R15 N5 (docs/20 Decision 10): the audio jitter-buffer target rides
+        // the same windowed arrival-jitter estimate the video playout
+        // controller uses — one measurement, two consumers.
+        const sink = sinkRef.current;
+        if (sink) {
+          sink.updateTarget(ev.stats.arrivalJitterMs, performance.now());
+          // The context can be suspended by the browser at any time (not just
+          // at start), so the tap-to-unmute affordance follows the stats
+          // cadence rather than the 50/s packet path.
+          setAudioNeedsGesture(sink.needsGesture);
+        }
         break;
+      }
       case 'error':
         // The one place every surfaced error (worker or main-thread path)
         // passes through — the detailed message lives here in the console,
@@ -151,8 +331,16 @@ export function useViewerConnection(
       case 'presentationTrack':
         setPresentationTrack(ev.track);
         break;
+      // R15: decoded PCM from the worker pipeline (the main-thread path
+      // calls handleAudioChunk directly — no event round-trip).
+      case 'audioChunk':
+        handleAudioChunk(ev);
+        break;
+      case 'audioReset':
+        handleAudioReset();
+        break;
     }
-  }, []);
+  }, [handleAudioChunk, handleAudioReset]);
 
   // ---- Worker path ---------------------------------------------------------
   const controllerRef = useRef<WorkerViewerController | null>(null);
@@ -295,6 +483,14 @@ export function useViewerConnection(
         onEnded: () => {
           if (active) applyEvent({ type: 'ended' });
         },
+        // R15: the main-thread pipeline decodes audio in place and feeds the
+        // same sink — no worker crossing on this path.
+        onAudioChunk: (chunk) => {
+          if (active) handleAudioChunk(chunk);
+        },
+        onAudioReset: () => {
+          if (active) handleAudioReset();
+        },
       },
     );
     session.start().catch((e) => {
@@ -310,7 +506,16 @@ export function useViewerConnection(
       active = false;
       void session.stop();
     };
-  }, [useWorker, broadcastId, resilientMode, applyEvent, canvasRef, resetState]);
+  }, [
+    useWorker,
+    broadcastId,
+    resilientMode,
+    applyEvent,
+    canvasRef,
+    resetState,
+    handleAudioChunk,
+    handleAudioReset,
+  ]);
 
   // R16: arm the tee (screen calls this at `watching` on gated devices, after
   // a positive probe). Idempotent down the whole chain.
@@ -333,6 +538,15 @@ export function useViewerConnection(
       probe: presentationTee && !useWorker ? false : presentationProbe,
       track: presentationTrack,
       arm: armPresentation,
+    },
+    audio: {
+      present: audioPresent,
+      muted,
+      volume,
+      needsGesture: audioNeedsGesture,
+      setMuted,
+      setVolume,
+      resume: resumeAudio,
     },
   };
 }

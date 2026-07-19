@@ -105,6 +105,33 @@ const (
 	//   00 17   record length = 23
 	//   01 01 01 00 ... 61 62 63   the golden VideoChunk datagram, verbatim
 	goldenCarrierRecordHex = "0017" + goldenVideoChunkHex
+
+	// AudioFrame: Seq=0x01020304, TimestampUs=0x0000005D21DBA5F0,
+	// payload "abc" (R15, docs/20 Decision 2).
+	//
+	//   01                       version
+	//   07                       type = AudioFrame
+	//   00                       flags (reserved)
+	//   00                       reserved
+	//   01 02 03 04              seq = 0x01020304
+	//   00 00 00 5d 21 db a5 f0  timestampUs = 0x0000005D21DBA5F0
+	//   61 62 63                 payload "abc"
+	goldenAudioFrameHex = "01070000010203040000005d21dba5f0616263"
+
+	// AudioConfig: Codec="opus", SampleRate=48000, Channels=2, empty
+	// description (R15 — the production configuration).
+	//
+	//   01            version
+	//   08            type = AudioConfig
+	//   00            reserved
+	//   04            codecLen = 4
+	//   6f 70 75 73   "opus"
+	//   00 00 bb 80   sampleRate = 48000
+	//   02            channels = 2
+	goldenAudioConfigHex = "010800046f7075730000bb8002"
+
+	// AudioConfig: as above but with a 3-byte description 01 02 03.
+	goldenAudioConfigDescHex = "010800046f7075730000bb8002010203"
 )
 
 var (
@@ -129,6 +156,24 @@ var (
 		TimestampUs: 0x0000005D21DBA5F0,
 		ConfigLen:   6,
 		PayloadLen:  3,
+	}
+
+	goldenAudioFrameHeader = AudioFrameHeader{
+		Seq:         0x01020304,
+		TimestampUs: 0x0000005D21DBA5F0,
+	}
+	goldenAudioFramePayload = []byte("abc")
+
+	goldenAudioConfig = AudioConfig{
+		Codec:      "opus",
+		SampleRate: 48000,
+		Channels:   2,
+	}
+	goldenAudioConfigDesc = AudioConfig{
+		Codec:       "opus",
+		SampleRate:  48000,
+		Channels:    2,
+		Description: []byte{0x01, 0x02, 0x03},
 	}
 )
 
@@ -1049,6 +1094,205 @@ func TestCarrierRecordErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, _, err := ParseCarrierRecord(tc.buf); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAudioConstants(t *testing.T) {
+	if MaxAudioPayload != MaxDatagramSize-AudioFrameHeaderSize {
+		t.Fatalf("MaxAudioPayload = %d, want %d", MaxAudioPayload, MaxDatagramSize-AudioFrameHeaderSize)
+	}
+}
+
+func TestGoldenAudioFrame(t *testing.T) {
+	want := mustHex(t, goldenAudioFrameHex)
+
+	dgram, err := AppendAudioFrame(nil, goldenAudioFrameHeader, goldenAudioFramePayload)
+	if err != nil {
+		t.Fatalf("AppendAudioFrame: %v", err)
+	}
+	if !bytes.Equal(dgram, want) {
+		t.Errorf("append produced %x, want %x", dgram, want)
+	}
+
+	h, payload, err := ParseAudioFrame(want)
+	if err != nil {
+		t.Fatalf("ParseAudioFrame: %v", err)
+	}
+	if h != goldenAudioFrameHeader {
+		t.Errorf("header = %+v, want %+v", h, goldenAudioFrameHeader)
+	}
+	if !bytes.Equal(payload, goldenAudioFramePayload) {
+		t.Errorf("payload = %x, want %x", payload, goldenAudioFramePayload)
+	}
+}
+
+func TestGoldenAudioConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		hexData string
+		want    AudioConfig
+	}{
+		{"opus empty description", goldenAudioConfigHex, goldenAudioConfig},
+		{"opus with description", goldenAudioConfigDescHex, goldenAudioConfigDesc},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wantBytes := mustHex(t, tc.hexData)
+
+			dgram, err := AppendAudioConfig(nil, tc.want)
+			if err != nil {
+				t.Fatalf("AppendAudioConfig: %v", err)
+			}
+			if !bytes.Equal(dgram, wantBytes) {
+				t.Errorf("append produced %x, want %x", dgram, wantBytes)
+			}
+
+			got, err := ParseAudioConfig(wantBytes)
+			if err != nil {
+				t.Fatalf("ParseAudioConfig: %v", err)
+			}
+			if got.Codec != tc.want.Codec || got.SampleRate != tc.want.SampleRate || got.Channels != tc.want.Channels {
+				t.Errorf("config = %+v, want %+v", got, tc.want)
+			}
+			if !bytes.Equal(got.Description, tc.want.Description) {
+				t.Errorf("description = %x, want %x", got.Description, tc.want.Description)
+			}
+		})
+	}
+}
+
+func TestAudioFrameRoundTrip(t *testing.T) {
+	h := AudioFrameHeader{Seq: 0xFFFFFFFF, TimestampUs: 1}
+	payload := bytes.Repeat([]byte{0x5A}, MaxAudioPayload)
+
+	dgram, err := AppendAudioFrame([]byte("prefix"), h, payload)
+	if err != nil {
+		t.Fatalf("AppendAudioFrame: %v", err)
+	}
+	dgram = dgram[len("prefix"):]
+	if len(dgram) != MaxDatagramSize {
+		t.Fatalf("max-payload audio frame is %d bytes, want %d", len(dgram), MaxDatagramSize)
+	}
+
+	got, gotPayload, err := ParseAudioFrame(dgram)
+	if err != nil {
+		t.Fatalf("ParseAudioFrame: %v", err)
+	}
+	if got != h {
+		t.Errorf("header = %+v, want %+v", got, h)
+	}
+	if !bytes.Equal(gotPayload, payload) {
+		t.Errorf("payload mismatch")
+	}
+	// Alias check, consistent with ParseVideoChunk.
+	dgram[AudioFrameHeaderSize] = 0x00
+	if gotPayload[0] != 0x00 {
+		t.Errorf("payload does not alias the input datagram")
+	}
+}
+
+func TestAppendAudioFrameErrors(t *testing.T) {
+	if _, err := AppendAudioFrame(nil, AudioFrameHeader{}, nil); !errors.Is(err, ErrBadAudioPayload) {
+		t.Errorf("empty payload error = %v, want ErrBadAudioPayload", err)
+	}
+	oversize := bytes.Repeat([]byte{1}, MaxAudioPayload+1)
+	if _, err := AppendAudioFrame(nil, AudioFrameHeader{}, oversize); !errors.Is(err, ErrBadAudioPayload) {
+		t.Errorf("oversize payload error = %v, want ErrBadAudioPayload", err)
+	}
+}
+
+func TestParseAudioFrameErrors(t *testing.T) {
+	valid := mustHex(t, goldenAudioFrameHex)
+
+	short := valid[:AudioFrameHeaderSize-1]
+	badVersion := append([]byte(nil), valid...)
+	badVersion[0] = 0x02
+	badType := append([]byte(nil), valid...)
+	badType[1] = TypeVideoChunk
+	empty := valid[:AudioFrameHeaderSize]
+
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"short", short, ErrShortDatagram},
+		{"bad version", badVersion, ErrBadVersion},
+		{"bad type", badType, ErrBadType},
+		{"empty payload", empty, ErrBadAudioPayload},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ParseAudioFrame(tc.dgram); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendAudioConfigErrors(t *testing.T) {
+	if _, err := AppendAudioConfig(nil, AudioConfig{SampleRate: 48000, Channels: 2}); !errors.Is(err, ErrBadCodec) {
+		t.Errorf("empty codec error = %v, want ErrBadCodec", err)
+	}
+	long := AudioConfig{Codec: strings.Repeat("x", 256), SampleRate: 48000, Channels: 2}
+	if _, err := AppendAudioConfig(nil, long); !errors.Is(err, ErrBadCodec) {
+		t.Errorf("long codec error = %v, want ErrBadCodec", err)
+	}
+	if _, err := AppendAudioConfig(nil, AudioConfig{Codec: "opus", Channels: 2}); !errors.Is(err, ErrBadAudioConfig) {
+		t.Errorf("zero sample rate error = %v, want ErrBadAudioConfig", err)
+	}
+	if _, err := AppendAudioConfig(nil, AudioConfig{Codec: "opus", SampleRate: 48000}); !errors.Is(err, ErrBadAudioConfig) {
+		t.Errorf("zero channels error = %v, want ErrBadAudioConfig", err)
+	}
+	big := AudioConfig{
+		Codec:       "opus",
+		SampleRate:  48000,
+		Channels:    2,
+		Description: bytes.Repeat([]byte{1}, MaxDatagramSize),
+	}
+	if _, err := AppendAudioConfig(nil, big); !errors.Is(err, ErrDatagramTooLarge) {
+		t.Errorf("oversize error = %v, want ErrDatagramTooLarge", err)
+	}
+}
+
+func TestParseAudioConfigErrors(t *testing.T) {
+	valid := mustHex(t, goldenAudioConfigHex)
+
+	badVersion := append([]byte(nil), valid...)
+	badVersion[0] = 0x02
+	badType := append([]byte(nil), valid...)
+	badType[1] = TypeDecoderConfig
+	emptyCodec := append([]byte(nil), valid...)
+	emptyCodec[3] = 0
+	// codecLen that leaves no room for sampleRate+channels.
+	overrun := append([]byte(nil), valid...)
+	overrun[3] = uint8(len(valid) - 4)
+	// Truncated: header + codec but missing the fixed tail.
+	truncated := valid[:len(valid)-1]
+	zeroRate := mustHex(t, "010800046f70757300000000"+"02")
+	zeroChannels := mustHex(t, "010800046f7075730000bb80"+"00")
+
+	cases := []struct {
+		name  string
+		dgram []byte
+		want  error
+	}{
+		{"empty", nil, ErrShortDatagram},
+		{"short", valid[:3], ErrShortDatagram},
+		{"bad version", badVersion, ErrBadVersion},
+		{"bad type", badType, ErrBadType},
+		{"empty codec", emptyCodec, ErrBadCodec},
+		{"codec overrun", overrun, ErrBadCodec},
+		{"truncated tail", truncated, ErrBadCodec},
+		{"zero sample rate", zeroRate, ErrBadAudioConfig},
+		{"zero channels", zeroChannels, ErrBadAudioConfig},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseAudioConfig(tc.dgram); !errors.Is(err, tc.want) {
 				t.Errorf("error = %v, want %v", err, tc.want)
 			}
 		})

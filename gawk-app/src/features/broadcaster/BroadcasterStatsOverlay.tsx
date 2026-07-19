@@ -1,4 +1,4 @@
-import { StatsPanel, type StatsSection } from '../../ui/StatsPanel';
+import { StatsPanel, type StatsRow, type StatsSection } from '../../ui/StatsPanel';
 import { formatHotkey } from '../../lib/useHotkey';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { fmt, fmtBits, fmtInt } from '../../lib/format';
@@ -71,6 +71,39 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
         ['Dgrams lost (out)', fmtInt(conn?.datagramsLostOutgoing)],
       ],
     },
+    // R15 (docs/20 N6): the Audio section — present only when the toggle
+    // asked for audio, so a video-only broadcast's overlay is unchanged.
+    // 'no-track'/'unsupported' are states worth seeing: they explain a silent
+    // stream without leaving the broadcast.
+    ...(stats && stats.audioState !== 'off'
+      ? [
+          {
+            title: 'Audio',
+            rows: [
+              [
+                'State',
+                stats.audioState === 'active'
+                  ? 'Active'
+                  : stats.audioState === 'no-track'
+                    ? 'No audio shared'
+                    : stats.audioState === 'unsupported'
+                      ? 'Unsupported here'
+                      : 'Error',
+              ],
+              [
+                'Format',
+                stats.audioCodec
+                  ? `${stats.audioCodec} · ${stats.audioSampleRate ?? '—'} Hz · ${stats.audioChannels ?? '—'}ch · ${fmtBits(stats.audioBitrateBps)}`
+                  : '—',
+              ],
+              ['Encoded/s', fmt(stats.audioEncodedPerSec)],
+              ['Sent/s', fmt(stats.audioSentPerSec)],
+              ['Packets sent', String(stats.audioPacketsSent)],
+              ['Configs sent', String(stats.audioConfigsSent)],
+            ] as StatsRow[],
+          },
+        ]
+      : []),
   ];
 
   return (

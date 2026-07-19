@@ -165,6 +165,41 @@ describe('BroadcastWorkerCore capture handshake', () => {
     core.capture(track, null);
     expect(track.stop).toHaveBeenCalled();
   });
+
+  // R15 N3 (docs/20): the audio clone rides the capture handshake into the
+  // worker-side media source, and teardown stops both clones.
+  it('threads the transferred audio track into the media source', async () => {
+    const { core, captured } = makeCore();
+    core.start(START_PARAMS);
+    const sourcePromise = captured[0].mediaSource(START_PARAMS.config);
+    const track = makeFakeTrack();
+    const audioTrack = makeFakeTrack();
+    core.capture(track, 60, audioTrack);
+    const source = await sourcePromise;
+    expect(source.audioTrack).toBe(audioTrack);
+
+    source.stop();
+    expect(track.stop).toHaveBeenCalled();
+    expect(audioTrack.stop).toHaveBeenCalled();
+  });
+
+  it('a capture without audio yields a null audioTrack (video-only state)', async () => {
+    const { core, captured } = makeCore();
+    core.start(START_PARAMS);
+    const sourcePromise = captured[0].mediaSource(START_PARAMS.config);
+    core.capture(makeFakeTrack(), 60);
+    const source = await sourcePromise;
+    expect(source.audioTrack).toBeNull();
+  });
+
+  it('stops a stray audio track arriving with no pending capture', () => {
+    const { core } = makeCore();
+    const track = makeFakeTrack();
+    const audioTrack = makeFakeTrack();
+    core.capture(track, null, audioTrack);
+    expect(track.stop).toHaveBeenCalled();
+    expect(audioTrack.stop).toHaveBeenCalled();
+  });
 });
 
 describe('BroadcastWorkerCore event mapping', () => {

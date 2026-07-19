@@ -218,16 +218,34 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     }
 
     const nativeFps = acquired.track.getSettings().frameRate ?? null;
+    // R15 N3: the system-audio clone transfers beside the video clone (the
+    // original audio track stays in the local stream, whose teardown stops
+    // it). An audio clone failure degrades to video-only — audio must never
+    // fail a start the video path would have survived.
+    let audioClone: MediaStreamTrack | null = null;
+    if (this.config.audio) {
+      const audioTrack = acquired.stream.getAudioTracks?.()[0] ?? null;
+      try {
+        audioClone = audioTrack?.clone() ?? null;
+      } catch (e) {
+        log.warn('Audio track clone failed; broadcasting video-only:', e);
+        audioClone = null;
+      }
+    }
     let clone: MediaStreamTrack;
     try {
       clone = acquired.track.clone();
-      this.post({ type: 'capture', track: clone, nativeFps }, [
-        clone as unknown as Transferable,
-      ]);
+      this.post(
+        { type: 'capture', track: clone, nativeFps, audioTrack: audioClone },
+        audioClone
+          ? [clone as unknown as Transferable, audioClone as unknown as Transferable]
+          : [clone as unknown as Transferable],
+      );
     } catch (e) {
       // Transfer failed despite the probe — release everything and fail the
       // start; the pipeline (phase 'capture') tears the relay session down.
       log.error('MediaStreamTrack transfer failed after a successful probe:', e);
+      audioClone?.stop();
       for (const t of acquired.stream.getTracks()) t.stop();
       this.post({ type: 'captureFailed', message: 'MediaStreamTrack transfer failed' });
       return;

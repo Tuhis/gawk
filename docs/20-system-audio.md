@@ -4,7 +4,9 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 2026-07-15; **design refreshed 2026-07-19** against everything landed since —
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
-not started). Adds the broadcaster's **system audio** to the
+**N1–N6 implemented 2026-07-19, automated gates green, manual browser
+verification pending** — see [Status](#status)). Adds the broadcaster's
+**system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
 (Opus) on the broadcaster, one Opus packet per WebTransport datagram through
 the relay, WebCodecs `AudioDecoder` + an `AudioWorklet` ring buffer on the
@@ -430,14 +432,82 @@ folded into the decisions above and the N-table criteria below:
 
 ## Status
 
+**Implementation status (2026-07-19)**: N1–N6 implemented; automated gates
+green in all three modules (`gofmt`/`go vet`/`go test -race`, `npm test` +
+`lint` + `build`, `helm lint`). **Manual browser verification is pending** —
+the plan below has not been executed, and audio has never played on real
+hardware. Deviations and decisions taken during implementation:
+
+1. **Decoded audio crosses as planar PCM, not a transferred `AudioData`**
+   (Decision 7 said the latter). The sink must reach an `AudioWorklet`,
+   which needs Float32 planar channels, so `copyTo()` has to happen
+   somewhere regardless; doing it in the worker keeps the copy off the main
+   thread (the one R8/R10 cleared) and sends only plain `ArrayBuffer`s in
+   the transfer list. Same "no structured clone of media" property, one
+   fewer API assumption (`AudioData` transferability).
+2. **The AudioWorklet processor ships as a source string → Blob URL.**
+   `addModule` takes a URL, and a `?url` import of a `.ts` file would serve
+   raw TypeScript. The Blob keeps the processor in the same module as the
+   sink instead of adding a build entry.
+3. **The timeline-change threshold is asymmetric** (Decision 8 implied one
+   bound): a backwards jump past 1 s is a restart, a forward hole past 5 s
+   is a reconnect. A symmetric bound made a short-session restart read as
+   lateness and late-drop forever — the R10 docs/14 finding, third medium.
+   Found by the unit test, not by inspection.
+4. **The audio buffer's profile re-seed is keyed on profile identity, not
+   value range.** The default `[40, 150]` and resilient `[150, 2000]`
+   envelopes overlap at 150 ms, so a clamp check silently kept the old
+   profile's target across a resilient flip (Decision 12's whole point).
+5. **`avMaster` was added to `ViewerStats`** beside `avSkewMs`: which clock
+   is actually driving display targets is ground truth worth showing, so a
+   fallback to the arrival baseline is visible rather than inferred.
+6. **The R15 golden vectors are mirrored into `gawk-broadcast`'s
+   `wirecheck`** even though the native broadcaster sends no audio (still a
+   non-goal): docs/19 Decision 11 makes that mirroring a rule, and R19's
+   carrier vectors set the precedent.
+7. **Audio UI requires audio to be *playable*, not merely present**: a
+   scope without `AudioContext`/`AudioWorkletNode` shows no controls (they
+   would be dead) and reports `audioState: 'unsupported'`.
+
+### Post-implementation review (2026-07-19)
+
+A self-review against `CODE-REVIEW.md` immediately after N6, before any
+manual verification. Both findings were invisible to the green test suite,
+which is the point worth keeping:
+
+1. **An audio-lane construction failure killed the whole broadcast.**
+   `startAudioLane()` builds a real `MediaStreamTrackProcessor`, which throws
+   synchronously on an ended track (or a scope whose MSTP rejects audio), and
+   it runs inside `startMedia()` — whose throw path tears the session down and
+   rejects `start()` with `BroadcastStartError{phase:'capture'}`. That is
+   exactly what Decision 6 forbids and what N2's own criterion claims. The
+   existing test covered encoder errors *via the callback*; construction is a
+   different path, so it stayed green. Found by CODE-REVIEW.md checklist item
+   3 ("walk the failure paths by hand"), fixed test-first. The viewer sink's
+   `postMessage`-with-transfer got the same guard for the same reason.
+2. **Audio stats inverted the diagnosis on lane death.** The viewer read the
+   decode counters straight off the live lane, so nulling it on error left the
+   overlay reporting *"State: Error, decoded 0, format —"* — which reads as
+   "audio never worked" rather than "audio worked, then died", on the one
+   screen someone would use to debug it. Counters are now folded into a
+   retained snapshot at both death sites (CODE-REVIEW.md: "counters and stats
+   survive their owner's deletion").
+
+Also closed here: the two N4 criteria that had no test behind them (a scope
+without `AudioDecoder` annotating `unsupported`; a consumer taking no audio
+never building a lane), and verification-by-reading that carrier records
+reach audio through `viewer-transport.ts`'s single
+`onCarrierRecord → onDatagram` seam, so Decision 12's viewer half needs no
+audio-specific code.
+
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| N1 | **Wire + relay** — Go `AudioFrame`/`AudioConfig` codecs (0x07/0x08, layouts above) + TS mirrors + golden vectors both sides; hub dispatch cases; `cachedAudioConfig` cache/prime/invalidate (**both** sites: `StartPublish` + `InvalidatePrimes`, Decision 4); strict-parse limits | Golden vectors byte-identical Go↔TS (new vectors in `wire_test.go` + `wire.test.ts`); hub tests: audio frame fans out verbatim to all subscribers, config cached + primed on subscribe + invalidated on new publisher session **and** on `InvalidatePrimes` (R17 edge upstream loss), malformed audio datagrams count bad and never panic (fuzz-style table like existing types); an edge-marked hub re-ingests + caches + fans audio through the same dispatch (cluster needs no other change — Decision 4); a reliable subscriber receives audio as carrier records with `SendDatagram` never called (Decision 12); audio seqs never perturb `ingressFramesLost`/`ingressChunksLost` or `framesRelayed`; `/statusz` + metrics unchanged except generic datagram counters; tier-1 `e2e` CI stays green (video-only pubsim = the no-audio path, now CI-asserted) | 📋 not started |
-| N2 | **Broadcaster main-thread path + toggle** — "Enable audio (experimental)" in `broadcastSettingsStore` (own LS key, default false) + advanced panel row with applies-on-next-start annotation; capture constraints per Decision 6; audio lane in `BroadcastPipeline` (MSTP → anchor → `AudioEncoder` wrapper → datagrams + 1 Hz config re-send); no-track graceful state; audio-lane-only error teardown; `BroadcastStats` audio fields | Toggle off ⇒ `getDisplayMedia` called with `audio: false` and zero audio code paths active (behavioral no-op vs. today, existing tests untouched); toggle on + no audio track ⇒ video-only + annotation, no error; unit tests (fake encoder/sender): anchor math produces monotone shared-clock timestamps, seq increments with wrap, config re-sent at 1 Hz, encoder error kills only the audio lane; encoded packets ≤ 1184 B asserted | 📋 not started |
-| N3 | **Broadcaster worker path** — audio clone transferred beside video in `provideCapture`; `capture` command + `BroadcastMediaSource` seam gain the audio track; worker handshake probes `AudioEncoder`; no-worker-audio ⇒ video-only annotation (placement never changes) | Worker path sends audio (integration test with fake worker scope, pattern of existing broadcast-worker-core tests); handshake-without-AudioEncoder falls back to video-only while video stays in the worker; teardown stops both clones; main-thread fallback path (Firefox) unaffected | 📋 not started |
-| N4 | **Viewer decode + playback + conditional UI** — reassembler demux cases; worker `AudioDecoder` + transferred `AudioData` event; main-thread `AudioWorklet` sink (ring buffer, gap/late/underrun/overflow policies + counters, **flush/re-anchor on restart/resync + reconnect**, Decision 8); `audioPresent` flag; mute/volume in fading controls + context menu (`gawk:muted`/`gawk:volume`); tap-to-unmute on suspended context; main-thread pipeline fallback decodes in place | Ring-buffer policies unit-tested pure (fake clock): gap ⇒ silence + counter, late ⇒ drop + counter, underrun ⇒ silence + counter, overflow ⇒ oldest dropped; restart signal ⇒ ring flushed + re-anchored (a post-restart timestamp jump never late-drops forever); demux tests route 0x07/0x08 and still count unknown types bad — incl. fed as carrier records through the record path (same demux, Decision 12); `audioPresent` false ⇒ zero audio UI rendered (video-only streams pixel-identical to today), true ⇒ controls appear reactively mid-view; mute/volume persist and act on the sink only; worker-without-`AudioDecoder` ⇒ video-only viewer, annotated | 📋 not started |
-| N5 | **A/V sync** — 4 Hz playhead report channel; `avSkewMs` + audio-buffer stats in `ViewerStats`; adaptive buffer target (quantile tracker + clamp/slew per Decision 10, **profile-carrying per Decision 12** — resilient mode adopts [150, 2000] ms / seed 500 via the live-getter pattern); audio-master `displayTargetMs` source in paced modes with slew-limited mapping + arrival-baseline fallback | Unit tests (fake clocks): skew computation correct on synthetic clocks incl. wrap; buffer target converges/clamps/slews like `PlayoutController` (same test shape) **and widens/re-seeds on the resilient flag** (mirror of the playout profile test); audio-master targets under the resilient profile sit at resilient depth, never dragging video below the video playout envelope (the Decision 12 conflict, regression-tested); paced-mode target source switches audio↔arrival without a step > slew bound; interpolation tests still pass with audio-derived targets (explicit criterion); live-edge mode never delays video (no video-target change when mode `off`); manual measurement: median \|avSkewMs\| ≤ 60 ms, p95 ≤ 120 ms on the reference LAN, both browsers, **in the default adaptive mode first** (the mainline path since the defaults flip) | 📋 not started |
-| N6 | **Stats/overlay + docs + verify** — Audio sections on both overlays (broadcaster: codec/bitrate/encoded/s/sent/s; viewer: decoded/s, buffer ms, gaps/late/underruns, skew, muted) gated on audio presence; Copy-diagnostics includes audio; README gotchas + ROADMAP/CLAUDE status sync; manual verification pass below | Overlay sections render only when audio active; diagnostics JSON round-trips audio fields; docs synced; the full manual verification plan executed and findings recorded in this doc (incl. the graduation question: keep experimental or default-on) | 📋 not started |
+| N1 | **Wire + relay** — Go `AudioFrame`/`AudioConfig` codecs (0x07/0x08, layouts above) + TS mirrors + golden vectors both sides; hub dispatch cases; `cachedAudioConfig` cache/prime/invalidate (**both** sites: `StartPublish` + `InvalidatePrimes`, Decision 4); strict-parse limits | Golden vectors byte-identical Go↔TS (new vectors in `wire_test.go` + `wire.test.ts`); hub tests: audio frame fans out verbatim to all subscribers, config cached + primed on subscribe + invalidated on new publisher session **and** on `InvalidatePrimes` (R17 edge upstream loss), malformed audio datagrams count bad and never panic (fuzz-style table like existing types); an edge-marked hub re-ingests + caches + fans audio through the same dispatch (cluster needs no other change — Decision 4); a reliable subscriber receives audio as carrier records with `SendDatagram` never called (Decision 12); audio seqs never perturb `ingressFramesLost`/`ingressChunksLost` or `framesRelayed`; `/statusz` + metrics unchanged except generic datagram counters; tier-1 `e2e` CI stays green (video-only pubsim = the no-audio path, now CI-asserted) | ✅ implemented 2026-07-19 |
+| N2 | **Broadcaster main-thread path + toggle** — "Enable audio (experimental)" in `broadcastSettingsStore` (own LS key, default false) + advanced panel row with applies-on-next-start annotation; capture constraints per Decision 6; audio lane in `BroadcastPipeline` (MSTP → anchor → `AudioEncoder` wrapper → datagrams + 1 Hz config re-send); no-track graceful state; audio-lane-only error teardown; `BroadcastStats` audio fields | Toggle off ⇒ `getDisplayMedia` called with `audio: false` and zero audio code paths active (behavioral no-op vs. today, existing tests untouched); toggle on + no audio track ⇒ video-only + annotation, no error; unit tests (fake encoder/sender): anchor math produces monotone shared-clock timestamps, seq increments with wrap, config re-sent at 1 Hz, encoder error kills only the audio lane; encoded packets ≤ 1184 B asserted | ✅ implemented 2026-07-19 |
+| N3 | **Broadcaster worker path** — audio clone transferred beside video in `provideCapture`; `capture` command + `BroadcastMediaSource` seam gain the audio track; worker handshake probes `AudioEncoder`; no-worker-audio ⇒ video-only annotation (placement never changes) | Worker path sends audio (integration test with fake worker scope, pattern of existing broadcast-worker-core tests); handshake-without-AudioEncoder falls back to video-only while video stays in the worker; teardown stops both clones; main-thread fallback path (Firefox) unaffected | ✅ implemented 2026-07-19 |
+| N4 | **Viewer decode + playback + conditional UI** — reassembler demux cases; worker `AudioDecoder` + transferred `AudioData` event; main-thread `AudioWorklet` sink (ring buffer, gap/late/underrun/overflow policies + counters, **flush/re-anchor on restart/resync + reconnect**, Decision 8); `audioPresent` flag; mute/volume in fading controls + context menu (`gawk:muted`/`gawk:volume`); tap-to-unmute on suspended context; main-thread pipeline fallback decodes in place | Ring-buffer policies unit-tested pure (fake clock): gap ⇒ silence + counter, late ⇒ drop + counter, underrun ⇒ silence + counter, overflow ⇒ oldest dropped; restart signal ⇒ ring flushed + re-anchored (a post-restart timestamp jump never late-drops forever); demux tests route 0x07/0x08 and still count unknown types bad — incl. fed as carrier records through the record path (same demux, Decision 12); `audioPresent` false ⇒ zero audio UI rendered (video-only streams pixel-identical to today), true ⇒ controls appear reactively mid-view; mute/volume persist and act on the sink only; worker-without-`AudioDecoder` ⇒ video-only viewer, annotated | ✅ implemented 2026-07-19 |
+| N5 | **A/V sync** — 4 Hz playhead report channel; `avSkewMs` + audio-buffer stats in `ViewerStats`; adaptive buffer target (quantile tracker + clamp/slew per Decision 10, **profile-carrying per Decision 12** — resilient mode adopts [150, 2000] ms / seed 500 via the live-getter pattern); audio-master `displayTargetMs` source in paced modes with slew-limited mapping + arrival-baseline fallback | Unit tests (fake clocks): skew computation correct on synthetic clocks incl. wrap; buffer target converges/clamps/slews like `PlayoutController` (same test shape) **and widens/re-seeds on the resilient flag** (mirror of the playout profile test); audio-master targets under the resilient profile sit at resilient depth, never dragging video below the video playout envelope (the Decision 12 conflict, regression-tested); paced-mode target source switches audio↔arrival without a step > slew bound; interpolation tests still pass with audio-derived targets (explicit criterion); live-edge mode never delays video (no video-target change when mode `off`); manual measurement: median \|avSkewMs\| ≤ 60 ms, p95 ≤ 120 ms on the reference LAN, both browsers, **in the default adaptive mode first** (the mainline path since the defaults flip) | ✅ implemented 2026-07-19 (manual measurement pending) |
+| N6 | **Stats/overlay + docs + verify** — Audio sections on both overlays (broadcaster: codec/bitrate/encoded/s/sent/s; viewer: decoded/s, buffer ms, gaps/late/underruns, skew, muted) gated on audio presence; Copy-diagnostics includes audio; README gotchas + ROADMAP/CLAUDE status sync; manual verification pass below | Overlay sections render only when audio active; diagnostics JSON round-trips audio fields; docs synced; the full manual verification plan executed and findings recorded in this doc (incl. the graduation question: keep experimental or default-on) | 🔧 overlays + docs done 2026-07-19; manual verification pass pending |
 
 Ordering: N1 → N2 → N4 form the minimal audible path (N2's main-thread
 pipeline + N4 can be browser-verified before N3); N3 rides once N2's lane
