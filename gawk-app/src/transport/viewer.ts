@@ -19,6 +19,13 @@ import {
   type ViewerTransportKind,
 } from './viewer-transport';
 import { getInterpolationEnabled } from './interpolation';
+import {
+  audioClockAvailable,
+  audioDisplayTargetMs,
+  getAvSkewMs,
+  observeVideoPresented,
+  resetAvSync,
+} from './av-sync';
 import { LiveEdgeTracker } from './live-edge';
 import {
   getPlayoutMode,
@@ -159,6 +166,15 @@ export interface ViewerStats extends ReassemblerStats {
   audioCodec: string | null;
   audioSampleRate: number | null;
   audioChannels: number | null;
+  // R15 N5 (docs/20 Decision 10): A/V skew at the last presented frame —
+  // positive = video ahead of audio (the forgiving direction, and the
+  // expected sign in live-edge mode). Null when there is no audio clock.
+  // Target: median |skew| ≤ 60 ms, p95 ≤ 120 ms.
+  avSkewMs: number | null;
+  // Whether audio is currently driving video display targets (paced modes
+  // with a fresh playhead) — ground truth, so a fallback to the arrival
+  // baseline is visible rather than inferred.
+  avMaster: 'audio' | 'arrival' | null;
   // R16 (docs/21 Decision 9). The pipeline itself never sets these three:
   // presentationTee is merged in by the viewer *worker shell* when the
   // presentation tee exists (gated devices only); featureGates and
@@ -588,6 +604,8 @@ export class ViewerPipeline {
     // R15 (docs/20 Decision 8): audio timestamps live on the same restarted
     // timeline — the sink must drop its queue and re-anchor, or every new
     // packet reads as older than the playhead and is late-dropped forever.
+    // The A/V mapping anchored on the dead timeline goes with it.
+    resetAvSync();
     this.cb.onAudioReset?.();
     // Held paced frames are from the old timeline — their targets are junk,
     // and so is any adaptive offset learned against it.
@@ -606,6 +624,9 @@ export class ViewerPipeline {
     }
     this.liveEdge.observe(decoded.frame.timestamp);
     this.observeCapToRender(decoded.frame.timestamp);
+    // R15 N5: A/V skew is measured always — in every playout mode, whether or
+    // not audio is driving the targets (docs/20 Decision 10).
+    observeVideoPresented(decoded.frame.timestamp);
     // Worker path: draw + close in place so the frame never crosses a boundary.
     // Main-thread path: hand it to the callback, which draws and closes it.
     if (this.renderSink) {
@@ -621,9 +642,17 @@ export class ViewerPipeline {
   // else ⇒ the sink presents ASAP, exactly the pre-R12 behavior.
   private displayTargetMs(timestampUs: number): number | undefined {
     if (getPlayoutMode() !== 'adaptive') return undefined;
-    const base = this.reorder?.arrivalBaselineMs();
     const offset = getPlayoutOffsetMs();
-    if (base == null || offset <= 0) return undefined;
+    if (offset <= 0) return undefined;
+    // R15 N5 (docs/20 Decision 10): with audio present and its clock fresh,
+    // audio is the master — video display targets derive from the playhead
+    // mapping instead of the arrival baseline. The mapping is slew-limited
+    // inside av-sync, and returns null the moment audio goes absent/stale,
+    // which falls straight back to the arrival baseline (exactly today).
+    const fromAudio = audioDisplayTargetMs(timestampUs, offset);
+    if (fromAudio !== null) return fromAudio;
+    const base = this.reorder?.arrivalBaselineMs();
+    if (base == null) return undefined;
     return timestampUs / 1000 + base + offset;
   }
 
@@ -758,6 +787,13 @@ export class ViewerPipeline {
       audioCodec: audioStats?.codec ?? null,
       audioSampleRate: audioStats?.sampleRate ?? null,
       audioChannels: audioStats?.channels ?? null,
+      avSkewMs: getAvSkewMs(),
+      avMaster:
+        this.audioState === 'active'
+          ? audioClockAvailable() && getPlayoutMode() === 'adaptive'
+            ? 'audio'
+            : 'arrival'
+          : null,
     });
   }
 

@@ -77,6 +77,8 @@ function fullStats(): ViewerStats {
     audioCodec: null,
     audioSampleRate: null,
     audioChannels: null,
+    avSkewMs: null,
+    avMaster: null,
   };
 }
 

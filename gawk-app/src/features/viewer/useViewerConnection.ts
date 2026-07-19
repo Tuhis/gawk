@@ -22,6 +22,8 @@ import type { ViewerStats } from '../../transport/viewer';
 import type { ViewerWorkerEvent } from '../../transport/viewer-worker-core';
 import { WorkerViewerController } from './workerViewerController';
 import { AudioSink, audioSinkSupported } from './audioSink';
+import { notePlayhead, resetAvSync } from '../../transport/av-sync';
+import { timeOriginMs } from '../../transport/time-sync';
 import {
   DEFAULT_AUDIO_PROFILE,
   RESILIENT_AUDIO_PROFILE,
@@ -157,12 +159,30 @@ export function useViewerConnection(
   const volumeRef = useRef(volume);
   volumeRef.current = volume;
 
+  const useWorkerRef = useRef(useWorker);
+  useWorkerRef.current = useWorker;
+
   const ensureSink = useCallback((): AudioSink | null => {
     if (sinkRef.current) return sinkRef.current;
     if (!audioSinkSupported()) return null;
     const profile = (): AudioBufferProfile =>
       resilientRef.current ? RESILIENT_AUDIO_PROFILE : DEFAULT_AUDIO_PROFILE;
-    const sink = new AudioSink({}, profile);
+    const sink = new AudioSink(
+      {
+        // R15 N5 (docs/20 Decision 10): the ~4 Hz playhead report reaches
+        // whichever context runs the pipeline — into the worker as a
+        // command, or into this context's module state on the fallback path.
+        onPlayhead: ({ playheadUs }) => {
+          const atEpochMs = timeOriginMs() + performance.now();
+          if (useWorkerRef.current) {
+            controllerRef.current?.sendAudioPlayhead(playheadUs, atEpochMs);
+          } else {
+            notePlayhead({ playheadUs, atEpochMs });
+          }
+        },
+      },
+      profile,
+    );
     sink.setMuted(mutedRef.current);
     sink.setVolume(volumeRef.current);
     sinkRef.current = sink;
@@ -191,6 +211,9 @@ export function useViewerConnection(
 
   const handleAudioReset = useCallback(() => {
     sinkRef.current?.flush();
+    // On the main-thread path the A/V mapping lives in this context; the
+    // worker path resets its own inside the pipeline.
+    if (!useWorkerRef.current) resetAvSync();
   }, []);
 
   // The sink outlives individual sessions (reconnects re-anchor it via
@@ -263,6 +286,10 @@ export function useViewerConnection(
         break;
       case 'stats':
         setStats(ev.stats);
+        // R15 N5 (docs/20 Decision 10): the audio jitter-buffer target rides
+        // the same windowed arrival-jitter estimate the video playout
+        // controller uses — one measurement, two consumers.
+        sinkRef.current?.updateTarget(ev.stats.arrivalJitterMs, performance.now());
         break;
       case 'error':
         // The one place every surfaced error (worker or main-thread path)

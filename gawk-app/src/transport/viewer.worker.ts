@@ -6,6 +6,7 @@
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
 import { log } from '../lib/logger';
+import { notePlayhead } from './av-sync';
 import { setInterpolationEnabled } from './interpolation';
 import { getPlayoutMode, setPlayoutMode, setResilientMode } from './playout';
 import {
@@ -132,6 +133,11 @@ ctx.onmessage = (e: MessageEvent) => {
     case 'interpolation':
       // R12 T4: read live by the paced sink on every tick.
       setInterpolationEnabled(cmd.enabled);
+      break;
+    case 'audioPlayhead':
+      // R15 N5: module state in this worker's context, read live by the
+      // pipeline on every decoded frame (same pattern as playout/resilient).
+      notePlayhead({ playheadUs: cmd.playheadUs, atEpochMs: cmd.atEpochMs });
       break;
     case 'resilient':
       // R19: module state for the resilient reorder/playout profile. The

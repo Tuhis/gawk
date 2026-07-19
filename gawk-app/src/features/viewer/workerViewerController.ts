@@ -125,6 +125,14 @@ export class WorkerViewerController {
     this.post({ type: 'interpolation', enabled });
   }
 
+  // R15 N5: the audio sink's ~4 Hz playhead report (docs/20 Decision 10).
+  // Fire-and-forget: a dropped report just means the worker keeps the
+  // previous mapping, and a stale one falls back to the arrival baseline.
+  sendAudioPlayhead(playheadUs: number | null, atEpochMs: number): void {
+    if (this.disposed) return;
+    this.post({ type: 'audioPlayhead', playheadUs, atEpochMs });
+  }
+
   // R19: resilient mode for the worker context. Callers send it before
   // start() (worker messages process in order), so the wider profile is live
   // before the session's first frame.
