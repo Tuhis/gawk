@@ -293,7 +293,7 @@ jobs:
             [worker.oci]
               networkMode = "host"
       - name: Build the relay image (reusing the docker job's cache scope)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: gawk-server
           file: gawk-server/deploy/Dockerfile
@@ -429,7 +429,7 @@ jobs:
           buildkitd-config-inline: |
             [worker.oci]
               networkMode = "host"
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
