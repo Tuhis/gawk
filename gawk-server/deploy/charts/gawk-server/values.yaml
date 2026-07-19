@@ -209,4 +209,4 @@ resources:
 # Requires privileged securityContext access on the host.
 sysctlInitContainer:
   enabled: false
-  image: busybox:1.36
+  image: busybox:1.38
