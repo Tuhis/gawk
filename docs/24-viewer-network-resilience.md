@@ -419,10 +419,13 @@ is out of scope by the same argument as broadcaster→relay loss.
   untouched; no broadcaster-side toggle (this is a per-viewer choice about
   their own network).
 - **Per-viewer quality adaptation / simulcast** — unchanged non-goal (R4).
-- **Audio** (R15, not started): when audio lands it stays on datagrams with
-  silence concealment per its own design; a resilient-mode audio story
-  (likely: widen the audio jitter-buffer clamp under the same profile) is a
-  one-paragraph amendment to docs/20 at that time, not scoped here.
+- **Audio** (R15): *(landed 2026-07-19, and the guess below was right —
+  docs/20 Decision 12 is that amendment.* Audio rides the reliable carrier
+  automatically, since the relay converts the subscriber's whole datagram
+  stream and audio is just another datagram type; the audio jitter buffer
+  became profile-carrying and adopts this mode's [150, 2000] ms / seed 500
+  envelope. Post-2026-07-20 that envelope sizes audio's own fallback depth
+  floor rather than anything video-side — A/V sync is video-master.)*
 - **DVR/rewind** — the buffer is a delivery buffer, not a seek buffer.
 
 ## Rejected

@@ -33,7 +33,7 @@ feature set exists).
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | ✅ T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify done 2026-07-19; T5 (motion-estimated interpolation) + T6 (findings) not started/droppable ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | ✅ V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC done 2026-07-19** (hardware encode/portal/GUI — not CI-reachable); V8 (direct Vulkan Video) still gated on V2's on-hardware result, not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
-| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, refreshed 2026-07-19 post-R16–R20; **N1–N6 implemented 2026-07-19, automated gates green in all three modules; manual browser verification pending** (audio has never played on real hardware) ([docs/20](docs/20-system-audio.md)) |
+| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, refreshed 2026-07-19 post-R16–R20; **N1–N6 implemented 2026-07-19; first hardware playback 2026-07-20 produced four field findings, all fixed — incl. the Decision 10 inversion to video-master A/V sync. Automated gates green; hardware re-verification pending** ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | ⚠️ U1–U3 implemented 2026-07-16; **U4 verdict 2026-07-19: native `webkitEnterFullscreen` still shows a black video on iPhone across three on-device passes → native tier not viable, pseudo-fullscreen (CSS) is the shipping path** (docs/21 U4 pre-registered verdict; BUGS.md) ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | ✅ W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + **green in the `e2e-cluster` CI job (2026-07-18)**; remaining homelab drills (rollout/crash/rebind blips, conntrack empiricism) + 200-viewer scale proof closed as owner-accepted 2026-07-19 (CI non-goals — kind lacks the physics) ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; cluster viewer-count check (origin `viewersGlobal` == Σ per-pod real viewers, edges excluded) **automated in the `e2e-cluster` CI job 2026-07-19**; single-pod browser/native + re-home + storm manual verify still pending ([docs/23](docs/23-live-viewer-count.md)) |
@@ -887,15 +887,20 @@ WebCodecs over datagrams** — chosen over Opus-over-reliable-streams
   decoded-media worker→main crossing); gaps → silence, late → drop,
   live-edge discipline throughout; no Opus FEC/PLC in v1 (WebCodecs exposes
   no hook).
-- **A/V sync ("good-enough", user decision)**: one capture clock for both
-  media makes skew a subtraction; `avSkewMs` measured always (target median
-  ≤ 60 ms, p95 ≤ 120 ms); live-edge default keeps video undelayed and bounds
-  skew via a small adaptive audio jitter buffer (40–150 ms, R12
-  controller pattern; widens to the R19 resilient envelope when that mode
-  is active — docs/20 Decision 12); in the R12 paced modes (the production
-  default since the 2026-07-15 flip) **audio becomes the master
-  clock** for video display targets (slew-limited, arrival-baseline
-  fallback); frame interpolation is unaffected by construction.
+- **A/V sync ("good-enough", user decision; direction inverted 2026-07-20
+  — docs/20 field finding 4)**: one capture clock for both media makes skew
+  a subtraction; `avSkewMs` measured always (target median ≤ 60 ms, p95
+  ≤ 120 ms). **Video is the master clock and is never rescheduled for
+  audio**, in every playout mode: audio is the medium with slack (one Opus
+  packet per datagram, no reassembly or keyframe wait, so it arrives
+  materially earlier than video), so it waits. Because the AudioWorklet
+  consumes exactly `sampleRate` samples/s at 1×, alignment is a *start-time*
+  decision — audio's first chunk is held until the video presentation
+  schedule says it is due — and residual clock drift is a *rate* problem,
+  absorbed by a sub-audible ±0.4% playback trim. Frame interpolation is
+  unaffected by construction. (The original design made audio the master in
+  the R12 paced modes; that inverted after it froze video on first hardware
+  playback.)
 
 **Non-goals**: microphone/voice mixing, multiple audio tracks, audio in the
 R14 native broadcaster (wire messages are ready; noted as an R14 follow-up),
@@ -905,11 +910,17 @@ FEC/PLC, DTX, audio-only mode.
 2026-07-19 against R16–R20 (docs/20 "Design refresh"); **N1–N6 implemented
 2026-07-19** — wire 0x07/0x08 + relay dispatch/cache, broadcaster audio lane
 behind the experimental toggle (main-thread + worker paths), viewer decode →
-AudioWorklet sink with the live-edge ring-buffer policies, A/V skew +
-audio-master pacing, and both overlays' Audio sections. Automated gates green
-in all three modules. **Manual browser verification is pending** — the
-docs/20 verification plan has not been executed and audio has never played on
-real hardware; deviations recorded in docs/20 "Implementation status".
+AudioWorklet sink with the live-edge ring-buffer policies, A/V skew, and both
+overlays' Audio sections. **First hardware playback 2026-07-20 produced four
+field findings** (docs/20), all fixed test-first: the toggle failed the whole
+broadcast where no system-audio source could start; video froze wholesale
+because the display target and the release gate ran off different clocks; the
+jitter buffer's target was an overflow ceiling with no floor, so the sink
+played at ~0 ms depth; and — owner decision — **Decision 10 inverted to
+video-master**, audio aligned at start to the video schedule with a
+sub-audible rate trim for drift. Automated gates green in all three modules.
+**Hardware re-verification of all four is pending**; deviations recorded in
+docs/20 "Implementation status".
 
 ---
 
