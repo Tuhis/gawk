@@ -275,6 +275,11 @@ export class ViewerPipeline {
   // changes for broadcasts without audio.
   private audioLane: AudioDecodeLane | null = null;
   private audioState: ViewerStats['audioState'] = 'absent';
+  // The lane's last counters, retained across its death (CODE-REVIEW.md:
+  // counters survive their owner's deletion). Without this, an audio error
+  // reports "State: Error, decoded 0, format —", which reads as "audio never
+  // worked" instead of "audio worked, then died" — the opposite diagnosis.
+  private lastAudioStats: ReturnType<AudioDecodeLane['getStats']> | null = null;
   // R12 T1: per-stats-window decode latencies (σ published as decodeJitterMs).
   private decodeLatencies: number[] = [];
 
@@ -416,6 +421,9 @@ export class ViewerPipeline {
       onError: (err) => {
         log.warn('Audio decode lane failed; the stream plays video-only:', err);
         this.audioState = 'error';
+        // Fold the counters before dropping the lane, or the overlay reports
+        // a lane that died as one that never ran.
+        this.lastAudioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
         this.audioLane = null;
       },
     });
@@ -716,7 +724,8 @@ export class ViewerPipeline {
     // what this pipeline asked for; carriers observed is what the relay
     // actually serves.
     const carrier = this.transport?.sampleCarrierStats?.() ?? null;
-    const audioStats = this.audioLane?.getStats() ?? null;
+    // Live lane if it exists, else the folded snapshot from its death.
+    const audioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
     const deliveryMode: ViewerStats['deliveryMode'] =
       this.connectOpts.deliveryMode === 'reliable'
         ? carrier && carrier.streamsOpened > 0
@@ -864,6 +873,9 @@ export class ViewerPipeline {
     }
     this.renderSink?.flush?.();
     this.transport?.close();
+    // Same fold as the error path: a final stats tick must still report what
+    // the lane did, not zeros.
+    this.lastAudioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
     this.audioLane?.stop();
 
     if (this.decoder) await this.decoder.close();
