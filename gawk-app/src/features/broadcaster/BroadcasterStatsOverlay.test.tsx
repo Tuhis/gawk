@@ -186,3 +186,51 @@ describe('BroadcasterStatsOverlay', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+// R15 N6 (docs/20): the broadcaster Audio section appears only when the
+// experimental toggle asked for audio.
+describe('BroadcasterStatsOverlay audio section (R15)', () => {
+  it('renders no Audio section when the toggle is off', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), audioState: 'off' }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.queryByText('Audio')).toBeNull();
+  });
+
+  it('shows the graceful no-audio-shared state', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), audioState: 'no-track', audioCodec: null }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Audio')).toBeTruthy();
+    expect(screen.getByText('No audio shared')).toBeTruthy();
+  });
+
+  it('shows format and rates while active', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={fullStats()}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Audio')).toBeTruthy();
+    expect(screen.getByText(/opus · 48000 Hz · 2ch/)).toBeTruthy();
+  });
+});

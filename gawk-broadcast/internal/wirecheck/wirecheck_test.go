@@ -26,6 +26,13 @@ const (
 	// R18 viewer count (docs/23 Decision 2): the relay→publisher push the
 	// native broadcaster receives (engine readDatagrams → Stats.ViewerCount).
 	goldenViewerCountHex = "010b00000003"
+	// R15 system audio (docs/20 Decision 2). The native broadcaster does not
+	// send audio yet — that is an explicit R15 non-goal and an R14 follow-up —
+	// but the vectors are mirrored in all three wire implementations by rule,
+	// exactly like the carrier framing above, so the format can't move under
+	// this module unnoticed.
+	goldenAudioFrameHex  = "01070000010203040000005d21dba5f0616263"
+	goldenAudioConfigHex = "010800046f7075730000bb8002"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -170,9 +177,13 @@ func TestWireConstants(t *testing.T) {
 		{"TypeResumeToken", wire.TypeResumeToken, 0x09},
 		{"TypeReliableCarrier", wire.TypeReliableCarrier, 0x0A},
 		{"TypeViewerCount", wire.TypeViewerCount, 0x0B},
+		{"TypeAudioFrame", wire.TypeAudioFrame, 0x07},
+		{"TypeAudioConfig", wire.TypeAudioConfig, 0x08},
 		{"CarrierPrologueSize", wire.CarrierPrologueSize, 2},
 		{"CarrierRecordHeaderSize", wire.CarrierRecordHeaderSize, 2},
 		{"ViewerCountSize", wire.ViewerCountSize, 6},
+		{"AudioFrameHeaderSize", wire.AudioFrameHeaderSize, 16},
+		{"MaxAudioPayload", wire.MaxAudioPayload, 1184},
 	} {
 		if c.got != c.want {
 			t.Errorf("wire.%s = %d, want %d — wire format changed; update the relay, both broadcasters and the viewer together", c.name, c.got, c.want)
@@ -199,5 +210,34 @@ func TestEmptyExtradataIsAccepted(t *testing.T) {
 	}
 	if len(cfg.Extradata) != 0 {
 		t.Errorf("extradata = %x, want empty", cfg.Extradata)
+	}
+}
+
+// R15 audio (docs/20 Decision 2): not sent by this module today, pinned from
+// this side anyway — see the constant's comment.
+func TestGoldenAudioFrame(t *testing.T) {
+	got, err := wire.AppendAudioFrame(nil, wire.AudioFrameHeader{
+		Seq:         0x01020304,
+		TimestampUs: 0x0000005d21dba5f0,
+	}, []byte("abc"))
+	if err != nil {
+		t.Fatalf("AppendAudioFrame: %v", err)
+	}
+	if want := mustHex(t, goldenAudioFrameHex); !bytes.Equal(got, want) {
+		t.Errorf("AudioFrame bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+}
+
+func TestGoldenAudioConfig(t *testing.T) {
+	got, err := wire.AppendAudioConfig(nil, wire.AudioConfig{
+		Codec:      "opus",
+		SampleRate: 48000,
+		Channels:   2,
+	})
+	if err != nil {
+		t.Fatalf("AppendAudioConfig: %v", err)
+	}
+	if want := mustHex(t, goldenAudioConfigHex); !bytes.Equal(got, want) {
+		t.Errorf("AudioConfig bytes drifted from the golden vector\n got %x\nwant %x", got, want)
 	}
 }

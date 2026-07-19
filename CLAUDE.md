@@ -187,11 +187,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
   decode with a main-thread AudioWorklet sink, good-enough A/V sync
   (shared capture clock, adaptive audio jitter buffer, audio-master pacing
-  in R12 paced modes); N1–N6 chunks; **designed 2026-07-15; design
-  refreshed 2026-07-19 post-R16–R20** (second cache-invalidation site for
-  cluster mode, R19 carrier interplay + resilient-widened audio buffer as
-  Decision 12, restart/reconnect sink resets — see the doc's "Design
-  refresh"); **not started**),
+  in R12 paced modes); N1–N6 chunks; designed 2026-07-15, refreshed
+  2026-07-19 post-R16–R20; **N1–N6 implemented 2026-07-19, automated gates
+  green in all three modules, manual browser verify pending** — deviations
+  in the doc's "Implementation status"),
   `docs/21-ios-video-fullscreen.md` for R16 (iOS native fullscreen:
   iPhone has **no Element Fullscreen API** — today's viewer fullscreen
   button is a silent no-op there; a `TeeRenderSink` decorator wraps each
@@ -689,8 +688,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    **Tray and global hotkeys deferred 2026-07-15** — research kept in the
    doc's Deferred section; don't re-derive it. Not a
    container/chart/CI-deploy component — binaries you run on your own PC.
-20. System audio — **designed 2026-07-15 (N1–N6); design refreshed
-   2026-07-19 against R16–R20 (docs/20 "Design refresh"); not started** (R15,
+20. System audio — **designed 2026-07-15 (N1–N6); refreshed 2026-07-19
+   against R16–R20; N1–N6 implemented 2026-07-19, automated gates green,
+   manual browser verify pending — audio has never played on real
+   hardware** (R15,
    `docs/20-system-audio.md`). **Experimental, default-off**: an "Enable
    audio (experimental)" toggle in the broadcaster's advanced settings
    (off ⇒ `audio: false`, byte-identical to today), and the viewer shows
@@ -724,6 +725,24 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    arrival-baseline fallback); frame interpolation unaffected by
    construction. Non-goals: mic mixing, R14-native audio (wire types are
    ready — follow-up there), FEC, DTX, audio-only mode.
+   **As implemented (2026-07-19)**: `gawk-app/src/media/audio-lane.ts`
+   (broadcaster: anchor → `AudioEncoder` → datagrams + 1 Hz config),
+   `transport/audio-decode.ts` (viewer decode → planar PCM),
+   `transport/audio-buffer.ts` (the live-edge ring-buffer policies, pure),
+   `transport/av-sync.ts` (skew + audio-master mapping, module state like
+   `playout.ts`), `features/viewer/audioSink.ts` (AudioContext +
+   AudioWorklet + GainNode). Deviations worth knowing before touching it:
+   decoded audio crosses the worker boundary as **planar Float32 buffers,
+   not a transferred `AudioData`** (the worklet needs planar channels, so
+   the copy happens worker-side); the worklet processor is a **source
+   string → Blob URL** (`addModule` needs a URL, and `?url` on a `.ts` file
+   would serve raw TypeScript); the buffer's timeline-change threshold is
+   **asymmetric** (backwards >1 s = restart, forwards >5 s = reconnect — a
+   symmetric bound late-dropped forever after a short-session restart); and
+   the audio buffer's profile re-seed is keyed on **profile identity, not
+   value range** (the default and resilient envelopes overlap at 150 ms).
+   **Manual browser verification is pending** — audio has never played on
+   real hardware.
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
    green); U4 verdict 2026-07-19: the native path still does not work on
    iPhone — `webkitEnterFullscreen` enters but shows a black video across
