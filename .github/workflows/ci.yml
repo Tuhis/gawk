@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   server:
-    runs-on: ubuntu-latest
+    runs-on: ioio-k8s
     defaults:
       run:
         working-directory: gawk-server
@@ -35,12 +35,19 @@ jobs:
         with:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: gawk-server/go.sum
-      # quic-go asks for ~7 MiB UDP buffers and the runner kernel caps them
+      # quic-go asks for ~7 MiB UDP buffers and a stock kernel caps them
       # at 2 MiB — low enough that loopback datagrams drop under -race load
       # (run 29663246454 lost a delta and hung a carrier test for the full
       # package timeout). Applies to every job that pushes QUIC over loopback.
-      - name: Raise UDP buffer limits for quic-go
-        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      # The ioio-k8s runner pods can't write net.core sysctls (/proc/sys is
+      # read-only in the container) — the limits are preset on the cluster
+      # nodes instead, so only write when actually below the floor.
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
       - run: go vet ./...
       - run: go test -race ./...
         env:
@@ -51,7 +58,7 @@ jobs:
   # only this job — pays for the cgo/Wayland/X11/EGL/Vulkan headers. The
   # relay's job must stay header-free.
   broadcast:
-    runs-on: ubuntu-latest
+    runs-on: ioio-k8s
     defaults:
       run:
         working-directory: gawk-broadcast
@@ -78,8 +85,12 @@ jobs:
             libffi-dev libxcursor-dev libvulkan-dev
       # See the server job — the relay integration tests here run QUIC over
       # loopback too.
-      - name: Raise UDP buffer limits for quic-go
-        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
@@ -147,7 +158,7 @@ jobs:
           if-no-files-found: error
 
   app:
-    runs-on: ubuntu-latest
+    runs-on: ioio-k8s
     defaults:
       run:
         working-directory: gawk-app
@@ -164,7 +175,7 @@ jobs:
       - run: npm run build
 
   helm:
-    runs-on: ubuntu-latest
+    runs-on: ioio-k8s
     steps:
       - uses: actions/checkout@v4
       - run: helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
@@ -178,7 +189,7 @@ jobs:
   # Copy-diagnostics JSON. Advisory until the docs/25 Z4 burn-in completes.
   e2e:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ioio-k8s
     timeout-minutes: 10
     # A force-push supersedes the previous run instead of paying for it.
     concurrency:
@@ -194,8 +205,12 @@ jobs:
             gawk-broadcast/go.sum
       # See the server job — the relay↔pubsim↔browser leg is QUIC over
       # loopback.
-      - name: Raise UDP buffer limits for quic-go
-        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
       - name: Build the relay and the fixture publisher
         run: |
           mkdir -p e2e/bin
@@ -237,7 +252,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--'))
-    runs-on: ubuntu-latest
+    runs-on: ioio-k8s
     timeout-minutes: 15
     concurrency:
       group: e2e-cluster-${{ github.ref }}
@@ -257,14 +272,26 @@ jobs:
             gawk-broadcast/go.sum
       # See the server job. net.core sysctls are host-global (not namespaced),
       # so this also covers the relay pods inside the kind node.
-      - name: Raise UDP buffer limits for quic-go
-        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
       - name: Build the E2E toolchain (devcert, loadgen, pubsim)
         run: |
           mkdir -p e2e/bin e2e/out
           (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen)
           (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
+      # and buildkit's default bridged networks assume 1500 — large downloads
+      # inside RUN steps black-hole otherwise.
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [worker.oci]
+              networkMode = "host"
       - name: Build the relay image (reusing the docker job's cache scope)
         uses: docker/build-push-action@v6
         with:
@@ -383,7 +410,7 @@ jobs:
           retention-days: 7
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ioio-k8s
     strategy:
       matrix:
         include:
@@ -393,7 +420,15 @@ jobs:
             dockerfile: gawk-app/deploy/Dockerfile
     steps:
       - uses: actions/checkout@v4
+      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
+      # and buildkit's default bridged networks assume 1500 — large downloads
+      # inside RUN steps black-hole otherwise.
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [worker.oci]
+              networkMode = "host"
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
