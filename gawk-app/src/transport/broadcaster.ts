@@ -826,22 +826,33 @@ export class BroadcastPipeline {
       log.info('Audio track present but AudioEncoder/MSTP unavailable here; broadcasting video-only.');
       return;
     }
-    this.audioLane = startAudioLane(track, {
-      // Reads the live sender so the lane survives R17 transport resumes
-      // (packets during the gap reject and drop — live-edge, no buffering).
-      send: (datagrams) => {
-        const sender = this.sender;
-        if (!sender) return Promise.reject(new Error('no transport'));
-        return sender.send(datagrams);
-      },
-      onError: (err) => {
-        // Audio-lane-only teardown: annotate and keep broadcasting video.
-        this.stats.audioState = 'error';
-        this.audioLane = null;
-        log.warn('Audio lane failed; broadcast continues video-only:', err);
-      },
-    });
-    this.stats.audioState = 'active';
+    // Construction itself can throw (an ended track, a scope whose MSTP
+    // rejects audio tracks). This runs inside startMedia(), so an escaping
+    // throw would fail the whole broadcast with a capture-phase error —
+    // precisely what Decision 6 forbids. Audio is strictly additive: it may
+    // annotate, never abort.
+    try {
+      this.audioLane = startAudioLane(track, {
+        // Reads the live sender so the lane survives R17 transport resumes
+        // (packets during the gap reject and drop — live-edge, no buffering).
+        send: (datagrams) => {
+          const sender = this.sender;
+          if (!sender) return Promise.reject(new Error('no transport'));
+          return sender.send(datagrams);
+        },
+        onError: (err) => {
+          // Audio-lane-only teardown: annotate and keep broadcasting video.
+          this.stats.audioState = 'error';
+          this.audioLane = null;
+          log.warn('Audio lane failed; broadcast continues video-only:', err);
+        },
+      });
+      this.stats.audioState = 'active';
+    } catch (e) {
+      this.stats.audioState = 'error';
+      this.audioLane = null;
+      log.warn('Audio lane could not start; broadcast continues video-only:', e);
+    }
   }
 
   // Recomputes the auto ladder when the source dimensions first appear or

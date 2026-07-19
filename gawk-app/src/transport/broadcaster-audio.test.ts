@@ -266,6 +266,35 @@ describe('BroadcastPipeline audio lane wiring', () => {
     await pipeline.stop();
   });
 
+  // Regression (self-review 2026-07-19): startAudioLane constructs a real
+  // MediaStreamTrackProcessor, and that can throw synchronously (ended track,
+  // a scope whose MSTP rejects audio tracks). It runs inside startMedia(),
+  // whose throw path fails the ENTIRE broadcast with a capture-phase error —
+  // exactly what Decision 6 forbids ("never the broadcast").
+  it('a lane that fails to construct annotates without failing the broadcast', async () => {
+    stubAudioGlobals();
+    // MSTP exists (so the lane is attempted) but explodes on construction.
+    vi.stubGlobal(
+      'MediaStreamTrackProcessor',
+      class {
+        constructor() {
+          throw new DOMException('audio tracks unsupported', 'NotSupportedError');
+        }
+      },
+    );
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs, makeMedia(fakeAudioTrack()), true);
+
+    // The broadcast must start — not reject with BroadcastStartError.
+    await expect(pipeline.start()).resolves.toBeUndefined();
+
+    const stats = await lastStats(cbs);
+    expect(stats.audioState).toBe('error');
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).not.toHaveBeenCalled();
+    await pipeline.stop();
+  });
+
   it('a lane error annotates and never fails the broadcast', async () => {
     const { encoderGlobal, controllers } = stubAudioGlobals();
     const cbs = makeCallbacks();

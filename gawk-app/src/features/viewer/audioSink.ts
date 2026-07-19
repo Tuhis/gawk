@@ -195,16 +195,23 @@ export class AudioSink {
     if (!node) return;
     const transfer: ArrayBuffer[] = [];
     for (const c of chunk.channels) transfer.push(c.buffer as ArrayBuffer);
-    node.port.postMessage(
-      {
-        type: 'chunk',
-        channels: chunk.channels,
-        frameCount: chunk.frameCount,
-        sampleRate: chunk.sampleRate,
-        timestampUs: chunk.timestampUs,
-      },
-      transfer,
-    );
+    try {
+      node.port.postMessage(
+        {
+          type: 'chunk',
+          channels: chunk.channels,
+          frameCount: chunk.frameCount,
+          sampleRate: chunk.sampleRate,
+          timestampUs: chunk.timestampUs,
+        },
+        transfer,
+      );
+    } catch (e) {
+      // A detached buffer or closed port must not propagate: this runs on the
+      // viewer's message path, and audio is never allowed to break video.
+      // Dropping the packet is the correct live-edge outcome anyway.
+      log.warn('Audio chunk could not reach the worklet; dropping it:', e);
+    }
   }
 
   // Broadcaster restart / viewer reconnect: drop everything and re-anchor
