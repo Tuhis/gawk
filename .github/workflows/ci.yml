@@ -317,7 +317,7 @@ jobs:
         run: |
           sudo curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
           sudo chmod +x /usr/local/bin/kind
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
       - uses: azure/setup-kubectl@v4
