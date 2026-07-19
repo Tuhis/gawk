@@ -2,12 +2,15 @@
 
 **Status**: design revised 2026-07-15 (post-review). **V0–V7 implemented
 2026-07-15**; automated gates green (both Go modules), **manual verification
-on the Linux gaming PC pending** — see [Verification plan](#verification-plan-manual),
-which is the gate that matters here: nothing about hardware encode, the
-portal, or the V4 timestamp-bias measurement is observable from the
-development box (WSL2, no GPU encode block, no desktop portal). **V8 (direct
-Vulkan Video encode) is not started** and remains hard-gated on V2's
-on-hardware Stage-1 result. Three implementation deviations from this design
+on the Linux gaming PC done 2026-07-19** — see [Verification plan](#verification-plan-manual).
+This was the gate that matters here and is **not CI-reachable**: nothing about
+hardware encode, the portal, or the V4 timestamp-bias measurement is
+observable from the development box or a hosted CI runner (WSL2 / hosted
+runner: no GPU encode block, no desktop portal). The R20 E2E does exercise the
+engine's *non-hardware* wire path (its `gawk-pubsim` publishes the fixture
+through the real `engine.Session` to the real relay), but not the encode/
+capture/GUI layers this verify covers. **V8 (direct Vulkan Video encode) is
+not started** and remains hard-gated on V2's on-hardware Stage-1 result. Three implementation deviations from this design
 are recorded in [Implementation notes](#implementation-notes-deviations-from-this-design).
 
 **Revision note (2026-07-15, recorded rather than quietly edited).** The
@@ -676,7 +679,7 @@ Gio's header list (Decision 14). `godbus` is pure Go.
 | V1 — engine: session surface + transport | ✅ implemented 2026-07-15 (announce read detached — see [Implementation notes](#implementation-notes-deviations-from-this-design)) |
 | V2 — engine: portal + capture + encode cascade | ✅ implemented 2026-07-15; **the cascade itself is unverified until it runs on the gaming PC** |
 | V3 — engine: bitstream + send policy | ✅ implemented 2026-07-15 |
-| V4 — CLI shell + end-to-end + the timestamp-bias gate | ✅ shell implemented 2026-07-15; **the bias gate is a manual measurement, still pending** |
+| V4 — CLI shell + end-to-end + the timestamp-bias gate | ✅ shell implemented 2026-07-15; **the bias gate is a manual measurement, done 2026-07-19 (gaming PC; not CI-reachable)** |
 | V5 — GUI shell: window | ✅ implemented 2026-07-15 |
 | V6 — GUI: stats panel, copy diagnostics, notifications | ✅ implemented 2026-07-15 |
 | V7 — docs + escape hatches | ✅ implemented 2026-07-15 |
@@ -1172,7 +1175,7 @@ format's maxFramerate, which KWin/Mutter honor by throttling delivery at
 the source; a compositor that refuses fails the rung's preroll and the
 ladder falls to plain auto — the exact pipeline verified on device.
 `CapturePath` distinguishes the rungs ("zero-copy (capped)" vs
-"zero-copy"); on-device verify pending.
+"zero-copy"); on-device verify done 2026-07-19.
 
 **10b. Picker rungs + blue primary (2026-07-17, user request).** The GUI's
 resolution and framerate fields became inline-expanding dropdowns (Gio has

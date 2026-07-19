@@ -30,15 +30,15 @@ feature set exists).
 | R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | 🚧 implemented 2026-07-14 (K1–K4); automated gates green, manual browser verify pending ([docs/16](docs/16-broadcaster-worker-offload.md)) |
-| R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | 🚧 T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify pending; T5 (motion-estimated interpolation) + T6 (findings) not started ([docs/17](docs/17-viewer-playback-smoothing.md)) |
+| R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | ✅ T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify done 2026-07-19; T5 (motion-estimated interpolation) + T6 (findings) not started/droppable ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
-| R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | 🚧 V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC pending**; V8 (direct Vulkan Video) gated on V2's on-hardware result ([docs/19](docs/19-linux-native-broadcaster.md)) |
+| R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | ✅ V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC done 2026-07-19** (hardware encode/portal/GUI — not CI-reachable); V8 (direct Vulkan Video) still gated on V2's on-hardware result, not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
 | R15 | [System audio](#r15--system-audio) | 📋 designed 2026-07-15 (N1–N6), not started ([docs/20](docs/20-system-audio.md)) |
-| R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | 🚧 U1–U3 implemented 2026-07-16; U4: two passes black → decoded-frame clone tee shipped 2026-07-16, third pass pending ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
-| R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | 🚧 W1–W6 implemented 2026-07-16, automated gates green; homelab drills + kind smoke + scale proof pending ([docs/22](docs/22-relay-scale-out.md)) |
-| R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; manual verify (single-pod + kind cluster) pending ([docs/23](docs/23-live-viewer-count.md)) |
-| R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | 🚧 X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification pending ([docs/24](docs/24-viewer-network-resilience.md)) |
-| R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18 (spike: headless hash-pinned WebTransport works; tier-2 rehearsed on local kind = docs/22's two-pod smoke); first CI runs + Z4 burn-in pending; Z5 stretch not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
+| R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | ⚠️ U1–U3 implemented 2026-07-16; **U4 verdict 2026-07-19: native `webkitEnterFullscreen` still shows a black video on iPhone across three on-device passes → native tier not viable, pseudo-fullscreen (CSS) is the shipping path** (docs/21 U4 pre-registered verdict; BUGS.md) ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
+| R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | ✅ W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + **green in the `e2e-cluster` CI job (2026-07-18)**; remaining homelab drills (rollout/crash/rebind blips, conntrack empiricism) + 200-viewer scale proof closed as owner-accepted 2026-07-19 (CI non-goals — kind lacks the physics) ([docs/22](docs/22-relay-scale-out.md)) |
+| R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; cluster viewer-count check (origin `viewersGlobal` == Σ per-pod real viewers, edges excluded) **automated in the `e2e-cluster` CI job 2026-07-19**; single-pod browser/native + re-home + storm manual verify still pending ([docs/23](docs/23-live-viewer-count.md)) |
+| R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | ✅ X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification done 2026-07-19 (lossy-network behaviour — not CI-reachable) ([docs/24](docs/24-viewer-network-resilience.md)) |
+| R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers green in real CI** (tier-1 `e2e` on every PR; `e2e-cluster` on the 2026-07-18 release PRs — Z3's green-on-a-release-PR acceptance met, origin/edge split + browser viewer asserted); Z4 burn-in → required flip pending; Z5 stretch not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 
 ---
 
@@ -695,8 +695,10 @@ toggle). **Default flipped the same day (user decision)**: the production
 viewer now defaults to adaptive paced playback + interpolation; the
 right-click menu disables either, and a legacy explicit opt-out migrates to
 live-edge (docs/17 Decision 8, as superseded). All automated gates green
-(391 vitest tests, build, lint); manual browser verify pending — see the
-doc's verification plan. T5 (motion-estimated interpolation, droppable) and
+(391 vitest tests, build, lint); manual browser verify done 2026-07-19 (the
+doc's verification plan; the R20 `e2e` browser job also runs the adaptive
+paced + interpolated pipeline green on every PR — rendered fps ≈ 2× received,
+the α=0.5 mid-slots). T5 (motion-estimated interpolation, droppable) and
 T6 (measurement findings + constant verdicts) not started.
 
 ---
@@ -829,10 +831,11 @@ integration tests build and run the **real `gawk-server`** and publish a
 committed H.264 fixture through it, attaching a real subscriber — a fake
 relay would only test our belief about the relay, which is the belief most
 worth doubting in a second implementation. **Manual verification on the
-gaming PC is pending** and is the gate that matters: everything about
-hardware encode, the portal picker (shown every start — never persisted), the
-V4 latency-bias measurement and the no-hardware refusal is unobservable from a WSL2 box with
-no GPU encode block and no desktop portal. **V8 is not started** and stays
+gaming PC is done (2026-07-19)** — the gate that matters, and one that is
+**not CI-reachable**: everything about hardware encode, the portal picker
+(shown every start — never persisted), the V4 latency-bias measurement and
+the no-hardware refusal is unobservable from a WSL2 box or a hosted CI runner
+with no GPU encode block and no desktop portal. **V8 is not started** and stays
 hard-gated on V2's on-hardware Stage-1 Vulkan result. Three recorded
 deviations from the doc (see docs/19): the announce read is detached, the
 mpegts fixture is ffmpeg-generated rather than pipeline-captured, and the
@@ -961,11 +964,15 @@ offering the video surface on non-gated devices.
 
 **Status**: U1–U3 implemented 2026-07-16 (gate + tiered fullscreen +
 Feature Gates section; worker tee + generator/track transfer; hidden video
-surface + native-fullscreen wiring); automated gates green. U4 (real-iPhone
-verification pass) pending — it settles the one known unverified fact,
-`new VideoFrame(OffscreenCanvas)` in a worker on iOS WebKit, which the
-runtime probe checks before any arm (probe failure ⇒ pseudo-fullscreen
-tier, the pre-registered fallback).
+surface + native-fullscreen wiring); automated gates green. **U4 verdict
+2026-07-19: the native path does not work on iPhone** — `webkitEnterFullscreen`
+enters but shows a **black video** across three on-device passes, and the
+decoded-frame clone tee (no canvas readback) did not cure it. Per the
+pre-registered U4 criteria (high Content sample + still black ⇒ the native
+player can't present locally generated MediaStreams on this WebKit), the
+native tier is rejected and **pseudo-fullscreen (CSS) is the shipping path**;
+the runtime probe (`new VideoFrame(OffscreenCanvas)` in a worker) and gate
+already fall back to it. See docs/21 "U4 findings" and BUGS.md.
 
 ---
 
@@ -1053,9 +1060,15 @@ multi-tenant auth, MoQ.
 which surfaced and fixed a real interop bug: the native engine read only
 the "first" server uni stream, but accept order is not open order — it now
 dispatches by wire type and persists the resume token (docs/22 finding 9).
-The homelab drills (rollout / crash / rebind blip measurements, conntrack
-empiricism, kind smoke, load proof) are pending — per-chunk status and
-implementation findings in [docs/22](docs/22-relay-scale-out.md).
+The kind two-pod smoke is now automated and **green in the `e2e-cluster` CI
+job** (2026-07-18, docs/25 Z3): the real chart with `replicas=2` +
+`clusterMode` on a pinned kind cluster, with the origin/edge split asserted
+from per-pod `/statusz` and a real browser viewer green against the cluster.
+The remaining homelab drills (rollout / crash / rebind blip measurements,
+conntrack empiricism) and the 200-viewer load proof are closed as
+owner-accepted 2026-07-19 — CI non-goals, since kind has none of that
+physics. Per-chunk status and implementation findings in
+[docs/22](docs/22-relay-scale-out.md).
 
 ---
 
@@ -1123,8 +1136,11 @@ historical/peak analytics (that stays `/statusz` + Prometheus territory);
 per-viewer adaptation.
 
 **Status**: **implemented 2026-07-18 (Y1–Y6, same day as the design)**;
-automated gates green across all three modules; **manual verify pending**
-(single-pod browser + native passes, 2-pod kind cluster, re-home, storm — the
+automated gates green across all three modules. The **2-pod kind cluster
+viewer-count check is now automated in the `e2e-cluster` CI job**
+(2026-07-19, `e2e/cluster-assert.sh`: origin `viewersGlobal` == Σ per-pod
+real viewers, edge-pod viewers counted, edge sessions excluded); single-pod
+browser + native passes, re-home, and storm manual verify remain pending (the
 docs/23 verification plan). Anchored on the cluster-mode counting model
 (only real viewers, counted once, summed across the origin/edge cascade —
 edges are plumbing, never counted): edges report their local viewer count up
@@ -1204,7 +1220,10 @@ stream-kind dispatch + resilient profile, the toggle, and full observability;
 automated gates green on both Go modules and the app. X1 (netem baseline +
 three-engine browser spike — needs real browsers/hardware; implemented ahead
 of it as a recorded deviation, see docs/24 "Implementation status") and X6
-(verification + tuning, incl. the real-phone LTE session) pending. User
+(verification + tuning, incl. the real-phone LTE session) done 2026-07-19 —
+the lossy-network behaviour this mode exists for is not CI-reachable (the R20
+E2E runs a clean loopback link with zero loss and default datagram delivery).
+User
 decisions anchoring scope: reliable-streams + extended-buffer mechanism;
 ~2 s adaptive latency budget; manual toggle first.
 
@@ -1289,9 +1308,14 @@ headless Chrome as-is** (no SPKI flag, no Xvfb). Test-the-test passed
 locally (publisher killed / wrong ID both go red), and the whole tier-2
 flow was rehearsed on a local kind cluster — executing docs/22's pending
 two-pod smoke (origin/edge split proven from per-pod `/statusz`, browser
-viewer green against the cluster). Pending: first real PR / release-PR CI
-runs with measured runtimes, then the Z4 burn-in → required flip; Z5
-stretch not started. See docs/25 "Implementation status & findings".
+viewer green against the cluster). **Both tiers are now green in real CI**:
+tier-1 `e2e` on every PR, and `e2e-cluster` on the 2026-07-18 release PRs
+(runs 29659639321 / 29659067892 — Z3's green-on-a-release-PR acceptance met;
+step 18 asserted the origin/edge split, browser viewer green). Pending: the
+Z4 burn-in → required flip — plus a re-run on the new self-hosted `ioio-k8s`
+runners, since the CI runner migration landed 2026-07-19 after those green
+runs (which were on GitHub-hosted runners); Z5 stretch not started. See
+docs/25 "Implementation status & findings".
 User decisions anchoring scope: cluster-mode
 verification on release-please PRs only; free-tier CI minutes as a
 design constraint, held by trigger scoping rather than assertion

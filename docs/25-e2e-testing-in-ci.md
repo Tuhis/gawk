@@ -1,7 +1,10 @@
 # R20 — E2E Testing in CI: Real-Browser Streaming Verification per PR
 
 Design doc for [ROADMAP R20](../ROADMAP.md#r20--e2e-testing-in-ci)
-(designed 2026-07-18, not started). Adds a GitHub Actions E2E stage that
+(designed 2026-07-18; Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers
+green in real CI** — tier-1 `e2e` on every PR, `e2e-cluster` on the
+2026-07-18 release PRs; Z4 burn-in + a re-run on the new self-hosted
+`ioio-k8s` runners pending, Z5 not started). Adds a GitHub Actions E2E stage that
 proves **streaming actually works** — a real Chromium viewer decodes and
 renders real frames published through the real relay binary — before a
 release can ship, in both **single-pod** and **cluster-mode** relay
@@ -287,8 +290,8 @@ Tier 1 (every PR):                     Tier 2 (release PRs only):
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
 | Z1 | **`gawk-pubsim` + harness spike** — the fixture-publisher CLI (Decision 3); `e2e/` skeleton (Decision 4); local proof that headless system Chrome does WebTransport against `-dev-cert` via `serverCertificateHashes` (Decision 5 — the load-bearing unknown) and decodes the fixture | `gawk-pubsim` publishes the looping fixture against a local relay, visible in `/statusz` (Go test for the loop/timestamp logic; CLI smoke documented); harness run locally green end-to-end with the exact command recorded; diagnostics JSON captured via the clipboard stub with decoded frames > 0; **spike verdict recorded in this doc**: hash-pinned WebTransport in headless — works / needs SPKI flag / needs headful+Xvfb | ✅ done 2026-07-18 — **verdict: works, no flag, no Xvfb** (findings below) |
-| Z2 | **Tier-1 CI job** — wire the harness into `ci.yml` (new `e2e` job, `pull_request` only); guardrails (concurrency cancel-in-progress, `timeout-minutes: 10`); assertions per Decision 6 | Job green on a real PR; deliberately-broken runs go red (kill `gawk-pubsim` mid-test → flow assertions fail; wrong broadcast ID → fails) — the test-the-test check; measured runtime ≤ 6 min recorded here; a force-push cancels the superseded run; job is advisory (not required yet) | 🔧 implemented 2026-07-18; test-the-test passed locally (both breakages red); green-on-a-real-PR + measured runtime pending the first CI run |
-| Z3 | **Tier-2 kind job** — pinned kind + UDP `extraPortMappings`; image build (shared GHA cache scope) + `kind load`; real chart install (replicas=2, clusterMode, NodePort, test secrets); pubsim + loadgen + browser viewer; per-pod ops assertions (Decision 7); `release-please--*` gate + `workflow_dispatch` | Green on a release PR (or `workflow_dispatch`); chart's replicas>1-requires-clusterMode guard exercised; origin/edge split proven from per-pod `/statusz`/metrics with the browser viewer green; measured runtime ≤ 10 min recorded; docs/22 status updated to point at this as the automated two-pod smoke | 🔧 implemented 2026-07-18 **and the whole flow rehearsed locally on kind** (origin/edge split + browser green — findings below; this executed docs/22's pending two-pod smoke); green-on-a-release-PR + measured runtime pending |
+| Z2 | **Tier-1 CI job** — wire the harness into `ci.yml` (new `e2e` job, `pull_request` only); guardrails (concurrency cancel-in-progress, `timeout-minutes: 10`); assertions per Decision 6 | Job green on a real PR; deliberately-broken runs go red (kill `gawk-pubsim` mid-test → flow assertions fail; wrong broadcast ID → fails) — the test-the-test check; measured runtime ≤ 6 min recorded here; a force-push cancels the superseded run; job is advisory (not required yet) | ✅ green on every PR since 2026-07-18 (test-the-test passed locally — both breakages red); advisory (not required yet); per-run minutes accounting rolls into Z4 |
+| Z3 | **Tier-2 kind job** — pinned kind + UDP `extraPortMappings`; image build (shared GHA cache scope) + `kind load`; real chart install (replicas=2, clusterMode, NodePort, test secrets); pubsim + loadgen + browser viewer; per-pod ops assertions (Decision 7); `release-please--*` gate + `workflow_dispatch` | Green on a release PR (or `workflow_dispatch`); chart's replicas>1-requires-clusterMode guard exercised; origin/edge split proven from per-pod `/statusz`/metrics with the browser viewer green; measured runtime ≤ 10 min recorded; docs/22 status updated to point at this as the automated two-pod smoke | ✅ green on the 2026-07-18 release PRs (runs `29659639321` / `29659067892`): step 18 asserted the origin/edge split from per-pod `/statusz` (origin `publisherActive` + `edgeSessions: 1`, edge serving 7 real subscribers, `framesRelayed` within 9) with the browser viewer green; job wall ≈ 4m44s. This executed docs/22's pending two-pod smoke in real CI. Re-run on the new self-hosted `ioio-k8s` runners pending (migration landed 2026-07-19, after these GitHub-hosted greens) |
 | Z4 | **Burn-in → required + budget findings** — flake log, minutes accounting, required-check flip; README/ROADMAP/CLAUDE status sync | ≥ 2 weeks / ~20 consecutive green release-PR runs with every flake root-caused in this doc's findings; measured monthly minutes projection recorded and within budget (Decision 2, incl. the trigger-narrowing fallback assessment); both tiers in the required set with tier 2 skipping cleanly on normal PRs; docs synced | 📋 not started |
 | Z5 | **Browser-broadcaster stretch (droppable)** — spike per Decision 9 order; if viable, a tier-1 variant where the browser publishes (pubsim retired from that scenario or kept as the cluster-tier publisher) | Either: browser-publisher scenario stable in CI at ≤ +3 min with capture path + encode funnel asserted from broadcaster diagnostics; **or** a documented rejection with per-path findings (flags/Xvfb/injection) and the kill criteria verdict — both are valid completions | 📋 not started |
 
@@ -301,10 +304,11 @@ tier-1 verdicts once Z2 lands.
 
 ## Implementation status & findings (2026-07-18)
 
-Z1 done, Z2/Z3 implemented and verified locally as far as a dev box can;
-what remains for their acceptance is CI's own half (green on a real PR /
-release PR, measured runtimes) plus Z4's calendar-gated burn-in. Z5 not
-started.
+Z1 done; Z2/Z3 implemented and **now green in real CI** (finding 10 below) —
+tier-1 `e2e` on every PR and `e2e-cluster` on the 2026-07-18 release PRs, so
+Z3's green-on-a-release-PR acceptance is met. What remains is Z4's
+calendar-gated burn-in (and a re-run on the new self-hosted runners, finding
+11). Z5 not started.
 
 1. **Z1 spike verdict: hash-pinned WebTransport in headless Chrome works
    outright.** New-headless Chrome for Testing 149 (playwright-core driving
@@ -377,6 +381,29 @@ started.
    first real runs (estimate from local timings: tier 1 well under the
    6-minute target; tier 2's cluster bring-up was ~1 min on a warm image —
    CI's cold node-image pull adds the documented ~1 min).
+10. **Both tiers went green in real CI on 2026-07-18** (the Z2/Z3 acceptance
+    half that a dev box can't self-certify). Tier-1 `e2e` runs on every PR
+    and has been green (e.g. renovate PRs). Tier-2 `e2e-cluster` ran on the
+    release-please PRs (runs `29659639321` and `29659067892`): the full job
+    — kind create, image build + load, `helm install` (replicas=2 +
+    clusterMode + NodePort + fleet secrets + `SSL_CERT_FILE`), pubsim +
+    12 loadgen + browser viewer, then `cluster-assert.sh` — completed
+    green in ≈ 4m44s, with step 18 logging
+    `PASS: origin=… edges=…`, origin `publisherActive` +`edgeSessions: 1`,
+    the edge pod serving 7 real subscribers, and the browser viewer's flow
+    green against the cluster. This is docs/22's two-pod smoke executed in
+    CI, and it discharges R17's kind-smoke drill. The R18 viewer-count
+    assertion (origin `viewersGlobal` == Σ per-pod real viewers) was added
+    to `cluster-assert.sh` 2026-07-19 and will be exercised on the next
+    release-PR run.
+11. **CI runner migration (2026-07-19) postdates those greens.** The
+    2026-07-18 green runs were on GitHub-hosted runners; on 2026-07-19 all
+    workflows moved to self-hosted `ioio-k8s` runners (kind-in-a-pod, buildx
+    with host networking for the 1480-MTU pod network). The cluster logic
+    under test is unchanged, but `e2e-cluster` has not yet re-run green on
+    the new substrate — the next release-please PR (or a `workflow_dispatch`)
+    re-proves it there. This is a required-flip precondition alongside the
+    Z4 burn-in.
 
 ## Verification plan (the meta-question: how we know the E2E itself works)
 

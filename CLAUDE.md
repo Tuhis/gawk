@@ -161,7 +161,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   jitter measurement, paced presentation + adaptive offset behind a new
   separate "Paced playback (adaptive)" toggle, experimental frame
   interpolation with pre-registered kill criteria, T1–T6 chunks; **T1–T4
-  implemented 2026-07-15, manual verify pending; T5/T6 not started;
+  implemented 2026-07-15, manual verify done 2026-07-19; T5/T6 not started;
   adaptive + interpolation are the production viewer's defaults since
   2026-07-15** — the right-click menu disables them),
   `docs/18-advanced-broadcaster-settings.md` for R13 (advanced broadcaster
@@ -180,7 +180,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   portal handshake + GStreamer subprocess; Vulkan Video as the target
   encode API; V0–V7 chunks + V8 direct Vulkan Video encode; **V0–V7
   implemented 2026-07-15, automated gates green, manual verify on the
-  gaming PC pending; V8 gated on V2's on-hardware Vulkan result**),
+  gaming PC done 2026-07-19 (hardware encode/portal/GUI — not CI-reachable);
+  V8 gated on V2's on-hardware Vulkan result, not started**),
   `docs/20-system-audio.md` for R15 (system audio, **experimental,
   default-off**: Opus/WebCodecs over datagrams — one Opus packet per
   datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
@@ -198,9 +199,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   `Element.requestFullscreen` so **non-iPhone devices are byte-identical**
   (sole overlay-only exception: the new **Feature Gates** stats section —
   UpperCamelCase gate names, first gate `NativeVideoFullscreen`);
-  U1–U4 chunks; **U1–U3 implemented 2026-07-16; U4: two on-device passes
-  black → tee reworked to decoded-frame clones 2026-07-16, third pass
-  pending**),
+  U1–U4 chunks; **U1–U3 implemented 2026-07-16; U4 verdict 2026-07-19:
+  native `webkitEnterFullscreen` still shows a black video on iPhone across
+  three on-device passes (the decoded-frame clone tee did not cure it) → per
+  the pre-registered U4 criteria the native tier is not viable on iOS WebKit;
+  pseudo-fullscreen (CSS) is the shipping path (probe/gate already fall back
+  to it) — see docs/21 "U4 findings" + BUGS.md**),
   `docs/22-relay-scale-out.md` for R17 (relay scale-out & high availability:
   N homogeneous relay pods, **self-federating origin/edge cascade over the
   existing WebTransport protocol** — per-broadcast **k8s Lease** origin
@@ -215,9 +219,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   **when the explicit fleet `resumeTokenKey` is set**; it wins over the
   publish-secret derivation, which every secret-holder can compute);
   allocations 0x09+/4002/4003 only (0x07/0x08 are R15's); W1–W6
-  chunks; **W1–W6 implemented 2026-07-16, automated gates green; homelab
-  drills (rollout/crash/rebind blips, conntrack empiricism, kind smoke,
-  load-tool scale proof) pending — see docs/22 findings, incl. the
+  chunks; **W1–W6 implemented 2026-07-16, automated gates green; kind
+  two-pod smoke automated + green in the `e2e-cluster` CI job (2026-07-18,
+  docs/25 Z3); remaining homelab drills (rollout/crash/rebind blips,
+  conntrack empiricism) + 200-viewer scale proof closed owner-accepted
+  2026-07-19 (CI non-goals — kind lacks the physics) — see docs/22 findings,
+  incl. the
   deviations (replicas defaults to 1 with a chart guard requiring
   clusterMode for >1; single-pod upgrades are RollingUpdate ≤1 s blips
   now) and the PR #47 post-review fixes (lingered-out edge hubs deleted,
@@ -237,8 +244,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   viewer joined" derived client-side from the 0→1 transition, no separate
   message (the native GUI rings it at critical urgency, once per broadcast);
   Y1–Y6 chunks; **implemented 2026-07-18 (designed same day), automated
-  gates green in all three modules; manual verify (single-pod + 2-pod kind)
-  pending — deviations recorded in the doc's "Implementation status":
+  gates green in all three modules; the 2-pod kind cluster viewer-count check
+  is automated in the `e2e-cluster` CI job (2026-07-19, `cluster-assert.sh`:
+  origin `viewersGlobal` == Σ per-pod real viewers, edges excluded);
+  single-pod browser/native + re-home + storm manual verify still pending —
+  deviations recorded in the doc's "Implementation status":
   publisherSend lives on `hub.Publisher` (BindSend), a spoofed well-formed
   count is dropped without counting bad, `#/debug/*` shows no count (frozen
   pages), and the count is trusted only from relay peers**),
@@ -257,7 +267,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   deferred as a suggest-banner sketch; supersedes docs/12 Decision 1 **for
   this opt-in mode only**; docs/23 is R18 (designed 2026-07-18); X1–X6 chunks;
   **X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser
-  baseline + X6 verification pending — ordering deviation recorded in the
+  baseline + X6 verification done 2026-07-19 (lossy-network behaviour — not
+  CI-reachable) — ordering deviation recorded in the
   doc's "Implementation status"**),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
@@ -282,7 +293,11 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   package), the harness in top-level `e2e/`; test-the-test passed locally
   and the tier-2 flow was rehearsed on a local kind cluster (= docs/22's
   two-pod smoke, incl. the `SSL_CERT_FILE=/tls/tls.crt` edge-TLS-trust
-  finding); first CI runs + Z4 burn-in pending, Z5 not started).
+  finding); **both tiers now green in real CI** — tier-1 `e2e` on every PR,
+  `e2e-cluster` on the 2026-07-18 release PRs (Z3 acceptance met; origin/edge
+  split + browser viewer asserted); Z4 burn-in → required flip pending (plus
+  a re-run on the new self-hosted `ioio-k8s` runners, migrated 2026-07-19
+  after those GitHub-hosted green runs), Z5 not started).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -521,7 +536,7 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    backgrounding (same renderer process) — this removes main-thread
    contention from the frame path, nothing more.
 17. Viewer playback smoothing — **T1–T4 implemented 2026-07-15; automated
-   gates green, manual browser verify pending; T5 (motion-estimated
+   gates green, manual browser verify done 2026-07-19; T5 (motion-estimated
    interpolation) + T6 (findings pass) not started** (R12,
    `docs/17-viewer-playback-smoothing.md`; viewer-client only, zero
    server/wire changes). (a) **Jitter measurement** (T1):
@@ -578,8 +593,9 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    instead); probe-annotated pickers (badge/disable, never remove) +
    Advanced settings panel + overlay Auto ceiling/Auto fps rows.
 19. Native Linux broadcaster — **V0–V7 implemented 2026-07-15; automated
-   gates green (both Go modules), manual verify on the gaming PC pending;
-   V8 not started — it is hard-gated on V2's on-hardware Vulkan result**
+   gates green (both Go modules), manual verify on the gaming PC done
+   2026-07-19 (hardware encode/portal/GUI — not CI-reachable); V8 not started
+   — it is hard-gated on V2's on-hardware Vulkan result**
    (R14, `docs/19-linux-native-broadcaster.md`). A **Gio GUI app**
    (`cmd/gawk-broadcast-gui`) + a CLI (`cmd/gawk-broadcast`) over a shared
    engine (`internal/engine`) in a **new top-level `gawk-broadcast/` Go
@@ -698,9 +714,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    construction. Non-goals: mic mixing, R14-native audio (wire types are
    ready — follow-up there), FEC, DTX, audio-only mode.
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
-   green); U4 in progress — two on-device passes found native fullscreen
-   black; the tee was reworked to decoded-frame clones 2026-07-16 (below),
-   third pass pending**
+   green); U4 verdict 2026-07-19: the native path still does not work on
+   iPhone — `webkitEnterFullscreen` enters but shows a black video across
+   three on-device passes (the decoded-frame clone tee did not cure it) →
+   per the pre-registered U4 criteria the native tier is not viable on iOS
+   WebKit, and pseudo-fullscreen (CSS) is the shipping path (the probe/gate
+   already fall back to it)**
    (R16, `docs/21-ios-video-fullscreen.md`; viewer-client only, zero
    server/wire changes). The viewer fullscreen button is a **silent no-op
    on iPhone**: no Element Fullscreen API exists there (iPad has it since
@@ -749,13 +768,17 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    removed) — interpolated mid-blends no longer cross, fullscreen shows
    real frames at paced cadence. New overlay **Content sample** row
    (periodic 4×4 peak-RGB of the element) separates black frame content
-   from a black native player. Third pass pending; pre-registered verdicts
-   in docs/21 "U4 findings" (high sample + still black ⇒ the native player
-   can't present locally generated MediaStreams ⇒ remove tier 2, ship
+   from a black native player. **Third pass 2026-07-19: still black ⇒
+   native tier rejected, pseudo-fullscreen ships** — the pre-registered
+   verdict in docs/21 "U4 findings" (high sample + still black ⇒ the native
+   player can't present locally generated MediaStreams ⇒ remove tier 2, ship
    pseudo). BUGS.md entry tracks it.
 22. Relay scale-out & high availability — **W1–W6 implemented 2026-07-16
-   (automated gates green; homelab drills + kind smoke + scale proof
-   pending — docs/22 "Implementation status & findings")**
+   (automated gates green; kind two-pod smoke automated + green in the
+   `e2e-cluster` CI job 2026-07-18; remaining homelab drills
+   (rollout/crash/rebind, conntrack) + 200-viewer scale proof closed
+   owner-accepted 2026-07-19 as CI non-goals — docs/22 "Implementation
+   status & findings")**
    (R17, `docs/22-relay-scale-out.md`). Product prep: N homogeneous relay
    pods behind the existing UDP LoadBalancer;
    **self-federating origin/edge cascade over the existing wire protocol**
@@ -816,7 +839,8 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `lastResumeToken` for reclaim.
 23. Resilient viewer mode for lossy networks — **X2–X5 implemented
    2026-07-18, automated gates green (both Go modules + app); X1 netem
-   baseline/browser spike + X6 verification pending — a recorded ordering
+   baseline/browser spike + X6 verification done 2026-07-19 (lossy-network
+   behaviour — not CI-reachable) — a recorded ordering
    deviation, see docs/24 "Implementation status"** (R19,
    `docs/24-viewer-network-resilience.md`;
    `docs/23` is R18 live viewer count, designed 2026-07-18). Opt-in per-viewer
@@ -857,9 +881,12 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `subscriberDetails.reliable` + carrier counters, Prometheus
    `gawk_broadcast_reliable_subscribers` + `carrier_*_total` +
    `egress_bytes_total{kind="carrier"}`, docs/13 playbook row.
-24. E2E testing in CI — **Z1 done + Z2/Z3 implemented 2026-07-18 (first
-   CI runs + Z4 burn-in pending; Z5 stretch not started; `Y` is R18's,
-   claimed by the concurrent docs/23 design)**
+24. E2E testing in CI — **Z1 done + Z2/Z3 implemented 2026-07-18; both
+   tiers now green in real CI (tier-1 `e2e` on every PR; `e2e-cluster` on
+   the 2026-07-18 release PRs — Z3 acceptance met); Z4 burn-in → required
+   flip pending, plus a re-run on the new self-hosted `ioio-k8s` runners
+   (migrated 2026-07-19 after those GitHub-hosted green runs); Z5 stretch
+   not started; `Y` is R18's, claimed by the concurrent docs/23 design)**
    (R20, `docs/25-e2e-testing-in-ci.md`). GitHub Actions proof that
    streaming works before a release ships: **Tier 1** on every PR runs
    the real relay (`-dev-cert`), publishes the committed H.264 fixture

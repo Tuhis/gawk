@@ -630,21 +630,29 @@ findings), CLAUDE.md/ROADMAP status sync.
 
 ## Implementation status & findings (2026-07-16)
 
-**W1–W6 implemented 2026-07-16; all automated gates green.** The homelab
-drills (rollout/crash/rebind blip measurements, the W1 conntrack empiricism,
-and the W6 load-tool scale proof against the real cluster) are **pending** —
-the in-process twins below stand in until then.
+**W1–W6 implemented 2026-07-16; all automated gates green.** The kind
+two-pod smoke is now automated and **green in real CI** (see below). The
+remaining homelab drills (rollout/crash/rebind blip measurements, the W1
+conntrack empiricism, and the W6 200-viewer load-tool scale proof against the
+real cluster) are **closed as owner-accepted 2026-07-19** — they are CI
+non-goals (kind has none of that physics: LoadBalancer/ECMP re-hash,
+conntrack flush timing, real scale), so the in-process twins below stand in
+for them and the closure is a deliberate accepted-risk decision, not a
+recorded measurement.
 
 **The two-pod smoke is done and automated (2026-07-18)**: R20's tier-2 kind
 E2E (docs/25 Z3, the `e2e-cluster` job in `ci.yml`) installs the real chart
 with `replicas=2` + `clusterMode` on a pinned kind cluster, publishes via
 `gawk-pubsim`, spreads 12 `gawk-loadgen` viewers + a real headless-Chrome
 viewer across both pods over a UDP NodePort, and asserts the origin/edge
-split from per-pod `/statusz` (`e2e/cluster-assert.sh`). Its first full local
-run (docs/25 findings 4–5) showed origin `publisherActive` + `edgeSessions:
-1` and the edge pod serving real subscribers, with the browser viewer green
-against the cluster — the W3/W4 "kind/k3s" rows below are covered by that
-job from here on. It also surfaced one deploy gotcha: edge pods verify the
+split from per-pod `/statusz` (`e2e/cluster-assert.sh`). It first ran green
+locally (docs/25 findings 4–5), then **green in real CI on the 2026-07-18
+release PRs** (docs/25 finding 10, runs `29659639321` / `29659067892`, job
+wall ≈ 4m44s): origin `publisherActive` + `edgeSessions: 1`, the edge pod
+serving 7 real subscribers, browser viewer green against the cluster — the
+W3/W4 "kind/k3s" rows below are covered by that job from here on. (The job
+moved to self-hosted `ioio-k8s` runners 2026-07-19, after those greens; a
+re-run there is pending — docs/25 finding 11.) It also surfaced one deploy gotcha: edge pods verify the
 internal dial's TLS against the **system root pool** (no
 `InsecureSkipVerify`, by design), so a non-cert-manager cluster needs
 `SSL_CERT_FILE` pointed at the mounted cert (docs/25 finding 5).

@@ -2,7 +2,9 @@
 
 Design doc for [ROADMAP R18](../ROADMAP.md#r18--live-viewer-count)
 (designed 2026-07-18; **Y1–Y6 implemented 2026-07-18** — automated gates
-green, manual verify pending; see "Implementation status" below).
+green; the 2-pod cluster viewer-count check is now automated in R20's
+`e2e-cluster` CI job (2026-07-19), with single-pod/native/re-home/storm
+manual verify still pending; see "Implementation status" below).
 Both the broadcaster and every viewer of a stream see a live **"N watching"**
 figure that updates promptly as viewers join and leave. This is the
 `SubscriberCount` message deliberately deferred from R14 (Decision 18) and
@@ -356,7 +358,7 @@ Cluster (origin O, edges E1..Ek):
 | Y3 | **Relay cluster aggregation** — `Subscriber.downstreamViewers`; edge report on the `pump` linger ticker (change-driven + keepalive); origin `handleInternalSubscribe` records reports; pump `G = externalSubs + Σ downstream`; edge `HandleDatagram` `TypeViewerCount` case gated on `b.edge`, caches + fans down; `InvalidatePrimes`/`claimPublisherLocked` clear `cachedViewerCount` | Multi-pod (origin + ≥1 edge, fakes): `G` == total real viewers across pods; an edge session is **never** counted (add an edge, `G` unchanged; add a viewer behind it, `G` +1); every viewer (origin + edge) observes the same `G`; a `ViewerCount` from a broadcaster on an origin is a no-op (spoof guard); re-home re-reports within a tick and `G` reconverges; single-pod path byte-identical (no edges ⇒ Decision 5 dormant) | ✅ 2026-07-18 |
 | Y4 | **Browser broadcaster + viewer** — `broadcaster.ts` read-loop branch → `BroadcastStats.viewerCount` + `docs/10` reserved slot + overlay row; `reassembler.ts` `TypeViewerCount` case → `onSubscriberCount` → `ViewerStats.viewerCount` → `ViewerScreen` badge + overlay row | Unit: reassembler routes `ViewerCount` to `onSubscriberCount`, ignores malformed (counts bad, no crash); broadcaster read loop updates the stat without disturbing TimeSync; badge renders the live number; `#/debug/*` overlay-only; count of 1 renders "1 watching" | ✅ 2026-07-18 |
 | Y5 | **Native broadcaster (R14)** — `engine.go readDatagrams` branch → `engine.Stats.ViewerCount` + `Callbacks.OnViewerCount`; Gio GUI surface; remove the two "deliberately absent" comments; 0→1 critical-urgency "first viewer" notification (godbus) | Engine test: a `ViewerCount` datagram updates `Stats` + fires `OnViewerCount`; GUI shows the number; wirecheck golden vectors (from Y1) pass; 0→1 transition fires exactly one notification, ≥1→≥1 changes do not | ✅ 2026-07-18 |
-| Y6 | **Observability + verification** — origin `Stats.ViewersGlobal` + `gawk_broadcast_viewers_global` gauge + `/statusz` `viewersGlobal`; `docs/13` playbook row; manual single-pod + multi-pod (kind) verify; README/ROADMAP/CLAUDE status sync | Gauge emitted only on origin hubs, bounded cardinality (obfuscated broadcast label, no per-viewer labels — R9 rule); `/statusz` shows local `subscribers`, `edgeSessions`, and origin `viewersGlobal`; manual: browser + native broadcaster both show a correct live count as viewers join/leave, single-pod and across a 2-pod kind cluster (origin + edge), edge viewers counted, edge sessions not | ✅ code + docs 2026-07-18; **manual verify pending** |
+| Y6 | **Observability + verification** — origin `Stats.ViewersGlobal` + `gawk_broadcast_viewers_global` gauge + `/statusz` `viewersGlobal`; `docs/13` playbook row; manual single-pod + multi-pod (kind) verify; README/ROADMAP/CLAUDE status sync | Gauge emitted only on origin hubs, bounded cardinality (obfuscated broadcast label, no per-viewer labels — R9 rule); `/statusz` shows local `subscribers`, `edgeSessions`, and origin `viewersGlobal`; manual: browser + native broadcaster both show a correct live count as viewers join/leave, single-pod and across a 2-pod kind cluster (origin + edge), edge viewers counted, edge sessions not | ✅ code + docs 2026-07-18; cluster (2-pod kind) viewer-count check automated in the R20 `e2e-cluster` CI job 2026-07-19 (`cluster-assert.sh`); single-pod browser/native + re-home + storm manual verify still pending |
 
 **Ordering**: Y1 → Y2 give a working single-pod feature (verifiable end-to-end
 with the browser broadcaster once Y4 lands, or a hub test before it). Y3 adds
@@ -398,9 +400,16 @@ Y1–Y6 implemented as designed; automated gates green in all three modules
 - **GUI compile is CI-gated**: this dev environment lacks the Wayland/xkb
   headers Gio needs (pre-existing), so `cmd/gawk-broadcast-gui` was
   gofmt/parse-checked here and compiles in CI, where the Gio deps install.
-- **Manual verification (the plan below) is pending** — single-pod browser +
-  native passes, the 2-pod kind cluster check, re-home reconvergence, and the
-  storm check.
+- **The 2-pod kind cluster viewer-count check is now automated** in R20's
+  `e2e-cluster` CI job (2026-07-19): `e2e/cluster-assert.sh` asserts the
+  origin's `viewersGlobal` equals the sum of per-pod real `subscribers`
+  across both pods and exceeds the origin's own local count — i.e. edge-pod
+  viewers are counted (G = local + Σ edge reports) while the edge sessions
+  themselves are not (verification-plan item 3's core). It runs on the next
+  release-please PR. **The rest of the manual plan below is still pending** —
+  single-pod browser + native passes, re-home reconvergence, and the storm
+  check (not CI-reachable: no real browser broadcaster, native GUI, R17
+  origin move, or connect/disconnect storm in the E2E).
 
 ## Verification plan (manual, Y6)
 
