@@ -4,7 +4,9 @@ Design doc for [ROADMAP R20](../ROADMAP.md#r20--e2e-testing-in-ci)
 (designed 2026-07-18; Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers
 green in real CI** — tier-1 `e2e` on every PR, `e2e-cluster` on the
 2026-07-18 release PRs; Z4 burn-in + a re-run on the new self-hosted
-`ioio-k8s` runners pending, Z5 not started). Adds a GitHub Actions E2E stage that
+`ioio-k8s` runners pending; Z5 implemented 2026-07-19 — **the browser
+broadcaster works headless via tab capture**, findings 12–15). Adds a
+GitHub Actions E2E stage that
 proves **streaming actually works** — a real Chromium viewer decodes and
 renders real frames published through the real relay binary — before a
 release can ship, in both **single-pod** and **cluster-mode** relay
@@ -293,7 +295,7 @@ Tier 1 (every PR):                     Tier 2 (release PRs only):
 | Z2 | **Tier-1 CI job** — wire the harness into `ci.yml` (new `e2e` job, `pull_request` only); guardrails (concurrency cancel-in-progress, `timeout-minutes: 10`); assertions per Decision 6 | Job green on a real PR; deliberately-broken runs go red (kill `gawk-pubsim` mid-test → flow assertions fail; wrong broadcast ID → fails) — the test-the-test check; measured runtime ≤ 6 min recorded here; a force-push cancels the superseded run; job is advisory (not required yet) | ✅ green on every PR since 2026-07-18 (test-the-test passed locally — both breakages red); advisory (not required yet); per-run minutes accounting rolls into Z4 |
 | Z3 | **Tier-2 kind job** — pinned kind + UDP `extraPortMappings`; image build (shared GHA cache scope) + `kind load`; real chart install (replicas=2, clusterMode, NodePort, test secrets); pubsim + loadgen + browser viewer; per-pod ops assertions (Decision 7); `release-please--*` gate + `workflow_dispatch` | Green on a release PR (or `workflow_dispatch`); chart's replicas>1-requires-clusterMode guard exercised; origin/edge split proven from per-pod `/statusz`/metrics with the browser viewer green; measured runtime ≤ 10 min recorded; docs/22 status updated to point at this as the automated two-pod smoke | ✅ green on the 2026-07-18 release PRs (runs `29659639321` / `29659067892`): step 18 asserted the origin/edge split from per-pod `/statusz` (origin `publisherActive` + `edgeSessions: 1`, edge serving 7 real subscribers, `framesRelayed` within 9) with the browser viewer green; job wall ≈ 4m44s. This executed docs/22's pending two-pod smoke in real CI. Re-run on the new self-hosted `ioio-k8s` runners pending (migration landed 2026-07-19, after these GitHub-hosted greens) |
 | Z4 | **Burn-in → required + budget findings** — flake log, minutes accounting, required-check flip; README/ROADMAP/CLAUDE status sync | ≥ 2 weeks / ~20 consecutive green release-PR runs with every flake root-caused in this doc's findings; measured monthly minutes projection recorded and within budget (Decision 2, incl. the trigger-narrowing fallback assessment); both tiers in the required set with tier 2 skipping cleanly on normal PRs; docs synced | 📋 not started |
-| Z5 | **Browser-broadcaster stretch (droppable)** — spike per Decision 9 order; if viable, a tier-1 variant where the browser publishes (pubsim retired from that scenario or kept as the cluster-tier publisher) | Either: browser-publisher scenario stable in CI at ≤ +3 min with capture path + encode funnel asserted from broadcaster diagnostics; **or** a documented rejection with per-path findings (flags/Xvfb/injection) and the kill criteria verdict — both are valid completions | 📋 not started |
+| Z5 | **Browser-broadcaster stretch (droppable)** — spike per Decision 9 order; if viable, a tier-1 variant where the browser publishes (pubsim retired from that scenario or kept as the cluster-tier publisher) | Either: browser-publisher scenario stable in CI at ≤ +3 min with capture path + encode funnel asserted from broadcaster diagnostics; **or** a documented rejection with per-path findings (flags/Xvfb/injection) and the kill criteria verdict — both are valid completions | 🔧 implemented 2026-07-19 — **spike verdict: viable in headless, via tab capture** (findings 12–14); second tier-1 step `node run.mjs --browser-broadcast` publishes from the production broadcaster surface with the funnel asserted from broadcaster diagnostics; test-the-test passed locally (both breakages red, finding 15); ~17 s wall locally — green-in-CI + the ≤ +3 min measurement pending the first CI run |
 
 Ordering: Z1 → Z2 ship the every-PR value first and de-risk the one real
 unknown (headless WebTransport) before any CI wiring; Z3 needs nothing from
@@ -302,13 +304,15 @@ normal development; Z5 is last and droppable. Nothing here blocks other
 roadmap work — R15/R18/R19 implementation PRs would simply start getting
 tier-1 verdicts once Z2 lands.
 
-## Implementation status & findings (2026-07-18)
+## Implementation status & findings (2026-07-18, Z5 2026-07-19)
 
 Z1 done; Z2/Z3 implemented and **now green in real CI** (finding 10 below) —
 tier-1 `e2e` on every PR and `e2e-cluster` on the 2026-07-18 release PRs, so
 Z3's green-on-a-release-PR acceptance is met. What remains is Z4's
 calendar-gated burn-in (and a re-run on the new self-hosted runners, finding
-11). Z5 not started.
+11). Z5 implemented 2026-07-19 (findings 12–15) — the browser-broadcaster
+spike succeeded on Decision 9's first path, so the injection hook (c) was
+never built and Xvfb (b) never needed.
 
 1. **Z1 spike verdict: hash-pinned WebTransport in headless Chrome works
    outright.** New-headless Chrome for Testing 149 (playwright-core driving
@@ -404,6 +408,70 @@ calendar-gated burn-in (and a re-run on the new self-hosted runners, finding
     the new substrate — the next release-please PR (or a `workflow_dispatch`)
     re-proves it there. This is a required-flip precondition alongside the
     Z4 burn-in.
+12. **Z5 spike verdict (2026-07-19): the browser-broadcaster leg is viable
+    in headless Chrome — via tab capture, never screen capture.** Decision
+    9's path (a) splits in two once you look at pixels:
+    `--auto-select-desktop-capture-source=Entire screen` **grants** and
+    delivers a steady 30 fps whose every frame is **solid black** (the
+    headless "monitor" surface has no content — useless for an E2E that
+    asserts non-black video), while
+    `--auto-select-tab-capture-source-by-title=<title>` grants tab capture
+    (`displaySurface: "browser"`) with real pixels at the full 30 fps —
+    including from a **background** tab (being captured keeps the tab
+    painting and rAF unthrottled; spike-measured 91 frames/3 s). Two
+    non-paths, confirmed so nobody retries them:
+    `--auto-accept-this-tab-capture` leaves the getDisplayMedia promise
+    pending forever (it only auto-accepts `preferCurrentTab` requests,
+    which the app doesn't make), and adding `--use-fake-ui-for-media-stream`
+    to the desktop flag turns the grant into `NotReadableError` — Decision
+    9's "ignored when combined" caveat confirmed. Paths (b) Xvfb and (c)
+    the injected-source hook were never needed.
+13. **Z5 scenario shape** (`node run.mjs --browser-broadcast`, a second
+    tier-1 CI step with `GAWK_E2E_OUT_DIR=out-browser-broadcast` keeping
+    failure artifacts apart): no pubsim — a second headless Chromium opens
+    an animated-canvas tab (title `gawk-e2e-motion-source`; full-viewport,
+    moving gradient so the viewer's non-uniform screenshot check holds)
+    plus the production `#/broadcast` surface, clicks the real "Start a
+    stream" button (the launch flag auto-selects the anim tab in the
+    picker), waits for the LIVE topbar and scrapes the minted code from
+    it, then asserts the encode funnel from the broadcaster's own
+    Copy-diagnostics JSON: median capture/encoder/sent fps ≥ 10 / ≥ 5 /
+    > 0, encoded frames + keyframes + keyframe streams + datagrams +
+    bytes all growing between two captures ~5 s apart, zero
+    keyframe-stream failures on loopback, encoder drops bounded by
+    encodes, and the codec an `avc1.*` variant (negotiation landed on
+    `avc1.4D4034` "realtime" software — no GPU headless/in CI). The
+    unchanged viewer scenario then runs against the scraped ID with the
+    codec assertion relaxed to `/^avc1\./` (negotiated, not
+    fixture-determined). Two harness accommodations: the publish-secret
+    prompt (which defaults **on** for dev/loopback hosts) is disabled by
+    seeding `window.__GAWK_CONFIG__ = { requirePublishSecret: false }` in
+    the init script, and the relay-side assertion now counts **active**
+    publishers only, so a retried broadcaster attempt's grace-period hub
+    can't trip the exactly-one check. Measured locally: the whole mode is
+    ~17 s wall with a 30/30/30 funnel; the ≤ +3 min CI budget has an
+    order of magnitude of headroom on paper, CI's own number pending.
+14. **The R11 worker offload does not engage in headless Chrome 149 — the
+    scenario records the pipeline placement instead of asserting it.**
+    From a proper localhost origin, the worker scope has `VideoEncoder`
+    and `WebTransport` but **no `MediaStreamTrackProcessor`**, and
+    `MediaStreamTrack` transfer throws `DataCloneError` (with
+    `--enable-blink-features=MediaStreamTrackTransfer` the message merely
+    changes to "could not be serialized"), so `createBroadcastSession`'s
+    capability probe correctly falls back to the main-thread pipeline —
+    which held the full 30/30/30 funnel anyway; both placements are
+    legitimate production paths (Firefox is always main-thread). Two
+    corollaries worth keeping: (a) whether stock *headful* Chrome engages
+    the worker path is exactly R11's still-pending manual verify — the
+    overlay's Pipeline row answers it in one glance on the gaming PC; (b)
+    don't probe worker capabilities from `about:blank` — its opaque
+    origin is not a secure context, which hides even WebCodecs/
+    WebTransport and made the first probe read entirely wrong.
+15. **Z5 test-the-test passed (run locally)**: a capture flag matching no
+    tab → red (getDisplayMedia never settles, the scenario times out
+    waiting for the LIVE stage, through the one broadcaster retry);
+    closing the publisher browser right after LIVE → red (the viewer
+    times out waiting for its first completed frame). Both exit 1.
 
 ## Verification plan (the meta-question: how we know the E2E itself works)
 

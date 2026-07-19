@@ -285,19 +285,26 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   private-repo CI minutes (2,000 free/month, 2-core no-GPU runners) as a
   design constraint — concurrency cancel-in-progress, timeout caps, no
   push-to-main runs, advisory burn-in before checks become required;
-  browser-broadcaster tier is a droppable Z5 stretch with kill criteria;
+  browser-broadcaster tier was a droppable Z5 stretch with kill criteria;
   Z1–Z5 chunks (`Y` is R18's — claimed by the concurrent docs/23 design);
-  **Z1 done + Z2/Z3 implemented 2026-07-18** — spike verdict: hash-pinned
-  WebTransport works in headless Chrome as-is; `gawk-pubsim` lives in
+  **Z1 done + Z2/Z3 implemented 2026-07-18, Z5 implemented 2026-07-19** —
+  spike verdicts: hash-pinned
+  WebTransport works in headless Chrome as-is, and the browser broadcaster
+  works headless **via tab capture** (`run.mjs --browser-broadcast`, a
+  second tier-1 step: `--auto-select-tab-capture-source-by-title` against
+  a harness-owned animated tab — headless *screen* capture grants but
+  delivers black frames; worker offload falls back to main-thread
+  headlessly, recorded not asserted); `gawk-pubsim` lives in
   `gawk-broadcast/cmd/` (fixture embedded via the new `internal/fixture`
   package), the harness in top-level `e2e/`; test-the-test passed locally
+  for Z2 and Z5,
   and the tier-2 flow was rehearsed on a local kind cluster (= docs/22's
   two-pod smoke, incl. the `SSL_CERT_FILE=/tls/tls.crt` edge-TLS-trust
   finding); **both tiers now green in real CI** — tier-1 `e2e` on every PR,
   `e2e-cluster` on the 2026-07-18 release PRs (Z3 acceptance met; origin/edge
   split + browser viewer asserted); Z4 burn-in → required flip pending (plus
   a re-run on the new self-hosted `ioio-k8s` runners, migrated 2026-07-19
-  after those GitHub-hosted green runs), Z5 not started).
+  after those GitHub-hosted green runs, and the Z5 step's first CI run)).
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -881,12 +888,14 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    `subscriberDetails.reliable` + carrier counters, Prometheus
    `gawk_broadcast_reliable_subscribers` + `carrier_*_total` +
    `egress_bytes_total{kind="carrier"}`, docs/13 playbook row.
-24. E2E testing in CI — **Z1 done + Z2/Z3 implemented 2026-07-18; both
+24. E2E testing in CI — **Z1 done + Z2/Z3 implemented 2026-07-18, Z5
+   implemented 2026-07-19; both
    tiers now green in real CI (tier-1 `e2e` on every PR; `e2e-cluster` on
    the 2026-07-18 release PRs — Z3 acceptance met); Z4 burn-in → required
    flip pending, plus a re-run on the new self-hosted `ioio-k8s` runners
-   (migrated 2026-07-19 after those GitHub-hosted green runs); Z5 stretch
-   not started; `Y` is R18's, claimed by the concurrent docs/23 design)**
+   (migrated 2026-07-19 after those GitHub-hosted green runs) and the Z5
+   step's first CI run; `Y` is R18's, claimed by the concurrent docs/23
+   design)**
    (R20, `docs/25-e2e-testing-in-ci.md`). GitHub Actions proof that
    streaming works before a release ships: **Tier 1** on every PR runs
    the real relay (`-dev-cert`), publishes the committed H.264 fixture
@@ -913,9 +922,19 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    trigger-narrowing-never-assertion-thinning fallback; both tiers land
    advisory and flip to required after a flake-free burn-in.
    Chromium-only v1 (Firefox deferred with a revisit-if); the
-   browser-broadcaster tier (getDisplayMedia automation) is a
-   pre-registered droppable stretch (Z5) whose documented rejection is a
-   valid completion. Z1's spike confirmed the one load-bearing unknown:
+   browser-broadcaster tier (getDisplayMedia automation) was a
+   pre-registered droppable stretch (Z5) — **implemented 2026-07-19, no
+   kill needed**: a second tier-1 step (`run.mjs --browser-broadcast`)
+   drives the production broadcaster surface headlessly with the capture
+   picker auto-granted by `--auto-select-tab-capture-source-by-title`
+   against a harness-owned animated tab — **tab capture, never screen
+   capture, which grants but delivers solid black frames headlessly**;
+   the encode funnel (capture/encode/sent + keyframe streams, software
+   `avc1.*`) is asserted from the broadcaster's own Copy-diagnostics
+   JSON, and the R11 worker offload is recorded not asserted (headless
+   Chrome exposes no worker MSTP and refuses track transfer → main-thread
+   fallback engages by design; docs/25 findings 12–15). Z1's spike
+   confirmed the one load-bearing unknown:
    **hash-pinned WebTransport works in headless Chrome as-is** (no SPKI
    flag, no Xvfb — docs/25 findings).
 

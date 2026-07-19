@@ -38,7 +38,7 @@ feature set exists).
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | ✅ W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + **green in the `e2e-cluster` CI job (2026-07-18)**; remaining homelab drills (rollout/crash/rebind blips, conntrack empiricism) + 200-viewer scale proof closed as owner-accepted 2026-07-19 (CI non-goals — kind lacks the physics) ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; cluster viewer-count check (origin `viewersGlobal` == Σ per-pod real viewers, edges excluded) **automated in the `e2e-cluster` CI job 2026-07-19**; single-pod browser/native + re-home + storm manual verify still pending ([docs/23](docs/23-live-viewer-count.md)) |
 | R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | ✅ X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification done 2026-07-19 (lossy-network behaviour — not CI-reachable) ([docs/24](docs/24-viewer-network-resilience.md)) |
-| R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers green in real CI** (tier-1 `e2e` on every PR; `e2e-cluster` on the 2026-07-18 release PRs — Z3's green-on-a-release-PR acceptance met, origin/edge split + browser viewer asserted); Z4 burn-in → required flip pending; Z5 stretch not started ([docs/25](docs/25-e2e-testing-in-ci.md)) |
+| R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers green in real CI** (tier-1 `e2e` on every PR; `e2e-cluster` on the 2026-07-18 release PRs — Z3's green-on-a-release-PR acceptance met, origin/edge split + browser viewer asserted); Z5 browser-broadcaster implemented 2026-07-19 (spike: viable headless via tab capture — screen capture delivers black frames); Z4 burn-in → required flip pending ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 
 ---
 
@@ -1301,7 +1301,8 @@ manual drill); Firefox in v1 (deferred with a recorded revisit-if);
 CI-driven deploys (locked decision: CI publishes, the cluster deploys
 itself).
 
-**Status**: Z1 done + Z2/Z3 implemented 2026-07-18 (chunks Z1–Z5 with
+**Status**: Z1 done + Z2/Z3 implemented 2026-07-18, Z5 implemented
+2026-07-19 (chunks Z1–Z5 with
 per-chunk acceptance criteria — `Y` is R18's, claimed by the same-day
 docs/23 design). The Z1 spike verdict: **hash-pinned WebTransport works in
 headless Chrome as-is** (no SPKI flag, no Xvfb). Test-the-test passed
@@ -1311,10 +1312,17 @@ two-pod smoke (origin/edge split proven from per-pod `/statusz`, browser
 viewer green against the cluster). **Both tiers are now green in real CI**:
 tier-1 `e2e` on every PR, and `e2e-cluster` on the 2026-07-18 release PRs
 (runs 29659639321 / 29659067892 — Z3's green-on-a-release-PR acceptance met;
-step 18 asserted the origin/edge split, browser viewer green). Pending: the
+step 18 asserted the origin/edge split, browser viewer green). The Z5 spike
+verdict: **the browser broadcaster works headless too, via tab capture** —
+`--auto-select-tab-capture-source-by-title` against a harness-owned
+animated tab (headless *screen* capture grants but delivers black frames);
+a second tier-1 step publishes from the production broadcaster surface with
+the encode funnel asserted from its own diagnostics, ~17 s wall locally.
+Pending: the
 Z4 burn-in → required flip — plus a re-run on the new self-hosted `ioio-k8s`
 runners, since the CI runner migration landed 2026-07-19 after those green
-runs (which were on GitHub-hosted runners); Z5 stretch not started. See
+runs (which were on GitHub-hosted runners), and the Z5 step's first CI
+runtime measurement. See
 docs/25 "Implementation status & findings".
 User decisions anchoring scope: cluster-mode
 verification on release-please PRs only; free-tier CI minutes as a
