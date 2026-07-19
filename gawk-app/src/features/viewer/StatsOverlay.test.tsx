@@ -70,6 +70,13 @@ function fullStats(): ViewerStats {
       datagramsLostOutgoing: null,
       datagramsDroppedIncoming: 5,
     },
+    audioState: 'absent',
+    audioPacketsReceived: 0,
+    audioPacketsDecoded: 0,
+    audioBytesReceived: 0,
+    audioCodec: null,
+    audioSampleRate: null,
+    audioChannels: null,
   };
 }
 

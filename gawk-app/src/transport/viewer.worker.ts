@@ -64,11 +64,13 @@ let teeArmed = false;
 
 // R16: the tee's counters ride the existing stats events (only when a tee
 // exists — non-gated stats are byte-identical).
-const post = (ev: ViewerWorkerEvent): void => {
+const post = (ev: ViewerWorkerEvent, transfer?: Transferable[]): void => {
   if (ev.type === 'stats' && tee) {
     ctx.postMessage({ ...ev, stats: { ...ev.stats, presentationTee: tee.teeStats() } });
   } else {
-    ctx.postMessage(ev);
+    // R15: audio chunks arrive with their channel buffers in the transfer
+    // list; everything else posts as before.
+    ctx.postMessage(ev, transfer);
   }
 };
 

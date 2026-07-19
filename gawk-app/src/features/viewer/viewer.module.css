@@ -233,3 +233,46 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* R15 (docs/20 Decision 9): audio controls — rendered only when the stream
+   actually carries audio, so a video-only viewer is unchanged. The slider
+   stays compact so the control bar keeps its cinematic restraint. */
+.audioControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: 0.35rem;
+}
+
+.volume {
+  width: 5.5rem;
+  accent-color: var(--text);
+  cursor: pointer;
+}
+
+/* Autoplay policy is holding playback for a gesture (the norm on iOS). */
+.unmutePrompt {
+  position: absolute;
+  bottom: 5.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  cursor: pointer;
+  animation: overlayIn var(--dur) var(--ease);
+}
+
+.unmutePrompt:hover {
+  border-color: var(--text);
+}

@@ -14,6 +14,15 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
     onStats: (s: unknown) => void;
     onError: (e: Error) => void;
     onEnded: () => void;
+    // R15: the audio crossing (optional — a session consumer without audio
+    // never sets them).
+    onAudioChunk?: (chunk: {
+      timestampUs: number;
+      sampleRate: number;
+      channels: Float32Array[];
+      frameCount: number;
+    }) => void;
+    onAudioReset?: () => void;
   }
   // failStartWith: makes the next sessions' start() reject — the
   // never-connected path (fatal by ViewerSession policy, no callbacks fire).
@@ -335,5 +344,102 @@ describe('ViewerScreen R16 presentation surface', () => {
       elementFrames: null,
       elementContentPeak: null,
     });
+  });
+});
+
+// R15 N4 (docs/20 Decision 9): the conditional-audio-UI criterion — audio
+// controls exist only when the stream actually carries audio.
+//
+// jsdom has no Web Audio, so these stub the minimum the sink touches. That is
+// deliberate: the UI must appear only where audio can actually *play*, so the
+// tests exercise the real ensureSink path rather than bypassing it.
+function stubWebAudio() {
+  class FakeAudioWorkletNode {
+    port = { postMessage: vi.fn(), onmessage: null as unknown };
+    connect = vi.fn();
+    disconnect = vi.fn();
+  }
+  class FakeAudioContext {
+    state = 'running';
+    destination = {};
+    audioWorklet = { addModule: vi.fn(() => Promise.resolve()) };
+    createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }));
+    resume = vi.fn(() => Promise.resolve());
+    close = vi.fn(() => Promise.resolve());
+  }
+  vi.stubGlobal('AudioContext', FakeAudioContext);
+  vi.stubGlobal('AudioWorkletNode', FakeAudioWorkletNode);
+  vi.stubGlobal('URL', {
+    ...URL,
+    createObjectURL: vi.fn(() => 'blob:stub'),
+    revokeObjectURL: vi.fn(),
+  });
+}
+
+describe('ViewerScreen audio UI (R15)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    stubWebAudio();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('renders no audio UI for a video-only stream', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    expect(screen.queryByLabelText('Volume')).toBeNull();
+    expect(screen.queryByLabelText('Mute')).toBeNull();
+    expect(screen.queryByLabelText('Unmute')).toBeNull();
+    expect(screen.queryByText(/Tap for sound/)).toBeNull();
+
+    // …and the right-click menu carries no audio entry either.
+    fireEvent.contextMenu(document.body.querySelector('div')!);
+    expect(screen.queryByText('Mute')).toBeNull();
+  });
+
+  it('reveals mute/volume reactively once audio is received mid-view', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    expect(screen.queryByLabelText('Volume')).toBeNull();
+
+    // The pipeline decodes its first audio chunk (jsdom has no AudioContext,
+    // so the sink can't build — but `present` is driven by receipt, and the
+    // controls must appear the moment audio exists in the stream).
+    act(() => {
+      sessions[0].cbs.onAudioChunk?.({
+        timestampUs: 0,
+        sampleRate: 48000,
+        channels: [new Float32Array(960), new Float32Array(960)],
+        frameCount: 960,
+      });
+    });
+
+    await waitFor(() => expect(screen.queryByLabelText('Volume')).not.toBeNull());
+    expect(screen.getByLabelText('Mute')).toBeTruthy();
+  });
+
+  it('mute persists and flips the control label', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    act(() => {
+      sessions[0].cbs.onAudioChunk?.({
+        timestampUs: 0,
+        sampleRate: 48000,
+        channels: [new Float32Array(960)],
+        frameCount: 960,
+      });
+    });
+    await waitFor(() => expect(screen.queryByLabelText('Mute')).not.toBeNull());
+
+    fireEvent.click(screen.getByLabelText('Mute'));
+    await waitFor(() => expect(screen.queryByLabelText('Unmute')).not.toBeNull());
+    expect(localStorage.getItem('gawk:muted')).toBe('1');
+
+    fireEvent.click(screen.getByLabelText('Unmute'));
+    await waitFor(() => expect(screen.queryByLabelText('Mute')).not.toBeNull());
+    expect(localStorage.getItem('gawk:muted')).toBe('0');
   });
 });

@@ -21,6 +21,12 @@ import {
 import type { ViewerStats } from '../../transport/viewer';
 import type { ViewerWorkerEvent } from '../../transport/viewer-worker-core';
 import { WorkerViewerController } from './workerViewerController';
+import { AudioSink, audioSinkSupported } from './audioSink';
+import {
+  DEFAULT_AUDIO_PROFILE,
+  RESILIENT_AUDIO_PROFILE,
+  type AudioBufferProfile,
+} from '../../transport/audio-buffer';
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
 
@@ -36,6 +42,20 @@ export interface PresentationState {
   arm: () => void;
 }
 
+// R15 (docs/20 Decision 9): the audio surface for the screen. `present` is
+// false until audio is actually observed in the stream — every piece of audio
+// UI hangs off it, so a video-only broadcast renders exactly today's viewer.
+// `needsGesture` drives the tap-to-unmute affordance (autoplay policy).
+export interface AudioState {
+  present: boolean;
+  muted: boolean;
+  volume: number;
+  needsGesture: boolean;
+  setMuted: (muted: boolean) => void;
+  setVolume: (volume: number) => void;
+  resume: () => void;
+}
+
 export interface ViewerConnectionState {
   status: ViewerStatus;
   stats: ViewerStats | null;
@@ -48,6 +68,32 @@ export interface ViewerConnectionState {
   errorFatal: boolean;
   retryNote: string | null;
   presentation: PresentationState;
+  audio: AudioState;
+}
+
+// R15 (docs/20 Decision 9): mute/volume persist per browser, filling the slot
+// R6 reserved. Default: unmuted at full volume — the toggle is the
+// broadcaster's experimental opt-in, not the viewer's.
+const MUTED_KEY = 'gawk:muted';
+const VOLUME_KEY = 'gawk:volume';
+
+function loadMuted(): boolean {
+  try {
+    return localStorage.getItem(MUTED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function loadVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_KEY);
+    if (raw === null) return 1;
+    const v = Number(raw);
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
+  } catch {
+    return 1;
+  }
 }
 
 // Whether we can even attempt the worker path. In jsdom (tests) and any browser
@@ -92,6 +138,96 @@ export function useViewerConnection(
   // transfer) that it lacks the codecs/transport — then we use the main thread.
   const [workerUnsupported, setWorkerUnsupported] = useState(false);
   const useWorker = canUseWorker && !workerUnsupported;
+
+  // R15 (docs/20 Decisions 7-9): the audio sink lives here — one per hook
+  // instance, created lazily on the first audio chunk so a video-only stream
+  // never constructs an AudioContext.
+  const [audioPresent, setAudioPresent] = useState(false);
+  const [audioNeedsGesture, setAudioNeedsGesture] = useState(false);
+  const [muted, setMutedState] = useState(loadMuted);
+  const [volume, setVolumeState] = useState(loadVolume);
+  const sinkRef = useRef<AudioSink | null>(null);
+  // Read live by the sink's jitter buffer: resilient mode widens the audio
+  // envelope too, or audio-master pacing would collapse the video buffer
+  // (docs/20 Decision 12).
+  const resilientRef = useRef(resilientMode);
+  resilientRef.current = resilientMode;
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+
+  const ensureSink = useCallback((): AudioSink | null => {
+    if (sinkRef.current) return sinkRef.current;
+    if (!audioSinkSupported()) return null;
+    const profile = (): AudioBufferProfile =>
+      resilientRef.current ? RESILIENT_AUDIO_PROFILE : DEFAULT_AUDIO_PROFILE;
+    const sink = new AudioSink({}, profile);
+    sink.setMuted(mutedRef.current);
+    sink.setVolume(volumeRef.current);
+    sinkRef.current = sink;
+    return sink;
+  }, []);
+
+  // Handles one decoded chunk from either pipeline path. The sink is started
+  // on the first chunk (its sample rate configures the context) and the
+  // audio UI appears reactively from that moment.
+  const handleAudioChunk = useCallback(
+    (chunk: { timestampUs: number; sampleRate: number; channels: Float32Array[]; frameCount: number }) => {
+      const sink = ensureSink();
+      if (!sink) return;
+      void sink.start(chunk.sampleRate).then(
+        () => setAudioNeedsGesture(sink.needsGesture),
+        () => {
+          // Context/worklet failed — video plays on; no audio UI is offered.
+          setAudioPresent(false);
+        },
+      );
+      setAudioPresent(true);
+      sink.push(chunk);
+    },
+    [ensureSink],
+  );
+
+  const handleAudioReset = useCallback(() => {
+    sinkRef.current?.flush();
+  }, []);
+
+  // The sink outlives individual sessions (reconnects re-anchor it via
+  // onAudioReset) but not the hook.
+  useEffect(() => {
+    return () => {
+      sinkRef.current?.dispose();
+      sinkRef.current = null;
+    };
+  }, []);
+
+  const setMuted = useCallback((next: boolean) => {
+    setMutedState(next);
+    sinkRef.current?.setMuted(next);
+    try {
+      localStorage.setItem(MUTED_KEY, next ? '1' : '0');
+    } catch {
+      // private mode etc. — the toggle still works for this session
+    }
+  }, []);
+
+  const setVolume = useCallback((next: number) => {
+    const v = Math.max(0, Math.min(1, next));
+    setVolumeState(v);
+    sinkRef.current?.setVolume(v);
+    try {
+      localStorage.setItem(VOLUME_KEY, String(v));
+    } catch {
+      // private mode etc.
+    }
+  }, []);
+
+  const resumeAudio = useCallback(() => {
+    const sink = sinkRef.current;
+    if (!sink) return;
+    void sink.resume().then(() => setAudioNeedsGesture(sink.needsGesture));
+  }, []);
 
   const resetState = useCallback(() => {
     setStatus('connecting');
@@ -151,8 +287,16 @@ export function useViewerConnection(
       case 'presentationTrack':
         setPresentationTrack(ev.track);
         break;
+      // R15: decoded PCM from the worker pipeline (the main-thread path
+      // calls handleAudioChunk directly — no event round-trip).
+      case 'audioChunk':
+        handleAudioChunk(ev);
+        break;
+      case 'audioReset':
+        handleAudioReset();
+        break;
     }
-  }, []);
+  }, [handleAudioChunk, handleAudioReset]);
 
   // ---- Worker path ---------------------------------------------------------
   const controllerRef = useRef<WorkerViewerController | null>(null);
@@ -295,6 +439,14 @@ export function useViewerConnection(
         onEnded: () => {
           if (active) applyEvent({ type: 'ended' });
         },
+        // R15: the main-thread pipeline decodes audio in place and feeds the
+        // same sink — no worker crossing on this path.
+        onAudioChunk: (chunk) => {
+          if (active) handleAudioChunk(chunk);
+        },
+        onAudioReset: () => {
+          if (active) handleAudioReset();
+        },
       },
     );
     session.start().catch((e) => {
@@ -310,7 +462,16 @@ export function useViewerConnection(
       active = false;
       void session.stop();
     };
-  }, [useWorker, broadcastId, resilientMode, applyEvent, canvasRef, resetState]);
+  }, [
+    useWorker,
+    broadcastId,
+    resilientMode,
+    applyEvent,
+    canvasRef,
+    resetState,
+    handleAudioChunk,
+    handleAudioReset,
+  ]);
 
   // R16: arm the tee (screen calls this at `watching` on gated devices, after
   // a positive probe). Idempotent down the whole chain.
@@ -333,6 +494,15 @@ export function useViewerConnection(
       probe: presentationTee && !useWorker ? false : presentationProbe,
       track: presentationTrack,
       arm: armPresentation,
+    },
+    audio: {
+      present: audioPresent,
+      muted,
+      volume,
+      needsGesture: audioNeedsGesture,
+      setMuted,
+      setVolume,
+      resume: resumeAudio,
     },
   };
 }

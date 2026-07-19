@@ -57,7 +57,21 @@ export type ViewerWorkerEvent =
   | { type: 'presentationProbe'; supported: boolean }
   // R16: the generator's track, transferred once on arm. Host-level in the
   // worker — it survives pipeline attempts/reconnects (docs/21 Decision 4).
-  | { type: 'presentationTrack'; track: MediaStreamTrack };
+  | { type: 'presentationTrack'; track: MediaStreamTrack }
+  // R15 (docs/20 Decision 7): decoded planar PCM for the main-thread
+  // AudioWorklet sink — the first deliberate decoded-media crossing (an
+  // AudioContext cannot exist in a dedicated worker). The channel buffers
+  // are transferred, so nothing is structured-cloned.
+  | {
+      type: 'audioChunk';
+      timestampUs: number;
+      sampleRate: number;
+      channels: Float32Array[];
+      frameCount: number;
+    }
+  // R15 (docs/20 Decision 8): restart/reconnect — the sink must flush and
+  // re-anchor before the new timeline's packets arrive.
+  | { type: 'audioReset' };
 
 // Shell-level boot handshake (posted by viewer.worker.ts on load, before any
 // command): reports whether this worker's global scope actually has the codecs
@@ -68,7 +82,9 @@ export type ViewerWorkerBoot = { type: 'boot'; supported: boolean };
 export type ViewerWorkerOutbound = ViewerWorkerEvent | ViewerWorkerBoot;
 
 export interface WorkerHost {
-  post(event: ViewerWorkerEvent): void;
+  // R15: the optional transfer list carries decoded audio buffers across
+  // without a structured clone.
+  post(event: ViewerWorkerEvent, transfer?: Transferable[]): void;
   renderSink: RenderSink;
   // R10 P3: how each pipeline attempt gets its transport. The shell supplies
   // a nested-transport-worker factory where nested workers exist; omitted, the
@@ -153,6 +169,24 @@ export class ViewerWorkerCore {
         if (!current()) return;
         this.session = null;
         this.host.post({ type: 'ended' });
+      },
+      // R15 (docs/20 Decision 7): decoded PCM crosses to the main thread,
+      // channel buffers transferred.
+      onAudioChunk: (chunk) => {
+        if (!current()) return;
+        this.host.post(
+          {
+            type: 'audioChunk',
+            timestampUs: chunk.timestampUs,
+            sampleRate: chunk.sampleRate,
+            channels: chunk.channels,
+            frameCount: chunk.frameCount,
+          },
+          chunk.channels.map((c) => c.buffer as ArrayBuffer),
+        );
+      },
+      onAudioReset: () => {
+        if (current()) this.host.post({ type: 'audioReset' });
       },
     };
 

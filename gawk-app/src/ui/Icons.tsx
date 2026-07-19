@@ -93,6 +93,27 @@ export function EyeIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// R15 (docs/20 Decision 9): the viewer's audio controls — rendered only when
+// audio is actually received in the stream.
+export function SpeakerIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4Z" />
+      <path d="M15.5 9a4 4 0 0 1 0 6" />
+      <path d="M18 6.5a7.5 7.5 0 0 1 0 11" />
+    </svg>
+  );
+}
+
+export function SpeakerMutedIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4Z" />
+      <path d="M16 9.5l5 5M21 9.5l-5 5" />
+    </svg>
+  );
+}
+
 export function CloseIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>

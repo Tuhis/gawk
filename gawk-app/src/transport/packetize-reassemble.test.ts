@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
-import { Reassembler, type AssembledFrame } from './reassembler';
-import { MAX_CHUNK_PAYLOAD, encodeClockMapping, encodeViewerCount, type DecoderConfigMessage } from './wire';
+import { Reassembler, type AssembledFrame, type AudioPacket } from './reassembler';
+import {
+  MAX_CHUNK_PAYLOAD,
+  encodeAudioConfig,
+  encodeAudioFrame,
+  encodeClockMapping,
+  encodeViewerCount,
+  type AudioConfigMessage,
+  type DecoderConfigMessage,
+} from './wire';
 
 function patternBytes(length: number, seed: number): Uint8Array {
   const out = new Uint8Array(length);
@@ -262,5 +270,92 @@ describe('malformed input', () => {
     expect(r.getStats().badDatagrams).toBe(1);
     r.push(a[1]);
     expect(frames).toHaveLength(1); // original frame still completes
+  });
+});
+
+// R15 N4 (docs/20 Decision 7): the audio demux — packets pass through with no
+// reassembly (one datagram IS one Opus packet), configs dedupe like the video
+// config, and unknown types still count bad.
+describe('audio demux (R15)', () => {
+  function audioCollector() {
+    const packets: AudioPacket[] = [];
+    const audioConfigs: AudioConfigMessage[] = [];
+    const frames: AssembledFrame[] = [];
+    const r = new Reassembler({
+      onFrame: (f) => frames.push(f),
+      onConfig: () => {},
+      onAudioFrame: (p) => packets.push(p),
+      onAudioConfig: (c) => audioConfigs.push(c),
+    });
+    return { r, packets, audioConfigs, frames };
+  }
+
+  const cfg = { codec: 'opus', sampleRate: 48000, channels: 2, description: new Uint8Array(0) };
+
+  it('routes audio frames straight through, preserving seq/timestamp/payload', () => {
+    const { r, packets } = audioCollector();
+    const payload = patternBytes(320, 7);
+    r.push(encodeAudioFrame({ seq: 42, timestampUs: 1_234_000n }, payload));
+
+    expect(packets).toHaveLength(1);
+    expect(packets[0].seq).toBe(42);
+    expect(packets[0].timestampUs).toBe(1_234_000n);
+    expect(packets[0].payload).toEqual(payload);
+  });
+
+  it('deduplicates the 1 Hz config re-sends, emitting only real changes', () => {
+    const { r, audioConfigs } = audioCollector();
+    r.push(encodeAudioConfig(cfg));
+    r.push(encodeAudioConfig(cfg));
+    r.push(encodeAudioConfig(cfg));
+    expect(audioConfigs).toHaveLength(1);
+
+    r.push(encodeAudioConfig({ ...cfg, sampleRate: 44100 }));
+    expect(audioConfigs).toHaveLength(2);
+    expect(audioConfigs[1].sampleRate).toBe(44100);
+    expect(r.getStats().duplicateConfigs).toBe(2);
+  });
+
+  it('counts audio packets and bytes without disturbing the video counters', () => {
+    const { r, frames } = audioCollector();
+    for (const d of packetizeFrame({ frameId: 1, keyframe: false, timestampUs: 0n }, patternBytes(100, 1))) {
+      r.push(d);
+    }
+    const audio = encodeAudioFrame({ seq: 0, timestampUs: 0n }, patternBytes(320, 2));
+    r.push(audio);
+
+    const stats = r.getStats();
+    expect(frames).toHaveLength(1);
+    expect(stats.framesCompleted).toBe(1);
+    expect(stats.audioPacketsReceived).toBe(1);
+    expect(stats.audioBytesReceived).toBe(audio.byteLength);
+    expect(stats.badDatagrams).toBe(0);
+  });
+
+  it('malformed audio datagrams count bad and emit nothing', () => {
+    const { r, packets, audioConfigs } = audioCollector();
+    const validFrame = encodeAudioFrame({ seq: 1, timestampUs: 0n }, patternBytes(10, 1));
+    const validConfig = encodeAudioConfig(cfg);
+
+    r.push(validFrame.subarray(0, 10)); // truncated header
+    r.push(validFrame.subarray(0, 16)); // header only, empty payload
+    r.push(validConfig.subarray(0, 6)); // truncated config
+
+    expect(packets).toHaveLength(0);
+    expect(audioConfigs).toHaveLength(0);
+    expect(r.getStats().badDatagrams).toBe(3);
+  });
+
+  it('a viewer with no audio callbacks ignores audio without counting it bad', () => {
+    const { r } = collector(); // no onAudioFrame/onAudioConfig
+    r.push(encodeAudioFrame({ seq: 0, timestampUs: 0n }, patternBytes(320, 3)));
+    r.push(encodeAudioConfig(cfg));
+    expect(r.getStats().badDatagrams).toBe(0);
+  });
+
+  it('still counts genuinely unknown types bad', () => {
+    const { r } = audioCollector();
+    r.push(new Uint8Array([0x01, 0x7f, 0x00, 0x00]));
+    expect(r.getStats().badDatagrams).toBe(1);
   });
 });

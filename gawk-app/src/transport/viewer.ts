@@ -4,6 +4,11 @@
 
 import { log } from '../lib/logger';
 import { Decoder, type DecodedFrame } from '../media/decoder';
+import {
+  AudioDecodeLane,
+  audioDecodeSupported,
+  type DecodedAudioChunk,
+} from './audio-decode';
 import type { ConnectOptions, KeyframeStreamFrame } from './connection';
 import type { TransportConnectionStats } from './net-stats';
 import {
@@ -142,6 +147,18 @@ export interface ViewerStats extends ReassemblerStats {
   // Carriers ending in a reset — the relay shedding a stalled/superseded GOP
   // tail; each costs at most one resync at the next keyframe.
   carrierStreamsAborted: number | null;
+  // R15 (docs/20): the audio lane, as observed by this pipeline. audioPresent
+  // flips true on the first AudioConfig/packet and is what gates every piece
+  // of viewer audio UI — a video-only stream renders exactly today's viewer.
+  // 'unsupported' means audio arrived but this scope has no AudioDecoder;
+  // 'error' means the lane died (video plays on).
+  audioState: 'absent' | 'active' | 'unsupported' | 'error';
+  audioPacketsReceived: number;
+  audioPacketsDecoded: number;
+  audioBytesReceived: number;
+  audioCodec: string | null;
+  audioSampleRate: number | null;
+  audioChannels: number | null;
   // R16 (docs/21 Decision 9). The pipeline itself never sets these three:
   // presentationTee is merged in by the viewer *worker shell* when the
   // presentation tee exists (gated devices only); featureGates and
@@ -158,6 +175,14 @@ export interface ViewerCallbacks {
   onStats: (stats: ViewerStats) => void;
   onError: (err: Error) => void;
   onEnded: () => void;
+  // R15 (docs/20 Decision 7): decoded planar PCM, headed for the main-thread
+  // AudioWorklet sink. On the worker path the host transfers it across; on
+  // the main-thread path it goes straight to the sink. Absent callback = the
+  // consumer doesn't do audio, and the lane is never built.
+  onAudioChunk?: (chunk: DecodedAudioChunk) => void;
+  // Broadcaster restart / resync: the sink must flush and re-anchor, or every
+  // packet on the new timeline is late forever (docs/20 Decision 8).
+  onAudioReset?: () => void;
 }
 
 export class ViewerPipeline {
@@ -229,6 +254,11 @@ export class ViewerPipeline {
   private lastCapToRenderMs: number | null = null;
   // R18: the relay's latest "N watching" push (last one wins).
   private viewerCount: number | null = null;
+  // R15 (docs/20): the audio lane. Built lazily on the first audio message —
+  // a video-only stream never constructs it, so nothing about this pipeline
+  // changes for broadcasts without audio.
+  private audioLane: AudioDecodeLane | null = null;
+  private audioState: ViewerStats['audioState'] = 'absent';
   // R12 T1: per-stats-window decode latencies (σ published as decodeJitterMs).
   private decodeLatencies: number[] = [];
 
@@ -281,6 +311,17 @@ export class ViewerPipeline {
       // R18: the relay's live viewer count (join-primed, then ~1 s cadence).
       onSubscriberCount: (count) => {
         this.viewerCount = count;
+      },
+      // R15 (docs/20 Decision 7): the audio lane's demux points. Both are
+      // no-ops without an onAudioChunk consumer, so a viewer that can't play
+      // audio never builds a decoder.
+      onAudioConfig: (config) => {
+        const lane = this.ensureAudioLane();
+        lane?.configure(config);
+      },
+      onAudioFrame: (packet) => {
+        const lane = this.ensureAudioLane();
+        lane?.push(packet);
       },
       // Reassembled datagram frames feed the reorder buffer. Keyframes only
       // arrive over streams in practice, but routing a keyframe-flagged
@@ -342,6 +383,28 @@ export class ViewerPipeline {
     // Web Worker (R8 S6), where `window` is undefined.
     this.statsTimer = setInterval(() => this.publishStats(), 500) as unknown as number;
     this.reorderTimer = setInterval(() => this.reorderTick(), REORDER_TICK_MS) as unknown as number;
+  }
+
+  // R15: builds the audio lane on first use. Returns null when this viewer
+  // has no audio consumer (main-thread paths that don't render audio) or the
+  // scope lacks AudioDecoder — both annotate and keep video untouched.
+  private ensureAudioLane(): AudioDecodeLane | null {
+    if (this.audioLane) return this.audioLane;
+    if (this.stopping || !this.cb.onAudioChunk) return null;
+    if (!audioDecodeSupported()) {
+      this.audioState = 'unsupported';
+      return null;
+    }
+    this.audioLane = new AudioDecodeLane({
+      onChunk: (chunk) => this.cb.onAudioChunk?.(chunk),
+      onError: (err) => {
+        log.warn('Audio decode lane failed; the stream plays video-only:', err);
+        this.audioState = 'error';
+        this.audioLane = null;
+      },
+    });
+    this.audioState = 'active';
+    return this.audioLane;
   }
 
   private handleKeyframeStream(kf: KeyframeStreamFrame): void {
@@ -522,6 +585,10 @@ export class ViewerPipeline {
     this.liveEdge.reset();
     this.broadcastClockOffsetUs = null;
     this.lastCapToRenderMs = null;
+    // R15 (docs/20 Decision 8): audio timestamps live on the same restarted
+    // timeline — the sink must drop its queue and re-anchor, or every new
+    // packet reads as older than the playhead and is late-dropped forever.
+    this.cb.onAudioReset?.();
     // Held paced frames are from the old timeline — their targets are junk,
     // and so is any adaptive offset learned against it.
     this.renderSink?.flush?.();
@@ -620,6 +687,7 @@ export class ViewerPipeline {
     // what this pipeline asked for; carriers observed is what the relay
     // actually serves.
     const carrier = this.transport?.sampleCarrierStats?.() ?? null;
+    const audioStats = this.audioLane?.getStats() ?? null;
     const deliveryMode: ViewerStats['deliveryMode'] =
       this.connectOpts.deliveryMode === 'reliable'
         ? carrier && carrier.streamsOpened > 0
@@ -683,6 +751,13 @@ export class ViewerPipeline {
       carrierStreams: carrier?.streamsOpened ?? null,
       carrierRecords: carrier?.recordsReceived ?? null,
       carrierStreamsAborted: carrier?.streamsAborted ?? null,
+      audioState: this.audioState,
+      audioPacketsReceived: reasm?.audioPacketsReceived ?? 0,
+      audioPacketsDecoded: audioStats?.packetsDecoded ?? 0,
+      audioBytesReceived: reasm?.audioBytesReceived ?? 0,
+      audioCodec: audioStats?.codec ?? null,
+      audioSampleRate: audioStats?.sampleRate ?? null,
+      audioChannels: audioStats?.channels ?? null,
     });
   }
 
@@ -753,6 +828,7 @@ export class ViewerPipeline {
     }
     this.renderSink?.flush?.();
     this.transport?.close();
+    this.audioLane?.stop();
 
     if (this.decoder) await this.decoder.close();
 
@@ -760,6 +836,7 @@ export class ViewerPipeline {
     this.reassembler = null;
     this.reorder = null;
     this.transport = null;
+    this.audioLane = null;
 
     this.cb.onEnded();
   }

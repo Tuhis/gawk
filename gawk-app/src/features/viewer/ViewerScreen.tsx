@@ -3,7 +3,15 @@ import styles from './viewer.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
 import { Button } from '../../ui/Button';
-import { EyeIcon, FullscreenExitIcon, FullscreenIcon, LeaveIcon, StatsIcon } from '../../ui/Icons';
+import {
+  EyeIcon,
+  FullscreenExitIcon,
+  FullscreenIcon,
+  LeaveIcon,
+  SpeakerIcon,
+  SpeakerMutedIcon,
+  StatsIcon,
+} from '../../ui/Icons';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
 import { StatsOverlay } from './StatsOverlay';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
@@ -173,14 +181,15 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // exactly as before. Sampled once per mount.
   const [gated] = useState(() => !elementFullscreenAvailable());
 
-  const { status, stats, codec, errorKind, errorFatal, retryNote, presentation } = useViewerConnection(
-    broadcastId,
-    canvasRef,
-    playoutMode,
-    interpolation,
-    gated,
-    resilientMode,
-  );
+  const { status, stats, codec, errorKind, errorFatal, retryNote, presentation, audio } =
+    useViewerConnection(
+      broadcastId,
+      canvasRef,
+      playoutMode,
+      interpolation,
+      gated,
+      resilientMode,
+    );
 
   const [showStats, setShowStats] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -390,6 +399,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           },
         ]
       : []),
+    // R15 (docs/20 Decision 9): audio entries appear only when the stream
+    // actually carries audio — a video-only broadcast's menu is unchanged.
+    ...(audio.present
+      ? [{ label: audio.muted ? 'Unmute ✓' : 'Mute', onSelect: () => audio.setMuted(!audio.muted) }]
+      : []),
     { label: 'Copy link', onSelect: copyLink },
     { label: 'Leave', onSelect: leave },
   ];
@@ -486,6 +500,15 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         />
       )}
 
+      {/* R15 (docs/20 Decision 9): the browser is holding audio for a
+          gesture (strict autoplay settings; the norm on iOS). Tapping
+          resumes the context — the pipeline never paused. */}
+      {audio.present && audio.needsGesture && status === 'watching' && (
+        <button className={styles.unmutePrompt} onClick={audio.resume}>
+          <SpeakerIcon /> Tap for sound
+        </button>
+      )}
+
       {copied && <div className={styles.toast}>Link copied</div>}
 
       <div className={[styles.controls, showControls ? '' : styles.controlsHidden].join(' ')}>
@@ -505,6 +528,33 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           )}
         </div>
         <div className={styles.actions}>
+          {/* R15 (docs/20 Decision 9): mute + volume, rendered only when the
+              stream actually carries audio. A video-only stream shows exactly
+              today's control bar. */}
+          {audio.present && (
+            <div className={styles.audioControls}>
+              <IconButton
+                label={audio.muted ? 'Unmute' : 'Mute'}
+                onClick={() => audio.setMuted(!audio.muted)}
+              >
+                {audio.muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
+              </IconButton>
+              <input
+                className={styles.volume}
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={audio.muted ? 0 : audio.volume}
+                aria-label="Volume"
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (audio.muted && v > 0) audio.setMuted(false);
+                  audio.setVolume(v);
+                }}
+              />
+            </div>
+          )}
           <IconButton label={showStats ? 'Hide stats' : 'Show stats'} onClick={() => setShowStats((s) => !s)}>
             <StatsIcon />
           </IconButton>

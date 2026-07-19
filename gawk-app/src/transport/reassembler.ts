@@ -20,7 +20,7 @@
 // - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
 //   the relay re-emits the config before every keyframe by design.
 
-import { frameIdAhead, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type DecoderConfigMessage } from './wire';
+import { frameIdAhead, parseAudioConfig, parseAudioFrame, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type AudioConfigMessage, type DecoderConfigMessage } from './wire';
 
 const MAX_ASSEMBLIES = 8;
 
@@ -29,6 +29,15 @@ export interface AssembledFrame {
   keyframe: boolean;
   timestampUs: bigint;
   data: Uint8Array; // contiguous copy, safe to retain
+}
+
+// R15 (docs/20 Decision 7): one demuxed audio packet — exactly one Opus
+// packet. The payload aliases the input datagram (same non-reuse contract as
+// push()).
+export interface AudioPacket {
+  seq: number;
+  timestampUs: bigint;
+  payload: Uint8Array;
 }
 
 export interface ReassemblerCallbacks {
@@ -41,6 +50,12 @@ export interface ReassemblerCallbacks {
   // R18 (docs/23 Decision 8): the relay's live "N watching" push (global
   // across the fleet in cluster mode). Last one wins, like the mapping.
   onSubscriberCount?: (count: number) => void;
+  // R15 (docs/20 Decision 7): the audio lane's demux points. Audio has no
+  // chunking/reassembly — a packet datagram IS the packet; the config is
+  // deduplicated by byte equality like the video config (the broadcaster
+  // re-sends it at 1 Hz by design).
+  onAudioFrame?: (packet: AudioPacket) => void;
+  onAudioConfig?: (config: AudioConfigMessage) => void;
 }
 
 export interface ReassemblerStats {
@@ -51,6 +66,10 @@ export interface ReassemblerStats {
   framesCompleted: number;
   framesDroppedIncomplete: number;
   framesDroppedLate: number;
+  // R15 (docs/20): audio packets demuxed here. Loss/gaps are the sink's
+  // story (it conceals them) — this is purely "what arrived".
+  audioPacketsReceived: number;
+  audioBytesReceived: number;
 }
 
 interface Assembly {
@@ -66,6 +85,7 @@ export class Reassembler {
   private cb: ReassemblerCallbacks;
   private assemblies = new Map<number, Assembly>(); // insertion order = arrival order
   private lastConfigBytes: Uint8Array | null = null;
+  private lastAudioConfigBytes: Uint8Array | null = null;
   private lastEmittedFrameId: number | null = null;
 
   private stats: ReassemblerStats = {
@@ -76,6 +96,8 @@ export class Reassembler {
     framesCompleted: 0,
     framesDroppedIncomplete: 0,
     framesDroppedLate: 0,
+    audioPacketsReceived: 0,
+    audioBytesReceived: 0,
   };
 
   constructor(callbacks: ReassemblerCallbacks) {
@@ -129,9 +151,46 @@ export class Reassembler {
       case TYPE_VIEWER_COUNT:
         this.pushViewerCount(dgram);
         break;
+      case TYPE_AUDIO_FRAME:
+        this.pushAudioFrame(dgram);
+        break;
+      case TYPE_AUDIO_CONFIG:
+        this.pushAudioConfig(dgram);
+        break;
       default:
         this.stats.badDatagrams++;
     }
+  }
+
+  private pushAudioFrame(dgram: Uint8Array): void {
+    let header, payload: Uint8Array;
+    try {
+      ({ header, payload } = parseAudioFrame(dgram));
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    this.stats.audioPacketsReceived++;
+    this.stats.audioBytesReceived += dgram.byteLength;
+    this.cb.onAudioFrame?.({ seq: header.seq, timestampUs: header.timestampUs, payload });
+  }
+
+  private pushAudioConfig(dgram: Uint8Array): void {
+    let config: AudioConfigMessage;
+    try {
+      config = parseAudioConfig(dgram);
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    // The broadcaster re-sends this at 1 Hz (docs/20 Decision 5) — dedup by
+    // byte equality so the sink reconfigures only on a real change.
+    if (this.lastAudioConfigBytes !== null && bytesEqual(this.lastAudioConfigBytes, dgram)) {
+      this.stats.duplicateConfigs++;
+      return;
+    }
+    this.lastAudioConfigBytes = dgram;
+    this.cb.onAudioConfig?.(config);
   }
 
   private pushViewerCount(dgram: Uint8Array): void {
