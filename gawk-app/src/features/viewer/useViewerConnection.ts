@@ -149,6 +149,8 @@ export function useViewerConnection(
   const [muted, setMutedState] = useState(loadMuted);
   const [volume, setVolumeState] = useState(loadVolume);
   const sinkRef = useRef<AudioSink | null>(null);
+  // One-shot latch for the per-packet hot path (see handleAudioChunk).
+  const audioStartedRef = useRef(false);
   // Read live by the sink's jitter buffer: resilient mode widens the audio
   // envelope too, or audio-master pacing would collapse the video buffer
   // (docs/20 Decision 12).
@@ -196,14 +198,21 @@ export function useViewerConnection(
     (chunk: { timestampUs: number; sampleRate: number; channels: Float32Array[]; frameCount: number }) => {
       const sink = ensureSink();
       if (!sink) return;
-      void sink.start(chunk.sampleRate).then(
-        () => setAudioNeedsGesture(sink.needsGesture),
-        () => {
-          // Context/worklet failed — video plays on; no audio UI is offered.
-          setAudioPresent(false);
-        },
-      );
-      setAudioPresent(true);
+      // This runs 50×/s (one Opus packet per 20 ms), so everything that only
+      // needs to happen once is hoisted behind the started latch — start() is
+      // idempotent internally, but attaching a fresh promise pair and calling
+      // two state setters per packet is churn on the hot path.
+      if (!audioStartedRef.current) {
+        audioStartedRef.current = true;
+        setAudioPresent(true);
+        void sink.start(chunk.sampleRate).then(
+          () => setAudioNeedsGesture(sink.needsGesture),
+          () => {
+            // Context/worklet failed — video plays on; no audio UI offered.
+            setAudioPresent(false);
+          },
+        );
+      }
       sink.push(chunk);
     },
     [ensureSink],
@@ -284,13 +293,21 @@ export function useViewerConnection(
       case 'codec':
         setCodec(ev.codec);
         break;
-      case 'stats':
+      case 'stats': {
         setStats(ev.stats);
         // R15 N5 (docs/20 Decision 10): the audio jitter-buffer target rides
         // the same windowed arrival-jitter estimate the video playout
         // controller uses — one measurement, two consumers.
-        sinkRef.current?.updateTarget(ev.stats.arrivalJitterMs, performance.now());
+        const sink = sinkRef.current;
+        if (sink) {
+          sink.updateTarget(ev.stats.arrivalJitterMs, performance.now());
+          // The context can be suspended by the browser at any time (not just
+          // at start), so the tap-to-unmute affordance follows the stats
+          // cadence rather than the 50/s packet path.
+          setAudioNeedsGesture(sink.needsGesture);
+        }
         break;
+      }
       case 'error':
         // The one place every surfaced error (worker or main-thread path)
         // passes through — the detailed message lives here in the console,
