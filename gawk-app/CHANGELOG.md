@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.25.1...gawk-app-v0.25.2) (2026-07-19)
+
+
+### Bug Fixes
+
+* **gawk-app:** reset broadcaster stage when start() fails after capture ([169689d](https://github.com/Tuhis/gawk/commit/169689d1305ce083144c4a21b1cfe839bb2aa16f))
+
 ## [0.25.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.25.0...gawk-app-v0.25.1) (2026-07-18)
 
 
