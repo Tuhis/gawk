@@ -164,7 +164,7 @@ jobs:
         working-directory: gawk-app
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -218,7 +218,7 @@ jobs:
           # gawk-pubsim imports engine+wire only — no Gio, so unlike the
           # broadcast job this needs no cgo or apt headers (docs/25 D3).
           (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -381,7 +381,7 @@ jobs:
           # subscriber count.
           ./e2e/bin/gawk-loadgen -url https://127.0.0.1:4433 -id "$ID" -viewers 12 \
             -duration 600s -ramp-ms 150 -insecure > e2e/out/loadgen.log 2>&1 &
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
