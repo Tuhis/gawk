@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.26.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.0...gawk-app-v0.26.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **gawk-app:** degrade to video-only when system audio can't start ([1dca620](https://github.com/Tuhis/gawk/commit/1dca620b1f7d96b657293868e169aabcd4b31f43))
+* **gawk-app:** make video the A/V sync master and align audio to it ([98e66b2](https://github.com/Tuhis/gawk/commit/98e66b297c60feba9e3bf0a86e5bbd09a5a75722))
+
 ## [0.26.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.25.2...gawk-app-v0.26.0) (2026-07-19)
 
 
