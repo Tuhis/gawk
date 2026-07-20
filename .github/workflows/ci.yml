@@ -324,7 +324,7 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
-      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-kubectl@v5
         with:
           version: ${{ env.KUBECTL_VERSION }}
       - name: Create the kind cluster (UDP NodePort mapped to 127.0.0.1:4433)
