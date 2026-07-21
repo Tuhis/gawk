@@ -204,6 +204,9 @@ export interface ViewerStats extends ReassemblerStats {
     gapsConcealed: number;
     lateDrops: number;
     overflowDrops: number;
+    // Re-anchors: timeline restarts + field-finding-7 stall recoveries. A
+    // climbing count with audio present means the sink keeps stalling.
+    resets: number;
   } | null;
 }
 

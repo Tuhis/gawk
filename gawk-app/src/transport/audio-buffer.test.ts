@@ -29,7 +29,7 @@ function chunk(timestampUs: number, fill = 0.5): AudioChunk {
 
 function collecting() {
   const emitted: AudioChunk[] = [];
-  const buffer = new AudioJitterBuffer((c) => emitted.push(c));
+  const buffer = new AudioJitterBuffer((c) => void emitted.push(c));
   return { emitted, buffer };
 }
 
@@ -153,7 +153,7 @@ describe('AudioJitterBuffer alignment', () => {
   function scheduled(dueAt: (timestampUs: number) => number | null) {
     const emitted: AudioChunk[] = [];
     const clock = { t: 1000 };
-    const buffer = new AudioJitterBuffer((c) => emitted.push(c), DEFAULT_AUDIO_PROFILE, {
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DEFAULT_AUDIO_PROFILE, {
       now: () => clock.t,
       schedule: () => dueAt,
     });
@@ -205,7 +205,7 @@ describe('AudioJitterBuffer alignment', () => {
     // A pipeline with no video baseline yet: still must not play at ~0 ms
     // depth (finding 3), so the jitter target becomes the gate.
     const emitted: AudioChunk[] = [];
-    const buffer = new AudioJitterBuffer((c) => emitted.push(c), DEFAULT_AUDIO_PROFILE, {
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DEFAULT_AUDIO_PROFILE, {
       now: () => 1000,
       schedule: () => null,
     });
@@ -300,7 +300,7 @@ describe('AudioJitterBuffer adaptive target', () => {
     const emitted: AudioChunk[] = [];
     let resilient = false;
     const buffer = new AudioJitterBuffer(
-      (c) => emitted.push(c),
+      (c) => void emitted.push(c),
       () => (resilient ? RESILIENT_AUDIO_PROFILE : DEFAULT_AUDIO_PROFILE),
     );
     buffer.updateTarget(200, 0);
@@ -325,6 +325,88 @@ describe('AudioJitterBuffer adaptive target', () => {
     expect(buffer.getStats().targetMs).toBe(DEFAULT_AUDIO_PROFILE.maxMs);
     buffer.flush();
     expect(buffer.getStats().targetMs).toBe(DEFAULT_AUDIO_PROFILE.seedMs);
+  });
+});
+
+// Field finding 7 (docs/20): the depth estimate is a *shadow* of the worklet's
+// real queue, and it must not count audio the worklet never received. The
+// pre-fix buffer incremented queuedMs for every chunk it handed to the emit
+// callback, even when the callback dropped it (the AudioWorklet node was still
+// booting, or its port threw). That phantom depth inflated bufferedMs past the
+// overflow ceiling forever, so every further chunk spuriously overflow-dropped
+// — the crackle — and, once the sink stopped draining, froze there with no
+// recovery — the silence.
+describe('AudioJitterBuffer honest accounting', () => {
+  it('does not count chunks the sink never received as buffered depth', () => {
+    // A sink that is "ready" (so release proceeds) but rejects every chunk on
+    // delivery — the worklet node vanished, or its port throws. emit signals
+    // the drop by returning false.
+    const buffer = new AudioJitterBuffer(() => false, DEFAULT_AUDIO_PROFILE, {
+      now: () => 1000,
+      schedule: () => null,
+      sinkReady: () => true,
+    });
+    // Far more than a ceiling's worth: the old buffer would have inflated
+    // queuedMs past target+slack and started overflow-dropping. Nothing here
+    // ever reached the worklet, so the honest depth is zero and nothing may be
+    // reported as backlog.
+    for (let i = 0; i < 200; i++) buffer.push(chunk(i * FRAME_US));
+    expect(buffer.getStats().bufferedMs).toBe(0);
+    expect(buffer.getStats().overflowDrops).toBe(0);
+  });
+
+  it('holds audio in priming until the sink can actually receive it', () => {
+    const emitted: AudioChunk[] = [];
+    let ready = false;
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DEFAULT_AUDIO_PROFILE, {
+      now: () => 1000,
+      schedule: () => null,
+      sinkReady: () => ready,
+    });
+    // The depth floor is met (3 × 20 ms ≥ 60 ms seed), but the worklet has not
+    // booted: releasing now would hand the whole cushion to a null node and
+    // lose it, leaving the worklet to starve at ~0 ms depth (finding 6 redux).
+    for (let i = 0; i < 5; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted).toHaveLength(0);
+
+    // Once the node exists, the held cushion is delivered in order and counts.
+    ready = true;
+    buffer.tick();
+    expect(emitted.map((c) => c.timestampUs)).toEqual([
+      0,
+      FRAME_US,
+      2 * FRAME_US,
+      3 * FRAME_US,
+      4 * FRAME_US,
+    ]);
+    expect(buffer.getStats().bufferedMs).toBeCloseTo(100, 5);
+  });
+
+  it('a mid-boot delivery drop leaves the depth honest, not inflated', () => {
+    // The realistic boot race: the first chunks land while the node is still
+    // coming up (dropped), then delivery succeeds. Only the delivered tail may
+    // count toward depth.
+    const emitted: AudioChunk[] = [];
+    let delivering = false;
+    const buffer = new AudioJitterBuffer(
+      (c) => {
+        if (!delivering) return false;
+        emitted.push(c);
+        return true;
+      },
+      DEFAULT_AUDIO_PROFILE,
+      { now: () => 1000, schedule: () => null, sinkReady: () => true },
+    );
+    // Release fires (ready), but the sink drops these three on the floor.
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    expect(buffer.getStats().bufferedMs).toBe(0);
+    // Now the worklet is live; the next two are the only real depth.
+    delivering = true;
+    buffer.push(chunk(3 * FRAME_US));
+    buffer.push(chunk(4 * FRAME_US));
+    expect(emitted).toHaveLength(2);
+    expect(buffer.getStats().bufferedMs).toBeCloseTo(40, 5);
+    expect(buffer.getStats().overflowDrops).toBe(0);
   });
 });
 

@@ -5,10 +5,11 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
 **N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-21 produced
-six field findings, all fixed — including the Decision 10 inversion to
+seven field findings, all fixed — including the Decision 10 inversion to
 **video-master** A/V sync, the Decision 12 reversal taking audio back off
-the R19 reliable carrier, and a live-edge audio buffer-depth floor;
-hardware re-verification pending** — see
+the R19 reliable carrier, a live-edge audio buffer-depth floor, and honest
+jitter-buffer depth accounting with worklet-stall recovery (finding 7 — the
+crackle-then-silence fix); hardware re-verification pending** — see
 [Status](#status)). Adds the broadcaster's
 **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
@@ -472,12 +473,14 @@ folded into the decisions above and the N-table criteria below:
 green in all three modules (`gofmt`/`go vet`/`go test -race`, `npm test` +
 `lint` + `build`, `helm lint`). **Manual browser verification is pending** —
 the plan below has not been executed, and audio has never played on real
-hardware as designed. Three field findings so far: **1** (the audio toggle
-failed the whole broadcast, before a single Opus packet was encoded) and,
-once audio did play, **2** (video froze — two clocks driving one pipeline)
-and **3** (the jitter buffer never buffered). All three are fixed; the
-verification pass has **not** been re-run since. Deviations and decisions
-taken during implementation:
+hardware as designed. Seven field findings so far: **1** (the audio toggle
+failed the whole broadcast, before a single Opus packet was encoded); once
+audio did play, **2** (video froze — two clocks driving one pipeline) and
+**3** (the jitter buffer never buffered); **4** (video-master inversion) and
+**5** (audio off the R19 carrier); **6** (live-edge starved for buffer depth);
+and **7** (the jitter-buffer depth estimate counted undelivered audio → the
+crackle-then-silence). All are fixed; the verification pass has **not** been
+re-run since. Deviations and decisions taken during implementation:
 
 1. **Decoded audio crosses as planar PCM, not a transferred `AudioData`**
    (Decision 7 said the latter). The sink must reach an `AudioWorklet`,
@@ -830,6 +833,70 @@ below target with climbing "Underruns" is the starvation signature to look for.
 **Follow-up (not in this change).** `avSkewMs` should self-correct once audio
 plays continuously (the playhead stops freezing); if it doesn't, it is a
 separate metric bug. **Hardware re-verification pending.**
+
+### Field finding 7 (2026-07-21): the depth estimate counted audio the worklet never got
+
+The finding-6 depth floor and its new diagnostics went to hardware (Safari 26,
+macOS) and audio now *started* — then, after 5–10 s, degraded to short cracks,
+and on a later session cut out entirely. Two Copy-diagnostics captures pinned it,
+and both are the **same defect at two stages**:
+
+- **Crackle capture.** `bufferedMs` sat at **300–650 ms** while `targetMs` was
+  150 and `alignmentHoldMs` only 60. The overflow ceiling
+  (`max(target, establishedDepth) + 200 ≈ 350 ms`) was chronically exceeded, so
+  `push()` overflow-dropped **~39 of every 50 incoming packets** — each drop a
+  waveform discontinuity → crackle — while `underruns` climbed as the *real*
+  worklet queue starved. `audioPacketsDecoded` held a clean 50/s throughout: not
+  loss, a buffer-accounting artifact.
+- **Silence capture.** `bufferedMs` **frozen at exactly 520**, `underruns`
+  frozen at 0, `avMaster: "free"` / `avSkewMs: null` (no playhead report for
+  >1.5 s), yet `overflowDrops` grew at ~50/s (every packet) and
+  `audioPacketsDecoded` kept climbing. The worklet had stopped draining (the
+  AudioContext was suspended — Safari does this at will), so `notePlayed`
+  stopped, the depth estimate froze above the ceiling, and every chunk was
+  dropped forever with no recovery.
+
+**Root cause.** `AudioJitterBuffer.queuedMs` is a *shadow* of the worklet's real
+queue depth: incremented when a chunk is handed to the sink, decremented by the
+worklet's ~4 Hz "played" reports. `AudioSink.forward()` **returns without
+delivering while the AudioWorklet node is still booting** (async `addModule`) and
+swallows a throwing/closed port — but `emitChunk` had already counted those
+chunks. Every undelivered-but-counted chunk permanently inflates the shadow by
+~one boot window (~150–300 ms). That phantom pushes `bufferedMs` chronically over
+the ceiling → spurious overflow drops → crackle. Once the sink stops draining
+(suspend/death), `notePlayed` stops and the shadow freezes above the ceiling;
+`noteUnderrun`'s `queuedMs === 0` recovery guard can't rescue a stuck-high shadow
+and nothing else lowers it → permanent silence.
+
+**Fix (viewer-only, test-first).** Three pure/local changes:
+
+1. **Honest accounting.** `emit` now reports whether the chunk reached the sink
+   (`AudioSink.forward()` returns `false` for a null node or a throwing port),
+   and `queuedMs`/`establishedDepthMs` count **only delivered** audio. The shadow
+   can no longer inflate, so the spurious overflow drops — the crackle — stop.
+2. **Sink-ready release gate.** The alignment cushion is held in priming until
+   the worklet node exists (`sinkReady: () => this.node !== null`), so it is
+   never released into a null node and lost (which would restart the worklet at
+   ~0 ms depth — finding 6 redux). `MAX_ALIGNMENT_HOLD_MS` still overrides so a
+   sink that never comes up can't mute audio forever.
+3. **Stall recovery.** The worklet reports every ~250 ms while its context runs
+   (even underrunning); a gap > `STALL_RECOVERY_MS` (1000 ms) with audio still
+   arriving means suspend/death. The sink then resumes a suspended context and
+   flushes both the buffer and the worklet's own queue, so audio re-anchors at
+   the live edge the instant the context runs again instead of never. (A
+   backgrounded tab with audio keeps reporting, so this does not false-fire.)
+
+**Observability (same change).** The jitter-buffer `resets` counter (timeline
+restarts **plus** stall recoveries) now reaches `ViewerStats.audioBuffer` and a
+new overlay **Recoveries** row — a climbing count with audio present is the sink
+repeatedly stalling. `AudioSink.flush()` was also hardened to swallow a
+closed-port throw (it reaches the worklet on the same never-break-video path as
+`forward()`).
+
+**Not covered.** A worklet that is *dead* rather than merely suspended can't be
+revived by resume+flush — only a full sink rebuild would, which is out of scope
+here; the recovery still keeps the buffer from wedging and surfaces the churn via
+`resets`. **Hardware re-verification pending.**
 
 ### Post-implementation review (2026-07-19)
 

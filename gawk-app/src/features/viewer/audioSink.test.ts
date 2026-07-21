@@ -95,6 +95,99 @@ describe('AudioSink worklet delivery', () => {
   });
 });
 
+// Field finding 7 (docs/20): the worklet drives the buffer's drain accounting
+// through ~4 Hz playhead reports. When the AudioContext is suspended (Safari
+// does this at will) the reports stop, the buffer's depth estimate freezes
+// above the overflow ceiling, and every further chunk is dropped forever with
+// no path back — total silence. The sink must detect the stall and recover.
+describe('AudioSink stall recovery', () => {
+  // A stub that hands back the created context + node so a test can drive the
+  // playhead-report channel and flip the context to 'suspended'. Both stub
+  // constructors return a shared object, so the handle the test holds is the
+  // exact instance the sink uses.
+  function stubWebAudioCapturing() {
+    const posts: { type: string }[] = [];
+    const node = {
+      port: {
+        postMessage: (m: unknown) => posts.push(m as { type: string }),
+        onmessage: null as ((e: { data: unknown }) => void) | null,
+      },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const ctx = {
+      state: 'running' as AudioContextState,
+      destination: {},
+      audioWorklet: { addModule: vi.fn(() => Promise.resolve()) },
+      createGain: vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() })),
+      resume: vi.fn(() => Promise.resolve()),
+      close: vi.fn(() => Promise.resolve()),
+    };
+    // A constructor returning an object makes `new` yield that object.
+    vi.stubGlobal(
+      'AudioContext',
+      function () {
+        return ctx;
+      } as unknown as typeof AudioContext,
+    );
+    vi.stubGlobal(
+      'AudioWorkletNode',
+      function () {
+        return node;
+      } as unknown as typeof AudioWorkletNode,
+    );
+    vi.stubGlobal('Blob', class {});
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:stub'), revokeObjectURL: vi.fn() });
+    return { posts, ctx, getNode: () => node };
+  }
+
+  function playhead(node: { port: { onmessage: ((e: { data: unknown }) => void) | null } }) {
+    node.port.onmessage!({
+      data: { type: 'playhead', playheadUs: 1000, playedFrames: 100, underruns: 0, contextTime: 0 },
+    });
+  }
+
+  it('flushes the worklet and resumes when reports stop (suspended context)', async () => {
+    let now = 0;
+    const { posts, ctx, getNode } = stubWebAudioCapturing();
+    const sink = new AudioSink({}, undefined, { now: () => now });
+    await sink.start(SAMPLE_RATE);
+    const node = getNode();
+
+    // Audio was playing: one playhead report has landed.
+    playhead(node);
+    posts.length = 0;
+
+    // The context suspends and the worklet goes silent, but audio keeps
+    // arriving. Time advances past the stall threshold.
+    ctx.state = 'suspended';
+    now = 3000;
+    sink.push(chunk(0));
+
+    expect(ctx.resume).toHaveBeenCalled();
+    expect(posts.some((m) => m.type === 'flush')).toBe(true);
+    sink.dispose();
+  });
+
+  it('does not flush while the worklet is reporting normally', async () => {
+    let now = 0;
+    const { posts, getNode } = stubWebAudioCapturing();
+    const sink = new AudioSink({}, undefined, { now: () => now });
+    await sink.start(SAMPLE_RATE);
+    const node = getNode();
+
+    // Healthy: reports arrive every ~250 ms, so no gap ever exceeds the
+    // threshold. Push audio across a couple of report intervals.
+    for (let i = 0; i < 20; i++) {
+      now = i * 200;
+      if (i % 1 === 0) playhead(node);
+      sink.push(chunk(i * 20_000));
+    }
+    expect(posts.some((m) => m.type === 'flush')).toBe(false);
+    sink.dispose();
+  });
+});
+
 // The worklet processor ships as a source string, so it never ran under test —
 // yet with the drift trim (docs/20 field finding 4) it is the code that touches
 // every audio sample. Instantiate it against stubbed worklet globals and drive

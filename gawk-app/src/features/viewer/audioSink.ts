@@ -142,6 +142,15 @@ export function audioSinkSupported(): boolean {
   return typeof AudioContext !== 'undefined' && typeof AudioWorkletNode !== 'undefined';
 }
 
+// Field finding 7 (docs/20): the worklet posts a playhead report every ~250 ms
+// as long as its AudioContext is running — even while underrunning. A gap this
+// long means the context was suspended (Safari does this at will) or the
+// worklet died: the buffer's depth estimate is frozen above the overflow
+// ceiling and every chunk is being dropped with no way back. Four missed
+// reports is unambiguous; a backgrounded tab with audio keeps reporting, so
+// this does not false-fire there.
+const STALL_RECOVERY_MS = 1000;
+
 export class AudioSink {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
@@ -155,6 +164,13 @@ export class AudioSink {
   private muted = false;
   private lastPlayheadUs: number | null = null;
   private lastContextTime: number | null = null;
+  // The sink's own clock (injectable for tests), shared with the buffer.
+  private now: () => number;
+  // Local ms of the last playhead report; the stall watchdog measures against
+  // it. Null until the worklet reports for the first time, so boot latency is
+  // never mistaken for a stall.
+  private lastPlayheadAtMs: number | null = null;
+  private lastStallRecoverAtMs = -Infinity;
 
   // Where the video pipeline says a frame with this timestamp will be
   // presented, in this context's performance.now() ms. Set by the owner from
@@ -168,8 +184,12 @@ export class AudioSink {
   ) {
     this.cb = callbacks;
     const now = opts.now ?? (() => performance.now());
+    this.now = now;
     this.buffer = new AudioJitterBuffer((chunk) => this.forward(chunk), profile, {
       now,
+      // Field finding 7: hold the alignment cushion until the worklet node
+      // exists, so it is never released into a null node and lost.
+      sinkReady: () => this.node !== null,
       // Video-master alignment (docs/20 field finding 4): hand a chunk to the
       // worklet early by exactly the latency the device adds, so it is *heard*
       // when the matching video frame is presented.
@@ -252,6 +272,8 @@ export class AudioSink {
         contextTime: number;
       };
       if (msg.type !== 'playhead') return;
+      // A live report means the worklet is draining: the stall watchdog resets.
+      this.lastPlayheadAtMs = this.now();
       this.lastPlayheadUs = msg.playheadUs;
       this.lastContextTime = msg.contextTime;
       if (this.sampleRate) this.buffer.notePlayed((msg.playedFrames / this.sampleRate) * 1000);
@@ -271,12 +293,37 @@ export class AudioSink {
   // first packets are ~one worklet-boot behind live anyway).
   push(chunk: AudioChunk): void {
     if (this.disposed) return;
+    this.maybeRecoverFromStall();
     this.buffer.push(chunk);
   }
 
-  private forward(chunk: AudioChunk): void {
+  // Field finding 7: if the worklet has stopped reporting while audio is still
+  // arriving, its context was suspended (or it died) and the jitter buffer is
+  // now dropping every chunk with no recovery. Wake the context and flush both
+  // sides so audio resumes at the live edge the instant the worklet runs again,
+  // instead of never. Only meaningful once the worklet has reported at least
+  // once — before that, the gap is boot latency, not a stall.
+  private maybeRecoverFromStall(): void {
+    if (!this.node || this.lastPlayheadAtMs === null) return;
+    const now = this.now();
+    if (now - this.lastPlayheadAtMs <= STALL_RECOVERY_MS) return;
+    // Cooldown: one recovery per interval, not one per 50/s packet.
+    if (now - this.lastStallRecoverAtMs < STALL_RECOVERY_MS) return;
+    this.lastStallRecoverAtMs = now;
+    log.warn('Audio worklet stopped reporting; resuming context and re-anchoring.');
+    if (this.ctx?.state === 'suspended') void this.resume();
+    this.flush();
+    // Measure the next stall from here rather than re-firing every packet until
+    // a fresh report lands.
+    this.lastPlayheadAtMs = now;
+  }
+
+  // Returns whether the chunk reached the worklet — the buffer counts depth
+  // only on delivery (field finding 7). A null node (still booting) or a
+  // throwing/closed port both mean "not delivered".
+  private forward(chunk: AudioChunk): boolean {
     const node = this.node;
-    if (!node) return;
+    if (!node) return false;
     const transfer: ArrayBuffer[] = [];
     for (const c of chunk.channels) transfer.push(c.buffer as ArrayBuffer);
     try {
@@ -290,11 +337,13 @@ export class AudioSink {
         },
         transfer,
       );
+      return true;
     } catch (e) {
       // A detached buffer or closed port must not propagate: this runs on the
       // viewer's message path, and audio is never allowed to break video.
       // Dropping the packet is the correct live-edge outcome anyway.
       log.warn('Audio chunk could not reach the worklet; dropping it:', e);
+      return false;
     }
   }
 
@@ -304,7 +353,13 @@ export class AudioSink {
   flush(): void {
     this.buffer.flush();
     this.lastRate = 1;
-    this.node?.port.postMessage({ type: 'flush' });
+    try {
+      this.node?.port.postMessage({ type: 'flush' });
+    } catch (e) {
+      // Same rule as forward(): a closed port must not break video. The buffer
+      // is already re-anchored; the worklet clears on its next live message.
+      log.warn('Audio worklet flush could not be delivered:', e);
+    }
   }
 
   setVolume(volume: number): void {
