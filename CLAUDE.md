@@ -796,8 +796,17 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the worklet. Fallbacks: no schedule ⇒ depth floor; schedule never fires ⇒
    released after `MAX_ALIGNMENT_HOLD_MS`; underrun re-prime ⇒ depth floor,
    not a past schedule. `avMaster` now reads 'video' | 'free';
-   `alignmentHoldMs` is the lip-sync diagnostic. **Hardware re-verification
-   of all four findings pending.**
+   `alignmentHoldMs` is the lip-sync diagnostic. **Field finding 5
+   (2026-07-20, docs/20)** reverses the carrier-routing half of Decision 12:
+   audio broke up in resilient mode because R19 delivered it as records on the
+   per-GOP reliable carrier (head-of-line blocking behind video deltas +
+   GOP-clumped tail drops — worse than concealed single-packet datagram loss).
+   `drainReliable` now routes `TypeAudioFrame`/`TypeAudioConfig` to the
+   unreliable datagram path (`sendSidebandDatagram`); only video deltas ride
+   the carrier. Relay-only, test-first, zero wire/broadcaster/viewer changes;
+   the profile-carrying half of Decision 12 stands (audio still adopts the
+   resilient depth envelope, aligning to the deep video playhead per finding
+   4). **Hardware re-verification of all five findings pending.**
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
    green); U4 verdict 2026-07-19: the native path still does not work on
    iPhone — `webkitEnterFullscreen` enters but shows a black video across

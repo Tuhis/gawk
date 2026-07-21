@@ -1838,6 +1838,19 @@ func (s *Subscriber) drainReliable() {
 	carDead := false
 	var scratch []byte
 	for dgram := range s.queue {
+		// The audio lane never rides the carrier (docs/20 field finding 5,
+		// reversing Decision 12's carrier-routing half). Audio is live-edge and
+		// loss-tolerant; reliable in-order delivery plus the per-GOP tail drop
+		// break it up worse than concealed single-packet datagram loss would
+		// (2026-07-20 hardware test). Send it unreliably, exactly as the normal
+		// drain does — only video deltas belong on the carrier. The audio
+		// jitter buffer still adopts the resilient depth profile: that half of
+		// Decision 12 stands, because audio aligns to the deep video playhead
+		// (field finding 4), not because it rides the carrier.
+		if isAudioDatagram(dgram) {
+			s.sendSidebandDatagram(dgram)
+			continue
+		}
 		// The egress cap is charged per record as written (prefix + datagram)
 		// — reliable delivery must not become a cap bypass. Over-cap records
 		// count as bandwidth datagram drops exactly like the datagram path,
@@ -1880,6 +1893,35 @@ func (s *Subscriber) drainReliable() {
 		s.carrierRecords.Add(1)
 		s.egressCarrierBytes.Add(uint64(len(scratch)))
 	}
+}
+
+// isAudioDatagram reports whether a fanned-out datagram belongs to the audio
+// lane (frame or config) — the messages a reliable subscriber must NOT receive
+// as carrier records (docs/20 field finding 5). A peek failure can't happen for
+// queued datagrams (the publisher dispatch validated each one before relaying);
+// treating it as non-audio keeps a malformed byte on the same path it would
+// take for a normal subscriber.
+func isAudioDatagram(dgram []byte) bool {
+	_, typ, err := wire.PeekType(dgram)
+	return err == nil && (typ == wire.TypeAudioFrame || typ == wire.TypeAudioConfig)
+}
+
+// sendSidebandDatagram delivers a datagram to a reliable subscriber over the
+// unreliable datagram path — byte-for-byte the normal drain's per-datagram
+// handling (bandwidth charge, send, egress + error counters). Audio uses this
+// so a resilient viewer's audio keeps its live-edge, loss-tolerant delivery
+// instead of being reliably in-order carriered (docs/20 field finding 5).
+func (s *Subscriber) sendSidebandDatagram(dgram []byte) {
+	if !s.hub.registry.consumeBandwidth(len(dgram)) {
+		s.dropped.Add(1)
+		s.hub.countBandwidthDrop(len(dgram))
+		return
+	}
+	if err := s.sender.SendDatagram(dgram); err != nil {
+		s.sendErrors.Add(1)
+		return
+	}
+	s.egressDatagramBytes.Add(uint64(len(dgram)))
 }
 
 func (s *Subscriber) currentCarrier() KeyframeStream {
