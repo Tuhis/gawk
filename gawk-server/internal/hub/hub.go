@@ -64,6 +64,18 @@ var (
 // correctness (leak cleanup), not capacity tuning.
 const KeyframeOpenFailEvictThreshold = 10
 
+// KeyframeSlowEvictThreshold is the same eviction rule for the other half of
+// the unreachability space: opens that *succeed* while every write stalls out
+// (Safari field finding, 2026-07-21). QUIC datagrams are not flow-controlled
+// but streams are, so a viewer whose stream path wedges keeps taking deltas at
+// full rate while no keyframe can land — it never recovers, never trips the
+// open-failure streak (which resets on each successful open), and freezes
+// permanently on "awaiting keyframe" with no signal to either end. Same value
+// and same reasoning as the open-failure threshold: ≈5 s of undeliverable
+// keyframes at the default GOP, non-terminal close code, so a live client that
+// was merely congested reconnects and continues.
+const KeyframeSlowEvictThreshold = 10
+
 // ViewerCountInterval paces the R18 count pump (docs/23 Decision 4): one
 // recompute-and-emit pass per tick, which is also what makes a reconnect
 // storm structurally unable to spam clients — emits can never exceed
@@ -1763,7 +1775,13 @@ type Subscriber struct {
 	// successful open. Crossing KeyframeOpenFailEvictThreshold evicts the
 	// subscriber (R10, docs/14); evicting latches so it fires exactly once.
 	kfConsecOpenFailed int
-	evicting           bool
+	// Consecutive keyframes whose stream opened but whose write stalled out
+	// (guarded by kfMu); reset on any delivered keyframe, untouched by a
+	// superseded one. Crossing KeyframeSlowEvictThreshold evicts the subscriber
+	// (Safari field finding, 2026-07-21) — the other half of unreachability,
+	// invisible to kfConsecOpenFailed because the opens keep succeeding.
+	kfConsecSlow int
+	evicting     bool
 	// Keyframe drops by cause (R9 M2); KeyframesDropped() sums them.
 	kfDroppedSuperseded atomic.Uint64
 	kfDroppedSlow       atomic.Uint64
@@ -2096,10 +2114,28 @@ func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
 	// or Close) cancelled it under kfMu — that classifies a failed write as
 	// "superseded" rather than "slow". Checked under the same lock that does
 	// the superseding, so the classification can't race the cause.
+	//
+	// The consecutive-slow streak is maintained under the same lock, for the
+	// same reason the open-failure streak is: it must not interleave with the
+	// supersede that decides whether this write counts as a stall at all. A
+	// superseded write says nothing about reachability and leaves the streak
+	// untouched; only a genuine stall increments it, and any delivered keyframe
+	// clears it.
 	s.kfMu.Lock()
 	superseded := s.kfCurrent != stream
 	if !superseded {
 		s.kfCurrent = nil
+	}
+	evict := false
+	switch {
+	case err == nil:
+		s.kfConsecSlow = 0
+	case !superseded:
+		s.kfConsecSlow++
+		evict = !s.evicting && s.kfConsecSlow >= KeyframeSlowEvictThreshold
+		if evict {
+			s.evicting = true
+		}
 	}
 	s.kfMu.Unlock()
 
@@ -2111,6 +2147,11 @@ func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
 			// Deadline exceeded (stalled flow control) or a write/close error
 			// to this peer — either way, this subscriber couldn't take it.
 			s.kfDroppedSlow.Add(1)
+		}
+		// Off-goroutine for the same reason as the open-failure path: Close
+		// takes the registry lock and CloseWithError is a network op.
+		if evict {
+			go s.evictStalled()
 		}
 		return
 	}
@@ -2126,6 +2167,21 @@ func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
 func (s *Subscriber) evict() {
 	s.hub.log.Warn("evicting unreachable subscriber: keyframe stream opens failing persistently",
 		"subscriber", s.statsKey, "consecutive_open_failures", KeyframeOpenFailEvictThreshold)
+	s.closeUnresponsive()
+}
+
+// evictStalled is the same eviction for a subscriber whose keyframe streams
+// open fine but never drain (Safari field finding, 2026-07-21). Logged
+// separately from evict(): the two causes want different first questions of an
+// operator — exhausted stream credit vs. a wedged stream/flow-control path on a
+// session that is still happily taking datagrams.
+func (s *Subscriber) evictStalled() {
+	s.hub.log.Warn("evicting unreachable subscriber: keyframe stream writes stalling persistently",
+		"subscriber", s.statsKey, "consecutive_slow_keyframes", KeyframeSlowEvictThreshold)
+	s.closeUnresponsive()
+}
+
+func (s *Subscriber) closeUnresponsive() {
 	_ = s.sender.CloseWithError(uint32(wire.CloseCodeSubscriberUnresponsive), "subscriber unresponsive")
 	s.Close()
 }
