@@ -301,11 +301,11 @@ export function useViewerConnection(
         setCodec(ev.codec);
         break;
       case 'stats': {
-        setStats(ev.stats);
         // R15 N5 (docs/20 Decision 10): the audio jitter-buffer target rides
         // the same windowed arrival-jitter estimate the video playout
         // controller uses — one measurement, two consumers.
         const sink = sinkRef.current;
+        let next: ViewerStats = ev.stats;
         if (sink) {
           const nowMs = performance.now();
           sink.updateTarget(ev.stats.arrivalJitterMs, nowMs);
@@ -325,7 +325,27 @@ export function useViewerConnection(
           // at start), so the tap-to-unmute affordance follows the stats
           // cadence rather than the 50/s packet path.
           setAudioNeedsGesture(sink.needsGesture);
+          // docs/20 field finding 6: the jitter-buffer counters live in the
+          // main-thread sink, so merge them into the worker-assembled stats
+          // here — the one place with both in hand — so the overlay and Copy
+          // diagnostics see buffer depth / underruns / drops (the worker-side
+          // stats omit them, which is why the first audio capture couldn't
+          // show them).
+          const b = sink.getStats();
+          next = {
+            ...ev.stats,
+            audioBuffer: {
+              bufferedMs: b.bufferedMs,
+              targetMs: b.targetMs,
+              alignmentHoldMs: b.alignmentHoldMs,
+              underruns: b.underruns,
+              gapsConcealed: b.gapsConcealed,
+              lateDrops: b.lateDrops,
+              overflowDrops: b.overflowDrops,
+            },
+          };
         }
+        setStats(next);
         break;
       }
       case 'error':

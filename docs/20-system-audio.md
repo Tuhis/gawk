@@ -4,9 +4,11 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 2026-07-15; **design refreshed 2026-07-19** against everything landed since —
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
-**N1–N6 implemented 2026-07-19; first hardware playback 2026-07-20 produced
-four field findings, all fixed — including the Decision 10 inversion to
-**video-master** A/V sync; hardware re-verification pending** — see
+**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-21 produced
+six field findings, all fixed — including the Decision 10 inversion to
+**video-master** A/V sync, the Decision 12 reversal taking audio back off
+the R19 reliable carrier, and a live-edge audio buffer-depth floor;
+hardware re-verification pending** — see
 [Status](#status)). Adds the broadcaster's
 **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
@@ -347,7 +349,11 @@ on both ends.
     would falsify the cap). No new relay knobs.
 
 12. **R19 resilient-mode interplay** *(added 2026-07-19 — R19 postdates
-    this design)*. For a `?delivery=reliable` subscriber the drain writes
+    this design)*. **⚠️ The carrier-routing half of this decision was
+    REVERSED 2026-07-20 by [field finding 5](#field-finding-5-2026-07-20-audio-off-the-r19-carrier)
+    — audio no longer rides the carrier. The paragraph below records the
+    original reasoning; the profile-carrying half (the last two bullets)
+    stands.** For a `?delivery=reliable` subscriber the drain writes
     **everything its fan-out queue carries** as length-prefixed records on
     the per-GOP carrier stream and never calls `SendDatagram`
     (`drainReliable`, docs/24 Decision 5) — so audio automatically rides
@@ -358,6 +364,11 @@ on both ends.
       entire point. In exchange audio shares the carrier's drop point: a
       dead/rotated carrier drops its GOP tail *including* the audio records
       in it (drops-over-stalls at GOP granularity, third medium).
+      *(This premise did not survive hardware: on a real link the GOP-tail
+      drop + head-of-line blocking behind video-delta records broke audio up
+      worse than concealed single-packet datagram loss — field finding 5.
+      Audio now takes the unreliable datagram path even for a resilient
+      subscriber; only video deltas ride the carrier.)*
     - Viewer side: carrier records feed the existing datagram path
       (`readServerStreams` → same demux), so N4's reassembler cases serve
       both delivery modes unchanged. No audio-specific carrier code.
@@ -711,6 +722,115 @@ inspection:
 
 **Still unverified on hardware.**
 
+### Field finding 5 (2026-07-20): audio off the R19 carrier
+
+The first hardware test with a resilient-mode viewer exposed the flaw in
+Decision 12's carrier-routing half. In resilient mode audio was *recognizable
+but broken up*; in default (datagram) mode it was continuous with a short crack
+at the GOP cadence. Decision 12 had assumed reliable delivery would only help
+audio ("QUIC heals loss → fewer concealment gaps"). It doesn't: putting the
+50 packets/s audio lane onto the same per-GOP reliable stream as the video
+deltas means
+
+- **head-of-line blocking** — an audio record queued behind a slow video-delta
+  record waits for it, and a constant-rate sink has no slack to wait; and
+- **clumped tail drops** — at each keyframe the carrier rotates and any records
+  not yet written are dropped *together* (`drainReliable`), so audio vanishes in
+  GOP-sized chunks instead of the single concealed 20 ms gaps datagram loss
+  would have produced.
+
+Reliable, in-order, bursty delivery is exactly wrong for the third medium —
+which is what Decision 1 said in the first place (one Opus packet per datagram,
+live-edge, no reliable streams). The premise that resilient audio wants
+reliability was never tested before 2026-07-20 because audio had never played
+on hardware.
+
+**Fix (relay-only, test-first):** the audio lane never touches the carrier.
+`drainReliable` now peeks each dequeued datagram's wire type and routes
+`TypeAudioFrame`/`TypeAudioConfig` to the unreliable datagram path
+(`sendSidebandDatagram`, byte-for-byte the normal drain's bandwidth-charge +
+`SendDatagram` + egress/error accounting), while video deltas ride the carrier
+exactly as before. Zero wire changes, zero broadcaster/viewer changes (carrier
+records still feed the viewer's datagram path; audio just arrives as datagrams,
+same as for a non-resilient viewer and same as the video decoder config always
+has). `TestAudioToReliableSubscriberBypassesCarrier` replaces the old
+`…RidesCarrier` test; the core R19 `TestReliableSubscriberCarrierDelivery`
+(video deltas + video decoder config) is unchanged and green — video resilience
+is untouched.
+
+**What survives of Decision 12:** the profile-carrying half. The audio jitter
+buffer still adopts the resilient depth envelope ([150, 2000] ms, seed 500)
+under `?delivery=reliable`, because audio aligns to the *deep video playhead*
+(field finding 4), not because it rides the carrier — video is still delivered
+at resilient depth, so audio must sit there too to stay in sync.
+
+**Known residual (not fixed here):** the reliable drain is one goroutine, so a
+carrier write stalled up to `KeyframeWriteTimeout` still delays the audio
+datagrams queued behind it until the stall is cancelled — bounded and transient
+(the same lossy moment would be dropping audio anyway), and vastly better than
+audio *on* the carrier permanently. Fully decoupling would need a separate audio
+queue/goroutine; deferred as a possible follow-up. **Hardware re-verification of
+this fix is pending.**
+
+### Field finding 6 (2026-07-21): live-edge audio starves for buffer depth
+
+The first resilient-vs-default comparison on hardware (Safari 26, macOS)
+showed default/live-edge audio was **near-silent — the only sound was a crack
+at roughly the GOP cadence** — while resilient mode was recognizable. Two
+Copy-diagnostics captures settled it:
+
+- **Not packet loss.** `audioPacketsDecoded` climbed at ~50/s (full Opus rate)
+  in *both* the "almost OK" and "cracks" captures — audio arrives and decodes
+  fine over plain datagrams. This also **validates field finding 5's carrier
+  fix as safe**: resilient mode played because of its deeper buffer profile,
+  not because the carrier's reliability was covering datagram loss.
+- **Both sessions were live-edge** (`playoutMode: "off"`, `playoutOffsetMs: 0`).
+- **Severity tracked arrival jitter**: `arrivalJitterMs` 72 → "almost OK",
+  158 → "mostly silent". That jitter-sensitivity is the signature of a worklet
+  starved for buffer depth.
+- `avSkewMs` read **~3–5 s**, which the owner correctly flagged as wrong. It is
+  an artifact of the underruns, not a real lip-sync error: the worklet's
+  playhead only advances on real samples, so during the frequent silences it
+  freezes while video keeps going, and the skew balloons.
+
+**Root cause.** Field finding 4's video-master alignment sets the worklet's
+buffer depth to "just enough that audio is heard when its video frame is
+presented." In paced modes that hold is a few hundred ms — the design's happy
+path. In **live-edge mode the frame is presented on arrival**, so the schedule
+resolves to "due now" at ~0 ms hold: the worklet gets essentially no cushion,
+and the normal 72–158 ms arrival jitter starves it into near-continuous
+underrun. Finding 4 was verified in paced modes; live-edge audio was never
+exercised (audio never played on hardware until 2026-07-20, and this is the
+first Safari/live-edge session).
+
+**Fix (viewer-only, test-first).** The adaptive jitter target
+(`clamp(arrivalJitter + 20, [40, 150])`) is now a **depth floor in every mode**:
+`AudioJitterBuffer` releases only when the video schedule is due **and** at
+least `targetMs` is buffered. In paced modes the schedule hold already exceeds
+the floor, so nothing changes there; in live-edge the floor supplies a
+~90–150 ms cushion sized to the measured jitter. The cost is that live-edge
+audio now sits a jitter-depth behind video instead of cutting out — bounded, in
+the perceptually forgiving direction (audio behind video), and live-edge video
+is itself jittery, so tight lip sync was never on offer there. One pure-module
+change in `audio-buffer.ts`; the pre-fix behavior was literally what an existing
+alignment test asserted (release the first chunk at ~0 depth), so the rewritten
+test fails first on old code.
+
+**Observability (same change).** The audio jitter-buffer counters
+(`bufferedMs`/`targetMs`/`alignmentHoldMs`/`underruns`/`gapsConcealed`/
+`lateDrops`/`overflowDrops`) are now surfaced. They live in the main-thread
+`AudioSink` while `ViewerStats` is assembled in the worker, so this capture
+couldn't show them — the same split that hides `featureGates`/
+`presentationSurface`. Fixed the same way: the viewer connection merges
+`AudioSink.getStats()` into the stats object (`ViewerStats.audioBuffer`,
+optional) at the one point that holds both, so they reach the overlay's Audio
+section **and** Copy-diagnostics uniformly. "Buffer depth *X / target* ms" well
+below target with climbing "Underruns" is the starvation signature to look for.
+
+**Follow-up (not in this change).** `avSkewMs` should self-correct once audio
+plays continuously (the playhead stops freezing); if it doesn't, it is a
+separate metric bug. **Hardware re-verification pending.**
+
 ### Post-implementation review (2026-07-19)
 
 A self-review against `CODE-REVIEW.md` immediately after N6, before any
@@ -744,7 +864,7 @@ audio-specific code.
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| N1 | **Wire + relay** — Go `AudioFrame`/`AudioConfig` codecs (0x07/0x08, layouts above) + TS mirrors + golden vectors both sides; hub dispatch cases; `cachedAudioConfig` cache/prime/invalidate (**both** sites: `StartPublish` + `InvalidatePrimes`, Decision 4); strict-parse limits | Golden vectors byte-identical Go↔TS (new vectors in `wire_test.go` + `wire.test.ts`); hub tests: audio frame fans out verbatim to all subscribers, config cached + primed on subscribe + invalidated on new publisher session **and** on `InvalidatePrimes` (R17 edge upstream loss), malformed audio datagrams count bad and never panic (fuzz-style table like existing types); an edge-marked hub re-ingests + caches + fans audio through the same dispatch (cluster needs no other change — Decision 4); a reliable subscriber receives audio as carrier records with `SendDatagram` never called (Decision 12); audio seqs never perturb `ingressFramesLost`/`ingressChunksLost` or `framesRelayed`; `/statusz` + metrics unchanged except generic datagram counters; tier-1 `e2e` CI stays green (video-only pubsim = the no-audio path, now CI-asserted) | ✅ implemented 2026-07-19 |
+| N1 | **Wire + relay** — Go `AudioFrame`/`AudioConfig` codecs (0x07/0x08, layouts above) + TS mirrors + golden vectors both sides; hub dispatch cases; `cachedAudioConfig` cache/prime/invalidate (**both** sites: `StartPublish` + `InvalidatePrimes`, Decision 4); strict-parse limits | Golden vectors byte-identical Go↔TS (new vectors in `wire_test.go` + `wire.test.ts`); hub tests: audio frame fans out verbatim to all subscribers, config cached + primed on subscribe + invalidated on new publisher session **and** on `InvalidatePrimes` (R17 edge upstream loss), malformed audio datagrams count bad and never panic (fuzz-style table like existing types); an edge-marked hub re-ingests + caches + fans audio through the same dispatch (cluster needs no other change — Decision 4); a reliable subscriber receives audio over the unreliable datagram path, **never** as carrier records (field finding 5, reversing Decision 12's carrier routing — video deltas still ride the carrier); audio seqs never perturb `ingressFramesLost`/`ingressChunksLost` or `framesRelayed`; `/statusz` + metrics unchanged except generic datagram counters; tier-1 `e2e` CI stays green (video-only pubsim = the no-audio path, now CI-asserted) | ✅ implemented 2026-07-19 |
 | N2 | **Broadcaster main-thread path + toggle** — "Enable audio (experimental)" in `broadcastSettingsStore` (own LS key, default false) + advanced panel row with applies-on-next-start annotation; capture constraints per Decision 6; audio lane in `BroadcastPipeline` (MSTP → anchor → `AudioEncoder` wrapper → datagrams + 1 Hz config re-send); no-track graceful state; audio-lane-only error teardown; `BroadcastStats` audio fields | Toggle off ⇒ `getDisplayMedia` called with `audio: false` and zero audio code paths active (behavioral no-op vs. today, existing tests untouched); toggle on + no audio track ⇒ video-only + annotation, no error; unit tests (fake encoder/sender): anchor math produces monotone shared-clock timestamps, seq increments with wrap, config re-sent at 1 Hz, encoder error kills only the audio lane; encoded packets ≤ 1184 B asserted | ✅ implemented 2026-07-19 |
 | N3 | **Broadcaster worker path** — audio clone transferred beside video in `provideCapture`; `capture` command + `BroadcastMediaSource` seam gain the audio track; worker handshake probes `AudioEncoder`; no-worker-audio ⇒ video-only annotation (placement never changes) | Worker path sends audio (integration test with fake worker scope, pattern of existing broadcast-worker-core tests); handshake-without-AudioEncoder falls back to video-only while video stays in the worker; teardown stops both clones; main-thread fallback path (Firefox) unaffected | ✅ implemented 2026-07-19 |
 | N4 | **Viewer decode + playback + conditional UI** — reassembler demux cases; worker `AudioDecoder` + transferred `AudioData` event; main-thread `AudioWorklet` sink (ring buffer, gap/late/underrun/overflow policies + counters, **flush/re-anchor on restart/resync + reconnect**, Decision 8); `audioPresent` flag; mute/volume in fading controls + context menu (`gawk:muted`/`gawk:volume`); tap-to-unmute on suspended context; main-thread pipeline fallback decodes in place | Ring-buffer policies unit-tested pure (fake clock): gap ⇒ silence + counter, late ⇒ drop + counter, underrun ⇒ silence + counter, overflow ⇒ oldest dropped; restart signal ⇒ ring flushed + re-anchored (a post-restart timestamp jump never late-drops forever); demux tests route 0x07/0x08 and still count unknown types bad — incl. fed as carrier records through the record path (same demux, Decision 12); `audioPresent` false ⇒ zero audio UI rendered (video-only streams pixel-identical to today), true ⇒ controls appear reactively mid-view; mute/volume persist and act on the sink only; worker-without-`AudioDecoder` ⇒ video-only viewer, annotated | ✅ implemented 2026-07-19 |
@@ -809,11 +929,13 @@ exercises the entire path and is unblocked everywhere.
    packet loss (no FEC in v1 — Decision 11), the latter a cushion too thin.
    An underrun re-primes on the depth floor rather than the schedule, so
    expect skew to step once there and be walked back by the trim.
-6. **Resilient mode (R19, Decision 12)**: on a lossy link (netem, docs/24
-   X1 technique), toggle Resilient mode — audio arrives as carrier records
-   (overlay Delivery-mode row), concealment gaps near zero vs. the
-   datagram run, skew targets still met at resilient depth (~500 ms), a
-   carrier drop surfaces as a silence blip, never growing delay.
+6. **Resilient mode (R19, Decision 12 as amended by field finding 5)**: on a
+   lossy link (netem, docs/24 X1 technique), toggle Resilient mode — **audio
+   stays on the unreliable datagram path** (only video deltas ride the
+   carrier), so audio behaves like the default-mode run (single concealed
+   gaps on loss, never GOP-clumped breaks) while video gains resilience; skew
+   targets still met at resilient depth (~500 ms) because audio aligns to the
+   deep video playhead, not the carrier.
 7. **Graceful states**: uncheck "share audio" in the picker → video-only +
    broadcaster annotation; Firefox broadcaster → same; broadcaster restart
    mid-view with audio newly enabled → viewer's audio controls appear

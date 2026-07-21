@@ -149,6 +149,28 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                     ? 'Video (audio free-running)'
                     : '—',
               ],
+              // docs/20 field finding 6: the jitter-buffer counters. Buffer
+              // depth well below target + climbing underruns is the "audio
+              // starved for cushion" signature (near-silent live-edge audio).
+              ...(stats.audioBuffer
+                ? ([
+                    [
+                      'Buffer depth',
+                      `${fmt(stats.audioBuffer.bufferedMs)} / ${fmt(stats.audioBuffer.targetMs)} ms`,
+                    ],
+                    [
+                      'Alignment hold',
+                      stats.audioBuffer.alignmentHoldMs == null
+                        ? '—'
+                        : `${fmt(stats.audioBuffer.alignmentHoldMs)} ms`,
+                    ],
+                    ['Underruns', String(stats.audioBuffer.underruns)],
+                    [
+                      'Gaps / late / overflow',
+                      `${stats.audioBuffer.gapsConcealed} / ${stats.audioBuffer.lateDrops} / ${stats.audioBuffer.overflowDrops}`,
+                    ],
+                  ] as StatsRow[])
+                : []),
             ] as StatsRow[],
           },
         ]
