@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.19.0...gawk-server-v0.19.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* trigger release ([f568e11](https://github.com/Tuhis/gawk/commit/f568e11b05048056d3633165fb9131c8bd54d28d))
+
 ## [0.19.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.18.0...gawk-server-v0.19.0) (2026-07-19)
 
 
