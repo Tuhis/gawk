@@ -4,6 +4,55 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
+## Safari viewer: keyframe delivery stops while datagrams keep flowing
+
+- **Found**: 2026-07-21, from a Safari 26.5.2 viewer's Copy-diagnostics
+  capture (broadcast `JCJHF8`, macOS). Reported as "playback suddenly
+  freezes; stats still show incoming frames, but nothing is decoded".
+- **Impact**: the viewer freezes permanently mid-stream. It is not a
+  disconnect — the session stays up, `viewerCount` is unchanged, and deltas
+  keep arriving at full rate, so nothing on either end used to notice.
+- **Signature** in the diagnostics: `keyframeStreamsReceived` frozen (232
+  across the whole 9.5 s capture) with `lastKeyframeAgeMs` climbing 6.6 s →
+  16.1 s, while `datagramsReceived`/`framesCompleted` climb normally at
+  ~54 fps; `reorderKeyframeWaitDrops` climbing at the full frame rate (every
+  delta ages out of the reorder buffer's waiting-for-keyframe state);
+  `decodedFrames` frozen, `decoderQueueDepth` 0. `reorderBuffered` parks at
+  ~50 ≈ 1 s of frames, i.e. exactly `KEYFRAME_WAIT_MS`. The reorder buffer is
+  the victim here, behaving correctly; keyframes stop at the transport
+  boundary (`viewer.ts` `handleKeyframeStream`, which is where the counter
+  increments).
+- **Cause — the freeze is mitigated, the trigger is NOT root-caused.**
+  QUIC datagrams are not flow-controlled but streams are, so the stall is
+  stream-path-specific: keyframes (reliable uni streams, R8) stop dead while
+  datagrams (deltas) continue. Whether the wedge is exhausted connection-level
+  receive credit on WebKit's side, or its incoming-uni-stream accept path, is
+  **unconfirmed** — it needs a `/statusz` capture taken *while a Safari viewer
+  is frozen*, which has not been done (the reported capture was hours stale by
+  the time it was investigated, and the signature only exists live).
+- **Confirmation procedure**: reproduce the freeze, then read that
+  subscriber's entry in `/statusz` `subscriberDetails` on its serving pod.
+  Stalled writes ⇒ `keyframesSent` flat while `keyframesDropped` climbs ~2/s,
+  with broadcast-level `keyframeDrops.slow` climbing in step. If instead
+  `keyframeDrops.superseded` climbs, the cause is upstream (publisher-side
+  keyframe cadence) and this entry is misfiled.
+- **Mitigation shipped** (2026-07-21, test-first, both layers): the relay
+  evicts a subscriber after `hub.KeyframeSlowEvictThreshold` (10 ≈ 5 s)
+  consecutive keyframes whose stream *opened* but whose write stalled — the
+  half of unreachability the R10 `KeyframeOpenFailEvictThreshold` streak
+  cannot see, because it resets on every successful open. Same non-terminal
+  4001 close code, so a live client reconnects. Plus a viewer-side backstop
+  (`viewer.ts` `checkKeyframeStall`, `KEYFRAME_STALL_MS` 8 s) for the case the
+  relay cannot see, deliberately longer than the relay's own remedy; it fires
+  only while frames are still arriving, so a broadcaster who merely stepped
+  away never trips it. **Both recover playback; neither explains WebKit's
+  behavior.** Remove this entry when the trigger is root-caused (and move what
+  it taught us into the relevant `docs/NN-*.md`).
+- **Not extended to R19 carrier streams on purpose**: a stalled carrier tail
+  is deliberately dropped at GOP granularity in resilient mode (docs/24
+  "drops-over-stalls"), so feeding those write stalls into an eviction streak
+  would disconnect healthy mobile viewers.
+
 ## iPhone native fullscreen enters but shows a black video
 
 - **Found**: 2026-07-16, first R16 U4 on-device pass (the predecessor bug —

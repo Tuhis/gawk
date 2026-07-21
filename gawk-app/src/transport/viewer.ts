@@ -46,6 +46,23 @@ import { getMaxDecoderQueueSize } from '../config';
 // decoder-backpressure resync are time-based). ~1 frame at 60 fps.
 const REORDER_TICK_MS = 16;
 
+// Keyframe-stall watchdog (Safari field finding, 2026-07-21). A viewer's
+// stream path can wedge while datagrams keep flowing — QUIC datagrams are not
+// flow-controlled, streams are — so keyframes stop dead while deltas arrive at
+// full rate. The reorder buffer then parks in waiting-for-keyframe and ages
+// out every delta, and playback freezes for good: no close code, no error,
+// nothing to reconnect on. The relay evicts such a subscriber itself
+// (hub.KeyframeSlowEvictThreshold, ~5 s), so this is the backstop for the case
+// the relay cannot see — deliberately longer than the relay's remedy, so a
+// healthy fleet fixes it server-side first and this never fires.
+const KEYFRAME_STALL_MS = 8000;
+
+// The watchdog fires only while frames are *still arriving*: that is what
+// distinguishes a wedged stream path from a broadcaster who merely stepped
+// away (which sends nothing at all and must keep its viewers connected —
+// docs/05 D1 keepalive).
+const FRAMES_FLOWING_WINDOW_MS = 1000;
+
 export interface ViewerStats extends ReassemblerStats {
   decodedFrames: number;
   decoderQueueDepth: number;
@@ -475,8 +492,29 @@ export class ViewerPipeline {
     });
   }
 
+  // Fails the pipeline when keyframes have stopped but frames keep coming, so
+  // ViewerSession reconnects into a fresh session (and, against a relay that
+  // already evicted us, this simply never fires). Plain Error, no close code:
+  // reconnectable, not terminal.
+  private checkKeyframeStall(): void {
+    const lastKeyframe = this.lastKeyframeReceivedAt;
+    const lastFrame = this.lastFrameReceivedAt;
+    if (lastKeyframe === null || lastFrame === null) return;
+    const now = performance.now();
+    if (now - lastFrame > FRAMES_FLOWING_WINDOW_MS) return; // idle, not starved
+    if (now - lastKeyframe < KEYFRAME_STALL_MS) return;
+    this.fail(
+      new Error(
+        `no keyframe for ${Math.round(now - lastKeyframe)}ms while frames are still arriving ` +
+          '(stream path stalled); reconnecting',
+      ),
+    );
+  }
+
   private reorderTick(): void {
     if (this.stopping || !this.reorder) return;
+    this.checkKeyframeStall();
+    if (this.stopping) return; // the watchdog just tore the pipeline down
     // Decoder backpressure: if the decode queue is deep, stop feeding it and
     // resync at the next keyframe so the viewer catches up to live.
     const dec = this.decoder;

@@ -111,6 +111,24 @@ func (f *fakeSender) setKfOpenErr(err error) {
 	f.kfOpenErr = err
 }
 
+func (f *fakeSender) setKfWriteErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kfWriteErr = err
+}
+
+func (f *fakeSender) getKfWriteErr() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.kfWriteErr
+}
+
+func (f *fakeSender) keyframeCount() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return uint64(len(f.keyframes))
+}
+
 // fakeKeyframeStream is one keyframe delivery to a fakeSender. Write optionally
 // blocks on the parent's kfBlock channel and is unblocked by CancelWrite (its
 // per-stream cancel channel), mirroring how a real SendStream.CancelWrite
@@ -125,8 +143,8 @@ type fakeKeyframeStream struct {
 func (k *fakeKeyframeStream) SetWriteDeadline(time.Time) error { return nil }
 
 func (k *fakeKeyframeStream) Write(p []byte) (int, error) {
-	if k.parent.kfWriteErr != nil {
-		return 0, k.parent.kfWriteErr
+	if err := k.parent.getKfWriteErr(); err != nil {
+		return 0, err
 	}
 	if k.parent.kfBlock != nil {
 		select {
@@ -734,6 +752,86 @@ func TestOpenFailureStreakResetsOnSuccess(t *testing.T) {
 
 	if _, closed := flaky.getCloseInfo(); closed {
 		t.Fatal("subscriber was evicted despite the streak resetting on success")
+	}
+	if got := singleBroadcastStats(t, r).Subscribers; got != 1 {
+		t.Errorf("Subscribers = %d, want 1 (no eviction)", got)
+	}
+}
+
+func TestStalledSubscriberEvictedAfterConsecutiveSlowKeyframes(t *testing.T) {
+	// Safari field finding (2026-07-21): a viewer whose stream path wedges while
+	// datagrams keep flowing (QUIC datagrams are not flow-controlled; streams
+	// are) leaves every keyframe *open* succeeding and every *write* timing out.
+	// That never feeds the open-failure streak, so the pre-fix relay kept the
+	// subscriber attached forever: it received deltas it could not decode and
+	// froze permanently on "awaiting keyframe". A subscriber dropping
+	// KeyframeSlowEvictThreshold consecutive keyframes as "slow" is as
+	// unreachable as one that cannot open streams — evict it with the same
+	// non-terminal code so a live client reconnects into fresh stream credit.
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
+
+	healthy := &fakeSender{}
+	// Opens succeed, writes fail: the stalled-stream shape, not the zombie one.
+	stalled := &fakeSender{kfWriteErr: errors.New("write deadline exceeded")}
+	sh, _ := r.Subscribe(id, healthy)
+	defer sh.Close()
+	if _, err := r.Subscribe(id, stalled); err != nil {
+		t.Fatalf("Subscribe(stalled): %v", err)
+	}
+
+	for i := range KeyframeSlowEvictThreshold {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(i+1), "vp8", fmt.Sprintf("kf%02d", i)))
+		// Pace on the healthy peer so a rapid next ingest can't supersede the
+		// stalled peer's in-flight write — a superseded drop is not a slow one.
+		waitKeyframes(t, healthy, i+1)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		code, closed := stalled.getCloseInfo()
+		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
+	}, "stalled subscriber to be closed with the unresponsive code")
+	waitFor(t, 5*time.Second, func() bool {
+		return singleBroadcastStats(t, r).Subscribers == 1
+	}, "evicted subscriber to be removed from the broadcast")
+
+	// Every drop was attributed to the stall, not miscounted as superseded.
+	if st := singleBroadcastStats(t, r); st.KeyframeDrops.Slow != KeyframeSlowEvictThreshold {
+		t.Errorf("KeyframeDrops.Slow = %d, want %d", st.KeyframeDrops.Slow, KeyframeSlowEvictThreshold)
+	}
+}
+
+func TestSlowStreakResetsOnDeliveredKeyframe(t *testing.T) {
+	// Eviction is for *persistent* stalls. A transiently slow subscriber that
+	// gets one keyframe through must not accumulate toward eviction — otherwise
+	// a congested-but-live viewer is disconnected for a bad few seconds.
+	r := NewRegistry(discardLog, Options{})
+	id, p, _ := r.StartPublish("")
+
+	flaky := &fakeSender{kfWriteErr: errors.New("transient stall")}
+	if _, err := r.Subscribe(id, flaky); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	seq := uint32(0)
+	ingest := func(n int) {
+		for range n {
+			seq++
+			ingestKeyframe(t, p, keyframeMsg(t, seq, "vp8", fmt.Sprintf("kf%03d", seq)))
+			waitFor(t, 5*time.Second, func() bool {
+				return singleBroadcastStats(t, r).KeyframeDrops.Total()+flaky.keyframeCount() >= uint64(seq)
+			}, "keyframe to be accounted before the next ingest")
+		}
+	}
+
+	ingest(KeyframeSlowEvictThreshold - 1)
+	flaky.setKfWriteErr(nil)
+	ingest(1) // a delivered keyframe resets the streak
+	flaky.setKfWriteErr(errors.New("stalling again"))
+	ingest(KeyframeSlowEvictThreshold - 1)
+
+	if _, closed := flaky.getCloseInfo(); closed {
+		t.Fatal("subscriber was evicted despite the streak resetting on a delivered keyframe")
 	}
 	if got := singleBroadcastStats(t, r).Subscribers; got != 1 {
 		t.Errorf("Subscribers = %d, want 1 (no eviction)", got)

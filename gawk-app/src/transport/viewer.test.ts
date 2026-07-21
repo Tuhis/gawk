@@ -151,6 +151,104 @@ describe('ViewerPipeline', () => {
     await pipeline.stop();
   });
 
+  it('reconnects when keyframes stop while deltas keep arriving (Safari stream-path stall)', async () => {
+    // Safari field finding (2026-07-21): the viewer's stream path can wedge
+    // while datagrams keep flowing (QUIC datagrams are not flow-controlled;
+    // streams are). Keyframes stop, the reorder buffer parks in
+    // waiting-for-keyframe and ages out every delta, and playback freezes
+    // permanently — with no close code and no error, so nothing reconnects.
+    // A viewer taking frames but starved of keyframes must give up and let
+    // ViewerSession reconnect into a fresh session.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      let deliver!: (d: Uint8Array) => void;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          deliver = cb.onDatagram;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      // A healthy start: config + a keyframe, so the watchdog has a baseline.
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Deltas keep arriving, but no keyframe ever lands again.
+      for (let i = 0; i < 60; i++) {
+        deliver(frameDgram(i + 2, false));
+        await vi.advanceTimersByTimeAsync(200);
+      }
+
+      expect(errors.length).toBeGreaterThan(0);
+      // Reconnectable, not fatal: no close code means ViewerSession retries.
+      expect((errors[0] as Error & { closeCode?: number }).closeCode).toBeUndefined();
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not reconnect when the broadcaster is merely away (no frames at all)', async () => {
+    // The stall watchdog keys on "frames arriving but no keyframes". A
+    // broadcaster who stepped away sends nothing at all, and the viewer must
+    // stay connected (QUIC keepalive holds the session — docs/05 D1), not
+    // reconnect-loop against an idle broadcast.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      let deliver!: (d: Uint8Array) => void;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          deliver = cb.onDatagram;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Total silence well past the stall threshold.
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(errors).toEqual([]);
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports the delivery mode truthfully, incl. the requested-but-datagrams fallback (R19)', async () => {
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
