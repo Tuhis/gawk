@@ -189,7 +189,7 @@ jobs:
     runs-on: ioio-k8s
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: |
