@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.3.0...gawk-broadcast-v1.3.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* trigger release ([f568e11](https://github.com/Tuhis/gawk/commit/f568e11b05048056d3633165fb9131c8bd54d28d))
+
 ## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.2.0...gawk-broadcast-v1.3.0) (2026-07-19)
 
 
