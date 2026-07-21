@@ -4,5 +4,5 @@ description: gawk frontend — the broadcast/view SPA served by nginx.
 type: application
 # Both fields are bumped by release-please; the image tag defaults to
 # appVersion, so chart version == image version always holds.
-version: 0.26.3 # x-release-please-version
-appVersion: "0.26.3" # x-release-please-version
+version: 0.26.4 # x-release-please-version
+appVersion: "0.26.4" # x-release-please-version
