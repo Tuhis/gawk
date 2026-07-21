@@ -415,6 +415,13 @@ async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec 
     );
     log('viewer is receiving frames; sampling diagnostics');
 
+    // The first completed frame proves flow, but the ≤6-sample median window
+    // still holds the connect/prime ticks behind it, each a zero. Let ~4
+    // healthy ticks land so those cannot be a majority — the same settle the
+    // broadcaster scenario takes after its first encoded frame, and for the
+    // same reason (a 4-sample window is where medianRecent stops being
+    // robust).
+    await sleep(2000);
     const diag1 = await captureDiagnostics(page, `diagnostics-${attempt}-1`);
     await sleep(SAMPLE_GAP_MS);
     const diag2 = await captureDiagnostics(page, `diagnostics-${attempt}-2`);
@@ -538,7 +545,22 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
       .locator('[role="dialog"][aria-label="Broadcast stats"]')
       .waitFor({ state: 'visible', timeout: 5000 });
 
-    // Let the funnel settle past encoder warm-up before the first capture.
+    // Wait for the funnel itself, never a fixed guess at encoder warm-up.
+    // A wall-clock sleep here is knife-edge: the stats cadence is 500 ms, so
+    // 2 s buys exactly 4 samples, and every tick before the first encoded
+    // frame is a zero. Three zeros out of four is a majority and
+    // medianRecent() returns 0 — failing a pipeline that is in fact healthy
+    // (observed on macOS, where tab-capture warm-up ran to ~1.5 s; the CI
+    // runners happen to land on the passing side of the same edge).
+    // Mirrors the viewer scenario's wait for its first completed frame.
+    await pollFor(
+      async () => Number.parseFloat((await rowValue(page, 'Encoder fps')) ?? '') > 0,
+      30_000,
+      500,
+      'the first encoded frame',
+    );
+    // Then let ~4 healthy ticks land, so warm-up zeros are a minority of the
+    // ≤6-sample median window whatever the start-up cost turned out to be.
     await sleep(2000);
     const diag1 = await captureDiagnostics(page, `broadcast-diagnostics-${attempt}-1`);
     await sleep(SAMPLE_GAP_MS);
