@@ -174,6 +174,37 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # Multi-module tidy gate. A dependency bump that lands in one module can
+  # leave a module that requires it via a local `replace` (gawk-broadcast →
+  # gawk-server) with a stale pruned module graph, which Go 1.25's
+  # `go vet`/`go build` then refuse — the failure that broke PR #75
+  # (client_golang bumped in gawk-server left gawk-broadcast's go.mod untidy).
+  # Renovate's `gomodTidy` tidies the module it edits, and grouping shared deps
+  # (renovate.json) makes cross-module bumps touch both go.mod files at once —
+  # but the transitive local-replace case only surfaces here, so every module
+  # must be `go mod tidy`-clean, checked independently of any build. `go mod
+  # tidy` resolves the module graph without compiling cgo, so this stays
+  # header-free and fast.
+  tidy:
+    runs-on: ioio-k8s
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-broadcast/go.sum
+      - name: go mod tidy leaves every module unchanged
+        run: |
+          for mod in gawk-server gawk-broadcast; do
+            (cd "$mod" && go mod tidy)
+          done
+          if ! git diff --exit-code; then
+            echo "::error::go.mod/go.sum not tidy — run 'go mod tidy' in the module(s) shown in the diff above and commit the result"
+            exit 1
+          fi
+
   helm:
     runs-on: ioio-k8s
     steps:
