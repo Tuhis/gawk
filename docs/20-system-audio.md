@@ -816,14 +816,20 @@ change in `audio-buffer.ts`; the pre-fix behavior was literally what an existing
 alignment test asserted (release the first chunk at ~0 depth), so the rewritten
 test fails first on old code.
 
-**Follow-ups (not in this change).** (a) `avSkewMs` should self-correct once
-audio plays continuously (the playhead stops freezing); if it doesn't, it is a
-separate metric bug. (b) The audio jitter-buffer stats
-(`underruns`/`bufferedMs`/`alignmentHoldMs`/`lateDrops`/`overflowDrops`) are
-**not** in Copy-diagnostics — they live in the main-thread sink while
-`ViewerStats` is assembled in the worker, so this capture couldn't show them
-directly; plumbing them up the existing playhead channel would make the next
-audio capture conclusive. **Hardware re-verification pending.**
+**Observability (same change).** The audio jitter-buffer counters
+(`bufferedMs`/`targetMs`/`alignmentHoldMs`/`underruns`/`gapsConcealed`/
+`lateDrops`/`overflowDrops`) are now surfaced. They live in the main-thread
+`AudioSink` while `ViewerStats` is assembled in the worker, so this capture
+couldn't show them — the same split that hides `featureGates`/
+`presentationSurface`. Fixed the same way: the viewer connection merges
+`AudioSink.getStats()` into the stats object (`ViewerStats.audioBuffer`,
+optional) at the one point that holds both, so they reach the overlay's Audio
+section **and** Copy-diagnostics uniformly. "Buffer depth *X / target* ms" well
+below target with climbing "Underruns" is the starvation signature to look for.
+
+**Follow-up (not in this change).** `avSkewMs` should self-correct once audio
+plays continuously (the playhead stops freezing); if it doesn't, it is a
+separate metric bug. **Hardware re-verification pending.**
 
 ### Post-implementation review (2026-07-19)
 

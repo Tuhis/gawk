@@ -190,6 +190,21 @@ export interface ViewerStats extends ReassemblerStats {
   presentationTee?: TeeStats;
   featureGates?: FeatureGate[];
   presentationSurface?: PresentationSurfaceStats;
+  // R15 (docs/20 field finding 6): the audio jitter-buffer's own counters.
+  // Like featureGates/presentationSurface the pipeline never sets these — the
+  // AudioSink lives on the main thread, so the viewer connection merges them in
+  // from AudioSink.getStats() before stats reach the overlay / Copy
+  // diagnostics (which the worker-assembled stats otherwise omit). Absent when
+  // there is no sink: a video-only stream, or before audio starts.
+  audioBuffer?: {
+    bufferedMs: number;
+    targetMs: number;
+    alignmentHoldMs: number | null;
+    underruns: number;
+    gapsConcealed: number;
+    lateDrops: number;
+    overflowDrops: number;
+  } | null;
 }
 
 export interface ViewerCallbacks {

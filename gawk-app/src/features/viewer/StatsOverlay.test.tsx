@@ -323,5 +323,43 @@ describe('StatsOverlay audio section (R15)', () => {
     expect(screen.getByText(/opus · 48000 Hz · 2ch/)).toBeTruthy();
     expect(screen.getByText('A/V skew')).toBeTruthy();
     expect(screen.getByText('Video (audio aligned)')).toBeTruthy();
+    // No sink stats merged in yet ⇒ no jitter-buffer rows.
+    expect(screen.queryByText('Buffer depth')).toBeNull();
+    expect(screen.queryByText('Underruns')).toBeNull();
+  });
+
+  // docs/20 field finding 6: the jitter-buffer counters, merged in on the main
+  // thread from the AudioSink, surface as their own rows (buffer depth / target,
+  // underruns, drops) — the "audio starved for cushion" diagnostic.
+  it('renders the jitter-buffer rows when the sink stats are present', () => {
+    render(
+      <StatsOverlay
+        stats={{
+          ...fullStats(),
+          audioState: 'active',
+          audioCodec: 'opus',
+          avSkewMs: 12,
+          avMaster: 'video',
+          audioBuffer: {
+            bufferedMs: 38.2,
+            targetMs: 120,
+            alignmentHoldMs: 95,
+            underruns: 7,
+            gapsConcealed: 2,
+            lateDrops: 1,
+            overflowDrops: 0,
+          },
+        }}
+        codec="avc1.42E01F"
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Buffer depth').nextSibling?.textContent).toBe('38.2 / 120.0 ms');
+    expect(screen.getByText('Alignment hold').nextSibling?.textContent).toBe('95.0 ms');
+    expect(screen.getByText('Underruns').nextSibling?.textContent).toBe('7');
+    expect(screen.getByText('Gaps / late / overflow').nextSibling?.textContent).toBe('2 / 1 / 0');
   });
 });
