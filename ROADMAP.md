@@ -44,8 +44,8 @@ feature set exists).
 
 ## R1 — Multi-broadcaster support
 
-**Goal**: multiple simultaneous, independent 1-to-many sessions. Five friends
-can each stream to their own audience at the same time. Starting a broadcast
+**Goal**: multiple simultaneous, independent 1-to-many sessions. Many
+broadcasters can each stream to their own audience at the same time. Starting a broadcast
 mints a short, shareable **broadcast ID**; the broadcaster's UI shows the ID
 and a direct join link (`#/view/<id>`), and viewers join by pasting the code
 or clicking the link.
@@ -104,7 +104,7 @@ possible follow-up, not part of R1.
 
 **Goal**: the relay enforces explicit limits and a minimal trust model
 instead of relying on obscurity and good behavior, so a bug, a rogue client,
-or an accidentally-shared URL can't take the homelab down.
+or an accidentally-shared URL can't take a deployment down.
 
 **Why here**: limits are naturally per-broadcast and per-server, so this
 lands right after R1 defines what a broadcast is. It's also a prerequisite
@@ -141,9 +141,9 @@ together); whether rate limiting lives in the relay or is better done at the
 homelab edge; what, if anything, needs to change in the Helm charts' defaults
 for a "safe by default" install.
 
-**Non-goals**: real user accounts, tokens, or a login flow — overkill for
-the audience. DDoS-grade protection — this is a private homelab service, not
-a public platform.
+**Non-goals**: real user accounts, tokens, or a login flow — out of scope for
+a self-hosted deployment. DDoS-grade protection — this targets self-hosted
+operators behind their own edge, not an open public platform.
 
 **Status**: done.
 
@@ -1009,8 +1009,8 @@ freeze. Pod crashes recover automatically within a few seconds (best-effort,
 explicitly looser than the rollout bound). Single-pod deployments keep
 byte-identical behavior behind a `-cluster-mode` flag.
 
-**Why now**: product prep — this is the load-bearing gap between "homelab
-toy" and "something friends-of-friends could use". Today a relay restart
+**Why now**: product prep — this is the load-bearing gap between a
+single-node demo and a deployment real audiences can rely on. Today a relay restart
 doesn't blip streams, it **orphans** them: `/publish/{id}` on an unknown ID
 returns 404 (no re-claim path), so every deploy forces a new broadcast ID and
 kills every viewer URL; the broadcaster has no auto-reconnect at all (terminal
