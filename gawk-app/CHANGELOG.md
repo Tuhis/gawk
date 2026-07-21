@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.4](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.3...gawk-app-v0.26.4) (2026-07-21)
+
+
+### Bug Fixes
+
+* recover viewers whose keyframe delivery stalls (Safari freeze) ([#90](https://github.com/Tuhis/gawk/issues/90)) ([8db98a6](https://github.com/Tuhis/gawk/commit/8db98a6cb1196506e4b87e50ee8526fcd19fd6d2))
+
 ## [0.26.3](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.2...gawk-app-v0.26.3) (2026-07-21)
 
 

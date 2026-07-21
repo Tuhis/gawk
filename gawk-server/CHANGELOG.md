@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.2](https://github.com/Tuhis/gawk/compare/gawk-server-v0.19.1...gawk-server-v0.19.2) (2026-07-21)
+
+
+### Bug Fixes
+
+* recover viewers whose keyframe delivery stalls (Safari freeze) ([#90](https://github.com/Tuhis/gawk/issues/90)) ([8db98a6](https://github.com/Tuhis/gawk/commit/8db98a6cb1196506e4b87e50ee8526fcd19fd6d2))
+
 ## [0.19.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.19.0...gawk-server-v0.19.1) (2026-07-21)
 
 
