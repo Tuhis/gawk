@@ -806,7 +806,18 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
    the carrier. Relay-only, test-first, zero wire/broadcaster/viewer changes;
    the profile-carrying half of Decision 12 stands (audio still adopts the
    resilient depth envelope, aligning to the deep video playhead per finding
-   4). **Hardware re-verification of all five findings pending.**
+   4). **Field finding 6 (2026-07-21, docs/20)**: live-edge (`playoutMode`
+   off) audio was near-silent because finding 4's video-master alignment
+   gives the worklet ~0 buffer depth when video presents on arrival, so
+   normal arrival jitter (72–158 ms) starved it (severity tracked jitter;
+   `audioPacketsDecoded` stayed ~50/s, proving it was not loss — which also
+   validated finding 5's carrier fix as safe). The adaptive jitter target is
+   now a **depth floor in every mode** (`audio-buffer.ts` releases only when
+   the video schedule is due AND `bufferedMs ≥ targetMs`); paced modes
+   unchanged, live-edge gets a ~90–150 ms cushion at the cost of audio
+   sitting a jitter-depth behind video. `avSkewMs` (~3–5 s) was a
+   frozen-playhead artifact of the underruns. **Hardware re-verification of
+   all six findings pending.**
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
    green); U4 verdict 2026-07-19: the native path still does not work on
    iPhone — `webkitEnterFullscreen` enters but shows a black video across

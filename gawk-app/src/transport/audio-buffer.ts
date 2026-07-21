@@ -247,10 +247,18 @@ export class AudioJitterBuffer {
       this.dueAtMs = this.schedule()?.(oldest.timestampUs) ?? null;
     }
     const nowMs = this.now();
-    const due =
-      this.alignOnSchedule && this.dueAtMs !== null
-        ? nowMs >= this.dueAtMs
-        : this.bufferedMs() >= this.targetMs;
+    // The video schedule decides *lip sync* — when audio is heard relative to
+    // its frame. But in live-edge mode the frame is presented on arrival, so
+    // the schedule says "due now" at ~0 hold, which leaves the worklet no
+    // cushion and lets normal arrival jitter starve it into constant underrun
+    // (docs/20 field finding 6: near-silent live-edge audio, worse the higher
+    // the arrival jitter). So the adaptive jitter target is a *floor* in every
+    // mode: never release below it. In paced modes the schedule hold already
+    // exceeds the floor, so gating on both changes nothing there.
+    const scheduleDue =
+      this.alignOnSchedule && this.dueAtMs !== null ? nowMs >= this.dueAtMs : true;
+    const depthReady = this.bufferedMs() >= this.targetMs;
+    const due = scheduleDue && depthReady;
     // The cap keeps a missing or nonsensical schedule from muting audio.
     if (!due && this.pendingMs < MAX_ALIGNMENT_HOLD_MS) return;
 

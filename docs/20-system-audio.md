@@ -4,10 +4,11 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 2026-07-15; **design refreshed 2026-07-19** against everything landed since —
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
-**N1–N6 implemented 2026-07-19; first hardware playback 2026-07-20 produced
-five field findings, all fixed — including the Decision 10 inversion to
-**video-master** A/V sync and the Decision 12 reversal taking audio back off
-the R19 reliable carrier; hardware re-verification pending** — see
+**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-21 produced
+six field findings, all fixed — including the Decision 10 inversion to
+**video-master** A/V sync, the Decision 12 reversal taking audio back off
+the R19 reliable carrier, and a live-edge audio buffer-depth floor;
+hardware re-verification pending** — see
 [Status](#status)). Adds the broadcaster's
 **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
@@ -770,6 +771,59 @@ datagrams queued behind it until the stall is cancelled — bounded and transien
 audio *on* the carrier permanently. Fully decoupling would need a separate audio
 queue/goroutine; deferred as a possible follow-up. **Hardware re-verification of
 this fix is pending.**
+
+### Field finding 6 (2026-07-21): live-edge audio starves for buffer depth
+
+The first resilient-vs-default comparison on hardware (Safari 26, macOS)
+showed default/live-edge audio was **near-silent — the only sound was a crack
+at roughly the GOP cadence** — while resilient mode was recognizable. Two
+Copy-diagnostics captures settled it:
+
+- **Not packet loss.** `audioPacketsDecoded` climbed at ~50/s (full Opus rate)
+  in *both* the "almost OK" and "cracks" captures — audio arrives and decodes
+  fine over plain datagrams. This also **validates field finding 5's carrier
+  fix as safe**: resilient mode played because of its deeper buffer profile,
+  not because the carrier's reliability was covering datagram loss.
+- **Both sessions were live-edge** (`playoutMode: "off"`, `playoutOffsetMs: 0`).
+- **Severity tracked arrival jitter**: `arrivalJitterMs` 72 → "almost OK",
+  158 → "mostly silent". That jitter-sensitivity is the signature of a worklet
+  starved for buffer depth.
+- `avSkewMs` read **~3–5 s**, which the owner correctly flagged as wrong. It is
+  an artifact of the underruns, not a real lip-sync error: the worklet's
+  playhead only advances on real samples, so during the frequent silences it
+  freezes while video keeps going, and the skew balloons.
+
+**Root cause.** Field finding 4's video-master alignment sets the worklet's
+buffer depth to "just enough that audio is heard when its video frame is
+presented." In paced modes that hold is a few hundred ms — the design's happy
+path. In **live-edge mode the frame is presented on arrival**, so the schedule
+resolves to "due now" at ~0 ms hold: the worklet gets essentially no cushion,
+and the normal 72–158 ms arrival jitter starves it into near-continuous
+underrun. Finding 4 was verified in paced modes; live-edge audio was never
+exercised (audio never played on hardware until 2026-07-20, and this is the
+first Safari/live-edge session).
+
+**Fix (viewer-only, test-first).** The adaptive jitter target
+(`clamp(arrivalJitter + 20, [40, 150])`) is now a **depth floor in every mode**:
+`AudioJitterBuffer` releases only when the video schedule is due **and** at
+least `targetMs` is buffered. In paced modes the schedule hold already exceeds
+the floor, so nothing changes there; in live-edge the floor supplies a
+~90–150 ms cushion sized to the measured jitter. The cost is that live-edge
+audio now sits a jitter-depth behind video instead of cutting out — bounded, in
+the perceptually forgiving direction (audio behind video), and live-edge video
+is itself jittery, so tight lip sync was never on offer there. One pure-module
+change in `audio-buffer.ts`; the pre-fix behavior was literally what an existing
+alignment test asserted (release the first chunk at ~0 depth), so the rewritten
+test fails first on old code.
+
+**Follow-ups (not in this change).** (a) `avSkewMs` should self-correct once
+audio plays continuously (the playhead stops freezing); if it doesn't, it is a
+separate metric bug. (b) The audio jitter-buffer stats
+(`underruns`/`bufferedMs`/`alignmentHoldMs`/`lateDrops`/`overflowDrops`) are
+**not** in Copy-diagnostics — they live in the main-thread sink while
+`ViewerStats` is assembled in the worker, so this capture couldn't show them
+directly; plumbing them up the existing playhead channel would make the next
+audio capture conclusive. **Hardware re-verification pending.**
 
 ### Post-implementation review (2026-07-19)
 

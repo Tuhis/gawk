@@ -181,14 +181,24 @@ describe('AudioJitterBuffer alignment', () => {
     expect(buffer.getStats().alignmentHoldMs).toBeCloseTo(100, 5);
   });
 
-  it('passes chunks straight through once aligned — the offset is fixed at start', () => {
-    const { emitted, buffer, clock } = scheduled(() => 1000);
+  it('builds the jitter-floor cushion even when the schedule is due immediately (live-edge)', () => {
+    // Live-edge: video presents on arrival, so the schedule says "due now" at
+    // ~0 hold. Releasing there would leave the worklet no cushion and let
+    // normal jitter starve it (docs/20 field finding 6). The adaptive jitter
+    // target is a floor in every mode: hold until it is met, THEN pass through.
+    const { emitted, buffer, clock } = scheduled(() => 1000); // due immediately
     buffer.push(chunk(0));
-    expect(emitted).toHaveLength(1); // due immediately
-
-    clock.t = 1020;
     buffer.push(chunk(FRAME_US));
-    expect(emitted).toHaveLength(2);
+    expect(emitted).toHaveLength(0); // 40 ms < 60 ms seed floor: not yet
+    buffer.push(chunk(2 * FRAME_US)); // 60 ms floor reached
+    expect(emitted).toHaveLength(3);
+    // The cushion the release established IS the worklet's depth.
+    expect(buffer.getStats().alignmentHoldMs).toBeCloseTo(60, 5);
+
+    // Aligned now: the offset is fixed, so later chunks pass straight through.
+    clock.t = 1020;
+    buffer.push(chunk(3 * FRAME_US));
+    expect(emitted).toHaveLength(4);
   });
 
   it('falls back to a depth floor when no schedule is known', () => {
@@ -217,18 +227,21 @@ describe('AudioJitterBuffer alignment', () => {
     // at this point — that is why we ran dry. Honoring it would release
     // instantly and rebuild no cushion at all.
     const { emitted, buffer, clock } = scheduled((ts) => 1000 + ts / 1000);
+    // Start playback by building the jitter-floor cushion (60 ms = 3 chunks).
     buffer.push(chunk(0));
-    expect(emitted).toHaveLength(1);
+    buffer.push(chunk(FRAME_US));
+    buffer.push(chunk(2 * FRAME_US));
+    expect(emitted).toHaveLength(3);
 
-    buffer.notePlayed(20);
+    buffer.notePlayed(60);
     buffer.noteUnderrun(4);
     const before = emitted.length;
 
     clock.t = 5000; // long past every chunk's scheduled slot
-    buffer.push(chunk(FRAME_US));
-    buffer.push(chunk(2 * FRAME_US));
-    expect(emitted).toHaveLength(before); // rebuilding depth
     buffer.push(chunk(3 * FRAME_US));
+    buffer.push(chunk(4 * FRAME_US));
+    expect(emitted).toHaveLength(before); // rebuilding depth
+    buffer.push(chunk(5 * FRAME_US));
     expect(emitted).toHaveLength(before + 3);
   });
 
@@ -239,11 +252,15 @@ describe('AudioJitterBuffer alignment', () => {
     const before = emitted.length;
 
     clock.t = 1500;
+    // Build the floor on the new timeline (60 ms); the oldest chunk's schedule
+    // slot is 2200, so it is still held against the schedule, not the depth.
     buffer.push(chunk(10 * FRAME_US));
+    buffer.push(chunk(11 * FRAME_US));
+    buffer.push(chunk(12 * FRAME_US));
     expect(emitted).toHaveLength(before); // held again, against the schedule
     clock.t = 2200;
     buffer.tick();
-    expect(emitted.length).toBeGreaterThan(before);
+    expect(emitted.length).toBeGreaterThan(before); // schedule due AND floor met
   });
 
   it('a deliberate alignment hold does not read as overflow', () => {
