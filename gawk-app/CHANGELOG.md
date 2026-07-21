@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.3](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.2...gawk-app-v0.26.3) (2026-07-21)
+
+
+### Bug Fixes
+
+* **audio:** count only delivered chunks + recover from worklet stalls ([#86](https://github.com/Tuhis/gawk/issues/86)) ([27811f9](https://github.com/Tuhis/gawk/commit/27811f970ceee192189c4bd1a28b001d3ad5d382))
+
 ## [0.26.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.1...gawk-app-v0.26.2) (2026-07-21)
 
 
