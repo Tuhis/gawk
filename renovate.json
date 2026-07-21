@@ -1,3 +1,24 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json"
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "Bump the Kubernetes libraries together — api/apimachinery/client-go must move in lockstep, and splitting them (as PRs #62/#63/#65 were) invites incompatible partial upgrades.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["k8s.io/**", "sigs.k8s.io/**"],
+      "groupName": "kubernetes packages"
+    },
+    {
+      "description": "quic-go and webtransport-go are direct deps of BOTH Go modules; grouping makes a bump edit (and gomodTidy) both go.mod files in one PR so they never drift apart.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/quic-go/**"],
+      "groupName": "quic-go"
+    },
+    {
+      "description": "The Prometheus client libraries (client_golang + client_model) share a release cadence and transitive graph — land them together.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/prometheus/**"],
+      "groupName": "prometheus packages"
+    }
+  ]
 }
