@@ -68,6 +68,13 @@ const SAMPLE_GAP_MS = 5000;
 // promise the source rate, only that frames keep flowing. Lowered 10 → 8 after
 // the runner narrowly missed 10 on otherwise-healthy runs.
 const DECODED_FPS_FLOOR = 8;
+// Encoded frames the browser broadcaster must produce before its first
+// diagnostics capture — a progress gate on encoder warm-up, deliberately not
+// a rate gate (that would pre-assert what assertBroadcastFlow() checks).
+// Calibrated from a real CI run: the 2-core runner ramps through 2–16 fps for
+// ~3.5 s, by which point it has encoded ~28 frames; a fast local box passes 30
+// in ~0.5 s.
+const WARMUP_FRAMES = 30;
 // Up to this many *retries* of the viewer scenario (so MAX_VIEWER_RETRIES + 1
 // total attempts) when its flow assertions don't hold — the fps floor above is
 // a soft, runner-load-sensitive signal, so one narrow miss must not fail the
@@ -415,6 +422,13 @@ async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec 
     );
     log('viewer is receiving frames; sampling diagnostics');
 
+    // The first completed frame proves flow, but the ≤6-sample median window
+    // still holds the connect/prime ticks behind it, each a zero. Let ~4
+    // healthy ticks land so those cannot be a majority — the same settle the
+    // broadcaster scenario takes after its first encoded frame, and for the
+    // same reason (a 4-sample window is where medianRecent stops being
+    // robust).
+    await sleep(2000);
     const diag1 = await captureDiagnostics(page, `diagnostics-${attempt}-1`);
     await sleep(SAMPLE_GAP_MS);
     const diag2 = await captureDiagnostics(page, `diagnostics-${attempt}-2`);
@@ -538,7 +552,33 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
       .locator('[role="dialog"][aria-label="Broadcast stats"]')
       .waitFor({ state: 'visible', timeout: 5000 });
 
-    // Let the funnel settle past encoder warm-up before the first capture.
+    // Wait for the funnel to warm up, never a fixed guess at how long that
+    // takes — and gate on *progress*, not on a rate, so the wait stays
+    // independent of the rates assertBroadcastFlow() then checks.
+    //
+    // A wall-clock sleep is knife-edge here: the stats cadence is 500 ms, so
+    // 2 s buys 4 samples, and medianRecent() over a 4-sample window flips on
+    // a single tick. The two ends warm up very differently — a dev macOS box
+    // reaches 60 fps in ~1.5 s (before that, zeros), while a 2-core CI runner
+    // software-encoding 720p30 ramps through 2–16 fps for ~3.5 s before it
+    // settles. Neither a fixed sleep nor "the first encoded frame" (true at
+    // 2 fps, on the runner's very first tick) survives both.
+    //
+    // The encoded-frame counter does: it is monotonic, and reaching it takes
+    // proportionally longer on a slower pipeline, which is exactly the
+    // scaling wanted. 30 frames lands at t≈3.5 s on the CI runner (past the
+    // ramp) and ~0.5 s on a fast local box. Bounded like every other wait.
+    await pollFor(
+      async () => {
+        const v = (await rowValue(page, 'Encoded'))?.trim();
+        return /^\d+$/.test(v) && Number(v) >= WARMUP_FRAMES;
+      },
+      30_000,
+      500,
+      `${WARMUP_FRAMES} encoded frames (encoder warm-up)`,
+    );
+    // Then let ~4 post-warm-up ticks land, so any residual ramp sample is a
+    // minority of the ≤6-sample median window.
     await sleep(2000);
     const diag1 = await captureDiagnostics(page, `broadcast-diagnostics-${attempt}-1`);
     await sleep(SAMPLE_GAP_MS);
