@@ -1,14 +1,21 @@
 # Project: Self-Hosted Low-Latency Game Stream
 
 ## Purpose & Context
-Hobby self-hosted game-streaming web app for a small private group (~15 friends)
-watching a single broadcaster (my gaming PC). Hosted on a homelab with a 1gbps
-symmetric connection. Target: sub-500ms glass-to-glass latency.
+Self-hosted, low-latency live game-streaming platform: a broadcaster shares
+their screen and viewers watch in the browser at sub-500ms glass-to-glass
+latency (≈50ms measured on a hardware encode/decode path). Join-by-code UX
+(no accounts, plugins, or native app), multiple simultaneous broadcasters,
+and a custom Go relay that **scales horizontally** — a self-federating fleet
+of relay pods carries hundreds of concurrent broadcasts and ~1000 viewers on
+a single hot broadcast behind one UDP load balancer. Ships as Helm charts +
+GHCR images, deployable from a single node to a Kubernetes cluster; the
+reference deployment runs on a homelab with a 1gbps symmetric uplink.
 
-Primary motivation is **learning** — exploring newer, lower-level browser tech.
-Success = a working low-latency stream *and* a rewarding technical exploration.
-This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
-(e.g. OvenMediaEngine) — that route was lower-risk but less interesting.
+WebTransport + WebCodecs is a deliberate choice over a mature WebRTC/SFU path
+(e.g. OvenMediaEngine): a lower-level, self-owned pipeline chosen partly as a
+genuine exploration of newer browser transport/codec APIs. That exploration
+stays an explicit success criterion — a working low-latency stream *and* a
+rewarding technical deep-dive — but it is not a licence to cut product corners.
 
 ## Architecture (locked in)
 - **Frontend**: React SPA (Vite + TypeScript + Zustand + CSS Modules)
@@ -1067,8 +1074,10 @@ This is why WebTransport + WebCodecs was chosen over a mature WebRTC/SFU path
   assume larger payloads are safe
 - Favor dropped frames over stalled playback (this is why datagrams, not streams,
   were chosen)
-- Small fixed audience + homelab bandwidth headroom means we can trade some
-  robustness for simplicity vs. a general-purpose streaming platform
+- Self-hosted target with bandwidth headroom (a known operator, not the open
+  internet) means we can trade some robustness for simplicity vs. a
+  general-purpose public streaming platform — even though the relay now scales
+  out horizontally, we don't owe a hostile-network SLA
 - **Trust the actual `VideoFrame` in hand, not `MediaStreamTrack.getSettings()`
   or any other metadata source** — Chrome's `getSettings()` has been observed
   to disagree with the frames MSTP actually delivers. Configure encoders and

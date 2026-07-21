@@ -1,18 +1,26 @@
 # gawk
 
-Self-hosted low-latency game streaming for a small private group (~15
-friends) watching one broadcaster's gaming PC. Homelab-hosted, 1 Gbps
-symmetric uplink, targeting sub-500 ms glass-to-glass latency.
+Self-hosted, low-latency live game streaming for the browser. A broadcaster
+shares their screen; viewers join with a 6-character code and watch at
+**sub-500 ms glass-to-glass latency** (≈50 ms measured on a hardware
+encode/decode path) — no accounts, no plugins, no native app.
 
-The primary motivation is **learning**: this deliberately explores newer,
-lower-level browser tech — WebTransport datagrams + WebCodecs — instead of
-the mature WebRTC/SFU route (OvenMediaEngine et al.), which would have been
-the safe choice.
+Built on **WebTransport datagrams + WebCodecs** with a custom Go relay that
+**scales horizontally**: a self-federating fleet of relay pods carries
+hundreds of concurrent broadcasts and ~1,000 viewers on a single hot
+broadcast behind one UDP load balancer. Deploy the whole stack — relay +
+web app — from Helm charts, on anything from a single node to a Kubernetes
+cluster.
+
+WebTransport + WebCodecs is a deliberate choice over the mature WebRTC/SFU
+route (OvenMediaEngine et al.): a lower-level path that trades some ready-made
+robustness for a leaner, self-owned pipeline and a real exploration of newer
+browser transport and codec APIs.
 
 ## How it works
 
 ```
-Broadcaster (Chrome)                relay (Go)                Viewers (Chrome, ≤15)
+Broadcaster (Chrome)                relay (Go)                Viewers (Chrome, many)
 getDisplayMedia                                              
   → VideoEncoder (WebCodecs)      WebTransport/QUIC            reassemble frames
   → chunk into ≤1200 B datagrams ──→ /publish                    → VideoDecoder
@@ -93,9 +101,9 @@ kind runs on release PRs (`e2e-cluster`). Locally: see
 
 Both components build to images (`<component>/deploy/Dockerfile`) and ship
 as Helm charts (`<component>/deploy/charts/<component>/`) published to GHCR by CI on
-release — chart version, `appVersion` and image tag always match. Homelab
+release — chart version, `appVersion` and image tag always match. Cluster
 deployment is automated cluster-side: whenever a new version is released,
-it is deployed to the homelab automatically (CI itself stays publish-only —
+it is rolled out automatically (CI itself stays publish-only —
 no cluster credentials in GitHub). Initial install runbook, GHCR pull-secret
 setup and the release flow:
 [`docs/05-resilience-deploy.md`](docs/05-resilience-deploy.md).

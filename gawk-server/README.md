@@ -1,9 +1,13 @@
 # gawk-server
 
-Go WebTransport relay for the gawk game stream. One publisher (the
-broadcaster's browser) sends encoded video as QUIC datagrams; the server fans
-them out to up to 15 subscribers, caching the latest keyframe and decoder
-config to prime late joiners.
+Go WebTransport relay for gawk. Publishers (a broadcaster's browser or the
+native Linux broadcaster) send encoded video as QUIC datagrams; the relay
+fans each broadcast out to its subscribers, caching the latest keyframe and
+decoder config to prime late joiners. It runs standalone or, in cluster mode
+(R17), as a self-federating fleet of pods that spreads one hot broadcast's
+audience across nodes. Per-broadcast and fleet-wide subscriber caps are
+configurable (`-max-subscribers`, default 15 per broadcast;
+`-max-total-subscribers`, default 50 per node) — see the flags table below.
 
 Design, wire format and task breakdown: [`../docs/implementation-tasks.md`](../docs/implementation-tasks.md).
 
