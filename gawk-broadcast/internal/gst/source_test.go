@@ -1,3 +1,22 @@
+//go:build linux
+
+// Linux-only, and deliberately so. These tests supervise a real child process
+// standing in for gst-launch-1.0, and the cascade's rule is "a child that dies
+// inside LiveProbeWindow means try the next encoder" — so the probe windows
+// here (100–150 ms) are load-bearing timings, not arbitrary ones.
+//
+// macOS evaluates the code signature and provenance of a never-before-executed
+// file on its first exec, which costs 140–230 ms for the freshly written
+// scripts fakeBinary() hands out (Linux: ~1–3 ms). The fake child is therefore
+// still starting when the probe window expires, gets adopted as alive, and
+// four tests fail for a reason that has nothing to do with the code under
+// test. Production is unaffected: its window is 3 s (source.go), two orders of
+// magnitude clear of that startup cost.
+//
+// The package is Linux-only anyway by runtime dependency — XDG ScreenCast
+// portal over D-Bus, PipeWire fd passing, and a hardware-only GStreamer
+// encoder cascade (docs/19). Tagging the file keeps `go test ./...` honest on
+// a developer's Mac rather than reporting a platform artifact as a failure.
 package gst
 
 import (
