@@ -342,6 +342,7 @@ export function useViewerConnection(
               gapsConcealed: b.gapsConcealed,
               lateDrops: b.lateDrops,
               overflowDrops: b.overflowDrops,
+              resets: b.resets,
             },
           };
         }

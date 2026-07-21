@@ -348,6 +348,7 @@ describe('StatsOverlay audio section (R15)', () => {
             gapsConcealed: 2,
             lateDrops: 1,
             overflowDrops: 0,
+            resets: 0,
           },
         }}
         codec="avc1.42E01F"

@@ -67,7 +67,18 @@ export interface AudioBufferStats {
   resets: number;
 }
 
-export type AudioChunkSink = (chunk: AudioChunk) => void;
+// Returns whether the chunk actually reached the sink. `false` means the sink
+// dropped it (the AudioWorklet node was still booting, or its port threw), and
+// the buffer must NOT count it toward depth — counting undelivered audio
+// inflates the estimate above the overflow ceiling forever, which is the
+// field-finding-7 crackle-then-silence. `void` is treated as delivered so
+// simpler sinks (the tests) need not care.
+export type AudioChunkSink = (chunk: AudioChunk) => boolean | void;
+
+// Whether the sink can receive a chunk right now. The buffer holds audio in
+// priming until this is true, so the alignment cushion is never released into
+// a null worklet node and lost (field finding 7). Defaults to always-ready.
+export type SinkReadyFn = () => boolean;
 
 // Maps a broadcaster audio timestamp (µs) to the local ms at which that chunk
 // should be handed to the sink so it is *heard* alongside the video frame of
@@ -127,6 +138,7 @@ export class AudioJitterBuffer {
 
   private now: () => number;
   private schedule: () => AudioScheduleFn | null;
+  private ready: SinkReadyFn;
   // True while the pending release is the *alignment* one (start, or after a
   // flush). An underrun re-prime clears it: by then the schedule for the
   // oldest pending chunk is already past — that's why we ran dry — so honoring
@@ -143,7 +155,11 @@ export class AudioJitterBuffer {
   constructor(
     emit: AudioChunkSink,
     profile: AudioBufferProfile | (() => AudioBufferProfile) = DEFAULT_AUDIO_PROFILE,
-    opts: { now?: () => number; schedule?: () => AudioScheduleFn | null } = {},
+    opts: {
+      now?: () => number;
+      schedule?: () => AudioScheduleFn | null;
+      sinkReady?: SinkReadyFn;
+    } = {},
   ) {
     this.emit = emit;
     this.profile = typeof profile === 'function' ? profile : () => profile;
@@ -151,6 +167,7 @@ export class AudioJitterBuffer {
     this.profileSeedMs = this.targetMs;
     this.now = opts.now ?? (() => performance.now());
     this.schedule = opts.schedule ?? (() => null);
+    this.ready = opts.sinkReady ?? (() => true);
   }
 
   // Lets the owner re-check the alignment gate when no chunk arrived to drive
@@ -228,8 +245,10 @@ export class AudioJitterBuffer {
   // once the alignment gate opens.
   private emitChunk(chunk: AudioChunk, durationMs: number): void {
     if (!this.priming) {
-      this.queuedMs += durationMs;
-      this.emit(chunk);
+      // Count toward depth only what the sink actually took (field finding 7):
+      // an undelivered chunk (node booting, port throwing) that still inflated
+      // queuedMs is what drove the chronic spurious overflow drops.
+      if (this.emit(chunk) !== false) this.queuedMs += durationMs;
       return;
     }
     this.pending.push(chunk);
@@ -258,19 +277,31 @@ export class AudioJitterBuffer {
     const scheduleDue =
       this.alignOnSchedule && this.dueAtMs !== null ? nowMs >= this.dueAtMs : true;
     const depthReady = this.bufferedMs() >= this.targetMs;
-    const due = scheduleDue && depthReady;
-    // The cap keeps a missing or nonsensical schedule from muting audio.
+    // Field finding 7: never release the cushion into a sink that can't receive
+    // it — the released chunks would be dropped and the worklet would start at
+    // ~0 ms depth (finding 6 redux). Hold until the worklet node exists.
+    const due = scheduleDue && depthReady && this.ready();
+    // The cap keeps a missing or nonsensical schedule (or a sink that never
+    // comes up) from muting audio: release anyway, and honest accounting below
+    // simply counts nothing if the sink still drops it.
     if (!due && this.pendingMs < MAX_ALIGNMENT_HOLD_MS) return;
 
     this.alignmentHoldMs = this.pendingMs;
     this.priming = false;
     this.dueAtMs = null;
-    this.queuedMs += this.pendingMs;
-    this.establishedDepthMs = this.queuedMs;
     this.pendingMs = 0;
     const ready = this.pending;
     this.pending = [];
-    for (const c of ready) this.emit(c);
+    // Count only what the sink accepted (field finding 7). If the node is up
+    // (the ready() path) that is all of it, identical to before; only the
+    // MAX_ALIGNMENT_HOLD escape can hit an unready sink, and there the depth
+    // must stay honest rather than bake in a phantom cushion.
+    let delivered = 0;
+    for (const c of ready) {
+      if (this.emit(c) !== false) delivered += (c.frameCount / c.sampleRate) * 1000;
+    }
+    this.queuedMs += delivered;
+    this.establishedDepthMs = this.queuedMs;
   }
 
   private bufferedMs(): number {

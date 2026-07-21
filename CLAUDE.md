@@ -823,8 +823,24 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    the video schedule is due AND `bufferedMs ≥ targetMs`); paced modes
    unchanged, live-edge gets a ~90–150 ms cushion at the cost of audio
    sitting a jitter-depth behind video. `avSkewMs` (~3–5 s) was a
-   frozen-playhead artifact of the underruns. **Hardware re-verification of
-   all six findings pending.**
+   frozen-playhead artifact of the underruns. **Field finding 7 (2026-07-21,
+   docs/20)**: with 1–6 fixed, audio started then degraded to short cracks
+   within ~10 s and, on a later session, cut out entirely.
+   `AudioJitterBuffer.queuedMs` (a shadow of the worklet's real queue depth)
+   counted chunks `AudioSink.forward()` silently dropped while the AudioWorklet
+   node was still booting (async `addModule`) or its port threw — permanently
+   inflating `bufferedMs` above the overflow ceiling, so `push()` spuriously
+   overflow-dropped ~39/50 incoming packets (crackle) and, once the worklet
+   stopped draining (Safari suspends the AudioContext), froze the estimate above
+   the ceiling and dropped every packet forever (total silence, no recovery).
+   Fixed test-first, viewer only: (a) **honest accounting** — `emit` signals
+   delivery, `queuedMs`/`establishedDepthMs` count only delivered audio; (b) a
+   **sink-ready release gate** so the alignment cushion is never released into a
+   null node; (c) **stall recovery** — no worklet playhead report for >1 s while
+   audio arrives ⇒ resume a suspended context + flush buffer/worklet to
+   re-anchor at the live edge; plus a `resets` (recoveries) overlay row and a
+   hardened `flush()`. **Hardware re-verification of all seven findings
+   pending.**
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
    green); U4 verdict 2026-07-19: the native path still does not work on
    iPhone — `webkitEnterFullscreen` enters but shows a black video across

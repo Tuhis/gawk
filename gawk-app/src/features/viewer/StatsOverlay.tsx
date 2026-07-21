@@ -169,6 +169,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                       'Gaps / late / overflow',
                       `${stats.audioBuffer.gapsConcealed} / ${stats.audioBuffer.lateDrops} / ${stats.audioBuffer.overflowDrops}`,
                     ],
+                    // Re-anchors (timeline restarts + field-finding-7 stall
+                    // recoveries): a climbing count is the sink stalling.
+                    ['Recoveries', String(stats.audioBuffer.resets)],
                   ] as StatsRow[])
                 : []),
             ] as StatsRow[],
