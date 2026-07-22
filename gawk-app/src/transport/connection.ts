@@ -139,6 +139,16 @@ export interface ServerStreamCallbacks {
   onCarrierRecord: (record: Uint8Array<ArrayBuffer>) => void;
 }
 
+// Test seam (undefined in production). readServerStreams tracks each in-flight
+// stream task in a set it prunes on settle, so the working set stays
+// proportional to open streams (~2), not to session length. This hook samples
+// that set's size after every add and every settle so a test can assert the
+// working set never grows unbounded (INGEST-1) — the bug being that the old
+// array retained one settled promise per stream for the life of the session.
+export interface ReadServerStreamsHooks {
+  onInFlightChange?: (count: number) => void;
+}
+
 // Reads server-initiated unidirectional streams for the life of the session,
 // dispatching each by its stream-kind bytes: a keyframe StreamFrame message
 // (version‖0x04 — read to EOF, bounded by MAX_KEYFRAME_BYTES) or, since R19,
@@ -151,19 +161,31 @@ export async function readServerStreams(
   cb: ServerStreamCallbacks,
   carrier: CarrierCounters,
   signal?: AbortSignal,
+  hooks?: ReadServerStreamsHooks,
 ): Promise<void> {
   const reader = wt.incomingUnidirectionalStreams.getReader();
   const onAbort = () => void reader.cancel().catch(() => {});
   signal?.addEventListener('abort', onAbort, { once: true });
-  const tasks: Promise<void>[] = [];
+  // Track only the streams still being read. A hours-long mobile session
+  // accepts thousands of short-lived streams (keyframe + carrier per GOP);
+  // pruning each on settle keeps the working set proportional to open streams
+  // (~2), not to session length — the old append-only array was a slow leak
+  // (INGEST-1: ~1 MB/hr, monotonic).
+  const inFlight = new Set<Promise<void>>();
   try {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) return;
       if (value) {
-        tasks.push(
-          readOneServerStream(value, cb, carrier).catch((e) => log.warn('server stream read failed:', e)),
+        const task = readOneServerStream(value, cb, carrier).catch((e) =>
+          log.warn('server stream read failed:', e),
         );
+        inFlight.add(task);
+        hooks?.onInFlightChange?.(inFlight.size);
+        void task.finally(() => {
+          inFlight.delete(task);
+          hooks?.onInFlightChange?.(inFlight.size);
+        });
       }
     }
   } catch (e) {
@@ -172,7 +194,9 @@ export async function readServerStreams(
   } finally {
     signal?.removeEventListener('abort', onAbort);
     reader.releaseLock();
-    await Promise.allSettled(tasks);
+    // Snapshot is taken synchronously; the .finally pruners deleting entries
+    // during the await don't disturb the settled set Promise.allSettled built.
+    await Promise.allSettled(inFlight);
   }
 }
 
