@@ -1,8 +1,13 @@
 // R15 (docs/20 Decision 8): the viewer's audio jitter buffer — live-edge
 // discipline for the third medium. Pure and clock-injected: every policy
-// decision (gap → silence, late → drop, overflow → drop oldest, underrun →
-// silence, restart → flush + re-anchor) is unit-testable without an
-// AudioContext.
+// decision (gap → skip or conceal, late → drop, overflow → shed toward the
+// alignment depth, underrun → silence, restart → flush + re-anchor) is
+// unit-testable without an AudioContext.
+//
+// The policies are not independent: field finding 8 shipped an overflow drop
+// and a gap concealment that exactly undid each other. Anything added here
+// must answer "what does this do to the depth, and what does the next policy
+// then do about that?"
 //
 // Division of labor with the AudioWorklet sink: this class owns *which*
 // PCM goes to the speaker and in what order; the worklet is a dumb FIFO
@@ -30,6 +35,20 @@ const SLEW_UP_MS_PER_S = 50;
 const SLEW_DOWN_MS_PER_S = 5;
 // Overflow ceiling: anything beyond target + this is backlog, not jitter.
 const OVERFLOW_SLACK_MS = 200;
+// How far audio may run *ahead* of the video it was aligned to before a hole
+// is worth paying for in synthesized silence (field finding 8, user decision
+// 2026-07-23).
+//
+// Concealment exists for one reason: alignment is a start-time decision (the
+// worklet then runs at 1×, so no later buffering can move a sample), which
+// means skipping a hole instead of filling it moves every following sample
+// earlier by the hole's length. Below this budget that lead is inaudible and
+// av-sync's rate trim walks it back out; above it, lip sync goes visibly
+// wrong. Silence is never the cheaper option — it is only the lesser evil.
+export const MAX_AUDIO_LEAD_MS = 100;
+// How long the depth estimate may be extrapolated between the sink's ~4 Hz
+// playhead reports before the ceiling stops trusting it. See queuedNowMs().
+const MAX_DRAIN_EXTRAPOLATION_MS = 500;
 // Timeline-change thresholds, deliberately asymmetric — the same lesson the
 // video path learned in R10 (docs/14 finding 5): a *serially backwards* jump
 // is the restart signal, and treating it as lateness strands the viewer.
@@ -54,6 +73,11 @@ export interface AudioChunk {
 
 export interface AudioBufferStats {
   gapsConcealed: number;
+  // Holes small enough to skip inside the lead budget (field finding 8).
+  // Split from gapsConcealed rather than folded into it: they are the same
+  // event with opposite treatments, and it was precisely the *ratio* of
+  // concealments to overflow drops that identified the finding-8 latch.
+  gapsSkipped: number;
   lateDrops: number;
   overflowDrops: number;
   underruns: number;
@@ -101,13 +125,25 @@ export class AudioJitterBuffer {
   // the other one's envelope (docs/24 Decision 9's rule, applied to audio) —
   // and the two envelopes overlap at 150 ms, so a range check alone misses it.
   private profileSeedMs: number;
+  // True while dropping incoming audio to get back down to the alignment
+  // depth after a backlog. Hysteretic — see the ceiling check in push().
+  private shedding = false;
 
   // The next expected timestamp (µs) — how gaps are detected. Null before
   // the first accepted chunk and after every flush.
   private nextExpectedUs: number | null = null;
-  // Frames handed to the sink but not yet played, in ms (the sink reports
-  // its drain back through notePlayed).
+  // What the sink held at its last report, in ms — the worklet's own measure
+  // of its queue, not an estimate maintained here (field finding 8). Between
+  // reports it is stale, so read it through queuedNowMs(), never directly, or
+  // the ceiling sees a sawtooth.
   private queuedMs = 0;
+  // Local ms of the last ground truth about the sink's depth (a playhead
+  // report, or the release that handed it the cushion). Null before playback.
+  private lastDrainAtMs: number | null = null;
+  // How far ahead of the video schedule the holes we chose to skip have put
+  // us (field finding 8). Concealment pays this back in full, so it is a debt
+  // and not a running average.
+  private skipLeadMs = 0;
   // Field findings 3 + 4 (docs/20): chunks accumulate here until playback is
   // due, then release in order. Two ways to become due, in priority order:
   //
@@ -130,6 +166,7 @@ export class AudioJitterBuffer {
 
   private stats = {
     gapsConcealed: 0,
+    gapsSkipped: 0,
     lateDrops: 0,
     overflowDrops: 0,
     underruns: 0,
@@ -190,11 +227,39 @@ export class AudioJitterBuffer {
     // against the steady-state ceiling drops the very audio being lined up,
     // and (once the drops keep pendingMs under the cap) audio never starts at
     // all. Once playing, the ceiling rides the depth alignment established.
-    const ceilingMs = this.priming
-      ? MAX_ALIGNMENT_HOLD_MS
-      : Math.max(this.targetMs, this.establishedDepthMs) + OVERFLOW_SLACK_MS;
-    if (this.bufferedMs() > ceilingMs) {
+    //
+    // Shedding is hysteretic: once over the ceiling, drop all the way back to
+    // the depth alignment actually chose, not merely back under the ceiling.
+    // Stopping at the ceiling leaves the buffer hovering exactly there, where
+    // input rate == drain rate keeps it, dropping a packet at the margin
+    // forever (chronic crackle) and leaving the excess as permanent A/V skew
+    // for the rate trim to walk out over ~a minute at 0.4 %. One bounded shed
+    // is the cheaper trade.
+    const floorMs = Math.max(this.targetMs, this.establishedDepthMs);
+    const ceilingMs = this.priming ? MAX_ALIGNMENT_HOLD_MS : floorMs + OVERFLOW_SLACK_MS;
+    const bufferedMs = this.bufferedMs();
+    if (bufferedMs > ceilingMs) this.shedding = true;
+    else if (this.shedding && bufferedMs <= floorMs) this.shedding = false;
+    if (this.shedding) {
       this.stats.overflowDrops++;
+      // Advance past what we dropped, so the drop cannot come back as a hole
+      // for the gap branch to conceal (field finding 8). Filling a hole we
+      // made ourselves re-adds exactly the depth the drop was meant to shed,
+      // which makes overflow-dropping unable to lower the depth at all: the
+      // buffer latches at the ceiling and converts audio into silence at
+      // whatever rate keeps it there (~75 % of it, in the Safari capture).
+      //
+      // Skipping is also the *right* answer here, not merely the cheap one:
+      // an overflow means the sink is holding more than the alignment asked
+      // for, i.e. audio is running late, so shedding content pulls it back
+      // toward the video rather than away from it. That is why this does not
+      // charge skipLeadMs — there is no lead to pay back.
+      if (this.nextExpectedUs !== null) {
+        this.nextExpectedUs = Math.max(
+          this.nextExpectedUs,
+          chunk.timestampUs + durationMs * 1000,
+        );
+      }
       return 'overflow';
     }
 
@@ -224,15 +289,25 @@ export class AudioJitterBuffer {
       return 'late';
     }
 
-    // Gap: packets went missing. Conceal with exactly the missing duration
-    // of silence so the media clock keeps its meaning, then play the chunk.
+    // Gap: packets went missing. Skipping the hole costs alignment (everything
+    // after it is heard that much earlier); concealing it costs audible
+    // silence. Pay in silence only once the accumulated lead is large enough
+    // to matter — and then pay the whole debt at once, so the timeline is
+    // exactly restored instead of half-corrected (field finding 8).
     if (deltaUs > 0) {
-      const gapMs = deltaUs / 1000;
-      this.stats.gapsConcealed++;
-      this.emitSilence(gapMs, chunk.sampleRate, chunk.channels.length);
+      this.skipLeadMs += deltaUs / 1000;
+      let filled = false;
+      if (this.skipLeadMs > MAX_AUDIO_LEAD_MS) {
+        this.stats.gapsConcealed++;
+        this.emitSilence(this.skipLeadMs, chunk.sampleRate, chunk.channels.length);
+        this.skipLeadMs = 0;
+        filled = true;
+      } else {
+        this.stats.gapsSkipped++;
+      }
       this.nextExpectedUs = chunk.timestampUs + durationMs * 1000;
       this.emitChunk(chunk, durationMs);
-      return 'gap-filled';
+      return filled ? 'gap-filled' : 'accepted';
     }
 
     this.nextExpectedUs = chunk.timestampUs + durationMs * 1000;
@@ -248,6 +323,8 @@ export class AudioJitterBuffer {
       // Count toward depth only what the sink actually took (field finding 7):
       // an undelivered chunk (node booting, port throwing) that still inflated
       // queuedMs is what drove the chronic spurious overflow drops.
+      // Counted optimistically until the sink's next report corrects it; only
+      // delivered audio counts (field finding 7).
       if (this.emit(chunk) !== false) this.queuedMs += durationMs;
       return;
     }
@@ -302,10 +379,37 @@ export class AudioJitterBuffer {
     }
     this.queuedMs += delivered;
     this.establishedDepthMs = this.queuedMs;
+    // The release is fresh ground truth about the sink's depth: it holds
+    // exactly what we just handed it, and starts draining now.
+    this.lastDrainAtMs = this.now();
+  }
+
+  // The sink's depth *now*, not at its last report. queuedMs is only credited
+  // down on the worklet's ~4 Hz playhead report, so reading it raw over-states
+  // depth by up to a full report interval (250 ms) — more than OVERFLOW_SLACK_MS
+  // (200 ms). A perfectly healthy real-time producer feeding a real-time sink
+  // therefore cleared the ceiling near the end of every window and dropped a
+  // slice of audio, 4×/s, forever (field finding 8, ~46 drops/s in the
+  // regression test). Between reports the worklet is known to drain at 1× — it
+  // consumes exactly sampleRate samples per second — so extrapolate, and let
+  // the next report correct it.
+  //
+  // Capped: if reports stop entirely (a suspended context — Safari does this
+  // at will) the extrapolation must not decay a real backlog to zero and let
+  // the buffer flood a worklet that is not draining. Past the cap the estimate
+  // freezes and AudioSink's stall watchdog owns recovery.
+  private queuedNowMs(): number {
+    if (this.queuedMs <= 0) return 0;
+    if (this.lastDrainAtMs === null) return this.queuedMs;
+    const elapsed = Math.min(
+      MAX_DRAIN_EXTRAPOLATION_MS,
+      Math.max(0, this.now() - this.lastDrainAtMs),
+    );
+    return Math.max(0, this.queuedMs - elapsed);
   }
 
   private bufferedMs(): number {
-    return this.queuedMs + this.pendingMs;
+    return this.queuedNowMs() + this.pendingMs;
   }
 
   private emitSilence(gapMs: number, sampleRate: number, channelCount: number): void {
@@ -320,9 +424,26 @@ export class AudioJitterBuffer {
     );
   }
 
-  // The sink drained this much audio (ms). Keeps bufferedMs honest.
-  notePlayed(ms: number): void {
-    this.queuedMs = Math.max(0, this.queuedMs - ms);
+  // The sink holds exactly this much audio (ms), as measured by the worklet
+  // itself and reconciled for anything still in flight. Authoritative: it
+  // replaces the running count rather than adjusting it.
+  //
+  // Findings 7 and 8 were both the same shape — a *shadow* of the worklet's
+  // queue, maintained here from deliveries and drain deltas, diverging from
+  // the real thing with no way to notice (undelivered chunks; a context
+  // running at a rate we assumed; a suspended worklet). A shadow cannot audit
+  // itself, so the queue's owner reports it instead, in content ms so the
+  // context's sample rate never enters the accounting.
+  noteDepth(queuedMs: number): void {
+    // A non-finite report is no information, not bad information. Every depth
+    // comparison here is a `>` or `>=`, and all of them are false against NaN:
+    // the ceiling would stop shedding and, worse, the priming gate would never
+    // open again — permanent silence. Keep the last good value and let the
+    // extrapolation below decay it until a sound report lands.
+    if (!Number.isFinite(queuedMs)) return;
+    this.queuedMs = Math.max(0, queuedMs);
+    // Ground truth: restart the extrapolation window.
+    this.lastDrainAtMs = this.now();
   }
 
   // The sink ran dry and emitted silence itself. Rebuild the cushion before
@@ -335,11 +456,21 @@ export class AudioJitterBuffer {
   // second silence for a gap that had closed.
   noteUnderrun(count = 1): void {
     this.stats.underruns += count;
+    // Only when it is *still* dry at the report: queuedMs comes from the same
+    // report (noteDepth lands first), so it says what the worklet holds now,
+    // not what it held at the dry instant. A queue that already refilled must
+    // not be sent back to priming to pay a second silence for a closed gap.
     if (this.queuedMs > 0) return;
     this.queuedMs = 0;
     this.establishedDepthMs = 0;
     this.priming = true;
     this.dueAtMs = null;
+    this.lastDrainAtMs = null;
+    this.shedding = false;
+    // Alignment is being rebuilt from here, so any lead accrued against the
+    // old one is meaningless — and the silence the worklet just played for
+    // itself has already pushed audio the other way.
+    this.skipLeadMs = 0;
     // Alignment is already lost (the sink played silence): rebuild depth, and
     // leave the residual skew to the rate trim rather than re-deciding the
     // alignment against a schedule that has already gone past.
@@ -353,9 +484,14 @@ export class AudioJitterBuffer {
   flush(): void {
     this.nextExpectedUs = null;
     this.queuedMs = 0;
+    this.lastDrainAtMs = null;
+    // The lead belonged to the timeline being dropped: carrying it over would
+    // make the new timeline's first small hole pay a debt it never incurred.
+    this.skipLeadMs = 0;
     this.pending = [];
     this.pendingMs = 0;
     this.priming = true;
+    this.shedding = false;
     // A fresh timeline gets a fresh alignment decision — the one case where
     // re-deciding against the video schedule is exactly right.
     this.alignOnSchedule = true;
@@ -373,6 +509,7 @@ export class AudioJitterBuffer {
     const resets = this.stats.resets + 1;
     this.stats = {
       gapsConcealed: 0,
+      gapsSkipped: 0,
       lateDrops: 0,
       overflowDrops: 0,
       underruns: 0,

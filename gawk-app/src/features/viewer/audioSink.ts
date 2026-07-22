@@ -23,29 +23,61 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.queue = [];
-    // Fractional: the drift trim advances it by \`rate\` per output frame.
+    // Fractional read position into queue[0], in *source* frames.
     this.offset = 0;
-    this.playedFrames = 0;
     this.underruns = 0;
     this.lastReportAt = 0;
     this.playheadUs = null;
-    this.rate = 1;
+    // Drift trim only (docs/20 Decision 10 revised). The base read rate comes
+    // from the content-vs-context sample rates and is computed per chunk.
+    this.trim = 1;
+    // The context's own rate — an AudioWorkletGlobalScope global. The context
+    // is NOT guaranteed to run at the rate we asked for: Safari/macOS hands
+    // back the device rate (44.1 kHz is routine) while Opus decodes to 48 kHz.
+    // Reading one source sample per output frame there plays 8.8 % slow and a
+    // semitone low, so the rate ratio is part of the read position, not an
+    // assumption (docs/20 field finding 8).
+    this.contextRate = sampleRate;
+    // Cumulative content ms this worklet has accepted. Paired with the sink's
+    // own delivered total, it lets the sink add back chunks that were in
+    // flight when a report was generated. Monotonic — deliberately NOT reset
+    // on flush, or the two counters would race each other across the port.
+    this.receivedMs = 0;
     this.port.onmessage = (e) => {
       const msg = e.data;
       if (msg.type === 'chunk') {
         this.queue.push(msg);
+        this.receivedMs += (msg.frameCount / msg.sampleRate) * 1000;
       } else if (msg.type === 'rate') {
-        // Video-master drift correction (docs/20 Decision 10 revised): a
-        // sub-audible resample, never a step or a skip. The controller
+        // A sub-audible resample, never a step or a skip. The controller
         // upstream owns the slew; this just honors it.
-        this.rate = msg.rate;
+        this.trim = msg.rate;
       } else if (msg.type === 'flush') {
         this.queue.length = 0;
         this.offset = 0;
         this.playheadUs = null;
-        this.rate = 1;
+        this.trim = 1;
       }
     };
+  }
+
+  // What the queue still holds, in *content* ms — each chunk measured by its
+  // own frameCount/sampleRate, so the figure means the same thing whatever
+  // rate the context runs at, and is directly comparable to the durations the
+  // jitter buffer thinks in.
+  //
+  // This is the number findings 7 and 8 were both missing: the buffer used to
+  // maintain a shadow of this queue from deliveries and drain deltas, which
+  // could diverge (undelivered chunks, an assumed context rate, a suspended
+  // context) with no way to notice. The queue's owner reports it instead.
+  queuedMs() {
+    let ms = 0;
+    for (let i = 0; i < this.queue.length; i++) {
+      const c = this.queue[i];
+      const frames = i === 0 ? Math.max(0, c.frameCount - this.offset) : c.frameCount;
+      ms += (frames / c.sampleRate) * 1000;
+    }
+    return ms;
   }
 
   // Linearly interpolated read at the fractional position, so a rate that is
@@ -79,7 +111,6 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
     const output = outputs[0];
     if (!output || output.length === 0) return true;
     const quantum = output[0].length;
-    const rate = this.rate;
 
     // Sample-at-a-time because the read position is fractional. The chunked
     // bulk copy this replaced could only advance in whole samples, which is
@@ -98,8 +129,10 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
       if (head.timestampUs != null) {
         this.playheadUs = head.timestampUs + (this.offset / head.sampleRate) * 1e6;
       }
-      this.offset += rate;
-      this.playedFrames += rate;
+      // Source frames consumed per output frame: the rate conversion the
+      // context needs, times the drift trim. Per iteration because the head
+      // chunk (and so its sample rate) can change mid-quantum.
+      this.offset += (head.sampleRate / this.contextRate) * this.trim;
       // The remainder carries across the boundary — dropping it would make
       // every chunk edge a sub-sample skip.
       while (this.queue.length > 0 && this.offset >= this.queue[0].frameCount) {
@@ -108,17 +141,18 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // ~4 Hz playhead/drain report (docs/20 Decision 10 measures skew from it).
+    // ~4 Hz playhead/depth report (docs/20 Decision 10 measures skew from it,
+    // field finding 8 takes the depth from it).
     if (currentTime - this.lastReportAt >= 0.25) {
       this.lastReportAt = currentTime;
       this.port.postMessage({
         type: 'playhead',
         playheadUs: this.playheadUs,
-        playedFrames: this.playedFrames,
+        queuedMs: this.queuedMs(),
+        receivedMs: this.receivedMs,
         underruns: this.underruns,
         contextTime: currentTime,
       });
-      this.playedFrames = 0;
       this.underruns = 0;
     }
     return true;
@@ -131,6 +165,11 @@ export interface AudioSinkStats {
   contextState: AudioContextState | null;
   playheadUs: number | null;
   contextTime: number | null;
+  // The rate the AudioContext actually runs at, which is not necessarily the
+  // one we asked for (docs/20 field finding 8). Diagnostic only — the worklet
+  // resamples to it and all accounting is in content ms — but when audio
+  // sounds slow or the depth looks wrong, this is the first number to read.
+  contextSampleRate: number | null;
 }
 
 export interface AudioSinkCallbacks {
@@ -164,7 +203,11 @@ export class AudioSink {
   private cb: AudioSinkCallbacks;
   private starting: Promise<void> | null = null;
   private disposed = false;
-  private sampleRate: number | null = null;
+  private contextSampleRate: number | null = null;
+  // Cumulative content ms handed to the worklet. Paired with the worklet's own
+  // received total, it makes the depth reconciliation exact: chunks delivered
+  // after a report was generated are in the queue but not in its figure.
+  private deliveredTotalMs = 0;
   private volume = 1;
   private muted = false;
   private lastPlayheadUs: number | null = null;
@@ -246,7 +289,6 @@ export class AudioSink {
   async start(sampleRate: number): Promise<void> {
     if (this.disposed) return;
     if (this.starting) return this.starting;
-    this.sampleRate = sampleRate;
     this.starting = this.build(sampleRate).catch((e) => {
       log.warn('Audio sink start failed; the stream plays video-only:', e);
       this.teardownNodes();
@@ -255,9 +297,31 @@ export class AudioSink {
     return this.starting;
   }
 
+  // Creating the context at the decoder's rate is the good case — no
+  // resampling, and the worklet's ratio is exactly 1. But the option is not
+  // guaranteed: a browser may reject an unsupported rate outright (which used
+  // to take the whole stream video-only) or quietly hand back the device rate.
+  // Ask, fall back, then believe `ctx.sampleRate` rather than the request.
+  private openContext(sampleRate: number): AudioContext {
+    try {
+      return new AudioContext({ sampleRate, latencyHint: 'interactive' });
+    } catch (e) {
+      log.warn(`AudioContext refused sampleRate ${sampleRate}; using the device rate:`, e);
+      return new AudioContext({ latencyHint: 'interactive' });
+    }
+  }
+
   private async build(sampleRate: number): Promise<void> {
-    const ctx = new AudioContext({ sampleRate, latencyHint: 'interactive' });
+    const ctx = this.openContext(sampleRate);
     this.ctx = ctx;
+    this.contextSampleRate = ctx.sampleRate ?? null;
+    if (this.contextSampleRate !== null && this.contextSampleRate !== sampleRate) {
+      // Not an error: the worklet resamples. Logged because it is the one
+      // condition that makes audio sound slow/low if the resampler regresses.
+      log.warn(
+        `AudioContext runs at ${this.contextSampleRate} Hz for ${sampleRate} Hz content; the worklet will resample.`,
+      );
+    }
     const url = URL.createObjectURL(new Blob([PROCESSOR_SOURCE], { type: 'application/javascript' }));
     try {
       await ctx.audioWorklet.addModule(url);
@@ -273,7 +337,8 @@ export class AudioSink {
       const msg = e.data as {
         type: string;
         playheadUs: number | null;
-        playedFrames: number;
+        queuedMs: number;
+        receivedMs: number;
         underruns: number;
         contextTime: number;
       };
@@ -282,7 +347,14 @@ export class AudioSink {
       this.lastPlayheadAtMs = this.now();
       this.lastPlayheadUs = msg.playheadUs;
       this.lastContextTime = msg.contextTime;
-      if (this.sampleRate) this.buffer.notePlayed((msg.playedFrames / this.sampleRate) * 1000);
+      // The report was generated a message-hop ago, so anything delivered since
+      // is in the worklet's queue but not in its figure. Both counters are
+      // cumulative and neither resets, so the difference is exactly the
+      // in-flight audio — no clock, no window, no drift.
+      const inFlightMs = Math.max(0, this.deliveredTotalMs - msg.receivedMs);
+      this.buffer.noteDepth(msg.queuedMs + inFlightMs);
+      // noteDepth first: noteUnderrun's "still dry?" check reads the depth this
+      // very report carries.
       if (msg.underruns > 0) {
         // Underrunning with nothing to play is silence working, not a defect:
         // once the stream dies the worklet reports a dry quantum ~375×/s
@@ -361,6 +433,7 @@ export class AudioSink {
         },
         transfer,
       );
+      this.deliveredTotalMs += (chunk.frameCount / chunk.sampleRate) * 1000;
       return true;
     } catch (e) {
       // A detached buffer or closed port must not propagate: this runs on the
@@ -427,6 +500,7 @@ export class AudioSink {
       contextState: this.contextState,
       playheadUs: this.lastPlayheadUs,
       contextTime: this.lastContextTime,
+      contextSampleRate: this.contextSampleRate,
     };
   }
 

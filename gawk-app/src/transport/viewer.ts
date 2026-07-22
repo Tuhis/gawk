@@ -249,11 +249,21 @@ export interface ViewerStats extends ReassemblerStats {
     alignmentHoldMs: number | null;
     underruns: number;
     gapsConcealed: number;
+    // Holes skipped inside the lead budget rather than filled with silence
+    // (docs/20 field finding 8). Concealments climbing while these stay flat
+    // is normal loss; overflow drops climbing *with* concealments is the
+    // finding-8 latch.
+    gapsSkipped: number;
     lateDrops: number;
     overflowDrops: number;
     // Re-anchors: timeline restarts + field-finding-7 stall recoveries. A
     // climbing count with audio present means the sink keeps stalling.
     resets: number;
+    // The rate the AudioContext actually runs at — not necessarily the one
+    // requested (docs/20 field finding 8). The worklet resamples to it; a
+    // value differing from the stream's rate is normal on macOS, and is the
+    // first thing to check if audio sounds slow.
+    contextSampleRate: number | null;
   } | null;
 }
 

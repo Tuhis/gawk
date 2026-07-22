@@ -141,9 +141,13 @@ describe('AudioSink stall recovery', () => {
     return { posts, ctx, getNode: () => node };
   }
 
-  function playhead(node: { port: { onmessage: ((e: { data: unknown }) => void) | null } }) {
+  function playhead(
+    node: { port: { onmessage: ((e: { data: unknown }) => void) | null } },
+    queuedMs = 40,
+    receivedMs = 0,
+  ) {
     node.port.onmessage!({
-      data: { type: 'playhead', playheadUs: 1000, playedFrames: 100, underruns: 0, contextTime: 0 },
+      data: { type: 'playhead', playheadUs: 1000, queuedMs, receivedMs, underruns: 0, contextTime: 0 },
     });
   }
 
@@ -163,7 +167,14 @@ describe('AudioSink stall recovery', () => {
 
     const report = (underruns: number) =>
       node.port.onmessage!({
-        data: { type: 'playhead', playheadUs: 1000, playedFrames: 0, underruns, contextTime: 0 },
+        data: {
+          type: 'playhead',
+          playheadUs: 1000,
+          queuedMs: 0,
+          receivedMs: 0,
+          underruns,
+          contextTime: 0,
+        },
       });
 
     // Audio is flowing and the sink runs dry: a real underrun, counted.
@@ -230,7 +241,13 @@ describe('AudioSink stall recovery', () => {
 // it directly: a resampler that steps or skips is exactly what the "smooth over
 // a long period" requirement forbids.
 describe('audio worklet resampler', () => {
-  function instantiate() {
+  // `sampleRate` and `currentTime` are real AudioWorkletGlobalScope globals, so
+  // they are stubbed as globals rather than passed in: the processor reads the
+  // context's rate to know how fast to consume source samples, and a test that
+  // wants a report drives currentTime past the 4 Hz threshold.
+  function instantiate(contextRate = SAMPLE_RATE) {
+    vi.stubGlobal('sampleRate', contextRate);
+    vi.stubGlobal('currentTime', 0);
     class FakeAudioWorkletProcessor {
       port = { onmessage: null as ((e: { data: unknown }) => void) | null, postMessage: vi.fn() };
     }
@@ -238,19 +255,32 @@ describe('audio worklet resampler', () => {
     const register = (_name: string, cls: new () => WorkletProcessor) => {
       Processor = cls;
     };
-    // currentTime as a constant keeps the 4 Hz report from firing here.
-    new Function('AudioWorkletProcessor', 'registerProcessor', 'currentTime', PROCESSOR_SOURCE)(
+    new Function('AudioWorkletProcessor', 'registerProcessor', PROCESSOR_SOURCE)(
       FakeAudioWorkletProcessor,
       register,
-      0,
     );
     return new Processor!();
+  }
+
+  // Drives one quantum with the clock past the report threshold and returns the
+  // report the worklet posted.
+  function report(p: WorkletProcessor): {
+    type: string;
+    queuedMs: number;
+    receivedMs: number;
+    playheadUs: number | null;
+    underruns: number;
+  } {
+    vi.stubGlobal('currentTime', 1);
+    p.process([], [[new Float32Array(QUANTUM), new Float32Array(QUANTUM)]]);
+    vi.stubGlobal('currentTime', 0);
+    const calls = (p.port.postMessage as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    return calls[calls.length - 1]![0] as never;
   }
 
   interface WorkletProcessor {
     port: { onmessage: ((e: { data: unknown }) => void) | null; postMessage: (m: unknown) => void };
     offset: number;
-    playedFrames: number;
     underruns: number;
     process(inputs: unknown[], outputs: Float32Array[][]): boolean;
   }
@@ -297,10 +327,14 @@ describe('audio worklet resampler', () => {
       p.port.onmessage!({ data: { type: 'rate', rate } });
       // Several chunks so the read crosses chunk boundaries repeatedly.
       for (let c = 0; c < 6; c++) feed(p, c * FRAME_COUNT, FRAME_COUNT, c * 20_000);
-      const out = drain(p, 8);
+      const out = drain(p, 7);
 
-      // The trim's whole purpose: source consumed ≠ output produced.
-      expect(p.playedFrames).toBeCloseTo(8 * QUANTUM * rate, 3);
+      // The trim's whole purpose: source consumed ≠ output produced. Measured
+      // through the depth it leaves behind, which is now what the worklet
+      // reports: 6 chunks in, 8 quanta of output, so the source consumed is
+      // 8 * QUANTUM * rate frames.
+      const consumedMs = ((8 * QUANTUM * rate) / SAMPLE_RATE) * 1000;
+      expect(report(p).queuedMs).toBeCloseTo(6 * 20 - consumedMs, 3);
       expect(p.underruns).toBe(0);
 
       // And it stays a ramp: every step is the same size, including across
@@ -316,6 +350,72 @@ describe('audio worklet resampler', () => {
     }
   });
 
+  // The sample-rate fix. macOS/Safari hands back a 44.1 kHz context routinely
+  // (it is the device rate), while Opus decodes to 48 kHz. Playing 48 kHz
+  // content one sample per output frame there is 8.8 % slow and a semitone
+  // low — and it also under-drains the queue by 8 %/s, which walks any
+  // inferred depth estimate straight to the overflow ceiling (field
+  // finding 8). The resampler the drift trim already needed is the fix: the
+  // base read rate is content rate ÷ context rate, and the trim multiplies it.
+  it('resamples source content to the context rate', () => {
+    const p = instantiate(44_100);
+    for (let c = 0; c < 4; c++) feed(p, c * FRAME_COUNT, FRAME_COUNT, c * 20_000);
+    const out = drain(p, 6);
+
+    // Source advances 48000/44100 samples per output frame — so the ramp's
+    // step grows by exactly that ratio, which is what preserves both pitch and
+    // duration. At the buggy 1× the step would be 1/100_000.
+    const step = (SAMPLE_RATE / 44_100) / 100_000;
+    for (let i = 1; i < out.length; i++) {
+      expect(out[i]! - out[i - 1]!).toBeCloseTo(step, 8);
+    }
+    expect(p.underruns).toBe(0);
+  });
+
+  it('plays a fixed amount of content in the wall-clock time it represents', () => {
+    // 80 ms of 48 kHz content on a 44.1 kHz context must last 80 ms — i.e.
+    // 3528 output frames (27.5 quanta), not the 3840 (30 quanta) that playing
+    // it at 1× would stretch it to.
+    const p = instantiate(44_100);
+    for (let c = 0; c < 4; c++) feed(p, c * FRAME_COUNT, FRAME_COUNT, c * 20_000);
+    drain(p, 27); // 3456 frames — just short of the content
+    expect(p.underruns).toBe(0);
+    drain(p, 2); // past 3528: dry
+    expect(p.underruns).toBeGreaterThan(0);
+  });
+
+  // Findings 7 and 8 were both a *shadow* of this queue diverging from it. The
+  // worklet is the only place the truth exists, so it reports it — in content
+  // ms (each chunk's own frameCount ÷ its own sampleRate), which is the unit
+  // the jitter buffer thinks in and is independent of the context rate.
+  it('reports its own queue depth in content ms, whatever the context rate', () => {
+    for (const contextRate of [SAMPLE_RATE, 44_100]) {
+      const p = instantiate(contextRate);
+      for (let c = 0; c < 5; c++) feed(p, c * FRAME_COUNT, FRAME_COUNT, c * 20_000);
+      // Nothing drained yet: 5 × 20 ms.
+      expect(report(p).queuedMs).toBeCloseTo(100 - (QUANTUM / contextRate) * 1000, 3);
+      expect(report(p).receivedMs).toBeCloseTo(100, 5);
+    }
+  });
+
+  it('reports a partially consumed head chunk as its remainder', () => {
+    const p = instantiate();
+    feed(p, 0, FRAME_COUNT, 0); // 20 ms
+    drain(p, 3); // 384 of 960 frames = 8 ms
+    expect(report(p).queuedMs).toBeCloseTo(20 - ((4 * QUANTUM) / SAMPLE_RATE) * 1000, 3);
+  });
+
+  it('keeps receivedMs cumulative across a flush so the sink can reconcile', () => {
+    // The counter pair (worklet receivedMs, sink deliveredMs) is what lets the
+    // sink add back chunks still in flight when the report was generated.
+    // Resetting either on flush would race the other across the port.
+    const p = instantiate();
+    for (let c = 0; c < 3; c++) feed(p, c * FRAME_COUNT, FRAME_COUNT, c * 20_000);
+    p.port.onmessage!({ data: { type: 'flush' } });
+    expect(report(p).queuedMs).toBe(0);
+    expect(report(p).receivedMs).toBeCloseTo(60, 5);
+  });
+
   it('counts an underrun and emits silence when it runs dry', () => {
     const p = instantiate();
     feed(p, 0, QUANTUM, 0);
@@ -324,5 +424,110 @@ describe('audio worklet resampler', () => {
     p.process([], [buf]);
     expect(p.underruns).toBeGreaterThan(0);
     expect(buf[0]!.every((s) => s === 0)).toBe(true);
+  });
+});
+
+// The sample-rate half of docs/20 field finding 8. The sink asks for a context
+// at the decoder's rate, but the browser is free to refuse the option outright
+// (a throw) or to hand back a context at the device rate. Neither may end with
+// audio accounted in one rate and played in another — the worklet resamples,
+// and the sink's own accounting is in content ms, so the context rate only
+// ever needs to be *known*, never assumed.
+describe('AudioSink context sample rate', () => {
+  function stubRateAware(opts: { refuseOption?: boolean; deviceRate?: number }) {
+    const created: { sampleRate: number | undefined }[] = [];
+    const node = {
+      port: { postMessage: vi.fn(), onmessage: null as ((e: { data: unknown }) => void) | null },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    vi.stubGlobal(
+      'AudioContext',
+      function (options?: { sampleRate?: number }) {
+        if (opts.refuseOption && options?.sampleRate !== undefined) {
+          throw new DOMException('sample rate not supported', 'NotSupportedError');
+        }
+        created.push({ sampleRate: options?.sampleRate });
+        return {
+          state: 'running' as AudioContextState,
+          sampleRate: options?.sampleRate ?? opts.deviceRate ?? 44_100,
+          destination: {},
+          audioWorklet: { addModule: vi.fn(() => Promise.resolve()) },
+          createGain: vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() })),
+          resume: vi.fn(() => Promise.resolve()),
+          close: vi.fn(() => Promise.resolve()),
+        };
+      } as unknown as typeof AudioContext,
+    );
+    vi.stubGlobal('AudioWorkletNode', function () {
+      return node;
+    } as unknown as typeof AudioWorkletNode);
+    vi.stubGlobal('Blob', class {});
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:stub'), revokeObjectURL: vi.fn() });
+    return { created, node };
+  }
+
+  it('falls back to the device context when the requested rate is refused', async () => {
+    const { created } = stubRateAware({ refuseOption: true, deviceRate: 44_100 });
+    const sink = new AudioSink();
+    // Pre-fix this rejected and the whole stream went video-only.
+    await sink.start(SAMPLE_RATE);
+    expect(created).toHaveLength(1);
+    expect(created[0].sampleRate).toBeUndefined();
+    expect(sink.getStats().contextSampleRate).toBe(44_100);
+    sink.dispose();
+  });
+
+  it('reports the rate the context actually runs at, not the one requested', async () => {
+    // A context that silently ignores the option: the number an operator needs
+    // when audio sounds slow, and the one that used to be assumed.
+    stubRateAware({ deviceRate: 44_100 });
+    const sink = new AudioSink();
+    await sink.start(SAMPLE_RATE);
+    expect(sink.getStats().contextSampleRate).toBe(SAMPLE_RATE);
+    sink.dispose();
+  });
+});
+
+// The report is generated inside the worklet and read a message-hop later, so
+// chunks delivered in between are in the worklet's queue but not in the depth
+// it reported. Cumulative counters on both sides make the reconciliation exact
+// instead of merely close.
+describe('AudioSink depth reconciliation', () => {
+  it('adds back chunks delivered after the report was generated', async () => {
+    const node = {
+      port: { postMessage: vi.fn(), onmessage: null as ((e: { data: unknown }) => void) | null },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    vi.stubGlobal('AudioContext', function () {
+      return {
+        state: 'running' as AudioContextState,
+        sampleRate: SAMPLE_RATE,
+        destination: {},
+        audioWorklet: { addModule: vi.fn(() => Promise.resolve()) },
+        createGain: vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() })),
+        resume: vi.fn(() => Promise.resolve()),
+        close: vi.fn(() => Promise.resolve()),
+      };
+    } as unknown as typeof AudioContext);
+    vi.stubGlobal('AudioWorkletNode', function () {
+      return node;
+    } as unknown as typeof AudioWorkletNode);
+    vi.stubGlobal('Blob', class {});
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:stub'), revokeObjectURL: vi.fn() });
+
+    const sink = new AudioSink();
+    await sink.start(SAMPLE_RATE);
+    // 5 × 20 ms delivered (3 prime the cushion, 2 pass through).
+    for (let i = 0; i < 5; i++) sink.push(chunk(i * 20_000));
+
+    // The worklet reports having seen only the first 3 (60 ms), holding 50 ms.
+    // The other 40 ms were in flight and are still real depth.
+    node.port.onmessage!({
+      data: { type: 'playhead', playheadUs: 0, queuedMs: 50, receivedMs: 60, underruns: 0, contextTime: 0 },
+    });
+    expect(sink.getStats().bufferedMs).toBeCloseTo(90, 5);
+    sink.dispose();
   });
 });

@@ -27,10 +27,20 @@ function chunk(timestampUs: number, fill = 0.5): AudioChunk {
   };
 }
 
+// A frozen, injectable clock: the buffer extrapolates the sink's drain between
+// playhead reports (field finding 8), so a test that let the wall clock run
+// would race its own assertions.
 function collecting() {
   const emitted: AudioChunk[] = [];
-  const buffer = new AudioJitterBuffer((c) => void emitted.push(c));
-  return { emitted, buffer };
+  const clock = { t: 1000 };
+  const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DEFAULT_AUDIO_PROFILE, {
+    now: () => clock.t,
+  });
+  return { emitted, buffer, clock };
+}
+
+function isSilence(c: AudioChunk): boolean {
+  return c.channels[0].every((s) => s === 0);
 }
 
 describe('AudioJitterBuffer policies', () => {
@@ -46,18 +56,19 @@ describe('AudioJitterBuffer policies', () => {
     expect(stats.overflowDrops).toBe(0);
   });
 
-  it('gap ⇒ silence of exactly the missing duration + counter', () => {
+  it('a gap past the lead budget ⇒ silence of exactly the missing duration', () => {
     const { emitted, buffer } = collecting();
     buffer.push(chunk(0));
-    // Packets 1 and 2 never arrive: 40 ms hole.
-    expect(buffer.push(chunk(3 * FRAME_US))).toBe('gap-filled');
+    // Packets 1..8 never arrive: a 160 ms hole. Skipping one this big would
+    // put audio 160 ms ahead of the video it was aligned to, so it is filled.
+    expect(buffer.push(chunk(9 * FRAME_US))).toBe('gap-filled');
 
     expect(buffer.getStats().gapsConcealed).toBe(1);
     // Emitted: the first chunk, the silence, then the late-arriving one.
     expect(emitted).toHaveLength(3);
     const silence = emitted[1];
-    expect(silence.frameCount).toBe((SAMPLE_RATE * 0.04) | 0);
-    expect(silence.channels[0].every((s) => s === 0)).toBe(true);
+    expect(silence.frameCount).toBe((SAMPLE_RATE * 0.16) | 0);
+    expect(isSilence(silence)).toBe(true);
     // The real audio still plays after the concealment.
     expect(emitted[2].channels[0][0]).toBeCloseTo(0.5);
   });
@@ -84,7 +95,7 @@ describe('AudioJitterBuffer policies', () => {
     expect(overflowed).toBeGreaterThan(0);
     expect(buffer.getStats().overflowDrops).toBe(overflowed);
     // Draining relieves it: the next push is accepted again.
-    buffer.notePlayed(10_000);
+    buffer.noteDepth(0);
     expect(buffer.push(chunk(ts))).not.toBe('overflow');
     expect(emitted.length).toBeGreaterThan(0);
   });
@@ -102,10 +113,10 @@ describe('AudioJitterBuffer policies', () => {
     // there is nothing for it to report draining.
     for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
     expect(buffer.getStats().bufferedMs).toBeCloseTo(60, 5);
-    buffer.notePlayed(20);
+    buffer.noteDepth(40);
     expect(buffer.getStats().bufferedMs).toBeCloseTo(40, 5);
-    // Never negative, even if the sink over-reports.
-    buffer.notePlayed(500);
+    // Never negative, even if the sink reports nonsense.
+    buffer.noteDepth(-5);
     expect(buffer.getStats().bufferedMs).toBe(0);
   });
 
@@ -152,10 +163,12 @@ describe('AudioJitterBuffer policies', () => {
     // timeline; `resets` says how many came before.
     const { buffer } = collecting();
     buffer.push(chunk(0));
-    buffer.push(chunk(3 * FRAME_US)); // a gap: conceals silence
-    buffer.push(chunk(FRAME_US)); // now late: dropped
+    buffer.push(chunk(3 * FRAME_US)); // a 40 ms hole: skipped inside the budget
+    buffer.push(chunk(9 * FRAME_US)); // 100 ms more: past it, so concealed
+    buffer.push(chunk(4 * FRAME_US)); // now late: dropped
     const before = buffer.getStats();
     expect(before.gapsConcealed).toBeGreaterThan(0);
+    expect(before.gapsSkipped).toBeGreaterThan(0);
     expect(before.lateDrops).toBeGreaterThan(0);
     buffer.noteUnderrun(3);
     expect(buffer.getStats().underruns).toBe(3);
@@ -164,6 +177,7 @@ describe('AudioJitterBuffer policies', () => {
 
     const after = buffer.getStats();
     expect(after.gapsConcealed).toBe(0);
+    expect(after.gapsSkipped).toBe(0);
     expect(after.lateDrops).toBe(0);
     expect(after.overflowDrops).toBe(0);
     expect(after.underruns).toBe(0);
@@ -266,7 +280,7 @@ describe('AudioJitterBuffer alignment', () => {
     buffer.push(chunk(2 * FRAME_US));
     expect(emitted).toHaveLength(3);
 
-    buffer.notePlayed(60);
+    buffer.noteDepth(0);
     buffer.noteUnderrun(4);
     const before = emitted.length;
 
@@ -443,3 +457,257 @@ describe('AudioJitterBuffer honest accounting', () => {
   });
 });
 
+
+// Field finding 8 (docs/20): on Safari the buffer latched into ~75 %
+// synthesized silence — 37 overflow drops/s against 50 packets/s arriving,
+// with zero network loss (received == decoded) and bufferedMs pinned at
+// target + slack forever. The cause is a loop between two policies that each
+// look right alone: `push` counts an overflow drop *before* advancing
+// nextExpectedUs, so the run of dropped packets comes back as a hole, and the
+// gap branch conceals that hole with exactly as much silence as was dropped —
+// through emitChunk, so it re-adds the very depth the drop was meant to shed.
+// Overflow-dropping therefore cannot lower the depth; it only converts audio
+// into silence, at whatever rate keeps the estimate at the ceiling.
+describe('AudioJitterBuffer overflow does not manufacture silence', () => {
+  it('an overflow drop is a skip toward live, not a hole to conceal', () => {
+    const { emitted, buffer, clock } = collecting();
+    // Establish playback with the seed cushion (3 × 20 ms = 60 ms floor).
+    let ts = 0;
+    for (let i = 0; i < 3; i++, ts += FRAME_US) buffer.push(chunk(ts));
+    expect(emitted).toHaveLength(3);
+
+    // Backlog the sink past the ceiling without ever draining.
+    let overflowed = 0;
+    for (let i = 0; i < 60; i++, ts += FRAME_US) {
+      if (buffer.push(chunk(ts)) === 'overflow') overflowed++;
+    }
+    expect(overflowed).toBeGreaterThan(5);
+
+    // The sink drains; the next packet is contiguous with the *skipped* run,
+    // not 'gap-filled'. Pre-fix this was the latch: a silence chunk exactly as
+    // long as the drops, putting the depth straight back over the ceiling.
+    clock.t += 1000;
+    buffer.noteDepth(0);
+    const before = emitted.length;
+    expect(buffer.push(chunk(ts))).toBe('accepted');
+    expect(emitted).toHaveLength(before + 1);
+    expect(emitted.slice(before).some(isSilence)).toBe(false);
+    expect(buffer.getStats().gapsConcealed).toBe(0);
+  });
+
+  // The headline regression: a realistic producer/consumer loop with the
+  // production shape (50 packets/s in, a worklet draining at 1×, ~4 Hz
+  // playhead reports) and one arrival burst to push it over the ceiling. The
+  // field capture sat at ~25 % real audio; anything near that is the bug.
+  it('recovers from an arrival burst instead of latching into silence', () => {
+    const clock = { t: 0 };
+    let workletMs = 0; // what the worklet actually holds
+    let realMs = 0; // audio the speaker gets
+    let silenceMs = 0; // audio the speaker doesn't
+    const buffer = new AudioJitterBuffer(
+      (c) => {
+        const ms = (c.frameCount / c.sampleRate) * 1000;
+        workletMs += ms;
+        if (isSilence(c)) silenceMs += ms;
+        else realMs += ms;
+        return true;
+      },
+      DEFAULT_AUDIO_PROFILE,
+      { now: () => clock.t },
+    );
+
+    let ts = 0;
+    const push = () => {
+      buffer.push(chunk(ts));
+      ts += FRAME_US;
+    };
+    // Prime.
+    for (let i = 0; i < 3; i++) push();
+    // The trigger: a 300 ms arrival burst (jitter on the shared datagram
+    // path — the capture showed receivedFps swinging 20→48 at ~100 ms of
+    // arrival jitter). Every packet is contiguous, so none of it is late.
+    for (let i = 0; i < 15; i++) push();
+
+    // 6 s of steady state: one 20 ms packet per 20 ms, the worklet draining in
+    // real time and reporting every 250 ms.
+    let playedMs = 0;
+    let dryQuanta = 0;
+    let sinceReport = 0;
+    let dropsAt2s = 0;
+    for (let step = 0; step < 6000; step += 10) {
+      clock.t += 10;
+      const drained = Math.min(workletMs, 10);
+      workletMs -= drained;
+      playedMs += drained;
+      if (drained < 10) dryQuanta++;
+      if (step % 20 === 0) push();
+      sinceReport += 10;
+      if (sinceReport >= 250) {
+        sinceReport = 0;
+        buffer.noteDepth(workletMs);
+        if (dryQuanta > 0) buffer.noteUnderrun(dryQuanta);
+        playedMs = 0;
+        dryQuanta = 0;
+      }
+      if (step === 2000) dropsAt2s = buffer.getStats().overflowDrops;
+    }
+    const dropsAtEnd = buffer.getStats().overflowDrops;
+
+    // The speaker hears audio, not silence. Pre-fix: 12 % real, the rest
+    // synthesized — audible as constant breakup.
+    expect(realMs / (realMs + silenceMs)).toBeGreaterThan(0.99);
+    // The burst is shed all the way back to the alignment depth, not merely to
+    // just under the ceiling: parked at the ceiling, input rate == drain rate
+    // keeps it there, dropping at the margin forever.
+    const stats = buffer.getStats();
+    expect(stats.bufferedMs).toBeLessThanOrEqual(stats.targetMs);
+    // ...and once shed, the steady state costs nothing at all.
+    expect(dropsAtEnd - dropsAt2s).toBe(0);
+  });
+
+  it('takes the sink\'s reported depth as authoritative, not its own estimate', () => {
+    const { buffer, clock } = collecting();
+    let ts = 0;
+    for (let i = 0; i < 3; i++, ts += FRAME_US) buffer.push(chunk(ts));
+    // The estimate drifts above the truth — findings 7 and 8 are both a
+    // *shadow* of the worklet's queue diverging from it, and a shadow can
+    // never notice on its own.
+    for (let i = 0; i < 12; i++, ts += FRAME_US) buffer.push(chunk(ts));
+    expect(buffer.getStats().bufferedMs).toBeGreaterThan(200);
+
+    // The worklet says what it actually holds. That ends the argument.
+    clock.t += 250;
+    buffer.noteDepth(45);
+    expect(buffer.getStats().bufferedMs).toBeCloseTo(45, 5);
+
+    // And a dry report re-primes, rebuilding the cushion rather than playing
+    // on at zero depth.
+    clock.t += 250;
+    buffer.noteDepth(0);
+    buffer.noteUnderrun(4);
+    expect(buffer.getStats().bufferedMs).toBe(0);
+  });
+
+  it('ignores a non-finite depth report instead of poisoning the estimate', () => {
+    // Every depth comparison is a `>` or `>=`, and every one of them is false
+    // against NaN: the ceiling would never shed, and — worse — the priming
+    // gate's `bufferedMs() >= targetMs` would never open, so audio would go
+    // permanently silent. A malformed report (a worklet/sink version skew is
+    // the realistic source) must be no information, not bad information.
+    const { emitted, buffer } = collecting();
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    const healthy = buffer.getStats().bufferedMs;
+
+    buffer.noteDepth(Number.NaN);
+    expect(buffer.getStats().bufferedMs).toBeCloseTo(healthy, 5);
+
+    // And the pipeline keeps running rather than wedging.
+    const before = emitted.length;
+    buffer.push(chunk(3 * FRAME_US));
+    expect(emitted).toHaveLength(before + 1);
+  });
+
+  it('does not re-prime when the worklet refilled before its report landed', () => {
+    // The underrun happened inside the window, but the queue recovered by the
+    // time the report was generated: re-priming here would pay a second
+    // silence for a gap that had already closed.
+    const { emitted, buffer } = collecting();
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    const before = emitted.length;
+    buffer.noteDepth(40);
+    buffer.noteUnderrun(2);
+    buffer.push(chunk(3 * FRAME_US));
+    expect(emitted).toHaveLength(before + 1); // straight through, still aligned
+  });
+});
+
+// The other half of the latch: the ceiling was evaluated against an estimate
+// that is only credited down on the worklet's ~4 Hz playhead report, so it
+// over-read by up to a full report interval (250 ms) while OVERFLOW_SLACK_MS
+// is 200 ms. A perfectly healthy real-time producer therefore cleared the
+// ceiling near the end of every report window and dropped a slice of audio,
+// 4×/s, forever.
+describe('AudioJitterBuffer depth estimate between playhead reports', () => {
+  it('does not overflow-drop a real-time producer feeding a real-time sink', () => {
+    const { buffer, clock } = collecting();
+    let ts = 0;
+    for (let i = 0; i < 3; i++, ts += FRAME_US) buffer.push(chunk(ts));
+
+    // 4 s of exact balance: 20 ms in per 20 ms, drained at 1×, reported at 4 Hz.
+    let sinceReport = 0;
+    let workletMs = 60; // the cushion the release handed it
+    for (let step = 0; step < 4000; step += 20) {
+      clock.t += 20;
+      workletMs = Math.max(0, workletMs - 20); // drained in real time
+      buffer.push(chunk(ts));
+      workletMs += 20;
+      ts += FRAME_US;
+      sinceReport += 20;
+      if (sinceReport >= 250) {
+        buffer.noteDepth(workletMs);
+        sinceReport = 0;
+      }
+    }
+    expect(buffer.getStats().overflowDrops).toBe(0);
+    expect(buffer.getStats().gapsConcealed).toBe(0);
+  });
+});
+
+// The lead budget (user decision 2026-07-23): concealment silence exists to
+// keep audio from running *ahead* of the video it was aligned to at playback
+// start. Below the budget that lead is inaudible and the av-sync rate trim
+// absorbs it; paying for it in synthesized silence is the worse trade.
+describe('AudioJitterBuffer gap lead budget', () => {
+  it('skips a small hole instead of concealing it', () => {
+    const { emitted, buffer } = collecting();
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    const before = emitted.length;
+
+    // A 40 ms hole: two packets lost. Skipping puts audio 40 ms ahead — under
+    // the budget, so no silence is synthesized.
+    expect(buffer.push(chunk(5 * FRAME_US))).toBe('accepted');
+    expect(emitted).toHaveLength(before + 1);
+    expect(emitted.slice(before).some(isSilence)).toBe(false);
+    expect(buffer.getStats().gapsConcealed).toBe(0);
+    expect(buffer.getStats().gapsSkipped).toBe(1);
+  });
+
+  it('conceals once the skipped lead accumulates past the budget', () => {
+    const { emitted, buffer } = collecting();
+    let ts = 0;
+    for (let i = 0; i < 3; i++, ts += FRAME_US) buffer.push(chunk(ts));
+
+    // Three 40 ms holes: 40, 80, then 120 ms of accumulated lead. Only the
+    // third crosses the budget, and it pays back the *whole* accrued lead so
+    // the timeline is exactly restored rather than half-corrected.
+    let concealed = 0;
+    for (let i = 0; i < 3; i++) {
+      ts += 2 * FRAME_US; // two packets lost
+      buffer.push(chunk(ts));
+      ts += FRAME_US;
+      concealed = buffer.getStats().gapsConcealed;
+      if (i < 2) expect(concealed).toBe(0);
+    }
+    expect(concealed).toBe(1);
+    expect(buffer.getStats().gapsSkipped).toBe(2);
+    const silence = emitted.filter(isSilence);
+    expect(silence).toHaveLength(1);
+    expect((silence[0].frameCount / SAMPLE_RATE) * 1000).toBeCloseTo(120, 5);
+  });
+
+  it('a flush forgets the accrued lead with the timeline it belonged to', () => {
+    const { emitted, buffer } = collecting();
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    buffer.push(chunk(5 * FRAME_US)); // 40 ms skipped
+    buffer.flush();
+
+    // New timeline: the old lead must not push the first hole here over the
+    // budget, or a reconnect would open with silence it doesn't owe.
+    let ts = 1_000_000;
+    for (let i = 0; i < 3; i++, ts += FRAME_US) buffer.push(chunk(ts));
+    const before = emitted.length;
+    ts += 2 * FRAME_US;
+    buffer.push(chunk(ts));
+    expect(emitted.slice(before).some(isSilence)).toBe(false);
+  });
+});

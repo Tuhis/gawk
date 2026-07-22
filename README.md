@@ -465,6 +465,41 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   presentation schedule says it is due), and everything after it is a **rate**
   problem: drift is absorbed by a sub-audible ±0.4% playback trim, never a
   step or a skip. ([docs/20](docs/20-system-audio.md) field finding 4)
+- **A drop policy and a concealment policy can cancel each other out.** R15's
+  audio buffer dropped an incoming chunk on overflow *without* advancing its
+  expected-timestamp cursor, so the run of drops came back as a hole — which
+  the gap branch then filled with exactly as much synthesized silence,
+  re-adding the depth the drop existed to shed. Overflow-dropping could
+  therefore never lower the depth, only convert audio into silence: on Safari
+  the buffer latched at the ceiling and served **74 % overflow drops against
+  zero packet loss** (received == decoded), ~25 % real audio and ~75 % silence.
+  Two symptoms that cannot both be true — overflow drops climbing *and*
+  underruns climbing — are the signature. ([docs/20](docs/20-system-audio.md)
+  field finding 8)
+- **A depth estimate credited down at 4 Hz is stale by 250 ms** — more than the
+  200 ms of overflow slack it was being compared against, so a healthy
+  real-time producer feeding a real-time sink cleared the ceiling near the end
+  of every report window and dropped audio ~46×/s. Extrapolate a known-rate
+  drain between reports. ([docs/20](docs/20-system-audio.md) field finding 8)
+- **Don't shadow a queue you don't own — make its owner report it.** R15's
+  audio buffer maintained its own count of what the AudioWorklet held, from
+  deliveries and drain deltas. A shadow cannot audit itself, and it drifted for
+  three different reasons across two findings (undelivered chunks while the node
+  booted; an assumed context sample rate; a suspended context that stopped
+  reporting), each time latching the buffer above its overflow ceiling with no
+  way back. The worklet now reports its own depth in **content ms** (each
+  chunk's `frameCount / sampleRate`, so the context's rate cannot enter the
+  accounting), and a cumulative counter on each side reconciles the chunks
+  in flight when the report was generated.
+  ([docs/20](docs/20-system-audio.md) field findings 7 + 8)
+- **An AudioContext does not have to run at the rate you asked for** — macOS
+  hands back the device rate (44.1 kHz is routine) for 48 kHz content, and a
+  browser may reject the `sampleRate` option outright. Playing one source sample
+  per output frame there is 8.8 % slow and a semitone low, *and* under-drains
+  the queue by 8 %/s. Always read `ctx.sampleRate` back; the worklet's read rate
+  is `content ÷ context`, with the drift trim multiplying it (the fractional
+  resampler is already there for the trim — the bug is hardcoding its base
+  to 1). ([docs/20](docs/20-system-audio.md) field finding 8)
 - **A jitter-buffer target that is only a ceiling is not a jitter buffer** —
   R15's audio buffer enforced its 40–150 ms target on overflow but forwarded
   every chunk to the worklet on arrival, so the sink played at ~0 ms depth and
