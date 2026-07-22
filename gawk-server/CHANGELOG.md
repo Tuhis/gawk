@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.19.3](https://github.com/Tuhis/gawk/compare/gawk-server-v0.19.2...gawk-server-v0.19.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* **relay:** bound a stalled carrier record to one GOP, not the keyframe timeout ([#102](https://github.com/Tuhis/gawk/issues/102)) ([ee9d4ff](https://github.com/Tuhis/gawk/commit/ee9d4ff56d63a6f9b26b4c1f23b356a06bd6ff8d))
+* **relay:** drop oldest, not newest, on reliable carrier queue overflow ([#104](https://github.com/Tuhis/gawk/issues/104)) ([0e4cacc](https://github.com/Tuhis/gawk/commit/0e4cacc3af8adc084b5b4648c6f0c142eae82b40))
+* **relay:** give resilient-mode queue overflow its own drop reason ([#100](https://github.com/Tuhis/gawk/issues/100)) ([eeaeda2](https://github.com/Tuhis/gawk/commit/eeaeda2a2f4ff5b6f745b67590bf80cd89112ebd))
+* **relay:** stop charging the egress cap for carrier records that are dropped ([#103](https://github.com/Tuhis/gawk/issues/103)) ([e316723](https://github.com/Tuhis/gawk/commit/e3167234398ada331ed834b68d5367621fa1c131))
+
 ## [0.19.2](https://github.com/Tuhis/gawk/compare/gawk-server-v0.19.1...gawk-server-v0.19.2) (2026-07-21)
 
 

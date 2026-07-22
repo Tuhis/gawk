@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.26.5](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.4...gawk-app-v0.26.5) (2026-07-22)
+
+
+### Bug Fixes
+
+* **viewer:** let the resilient playout buffer reach its 2 s envelope ([#96](https://github.com/Tuhis/gawk/issues/96)) ([3041fca](https://github.com/Tuhis/gawk/commit/3041fca9642ce13f40ca79ca10316b29a91a9bfb))
+* **viewer:** make the resilient-mode menu reachable without a right-click ([#98](https://github.com/Tuhis/gawk/issues/98)) ([e2614a8](https://github.com/Tuhis/gawk/commit/e2614a81091ff3555b2367c99c1f719181afd187))
+* **viewer:** offer the interpolation toggle under resilient mode ([#106](https://github.com/Tuhis/gawk/issues/106)) ([6b613cd](https://github.com/Tuhis/gawk/commit/6b613cd572d571cc31d0486900678b6cc1dbfc85))
+* **viewer:** prune settled server-stream tasks to stop a slow leak ([#101](https://github.com/Tuhis/gawk/issues/101)) ([e336334](https://github.com/Tuhis/gawk/commit/e336334821964b7280bed31cb8f4e890241797b3))
+
 ## [0.26.4](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.3...gawk-app-v0.26.4) (2026-07-21)
 
 
