@@ -278,7 +278,18 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   **X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser
   baseline + X6 verification done 2026-07-19 (lossy-network behaviour — not
   CI-reachable) — ordering deviation recorded in the
-  doc's "Implementation status"**),
+  doc's "Implementation status"**. **Post-review fix 2026-07-22 (docs/24
+  finding 8, review finding `PLAYOUT-1`)**: Decision 7's "the existing
+  `WindowedQuantileTracker` needs no changes" was wrong — its 500 ms
+  histogram range capped measured arrival jitter, so the `[150, 2000]`
+  clamp could never exceed **~534 ms** and the mode under-buffered exactly
+  the deep stalls it exists for. The histogram's range + window are now
+  `PlayoutProfile` fields (resilient 2500 ms / 8 s; PLAYOUT-3 fixed by the
+  same change), a large rise steps instead of slewing (`stepUpAboveMs`,
+  resilient-only — down is still never stepped), and the min tracker
+  deliberately keeps its 60 s window because it is also `releasableAt`'s
+  anchor. Mode-off is byte-identical; **X6's headline criterion needs a
+  re-run**),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →

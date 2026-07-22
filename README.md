@@ -287,6 +287,19 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   is now **evicted** after 10 consecutive failures with non-terminal close
   code 4001, so it reconnects if live and stops costing fan-out if dead.
   ([docs/14](docs/14-viewer-render-performance.md))
+- **An adaptive buffer can only be as deep as its estimator can measure.**
+  R19's resilient playout controller clamps to `[150, 2000] ms`, but the
+  arrival-jitter signal driving it came from a **fixed-range histogram**
+  (500 ms, values past it clamp into the top bin), so the offset could never
+  exceed **~534 ms** — the advertised upper half was dead, and the design doc
+  had explicitly reasoned that the tracker "needs no changes". It survived
+  design, implementation and a manual verification pass because every test
+  fed the *controller* a synthetic jitter number instead of measuring one.
+  The histogram's range and window are now part of `PlayoutProfile`, with a
+  test asserting `quantileRangeMs >= maxMs` per profile. When a control law
+  and its estimator are tuned in different files, check the estimator's
+  dynamic range covers the law's envelope.
+  ([docs/24](docs/24-viewer-network-resilience.md))
 - **A silently-dead publisher session holds its slot for up to the QUIC idle
   timeout (~30 s), and rejecting the broadcaster's own reclaim in that window
   killed live broadcasts.** The reclaim got 409 from its own zombie session,

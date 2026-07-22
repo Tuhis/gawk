@@ -28,8 +28,13 @@
 // Pure and timer-free: the pipeline injects the clock and calls tick()
 // periodically (e.g. once per rendered frame). Fully unit-testable in node.
 
-import { WindowedMinTracker, WindowedQuantileTracker } from './live-edge';
-import { DECODE_LEAD_MS, getPlayoutMode, getPlayoutOffsetMs } from './playout';
+import {
+  LIVE_EDGE_BUCKET_MS,
+  QUANTILE_BIN_MS,
+  WindowedMinTracker,
+  WindowedQuantileTracker,
+} from './live-edge';
+import { DECODE_LEAD_MS, getPlayoutMode, getPlayoutOffsetMs, getPlayoutProfile } from './playout';
 import {
   RESILIENT_DELTA_GAP_GRACE_MS,
   RESILIENT_KEYFRAME_WAIT_MS,
@@ -66,6 +71,21 @@ function deltaGapGraceMs(): number {
 }
 function maxBufferedFrames(): number {
   return getResilientMode() ? RESILIENT_MAX_BUFFERED_FRAMES : MAX_BUFFERED_FRAMES;
+}
+
+// R19 hardening (PLAYOUT-1): the arrival-jitter histogram's geometry belongs
+// to the playout profile that consumes it — a controller clamped to 2000 ms
+// off a histogram that saturates at 500 ms can never buffer more than ~534 ms.
+// Unlike the bounds above, geometry can't be read per use (the histogram is a
+// fixed-shape structure), so the tracker is rebuilt when the profile changes.
+function newQuantileTracker(): WindowedQuantileTracker {
+  const p = getPlayoutProfile();
+  return new WindowedQuantileTracker(
+    p.jitterWindowMs,
+    LIVE_EDGE_BUCKET_MS,
+    QUANTILE_BIN_MS,
+    p.quantileRangeMs,
+  );
 }
 
 export interface ReorderKeyframe {
@@ -140,10 +160,15 @@ export class ReorderBuffer {
   private decodeLeadMs: () => number;
   // Windowed min of (arrivalMs − timestampMs): the pacing anchor (R5 Q3).
   // Reset with the restart signal — new session, new timestamp timeline.
+  // Its window is profile-independent on purpose: `releasableAt` anchors the
+  // release schedule on this min, so the offset (≈ p95 − this min) and the
+  // anchor have to be measured against the same baseline.
   private arrivalBaseline = new WindowedMinTracker();
   // Windowed quantile of the same delta (R12 T1): p95 − min is the arrival
   // jitter, and the same estimator feeds the adaptive playout offset (T3).
-  private arrivalQuantile = new WindowedQuantileTracker();
+  // Geometry comes from the active playout profile (R19 PLAYOUT-1).
+  private arrivalQuantile = newQuantileTracker();
+  private quantileProfile = getPlayoutProfile();
 
   private buffer = new Map<number, Entry>();
   // frameId of the last frame released to the decoder; null before the first.
@@ -267,6 +292,15 @@ export class ReorderBuffer {
   }
 
   private insert(e: Entry): void {
+    // A resilient-mode flip is a deliberate reconnect (docs/24 Decision 9), so
+    // in production this rebuilds nothing; it keeps the estimator honest if a
+    // context ever does flip mid-session (jitter reads null until it refills,
+    // which the controller treats as "no data" and holds its offset).
+    const profile = getPlayoutProfile();
+    if (profile !== this.quantileProfile) {
+      this.quantileProfile = profile;
+      this.arrivalQuantile = newQuantileTracker();
+    }
     const arrivalDelta = e.receivedAtMs - Number(e.timestampUs) / 1000;
     this.arrivalBaseline.observe(arrivalDelta, e.receivedAtMs);
     this.arrivalQuantile.observe(arrivalDelta, e.receivedAtMs);

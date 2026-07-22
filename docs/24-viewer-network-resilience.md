@@ -226,8 +226,11 @@ throughput, ugly loss/jitter.
      The formula is unchanged — `clamp(arrivalP95 − min + headroom)` — only
      the profile widens: retransmit stalls inflate arrival p95, so the
      offset grows exactly when loss is happening and shrinks (slowly,
-     dwell-gated) when the link cleans up. The existing
-     `WindowedQuantileTracker` needs no changes.
+     dwell-gated) when the link cleans up. ~~The existing
+     `WindowedQuantileTracker` needs no changes.~~ **Wrong — superseded
+     2026-07-22** (finding 8 below): its 500 ms histogram range capped the
+     measured jitter, pinning this clamp at ~534 ms. The profile now carries
+     `quantileRangeMs` / `jitterWindowMs` / `stepUpAboveMs` too.
    - Resilient mode **implies adaptive pacing with this profile** while
      active. The existing playout-mode setting (`off`/`fixed`/`adaptive`)
      keeps its stored value and its semantics untouched; the right-click
@@ -370,6 +373,55 @@ build). Notes and deviations:
    matches records by byte equality instead of position (resends
    duplicate; the relay forwards verbatim). CI additionally raises the UDP
    buffer sysctls in every job that pushes QUIC over loopback.
+8. **Post-review fix (2026-07-22): Decision 7's adaptive buffer topped out
+   at ~534 ms — `PLAYOUT-1` (high) from
+   `docs/reviews/resilient-mode-review.md`.** Decision 7 above says "the
+   existing `WindowedQuantileTracker` needs no changes"; that is the one
+   sentence in this design that was wrong, and it made the headline
+   capability structurally unreachable. The tracker is a **fixed-range
+   histogram** (`live-edge.ts`, `QUANTILE_RANGE_MS = 500`) whose samples
+   clamp into the top bin, so the arrival jitter feeding the controller
+   saturates at ~500 ms and `clamp(jitter + 34, [150, 2000])` could never
+   exceed **534 ms** — the entire upper half of the envelope was dead, and
+   the ≥ 500 ms retransmit stalls the mode exists to absorb were exactly
+   the ones it under-buffered. The clamp bites hardest in the very shape
+   this mode targets: a stall holds a burst of deltas, then delivers them
+   at once, so the held frames and the fresh ones share an arrival bucket
+   and the deep ones clamp against its 500 ms wall. Amendments to
+   Decision 7, all inside `PlayoutProfile` so nothing changes with the mode
+   off:
+   - **`quantileRangeMs`** — 500 default, **2500** resilient (> `maxMs`, so
+     p95 stays honest to the top of the clamp). A profile must be able to
+     measure its whole clamp range; a test now asserts that invariant for
+     both profiles so it can't rot back.
+   - **`jitterWindowMs`** — 60 s default, **8 s** resilient. The 60 s p95
+     window is `PLAYOUT-3` (low) from the same review: a seconds-scale
+     handover spike sits under the p95 of a minute of clean samples and
+     barely moves the offset. The **min tracker keeps its 60 s window** —
+     it is also `releasableAt`'s anchor, and `offset ≈ p95 − min₆₀` is what
+     makes the release schedule land at the measured p95; measuring the two
+     terms over different baselines would make the schedule and the offset
+     disagree. Down-direction memory stays where it belongs, in the dwell +
+     slew, not in how fast a bad episode ages out.
+   - **`stepUpAboveMs`** — `Infinity` default (unchanged behavior),
+     **150 ms** resilient: a rise larger than that is taken in one step
+     instead of slewed. Slewing 1 s of new buffer in at 100 ms/s spends 10 s
+     stuttering on the way, which is the stutter the mode exists to remove;
+     the alternative to one pause is frames missing their slot and freezing
+     to the next keyframe. **Down is still never stepped** (a step down is a
+     visible skip) and small rises still slew. This supersedes the
+     always-slew reading of Decision 7's "slew up 100 ms/s", whose values
+     were provisional pending X6 in any case.
+
+   Cost check: the resilient histogram is **smaller** than the default one
+   (626 bins × 9 buckets = 5,634 cells vs 126 × 61 = 7,686) — the shorter
+   window more than pays for the wider range. Geometry is fixed per
+   histogram, so unlike the other resilient bounds it can't be read per use;
+   the reorder buffer rebuilds its tracker when the active profile changes,
+   which in production never fires (a mode flip is a reconnect, Decision 9).
+   **Re-run the X6 headline criterion after this** — it could not have been
+   met at a 534 ms ceiling, so the ✅ on X6 covers the mode's behavior on the
+   links it was measured on, not the deep-stall claim.
 
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a

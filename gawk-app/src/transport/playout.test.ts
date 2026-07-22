@@ -4,8 +4,10 @@
 // the jitter-tracked controller). Module state per JS context, read live.
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { LIVE_EDGE_WINDOW_MS, QUANTILE_RANGE_MS } from './live-edge';
 import {
   DECODE_LEAD_MS,
+  DEFAULT_PLAYOUT_PROFILE,
   HEADROOM_MS,
   MAX_PLAYOUT_OFFSET_MS,
   MIN_PLAYOUT_OFFSET_MS,
@@ -18,6 +20,7 @@ import {
   RESILIENT_PLAYOUT_PROFILE,
   getPlayoutMode,
   getPlayoutOffsetMs,
+  getPlayoutProfile,
   getStoredPlayoutMode,
   setPlayoutMode,
   setResilientMode,
@@ -213,7 +216,10 @@ describe('resilient playout profile (R19)', () => {
     for (; t <= OFFSET_WARMUP_MS; t += 1000) c.update(150, t);
     let prev = c.offsetMs();
     for (let i = 0; i < 5; i++) {
-      c.update(1500, t);
+      // Each rise stays inside stepUpAboveMs so this exercises the slew
+      // regime; a rise larger than that is taken in one step instead (R19
+      // hardening, PLAYOUT-1 — see the suite at the end of this file).
+      c.update(prev + RESILIENT_PLAYOUT_PROFILE.stepUpAboveMs - HEADROOM_MS - 1, t);
       const step = c.offsetMs() - prev;
       expect(step).toBeLessThanOrEqual(RESILIENT_PLAYOUT_PROFILE.slewUpMsPerS + 1e-9);
       prev = c.offsetMs();
@@ -254,5 +260,81 @@ describe('resilient playout profile (R19)', () => {
     setResilientMode(true);
     for (let t = 0; t <= OFFSET_WARMUP_MS + 60_000; t += 1000) updatePlayoutController(1200, t);
     expect(getPlayoutOffsetMs()).toBe(1200 + HEADROOM_MS);
+  });
+});
+
+// R19 hardening — PLAYOUT-1 (docs/reviews/resilient-mode-review.md). Two
+// halves: the profile must be able to *measure* the envelope it clamps to
+// (the histogram range lived outside the profile and capped the signal at
+// 500 ms), and it must be able to *reach* it in time — slewing at 100 ms/s
+// from a 500 ms seed spends 10 s stuttering on the way to 1500 ms, which is
+// the stutter the mode exists to remove.
+describe('playout profiles carry their own jitter measurement (R19 PLAYOUT-1)', () => {
+  afterEach(() => {
+    setResilientMode(false);
+    setPlayoutMode('off');
+  });
+
+  it('each profile can measure its whole clamp range', () => {
+    // The invariant the bug violated: a clamp the signal cannot express is
+    // dead envelope. Applies to both profiles, so neither drifts back.
+    for (const p of [DEFAULT_PLAYOUT_PROFILE, RESILIENT_PLAYOUT_PROFILE]) {
+      expect(p.quantileRangeMs).toBeGreaterThanOrEqual(p.maxMs);
+    }
+  });
+
+  it('the resilient profile measures over a shorter window than the default', () => {
+    // PLAYOUT-3: a 60 s window reacts on a minute timescale. Down-direction
+    // memory lives in the dwell + slew, not in the measurement window.
+    expect(RESILIENT_PLAYOUT_PROFILE.jitterWindowMs).toBeLessThan(
+      DEFAULT_PLAYOUT_PROFILE.jitterWindowMs,
+    );
+    expect(DEFAULT_PLAYOUT_PROFILE.jitterWindowMs).toBe(LIVE_EDGE_WINDOW_MS);
+    expect(DEFAULT_PLAYOUT_PROFILE.quantileRangeMs).toBe(QUANTILE_RANGE_MS);
+  });
+
+  it('getPlayoutProfile follows the resilient flag', () => {
+    expect(getPlayoutProfile()).toBe(DEFAULT_PLAYOUT_PROFILE);
+    setResilientMode(true);
+    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
+  });
+
+  it('steps straight to a far-above target instead of slewing for seconds', () => {
+    const c = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
+    let t = 0;
+    for (; t <= OFFSET_WARMUP_MS; t += 1000) c.update(50, t);
+    const before = c.offsetMs();
+    c.update(1500, t); // a stall the seed-sized buffer cannot absorb
+    expect(before).toBeLessThan(1000);
+    expect(c.offsetMs()).toBe(1500 + HEADROOM_MS);
+  });
+
+  it('still slews a small rise, and never steps downward', () => {
+    const c = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
+    let t = 0;
+    for (; t <= OFFSET_WARMUP_MS; t += 1000) c.update(400, t);
+    const before = c.offsetMs();
+    c.update(400 + RESILIENT_PLAYOUT_PROFILE.stepUpAboveMs - 1, t); // contiguous 1 s step
+    expect(c.offsetMs() - before).toBeLessThanOrEqual(
+      RESILIENT_PLAYOUT_PROFILE.slewUpMsPerS + 1e-9,
+    );
+    // Downward is always slewed + dwell-gated: a step down is a visible skip.
+    const high = c.offsetMs();
+    t += 1000;
+    c.update(0, t);
+    expect(c.offsetMs()).toBe(high);
+  });
+
+  it('the default profile never steps — live-edge pacing is unchanged', () => {
+    const c = new PlayoutController(DEFAULT_PLAYOUT_PROFILE);
+    let t = 0;
+    for (; t <= OFFSET_WARMUP_MS; t += 1000) c.update(0, t);
+    let prev = c.offsetMs();
+    for (let i = 0; i < 3; i++) {
+      c.update(10_000, t); // far above anything the default clamp allows
+      expect(c.offsetMs() - prev).toBeLessThanOrEqual(OFFSET_SLEW_UP_MS_PER_S + 1e-9);
+      prev = c.offsetMs();
+      t += 1000;
+    }
   });
 });

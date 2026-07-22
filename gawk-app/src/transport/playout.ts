@@ -20,6 +20,7 @@
 // read live by the reorder buffer on every advance — so switching mode
 // mid-session re-paces without touching the pipeline.
 
+import { LIVE_EDGE_WINDOW_MS, QUANTILE_RANGE_MS } from './live-edge';
 import { getResilientMode, setResilientModeFlag } from './resilient';
 
 export type PlayoutMode = 'off' | 'fixed' | 'adaptive';
@@ -58,12 +59,30 @@ export const OFFSET_WARMUP_MS = 5000; // seed holds until the jitter window has 
 // mode — retransmit stalls inflate arrival p95, so the offset grows exactly
 // when loss is happening and shrinks (slowly, dwell-gated) when the link
 // cleans up.
+//
+// A profile also owns the *measurement* feeding it (R19 hardening,
+// PLAYOUT-1): the arrival-jitter estimator is a fixed-range histogram, so a
+// clamp the histogram cannot express is dead envelope. docs/24 Decision 7
+// assumed "the existing WindowedQuantileTracker needs no changes" and it was
+// wrong — its 500 ms range pinned the resilient offset at ~534 ms, less than
+// the retransmit stalls the mode exists to absorb. Keep
+// `quantileRangeMs >= maxMs` in every profile.
 export interface PlayoutProfile {
   seedMs: number;
   minMs: number;
   maxMs: number;
   slewUpMsPerS: number;
   slewDownMsPerS: number;
+  // Range of the arrival-jitter histogram (reorder-buffer.ts). Values past it
+  // clamp into the top bin, so this is the largest jitter the profile can see.
+  quantileRangeMs: number;
+  // Sliding window the p95 is taken over. Shorter = faster reaction in both
+  // directions; the *down* direction is deliberately governed by the dwell +
+  // slew below, not by how fast a bad episode ages out of the window.
+  jitterWindowMs: number;
+  // A rise larger than this steps the offset straight to target instead of
+  // slewing. Infinity = always slew (the default profile's shipped behavior).
+  stepUpAboveMs: number;
 }
 
 export const DEFAULT_PLAYOUT_PROFILE: PlayoutProfile = {
@@ -72,6 +91,9 @@ export const DEFAULT_PLAYOUT_PROFILE: PlayoutProfile = {
   maxMs: MAX_PLAYOUT_OFFSET_MS,
   slewUpMsPerS: OFFSET_SLEW_UP_MS_PER_S,
   slewDownMsPerS: OFFSET_SLEW_DOWN_MS_PER_S,
+  quantileRangeMs: QUANTILE_RANGE_MS,
+  jitterWindowMs: LIVE_EDGE_WINDOW_MS,
+  stepUpAboveMs: Infinity,
 };
 
 // R19 resilient profile (docs/24 Decision 7): clamp [150, 2000] ms, seed 500,
@@ -82,7 +104,26 @@ export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
   maxMs: 2000,
   slewUpMsPerS: 100,
   slewDownMsPerS: 10,
+  // 2500 > maxMs: p95 stays honest right up to the top of the clamp instead
+  // of saturating against the histogram wall.
+  quantileRangeMs: 2500,
+  // 8 s, not 60: a handover spike is a seconds-scale event, and at 60 s it
+  // sits under the p95 of a minute of clean samples and barely moves the
+  // offset (PLAYOUT-3). The min tracker keeps its 60 s window — it is also
+  // the release-schedule anchor, and offset ≈ p95 − min₆₀ is what makes
+  // `timestamp + min₆₀ + offset` land at the measured p95.
+  jitterWindowMs: 8000,
+  // Slewing 1 s of new buffer in at 100 ms/s costs 10 s of the stutter this
+  // mode exists to remove, so a large rise is taken at once: the alternative
+  // to a one-time pause is frames missing their slot and freezing to the next
+  // keyframe. Small rises still slew (invisible), and *down* is never stepped.
+  stepUpAboveMs: 150,
 };
+
+// The profile in force in this JS context.
+export function getPlayoutProfile(): PlayoutProfile {
+  return getResilientMode() ? RESILIENT_PLAYOUT_PROFILE : DEFAULT_PLAYOUT_PROFILE;
+}
 
 export class PlayoutController {
   private profile: () => PlayoutProfile;
@@ -112,7 +153,10 @@ export class PlayoutController {
     const target = Math.min(p.maxMs, Math.max(p.minMs, jitterMs + HEADROOM_MS));
     if (target > this.current) {
       this.belowSince = null;
-      this.current = Math.min(target, this.current + (p.slewUpMsPerS * dtMs) / 1000);
+      this.current =
+        target - this.current > p.stepUpAboveMs
+          ? target
+          : Math.min(target, this.current + (p.slewUpMsPerS * dtMs) / 1000);
     } else if (target < this.current) {
       // Arm a descent only on a clear gap; once armed, keep descending all
       // the way to the target even as the gap narrows below the margin —
@@ -142,9 +186,7 @@ export class PlayoutController {
 }
 
 let mode: PlayoutMode = 'off';
-const controller = new PlayoutController(() =>
-  getResilientMode() ? RESILIENT_PLAYOUT_PROFILE : DEFAULT_PLAYOUT_PROFILE,
-);
+const controller = new PlayoutController(getPlayoutProfile);
 
 export function setPlayoutMode(m: PlayoutMode): void {
   // Entering adaptive re-seeds: jitter observed under another mode's pacing
