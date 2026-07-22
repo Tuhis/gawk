@@ -783,9 +783,17 @@ func TestStalledSubscriberEvictedAfterConsecutiveSlowKeyframes(t *testing.T) {
 
 	for i := range KeyframeSlowEvictThreshold {
 		ingestKeyframe(t, p, keyframeMsg(t, uint32(i+1), "vp8", fmt.Sprintf("kf%02d", i)))
-		// Pace on the healthy peer so a rapid next ingest can't supersede the
-		// stalled peer's in-flight write — a superseded drop is not a slow one.
-		waitKeyframes(t, healthy, i+1)
+		// Pace on the stalled peer actually recording *this* keyframe as a slow
+		// drop before ingesting the next. Pacing on the healthy peer's receipt
+		// (as this did before) does not order the stalled peer's write: under
+		// load the next ingest can supersede the still-in-flight write, and a
+		// superseded drop is not a slow one — the consecutive-slow streak then
+		// falls short of the threshold and the eviction never fires (a real
+		// ~2.5% flake under `-race`). Only the stalled peer drops keyframes as
+		// slow (the healthy one delivers), so the aggregate count is its count.
+		waitFor(t, 5*time.Second, func() bool {
+			return singleBroadcastStats(t, r).KeyframeDrops.Slow == uint64(i+1)
+		}, "stalled keyframe to be counted as a slow drop")
 	}
 
 	waitFor(t, 5*time.Second, func() bool {
