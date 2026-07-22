@@ -808,6 +808,43 @@ build). Notes and deviations:
     subscriber already deep in sustained overflow (a link that cannot keep up
     at all), and is a reasonable future refinement, not a blocker.
 
+15. **Post-review fix (2026-07-22): the carrier's most common record size was
+    never round-tripped — `WIRE-1` (low) from
+    `docs/reviews/resilient-mode-review.md`.** The carrier framing tests in
+    all three mirrors exercised the 23-byte golden VideoChunk and asserted
+    *rejection* of `MaxDatagramSize + 1`, but never carried a record whose
+    datagram is exactly `MaxDatagramSize`. That is not an exotic edge: a full
+    delta chunk is exactly 1200 bytes, so it is the record the carrier frames
+    most of the time, and the uint16 length prefix's inclusive upper boundary
+    is precisely where an off-by-one lives. `DecoderConfig` and `AudioFrame`
+    both pin their exact-1200 boundary; the carrier was the asymmetry.
+    Test-only, no production code touched — `AppendCarrierRecord` /
+    `CarrierRecordParser` handle 1200 correctly today; this is a guard, added
+    to all three mirrors by the same rule that mirrors the golden vectors:
+    - `TestCarrierRecordMaxSizeDatagram` (`gawk-server/wire/wire_test.go`) and
+      `TestCarrierRecordAtMaxDatagramSize`
+      (`gawk-broadcast/internal/wirecheck/wirecheck_test.go`) build the
+      boundary datagram as a **real full delta chunk** (`AppendVideoChunk`
+      with `MaxChunkPayload`), so the vector also re-pins
+      `MaxChunkPayload + VideoChunkHeaderSize == MaxDatagramSize`.
+    - The relay-side test frames a second record behind the max-size one: the
+      boundary must not swallow or truncate what follows on the same stream.
+    - The viewer test (`wire.test.ts`) drives the production path — the
+      incremental `CarrierRecordParser` — with the read split landing on
+      either side of the record boundary and on it exactly.
+    - The 2-byte length prefix at the maximum (`04b0`) is pinned as a hex
+      constant in all three, the only part of a 1202-byte record worth
+      stating as a vector.
+
+    **Test-the-test** (each mutant reverted afterwards): flipping
+    `> MaxDatagramSize` to `>=` in `AppendCarrierRecord` reddens the relay and
+    wirecheck tests; the same flip in `ParseCarrierRecord`, in
+    `encodeCarrierRecord` and in `CarrierRecordParser.push` reddens the
+    corresponding mirror. The point of the finding is the *rest* of the
+    result: with the append-side mutant in place the **entire pre-existing
+    wire suite stays green**, in every mirror — which is exactly the gap
+    reported.
+
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
 product feature; X5 rides alongside; X6 last. Nothing here blocks or is

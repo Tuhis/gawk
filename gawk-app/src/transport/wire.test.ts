@@ -79,6 +79,9 @@ const GOLDEN_CLOCK_MAPPING_NEGATIVE_HEX = '0106fffffffffff0bdc0';
 // R19 reliable-carrier framing (docs/24 Decision 3).
 const GOLDEN_CARRIER_PROLOGUE_HEX = '010a';
 const GOLDEN_CARRIER_RECORD_HEX = '0017' + GOLDEN_VIDEO_CHUNK_HEX;
+// The length prefix of a record at the inclusive upper boundary: a full delta
+// chunk is exactly MAX_DATAGRAM_SIZE (1200 = 0x04b0).
+const GOLDEN_CARRIER_MAX_RECORD_PREFIX_HEX = '04b0';
 // R18 viewer count (docs/23 Decision 2).
 const GOLDEN_VIEWER_COUNT_HEX = '010b00000003';
 const GOLDEN_VIEWER_COUNT_LARGE_HEX = '010b01020304';
@@ -405,6 +408,41 @@ describe('carrier record parser (R19)', () => {
     const oversize = new Uint8Array(2);
     new DataView(oversize.buffer).setUint16(0, MAX_DATAGRAM_SIZE + 1);
     expect(() => new CarrierRecordParser().push(oversize)).toThrow(WireError);
+  });
+
+  // The inclusive upper boundary of the uint16 length prefix. A full delta
+  // chunk is exactly MAX_DATAGRAM_SIZE, so this is the *common* record on a
+  // carrier — not an exotic edge — and it must survive both the framing and a
+  // read split landing on the boundary itself (docs/24 finding 15).
+  it('round-trips a record whose datagram is exactly MAX_DATAGRAM_SIZE', () => {
+    const dgram = encodeVideoChunk(
+      { keyframe: false, frameId: 43, chunkIndex: 1, chunkCount: 2, timestampUs: 7654321n },
+      new Uint8Array(MAX_CHUNK_PAYLOAD).fill(0xab),
+    );
+    expect(dgram.length).toBe(MAX_DATAGRAM_SIZE);
+
+    const record = encodeCarrierRecord(dgram);
+    expect(record.length).toBe(CARRIER_RECORD_HEADER_SIZE + MAX_DATAGRAM_SIZE);
+    expect(toHex(record.subarray(0, CARRIER_RECORD_HEADER_SIZE))).toBe(
+      GOLDEN_CARRIER_MAX_RECORD_PREFIX_HEX,
+    );
+
+    // A second record behind it: the boundary must not swallow or truncate
+    // what follows on the same carrier stream.
+    const trailer = encodeCarrierRecord(fromHex(GOLDEN_VIDEO_CHUNK_HEX));
+    const stream = new Uint8Array(record.length + trailer.length);
+    stream.set(record, 0);
+    stream.set(trailer, record.length);
+
+    for (const split of [record.length - 1, record.length, record.length + 1]) {
+      const parser = new CarrierRecordParser();
+      const records = [
+        ...parser.push(stream.subarray(0, split)),
+        ...parser.push(stream.subarray(split)),
+      ];
+      expect(records.map(toHex)).toEqual([toHex(dgram), GOLDEN_VIDEO_CHUNK_HEX]);
+      expect(parser.hasPartial()).toBe(false);
+    }
   });
 
   it('rejects oversize and empty datagrams at encode', () => {
