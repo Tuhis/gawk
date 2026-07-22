@@ -29,8 +29,13 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
   const sessionState = { failStartWith: null as Error | null };
   class FakeViewerSession {
     cbs: Cbs;
-    constructor(_url: string, _id: string, _opts: unknown, cbs: Cbs) {
+    // R19: the connect options carry the delivery negotiation
+    // (`deliveryMode: 'reliable'` ⇔ resilient mode) — recorded so a toggle
+    // can be asserted at the seam that actually reaches the relay.
+    opts: unknown;
+    constructor(_url: string, _id: string, opts: unknown, cbs: Cbs) {
       this.cbs = cbs;
+      this.opts = opts;
       sessions.push(this);
     }
     async start(): Promise<void> {
@@ -255,6 +260,72 @@ describe('ViewerScreen playout modes', () => {
     openMenu();
     expect(screen.getByText('Frame interpolation (experimental)')).toBeTruthy();
     cleanupPlayout();
+  });
+});
+
+// Review finding PRODUCT-2 (docs/reviews/resilient-mode-review.md): every
+// menu-only setting — above all R19's "Resilient mode (mobile networks)",
+// which exists *for* phones — was reachable through a right-click alone, an
+// affordance touch devices do not have. The control bar carries a visible
+// overflow button that opens the same menu.
+describe('ViewerScreen menu button (touch reachability)', () => {
+  function clearPrefs() {
+    localStorage.removeItem('gawk:resilient-mode');
+    localStorage.removeItem('gawk:playout-mode');
+    localStorage.removeItem('gawk:interpolation');
+  }
+  beforeEach(clearPrefs);
+  afterEach(clearPrefs);
+
+  // A tap: pointerdown (which also dismisses an open menu) then click.
+  const tap = (el: Element) => {
+    fireEvent.pointerDown(el);
+    fireEvent.click(el);
+  };
+
+  it('opens the same menu from a visible control-bar button', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    tap(screen.getByLabelText('More options'));
+
+    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByText('Resilient mode (mobile networks)')).toBeTruthy();
+    expect(screen.getByText('Copy link')).toBeTruthy();
+  });
+
+  it('tapping the button again dismisses the menu', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    const button = screen.getByLabelText('More options');
+    tap(button);
+    expect(screen.getByRole('menu')).toBeTruthy();
+    tap(button);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  // The point of the fix: a phone viewer on a lossy link can actually reach
+  // the mode, and reaching it negotiates reliable delivery.
+  it('enables resilient mode from the button and reconnects with reliable delivery', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    expect(sessions[0].opts).not.toMatchObject({ deliveryMode: 'reliable' });
+
+    tap(screen.getByLabelText('More options'));
+    fireEvent.click(screen.getByText('Resilient mode (mobile networks)'));
+
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(sessions[1].opts).toMatchObject({ deliveryMode: 'reliable' });
+    expect(localStorage.getItem('gawk:resilient-mode')).toBe('1');
+
+    // …and it stays reachable to turn back off (the menu reflects the state).
+    tap(screen.getByLabelText('More options'));
+    expect(screen.getByText('Resilient mode (mobile networks) ✓')).toBeTruthy();
   });
 });
 

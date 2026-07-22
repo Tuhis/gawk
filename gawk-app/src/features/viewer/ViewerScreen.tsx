@@ -8,6 +8,7 @@ import {
   FullscreenExitIcon,
   FullscreenIcon,
   LeaveIcon,
+  MoreIcon,
   SpeakerIcon,
   SpeakerMutedIcon,
   StatsIcon,
@@ -192,9 +193,20 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     );
 
   const [showStats, setShowStats] = useState(false);
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    anchor?: 'top-left' | 'bottom-right';
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const [statsCopied, setStatsCopied] = useState(false);
+
+  // Review finding PRODUCT-2: the menu holds the settings that matter most on
+  // a phone (above all R19's Resilient mode), and a right-click is the one
+  // gesture a touch device doesn't have. The control-bar button opens the
+  // same menu for every pointer type — and dismisses it, which is why the
+  // menu needs the button as its anchor (see ContextMenu's `anchorRef`).
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const { probe: teeProbe, track: teeTrack, arm: armTee } = presentation;
 
@@ -555,6 +567,27 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
               />
             </div>
           )}
+          <IconButton
+            ref={menuButtonRef}
+            label="More options"
+            aria-haspopup="menu"
+            aria-expanded={menu != null}
+            onClick={(e) => {
+              if (menu) {
+                setMenu(null);
+                return;
+              }
+              // Grow up-left from the button's top-right corner: anchored
+              // top-left it would cover the button itself (the bar sits at the
+              // bottom of the viewport, so the viewport clamp pushes the menu
+              // back up over it) — and then a second tap would hit a menu item
+              // instead of dismissing.
+              const r = e.currentTarget.getBoundingClientRect();
+              setMenu({ x: r.right, y: r.top - 6, anchor: 'bottom-right' });
+            }}
+          >
+            <MoreIcon />
+          </IconButton>
           <IconButton label={showStats ? 'Hide stats' : 'Show stats'} onClick={() => setShowStats((s) => !s)}>
             <StatsIcon />
           </IconButton>
@@ -571,7 +604,14 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       </div>
 
       {menu && (
-        <ContextMenu items={menuItems} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />
+        <ContextMenu
+          items={menuItems}
+          x={menu.x}
+          y={menu.y}
+          anchor={menu.anchor}
+          anchorRef={menuButtonRef}
+          onClose={() => setMenu(null)}
+        />
       )}
     </div>
   );

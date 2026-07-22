@@ -300,6 +300,27 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   and its estimator are tuned in different files, check the estimator's
   dynamic range covers the law's envelope.
   ([docs/24](docs/24-viewer-network-resilience.md))
+- **A right-click menu is not a UI on a phone** — and a button that opens a
+  popup needs two things jsdom will never tell you about. R19's "Resilient
+  mode (mobile networks)" toggle lived only in the viewer's context menu,
+  i.e. the feature built for phones was unreachable on phones; the fix is a
+  visible "⋮" button in the control bar opening the *same* menu. Building it
+  surfaced two browser-only traps. (1) **The opener is inside the
+  outside-click handler's world**: the menu closes on any outside
+  `pointerdown`, including the button's own, so the ensuing `click` re-opens
+  what the pointerdown just closed and the button can never dismiss its own
+  menu. A "was it open at pointerdown?" guard *passes in jsdom* — `fireEvent`
+  runs inside `act`, which defers the flush — and fails in Chrome, which
+  runs a microtask checkpoint between listeners. The menu now takes an
+  `anchorRef` and excludes it from "outside": no race to time. (2)
+  **Measuring an element mid-animation measures the animation**:
+  `getBoundingClientRect()` on the menu returned its `scale(0.97)` opening
+  frame, 3 % small, enough to drift it onto the button — and a fixed
+  element's shrink-to-fit width depends on where you put it, so measuring at
+  the requested position returns a squeezed size that then feeds the
+  placement math. Measure the layout box (`offsetWidth`/`offsetHeight`) from
+  a neutral corner, hidden until placed.
+  ([docs/24](docs/24-viewer-network-resilience.md))
 - **A silently-dead publisher session holds its slot for up to the QUIC idle
   timeout (~30 s), and rejecting the broadcaster's own reclaim in that window
   killed live broadcasts.** The reclaim got 409 from its own zombie session,
