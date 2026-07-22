@@ -94,7 +94,21 @@ export class LocalViewerTransport implements ViewerTransport {
     if (datagrams?.writable) {
       const writer = datagrams.writable.getWriter();
       this.timeSyncWriter = writer;
-      this.timeSync = new TimeSyncClient((d) => void writer.write(d).catch(() => {}));
+      // A ping that never leaves is why `timeSyncRttMs` reads null forever —
+      // which is how both 2026-07-22 Safari captures looked, with no clue as
+      // to the cause because this rejection used to be swallowed outright
+      // (BUGS.md). Still non-fatal (a failed ping must never take the
+      // pipeline down), but no longer silent; logged once so a broken leg
+      // doesn't spam a 0.5 Hz warning for the life of the session.
+      let pingSendLogged = false;
+      this.timeSync = new TimeSyncClient(
+        (d) =>
+          void writer.write(d).catch((e) => {
+            if (pingSendLogged) return;
+            pingSendLogged = true;
+            log.warn('TimeSync ping could not be sent; clock sync and RTT stay unavailable:', e);
+          }),
+      );
       this.timeSync.start();
     }
 

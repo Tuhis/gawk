@@ -39,7 +39,7 @@ import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates'
 import type { TeeStats } from './tee-render-sink';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
-import type { DecoderConfigMessage } from './wire';
+import { TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, type DecoderConfigMessage } from './wire';
 import { getMaxDecoderQueueSize } from '../config';
 
 // How often the reorder buffer is advanced (its bounded waits and the
@@ -57,11 +57,36 @@ const REORDER_TICK_MS = 16;
 // healthy fleet fixes it server-side first and this never fires.
 const KEYFRAME_STALL_MS = 8000;
 
-// The watchdog fires only while frames are *still arriving*: that is what
-// distinguishes a wedged stream path from a broadcaster who merely stepped
-// away (which sends nothing at all and must keep its viewers connected —
-// docs/05 D1 keepalive).
+// The keyframe watchdog fires only while frames are *still arriving*: that is
+// what distinguishes a wedged stream path from a broadcaster who merely
+// stepped away (which sends no media and must keep its viewers connected —
+// docs/05 D1 keepalive). That guard is correct for what it covers and fatal
+// for what it does not — see SESSION_STALL_MS.
 const FRAMES_FLOWING_WINDOW_MS = 1000;
+
+// Dead-session watchdog (BUGS.md, 2026-07-22 paired capture). The keyframe
+// watchdog above cannot fire when *nothing* is arriving, which is exactly the
+// worst failure: the relay had already dropped the subscriber while WebKit
+// surfaced no signal at all — `wt.closed` never resolved and no read loop
+// rejected — so the viewer sat on a dead session for 48 s showing stale stats,
+// no error and no reconnect, needing a manual page reload. Those two signals
+// are the pipeline's only session-end events, so when the browser withholds
+// both there is nothing left but to notice the silence.
+//
+// Total inbound silence is a sound test because a live session is never
+// silent: the relay's R18 ViewerCount keepalive reaches every subscriber at
+// least every hub.ViewerCountKeepalive (5 s) — including while the broadcaster
+// is away, which is what keeps this from firing on an idle broadcast (the
+// relay-side half of this fix, same change). Three missed keepalives is
+// unambiguous and still well inside the ~30 s QUIC idle timeout.
+export const SESSION_STALL_MS = 15000;
+
+// Whether a datagram belongs to the R15 audio lane. Used only to keep audio
+// bytes out of the *video* byte counter; a too-short datagram is left to the
+// reassembler's strict parsing, exactly as before.
+function isAudioDatagram(dgram: Uint8Array): boolean {
+  return dgram.length >= 2 && (dgram[1] === TYPE_AUDIO_FRAME || dgram[1] === TYPE_AUDIO_CONFIG);
+}
 
 export interface ViewerStats extends ReassemblerStats {
   decodedFrames: number;
@@ -102,6 +127,11 @@ export interface ViewerStats extends ReassemblerStats {
   // the last keyframe (recovery bound: should hover at or under the GOP).
   timeSinceLastFrameMs: number | null;
   lastKeyframeAgeMs: number | null;
+  // Time since ANY inbound datagram/stream byte — media, audio, or the R18
+  // count keepalive. This is the one that separates "the broadcaster stepped
+  // away" (climbs to ~5 s, resets) from "the session is dead" (climbs without
+  // bound), which a Copy-diagnostics capture previously could not tell apart.
+  timeSinceLastInboundMs: number | null;
   // R5 Q1 (docs/15): how far the newest decoded frame lags behind this
   // session's best capture→decode delta (windowed min — clock offset cancels).
   // ~0 = at live edge; growth = decoder backlog / reorder holds / queue
@@ -291,6 +321,11 @@ export class ViewerPipeline {
   private lastRenderedTotal = 0;
   private lastFrameReceivedAt: number | null = null;
   private lastKeyframeReceivedAt: number | null = null;
+  // Last inbound byte of ANY kind from the relay — media, audio, decoder
+  // config, the R18 count keepalive, a carrier record. Null until the first
+  // one arrives, so a viewer that joins an away broadcast and waits for its
+  // first keepalive is never torn down by the dead-session watchdog.
+  private lastInboundAt: number | null = null;
   private videoBytesReceived = 0;
   // The codec of the last applied config — for a clear "can't decode" message.
   private lastCodec: string | null = null;
@@ -422,7 +457,14 @@ export class ViewerPipeline {
       await transport.connect({
         onDatagram: (dgram) => {
           if (this.stopping) return;
-          this.videoBytesReceived += dgram.byteLength;
+          // Liveness first, and for every datagram kind: the count keepalive
+          // is the only thing an away broadcaster's viewer receives, and it is
+          // what makes total silence mean "dead session" (SESSION_STALL_MS).
+          this.lastInboundAt = performance.now();
+          // Audio rides the same datagram path but is not video: counting it
+          // here overstated "Video bitrate (recv)" by the whole audio lane
+          // whenever audio was on (BUGS.md, 2026-07-22).
+          if (!isAudioDatagram(dgram)) this.videoBytesReceived += dgram.byteLength;
           this.reassembler?.push(dgram);
         },
         onKeyframe: (kf) => this.handleKeyframeStream(kf),
@@ -484,6 +526,7 @@ export class ViewerPipeline {
     this.videoBytesReceived += kf.streamBytes;
     this.lastFrameReceivedAt = performance.now();
     this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
+    this.lastInboundAt = this.lastFrameReceivedAt;
     this.reorder.pushKeyframe({
       frameId: kf.frameId,
       timestampUs: kf.timestampUs,
@@ -511,8 +554,29 @@ export class ViewerPipeline {
     );
   }
 
+  // Fails the pipeline when the session has gone completely silent — the case
+  // the keyframe watchdog structurally cannot see, because its "frames still
+  // arriving" guard is false precisely when everything has stopped. A live
+  // session always carries at least the relay's count keepalive, so silence
+  // this long means the session is dead however the browser is describing it.
+  // Arms on the first inbound byte, never at connect: a viewer joining an away
+  // broadcast has legitimately received nothing yet.
+  private checkSessionStall(): void {
+    const last = this.lastInboundAt;
+    if (last === null) return;
+    const silentMs = performance.now() - last;
+    if (silentMs < SESSION_STALL_MS) return;
+    this.fail(
+      new Error(
+        `no data from the relay for ${Math.round(silentMs)}ms (session appears dead); reconnecting`,
+      ),
+    );
+  }
+
   private reorderTick(): void {
     if (this.stopping || !this.reorder) return;
+    this.checkSessionStall();
+    if (this.stopping) return; // the watchdog just tore the pipeline down
     this.checkKeyframeStall();
     if (this.stopping) return; // the watchdog just tore the pipeline down
     // Decoder backpressure: if the decode queue is deep, stop feeding it and
@@ -831,6 +895,7 @@ export class ViewerPipeline {
       pipelineContext: this.pipelineContext,
       transport: this.transport?.kind ?? null,
       timeSinceLastFrameMs: this.lastFrameReceivedAt === null ? null : now - this.lastFrameReceivedAt,
+      timeSinceLastInboundMs: this.lastInboundAt === null ? null : now - this.lastInboundAt,
       lastKeyframeAgeMs: this.lastKeyframeReceivedAt === null ? null : now - this.lastKeyframeReceivedAt,
       liveEdgeDriftMs: this.liveEdge.driftMs(),
       capToRenderMs: this.lastCapToRenderMs,

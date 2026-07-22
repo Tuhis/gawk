@@ -147,6 +147,42 @@ describe('AudioSink stall recovery', () => {
     });
   }
 
+  // BUGS.md (2026-07-22): once the stream dies the worklet keeps running and
+  // keeps reporting an underrun for every 128-sample quantum, forever — a
+  // capture showed `underruns` at 300386 climbing ~375/s with no audio
+  // arriving at all. Underrunning with nothing to play is not a defect; it is
+  // silence working correctly. Counting it destroys the counter's value as a
+  // severity measure exactly when someone is reading it to diagnose a freeze.
+  it('stops counting underruns once no audio is arriving', async () => {
+    const cap = stubWebAudioCapturing();
+    let now = 0;
+    vi.stubGlobal('performance', { now: () => now, timeOrigin: 0 });
+    const sink = new AudioSink();
+    await sink.start(SAMPLE_RATE);
+    const node = cap.getNode();
+
+    const report = (underruns: number) =>
+      node.port.onmessage!({
+        data: { type: 'playhead', playheadUs: 1000, playedFrames: 0, underruns, contextTime: 0 },
+      });
+
+    // Audio is flowing and the sink runs dry: a real underrun, counted.
+    sink.push(chunk(0));
+    report(4);
+    expect(sink.getStats().underruns).toBe(4);
+
+    // The stream dies. Past the expectation window the worklet keeps reporting
+    // dry quanta forever; none of them says anything about audio health,
+    // because there is no audio left to play.
+    now += 5000;
+    const counted = sink.getStats().underruns;
+    for (let i = 0; i < 20; i++) {
+      now += 1000;
+      report(188);
+    }
+    expect(sink.getStats().underruns).toBe(counted);
+  });
+
   it('flushes the worklet and resumes when reports stop (suspended context)', async () => {
     let now = 0;
     const { posts, ctx, getNode } = stubWebAudioCapturing();

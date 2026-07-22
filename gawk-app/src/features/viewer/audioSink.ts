@@ -151,6 +151,11 @@ export function audioSinkSupported(): boolean {
 // this does not false-fire there.
 const STALL_RECOVERY_MS = 1000;
 
+// How long after the last decoded chunk a worklet underrun still describes
+// audio health. Past it there is simply no audio to play, and a dry quantum is
+// the correct outcome rather than a defect worth counting (BUGS.md).
+const AUDIO_EXPECTED_MS = 1000;
+
 export class AudioSink {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
@@ -170,6 +175,7 @@ export class AudioSink {
   // it. Null until the worklet reports for the first time, so boot latency is
   // never mistaken for a stall.
   private lastPlayheadAtMs: number | null = null;
+  private lastPushAtMs: number | null = null;
   private lastStallRecoverAtMs = -Infinity;
 
   // Where the video pipeline says a frame with this timestamp will be
@@ -277,7 +283,16 @@ export class AudioSink {
       this.lastPlayheadUs = msg.playheadUs;
       this.lastContextTime = msg.contextTime;
       if (this.sampleRate) this.buffer.notePlayed((msg.playedFrames / this.sampleRate) * 1000);
-      if (msg.underruns > 0) this.buffer.noteUnderrun(msg.underruns);
+      if (msg.underruns > 0) {
+        // Underrunning with nothing to play is silence working, not a defect:
+        // once the stream dies the worklet reports a dry quantum ~375×/s
+        // forever, which buried the counter's real signal under six figures of
+        // noise exactly when it was being read to diagnose a freeze (BUGS.md,
+        // 2026-07-22). Report zero rather than skipping the call: the re-prime
+        // side effect must still run, so audio that resumes rebuilds its
+        // cushion instead of restarting at ~0 ms depth (field finding 6).
+        this.buffer.noteUnderrun(this.audioExpected() ? msg.underruns : 0);
+      }
       this.cb.onPlayhead?.({ playheadUs: msg.playheadUs, contextTime: msg.contextTime });
     };
     const gain = ctx.createGain();
@@ -293,8 +308,17 @@ export class AudioSink {
   // first packets are ~one worklet-boot behind live anyway).
   push(chunk: AudioChunk): void {
     if (this.disposed) return;
+    this.lastPushAtMs = this.now();
     this.maybeRecoverFromStall();
     this.buffer.push(chunk);
+  }
+
+  // Whether audio is still arriving, i.e. whether a dry worklet means anything.
+  // One window of packets (50/s) is far more slack than any jitter this
+  // buffer tolerates, so a true starvation still counts while a dead stream
+  // stops counting almost immediately.
+  private audioExpected(): boolean {
+    return this.lastPushAtMs !== null && this.now() - this.lastPushAtMs <= AUDIO_EXPECTED_MS;
   }
 
   // Field finding 7: if the worklet has stopped reporting while audio is still

@@ -48,10 +48,11 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   away never trips it. **Both recover playback; neither explains WebKit's
   behavior.** Remove this entry when the trigger is root-caused (and move what
   it taught us into the relevant `docs/NN-*.md`).
-- **Not extended to R19 carrier streams on purpose**: a stalled carrier tail
-  is deliberately dropped at GOP granularity in resilient mode (docs/24
-  "drops-over-stalls"), so feeding those write stalls into an eviction streak
-  would disconnect healthy mobile viewers.
+- **Carrier *writes* are still not fed to an eviction streak, on purpose**: a
+  stalled carrier tail is deliberately dropped at GOP granularity in resilient
+  mode (docs/24 "drops-over-stalls"), so counting those write stalls would
+  disconnect healthy mobile viewers. Carrier *opens* are a different signal and
+  got their own streak on 2026-07-23 — see the entry below.
 - **Related, and now confirmed**: the second variant below (the whole session
   dies and the viewer never notices) was captured client+server simultaneously
   on 2026-07-22. It is a different failure from this one — there the session is
@@ -124,17 +125,91 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   stays inferred. The 22:46 capture's earlier "video drops to 2 fps" phase —
   keyframes arriving at the 500 ms GOP rate with no deltas — is the same
   backpressure seen from the client side.
-- **Fix would start**: viewer-side, and it is the higher-value half. Replace
-  `checkKeyframeStall`'s "frames still arriving" guard with a real liveness
-  signal, so a viewer can notice its own dead session. The guard exists to
-  avoid disconnecting a viewer whose broadcaster merely stepped away
-  (docs/05 D1 keepalive), but that case is distinguishable without requiring
-  *frames*: a live session still has the relay's QUIC keepalive, audio
-  datagrams, or a TimeSync pong. Making TimeSync's failure visible instead of
-  swallowed is a prerequisite for gating on it. The relay-side backpressure
-  above is worth fixing too, but it would only have made this session
-  healthier, not recoverable — a client that cannot detect a dead session will
-  freeze on the next cause as well.
+- **Mitigation shipped (2026-07-23, test-first, both layers). The freeze now
+  recovers; WebKit's silence is still not root-caused, which is why this entry
+  stays open.**
+  - *Viewer — dead-session watchdog* (`viewer.ts` `checkSessionStall`,
+    `SESSION_STALL_MS` 15 s). Fires on total inbound silence rather than on
+    missing keyframes, so it works precisely where `checkKeyframeStall` cannot.
+    Routed through the same `fail()` → `ViewerSession` reconnect path, so it is
+    reconnectable, not terminal. It arms on the first inbound byte, never at
+    connect: a viewer joining an away broadcast has legitimately received
+    nothing yet.
+  - *Relay — the count keepalive no longer stops when the broadcaster does*
+    (`hub.go` `PumpViewerCounts`). This is what makes the watchdog sound rather
+    than merely aggressive: the pump used to skip hubs with no active
+    publisher, so "session dead" and "broadcaster stepped away" were
+    indistinguishable on the wire, and any silence-based watchdog had to choose
+    which one to get wrong. A live session now always carries the R18
+    ViewerCount at least every `ViewerCountKeepalive` (5 s), so 15 s of silence
+    is three missed keepalives and unambiguous. **Version-skew note**: a new
+    viewer against a pre-2026-07-23 relay will reconnect every ~15 s while the
+    broadcaster is away, until the relay is upgraded — bounded by the rollout,
+    and strictly better than the freeze it replaces.
+  - *Relay — carrier opens get their own eviction streak*
+    (`CarrierOpenFailEvictThreshold`). `openCarrier` incremented the keyframe
+    streak, which every successful `sendKeyframe` open zeroed — so "carrier
+    never opens, keyframes always do" was structurally un-evictable and
+    presented as a stable, silent 2 fps with the relay reporting a healthy
+    subscriber. Carrier *write* failures are still deliberately not counted
+    (dropping a stalled GOP's tail is the mode working as designed). Note the
+    behavior change: a subscriber failing *both* kinds now takes a full
+    threshold of GOPs rather than half of one, since the streaks no longer
+    share a counter.
+  - *Viewer — TimeSync send failures are no longer swallowed*
+    (`viewer-transport.ts`). `timeSyncRttMs` read `null` for the whole life of
+    both captured sessions with no clue why, because the ping write's rejection
+    was discarded by a bare `.catch(() => {})`. Logged once per session now
+    (still non-fatal — a failed ping must never take the pipeline down).
+    **Landed without a test, deliberately**: there is no `viewer-transport`
+    harness and standing one up to assert a log line is disproportionate; per
+    CODE-REVIEW's escape clause, recorded here instead. Surfacing it in
+    Copy-diagnostics needs plumbing through the worker stats boundary and was
+    not done.
+  - *Viewer — `timeSinceLastInboundMs`* added to `ViewerStats` and the overlay
+    ("Last inbound"). This is the row that separates the two failures in a
+    future capture: it resets every ≤5 s on a live session and climbs without
+    bound on a dead one.
+- **Diagnostics defects fixed at the same time** (found while reading these
+  captures, all three shipped 2026-07-23, test-first):
+  - `AudioJitterBuffer.flush()` now zeroes its counters and keeps only
+    `resets`. The sink deliberately outlives sessions
+    (`useViewerConnection.ts`), so those counters were the one
+    cumulative-across-reconnects block in an otherwise per-attempt file — which
+    is how the 23:10 capture reported 12 816 overflow drops against 4 908
+    decoded packets, a comparison that reads as a wild accounting bug and is
+    really two time bases.
+  - `videoBytesReceived` no longer counts audio datagrams. In the 22:46
+    capture its per-sample delta equalled `audioBytesReceived`'s exactly (8688,
+    8715, 8135, 8457, 1020) once video had stopped, so "Video bitrate (recv)"
+    was overstated by the whole audio lane whenever audio was on.
+  - Worklet underruns are no longer counted once no audio is arriving
+    (`AudioSink`, 1 s expectation window). After the stream died the worklet
+    reported a dry quantum ~375×/s forever — `underruns` reached 300 386 —
+    burying the counter's real signal. The re-prime side effect still runs, so
+    audio that resumes rebuilds its cushion (docs/20 field finding 6).
+- **Reading the 2026-07-22 captures**: they predate all of the above. Their
+  `audioBuffer` block is cumulative across reconnects, their
+  `videoBytesReceived` includes audio, their `underruns` are inflated by the
+  post-death spin, and they have no `timeSinceLastInboundMs` row.
+- **Deliberately NOT fixed, and why**:
+  - *The carrier drain backpressure* (`carrierQueueOverflow` 3100 = 12 %).
+    This is the most likely proximate cause of the session ending and it is
+    still open. `drainReliable` is one goroutine doing per-record framing, the
+    write, the deadline and the audio sideband, and the fix is a choice between
+    batching records per write, moving audio off that goroutine, and retuning
+    `QueueDepth`/`CarrierWriteTimeout` — a choice that should follow a
+    measurement, not a guess. The pointed question for that work: the edge pod
+    had **zero** overflow across 372 289 records while the origin had 3100
+    across 22 987, so this is not inherent to the mode.
+  - *Why WebKit surfaces nothing.* Needs a reduced repro (a page whose session
+    the server closes abruptly). Now that the watchdog recovers playback this
+    is an upstream bug report rather than an outage, and it is what would let
+    the entry above this one finally close too.
+  - *Resilient mode's cost on good networks.* It doubles the uni-stream open
+    rate to ~4/s/viewer and, on this desktop Safari, delivered 12 % queue
+    overflow — it was designed for LTE phones. Whether to relax the per-GOP
+    carrier rotation or warn on the toggle should wait on the two items above.
 - **Reproduction/confirmation kit**: the paired capture is the whole point —
   a client capture alone cannot distinguish "relay stopped sending" from
   "WebKit stopped delivering", and a relay capture taken minutes later shows
@@ -142,33 +217,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   viewer may be origin- or edge-served; here it was origin while a healthy
   viewer sat on the edge) and take the client's Copy-diagnostics in the same
   minute, before touching the tab.
-
-## Viewer diagnostics: audio counters are cumulative across sessions
-
-- **Found**: 2026-07-22, while reading the captures for the entry above.
-- **Impact**: the `audioBuffer` block cannot be compared against anything else
-  in the same Copy-diagnostics JSON, which sends readers down false trails —
-  `overflowDrops` 12816 against `audioPacketsDecoded` 4908 reads as a wild
-  accounting bug rather than what it is.
-- **Cause** (confirmed): `AudioSink` deliberately outlives individual sessions
-  (`useViewerConnection.ts`: "The sink outlives individual sessions"), and
-  `AudioJitterBuffer.flush()` increments `resets` but zeroes none of the other
-  stats. So every `audioBuffer` counter is cumulative over the whole page view
-  including reconnects, while every other counter in the file is per-attempt.
-  `resets: 11` in the 23:10 capture says how many re-anchors it had absorbed.
-- **Two smaller reporting defects found alongside**:
-  - `videoBytesReceived` includes the audio sideband. In the 22:46 capture its
-    per-sample delta equals `audioBytesReceived`'s exactly (8688, 8715, 8135,
-    8457, 1020) once video had stopped. "Video bitrate (recv)" is overstated
-    whenever audio is on.
-  - After the stream dies the worklet reports an underrun every 128-sample
-    quantum forever (+188 per 500 ms ≈ 375/s; `underruns` reached 300 386),
-    each one driving `noteUnderrun` → re-prime. Harmless, but it destroys the
-    counter's value as a severity measure and churns the port.
-- **Fix would start**: reset the `AudioJitterBuffer` stats on `flush()` (or
-  report them per-attempt alongside a cumulative pair), split audio bytes out
-  of `videoBytesReceived`, and stop counting underruns when no audio is
-  expected.
 
 ## iPhone native fullscreen enters but shows a black video
 

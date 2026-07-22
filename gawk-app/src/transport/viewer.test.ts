@@ -37,7 +37,7 @@ vi.mock('../media/decoder', () => ({
 }));
 
 import { timeOriginMs } from './time-sync';
-import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
+import { SESSION_STALL_MS, ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
@@ -46,6 +46,7 @@ import {
   encodeClockMapping,
   encodeDecoderConfig,
   encodeVideoChunk,
+  encodeViewerCount,
 } from './wire';
 
 function makeFakeWT(closedAfterMs: number, closeInfo: unknown) {
@@ -205,11 +206,12 @@ describe('ViewerPipeline', () => {
     }
   });
 
-  it('does not reconnect when the broadcaster is merely away (no frames at all)', async () => {
-    // The stall watchdog keys on "frames arriving but no keyframes". A
-    // broadcaster who stepped away sends nothing at all, and the viewer must
-    // stay connected (QUIC keepalive holds the session — docs/05 D1), not
-    // reconnect-loop against an idle broadcast.
+  it('does not reconnect when the broadcaster is away but the session is alive', async () => {
+    // A broadcaster who stepped away sends no media at all, and the viewer
+    // must stay connected (docs/05 D1 keepalive holds the session open on
+    // purpose), not reconnect-loop against an idle broadcast. What proves the
+    // session is still alive is the relay's R18 ViewerCount keepalive, which
+    // keeps arriving every ViewerCountKeepalive (5 s) with the publisher away.
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
     });
@@ -239,9 +241,94 @@ describe('ViewerPipeline', () => {
       deliver(frameDgram(1, true));
       await vi.advanceTimersByTimeAsync(0);
 
-      // Total silence well past the stall threshold.
-      await vi.advanceTimersByTimeAsync(30_000);
+      // No media for 30 s, but the relay's count keepalive keeps landing.
+      for (let i = 0; i < 6; i++) {
+        deliver(encodeViewerCount(1));
+        await vi.advanceTimersByTimeAsync(5_000);
+      }
 
+      expect(errors).toEqual([]);
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconnects when the session goes completely silent (dead session, no signal)', async () => {
+    // BUGS.md (2026-07-22 paired capture): the relay had already dropped the
+    // subscriber while WebKit surfaced nothing — wt.closed never resolved and
+    // no read loop rejected — so the viewer sat on a corpse for 48 s showing
+    // stale stats, no error and no reconnect. The keyframe watchdog could not
+    // help: it only fires while frames are still arriving, and nothing was.
+    // Total inbound silence past SESSION_STALL_MS is a dead session, because a
+    // live one always carries at least the ViewerCount keepalive.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      let deliver!: (d: Uint8Array) => void;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          deliver = cb.onDatagram;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      await vi.advanceTimersByTimeAsync(0);
+
+      await vi.advanceTimersByTimeAsync(SESSION_STALL_MS + 2_000);
+
+      expect(errors.length).toBeGreaterThan(0);
+      // Reconnectable, not fatal: no close code means ViewerSession retries.
+      expect((errors[0] as Error & { closeCode?: number }).closeCode).toBeUndefined();
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not fire the session watchdog before anything has ever arrived', async () => {
+    // A viewer joining a broadcast whose broadcaster is away receives nothing
+    // until the first keepalive. Arming the watchdog from connect time would
+    // tear that session down; it arms on the first inbound byte.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async () => {},
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(SESSION_STALL_MS + 10_000);
       expect(errors).toEqual([]);
       await pipeline.stop();
     } finally {

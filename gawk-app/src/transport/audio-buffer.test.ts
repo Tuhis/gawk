@@ -140,6 +140,39 @@ describe('AudioJitterBuffer policies', () => {
     expect(buffer.push(chunk(9_000_000))).toBe('accepted');
     expect(buffer.getStats().gapsConcealed).toBe(0);
   });
+
+  it('flush zeroes the per-timeline counters but keeps counting resets', () => {
+    // BUGS.md (2026-07-22): the sink outlives individual sessions, and flush()
+    // used to bump `resets` while leaving every other counter running. So the
+    // audioBuffer block in a Copy-diagnostics capture was cumulative over the
+    // whole page view while everything beside it was per-attempt — which is
+    // how a capture ended up reporting 12816 overflow drops against 4908
+    // decoded packets, a comparison that reads as a wild accounting bug and is
+    // really two different time bases. The counters describe the CURRENT
+    // timeline; `resets` says how many came before.
+    const { buffer } = collecting();
+    buffer.push(chunk(0));
+    buffer.push(chunk(3 * FRAME_US)); // a gap: conceals silence
+    buffer.push(chunk(FRAME_US)); // now late: dropped
+    const before = buffer.getStats();
+    expect(before.gapsConcealed).toBeGreaterThan(0);
+    expect(before.lateDrops).toBeGreaterThan(0);
+    buffer.noteUnderrun(3);
+    expect(buffer.getStats().underruns).toBe(3);
+
+    buffer.flush();
+
+    const after = buffer.getStats();
+    expect(after.gapsConcealed).toBe(0);
+    expect(after.lateDrops).toBe(0);
+    expect(after.overflowDrops).toBe(0);
+    expect(after.underruns).toBe(0);
+    // The one counter that must survive: it is what tells a reader how many
+    // timelines the surviving numbers are NOT describing.
+    expect(after.resets).toBe(1);
+    buffer.flush();
+    expect(buffer.getStats().resets).toBe(2);
+  });
 });
 
 // Field findings 3 + 4 (docs/20). Finding 3: the target was implemented as an

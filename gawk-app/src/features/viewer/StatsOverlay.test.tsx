@@ -38,6 +38,7 @@ function fullStats(): ViewerStats {
     pipelineContext: 'worker',
     transport: 'worker',
     timeSinceLastFrameMs: 33,
+    timeSinceLastInboundMs: 12,
     lastKeyframeAgeMs: 210,
     liveEdgeDriftMs: 42,
     capToRenderMs: 384,

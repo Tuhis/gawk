@@ -412,3 +412,39 @@ func TestViewerCountFromBroadcasterIgnoredOnOrigin(t *testing.T) {
 		t.Errorf("BadDatagrams = %d, want 1", st.BadDatagrams)
 	}
 }
+
+// The count keepalive must keep flowing while the broadcaster is merely away.
+// It is the only app-layer traffic a subscribed viewer is guaranteed to see
+// when no media is flowing, which is what lets the viewer tell "my session is
+// dead" from "the broadcaster stepped away" (BUGS.md, 2026-07-22 paired
+// capture; docs/05 D1 keepalive keeps that session open on purpose). Skipping
+// the pump for an away publisher made those two indistinguishable on the wire.
+func TestViewerCountKeepaliveContinuesWhilePublisherAway(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, pub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	if _, err := r.Subscribe(id, f); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	t0 := time.Now()
+	r.PumpViewerCounts(t0)
+	waitViewerCounts(t, f, []uint32{1})
+
+	// The broadcaster goes away; the hub survives its grace period and so does
+	// the viewer's session.
+	pub.Close()
+
+	// Inside the keepalive window nothing changes (the count is unchanged).
+	r.PumpViewerCounts(t0.Add(ViewerCountInterval))
+	waitViewerCounts(t, f, []uint32{1})
+
+	// Past it, the keepalive re-emits — the viewer's proof it is still attached.
+	r.PumpViewerCounts(t0.Add(ViewerCountKeepalive))
+	waitViewerCounts(t, f, []uint32{1, 1})
+	r.PumpViewerCounts(t0.Add(2 * ViewerCountKeepalive))
+	waitViewerCounts(t, f, []uint32{1, 1, 1})
+}

@@ -362,7 +362,22 @@ export class AudioJitterBuffer {
     this.dueAtMs = null;
     this.alignmentHoldMs = null;
     this.establishedDepthMs = 0;
-    this.stats.resets++;
+    // The counters describe the timeline being played, not the page view. The
+    // sink deliberately outlives individual sessions (useViewerConnection:
+    // "The sink outlives individual sessions"), so leaving them running made
+    // the audioBuffer block the only cumulative-across-reconnects section of a
+    // Copy-diagnostics capture — uncomparable with the per-attempt counters
+    // beside it, and actively misleading (BUGS.md, 2026-07-22). `resets` is
+    // the exception by design: it is what tells a reader how many earlier
+    // timelines the surviving numbers are not describing.
+    const resets = this.stats.resets + 1;
+    this.stats = {
+      gapsConcealed: 0,
+      lateDrops: 0,
+      overflowDrops: 0,
+      underruns: 0,
+      resets,
+    };
     const p = this.profile();
     this.targetMs = p.seedMs;
     this.profileSeedMs = p.seedMs;

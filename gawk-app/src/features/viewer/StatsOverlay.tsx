@@ -80,6 +80,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],
         ['Reorder buffered', String(stats?.reorderBuffered ?? '—')],
         ['Last frame', stats?.timeSinceLastFrameMs == null ? '—' : `${fmtInt(stats.timeSinceLastFrameMs)} ms ago`],
+        // Any inbound byte, media or not. Climbing past ~5 s with no media
+        // means the session itself is dead, not that the broadcaster paused.
+        ['Last inbound', stats?.timeSinceLastInboundMs == null ? '—' : `${fmtInt(stats.timeSinceLastInboundMs)} ms ago`],
         ['Keyframe age', stats?.lastKeyframeAgeMs == null ? '—' : `${fmtInt(stats.lastKeyframeAgeMs)} ms`],
         // R5 Q1: lag behind this session's best capture→decode delta. ~0 = at
         // live edge; sustained growth = falling behind (see docs/15).

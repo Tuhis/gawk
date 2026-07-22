@@ -241,6 +241,12 @@ func (f *fakeSender) setCarBlock(ch chan struct{}) {
 	f.mu.Unlock()
 }
 
+func (f *fakeSender) setCarOpenErr(err error) {
+	f.mu.Lock()
+	f.carOpenErr = err
+	f.mu.Unlock()
+}
+
 func (f *fakeSender) carrierOpens() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2255,7 +2261,11 @@ func TestCarrierOpenFailuresFeedEvictionStreak(t *testing.T) {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 
-	for i := 0; i < KeyframeOpenFailEvictThreshold/2; i++ {
+	// One GOP contributes one failure to EACH streak (they are independent
+	// since 2026-07-22 — a successful keyframe open must not clear the
+	// carrier's streak), so eviction lands after a full threshold of GOPs
+	// rather than half of one. Both streaks cross on the same cycle here.
+	for i := 0; i < CarrierOpenFailEvictThreshold; i++ {
 		frameID := uint32(i * 2)
 		ingestKeyframe(t, p, keyframeMsg(t, frameID, "vp8", "KEY"))
 		p.HandleDatagram(chunkDgram(t, false, frameID+1, 0, 1, "d"))
@@ -2639,5 +2649,70 @@ func TestCarrierPrologueChargedOncePerGOP(t *testing.T) {
 	wantEgress := uint64(2*wire.CarrierPrologueSize + record(d1) + record(d2) + record(d4))
 	if got := r.Stats().Broadcasts[r.ObfuscateID(id)].EgressCarrierBytes; got != wantEgress {
 		t.Errorf("EgressCarrierBytes = %d, want %d (the bytes charged to the cap)", got, wantEgress)
+	}
+}
+
+// A reliable subscriber whose carrier opens fail while its KEYFRAME opens keep
+// succeeding must still be evicted. Before the fix both paths shared
+// kfConsecOpenFailed, and sendKeyframe zeroed it on every successful open — so
+// a viewer that could take keyframes but no carrier never tripped any streak.
+// The relay saw a healthy subscriber while the viewer sat at keyframe-only
+// playback (2 fps at the default 500 ms GOP) forever, with no signal to either
+// end (BUGS.md, 2026-07-22 paired capture).
+func TestCarrierOpenFailuresEvictWhenKeyframeOpensSucceed(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	// Keyframe opens succeed (kfOpenErr nil); only the carrier cannot open.
+	f := &fakeSender{carOpenErr: errors.New("stream credit exhausted")}
+	if _, err := r.SubscribeReliable(id, f); err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	for i := 0; i < CarrierOpenFailEvictThreshold; i++ {
+		frameID := uint32(i * 2)
+		ingestKeyframe(t, p, keyframeMsg(t, frameID, "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, frameID+1, 0, 1, "d"))
+		wantOpens := i + 1
+		waitFor(t, 5*time.Second, func() bool { return f.carrierOpens() >= wantOpens }, "carrier open attempt")
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		code, closed := f.getCloseInfo()
+		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
+	}, "carrier-only zombie evicted with 4001")
+}
+
+// A successful carrier open clears the carrier streak, so a subscriber that is
+// merely blipping (one failed open, then fine) is never evicted.
+func TestCarrierOpenFailureStreakResetsOnSuccess(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{carOpenErr: errors.New("transient")}
+	if _, err := r.SubscribeReliable(id, f); err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	for i := 0; i < CarrierOpenFailEvictThreshold*2; i++ {
+		// Alternate: every other GOP the carrier opens fine, which must reset
+		// the streak and keep the subscriber alive indefinitely.
+		f.setCarOpenErr(nil)
+		if i%2 == 0 {
+			f.setCarOpenErr(errors.New("transient"))
+		}
+		frameID := uint32(i * 2)
+		ingestKeyframe(t, p, keyframeMsg(t, frameID, "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, frameID+1, 0, 1, "d"))
+		wantOpens := i + 1
+		waitFor(t, 5*time.Second, func() bool { return f.carrierOpens() >= wantOpens }, "carrier open attempt")
+	}
+
+	if _, closed := f.getCloseInfo(); closed {
+		t.Fatal("subscriber evicted despite carrier opens succeeding every other GOP")
 	}
 }

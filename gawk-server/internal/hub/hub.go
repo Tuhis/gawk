@@ -76,6 +76,24 @@ const KeyframeOpenFailEvictThreshold = 10
 // was merely congested reconnects and continues.
 const KeyframeSlowEvictThreshold = 10
 
+// CarrierOpenFailEvictThreshold is the third face of the same unreachability
+// space, and it needs its own counter rather than a share of the keyframe one.
+// A reliable subscriber opens TWO streams per GOP — the keyframe and the R19
+// carrier — and the carrier is the one that loses when stream credit is
+// scarce: the keyframe opens first at fan-out, the carrier lazily on the next
+// delta. While both fed kfConsecOpenFailed, every successful keyframe open
+// zeroed the streak the carrier's failure had just incremented, so "carrier
+// never opens, keyframes always do" was structurally un-evictable — the relay
+// reported a healthy subscriber while the viewer sat at keyframe-only playback
+// (2 fps at the default 500 ms GOP) with no signal to either end (BUGS.md,
+// 2026-07-22 paired capture). Same value and reasoning as its siblings: one
+// open is attempted per rotation, so 10 misses ≈ 5 s of GOPs, and the close
+// code is non-terminal so a merely-congested client reconnects. A failed
+// carrier *write* is deliberately NOT counted here: dropping a stalled GOP's
+// tail is the mode working as designed (docs/24 drops-over-stalls), not a
+// symptom of unreachability.
+const CarrierOpenFailEvictThreshold = 10
+
 // CarrierWriteTimeout bounds how long ONE record write to an R19 reliable
 // carrier may block on flow control before the carrier is abandoned (docs/24
 // finding 12). It is deliberately not KeyframeWriteTimeout, which the carrier
@@ -953,7 +971,18 @@ func (r *Registry) PumpViewerCounts(now time.Time) {
 	var pushes []push
 	r.mu.Lock()
 	for _, b := range r.hubs {
-		if b.edge || !b.publisherActive {
+		// Edge hubs are skipped: they neither aggregate nor host a real
+		// broadcaster, they forward G from upstream (Decision 5c). An *away*
+		// publisher is NOT skipped, though it once was: while the broadcaster
+		// is gone the hub survives its grace period and so do its viewers'
+		// sessions (docs/05 D1 keepalive keeps them attached on purpose), and
+		// this count is then the only app-layer traffic those viewers get.
+		// Without it, "my session died silently" and "the broadcaster stepped
+		// away" are indistinguishable from the client — which is exactly what
+		// left a Safari viewer frozen on a dead session for 48 s with no way
+		// to tell (BUGS.md, 2026-07-22 paired capture). The count itself stays
+		// meaningful while away: those viewers really are still watching.
+		if b.edge {
 			continue
 		}
 		g := b.globalViewersLocked()
@@ -1827,7 +1856,15 @@ type Subscriber struct {
 	// (Safari field finding, 2026-07-21) — the other half of unreachability,
 	// invisible to kfConsecOpenFailed because the opens keep succeeding.
 	kfConsecSlow int
-	evicting     bool
+	// Consecutive OpenCarrierStream failures (guarded by kfMu); reset on any
+	// successful carrier open, and deliberately NOT by a successful keyframe
+	// open — sharing kfConsecOpenFailed made "carrier never opens, keyframes
+	// always do" un-evictable, because the keyframe reset always undid the
+	// carrier's increment. Crossing CarrierOpenFailEvictThreshold evicts
+	// (BUGS.md, 2026-07-22). At most one open is attempted per rotation, so
+	// this grows at GOP cadence, not record cadence.
+	carConsecOpenFailed int
+	evicting            bool
 	// Keyframe drops by cause (R9 M2); KeyframesDropped() sums them.
 	kfDroppedSuperseded atomic.Uint64
 	kfDroppedSlow       atomic.Uint64
@@ -2066,8 +2103,8 @@ func (s *Subscriber) openCarrier(deadline time.Time) bool {
 	st, err := s.sender.OpenCarrierStream()
 	if err != nil {
 		s.kfMu.Lock()
-		s.kfConsecOpenFailed++
-		evict := !s.evicting && s.kfConsecOpenFailed >= KeyframeOpenFailEvictThreshold
+		s.carConsecOpenFailed++
+		evict := !s.evicting && s.carConsecOpenFailed >= CarrierOpenFailEvictThreshold
 		if evict {
 			s.evicting = true
 		}
@@ -2078,7 +2115,7 @@ func (s *Subscriber) openCarrier(deadline time.Time) bool {
 		return false
 	}
 	s.kfMu.Lock()
-	s.kfConsecOpenFailed = 0
+	s.carConsecOpenFailed = 0
 	s.kfMu.Unlock()
 
 	s.carMu.Lock()
