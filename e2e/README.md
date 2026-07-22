@@ -41,6 +41,17 @@ playwright download (`npx playwright install chromium`). On a bare distro the
 browser may also need `libnss3 libnspr4 libasound2t64` (extractable per-user
 via `apt-get download` + `dpkg -x` + `LD_LIBRARY_PATH` if you can't install).
 
+The tier-1 run then repeats the viewer scenario once in **R19 resilient mode**
+(`gawk:resilient-mode` seeded before app boot, artifacts tagged
+`resilient-<attempt>`), asserting that the viewer negotiates
+`?delivery=reliable` and that its carrier reader keeps consuming rotating
+carrier streams — the only automated exercise of the browser half of that
+path. It reuses the running relay/publisher/preview, so it costs one browser
+session. Loss is deliberately **not** injected here: behaviour under loss is
+covered deterministically by `gawk-server/internal/transport/resilient_loss_test.go`
+(a UDP forwarder dropping 15 % of the relay→viewer packets). See docs/25
+finding 16 and docs/24 finding 10.
+
 ## Browser broadcaster (Z5)
 
 ```sh

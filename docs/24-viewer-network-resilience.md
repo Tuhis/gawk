@@ -492,6 +492,67 @@ build). Notes and deviations:
    finding 8 fixed, so that data has to be re-taken before it can set
    thresholds that flip a transport mode.
 
+10. **Post-review fix (2026-07-22): the carrier path had no automated
+    coverage under loss — `PRODUCT-1` (medium) from
+    `docs/reviews/resilient-mode-review.md`.** X2/X3's tests are real, but
+    they run against in-memory fakes (`hub_test.go`'s `fakeCarrierStream`) or
+    a **zero-loss** loopback (`TestSubscribeReliableDeliversCarrierRecords`),
+    and the R20 browser harness subscribed in default datagram mode only. So
+    nothing automated exercised the one claim the mode is built on — *the
+    deltas a datagram viewer loses, a reliable viewer still gets* — and
+    nothing exercised the browser's carrier reader or the
+    `?delivery=reliable` negotiation end to end. A regression that silently
+    degraded carriers back to lossy delivery would have shipped green (it
+    now does not: see the mutants below). Two additions, no production code
+    touched:
+    - **Relay integration test under injected loss**
+      (`gawk-server/internal/transport/resilient_loss_test.go`). A userspace
+      UDP forwarder sits in front of the relay and drops 15 % of the packets
+      travelling **relay → subscriber** — R19's actual failure geometry;
+      the publisher stays wired straight to the relay, so ingress is clean
+      and every absence downstream is attributable to the injected loss.
+      Two subscribers behind the same forwarder, one `?delivery=reliable`
+      and one plain, make the datagram viewer a same-conditions **control**
+      rather than a separate experiment. Two GOPs, so a carrier rotation —
+      R19's designated drop point — happens while the link is lossy.
+      Asserted: every relayed delta arrives as a record, byte-identical,
+      no duplicates, no holes; `CarrierRecordsDropped == 0`; and the control
+      loses strictly more than the carrier did. Typical run: carrier 96/96,
+      control missing 15–17 of 96, ~1.1 s wall under `-race`.
+      **Ordering across carriers is asserted by content, not accept order** —
+      webtransport-go does not deliver accepted streams in the order the
+      peer opened them (docs/22 finding 9), so the runs are sorted by their
+      first record and the assertion is that the concatenation is still
+      strictly ascending, which an interleaving carrier cannot satisfy.
+      `tc netem` was not an option (CI runners are unprivileged containers
+      with no NET_ADMIN) and is not needed for a downlink-only drop model.
+    - **Resilient viewer pass in the R20 tier-1 harness** (`e2e/run.mjs`,
+      docs/25 finding 16). The Go test owns behaviour-under-loss; only a real
+      browser can show that the production viewer *negotiates* the mode and
+      that its own carrier reader turns those uni streams back into frames.
+      A second viewer scenario seeds `gawk:resilient-mode` before app boot
+      and asserts, flow-shaped, that `deliveryMode` reads `reliable` (not
+      the `reliable-requested` degradation), that carriers rotate, and that
+      records keep arriving between the two diagnostics captures. It reuses
+      the running relay/publisher/preview, so it costs one browser session.
+      No loss is injected there — deliberately, since it would trade the
+      Go test's determinism for CI flake.
+
+    **Test-the-test** (per `CODE-REVIEW.md`; each mutant reverted after):
+    negotiation regressed to datagram delivery → red on
+    `ReliableSubscribers = 0`; carrier degraded to unreliable datagrams
+    (`isAudioDatagram` → always true) → red on "missing 96 of 96 relayed
+    deltas" + `CarrierStreams = 0`; carrier silently dropping every 8th
+    record → red on "missing 12 of 96"; **loss injection disabled → red**
+    ("the lossy link dropped nothing — the test proves nothing"), which is
+    what keeps the test from passing vacuously if the forwarder ever stops
+    dropping. Browser side: seeding the toggle off → red on all four
+    resilient assertions.
+
+    What this still does not cover: the resilient *playout* profile end to
+    end (finding 8's buffer envelope is unit-tested only), and real cellular
+    behaviour — X6's re-run remains a manual, owner-verified drill.
+
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
 product feature; X5 rides alongside; X6 last. Nothing here blocks or is

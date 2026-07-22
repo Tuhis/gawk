@@ -82,12 +82,22 @@ const WARMUP_FRAMES = 30;
 // (Decision 8). Retries are logged loudly: recurring attempt-1 failures are
 // findings for docs/25, not noise.
 const MAX_VIEWER_RETRIES = 5;
+// The R19 resilient-mode pass (below) runs only in the plain tier-1 mode: the
+// relay and publisher are already up there, so it costs one browser session.
+// External/cluster mode and the browser-broadcast step spend their budget
+// elsewhere (see the pass itself for why).
+const RESILIENT_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
+// Fewer retries than the main pass: it runs after a viewer scenario that
+// already proved flow on this broadcast, so a failure here is far more likely
+// to be the carrier path than runner weather.
+const MAX_RESILIENT_RETRIES = 1;
 // One hard cap on the whole run — a hung QUIC handshake must fail, not hang.
 // The browser-broadcast mode runs two browser scenarios back to back, and the
 // viewer scenario can now retry up to MAX_VIEWER_RETRIES times, so the cap
 // leaves room for the retries to run before it aborts (still well under the
-// CI job's own timeout-minutes).
-const WATCHDOG_MS = EXTERNAL ? 300_000 : BROWSER_BROADCAST ? 360_000 : 300_000;
+// CI job's own timeout-minutes). The plain tier-1 mode gets the same headroom
+// as browser-broadcast because of its second (resilient) viewer pass.
+const WATCHDOG_MS = EXTERNAL ? 300_000 : 360_000;
 
 // Z5: the tab the headless broadcaster captures. The flag matches by title
 // substring, so the value must never be a substring of the app's own title
@@ -353,13 +363,15 @@ function launchBrowser(extraArgs = []) {
 // useTransportStore owns), the clipboard stubbed (the ViewerScreen.test.tsx
 // precedent), and the publish-secret prompt disabled (loopback hosts count as
 // dev environments, where the prompt defaults on) — all before any app code
-// runs.
-async function newAppContext(browser, { relayUrl, certHash }) {
+// runs. `resilient` seeds R19's persisted toggle, which is the only way in:
+// the mode is negotiated at connect, so it has to be set before the app runs.
+async function newAppContext(browser, { relayUrl, certHash, resilient = false }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
-    ({ serverUrl, hash }) => {
+    ({ serverUrl, hash, resilientMode }) => {
       localStorage.setItem('gawk.serverUrl', serverUrl);
       if (hash) localStorage.setItem('gawk.certHashHex', hash);
+      if (resilientMode) localStorage.setItem('gawk:resilient-mode', '1');
       // The shipped public/config.js assigns nothing, so this seed survives.
       window.__GAWK_CONFIG__ = { requirePublishSecret: false };
       window.__gawkClipboard = [];
@@ -373,7 +385,7 @@ async function newAppContext(browser, { relayUrl, certHash }) {
         }),
       });
     },
-    { serverUrl: relayUrl, hash: certHash },
+    { serverUrl: relayUrl, hash: certHash, resilientMode: resilient },
   );
   return context;
 }
@@ -385,10 +397,62 @@ function wirePageLogs(page, name) {
   page.on('pageerror', (err) => appendFileSync(consoleLog, `[pageerror] ${err}\n`));
 }
 
-async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec }) {
+// R19 (docs/24) resilient mode, from the client side. The relay half of the
+// carrier path is covered in Go under injected packet loss
+// (gawk-server/internal/transport/resilient_loss_test.go); what only a real
+// browser can show is the other half — that the production viewer negotiates
+// `?delivery=reliable` against a real relay and that its own carrier reader
+// turns those uni streams back into decodable frames. Loss is deliberately
+// NOT injected here: this pass exists to prove the client path exists and
+// works, and the Go test owns the behaviour-under-loss claim.
+//
+// Flow-shaped like every other assertion here (Decision 6) — counters that
+// must move, never a rate or a stream count that a contended runner could
+// legitimately miss.
+function assertCarrierFlow(d1, d2) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  // 'reliable-requested' is the graceful degradation the viewer reports when
+  // it asked for carriers and the relay served datagrams anyway — here that
+  // means the negotiation broke, since both ends are this build.
+  check(
+    s2.deliveryMode === 'reliable',
+    `deliveryMode = ${s2.deliveryMode}, want "reliable" (the ?delivery=reliable negotiation did not take)`,
+  );
+  check(s2.carrierStreams > 0, `carrierStreams = ${s2.carrierStreams}, want > 0`);
+  // Between the captures (~5 s, GOP 500 ms) the relay must have rotated the
+  // carrier and kept feeding it: a single stream that stopped delivering
+  // would satisfy the counters above and nothing else.
+  check(
+    s2.carrierStreams - s1.carrierStreams >= 1,
+    `no carrier rotation between the captures (${s1.carrierStreams} → ${s2.carrierStreams} streams)`,
+  );
+  check(
+    s2.carrierRecords - s1.carrierRecords > 0,
+    `no carrier records between the captures (${s1.carrierRecords} → ${s2.carrierRecords})`,
+  );
+
+  if (problems.length > 0) {
+    fail(`resilient-mode assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  // Aborted carriers are recorded, not asserted: a reset GOP tail is the
+  // relay shedding a slow subscriber, which a contended runner can legitimately
+  // provoke — it is not a wire bug.
+  log(
+    `resilient mode ok: ${s2.carrierStreams} carrier streams, ${s2.carrierRecords} records ` +
+      `(+${s2.carrierRecords - s1.carrierRecords} between captures, ${s2.carrierStreamsAborted ?? 0} aborted)`,
+  );
+}
+
+async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec, resilient = false }) {
   const browser = await launchBrowser();
   try {
-    const context = await newAppContext(browser, { relayUrl, certHash });
+    const context = await newAppContext(browser, { relayUrl, certHash, resilient });
     const page = await context.newPage();
     wirePageLogs(page, `console-${attempt}`);
 
@@ -433,6 +497,7 @@ async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec 
     await sleep(SAMPLE_GAP_MS);
     const diag2 = await captureDiagnostics(page, `diagnostics-${attempt}-2`);
     assertFlow(diag1, diag2, expectedCodec);
+    if (resilient) assertCarrierFlow(diag1, diag2);
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
@@ -691,24 +756,44 @@ async function main() {
     id = res.id;
   }
 
-  try {
-    // Up to MAX_VIEWER_RETRIES in-harness retries, relaunching the browser but
-    // never the relay or the publisher (Decision 8). Every failed attempt is
-    // logged loudly; only the last failure is fatal.
+  // Up to `retries` in-harness retries, relaunching the browser but never the
+  // relay or the publisher (Decision 8). Every failed attempt is logged
+  // loudly; only the last failure is fatal.
+  const runViewer = async (label, retries, opts) => {
     let lastErr;
-    for (let attempt = 1; attempt <= MAX_VIEWER_RETRIES + 1; attempt++) {
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
-        await browserScenario({ relayUrl, certHash, id, attempt, expectedCodec });
-        lastErr = undefined;
-        break;
+        // The attempt tag names this pass's artifacts (console log, both
+        // diagnostics JSONs, the screenshot), so the two passes never
+        // overwrite each other's failure evidence.
+        const tag = label ? `${label}-${attempt}` : String(attempt);
+        await browserScenario({ relayUrl, certHash, id, attempt: tag, expectedCodec, ...opts });
+        return;
       } catch (err) {
         lastErr = err;
-        if (attempt <= MAX_VIEWER_RETRIES) {
-          log(`RETRY: browser scenario attempt ${attempt} failed: ${err.message ?? err}`);
+        if (attempt <= retries) {
+          log(`RETRY: ${label || 'browser'} scenario attempt ${attempt} failed: ${err.message ?? err}`);
         }
       }
     }
-    if (lastErr) throw lastErr;
+    throw lastErr;
+  };
+
+  try {
+    await runViewer('', MAX_VIEWER_RETRIES, {});
+
+    // R19 resilient mode, on the same live broadcast (PRODUCT-1): the only
+    // automated exercise of the browser's carrier reader and of the
+    // ?delivery=reliable negotiation end to end. Reuses the running relay,
+    // publisher and preview — the marginal cost is one browser session.
+    //
+    // Tier 1 with the fixture publisher only: tier 2's value is the
+    // origin/edge split (asserted per pod in cluster-assert.sh), and the
+    // browser-broadcast step already spends its budget on the encode funnel.
+    if (RESILIENT_VIEWER_PASS) {
+      log('running the resilient-mode viewer pass (R19 carrier path)');
+      await runViewer('resilient', MAX_RESILIENT_RETRIES, { resilient: true });
+    }
 
     if (opsUrl) await assertRelaySide(opsUrl);
   } finally {

@@ -303,7 +303,24 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   corrupt a naive measure); touch-sized menu rows under
   `@media (pointer: coarse)` only. Decision 11's suggest-banner stays
   deferred — its thresholds need X6 re-run against the post-finding-8
-  buffer),
+  buffer. **Post-review fix 2026-07-22 (docs/24 finding 10, review finding
+  `PRODUCT-1`)**: the carrier path had no automated coverage under loss —
+  every carrier test ran against in-memory fakes or a zero-loss loopback, so
+  a regression degrading carriers back to lossy delivery would ship green.
+  Now `gawk-server/internal/transport/resilient_loss_test.go` puts a
+  userspace UDP forwarder in front of the relay dropping **15 % of the
+  relay→viewer packets** (R19's actual lossy leg; the publisher stays wired
+  direct so ingress is clean) with a plain subscriber behind the same
+  forwarder as a same-conditions **control**, and asserts across a GOP
+  rotation that every relayed delta arrives verbatim with no holes and zero
+  `CarrierRecordsDropped` while the control loses 15–17 of 96. Cross-carrier
+  order is asserted **by content, never by accept order** (webtransport-go
+  does not accept in open order — docs/22 finding 9). `tc netem` is not
+  usable in CI (unprivileged containers, no NET_ADMIN) and is not needed for
+  a downlink-only model. The R20 tier-1 harness additionally repeats its
+  viewer pass with `gawk:resilient-mode` seeded, covering the browser's
+  carrier reader + the `?delivery=reliable` negotiation end to end (no loss
+  injected there — that is the Go test's job)),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →
@@ -992,8 +1009,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `lastResumeToken` for reclaim.
 23. Resilient viewer mode for lossy networks — **X2–X5 implemented
    2026-07-18, automated gates green (both Go modules + app); X1 netem
-   baseline/browser spike + X6 verification done 2026-07-19 (lossy-network
-   behaviour — not CI-reachable) — a recorded ordering
+   baseline/browser spike + X6 verification done 2026-07-19 (real-cellular
+   behaviour stays owner-verified, but since 2026-07-22 the carrier path
+   **is** covered under injected loss in CI — docs/24 finding 10) — a
+   recorded ordering
    deviation, see docs/24 "Implementation status"** (R19,
    `docs/24-viewer-network-resilience.md`;
    `docs/23` is R18 live viewer count, designed 2026-07-18). Opt-in per-viewer
@@ -1052,7 +1071,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    viewer in headless system Chromium** (playwright-core, the
    `gawk-app:verify` recipes), asserting **flow-shaped** criteria from
    the R9 Copy-diagnostics JSON captured via a `clipboard.writeText`
-   stub — never fps ceilings or latency numbers (2-core no-GPU runners).
+   stub — never fps ceilings or latency numbers (2-core no-GPU runners);
+   since 2026-07-22 the tier-1 step repeats that viewer pass once with
+   **R19 resilient mode** seeded (docs/25 finding 16), covering the
+   browser's carrier reader + the `?delivery=reliable` negotiation.
    **Tier 2** runs **only on release-please PRs** (user decision;
    `workflow_dispatch` escape hatch): fresh pinned kind cluster, real
    chart with `replicaCount=2` + `config.clusterMode=true` +
