@@ -1928,16 +1928,6 @@ func (s *Subscriber) drainReliable() {
 			s.sendSidebandDatagram(dgram)
 			continue
 		}
-		// The egress cap is charged per record as written (prefix + datagram)
-		// — reliable delivery must not become a cap bypass. Over-cap records
-		// count as bandwidth datagram drops exactly like the datagram path,
-		// so queue_full stays derivable by subtraction (R9).
-		n := wire.CarrierRecordHeaderSize + len(dgram)
-		if !s.hub.registry.consumeBandwidth(n) {
-			s.dropped.Add(1)
-			s.hub.countBandwidthDrop(n)
-			continue
-		}
 		if rot := s.carRotations.Load(); rot != carSeen {
 			// A keyframe fanned out since the last record: this GOP's carrier
 			// is done. Retire it and start the next one lazily below.
@@ -1949,21 +1939,42 @@ func (s *Subscriber) drainReliable() {
 			s.carrierRecordsDropped.Add(1)
 			continue
 		}
-		// One deadline for this record's whole trip onto the wire — the lazy
-		// open's prologue and the record itself share it, so a dequeued delta
-		// blocks the drain for at most carrierWriteTimeout even when both
-		// writes park (docs/24 finding 12).
-		deadline := time.Now().Add(s.hub.registry.opts.carrierWriteTimeout())
-		if s.currentCarrier() == nil && !s.openCarrier(deadline) {
-			carDead = true
-			s.carrierRecordsDropped.Add(1)
-			continue
-		}
 		var err error
 		scratch, err = wire.AppendCarrierRecord(scratch[:0], dgram)
 		if err != nil {
 			// Unreachable for queue datagrams (all ≤ MaxDatagramSize); count
 			// rather than crash the drain if the invariant ever breaks.
+			s.carrierRecordsDropped.Add(1)
+			continue
+		}
+		// The egress cap is charged once per record, for exactly the bytes
+		// this record is about to put on the wire: the record (prefix +
+		// datagram), plus the 2-byte prologue when it is the record whose
+		// lazy open starts this GOP's carrier. Reliable delivery must not
+		// become a cap bypass in either direction (docs/24 finding 13) —
+		// the prologue is not free, and the drop decisions above run first
+		// because that bucket is shared by every broadcast on the pod, so a
+		// record charged after the drain already decided not to write it
+		// throttles somebody else's viewers for bytes that never existed.
+		// Over-cap records count as bandwidth datagram drops exactly like the
+		// datagram path, so queue_full stays derivable by subtraction (R9).
+		needsOpen := s.currentCarrier() == nil
+		n := len(scratch)
+		if needsOpen {
+			n += wire.CarrierPrologueSize
+		}
+		if !s.hub.registry.consumeBandwidth(n) {
+			s.dropped.Add(1)
+			s.hub.countBandwidthDrop(n)
+			continue
+		}
+		// One deadline for this record's whole trip onto the wire — the lazy
+		// open's prologue and the record itself share it, so a dequeued delta
+		// blocks the drain for at most carrierWriteTimeout even when both
+		// writes park (docs/24 finding 12).
+		deadline := time.Now().Add(s.hub.registry.opts.carrierWriteTimeout())
+		if needsOpen && !s.openCarrier(deadline) {
+			carDead = true
 			s.carrierRecordsDropped.Add(1)
 			continue
 		}
@@ -2018,7 +2029,9 @@ func (s *Subscriber) currentCarrier() KeyframeStream {
 // stream credit fails both kinds and is evicted with 4001. At most one open
 // is attempted per rotation (openCarrier failing marks the GOP dead), so the
 // streak grows at GOP cadence, not record cadence. deadline is the caller's
-// per-record budget, shared with the record write that follows.
+// per-record budget, shared with the record write that follows; so is the
+// prologue's egress-cap charge, which the caller has already taken on this
+// call's behalf (docs/24 finding 13).
 func (s *Subscriber) openCarrier(deadline time.Time) bool {
 	st, err := s.sender.OpenCarrierStream()
 	if err != nil {
