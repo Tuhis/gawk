@@ -182,6 +182,10 @@ throughput, ugly loss/jitter.
      `KeyframeWriteTimeout`) is `CancelWrite`-ed — the viewer loses the tail
      of a stale GOP and resyncs at the keyframe it already reliably has.
      **≤ 2 carriers open per subscriber** (current + draining predecessor).
+     **Amended 2026-07-22** (finding 12 below): the deadline is *not*
+     `KeyframeWriteTimeout` but `CarrierWriteTimeout` (500 ms — one GOP),
+     because a record write blocks the whole subscriber's delta drain while
+     a keyframe write blocks nobody. Still no new knob.
    - The existing consecutive-open-failure eviction (threshold 10, close
      code 4001) extends to carrier opens — a zombie resilient subscriber is
      evicted the same way a zombie keyframe subscriber is today.
@@ -343,11 +347,14 @@ build). Notes and deviations:
    "≤ 2 open carriers" bound: the drain goroutine owns all carrier stream
    I/O sequentially (open/write/close), so at most one carrier is ever being
    written; a rotation gracefully closes the predecessor before the next
-   record. Each record write carries a `KeyframeWriteTimeout` deadline — a
-   stalled write cancels the carrier (a half-written record is unrecoverable
-   framing) and the GOP's remaining records are dropped until the next
-   rotation. `Subscriber.Close` cancels the current carrier under its own
-   mutex so a blocked drain unblocks immediately.
+   record. Each record write carries a deadline — a stalled write cancels the
+   carrier (a half-written record is unrecoverable framing) and the GOP's
+   remaining records are dropped until the next rotation. `Subscriber.Close`
+   cancels the current carrier under its own mutex so a blocked drain unblocks
+   immediately. **Amended 2026-07-22** (finding 12 below): that deadline was
+   `KeyframeWriteTimeout` and is now `CarrierWriteTimeout` (500 ms), shared by
+   the lazy open's prologue and the record write so one dequeued delta stalls
+   the drain for at most one GOP total.
 3. **Eviction-streak cadence.** Carrier opens share the keyframe streak, and
    at most one carrier open is attempted per rotation (an open failure marks
    the GOP dead), so the streak grows at GOP cadence — a zombie with both
@@ -602,6 +609,83 @@ build). Notes and deviations:
     `internal/hub` `TestReliableQueueOverflowCountedApartFromDatagramDrops`
     covers the `/statusz` surface: the per-subscriber split, the total
     staying whole, `CarrierRecordsDropped` staying 0, and the fold on close.
+
+12. **Post-review fix (2026-07-22): a stalled record froze the drain for two
+    GOPs — `BACKPRESSURE-2` (medium) from
+    `docs/reviews/resilient-mode-review.md`.** Decision 5's "reuse
+    `KeyframeWriteTimeout`" was the cheap call at design time and the wrong
+    one at runtime, because the two writes are not comparable work:
+    - a **keyframe** is ~236 KB on a stream of its own, written by a
+      per-keyframe goroutine (`writeKeyframe`) that blocks nothing else, so
+      1 s of patience costs that subscriber at most that keyframe;
+    - a **carrier record** is ~20 B–1.2 kB written by `drainReliable`, the
+      single goroutine that owns the subscriber's *entire* delta path — the
+      audio sideband included. Its deadline is not "how long we wait for this
+      record", it is **how long every delta behind it is frozen**.
+
+    So the mode built to hide network stalls could manufacture a 1 s one of
+    its own — twice the 500 ms GOP it is scoped to — every time a peer's
+    stream flow-control window closed. The queue survives it (at 30–60 fps a
+    1 s block accrues ~30–60 deltas against a 256-deep queue, so this is a
+    latency defect, not the finding-11 overflow), and the GOP tail is
+    recovered late rather than lost, but the freeze is exactly the symptom
+    the feature exists to remove.
+    Fix, relay only, no wire/viewer/broadcaster change and **still no new
+    knob**:
+    - **`CarrierWriteTimeout` = 500 ms**, a constant beside the eviction
+      thresholds (it encodes the relay's drops-over-stalls policy, not fleet
+      capacity). One GOP is the natural bound: it is also when the next
+      keyframe rotates the carrier and hands the viewer a clean resync point,
+      so a record still unsent by then has missed its ride regardless.
+      Nor is anything gained by waiting: the write blocks because the peer's
+      *stream* flow-control window is shut, and that stream is in-order, so
+      while it is blocked the viewer is receiving nothing on it either —
+      patience extends the freeze instead of shortening it, and delays the
+      next GOP's carrier behind it. (Nor is this the "merely slow" case: a
+      record is ≤ ~1.2 kB, so 500 ms of blocking means < 2.4 kB/s on that
+      stream — a link that cannot carry video at all. The deeper playout
+      buffer finding 8 unlocked does not change this; a buffer can only play
+      frames it has, and these are stuck behind a wedged stream.)
+    - **One budget per dequeued record.** The deadline is computed once in
+      `drainReliable` and shared by the lazy `openCarrier` prologue write and
+      the record write, so a record can't stall the drain for 2× the bound by
+      parking in both.
+    - **An operator's tighter setting still wins**:
+      `Options.carrierWriteTimeout()` returns
+      `min(CarrierWriteTimeout, KeyframeWriteTimeout)` — a fleet that
+      abandons a whole keyframe after 200 ms has no business waiting 500 ms
+      on one delta record. Patience may shrink with the fleet's setting,
+      never grow past a GOP.
+    - `retireCarrier`'s `Close` deadline moves with it: retiring also runs on
+      the drain goroutine.
+
+    **Not done: the review's alternative half** ("check `carRotations`
+    immediately before the blocking `Write`"). It cannot bound an
+    *already-blocked* write, which is the defect; and dropping the in-hand
+    record on a rotation would discard deltas the current code delivers on
+    the next carrier in the healthy case (the queue legitimately holds a few
+    records at rotation time under normal jitter). Cancelling from the
+    rotation side would bound it, but at 500 ms the deadline and the rotation
+    coincide by construction, without cross-goroutine cancellation of a
+    stream that may merely be slow.
+
+    Tests (test-first): `TestStalledCarrierAbandonedOnItsOwnDeadline` parks a
+    carrier write on a registry configured with a *patient* 5 s
+    `KeyframeWriteTimeout` and requires the abandon within 2 s — it timed out
+    at 2 s before the fix and passes in ~0.5 s after — then shows the drain
+    free again on the next rotation.
+    `TestCarrierWriteTimeoutTakesTheTighterBound` pins the `min` rule and the
+    "shorter than the default keyframe timeout" invariant so neither can rot
+    back. **Test-the-test** (each mutant reverted): deadline reverted to
+    `KeyframeWriteTimeout` → red on the 2 s bound; the `min` rule removed →
+    red on the 200 ms operator case; `CarrierWriteTimeout` raised to 2 s →
+    red on the invariant guard. Existing coverage unchanged and green,
+    including the finding-10 loss-injection integration test.
+
+    Residual, unchanged by this fix: the reliable drain is still one
+    goroutine, so a stalled record delays the audio datagrams queued behind
+    it — now for ≤ 500 ms rather than ≤ 1 s (docs/20 field finding 5's known
+    residual).
 
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a

@@ -335,7 +335,29 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   zero. `carrierRecordsDropped` is deliberately **not** incremented: these
   deltas die at the queue before becoming records, and the two counters
   answer different questions ("did the carrier fail?" vs "did the drain keep
-  up?"). Relay-only, test-first, zero wire/viewer/broadcaster changes),
+  up?"). Relay-only, test-first, zero wire/viewer/broadcaster changes.
+  **Post-review fix 2026-07-22 (docs/24 finding 12, review finding
+  `BACKPRESSURE-2`)**: Decision 5's "reuse `KeyframeWriteTimeout`" as the
+  per-record carrier deadline let the mode manufacture a **1 s stall of its
+  own** — two GOPs — whenever a peer's stream window closed, because the two
+  writes are not comparable work: a keyframe is a large message on its own
+  stream written by a goroutine that blocks nobody, while a carrier record is
+  written by `drainReliable`, the one goroutine owning that subscriber's
+  entire delta path (audio sideband included), so its deadline *is* the freeze
+  every delta behind it inherits. The carrier now has its own
+  **`CarrierWriteTimeout` = 500 ms** (one GOP — also when the next keyframe
+  rotates the carrier and gives a clean resync point), a constant beside the
+  eviction thresholds rather than a knob; the deadline is computed **once per
+  dequeued record** and shared by the lazy open's prologue write and the
+  record write (so it can't stall for 2×); and
+  `Options.carrierWriteTimeout()` returns
+  `min(CarrierWriteTimeout, KeyframeWriteTimeout)` so an operator's *tighter*
+  stall tolerance still wins — patience may shrink, never grow past a GOP.
+  The review's alternative half (a `carRotations` re-check before the write)
+  was deliberately **not** taken: it can't bound an already-blocked write, and
+  dropping the in-hand record on rotation would discard deltas the healthy
+  path delivers. Relay-only, test-first, zero wire/viewer/broadcaster
+  changes),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →

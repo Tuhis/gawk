@@ -76,6 +76,23 @@ const KeyframeOpenFailEvictThreshold = 10
 // was merely congested reconnects and continues.
 const KeyframeSlowEvictThreshold = 10
 
+// CarrierWriteTimeout bounds how long ONE record write to an R19 reliable
+// carrier may block on flow control before the carrier is abandoned (docs/24
+// finding 12). It is deliberately not KeyframeWriteTimeout, which the carrier
+// originally borrowed: a keyframe is a large message on a stream of its own,
+// written by a goroutine that blocks nobody, so patience there costs one
+// subscriber one keyframe — while a carrier record is written by the drain
+// goroutine that owns the subscriber's *entire* delta path, so its deadline is
+// the length of the freeze every delta behind it inherits. At the default 1 s
+// keyframe timeout that was two GOPs of stall inside the mode whose whole
+// purpose is hiding stalls. One GOP (the 500 ms broadcaster default, docs/08)
+// is the natural bound: it is also when the next keyframe rotates the carrier
+// and gives the viewer a clean resync point, so a record still unsent by then
+// has missed its ride regardless. A constant, not a knob, for the same reason
+// as the eviction thresholds: it encodes the relay's own drops-over-stalls
+// policy, not fleet capacity.
+const CarrierWriteTimeout = 500 * time.Millisecond
+
 // ViewerCountInterval paces the R18 count pump (docs/23 Decision 4): one
 // recompute-and-emit pass per tick, which is also what makes a reconnect
 // storm structurally unable to spam clients — emits can never exceed
@@ -168,6 +185,19 @@ type Options struct {
 	// in every pod's /statusz and gawk_broadcast_* series. Empty falls back
 	// to a fresh per-process key — exactly the pre-R17 single-pod behavior.
 	StatsKey []byte
+}
+
+// carrierWriteTimeout is the deadline budget for placing ONE record on an R19
+// carrier — the open's prologue and the record write share it, so a single
+// dequeued delta can stall the drain for at most this long. It is
+// CarrierWriteTimeout, or KeyframeWriteTimeout when an operator has configured
+// a stall tolerance tighter than that: a fleet that abandons a whole keyframe
+// after 200 ms has no business waiting 500 ms on one delta record.
+func (o Options) carrierWriteTimeout() time.Duration {
+	if o.KeyframeWriteTimeout > 0 && o.KeyframeWriteTimeout < CarrierWriteTimeout {
+		return o.KeyframeWriteTimeout
+	}
+	return CarrierWriteTimeout
 }
 
 // KeyframeDrops breaks keyframe-stream drops down by cause (R9 M2). The
@@ -1919,7 +1949,12 @@ func (s *Subscriber) drainReliable() {
 			s.carrierRecordsDropped.Add(1)
 			continue
 		}
-		if s.currentCarrier() == nil && !s.openCarrier() {
+		// One deadline for this record's whole trip onto the wire — the lazy
+		// open's prologue and the record itself share it, so a dequeued delta
+		// blocks the drain for at most carrierWriteTimeout even when both
+		// writes park (docs/24 finding 12).
+		deadline := time.Now().Add(s.hub.registry.opts.carrierWriteTimeout())
+		if s.currentCarrier() == nil && !s.openCarrier(deadline) {
 			carDead = true
 			s.carrierRecordsDropped.Add(1)
 			continue
@@ -1932,7 +1967,7 @@ func (s *Subscriber) drainReliable() {
 			s.carrierRecordsDropped.Add(1)
 			continue
 		}
-		if !s.writeCarrier(scratch) {
+		if !s.writeCarrier(scratch, deadline) {
 			carDead = true
 			s.carrierRecordsDropped.Add(1)
 			continue
@@ -1982,8 +2017,9 @@ func (s *Subscriber) currentCarrier() KeyframeStream {
 // stream opens (docs/24 Decision 5): a zombie subscriber with exhausted
 // stream credit fails both kinds and is evicted with 4001. At most one open
 // is attempted per rotation (openCarrier failing marks the GOP dead), so the
-// streak grows at GOP cadence, not record cadence.
-func (s *Subscriber) openCarrier() bool {
+// streak grows at GOP cadence, not record cadence. deadline is the caller's
+// per-record budget, shared with the record write that follows.
+func (s *Subscriber) openCarrier(deadline time.Time) bool {
 	st, err := s.sender.OpenCarrierStream()
 	if err != nil {
 		s.kfMu.Lock()
@@ -2012,26 +2048,26 @@ func (s *Subscriber) openCarrier() bool {
 	s.carMu.Unlock()
 	s.carrierStreams.Add(1)
 
-	if !s.writeCarrier(wire.AppendCarrierPrologue(nil)) {
+	if !s.writeCarrier(wire.AppendCarrierPrologue(nil), deadline) {
 		return false
 	}
 	s.egressCarrierBytes.Add(wire.CarrierPrologueSize)
 	return true
 }
 
-// writeCarrier writes buf to the current carrier under the keyframe write
-// deadline. A failed or timed-out write leaves a half-written record on the
-// stream — unrecoverable framing for a length-prefixed protocol — so the
-// carrier is cancelled; the viewer loses the tail of this GOP and resyncs at
-// the keyframe it already reliably has.
-func (s *Subscriber) writeCarrier(buf []byte) bool {
+// writeCarrier writes buf to the current carrier under the caller's deadline.
+// A failed or timed-out write leaves a half-written record on the stream —
+// unrecoverable framing for a length-prefixed protocol — so the carrier is
+// cancelled; the viewer loses the tail of this GOP and resyncs at the keyframe
+// it already reliably has.
+func (s *Subscriber) writeCarrier(buf []byte, deadline time.Time) bool {
 	s.carMu.Lock()
 	st := s.carCurrent
 	s.carMu.Unlock()
 	if st == nil {
 		return false // cancelled by Close between records
 	}
-	_ = st.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.KeyframeWriteTimeout))
+	_ = st.SetWriteDeadline(deadline)
 	if _, err := st.Write(buf); err != nil {
 		st.CancelWrite()
 		s.carMu.Lock()
@@ -2054,7 +2090,9 @@ func (s *Subscriber) retireCarrier() {
 	if st == nil {
 		return
 	}
-	_ = st.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.KeyframeWriteTimeout))
+	// Same per-record budget as a write: retiring runs on the drain goroutine
+	// too, so a Close that blocks stalls the next GOP's records.
+	_ = st.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.carrierWriteTimeout()))
 	if err := st.Close(); err != nil {
 		st.CancelWrite()
 	}
