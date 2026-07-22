@@ -376,7 +376,28 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   datagram path's check-then-send ordering stands and a record whose write
   *fails* stays charged (one record per dead GOP, not the tail). Inert on a
   default fleet — `-max-bandwidth` unset ⇒ no limiter. Relay-only,
-  test-first, zero wire/viewer/broadcaster changes),
+  test-first, zero wire/viewer/broadcaster changes. **Post-review fix
+  2026-07-22 (docs/24 finding 14, review finding `BACKPRESSURE-3`)**:
+  `enqueueLocked`'s bounded queue is shared by both
+  drains, and its drop-**newest** overflow policy (shed the newcomer) is right
+  for the datagram drain — a live-edge, loss-tolerant viewer whose queue
+  already holds fresher frames — but backwards when reused for a reliable
+  subscriber. The carrier delivers records in order, so a queue overflow forces
+  a keyframe resync either way; drop-newest reliably delivers the *stale*
+  backlog and discards the near-live frames, stranding the viewer as far behind
+  as the queue is deep (256 records ≈ 4–8 s @ 30–60 fps) at exactly the moment
+  the mode should keep it near live. Now, for `s.reliable` only, the overflow
+  path evicts the queue's **oldest** record (a non-blocking receive) before
+  enqueuing the newcomer, so the queue trends toward live; the datagram path is
+  byte-identical. The evict-then-enqueue is race-safe on an invariant already
+  in the code — `enqueueLocked` is the sole sender and always runs under
+  `registry.mu` (via `fanOutLocked`) while the drain only ever *removes*, so a
+  freed head can't be re-filled by anyone else — and the second send stays a
+  non-blocking `select` regardless (fan-out must never block under the lock).
+  Exactly one datagram is shed per overflow, so finding-11's accounting is
+  unchanged (one `dropped` + one `carrierQueueOverflow`, `queue_full` still
+  derivable by subtraction). Relay-only, test-first, zero
+  wire/viewer/broadcaster changes),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →

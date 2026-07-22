@@ -1865,21 +1865,51 @@ func (s *Subscriber) keyframeDrops() KeyframeDrops {
 func (s *Subscriber) enqueueLocked(dgram []byte) {
 	select {
 	case s.queue <- dgram:
+		return
 	default:
-		s.dropped.Add(1)
-		if s.reliable {
-			// A resilient subscriber's overflow is a different failure from a
-			// slow datagram viewer's, even though the mechanism is identical
-			// (docs/24 finding 11): it punches a hole in a stream the viewer is
-			// told is reliable and in-order, so the viewer freezes to the next
-			// keyframe — the very stutter the mode exists to prevent. It gets
-			// its own reason bucket so an operator can tell "resilient mode is
-			// failing this viewer" from "this viewer's link is slow". The drop
-			// still counts in `dropped`: this is a slice of the drop budget,
-			// not a second one, and queue_full is derived by subtracting it.
-			s.carrierQueueOverflow.Add(1)
-		}
 	}
+	// The queue is full; which datagram to shed depends on the sink.
+	if !s.reliable {
+		// Datagram viewer: drop the newcomer (drop-newest). The queue already
+		// holds fresher-or-equal live-edge frames and this viewer is
+		// loss-tolerant, so shedding the arrival is simplest and correct.
+		s.dropped.Add(1)
+		return
+	}
+	// Reliable carrier (docs/24 finding 14, review finding BACKPRESSURE-3): the
+	// carrier delivers records in order and the viewer treats them as one
+	// contiguous stream, so an overflow hole forces a keyframe resync either
+	// way. Drop the *oldest* queued record instead of the newcomer, so the
+	// queue keeps trending toward live and the resync lands as close to the live
+	// edge as possible — dropping the newest would instead replay a stale
+	// backlog and strand the viewer further behind, the opposite of what the
+	// mode is for. enqueueLocked is the sole sender (always under registry.mu)
+	// and the drain only ever *removes*, so evicting one head guarantees room
+	// for the newcomer; the fallback below stays non-blocking regardless, so the
+	// fan-out is never blocked under the lock.
+	select {
+	case <-s.queue:
+		// Evicted the oldest queued record to make room.
+	default:
+		// The drain emptied the queue between the full check and here; no
+		// eviction needed — fall through and enqueue the newcomer.
+	}
+	select {
+	case s.queue <- dgram:
+	default:
+		// Unreachable given the single-sender invariant above, but never block
+		// the fan-out: fall back to dropping the newcomer.
+	}
+	// Exactly one datagram is shed per overflow (the evicted oldest, or the
+	// newcomer in the unreachable fallback). A resilient subscriber's overflow
+	// is a different failure from a slow datagram viewer's (docs/24 finding 11):
+	// it punches a hole in a stream the viewer is told is reliable and in-order,
+	// so it gets its own reason bucket for operators to tell "resilient mode is
+	// failing this viewer" from "this viewer's link is slow". The drop still
+	// counts in `dropped`: a slice of the drop budget, not a second one, and
+	// queue_full stays derivable by subtracting it.
+	s.dropped.Add(1)
+	s.carrierQueueOverflow.Add(1)
 }
 
 func (s *Subscriber) drain() {
