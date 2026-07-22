@@ -401,7 +401,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     // R12 T4: only offered where the pipeline can actually interpolate
     // (stats.interpolation is null on the main-thread path, non-WebGL2 sinks,
     // and outside adaptive mode).
-    ...(playoutMode === 'adaptive' && stats?.interpolation != null
+    // Review finding LIFECYCLE-2: the gate is the *effective* mode, not the
+    // stored one — R19 resilient mode implies adaptive pacing (playout.ts's
+    // getPlayoutMode), so a resilient viewer whose stored mode is 'off' or
+    // 'fixed' has interpolation running and needs the control to reach it.
+    ...((resilientMode || playoutMode === 'adaptive') && stats?.interpolation != null
       ? [
           {
             label: interpolation
