@@ -2,3 +2,5 @@ node_modules/
 e2e/bin/
 e2e/out/
 e2e/out-browser-broadcast/
+.claude/worktrees
+
