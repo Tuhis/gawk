@@ -76,13 +76,54 @@ jobs:
           cache-dependency-path: gawk-broadcast/go.sum
       # Gio's build dependencies (docs/19 Decision 14) — the honest price of
       # a native Wayland GUI. Keep in sync with gawk-broadcast/README.md.
+      #
+      # The apt invocation is deliberately defensive, because the plain one is
+      # not survivable here (run 29937257710 — every broadcast job failed for
+      # over an hour):
+      #  * the ioio-k8s runner pods have no IPv6 route, so apt burns a connect
+      #    timeout on all six AAAA records of every archive host before it ever
+      #    tries an A record → ForceIPv4.
+      #  * port 80 to the Canonical archives goes dark periodically while 443
+      #    stays healthy (in that run the HTTPS repos — dl.google.com, the
+      #    git-core PPA — fetched in milliseconds while archive/security
+      #    .ubuntu.com timed out on every address; reproduced off-cluster from
+      #    a second network) → the .ubuntu.com sources are rewritten to HTTPS.
+      #    Safe on any Ubuntu image: apt has built-in HTTPS support and the
+      #    runner images ship ca-certificates (those HTTPS repos prove it).
+      #  * `apt-get update` exits 0 when index downloads fail, so the outage
+      #    surfaced two commands later as a baffling "E: Unable to locate
+      #    package libwayland-dev" → Error-Mode=any + retries. A pocket that
+      #    stays unreachable is only a warning: a stale index still installs,
+      #    and the install below is the real gate.
       - name: Install Gio build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          set -euo pipefail
+          # deb822 (.sources) on noble, one-line (.list) on older images.
+          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i 's|http://\([a-z0-9.-]*\)\.ubuntu\.com|https://\1.ubuntu.com|g' {} +
+          sudo tee /etc/apt/apt.conf.d/99-gawk-ci >/dev/null <<'EOF'
+          Acquire::ForceIPv4 "true";
+          Acquire::Retries "3";
+          Acquire::http::Timeout "20";
+          Acquire::https::Timeout "20";
+          EOF
+          retry() {
+            for attempt in 1 2 3; do
+              [ "$attempt" = 1 ] || sleep $(((attempt - 1) * 15))
+              "$@" && return 0
+              echo "::warning::attempt ${attempt}/3 failed: $*"
+            done
+            return 1
+          }
+          retry sudo apt-get -o APT::Update::Error-Mode=any update ||
+            echo "::warning::apt-get update never completed cleanly — installing against whatever indexes we have"
+          retry sudo apt-get install -y --no-install-recommends \
             gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
-            libffi-dev libxcursor-dev libvulkan-dev
+            libffi-dev libxcursor-dev libvulkan-dev || {
+              echo "::error::Gio build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
+              exit 1
+            }
       # See the server job — the relay integration tests here run QUIC over
       # loopback too.
       - name: Ensure UDP buffer limits for quic-go
