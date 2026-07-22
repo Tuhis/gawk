@@ -23,6 +23,10 @@ const (
 	// but the vector is mirrored in all three wire implementations by rule.
 	goldenCarrierPrologueHex = "010a"
 	goldenCarrierRecordHex   = "0017" + goldenVideoChunkHex
+	// The length prefix of a record at the inclusive upper boundary: a full
+	// delta chunk — which this module produces — is exactly MaxDatagramSize
+	// (1200 = 0x04B0).
+	goldenCarrierMaxRecordPrefixHex = "04b0"
 	// R18 viewer count (docs/23 Decision 2): the relay→publisher push the
 	// native broadcaster receives (engine readDatagrams → Stats.ViewerCount).
 	goldenViewerCountHex = "010b00000003"
@@ -117,6 +121,44 @@ func TestGoldenCarrierPrologueAndRecord(t *testing.T) {
 	}
 	if want := mustHex(t, goldenCarrierRecordHex); !bytes.Equal(record, want) {
 		t.Errorf("carrier record drifted from the golden vector\n got %x\nwant %x", record, want)
+	}
+}
+
+// The inclusive upper boundary of the carrier record's uint16 length prefix.
+// The carrier is relay→viewer, but the delta chunks it frames are the ones
+// *this* module puts on the wire, and a full one is exactly MaxDatagramSize —
+// so the boundary is mirrored here like every other carrier vector
+// (docs/24 finding 15).
+func TestCarrierRecordAtMaxDatagramSize(t *testing.T) {
+	h := wire.VideoChunkHeader{FrameID: 43, ChunkIndex: 1, ChunkCount: 2, TimestampUs: 7654321}
+	dgram, err := wire.AppendVideoChunk(nil, h, bytes.Repeat([]byte{0xAB}, wire.MaxChunkPayload))
+	if err != nil {
+		t.Fatalf("AppendVideoChunk: %v", err)
+	}
+	if len(dgram) != wire.MaxDatagramSize {
+		t.Fatalf("full delta chunk is %d bytes, want %d", len(dgram), wire.MaxDatagramSize)
+	}
+
+	record, err := wire.AppendCarrierRecord(nil, dgram)
+	if err != nil {
+		t.Fatalf("AppendCarrierRecord(max size): %v", err)
+	}
+	if want := wire.CarrierRecordHeaderSize + wire.MaxDatagramSize; len(record) != want {
+		t.Fatalf("record = %d bytes, want %d", len(record), want)
+	}
+	if got := hex.EncodeToString(record[:wire.CarrierRecordHeaderSize]); got != goldenCarrierMaxRecordPrefixHex {
+		t.Errorf("max-size length prefix drifted from the golden vector\n got %s\nwant %s", got, goldenCarrierMaxRecordPrefixHex)
+	}
+
+	got, rest, err := wire.ParseCarrierRecord(record)
+	if err != nil {
+		t.Fatalf("ParseCarrierRecord(max size): %v", err)
+	}
+	if !bytes.Equal(got, dgram) {
+		t.Errorf("max-size record = %d bytes, want the %d-byte datagram verbatim", len(got), len(dgram))
+	}
+	if len(rest) != 0 {
+		t.Errorf("rest = %x, want empty", rest)
 	}
 }
 

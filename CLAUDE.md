@@ -397,7 +397,19 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   Exactly one datagram is shed per overflow, so finding-11's accounting is
   unchanged (one `dropped` + one `carrierQueueOverflow`, `queue_full` still
   derivable by subtraction). Relay-only, test-first, zero
-  wire/viewer/broadcaster changes),
+  wire/viewer/broadcaster changes. **Post-review fix
+  2026-07-22 (docs/24 finding 15, review finding `WIRE-1`)**: the carrier
+  framing tests round-tripped the 23-byte golden chunk and asserted
+  *rejection* of `MaxDatagramSize + 1`, but never carried a record whose
+  datagram is exactly **1200 B** — which is not an edge case but the
+  **common** one (a full delta chunk is exactly `MaxDatagramSize`), sitting
+  on the uint16 length prefix's inclusive boundary; `DecoderConfig` and
+  `AudioFrame` already pinned theirs. Test-only guard added to all three
+  wire mirrors (the boundary datagram is built as a real full delta chunk,
+  the relay test frames a second record behind it, the viewer test splits
+  the read on the boundary, and the `04b0` prefix is pinned as hex).
+  Verified load-bearing: with `>` flipped to `>=` in `AppendCarrierRecord`
+  the whole pre-existing wire suite stays green in every mirror),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →

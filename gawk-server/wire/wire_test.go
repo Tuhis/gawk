@@ -106,6 +106,12 @@ const (
 	//   01 01 01 00 ... 61 62 63   the golden VideoChunk datagram, verbatim
 	goldenCarrierRecordHex = "0017" + goldenVideoChunkHex
 
+	// The length prefix of a record at the inclusive upper boundary: a full
+	// delta chunk is exactly MaxDatagramSize (1200 = 0x04B0), which is the
+	// record size the carrier carries most often. The record body is a
+	// 1200-byte VideoChunk, so only the prefix is worth pinning as hex.
+	goldenCarrierMaxRecordPrefixHex = "04b0"
+
 	// AudioFrame: Seq=0x01020304, TimestampUs=0x0000005D21DBA5F0,
 	// payload "abc" (R15, docs/20 Decision 2).
 	//
@@ -1046,6 +1052,56 @@ func TestCarrierRecordSequence(t *testing.T) {
 	}
 	if !bytes.Equal(record, second) {
 		t.Errorf("second record = %x, want %x", record, second)
+	}
+	if len(rest) != 0 {
+		t.Errorf("rest = %x, want empty", rest)
+	}
+}
+
+// The inclusive upper boundary of the uint16 length prefix. A full delta
+// chunk is exactly MaxDatagramSize bytes, so this is the *common* record on
+// a carrier — not an exotic edge — and the framing has to carry it whole and
+// still frame whatever follows it on the stream. DecoderConfig and AudioFrame
+// both pin their exact-1200 boundary; this is the symmetric carrier vector
+// (docs/24 finding 15).
+func TestCarrierRecordMaxSizeDatagram(t *testing.T) {
+	h := VideoChunkHeader{FrameID: 43, ChunkIndex: 1, ChunkCount: 2, TimestampUs: 7654321}
+	dgram, err := AppendVideoChunk(nil, h, bytes.Repeat([]byte{0xAB}, MaxChunkPayload))
+	if err != nil {
+		t.Fatalf("AppendVideoChunk: %v", err)
+	}
+	if len(dgram) != MaxDatagramSize {
+		t.Fatalf("full delta chunk is %d bytes, want %d", len(dgram), MaxDatagramSize)
+	}
+
+	trailer := mustHex(t, goldenVideoChunkHex)
+	buf, err := AppendCarrierRecord(nil, dgram)
+	if err != nil {
+		t.Fatalf("AppendCarrierRecord(max size): %v", err)
+	}
+	if buf, err = AppendCarrierRecord(buf, trailer); err != nil {
+		t.Fatalf("AppendCarrierRecord(trailer): %v", err)
+	}
+	if want := 2*CarrierRecordHeaderSize + MaxDatagramSize + len(trailer); len(buf) != want {
+		t.Fatalf("carrier bytes = %d, want %d", len(buf), want)
+	}
+	if got := hex.EncodeToString(buf[:CarrierRecordHeaderSize]); got != goldenCarrierMaxRecordPrefixHex {
+		t.Errorf("max-size length prefix = %s, want %s", got, goldenCarrierMaxRecordPrefixHex)
+	}
+
+	record, rest, err := ParseCarrierRecord(buf)
+	if err != nil {
+		t.Fatalf("ParseCarrierRecord(max size): %v", err)
+	}
+	if !bytes.Equal(record, dgram) {
+		t.Errorf("max-size record = %d bytes, want the %d-byte datagram verbatim", len(record), len(dgram))
+	}
+	record, rest, err = ParseCarrierRecord(rest)
+	if err != nil {
+		t.Fatalf("ParseCarrierRecord(trailer): %v", err)
+	}
+	if !bytes.Equal(record, trailer) {
+		t.Errorf("trailing record = %x, want %x", record, trailer)
 	}
 	if len(rest) != 0 {
 		t.Errorf("rest = %x, want empty", rest)
