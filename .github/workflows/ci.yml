@@ -95,7 +95,23 @@ jobs:
       #    package libwayland-dev" → Error-Mode=any + retries. A pocket that
       #    stays unreachable is only a warning: a stale index still installs,
       #    and the install below is the real gate.
+      #
+      # Patience is budgeted, not maximised: when a host is unreachable, more
+      # of it only converts a 30 s step into a 30 min one. Measured against the
+      # live degraded archives — 3 apt-level retries at a 20 s timeout (9
+      # attempts per index file, once the outer retry loop multiplies in) ran
+      # past 20 minutes without finishing, where 1 at 15 s installed all eleven
+      # packages in 2m25s. Note these are *inactivity* timeouts, so they don't
+      # cut off a slow-but-progressing transfer — a good thing: on the run that
+      # verified this the indexes came down in 13 s at 2.4 MB/s and then the
+      # .debs crawled in at 9.5 kB/s, 7m07s for 4 MB.
+      #
+      # timeout-minutes is a hang backstop, not a performance budget — that
+      # 7m07s is why it isn't tighter. Neither the job nor the workflow sets
+      # one, so without it a wedged apt holds a self-hosted runner for the
+      # 6-hour default.
       - name: Install Gio build dependencies
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           # deb822 (.sources) on noble, one-line (.list) on older images.
@@ -103,9 +119,9 @@ jobs:
             -exec sed -i 's|http://\([a-z0-9.-]*\)\.ubuntu\.com|https://\1.ubuntu.com|g' {} +
           sudo tee /etc/apt/apt.conf.d/99-gawk-ci >/dev/null <<'EOF'
           Acquire::ForceIPv4 "true";
-          Acquire::Retries "3";
-          Acquire::http::Timeout "20";
-          Acquire::https::Timeout "20";
+          Acquire::Retries "1";
+          Acquire::http::Timeout "15";
+          Acquire::https::Timeout "15";
           EOF
           retry() {
             for attempt in 1 2 3; do
