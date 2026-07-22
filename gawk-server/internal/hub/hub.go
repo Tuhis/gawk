@@ -216,6 +216,7 @@ type SubscriberStats struct {
 	CarrierStreams        uint64 `json:"carrierStreams,omitempty"`
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
+	CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
@@ -271,7 +272,12 @@ type Stats struct {
 	CarrierStreams        uint64 `json:"carrierStreams"`        // carrier streams opened
 	CarrierRecords        uint64 `json:"carrierRecords"`        // records fully written to carriers
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"` // records dropped: dead carrier, open/write failure
-	EgressCarrierBytes    uint64 `json:"egressCarrierBytes"`    // carrier bytes written (prologues + records)
+	// CarrierQueueOverflow counts deltas dropped at the queue, before they ever
+	// became records, because a reliable subscriber's carrier drain fell behind
+	// (docs/24 finding 11). Counted in DatagramsDropped too — this is the
+	// reliable slice of it, not a separate budget.
+	CarrierQueueOverflow uint64 `json:"carrierQueueOverflow"`
+	EgressCarrierBytes   uint64 `json:"egressCarrierBytes"` // carrier bytes written (prologues + records)
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
@@ -311,6 +317,7 @@ type TotalStats struct {
 	CarrierStreams        uint64 `json:"carrierStreams"`
 	CarrierRecords        uint64 `json:"carrierRecords"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"`
+	CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow"`
 	EgressCarrierBytes    uint64 `json:"egressCarrierBytes"`
 }
 
@@ -350,6 +357,7 @@ type Registry struct {
 	totalCarrierStreams            uint64
 	totalCarrierRecords            uint64
 	totalCarrierRecordsDropped     uint64
+	totalCarrierQueueOverflow      uint64
 	totalEgressCarrierBytes        uint64
 
 	limiter *bandwidthLimiter
@@ -449,6 +457,7 @@ type broadcastHub struct {
 	carrierStreams        uint64
 	carrierRecords        uint64
 	carrierRecordsDropped uint64
+	carrierQueueOverflow  uint64
 	egressCarrierBytes    uint64
 }
 
@@ -1135,6 +1144,7 @@ func (r *Registry) Stats() RegistryStats {
 		carStreams := b.carrierStreams
 		carRecords := b.carrierRecords
 		carDropped := b.carrierRecordsDropped
+		carOverflow := b.carrierQueueOverflow
 		egressCar := b.egressCarrierBytes
 		reliableSubs := 0
 		details := make([]SubscriberStats, 0, len(b.subs))
@@ -1156,6 +1166,7 @@ func (r *Registry) Stats() RegistryStats {
 			carStreams += s.carrierStreams.Load()
 			carRecords += s.carrierRecords.Load()
 			carDropped += s.carrierRecordsDropped.Load()
+			carOverflow += s.carrierQueueOverflow.Load()
 			egressCar += s.egressCarrierBytes.Load()
 			details = append(details, SubscriberStats{
 				Key:                   s.statsKey,
@@ -1169,6 +1180,7 @@ func (r *Registry) Stats() RegistryStats {
 				CarrierStreams:        s.carrierStreams.Load(),
 				CarrierRecords:        s.carrierRecords.Load(),
 				CarrierRecordsDropped: s.carrierRecordsDropped.Load(),
+				CarrierQueueOverflow:  s.carrierQueueOverflow.Load(),
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -1181,6 +1193,7 @@ func (r *Registry) Stats() RegistryStats {
 		totals.CarrierStreams += carStreams
 		totals.CarrierRecords += carRecords
 		totals.CarrierRecordsDropped += carDropped
+		totals.CarrierQueueOverflow += carOverflow
 		totals.EgressCarrierBytes += egressCar
 
 		var graceRemaining int
@@ -1208,6 +1221,7 @@ func (r *Registry) Stats() RegistryStats {
 			CarrierStreams:            carStreams,
 			CarrierRecords:            carRecords,
 			CarrierRecordsDropped:     carDropped,
+			CarrierQueueOverflow:      carOverflow,
 			EgressCarrierBytes:        egressCar,
 			EdgeSessions:              edgeSessions,
 			FramesRelayed:             b.framesRelayed,
@@ -1259,6 +1273,7 @@ func (r *Registry) Stats() RegistryStats {
 	totals.CarrierStreams += r.totalCarrierStreams
 	totals.CarrierRecords += r.totalCarrierRecords
 	totals.CarrierRecordsDropped += r.totalCarrierRecordsDropped
+	totals.CarrierQueueOverflow += r.totalCarrierQueueOverflow
 	totals.EgressCarrierBytes += r.totalEgressCarrierBytes
 	totals.KeyframeStreamsDropped = totals.KeyframeDrops.Total()
 
@@ -1345,6 +1360,7 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool 
 	r.totalCarrierStreams += b.carrierStreams
 	r.totalCarrierRecords += b.carrierRecords
 	r.totalCarrierRecordsDropped += b.carrierRecordsDropped
+	r.totalCarrierQueueOverflow += b.carrierQueueOverflow
 	r.totalEgressCarrierBytes += b.egressCarrierBytes
 	if b.edge {
 		r.totalEdgeIngressFramesLost += b.ingressFramesLost
@@ -1802,6 +1818,7 @@ type Subscriber struct {
 	carrierStreams        atomic.Uint64
 	carrierRecords        atomic.Uint64
 	carrierRecordsDropped atomic.Uint64
+	carrierQueueOverflow  atomic.Uint64
 	egressCarrierBytes    atomic.Uint64
 }
 
@@ -1820,6 +1837,18 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 	case s.queue <- dgram:
 	default:
 		s.dropped.Add(1)
+		if s.reliable {
+			// A resilient subscriber's overflow is a different failure from a
+			// slow datagram viewer's, even though the mechanism is identical
+			// (docs/24 finding 11): it punches a hole in a stream the viewer is
+			// told is reliable and in-order, so the viewer freezes to the next
+			// keyframe — the very stutter the mode exists to prevent. It gets
+			// its own reason bucket so an operator can tell "resilient mode is
+			// failing this viewer" from "this viewer's link is slow". The drop
+			// still counts in `dropped`: this is a slice of the drop budget,
+			// not a second one, and queue_full is derived by subtracting it.
+			s.carrierQueueOverflow.Add(1)
+		}
 	}
 }
 
@@ -2239,6 +2268,7 @@ func (s *Subscriber) Close() {
 		b.carrierStreams += s.carrierStreams.Load()
 		b.carrierRecords += s.carrierRecords.Load()
 		b.carrierRecordsDropped += s.carrierRecordsDropped.Load()
+		b.carrierQueueOverflow += s.carrierQueueOverflow.Load()
 		b.egressCarrierBytes += s.egressCarrierBytes.Load()
 	} else {
 		r.totalDatagramsDropped += s.dropped.Load()
@@ -2250,6 +2280,7 @@ func (s *Subscriber) Close() {
 		r.totalCarrierStreams += s.carrierStreams.Load()
 		r.totalCarrierRecords += s.carrierRecords.Load()
 		r.totalCarrierRecordsDropped += s.carrierRecordsDropped.Load()
+		r.totalCarrierQueueOverflow += s.carrierQueueOverflow.Load()
 		r.totalEgressCarrierBytes += s.egressCarrierBytes.Load()
 	}
 }

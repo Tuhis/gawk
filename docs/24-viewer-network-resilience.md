@@ -356,7 +356,10 @@ build). Notes and deviations:
 4. **Bandwidth-cap accounting.** Over-cap carrier records count as
    *datagram* bandwidth drops (same counters as the datagram drain), keeping
    R9's queue_full-by-subtraction intact; `carrier_records_dropped_total` is
-   reserved for dead-carrier/open-failure drops.
+   reserved for dead-carrier/open-failure drops. **Amended 2026-07-22**
+   (finding 11 below): a reliable subscriber's *queue* overflow — dropped
+   before it could become a record — is neither of those, and now has its
+   own `reason="carrier_queue_full"` slice of the same drop total.
 5. **Delivery-mode ground truth.** The viewer reports
    `reliable-requested` (Decision 8) until the first carrier stream is
    actually observed — which also covers the first instants after connect,
@@ -552,6 +555,53 @@ build). Notes and deviations:
     What this still does not cover: the resilient *playout* profile end to
     end (finding 8's buffer envelope is unit-tested only), and real cellular
     behaviour — X6's re-run remains a manual, owner-verified drill.
+
+11. **Post-review fix (2026-07-22): the mode's dominant failure was
+    invisible in metrics — `PRODUCT-3` (medium) from
+    `docs/reviews/resilient-mode-review.md`.** When a reliable subscriber's
+    carrier drain falls behind (sustained congestion, repeated write
+    stalls), its bounded queue overflows in `enqueueLocked` — and that
+    incremented only the generic `dropped` counter, surfacing as
+    `gawk_broadcast_datagrams_dropped_total{reason="queue_full"}`,
+    byte-identical to a normal slow *datagram* viewer. But the two are not
+    the same failure: the hole this punches lands in a stream the viewer
+    treats as reliable and in-order, so it freezes to the next keyframe —
+    exactly the stutter the mode exists to prevent — while the datagram
+    viewer's queue_full is business as usual. An operator could not tell
+    "resilient mode is failing this viewer" from "this viewer's link is
+    slow", which is the question the whole feature's dashboards exist to
+    answer. Decision 4's bandwidth-cap accounting had made the analogous
+    call correctly (over-cap records count as *datagram* bandwidth drops);
+    the queue overflow simply had no bucket of its own. Fix, relay only,
+    no wire/viewer/broadcaster change:
+    - **Its own reason bucket**: `enqueueLocked` increments a new
+      per-subscriber `carrierQueueOverflow` when `s.reliable`, exposed as
+      `…_datagrams_dropped_total{reason="carrier_queue_full"}` on both the
+      per-broadcast and relay-lifetime families.
+    - **The drop budget stays whole.** The overflow still counts in
+      `dropped`, so `carrier_queue_full` is a *slice* of the datagram-drop
+      total, not a second budget; `queue_full` remains derived by
+      subtraction (R9), now minus the carrier slice as well as the
+      bandwidth one — so a normal viewer's drops read exactly as before.
+      The subtraction is floored at zero: its terms are atomics read at
+      slightly different instants and a Prometheus counter must not wrap.
+    - **`carrierRecordsDropped` is deliberately untouched.** These deltas
+      are dropped at the queue, before they ever become records; folding
+      them in would make "records dropped" mean two different things and
+      would move the goalposts of finding 10's `CarrierRecordsDropped == 0`
+      assertion. The two counters answer "did the carrier fail?" and "did
+      the drain keep up?" separately; `/statusz` carries both, per broadcast
+      and per subscriber (`subscriberDetails[].carrierQueueOverflow`).
+
+    Tests (test-first): the reproduction is
+    `internal/metrics` `TestReliableQueueOverflowHasItsOwnDropReason` — a
+    wedged reliable subscriber on one broadcast and a wedged datagram
+    subscriber on another, asserting each lands in its own bucket and
+    neither leaks into the other; before the fix it reported all 16 carrier
+    overflows under `queue_full` and no `carrier_queue_full` series at all.
+    `internal/hub` `TestReliableQueueOverflowCountedApartFromDatagramDrops`
+    covers the `/statusz` surface: the per-subscriber split, the total
+    staying whole, `CarrierRecordsDropped` staying 0, and the fold on close.
 
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
