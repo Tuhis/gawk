@@ -289,7 +289,21 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   resilient-only — down is still never stepped), and the min tracker
   deliberately keeps its 60 s window because it is also `releasableAt`'s
   anchor. Mode-off is byte-identical; **X6's headline criterion needs a
-  re-run**),
+  re-run**. **Post-review fix 2026-07-22 (docs/24 finding 9, review finding
+  `PRODUCT-2`)**: Decision 9 put the toggle in the right-click menu only, so
+  the mode built for phones was unreachable on phones (iOS Safari fires no
+  `contextmenu`). The viewer control bar now carries a visible "⋮" **More
+  options** button opening the *same* `ContextMenu`; `ContextMenu` gained
+  `anchor: 'bottom-right'` (grow up-left, or the bottom-bar viewport clamp
+  puts the menu back over the button) and `anchorRef` (exclude the opener
+  from outside-click, or its click re-opens what its pointerdown closed — a
+  flush-order race jsdom's `act` hides and Chrome loses), plus placement
+  measured from `offsetWidth`/`offsetHeight` at a neutral corner (the
+  `scale(0.97)` open animation and position-dependent shrink-to-fit both
+  corrupt a naive measure); touch-sized menu rows under
+  `@media (pointer: coarse)` only. Decision 11's suggest-banner stays
+  deferred — its thresholds need X6 re-run against the post-finding-8
+  buffer),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →

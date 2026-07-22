@@ -2,6 +2,10 @@
   position: fixed;
   z-index: 50;
   min-width: 168px;
+  /* Long labels (R19's "…— governed by Resilient mode") would otherwise run
+     off a phone screen, now that the viewer's overflow button makes this menu
+     a touch surface. Wide viewports are unaffected. */
+  max-width: calc(100vw - 16px);
   padding: 0.35rem;
   display: flex;
   flex-direction: column;
@@ -41,4 +45,13 @@
 
 .item.active {
   background: rgba(255, 255, 255, 0.08);
+}
+
+/* Touch pointers get roomier hit targets: on a phone this menu is now the way
+   into every viewer setting, and a mis-tap on a delivery-mode entry costs a
+   reconnect. Mouse/trackpad surfaces render exactly as before. */
+@media (pointer: coarse) {
+  .item {
+    padding: 0.7rem 0.8rem;
+  }
 }

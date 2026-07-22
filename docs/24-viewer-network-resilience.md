@@ -252,8 +252,13 @@ throughput, ugly loss/jitter.
    protocol; observability over ceremony.
 
 9. **Activation: one new toggle, mode change = clean reconnect.**
-   Right-click menu: **"Resilient mode (mobile networks)"**, persisted under
-   `gawk:resilient-mode`, default off. Toggling tears the session down
+   ~~Right-click menu:~~ **"Resilient mode (mobile networks)"** — reached
+   from the viewer menu, persisted under
+   `gawk:resilient-mode`, default off. **Right-click-only was wrong —
+   amended 2026-07-22** (finding 9 below): touch devices have no such
+   gesture, so the mode built for phones was unreachable on phones. The
+   control bar now carries a visible overflow ("⋮") button that opens the
+   same menu for every pointer type. Toggling tears the session down
    deliberately and reconnects with/without `?delivery=reliable` through the
    existing `ViewerSession` machinery (a fresh start, not the backoff path);
    reconnects preserve the mode. The worker learns the mode via a command in
@@ -422,6 +427,70 @@ build). Notes and deviations:
    **Re-run the X6 headline criterion after this** — it could not have been
    met at a 534 ms ceiling, so the ✅ on X6 covers the mode's behavior on the
    links it was measured on, not the deep-stall claim.
+
+9. **Post-review fix (2026-07-22): the mobile mode was unreachable on
+   mobile — `PRODUCT-2` (high, product-fit) from
+   `docs/reviews/resilient-mode-review.md`.** Decision 9 put the toggle in
+   the right-click menu and stopped there. The control bar
+   (`ViewerScreen.tsx`) carried stats/fullscreen/leave icons and no way into
+   that menu, and a right-click is the one gesture a touch device does not
+   have: on the phones this whole mode exists for, "Resilient mode (mobile
+   networks)" — plus the playout modes, mute and Copy link — had no reliable
+   entry point at all. Long-press → `contextmenu` is an Android-Chrome
+   behavior, not a guarantee (iOS Safari does not fire it), so the feature's
+   entire target population depended on a gesture half of them lack.
+   Fix, viewer-UI only:
+   - **Overflow button in the control bar** (`MoreIcon`, `aria-haspopup`,
+     labelled "More options") opening the *same* `ContextMenu` with the same
+     items — no second menu to keep in sync. Right-click keeps working
+     unchanged.
+   - **`ContextMenu` grew an `anchor` prop.** Its coordinates were always a
+     pointer position it grows down-right from; anchored that way to a
+     button in the *bottom* bar, the viewport clamp pushes the menu straight
+     back up over the button that opened it (caught in a real browser —
+     Playwright reported the menu intercepting pointer events on the
+     button). `anchor: 'bottom-right'` treats (x, y) as the corner the menu
+     grows *up-left* from, so it opens above the bar, right-aligned to the
+     button.
+   - **`ContextMenu` grew an `anchorRef` prop**, and this is the subtle one.
+     The menu closes on any outside `pointerdown`, which includes the
+     button's own — so the ensuing click re-opens what the pointerdown just
+     closed and the button can never dismiss its own menu. Whether that is
+     even *visible* depends on when React flushes the close between the two
+     listeners: jsdom (`fireEvent` inside `act`) defers it and the naive
+     "was it open at pointerdown?" guard passes, while Chrome runs a
+     microtask checkpoint between listeners, flushes, and the guard reads
+     the already-closed state. Excluding the anchor from "outside" removes
+     the race instead of timing it; the click then sees a still-open menu
+     and closes it.
+   - **Placement measures the layout box from a neutral corner.** Two
+     browser-only traps, both invisible in jsdom (which measures everything
+     as 0): the open animation starts at `scale(0.97)`, so
+     `getBoundingClientRect()` under-reports by 3 % and drifts the menu onto
+     its anchor (now `offsetWidth`/`offsetHeight`); and a fixed element's
+     shrink-to-fit width is computed against the space between its `left`
+     and the viewport edge, so measuring it where it was *asked* to appear
+     can return a squeezed size that then feeds the placement math (now
+     measured at the pad corner, hidden until placed).
+   - **Touch ergonomics:** `.item` padding grows under
+     `@media (pointer: coarse)` only (a mis-tap on a delivery-mode entry
+     costs a reconnect), and the menu gains `max-width: calc(100vw - 16px)`
+     so R19's long "— governed by Resilient mode" labels wrap instead of
+     running off a 360 px screen. Mouse surfaces render byte-identically.
+
+   The control bar itself was already touch-safe: `useAutoHide` reveals on
+   `pointerdown`, so a tap brings the bar (and the button) back. Verified in
+   headless Chrome at 1280×800, 390×844 (touch taps, not mouse clicks) and
+   320×568: the button renders, the menu opens above it and fully on screen,
+   a second tap dismisses, an outside tap dismisses, right-click still
+   opens, and toggling Resilient mode from the button persists and
+   reconnects.
+   **Still deferred: Decision 11's suggest-banner.** This fix makes the mode
+   *reachable*; a viewer who does not know it exists still has to open the
+   menu. The banner stays deferred deliberately — its hysteresis thresholds
+   were to come from X6 field data, and X6 ran against the ~534 ms buffer
+   finding 8 fixed, so that data has to be re-taken before it can set
+   thresholds that flip a transport mode.
 
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a

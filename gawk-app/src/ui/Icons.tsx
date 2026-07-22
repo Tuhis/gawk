@@ -114,6 +114,18 @@ export function SpeakerMutedIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// The overflow ("kebab") glyph — the pointer-agnostic way into the viewer
+// menu, which a right-click alone left out of reach on touch devices
+// (docs/24 review finding PRODUCT-2). Dots are zero-length round-capped
+// segments, so they inherit the file's stroke styling.
+export function MoreIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 5.5h.01M12 12h.01M12 18.5h.01" strokeWidth={2.4} />
+    </svg>
+  );
+}
+
 export function CloseIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>
