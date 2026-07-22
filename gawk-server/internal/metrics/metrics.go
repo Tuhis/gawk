@@ -123,7 +123,7 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 		datagramsRelayed: newDesc("datagrams_relayed_total",
 			"Delta datagrams fanned out (before per-subscriber drops)."),
 		datagramsDropped: newDesc("datagrams_dropped_total",
-			"Per-subscriber datagram drops: queue_full = slow viewer, bandwidth = configured egress cap.", "reason"),
+			"Per-subscriber datagram drops: queue_full = slow viewer, carrier_queue_full = R19 resilient viewer whose carrier drain fell behind (holes a reliable stream, viewer freezes to keyframe), bandwidth = configured egress cap.", "reason"),
 		badDatagrams: newDesc("bad_datagrams_total",
 			"Malformed publisher datagrams dropped."),
 		sendErrors: newDesc("send_errors_total",
@@ -187,6 +187,20 @@ func (c *RegistryCollector) counterDescs() []desc {
 	}
 }
 
+// queueFull derives the generic slow-viewer drop bucket the way R9 fixed it:
+// total per-subscriber drops minus every reason that has a bucket of its own
+// (the egress cap, and since R19 a resilient subscriber's carrier-queue
+// overflow). Floored at zero — the terms come from atomics read at slightly
+// different instants during a snapshot, and a Prometheus counter must never
+// wrap into a nonsense value because one raced ahead by a drop.
+func queueFull(total, bandwidth, carrierOverflow uint64) uint64 {
+	accounted := bandwidth + carrierOverflow
+	if total < accounted {
+		return 0
+	}
+	return total - accounted
+}
+
 // Collect implements prometheus.Collector: one Registry.Stats() snapshot per
 // scrape (the same cost as a /statusz poll).
 func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
@@ -223,7 +237,8 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.framesRelayed.broadcast, s.FramesRelayed-s.KeyframeStreamsIn, id, "delta")
 		counter(c.framesRelayed.broadcast, s.KeyframeStreamsIn, id, "keyframe")
 		counter(c.datagramsRelayed.broadcast, s.DatagramsRelayed, id)
-		counter(c.datagramsDropped.broadcast, s.DatagramsDropped-s.BandwidthDroppedDatagrams, id, "queue_full")
+		counter(c.datagramsDropped.broadcast, queueFull(s.DatagramsDropped, s.BandwidthDroppedDatagrams, s.CarrierQueueOverflow), id, "queue_full")
+		counter(c.datagramsDropped.broadcast, s.CarrierQueueOverflow, id, "carrier_queue_full")
 		counter(c.datagramsDropped.broadcast, s.BandwidthDroppedDatagrams, id, "bandwidth")
 		counter(c.badDatagrams.broadcast, s.BadDatagrams, id)
 		counter(c.sendErrors.broadcast, s.SendErrors, id)
@@ -258,7 +273,8 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.framesRelayed.relay, t.FramesRelayed-t.KeyframeStreamsIn, "delta")
 	counter(c.framesRelayed.relay, t.KeyframeStreamsIn, "keyframe")
 	counter(c.datagramsRelayed.relay, t.DatagramsRelayed)
-	counter(c.datagramsDropped.relay, t.DatagramsDropped-t.BandwidthDroppedDatagrams, "queue_full")
+	counter(c.datagramsDropped.relay, queueFull(t.DatagramsDropped, t.BandwidthDroppedDatagrams, t.CarrierQueueOverflow), "queue_full")
+	counter(c.datagramsDropped.relay, t.CarrierQueueOverflow, "carrier_queue_full")
 	counter(c.datagramsDropped.relay, t.BandwidthDroppedDatagrams, "bandwidth")
 	counter(c.badDatagrams.relay, t.BadDatagrams)
 	counter(c.sendErrors.relay, t.SendErrors)

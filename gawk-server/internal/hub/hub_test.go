@@ -2181,6 +2181,103 @@ func TestCarrierOpenFailuresFeedEvictionStreak(t *testing.T) {
 	}, "evicted subscriber removed from hub")
 }
 
+// A resilient subscriber whose carrier drain falls behind overflows the same
+// bounded queue a slow datagram viewer does — but it is a different failure
+// (docs/24 finding 11, review finding PRODUCT-3): the hole lands in a stream
+// the viewer treats as reliable and in-order, so it freezes to the next
+// keyframe. The overflow is counted apart from the datagram viewer's drops,
+// while still counting in the shared drop total, and survives the fold on
+// close.
+func TestReliableQueueOverflowCountedApartFromDatagramDrops(t *testing.T) {
+	const queueDepth = 4
+	const deltas = 20
+
+	// A write deadline far past the test: the parked carrier write never times
+	// out on its own, so the backlog behind it is deterministic.
+	r := NewRegistry(discardLog, Options{QueueDepth: queueDepth, KeyframeWriteTimeout: time.Minute})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+
+	reliable := &fakeSender{}
+	reliable.setCarBlock(make(chan struct{})) // the carrier write parks
+	subR, err := r.SubscribeReliable(id, reliable)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	// The control: a normal viewer, equally stuck, whose drops must stay out of
+	// the carrier bucket.
+	normal := &fakeSender{block: make(chan struct{})}
+	subN, err := r.Subscribe(id, normal)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Fan-out is synchronous with HandleDatagram, so everything past the queue's
+	// capacity (plus the one datagram each parked drain holds) overflows.
+	for i := range deltas {
+		p.HandleDatagram(chunkDgram(t, false, uint32(i+1), 0, 1, fmt.Sprintf("d%03d", i)))
+	}
+	minDrops := uint64(deltas - queueDepth - 1)
+
+	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if subR.Dropped() < minDrops {
+		t.Fatalf("reliable subscriber dropped %d, want >= %d — the queue did not overflow", subR.Dropped(), minDrops)
+	}
+	if subN.Dropped() < minDrops {
+		t.Fatalf("datagram subscriber dropped %d, want >= %d — the control queue did not overflow", subN.Dropped(), minDrops)
+	}
+	if stats.CarrierQueueOverflow != subR.Dropped() {
+		t.Errorf("CarrierQueueOverflow = %d, want %d (the reliable subscriber's drops)",
+			stats.CarrierQueueOverflow, subR.Dropped())
+	}
+	if stats.DatagramsDropped != subR.Dropped()+subN.Dropped() {
+		t.Errorf("DatagramsDropped = %d, want %d — the carrier bucket is a slice of the drop total, not a second budget",
+			stats.DatagramsDropped, subR.Dropped()+subN.Dropped())
+	}
+	// Nothing reached a carrier: these deltas were dropped before they ever
+	// became records, which is why carrierRecordsDropped can't cover them.
+	if stats.CarrierRecordsDropped != 0 {
+		t.Errorf("CarrierRecordsDropped = %d, want 0 (drops happened at the queue)", stats.CarrierRecordsDropped)
+	}
+
+	// Per-subscriber detail: only the reliable entry carries the overflow.
+	var seenReliable, seenNormal bool
+	for _, d := range stats.SubscriberDetails {
+		if d.Reliable {
+			seenReliable = true
+			if d.CarrierQueueOverflow != subR.Dropped() {
+				t.Errorf("reliable detail CarrierQueueOverflow = %d, want %d", d.CarrierQueueOverflow, subR.Dropped())
+			}
+			continue
+		}
+		seenNormal = true
+		if d.CarrierQueueOverflow != 0 {
+			t.Errorf("datagram detail CarrierQueueOverflow = %d, want 0", d.CarrierQueueOverflow)
+		}
+		if d.Dropped == 0 {
+			t.Error("datagram detail Dropped = 0, want the control's drops")
+		}
+	}
+	if !seenReliable || !seenNormal {
+		t.Errorf("SubscriberDetails = %+v, want one reliable and one datagram entry", stats.SubscriberDetails)
+	}
+
+	// Fold on close: the counter survives its subscriber (CODE-REVIEW.md).
+	wantOverflow := subR.Dropped()
+	close(normal.block)
+	subN.Close()
+	subR.Close()
+	stats = r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if stats.CarrierQueueOverflow != wantOverflow {
+		t.Errorf("CarrierQueueOverflow after close = %d, want %d (folded)", stats.CarrierQueueOverflow, wantOverflow)
+	}
+	if total := r.Stats().Totals.CarrierQueueOverflow; total != wantOverflow {
+		t.Errorf("Totals.CarrierQueueOverflow = %d, want %d", total, wantOverflow)
+	}
+}
+
 // The egress bandwidth cap charges carrier records like datagrams — reliable
 // delivery is not a cap bypass (docs/24 Decision 5). Over-cap records are
 // dropped at the drain and recorded under the bandwidth reason.

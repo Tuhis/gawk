@@ -172,6 +172,129 @@ func TestRegistryCollectorScenario(t *testing.T) {
 	}
 }
 
+// stalledConn is a hub.Conn that never completes a delivery: carrier writes
+// and datagram sends park on release until the test frees them. A subscriber
+// behind it stops draining, so its bounded queue overflows — the shape of a
+// viewer whose link can't keep up.
+type stalledConn struct{ release chan struct{} }
+
+func (c *stalledConn) SendDatagram([]byte) error {
+	<-c.release
+	return nil
+}
+
+func (c *stalledConn) OpenKeyframeStream() (hub.KeyframeStream, error) {
+	return &stalledStream{release: c.release}, nil
+}
+
+func (c *stalledConn) OpenCarrierStream() (hub.KeyframeStream, error) {
+	return &stalledStream{release: c.release}, nil
+}
+
+func (c *stalledConn) CloseWithError(uint32, string) error { return nil }
+
+type stalledStream struct{ release chan struct{} }
+
+func (s *stalledStream) SetWriteDeadline(time.Time) error { return nil }
+func (s *stalledStream) Write(p []byte) (int, error) {
+	<-s.release
+	return 0, errors.New("stalled")
+}
+func (s *stalledStream) Close() error { return nil }
+func (s *stalledStream) CancelWrite() {}
+
+// R19 review finding PRODUCT-3 (docs/24 finding 11): a reliable subscriber's
+// queue overflow is the resilient mode's dominant failure — it punches a hole
+// in a supposedly in-order delta stream and costs the viewer a
+// freeze-to-keyframe — but it used to increment the same generic drop counter
+// as a slow datagram viewer, so `reason=queue_full` could not tell an operator
+// which of the two was happening. The reliable path gets its own bucket, and
+// the datagram derivation stays exactly as it was for normal subscribers.
+func TestReliableQueueOverflowHasItsOwnDropReason(t *testing.T) {
+	const queueDepth = 4
+	const deltas = 20
+
+	r := hub.NewRegistry(discardLog, hub.Options{QueueDepth: queueDepth})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	// Broadcast A: one resilient subscriber whose carrier is wedged.
+	reliableID, reliablePub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	if _, err := r.SubscribeReliable(reliableID, &stalledConn{release: release}); err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	// Broadcast B: one normal subscriber whose datagram sends are wedged —
+	// the control that must stay in the generic bucket.
+	datagramID, datagramPub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	if _, err := r.Subscribe(datagramID, &stalledConn{release: release}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Fan-out is synchronous with HandleDatagram, so once the drain has parked
+	// on its first dequeue every delta past the queue's capacity overflows.
+	for i := range deltas {
+		reliablePub.HandleDatagram(deltaDgram(t, uint32(i+1)))
+		datagramPub.HandleDatagram(deltaDgram(t, uint32(i+1)))
+	}
+
+	promReg := prometheus.NewPedanticRegistry()
+	collector := NewRegistryCollector(r)
+	promReg.MustRegister(collector)
+	if _, err := testutil.CollectAndLint(collector); err != nil {
+		t.Errorf("CollectAndLint: %v", err)
+	}
+	mfs, err := promReg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	snap := r.Stats()
+	reliableStats := snap.Broadcasts[r.ObfuscateID(reliableID)]
+	datagramStats := snap.Broadcasts[r.ObfuscateID(datagramID)]
+	// At most queueDepth queued + 1 in the parked drain survive.
+	if minDrops := uint64(deltas - queueDepth - 1); reliableStats.DatagramsDropped < minDrops {
+		t.Fatalf("reliable subscriber dropped %d datagrams, want >= %d — the queue did not overflow",
+			reliableStats.DatagramsDropped, minDrops)
+	}
+	if datagramStats.DatagramsDropped == 0 {
+		t.Fatal("datagram subscriber dropped nothing — the control queue did not overflow")
+	}
+
+	reliable := map[string]string{"broadcast": r.ObfuscateID(reliableID)}
+	datagram := map[string]string{"broadcast": r.ObfuscateID(datagramID)}
+	checks := []struct {
+		name   string
+		labels map[string]string
+		want   float64
+	}{
+		// The resilient viewer's overflow is bucketed as a carrier failure…
+		{"gawk_broadcast_datagrams_dropped_total", withReason(reliable, "carrier_queue_full"),
+			float64(reliableStats.DatagramsDropped)},
+		{"gawk_broadcast_datagrams_dropped_total", withReason(reliable, "queue_full"), 0},
+		// …and a normal slow viewer's is untouched (the R9 derivation).
+		{"gawk_broadcast_datagrams_dropped_total", withReason(datagram, "queue_full"),
+			float64(datagramStats.DatagramsDropped)},
+		{"gawk_broadcast_datagrams_dropped_total", withReason(datagram, "carrier_queue_full"), 0},
+		// Relay-lifetime totals split the same way; no drop is lost or double-counted.
+		{"gawk_relay_datagrams_dropped_total", map[string]string{"reason": "carrier_queue_full"},
+			float64(reliableStats.DatagramsDropped)},
+		{"gawk_relay_datagrams_dropped_total", map[string]string{"reason": "queue_full"},
+			float64(datagramStats.DatagramsDropped)},
+	}
+	for _, c := range checks {
+		if got := value(mfs, c.name, c.labels); got != c.want {
+			t.Errorf("%s%v = %v, want %v", c.name, c.labels, got, c.want)
+		}
+	}
+}
+
 func TestRegistryCollectorTotalsSurviveGC(t *testing.T) {
 	// Counters folded from an expired broadcast must remain visible in the
 	// gawk_relay_* totals even after the per-broadcast series disappear.

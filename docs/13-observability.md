@@ -172,9 +172,15 @@ counters with no existing book to drift from.
   totals series carry the long-range view.
 - `reason` — closed enums per metric (e.g. keyframe drops:
   `superseded|slow|bandwidth|open_failed`; datagram drops:
-  `queue_full|bandwidth`). `superseded` is *benign* (a newer keyframe
-  replaced an in-flight one); separating it out is precisely what makes the
-  drop counter diagnostic instead of noise.
+  `queue_full|carrier_queue_full|bandwidth`). `superseded` is *benign* (a
+  newer keyframe replaced an in-flight one); separating it out is precisely
+  what makes the drop counter diagnostic instead of noise. Same reasoning
+  splits `carrier_queue_full` (R19, docs/24 finding 11) out of `queue_full`:
+  the mechanism is one bounded queue overflowing, but on a resilient
+  subscriber it holes a stream the viewer believes is reliable and costs it
+  a freeze-to-keyframe, where on a datagram viewer it is routine
+  drops-over-stalls. The buckets partition one total — `queue_full` is
+  derived by subtracting the reasons that have their own bucket.
 - `route`/`outcome` — closed enums on connection counters (M4).
 - **No per-subscriber labels.** 50 ephemeral subscribers × churn would be
   pointless series bloat; per-subscriber detail goes into `/statusz` JSON
@@ -342,7 +348,7 @@ dimensions — the two-prefix split is the clean expression of the same idea.
 | `…_ingress_bytes_total` | counter | `kind` | broadcaster→relay volume |
 | `…_egress_bytes_total` | counter | `kind` | relay→viewers volume actually written; graph against the cap |
 | `…_datagrams_relayed_total` | counter | — | fan-out datagram volume (pre-drop) |
-| `…_datagrams_dropped_total` | counter | `reason=queue_full\|bandwidth` | **leg-B pressure**: slow-viewer queue overflow vs configured cap |
+| `…_datagrams_dropped_total` | counter | `reason=queue_full\|carrier_queue_full\|bandwidth` | **leg-B pressure**: slow-viewer queue overflow vs the same overflow on an R19 resilient viewer (a hole in a reliable stream → freeze-to-keyframe) vs configured cap |
 | `…_send_errors_total` | counter | — | datagram write failures to viewers (was counted, never exposed) |
 | `…_bad_datagrams_total` | counter | — | malformed publisher input |
 | `…_bandwidth_dropped_bytes_total` | counter | — | bytes the egress cap discarded (datagrams + keyframes) |
@@ -420,6 +426,7 @@ The point of the whole design: symptom → discriminating signals → verdict.
 | Frequent "Awaiting keyframe" / gap resyncs on one viewer | Viewer `framesDroppedIncomplete`/`reorderGapResyncs` up; relay keyframe `slow` drops for that subscriber; `lastKeyframeAgeMs` spiking ≫ GOP | **Delta loss on leg B** eating GOPs; keyframe cadence + reliable streams bound recovery — if age ≫ 500 ms GOP something is wrong at the relay |
 | Nothing plays for anyone | `gawk_connections_total{outcome!="accepted"}` — 401 (secret), 404 (bad/expired ID), 429 (limits/rate limiter), `origin_rejected` (CORS config) | **Config/limits, not media** |
 | Resilient-mode viewer (R19) stutters anyway | Overlay Delivery mode says `reliable (resilient)` and Playout offset is climbing toward its 2000 ms clamp, yet `renderCadence` p95 stays high; relay `gawk_broadcast_carrier_records_dropped_total` and per-sub `carrierRecordsDropped` climbing, or overlay `Carrier streams` shows aborts every GOP | **Sustained undersupply, not loss** — the link can't carry the stream bitrate; reliable delivery can't create bandwidth (docs/24), lower the rung/bitrate. If the mode row instead says `reliable requested / datagrams served`, the relay predates R19 X2 — buffering still widened, loss recovery didn't |
+| Resilient-mode viewer (R19) freezes to keyframes repeatedly | `gawk_broadcast_datagrams_dropped_total{reason="carrier_queue_full"}` climbing for that broadcast (and per-sub `carrierQueueOverflow` in `/statusz`) while `queue_full` on the datagram viewers stays flat; that subscriber's `queueDepth` pinned near `-queue-depth` | **The carrier drain can't keep up for that viewer** — the relay is dropping deltas *before* they reach the reliable stream, so the viewer sees holes in a stream it trusts. Distinct from `carrier_records_dropped_total` (the carrier itself stalled/failed) and from plain `queue_full` (a normal slow viewer, business as usual) |
 | Broadcaster shows fewer viewers than expected (R18) | Compare `sum(gawk_broadcast_subscribers) by (broadcast)` (the fleet truth) against the origin's `gawk_broadcast_viewers_global` (what it pushes). Equal but low → viewers really left. Global < sum → an edge's report isn't reaching the origin: check the origin's `/statusz` `edgeSessions` vs the edges' `subscribers`, and the edge pods' logs for upstream re-attach churn. "—"/n/a on the client with viewers present → the relay predates R18 | **Edge report / aggregation gap vs. reality** — the two gauges split it |
 
 ## Verification plan

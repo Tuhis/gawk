@@ -320,7 +320,22 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   a downlink-only model. The R20 tier-1 harness additionally repeats its
   viewer pass with `gawk:resilient-mode` seeded, covering the browser's
   carrier reader + the `?delivery=reliable` negotiation end to end (no loss
-  injected there — that is the Go test's job)),
+  injected there — that is the Go test's job). **Post-review fix 2026-07-22
+  (docs/24 finding 11, review finding `PRODUCT-3`)**: the mode's dominant
+  failure was invisible to operators — a reliable subscriber's bounded queue
+  overflowing in `enqueueLocked` incremented only the generic `dropped`
+  counter, so it read as `datagrams_dropped_total{reason="queue_full"}`,
+  byte-identical to a routine slow *datagram* viewer, even though on a
+  reliable subscriber the hole lands in a stream the viewer trusts as
+  in-order and costs it a freeze-to-keyframe. It now has its own
+  **`reason="carrier_queue_full"`** slice (+ `carrierQueueOverflow` in
+  `/statusz`, per broadcast and per subscriber); the drop still counts in
+  `dropped`, so the bucket is a slice of one total and `queue_full` stays
+  derived by subtraction (R9) — now minus the carrier slice too, floored at
+  zero. `carrierRecordsDropped` is deliberately **not** incremented: these
+  deltas die at the queue before becoming records, and the two counters
+  answer different questions ("did the carrier fail?" vs "did the drain keep
+  up?"). Relay-only, test-first, zero wire/viewer/broadcaster changes),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →
