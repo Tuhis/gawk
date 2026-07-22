@@ -409,7 +409,22 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   the relay test frames a second record behind it, the viewer test splits
   the read on the boundary, and the `04b0` prefix is pinned as hex).
   Verified load-bearing: with `>` flipped to `>=` in `AppendCarrierRecord`
-  the whole pre-existing wire suite stays green in every mirror),
+  the whole pre-existing wire suite stays green in every mirror).
+  **Post-review fix 2026-07-22 (docs/24 finding 16, review finding
+  `LIFECYCLE-2`)**: Decision 7's stored-vs-effective playout split is honored
+  by the pipeline (`viewer.ts` reports `stats.interpolation` off
+  `getPlayoutMode()`, which resilient mode forces to adaptive) but not by
+  `ViewerScreen`'s menu, which gated the "Frame interpolation
+  (experimental)" entry on the **stored** mode — so a resilient viewer whose
+  stored playout is `'off'`/`'fixed'` had the experimental, most
+  GPU-expensive viewer feature running with no control to turn it off, on
+  exactly the phones R19 exists for. The entry is now gated on
+  `resilientMode || playoutMode === 'adaptive'` — the effective mode computed
+  from local state, deliberately *not* from `stats.playoutMode`, which lags a
+  toggle by up to a stats tick. Viewer-UI only, test-first, zero
+  server/wire/broadcaster changes; no "governed by Resilient mode"
+  annotation, because unlike the two pacing entries this toggle still does
+  what it says under resilient mode),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →

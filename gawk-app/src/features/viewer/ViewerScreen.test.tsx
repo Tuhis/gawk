@@ -59,7 +59,9 @@ import {
   PLAYOUT_OFFSET_MS,
   getPlayoutMode,
   getPlayoutOffsetMs,
+  getStoredPlayoutMode,
   setPlayoutMode,
+  setResilientMode,
 } from '../../transport/playout';
 
 beforeEach(() => {
@@ -259,6 +261,52 @@ describe('ViewerScreen playout modes', () => {
     expect(localStorage.getItem('gawk:interpolation')).toBe('0');
     openMenu();
     expect(screen.getByText('Frame interpolation (experimental)')).toBeTruthy();
+    cleanupPlayout();
+  });
+
+  // Review finding LIFECYCLE-2 (docs/reviews/resilient-mode-review.md): the
+  // entry was gated on the *stored* mode, but resilient mode overrides the
+  // *effective* one to adaptive — so a resilient viewer whose stored playout
+  // is 'off'/'fixed' had interpolation running with no way to turn it off.
+  it('offers interpolation under resilient mode even when the stored mode is not adaptive', async () => {
+    cleanupPlayout();
+    localStorage.removeItem('gawk:resilient-mode');
+    localStorage.setItem('gawk:playout-mode', 'off');
+    localStorage.setItem('gawk:resilient-mode', '1');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    // Stored 'off', effective 'adaptive' — the pipeline reports interpolation
+    // as live, which is precisely why the control has to be reachable.
+    expect(getStoredPlayoutMode()).toBe('off');
+    expect(getPlayoutMode()).toBe('adaptive');
+
+    act(() => sessions[0].cbs.onStats({ interpolation: 'on' }));
+    openMenu();
+    expect(screen.getByText('Frame interpolation (experimental) ✓')).toBeTruthy();
+
+    // …and it actually turns it off, leaving the stored playout mode alone.
+    fireEvent.click(screen.getByText('Frame interpolation (experimental) ✓'));
+    expect(localStorage.getItem('gawk:interpolation')).toBe('0');
+    expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
+
+    localStorage.removeItem('gawk:resilient-mode');
+    setResilientMode(false);
+    cleanupPlayout();
+  });
+
+  // The other half of "effective mode": with resilient mode off and the
+  // stored mode not adaptive, nothing is interpolating, so the entry stays
+  // absent (a stale stats sample must not resurrect it).
+  it('hides interpolation when neither the stored nor the effective mode is adaptive', async () => {
+    cleanupPlayout();
+    localStorage.setItem('gawk:playout-mode', 'fixed');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    act(() => sessions[0].cbs.onStats({ interpolation: 'on' }));
+    openMenu();
+    expect(screen.queryByText(/Frame interpolation/)).toBeNull();
     cleanupPlayout();
   });
 });

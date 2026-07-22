@@ -845,6 +845,49 @@ build). Notes and deviations:
     wire suite stays green**, in every mirror — which is exactly the gap
     reported.
 
+16. **Post-review fix (2026-07-22): the frame-interpolation menu entry was
+    keyed on the *stored* playout mode, not the effective one — `LIFECYCLE-2`
+    (low) from `docs/reviews/resilient-mode-review.md`.** Decision 7 gave
+    resilient mode a deliberate split: the stored playout mode keeps its value
+    untouched (so it regains effect the moment the mode turns off) while the
+    *effective* mode is forced to adaptive with the resilient profile —
+    `playout.ts` exposes exactly that pair (`getStoredPlayoutMode` /
+    `getPlayoutMode`). The pipeline honours the split correctly: `viewer.ts`
+    reports `stats.interpolation` non-null when `getPlayoutMode() ===
+    'adaptive'`, so a resilient viewer *is* interpolating regardless of what
+    it stored. `ViewerScreen`'s menu, though, gated the "Frame interpolation
+    (experimental)" entry on the local `playoutMode` state — the stored value.
+    A resilient viewer whose stored mode is `'off'` or `'fixed'` therefore had
+    an experimental feature running with **no control to turn it off**, which
+    is precisely the population that most wants the option: R19 exists for
+    phones, and interpolation is the most GPU-expensive thing in the viewer.
+
+    Fix, viewer UI only, test-first, one condition: the entry is gated on
+    `resilientMode || playoutMode === 'adaptive'` — the effective mode,
+    computed from the same two inputs `playout.ts` uses. Kept deliberately as
+    a local computation rather than switching the gate to `stats.playoutMode`:
+    the local state changes the instant the user toggles, while a stats sample
+    is up to a tick stale, so a viewer who turns pacing off would keep seeing
+    an interpolation entry for ~1 s. The `stats?.interpolation != null`
+    half of the condition stays — it is what still excludes the main-thread
+    path and non-WebGL2 sinks. No annotation was added to the entry (unlike
+    the two pacing entries, which resilient mode *overrides*): interpolation
+    remains genuinely user-controlled in resilient mode, so the toggle means
+    what it says.
+
+    Tests (test-first, `ViewerScreen.test.tsx`): the reproducer renders with
+    `gawk:playout-mode='off'` + `gawk:resilient-mode='1'`, asserts the split
+    at the source (`getStoredPlayoutMode() === 'off'`,
+    `getPlayoutMode() === 'adaptive'`), and requires the entry to be present,
+    checked, and to actually flip `gawk:interpolation` without disturbing the
+    stored playout mode. A negative control (stored `'fixed'`, resilient off)
+    pins that a stale `interpolation: 'on'` sample cannot resurrect the entry.
+    **Test-the-test** (mutants reverted): dropping the mode half of the
+    condition entirely — gating on `stats?.interpolation != null` alone —
+    reddens the negative control, and the original stored-mode gate reddens
+    the reproducer; the whole pre-existing viewer suite stays green under
+    both.
+
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
 product feature; X5 rides alongside; X6 last. Nothing here blocks or is
