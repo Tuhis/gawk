@@ -474,6 +474,37 @@ never built and Xvfb (b) never needed.
     waiting for the LIVE stage, through the one broadcaster retry);
     closing the publisher browser right after LIVE → red (the viewer
     times out waiting for its first completed frame). Both exit 1.
+16. **Second tier-1 viewer pass: R19 resilient mode (2026-07-22)** — from
+    review finding `PRODUCT-1` (docs/24 finding 10). The harness only ever
+    subscribed in default datagram mode, so the browser's reliable-carrier
+    reader and the `?delivery=reliable` negotiation had no end-to-end
+    coverage anywhere. `node run.mjs` now runs the viewer scenario a second
+    time with `gawk:resilient-mode` seeded before app boot (the mode is
+    negotiated at connect, so the persisted toggle is the only way in) and
+    adds `assertCarrierFlow`: `deliveryMode === 'reliable'` — the
+    `reliable-requested` degradation is a *failure* here, since both ends
+    are this build — plus carrier rotation and record growth between the two
+    captures. Aborted carriers are **recorded, not asserted**: a reset GOP
+    tail is the relay shedding a slow subscriber, which a contended runner
+    can legitimately provoke.
+    Shape notes: it reuses the running relay, publisher and preview, so the
+    marginal cost is one browser session (~12 s locally, artifacts tagged
+    `resilient-<attempt>` so neither pass overwrites the other's evidence);
+    it gets 1 retry rather than the main pass's 5, because it runs *after* a
+    scenario that already proved flow on this broadcast, so a failure points
+    at the carrier path rather than at runner weather; and the plain tier-1
+    watchdog moves 300 s → 360 s to keep the same headroom the
+    browser-broadcast mode has. It runs in the plain tier-1 step only —
+    tier 2's value is the origin/edge split (asserted per pod in
+    `cluster-assert.sh`, and `?delivery=reliable` is deliberately never
+    propagated origin→edge), and the browser-broadcast step spends its
+    budget on the encode funnel. **No loss is injected**: behaviour under
+    loss is owned by a Go relay-integration test
+    (`gawk-server/internal/transport/resilient_loss_test.go`, docs/24
+    finding 10), which gets determinism a browser on a shared runner cannot.
+    Test-the-test: seeding the toggle off makes all four assertions fire
+    (`deliveryMode = datagrams`, `carrierStreams = 0`, no rotation, no
+    records) through the retry, and the run exits 1.
 
 ## Verification plan (the meta-question: how we know the E2E itself works)
 
