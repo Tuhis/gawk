@@ -2145,6 +2145,90 @@ func TestStalledCarrierCancelledAfterDeadline(t *testing.T) {
 	}
 }
 
+// A stalled carrier record must be abandoned on the carrier's own GOP-scale
+// deadline, never on the keyframe stall tolerance (docs/24 finding 12, review
+// finding BACKPRESSURE-2). The two writes are not comparable: a keyframe is
+// ~236 KB on a stream of its own, written by a goroutine that blocks nobody,
+// so an operator can rationally be patient with it — while one ~20-byte delta
+// record is written by the drain goroutine that owns the subscriber's ENTIRE
+// delta path, so its deadline is the length of the freeze every later delta
+// inherits. Inheriting a patient keyframe timeout makes the mode built to hide
+// stalls produce one lasting several GOPs.
+func TestStalledCarrierAbandonedOnItsOwnDeadline(t *testing.T) {
+	// A fleet tuned to be patient with keyframes on slow links.
+	const keyframeTimeout = 5 * time.Second
+	// Post-fix the drain gives up after CarrierWriteTimeout (~one GOP); this
+	// bound is far above that and far below keyframeTimeout, so neither a slow
+	// CI runner nor a lucky scheduling win can blur the two.
+	const stallBound = 2 * time.Second
+
+	r := NewRegistry(discardLog, Options{KeyframeWriteTimeout: keyframeTimeout})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer sub.Close()
+
+	// A healthy GOP first: the carrier is open and delivering.
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0"))
+	p.HandleDatagram(chunkDgram(t, false, 1, 0, 1, "d1"))
+	waitCarrierRecords(t, f, 1)
+
+	// The peer's stream flow-control window closes: the next record write parks.
+	f.setCarBlock(make(chan struct{}))
+	p.HandleDatagram(chunkDgram(t, false, 2, 0, 1, "d2"))
+	waitFor(t, stallBound, func() bool {
+		_, cancelled := f.carrierStreams()[0].state()
+		return cancelled
+	}, fmt.Sprintf("the stalled carrier to be abandoned within %s (KeyframeWriteTimeout is %s — a delta record must not inherit it)",
+		stallBound, keyframeTimeout))
+
+	// And the drain is free again: the next GOP delivers on a fresh carrier
+	// without waiting out the keyframe timeout.
+	f.setCarBlock(nil)
+	ingestKeyframe(t, p, keyframeMsg(t, 3, "vp8", "KEY3"))
+	d4 := chunkDgram(t, false, 4, 0, 1, "d4")
+	p.HandleDatagram(d4)
+	waitFor(t, stallBound, func() bool { return len(f.carrierRecords(t)) >= 2 }, "delivery resumed on the next rotation")
+	records := f.carrierRecords(t)
+	if !bytes.Equal(records[len(records)-1], d4) {
+		t.Errorf("last record = %x, want d4 %x", records[len(records)-1], d4)
+	}
+}
+
+// The carrier's deadline is its own bound — except where an operator has
+// configured a keyframe stall tolerance *tighter* than it. Patience on the
+// drain that owns the whole delta path may shrink with the fleet's setting,
+// never grow past a GOP (docs/24 finding 12).
+func TestCarrierWriteTimeoutTakesTheTighterBound(t *testing.T) {
+	if CarrierWriteTimeout >= time.Second {
+		t.Fatalf("CarrierWriteTimeout = %s, want < the 1s default KeyframeWriteTimeout — "+
+			"a carrier record must never wait as long as a keyframe", CarrierWriteTimeout)
+	}
+	for _, tc := range []struct {
+		name     string
+		keyframe time.Duration
+		want     time.Duration
+	}{
+		{"default keyframe timeout", time.Second, CarrierWriteTimeout},
+		{"patient fleet", 5 * time.Second, CarrierWriteTimeout},
+		{"operator tighter than a GOP", 200 * time.Millisecond, 200 * time.Millisecond},
+		{"unset", 0, CarrierWriteTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := Options{KeyframeWriteTimeout: tc.keyframe}
+			if got := opts.carrierWriteTimeout(); got != tc.want {
+				t.Errorf("carrierWriteTimeout() = %s, want %s (KeyframeWriteTimeout %s)", got, tc.want, tc.keyframe)
+			}
+		})
+	}
+}
+
 // Carrier stream-open failures feed the same consecutive-failure eviction
 // streak as keyframe opens: a zombie subscriber (all opens failing — the
 // exhausted-stream-credit signature) is evicted with 4001 (docs/24

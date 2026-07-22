@@ -768,8 +768,9 @@ under `?delivery=reliable`, because audio aligns to the *deep video playhead*
 at resilient depth, so audio must sit there too to stay in sync.
 
 **Known residual (not fixed here):** the reliable drain is one goroutine, so a
-carrier write stalled up to `KeyframeWriteTimeout` still delays the audio
-datagrams queued behind it until the stall is cancelled — bounded and transient
+stalled carrier write still delays the audio datagrams queued behind it until
+the stall is cancelled — for up to `CarrierWriteTimeout` (500 ms since docs/24
+finding 12; it was `KeyframeWriteTimeout`, 1 s, when this was written) — bounded and transient
 (the same lossy moment would be dropping audio anyway), and vastly better than
 audio *on* the carrier permanently. Fully decoupling would need a separate audio
 queue/goroutine; deferred as a possible follow-up. **Hardware re-verification of
