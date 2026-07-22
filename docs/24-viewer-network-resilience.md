@@ -757,6 +757,57 @@ build). Notes and deviations:
     halves of this fix are not independent: the prologue can only be charged
     correctly from below the rotation check.
 
+14. **Post-review fix (2026-07-22): a reliable subscriber's queue overflow
+    dropped the *newest* record — `BACKPRESSURE-3` (low) from
+    `docs/reviews/resilient-mode-review.md`.** `enqueueLocked`'s bounded queue
+    is shared by both drains, and its overflow policy — a non-blocking send
+    that sheds the *newcomer* — is correct for the datagram drain: a datagram
+    viewer is live-edge and loss-tolerant, and the queue already holds
+    fresher-or-equal frames, so dropping the arrival is right. Reused verbatim
+    for a reliable subscriber it is backwards. The carrier delivers records in
+    order and the viewer treats them as one contiguous stream, so a queue
+    overflow forces a keyframe resync (`jumpToKeyframe`) either way — but
+    drop-newest reliably delivers the *stale* backlog in order and throws away
+    the near-live frames, stranding the viewer as far behind as the queue is
+    deep (256 records ≈ 4–8 s at 30–60 fps) at exactly the moment resilient
+    mode is supposed to keep it near live. The cost of the hole is one resync
+    regardless of which end is dropped; the choice only decides how far behind
+    live the viewer lands after it.
+
+    Fix, relay only, test-first, no wire/viewer/broadcaster change and no new
+    knob: for `s.reliable` subscribers the overflow path evicts the queue's
+    **oldest** record (a non-blocking receive) before enqueuing the newcomer,
+    so the queue trends toward live. The datagram path keeps drop-newest,
+    byte-identical. Safety of the two-step evict-then-enqueue rests on an
+    invariant already true in the code: `enqueueLocked` is the *sole* sender to
+    the queue and always runs under `registry.mu` (via `fanOutLocked`), while
+    the drain goroutine only ever *removes* — so once a head is evicted, room
+    for the newcomer is guaranteed and no concurrent sender can re-fill it. The
+    second send stays a non-blocking `select` regardless (fan-out must never
+    block under the lock); its `default` is unreachable given the invariant but
+    falls back to dropping the newcomer if that invariant ever breaks. Exactly
+    one datagram is shed per overflow either way, so the finding-11
+    accounting is unchanged: one `dropped` + one `carrierQueueOverflow` per
+    reliable overflow, `queue_full` still derivable by subtraction.
+
+    Test (test-first): `TestReliableQueueOverflowDropsOldest` parks the carrier
+    write so the drain holds one delta and the queue fills, fans out
+    `2×queueDepth` more deltas, then releases the carrier and asserts the
+    delivered records are the in-flight delta plus the **newest** `queueDepth`
+    survivors in order — the newest delta present, the oldest overflowed one
+    absent. It fails on the old drop-newest code (it delivered the oldest
+    `queueDepth`, newest absent) and passes after the evict-oldest change; the
+    existing `TestReliableQueueOverflowCountedApartFromDatagramDrops` (drop
+    count / bucketing) and `TestReliableSubscriberCarrierDelivery` (in-order
+    verbatim delivery) stay green, as does `go test -race ./internal/hub/...`.
+
+    Not done: the review's alternative "carrier-backlog cap that sheds stale
+    GOPs". Drop-oldest already preserves the near-live frames the finding is
+    about with a one-line policy change and no new state; a GOP-granular
+    backlog cap is a larger mechanism for a low-severity edge that only bites a
+    subscriber already deep in sustained overflow (a link that cannot keep up
+    at all), and is a reasonable future refinement, not a blocker.
+
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
 product feature; X5 rides alongside; X6 last. Nothing here blocks or is

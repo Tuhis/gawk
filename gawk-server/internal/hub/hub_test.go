@@ -783,9 +783,17 @@ func TestStalledSubscriberEvictedAfterConsecutiveSlowKeyframes(t *testing.T) {
 
 	for i := range KeyframeSlowEvictThreshold {
 		ingestKeyframe(t, p, keyframeMsg(t, uint32(i+1), "vp8", fmt.Sprintf("kf%02d", i)))
-		// Pace on the healthy peer so a rapid next ingest can't supersede the
-		// stalled peer's in-flight write — a superseded drop is not a slow one.
-		waitKeyframes(t, healthy, i+1)
+		// Pace on the stalled peer actually recording *this* keyframe as a slow
+		// drop before ingesting the next. Pacing on the healthy peer's receipt
+		// (as this did before) does not order the stalled peer's write: under
+		// load the next ingest can supersede the still-in-flight write, and a
+		// superseded drop is not a slow one — the consecutive-slow streak then
+		// falls short of the threshold and the eviction never fires (a real
+		// ~2.5% flake under `-race`). Only the stalled peer drops keyframes as
+		// slow (the healthy one delivers), so the aggregate count is its count.
+		waitFor(t, 5*time.Second, func() bool {
+			return singleBroadcastStats(t, r).KeyframeDrops.Slow == uint64(i+1)
+		}, "stalled keyframe to be counted as a slow drop")
 	}
 
 	waitFor(t, 5*time.Second, func() bool {
@@ -2360,6 +2368,89 @@ func TestReliableQueueOverflowCountedApartFromDatagramDrops(t *testing.T) {
 	}
 	if total := r.Stats().Totals.CarrierQueueOverflow; total != wantOverflow {
 		t.Errorf("Totals.CarrierQueueOverflow = %d, want %d", total, wantOverflow)
+	}
+}
+
+// When a reliable subscriber's carrier drain falls behind and its bounded delta
+// queue overflows, the queue must shed its *oldest* records, not the newcomer
+// (docs/24 finding 14, review finding BACKPRESSURE-3). The carrier delivers
+// records reliably and in order, so an overflow hole forces the viewer to freeze
+// and resync at a keyframe either way — but dropping the newest strands it
+// replaying a stale backlog, the opposite of what resilient mode is for, while
+// dropping the oldest keeps the queue trending toward live so the resync lands
+// as close to the live edge as possible. The distinguishing signal: the newest
+// delta fanned out before the drain caught up reaches the carrier; the oldest
+// overflowed ones do not.
+func TestReliableQueueOverflowDropsOldest(t *testing.T) {
+	const queueDepth = 4
+	// A write deadline far past the test so the parked carrier never times out on
+	// its own — the backlog is entirely deterministic.
+	r := NewRegistry(discardLog, Options{QueueDepth: queueDepth, KeyframeWriteTimeout: time.Minute})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+
+	f := &fakeSender{}
+	f.setCarBlock(make(chan struct{})) // every carrier write parks
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	// d0 is pulled by the drain, which opens a carrier and parks on the prologue
+	// write. Wait for the open so the queue state below is deterministic: the
+	// drain is now stuck holding exactly d0, and nothing else leaves the queue.
+	deltas := make([][]byte, 0, queueDepth*2+1)
+	d0 := chunkDgram(t, false, 1, 0, 1, "d000")
+	deltas = append(deltas, d0)
+	p.HandleDatagram(d0)
+	waitFor(t, 5*time.Second, func() bool { return f.carrierOpens() >= 1 },
+		"the drain to open a carrier and park")
+
+	// Fill the queue to capacity, then overflow it by another queueDepth deltas.
+	// With the drain parked, every enqueue past capacity overflows deterministically.
+	for i := 1; i <= queueDepth*2; i++ {
+		d := chunkDgram(t, false, uint32(i+1), 0, 1, fmt.Sprintf("d%03d", i))
+		deltas = append(deltas, d)
+		p.HandleDatagram(d)
+	}
+	waitFor(t, 5*time.Second, func() bool { return sub.Dropped() >= queueDepth },
+		"the queue to overflow by queueDepth deltas")
+
+	// Release the carrier: the drain writes d0's record, then the queue's
+	// survivors in FIFO order.
+	close(f.carBlock)
+	waitCarrierRecords(t, f, queueDepth+1)
+	sub.Close()
+
+	// Drop-oldest keeps the newest queueDepth deltas plus the in-flight d0:
+	// [d0, d5, d6, d7, d8] for queueDepth=4. Drop-newest — the datagram policy,
+	// the bug — would keep [d0, d1, d2, d3, d4] and strand the viewer behind.
+	got := f.carrierRecords(t)
+	want := append([][]byte{deltas[0]}, deltas[len(deltas)-queueDepth:]...)
+	if len(got) != len(want) {
+		t.Fatalf("carrier records = %d, want %d (d0 + %d newest survivors)", len(got), len(want), queueDepth)
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Errorf("record %d = %x, want %x — reliable overflow must drop the oldest, not the newest", i, got[i], want[i])
+		}
+	}
+
+	containsRecord := func(target []byte) bool {
+		for _, r := range got {
+			if bytes.Equal(r, target) {
+				return true
+			}
+		}
+		return false
+	}
+	if newest := deltas[len(deltas)-1]; !containsRecord(newest) {
+		t.Errorf("newest delta %x missing from carrier records — drop-oldest must keep it", newest)
+	}
+	if oldest := deltas[1]; containsRecord(oldest) {
+		t.Errorf("oldest overflowed delta %x present in carrier records — it should have been dropped", oldest)
 	}
 }
 
