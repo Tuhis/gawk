@@ -12,7 +12,8 @@ import {
   MAX_BUFFERED_FRAMES,
   type ReleasedFrame,
 } from './reorder-buffer';
-import { QUANTILE_BIN_MS } from './live-edge';
+import { LIVE_EDGE_WINDOW_MS, QUANTILE_BIN_MS, QUANTILE_RANGE_MS } from './live-edge';
+import { PlayoutController, RESILIENT_PLAYOUT_PROFILE } from './playout';
 import {
   RESILIENT_DELTA_GAP_GRACE_MS,
   RESILIENT_KEYFRAME_WAIT_MS,
@@ -596,5 +597,159 @@ describe('ReorderBuffer resilient profile (R19)', () => {
     clock.t += DELTA_GAP_GRACE_MS + 5;
     rb.tick();
     expect(rb.getStats().gapResyncs).toBe(1);
+  });
+});
+
+// R19 hardening — PLAYOUT-1 (docs/reviews/resilient-mode-review.md): the
+// resilient offset envelope goes to 2000 ms, but the signal driving it —
+// arrival jitter — was measured by a histogram whose range is 500 ms, so
+// `p95 − min` saturated at ~500 and the controller could never climb past
+// ~534 ms. The histogram geometry now comes from the active playout profile.
+//
+// The scenario below is the one the mode exists for: a retransmit stall holds
+// a burst of deltas, then delivers them at once. Every held frame lands in the
+// SAME arrival bucket as the fresh ones that follow it, which is exactly where
+// the per-bucket clamp bit.
+describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () => {
+  afterEach(() => setResilientModeFlag(false));
+
+  // Frames stamped on the broadcaster clock; the viewer clock runs
+  // BASE_DELTA_MS ahead of it (unknown offset + best-case latency), so a
+  // frame delivered on time reads an arrival delta of exactly BASE_DELTA_MS.
+  const BASE_DELTA_MS = 1000;
+  const FRAME_INTERVAL_MS = 1000 / 30;
+
+  // Offset injected as 0: this suite is about the estimator, not pacing.
+  function jitterHarness() {
+    const clock = { t: 0 };
+    const rb = new ReorderBuffer(
+      () => {},
+      () => clock.t,
+      { playoutOffsetMs: () => 0 },
+    );
+    let frameId = 0;
+    let captureMs = 0;
+    return {
+      rb,
+      clock,
+      // The opening keyframe, delivered on time like everything else — an
+      // arrival delta of 0 here would anchor the windowed min at 0 and make
+      // every jitter reading below meaningless.
+      keyframe() {
+        captureMs += FRAME_INTERVAL_MS;
+        clock.t = captureMs + BASE_DELTA_MS;
+        rb.pushKeyframe({
+          frameId,
+          timestampUs: BigInt(Math.round(captureMs * 1000)),
+          config: null,
+          data: new Uint8Array([0]),
+        });
+      },
+      // Delivers `count` frames on time, advancing the clock with them.
+      steady(count: number) {
+        for (let i = 0; i < count; i++) {
+          captureMs += FRAME_INTERVAL_MS;
+          clock.t = captureMs + BASE_DELTA_MS;
+          rb.pushDelta({
+            frameId: ++frameId,
+            timestampUs: BigInt(Math.round(captureMs * 1000)),
+            data: new Uint8Array([frameId & 0xff]),
+          });
+        }
+      },
+      // A stall of `stallMs`: frames keep being captured but nothing is
+      // delivered, then the whole backlog lands in one burst.
+      stallThenBurst(stallMs: number) {
+        const held: number[] = [];
+        for (let held_ms = 0; held_ms < stallMs; held_ms += FRAME_INTERVAL_MS) {
+          captureMs += FRAME_INTERVAL_MS;
+          held.push(captureMs);
+        }
+        clock.t = captureMs + BASE_DELTA_MS; // the burst arrives when the link recovers
+        for (const ts of held) {
+          rb.pushDelta({
+            frameId: ++frameId,
+            timestampUs: BigInt(Math.round(ts * 1000)),
+            data: new Uint8Array([frameId & 0xff]),
+          });
+        }
+      },
+    };
+  }
+
+  it('measures a 1400 ms stall as >1 s of jitter in resilient mode', () => {
+    setResilientModeFlag(true);
+    const h = jitterHarness();
+    h.keyframe();
+    h.steady(20);
+    h.stallThenBurst(1400);
+
+    const jitter = h.rb.arrivalJitterMs();
+    expect(jitter).not.toBeNull();
+    // The oldest held frame is ~1400 ms late; p95 across the window must land
+    // deep in the burst, not against a 500 ms histogram wall.
+    expect(jitter!).toBeGreaterThan(1000);
+  });
+
+  it('lets the resilient controller reach past 1 s from the measured signal', () => {
+    setResilientModeFlag(true);
+    const h = jitterHarness();
+    h.keyframe();
+    const controller = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
+    // A link that stalls repeatedly, sampled the way the pipeline does it.
+    for (let round = 0; round < 12; round++) {
+      h.steady(15);
+      h.stallThenBurst(1400);
+      controller.update(h.rb.arrivalJitterMs(), h.clock.t);
+    }
+    expect(controller.offsetMs()).toBeGreaterThan(1000);
+  });
+
+  it('keeps the default profile on its 500 ms histogram', () => {
+    const h = jitterHarness(); // resilient off
+    h.keyframe();
+    h.steady(20);
+    h.stallThenBurst(1400);
+
+    const jitter = h.rb.arrivalJitterMs();
+    expect(jitter).not.toBeNull();
+    // Live-edge mode never buffers past MAX_PLAYOUT_OFFSET_MS, so the narrow
+    // histogram stays exactly as it shipped — the saturation is by design here.
+    expect(jitter!).toBeLessThanOrEqual(QUANTILE_RANGE_MS + QUANTILE_BIN_MS);
+  });
+
+  it('follows a profile change made after construction', () => {
+    // A mode flip is a deliberate reconnect in production, so this only
+    // guards the estimator against ever being left on the wrong geometry.
+    const h = jitterHarness(); // constructed with resilient off
+    h.keyframe();
+    h.steady(20);
+    h.stallThenBurst(1400);
+    expect(h.rb.arrivalJitterMs()!).toBeLessThanOrEqual(QUANTILE_RANGE_MS + QUANTILE_BIN_MS);
+
+    setResilientModeFlag(true);
+    h.steady(20);
+    h.stallThenBurst(1400);
+    expect(h.rb.arrivalJitterMs()!).toBeGreaterThan(1000);
+  });
+
+  // PLAYOUT-3, the second half of the same fix: a 60 s window makes the
+  // resilient offset react on a minute timescale. The resilient profile
+  // measures over a much shorter window, so a cleaned-up link is reflected
+  // in seconds — the down direction stays governed by the controller's dwell
+  // and slew, which is where that memory belongs.
+  it('ages a stall out of the resilient jitter window within seconds', () => {
+    setResilientModeFlag(true);
+    const h = jitterHarness();
+    h.keyframe();
+    h.steady(20);
+    h.stallThenBurst(1400);
+    expect(h.rb.arrivalJitterMs()!).toBeGreaterThan(1000);
+
+    // The link cleans up: steady delivery for the whole resilient window.
+    const windowMs = RESILIENT_PLAYOUT_PROFILE.jitterWindowMs;
+    h.steady(Math.ceil((windowMs + 2000) / FRAME_INTERVAL_MS));
+    expect(h.rb.arrivalJitterMs()!).toBeLessThan(QUANTILE_BIN_MS * 2);
+    expect(windowMs).toBeLessThan(LIVE_EDGE_WINDOW_MS);
   });
 });
