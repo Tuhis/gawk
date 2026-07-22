@@ -357,7 +357,26 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   was deliberately **not** taken: it can't bound an already-blocked write, and
   dropping the in-hand record on rotation would discard deltas the healthy
   path delivers. Relay-only, test-first, zero wire/viewer/broadcaster
-  changes),
+  changes. **Post-review fix 2026-07-22 (docs/24 finding 13, review findings
+  `BW-CHARGE` + the `BACKPRESSURE-4` it is paired with)**: `drainReliable`
+  charged `consumeBandwidth` at the *top* of the loop — before the rotation,
+  `carDead`/`closed` and carrier-open decisions — so every record it then
+  dropped had already debited the cap. That cap is one process-wide bucket
+  shared by **every broadcast on the pod**, so a dead GOP's tail (all of it,
+  after one failed open) was paid for by *unrelated* broadcasts' viewers, in
+  bytes that never reached a wire; the mirror image was the 2-byte carrier
+  prologue, counted into `egressCarrierBytes` but never charged. Now one
+  charge per record, taken **below** the drop decisions, for exactly the
+  bytes that record puts on the wire — the record plus the prologue when it
+  is the record whose lazy open starts the GOP's carrier (one charge site,
+  and an over-cap drop is decided before a stream exists, where `openCarrier`
+  would already have written the prologue). Charge and drop accounting share
+  one `n`. Deliberately **not** "charge only on a successful write": a cap
+  that debits after the bytes are gone can't refuse anything, so the
+  datagram path's check-then-send ordering stands and a record whose write
+  *fails* stays charged (one record per dead GOP, not the tail). Inert on a
+  default fleet — `-max-bandwidth` unset ⇒ no limiter. Relay-only,
+  test-first, zero wire/viewer/broadcaster changes),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →

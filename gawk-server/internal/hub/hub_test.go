@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -2395,7 +2396,157 @@ func TestCarrierBandwidthCapDropsRecords(t *testing.T) {
 	if stats.BandwidthDroppedDatagrams != 1 {
 		t.Errorf("BandwidthDroppedDatagrams = %d, want 1", stats.BandwidthDroppedDatagrams)
 	}
-	if want := uint64(wire.CarrierRecordHeaderSize + len(d1)); stats.BandwidthDroppedBytes != want {
-		t.Errorf("BandwidthDroppedBytes = %d, want %d (record size incl. prefix)", stats.BandwidthDroppedBytes, want)
+	if want := uint64(wire.CarrierPrologueSize + wire.CarrierRecordHeaderSize + len(d1)); stats.BandwidthDroppedBytes != want {
+		t.Errorf("BandwidthDroppedBytes = %d, want %d (record incl. prefix, plus the prologue this record would have opened with)",
+			stats.BandwidthDroppedBytes, want)
+	}
+}
+
+// freezeBandwidthBudget re-tunes the registry's egress limiter into a large,
+// effectively static budget: a rate this low refills a thousandth of a byte per
+// second, so what the drain debited over a test is exactly what it charged —
+// assertable as a number rather than as an inequality. The rate must stay above
+// zero; consume() reads a non-positive rate as "no limit" and never touches the
+// balance at all.
+func freezeBandwidthBudget(t *testing.T, r *Registry) {
+	t.Helper()
+	if r.limiter == nil {
+		t.Fatal("registry has no bandwidth limiter (set Options.MaxBandwidthBytes)")
+	}
+	r.limiter.mu.Lock()
+	defer r.limiter.mu.Unlock()
+	r.limiter.rate = 0.001
+	r.limiter.burst = 1 << 20
+	r.limiter.tokens = 1 << 20
+	r.limiter.last = time.Now()
+}
+
+// bandwidthBalance reads the frozen budget's remaining tokens.
+func bandwidthBalance(r *Registry) float64 {
+	r.limiter.mu.Lock()
+	defer r.limiter.mu.Unlock()
+	return r.limiter.tokens
+}
+
+// A record the drain has already decided not to write must not debit the egress
+// cap (docs/24 finding 13, review finding BW-CHARGE). That cap is a single
+// process-wide token bucket shared by every broadcast on the pod, so bytes
+// charged for records that never reach a stream throttle *other* broadcasts'
+// viewers — a phantom debit. The shape it takes is a whole GOP tail: once a
+// carrier open fails the rest of the GOP is dropped at the top of the loop, and
+// each of those drops used to pay full freight on the way out.
+func TestDeadCarrierRecordsDoNotDebitEgressCap(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxBandwidthBytes: 1 << 20})
+	freezeBandwidthBudget(t, r)
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	// Every carrier open fails, so the GOP dies on its first record and the
+	// whole tail behind it is dropped without a stream ever existing.
+	f := &fakeSender{carOpenErr: errors.New("stream credit exhausted")}
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer sub.Close()
+
+	// sendKeyframe charges inline on the ingest goroutine (only the write is
+	// deferred), so once this returns the keyframe's own debit has landed and
+	// the balance below is a clean baseline for the records.
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0"))
+	before := bandwidthBalance(r)
+
+	const tail = 5
+	deltas := make([][]byte, tail)
+	for i := range deltas {
+		deltas[i] = chunkDgram(t, false, uint32(i+1), 0, 1, "d")
+		p.HandleDatagram(deltas[i])
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return sub.carrierRecordsDropped.Load() == tail
+	}, "the whole GOP tail dropped for a dead carrier")
+
+	// One open is attempted per rotation, so exactly one record was ever
+	// destined for the wire: its own bytes plus the prologue that open would
+	// have written. The four behind it died at the top of the loop and are
+	// worth nothing.
+	want := wire.CarrierPrologueSize + wire.CarrierRecordHeaderSize + len(deltas[0])
+	if got := int(math.Round(before - bandwidthBalance(r))); got != want {
+		t.Errorf("egress budget debited %d bytes for %d records the drain refused to write, want %d "+
+			"(only the record that reached an open attempt) — a dropped record must not spend a budget shared with every other broadcast",
+			got, tail, want)
+	}
+	// And a dead carrier is not a bandwidth failure: the cap was never the
+	// reason anything here was dropped, and must not read as though it were.
+	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if stats.BandwidthDroppedDatagrams != 0 {
+		t.Errorf("BandwidthDroppedDatagrams = %d, want 0 (these records died with the carrier, not against the cap)",
+			stats.BandwidthDroppedDatagrams)
+	}
+	if stats.EgressCarrierBytes != 0 {
+		t.Errorf("EgressCarrierBytes = %d, want 0 (nothing reached a stream)", stats.EgressCarrierBytes)
+	}
+}
+
+// The carrier prologue rides the same budget as the records behind it (docs/24
+// finding 13, review finding BACKPRESSURE-4). Two bytes per GOP is nothing in
+// itself, but a cap with a hole in it is not a cap, and the invariant that pays
+// for the rest of the accounting being reviewable is that every carrier byte
+// the relay puts on the wire is charged exactly once — once per GOP for the
+// prologue, once per record for a record.
+func TestCarrierPrologueChargedOncePerGOP(t *testing.T) {
+	r := NewRegistry(discardLog, Options{MaxBandwidthBytes: 1 << 20})
+	freezeBandwidthBudget(t, r)
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer sub.Close()
+
+	// spend charges one delta through and reports what the budget lost. The
+	// record's bytes are visible to the fake only after its write, which the
+	// charge precedes — so by the time the record shows up the debit is final.
+	records := 0
+	spend := func(dgram []byte) int {
+		t.Helper()
+		before := bandwidthBalance(r)
+		p.HandleDatagram(dgram)
+		records++
+		waitCarrierRecords(t, f, records)
+		return int(math.Round(before - bandwidthBalance(r)))
+	}
+	record := func(dgram []byte) int { return wire.CarrierRecordHeaderSize + len(dgram) }
+
+	// GOP 1. The first record lazily opens the carrier and so pays for the
+	// prologue too; the second rides a carrier that already exists.
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0"))
+	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
+	if got, want := spend(d1), wire.CarrierPrologueSize+record(d1); got != want {
+		t.Errorf("first record of a GOP debited %d bytes, want %d (record + the prologue its open writes)", got, want)
+	}
+	d2 := chunkDgram(t, false, 2, 0, 1, "d2")
+	if got, want := spend(d2), record(d2); got != want {
+		t.Errorf("second record of a GOP debited %d bytes, want %d (no second prologue on one carrier)", got, want)
+	}
+
+	// GOP 2. The keyframe rotates the carrier, so the next record opens a
+	// fresh one and pays for a fresh prologue.
+	ingestKeyframe(t, p, keyframeMsg(t, 3, "vp8", "KEY3"))
+	d4 := chunkDgram(t, false, 4, 0, 1, "d4")
+	if got, want := spend(d4), wire.CarrierPrologueSize+record(d4); got != want {
+		t.Errorf("first record after a rotation debited %d bytes, want %d (the new carrier's prologue is charged too)", got, want)
+	}
+
+	// Closing the loop: what the cap was charged is what the operator is told
+	// went out. If these two ever disagree, one of them is lying.
+	wantEgress := uint64(2*wire.CarrierPrologueSize + record(d1) + record(d2) + record(d4))
+	if got := r.Stats().Broadcasts[r.ObfuscateID(id)].EgressCarrierBytes; got != wantEgress {
+		t.Errorf("EgressCarrierBytes = %d, want %d (the bytes charged to the cap)", got, wantEgress)
 	}
 }

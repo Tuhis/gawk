@@ -192,7 +192,9 @@ throughput, ugly loss/jitter.
    - **Egress bandwidth cap applies**: carrier bytes pass
      `consumeBandwidth` exactly like keyframe stream bytes do today
      (`sendKeyframe` precedent) — reliable delivery must not become a cap
-     bypass.
+     bypass. Charged once per record, for the record plus the prologue of
+     the carrier that record opens, and only after the drain has decided
+     the record is actually going out (finding 13).
    - **No new knobs in v1**: `QueueDepth`, `KeyframeWriteTimeout`,
      subscriber caps and the bandwidth cap cover the resilient path with
      their existing values (any new knob would cross `registryOptions` in
@@ -686,6 +688,74 @@ build). Notes and deviations:
     goroutine, so a stalled record delays the audio datagrams queued behind
     it — now for ≤ 500 ms rather than ≤ 1 s (docs/20 field finding 5's known
     residual).
+
+13. **Post-review fix (2026-07-22): the egress cap was charged for records
+    the drain had already decided not to write — `BW-CHARGE` (medium,
+    reported independently as `BACKPRESSURE-1`/`DRAIN-1`) from
+    `docs/reviews/resilient-mode-review.md`, together with the low-severity
+    `BACKPRESSURE-4` the review pairs with it.** `drainReliable` charged
+    `consumeBandwidth` at the *top* of the loop, before the rotation check,
+    the `carDead`/`closed` check and the carrier open — so every record the
+    loop then dropped had already debited the cap. That cap is one
+    process-wide token bucket shared by **every broadcast on the pod**, so
+    the debit is not paid by the viewer whose record died: it is paid by
+    unrelated broadcasts, whose datagrams get bandwidth-dropped to fund
+    bytes that never existed. The failure shape is a whole GOP tail — once
+    `openCarrier` fails, `carDead` drops every remaining record of that GOP
+    at the top of the loop, and each one used to pay full freight on the way
+    out. It also contradicted the code's own comment ("charged per record as
+    written"). Mirror-image on the other side: `openCarrier`'s 2-byte
+    prologue was counted into `egressCarrierBytes` but never charged
+    (`BACKPRESSURE-4`) — a small, permanent hole in the cap and in the
+    invariant that makes the accounting reviewable at all. Both are inert
+    on a default fleet (`-max-bandwidth` unset ⇒ `limiter == nil`), which is
+    why this ranks below findings 8–12. Fix, relay only, no
+    wire/viewer/broadcaster change and no new knob:
+    - **One charge per record, taken below the drop decisions**, for exactly
+      the bytes that record is about to put on the wire: `len(record)`, plus
+      `wire.CarrierPrologueSize` when it is the record whose lazy open
+      starts this GOP's carrier. The rotation/`carDead`/`closed` checks and
+      the record marshalling now all run *before* the charge.
+    - **The prologue is charged by the record that opens the carrier**,
+      rather than inside `openCarrier`. One charge site keeps the invariant
+      statable in a sentence, and an over-cap drop at that point is decided
+      *before* a stream exists — where `openCarrier` would already have
+      written the prologue and set `carCurrent` before it could refuse.
+    - Charging and dropping use the same `n`, so `bandwidthDroppedBytes`
+      keeps meaning "bytes we intended to send and could not" (a
+      cap-refused first record of a GOP now counts its prologue too).
+    - Moving the rotation check above the charge is a small bonus: an
+      over-cap record now still retires the previous GOP's carrier instead
+      of leaving it open until some later record passes the cap.
+
+    **Deliberately not "charge only on successful write"** (the review's
+    first suggestion). A cap that debits after the bytes are gone cannot
+    refuse anything — the datagram path's check-then-send ordering is what
+    makes `-max-bandwidth` a limit rather than a meter, and reliable
+    delivery must not get a weaker rule than datagrams. The residual
+    imprecision is therefore bounded and intended: a record whose
+    `openCarrier` or `writeCarrier` *fails* stays charged, exactly as a
+    datagram whose `SendDatagram` fails does. That is one record per dead
+    GOP (at most one open attempt per rotation), not the GOP tail.
+
+    Tests (test-first, `internal/hub`):
+    `TestDeadCarrierRecordsDoNotDebitEgressCap` fails every carrier open and
+    pushes a five-record GOP tail through a frozen budget — 115 bytes
+    debited before the fix, 25 after (the one record that reached an open
+    attempt, prologue included) — and asserts the drops do not masquerade as
+    bandwidth drops. `TestCarrierPrologueChargedOncePerGOP` measures the
+    debit per record across a rotation (prologue + record, record, prologue
+    + record) and closes the loop against `EgressCarrierBytes`, so the cap
+    and the operator-visible egress counter can't drift apart.
+    `TestCarrierBandwidthCapDropsRecords`'s expectation moves by the
+    prologue's two bytes — the one deliberate behaviour change to an
+    existing assertion. **Test-the-test** (mutant reverted afterwards):
+    putting the charge back at the top of the loop while *keeping* the
+    prologue in it reddens both new tests — 125 bytes for the dead GOP, and
+    no prologue charged after a rotation, because above the rotation check
+    `currentCarrier()` still returns the previous GOP's carrier. The two
+    halves of this fix are not independent: the prologue can only be charged
+    correctly from below the rotation check.
 
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
