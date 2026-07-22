@@ -106,6 +106,65 @@ describe('readServerStreams — keyframes', () => {
   });
 });
 
+describe('readServerStreams — in-flight task pruning (INGEST-1)', () => {
+  it('keeps the working set proportional to open streams, not session length', async () => {
+    // A long mobile session accepts thousands of short-lived server streams
+    // (keyframe + carrier per GOP). Each must be dropped from the in-flight
+    // set the moment it settles; the pre-fix code kept one settled promise per
+    // stream for the whole session, an unbounded slow leak that bites the
+    // hours-long viewers resilient mode targets.
+    const N = 40;
+    const kf = () =>
+      encodeStreamFrame({ keyframe: true, frameId: 1, timestampUs: 0n }, new Uint8Array(0), new Uint8Array(4).fill(1));
+
+    let delivered = 0;
+    const incoming = new ReadableStream<ReadableStream<Uint8Array>>({
+      // A macrotask gap between accepts drains the microtask queue, so the
+      // previously-accepted stream's task fully settles (and, once fixed,
+      // prunes) before the next stream is accepted. The observed peak then
+      // reflects true concurrency rather than timing luck.
+      pull(controller) {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            if (delivered < N) {
+              delivered++;
+              controller.enqueue(
+                new ReadableStream<Uint8Array>({
+                  start(inner) {
+                    inner.enqueue(kf());
+                    inner.close();
+                  },
+                }),
+              );
+            } else {
+              controller.close();
+            }
+            resolve();
+          }, 0);
+        });
+      },
+    });
+    const wt = { incomingUnidirectionalStreams: incoming } as unknown as WebTransport;
+
+    let peakInFlight = 0;
+    let kfCount = 0;
+    const counters = newCarrierCounters();
+    await readServerStreams(
+      wt,
+      { onKeyframe: () => kfCount++, onCarrierRecord: () => {} },
+      counters,
+      undefined,
+      { onInFlightChange: (n) => (peakInFlight = Math.max(peakInFlight, n)) },
+    );
+
+    // Every stream was actually read to completion...
+    expect(kfCount).toBe(N);
+    // ...yet the transport never held more than a couple of tasks at once.
+    // Pre-fix this reached N (the array never shrank).
+    expect(peakInFlight).toBeLessThanOrEqual(2);
+  });
+});
+
 describe('readServerStreams — reliable carriers (R19)', () => {
   const dgram = (frameId: number) =>
     encodeVideoChunk(
