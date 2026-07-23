@@ -956,6 +956,17 @@ build). Notes and deviations:
     also explain the edge pod's zero overflow. These three fixes bound the
     damage; they do not explain it.
 
+18. **Superseded by R21 (2026-07-23): the Resilient toggle is now the middle
+    of three modes.** Decision 9's boolean became a radio group — live edge /
+    resilient / deep buffer (docs/26 Decision 15) — because R21's ring makes a
+    multi-second buffer worth offering, and folding that into this toggle
+    would have turned ~0.5 s of latency into ~3 s for every existing resilient
+    viewer without them choosing it. Everything else in R19 is unchanged:
+    `resilient` still means exactly what it meant here (carrier delivery, the
+    wider reorder profile, adaptive pacing), the legacy
+    `gawk:resilient-mode` key migrates to it, and `getResilientMode()` still
+    reads "not live-edge" for every call site in this document.
+
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
 product feature; X5 rides alongside; X6 last. Nothing here blocks or is

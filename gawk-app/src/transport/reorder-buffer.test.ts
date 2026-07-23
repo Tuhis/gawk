@@ -18,7 +18,7 @@ import {
   RESILIENT_DELTA_GAP_GRACE_MS,
   RESILIENT_KEYFRAME_WAIT_MS,
   RESILIENT_MAX_BUFFERED_FRAMES,
-  setResilientModeFlag,
+  setViewerDeliveryModeFlag,
 } from './resilient';
 
 function harness() {
@@ -537,10 +537,10 @@ describe('ReorderBuffer decode lead (R12 T2)', () => {
 // on and revert the moment it's off — the default-mode suites above run with
 // it off and are untouched.
 describe('ReorderBuffer resilient profile (R19)', () => {
-  afterEach(() => setResilientModeFlag(false));
+  afterEach(() => setViewerDeliveryModeFlag('live'));
 
   it('waits out RTT-scale delta stragglers before declaring a gap', () => {
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     const { rb, clock } = harness();
     rb.pushKeyframe(kf(0));
     rb.pushDelta(delta(2)); // next=1 missing
@@ -555,7 +555,7 @@ describe('ReorderBuffer resilient profile (R19)', () => {
 
     // The cross-carrier straggler arriving inside the widened grace decodes.
     const second = harness();
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     second.rb.pushKeyframe(kf(0));
     second.rb.pushDelta(delta(2));
     second.clock.t += RESILIENT_DELTA_GAP_GRACE_MS - 10;
@@ -564,7 +564,7 @@ describe('ReorderBuffer resilient profile (R19)', () => {
   });
 
   it('holds undecodable frames up to the widened keyframe wait', () => {
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     const { rb, clock } = harness();
     rb.pushDelta(delta(5)); // no keyframe yet
 
@@ -578,7 +578,7 @@ describe('ReorderBuffer resilient profile (R19)', () => {
   });
 
   it('bounds the buffer at the widened frame cap', () => {
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     const { rb } = harness();
     rb.pushKeyframe(kf(0));
     // Skip frame 1 so everything above buffers.
@@ -589,8 +589,8 @@ describe('ReorderBuffer resilient profile (R19)', () => {
   });
 
   it('reverts to the default bounds the moment resilient mode is off', () => {
-    setResilientModeFlag(true);
-    setResilientModeFlag(false);
+    setViewerDeliveryModeFlag('resilient');
+    setViewerDeliveryModeFlag('live');
     const { rb, clock } = harness();
     rb.pushKeyframe(kf(0));
     rb.pushDelta(delta(2));
@@ -611,7 +611,7 @@ describe('ReorderBuffer resilient profile (R19)', () => {
 // SAME arrival bucket as the fresh ones that follow it, which is exactly where
 // the per-bucket clamp bit.
 describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () => {
-  afterEach(() => setResilientModeFlag(false));
+  afterEach(() => setViewerDeliveryModeFlag('live'));
 
   // Frames stamped on the broadcaster clock; the viewer clock runs
   // BASE_DELTA_MS ahead of it (unknown offset + best-case latency), so a
@@ -678,7 +678,7 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
   }
 
   it('measures a 1400 ms stall as >1 s of jitter in resilient mode', () => {
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     const h = jitterHarness();
     h.keyframe();
     h.steady(20);
@@ -692,7 +692,7 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
   });
 
   it('lets the resilient controller reach past 1 s from the measured signal', () => {
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     const h = jitterHarness();
     h.keyframe();
     const controller = new PlayoutController(RESILIENT_PLAYOUT_PROFILE);
@@ -727,7 +727,7 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
     h.stallThenBurst(1400);
     expect(h.rb.arrivalJitterMs()!).toBeLessThanOrEqual(QUANTILE_RANGE_MS + QUANTILE_BIN_MS);
 
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     h.steady(20);
     h.stallThenBurst(1400);
     expect(h.rb.arrivalJitterMs()!).toBeGreaterThan(1000);
@@ -739,7 +739,7 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
   // in seconds — the down direction stays governed by the controller's dwell
   // and slew, which is where that memory belongs.
   it('ages a stall out of the resilient jitter window within seconds', () => {
-    setResilientModeFlag(true);
+    setViewerDeliveryModeFlag('resilient');
     const h = jitterHarness();
     h.keyframe();
     h.steady(20);

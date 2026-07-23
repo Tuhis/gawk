@@ -11,5 +11,6 @@ data:
   config.js: |
     window.__GAWK_CONFIG__ = {
       "requirePublishSecret": {{ .Values.config.requirePublishSecret | default false }},
-      "maxDecoderQueueSize": {{ .Values.config.maxDecoderQueueSize | default 5 }}
+      "maxDecoderQueueSize": {{ .Values.config.maxDecoderQueueSize | default 5 }},
+      "dvrBufferMs": {{ .Values.config.dvrBufferMs | default 3000 }}
     };

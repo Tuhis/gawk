@@ -156,8 +156,10 @@ and the value is the viewer's guaranteed FLOOR, not its current offset.**
 Query params are the established negotiation surface (publish secret, then
 `delivery` itself) because the WebTransport JS API cannot set headers.
 
-`buffer` carries `RESILIENT_PLAYOUT_PROFILE.minMs` — the viewer's *minimum*
-playout offset, not the one it happens to be running. The distinction is
+`buffer` carries the Deep-buffer floor (`DVR_BUFFER_MS`, a deploy-time value —
+see Decision 16) and is sent **only by a viewer on the Deep buffer step**
+(Decision 15). It is the viewer's *minimum* playout offset, not the one it
+happens to be running. The distinction is
 load-bearing: the viewer's offset is adaptive (`PlayoutController` slews between
 `minMs` and `maxMs` on measured jitter), so any snapshot is stale the moment it
 is sent, while the floor is a static property of the profile. Because it is a
@@ -349,6 +351,39 @@ Decision 7a proposes the one deliberate exception: a 4-byte join-time
 a control message, not a media one, and it is recommended precisely because the
 alternative is an unobservable mode.
 
+**15. The viewer control is one axis with three points, not a second toggle.**
+R19 shipped a boolean "Resilient mode (mobile networks)". R21 cannot simply
+ride on it: that toggle means an adaptive buffer of roughly 150–500 ms, and
+letting it silently become 3 s on a relay upgrade would hand every existing
+resilient viewer a **10x latency change they never asked for**, visible only in
+the stats overlay.
+
+Nor is a second boolean right. Live-edge, resilient and deep are three points
+on one axis — each step buys smoothness with delay — and "resilient + deep" is
+not a state that exists. Two booleans would have made two controls out of one
+choice, in a menu that already carries paced playback and interpolation.
+
+So the menu renders a **radio group**: `Live edge — lowest latency`,
+`Resilient mode — mobile networks, ~0.5 s behind`, `Deep buffer — rides out
+dropouts, seconds behind`. Each label states its cost, because the cost *is*
+the choice. Persisted as `gawk:viewer-delivery`; the legacy
+`gawk:resilient-mode` boolean migrates to **`resilient`, never to `deep`**.
+
+Internally the third state is a superset of the second, which is what lets
+`getResilientMode()` keep meaning "not live-edge" — every R19 call site
+(reorder profile, adaptive pacing, carrier delivery) reads it unchanged, and
+only two things consult the new `getDeepBuffer()`: whether to send `buffer=`,
+and which playout profile to use once granted.
+
+**16. The Deep-buffer floor is a deploy-time value, not a constant.**
+`config.dvrBufferMs` in the gawk-app chart, rendered into `/config.js` beside
+`maxDecoderQueueSize`, pairing with the relay chart's `config.dvrWindow` that
+clamps it. DV6 exists to *set* this number by measurement, and needing an image
+rebuild to re-tune it would make that loop far more expensive than it should
+be. Clamped client-side to [1000, 30000]: below the relay's `MinDVRBufferMs`
+the request is downgraded anyway, and a value in the minutes is a configuration
+error rather than a choice.
+
 ## What the viewer needs (less than you would think)
 
 The viewer already accepts frames whose `releasableAt` is in the future — that
@@ -424,6 +459,10 @@ Deviations worth knowing before touching this:
   sideband from their own goroutine — a two-second-old viewer count is worse
   than none, and the keepalive is what a viewer's dead-session watchdog reads
   as proof the session is alive.
+- **The deep floor needs both the user's choice and the relay's grant.**
+  Choosing Deep buffer sends `buffer=`; the profile only deepens once the ack
+  says `dvr`. A viewer on Resilient mode never gets the deep envelope even if a
+  relay grants a ring, and the grant is cleared on every mode change.
 - **The viewer applies the deeper floor only on a granted ack**, never on
   request. Against a relay that cannot keep it filled a deep buffer is pure
   latency. The grant resets on every reconnect.

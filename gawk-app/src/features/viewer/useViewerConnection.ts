@@ -15,7 +15,10 @@ import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
 import {
   setPlayoutMode as setLocalPlayoutMode,
-  setResilientMode as setLocalResilientMode,
+  setViewerDeliveryMode as setLocalViewerDeliveryMode,
+} from '../../transport/playout';
+import type { ViewerDeliveryMode } from '../../transport/resilient';
+import {
   type PlayoutMode,
 } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
@@ -123,7 +126,7 @@ export function useViewerConnection(
   // session effect — a deliberate teardown + reconnect with (or without)
   // ?delivery=reliable; the wider reorder/playout profile is applied to the
   // pipeline's context before the session starts.
-  resilientMode = false,
+  deliveryMode = 'live' as ViewerDeliveryMode,
 ): ViewerConnectionState {
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [stats, setStats] = useState<ViewerStats | null>(null);
@@ -158,8 +161,8 @@ export function useViewerConnection(
   // Read live by the sink's jitter buffer: resilient mode widens the audio
   // envelope too, so the fallback depth floor is sized for a lossy link
   // (docs/20 Decision 12).
-  const resilientRef = useRef(resilientMode);
-  resilientRef.current = resilientMode;
+  const resilientRef = useRef(deliveryMode);
+  resilientRef.current = deliveryMode;
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
   const volumeRef = useRef(volume);
@@ -437,16 +440,16 @@ export function useViewerConnection(
     if (!useWorker) return;
     const { serverUrl, certHashHex } = useTransportStore.getState();
     resetState();
-    controllerRef.current?.setResilientMode(resilientMode);
+    controllerRef.current?.setViewerDeliveryMode(deliveryMode);
     controllerRef.current?.start({
       serverUrl,
       broadcastId,
-      connectOpts: { certHashHex, ...(resilientMode ? { deliveryMode: 'reliable' as const } : {}) },
+      connectOpts: { certHashHex, ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}) },
     });
     return () => {
       controllerRef.current?.stop();
     };
-  }, [useWorker, broadcastId, resilientMode, resetState]);
+  }, [useWorker, broadcastId, deliveryMode, resetState]);
 
   // R5 Q3 + R12 T2: the playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -474,12 +477,12 @@ export function useViewerConnection(
     resetState();
     // R19: the profile lives in this (main-thread) context here; set it
     // before the session starts so it is live from the first frame.
-    setLocalResilientMode(resilientMode);
+    setLocalViewerDeliveryMode(deliveryMode);
 
     const session = new ViewerSession(
       serverUrl,
       broadcastId,
-      { certHashHex, ...(resilientMode ? { deliveryMode: 'reliable' as const } : {}) },
+      { certHashHex, ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}) },
       {
         onDecodedFrame: ({ frame }) => {
           const canvas = canvasRef.current;
@@ -552,7 +555,7 @@ export function useViewerConnection(
   }, [
     useWorker,
     broadcastId,
-    resilientMode,
+    deliveryMode,
     applyEvent,
     canvasRef,
     resetState,

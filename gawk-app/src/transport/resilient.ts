@@ -25,15 +25,41 @@ export const RESILIENT_DELTA_GAP_GRACE_MS = 250;
 // same patience the rest of the budget gets.
 export const RESILIENT_KEYFRAME_WAIT_MS = 2000;
 
-let resilient = false;
+// R21 (docs/26 Decision 15): the three points on the latency-for-smoothness
+// axis, replacing R19's boolean. They really are one axis — each step buys
+// more smoothness with more delay — so a boolean plus a second boolean would
+// have made two controls out of one choice.
+//
+//   live       live-edge datagrams, no added delay (the default)
+//   resilient  reliable carriers + the R19 adaptive buffer (~150-500 ms)
+//   deep       the above, plus the R21 relay ring and a multi-second buffer
+//
+// `deep` is a superset of `resilient`, which is what lets getResilientMode()
+// stay the derived "not live-edge" signal every existing call site reads.
+export type ViewerDeliveryMode = 'live' | 'resilient' | 'deep';
 
+let mode: ViewerDeliveryMode = 'live';
+
+// True for anything that is not live-edge: reliable carriers, the wider
+// reorder profile, adaptive pacing. Deliberately unchanged in meaning from
+// R19, so reorder-buffer.ts and playout.ts read it exactly as before.
 export function getResilientMode(): boolean {
-  return resilient;
+  return mode !== 'live';
 }
 
-// Internal: flips the raw flag only. Callers outside playout.ts must use
-// playout.ts's setResilientMode, which also resets the playout controller
+// True only for the deep-buffer step: whether to ask the relay for a DVR ring
+// and, once granted, hold the multi-second floor.
+export function getDeepBuffer(): boolean {
+  return mode === 'deep';
+}
+
+export function getViewerDeliveryMode(): ViewerDeliveryMode {
+  return mode;
+}
+
+// Internal: sets the raw mode only. Callers outside playout.ts must use
+// playout.ts's setViewerDeliveryMode, which also resets the playout controller
 // onto the right profile.
-export function setResilientModeFlag(on: boolean): void {
-  resilient = on;
+export function setViewerDeliveryModeFlag(next: ViewerDeliveryMode): void {
+  mode = next;
 }

@@ -1,3 +1,4 @@
+import type { ViewerDeliveryMode } from '../../transport/resilient';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './viewer.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
@@ -49,6 +50,12 @@ const INTERPOLATION_KEY = 'gawk:interpolation';
 // reliable delta delivery + a wider adaptive buffer, at 0.5–2 s behind live.
 // Default off; persisted; toggling is a deliberate reconnect.
 const RESILIENT_MODE_KEY = 'gawk:resilient-mode';
+// R21 (docs/26 Decision 15): R19's boolean became three points on one axis —
+// live-edge, resilient, deep buffer — because each step buys smoothness with
+// delay and a second boolean would have made two controls out of one choice.
+// The legacy key migrates: an R19 viewer that had resilient mode on keeps
+// exactly the latency it had, and opts into the deep buffer separately.
+const DELIVERY_MODE_KEY = 'gawk:viewer-delivery';
 
 function loadInterpolation(): boolean {
   try {
@@ -58,11 +65,16 @@ function loadInterpolation(): boolean {
   }
 }
 
-function loadResilientMode(): boolean {
+function loadDeliveryMode(): ViewerDeliveryMode {
   try {
-    return localStorage.getItem(RESILIENT_MODE_KEY) === '1';
+    const v = localStorage.getItem(DELIVERY_MODE_KEY);
+    if (v === 'live' || v === 'resilient' || v === 'deep') return v;
+    // Legacy R19 boolean: on ⇒ resilient, never deep. Silently promoting it
+    // would hand an existing viewer a 10x latency change it never asked for.
+    if (localStorage.getItem(RESILIENT_MODE_KEY) === '1') return 'resilient';
+    return 'live';
   } catch {
-    return false;
+    return 'live';
   }
 }
 
@@ -161,20 +173,21 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     });
   }, []);
 
-  // R19: resilient mode. Flipping it re-runs the connection effect — a
-  // visible, deliberate reconnect with (or without) reliable delivery.
-  const [resilientMode, setResilientMode] = useState(loadResilientMode);
-  const toggleResilientMode = useCallback(() => {
-    setResilientMode((on) => {
-      const next = !on;
+  // R19/R21: where this viewer sits on the latency-for-smoothness axis.
+  // Changing it re-runs the connection effect — a visible, deliberate
+  // reconnect, because delivery is negotiated at subscribe time.
+  const [deliveryMode, setDeliveryMode] = useState(loadDeliveryMode);
+  const chooseDeliveryMode = useCallback((next: ViewerDeliveryMode) => {
+    setDeliveryMode(() => {
       try {
-        localStorage.setItem(RESILIENT_MODE_KEY, next ? '1' : '0');
+        localStorage.setItem(DELIVERY_MODE_KEY, next);
       } catch {
-        // private mode etc. — the toggle still works for this session
+        // private mode etc. — the choice still holds for this session
       }
       return next;
     });
   }, []);
+  const resilientMode = deliveryMode !== 'live';
 
   // R16 (docs/21 Decision 1): the device gate — absence of the Element
   // Fullscreen API (effectively an iPhone signature). On non-gated devices no
@@ -189,7 +202,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       playoutMode,
       interpolation,
       gated,
-      resilientMode,
+      deliveryMode,
     );
 
   const [showStats, setShowStats] = useState(false);
@@ -390,13 +403,25 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         (resilientMode ? ' — governed by Resilient mode' : ''),
       onSelect: () => togglePlayoutMode('adaptive'),
     },
-    // R19: its own toggle (never a repurposed one — project rule). Toggling
-    // deliberately reconnects with/without reliable delivery.
+    // R19 + R21 (docs/26 Decision 15): one axis, three points, rendered as a
+    // radio group rather than as independent toggles — picking one always
+    // clears the others, and "resilient + deep" is not a state that exists.
+    // Each label states its cost, because the whole choice IS the cost.
     {
-      label: resilientMode
-        ? 'Resilient mode (mobile networks) ✓'
-        : 'Resilient mode (mobile networks)',
-      onSelect: toggleResilientMode,
+      label: (deliveryMode === 'live' ? 'Live edge ✓' : 'Live edge') + ' — lowest latency',
+      onSelect: () => chooseDeliveryMode('live'),
+    },
+    {
+      label:
+        (deliveryMode === 'resilient' ? 'Resilient mode ✓' : 'Resilient mode') +
+        ' — mobile networks, ~0.5 s behind',
+      onSelect: () => chooseDeliveryMode('resilient'),
+    },
+    {
+      label:
+        (deliveryMode === 'deep' ? 'Deep buffer ✓' : 'Deep buffer') +
+        ' — rides out dropouts, seconds behind',
+      onSelect: () => chooseDeliveryMode('deep'),
     },
     // R12 T4: only offered where the pipeline can actually interpolate
     // (stats.interpolation is null on the main-thread path, non-WebGL2 sinks,

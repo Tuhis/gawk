@@ -20,8 +20,15 @@
 // read live by the reorder buffer on every advance — so switching mode
 // mid-session re-paces without touching the pipeline.
 
+import { getDvrBufferMs } from '../config';
 import { LIVE_EDGE_WINDOW_MS, QUANTILE_RANGE_MS } from './live-edge';
-import { getResilientMode, setResilientModeFlag } from './resilient';
+import {
+  getDeepBuffer,
+  getResilientMode,
+  getViewerDeliveryMode,
+  setViewerDeliveryModeFlag,
+  type ViewerDeliveryMode,
+} from './resilient';
 
 export type PlayoutMode = 'off' | 'fixed' | 'adaptive';
 
@@ -126,7 +133,7 @@ export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
 // pure latency for no benefit, so the floor only deepens on a DeliveryAck
 // saying `dvr`. The value must strictly exceed the stall it covers — 3 s of
 // buffer backs a ~2 s stall at 3x recovery bandwidth (docs/26 Decision 6).
-export const DVR_BUFFER_MS = 3000;
+export const DVR_BUFFER_MS = getDvrBufferMs();
 
 // R21 DVR profile: the resilient envelope with its floor raised to what the
 // relay is now able to keep filled. maxMs rises with it so the adaptive
@@ -156,7 +163,10 @@ export function getDvrGranted(): boolean {
 // The profile in force in this JS context.
 export function getPlayoutProfile(): PlayoutProfile {
   if (!getResilientMode()) return DEFAULT_PLAYOUT_PROFILE;
-  return dvrGranted ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
+  // The deep floor needs BOTH: the user asking for it and the relay confirming
+  // it can keep it filled. Against a relay that cannot, a multi-second buffer
+  // is pure latency for no benefit (docs/26 Decision 7).
+  return getDeepBuffer() && dvrGranted ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
 }
 
 export class PlayoutController {
@@ -267,8 +277,14 @@ export function resetPlayoutController(): void {
 // in this JS context. Resets the controller across the flip so the offset
 // re-seeds on the incoming profile (500 ms entering resilient, 150 ms
 // leaving it) instead of carrying a value from the other profile's envelope.
-export function setResilientMode(on: boolean): void {
-  if (on === getResilientMode()) return;
-  setResilientModeFlag(on);
+export function setViewerDeliveryMode(next: ViewerDeliveryMode): void {
+  if (next === getViewerDeliveryMode()) return;
+  setViewerDeliveryModeFlag(next);
+  // Reset across every step, not just across the live boundary: resilient and
+  // deep have different envelopes, so a target learned under one would be
+  // carried into the other's clamp (the R19 rule, extended to three states).
   controller.reset();
+  // A mode change is a deliberate reconnect, so the previous session's grant
+  // says nothing about the next one.
+  setDvrGranted(false);
 }

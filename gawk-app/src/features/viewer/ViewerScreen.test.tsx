@@ -61,7 +61,7 @@ import {
   getPlayoutOffsetMs,
   getStoredPlayoutMode,
   setPlayoutMode,
-  setResilientMode,
+  setViewerDeliveryMode,
 } from '../../transport/playout';
 
 beforeEach(() => {
@@ -291,7 +291,7 @@ describe('ViewerScreen playout modes', () => {
     expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
 
     localStorage.removeItem('gawk:resilient-mode');
-    setResilientMode(false);
+    setViewerDeliveryMode('live');
     cleanupPlayout();
   });
 
@@ -340,7 +340,7 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     tap(screen.getByLabelText('More options'));
 
     expect(screen.getByRole('menu')).toBeTruthy();
-    expect(screen.getByText('Resilient mode (mobile networks)')).toBeTruthy();
+    expect(screen.getByText(/^Resilient mode —/)).toBeTruthy();
     expect(screen.getByText('Copy link')).toBeTruthy();
   });
 
@@ -358,22 +358,42 @@ describe('ViewerScreen menu button (touch reachability)', () => {
 
   // The point of the fix: a phone viewer on a lossy link can actually reach
   // the mode, and reaching it negotiates reliable delivery.
-  it('enables resilient mode from the button and reconnects with reliable delivery', async () => {
+  it('picks a delivery mode from the button and reconnects with reliable delivery', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     act(() => sessions[0].cbs.onConnected());
     expect(sessions[0].opts).not.toMatchObject({ deliveryMode: 'reliable' });
 
     tap(screen.getByLabelText('More options'));
-    fireEvent.click(screen.getByText('Resilient mode (mobile networks)'));
+    fireEvent.click(screen.getByText(/^Resilient mode —/));
 
     await waitFor(() => expect(sessions).toHaveLength(2));
     expect(sessions[1].opts).toMatchObject({ deliveryMode: 'reliable' });
-    expect(localStorage.getItem('gawk:resilient-mode')).toBe('1');
+    expect(localStorage.getItem('gawk:viewer-delivery')).toBe('resilient');
 
-    // …and it stays reachable to turn back off (the menu reflects the state).
+    // R21 (docs/26 Decision 15): one axis, three points — the menu is a radio
+    // group, so the active one is ticked and the others are reachable.
     tap(screen.getByLabelText('More options'));
-    expect(screen.getByText('Resilient mode (mobile networks) ✓')).toBeTruthy();
+    expect(screen.getByText(/^Resilient mode ✓/)).toBeTruthy();
+    expect(screen.getByText(/^Live edge —/)).toBeTruthy();
+    fireEvent.click(screen.getByText(/^Deep buffer —/));
+    await waitFor(() => expect(sessions).toHaveLength(3));
+    // Deep buffer is still reliable delivery; what differs is the buffer the
+    // viewer asks the relay to back.
+    expect(sessions[2].opts).toMatchObject({ deliveryMode: 'reliable' });
+    expect(localStorage.getItem('gawk:viewer-delivery')).toBe('deep');
+  });
+
+  it('migrates an R19 resilient viewer to resilient, never to deep', async () => {
+    // A 10x latency change nobody asked for would be the worst possible way
+    // to introduce this (docs/26 Decision 15).
+    localStorage.removeItem('gawk:viewer-delivery');
+    localStorage.setItem('gawk:resilient-mode', '1');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    tap(screen.getByLabelText('More options'));
+    expect(screen.getByText(/^Resilient mode ✓/)).toBeTruthy();
   });
 });
 
