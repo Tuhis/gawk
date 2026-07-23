@@ -888,6 +888,74 @@ build). Notes and deviations:
     the reproducer; the whole pre-existing viewer suite stays green under
     both.
 
+17. **Field fix (2026-07-23): the carrier drain's backpressure — deeper
+    queue, audio on its own lane, and dead-GOP shedding that supersedes
+    finding 14's drop-oldest.** The 2026-07-22 paired capture (BUGS.md) found
+    a reliable subscriber with **3100 queue overflows against 22 987 delivered
+    records — a 12 % overflow rate** — while an edge pod serving a different
+    viewer had *zero* across 372 289. Three causes, three fixes, none of which
+    changes the wire:
+
+    - **The queue was 0.65 s deep.** `QueueDepth` 256 counts *datagrams*, and
+      a 1080p frame is ~13 chunks, so 256 slots ≈ 20 frames. A carrier write
+      parked on flow control only had to stall for two thirds of a second
+      before the queue began shedding. Raised to **1024** (≈2.6 s). Near inert
+      for datagram subscribers, whose drain never parks (`SendDatagram` does
+      not block) and whose drop-newest policy cannot turn depth into replayed
+      staleness.
+    - **Audio shared the video drain.** Since field finding 5 (docs/20) audio
+      does not ride the carrier — but it was still dequeued by
+      `drainReliable`, so one parked carrier write froze every audio packet
+      behind it for up to `CarrierWriteTimeout`, in the medium least able to
+      hide a gap. A reliable subscriber now gets a second queue
+      (`AudioSidebandQueueDepth` 64 ≈ 1.3 s — deliberately not `QueueDepth`,
+      which is sized for video chunks and would let audio queue 20 s deep) and
+      a second drain goroutine, `drainAudioSideband`, ending in the same
+      `sendSidebandDatagram`. `drainReliable` keeps its audio branch as
+      belt-and-braces: routing audio onto a carrier is exactly the bug finding
+      5 fixed, and one `PeekType` per record is cheap insurance against a
+      future path that bypasses the split. Both drains must finish before
+      `Close` folds the counters, or the audio lane's drops are lost.
+    - **Overflow was accounted and handled per packet.** Once a record is
+      shed the carrier is holed, and the viewer freezes to the next keyframe
+      regardless — so every remaining delta of that GOP is work it is
+      guaranteed to discard. The relay now marks the GOP dead
+      (`carDeadRotation`, stored as generation+1 so the zero value means
+      "none"), **purges the already-queued deltas** (`purgeQueuedDeltasLocked`)
+      and sheds later ones at the door until the next rotation. It needs no
+      reset: `carRotations` is bumped by the keyframe fan-out, not by the
+      drain, so the mark clears even while the drain is parked.
+
+      **This supersedes finding 14's drop-oldest eviction — do not restore
+      it.** Finding 14 aimed to keep the queue trending toward live so the
+      forced resync landed near the live edge; at GOP granularity that aim is
+      met for free, because the resync point *is* the next keyframe and is
+      fresh by construction, so which of a doomed GOP's records survive cannot
+      change what the viewer displays. The visible freeze is identical either
+      way. What the GOP-level policy adds is the part drop-oldest could not
+      do: at the new 1024 depth it stops the drain from writing over a
+      megabyte of records nobody will decode, aimed at a viewer already too
+      slow to keep up.
+
+      **Control datagrams are exempt from the shed and put back by the purge**
+      — `DecoderConfig`, `ClockMapping`, and above all the R18 `ViewerCount`
+      keepalive, which is what a viewer's dead-session watchdog reads as proof
+      its session is alive (BUGS.md). Shedding it would turn a stalled carrier
+      into an apparent disconnect.
+
+      Accounting: **one** `carrierQueueOverflow` (+ one `dropped`) per dead
+      GOP rather than one per packet, so the counter answers "how many GOPs
+      did this viewer lose"; the purged and shed tail counts only in
+      `carrierRecordsDropped`, the same bucket as any other dead GOP's tail,
+      which keeps R9's `queue_full = dropped − overflow` subtraction honest.
+
+    **Not done, deliberately**: the underlying reason those writes park is
+    still unknown, and the strongest hypothesis is that it is not a relay
+    problem at all — a write parks when the *viewer* stops reading, which is
+    suspiciously close to the WebKit stream-path wedge in BUGS.md, and would
+    also explain the edge pod's zero overflow. These three fixes bound the
+    damage; they do not explain it.
+
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
 product feature; X5 rides alongside; X6 last. Nothing here blocks or is

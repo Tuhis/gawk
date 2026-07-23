@@ -2325,8 +2325,11 @@ func TestReliableQueueOverflowCountedApartFromDatagramDrops(t *testing.T) {
 	minDrops := uint64(deltas - queueDepth - 1)
 
 	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
-	if subR.Dropped() < minDrops {
-		t.Fatalf("reliable subscriber dropped %d, want >= %d — the queue did not overflow", subR.Dropped(), minDrops)
+	// The reliable subscriber overflows ONCE per dead GOP now (the tail is shed
+	// without re-overflowing), so its drop count is 1 — the point of this test
+	// is the bucketing, not the magnitude.
+	if subR.Dropped() != 1 {
+		t.Fatalf("reliable subscriber dropped %d, want exactly 1 (one overflow event for the dead GOP)", subR.Dropped())
 	}
 	if subN.Dropped() < minDrops {
 		t.Fatalf("datagram subscriber dropped %d, want >= %d — the control queue did not overflow", subN.Dropped(), minDrops)
@@ -2339,10 +2342,15 @@ func TestReliableQueueOverflowCountedApartFromDatagramDrops(t *testing.T) {
 		t.Errorf("DatagramsDropped = %d, want %d — the carrier bucket is a slice of the drop total, not a second budget",
 			stats.DatagramsDropped, subR.Dropped()+subN.Dropped())
 	}
-	// Nothing reached a carrier: these deltas were dropped before they ever
-	// became records, which is why carrierRecordsDropped can't cover them.
-	if stats.CarrierRecordsDropped != 0 {
-		t.Errorf("CarrierRecordsDropped = %d, want 0 (drops happened at the queue)", stats.CarrierRecordsDropped)
+	// The dead GOP's purged and shed deltas land in carrierRecordsDropped —
+	// the same bucket as any other dead GOP's tail — and deliberately NOT in
+	// `dropped`, so queue_full stays derivable from dropped − overflow (R9).
+	if stats.CarrierRecordsDropped == 0 {
+		t.Error("CarrierRecordsDropped = 0, want the purged + shed tail of the dead GOP")
+	}
+	if stats.DatagramsDropped < stats.CarrierQueueOverflow {
+		t.Errorf("DatagramsDropped %d < CarrierQueueOverflow %d — the overflow bucket must stay a slice of the total",
+			stats.DatagramsDropped, stats.CarrierQueueOverflow)
 	}
 
 	// Per-subscriber detail: only the reliable entry carries the overflow.
@@ -2382,16 +2390,22 @@ func TestReliableQueueOverflowCountedApartFromDatagramDrops(t *testing.T) {
 }
 
 // When a reliable subscriber's carrier drain falls behind and its bounded delta
-// queue overflows, the queue must shed its *oldest* records, not the newcomer
-// (docs/24 finding 14, review finding BACKPRESSURE-3). The carrier delivers
-// records reliably and in order, so an overflow hole forces the viewer to freeze
-// and resync at a keyframe either way — but dropping the newest strands it
-// replaying a stale backlog, the opposite of what resilient mode is for, while
-// dropping the oldest keeps the queue trending toward live so the resync lands
-// as close to the live edge as possible. The distinguishing signal: the newest
-// delta fanned out before the drain caught up reaches the carrier; the oldest
-// overflowed ones do not.
-func TestReliableQueueOverflowDropsOldest(t *testing.T) {
+// queue overflows, the GOP is holed and the viewer will resync at the next
+// keyframe — so the queue's remaining deltas are purged rather than written.
+//
+// This supersedes docs/24 finding 14's drop-oldest eviction. That fix aimed to
+// keep the queue trending toward live so the forced resync landed near the live
+// edge; at GOP granularity the aim is met for free, because the resync point IS
+// the next keyframe and is fresh by construction. What the purge adds is the
+// part drop-oldest could not do: it stops the drain from spending the link on a
+// queue full of records the viewer is guaranteed to discard — at the 1024-slot
+// default that is over a megabyte aimed at a viewer already too slow to keep up.
+//
+// Control datagrams are exempt and must survive: the R18 ViewerCount keepalive
+// in particular is what a viewer's dead-session watchdog reads as proof its
+// session is alive, so shedding it would turn a stalled carrier into an
+// apparent disconnect.
+func TestReliableQueueOverflowPurgesGopAndKeepsKeepalive(t *testing.T) {
 	const queueDepth = 4
 	// A write deadline far past the test so the parked carrier never times out on
 	// its own — the backlog is entirely deterministic.
@@ -2411,56 +2425,45 @@ func TestReliableQueueOverflowDropsOldest(t *testing.T) {
 	// d0 is pulled by the drain, which opens a carrier and parks on the prologue
 	// write. Wait for the open so the queue state below is deterministic: the
 	// drain is now stuck holding exactly d0, and nothing else leaves the queue.
-	deltas := make([][]byte, 0, queueDepth*2+1)
 	d0 := chunkDgram(t, false, 1, 0, 1, "d000")
-	deltas = append(deltas, d0)
 	p.HandleDatagram(d0)
 	waitFor(t, 5*time.Second, func() bool { return f.carrierOpens() >= 1 },
 		"the drain to open a carrier and park")
 
-	// Fill the queue to capacity, then overflow it by another queueDepth deltas.
-	// With the drain parked, every enqueue past capacity overflows deterministically.
+	// A keepalive lands mid-GOP, then the queue fills and overflows.
+	r.PumpViewerCounts(time.Now())
+	deltas := [][]byte{d0}
 	for i := 1; i <= queueDepth*2; i++ {
 		d := chunkDgram(t, false, uint32(i+1), 0, 1, fmt.Sprintf("d%03d", i))
 		deltas = append(deltas, d)
 		p.HandleDatagram(d)
 	}
-	waitFor(t, 5*time.Second, func() bool { return sub.Dropped() >= queueDepth },
-		"the queue to overflow by queueDepth deltas")
+	waitFor(t, 5*time.Second, func() bool { return sub.Dropped() >= 1 }, "the queue to overflow")
 
-	// Release the carrier: the drain writes d0's record, then the queue's
-	// survivors in FIFO order.
+	// Release the carrier and let the drain write whatever survived: d0, which
+	// it was already holding, plus the keepalive the purge put back.
 	close(f.carBlock)
-	waitCarrierRecords(t, f, queueDepth+1)
+	waitCarrierRecords(t, f, 2)
 	sub.Close()
 
-	// Drop-oldest keeps the newest queueDepth deltas plus the in-flight d0:
-	// [d0, d5, d6, d7, d8] for queueDepth=4. Drop-newest — the datagram policy,
-	// the bug — would keep [d0, d1, d2, d3, d4] and strand the viewer behind.
 	got := f.carrierRecords(t)
-	want := append([][]byte{deltas[0]}, deltas[len(deltas)-queueDepth:]...)
-	if len(got) != len(want) {
-		t.Fatalf("carrier records = %d, want %d (d0 + %d newest survivors)", len(got), len(want), queueDepth)
-	}
-	for i := range want {
-		if !bytes.Equal(got[i], want[i]) {
-			t.Errorf("record %d = %x, want %x — reliable overflow must drop the oldest, not the newest", i, got[i], want[i])
-		}
-	}
-
-	containsRecord := func(target []byte) bool {
-		for _, r := range got {
-			if bytes.Equal(r, target) {
-				return true
+	// Only the in-flight d0 and the keepalive survive: every queued delta of the
+	// dead GOP was purged, and every later one shed at the door.
+	for _, d := range deltas[1:] {
+		for _, rec := range got {
+			if bytes.Equal(rec, d) {
+				t.Errorf("delta %x reached the carrier; the dead GOP must be purged, not written", d)
 			}
 		}
-		return false
 	}
-	if newest := deltas[len(deltas)-1]; !containsRecord(newest) {
-		t.Errorf("newest delta %x missing from carrier records — drop-oldest must keep it", newest)
+	keepalive := false
+	for _, rec := range got {
+		if len(rec) >= 2 && rec[1] == wire.TypeViewerCount {
+			keepalive = true
+		}
 	}
-	if oldest := deltas[1]; containsRecord(oldest) {
-		t.Errorf("oldest overflowed delta %x present in carrier records — it should have been dropped", oldest)
+	if !keepalive {
+		t.Error("the ViewerCount keepalive was purged with the dead GOP; a viewer would read that as a dead session")
 	}
 }
 
@@ -2714,5 +2717,105 @@ func TestCarrierOpenFailureStreakResetsOnSuccess(t *testing.T) {
 
 	if _, closed := f.getCloseInfo(); closed {
 		t.Fatal("subscriber evicted despite carrier opens succeeding every other GOP")
+	}
+}
+
+// Once a reliable subscriber's queue overflows, the GOP it is in is holed and
+// the viewer will freeze to the next keyframe no matter what — so every
+// remaining delta of that GOP is already worthless to it. Continuing to queue
+// and write them spends the exact drain time and bandwidth that caused the
+// overflow. The relay declares the GOP dead instead and sheds its tail at the
+// enqueue, recovering at the next rotation. The visible freeze is unchanged
+// (it ends at the next keyframe either way); what changes is that the drain is
+// free and ready when the new GOP starts.
+func TestReliableOverflowShedsGopTailUntilRotation(t *testing.T) {
+	const queueDepth = 4
+	const deltas = 30
+
+	r := NewRegistry(discardLog, Options{QueueDepth: queueDepth, KeyframeWriteTimeout: time.Minute})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	f.setCarBlock(make(chan struct{})) // the carrier write parks: nothing drains
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	for i := range deltas {
+		p.HandleDatagram(chunkDgram(t, false, uint32(i+1), 0, 1, fmt.Sprintf("d%03d", i)))
+	}
+
+	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	// The overflow is one event per GOP, not one per shed packet: that is what
+	// makes the counter answer "how many GOPs did this viewer lose".
+	if stats.CarrierQueueOverflow != 1 {
+		t.Errorf("CarrierQueueOverflow = %d, want 1 (one dead GOP, not one per packet)", stats.CarrierQueueOverflow)
+	}
+	// The tail is accounted as carrier record drops, exactly like the tail of a
+	// GOP killed by a failed open/write — and NOT in `dropped`, so the R9
+	// queue_full-by-subtraction stays honest.
+	if stats.CarrierRecordsDropped == 0 {
+		t.Error("CarrierRecordsDropped = 0, want the shed tail of the dead GOP")
+	}
+	if got := sub.Dropped(); got != 1 {
+		t.Errorf("Dropped() = %d, want 1 — only the triggering overflow counts as a datagram drop", got)
+	}
+
+	// A keyframe rotates the carrier: the next GOP is live again and its
+	// deltas are queued rather than shed.
+	ingestKeyframe(t, p, keyframeMsg(t, 500, "vp8", "KEY"))
+	before := r.Stats().Broadcasts[r.ObfuscateID(id)].CarrierRecordsDropped
+	p.HandleDatagram(chunkDgram(t, false, 501, 0, 1, "fresh"))
+	after := r.Stats().Broadcasts[r.ObfuscateID(id)].CarrierRecordsDropped
+	if after != before {
+		t.Errorf("a delta after rotation was shed (%d → %d); the dead-GOP mark must clear on rotation", before, after)
+	}
+}
+
+// Audio must not be held hostage by a parked carrier write. It does not ride
+// the carrier (docs/20 field finding 5) and has no GOP to align to, so it gets
+// its own queue and its own drain goroutine — otherwise every audio packet
+// queues behind the one video write the drain is blocked on, which is a freeze
+// in the medium least able to hide one.
+func TestAudioSidebandFlowsWhileCarrierWriteIsParked(t *testing.T) {
+	r := NewRegistry(discardLog, Options{KeyframeWriteTimeout: time.Minute})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	f.setCarBlock(make(chan struct{})) // the video drain parks forever
+	if _, err := r.SubscribeReliable(id, f); err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	// Wedge the video drain first, so audio is provably not just winning a race.
+	p.HandleDatagram(chunkDgram(t, false, 1, 0, 1, "d"))
+
+	const packets = 20
+	for i := range packets {
+		p.HandleDatagram(audioDgram(t, uint32(i), "opus"))
+	}
+
+	// The parked write is bounded by CarrierWriteTimeout, after which the drain
+	// frees itself and would deliver the audio anyway — so the assertion is
+	// about *when*: audio that shares the video drain cannot arrive before that
+	// deadline expires, and audio on its own drain arrives immediately.
+	t0 := time.Now()
+	waitFor(t, 5*time.Second, func() bool {
+		n := 0
+		for _, d := range f.received() {
+			if len(d) >= 2 && d[1] == wire.TypeAudioFrame {
+				n++
+			}
+		}
+		return n == packets
+	}, "audio delivered while the carrier write is parked")
+	if waited := time.Since(t0); waited >= CarrierWriteTimeout {
+		t.Errorf("audio took %v to arrive (>= the %v carrier deadline): it is still queued behind the parked video write",
+			waited, CarrierWriteTimeout)
 	}
 }
