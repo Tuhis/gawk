@@ -4,13 +4,14 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 2026-07-15; **design refreshed 2026-07-19** against everything landed since —
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
-**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-21 produced
-seven field findings, all fixed — including the Decision 10 inversion to
+**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-23 produced
+ten field findings, all fixed — including the Decision 10 inversion to
 **video-master** A/V sync, the Decision 12 reversal taking audio back off
-the R19 reliable carrier, a live-edge audio buffer-depth floor, and honest
+the R19 reliable carrier, a live-edge audio buffer-depth floor, honest
 jitter-buffer depth accounting with worklet-stall recovery (finding 7 — the
-crackle-then-silence fix); hardware re-verification pending** — see
-[Status](#status)). Adds the broadcaster's
+crackle-then-silence fix), and the re-anchor fix for leaving Deep buffer
+(finding 10, reproduced against the homelab); hardware re-verification
+pending** — see [Status](#status)). Adds the broadcaster's
 **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
 (Opus) on the broadcaster, one Opus packet per WebTransport datagram through
@@ -1080,6 +1081,63 @@ and catches every discontinuity, including those no explicit signal covers.
 
 Viewer-only, test-first, zero wire/relay/broadcaster changes. **Hardware
 re-verification pending**, together with findings 1–8.
+
+### Field finding 10 (2026-07-23): leaving Deep buffer stranded audio ~2.8 s behind
+
+Found during the first pass of the manual verification plan below, and
+**reproduced end-to-end against the homelab deployment** (Chrome/macOS, tab
+audio, single viewer) rather than inferred from a capture.
+
+**Symptom.** A viewer who switches to Deep buffer and back to Live edge plays
+audio ~2.8 s behind the picture, for the rest of the session. Only a page
+reload cures it. The three-point sequence:
+
+| | fresh (live) | → Deep buffer | → back to Live edge |
+|---|---|---|---|
+| `deliveryMode` / `playoutOffsetMs` | datagrams / 147 | dvr / 3000 | datagrams / 130 ✓ |
+| `capToRenderMs` | 169 ms | 3028 ms | 152 ms ✓ |
+| `resets` | 0 | 1 | 2 |
+| `alignmentHoldMs` | 73.5 ms | 2813.5 ms | **2873.5 ms** ✗ |
+| `bufferedMs / targetMs` | 176 / 120 | 2942 / 3000 | **2827 / 114.6** ✗ |
+
+Video returns to the live edge correctly; audio stays deep.
+
+**What it was not.** `resets` incrementing 1 → 2 on the switch proves the
+re-anchor path fires: `ViewerSession` emits `onAudioReset` on every pipeline
+creation, `ViewerWorkerCore` forwards it (its `gen` is bumped *before*
+`createSession`, so `current()` is true), and `handleAudioReset` calls
+`sink.flush()`. The flush was never the problem — the re-anchor *after* it was.
+
+**Root cause.** `maybeRelease` computed `dueAtMs` only when it was `null`, i.e.
+**once per priming cycle**, latching the first schedule it saw. Audio arrives at
+50/s; the new session's video baseline only reaches the sink on the ~2 Hz stats
+tick (`videoScheduleBaseEpochMs` → `setVideoSchedule`). So the first chunk after
+the flush *always* latched the **outgoing** schedule, and the incoming one —
+milliseconds later — was never consulted. The buffer then waited for a due time
+~3 s out, never became due, and released only via the `MAX_ALIGNMENT_HOLD_MS`
+safety net. The observed 2873.5 ms is that cap, not a schedule-derived hold —
+the net whose own comment calls it *"NOT a normal release path"*. Alignment is a
+start-time decision (finding 4), so the bad anchor is permanent.
+
+**Why only this direction.** Entering Deep buffer latches the *shallow* live
+schedule, which says "due now" — but the DVR profile's depth floor
+(`seedMs = minMs = B`) then holds release until 3000 ms of depth exists, so the
+anchor lands correctly by way of the floor. Leaving Deep buffer has no such
+backstop: a stale deep schedule can only make the buffer wait, and the cap
+commits it. Deep→live is the broken direction; live→deep is right by accident.
+
+**Fix.** Re-read the schedule on every priming pass instead of latching the
+first answer — the release *is* the alignment decision, so only the schedule in
+force at that moment may decide it. A momentarily absent schedule keeps the last
+known due time rather than clearing it, leaving the no-schedule depth-floor path
+untouched. Viewer-only, test-first (the regression test fails on the latch and
+passes on the fix), zero wire/relay/broadcaster changes.
+
+**Coverage note.** `onAudioReset` had **no test coverage at all** — no
+`viewer-worker-core.test.ts` exists and no test referenced the callback — which
+is how a re-anchor defect shipped green. The fix is pinned at the
+`AudioJitterBuffer` seam, where the defect actually lived; the reset *wiring*
+remains untested and is worth closing separately.
 
 ### Post-implementation review (2026-07-19)
 

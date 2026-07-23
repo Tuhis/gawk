@@ -281,6 +281,42 @@ describe('AudioJitterBuffer alignment', () => {
     expect(emitted.length).toBeGreaterThan(0);
   });
 
+  // docs/20 field finding 9 (2026-07-23, reproduced against the homelab).
+  // Leaving Deep buffer for Live edge flushed the buffer correctly (`resets`
+  // incremented) and audio still committed ~2.8 s behind the picture. The due
+  // time was computed from the *first* schedule seen after the flush — the
+  // outgoing deep one, since audio arrives at 50/s and the new session's video
+  // baseline only reaches the sink on the ~2 Hz stats tick — and then latched.
+  // The live schedule that arrived moments later was never consulted, so the
+  // buffer waited out MAX_ALIGNMENT_HOLD_MS and released ~2.87 s deep (the
+  // observed 2873.5 ms is the cap, not a schedule-derived hold). Alignment is a
+  // start-time decision, so that anchor is permanent: only a reload cured it.
+  it('re-evaluates the due time when the schedule changes during priming', () => {
+    // The deep schedule: this chunk's frame is presented 3 s from now.
+    let dueAt = 4000;
+    const emitted: AudioChunk[] = [];
+    const clock = { t: 1000 };
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DEFAULT_AUDIO_PROFILE, {
+      now: () => clock.t,
+      schedule: () => () => dueAt,
+    });
+
+    buffer.push(chunk(0));
+    expect(emitted).toHaveLength(0); // held, correctly, under the deep schedule
+
+    // The new session's first stats land: video is back at the live edge, so
+    // its frames are presented on arrival.
+    dueAt = 1000;
+    clock.t = 1040;
+    buffer.push(chunk(FRAME_US));
+    buffer.push(chunk(2 * FRAME_US)); // 60 ms depth = the seed floor
+
+    // Must anchor against the schedule in force *now*, not the one that was
+    // current when the first post-flush chunk happened to arrive.
+    expect(emitted).toHaveLength(3);
+    expect(buffer.getStats().alignmentHoldMs!).toBeLessThan(500);
+  });
+
   it('re-primes on a dry underrun by depth, not by a schedule already past', () => {
     // The schedule for the oldest pending chunk is in the past by definition
     // at this point — that is why we ran dry. Honoring it would release
