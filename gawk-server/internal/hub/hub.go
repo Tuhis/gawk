@@ -137,6 +137,15 @@ const (
 // than refused — a query param must never reject a session.
 const MinDVRBufferMs = 1000
 
+// DefaultDVRProgressTimeout is how long a DVR subscriber may write nothing at
+// all before the relay calls it unreachable (docs/26 Decision 9). It cannot be
+// expressed as lag, which is this mode's whole point, so it is expressed as
+// progress: not one record or keyframe landing in this long means the peer is
+// gone, not slow. Comfortably past any tolerable stall — the ring is seconds
+// deep and the viewer's own dead-session watchdog fires at 15 s — so a viewer
+// merely riding out a bad minute is never caught by it.
+const DefaultDVRProgressTimeout = 30 * time.Second
+
 // ViewerCountInterval paces the R18 count pump (docs/23 Decision 4): one
 // recompute-and-emit pass per tick, which is also what makes a reconnect
 // storm structurally unable to spam clients — emits can never exceed
@@ -202,6 +211,11 @@ type Options struct {
 	// DVR bounds the R21 per-broadcast ring (docs/26). Only allocated for
 	// broadcasts that actually have a DVR subscriber.
 	DVR DVROptions
+
+	// DVRProgressTimeout is how long a DVR subscriber may make no progress at
+	// all before it is evicted (docs/26 Decision 9). Health in this mode is
+	// "is the cursor advancing?", never "is it at live?" — lag is the feature.
+	DVRProgressTimeout time.Duration
 	// BroadcastGrace is the amount of time a broadcast ID survives after its
 	// publisher disconnects, allowing it to be reclaimed. Defaults to 5 minutes.
 	BroadcastGrace time.Duration
@@ -295,6 +309,16 @@ type SubscriberStats struct {
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
 	CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow,omitempty"`
+
+	// R21 DVR (docs/26 DV4). Lag is NOT a health signal in this mode — it is
+	// the feature — so read these together: a large DVRLagMs with DVRResyncs
+	// flat and DVRGopSeq climbing is a viewer riding out a bad link exactly as
+	// designed. Resyncs climbing is the mode's only frame loss.
+	DVR         bool   `json:"dvr,omitempty"`
+	DVRBufferMs int    `json:"dvrBufferMs,omitempty"`
+	DVRLagMs    int64  `json:"dvrLagMs,omitempty"`
+	DVRGopSeq   int64  `json:"dvrGopSeq,omitempty"`
+	DVRResyncs  uint64 `json:"dvrResyncs,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
@@ -356,6 +380,15 @@ type Stats struct {
 	// reliable slice of it, not a separate budget.
 	CarrierQueueOverflow uint64 `json:"carrierQueueOverflow"`
 	EgressCarrierBytes   uint64 `json:"egressCarrierBytes"` // carrier bytes written (prologues + records)
+
+	// R21 DVR (docs/26 DV4). DVRSubscribers is how many viewers are served
+	// from the ring; DVRRingBytes/DVRRingGops is what that window costs right
+	// now — the number to watch against -dvr-max-bytes. DVRResyncs is the
+	// mode's only frame loss: viewers whose stall outlived the ring.
+	DVRSubscribers int    `json:"dvrSubscribers,omitempty"`
+	DVRRingBytes   int    `json:"dvrRingBytes,omitempty"`
+	DVRRingGops    int    `json:"dvrRingGops,omitempty"`
+	DVRResyncs     uint64 `json:"dvrResyncs,omitempty"`
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
@@ -587,6 +620,9 @@ func (l *bandwidthLimiter) consume(n int) bool {
 func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	if opts.MaxSubscribers <= 0 {
 		opts.MaxSubscribers = 15
+	}
+	if opts.DVRProgressTimeout <= 0 {
+		opts.DVRProgressTimeout = DefaultDVRProgressTimeout
 	}
 	if opts.DVR.Window <= 0 {
 		opts.DVR.Window = DefaultDVRWindow
@@ -1300,6 +1336,8 @@ func (r *Registry) Stats() RegistryStats {
 		carOverflow := b.carrierQueueOverflow
 		egressCar := b.egressCarrierBytes
 		reliableSubs := 0
+		dvrSubs := 0
+		var dvrResyncs uint64
 		details := make([]SubscriberStats, 0, len(b.subs))
 		edgeSessions := 0
 		for s := range b.subs {
@@ -1308,6 +1346,10 @@ func (r *Registry) Stats() RegistryStats {
 			}
 			if s.reliable && !s.internal {
 				reliableSubs++
+			}
+			if s.dvr != nil {
+				dvrSubs++
+				dvrResyncs += s.dvrResyncs.Load()
 			}
 			subDrops := s.keyframeDrops()
 			dropped += s.dropped.Load()
@@ -1334,6 +1376,11 @@ func (r *Registry) Stats() RegistryStats {
 				CarrierRecords:        s.carrierRecords.Load(),
 				CarrierRecordsDropped: s.carrierRecordsDropped.Load(),
 				CarrierQueueOverflow:  s.carrierQueueOverflow.Load(),
+				DVR:                   s.dvr != nil,
+				DVRBufferMs:           s.dvrBufferMs,
+				DVRLagMs:              s.dvrLagMs.Load(),
+				DVRGopSeq:             s.dvrGopSeq.Load(),
+				DVRResyncs:            s.dvrResyncs.Load(),
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -1364,6 +1411,10 @@ func (r *Registry) Stats() RegistryStats {
 		} else {
 			viewersGlobal = b.globalViewersLocked()
 		}
+		ringBytes, ringGops := 0, 0
+		if b.dvr != nil {
+			ringBytes, ringGops = b.dvr.Bytes(), b.dvr.Gops()
+		}
 		obf := r.ObfuscateID(id)
 		broadcasts[obf] = Stats{
 			PublisherActive:           b.publisherActive,
@@ -1375,6 +1426,10 @@ func (r *Registry) Stats() RegistryStats {
 			CarrierRecords:            carRecords,
 			CarrierRecordsDropped:     carDropped,
 			CarrierQueueOverflow:      carOverflow,
+			DVRSubscribers:            dvrSubs,
+			DVRRingBytes:              ringBytes,
+			DVRRingGops:               ringGops,
+			DVRResyncs:                dvrResyncs,
 			EgressCarrierBytes:        egressCar,
 			EdgeSessions:              edgeSessions,
 			FramesRelayed:             b.framesRelayed,
@@ -2003,13 +2058,14 @@ type Subscriber struct {
 
 	// R21 DVR state (docs/26). dvr non-nil selects the cursor drain over the
 	// queue drain; dvrCursor is owned by that goroutine alone after subscribe.
-	dvr         *DVRRing
-	dvrCursor   DVRCursor
-	dvrBufferMs int
-	dvrStop     chan struct{}
-	dvrResyncs  atomic.Uint64
-	dvrLagMs    atomic.Int64
-	dvrGopSeq   atomic.Int64
+	dvr           *DVRRing
+	dvrCursor     DVRCursor
+	dvrBufferMs   int
+	dvrStop       chan struct{}
+	dvrResyncs    atomic.Uint64
+	dvrLagMs      atomic.Int64
+	dvrProgressAt atomic.Int64
+	dvrGopSeq     atomic.Int64
 
 	carrierStreams        atomic.Uint64
 	carrierRecords        atomic.Uint64

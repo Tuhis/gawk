@@ -337,8 +337,19 @@ const dvrRetryFloor = 20 * time.Millisecond
 func (s *Subscriber) drainDVR() {
 	defer s.retireCarrier()
 	var scratch []byte
+	s.dvrProgressAt.Store(time.Now().UnixMilli())
 	for {
 		if s.closed.Load() {
+			return
+		}
+		// Health in this mode is progress, not position (docs/26 Decision 9).
+		// A cursor legitimately sits seconds behind live — that is what the
+		// viewer paid latency for — so the only honest question is whether it
+		// is still moving. Checked here rather than in the shared keyframe /
+		// carrier eviction streaks, which key on lag and would evict exactly
+		// the viewers this mode exists for.
+		if s.dvrStalled() {
+			s.evictOnce()
 			return
 		}
 		// Take the wake channel BEFORE reading, so an append landing between
@@ -476,6 +487,7 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	} else {
 		s.keyframesSent.Add(1)
 		s.egressKeyframeBytes.Add(uint64(len(msg)))
+		s.dvrNoteProgress()
 	}
 	s.dvrCursor = s.dvrCursor.AtFirstRecord()
 	s.dvrNoteCursor()
@@ -512,7 +524,36 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	s.carrierRecords.Add(1)
 	s.egressCarrierBytes.Add(uint64(len(framed)))
 	s.dvrCursor = s.dvrCursor.Next()
+	s.dvrNoteProgress()
 	return true
+}
+
+// dvrStalled reports that nothing at all has been written for this subscriber
+// in DVRProgressTimeout — unreachable, however healthy its lag looks.
+func (s *Subscriber) dvrStalled() bool {
+	last := s.dvrProgressAt.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.UnixMilli(last)) > s.hub.registry.opts.DVRProgressTimeout
+}
+
+// dvrNoteProgress records that bytes actually reached this subscriber.
+func (s *Subscriber) dvrNoteProgress() {
+	s.dvrProgressAt.Store(time.Now().UnixMilli())
+}
+
+// evictOnce closes an unreachable subscriber with the non-terminal 4001, at
+// most once — the same latch and the same code the keyframe streaks use, so a
+// live client that was merely congested reconnects and continues.
+func (s *Subscriber) evictOnce() {
+	s.kfMu.Lock()
+	first := !s.evicting
+	s.evicting = true
+	s.kfMu.Unlock()
+	if first {
+		go s.evict()
+	}
 }
 
 // DVRResyncs is how many times this subscriber fell off the ring's tail — the

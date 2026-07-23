@@ -378,3 +378,111 @@ func TestDVRBufferNegotiation(t *testing.T) {
 		t.Errorf("datagram viewer with a buffer param = %d/%d, want datagrams/0", mode, ms)
 	}
 }
+
+// DV4 (docs/26 Decision 9): a DVR subscriber legitimately sits behind live —
+// that is the feature. Health must therefore ask "is the cursor advancing?",
+// never "is it at live?", or the eviction machinery starts killing exactly the
+// viewers the mode exists for.
+func TestDVRLaggingButAdvancingSubscriberIsNotEvicted(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR: DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.SubscribeDVR(id, f, 30000)
+	if err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	// Well past every eviction threshold in GOP count, and always making
+	// progress. A subscriber like this is healthy no matter how far back it is.
+	for g := range KeyframeSlowEvictThreshold + CarrierOpenFailEvictThreshold + 5 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, uint32(g*100+1), 0, 1, fmt.Sprintf("g%02d", g)))
+	}
+	waitFor(t, 10*time.Second, func() bool { return len(f.carrierRecords(t)) > 0 }, "records to flow")
+
+	if _, closed := f.getCloseInfo(); closed {
+		t.Fatal("a DVR subscriber that was advancing got evicted — lag is not sickness in this mode")
+	}
+	_ = sub
+}
+
+// The other half: a subscriber whose cursor has NOT moved is unreachable
+// however healthy its lag looks, and must be evicted so the relay stops
+// burning fan-out on a ghost.
+func TestDVRStuckSubscriberIsEvicted(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR: DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+		// Short enough to keep the test quick; the production default is
+		// measured in tens of seconds.
+		DVRProgressTimeout: 300 * time.Millisecond,
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	f.setCarBlock(make(chan struct{})) // writes park forever: no progress, ever
+	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	for g := range 6 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, uint32(g*100+1), 0, 1, "d"))
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		code, closed := f.getCloseInfo()
+		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
+	}, "a stuck DVR subscriber to be evicted with 4001")
+}
+
+// Mode isolation (docs/26 Decision 12): the DVR subscriber's lag must not
+// influence when the other two delivery modes are evicted. They share the
+// eviction code, and that shared rewrite is the one place R21 can silently
+// change behaviour for viewers who never opted in.
+func TestDVRDoesNotDisturbOtherModesEviction(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR:                DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+		DVRProgressTimeout: 300 * time.Millisecond,
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	// A stuck DVR subscriber alongside healthy viewers on the other two modes.
+	stuck := &fakeSender{}
+	stuck.setCarBlock(make(chan struct{}))
+	if _, err := r.SubscribeDVR(id, stuck, 30000); err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+	plain := &fakeSender{}
+	if _, err := r.Subscribe(id, plain); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	reliable := &fakeSender{}
+	if _, err := r.SubscribeReliable(id, reliable); err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	for g := range 8 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, uint32(g*100+1), 0, 1, "d"))
+		time.Sleep(50 * time.Millisecond)
+	}
+	waitFor(t, 10*time.Second, func() bool { _, closed := stuck.getCloseInfo(); return closed },
+		"the stuck DVR subscriber to be evicted")
+
+	if _, closed := plain.getCloseInfo(); closed {
+		t.Error("the datagram subscriber was evicted — R21 changed a mode that never opted in")
+	}
+	if _, closed := reliable.getCloseInfo(); closed {
+		t.Error("the reliable subscriber was evicted — R21 changed a mode that never opted in")
+	}
+}

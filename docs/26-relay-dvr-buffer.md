@@ -396,6 +396,38 @@ Ordering: DV1 → DV2 is the minimal path and is independently valuable (it is
 what removes the freeze). DV3 makes it operable, DV4 makes it safe to run,
 DV5 is separable and may be declined, DV6 closes it.
 
+## Implementation status (2026-07-23)
+
+| Chunk | State |
+|---|---|
+| wire | **done** — `TypeDeliveryAck` 0x0C, 5 B, mirrored in all three homes with identical golden vectors |
+| DV1 | **done** — `internal/hub/dvr.go`, race-clean under concurrent append + 4 readers |
+| DV2 | **done** — cursor drain, with a same-conditions R19 control proving the difference |
+| DV3 | **done except the catch-up ceiling** — negotiation, ack, knobs flag→env→chart→`registryOptions`, viewer request + grant |
+| DV4 | **done** — cursor-progress eviction, `/statusz` + Prometheus + playbook rows |
+| DV5 | not started (audio ring) |
+| DV6 | not started (hardware verification + tuning) |
+
+Deviations worth knowing before touching this:
+
+- **The drain waits on a failed write; it does not skip.** The first version
+  skipped the GOP, which is right for live-edge and silently reintroduced the
+  exact loss R21 removes. It was caught by the control subscriber *passing*
+  when it should not have. What bounds the wait is the tail and staleness
+  checks, never a write deadline.
+- **Health is progress, not position** (`DVRProgressTimeout`, default 30 s).
+  The shared keyframe/carrier eviction streaks key on lag and would evict
+  exactly the viewers this mode exists for, so the DVR drain has its own check
+  and a test asserts the other two modes' eviction is unchanged.
+- **Control traffic is not in the ring and not behind the cursor.**
+  ClockMapping, DecoderConfig and the R18 ViewerCount keepalive go out on the
+  sideband from their own goroutine — a two-second-old viewer count is worse
+  than none, and the keepalive is what a viewer's dead-session watchdog reads
+  as proof the session is alive.
+- **The viewer applies the deeper floor only on a granted ack**, never on
+  request. Against a relay that cannot keep it filled a deep buffer is pure
+  latency. The grant resets on every reconnect.
+
 ## Verification plan
 
 **Automated (CI).** The `resilient_loss_test.go` forwarder already models a lossy
