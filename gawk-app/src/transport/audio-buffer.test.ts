@@ -103,8 +103,17 @@ describe('AudioJitterBuffer policies', () => {
     expect(emitted.length).toBeGreaterThan(0);
   });
 
-  it('underruns are counted from the sink', () => {
-    const { buffer } = collecting();
+  it('underruns are counted from the sink once playback has started', () => {
+    const { buffer, emitted } = collecting();
+    // Pre-roll underruns (the connected worklet pulling silence before the
+    // first release) are expected, not a defect, and are not counted.
+    buffer.noteUnderrun(5);
+    expect(buffer.getStats().underruns).toBe(0);
+    // Start playback: no schedule ⇒ the 60 ms seed floor gates the release.
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted.length).toBeGreaterThan(0);
+    // Now a dry underrun is a real dry-after-playback event and is counted.
+    buffer.noteDepth(0);
     buffer.noteUnderrun();
     buffer.noteUnderrun(3);
     expect(buffer.getStats().underruns).toBe(4);
@@ -794,5 +803,41 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
     expect(emitted.length).toBeGreaterThan(0);
     expect(buffer.getStats().alignmentHoldMs).toBeGreaterThanOrEqual(B - 100);
     expect(buffer.getStats().overflowDrops).toBe(0);
+  });
+
+  it('keeps the video-schedule alignment through worklet underruns during the hold', () => {
+    // The connected AudioWorklet pulls a quantum every ~2.67 ms, so during the
+    // multi-second deep hold it reports a continuous run of dry underruns while
+    // we DELIBERATELY hold the cushion. Those are expected pre-roll silence, not
+    // a dry-after-playback event: they must not re-prime the buffer, because
+    // re-prime clears alignOnSchedule and would drop the deep buffer onto the
+    // depth floor (anchored to audio arrival) instead of the video playhead —
+    // audible as audio drifting off video by ~the output-latency lead.
+    const emitted: AudioChunk[] = [];
+    const clock = { t: 1000 };
+    // Schedule due LATER than the depth floor would release, so a lost
+    // schedule alignment is observable: depth is ready at 3000 ms of audio but
+    // the video frame is not due until t = 6000.
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DVR_AUDIO_PROFILE, {
+      now: () => clock.t,
+      schedule: () => (ts: number) => 6000 + ts / 1000,
+    });
+    // Prime past the depth floor but under the hold cap (max(3000,3000+1000)=
+    // 4000 ms), so a depth-floor release would be observable while the escape
+    // cap is not yet in play: 175 chunks = 3500 ms.
+    for (let i = 0; i < 175; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted).toHaveLength(0); // holding on the schedule, not depth
+    buffer.noteDepth(0);
+    buffer.noteUnderrun(500);
+    buffer.tick();
+    // Still holding: the schedule is not due, and the underruns must not have
+    // forced a depth-floor release.
+    expect(emitted).toHaveLength(0);
+    // Pre-release underruns are expected pre-roll, not a defect — not counted.
+    expect(buffer.getStats().underruns).toBe(0);
+    // The schedule, not the depth floor, still governs the release.
+    clock.t = 6000;
+    buffer.tick();
+    expect(emitted.length).toBeGreaterThan(0);
   });
 });

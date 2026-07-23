@@ -231,6 +231,14 @@ export class AudioJitterBuffer {
   // it would release instantly and rebuild no cushion at all. Depth floor
   // there instead, and let the rate trim walk the residual skew back out.
   private alignOnSchedule = true;
+  // Whether any audio has ever been released to the sink on this timeline (set
+  // at the first release, cleared on flush). Before the first release the
+  // connected worklet pulls silence while we deliberately hold the cushion, and
+  // those "underruns" are expected pre-roll — not the dry-after-playback event
+  // noteUnderrun's re-prime is for. Without this flag a multi-second deep hold's
+  // ~1100 pre-roll underruns clear alignOnSchedule and drop the buffer onto the
+  // depth floor, losing the video-schedule lip sync before it ever applies.
+  private everReleased = false;
   // The hold actually applied at the alignment release, for the overlay.
   private alignmentHoldMs: number | null = null;
   // Depth established at release; the overflow ceiling rides this rather than
@@ -417,6 +425,7 @@ export class AudioJitterBuffer {
 
     this.alignmentHoldMs = this.pendingMs;
     this.priming = false;
+    this.everReleased = true;
     this.dueAtMs = null;
     this.pendingMs = 0;
     const ready = this.pending;
@@ -515,6 +524,15 @@ export class AudioJitterBuffer {
   // already recovered would otherwise be sent back to priming — paying a
   // second silence for a gap that had closed.
   noteUnderrun(count = 1): void {
+    // Before the first release the worklet is connected and pulling silence
+    // while we deliberately hold the alignment cushion (a deep buffer holds
+    // ~B ms). That is expected pre-roll, not a dry-after-playback event:
+    // counting it inflates the stat (a 3 s deep hold logs ~1100 "underruns")
+    // and, worse, the re-prime below clears alignOnSchedule and would drop the
+    // deep buffer onto the depth floor — anchored to audio arrival, missing the
+    // output-latency lead — instead of the video playhead it is meant to align
+    // to (docs/20 field finding 4). Ignore it and keep waiting for the schedule.
+    if (!this.everReleased) return;
     this.stats.underruns += count;
     // Only when it is *still* dry at the report: queuedMs comes from the same
     // report (noteDepth lands first), so it says what the worklet holds now,
@@ -555,6 +573,9 @@ export class AudioJitterBuffer {
     // A fresh timeline gets a fresh alignment decision — the one case where
     // re-deciding against the video schedule is exactly right.
     this.alignOnSchedule = true;
+    // Back to pre-roll: the new timeline's hold will underrun the worklet again
+    // and those reports must not re-prime it off the schedule (see noteUnderrun).
+    this.everReleased = false;
     this.dueAtMs = null;
     this.alignmentHoldMs = null;
     this.establishedDepthMs = 0;
