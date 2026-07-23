@@ -219,6 +219,12 @@ func TestWireConstants(t *testing.T) {
 		{"TypeResumeToken", wire.TypeResumeToken, 0x09},
 		{"TypeReliableCarrier", wire.TypeReliableCarrier, 0x0A},
 		{"TypeViewerCount", wire.TypeViewerCount, 0x0B},
+		// R21: the broadcaster never receives a DeliveryAck (it is relay→viewer
+		// only), but the type byte is pinned here anyway — this table is the
+		// allocation map, and a silent collision is exactly what it exists to
+		// prevent.
+		{"TypeDeliveryAck", wire.TypeDeliveryAck, 0x0C},
+		{"DeliveryAckSize", wire.DeliveryAckSize, 5},
 		{"TypeAudioFrame", wire.TypeAudioFrame, 0x07},
 		{"TypeAudioConfig", wire.TypeAudioConfig, 0x08},
 		{"CarrierPrologueSize", wire.CarrierPrologueSize, 2},

@@ -1350,6 +1350,59 @@ verification on release-please PRs only; free-tier CI minutes as a
 design constraint, held by trigger scoping rather than assertion
 thinning.
 
+## R21 — Relay DVR ring buffer for resilient mode
+
+**Goal**: make resilient mode ride out a multi-second connectivity stall
+with **no freeze and no lost frames**, by giving each broadcast a short
+(2–3 s, configurable) ring of itself on the relay and serving every
+resilient subscriber from its own cursor into that ring. Pre-registered
+success criterion: a viewer with a 3 s playout offset survives a **2 s
+total blackout** with zero discarded frames, given ≥3× recovery
+bandwidth.
+
+**Why**: R19 shipped the viewer half of the trade — a deep adaptive
+playout buffer — but not the relay half, so the mode only survives *loss
+and jitter on a connected link*, not an actual outage. The 2026-07-22
+paired capture (BUGS.md) showed why: the viewer's buffer is made of
+*delay*, not of pre-fetched data, so during a stall it needs precisely
+the frames captured during that stall — and the relay destroys exactly
+those, first at the 500 ms `CarrierWriteTimeout` and then in docs/24
+finding 17's dead-GOP purge. Both are right for live-edge delivery and
+fatal for a mode whose premise is that late frames are fine. Deepening
+the viewer buffer alone does not fix it: it *relocates* the freeze to
+after the outage and adds permanent latency. The capacity was never
+missing (the per-subscriber queue is already ~2.6 s); what is missing is
+keyframes inside that window and any notion of where each subscriber is
+in the stream.
+
+**Scope sketch** (full design in
+[`docs/26-relay-dvr-buffer.md`](docs/26-relay-dvr-buffer.md)):
+
+- **One ring per broadcast, cursors per subscriber** — one copy of the
+  bytes, N readers; also makes fan-out O(1) instead of O(subscribers).
+- **The ring stores GOPs**, not loose datagrams: a cursor must be able to
+  start, and the only decodable start is a keyframe. Replay of a GOP is
+  byte-identical on the wire to a live one, so **zero wire changes** and
+  almost no viewer changes.
+- **Falling off the tail is the only frame loss the mode has** — the
+  design converts "stalls over 500 ms lose frames" into "stalls over the
+  ring window lose frames". It moves the cliff; it does not remove it.
+- **The buffer must strictly exceed the stall**: covering a stall `S`
+  with buffer `B` needs burst bandwidth `B/(B−S)` × bitrate, so 2 s of
+  buffer cannot cover a 2 s stall at any bandwidth. Per-subscriber
+  catch-up ceiling (default 2×) keeps one recovering viewer from taking
+  the pod's whole egress budget.
+- **Audio joins the ring** behind its own flag — a partial reversal of
+  docs/20 field finding 5, gated and measured, because a video-only DVR
+  fixes the picture and leaves the sound full of holes.
+- Health becomes "is the cursor advancing?", not "is it at live?", or
+  the existing eviction thresholds start killing healthy viewers.
+- Mode off ⇒ byte-identical; the ring is allocated lazily and freed with
+  the last DVR subscriber.
+
+Chunks **DV1–DV6** (every single-letter prefix A–Z is taken). Designed
+2026-07-23, not started.
+
 ---
 
 ## Explicitly out of scope (unchanged from CLAUDE.md)

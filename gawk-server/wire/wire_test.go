@@ -100,6 +100,16 @@ const (
 	// ViewerCount: count=0x01020304 (every byte distinct — endianness pin).
 	goldenViewerCountLargeHex = "010b01020304"
 
+	// DeliveryAck: mode=DeliveryDVR, bufferMs=3000 (R21, docs/26 Decision 7a).
+	//   01          version
+	//   0c          type = DeliveryAck
+	//   02          mode = DVR
+	//   0bb8        accepted buffer = 3000 ms
+	goldenDeliveryAckHex = "010c020bb8"
+	// DeliveryAck: mode=DeliveryDatagrams, bufferMs=0 — what a viewer that
+	// asked for reliable and was refused must be told.
+	goldenDeliveryAckDatagramsHex = "010c000000"
+
 	// One carrier record framing the golden VideoChunk datagram (23 bytes).
 	//
 	//   00 17   record length = 23
@@ -866,6 +876,62 @@ func TestViewerCountGolden(t *testing.T) {
 	}
 	if count != 0x01020304 {
 		t.Errorf("count = %#x, want 0x01020304", count)
+	}
+}
+
+func TestDeliveryAckGolden(t *testing.T) {
+	dvr := mustHex(t, goldenDeliveryAckHex)
+	if got := AppendDeliveryAck(nil, DeliveryDVR, 3000); !bytes.Equal(got, dvr) {
+		t.Errorf("AppendDeliveryAck = %x, want %x", got, dvr)
+	}
+	plain := mustHex(t, goldenDeliveryAckDatagramsHex)
+	if got := AppendDeliveryAck(nil, DeliveryDatagrams, 0); !bytes.Equal(got, plain) {
+		t.Errorf("AppendDeliveryAck datagrams = %x, want %x", got, plain)
+	}
+
+	mode, buf, err := ParseDeliveryAck(dvr)
+	if err != nil {
+		t.Fatalf("ParseDeliveryAck: %v", err)
+	}
+	if mode != DeliveryDVR || buf != 3000 {
+		t.Errorf("mode/buffer = %d/%d, want %d/3000", mode, buf, DeliveryDVR)
+	}
+}
+
+func TestDeliveryAckRoundTrip(t *testing.T) {
+	for _, mode := range []DeliveryMode{DeliveryDatagrams, DeliveryReliable, DeliveryDVR} {
+		for _, ms := range []uint16{0, 1, 1000, 3000, 0xFFFF} {
+			dgram := AppendDeliveryAck(nil, mode, ms)
+			if len(dgram) != DeliveryAckSize {
+				t.Fatalf("DeliveryAck is %d bytes, want %d", len(dgram), DeliveryAckSize)
+			}
+			gotMode, gotMs, err := ParseDeliveryAck(dgram)
+			if err != nil {
+				t.Fatalf("ParseDeliveryAck(%d,%d): %v", mode, ms, err)
+			}
+			if gotMode != mode || gotMs != ms {
+				t.Errorf("round trip = %d/%d, want %d/%d", gotMode, gotMs, mode, ms)
+			}
+		}
+	}
+}
+
+func TestDeliveryAckRejectsMalformed(t *testing.T) {
+	good := AppendDeliveryAck(nil, DeliveryDVR, 3000)
+	cases := map[string][]byte{
+		"short":       good[:len(good)-1],
+		"long":        append(append([]byte{}, good...), 0),
+		"bad version": {0x02, TypeDeliveryAck, 2, 0x0b, 0xb8},
+		"bad type":    {Version, TypeViewerCount, 2, 0x0b, 0xb8},
+		// An unknown mode must be rejected rather than silently reported as
+		// datagrams: a viewer that cannot name what it got is the exact
+		// diagnostic gap this message exists to close (docs/26 Decision 7a).
+		"unknown mode": {Version, TypeDeliveryAck, 9, 0x0b, 0xb8},
+	}
+	for name, dgram := range cases {
+		if _, _, err := ParseDeliveryAck(dgram); err == nil {
+			t.Errorf("%s: ParseDeliveryAck accepted %x", name, dgram)
+		}
 	}
 }
 

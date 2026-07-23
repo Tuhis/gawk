@@ -76,6 +76,12 @@ export const TYPE_RELIABLE_CARRIER = 0x0a;
 // mode, an edge's local count reported up to its origin — a leg browsers
 // never see). Clients parse it and never send it.
 export const TYPE_VIEWER_COUNT = 0x0b;
+// DeliveryAck (R21, docs/26 Decision 7a): relay→viewer, once at join. Says
+// what this subscriber is ACTUALLY being served — delivery is negotiated by
+// query param, and a DVR-replayed GOP is byte-identical on the wire to a live
+// one, so without this the viewer cannot tell an honoured request from a
+// downgrade or from a relay too old to know the parameter.
+export const TYPE_DELIVERY_ACK = 0x0c;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -401,6 +407,56 @@ export function parseClockMapping(dgram: Uint8Array): bigint {
   }
   const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
   return view.getBigInt64(2);
+}
+
+// DeliveryAck (R21, docs/26): exactly 5 bytes — version, type 0x0c, a mode
+// byte, then the accepted buffer in ms (uint16). The encoder exists for tests
+// and golden vectors; browsers only ever parse it. An unknown mode throws
+// rather than defaulting: a viewer that cannot name what it got is the gap
+// this message closes.
+
+export const DELIVERY_ACK_SIZE = 5;
+
+export type DeliveryServedMode = 'datagrams' | 'reliable' | 'dvr';
+
+const DELIVERY_MODES: Record<number, DeliveryServedMode> = {
+  0: 'datagrams',
+  1: 'reliable',
+  2: 'dvr',
+};
+
+export interface DeliveryAckMessage {
+  mode: DeliveryServedMode;
+  bufferMs: number;
+}
+
+export function encodeDeliveryAck(mode: DeliveryServedMode, bufferMs: number): Uint8Array<ArrayBuffer> {
+  const code = Number(Object.keys(DELIVERY_MODES).find((k) => DELIVERY_MODES[Number(k)] === mode));
+  const dgram = new Uint8Array(DELIVERY_ACK_SIZE);
+  const view = new DataView(dgram.buffer);
+  dgram[0] = WIRE_VERSION;
+  dgram[1] = TYPE_DELIVERY_ACK;
+  dgram[2] = code;
+  view.setUint16(3, bufferMs);
+  return dgram;
+}
+
+export function parseDeliveryAck(dgram: Uint8Array): DeliveryAckMessage {
+  if (dgram.length !== DELIVERY_ACK_SIZE) {
+    throw new WireError(`delivery ack must be exactly ${DELIVERY_ACK_SIZE} bytes, got ${dgram.length}`);
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_DELIVERY_ACK) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want delivery ack`);
+  }
+  const mode = DELIVERY_MODES[dgram[2]];
+  if (mode === undefined) {
+    throw new WireError(`unknown delivery mode ${dgram[2]}`);
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  return { mode, bufferMs: view.getUint16(3) };
 }
 
 // ViewerCount (R18, docs/23): exactly 6 bytes — version, type 0x0b, then a

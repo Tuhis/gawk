@@ -123,7 +123,37 @@ const (
 	// external-subscriber count. Clients parse it and never send it — a
 	// ViewerCount arriving where a client is the sender is dropped.
 	TypeViewerCount = 0x0B
+
+	// TypeDeliveryAck identifies a DeliveryAck datagram (R21, docs/26
+	// Decision 7a): relay→viewer, sent once at join, telling the subscriber
+	// what it was ACTUALLY served. Delivery is negotiated by query param, and
+	// R21's replayed GOPs are byte-identical on the wire to live ones — so
+	// without this a viewer cannot tell an honoured request from a downgraded
+	// one, or from a relay too old to know the parameter. That gap is the one
+	// the 2026-07-22 investigation was lost in (BUGS.md); the R19 truthful
+	// "reliable requested / datagrams served" row exists for the same reason
+	// and extends naturally from this. Clients parse it and never send it.
+	TypeDeliveryAck = 0x0C
 )
+
+// DeliveryMode names what a subscriber is actually being served, as carried
+// by DeliveryAck. Values are wire-visible: append, never renumber.
+type DeliveryMode uint8
+
+const (
+	// DeliveryDatagrams is the default live-edge path: unreliable datagrams.
+	// Also what a viewer is told when it asked for more and was refused.
+	DeliveryDatagrams DeliveryMode = 0
+	// DeliveryReliable is R19 carrier delivery without a DVR ring.
+	DeliveryReliable DeliveryMode = 1
+	// DeliveryDVR is R21: carrier delivery served from the broadcast's ring
+	// at this subscriber's own cursor.
+	DeliveryDVR DeliveryMode = 2
+)
+
+// DeliveryAckSize is the exact size of a DeliveryAck datagram: version, type,
+// mode, then the accepted buffer in ms (big-endian uint16).
+const DeliveryAckSize = 5
 
 // CloseCodeBroadcastEnded is the WebTransport application close code sent
 // to subscribers when their broadcast is garbage-collected.
@@ -513,6 +543,40 @@ func ParseViewerCount(dgram []byte) (count uint32, err error) {
 			ErrBadType, dgram[1], TypeViewerCount)
 	}
 	return binary.BigEndian.Uint32(dgram[2:6]), nil
+}
+
+// AppendDeliveryAck appends a DeliveryAck datagram (R21) to dst. bufferMs is
+// the buffer the relay accepted after clamping — 0 whenever mode is not
+// DeliveryDVR, since no other mode has one.
+func AppendDeliveryAck(dst []byte, mode DeliveryMode, bufferMs uint16) []byte {
+	dst = append(dst, Version, TypeDeliveryAck, byte(mode))
+	dst = binary.BigEndian.AppendUint16(dst, bufferMs)
+	return dst
+}
+
+// ParseDeliveryAck parses a DeliveryAck datagram. Strict, like every other
+// parser here: exact length, right version and type, and a mode this build
+// knows. An unknown mode is an error rather than a silent fallback — a viewer
+// that cannot name what it was served is the gap this message closes.
+func ParseDeliveryAck(dgram []byte) (mode DeliveryMode, bufferMs uint16, err error) {
+	if len(dgram) != DeliveryAckSize {
+		return 0, 0, fmt.Errorf("%w: %d bytes, want exactly %d for delivery ack",
+			ErrBadLength, len(dgram), DeliveryAckSize)
+	}
+	if dgram[0] != Version {
+		return 0, 0, fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeDeliveryAck {
+		return 0, 0, fmt.Errorf("%w: got 0x%02x, want delivery ack 0x%02x",
+			ErrBadType, dgram[1], TypeDeliveryAck)
+	}
+	mode = DeliveryMode(dgram[2])
+	switch mode {
+	case DeliveryDatagrams, DeliveryReliable, DeliveryDVR:
+	default:
+		return 0, 0, fmt.Errorf("%w: unknown delivery mode %d", ErrBadType, dgram[2])
+	}
+	return mode, binary.BigEndian.Uint16(dgram[3:5]), nil
 }
 
 // AudioFrameHeader is the parsed header of an AudioFrame datagram (R15).

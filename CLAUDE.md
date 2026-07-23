@@ -425,6 +425,30 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   server/wire/broadcaster changes; no "governed by Resilient mode"
   annotation, because unlike the two pacing entries this toggle still does
   what it says under resilient mode),
+  `docs/26-relay-dvr-buffer.md` for R21 (relay DVR ring buffer for resilient
+  mode: **designed 2026-07-23, not started**. R19 shipped the viewer half of
+  the latency trade (a deep adaptive playout buffer) but not the relay half,
+  so the mode survives loss/jitter on a *connected* link and still freezes on
+  an actual outage — the viewer's buffer is made of **delay, not pre-fetched
+  data**, so during a stall it needs exactly the frames captured during that
+  stall, and the relay destroys those at the 500 ms `CarrierWriteTimeout` and
+  again in docs/24 finding 17's dead-GOP purge. **Deepening the viewer buffer
+  alone relocates the freeze** to after the outage and adds permanent latency
+  — don't re-propose it. Design: **one ring per broadcast holding whole GOPs**
+  (a cursor must start at a keyframe) with **a cursor per subscriber** — one
+  copy of the bytes, fan-out becomes O(1); a replayed GOP is byte-identical on
+  the wire to a live one, so **zero wire changes**; falling off the tail is the
+  mode's only frame loss, converting "stalls > 500 ms lose frames" into
+  "stalls > ring window lose frames"; **the buffer must strictly exceed the
+  stall** — covering `S` with buffer `B` needs `B/(B−S)`× burst bandwidth, so
+  2 s of buffer cannot cover a 2 s stall at any rate; per-subscriber catch-up
+  ceiling (2×) so one recovering viewer can't take the pod's egress budget;
+  audio joins the ring behind its own flag (a gated, measured partial reversal
+  of docs/20 field finding 5); health becomes "is the cursor advancing?" or the
+  existing eviction thresholds kill healthy laggards; mode off ⇒
+  byte-identical, ring allocated lazily. Chunks **DV1–DV6** — every
+  single-letter chunk prefix A–Z is claimed, so this and later milestones use
+  two letters),
   `docs/25-e2e-testing-in-ci.md` for R20 (E2E testing in CI: a real
   Chromium viewer decoding real relayed frames as a GitHub Actions gate —
   **Tier 1** single-pod browser E2E on every PR (relay `-dev-cert` →
