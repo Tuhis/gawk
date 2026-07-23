@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.28.0...gawk-app-v0.28.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **viewer:** hold Deep-buffer audio to the DVR depth so A/V stays in sync ([#115](https://github.com/Tuhis/gawk/issues/115)) ([d70e92d](https://github.com/Tuhis/gawk/commit/d70e92d22bd6ca0843e45448f1c712cdda178c74))
+* **viewer:** measure A/V skew at presentation and snap on re-anchor (docs/20 finding 9) ([#116](https://github.com/Tuhis/gawk/issues/116)) ([0924b8d](https://github.com/Tuhis/gawk/commit/0924b8d09251174b76991794cac8a6c02e026dc4))
+
 ## [0.28.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.27.0...gawk-app-v0.28.0) (2026-07-23)
 
 
