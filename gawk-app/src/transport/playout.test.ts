@@ -23,8 +23,10 @@ import {
   getPlayoutProfile,
   getStoredPlayoutMode,
   setPlayoutMode,
-  setResilientMode,
+  setViewerDeliveryMode,
   updatePlayoutController,
+  DVR_PLAYOUT_PROFILE,
+  setDvrGranted,
 } from './playout';
 
 afterEach(() => setPlayoutMode('off'));
@@ -185,7 +187,7 @@ describe('adaptive mode wiring (R12 T3)', () => {
 // moment resilient mode turns off.
 describe('resilient playout profile (R19)', () => {
   afterEach(() => {
-    setResilientMode(false);
+    setViewerDeliveryMode('live');
     setPlayoutMode('off');
   });
 
@@ -230,34 +232,34 @@ describe('resilient playout profile (R19)', () => {
 
   it('implies adaptive pacing while active, seeded at 500', () => {
     setPlayoutMode('off');
-    setResilientMode(true);
+    setViewerDeliveryMode('resilient');
     expect(getPlayoutMode()).toBe('adaptive');
     expect(getPlayoutOffsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.seedMs);
   });
 
   it('the stored playout mode survives a resilient on/off round-trip', () => {
     setPlayoutMode('fixed');
-    setResilientMode(true);
+    setViewerDeliveryMode('resilient');
     expect(getStoredPlayoutMode()).toBe('fixed');
     expect(getPlayoutMode()).toBe('adaptive');
-    setResilientMode(false);
+    setViewerDeliveryMode('live');
     expect(getStoredPlayoutMode()).toBe('fixed');
     expect(getPlayoutMode()).toBe('fixed');
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
   });
 
   it('leaving resilient mode re-seeds the controller onto the default profile', () => {
-    setResilientMode(true);
+    setViewerDeliveryMode('resilient');
     setPlayoutMode('adaptive');
     expect(getPlayoutOffsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.seedMs);
-    setResilientMode(false);
+    setViewerDeliveryMode('live');
     // Still adaptive by stored mode, but back on the default seed/envelope.
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
   });
 
   it('updatePlayoutController runs under resilient mode even with stored mode off', () => {
     setPlayoutMode('off');
-    setResilientMode(true);
+    setViewerDeliveryMode('resilient');
     for (let t = 0; t <= OFFSET_WARMUP_MS + 60_000; t += 1000) updatePlayoutController(1200, t);
     expect(getPlayoutOffsetMs()).toBe(1200 + HEADROOM_MS);
   });
@@ -271,7 +273,7 @@ describe('resilient playout profile (R19)', () => {
 // the stutter the mode exists to remove.
 describe('playout profiles carry their own jitter measurement (R19 PLAYOUT-1)', () => {
   afterEach(() => {
-    setResilientMode(false);
+    setViewerDeliveryMode('live');
     setPlayoutMode('off');
   });
 
@@ -295,7 +297,7 @@ describe('playout profiles carry their own jitter measurement (R19 PLAYOUT-1)', 
 
   it('getPlayoutProfile follows the resilient flag', () => {
     expect(getPlayoutProfile()).toBe(DEFAULT_PLAYOUT_PROFILE);
-    setResilientMode(true);
+    setViewerDeliveryMode('resilient');
     expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
   });
 
@@ -336,5 +338,47 @@ describe('playout profiles carry their own jitter measurement (R19 PLAYOUT-1)', 
       prev = c.offsetMs();
       t += 1000;
     }
+  });
+});
+
+// R21 (docs/26 Decision 15): three points on one axis, and the deep floor
+// needs BOTH the user's choice and the relay's confirmation.
+describe('viewer delivery mode', () => {
+  afterEach(() => {
+    setViewerDeliveryMode('live');
+    setDvrGranted(false);
+  });
+
+  it('live edge keeps the default profile', () => {
+    setViewerDeliveryMode('live');
+    expect(getPlayoutProfile()).toBe(DEFAULT_PLAYOUT_PROFILE);
+  });
+
+  it('resilient uses the R19 envelope, never the deep one', () => {
+    setViewerDeliveryMode('resilient');
+    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
+    // Even if a relay somehow granted a ring, a viewer that did not ask for
+    // the deep buffer must not silently get its latency.
+    setDvrGranted(true);
+    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
+  });
+
+  it('deep buffer waits for the relay to confirm it can back it', () => {
+    setViewerDeliveryMode('deep');
+    // Asked for, not yet granted: against a relay that cannot keep it filled
+    // a multi-second buffer is pure latency for no benefit.
+    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
+    setDvrGranted(true);
+    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
+  });
+
+  it('a mode change forgets the previous session grant', () => {
+    setViewerDeliveryMode('deep');
+    setDvrGranted(true);
+    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
+    setViewerDeliveryMode('resilient');
+    setViewerDeliveryMode('deep');
+    // A mode change is a deliberate reconnect; the new session must re-earn it.
+    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
   });
 });

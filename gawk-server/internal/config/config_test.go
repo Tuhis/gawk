@@ -35,6 +35,10 @@ func TestDefaults(t *testing.T) {
 		MaxBandwidthBytes:    0,
 		MaxKeyframeBytes:     8388608,
 		KeyframeWriteTimeout: time.Second,
+		DVRWindow:            3 * time.Second,
+		DVRMaxBytes:          24 << 20,
+		DVRMaxCatchup:        4,
+		DVRAudio:             true,
 		MetricsAddr:          ":2112",
 	}
 	if !reflect.DeepEqual(cfg, want) {

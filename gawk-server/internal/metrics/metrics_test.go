@@ -258,10 +258,14 @@ func TestReliableQueueOverflowHasItsOwnDropReason(t *testing.T) {
 	snap := r.Stats()
 	reliableStats := snap.Broadcasts[r.ObfuscateID(reliableID)]
 	datagramStats := snap.Broadcasts[r.ObfuscateID(datagramID)]
-	// At most queueDepth queued + 1 in the parked drain survive.
-	if minDrops := uint64(deltas - queueDepth - 1); reliableStats.DatagramsDropped < minDrops {
-		t.Fatalf("reliable subscriber dropped %d datagrams, want >= %d — the queue did not overflow",
-			reliableStats.DatagramsDropped, minDrops)
+	// The reliable subscriber overflows once per dead GOP: the tail is shed and
+	// purged into carrierRecordsDropped rather than re-overflowing, so what
+	// proves the overflow happened is the reason bucket, not the magnitude.
+	if reliableStats.DatagramsDropped == 0 {
+		t.Fatal("reliable subscriber dropped nothing — the queue did not overflow")
+	}
+	if reliableStats.CarrierQueueOverflow == 0 {
+		t.Fatal("reliable subscriber recorded no carrier queue overflow")
 	}
 	if datagramStats.DatagramsDropped == 0 {
 		t.Fatal("datagram subscriber dropped nothing — the control queue did not overflow")

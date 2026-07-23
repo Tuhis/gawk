@@ -14,6 +14,10 @@ import {
   TYPE_CLOCK_MAPPING,
   TYPE_RESUME_TOKEN,
   TYPE_RELIABLE_CARRIER,
+  TYPE_DELIVERY_ACK,
+  DELIVERY_ACK_SIZE,
+  encodeDeliveryAck,
+  parseDeliveryAck,
   TYPE_VIEWER_COUNT,
   TIME_SYNC_SIZE,
   CLOCK_MAPPING_SIZE,
@@ -178,6 +182,8 @@ describe('constants', () => {
     expect(CLOSE_CODE_SERVER_DRAINING).toBe(4002);
     expect(CLOSE_CODE_ORIGIN_MOVED).toBe(4003);
     expect(TYPE_RELIABLE_CARRIER).toBe(0x0a);
+    expect(TYPE_DELIVERY_ACK).toBe(0x0c);
+    expect(DELIVERY_ACK_SIZE).toBe(5);
     expect(CARRIER_PROLOGUE_SIZE).toBe(2);
     expect(CARRIER_RECORD_HEADER_SIZE).toBe(2);
     expect(TYPE_VIEWER_COUNT).toBe(0x0b);
@@ -669,5 +675,35 @@ describe('resume token (R17 W2)', () => {
     expect(() => parseResumeToken(new Uint8Array([0x01, 0x09, 0x01, 0x42, 0x43]))).toThrow(/resume token/);
     expect(() => encodeResumeToken(new Uint8Array(0))).toThrow(WireError);
     expect(() => encodeResumeToken(new Uint8Array(256))).toThrow(WireError);
+  });
+});
+
+// R21 (docs/26 Decision 7a): the join-time delivery ack. Golden vectors are
+// byte-identical to gawk-server/wire's — this is the mirror that keeps them so.
+describe('DeliveryAck (R21)', () => {
+  const GOLDEN_DVR_HEX = '010c020bb8';
+  const GOLDEN_DATAGRAMS_HEX = '010c000000';
+
+  it('matches the Go golden vectors', () => {
+    expect(toHex(encodeDeliveryAck('dvr', 3000))).toBe(GOLDEN_DVR_HEX);
+    expect(toHex(encodeDeliveryAck('datagrams', 0))).toBe(GOLDEN_DATAGRAMS_HEX);
+  });
+
+  it('round-trips every mode', () => {
+    for (const mode of ['datagrams', 'reliable', 'dvr'] as const) {
+      for (const bufferMs of [0, 1, 1000, 3000, 65535]) {
+        expect(parseDeliveryAck(encodeDeliveryAck(mode, bufferMs))).toEqual({ mode, bufferMs });
+      }
+    }
+  });
+
+  it('rejects malformed acks strictly', () => {
+    const good = encodeDeliveryAck('dvr', 3000);
+    expect(() => parseDeliveryAck(good.subarray(0, 4))).toThrow();
+    expect(() => parseDeliveryAck(fromHex('010c020bb800'))).toThrow();
+    expect(() => parseDeliveryAck(fromHex('020c020bb8'))).toThrow(); // version
+    expect(() => parseDeliveryAck(fromHex('010b020bb8'))).toThrow(); // type
+    // An unknown mode must throw, not silently read as datagrams.
+    expect(() => parseDeliveryAck(fromHex('010c090bb8'))).toThrow();
   });
 });

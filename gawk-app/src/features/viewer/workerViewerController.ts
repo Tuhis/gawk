@@ -7,6 +7,7 @@
 // cannot be repeated or reversed), drive with start()/stop() across broadcasts,
 // dispose() on teardown.
 
+import type { ViewerDeliveryMode } from '../../transport/resilient';
 import type { ConnectOptions } from '../../transport/connection';
 import type { PlayoutMode } from '../../transport/playout';
 import type {
@@ -136,9 +137,9 @@ export class WorkerViewerController {
   // R19: resilient mode for the worker context. Callers send it before
   // start() (worker messages process in order), so the wider profile is live
   // before the session's first frame.
-  setResilientMode(enabled: boolean): void {
+  setViewerDeliveryMode(mode: ViewerDeliveryMode): void {
     if (this.disposed) return;
-    this.post({ type: 'resilient', enabled });
+    this.post({ type: 'resilient', mode });
   }
 
   // R16: activate the presentation tee (gated devices, at `watching`). Sent

@@ -219,6 +219,14 @@ spec:
               value: {{ .Values.config.maxKeyframeBytes | quote }}
             - name: GAWK_KEYFRAME_WRITE_TIMEOUT
               value: {{ .Values.config.keyframeWriteTimeout | quote }}
+            - name: GAWK_DVR_WINDOW
+              value: {{ .Values.config.dvrWindow | quote }}
+            - name: GAWK_DVR_MAX_BYTES
+              value: {{ .Values.config.dvrMaxBytes | quote }}
+            - name: GAWK_DVR_MAX_CATCHUP
+              value: {{ .Values.config.dvrMaxCatchup | quote }}
+            - name: GAWK_DVR_AUDIO
+              value: {{ .Values.config.dvrAudio | quote }}
             - name: GAWK_MAX_IDLE_TIMEOUT
               value: {{ .Values.config.maxIdleTimeout | quote }}
             - name: GAWK_KEEPALIVE_PERIOD

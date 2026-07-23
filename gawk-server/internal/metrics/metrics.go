@@ -62,6 +62,8 @@ type RegistryCollector struct {
 	graceRemaining      *prometheus.Desc
 	subscribers         *prometheus.Desc
 	reliableSubscribers *prometheus.Desc
+	dvrSubscribers      *prometheus.Desc
+	dvrRingBytes        *prometheus.Desc
 	edgeSessions        *prometheus.Desc
 	viewersGlobal       *prometheus.Desc
 	role                *prometheus.Desc
@@ -85,6 +87,7 @@ type RegistryCollector struct {
 	kfOversize       desc
 	carrierStreams   desc
 	carrierRecords   desc
+	dvrResyncs       desc
 	carrierDropped   desc
 }
 
@@ -107,6 +110,10 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"Local viewers currently connected to the broadcast (edge sessions excluded).", []string{"broadcast"}, nil),
 		reliableSubscribers: prometheus.NewDesc("gawk_broadcast_reliable_subscribers",
 			"Local viewers in R19 reliable (resilient) delivery mode.", []string{"broadcast"}, nil),
+		dvrSubscribers: prometheus.NewDesc("gawk_broadcast_dvr_subscribers",
+			"Local viewers served from the R21 DVR ring at their own cursor.", []string{"broadcast"}, nil),
+		dvrRingBytes: prometheus.NewDesc("gawk_broadcast_dvr_ring_bytes",
+			"Bytes this broadcast's DVR ring currently retains — the number to watch against -dvr-max-bytes.", []string{"broadcast"}, nil),
 		edgeSessions: prometheus.NewDesc("gawk_broadcast_edge_sessions",
 			"Downstream edge pods attached via the internal subscribe route (R17).", []string{"broadcast"}, nil),
 		viewersGlobal: prometheus.NewDesc("gawk_broadcast_viewers_global",
@@ -154,6 +161,8 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"R19 reliable carrier streams opened to resilient subscribers (~2/GOP each)."),
 		carrierRecords: newDesc("carrier_records_total",
 			"Delta datagrams delivered as reliable carrier records (R19)."),
+		dvrResyncs: newDesc("dvr_resyncs_total",
+			"R21 DVR subscribers resynced after their cursor fell off the ring's tail — the mode's only frame loss. Rising means stalls are outliving -dvr-window."),
 		carrierDropped: newDesc("carrier_records_dropped_total",
 			"Carrier records dropped: dead carrier after a stall/cancel, or stream-open failure (R19). Bandwidth-cap drops count as datagram bandwidth drops instead."),
 	}
@@ -167,6 +176,8 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.graceRemaining
 	ch <- c.subscribers
 	ch <- c.reliableSubscribers
+	ch <- c.dvrSubscribers
+	ch <- c.dvrRingBytes
 	ch <- c.edgeSessions
 	ch <- c.viewersGlobal
 	ch <- c.role
@@ -183,7 +194,7 @@ func (c *RegistryCollector) counterDescs() []desc {
 		c.sendErrors, c.ingressLostF, c.ingressLostC, c.edgeIngressLostF,
 		c.edgeIngressLostC, c.ingressBytes,
 		c.egressBytes, c.bwDroppedBytes, c.kfIn, c.kfSent, c.kfDropped, c.kfOversize,
-		c.carrierStreams, c.carrierRecords, c.carrierDropped,
+		c.carrierStreams, c.carrierRecords, c.carrierDropped, c.dvrResyncs,
 	}
 }
 
@@ -267,6 +278,11 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.carrierStreams.broadcast, s.CarrierStreams, id)
 		counter(c.carrierRecords.broadcast, s.CarrierRecords, id)
 		counter(c.carrierDropped.broadcast, s.CarrierRecordsDropped, id)
+		counter(c.dvrResyncs.broadcast, s.DVRResyncs, id)
+		// The ring's live cost, against which -dvr-max-bytes is set. A gauge,
+		// not a counter: what matters is what it holds now.
+		gauge(c.dvrSubscribers, float64(s.DVRSubscribers), id)
+		gauge(c.dvrRingBytes, float64(s.DVRRingBytes), id)
 	}
 
 	t := snap.Totals

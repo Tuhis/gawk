@@ -65,7 +65,10 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Watching', stats?.viewerCount == null ? '—' : String(stats.viewerCount)],
         // R19 (docs/24 Decision 10): how deltas actually arrive — the
         // truthful mode row, incl. the Decision 8 degradation state.
-        ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
+        // R21: 'dvr' is the relay's own word for it (the join-time DeliveryAck)
+        // — a replayed GOP looks exactly like a live one, so nothing the viewer
+        // can observe would tell these two apart.
+        ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'dvr' ? `ring-backed (buffer ${fmtInt(stats.dvrBufferMs)} ms)` : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
         ...(stats?.deliveryMode !== 'datagrams' && stats != null
           ? ([
               ['Carrier streams', stats.carrierStreams == null ? '—' : `${stats.carrierStreams} (${stats.carrierStreamsAborted ?? 0} aborted)`],

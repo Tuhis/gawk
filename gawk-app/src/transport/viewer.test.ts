@@ -38,6 +38,7 @@ vi.mock('../media/decoder', () => ({
 
 import { timeOriginMs } from './time-sync';
 import { SESSION_STALL_MS, ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
+import { DVR_BUFFER_MS, getDvrGranted, setDvrGranted } from './playout';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
@@ -47,6 +48,7 @@ import {
   encodeDecoderConfig,
   encodeVideoChunk,
   encodeViewerCount,
+  encodeDeliveryAck,
 } from './wire';
 
 function makeFakeWT(closedAfterMs: number, closeInfo: unknown) {
@@ -145,8 +147,11 @@ describe('ViewerPipeline', () => {
     const opts = { deliveryMode: 'reliable' as const };
     const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
     await pipeline.start();
+    // R21 (docs/26 Decision 7): the buffer floor rides along, so a relay that
+    // can serve from a ring does. A relay that predates the parameter ignores
+    // it and serves R19 carriers — the degradation we want.
     expect(connectWebTransport).toHaveBeenCalledWith(
-      'https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable',
+      `https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable&buffer=${DVR_BUFFER_MS}`,
       opts,
     );
     await pipeline.stop();
@@ -927,6 +932,68 @@ describe('ViewerPipeline audio stats survive lane death', () => {
     expect(latest!.audioCodec).toBe('opus');
     expect(latest!.audioSampleRate).toBe(48000);
     expect(latest!.audioChannels).toBe(2);
+    await pipeline.stop();
+  });
+});
+
+// R21 (docs/26 Decision 7a): the relay states the served mode once at join,
+// because a ring-replayed GOP is byte-identical on the wire to a live one and
+// nothing the viewer can observe would tell the two apart. The deeper playout
+// floor is applied only on that confirmation — against a relay that cannot
+// keep it filled it would be pure latency.
+describe('ViewerPipeline delivery ack', () => {
+  afterEach(() => setDvrGranted(false));
+
+  async function runWithAck(ack: Uint8Array | null) {
+    let deliver!: (d: Uint8Array) => void;
+    const fakeTransport: ViewerTransport = {
+      kind: 'in-process',
+      connect: async (cb) => {
+        deliver = cb.onDatagram;
+      },
+      sampleConnectionStats: () => null,
+      sampleTimeSync: () => null,
+      close: () => {},
+    };
+    const { cbs } = makeCallbacks();
+    const stats: ViewerStats[] = [];
+    cbs.onStats = (s) => stats.push(s);
+    const pipeline = new ViewerPipeline(
+      'https://relay.test:4433',
+      'K7XQ2M',
+      { deliveryMode: 'reliable' },
+      cbs,
+      null,
+      () => fakeTransport,
+    );
+    await pipeline.start();
+    if (ack) deliver(ack);
+    return { pipeline, stats, deliver };
+  }
+
+  it('reports ring-backed delivery and deepens the playout floor', async () => {
+    const { pipeline, stats } = await runWithAck(encodeDeliveryAck('dvr', 3000));
+    expect(getDvrGranted()).toBe(true);
+    await new Promise((r) => setTimeout(r, 600)); // one stats tick
+    const s = stats.at(-1);
+    expect(s?.deliveryMode).toBe('dvr');
+    expect(s?.dvrBufferMs).toBe(3000);
+    await pipeline.stop();
+  });
+
+  it('does not deepen the buffer when the relay serves plain carriers', async () => {
+    const { pipeline } = await runWithAck(encodeDeliveryAck('reliable', 0));
+    expect(getDvrGranted()).toBe(false);
+    await pipeline.stop();
+  });
+
+  it('survives a malformed ack without breaking playback', async () => {
+    // A diagnostics message must never be able to take the stream down.
+    const bad = new Uint8Array([0x01, 0x0c, 0x09, 0x00, 0x00]);
+    const { pipeline, deliver } = await runWithAck(bad);
+    expect(getDvrGranted()).toBe(false);
+    deliver(configDgram());
+    deliver(frameDgram(1, true));
     await pipeline.stop();
   });
 });

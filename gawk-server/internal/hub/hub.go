@@ -111,6 +111,49 @@ const CarrierOpenFailEvictThreshold = 10
 // policy, not fleet capacity.
 const CarrierWriteTimeout = 500 * time.Millisecond
 
+// AudioSidebandQueueDepth bounds the reliable subscriber's audio lane. Audio is
+// one Opus packet per datagram at 50/s, and this drain ends in SendDatagram,
+// which never parks — so the queue only has to absorb a scheduling hiccup, not
+// a stalled write, and ~1.3 s of packets is already generous. Deliberately not
+// QueueDepth: that number is sized for video chunks (~13 per frame), and reusing
+// it would let audio queue 20 s deep, which for a live-edge medium is backlog
+// nobody wants delivered.
+const AudioSidebandQueueDepth = 64
+
+// DefaultDVRWindow and DefaultDVRMaxBytes bound the R21 ring (docs/26
+// Decision 10). The window expresses the product intent — how long a stall the
+// mode can hide — and must exceed the viewer's playout buffer, which in turn
+// must strictly exceed the stall it covers (Decision 6). The byte cap is the
+// bound that actually protects the pod: 3 s of a 50 Mbps broadcaster is 18 MB,
+// and nothing else stops five of those from arriving at once.
+const (
+	DefaultDVRWindow   = 3 * time.Second
+	DefaultDVRMaxBytes = 24 << 20
+)
+
+// MinDVRBufferMs is the smallest viewer buffer worth serving from a ring
+// (docs/26 Decision 7). Below it every replayed record would arrive past its
+// due time, so the subscriber is *downgraded* to plain carrier delivery rather
+// than refused — a query param must never reject a session.
+const MinDVRBufferMs = 1000
+
+// DefaultDVRProgressTimeout is how long a DVR subscriber may write nothing at
+// all before the relay calls it unreachable (docs/26 Decision 9). It cannot be
+// expressed as lag, which is this mode's whole point, so it is expressed as
+// progress: not one record or keyframe landing in this long means the peer is
+// gone, not slow. Comfortably past any tolerable stall — the ring is seconds
+// deep and the viewer's own dead-session watchdog fires at 15 s — so a viewer
+// merely riding out a bad minute is never caught by it.
+const DefaultDVRProgressTimeout = 30 * time.Second
+
+// DefaultDVRMaxCatchup is how much faster than live a recovering DVR
+// subscriber may send. Covering a stall S with buffer B needs B/(B−S) times
+// the stream bitrate (docs/26 Decision 6), so 4x carries a 2 s stall on a
+// 2.67 s buffer — comfortably inside the 3 s default window and buffer —
+// while still bounding a herd that recovers together after one shared network
+// event. A negative value disables the ceiling.
+const DefaultDVRMaxCatchup = 4.0
+
 // ViewerCountInterval paces the R18 count pump (docs/23 Decision 4): one
 // recompute-and-emit pass per tick, which is also what makes a reconnect
 // storm structurally unable to spam clients — emits can never exceed
@@ -172,6 +215,25 @@ type Options struct {
 	// usually one datagram each, but a high-motion delta can span a few, so
 	// this comfortably exceeds a burst. Defaults to 256.
 	QueueDepth int
+
+	// DVR bounds the R21 per-broadcast ring (docs/26). Only allocated for
+	// broadcasts that actually have a DVR subscriber.
+	DVR DVROptions
+
+	// DVRAudio puts audio in the ring too (docs/26 Decision 8). Off leaves
+	// audio on the live-edge sideband, which is docs/20 field finding 5's
+	// behaviour exactly.
+	DVRAudio bool
+
+	// DVRMaxCatchup caps how much faster than live a recovering DVR subscriber
+	// may send, as a multiple of the broadcast's own bitrate (docs/26
+	// Decision 6). Negative disables the ceiling.
+	DVRMaxCatchup float64
+
+	// DVRProgressTimeout is how long a DVR subscriber may make no progress at
+	// all before it is evicted (docs/26 Decision 9). Health in this mode is
+	// "is the cursor advancing?", never "is it at live?" — lag is the feature.
+	DVRProgressTimeout time.Duration
 	// BroadcastGrace is the amount of time a broadcast ID survives after its
 	// publisher disconnects, allowing it to be reclaimed. Defaults to 5 minutes.
 	BroadcastGrace time.Duration
@@ -265,6 +327,16 @@ type SubscriberStats struct {
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
 	CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow,omitempty"`
+
+	// R21 DVR (docs/26 DV4). Lag is NOT a health signal in this mode — it is
+	// the feature — so read these together: a large DVRLagMs with DVRResyncs
+	// flat and DVRGopSeq climbing is a viewer riding out a bad link exactly as
+	// designed. Resyncs climbing is the mode's only frame loss.
+	DVR         bool   `json:"dvr,omitempty"`
+	DVRBufferMs int    `json:"dvrBufferMs,omitempty"`
+	DVRLagMs    int64  `json:"dvrLagMs,omitempty"`
+	DVRGopSeq   int64  `json:"dvrGopSeq,omitempty"`
+	DVRResyncs  uint64 `json:"dvrResyncs,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
@@ -326,6 +398,15 @@ type Stats struct {
 	// reliable slice of it, not a separate budget.
 	CarrierQueueOverflow uint64 `json:"carrierQueueOverflow"`
 	EgressCarrierBytes   uint64 `json:"egressCarrierBytes"` // carrier bytes written (prologues + records)
+
+	// R21 DVR (docs/26 DV4). DVRSubscribers is how many viewers are served
+	// from the ring; DVRRingBytes/DVRRingGops is what that window costs right
+	// now — the number to watch against -dvr-max-bytes. DVRResyncs is the
+	// mode's only frame loss: viewers whose stall outlived the ring.
+	DVRSubscribers int    `json:"dvrSubscribers,omitempty"`
+	DVRRingBytes   int    `json:"dvrRingBytes,omitempty"`
+	DVRRingGops    int    `json:"dvrRingGops,omitempty"`
+	DVRResyncs     uint64 `json:"dvrResyncs,omitempty"`
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
@@ -473,6 +554,12 @@ type broadcastHub struct {
 	// upstream and is forwarded verbatim (Decision 5c — counts are
 	// pod-independent, no per-hop rewrite).
 	cachedViewerCount []byte
+
+	// dvr is this broadcast's R21 window, nil until a DVR subscriber joins
+	// (docs/26 Decision 11) and shared by every one of them.
+	dvr *DVRRing
+	// dvrAudio is the same window for the audio lane, allocated beside it.
+	dvrAudio *DVRAudioRing
 	// Count-pump emit tracking (origin hubs only): the last count pushed and
 	// when, making emits change-driven with a keepalive re-send (Decision 4).
 	lastViewerCount        uint32
@@ -554,8 +641,29 @@ func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	if opts.MaxSubscribers <= 0 {
 		opts.MaxSubscribers = 15
 	}
+	if opts.DVRMaxCatchup == 0 {
+		opts.DVRMaxCatchup = DefaultDVRMaxCatchup
+	}
+	if opts.DVRProgressTimeout <= 0 {
+		opts.DVRProgressTimeout = DefaultDVRProgressTimeout
+	}
+	if opts.DVR.Window <= 0 {
+		opts.DVR.Window = DefaultDVRWindow
+	}
+	if opts.DVR.MaxBytes <= 0 {
+		opts.DVR.MaxBytes = DefaultDVRMaxBytes
+	}
 	if opts.QueueDepth <= 0 {
-		opts.QueueDepth = 256
+		// ~1024 delta chunks ≈ 2.6 s of 1080p video (a frame is ~13 chunks at
+		// the ~1200 B datagram cap), raised from 256 (~0.65 s) because that was
+		// too little headroom for a reliable subscriber: a carrier write parked
+		// on flow control only had to stall for two thirds of a second before
+		// the queue began shedding (BUGS.md, 2026-07-22 — 12 % overflow). Near
+		// inert for datagram subscribers, whose drain never blocks
+		// (SendDatagram does not park), so their queue effectively never fills;
+		// what the depth buys there is tolerance for a scheduling hiccup, and
+		// their drop-newest policy means it cannot turn into replayed staleness.
+		opts.QueueDepth = 1024
 	}
 	if opts.BroadcastGrace <= 0 {
 		opts.BroadcastGrace = 5 * time.Minute
@@ -1082,7 +1190,29 @@ func (r *Registry) SubscribeInternal(id string, conn Conn) (*Subscriber, error) 
 	return r.subscribe(id, conn, true, false)
 }
 
+// SubscribeDVR registers an R21 subscriber (docs/26): reliable carrier
+// delivery served from the broadcast's ring at this subscriber's own cursor,
+// so a stalled link loses nothing until the stall outlives the ring.
+// bufferMs is the viewer's *guaranteed minimum* playout offset — its profile
+// floor, not its current value (Decision 7) — and bounds how far behind the
+// cursor may fall before replaying is pointless.
+func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs int) (*Subscriber, error) {
+	return r.subscribeOpts(id, conn, subscribeOpts{reliable: true, dvr: true, bufferMs: bufferMs})
+}
+
+type subscribeOpts struct {
+	internal bool
+	reliable bool
+	dvr      bool
+	bufferMs int
+}
+
 func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Subscriber, error) {
+	return r.subscribeOpts(id, conn, subscribeOpts{internal: internal, reliable: reliable})
+}
+
+func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subscriber, error) {
+	internal, reliable := so.internal, so.reliable
 	r.mu.Lock()
 
 	normID, err := broadcastid.Normalize(id)
@@ -1115,8 +1245,39 @@ func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Su
 		done:     make(chan struct{}),
 		statsKey: newSubscriberStatsKey(),
 	}
+	if reliable {
+		s.audioQueue = make(chan []byte, AudioSidebandQueueDepth)
+		s.audioDone = make(chan struct{})
+	}
+	if so.dvr {
+		// Lazy allocation (docs/26 Decision 11): a fleet with no DVR viewers
+		// pays nothing, and one DVR viewer's ring serves every later joiner.
+		if b.dvr == nil {
+			b.dvr = NewDVRRing(r.opts.DVR)
+			if r.opts.DVRAudio {
+				b.dvrAudio = NewDVRAudioRing(r.opts.DVR)
+			}
+			// Seed from the cached keyframe so a joiner has a decodable entry
+			// point immediately, exactly as the join prime does.
+			if b.cachedKeyframe != nil {
+				b.dvr.AppendKeyframe(b.cachedKeyframe, time.Now())
+			}
+		}
+		s.dvr = b.dvr
+		s.dvrBufferMs = so.bufferMs
+		s.dvrCursor = b.dvr.NewCursor()
+		s.dvrStop = make(chan struct{})
+		s.dvrPace = newDVRPacer(r.opts.DVRMaxCatchup, time.Now)
+		if b.dvrAudio != nil {
+			s.dvrAudio = b.dvrAudio
+			s.dvrAudioCur = b.dvrAudio.Newest()
+		}
+	}
 	b.subs[s] = struct{}{}
 	go s.drain()
+	if s.audioQueue != nil {
+		go s.drainAudioSideband()
+	}
 
 	// Prime the joiner with the cached clock mapping (R5 Q2) so absolute
 	// latency works without waiting for the broadcaster's next re-send. A
@@ -1206,6 +1367,8 @@ func (r *Registry) Stats() RegistryStats {
 		carOverflow := b.carrierQueueOverflow
 		egressCar := b.egressCarrierBytes
 		reliableSubs := 0
+		dvrSubs := 0
+		var dvrResyncs uint64
 		details := make([]SubscriberStats, 0, len(b.subs))
 		edgeSessions := 0
 		for s := range b.subs {
@@ -1214,6 +1377,10 @@ func (r *Registry) Stats() RegistryStats {
 			}
 			if s.reliable && !s.internal {
 				reliableSubs++
+			}
+			if s.dvr != nil {
+				dvrSubs++
+				dvrResyncs += s.dvrResyncs.Load()
 			}
 			subDrops := s.keyframeDrops()
 			dropped += s.dropped.Load()
@@ -1240,6 +1407,11 @@ func (r *Registry) Stats() RegistryStats {
 				CarrierRecords:        s.carrierRecords.Load(),
 				CarrierRecordsDropped: s.carrierRecordsDropped.Load(),
 				CarrierQueueOverflow:  s.carrierQueueOverflow.Load(),
+				DVR:                   s.dvr != nil,
+				DVRBufferMs:           s.dvrBufferMs,
+				DVRLagMs:              s.dvrLagMs.Load(),
+				DVRGopSeq:             s.dvrGopSeq.Load(),
+				DVRResyncs:            s.dvrResyncs.Load(),
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -1270,6 +1442,10 @@ func (r *Registry) Stats() RegistryStats {
 		} else {
 			viewersGlobal = b.globalViewersLocked()
 		}
+		ringBytes, ringGops := 0, 0
+		if b.dvr != nil {
+			ringBytes, ringGops = b.dvr.Bytes(), b.dvr.Gops()
+		}
 		obf := r.ObfuscateID(id)
 		broadcasts[obf] = Stats{
 			PublisherActive:           b.publisherActive,
@@ -1281,6 +1457,10 @@ func (r *Registry) Stats() RegistryStats {
 			CarrierRecords:            carRecords,
 			CarrierRecordsDropped:     carDropped,
 			CarrierQueueOverflow:      carOverflow,
+			DVRSubscribers:            dvrSubs,
+			DVRRingBytes:              ringBytes,
+			DVRRingGops:               ringGops,
+			DVRResyncs:                dvrResyncs,
 			EgressCarrierBytes:        egressCar,
 			EdgeSessions:              edgeSessions,
 			FramesRelayed:             b.framesRelayed,
@@ -1691,6 +1871,9 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 		return
 	}
 	b.cachedKeyframe = msg
+	if b.dvr != nil {
+		b.dvr.AppendKeyframe(msg, time.Now())
+	}
 	b.cachedKeyframeID = hdr.FrameID
 	b.cachedKeyframeHasConfig = hdr.ConfigLen > 0
 	b.keyframeSeq++
@@ -1750,6 +1933,16 @@ func (p *Publisher) Close() {
 	}
 }
 
+// cachedAudioConfigSnapshot returns the latest AudioConfig datagram for the
+// audio DVR's resync re-emit. Under the registry lock: the drain reads it from
+// its own goroutine.
+func (b *broadcastHub) cachedAudioConfigSnapshot() []byte {
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return b.cachedAudioConfig
+}
+
 func (b *broadcastHub) countBad() {
 	r := b.registry
 	r.mu.Lock()
@@ -1797,6 +1990,19 @@ func (p *Publisher) relayVideoChunk(hdr wire.VideoChunkHeader, dgram []byte) {
 
 func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	b.datagramsRelayed++
+	// R21: the ring is fed ONCE per broadcast, not once per subscriber — that
+	// is the whole memory argument (docs/26 Decision 1). Only video deltas are
+	// retained: control traffic (ClockMapping, the R18 ViewerCount keepalive,
+	// DecoderConfig) is live-edge by nature, and replaying a two-second-old
+	// viewer count would be worse than not sending it. Those keep going
+	// straight out through the sideband, so a DVR subscriber's keepalive is
+	// never delayed by the depth of its video cursor.
+	if b.dvr != nil && isVideoChunkDatagram(dgram) {
+		b.dvr.AppendRecord(dgram, time.Now())
+	}
+	if b.dvrAudio != nil && isAudioDatagram(dgram) {
+		b.dvrAudio.Append(dgram, time.Now())
+	}
 	for s := range b.subs {
 		s.enqueueLocked(dgram)
 	}
@@ -1808,6 +2014,13 @@ type Subscriber struct {
 	sender Conn
 	queue  chan []byte
 	done   chan struct{}
+	// The audio sideband's own lane, on reliable subscribers only (nil
+	// otherwise — a datagram subscriber's drain never parks, so there is
+	// nothing to decouple it from). Audio does not ride the carrier and has no
+	// GOP to align to; giving it its own drain is what keeps a parked video
+	// write from freezing it.
+	audioQueue chan []byte
+	audioDone  chan struct{}
 
 	// statsKey names this subscriber in /statusz subscriberDetails: random
 	// per-session, so a slow viewer can be watched across polls without
@@ -1881,6 +2094,27 @@ type Subscriber struct {
 	carRotations atomic.Uint64
 	carMu        sync.Mutex
 	carCurrent   KeyframeStream
+	// The rotation generation whose GOP has been declared dead by a queue
+	// overflow, stored as generation+1 so the zero value means "none". Written
+	// by enqueueLocked (under registry.mu) and read there; it needs no reset,
+	// because a rotation moves carRotations past it.
+	carDeadRotation atomic.Uint64
+
+	// R21 DVR state (docs/26). dvr non-nil selects the cursor drain over the
+	// queue drain; dvrCursor is owned by that goroutine alone after subscribe.
+	dvr           *DVRRing
+	dvrCursor     DVRCursor
+	dvrBufferMs   int
+	dvrStop       chan struct{}
+	dvrResyncs    atomic.Uint64
+	dvrLagMs      atomic.Int64
+	dvrProgressAt atomic.Int64
+	dvrCursorAtMs atomic.Int64
+	dvrPace       *dvrPacer
+	dvrAudio      *DVRAudioRing
+	dvrAudioCur   DVRAudioCursor
+	dvrAudioCar   KeyframeStream
+	dvrGopSeq     atomic.Int64
 
 	carrierStreams        atomic.Uint64
 	carrierRecords        atomic.Uint64
@@ -1900,6 +2134,45 @@ func (s *Subscriber) keyframeDrops() KeyframeDrops {
 }
 
 func (s *Subscriber) enqueueLocked(dgram []byte) {
+	// Audio takes its own lane on a reliable subscriber. It never rides the
+	// carrier (docs/20 field finding 5) and has no GOP to align to, so sharing
+	// the video queue only bought it the video drain's stalls: one parked
+	// carrier write froze every audio packet behind it for up to a full
+	// CarrierWriteTimeout, in the medium least able to hide a gap.
+	// A DVR subscriber reads its video from the ring at its own cursor, so the
+	// queue would only duplicate it. Everything else still rides the queue.
+	if s.dvr != nil && isVideoChunkDatagram(dgram) {
+		return
+	}
+	if s.dvrAudio != nil && isAudioDatagram(dgram) {
+		return
+	}
+	if s.audioQueue != nil && isAudioDatagram(dgram) {
+		select {
+		case s.audioQueue <- dgram:
+		default:
+			// Drop-newest, exactly like the datagram drain's queue: this lane
+			// ends in SendDatagram, which never parks, so a full queue means a
+			// wedged session rather than a slow write.
+			s.dropped.Add(1)
+		}
+		return
+	}
+	// A GOP whose carrier has already been holed is beyond saving: the viewer
+	// freezes to the next keyframe regardless, so every remaining delta of it
+	// is work the viewer will discard. Shed the tail at the door rather than
+	// spending the drain time and bandwidth that caused the overflow, and let
+	// the next rotation recover (carRotations is bumped by the keyframe
+	// fan-out, not by the drain, so this clears even while the drain is
+	// parked). Deliberately video-only: DecoderConfig and the R18 ViewerCount
+	// keepalive must still get through — the latter is what a viewer's
+	// dead-session watchdog reads as proof the session is alive.
+	if s.reliable && isVideoChunkDatagram(dgram) {
+		if s.carDeadRotation.Load() == s.carRotations.Load()+1 {
+			s.carrierRecordsDropped.Add(1)
+			return
+		}
+	}
 	select {
 	case s.queue <- dgram:
 		return
@@ -1913,44 +2186,93 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 		s.dropped.Add(1)
 		return
 	}
-	// Reliable carrier (docs/24 finding 14, review finding BACKPRESSURE-3): the
-	// carrier delivers records in order and the viewer treats them as one
-	// contiguous stream, so an overflow hole forces a keyframe resync either
-	// way. Drop the *oldest* queued record instead of the newcomer, so the
-	// queue keeps trending toward live and the resync lands as close to the live
-	// edge as possible — dropping the newest would instead replay a stale
-	// backlog and strand the viewer further behind, the opposite of what the
-	// mode is for. enqueueLocked is the sole sender (always under registry.mu)
-	// and the drain only ever *removes*, so evicting one head guarantees room
-	// for the newcomer; the fallback below stays non-blocking regardless, so the
-	// fan-out is never blocked under the lock.
-	select {
-	case <-s.queue:
-		// Evicted the oldest queued record to make room.
-	default:
-		// The drain emptied the queue between the full check and here; no
-		// eviction needed — fall through and enqueue the newcomer.
-	}
-	select {
-	case s.queue <- dgram:
-	default:
-		// Unreachable given the single-sender invariant above, but never block
-		// the fan-out: fall back to dropping the newcomer.
-	}
-	// Exactly one datagram is shed per overflow (the evicted oldest, or the
-	// newcomer in the unreachable fallback). A resilient subscriber's overflow
-	// is a different failure from a slow datagram viewer's (docs/24 finding 11):
-	// it punches a hole in a stream the viewer is told is reliable and in-order,
-	// so it gets its own reason bucket for operators to tell "resilient mode is
-	// failing this viewer" from "this viewer's link is slow". The drop still
-	// counts in `dropped`: a slice of the drop budget, not a second one, and
-	// queue_full stays derivable by subtracting it.
+	// Reliable carrier: the carrier delivers records in order and the viewer
+	// treats them as one contiguous stream, so this overflow has already cost
+	// it a freeze to the next keyframe. Mark the GOP dead (the tail is shed at
+	// the top of this function from here until the next rotation) and drop the
+	// newcomer.
+	//
+	// This supersedes docs/24 finding 14's drop-oldest eviction, whose goal was
+	// to keep the queue trending toward live so the forced resync landed near
+	// the live edge. At GOP granularity that goal is met for free: the resync
+	// point IS the next keyframe, which is fresh by construction, so which of a
+	// doomed GOP's records survive in the queue cannot change what the viewer
+	// ends up showing. The visible freeze is identical either way — what the
+	// GOP-level mark buys is a drain that is idle and ready when the next GOP
+	// starts, instead of one still working through records nobody will decode.
+	s.carDeadRotation.Store(s.carRotations.Load() + 1)
+	s.carrierRecordsDropped.Add(uint64(s.purgeQueuedDeltasLocked()))
+	// One overflow event per dead GOP, not one per shed packet. A resilient
+	// subscriber's overflow is a different failure from a slow datagram
+	// viewer's (docs/24 finding 11): it punches a hole in a stream the viewer
+	// is told is reliable and in-order, so it gets its own reason bucket for
+	// operators to tell "resilient mode is failing this viewer" from "this
+	// viewer's link is slow". The drop still counts in `dropped`: a slice of
+	// the drop budget, not a second one, and queue_full stays derivable by
+	// subtracting it. The shed tail counts only in carrierRecordsDropped —
+	// same as any other dead GOP's tail — so that subtraction stays honest.
 	s.dropped.Add(1)
 	s.carrierQueueOverflow.Add(1)
 }
 
+// purgeQueuedDeltasLocked empties the already-queued video deltas of a GOP that
+// has just been declared dead, returning how many it discarded. Without it the
+// dead-GOP mark would only shed *future* arrivals while the drain still worked
+// through a full queue of records the viewer is guaranteed to discard — at the
+// 1024-slot depth that is over a megabyte of writes aimed at a viewer already
+// too slow to keep up, which is the pipe the mode most needs freed.
+//
+// Control datagrams are put back in order rather than dropped: DecoderConfig,
+// ClockMapping and above all the R18 ViewerCount keepalive say nothing about
+// video and must survive a holed GOP — the keepalive is what a viewer's
+// dead-session watchdog reads as proof its session is alive, so shedding it
+// here would make a stalled carrier look like a dead connection.
+//
+// Caller holds registry.mu, which makes this safe: enqueueLocked is the sole
+// sender and the drain only ever removes, so re-enqueuing fewer items than
+// were taken always fits. Every send stays non-blocking regardless — fan-out
+// must never block under the lock.
+func (s *Subscriber) purgeQueuedDeltasLocked() int {
+	queued := len(s.queue)
+	if queued == 0 {
+		return 0
+	}
+	purged := 0
+	keep := make([][]byte, 0, queued)
+drain:
+	for range queued {
+		select {
+		case d := <-s.queue:
+			if isVideoChunkDatagram(d) {
+				purged++
+				continue
+			}
+			keep = append(keep, d)
+		default:
+			break drain
+		}
+	}
+	for _, d := range keep {
+		select {
+		case s.queue <- d:
+		default:
+		}
+	}
+	return purged
+}
+
 func (s *Subscriber) drain() {
 	defer close(s.done)
+	if s.dvr != nil {
+		// The queue still carries this subscriber's control traffic; a
+		// separate goroutine drains it so neither can stall the other.
+		go s.drainControlSideband()
+		if s.dvrAudio != nil {
+			go s.drainDVRAudio()
+		}
+		s.drainDVR()
+		return
+	}
 	if s.reliable {
 		s.drainReliable()
 		return
@@ -2053,6 +2375,28 @@ func (s *Subscriber) drainReliable() {
 		s.carrierRecords.Add(1)
 		s.egressCarrierBytes.Add(uint64(len(scratch)))
 	}
+}
+
+// drainAudioSideband is the reliable subscriber's second drain: audio only,
+// straight out to SendDatagram. It exists so the audio lane cannot inherit the
+// carrier's stalls — sendSidebandDatagram never parks, so this goroutine is
+// always ready, while drainReliable may be blocked in a record write for up to
+// CarrierWriteTimeout.
+func (s *Subscriber) drainAudioSideband() {
+	defer close(s.audioDone)
+	for dgram := range s.audioQueue {
+		s.sendSidebandDatagram(dgram)
+	}
+}
+
+// isVideoChunkDatagram reports whether a fanned-out datagram is a video delta
+// chunk — the only kind the dead-GOP shed may drop. Control traffic sharing
+// the queue (DecoderConfig, ClockMapping, the R18 ViewerCount keepalive) must
+// survive a holed GOP: the keepalive in particular is what a viewer's
+// dead-session watchdog reads as proof its session is still alive.
+func isVideoChunkDatagram(dgram []byte) bool {
+	_, typ, err := wire.PeekType(dgram)
+	return err == nil && typ == wire.TypeVideoChunk
 }
 
 // isAudioDatagram reports whether a fanned-out datagram belongs to the audio
@@ -2333,6 +2677,14 @@ func (s *Subscriber) closeUnresponsive() {
 	s.Close()
 }
 
+// waitAudioDrain blocks until the audio sideband drain has exited. A no-op on
+// datagram subscribers, which have no second lane.
+func (s *Subscriber) waitAudioDrain() {
+	if s.audioDone != nil {
+		<-s.audioDone
+	}
+}
+
 // Close removes the subscriber and stops its drain loop.
 func (s *Subscriber) Close() {
 	b := s.hub
@@ -2341,11 +2693,20 @@ func (s *Subscriber) Close() {
 	if s.closed.Load() {
 		r.mu.Unlock()
 		<-s.done
+		s.waitAudioDrain()
 		return
 	}
 	s.closed.Store(true)
 	delete(b.subs, s)
 	close(s.queue)
+	if s.audioQueue != nil {
+		close(s.audioQueue)
+	}
+	if s.dvrStop != nil {
+		// The DVR drain blocks on the ring rather than on the queue, so
+		// closing the queue does not release it — this does.
+		close(s.dvrStop)
+	}
 	r.mu.Unlock()
 
 	// Cancel any in-flight keyframe stream and wait for its writer to finish,
@@ -2369,6 +2730,10 @@ func (s *Subscriber) Close() {
 	s.carMu.Unlock()
 
 	<-s.done
+	// Both drains must be finished before the fold below: the audio lane keeps
+	// its own drop/send-error/egress counters, and folding while it still runs
+	// loses whatever it does next (CODE-REVIEW: counters survive their owner).
+	s.waitAudioDrain()
 
 	// Fold the final counters only after drain has finished: drain keeps
 	// consuming (and bandwidth-dropping) the queued backlog after the queue

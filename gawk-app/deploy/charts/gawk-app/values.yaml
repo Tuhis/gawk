@@ -45,3 +45,13 @@ config:
   # The maximum number of frames the viewer's WebCodecs VideoDecoder will queue
   # before it starts dropping frames until the next keyframe.
   maxDecoderQueueSize: 5
+
+  # R21 Deep buffer: how much video a viewer on that mode holds, in ms, and
+  # what it asks the relay to keep filled. Pairs with the gawk-server chart's
+  # config.dvrWindow, which clamps it — set the window at least this high or
+  # the relay will serve less than the viewer expects. The buffer must
+  # strictly EXCEED the stall it covers: covering S needs B/(B-S)x burst
+  # bandwidth, so 3000 backs a ~2 s dropout at 3x. Clamped client-side to
+  # [1000, 30000]; below 1000 the relay downgrades to plain resilient
+  # delivery, since every replayed record would arrive past due.
+  dvrBufferMs: 3000

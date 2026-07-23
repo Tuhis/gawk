@@ -14,6 +14,13 @@ export interface GawkRuntimeConfig {
   // The maximum number of frames the viewer's WebCodecs VideoDecoder will queue
   // before it starts dropping frames until the next keyframe.
   maxDecoderQueueSize?: number;
+
+  // R21 (docs/26): the playout floor a Deep buffer viewer holds, in ms, and
+  // the value it asks the relay to back. Pairs with the relay chart's
+  // config.dvrWindow, which clamps it — so this is the knob for tuning the
+  // trade per deployment without an image rebuild, which is exactly what DV6
+  // needs. Default 3000.
+  dvrBufferMs?: number;
 }
 
 declare global {
@@ -54,4 +61,20 @@ export function isDevEnvironment(): boolean {
   if (typeof window === 'undefined') return false;
   const h = window.location.hostname;
   return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+}
+
+export const DEFAULT_DVR_BUFFER_MS = 3000;
+// The relay downgrades anything under a second (docs/26 Decision 7), so asking
+// for less is asking for plain carrier delivery by another name.
+export const MIN_DVR_BUFFER_MS = 1000;
+export const MAX_DVR_BUFFER_MS = 30000;
+
+// R21: the Deep buffer floor. Clamped to something a viewer can actually hold
+// and a relay can plausibly back — a value below the relay's minimum would be
+// silently downgraded, and one in the minutes is a configuration error rather
+// than a choice.
+export function getDvrBufferMs(): number {
+  const v = getRuntimeConfig().dvrBufferMs;
+  if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_DVR_BUFFER_MS;
+  return Math.min(Math.max(Math.round(v), MIN_DVR_BUFFER_MS), MAX_DVR_BUFFER_MS);
 }

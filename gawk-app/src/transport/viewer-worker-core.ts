@@ -8,6 +8,7 @@
 // whole thing be unit-tested synchronously with a fake host — no real Worker,
 // no OffscreenCanvas, no DOM.
 
+import type { ViewerDeliveryMode } from './resilient';
 import type { ConnectOptions } from './connection';
 import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
@@ -35,7 +36,7 @@ export type ViewerWorkerCommand =
   // wider reorder/playout profile. Sent before 'start' (the delivery
   // negotiation itself rides connectOpts.deliveryMode into the subscribe
   // URL); a mode change is a deliberate reconnect, not a live flip.
-  | { type: 'resilient'; enabled: boolean }
+  | { type: 'resilient'; mode: ViewerDeliveryMode }
   // R16 Decision 4: activate the tee — create the VideoTrackGenerator in the
   // worker, post its track back (transferred), start capturing presented
   // frames. Idempotent; a no-op when init carried no tee or the probe failed.

@@ -193,15 +193,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   `videoBytesReceived` includes audio, their `underruns` are inflated by the
   post-death spin, and they have no `timeSinceLastInboundMs` row.
 - **Deliberately NOT fixed, and why**:
-  - *The carrier drain backpressure* (`carrierQueueOverflow` 3100 = 12 %).
-    This is the most likely proximate cause of the session ending and it is
-    still open. `drainReliable` is one goroutine doing per-record framing, the
-    write, the deadline and the audio sideband, and the fix is a choice between
-    batching records per write, moving audio off that goroutine, and retuning
-    `QueueDepth`/`CarrierWriteTimeout` — a choice that should follow a
-    measurement, not a guess. The pointed question for that work: the edge pod
-    had **zero** overflow across 372 289 records while the origin had 3100
-    across 22 987, so this is not inherent to the mode.
   - *Why WebKit surfaces nothing.* Needs a reduced repro (a page whose session
     the server closes abruptly). Now that the watchdog recovers playback this
     is an upstream bug report rather than an outage, and it is what would let
@@ -210,6 +201,27 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
     rate to ~4/s/viewer and, on this desktop Safari, delivered 12 % queue
     overflow — it was designed for LTE phones. Whether to relax the per-GOP
     carrier rotation or warn on the toggle should wait on the two items above.
+- **Carrier drain backpressure addressed (2026-07-23, test-first, relay only;
+  docs/24 finding 17).** The `carrierQueueOverflow` 3100-against-22 987 (12 %)
+  measured above had three separate causes, all now bounded: the queue was only
+  0.65 s deep (`QueueDepth` 256 → **1024**, ≈2.6 s — it counts datagrams, and a
+  1080p frame is ~13 of them); audio was dequeued by the video drain, so one
+  parked carrier write froze it for up to `CarrierWriteTimeout` (audio now has
+  its own queue and `drainAudioSideband` goroutine); and overflow was handled
+  per packet, so a holed GOP kept thrashing the queue and writing records the
+  viewer was guaranteed to discard (the GOP is now marked dead, its queued
+  deltas purged and later ones shed until the next rotation, with control
+  datagrams — including the ViewerCount keepalive this entry's watchdog depends
+  on — exempt). `carrierQueueOverflow` now counts **one per dead GOP** instead
+  of one per packet, so the metric answers "how many GOPs did this viewer
+  lose". **This does not explain the parked writes** — see the note below.
+- **Still not root-caused, and the most interesting lead**: a carrier write
+  parks when the *viewer* stops reading the stream. That is suspiciously close
+  to the WebKit stream-path wedge in the entry above, and would also explain
+  why the edge pod serving a different viewer had **zero** overflow across
+  372 289 records. If that link holds, the backpressure was never an
+  independent relay bug — it was the same Safari problem seen from the server
+  side, and the relay work above bounds the damage rather than fixing a cause.
 - **Reproduction/confirmation kit**: the paired capture is the whole point —
   a client capture alone cannot distinguish "relay stopped sending" from
   "WebKit stopped delivering", and a relay capture taken minutes later shows

@@ -8,7 +8,7 @@
 import { log } from '../lib/logger';
 import { notePlayhead } from './av-sync';
 import { setInterpolationEnabled } from './interpolation';
-import { getPlayoutMode, setPlayoutMode, setResilientMode } from './playout';
+import { getPlayoutMode, setPlayoutMode, setViewerDeliveryMode } from './playout';
 import {
   PacedPresentationSink,
   createContextSink,
@@ -144,7 +144,7 @@ ctx.onmessage = (e: MessageEvent) => {
       // controller sends it before 'start', so the profile is active from
       // the session's first frame. Turning it off can drop the effective
       // mode out of adaptive — present any held frame now, like 'playout'.
-      setResilientMode(cmd.enabled);
+      setViewerDeliveryMode(cmd.mode);
       if (getPlayoutMode() !== 'adaptive') sink?.flush?.(true);
       break;
   }
