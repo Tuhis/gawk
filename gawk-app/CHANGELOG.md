@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.28.1...gawk-app-v0.28.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* **viewer:** keep Deep-buffer audio on the video schedule through the startup hold ([#119](https://github.com/Tuhis/gawk/issues/119)) ([aa4a749](https://github.com/Tuhis/gawk/commit/aa4a749e2cd475ae496f46394c31727e5e4d3064))
+
 ## [0.28.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.28.0...gawk-app-v0.28.1) (2026-07-23)
 
 
