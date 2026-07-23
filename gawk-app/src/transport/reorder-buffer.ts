@@ -61,10 +61,25 @@ export const DELTA_GAP_GRACE_MS = 60;
 // buffer without bound. Oldest-received entries are dropped past this.
 export const MAX_BUFFERED_FRAMES = 64;
 
+// How far the keyframe wait must outlast the playout offset (R21). One GOP at
+// the broadcaster default, so a delta held for its keyframe always survives at
+// least until the following keyframe is due.
+export const KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS = 500;
+
 // R19 (docs/24 Decision 7): the three bounds widen while resilient mode is
 // on — read live per use so the defaults stay byte-identical when it's off.
 function keyframeWaitMs(): number {
-  return getResilientMode() ? RESILIENT_KEYFRAME_WAIT_MS : KEYFRAME_WAIT_MS;
+  const base = getResilientMode() ? RESILIENT_KEYFRAME_WAIT_MS : KEYFRAME_WAIT_MS;
+  // The wait must outlast the delay the playout offset deliberately imposes
+  // (R21). While waiting for a keyframe, a held delta is dropped once it is
+  // older than this — but its keyframe does not become *due* until the offset
+  // has elapsed, so a wait shorter than the offset ages out every delta before
+  // its keyframe can release, leaving keyframe-only playback: 2 fps at a
+  // 500 ms GOP. R19's 2 s wait covered its <=2 s clamp; R21's 3 s buffer
+  // exceeded it. Deriving from the live offset keeps the two in step whatever
+  // the profile is tuned to. No effect below the base: live-edge (offset 0)
+  // and resilient (~0.5 s) keep exactly the values they had.
+  return Math.max(base, getPlayoutOffsetMs() + KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS);
 }
 function deltaGapGraceMs(): number {
   return getResilientMode() ? RESILIENT_DELTA_GAP_GRACE_MS : DELTA_GAP_GRACE_MS;
@@ -362,18 +377,31 @@ export class ReorderBuffer {
     }
   }
 
-  // Jumps to the freshest buffered keyframe (most recently arrived — which is
-  // the newest within a session and, across a broadcaster restart, the new
-  // one). Drops buffered frames below it by frameId (undecodable / superseded).
-  // Returns true if it released a keyframe.
+  // Jumps to the freshest buffered keyframe that is actually DUE (most
+  // recently arrived among those the playout schedule allows — the newest
+  // within a session and, across a broadcaster restart, the new one). Drops
+  // buffered frames below it by frameId (undecodable / superseded). Returns
+  // true if it released a keyframe.
+  //
+  // "Due" is part of the selection, not a check applied afterwards, and R21
+  // is why. Picking the freshest keyframe overall and then rejecting it as
+  // not-yet-due livelocks whenever the playout offset exceeds the GOP
+  // interval: at a 3 s offset with a 500 ms GOP, a newer keyframe always
+  // arrives before the current pick comes due, so the pick keeps moving
+  // forward and NOTHING is ever released. The buffer fills for ever, decode
+  // never starts, and every arrival counter keeps climbing while the screen
+  // stays black. R19's <=500 ms offsets hid it: a keyframe came due inside
+  // one GOP interval. Live-edge is unaffected — at offset 0 everything
+  // buffered is due, so this picks exactly what it always did.
   private jumpToKeyframe(): boolean {
+    const now = this.now();
     let best: Entry | null = null;
     for (const e of this.buffer.values()) {
       if (!e.keyframe) continue;
+      if (now < this.releasableAt(e)) continue; // paced (Q3): not due yet
       if (best === null || e.receivedAtMs > best.receivedAtMs) best = e;
     }
     if (!best) return false;
-    if (this.now() < this.releasableAt(best)) return false; // paced (Q3): not due yet
 
     for (const [id, e] of this.buffer) {
       const behindBest = id !== best.frameId && !frameIdAhead(id, best.frameId);

@@ -13,7 +13,12 @@ import {
   type ReleasedFrame,
 } from './reorder-buffer';
 import { LIVE_EDGE_WINDOW_MS, QUANTILE_BIN_MS, QUANTILE_RANGE_MS } from './live-edge';
-import { PlayoutController, RESILIENT_PLAYOUT_PROFILE } from './playout';
+import { PlayoutController, RESILIENT_PLAYOUT_PROFILE,
+  setPlayoutMode,
+  resetPlayoutController,
+  setViewerDeliveryMode,
+  getPlayoutOffsetMs,
+} from './playout';
 import {
   RESILIENT_DELTA_GAP_GRACE_MS,
   RESILIENT_KEYFRAME_WAIT_MS,
@@ -751,5 +756,58 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
     h.steady(Math.ceil((windowMs + 2000) / FRAME_INTERVAL_MS));
     expect(h.rb.arrivalJitterMs()!).toBeLessThan(QUANTILE_BIN_MS * 2);
     expect(windowMs).toBeLessThan(LIVE_EDGE_WINDOW_MS);
+  });
+});
+
+// R21 (docs/26): with a deep playout offset, jumpToKeyframe must pick the
+// freshest keyframe that is actually DUE, not the freshest one overall.
+//
+// Picking the freshest overall livelocks: at a 3 s offset and a 500 ms GOP, a
+// newer keyframe always arrives before the current best comes due, so `best`
+// keeps moving forward and nothing is ever released. The buffer fills for
+// ever, decode never starts, and the viewer shows a black screen while every
+// arrival counter climbs. R19's <=500 ms offsets hid it, because a keyframe
+// came due inside one GOP interval.
+describe('ReorderBuffer under a deep playout offset (R21)', () => {
+  afterEach(() => {
+    setPlayoutMode('off');
+    setViewerDeliveryMode('live');
+    resetPlayoutController();
+  });
+
+  it('releases despite a newer keyframe arriving every GOP', () => {
+    // The public setter, so the controller is reseeded onto the deep profile —
+    // the raw flag leaves it on the default seed and the test would pass
+    // without ever being deep.
+    setViewerDeliveryMode('deep');
+    setPlayoutMode('adaptive');
+    expect(getPlayoutOffsetMs()).toBeGreaterThanOrEqual(2000);
+    const { rb, released, clock } = harness();
+
+    // A LIVE stream: capture timestamps advance with the clock, which is what
+    // makes the newest keyframe permanently un-due under a deep offset. (With
+    // static timestamps everything is due immediately and the livelock cannot
+    // reproduce — the first version of this test made exactly that mistake.)
+    const stamp = () => BigInt(clock.t * 1000);
+    for (let i = 0; i < 20; i++) {
+      rb.pushKeyframe({ frameId: i * 10, timestampUs: stamp(), config: null, data: new Uint8Array([1]) });
+      for (let d = 1; d < 5; d++) {
+        clock.t += 100;
+        rb.pushDelta({ frameId: i * 10 + d, timestampUs: stamp(), data: new Uint8Array([1]) });
+        rb.tick();
+      }
+      clock.t += 100;
+      rb.tick();
+    }
+
+    // 10 s of stream at a 3 s offset: the first seconds are long overdue.
+    expect(released.length).toBeGreaterThan(0);
+    // And DELTAS must survive the wait, not just keyframes. The keyframe wait
+    // has to outlast the delay the playout offset deliberately imposes, or
+    // every delta ages out before its keyframe is even due and playback is
+    // keyframe-only — 2 fps at a 500 ms GOP, which is exactly what the E2E
+    // deep-buffer pass measured.
+    const deltasReleased = released.filter((f) => f.frameId % 10 !== 0).length;
+    expect(deltasReleased).toBeGreaterThan(released.length / 2);
   });
 });

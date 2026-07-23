@@ -363,22 +363,32 @@ describe('viewer delivery mode', () => {
     expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
   });
 
-  it('deep buffer waits for the relay to confirm it can back it', () => {
+  it('deep buffer applies at once and only a denial walks it back', () => {
     setViewerDeliveryMode('deep');
-    // Asked for, not yet granted: against a relay that cannot keep it filled
-    // a multi-second buffer is pure latency for no benefit.
-    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
+    // Applied before the ack arrives: deepening later would make the reorder
+    // buffer hold frames longer mid-session, which is a visible multi-second
+    // freeze (docs/26 Decision 7, revised — the E2E pass caught it).
+    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
     setDvrGranted(true);
     expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
   });
 
-  it('a mode change forgets the previous session grant', () => {
+  it('shortens the buffer when the relay says it is not serving a ring', () => {
     setViewerDeliveryMode('deep');
-    setDvrGranted(true);
-    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
+    setDvrGranted(false);
+    // Shortening is free — frames just become due sooner — so an old relay
+    // costs no latency rather than costing a freeze.
+    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
+  });
+
+  it('a mode change forgets a previous denial', () => {
+    setViewerDeliveryMode('deep');
+    setDvrGranted(false);
+    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
     setViewerDeliveryMode('resilient');
     setViewerDeliveryMode('deep');
-    // A mode change is a deliberate reconnect; the new session must re-earn it.
-    expect(getPlayoutProfile()).toBe(RESILIENT_PLAYOUT_PROFILE);
+    // The new session starts unknown, not denied: a relay that was replaced
+    // mid-view must not keep an old refusal in force.
+    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
   });
 });

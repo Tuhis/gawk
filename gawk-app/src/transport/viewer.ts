@@ -26,6 +26,7 @@ import {
   resetAvSync,
 } from './av-sync';
 import { LiveEdgeTracker } from './live-edge';
+import { getDeepBuffer } from './resilient';
 import {
   DVR_BUFFER_MS,
   setDvrGranted,
@@ -476,11 +477,14 @@ export class ViewerPipeline {
     // time via the query param — the WebTransport JS API can't set headers.
     if (this.connectOpts.deliveryMode === 'reliable') {
       url.searchParams.set('delivery', 'reliable');
-      // R21 (docs/26 Decision 7): ask to be served from the relay's ring, and
-      // declare the buffer floor we will hold if it agrees. A relay that does
-      // not know the parameter ignores it and serves R19 carriers, which is
-      // exactly the degradation we want.
-      url.searchParams.set('buffer', String(DVR_BUFFER_MS));
+      // R21 (docs/26 Decisions 7 + 15): ask for a ring ONLY on the Deep buffer
+      // step. Sending it for plain Resilient mode would have the relay serve
+      // that viewer from a cursor with a 3 s staleness bound while it actually
+      // holds ~0.5 s — the two ends disagreeing about how far behind the
+      // viewer is, which is the mismatch the three-point control exists to
+      // prevent. A relay that does not know the parameter ignores it and
+      // serves R19 carriers, which is the degradation we want.
+      if (getDeepBuffer()) url.searchParams.set('buffer', String(DVR_BUFFER_MS));
     }
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;

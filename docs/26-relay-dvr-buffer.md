@@ -459,6 +459,39 @@ climbing at the full frame rate. Worth remembering as a diagnostic: **in DVR
 mode those two counters must climb at the same rate**, one keyframe and one
 carrier per GOP. Any ratio other than 1:1 means two timelines.
 
+**Field findings 2-4 (2026-07-23), all found by the new tier-1 deep-buffer
+E2E pass on its first run.** Every one of them broke the mode completely, and
+none was reachable by a unit test with a fake relay:
+
+2. **A Resilient-mode viewer was requesting a ring.** The `buffer=` param was
+   sent whenever delivery was `reliable`, never gated on the Deep-buffer
+   choice — so the relay served a plain resilient viewer from a cursor with a
+   3 s staleness bound while it actually held ~0.5 s. The two ends disagreeing
+   about how far behind a viewer is, which is precisely what Decision 15's
+   three-point control exists to prevent.
+
+3. **`jumpToKeyframe` livelocked under a deep offset.** It picked the freshest
+   buffered keyframe and *then* rejected it as not-yet-due. At a 3 s offset
+   with a 500 ms GOP a newer keyframe always arrives before the current pick
+   comes due, so the pick kept moving forward and **nothing was ever
+   released** — buffer filling for ever, decode never starting, black screen
+   with every arrival counter climbing. Due-ness is now part of the selection
+   rather than a check after it. R19's <=500 ms offsets hid this: a keyframe
+   came due inside one GOP interval.
+
+4. **The keyframe wait was shorter than the playout offset.** While waiting
+   for a keyframe, held deltas are dropped once older than
+   `keyframeWaitMs()` — 2 s in resilient mode — but the keyframe does not
+   become *due* until the offset (3 s) has elapsed. Every delta aged out
+   before its keyframe could release, leaving keyframe-only playback at
+   exactly 2 fps. The wait now derives from the live offset
+   (`+ KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS`), so the two stay in step whatever
+   DV6 tunes the buffer to. Live-edge and resilient keep their existing values.
+
+   Finding 4 was masked by finding 3 and only surfaced once it was fixed —
+   worth remembering that a mode this deep can hide more than one blocker
+   behind the first.
+
 Deviations worth knowing before touching this:
 
 - **The drain waits on a failed write; it does not skip.** The first version
@@ -479,8 +512,12 @@ Deviations worth knowing before touching this:
   Choosing Deep buffer sends `buffer=`; the profile only deepens once the ack
   says `dvr`. A viewer on Resilient mode never gets the deep envelope even if a
   relay grants a ring, and the grant is cleared on every mode change.
-- **The viewer applies the deeper floor only on a granted ack**, never on
-  request. Against a relay that cannot keep it filled a deep buffer is pure
+- **The deep floor applies on the user's choice, not on the grant** (Decision 7
+  as revised by finding 3's neighbourhood). Deepening mid-session makes the
+  reorder buffer hold frames longer, which is a visible multi-second freeze
+  while it refills; shortening costs nothing. So a Deep-buffer viewer starts
+  deep, and only an explicit non-`dvr` ack walks it back. "Not yet answered"
+  is not "denied". Against a relay that cannot keep it filled a deep buffer is pure
   latency. The grant resets on every reconnect.
 - **The catch-up ceiling is a multiple of the broadcast's own bitrate**
   (`-dvr-max-catchup`, default **4x**), estimated from the ring itself — bytes
