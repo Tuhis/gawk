@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.4.0...gawk-broadcast-v1.4.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* stop sending DVR subscribers a second, live keyframe timeline ([#112](https://github.com/Tuhis/gawk/issues/112)) ([7de0d18](https://github.com/Tuhis/gawk/commit/7de0d18f1bcb9fc55e75c3da1dbf1ff32a399cb0))
+
 ## [1.4.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.3.1...gawk-broadcast-v1.4.0) (2026-07-23)
 
 
