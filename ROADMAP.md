@@ -39,6 +39,8 @@ feature set exists).
 | R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; cluster viewer-count check (origin `viewersGlobal` == Σ per-pod real viewers, edges excluded) **automated in the `e2e-cluster` CI job 2026-07-19**; single-pod browser/native + re-home + storm manual verify still pending ([docs/23](docs/23-live-viewer-count.md)) |
 | R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | ✅ X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification done 2026-07-19 (lossy-network behaviour — not CI-reachable) ([docs/24](docs/24-viewer-network-resilience.md)) |
 | R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers green in real CI** (tier-1 `e2e` on every PR; `e2e-cluster` on the 2026-07-18 release PRs — Z3's green-on-a-release-PR acceptance met, origin/edge split + browser viewer asserted); Z5 browser-broadcaster implemented 2026-07-19 (spike: viable headless via tab capture — screen capture delivers black frames); Z4 burn-in → required flip pending ([docs/25](docs/25-e2e-testing-in-ci.md)) |
+| R21 | [Relay DVR ring buffer for resilient mode](#r21--relay-dvr-ring-buffer-for-resilient-mode) | 🔧 designed 2026-07-23, not started (DV1–DV6) ([docs/26](docs/26-relay-dvr-buffer.md)) |
+| R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔧 designed 2026-07-23, not started (MF1–MF5); MSE-backed native fullscreen **spike-confirmed on iPhone** — supersedes R16's rejected MediaStream tee ([docs/27](docs/27-ios-mse-fullscreen.md)) |
 
 ---
 
@@ -1416,6 +1418,60 @@ in the stream.
 
 Chunks **DV1–DV6** (every single-letter prefix A–Z is taken). Designed
 2026-07-23, not started.
+
+---
+
+## R22 — iOS native fullscreen via MSE
+
+**Goal**: the iPhone fullscreen button shows real native fullscreen video —
+not the silent no-op it is today, and not the black native player R16's
+MediaStream tee produced. An iPhone viewer taps fullscreen and gets the live
+stream in the system player (landscape, chrome-free); exiting returns to the
+inline viewer seamlessly. Desktop/Android/iPad untouched; zero
+server/wire/broadcaster changes.
+
+**Why now**: R16 shipped the device gate, the tiered `useFullscreen`, the
+hidden `<video>`, and the Feature Gates overlay — but its native tier
+(`VideoTrackGenerator` → MediaStream → `<video>`) showed **black** across three
+on-device passes, and the pre-registered verdict rejected it (docs/21 U4;
+pseudo-fullscreen ships). R16 had also rejected MSE up front as survey option C
+("an fMP4 muxer fights the sub-500 ms target; too heavy for a fullscreen
+button"). A real-iPhone spike (2026-07-23) inverted that: a
+`ManagedMediaSource`-backed `<video>` **presents real frames** under
+`webkitEnterFullscreen` where a MediaStream is black — because the native
+player accepts standard buffered media, not a locally generated track. MSE is
+now the *only known-working* native-fullscreen path on iPhone.
+
+**Scope sketch** (full design in [`docs/27`](docs/27-ios-mse-fullscreen.md)):
+
+- **Parallel, not primary** (user-confirmed 2026-07-23): the WebCodecs/canvas
+  inline path stays byte-identical (sub-500 ms live-edge, R12 pacing +
+  interpolation, R5 metrics all preserved on iPhone); MSE feeds a *second*,
+  fullscreen-only `<video>`, so its buffered latency is confined to the native
+  player. MSE-primary-on-iOS was rejected (it would surrender all of that
+  everywhere on iPhone).
+- **Fork upstream of the decoder**: a worker-side fMP4 muxer consumes the
+  reorder buffer's release stream (the encoded frames that feed the decoder)
+  plus the `DecoderConfig`, and hands fMP4 to a `ManagedMediaSource`. That
+  upstream fork — vs. R16's downstream presented-frame tee — is *exactly why*
+  MSE renders and the tee did not. Handles both wire formats (AVCC browser +
+  Annex-B native); no B-frames ⇒ trivial fMP4 timing. Zero
+  wire/server/broadcaster change.
+- **Reuse the R16 scaffolding, delete its tee**: the gate, tiers,
+  `presentationVideo` seam, hidden-`<video>` rules, and `NativeVideoFullscreen`
+  feature gate all survive; only tier-2's *source* changes from MediaStream to
+  MMS. R22 deletes `TeeRenderSink`/generator/MediaStream wiring — the cleanup
+  R16's U4 verdict left pending in BUGS.md.
+- **Interpolation**: retained for all inline + CSS-pseudo-fullscreen viewing;
+  the native player shows real encoded cadence (synthesized frames are never
+  encoded). "Good to have, not must have" — satisfied for normal viewing.
+- **CI-provable in Chrome**: the muxer's fMP4 plays in Chrome's `MediaSource`
+  (R20 tier-1 harness), so muxer correctness becomes a browser gate; only the
+  iPhone-native presentation stays manual (spike-confirmed). H.264-only in v1
+  (a VP-codec broadcast probes false on iPhone → CSS pseudo-fullscreen).
+
+Chunks **MF1–MF5** (two-letter prefix — A–Z taken). Designed 2026-07-23,
+spike-confirmed on iPhone the same day, not started.
 
 ---
 
