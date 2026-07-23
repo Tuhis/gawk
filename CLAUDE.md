@@ -425,6 +425,33 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   server/wire/broadcaster changes; no "governed by Resilient mode"
   annotation, because unlike the two pacing entries this toggle still does
   what it says under resilient mode),
+  `docs/27-ios-mse-fullscreen.md` for R22 (iOS native fullscreen via MSE:
+  **designed 2026-07-23, spike-confirmed on iPhone the same day, not started**;
+  supersedes R16's rejected native tier. R16's `VideoTrackGenerator`
+  MediaStream tee showed **black** across three on-device passes (docs/21 U4),
+  and R16 had rejected MSE up front as survey option C — but a real-iPhone
+  spike proved a **`ManagedMediaSource`-backed `<video>` presents real frames**
+  under `webkitEnterFullscreen` where a MediaStream is black (the native player
+  accepts standard buffered media, not a locally generated track). Design:
+  **parallel tee, not primary** (user-confirmed) — the WebCodecs/canvas inline
+  path stays byte-identical (sub-500 ms live-edge + R12 pacing/interpolation +
+  R5 metrics preserved on iPhone), MSE feeds a *second*, fullscreen-only
+  `<video>` so its buffered latency is confined to the native player; a
+  worker-side **fMP4 muxer forks the reorder buffer's release stream** (the
+  encoded frames feeding the decoder) + `DecoderConfig` — **upstream** of the
+  decoder, vs. R16's *downstream* presented-frame tee, which is exactly why MSE
+  renders and the tee was black — handling both wire formats (AVCC browser +
+  Annex-B native, SPS/PPS + dims from the bitstream), no B-frames ⇒ trivial
+  fMP4 timing; **reuses the R16 gate/tiers/`presentationVideo`
+  seam/`NativeVideoFullscreen` gate and deletes
+  `TeeRenderSink`/generator/MediaStream** (the cleanup R16's U4 verdict left in
+  BUGS.md); tier-2's *source* changes MediaStream→MMS and `useFullscreen`
+  barely changes; **interpolation retained inline + CSS-pseudo, not in the
+  native player** (post-decode synthesized frames aren't encoded — "good to
+  have, not must have"); **H.264-only v1** (a VP-codec broadcast probes false
+  on iPhone → pseudo); **CI-provable in Chrome `MediaSource`** (R20 tier-1),
+  only the iPhone-native presentation stays manual; zero server/wire/broadcaster
+  changes. Chunks **MF1–MF5** — two-letter prefix, A–Z claimed),
   `docs/26-relay-dvr-buffer.md` for R21 (relay DVR ring buffer for resilient
   mode: **designed 2026-07-23, not started**. R19 shipped the viewer half of
   the latency trade (a deep adaptive playout buffer) but not the relay half,
