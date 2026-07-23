@@ -395,10 +395,16 @@ Three tuning changes, all in `playout.ts`:
   3000 ms, to be set by DV6's measurement.
 - Confirm the R19 reorder capacity (256 frames ≈ 8.5 s at 30 fps) still bounds
   the deeper buffer. It should; DV6 verifies rather than assumes.
-- `RESILIENT_AUDIO_PROFILE.maxMs` (2000) and `MAX_ALIGNMENT_HOLD_MS` (3000) must
-  both exceed `B`, or audio cannot hold long enough to stay aligned with a video
-  playhead that is now `B` behind (docs/20 field finding 4 makes video the
-  master clock).
+- The audio depth ceiling and the alignment-hold cap must both exceed `B`, or
+  audio cannot hold long enough to stay aligned with a video playhead that is now
+  `B` behind (docs/20 field finding 4 makes video the master clock). This was
+  under-specified here as "raise `RESILIENT_AUDIO_PROFILE.maxMs`", which would
+  have leaked deep depth into plain resilient mode; as built, audio mirrors the
+  video profile split instead — a dedicated `DVR_AUDIO_PROFILE`
+  (`seed = min = B`, `max ≥ B`) selected by `audioProfileForDeliveryMode`, and
+  `MAX_ALIGNMENT_HOLD_MS` becomes a floor under a profile-tracking
+  `alignmentHoldCapMs()` (`profile.maxMs + margin`). See the A/V field finding
+  below — the original constants shipped unchanged and the mode desynced.
 
 ## End-to-end path: a 2 s blackout, `B = 3 s`, ring 3 s
 
@@ -491,6 +497,33 @@ none was reachable by a unit test with a fake relay:
    Finding 4 was masked by finding 3 and only surfaced once it was fixed —
    worth remembering that a mode this deep can hide more than one blocker
    behind the first.
+
+**Field finding 5 (2026-07-23): A/V sync was completely off — audio ran
+seconds ahead of video.** Findings 2-4 fixed the video path; with video finally
+playing, audio was audibly seconds early. This one *was* foreseen — the "What
+the viewer needs" note above spelled out that the audio depth ceiling and the
+alignment-hold cap must both exceed `B` — but the implementation shipped the R19
+constants unchanged: deep mode used `RESILIENT_AUDIO_PROFILE` (seed 500, max
+2000) and `MAX_ALIGNMENT_HOLD_MS` was a flat 3000. Video is the master clock and
+alignment is a *start-time* decision (docs/20 field finding 4), so audio picked
+its offset once, against a 500 ms floor, and sat ~`B − 500` ms ahead of a video
+playhead `B` behind — permanently, because after playback starts no buffering
+can move a sample and the ±0.4 % rate trim cannot close seconds. The startup
+race made it certain rather than likely: the video schedule reaches the sink
+only on the ~2 Hz stats tick, the worklet usually boots faster, and audio
+arrives ahead of video, so the first release was gated by the depth floor alone.
+Compounding it, a plain truthy check on the (now three-valued) delivery mode
+always returned the resilient profile — so live-edge viewers silently got the
+resilient floor too. Fixed viewer-only, test-first: a dedicated
+`DVR_AUDIO_PROFILE` (`seed = min = B`) selected by `audioProfileForDeliveryMode`
+so the depth floor equals the video offset even before the schedule lands, and
+`alignmentHoldCapMs()` (`max(3000, profile.maxMs + 1000)`) so the safety net
+tracks the profile instead of preempting a deep hold. Live and resilient modes
+are byte-identical (their profile ceilings are ≤ 3000). Resilient mode was
+spared only by luck — its 500 ms audio floor happens to match its ~500 ms video
+offset. Audio has still never been verified on real hardware in deep mode; this
+is a correctness fix against the design's own acceptance note, not a field
+observation of the *fix* working.
 
 Deviations worth knowing before touching this:
 

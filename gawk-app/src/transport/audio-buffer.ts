@@ -14,6 +14,9 @@
 // that drains 128-frame quanta and reports its playhead back (underruns are
 // counted there and folded in here via noteUnderrun).
 
+import { getDvrBufferMs } from '../config';
+import type { ViewerDeliveryMode } from './resilient';
+
 // Decision 10: the adaptive target envelope. Default profile is small — the
 // live-edge philosophy does not bend for audio; the resilient profile
 // (docs/24 + docs/20 Decision 12) widens it so audio-master pacing works at
@@ -26,6 +29,41 @@ export interface AudioBufferProfile {
 
 export const DEFAULT_AUDIO_PROFILE: AudioBufferProfile = { minMs: 40, maxMs: 150, seedMs: 60 };
 export const RESILIENT_AUDIO_PROFILE: AudioBufferProfile = { minMs: 150, maxMs: 2000, seedMs: 500 };
+
+// R21 Deep buffer (docs/26). The audio analogue of playout.ts's
+// DVR_PLAYOUT_PROFILE, and for the same reason: in deep mode the video playhead
+// sits DVR_BUFFER_MS (`B`) behind live while audio still arrives ~live (it is
+// not in the relay ring — docs/26 Decision 8/8a is unshipped), so the audio
+// buffer must hold that full depth or it plays ~B ahead of its video. Alignment
+// is a start-time decision (docs/20 field finding 4), so a shallow floor here
+// is a permanent desync, not a transient the rate trim can walk out. docs/26's
+// acceptance note requires the depth ceiling to exceed `B`; pinning seed = min
+// = B (max ≥ B) mirrors the video profile exactly. RESILIENT_AUDIO_PROFILE's
+// 2000 ms ceiling could not express B, which is why deep mode needs its own.
+const DVR_BUFFER_MS = getDvrBufferMs();
+export const DVR_AUDIO_PROFILE: AudioBufferProfile = {
+  minMs: DVR_BUFFER_MS,
+  maxMs: Math.max(RESILIENT_AUDIO_PROFILE.maxMs, DVR_BUFFER_MS),
+  seedMs: DVR_BUFFER_MS,
+};
+
+// The audio profile matching a viewer delivery mode, three-valued to mirror
+// playout.ts's getPlayoutProfile. Deep buffer gets DVR_AUDIO_PROFILE so the
+// audio depth floor equals the video offset; resilient and live keep their R19
+// profiles. A prior version tested the (now three-valued) mode as a boolean,
+// which is always truthy — so it handed live-edge the resilient floor and deep
+// mode no deep floor at all, stranding Deep-buffer audio ~B ahead of a video
+// playhead B behind (docs/26 A/V field finding, 2026-07-23).
+export function audioProfileForDeliveryMode(mode: ViewerDeliveryMode): AudioBufferProfile {
+  switch (mode) {
+    case 'deep':
+      return DVR_AUDIO_PROFILE;
+    case 'resilient':
+      return RESILIENT_AUDIO_PROFILE;
+    default:
+      return DEFAULT_AUDIO_PROFILE;
+  }
+}
 
 // Headroom over measured jitter, mirroring the R12 PlayoutController shape.
 const HEADROOM_MS = 20;
@@ -111,9 +149,20 @@ export type SinkReadyFn = () => boolean;
 export type AudioScheduleFn = (timestampUs: number) => number | null;
 
 // A schedule that never fires would hold audio forever; release anyway past
-// this. Generous — it only exists so a broken/absent schedule degrades to
-// "audio plays, badly aligned" instead of "audio never plays".
+// this. It is a safety net for a broken/absent schedule ("audio plays, badly
+// aligned" instead of "audio never plays"), NOT a normal release path — so it
+// must sit clearly above the deepest *legitimate* hold. The historical 3000 ms
+// covers the live/resilient profiles, but Deep buffer holds `B` (≥ 3000 ms,
+// tunable to 30 s), so the effective cap tracks the active profile's ceiling
+// via alignmentHoldCapMs(); at 3000 ms flat the net fired as a matter of course
+// in deep mode and preempted the very schedule it exists to back up (docs/26
+// A/V field finding). This constant stays the floor for the shallow profiles,
+// so live/resilient behavior is byte-identical.
 export const MAX_ALIGNMENT_HOLD_MS = 3000;
+// Headroom between the deepest intended hold (the profile ceiling) and the
+// point the safety net trips, so ordinary jitter around a deep hold never
+// crosses it.
+export const ALIGNMENT_HOLD_MARGIN_MS = 1000;
 
 export class AudioJitterBuffer {
   private profile: () => AudioBufferProfile;
@@ -236,7 +285,10 @@ export class AudioJitterBuffer {
     // for the rate trim to walk out over ~a minute at 0.4 %. One bounded shed
     // is the cheaper trade.
     const floorMs = Math.max(this.targetMs, this.establishedDepthMs);
-    const ceilingMs = this.priming ? MAX_ALIGNMENT_HOLD_MS : floorMs + OVERFLOW_SLACK_MS;
+    // While priming, the cushion is *supposed* to reach the alignment depth
+    // (B in deep mode); cap it at the same safety net the release uses, not the
+    // flat 3000 ms — otherwise a deep cushion sheds itself before it is built.
+    const ceilingMs = this.priming ? this.alignmentHoldCapMs() : floorMs + OVERFLOW_SLACK_MS;
     const bufferedMs = this.bufferedMs();
     if (bufferedMs > ceilingMs) this.shedding = true;
     else if (this.shedding && bufferedMs <= floorMs) this.shedding = false;
@@ -361,7 +413,7 @@ export class AudioJitterBuffer {
     // The cap keeps a missing or nonsensical schedule (or a sink that never
     // comes up) from muting audio: release anyway, and honest accounting below
     // simply counts nothing if the sink still drops it.
-    if (!due && this.pendingMs < MAX_ALIGNMENT_HOLD_MS) return;
+    if (!due && this.pendingMs < this.alignmentHoldCapMs()) return;
 
     this.alignmentHoldMs = this.pendingMs;
     this.priming = false;
@@ -410,6 +462,14 @@ export class AudioJitterBuffer {
 
   private bufferedMs(): number {
     return this.queuedNowMs() + this.pendingMs;
+  }
+
+  // The safety-net hold, tracking the active profile so a deep cushion is never
+  // preempted by it (see MAX_ALIGNMENT_HOLD_MS). The deepest legitimate hold is
+  // the profile's ceiling; the net trips one margin above that. For the shallow
+  // profiles this is exactly the historical 3000 ms.
+  private alignmentHoldCapMs(): number {
+    return Math.max(MAX_ALIGNMENT_HOLD_MS, this.profile().maxMs + ALIGNMENT_HOLD_MARGIN_MS);
   }
 
   private emitSilence(gapMs: number, sampleRate: number, channelCount: number): void {
