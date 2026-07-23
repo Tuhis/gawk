@@ -1305,7 +1305,10 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 	primeSeq := b.keyframeSeq
 	r.mu.Unlock()
 
-	if primeMsg != nil {
+	// Same reason: a DVR subscriber is primed by the ring instead — it is
+	// seeded from this same cached keyframe when allocated, and the cursor
+	// starts there, so priming again would duplicate the first GOP.
+	if primeMsg != nil && s.dvr == nil {
 		s.sendKeyframe(primeMsg, primeSeq)
 	}
 
@@ -1886,6 +1889,17 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 	b.ingressChunksLost += cl
 	subs := make([]*Subscriber, 0, len(b.subs))
 	for s := range b.subs {
+		// R21: a DVR subscriber's keyframes come from the ring at ITS cursor,
+		// which sits seconds behind live. Sending the live one as well hands
+		// it a second, contradictory timeline: the viewer's reorder buffer
+		// sees frameIds jump forward to live and back to the cursor, parks in
+		// waiting-for-keyframe and ages out every delta, so video freezes
+		// completely while data keeps arriving (found on hardware
+		// 2026-07-23 — keyframeStreamsReceived climbing at 2x the
+		// carrierStreams rate was the tell).
+		if s.dvr != nil {
+			continue
+		}
 		subs = append(subs, s)
 	}
 	r.mu.Unlock()

@@ -486,3 +486,48 @@ func TestDVRDoesNotDisturbOtherModesEviction(t *testing.T) {
 		t.Error("the reliable subscriber was evicted — R21 changed a mode that never opted in")
 	}
 }
+
+// A DVR subscriber must receive keyframes ONLY from its own cursor. The live
+// fan-out path (onKeyframe → sendKeyframe) and the join prime both send the
+// *current* keyframe to every subscriber, which for a cursor sitting seconds
+// behind is a second, contradictory timeline: the viewer's reorder buffer sees
+// frameIds jump forward to live and back to the cursor, parks in
+// waiting-for-keyframe and ages out every delta. Video freezes completely
+// while data keeps arriving.
+//
+// Found on hardware 2026-07-23 (broadcast 3YPR53): the client's own numbers
+// named it — keyframeStreamsReceived climbing at ~2x the carrierStreams rate,
+// i.e. two keyframes per GOP, with decodedFps 0 and reorderKeyframeWaitDrops
+// climbing at the full frame rate.
+func TestDVRSubscriberGetsKeyframesOnlyFromItsCursor(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR: DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	// A keyframe before anyone joins, so the join prime has something to send.
+	ingestKeyframe(t, p, keyframeMsg(t, 1, "vp8", "PRIME"))
+
+	f := &fakeSender{}
+	if _, err := r.SubscribeDVR(id, f, 3000); err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	const gops = 5
+	for g := range gops {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32((g+1)*100), "vp8", fmt.Sprintf("KEY%d", g)))
+		p.HandleDatagram(chunkDgram(t, false, uint32((g+1)*100+1), 0, 1, "d"))
+	}
+
+	// One keyframe per GOP served, plus at most the seeded one the cursor
+	// starts on — never two timelines' worth.
+	waitFor(t, 5*time.Second, func() bool { return len(f.receivedKeyframes()) >= gops }, "keyframes to flow")
+	time.Sleep(200 * time.Millisecond) // let any duplicate land before counting
+	got := len(f.receivedKeyframes())
+	if got > gops+1 {
+		t.Errorf("DVR subscriber received %d keyframes for %d GOPs — the live fan-out is "+
+			"sending a second, contradictory timeline alongside the cursor's", got, gops)
+	}
+}

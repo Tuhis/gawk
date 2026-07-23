@@ -146,27 +146,43 @@ export const DVR_PLAYOUT_PROFILE: PlayoutProfile = {
   quantileRangeMs: Math.max(RESILIENT_PLAYOUT_PROFILE.quantileRangeMs, DVR_BUFFER_MS + 500),
 };
 
-// Whether the relay confirmed ring-backed delivery for this session. Module
-// state like the resilient flag itself, set from the DeliveryAck and reset on
-// every reconnect — a new session must re-earn the deeper buffer rather than
-// inherit it from a relay that may have been replaced mid-view.
-let dvrGranted = false;
+// What the relay's DeliveryAck said about this session, or null before it
+// arrives. Module state like the delivery mode itself, and reset on every mode
+// change — a new session must re-establish it rather than inherit it from a
+// relay that may have been replaced mid-view.
+//
+// Deliberately three-valued rather than a boolean, and the deep profile
+// applies while it is still null (docs/26 Decision 7, revised 2026-07-23).
+// The original rule was "never deepen on request, only on grant", to avoid
+// paying latency a relay could not back. But the two directions are not
+// symmetric: DEEPENING mid-session makes the reorder buffer hold frames
+// longer, which is a visible multi-second freeze while it refills — the E2E
+// deep-buffer pass caught exactly that, ~2 s of frozen video at startup,
+// indistinguishable to a viewer from the bug it was written to catch.
+// SHORTENING costs nothing: frames simply become due sooner. So the buffer a
+// user asked for applies immediately, and a denial shortens it.
+type DvrAck = 'granted' | 'denied';
+let dvrAck: DvrAck | null = null;
 
 export function setDvrGranted(granted: boolean): void {
-  dvrGranted = granted;
+  dvrAck = granted ? 'granted' : 'denied';
 }
 
 export function getDvrGranted(): boolean {
-  return dvrGranted;
+  return dvrAck === 'granted';
+}
+
+// Clears the ack for a new session (a mode change is a deliberate reconnect).
+export function resetDvrAck(): void {
+  dvrAck = null;
 }
 
 // The profile in force in this JS context.
 export function getPlayoutProfile(): PlayoutProfile {
   if (!getResilientMode()) return DEFAULT_PLAYOUT_PROFILE;
-  // The deep floor needs BOTH: the user asking for it and the relay confirming
-  // it can keep it filled. Against a relay that cannot, a multi-second buffer
-  // is pure latency for no benefit (docs/26 Decision 7).
-  return getDeepBuffer() && dvrGranted ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
+  // The user's choice applies at once; only an explicit denial walks it back.
+  // See the DvrAck comment for why the asymmetry matters.
+  return getDeepBuffer() && dvrAck !== 'denied' ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
 }
 
 export class PlayoutController {
@@ -284,7 +300,7 @@ export function setViewerDeliveryMode(next: ViewerDeliveryMode): void {
   // deep have different envelopes, so a target learned under one would be
   // carried into the other's clamp (the R19 rule, extended to three states).
   controller.reset();
-  // A mode change is a deliberate reconnect, so the previous session's grant
-  // says nothing about the next one.
-  setDvrGranted(false);
+  // A mode change is a deliberate reconnect, so the previous session's ack
+  // says nothing about the next one — and "unknown" is not "denied".
+  resetDvrAck();
 }

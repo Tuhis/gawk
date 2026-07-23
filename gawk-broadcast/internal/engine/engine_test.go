@@ -495,16 +495,21 @@ func TestViewerCountPushUpdatesStatsAndFiresCallback(t *testing.T) {
 		t.Error("ViewerCountAvailable = true before any push")
 	}
 
+	// Wait on the CALLBACK, not on Stats. setViewerCount publishes the stats
+	// and only then fires the callback, so waiting on the stats and asserting
+	// on the callback immediately after loses that window — a flake that
+	// additionally read `counts` unlocked in the failure message, which is
+	// what the race detector reported (CI run 30027598262). Stats are
+	// guaranteed set by the time the callback has fired, so they are asserted
+	// after rather than waited on.
 	sess.receiveDatagrams <- wire.AppendViewerCount(nil, 2)
 	waitFor(t, func() bool {
-		st := s.Stats()
-		return st.ViewerCountAvailable && st.ViewerCount == 2
-	}, "the pushed count in Stats")
-	mu.Lock()
-	gotFirst := len(counts) == 1 && counts[0] == 2
-	mu.Unlock()
-	if !gotFirst {
-		t.Fatalf("OnViewerCount calls = %v, want [2]", counts)
+		mu.Lock()
+		defer mu.Unlock()
+		return len(counts) == 1 && counts[0] == 2
+	}, "the first OnViewerCount call")
+	if st := s.Stats(); !st.ViewerCountAvailable || st.ViewerCount != 2 {
+		t.Fatalf("Stats = {available:%v count:%d}, want {true 2}", st.ViewerCountAvailable, st.ViewerCount)
 	}
 
 	// Malformed (bad version): dropped, count unchanged.
@@ -513,11 +518,18 @@ func TestViewerCountPushUpdatesStatsAndFiresCallback(t *testing.T) {
 	sess.receiveDatagrams <- bad
 	// A subsequent valid push still lands.
 	sess.receiveDatagrams <- wire.AppendViewerCount(nil, 3)
-	waitFor(t, func() bool { return s.Stats().ViewerCount == 3 }, "the second count")
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(counts) == 2
+	}, "the second OnViewerCount call")
 	mu.Lock()
 	defer mu.Unlock()
-	if len(counts) != 2 || counts[1] != 3 {
-		t.Errorf("OnViewerCount calls = %v, want [2 3]", counts)
+	if counts[1] != 3 {
+		t.Errorf("OnViewerCount calls = %v, want [2 3] — the malformed push was not dropped", counts)
+	}
+	if st := s.Stats(); st.ViewerCount != 3 {
+		t.Errorf("Stats.ViewerCount = %d, want 3", st.ViewerCount)
 	}
 }
 

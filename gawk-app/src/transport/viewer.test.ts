@@ -38,7 +38,7 @@ vi.mock('../media/decoder', () => ({
 
 import { timeOriginMs } from './time-sync';
 import { SESSION_STALL_MS, ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
-import { DVR_BUFFER_MS, getDvrGranted, setDvrGranted } from './playout';
+import { DVR_BUFFER_MS, getDvrGranted, setDvrGranted, setViewerDeliveryMode } from './playout';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
@@ -147,14 +147,34 @@ describe('ViewerPipeline', () => {
     const opts = { deliveryMode: 'reliable' as const };
     const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
     await pipeline.start();
-    // R21 (docs/26 Decision 7): the buffer floor rides along, so a relay that
-    // can serve from a ring does. A relay that predates the parameter ignores
-    // it and serves R19 carriers — the degradation we want.
+    // R21 (docs/26 Decisions 7 + 15): plain Resilient mode asks for carriers
+    // and NOT for a ring. Sending buffer= here would have the relay serve this
+    // viewer from a cursor with a 3 s staleness bound while it holds ~0.5 s —
+    // the two ends disagreeing about how far behind it is.
     expect(connectWebTransport).toHaveBeenCalledWith(
-      `https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable&buffer=${DVR_BUFFER_MS}`,
+      'https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable',
       opts,
     );
     await pipeline.stop();
+  });
+
+  it('asks for a ring only on the deep-buffer step (R21)', async () => {
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    setViewerDeliveryMode('deep');
+    try {
+      const { cbs } = makeCallbacks();
+      const opts = { deliveryMode: 'reliable' as const };
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
+      await pipeline.start();
+      expect(connectWebTransport).toHaveBeenCalledWith(
+        `https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable&buffer=${DVR_BUFFER_MS}`,
+        opts,
+      );
+      await pipeline.stop();
+    } finally {
+      setViewerDeliveryMode('live');
+    }
   });
 
   it('reconnects when keyframes stop while deltas keep arriving (Safari stream-path stall)', async () => {

@@ -53,6 +53,8 @@ func main() {
 	duration := flag.Duration("duration", 30*time.Second, "how long to hold the load")
 	rampMs := flag.Int("ramp-ms", 25, "delay between session dials (avoid tripping the rate limiter from one IP)")
 	insecure := flag.Bool("insecure", false, "skip TLS verification (dev certs)")
+	delivery := flag.String("delivery", "", "delivery mode: \"\" (datagrams), \"reliable\" (R19 carriers), or \"deep\" (R21 DVR ring)")
+	bufferMs := flag.Int("buffer-ms", 3000, "playout buffer to declare with -delivery=deep (R21)")
 	report := flag.Duration("report", 5*time.Second, "aggregate report interval")
 	flag.Parse()
 	if *id == "" {
@@ -65,13 +67,28 @@ func main() {
 	ctx, cancel := context.WithTimeout(ctx, *duration)
 	defer cancel()
 
+	// R19/R21: the delivery mode rides on the subscribe query, exactly as the
+	// browser negotiates it — reliable carriers for "reliable", and the DVR
+	// ring for "deep". Built once so every session dials the same URL.
+	subscribeURL := *url + "/subscribe/" + *id
+	switch *delivery {
+	case "":
+	case "reliable":
+		subscribeURL += "?delivery=reliable"
+	case "deep":
+		subscribeURL += fmt.Sprintf("?delivery=reliable&buffer=%d", *bufferMs)
+	default:
+		fmt.Fprintf(os.Stderr, "gawk-loadgen: unknown -delivery %q (want \"\", \"reliable\" or \"deep\")\n", *delivery)
+		os.Exit(2)
+	}
+
 	var t totals
 	var wg sync.WaitGroup
 	for i := 0; i < *viewers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runViewer(ctx, *url, *id, *insecure, &t)
+			runViewer(ctx, subscribeURL, *insecure, &t)
 		}()
 		select {
 		case <-ctx.Done():
@@ -120,7 +137,7 @@ func printSummary(t *totals, viewers int, elapsed time.Duration) {
 	fmt.Printf("bytes received:    %d (%.1f Mbps aggregate)\n", total, float64(total)*8/1e6/elapsed.Seconds())
 }
 
-func runViewer(ctx context.Context, baseURL, id string, insecure bool, t *totals) {
+func runViewer(ctx context.Context, subscribeURL string, insecure bool, t *totals) {
 	d := &webtransport.Dialer{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
 		QUICConfig: &quic.Config{
@@ -131,7 +148,7 @@ func runViewer(ctx context.Context, baseURL, id string, insecure bool, t *totals
 		},
 	}
 	defer d.Close()
-	_, sess, err := d.Dial(ctx, baseURL+"/subscribe/"+id, nil)
+	_, sess, err := d.Dial(ctx, subscribeURL, nil)
 	if err != nil {
 		t.dialErrors.Add(1)
 		return

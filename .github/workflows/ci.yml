@@ -469,6 +469,13 @@ jobs:
           # subscriber count.
           ./e2e/bin/gawk-loadgen -url https://127.0.0.1:4433 -id "$ID" -viewers 12 \
             -duration 600s -ramp-ms 150 -insecure > e2e/out/loadgen.log 2>&1 &
+          # R21: a handful of DVR sessions in the same spread, so at least one
+          # lands on the EDGE pod. An edge builds its own ring from the
+          # datagrams it pulled from the origin — a different code path from
+          # an origin-served ring, and the only one tier 2 can reach.
+          ./e2e/bin/gawk-loadgen -url https://127.0.0.1:4433 -id "$ID" -viewers 6 \
+            -delivery deep -buffer-ms 3000 \
+            -duration 600s -ramp-ms 150 -insecure > e2e/out/loadgen-dvr.log 2>&1 &
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -497,6 +504,9 @@ jobs:
             echo "retrying with 12 more subscriber sessions"
             ./e2e/bin/gawk-loadgen -url https://127.0.0.1:4433 -id "$BROADCAST_ID" \
               -viewers 12 -duration 180s -ramp-ms 150 -insecure >> e2e/out/loadgen.log 2>&1 &
+            ./e2e/bin/gawk-loadgen -url https://127.0.0.1:4433 -id "$BROADCAST_ID" \
+              -viewers 6 -delivery deep -buffer-ms 3000 \
+              -duration 180s -ramp-ms 150 -insecure >> e2e/out/loadgen-dvr.log 2>&1 &
             ./e2e/cluster-assert.sh gawk-e2e 120
           }
       - name: Export cluster state on failure

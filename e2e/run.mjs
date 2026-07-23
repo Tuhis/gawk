@@ -82,6 +82,11 @@ const WARMUP_FRAMES = 30;
 // (Decision 8). Retries are logged loudly: recurring attempt-1 failures are
 // findings for docs/25, not noise.
 const MAX_VIEWER_RETRIES = 5;
+// Extra settle for the R21 deep-buffer pass, on top of the standard one: the
+// mode presents a playout offset (3 s) behind arrival, so the median window
+// needs that long again of *decoded* samples before the fps floors mean
+// anything. Sized to fill medianRecent's ≤6-sample (3 s) window twice over.
+const DEEP_BUFFER_SETTLE_MS = 6000;
 // The R19 resilient-mode pass (below) runs only in the plain tier-1 mode: the
 // relay and publisher are already up there, so it costs one browser session.
 // External/cluster mode and the browser-broadcast step spend their budget
@@ -365,13 +370,15 @@ function launchBrowser(extraArgs = []) {
 // dev environments, where the prompt defaults on) — all before any app code
 // runs. `resilient` seeds R19's persisted toggle, which is the only way in:
 // the mode is negotiated at connect, so it has to be set before the app runs.
-async function newAppContext(browser, { relayUrl, certHash, resilient = false }) {
+async function newAppContext(browser, { relayUrl, certHash, delivery = null }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
-    ({ serverUrl, hash, resilientMode }) => {
+    ({ serverUrl, hash, deliveryMode }) => {
       localStorage.setItem('gawk.serverUrl', serverUrl);
       if (hash) localStorage.setItem('gawk.certHashHex', hash);
-      if (resilientMode) localStorage.setItem('gawk:resilient-mode', '1');
+      // R19/R21: the persisted delivery choice is the only way in — the mode
+      // is negotiated at connect, so it has to be set before the app runs.
+      if (deliveryMode) localStorage.setItem('gawk:viewer-delivery', deliveryMode);
       // The shipped public/config.js assigns nothing, so this seed survives.
       window.__GAWK_CONFIG__ = { requirePublishSecret: false };
       window.__gawkClipboard = [];
@@ -385,7 +392,7 @@ async function newAppContext(browser, { relayUrl, certHash, resilient = false })
         }),
       });
     },
-    { serverUrl: relayUrl, hash: certHash, resilientMode: resilient },
+    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery },
   );
   return context;
 }
@@ -406,6 +413,59 @@ function wirePageLogs(page, name) {
 // NOT injected here: this pass exists to prove the client path exists and
 // works, and the Go test owns the behaviour-under-loss claim.
 //
+// R21 (docs/26) Deep buffer, from the client side. assertFlow already covers
+// the freeze this exists to catch — decoded/rendered fps floors — so this adds
+// only what is specific to the mode: that it was actually granted, and the
+// one-keyframe-per-carrier invariant.
+//
+// That invariant is field finding 1 (docs/26, 2026-07-23) turned into a test.
+// A DVR subscriber's keyframes come from the ring at its own cursor; anything
+// else sending it the *live* keyframe hands it a second, contradictory
+// timeline and video freezes while every arrival counter keeps climbing. The
+// tell was the ratio: keyframes arriving at ~2x the carrier-rotation rate.
+// assertFlow would have failed on the frozen decoder, but the ratio names the
+// cause instead of just the symptom.
+function assertDvrFlow(d1, d2) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  // Only the relay's own DeliveryAck can say this: a replayed GOP is
+  // byte-identical to a live one, so nothing observable distinguishes them.
+  // 'reliable' here means the ?buffer= negotiation did not take.
+  check(
+    s2.deliveryMode === 'dvr',
+    `deliveryMode = ${s2.deliveryMode}, want "dvr" (the ?buffer= negotiation did not take)`,
+  );
+  check(s2.dvrBufferMs > 0, `dvrBufferMs = ${s2.dvrBufferMs}, want > 0 (the ack carried no buffer)`);
+
+  const growth = (key) => s2[key] - s1[key];
+  const carriers = growth('carrierStreams');
+  const keyframes = growth('keyframeStreamsReceived');
+  check(carriers >= 1, `no carrier rotation between the captures (${s1.carrierStreams} → ${s2.carrierStreams})`);
+  check(growth('carrierRecords') > 0, `no carrier records between the captures`);
+  // One keyframe per rotation, both from the same cursor. A tolerance of 1
+  // absorbs a capture landing between a rotation and its keyframe; 2x is the
+  // signature of two timelines and must never pass.
+  check(
+    Math.abs(keyframes - carriers) <= 1,
+    `${keyframes} keyframes vs ${carriers} carrier rotations between the captures — ` +
+      `these must be 1:1 in DVR mode; a ratio near 2 means the viewer is being served ` +
+      `two timelines (docs/26 field finding 1)`,
+  );
+
+  if (problems.length > 0) {
+    fail(`deep-buffer assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `deep buffer ok: ${keyframes} keyframes / ${carriers} carrier rotations (1:1), ` +
+      `buffer ${s2.dvrBufferMs} ms`,
+  );
+}
+
 // Flow-shaped like every other assertion here (Decision 6) — counters that
 // must move, never a rate or a stream count that a contended runner could
 // legitimately miss.
@@ -449,10 +509,10 @@ function assertCarrierFlow(d1, d2) {
   );
 }
 
-async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec, resilient = false }) {
+async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec, delivery = null }) {
   const browser = await launchBrowser();
   try {
-    const context = await newAppContext(browser, { relayUrl, certHash, resilient });
+    const context = await newAppContext(browser, { relayUrl, certHash, delivery });
     const page = await context.newPage();
     wirePageLogs(page, `console-${attempt}`);
 
@@ -486,6 +546,25 @@ async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec,
     );
     log('viewer is receiving frames; sampling diagnostics');
 
+    // Deep buffer holds ~3 s before it presents anything, so "frames are
+    // arriving" happens a playout offset before "frames are decoding". Waiting
+    // only for arrival would capture a median window still full of the
+    // pre-decode zeros and fail assertFlow's fps floors on a healthy run — a
+    // flake that would (correctly) get the pass deleted rather than fixed.
+    // Wait for decode itself, then let the ≤6-sample window fill with it.
+    if (delivery === 'deep') {
+      await pollFor(
+        async () => {
+          const v = (await rowValue(page, 'Decoded'))?.trim();
+          return /^\d+$/.test(v) && Number(v) > 0;
+        },
+        30_000,
+        1000,
+        'the first decoded frame (deep buffer holds a playout offset first)',
+      );
+      await sleep(DEEP_BUFFER_SETTLE_MS);
+    }
+
     // The first completed frame proves flow, but the ≤6-sample median window
     // still holds the connect/prime ticks behind it, each a zero. Let ~4
     // healthy ticks land so those cannot be a majority — the same settle the
@@ -497,7 +576,8 @@ async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec,
     await sleep(SAMPLE_GAP_MS);
     const diag2 = await captureDiagnostics(page, `diagnostics-${attempt}-2`);
     assertFlow(diag1, diag2, expectedCodec);
-    if (resilient) assertCarrierFlow(diag1, diag2);
+    if (delivery === 'resilient') assertCarrierFlow(diag1, diag2);
+    if (delivery === 'deep') assertDvrFlow(diag1, diag2);
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
@@ -792,7 +872,14 @@ async function main() {
     // browser-broadcast step already spends its budget on the encode funnel.
     if (RESILIENT_VIEWER_PASS) {
       log('running the resilient-mode viewer pass (R19 carrier path)');
-      await runViewer('resilient', MAX_RESILIENT_RETRIES, { resilient: true });
+      await runViewer('resilient', MAX_RESILIENT_RETRIES, { delivery: 'resilient' });
+
+      // R21 Deep buffer, same broadcast, one more browser session. This pass
+      // exists because the freeze that shipped in R21 (docs/26 field finding
+      // 1) was catchable by the assertions already here — the mode simply was
+      // never run. A mode with no pass is a mode nobody tests.
+      log('running the deep-buffer viewer pass (R21 DVR ring)');
+      await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep' });
     }
 
     if (opsUrl) await assertRelaySide(opsUrl);

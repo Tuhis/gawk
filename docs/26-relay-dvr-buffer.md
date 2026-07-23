@@ -443,6 +443,55 @@ DV5 is separable and may be declined, DV6 closes it.
 | DV5 | **done** — audio ring on its own stream, cursor held to the video cursor |
 | DV6 | not started (hardware verification + tuning) |
 
+**Field finding 1 (2026-07-23, hardware): a DVR subscriber must be excluded
+from the LIVE keyframe paths.** `onKeyframe`'s fan-out and the join prime both
+send the *current* keyframe to every subscriber. For a cursor sitting seconds
+behind live that is a second, contradictory timeline — the viewer's reorder
+buffer sees frameIds jump forward to live and back to the cursor, parks in
+waiting-for-keyframe and ages out every delta. **Video freezes completely while
+every counter says data is arriving**, which is the most misleading shape this
+failure could have taken.
+
+The client's own numbers named it before any server capture was needed:
+`keyframeStreamsReceived` climbing at ~2x the `carrierStreams` rate, i.e. two
+keyframes per 500 ms GOP, with `decoderFps` 0 and `reorderKeyframeWaitDrops`
+climbing at the full frame rate. Worth remembering as a diagnostic: **in DVR
+mode those two counters must climb at the same rate**, one keyframe and one
+carrier per GOP. Any ratio other than 1:1 means two timelines.
+
+**Field findings 2-4 (2026-07-23), all found by the new tier-1 deep-buffer
+E2E pass on its first run.** Every one of them broke the mode completely, and
+none was reachable by a unit test with a fake relay:
+
+2. **A Resilient-mode viewer was requesting a ring.** The `buffer=` param was
+   sent whenever delivery was `reliable`, never gated on the Deep-buffer
+   choice — so the relay served a plain resilient viewer from a cursor with a
+   3 s staleness bound while it actually held ~0.5 s. The two ends disagreeing
+   about how far behind a viewer is, which is precisely what Decision 15's
+   three-point control exists to prevent.
+
+3. **`jumpToKeyframe` livelocked under a deep offset.** It picked the freshest
+   buffered keyframe and *then* rejected it as not-yet-due. At a 3 s offset
+   with a 500 ms GOP a newer keyframe always arrives before the current pick
+   comes due, so the pick kept moving forward and **nothing was ever
+   released** — buffer filling for ever, decode never starting, black screen
+   with every arrival counter climbing. Due-ness is now part of the selection
+   rather than a check after it. R19's <=500 ms offsets hid this: a keyframe
+   came due inside one GOP interval.
+
+4. **The keyframe wait was shorter than the playout offset.** While waiting
+   for a keyframe, held deltas are dropped once older than
+   `keyframeWaitMs()` — 2 s in resilient mode — but the keyframe does not
+   become *due* until the offset (3 s) has elapsed. Every delta aged out
+   before its keyframe could release, leaving keyframe-only playback at
+   exactly 2 fps. The wait now derives from the live offset
+   (`+ KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS`), so the two stay in step whatever
+   DV6 tunes the buffer to. Live-edge and resilient keep their existing values.
+
+   Finding 4 was masked by finding 3 and only surfaced once it was fixed —
+   worth remembering that a mode this deep can hide more than one blocker
+   behind the first.
+
 Deviations worth knowing before touching this:
 
 - **The drain waits on a failed write; it does not skip.** The first version
@@ -463,8 +512,12 @@ Deviations worth knowing before touching this:
   Choosing Deep buffer sends `buffer=`; the profile only deepens once the ack
   says `dvr`. A viewer on Resilient mode never gets the deep envelope even if a
   relay grants a ring, and the grant is cleared on every mode change.
-- **The viewer applies the deeper floor only on a granted ack**, never on
-  request. Against a relay that cannot keep it filled a deep buffer is pure
+- **The deep floor applies on the user's choice, not on the grant** (Decision 7
+  as revised by finding 3's neighbourhood). Deepening mid-session makes the
+  reorder buffer hold frames longer, which is a visible multi-second freeze
+  while it refills; shortening costs nothing. So a Deep-buffer viewer starts
+  deep, and only an explicit non-`dvr` ack walks it back. "Not yet answered"
+  is not "denied". Against a relay that cannot keep it filled a deep buffer is pure
   latency. The grant resets on every reconnect.
 - **The catch-up ceiling is a multiple of the broadcast's own bitrate**
   (`-dvr-max-catchup`, default **4x**), estimated from the ring itself — bytes
@@ -488,13 +541,40 @@ Deviations worth knowing before touching this:
 
 ## Verification plan
 
-**Automated (CI).** The `resilient_loss_test.go` forwarder already models a lossy
-relay→viewer leg with a clean publisher; a blackout is the same harness with
-100 % loss for a bounded window. That is the whole DV2 criterion and it runs in
-an unprivileged container — no `tc netem`, no NET_ADMIN, consistent with docs/24
-finding 10's reasoning. The R20 tier-1 browser harness gains a third viewer pass
-with `buffer` set, covering the negotiation end to end (no loss injected there —
-the Go test owns behaviour under loss).
+**Automated (CI) — all three shipped 2026-07-23.**
+
+- **Go blackout** (`internal/transport/dvr_blackout_test.go`): the DV2
+  criterion against a real relay over real QUIC. The `resilient_loss_test.go`
+  forwarder with the loss dialled to 100 % for a bounded window; a DVR
+  subscriber loses nothing (60/60 deltas, `dvrResyncs` 0) while a datagram
+  control on the same dark link loses exactly the window (30/60). No
+  `tc netem`, no NET_ADMIN — consistent with docs/24 finding 10.
+
+  **The control is a datagram viewer, not an R19 one, and that is itself a
+  finding.** An R19 carrier subscriber was tried first and survived the
+  blackout intact: at the data volume a CI-paced test can reach (~60 small
+  deltas) QUIC's own send buffer absorbs 1.2 s of darkness, so the carrier
+  write never parks long enough to hit `CarrierWriteTimeout`. R21's advantage
+  over R19 appears only at volumes that exhaust stream flow control — a few
+  hundred KB — which is not reproducible without pacing fast enough to inject
+  loopback ingress loss instead. **Short blackouts at low bitrate are already
+  survivable without a ring**, and any future claim about R21 beating R19
+  needs to say at what volume.
+
+- **Tier-1 browser** (`e2e/run.mjs`): a third viewer pass with
+  `gawk:viewer-delivery=deep`. Standard flow assertions plus the granted-ack
+  check and the **1:1 keyframes-to-carrier-rotations invariant** (field
+  finding 1 as a test). Needs a decode-aware settle: the mode presents a
+  playout offset behind arrival, so waiting only for arrival captures a median
+  window of pre-decode zeros. Its first run found three separate bugs
+  (findings 2–4).
+
+- **Tier-2 cluster** (`e2e/cluster-assert.sh`): an **edge**-served DVR
+  subscriber, polled like the origin/edge split it sits beside. Asserted on
+  the edge specifically rather than "some pod" — an origin-served ring is
+  already covered by tier 1, so accepting either would let the edge path rot.
+  Fed by `gawk-loadgen -delivery deep`, which replaces the old
+  query-string-in-`-id` hack with real flags.
 
 **Manual (owner).** Real mobile link, real blackouts: lift/drop the interface,
 walk into the known dead spot. The numbers that matter are the ones CI cannot

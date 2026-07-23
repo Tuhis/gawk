@@ -67,6 +67,39 @@ while true; do
   sleep 3
 done
 
+# R21 (docs/26 Decision 13): the DVR ring lives on the pod serving the
+# subscriber, so an EDGE-served DVR viewer builds its ring from datagrams the
+# edge pulled from the origin — a different path from an origin-served ring,
+# and the only one tier 2 reaches. Poll for it: which pod a session lands on is
+# the same probabilistic conntrack spread as the split above.
+#
+# Asserted on the edge specifically rather than "some pod": an origin-served
+# ring is already covered by the tier-1 deep-buffer pass, so accepting either
+# here would let the edge path rot unnoticed.
+end=$((SECONDS + DEADLINE))
+while true; do
+  edge_dvr=0
+  for p in "${PODS[@]}"; do
+    st=$(statusz "$p" 2>/dev/null) || continue
+    if jq -e '[.broadcasts[] | select(.role == "edge" and .dvrSubscribers >= 1 and .dvrRingBytes > 0)] | length >= 1' \
+      >/dev/null <<<"$st"; then
+      edge_dvr=1
+      echo "edge DVR ok on $p: $(jq -c '[.broadcasts[] | select(.role == "edge") | {dvrSubscribers, dvrRingBytes, dvrRingGops, dvrResyncs}]' <<<"$st")"
+      break
+    fi
+  done
+  [ "$edge_dvr" -eq 1 ] && break
+  if [ "$SECONDS" -ge "$end" ]; then
+    echo "FAIL: no edge pod is serving a DVR subscriber from a ring after ${DEADLINE}s" >&2
+    for p in "${PODS[@]}"; do
+      echo "--- $p /statusz:" >&2
+      statusz "$p" >&2 || echo "(unreachable)" >&2
+    done
+    exit 1
+  fi
+  sleep 3
+done
+
 # The origin must also see the edge attached (the internal pull is what feeds
 # the edge pod's subscribers).
 ORIGIN=${origin_pods[0]}
