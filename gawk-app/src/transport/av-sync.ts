@@ -33,9 +33,19 @@ import { timeOriginMs } from './time-sync';
 // slept, or the sink died. Video falls back to the arrival baseline.
 const PLAYHEAD_STALE_MS = 1500;
 // How fast the audio-derived mapping may move (ms of correction per second).
-// Slew-limiting is what keeps video targets from stepping when the audio
-// clock is re-anchored underneath us.
+// Slewing smooths clock drift and report-arrival jitter into the skew metric
+// and the drift trim it feeds.
 const MAPPING_SLEW_MS_PER_S = 20;
+// A discrepancy larger than this is not drift or jitter — it is a re-anchor:
+// the audio jitter buffer under-ran, re-primed, and resumed at the live edge,
+// moving the playhead discontinuously (docs/20 field finding 9). Slewing that
+// back at 20 ms/s left the skew reading ~2 s and creeping for the ~100 s it
+// took to reconverge (the field capture climbed at exactly 20 ms/s). Above
+// this the mapping snaps to the report in one step. Well above report-arrival
+// jitter (tens of ms), so normal operation still slews; and snapping to a
+// late report is correct anyway — the playhead value is exact, only the
+// arrival-time prediction was stale.
+const MAPPING_REANCHOR_MS = 250;
 
 export interface PlayheadReport {
   // Broadcaster-clock µs at the sink's play position; null before the first
@@ -78,10 +88,16 @@ export function notePlayhead(report: PlayheadReport, nowMs: number = performance
     mapping = next;
     return;
   }
-  // Slew-limit: correct toward the new anchor rather than jumping to it, so
-  // a re-anchored audio clock can't step every video target at once.
   const predictedUs = mapping.anchorUs + (localMs - mapping.anchorLocalMs) * 1000;
   const errorMs = (report.playheadUs - predictedUs) / 1000;
+  // A re-anchor moves the playhead too far to be drift: snap to it in one step
+  // rather than crawl back at the slew cap (docs/20 field finding 9).
+  if (Math.abs(errorMs) > MAPPING_REANCHOR_MS) {
+    mapping = next;
+    return;
+  }
+  // Slew-limit small discrepancies: this smooths drift and report jitter into
+  // the skew metric and the drift trim it feeds.
   const elapsedS = Math.max(0, (localMs - mapping.anchorLocalMs) / 1000);
   const maxCorrectionMs = Math.max(1, MAPPING_SLEW_MS_PER_S * elapsedS);
   const correctionMs = Math.max(-maxCorrectionMs, Math.min(maxCorrectionMs, errorMs));

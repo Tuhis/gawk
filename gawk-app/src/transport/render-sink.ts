@@ -22,6 +22,13 @@ import { getInterpolationEnabled, midSlotMs } from './interpolation';
 // "is your Firefox actually on the WebGL sink?" is answerable remotely.
 export type RenderSinkKind = '2d' | 'webgl';
 
+// Fired at the instant a REAL frame is presented (not decoded, not an
+// interpolated mid-frame), carrying that frame's timestamp and the sink's own
+// clock. The viewer pipeline routes this into av-sync's observeVideoPresented:
+// the paced sink holds a frame for the playout offset, so sampling A/V skew at
+// decode reads the audio buffering depth as skew (docs/20 field finding 9).
+export type PresentationObserver = (timestampUs: number, atMs: number) => void;
+
 export interface RenderSink {
   readonly kind: RenderSinkKind;
   // Whether the scheduling sink paces on worker rAF or the timer fallback —
@@ -44,6 +51,9 @@ export interface RenderSink {
   // R12 T4: whether this sink can synthesize interpolated frames (the
   // WebGL2 two-texture path) — gates the experimental toggle's visibility.
   readonly supportsInterpolation?: boolean;
+  // Observe real presentations for the A/V-skew metric (implemented by the
+  // scheduling sink, where the paint happens; null clears it).
+  setPresentationObserver?(observer: PresentationObserver | null): void;
 }
 
 // R12 T4: what the paced sink needs from an interpolation-capable inner sink.
@@ -444,6 +454,8 @@ export class PacedPresentationSink implements RenderSink {
   private lastPresentedTarget: number | null = null;
   // A real frame uploaded early for a mid blend; its own slot still pends.
   private uploadedNext: { targetDisplayMs: number; timestampUs: number } | null = null;
+  // A/V skew: notified at each real presentation (not the interpolated blends).
+  private onPresent: PresentationObserver | null = null;
 
   constructor(
     inner: RenderSink,
@@ -461,6 +473,19 @@ export class PacedPresentationSink implements RenderSink {
 
   get supportsInterpolation(): boolean {
     return this.interpolating !== null;
+  }
+
+  setPresentationObserver(observer: PresentationObserver | null): void {
+    this.onPresent = observer;
+  }
+
+  // One place to stamp a real presentation: the cadence metric and the A/V-skew
+  // observer must see the same frame at the same clock, and neither fires for
+  // the interpolated mid-frames (which have no single source timestamp).
+  private notePresented(timestampUs: number): void {
+    const at = this.now();
+    this.cadence.record(timestampUs, at);
+    this.onPresent?.(timestampUs, at);
   }
 
   draw(frame: VideoFrame, targetDisplayMs?: number): void {
@@ -554,7 +579,7 @@ export class PacedPresentationSink implements RenderSink {
         const { targetDisplayMs, timestampUs } = this.uploadedNext;
         this.uploadedNext = null;
         if (this.interpolating) {
-          this.cadence.record(timestampUs, this.now());
+          this.notePresented(timestampUs);
           this.interpolating.present(1);
           this.lastPresentedTarget = targetDisplayMs;
         }
@@ -586,7 +611,7 @@ export class PacedPresentationSink implements RenderSink {
   // available and enabled (so the previous-frame texture stays warm), the
   // plain inner draw otherwise.
   private presentReal(frame: VideoFrame, targetDisplayMs: number): void {
-    this.cadence.record(frame.timestamp, this.now());
+    this.notePresented(frame.timestamp);
     const interp = getInterpolationEnabled() ? this.interpolating : null;
     if (interp) {
       interp.upload(frame);
@@ -598,7 +623,7 @@ export class PacedPresentationSink implements RenderSink {
   }
 
   private paint(frame: VideoFrame): void {
-    this.cadence.record(frame.timestamp, this.now());
+    this.notePresented(frame.timestamp);
     this.inner.draw(frame);
   }
 }

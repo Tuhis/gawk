@@ -443,6 +443,78 @@ describe('PacedPresentationSink cadence (R12 T1)', () => {
   });
 });
 
+// The A/V-skew sample must be taken when a frame is actually on screen, not
+// when it left the decoder: the paced sink holds a frame for the playout
+// offset, so a decode-time sample reads the buffering depth as skew. The sink
+// fires a presentation observer at each REAL presentation with its own clock,
+// which the pipeline routes into av-sync's observeVideoPresented.
+describe('PacedPresentationSink presentation observer', () => {
+  it('fires at the real presentation with the frame timestamp and present-time clock', () => {
+    const { paced, drawn, sched, clock } = pacedHarness();
+    const seen: Array<[number, number]> = [];
+    paced.setPresentationObserver((ts, at) => seen.push([ts, at]));
+
+    clock.t = 1000;
+    paced.draw(fakeFrame(640, 480, 5_000_000)); // no target → next tick
+    expect(seen).toHaveLength(0); // not at draw/decode time
+    expect(drawn).toHaveLength(0);
+
+    clock.t = 1016;
+    sched.fire();
+    expect(drawn).toHaveLength(1);
+    expect(seen).toEqual([[5_000_000, 1016]]); // sampled at present, present clock
+  });
+
+  it('does not fire while a frame is still held for its slot', () => {
+    const { paced, sched, clock } = pacedHarness();
+    const seen: number[] = [];
+    paced.setPresentationObserver((ts) => seen.push(ts));
+
+    clock.t = 1000;
+    paced.draw(fakeFrame(640, 480, 0), 2000); // due far in the future
+    sched.fire(); // tick at 1000: not due
+    expect(seen).toHaveLength(0);
+
+    clock.t = 2000;
+    sched.fire(); // now due → presented
+    expect(seen).toEqual([0]);
+  });
+
+  it('does not fire for interpolated mid-frames (no single source timestamp)', () => {
+    setInterpolationEnabled(true);
+    const { canvas } = fakeCanvas();
+    const gl = fakeGL();
+    const inner = new InterpolatingWebGLRenderSink(canvas, gl as unknown as WebGL2RenderingContext);
+    const sched = manualSchedule();
+    const clock = { t: 1000 };
+    const paced = new PacedPresentationSink(inner, sched.schedule, () => clock.t);
+    const seen: number[] = [];
+    paced.setPresentationObserver((ts) => seen.push(ts));
+
+    // Two real frames a slot apart; the sink synthesizes a mid frame between.
+    paced.draw(fakeFrame(640, 480, 0), 1000);
+    paced.draw(fakeFrame(640, 480, 33_333), 1033);
+    for (let i = 0; i < 6; i++) {
+      clock.t += 8;
+      sched.fire();
+    }
+    // Only the real presentations are observed; the α=0.5 blend is not.
+    expect(seen).toEqual([0, 33_333]);
+  });
+
+  it('a null observer clears it', () => {
+    const { paced, sched, clock } = pacedHarness();
+    const seen: number[] = [];
+    paced.setPresentationObserver((ts) => seen.push(ts));
+    paced.setPresentationObserver(null);
+
+    paced.draw(fakeFrame(640, 480, 1_000));
+    clock.t = 1016;
+    sched.fire();
+    expect(seen).toHaveLength(0);
+  });
+});
+
 describe('WebGLRenderSink (R10 P2)', () => {
   it('uploads the frame via texImage2D, draws the quad, and closes the frame', () => {
     const { canvas } = fakeCanvas();

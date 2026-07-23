@@ -77,6 +77,64 @@ describe('av-sync playhead mapping', () => {
   });
 });
 
+// The mapping's 20 ms/s slew smooths drift, but a re-anchor (the audio jitter
+// buffer under-runs, re-primes, and resumes at the live edge) moves the
+// playhead discontinuously by hundreds of ms to seconds. Slewing that back at
+// 20 ms/s left the skew reading ~2 s and creeping for the ~100 s it took to
+// reconverge (the field capture: 1939→2130 over 9.5 s = exactly 20 ms/s). A
+// large discrepancy is not drift; the mapping snaps to it in one report.
+describe('av-sync snaps on a re-anchor instead of crawling at the slew cap', () => {
+  it('tracks a 2 s playhead jump in one report (was ~2000 ms of slew lag)', () => {
+    // Converge: at local 5000 ms the speaker is playing broadcaster ts 5.000 s.
+    for (let t = 0; t <= 5000; t += 250) {
+      notePlayhead({ playheadUs: t * 1000, atEpochMs: epochFor(t) }, t);
+    }
+    expect(observeVideoPresented(5_000_000, 5000)!).toBeCloseTo(0, 0);
+
+    // The audio buffer re-primes after a deep stall and resumes at the live
+    // edge: the next report's playhead is 2 s ahead of where the mapping was.
+    const t = 5250;
+    const jumped = (t + 2000) * 1000;
+    notePlayhead({ playheadUs: jumped, atEpochMs: epochFor(t) }, t);
+
+    // A frame at the new live edge reads ~0 (snapped). Pre-fix the mapping
+    // corrected only 5 ms of the 2 s gap, so it read ~1995 ms.
+    expect(Math.abs(observeVideoPresented(jumped, t)!)).toBeLessThan(50);
+  });
+
+  it('does not let a frozen playhead ramp the skew at the slew rate', () => {
+    for (let t = 0; t <= 5000; t += 250) {
+      notePlayhead({ playheadUs: t * 1000, atEpochMs: epochFor(t) }, t);
+    }
+    // The worklet under-runs: its playhead freezes while the wall clock (and
+    // the audio that eventually resumes) keep moving. Pre-fix, each stale
+    // report dragged the mapping down 5 ms and the skew climbed 20 ms/s.
+    const frozen = 5000 * 1000;
+    for (let t = 5250; t <= 8000; t += 250) {
+      notePlayhead({ playheadUs: frozen, atEpochMs: epochFor(t) }, t);
+    }
+    // Audio resumes at the live edge; the very next report must re-align.
+    const t = 8250;
+    const resumed = (t - 30) * 1000; // 30 ms behind live, healthy
+    notePlayhead({ playheadUs: resumed, atEpochMs: epochFor(t) }, t);
+    expect(observeVideoPresented(t * 1000, t)!).toBeCloseTo(30, 0);
+  });
+
+  it('still slews through ordinary report-arrival jitter (no spurious snap)', () => {
+    notePlayhead({ playheadUs: 0, atEpochMs: epochFor(0) }, 0);
+    // Reports land with ±40 ms arrival jitter while the playhead advances at
+    // 1×: well under the re-anchor threshold, so the slew smooths it.
+    for (let k = 1; k <= 40; k++) {
+      const arrive = k * 250 + (k % 2 === 0 ? 40 : -40);
+      notePlayhead({ playheadUs: k * 250 * 1000, atEpochMs: epochFor(arrive) }, arrive);
+    }
+    const nowMs = 40 * 250;
+    // A frame at the true current playhead reads within jitter of 0 — smoothed,
+    // not snapped to a noisy instantaneous sample.
+    expect(Math.abs(observeVideoPresented(nowMs * 1000, nowMs)!)).toBeLessThan(60);
+  });
+});
+
 // The video-master guarantee (docs/20 Decision 10 revised, field finding 4):
 // av-sync measures, and nothing more. It exports no way to reschedule video,
 // so no audio state — fresh, stale, or absent — can move a video frame. That
