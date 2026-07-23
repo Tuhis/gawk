@@ -37,7 +37,9 @@ vi.mock('../media/decoder', () => ({
 }));
 
 import { timeOriginMs } from './time-sync';
+import { getAvSkewMs, notePlayhead, resetAvSync } from './av-sync';
 import { SESSION_STALL_MS, ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
+import type { RenderSink } from './render-sink';
 import { DVR_BUFFER_MS, getDvrGranted, setDvrGranted, setViewerDeliveryMode } from './playout';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import {
@@ -643,6 +645,89 @@ describe('ViewerPipeline', () => {
       expect(last.frameHeight).toBe(1080);
 
       await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('samples A/V skew at presentation via the render sink, not at decode', async () => {
+    // The paced sink holds a frame for the playout offset, so sampling skew at
+    // decode reads the buffer depth as skew. On the render-sink (worker) path
+    // the pipeline installs a presentation observer and does NOT sample at
+    // decode — the sink fires the observer when the frame is on screen.
+    resetAvSync();
+    // An audio clock: at local 0 the speaker is playing broadcaster ts 1.000 s.
+    notePlayhead({ playheadUs: 1_000_000, atEpochMs: timeOriginMs() }, 0);
+
+    let observer: ((ts: number, at: number) => void) | null = null;
+    const draws: number[] = [];
+    const sink = {
+      kind: 'webgl' as const,
+      setPresentationObserver: (o: ((ts: number, at: number) => void) | null) => {
+        observer = o;
+      },
+      draw: (f: { timestamp: number; close?: () => void }) => {
+        draws.push(f.timestamp);
+        f.close?.();
+      },
+      drawnFrames: () => draws.length,
+    };
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    const { cbs } = makeCallbacks();
+    const pipeline = new ViewerPipeline(
+      'https://relay.test:4433',
+      'K7XQ2M',
+      {},
+      cbs,
+      sink as unknown as RenderSink,
+    );
+    await pipeline.start();
+    expect(observer).toBeTypeOf('function'); // observer installed at start
+
+    // A decoded frame stamped 1.050 s reaches the sink but is NOT sampled yet.
+    decoderCbs.value!.onDecoded({
+      frame: { timestamp: 1_050_000, displayWidth: 640, displayHeight: 480 },
+      decodeStartMs: 0,
+      decodeEndMs: 1,
+    });
+    expect(draws).toEqual([1_050_000]);
+    expect(getAvSkewMs()).toBeNull(); // decode did not sample skew
+
+    // The sink presents the frame (its own clock): skew is sampled now, and
+    // reads video − audio = 50 ms, not the buffering depth.
+    observer!(1_050_000, 0);
+    expect(getAvSkewMs()).toBeCloseTo(50, 0);
+
+    await pipeline.stop();
+    resetAvSync();
+  });
+
+  it('samples A/V skew at decode on the main-thread fallback (no render sink)', async () => {
+    // Without a paced sink the frame is drawn on arrival, so decode ≈ present
+    // and decode-time sampling is correct there.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      resetAvSync();
+      notePlayhead({ playheadUs: 1_000_000, atEpochMs: timeOriginMs() }, 0);
+      connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+      readDatagrams.mockReturnValue(new Promise(() => {}));
+      const { cbs } = makeCallbacks();
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs); // no sink
+      await pipeline.start();
+
+      decoderCbs.value!.onDecoded({
+        frame: { timestamp: 1_050_000, displayWidth: 640, displayHeight: 480 },
+        decodeStartMs: 0,
+        decodeEndMs: 1,
+      });
+      // performance.now() is 0 under fake timers, matching the mapping anchor.
+      expect(getAvSkewMs()).toBeCloseTo(50, 0);
+
+      await pipeline.stop();
+      resetAvSync();
     } finally {
       vi.useRealTimers();
     }

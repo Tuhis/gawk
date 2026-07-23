@@ -1024,6 +1024,54 @@ inferred depth to the ceiling on its own. Three parts:
 
 **Hardware re-verification pending**, together with findings 1–7.
 
+### Field finding 9 (2026-07-23): `avSkewMs` measured buffering depth + estimator lag, not lip-sync
+
+A Copy-diagnostics capture from a healthy Chrome/macOS session (audio and video
+both near live, sync visually and aurally fine) reported `avSkewMs` at **over
+2000 ms and climbing** — the overlay's headline lip-sync number was alarmingly
+wrong while nothing was actually wrong. The capture's fingerprint pins the
+cause exactly: `audioPacketsReceived == audioPacketsDecoded` (zero loss),
+`bufferedMs` a stable ~150–200 ms, every audio event counter (`underruns`,
+`overflowDrops`, `resets`) frozen — a steady state — and `avSkewMs` rising
+**1939 → 2130 over 9.5 s = exactly 20.0 ms/s**, which is `MAPPING_SLEW_MS_PER_S`
+to the digit. Two independent defects, both in how the metric is *taken*, not
+in the A/V path it claims to measure.
+
+**Defect 1 — sampled at decode, not at presentation.**
+`viewer.ts handleDecoded` called `observeVideoPresented(frame.timestamp)` the
+instant a frame left the decoder. But the paced sink holds that frame for the
+playout offset before it is on screen, and the audio playhead the metric
+subtracts is audio *at the speaker* — aligned to the frame being **presented**,
+not the newest one **decoded**. So the subtraction conflated the video
+presentation delay and the audio buffer depth with true lip-sync. Fix: the
+render sink fires a presentation observer (`PresentationObserver` in
+`render-sink.ts`) at each *real* presentation — the same point the cadence
+metric is already stamped, and never the interpolated α=0.5 blends, which have
+no single source timestamp — with the sink's own clock, and the pipeline routes
+that into `observeVideoPresented`. The main-thread fallback (no paced hold, so
+present ≈ decode) keeps sampling at decode, gated on a `presentationSampled`
+flag so exactly one site samples.
+
+**Defect 2 — the mapping crawled back from re-anchors at the slew cap.**
+`av-sync.notePlayhead` slew-limited every correction to 20 ms/s. That is right
+for drift and report-arrival jitter, but wrong for a **re-anchor**: when the
+audio jitter buffer under-runs and re-primes (`noteUnderrun`) or flushes, the
+worklet playhead moves discontinuously — hundreds of ms to seconds — and
+`resetAvSync()` fires only on a *broadcaster* restart, not on these buffer-level
+re-anchors. So after even one such event the estimate sat up to seconds stale
+and closed the gap at 20 ms/s (~100 s for a 2 s jump), which is the 20 ms/s ramp
+in the capture. This also fed a bogus 0.4 % correction into the audio **rate
+trim** (`AudioRateController`), so the phantom was not purely cosmetic. Fix: a
+discrepancy over `MAPPING_REANCHOR_MS` (250 ms — well above report jitter, far
+below a re-anchor) snaps the mapping to the report in one step; smaller ones
+still slew. Snapping to a late report is correct regardless: the playhead value
+is exact, only the arrival-time prediction was stale. This is the self-contained
+realization of "reset on re-anchor" — it needs no signal plumbed from the buffer
+and catches every discontinuity, including those no explicit signal covers.
+
+Viewer-only, test-first, zero wire/relay/broadcaster changes. **Hardware
+re-verification pending**, together with findings 1–8.
+
 ### Post-implementation review (2026-07-19)
 
 A self-review against `CODE-REVIEW.md` immediately after N6, before any

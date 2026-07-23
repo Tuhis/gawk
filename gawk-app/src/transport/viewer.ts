@@ -305,6 +305,11 @@ export class ViewerPipeline {
   // so a VideoFrame never crosses the worker boundary. Null on the main-thread
   // path, where onDecodedFrame draws and the caller closes the frame.
   private renderSink: RenderSink | null;
+  // True once the render sink is sampling A/V skew at presentation for us
+  // (docs/20 field finding 9). While false — the main-thread fallback, or a
+  // sink without the hook — handleDecoded samples at decode, where present ≈
+  // decode because there is no paced hold.
+  private presentationSampled = false;
 
   // Connection + read loops live behind the transport seam (R10 P3): local
   // (in-process) by default, or proxied to a dedicated transport worker.
@@ -406,6 +411,18 @@ export class ViewerPipeline {
   }
 
   async start(): Promise<void> {
+    // A/V skew is sampled where the frame is actually presented, not where it
+    // is decoded: the paced sink holds a frame for the playout offset, so a
+    // decode-time sample reads the audio buffering depth as skew (docs/20
+    // field finding 9). The sink calls back at each real presentation with its
+    // own clock, which is the instant the audio playhead must be compared to.
+    if (this.renderSink?.setPresentationObserver) {
+      this.renderSink.setPresentationObserver((timestampUs, atMs) =>
+        observeVideoPresented(timestampUs, atMs),
+      );
+      this.presentationSampled = true;
+    }
+
     // Pipeline stages exist before the transport connects: the relay primes a
     // joining viewer with the cached keyframe immediately, and that must land
     // in the reorder buffer, not race the setup.
@@ -818,8 +835,10 @@ export class ViewerPipeline {
     this.liveEdge.observe(decoded.frame.timestamp);
     this.observeCapToRender(decoded.frame.timestamp);
     // R15 N5: A/V skew is measured always — in every playout mode, whether or
-    // not audio is driving the targets (docs/20 Decision 10).
-    observeVideoPresented(decoded.frame.timestamp);
+    // not audio is driving the targets (docs/20 Decision 10). When the render
+    // sink samples at presentation (field finding 9) we defer to it; otherwise
+    // (main-thread fallback, no paced hold) present ≈ decode, so sample here.
+    if (!this.presentationSampled) observeVideoPresented(decoded.frame.timestamp);
     // Worker path: draw + close in place so the frame never crosses a boundary.
     // Main-thread path: hand it to the callback, which draws and closes it.
     if (this.renderSink) {
