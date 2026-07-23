@@ -6,7 +6,16 @@
 //
 //   'off'      — live-edge: release + present immediately (the default).
 //   'fixed'    — R5 Q3's constant 150 ms decoder-release pacing, preserved
-//                exactly as it shipped.
+//                exactly as it shipped. **Retired from the production menu**
+//                by docs/17 Decision 10 (2026-07-23): adaptive's clamp floor
+//                sits below this constant on a clean link and above it on a
+//                dirty one, its warmup seeds at this same 150 ms, and only
+//                adaptive sets a displayTargetMs — so 'fixed' bought the
+//                buffering latency without the presentation pacing. It stays
+//                a mode because a measurement-free offset is the control that
+//                separates a pacing bug from a bug in the jitter estimator
+//                driving it (PLAYOUT-1, docs/24 finding 8); ViewerScreen
+//                offers it in dev builds only.
 //   'adaptive' — R12: sub-frame paced presentation with a jitter-tracked
 //                offset (T3; until then the seed constant) and a decode lead.
 //

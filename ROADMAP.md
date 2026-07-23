@@ -701,6 +701,20 @@ paced + interpolated pipeline green on every PR — rendered fps ≈ 2× receive
 the α=0.5 mid-slots). T5 (motion-estimated interpolation, droppable) and
 T6 (measurement findings + constant verdicts) not started.
 
+**Revised 2026-07-23 (docs/17 Decision 10, user decision)**: the fixed
+150 ms `'fixed'` mode is **retired from the production menu** — adaptive
+dominates it at every point on the trade curve (its clamp floor of 50 ms
+sits *below* fixed's constant on a clean link, its ceiling above it on a
+dirty one, its warmup seeds at the same 150 ms, and only adaptive sets a
+`displayTargetMs`, so fixed paid the buffering latency while presenting
+unpaced). Viewer pacing is now one binary toggle, relabelled **"Paced
+playback"**; the mode survives as an `isDevEnvironment()`-gated diagnostic
+("Smooth playback (fixed 150 ms)") because a measurement-free offset is
+what separates a pacing bug from a jitter-estimator bug (PLAYOUT-1,
+docs/24 finding 8). Stored `'fixed'` and the legacy `gawk:smoothed-playout
+=== '1'` both migrate to `'adaptive'`. Viewer-UI only; zero
+server/wire/pipeline changes.
+
 ---
 
 ## R14 — Native Linux broadcaster

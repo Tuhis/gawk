@@ -137,7 +137,11 @@ final sub-frame alignment (Decision 4 below).
    `REORDER_TICK_MS = 16` stays; its jitter is absorbed by the sink hold.
 
 5. **A separate new toggle; three playout modes** (user decision
-   2026-07-15). The existing right-click "Smooth playback" toggle keeps its
+   2026-07-15). **Partly superseded by Decision 10 (2026-07-23)**: the
+   menu now carries one smoothing toggle, "Paced playback", and the
+   fixed-mode entry is dev-only. The three-mode enum, the module state and
+   the worker command are unchanged — only the menu narrowed.
+   The existing right-click "Smooth playback" toggle keeps its
    exact current behavior — fixed 150 ms decoder-release pacing,
    coalescing-equivalent presentation. A **new** right-click toggle,
    **"Paced playback (adaptive)"**, enables the new machinery: sub-frame
@@ -247,6 +251,73 @@ final sub-frame alignment (Decision 4 below).
    regresses in nothing it has today and gains pacing wherever worker rAF
    exists (≥105).
 
+10. **`'fixed'` retired from the production menu — pacing is one binary
+    (2026-07-23, user decision).** Decision 8 kept `'fixed'` as a
+    co-equal, mutually-exclusive toggle beside `'adaptive'`. That was
+    wrong on the merits: **adaptive dominates fixed at every point on the
+    trade curve**, so the pair was never a real choice.
+
+    | | `'fixed'` | `'adaptive'` |
+    |---|---|---|
+    | Offset, clean link | 150 ms always | down to `MIN_PLAYOUT_OFFSET_MS` = 50 |
+    | Offset, lossy link | 150 ms always | up to `MAX_PLAYOUT_OFFSET_MS` = 350 |
+    | First ~`OFFSET_WARMUP_MS` | 150 ms | 150 ms (seed) — identical |
+    | Presentation alignment | **none** | sub-frame slot matching |
+    | Interpolation reachable | no | yes |
+
+    The decisive row is the fourth. `viewer.ts`'s `displayTargetMs()`
+    returns `undefined` outside `'adaptive'`, so `PacedPresentationSink`
+    degenerates to R10's latest-frame-wins coalescing: **fixed mode paid
+    the full buffering latency and then painted unpaced.** It bought a
+    fraction of what its cost implied. And because adaptive's clamp floor
+    (50 ms) sits *below* fixed's constant, fixed is not even the
+    lower-latency option — there is no link condition, and no transient
+    (the warmup seeds at the same 150 ms), where a viewer is better off
+    with it.
+
+    Secondary, but real: the viewer menu had grown to two smoothing
+    toggles + three delivery modes + interpolation, and under any non-live
+    delivery mode *both* smoothing entries render as inert controls
+    annotated "governed by Resilient mode" (Decision 7 of docs/24). Going
+    from two mutually-exclusive toggles to one binary removes a state pair
+    a viewer cannot reason about.
+
+    **What is kept, and why.** `'fixed'` survives as a `PlayoutMode` — in
+    the type, in `getPlayoutOffsetMs()`, in the overlay's Playout row —
+    because a **measurement-free offset is the control that separates a
+    pacing bug from a bug in the thing measuring the pacing**, and
+    PLAYOUT-1 (docs/24 finding 8) is proof that is a live failure mode:
+    the arrival-jitter histogram's range silently pinned the resilient
+    clamp at ~534 ms, and every symptom pointed at pacing. A constant
+    offset is how you tell those apart in one toggle.
+
+    So the mode is **gated on `isDevEnvironment()`** — the existing
+    pattern from the broadcaster's dev settings (`showDevSettings`) —
+    rather than left as an unreachable branch with a story attached. A
+    diagnostic nothing can reach is dead code; this one is reachable
+    exactly where a diagnostic is used. Labelled with its constant
+    ("Smooth playback (fixed 150 ms)"), because the constant is the point.
+
+    **Migration** (both hops land a viewer where the menu has a control):
+    - stored `'fixed'` → `'adaptive'` outside a dev build; honoured inside
+      one.
+    - legacy `gawk:smoothed-playout === '1'` → `'adaptive'` (was
+      `'fixed'`). That viewer asked for smoothing in the R5 UI; adaptive
+      is the mode that now delivers it. `'0'` → `'off'` is unchanged —
+      Decision 8's rule that the default flip never overrules an explicit
+      live-edge opt-out still stands.
+
+    **Naming.** The survivor is labelled **"Paced playback"**, dropping
+    the "(adaptive)" qualifier — it existed only to distinguish it from
+    the fixed mode. "Smooth playback" was deliberately *not* recycled for
+    it: reusing a shipped label for different semantics would make every
+    pre-2026-07-23 bug report about "Smooth playback" ambiguous.
+
+    Nothing else moves: no server, wire, broadcaster or pipeline change;
+    `PacedPresentationSink`, `PlayoutController` and every drop/resync
+    policy are untouched, and the pipeline-level module default stays
+    `'off'` so `#/debug/*` keeps live-edge.
+
 ## Status
 
 | Chunk | Scope | Acceptance criteria | Status |
@@ -292,8 +363,9 @@ the sketch, each folded back into the decisions above:
   > 5 s (a broadcaster restart moves timelines), so no restart signal needs
   to reach the render sink for the metric's sake.
 - **Persistence**: one mode key (`gawk:playout-mode`) replaces the legacy
-  boolean (`gawk:smoothed-playout`, migrated to `'fixed'` on load);
-  interpolation persists under `gawk:interpolation`.
+  boolean (`gawk:smoothed-playout`, migrated to `'fixed'` on load — **now
+  to `'adaptive'`, Decision 10**); interpolation persists under
+  `gawk:interpolation`.
 - **Default flip (2026-07-15, after T1–T4 landed)**: the production viewer
   now defaults to adaptive paced playback + interpolation (Decision 8, as
   superseded). Legacy `'0'` (explicit old-toggle opt-out) maps to `'off'`
@@ -305,11 +377,11 @@ the sketch, each folded back into the decisions above:
 - **T1**: open the overlay on a healthy LAN viewer — cadence σ visibly
   nonzero at 30-on-60 (the baseline); numbers recorded in this doc.
 - **T2/T3**: on a jittery link (or devtools-throttled), toggle "Paced
-  playback (adaptive)" — judder visibly decreases, cadence σ drops vs the
+  playback" — judder visibly decreases, cadence σ drops vs the
   T1 baseline, the Playout row shows the live adaptive offset rising on a
   degrading link and slewing back down (slowly) on recovery; toggling back
-  to "Smooth playback" and to live-edge behaves exactly as today, no stall
-  or reconnect.
+  to live-edge (and, in a dev build, to "Smooth playback (fixed 150 ms)")
+  behaves exactly as today, no stall or reconnect.
 - **T4/T5**: interpolation toggled on a 30 fps rung — rendered fps ≈ 2×
   received fps; `capToRenderMs` rises ≈ 33 ms; artifacts inspected on real
   game footage against kill criterion (ii); GPU cost sanity-checked in the
