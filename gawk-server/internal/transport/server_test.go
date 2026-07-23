@@ -1862,7 +1862,7 @@ func TestDeliveryAckIsReAnnounced(t *testing.T) {
 
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
-	recvCtx, recvCancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	recvCtx, recvCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer recvCancel()
 	acks := 0
 	for acks < 2 {

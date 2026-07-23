@@ -49,13 +49,20 @@ const drainFlushDelay = 250 * time.Millisecond
 
 // How many times a subscriber is told what delivery it was served, and how far
 // apart (R21, docs/26 Decision 7a). The announcement rides an unreliable
-// datagram and never changes for the life of the session, so a small bounded
-// repeat costs 5 bytes a second for four seconds and removes a single point of
-// failure — a viewer that misses every copy is one that is not receiving media
-// either.
+// datagram and never changes, so a small bounded repeat removes a single point
+// of failure for 20 bytes.
+//
+// The burst is deliberately tight rather than spread over seconds. What it
+// defends against is a *startup* race — datagrams arriving before the viewer's
+// reader is draining — which resolves in well under a second; and a datagram is
+// ack-eliciting, so a repeat spread across seconds is indistinguishable from a
+// keepalive and holds the QUIC connection open past -max-idle-timeout. A
+// 1 s idle timeout with keepalives off is exactly what
+// TestIdleSubscriberTimesOutWithoutKeepalive pins, and a 4 s version of this
+// broke it. Finish long before any sane idle timeout.
 const (
-	deliveryAckAnnouncements   = 5
-	deliveryAckReannounceEvery = time.Second
+	deliveryAckAnnouncements   = 4
+	deliveryAckReannounceEvery = 150 * time.Millisecond
 )
 
 // drainSession is the slice of a webtransport.Session the drain needs;
