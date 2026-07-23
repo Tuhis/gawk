@@ -177,8 +177,13 @@ describe('AudioSink stall recovery', () => {
         },
       });
 
-    // Audio is flowing and the sink runs dry: a real underrun, counted.
+    // Audio is flowing and playback has started, then the sink runs dry: a
+    // real dry-after-playback underrun, counted. Playback needs the 60 ms seed
+    // floor to be met first (3 × 20 ms chunks) — before that the worklet's dry
+    // quanta are expected pre-roll and are deliberately not counted.
     sink.push(chunk(0));
+    sink.push(chunk(20_000));
+    sink.push(chunk(40_000));
     report(4);
     expect(sink.getStats().underruns).toBe(4);
 

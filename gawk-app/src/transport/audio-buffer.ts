@@ -87,6 +87,16 @@ export const MAX_AUDIO_LEAD_MS = 100;
 // How long the depth estimate may be extrapolated between the sink's ~4 Hz
 // playhead reports before the ceiling stops trusting it. See queuedNowMs().
 const MAX_DRAIN_EXTRAPOLATION_MS = 500;
+// The anti-starvation cushion required at the alignment release WHEN the video
+// schedule governs the hold. The schedule already sets the (lead-compensated)
+// release time; the depth check is then only a guard against releasing into an
+// empty worklet, not the alignment target — so it must be small. Requiring the
+// full profile target here instead gates the release ~target ms after the
+// schedule wants it (audio arrives ~real time, so `targetMs` of it takes
+// `targetMs` to accumulate), which for deep/resilient modes lands `lead` ms
+// late and leaves audio output-latency behind video. 150 ms comfortably covers
+// arrival jitter; live-edge's own target is smaller, so min() leaves it alone.
+const SCHEDULED_START_CUSHION_MS = 150;
 // Timeline-change thresholds, deliberately asymmetric — the same lesson the
 // video path learned in R10 (docs/14 finding 5): a *serially backwards* jump
 // is the restart signal, and treating it as lateness strands the viewer.
@@ -231,6 +241,14 @@ export class AudioJitterBuffer {
   // it would release instantly and rebuild no cushion at all. Depth floor
   // there instead, and let the rate trim walk the residual skew back out.
   private alignOnSchedule = true;
+  // Whether any audio has ever been released to the sink on this timeline (set
+  // at the first release, cleared on flush). Before the first release the
+  // connected worklet pulls silence while we deliberately hold the cushion, and
+  // those "underruns" are expected pre-roll — not the dry-after-playback event
+  // noteUnderrun's re-prime is for. Without this flag a multi-second deep hold's
+  // ~1100 pre-roll underruns clear alignOnSchedule and drop the buffer onto the
+  // depth floor, losing the video-schedule lip sync before it ever applies.
+  private everReleased = false;
   // The hold actually applied at the alignment release, for the overlay.
   private alignmentHoldMs: number | null = null;
   // Depth established at release; the overflow ceiling rides this rather than
@@ -403,9 +421,20 @@ export class AudioJitterBuffer {
     // the arrival jitter). So the adaptive jitter target is a *floor* in every
     // mode: never release below it. In paced modes the schedule hold already
     // exceeds the floor, so gating on both changes nothing there.
-    const scheduleDue =
-      this.alignOnSchedule && this.dueAtMs !== null ? nowMs >= this.dueAtMs : true;
-    const depthReady = this.bufferedMs() >= this.targetMs;
+    const haveSchedule = this.alignOnSchedule && this.dueAtMs !== null;
+    const scheduleDue = haveSchedule ? nowMs >= this.dueAtMs! : true;
+    // Depth gate. With NO schedule it is the whole alignment target (finding 5's
+    // deep fallback: hold B even when the video baseline never arrives). With a
+    // schedule it is only an anti-starvation cushion — the schedule already sets
+    // the hold, and does so lead-compensated (dueAt = present − output latency),
+    // so requiring the full target on top would defeat that compensation and
+    // leave audio ~output-latency behind video (the depth is only met `lead` ms
+    // after the schedule is due, because `targetMs` of audio takes `targetMs` to
+    // arrive at 1×). See SCHEDULED_START_CUSHION_MS.
+    const depthTarget = haveSchedule
+      ? Math.min(this.targetMs, SCHEDULED_START_CUSHION_MS)
+      : this.targetMs;
+    const depthReady = this.bufferedMs() >= depthTarget;
     // Field finding 7: never release the cushion into a sink that can't receive
     // it — the released chunks would be dropped and the worklet would start at
     // ~0 ms depth (finding 6 redux). Hold until the worklet node exists.
@@ -417,6 +446,7 @@ export class AudioJitterBuffer {
 
     this.alignmentHoldMs = this.pendingMs;
     this.priming = false;
+    this.everReleased = true;
     this.dueAtMs = null;
     this.pendingMs = 0;
     const ready = this.pending;
@@ -515,6 +545,15 @@ export class AudioJitterBuffer {
   // already recovered would otherwise be sent back to priming — paying a
   // second silence for a gap that had closed.
   noteUnderrun(count = 1): void {
+    // Before the first release the worklet is connected and pulling silence
+    // while we deliberately hold the alignment cushion (a deep buffer holds
+    // ~B ms). That is expected pre-roll, not a dry-after-playback event:
+    // counting it inflates the stat (a 3 s deep hold logs ~1100 "underruns")
+    // and, worse, the re-prime below clears alignOnSchedule and would drop the
+    // deep buffer onto the depth floor — anchored to audio arrival, missing the
+    // output-latency lead — instead of the video playhead it is meant to align
+    // to (docs/20 field finding 4). Ignore it and keep waiting for the schedule.
+    if (!this.everReleased) return;
     this.stats.underruns += count;
     // Only when it is *still* dry at the report: queuedMs comes from the same
     // report (noteDepth lands first), so it says what the worklet holds now,
@@ -555,6 +594,9 @@ export class AudioJitterBuffer {
     // A fresh timeline gets a fresh alignment decision — the one case where
     // re-deciding against the video schedule is exactly right.
     this.alignOnSchedule = true;
+    // Back to pre-roll: the new timeline's hold will underrun the worklet again
+    // and those reports must not re-prime it off the schedule (see noteUnderrun).
+    this.everReleased = false;
     this.dueAtMs = null;
     this.alignmentHoldMs = null;
     this.establishedDepthMs = 0;

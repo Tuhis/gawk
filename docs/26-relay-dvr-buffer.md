@@ -525,6 +525,50 @@ offset. Audio has still never been verified on real hardware in deep mode; this
 is a correctness fix against the design's own acceptance note, not a field
 observation of the *fix* working.
 
+**Field finding 6 (2026-07-23): with finding 5 in, audio played but sat
+somewhat *behind* the video.** A hardware capture showed the audio buffer
+correctly deep (`alignmentHoldMs` 3013 ms, `bufferedMs` ≈ target 3000) — but
+also `underruns` frozen at **1408** across the whole 9.5 s window with
+`resets: 1`, i.e. every one of them fired *before* the capture, during the
+~3 s startup hold. That is the tell: the `AudioWorklet` is connected and the
+browser pulls a 128-sample quantum every ~2.67 ms, so for the entire multi-
+second alignment hold it starves and reports a continuous run of dry quanta
+(~3 s / 2.67 ms ≈ 1100+). Each report reached `AudioJitterBuffer.noteUnderrun`
+with `queuedMs === 0` (nothing delivered yet), so its dry-after-playback
+re-prime ran and cleared **`alignOnSchedule`** — the flag that keeps the
+release gated on the *video presentation schedule*. With it cleared the buffer
+fell back to the depth floor, anchored to *audio arrival + depth* rather than
+the video playhead and missing the output-latency `lead` the schedule applies,
+so audio landed ~output-latency behind video. The re-prime exists for a
+worklet that ran dry *after* playback started; the initial hold's dry quanta
+are expected pre-roll (video shows nothing for those 3 s either). Fixed
+viewer-only, test-first: an `everReleased` flag (set at the first release,
+cleared on flush) makes `noteUnderrun` ignore pre-release underruns entirely —
+they neither re-prime nor inflate the counter — so the deep buffer keeps its
+video-schedule alignment through the hold. `avSkewMs` in the capture was a
+stable ~−30 ms, which is *expected* at good sync (it reads ≈ −outputLatency),
+and is why the buffer counters, not the skew metric, are what named this.
+
+But keeping the schedule active was necessary, **not sufficient** — the output-
+latency delay survived it, and this was the actual cause of "audio behind."
+The release gate is `scheduleDue && depthReady`. The schedule already subtracts
+the sink's output latency (`dueAt = present − lead`) so audio is *heard* when
+the frame is shown. But `depthReady` required the full profile target buffered
+(`targetMs = B` in deep mode, from finding 5), and audio arrives ~real time, so
+`B` ms of it takes `B` ms to accumulate — `depthReady` is not met until
+`arrival + B`, which is `lead` ms *after* the lead-compensated `scheduleDue`
+(`arrival + B − lead`). Since the release needs both, the full-depth gate binds
+and the `−lead` never takes effect; the worklet then adds output latency on top,
+so audio lands ~output-latency behind video (and the same defeats resilient
+mode, whose `targetMs = 500` binds `lead` late identically). The fix: under a
+schedule the depth check is only a small anti-starvation cushion
+(`SCHEDULED_START_CUSHION_MS`, 150 ms), letting the lead-compensated schedule set
+the release time; the full `B` target stays the gate only when there is no
+schedule (finding 5's fallback). Live-edge is byte-identical — its own target is
+below the cushion, so the `min()` leaves it alone. Both halves are needed:
+`everReleased` keeps the schedule governing, this makes the governing schedule
+actually lead-compensate.
+
 Deviations worth knowing before touching this:
 
 - **The drain waits on a failed write; it does not skip.** The first version
