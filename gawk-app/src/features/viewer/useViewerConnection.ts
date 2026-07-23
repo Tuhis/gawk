@@ -340,9 +340,11 @@ export function useViewerConnection(
               alignmentHoldMs: b.alignmentHoldMs,
               underruns: b.underruns,
               gapsConcealed: b.gapsConcealed,
+              gapsSkipped: b.gapsSkipped,
               lateDrops: b.lateDrops,
               overflowDrops: b.overflowDrops,
               resets: b.resets,
+              contextSampleRate: b.contextSampleRate,
             },
           };
         }

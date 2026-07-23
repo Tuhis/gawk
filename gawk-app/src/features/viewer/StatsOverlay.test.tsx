@@ -339,6 +339,7 @@ describe('StatsOverlay audio section (R15)', () => {
           ...fullStats(),
           audioState: 'active',
           audioCodec: 'opus',
+          audioSampleRate: 48_000,
           avSkewMs: 12,
           avMaster: 'video',
           audioBuffer: {
@@ -347,6 +348,8 @@ describe('StatsOverlay audio section (R15)', () => {
             alignmentHoldMs: 95,
             underruns: 7,
             gapsConcealed: 2,
+            gapsSkipped: 3,
+            contextSampleRate: 44100,
             lateDrops: 1,
             overflowDrops: 0,
             resets: 0,
@@ -362,6 +365,9 @@ describe('StatsOverlay audio section (R15)', () => {
     expect(screen.getByText('Buffer depth').nextSibling?.textContent).toBe('38.2 / 120.0 ms');
     expect(screen.getByText('Alignment hold').nextSibling?.textContent).toBe('95.0 ms');
     expect(screen.getByText('Underruns').nextSibling?.textContent).toBe('7');
-    expect(screen.getByText('Gaps / late / overflow').nextSibling?.textContent).toBe('2 / 1 / 0');
+    expect(screen.getByText('Gaps filled / skipped').nextSibling?.textContent).toBe('2 / 3');
+    expect(screen.getByText('Late / overflow drops').nextSibling?.textContent).toBe('1 / 0');
+    // The stream is 48 kHz (fixture above), the context 44.1 kHz: annotated.
+    expect(screen.getByText('Sink rate').nextSibling?.textContent).toBe('44100 Hz (resampling)');
   });
 });

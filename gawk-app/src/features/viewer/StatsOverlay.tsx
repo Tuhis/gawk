@@ -168,13 +168,34 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                         : `${fmt(stats.audioBuffer.alignmentHoldMs)} ms`,
                     ],
                     ['Underruns', String(stats.audioBuffer.underruns)],
+                    // Filled vs skipped separates "loss was concealed" from
+                    // "loss was skipped inside the lead budget"; overflow
+                    // climbing alongside filled is the finding-8 latch.
                     [
-                      'Gaps / late / overflow',
-                      `${stats.audioBuffer.gapsConcealed} / ${stats.audioBuffer.lateDrops} / ${stats.audioBuffer.overflowDrops}`,
+                      'Gaps filled / skipped',
+                      `${stats.audioBuffer.gapsConcealed} / ${stats.audioBuffer.gapsSkipped}`,
+                    ],
+                    [
+                      'Late / overflow drops',
+                      `${stats.audioBuffer.lateDrops} / ${stats.audioBuffer.overflowDrops}`,
                     ],
                     // Re-anchors (timeline restarts + field-finding-7 stall
                     // recoveries): a climbing count is the sink stalling.
                     ['Recoveries', String(stats.audioBuffer.resets)],
+                    // The context is free to run at the device rate rather
+                    // than the stream's; the worklet resamples, but this is
+                    // the number to read first when audio sounds slow.
+                    [
+                      'Sink rate',
+                      stats.audioBuffer.contextSampleRate == null
+                        ? '—'
+                        : `${stats.audioBuffer.contextSampleRate} Hz${
+                            stats.audioSampleRate != null &&
+                            stats.audioSampleRate !== stats.audioBuffer.contextSampleRate
+                              ? ' (resampling)'
+                              : ''
+                          }`,
+                    ],
                   ] as StatsRow[])
                 : []),
             ] as StatsRow[],

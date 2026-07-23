@@ -985,8 +985,51 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    null node; (c) **stall recovery** — no worklet playhead report for >1 s while
    audio arrives ⇒ resume a suspended context + flush buffer/worklet to
    re-anchor at the live edge; plus a `resets` (recoveries) overlay row and a
-   hardened `flush()`. **Hardware re-verification of all seven findings
-   pending.**
+   hardened `flush()`. **Field finding 8 (2026-07-23, docs/20)**: on Safari
+   audio broke up continuously while video was fine — `overflowDrops` at
+   **74 % of arrivals** with `audioPacketsReceived == audioPacketsDecoded`
+   (zero wire loss) and `bufferedMs` pinned at the ceiling. Two policies
+   cancelled each other: `push()` counted an overflow drop *before* advancing
+   `nextExpectedUs`, so the run of drops returned as a hole, and the gap
+   branch concealed it with exactly as much silence — through `emitChunk`, so
+   the silence re-added the depth the drop was meant to shed. Overflow-
+   dropping could not lower the depth at all, only convert audio into silence
+   (~25 % real audio, ~75 % synthesized), and once over the ceiling it never
+   came back; `noteUnderrun`'s `queuedMs === 0` guard discarded the one signal
+   that proved the estimate wrong. Two things pushed it over: the ceiling was
+   compared against an estimate credited down only at the worklet's ~4 Hz
+   report (stale by 250 ms vs. 200 ms of slack — 46 spurious drops/s on a
+   healthy real-time feed), and any single ~200 ms hiccup latched it. Fixed
+   viewer-only, test-first, each mechanism mutation-verified: an overflow drop
+   advances the cursor (a skip toward live — deliberately not charged to the
+   lead budget, since overflow means audio is running *late*); shedding is
+   hysteretic down to `max(target, establishedDepth)` (parked at the ceiling,
+   input rate == drain rate keeps it there, dropping at the margin forever);
+   concealment is gated on a **100 ms accumulated-lead budget** (owner
+   decision — below it the skip is inaudible and av-sync's rate trim absorbs
+   it, above it one concealment repays the whole debt); the depth estimate is
+   extrapolated at 1× between reports (capped at 500 ms so a suspended context
+   can't decay a real backlog); and an underrun clamps the estimate to what
+   the closing window delivered. New `gapsSkipped` counter + split overlay
+   rows — the concealment/overflow *ratio* is what identified this. Sample
+   rates deliberately untouched (`ctx.sampleRate` is still never read back);
+   and the same change closes the root both findings share: the buffer no
+   longer *shadows* the worklet's queue at all. The worklet reports its own
+   depth in **content ms** (`frameCount / sampleRate` per chunk) in the report
+   it already sent at 4 Hz, `notePlayed(delta)` becomes `noteDepth(absolute)`,
+   and cumulative counters on both sides (`receivedMs` / `deliveredTotalMs`,
+   neither reset on flush) reconcile chunks in flight when a report was
+   generated — which retired the underrun clamp. **Sample rate, same change**:
+   `build()` never read back `ctx.sampleRate`, and macOS/Safari routinely hands
+   back a 44.1 kHz context for 48 kHz Opus — 8.8 % slow, a semitone low, and an
+   8 %/s under-drain that walks any inferred depth to the ceiling by itself. The
+   worklet's base read rate is now `chunk.sampleRate / contextRate` × trim (the
+   fractional resampler the trim already needed — its base was simply hardcoded
+   to 1), the context rate is read back with a fallback when the option is
+   *refused* (which used to take the whole stream video-only), and no
+   main-thread code converts frames to ms any more. New overlay rows: **Sink
+   rate** (annotated `(resampling)`) and **Gaps filled / skipped**.
+   **Hardware re-verification of all eight findings pending.**
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
    green); U4 verdict 2026-07-19: the native path still does not work on
    iPhone — `webkitEnterFullscreen` enters but shows a black video across

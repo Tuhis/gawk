@@ -899,6 +899,131 @@ revived by resume+flush — only a full sink rebuild would, which is out of scop
 here; the recovery still keeps the buffer from wedging and surfaces the churn via
 `resets`. **Hardware re-verification pending.**
 
+### Field finding 8 (2026-07-23): overflow drops and gap concealment fought each other
+
+Finding 7's honest accounting went to hardware (Safari 26.5, macOS). Video was
+fine; audio broke up continuously from the first second. The Copy-diagnostics
+capture is unusually clean, and every number in it agrees:
+
+| signal | value |
+|---|---|
+| `audioPacketsReceived` / `audioPacketsDecoded` | **identical**, a flat 50.1/s for 9.5 s |
+| `badDatagrams`, `decodeErrors` | 0 |
+| `overflowDrops` | **37.0/s — 74 % of everything that arrived** |
+| `gapsConcealed` | 4.2/s |
+| `underruns` | 1.5/s |
+| `bufferedMs` / `targetMs` | pinned **321–345** / 120–126, `alignmentHoldMs` 100 |
+
+Zero loss on the wire, zero decode failures, and three quarters of the audio
+destroyed on the viewer. The equilibrium closes exactly: the ~12.7 packets/s
+that survive are 254 ms of real audio per second, and 4.2 concealments/s ×
+~178 ms ≈ 746 ms/s of synthesized silence make up the rest of the second the
+worklet consumes. **The stream was ~25 % audio and ~75 % silence.**
+
+**Root cause — two policies, each defensible alone, in a loop.** `push()`
+counts an overflow drop and returns *before* advancing `nextExpectedUs`, so a
+run of dropped packets comes back as a hole; the gap branch then conceals that
+hole with exactly as much silence as was dropped — via `emitChunk`, so the
+silence re-adds the very depth the drop was meant to shed. Overflow-dropping
+therefore **cannot lower the depth**; it can only convert audio into silence,
+at whatever rate holds the estimate at the ceiling. Once `bufferedMs` crosses
+the ceiling for any reason it never comes back: 37 drops ÷ 4.2 gaps = 8.8
+consecutive drops per cycle = the 176 ms of silence per concealment observed.
+
+The reconciliation that should have caught it was gated off. `noteUnderrun`
+re-primes only `if (queuedMs === 0)`, so the worklet reporting underruns *while
+the buffer believed it held 330 ms* — a contradiction, and proof the estimate
+had diverged — was discarded.
+
+**What pushed it over the ceiling.** Two contributors, both fixed:
+
+1. **The ceiling was evaluated against an estimate stale by a full report
+   interval.** `queuedMs` grows on every `push()` but is only credited down on
+   the worklet's ~4 Hz playhead report, so it over-reads by up to **250 ms**
+   while `OVERFLOW_SLACK_MS` is **200 ms**. A perfectly healthy real-time
+   producer feeding a real-time sink therefore cleared the ceiling near the end
+   of every window — the regression test measures **46 spurious drops/s** with
+   this alone. Structural; needs no Safari-specific behaviour.
+2. **Any single ~200 ms hiccup latches it permanently.** One genuine gap under
+   `BACKWARDS_RESTART_MS` injects its whole duration into `queuedMs` at once,
+   and nothing brought it back down. The capture's video path shows
+   `arrivalJitterMs` ~100 ms with `receivedFps` swinging 20→48 on the shared
+   datagram path; `resets: 2` says the finding-7 stall watchdog had already
+   fired twice.
+
+**Fix (viewer-only, test-first, no wire/relay/broadcaster changes).** Five
+changes in `audio-buffer.ts`, each mutation-verified load-bearing:
+
+1. **An overflow drop advances `nextExpectedUs`.** The drop becomes an honest
+   skip toward live and can never return as a hole to conceal. It is also the
+   right answer on its own terms: overflow means the sink holds *more* than
+   alignment asked for, i.e. audio is running late, so shedding content pulls
+   it back toward the video — which is why the skip is deliberately **not**
+   charged to the lead budget below.
+2. **Shedding is hysteretic.** Once over the ceiling, drop back to
+   `max(target, establishedDepth)` — the depth alignment chose — not merely
+   back under the ceiling. Parked at the ceiling, input rate == drain rate
+   keeps it there, dropping a packet at the margin forever (chronic crackle)
+   and leaving the excess as permanent A/V skew for the rate trim to walk out
+   at 0.4 %. One bounded shed is the cheaper trade.
+3. **The lead budget (`MAX_AUDIO_LEAD_MS`, 100 ms — owner decision).**
+   Concealment exists only because alignment is a start-time decision (finding
+   4): skipping a hole moves every later sample earlier by its length. Below
+   100 ms of *accumulated* skipped lead that is inaudible and the av-sync rate
+   trim absorbs it, so holes are now skipped; past it, one concealment pays the
+   whole accrued debt at once so the timeline is exactly restored rather than
+   half-corrected. The debt is dropped on `flush()` (it belonged to the dead
+   timeline) and on an underrun re-prime (alignment is being rebuilt, and the
+   worklet's own silence already pushed the other way).
+4. **The depth estimate is extrapolated between reports.** The worklet is known
+   to drain at 1×, so `queuedNowMs()` subtracts elapsed-since-last-report and
+   the next report corrects it. Capped at `MAX_DRAIN_EXTRAPOLATION_MS` (500 ms)
+   so a suspended context cannot decay a real backlog to zero and flood a
+   worklet that is not draining — past the cap the estimate freezes and
+   finding 7's stall watchdog owns recovery.
+5. **The depth is reported, not inferred.** The worklet now measures its own
+   queue and sends it in the report it already posted every 250 ms —
+   `queuedMs`, summed as each chunk's `frameCount / sampleRate`, i.e. in
+   **content ms**, so the figure means the same thing whatever rate the context
+   runs at. `AudioJitterBuffer.notePlayed(delta)` becomes `noteDepth(absolute)`.
+   This is the actual root of findings 7 *and* 8: the buffer kept a *shadow* of
+   a queue it did not own, built from deliveries and drain deltas, and a shadow
+   cannot audit itself — undelivered chunks (finding 7), an assumed context rate
+   (below), or a suspended worklet all move the two apart with nothing to notice.
+   The queue's owner reports it instead, which retires the underrun clamp this
+   fix originally carried.
+6. **In-flight reconciliation.** A report is generated a message-hop before it
+   is read, so chunks delivered in between are in the worklet's queue but not in
+   its figure. Both sides keep a cumulative content-ms counter
+   (`receivedMs` in the worklet, `deliveredTotalMs` in the sink) and the
+   difference *is* the in-flight audio — exact, with no clock and no window.
+   Neither counter resets on flush, deliberately: resetting one would race the
+   other across the port.
+
+**The sample rate, same change.** `AudioSink.build()` requested
+`new AudioContext({ sampleRate })` and never read back what it got, while the
+worklet advanced exactly one source sample per output frame. On macOS/Safari a
+44.1 kHz context is routine (it is the device rate) against 48 kHz Opus, which
+plays **8.8 % slow and a semitone low** — and under-drains by 8 %/s, walking any
+inferred depth to the ceiling on its own. Three parts:
+
+- **The worklet resamples.** The base read rate is `chunk.sampleRate /
+  contextRate` (the context's rate is an `AudioWorkletGlobalScope` global),
+  multiplied by the drift trim. The fractional-read resampler the trim already
+  required does the work — the bug was only ever that its base was hardcoded to
+  1. Computed per iteration, since the head chunk can change mid-quantum.
+- **The context rate is read back, not assumed**, and a browser that *refuses*
+  the `sampleRate` option (a throw — which previously took the whole stream
+  video-only) falls back to a device-rate context instead.
+- **Nothing on the main thread converts frames to ms any more.** Depth arrives
+  in content ms, so the context rate cannot enter the accounting even in
+  principle. A new overlay **Sink rate** row reports the real rate and annotates
+  `(resampling)` when it differs from the stream's — the one number that
+  explains "audio sounds slow", and the one this finding had to be diagnosed
+  without.
+
+**Hardware re-verification pending**, together with findings 1–7.
+
 ### Post-implementation review (2026-07-19)
 
 A self-review against `CODE-REVIEW.md` immediately after N6, before any
