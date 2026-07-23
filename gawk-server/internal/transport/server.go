@@ -47,6 +47,17 @@ const drainWindow = time.Second
 // an anonymous drop (still recovered, but on the slower abrupt-error path).
 const drainFlushDelay = 250 * time.Millisecond
 
+// How many times a subscriber is told what delivery it was served, and how far
+// apart (R21, docs/26 Decision 7a). The announcement rides an unreliable
+// datagram and never changes for the life of the session, so a small bounded
+// repeat costs 5 bytes a second for four seconds and removes a single point of
+// failure — a viewer that misses every copy is one that is not receiving media
+// either.
+const (
+	deliveryAckAnnouncements   = 5
+	deliveryAckReannounceEvery = time.Second
+)
+
 // drainSession is the slice of a webtransport.Session the drain needs;
 // narrowed to an interface so the drain logic is unit-testable with fakes.
 type drainSession interface {
@@ -976,9 +987,33 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// too old to know the parameter — and a viewer that cannot name what it
 	// got is what made the 2026-07-22 investigation so expensive (BUGS.md).
 	// Best-effort: a failed ack costs a diagnostics row, never the session.
-	if err := sess.SendDatagram(wire.AppendDeliveryAck(nil, mode, uint16(bufferMs))); err != nil {
+	ack := wire.AppendDeliveryAck(nil, mode, uint16(bufferMs))
+	if err := sess.SendDatagram(ack); err != nil {
 		log.Warn("delivery ack not sent; the viewer cannot report its served mode", "err", err)
 	}
+	// ...and re-announce it a few times. This one datagram is the viewer's
+	// only way to name what it was served, and it was sent exactly once, at
+	// the instant the CONNECT was accepted — the moment a viewer is least
+	// likely to be draining its datagram queue. Unreliable delivery plus a
+	// one-shot announcement means a single loss leaves the viewer reporting
+	// the wrong mode for the whole session, with no way to ask again (the
+	// one-way data flow is deliberate — docs/15 Decision 6). Re-emitting is
+	// the same answer the cached DecoderConfig and the 1 Hz audio config
+	// already use, bounded here because unlike those this never changes.
+	go func() {
+		t := time.NewTicker(deliveryAckReannounceEvery)
+		defer t.Stop()
+		for i := 1; i < deliveryAckAnnouncements; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-t.C:
+				if err := sess.SendDatagram(ack); err != nil {
+					return
+				}
+			}
+		}
+	}()
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
 	for {

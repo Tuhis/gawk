@@ -646,8 +646,23 @@ func NegotiateDelivery(reliable bool, raw string, window time.Duration) (wire.De
 		// its due time at the viewer, so a ring would only add latency.
 		return wire.DeliveryReliable, 0
 	}
+	if window <= 0 {
+		// The hub defaults a zero window to DefaultDVRWindow when it builds the
+		// ring (see newHub), so leaving it raw here made the two disagree: the
+		// broadcast got a 3 s ring while the negotiation clamped the grant to
+		// 0 ms below. Default in the same place, from the same constant.
+		window = DefaultDVRWindow
+	}
 	if max := int(window / time.Millisecond); ms > max {
 		ms = max
+	}
+	if ms < MinDVRBufferMs {
+		// The clamp can land below the floor when the operator's window is
+		// itself tiny. Granting DVR with a sub-minimum — or zero — buffer is
+		// incoherent: the viewer is told it is ring-backed and deepens its
+		// playout to a depth the relay never holds. Downgrade honestly, which
+		// is what a below-floor *request* already gets above.
+		return wire.DeliveryReliable, 0
 	}
 	return wire.DeliveryDVR, ms
 }

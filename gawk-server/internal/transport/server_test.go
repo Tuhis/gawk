@@ -1799,3 +1799,79 @@ func TestSubscribeUnknownDeliveryFallsBackToDatagrams(t *testing.T) {
 		return
 	}
 }
+
+// R21 (docs/26 Decision 7a). Two defects in one announcement, both found while
+// chasing the R20 tier-1 deep-buffer pass that failed on 3 of 4 runs (and
+// blocked a release PR) with "the ?buffer= negotiation did not take".
+//
+// First: the hub defaults a zero DVR window to DefaultDVRWindow when it builds
+// the ring, but the negotiation used cfg.DVRWindow raw — so a server whose
+// window was never set granted DeliveryDVR while clamping the buffer to 0. The
+// viewer is then told it is ring-backed and deepens its playout to a depth the
+// relay does not hold. A grant must be coherent or it must be a downgrade.
+func TestNegotiateDeliveryNeverGrantsDVRWithoutABuffer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
+
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s?delivery=reliable&buffer=3000", port, id)
+	sub := dial(t, ctx, url, clientTLS)
+	defer sub.CloseWithError(0, "")
+
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer recvCancel()
+	for {
+		got, err := sub.ReceiveDatagram(recvCtx)
+		if err != nil {
+			t.Fatalf("no DeliveryAck: %v", err)
+		}
+		if len(got) < 2 || got[1] != wire.TypeDeliveryAck {
+			continue
+		}
+		mode, bufferMs, err := wire.ParseDeliveryAck(got)
+		if err != nil {
+			t.Fatalf("malformed delivery ack: %v", err)
+		}
+		if mode == wire.DeliveryDVR && bufferMs == 0 {
+			t.Fatal("granted dvr with a 0 ms buffer: the viewer would deepen its playout to a depth the ring never holds")
+		}
+		return
+	}
+}
+
+// Second: the ack was sent exactly once, at the instant the CONNECT was
+// accepted — the moment a viewer is least likely to be draining its datagram
+// queue — and it rides an unreliable datagram with no way to ask again (the
+// one-way data flow is deliberate, docs/15 Decision 6). A single loss left the
+// viewer naming the wrong mode for the whole session. It must be re-announced,
+// the way the cached DecoderConfig and the 1 Hz audio config already are.
+func TestDeliveryAckIsReAnnounced(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServer(t, ctx, 15)
+
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s?delivery=reliable", port, id)
+	sub := dial(t, ctx, url, clientTLS)
+	defer sub.CloseWithError(0, "")
+
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	defer recvCancel()
+	acks := 0
+	for acks < 2 {
+		got, err := sub.ReceiveDatagram(recvCtx)
+		if err != nil {
+			t.Fatalf("saw %d DeliveryAck(s) in the window, want the announcement repeated: %v", acks, err)
+		}
+		if len(got) >= 2 && got[1] == wire.TypeDeliveryAck {
+			acks++
+		}
+	}
+}
