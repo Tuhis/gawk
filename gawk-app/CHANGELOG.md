@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.28.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.27.0...gawk-app-v0.28.0) (2026-07-23)
+
+
+### Features
+
+* **viewer:** retire the fixed playout toggle, pacing is one binary (docs/17 Decision 10) ([#113](https://github.com/Tuhis/gawk/issues/113)) ([5632a3b](https://github.com/Tuhis/gawk/commit/5632a3bcdbdf0423875f7e56a28e5b9e06876a7c))
+
+
+### Bug Fixes
+
+* stop sending DVR subscribers a second, live keyframe timeline ([#112](https://github.com/Tuhis/gawk/issues/112)) ([7de0d18](https://github.com/Tuhis/gawk/commit/7de0d18f1bcb9fc55e75c3da1dbf1ff32a399cb0))
+
 ## [0.27.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.26.5...gawk-app-v0.27.0) (2026-07-23)
 
 
