@@ -41,6 +41,7 @@ feature set exists).
 | R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers green in real CI** (tier-1 `e2e` on every PR; `e2e-cluster` on the 2026-07-18 release PRs — Z3's green-on-a-release-PR acceptance met, origin/edge split + browser viewer asserted); Z5 browser-broadcaster implemented 2026-07-19 (spike: viable headless via tab capture — screen capture delivers black frames); Z4 burn-in → required flip pending ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 | R21 | [Relay DVR ring buffer for resilient mode](#r21--relay-dvr-ring-buffer-for-resilient-mode) | 🔧 designed 2026-07-23, not started (DV1–DV6) ([docs/26](docs/26-relay-dvr-buffer.md)) |
 | R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔧 designed 2026-07-23, not started (MF1–MF5); MSE-backed native fullscreen **spike-confirmed on iPhone** — supersedes R16's rejected MediaStream tee ([docs/27](docs/27-ios-mse-fullscreen.md)) |
+| R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 📝 not designed, not started |
 
 ---
 
@@ -1472,6 +1473,81 @@ now the *only known-working* native-fullscreen path on iPhone.
 
 Chunks **MF1–MF5** (two-letter prefix — A–Z taken). Designed 2026-07-23,
 spike-confirmed on iPhone the same day, not started.
+
+---
+
+## R23 — Terms & conditions / usage terms
+
+**Goal**: `gawk-app` states the terms under which the deployment may be used,
+and both surfaces make them reachable. A broadcaster acknowledges them once
+before their first broadcast; a viewer can read them from any surface without
+a click-through gate. The operator can replace the text for their own
+deployment without forking the app.
+
+**Why**: the platform relays whatever is on a broadcaster's screen to whoever
+holds the join code — today with no stated rules, no stated retention
+position, and nothing telling an operator's friends what is and isn't
+acceptable to stream. Join-by-code UX (no accounts, no login) is a deliberate
+product decision, so the terms have to work without an identity to bind them
+to. This is also the first item whose content is partly **not** a technical
+artifact: the default text is a writing task, and the operator's own text is a
+deployment concern.
+
+**Scope sketch**:
+
+- **A terms surface**: a `#/terms` hash route in the production UI (R6 design
+  system, monochrome/restrained, readable long-form typography), linked
+  unobtrusively from the landing page and from the broadcaster's settings
+  panel; the viewer surface links it from the "⋮" menu (docs/24 finding 9's
+  bottom-bar entry point) rather than adding chrome to the cinematic view.
+- **One-time broadcaster acknowledgment**: shown before the first broadcast
+  start, persisted in `localStorage` under the existing `gawk:*` key
+  convention (`gawk:terms-accepted-<version>`), re-prompted when the terms
+  version changes. Broadcasting is the action with consequences (you are
+  publishing your screen), so it is the action that carries the gate.
+  **Viewers are not gated** — a join link that opens a modal instead of the
+  stream is the friction R1/R6 spent their design budget removing.
+- **Operator-customizable text**: shipped default content plus a
+  deployment-level override, so a self-hosted operator states their own rules.
+  The mechanism is a design question (below), not decided here.
+- **Content the default text has to cover**: acceptable use (what you may
+  stream), that broadcast content is relayed to anyone holding the code, that
+  the relay does not record or persist media (true today — the relay caches a
+  keyframe, and R21 would add a seconds-deep ring; both are in-memory and
+  short-lived, and the text must stay accurate if R21 lands), no warranty /
+  self-hosted "as is" positioning, and the operator's contact point.
+- **Non-goals**: accounts, signature capture, or any server-side record of
+  acceptance (there is no identity to attach it to — R2 non-goals stand); a
+  cookie banner (the app sets no cookies and does no analytics); per-viewer
+  legal gating; localization beyond English in v1.
+
+**Key design questions** (for the design doc):
+
+- **How the override reaches the app.** The frontend is a static nginx image,
+  so the candidates are a build-time env var (rebuild per operator — wrong for
+  a chart-installed image), a runtime `config.json` fetched on boot and mounted
+  from a ConfigMap via the existing `gawk-app` chart, or a Markdown/HTML file
+  served alongside the SPA. The chart already has a values surface; a
+  ConfigMap-mounted document is the obvious shape, but the boot-time fetch
+  interacts with the app's current zero-network-before-connect startup and
+  needs a fallback when it 404s.
+- **How the terms version is defined** (so acknowledgment re-prompts on
+  meaningful edits but not on typo fixes) — an explicit version field in the
+  content document rather than a content hash, most likely.
+- **Whether the acknowledgment blocks or annotates.** A blocking modal before
+  the first `getDisplayMedia` call is the strong form; a persistent inline
+  notice on the broadcaster surface is the weak one. This interacts with R13's
+  "no settings change ever restarts the stream" ergonomics and with the
+  broadcaster's connect-before-picker ordering (R11) — the gate belongs before
+  connect, not between connect and picker.
+- **Whether the native broadcaster (R14) needs the same acknowledgment.** It
+  publishes to the same relay under the same operator's terms, but it is a
+  binary you run on your own PC, outside the deployment. Probably a one-line
+  reference in its GUI + README rather than a gate; decide explicitly.
+
+**Status**: not designed, not started. Would get the next doc number in the
+`docs/NN-*.md` series and a chunk prefix following R22's two-letter
+convention (`MF` is claimed).
 
 ---
 
