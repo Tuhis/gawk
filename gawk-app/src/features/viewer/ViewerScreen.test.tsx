@@ -54,6 +54,17 @@ vi.mock('../../transport/viewer-session', () => ({
   RECONNECT_MAX_ATTEMPTS: 10,
 }));
 
+// docs/17 Decision 10: the retired 'fixed' playout entry is gated on
+// isDevEnvironment(), which vitest makes unconditionally true
+// (import.meta.env.DEV) — so a real viewer's behaviour is only assertable
+// through a seam. Everything else in config.ts stays real: playout.ts reads
+// getDvrBufferMs() from this same module.
+const devEnv = vi.hoisted(() => ({ value: true }));
+vi.mock('../../config', async (importActual) => ({
+  ...(await importActual<typeof import('../../config')>()),
+  isDevEnvironment: () => devEnv.value,
+}));
+
 import { ViewerScreen } from './ViewerScreen';
 import {
   PLAYOUT_OFFSET_MS,
@@ -143,15 +154,18 @@ describe('ViewerScreen states', () => {
   });
 });
 
-// R5 Q3 + R12 T2: the playout toggles — two mutually exclusive right-click
-// menu items ("Smooth playback" = fixed 150 ms, unchanged; "Paced playback
-// (adaptive)" = the R12 paced-presentation mode), persisted as one mode and
-// applied to the (main-thread, in these tests) pipeline context. Since the
-// default flip (user decision 2026-07-15), a fresh browser defaults to
-// adaptive + interpolation; the menu is the disable path.
+// R5 Q3 + R12 T2, revised by docs/17 Decision 10 (2026-07-23): the production
+// viewer has ONE playout toggle — "Paced playback" (the R12 adaptive
+// paced-presentation mode) — persisted as one mode and applied to the
+// (main-thread, in these tests) pipeline context. The retired fixed 150 ms
+// mode keeps its "Smooth playback (fixed 150 ms)" entry in dev builds only,
+// as the measurement-free control for pacing diagnosis. Since the default
+// flip (user decision 2026-07-15), a fresh browser defaults to adaptive +
+// interpolation; the menu is the disable path.
 describe('ViewerScreen playout modes', () => {
   function cleanupPlayout() {
     setPlayoutMode('off');
+    devEnv.value = true;
     localStorage.removeItem('gawk:playout-mode');
     localStorage.removeItem('gawk:smoothed-playout');
     localStorage.removeItem('gawk:interpolation');
@@ -166,53 +180,100 @@ describe('ViewerScreen playout modes', () => {
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutMode()).toBe('adaptive');
     openMenu();
-    expect(screen.getByText('Paced playback (adaptive) ✓')).toBeTruthy();
+    expect(screen.getByText('Paced playback ✓')).toBeTruthy();
     cleanupPlayout();
   });
 
-  it('toggles fixed smoothing via the context menu, persists, and sets the module', async () => {
+  // docs/17 Decision 10: the production menu offers pacing as one binary. A
+  // real viewer never sees the fixed entry, so it can never reach 'fixed'.
+  it('offers no fixed-playout entry outside a dev build', async () => {
+    cleanupPlayout();
+    devEnv.value = false;
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    openMenu();
+    expect(screen.queryByText(/Smooth playback/)).toBeNull();
+    expect(screen.getByText('Paced playback ✓')).toBeTruthy();
+
+    // The one remaining toggle is a plain binary: adaptive ⇄ live-edge.
+    fireEvent.click(screen.getByText('Paced playback ✓'));
+    expect(getPlayoutMode()).toBe('off');
+    expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
+    openMenu();
+    fireEvent.click(screen.getByText('Paced playback'));
+    expect(getPlayoutMode()).toBe('adaptive');
+    cleanupPlayout();
+  });
+
+  // The mode survives as a dev-only diagnostic — a measurement-free offset,
+  // which is what separates a pacing bug from a jitter-estimator bug.
+  it('toggles fixed smoothing via the context menu in a dev build', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutMode()).toBe('adaptive'); // the default
 
     openMenu();
-    fireEvent.click(screen.getByText('Smooth playback'));
+    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms)'));
     expect(getPlayoutMode()).toBe('fixed');
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
     expect(localStorage.getItem('gawk:playout-mode')).toBe('fixed');
 
     // Toggle back off: live-edge, persisted so the default flip won't undo it.
     openMenu();
-    fireEvent.click(screen.getByText('Smooth playback ✓'));
+    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms) ✓'));
     expect(getPlayoutMode()).toBe('off');
     expect(getPlayoutOffsetMs()).toBe(0);
     expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
     cleanupPlayout();
   });
 
-  it('the two smoothing modes exclude each other and uncheck back to live-edge', async () => {
+  it('the two smoothing modes exclude each other in a dev build', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
     // Checking the other mode unchecks the default adaptive one.
     openMenu();
-    expect(screen.queryByText('Paced playback (adaptive) ✓')).toBeTruthy();
-    fireEvent.click(screen.getByText('Smooth playback'));
+    expect(screen.queryByText('Paced playback ✓')).toBeTruthy();
+    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms)'));
     expect(getPlayoutMode()).toBe('fixed');
     openMenu();
-    expect(screen.queryByText('Paced playback (adaptive) ✓')).toBeNull();
-    expect(screen.queryByText('Smooth playback ✓')).toBeTruthy();
+    expect(screen.queryByText('Paced playback ✓')).toBeNull();
+    expect(screen.queryByText('Smooth playback (fixed 150 ms) ✓')).toBeTruthy();
 
     // Re-checking adaptive flips back.
-    fireEvent.click(screen.getByText('Paced playback (adaptive)'));
+    fireEvent.click(screen.getByText('Paced playback'));
     expect(getPlayoutMode()).toBe('adaptive');
 
     // And unchecking the checked one returns to live-edge.
     openMenu();
-    fireEvent.click(screen.getByText('Paced playback (adaptive) ✓'));
+    fireEvent.click(screen.getByText('Paced playback ✓'));
     expect(getPlayoutMode()).toBe('off');
+    cleanupPlayout();
+  });
+
+  // docs/17 Decision 10: a viewer carrying 'fixed' from before the retirement
+  // lands on adaptive — the mode fixed was a worse approximation of — rather
+  // than on a mode with no control in their menu.
+  it('migrates a stored fixed mode to adaptive outside a dev build', async () => {
+    cleanupPlayout();
+    devEnv.value = false;
+    localStorage.setItem('gawk:playout-mode', 'fixed');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(getPlayoutMode()).toBe('adaptive');
+    openMenu();
+    expect(screen.getByText('Paced playback ✓')).toBeTruthy();
+    cleanup();
+
+    // ...and is honoured where the menu can still reach it.
+    cleanupPlayout();
+    localStorage.setItem('gawk:playout-mode', 'fixed');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(getPlayoutMode()).toBe('fixed');
     cleanupPlayout();
   });
 
@@ -225,13 +286,15 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  it('migrates the legacy smoothed-playout preference: on → fixed, explicit off → off', async () => {
+  // docs/17 Decision 10 re-pointed the legacy hop: an R5 viewer who opted into
+  // "Smooth playback" was asking for smoothing, and adaptive is the mode that
+  // now delivers it. (It also lands them where the menu has a control.)
+  it('migrates the legacy smoothed-playout preference: on → adaptive, explicit off → off', async () => {
     cleanupPlayout();
     localStorage.setItem('gawk:smoothed-playout', '1');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
-    expect(getPlayoutMode()).toBe('fixed');
-    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+    expect(getPlayoutMode()).toBe('adaptive');
     cleanup();
 
     // A viewer who explicitly turned the old smoothing off chose live-edge;

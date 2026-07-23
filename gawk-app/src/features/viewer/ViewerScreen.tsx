@@ -15,6 +15,7 @@ import {
   StatsIcon,
 } from '../../ui/Icons';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
+import { isDevEnvironment } from '../../config';
 import { StatsOverlay } from './StatsOverlay';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
@@ -33,13 +34,27 @@ import { HOME } from '../../routing';
 const CONTROL_IDLE_MS = 3000;
 
 // R5 Q3 + R12 T2: the playout preference, persisted per browser as one mode
-// ('off' | 'fixed' | 'adaptive') — the two smoothing toggles are mutually
-// exclusive by construction. **Default: 'adaptive'** (user decision
+// ('off' | 'fixed' | 'adaptive'). **Default: 'adaptive'** (user decision
 // 2026-07-15, flipping the earlier live-edge default for the production
-// viewer; the right-click menu is the disable path). Migration order: an
-// explicit new-key choice wins; then the legacy boolean ('1' = the old
-// "Smooth playback" → 'fixed'; '0' = an explicit live-edge choice → 'off' —
-// the default flip must not overrule it); then the adaptive default.
+// viewer; the right-click menu is the disable path).
+//
+// docs/17 Decision 10 (2026-07-23) retired 'fixed' from the production menu:
+// adaptive dominates it on every axis — its clamp floor (50 ms) is *below*
+// fixed's constant 150 ms on a clean link, its ceiling above it on a dirty
+// one, its first ~5 s are the same 150 ms seed, and only adaptive computes a
+// displayTargetMs, so fixed paid the buffering latency while presenting
+// unpaced (viewer.ts `displayTargetMs` returns undefined outside adaptive).
+// The *mode* survives as a developer diagnostic — a measurement-free control
+// for telling a pacing bug from a bug in the thing measuring the pacing,
+// which PLAYOUT-1 (docs/24 finding 8) proved is a real failure mode — so the
+// entry is gated on isDevEnvironment() exactly like the broadcaster's dev
+// settings, rather than left as an unreachable branch.
+//
+// Migration order: an explicit new-key choice wins ('fixed' outside a dev
+// build resolves to 'adaptive' — the mode it was a worse approximation of);
+// then the legacy boolean ('1' = the R5 "Smooth playback" opt-in → 'adaptive',
+// which is what that user was asking for; '0' = an explicit live-edge choice
+// → 'off', the default flip must not overrule it); then the adaptive default.
 const PLAYOUT_MODE_KEY = 'gawk:playout-mode';
 const LEGACY_SMOOTHED_KEY = 'gawk:smoothed-playout';
 // R12 T4: the experimental frame-interpolation preference. **Default: on**
@@ -81,9 +96,12 @@ function loadDeliveryMode(): ViewerDeliveryMode {
 function loadPlayoutMode(): PlayoutMode {
   try {
     const v = localStorage.getItem(PLAYOUT_MODE_KEY);
-    if (v === 'fixed' || v === 'adaptive' || v === 'off') return v;
+    // A stored 'fixed' only survives where the menu can still reach it; a real
+    // viewer carrying one from before docs/17 Decision 10 lands on adaptive.
+    if (v === 'fixed') return isDevEnvironment() ? 'fixed' : 'adaptive';
+    if (v === 'adaptive' || v === 'off') return v;
     const legacy = localStorage.getItem(LEGACY_SMOOTHED_KEY);
-    if (legacy === '1') return 'fixed';
+    if (legacy === '1') return 'adaptive';
     if (legacy === '0') return 'off';
     return 'adaptive';
   } catch {
@@ -139,10 +157,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
 
   // R5 Q3 + R12 T2: playout smoothing (trades latency for steadier pacing).
   // 'adaptive' (the R12 paced-presentation mode) is the default since
-  // 2026-07-15; 'fixed' is the original 150 ms mode. Each menu item toggles
-  // its own mode, checking one unchecks the other, and unchecking the
-  // active one returns to live-edge ('off').
+  // 2026-07-15 and, since docs/17 Decision 10, the only one a real viewer can
+  // select; 'fixed' is the original 150 ms mode, kept as a dev-only
+  // diagnostic. Toggling the checked mode returns to live-edge ('off'); in a
+  // dev build the two remain mutually exclusive.
   const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
+  const showFixedPlayout = isDevEnvironment();
   const togglePlayoutMode = useCallback((mode: 'fixed' | 'adaptive') => {
     setPlayoutModeState((current) => {
       const next = current === mode ? 'off' : mode;
@@ -386,23 +406,32 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const menuItems: MenuItem[] = [
     { label: showStats ? 'Hide stats' : 'Stats', onSelect: () => setShowStats((s) => !s) },
     { label: isFullscreen ? 'Exit fullscreen' : 'Fullscreen', onSelect: () => toggleFullscreen() },
-    // R5 Q3 + R12 T2: visibly costed opt-ins — the overlay's Playout/latency
-    // rows show the added delay while either is on. Mutually exclusive.
+    // R12 T2: a visibly costed opt-in — the overlay's Playout/latency rows
+    // show the added delay while it is on.
     // R19 (docs/24 Decision 7): while Resilient mode is on it governs pacing
-    // (adaptive, wider profile) — these entries are annotated but keep their
-    // stored value and regain effect the moment Resilient mode turns off.
+    // (adaptive, wider profile) — this entry is annotated but keeps its
+    // stored value and regains effect the moment Resilient mode turns off.
     {
       label:
-        (playoutMode === 'fixed' ? 'Smooth playback ✓' : 'Smooth playback') +
-        (resilientMode ? ' — governed by Resilient mode' : ''),
-      onSelect: () => togglePlayoutMode('fixed'),
-    },
-    {
-      label:
-        (playoutMode === 'adaptive' ? 'Paced playback (adaptive) ✓' : 'Paced playback (adaptive)') +
+        (playoutMode === 'adaptive' ? 'Paced playback ✓' : 'Paced playback') +
         (resilientMode ? ' — governed by Resilient mode' : ''),
       onSelect: () => togglePlayoutMode('adaptive'),
     },
+    // docs/17 Decision 10: the retired fixed 150 ms mode, kept reachable in dev
+    // builds only as the measurement-free control for pacing diagnosis. The
+    // label carries its constant because that is the whole point of it.
+    ...(showFixedPlayout
+      ? [
+          {
+            label:
+              (playoutMode === 'fixed'
+                ? 'Smooth playback (fixed 150 ms) ✓'
+                : 'Smooth playback (fixed 150 ms)') +
+              (resilientMode ? ' — governed by Resilient mode' : ''),
+            onSelect: () => togglePlayoutMode('fixed'),
+          },
+        ]
+      : []),
     // R19 + R21 (docs/26 Decision 15): one axis, three points, rendered as a
     // radio group rather than as independent toggles — picking one always
     // clears the others, and "resilient + deep" is not a state that exists.
