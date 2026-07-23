@@ -35,6 +35,11 @@ as today, byte-identical behavior; and the viewer surfaces audio controls
 optimistically. Graduation to default-on is a later, explicit decision that
 amends this doc.
 
+**That graduation happened on 2026-07-23** (user decision, after audio was
+verified working and reliable on real hardware): the toggle is **removed**,
+not flipped — the production broadcaster asks for system audio on every
+start. See [Graduation](#graduation-2026-07-23-the-toggle-is-removed).
+
 ## Goal
 
 A viewer joining a broadcast hears the broadcaster's game audio, in sync
@@ -512,6 +517,10 @@ re-run since. Deviations and decisions taken during implementation:
 7. **Audio UI requires audio to be *playable*, not merely present**: a
    scope without `AudioContext`/`AudioWorkletNode` shows no controls (they
    would be dead) and reports `audioState: 'unsupported'`.
+
+**Status update (2026-07-23, owner)**: with findings 1–9 fixed, audio is
+**verified working and reliable on real hardware** — which is what made the
+graduation below an explicit decision rather than a guess.
 
 ### Field finding 1 (2026-07-19): the audio toggle killed the broadcast
 
@@ -1110,13 +1119,53 @@ audio-specific code.
 | N3 | **Broadcaster worker path** — audio clone transferred beside video in `provideCapture`; `capture` command + `BroadcastMediaSource` seam gain the audio track; worker handshake probes `AudioEncoder`; no-worker-audio ⇒ video-only annotation (placement never changes) | Worker path sends audio (integration test with fake worker scope, pattern of existing broadcast-worker-core tests); handshake-without-AudioEncoder falls back to video-only while video stays in the worker; teardown stops both clones; main-thread fallback path (Firefox) unaffected | ✅ implemented 2026-07-19 |
 | N4 | **Viewer decode + playback + conditional UI** — reassembler demux cases; worker `AudioDecoder` + transferred `AudioData` event; main-thread `AudioWorklet` sink (ring buffer, gap/late/underrun/overflow policies + counters, **flush/re-anchor on restart/resync + reconnect**, Decision 8); `audioPresent` flag; mute/volume in fading controls + context menu (`gawk:muted`/`gawk:volume`); tap-to-unmute on suspended context; main-thread pipeline fallback decodes in place | Ring-buffer policies unit-tested pure (fake clock): gap ⇒ silence + counter, late ⇒ drop + counter, underrun ⇒ silence + counter, overflow ⇒ oldest dropped; restart signal ⇒ ring flushed + re-anchored (a post-restart timestamp jump never late-drops forever); demux tests route 0x07/0x08 and still count unknown types bad — incl. fed as carrier records through the record path (same demux, Decision 12); `audioPresent` false ⇒ zero audio UI rendered (video-only streams pixel-identical to today), true ⇒ controls appear reactively mid-view; mute/volume persist and act on the sink only; worker-without-`AudioDecoder` ⇒ video-only viewer, annotated | ✅ implemented 2026-07-19 |
 | N5 | **A/V sync** — 4 Hz playhead report channel; `avSkewMs` + audio-buffer stats in `ViewerStats`; adaptive buffer target (quantile tracker + clamp/slew per Decision 10, **profile-carrying per Decision 12** — resilient mode adopts [150, 2000] ms / seed 500 via the live-getter pattern); ~~audio-master `displayTargetMs` source in paced modes with slew-limited mapping + arrival-baseline fallback~~ **superseded 2026-07-20 (field finding 4): video-master — audio aligned at start to the video presentation schedule, drift absorbed by a sub-audible rate trim; av-sync exports no video-side lever** | Unit tests (fake clocks): skew computation correct on synthetic clocks incl. wrap; buffer target converges/clamps/slews like `PlayoutController` (same test shape) **and widens/re-seeds on the resilient flag** (mirror of the playout profile test); audio-master targets under the resilient profile sit at resilient depth, never dragging video below the video playout envelope (the Decision 12 conflict, regression-tested); ~~paced-mode target source switches audio↔arrival without a step > slew bound~~; interpolation tests still pass (unaffected by construction); **no mode delays video for audio — asserted at the module surface: av-sync exports no video-side lever, and the reorder buffer paces on the arrival baseline alone**; audio's alignment hold, its depth-floor and never-fires fallbacks, the underrun re-prime, and the rate trim's deadband/clamp/slew/give-up are unit-tested, as is the worklet resampler (instantiated against stubbed worklet globals — ramp continuity across chunk edges); manual measurement: median \|avSkewMs\| ≤ 60 ms, p95 ≤ 120 ms on the reference LAN, both browsers, **in the default adaptive mode first**, plus a ≥ 30 min drift run | ✅ implemented 2026-07-19; A/V sync reworked to video-master 2026-07-20 (manual measurement pending) |
-| N6 | **Stats/overlay + docs + verify** — Audio sections on both overlays (broadcaster: codec/bitrate/encoded/s/sent/s; viewer: decoded/s, buffer ms, gaps/late/underruns, skew, muted) gated on audio presence; Copy-diagnostics includes audio; README gotchas + ROADMAP/CLAUDE status sync; manual verification pass below | Overlay sections render only when audio active; diagnostics JSON round-trips audio fields; docs synced; the full manual verification plan executed and findings recorded in this doc (incl. the graduation question: keep experimental or default-on) | 🔧 overlays + docs done 2026-07-19; manual verification pass pending |
+| N6 | **Stats/overlay + docs + verify** — Audio sections on both overlays (broadcaster: codec/bitrate/encoded/s/sent/s; viewer: decoded/s, buffer ms, gaps/late/underruns, skew, muted) gated on audio presence; Copy-diagnostics includes audio; README gotchas + ROADMAP/CLAUDE status sync; manual verification pass below | Overlay sections render only when audio active; diagnostics JSON round-trips audio fields; docs synced; the full manual verification plan executed and findings recorded in this doc (incl. the graduation question: keep experimental or default-on) | 🔧 overlays + docs done 2026-07-19; graduation question answered 2026-07-23 (toggle removed — see below); manual verification pass pending |
 
 Ordering: N1 → N2 → N4 form the minimal audible path (N2's main-thread
 pipeline + N4 can be browser-verified before N3); N3 rides once N2's lane
 exists; N5 needs N4's sink; N6 last. Nothing here blocks or is blocked by
 R14 (which would add audio later by reusing the same wire messages — noted
 as a follow-up there, not scoped here).
+
+### Graduation (2026-07-23): the toggle is removed
+
+User decision, once audio was verified working and reliable on real
+hardware — this is the amendment the intro's rollout decision reserved, and
+the answer to N6's open graduation question. **System audio is no longer a
+setting.** "Enable audio (experimental)" is gone from the advanced panel,
+`audioEnabled`/`gawk.audioEnabled` are gone from `broadcastSettingsStore`
+(a stale persisted value is inert), and `BroadcasterScreen` passes one
+`BROADCASTER_CAPTURE_CONFIG = { ...DEFAULT_CAPTURE_CONFIG, audio: true }` to
+both its reclaim and mint call sites.
+
+**Removed, not flipped to default-on**: a checkbox nobody unticks is a
+support surface with nothing behind it, and everything below it already
+treats "there is no audio" as a first-class state (video-only grants, the
+`audioState` annotations, the viewer's audio-UI-only-when-received rule).
+Unchanged by design: the frozen `#/debug/*` surfaces still pass plain
+`DEFAULT_CAPTURE_CONFIG` (audio absent) and stay byte-identical; the native
+broadcaster (R14) still sends no audio; the viewer is untouched.
+
+**The one thing the toggle was still load-bearing for** is field finding 1's
+error message: "turn off Enable audio and start again" was the only escape
+on a machine that cannot start a system-audio source, because the video-only
+retry needs its own transient activation and the picker has usually spent
+it. With no toggle that advice is unimplementable, so `capture.ts` now
+**remembers a refusal for the rest of the page session**: the first start
+may still die on `NotReadableError`, and the next one asks for video only
+and broadcasts. Deliberately *not* persisted — finding 1's device-state
+class is transient (a woken output endpoint, a tab share instead of a
+screen), so a reload earns a fresh audio attempt. The message now says
+"start the broadcast again to continue without audio", which is what the
+code does.
+
+| Goal | Verified by |
+|------|-------------|
+| No audio control exists in the broadcaster UI | `EncoderSettingsPanel` renders acceleration/bitrate/codec only; the whole `gawk-app` suite stays green with the store field deleted (52 files / 732 tests) |
+| The production broadcaster always requests system audio | `BROADCASTER_CAPTURE_CONFIG` is the single config object passed to both `createBroadcastSession` call sites |
+| A browser that cannot start an audio source still gets to broadcast | `capture.test.ts`: a refusal yields a video-only grant flagged `audioUnavailable`, and the **next** start asks `audio: false` in a single call — both new cases fail without the session memory (mutation-checked) |
+| `#/debug/*` behaviour unchanged | those surfaces still pass `DEFAULT_CAPTURE_CONFIG`, whose `audio` stays absent |
+| The R20 browser-broadcaster CI step survives always-on audio | tier-1 `node run.mjs --browser-broadcast` run locally: broadcaster LIVE, `audioState: "active"`, 274 Opus packets sent, viewer 60 fps, zero relay ingress loss. Headless tab capture *grants* audio, so that step now exercises the encode lane too — it is no longer only the video-only path |
 
 ## Verification plan (manual, after N6)
 

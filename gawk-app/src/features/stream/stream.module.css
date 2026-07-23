@@ -71,30 +71,6 @@
   opacity: 0.5;
 }
 
-/* R15: the audio toggle — an inline checkbox row, not a boxed text input. */
-.checkboxField {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.checkboxField label {
-  color: var(--text);
-  font-size: 0.85rem;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.checkboxField input {
-  accent-color: var(--text);
-}
-
-.fieldNote {
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
 /* R3 ladder picker: two compact selects, usable mid-broadcast. */
 .ladderPicker {
   display: flex;
