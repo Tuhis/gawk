@@ -425,6 +425,48 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   server/wire/broadcaster changes; no "governed by Resilient mode"
   annotation, because unlike the two pacing entries this toggle still does
   what it says under resilient mode),
+  `docs/28-native-broadcaster-audio.md` for R25 (native broadcaster audio:
+  **designed 2026-07-23, not started**; flips docs/20's "audio in the R14
+  native broadcaster" non-goal, which had already written down the shape.
+  R15 built the feature and only the *browser* got a producer — wire
+  0x07/0x08 live in the **shared Go** `gawk-server/wire`, the relay's
+  dispatch/cache/join-prime and the whole viewer path are engine-agnostic and
+  shipped, and R15's golden vectors were mirrored into `gawk-broadcast`'s
+  `wirecheck` ahead of need (docs/20 deviation 6). So this is a **producer
+  change and nothing else**: zero relay, wire, viewer and `gawk-app` changes.
+  Design: capture is **outside the portal** (ScreenCast carries no audio —
+  don't go looking for a flag) from the **default sink's monitor** via
+  PipeWire, which the portal already proves present; a **probed source
+  cascade** — `pipewiresrc` with `stream.capture.sink=true` first *because
+  WirePlumber follows the default sink*, so a headphone↔speaker switch
+  re-routes instead of erroring, then `pulsesrc @DEFAULT_MONITOR@`, then an
+  explicit device — and because an audio trial pops no picker it runs
+  **before** the portal handshake (the `EnsureBinary` ordering rule); encode
+  stays in **GStreamer** (Opus 48 kHz stereo, 20 ms, `dtx=false`,
+  `inband-fec=false`, forced `channels=2` — a 5.1 monitor would give
+  multistream Opus, undecodable by WebCodecs without the `OpusHead`
+  description R15 deliberately leaves empty), because cgo bindings would put
+  libopus headers on `gawk-pubsim`'s build path and break the R20 harness's
+  reason for existing; **audio muxes into the existing MPEG-TS** (verified:
+  `mpegtsmux` takes `audio/x-opus` and is `GstAggregator`-based, so it does
+  not hold audio hostage to damage-driven video) so that **one `ptsAnchor`
+  serves both media** — the load-bearing sync decision, since one PTS
+  timeline through one affine map makes relative A/V skew zero by
+  construction, where a second pipe (the pre-registered fallback:
+  `rtpopuspay timestamp-offset=0 ! rtpstreampay`) reintroduces a constant
+  unmeasurable lip-sync bias; audio is **subordinate** (no source ⇒
+  video-only and say so; a live failure naming an audio element ⇒ drop audio,
+  retry the same rung) and an **outer** cascade dimension, never per-rung
+  (that would be 18 attempts and a minute of startup); an *optional*
+  `AudioSource` interface keeps video-only a first-class shape, which is what
+  R20 tier-1's standing no-audio assertion needs; and `gawk-pubsim` gains a
+  **committed Opus fixture behind a default-off flag** so tier-1 exercises the
+  real engine send path while the no-audio pass keeps running. Chunks
+  **NA1–NA8**, NA1 an on-hardware spike that confirms or overturns the muxing
+  decision before NA3/NA4 are written; three facts are explicitly *unverified*
+  in the doc rather than assumed — the Opus-in-TS control-header layout,
+  `pipewiresrc`'s `stream.capture.sink` forwarding, and pipewire-pulse's
+  `@DEFAULT_MONITOR@`),
   `docs/27-ios-mse-fullscreen.md` for R22 (iOS native fullscreen via MSE:
   **designed 2026-07-23, spike-confirmed on iPhone the same day, not started**;
   supersedes R16's rejected native tier. R16's `VideoTrackGenerator`

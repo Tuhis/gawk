@@ -43,6 +43,7 @@ feature set exists).
 | R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔧 designed 2026-07-23, not started (MF1–MF5); MSE-backed native fullscreen **spike-confirmed on iPhone** — supersedes R16's rejected MediaStream tee ([docs/27](docs/27-ios-mse-fullscreen.md)) |
 | R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 📝 not designed, not started |
 | R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 💡 idea — not designed, no doc yet |
+| R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
 
 ---
 
@@ -1613,6 +1614,71 @@ architecture — this item ships *words*, not pipeline changes.
 **Status**: idea captured 2026-07-23, not designed. Prerequisite for it being
 worth much: R15's pending hardware re-verification, so the audio advice
 describes what actually happens today.
+
+---
+
+## R25 — Native broadcaster audio
+
+**Goal**: a Linux broadcaster running `gawk-broadcast` publishes **system
+audio** alongside their screen, and a viewer hears it in sync — with no
+viewer-side and no relay-side change of any kind. Audio is on by default and
+never costs a broadcast: a machine with no usable audio source publishes video
+exactly as it does today, and says so.
+
+**Why**: R15 built the audio feature; only the *browser* got a producer. The
+wire messages (0x07/0x08), the relay's dispatch and config cache, the viewer's
+decode → jitter buffer → AudioWorklet path, and nine field findings' worth of
+hardening are all engine-agnostic and already shipped. docs/20 recorded this as
+a non-goal *with the shape of the follow-up already written down* — "a
+GStreamer audio chain (`pipewiresrc`/`pulsesrc` → `opusenc`) emitting the same
+0x07/0x08 messages from the engine" — and even mirrored R15's golden vectors
+into `gawk-broadcast`'s `wirecheck` ahead of need. This is that follow-up, and
+it is a producer change and nothing else. Today the native broadcaster is the
+one way to stream from Linux with hardware encode, and it is silent.
+
+**Scope sketch** (full design in
+[`docs/28-native-broadcaster-audio.md`](docs/28-native-broadcaster-audio.md)):
+
+- **Capture is outside the portal.** The ScreenCast portal carries no audio;
+  system audio comes from the **default sink's monitor** via PipeWire (which
+  the portal already proves is present). The share picker stays video-only.
+- **A probed source cascade**, `pipewiresrc` with `stream.capture.sink=true`
+  first — because WirePlumber *follows* the default sink, so a headphone ↔
+  speaker switch re-routes instead of erroring — then `pulsesrc
+  @DEFAULT_MONITOR@`, then an explicit device. Same trial-then-believe pattern
+  as the encoder cascade, but the audio trial pops no picker, so it runs
+  **before** the portal handshake.
+- **Encode stays in GStreamer** (Opus 48 kHz stereo, 20 ms, DTX off,
+  128 kbps). Moving it into Go means cgo, which would put libopus headers on
+  `gawk-pubsim`'s build path and break the CI harness's whole reason for
+  existing.
+- **One child, one pipe: audio is muxed into the existing MPEG-TS.** Verified:
+  `mpegtsmux` takes `audio/x-opus` and is `GstAggregator`-based (so it does not
+  hold audio hostage to damage-driven video). The cost is teaching
+  `internal/mpegts` one more shape; the prize is the next bullet.
+- **One PTS anchor for both media** — the load-bearing sync decision. Both
+  media share one PTS timeline, so one anchor maps both with one affine
+  function and relative A/V skew is zero by construction, exactly as
+  `performance.now()` gives the browser. A second pipe (the pre-registered
+  fallback) would reintroduce a constant lip-sync bias nothing can measure.
+- **Audio never fails a broadcast**: no source ⇒ video-only and say so; a live
+  failure that names an audio element ⇒ drop audio and retry the same rung;
+  audio is an **outer** cascade dimension, never a per-rung one (that would be
+  18 attempts and a minute of startup).
+- **The CI fixture becomes audio-capable** — a committed Opus fixture behind a
+  default-off `gawk-pubsim` flag, so tier-1 exercises the real engine send path
+  while keeping the existing no-audio assertion running.
+
+Chunks **NA1–NA8** (two-letter prefix; A–Z claimed). NA1 is an on-hardware
+spike that confirms or overturns the muxing decision before NA3/NA4 are
+written. Designed 2026-07-23, not started.
+
+**Sequencing note**: the manual A/V pass should follow R15's pending hardware
+re-verification. The lip-sync criterion is measured with `avSkewMs`, which only
+became a lip-sync metric in docs/20 field finding 9 (before it, it read over
+2000 ms on a healthy session) — and that fix has not had its own field pass
+yet. Debugging a new audio lane through an unverified instrument would indict
+the wrong half.
 
 ---
 
