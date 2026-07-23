@@ -409,8 +409,21 @@ export class AudioJitterBuffer {
   private maybeRelease(): void {
     if (!this.priming || this.pending.length === 0) return;
     const oldest = this.pending[0]!;
-    if (this.alignOnSchedule && this.dueAtMs === null) {
-      this.dueAtMs = this.schedule()?.(oldest.timestampUs) ?? null;
+    // Re-read the schedule on every pass while priming, rather than latching
+    // the first answer. The release *is* the alignment decision, so the only
+    // schedule that may decide it is the one in force at that moment (docs/20
+    // field finding 9). Latching broke leaving Deep buffer: audio arrives at
+    // 50/s but the new session's video baseline only reaches the sink on the
+    // ~2 Hz stats tick, so the first post-flush chunk always latched the
+    // *outgoing* deep schedule, and the live one that arrived milliseconds
+    // later was never consulted — the buffer waited out the
+    // MAX_ALIGNMENT_HOLD_MS net and committed ~2.87 s behind a picture back at
+    // the live edge, permanently (alignment is a start-time decision). A
+    // momentarily absent schedule keeps the last known due time instead of
+    // clearing it, so the no-schedule depth-floor path is unchanged.
+    if (this.alignOnSchedule) {
+      const next = this.schedule()?.(oldest.timestampUs) ?? null;
+      if (next !== null) this.dueAtMs = next;
     }
     const nowMs = this.now();
     // The video schedule decides *lip sync* — when audio is heard relative to
