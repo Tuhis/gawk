@@ -28,8 +28,7 @@ import { AudioSink, audioSinkSupported } from './audioSink';
 import { AudioRateController, notePlayhead, resetAvSync } from '../../transport/av-sync';
 import { timeOriginMs } from '../../transport/time-sync';
 import {
-  DEFAULT_AUDIO_PROFILE,
-  RESILIENT_AUDIO_PROFILE,
+  audioProfileForDeliveryMode,
   type AudioBufferProfile,
 } from '../../transport/audio-buffer';
 import { useTransportStore } from '../../state/transportStore';
@@ -158,11 +157,11 @@ export function useViewerConnection(
   // at playback start, so this is the only lever left. Lives here because it
   // drives the sink, and is fed the skew the pipeline measures.
   const rateControllerRef = useRef(new AudioRateController());
-  // Read live by the sink's jitter buffer: resilient mode widens the audio
-  // envelope too, so the fallback depth floor is sized for a lossy link
-  // (docs/20 Decision 12).
-  const resilientRef = useRef(deliveryMode);
-  resilientRef.current = deliveryMode;
+  // Read live by the sink's jitter buffer: each delivery mode widens the audio
+  // envelope to match its video buffer, so the fallback depth floor is sized
+  // for the mode (docs/20 Decision 12; docs/26 for the Deep-buffer floor).
+  const deliveryModeRef = useRef(deliveryMode);
+  deliveryModeRef.current = deliveryMode;
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
   const volumeRef = useRef(volume);
@@ -174,8 +173,12 @@ export function useViewerConnection(
   const ensureSink = useCallback((): AudioSink | null => {
     if (sinkRef.current) return sinkRef.current;
     if (!audioSinkSupported()) return null;
+    // Three-valued: Deep buffer needs a floor at DVR_BUFFER_MS, not the
+    // resilient 500 ms — and a plain truthy check on the (now three-valued)
+    // mode always returned the resilient profile, even for live-edge (docs/26
+    // A/V field finding).
     const profile = (): AudioBufferProfile =>
-      resilientRef.current ? RESILIENT_AUDIO_PROFILE : DEFAULT_AUDIO_PROFILE;
+      audioProfileForDeliveryMode(deliveryModeRef.current);
     const sink = new AudioSink(
       {
         // R15 N5 (docs/20 Decision 10): the ~4 Hz playhead report reaches

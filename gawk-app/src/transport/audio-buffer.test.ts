@@ -8,10 +8,13 @@ import { describe, expect, it } from 'vitest';
 import {
   AudioJitterBuffer,
   DEFAULT_AUDIO_PROFILE,
+  DVR_AUDIO_PROFILE,
   MAX_ALIGNMENT_HOLD_MS,
   RESILIENT_AUDIO_PROFILE,
+  audioProfileForDeliveryMode,
   type AudioChunk,
 } from './audio-buffer';
+import { getDvrBufferMs } from '../config';
 
 const SAMPLE_RATE = 48000;
 // 20 ms Opus frames — the production cadence.
@@ -709,5 +712,87 @@ describe('AudioJitterBuffer gap lead budget', () => {
     ts += 2 * FRAME_US;
     buffer.push(chunk(ts));
     expect(emitted.slice(before).some(isSilence)).toBe(false);
+  });
+});
+
+// R21 Deep buffer (docs/26). In deep mode the video playhead sits DVR_BUFFER_MS
+// (`B`) behind live while audio still arrives ~live (audio is NOT in the relay
+// ring — docs/26 Decision 8/8a is unshipped), so the audio buffer must hold the
+// full `B` depth or audio plays ~B ahead of its video (docs/20 field finding 4:
+// video is the master clock, and alignment is a start-time decision that
+// buffering can never undo). docs/26's own acceptance note ("What the viewer
+// needs"): the audio depth ceiling AND the alignment-hold cap must both exceed
+// `B`. The R19 resilient profile (seed 500, max 2000) and MAX_ALIGNMENT_HOLD_MS
+// (3000) satisfy neither at B ≥ 3000.
+describe('AudioJitterBuffer deep-buffer alignment', () => {
+  it('audioProfileForDeliveryMode gives Deep buffer a floor at B, not the resilient 500 ms', () => {
+    const B = getDvrBufferMs();
+    const deep = audioProfileForDeliveryMode('deep');
+    // The depth floor (seed/min) must equal the video offset, else audio locks
+    // in ~B−500 ms ahead of video and the rate trim (±0.4 %) can never close it.
+    expect(deep.seedMs).toBe(B);
+    expect(deep.minMs).toBe(B);
+    expect(deep.maxMs).toBeGreaterThanOrEqual(B);
+    // And the other two points on the axis are unchanged — in particular
+    // live-edge must NOT inherit the resilient floor (the truthy-string bug: a
+    // three-valued mode read as a boolean is always truthy).
+    expect(audioProfileForDeliveryMode('resilient')).toBe(RESILIENT_AUDIO_PROFILE);
+    expect(audioProfileForDeliveryMode('live')).toBe(DEFAULT_AUDIO_PROFILE);
+  });
+
+  it('holds audio to the deep floor when the video schedule has not arrived yet', () => {
+    // The realistic startup race: the schedule reaches the sink only on the
+    // ~2 Hz stats tick, the worklet often boots faster, and audio arrives ahead
+    // of video — so the first release is gated by the depth floor alone. It must
+    // be B, not 500 ms.
+    const emitted: AudioChunk[] = [];
+    const B = getDvrBufferMs();
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DVR_AUDIO_PROFILE, {
+      now: () => 1000,
+      schedule: () => null,
+    });
+    // 500 ms — the old resilient floor — must NOT be enough to start playback.
+    for (let i = 0; i * 20 < 500; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted).toHaveLength(0);
+    // Fill up to (but not across) B: still holding, no shedding.
+    const chunksUnderB = Math.ceil(B / 20) - 1; // last count with < B ms of audio
+    for (let i = 25; i < chunksUnderB; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted).toHaveLength(0);
+    // The chunk that reaches B releases the whole cushion, establishing a ~B
+    // sink depth — the cushion the resilient floor could never build.
+    buffer.push(chunk(chunksUnderB * FRAME_US));
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(buffer.getStats().bufferedMs).toBeGreaterThanOrEqual(B);
+    expect(buffer.getStats().overflowDrops).toBe(0);
+  });
+
+  it('does not release before a deep schedule is due, even when B exceeds the old 3000 cap', () => {
+    // B = 5000 > the historical MAX_ALIGNMENT_HOLD_MS of 3000 and its priming
+    // ceiling. With the old cap the buffer sheds/escapes at ~3000 ms and audio
+    // ends up ~2 s ahead of a 5 s-delayed video. The cap must track the profile.
+    const B = 5000;
+    const deepProfile = { seedMs: B, minMs: B, maxMs: B };
+    const emitted: AudioChunk[] = [];
+    const clock = { t: 1000 };
+    // Video for timestamp T presents at 1000 + B + T/1000 (B behind live).
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), deepProfile, {
+      now: () => clock.t,
+      schedule: () => (ts: number) => 1000 + B + ts / 1000,
+    });
+    // Feed audio in real time. It must stay held the whole way to the schedule.
+    for (let i = 0; clock.t < 1000 + B; i++) {
+      buffer.push(chunk(i * FRAME_US));
+      clock.t = 1000 + i * 20;
+      if (clock.t < 1000 + B - 40) {
+        expect(emitted).toHaveLength(0);
+        expect(buffer.getStats().overflowDrops).toBe(0);
+      }
+    }
+    // Once due, it releases with a hold ≈ B — aligned with the video playhead.
+    clock.t = 1000 + B;
+    buffer.tick();
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(buffer.getStats().alignmentHoldMs).toBeGreaterThanOrEqual(B - 100);
+    expect(buffer.getStats().overflowDrops).toBe(0);
   });
 });
