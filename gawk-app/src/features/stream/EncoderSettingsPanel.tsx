@@ -41,8 +41,6 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
   const hwPreference = useBroadcastSettingsStore((s) => s.hwPreference);
   const bitrateOverride = useBroadcastSettingsStore((s) => s.bitrateOverride);
   const codecOverride = useBroadcastSettingsStore((s) => s.codecOverride);
-  const audioEnabled = useBroadcastSettingsStore((s) => s.audioEnabled);
-  const setAudioEnabled = useBroadcastSettingsStore((s) => s.setAudioEnabled);
   // The codec annotations answer "what would pinning this codec get at the
   // *current* resolution/fps selections" — so they follow the pickers live.
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
@@ -116,27 +114,10 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
           })}
         </select>
       </div>
-      {/* R15 (docs/20): not part of EncoderSettings — the toggle is read at
-          broadcast start (getDisplayMedia can't add an audio track without
-          re-prompting), so no onChange emit. */}
-      <div className={styles.checkboxField}>
-        <label htmlFor="audio-enabled">
-          <input
-            id="audio-enabled"
-            type="checkbox"
-            checked={audioEnabled}
-            onChange={(e) => setAudioEnabled(e.target.checked)}
-          />
-          Enable audio (experimental)
-        </label>
-        {/* Not decoration: when the browser can't start a system-audio source
-            it refuses the whole grant, video included (capture.ts retries
-            video-only). Sharing a tab is the path that works everywhere. */}
-        <span className={styles.fieldNote}>
-          Applies when the broadcast starts. If the browser can't capture system audio, the
-          broadcast continues video-only — sharing a tab with its audio is the reliable path.
-        </span>
-      </div>
+      {/* R15's "Enable audio (experimental)" checkbox lived here until
+          2026-07-23. System audio is on unconditionally now — there is
+          nothing to configure, and a browser that can't start a source is
+          handled in capture.ts, not by asking the broadcaster. */}
     </div>
   );
 }

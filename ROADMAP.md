@@ -867,8 +867,11 @@ concealed as brief silence, never as growing delay. Ships as an
 **experimental, default-off** feature — an "Enable audio (experimental)"
 toggle in the broadcaster's advanced settings; the viewer surfaces audio
 controls (mute/volume, overlay Audio section) only when audio is actually
-received in the stream. Graduation to default-on is a later explicit
-decision.
+received in the stream. **Graduated 2026-07-23** (user decision, docs/20
+"Graduation"): the toggle is removed and the broadcaster requests system
+audio on every start — a browser that can't start a source broadcasts
+video-only, and `capture.ts` remembers that refusal for the page session so
+the next start needs no user intervention.
 
 **Why now**: the last big missing piece of the actual watching experience —
 R6 reserved the volume-control slot and docs/15 reserved the clock story for
@@ -894,9 +897,9 @@ WebCodecs over datagrams** — chosen over Opus-over-reliable-streams
   shared-clock anchor → `AudioEncoder` → datagrams), audio processing off
   (game audio, not voice); no-audio-track (Firefox, unchecked picker box) is
   a graceful video-only state; worker path transfers the audio clone beside
-  the video clone. The toggle applies on the next broadcast start — the one
-  R13 live-apply exception, forced by `getDisplayMedia` (an audio track
-  can't be conjured without re-prompting).
+  the video clone. Audio is decided at broadcast start, never mid-stream —
+  the one R13 live-apply exception, forced by `getDisplayMedia` (an audio
+  track can't be conjured without re-prompting).
 - **Viewer**: demux in the reassembler; `AudioDecoder` in the viewer worker;
   decoded `AudioData` transferred to a main-thread `AudioWorklet` ring
   buffer (`AudioContext` can't live in a worker — the first deliberate
@@ -934,8 +937,14 @@ because the display target and the release gate ran off different clocks; the
 jitter buffer's target was an overflow ceiling with no floor, so the sink
 played at ~0 ms depth; and — owner decision — **Decision 10 inverted to
 video-master**, audio aligned at start to the video schedule with a
-sub-audible rate trim for drift. Automated gates green in all three modules.
-**Hardware re-verification of all four is pending**; deviations recorded in
+sub-audible rate trim for drift. Five more followed through 2026-07-23
+(audio taken back off the R19 reliable carrier, a live-edge buffer-depth
+floor, honest depth accounting with worklet-stall recovery, the
+overflow-drop-vs-concealment fight plus the context's real sample rate, and
+`avSkewMs` measuring buffering rather than lip-sync) — all fixed, and the
+owner reports audio playing reliably as of 2026-07-23, which graduated it
+out of experimental. Automated gates green in all three modules; the formal
+docs/20 verification-plan pass has not been re-run. Deviations recorded in
 docs/20 "Implementation status".
 
 ---

@@ -189,8 +189,9 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   implemented 2026-07-15, automated gates green, manual verify on the
   gaming PC done 2026-07-19 (hardware encode/portal/GUI — not CI-reachable);
   V8 gated on V2's on-hardware Vulkan result, not started**),
-  `docs/20-system-audio.md` for R15 (system audio, **experimental,
-  default-off**: Opus/WebCodecs over datagrams — one Opus packet per
+  `docs/20-system-audio.md` for R15 (system audio, **always on since
+  2026-07-23** — shipped experimental/default-off, graduated by removing
+  the toggle outright: Opus/WebCodecs over datagrams — one Opus packet per
   datagram, new wire types 0x07/0x08 + hub audio-config cache, viewer-worker
   decode with a main-thread AudioWorklet sink, good-enough A/V sync
   (shared capture clock, adaptive audio jitter buffer, **video-master**
@@ -902,14 +903,23 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    doc's Deferred section; don't re-derive it. Not a
    container/chart/CI-deploy component — binaries you run on your own PC.
 20. System audio — **designed 2026-07-15 (N1–N6); refreshed 2026-07-19
-   against R16–R20; N1–N6 implemented 2026-07-19, automated gates green,
-   manual browser verify pending — audio has never played on real
-   hardware** (R15,
-   `docs/20-system-audio.md`). **Experimental, default-off**: an "Enable
-   audio (experimental)" toggle in the broadcaster's advanced settings
-   (off ⇒ `audio: false`, byte-identical to today), and the viewer shows
-   audio controls (mute/volume, overlay Audio section) **only when audio is
-   actually received**. Direction (settled over reliable-stream Opus, raw
+   against R16–R20; N1–N6 implemented 2026-07-19, automated gates green;
+   nine hardware field findings fixed 2026-07-19→07-23, and the owner
+   reports audio working reliably as of 2026-07-23 — which is what
+   graduated it from experimental (below)** (R15,
+   `docs/20-system-audio.md`). Shipped **experimental, default-off** behind
+   an "Enable audio (experimental)" toggle; **graduated 2026-07-23 (user
+   decision, docs/20 "Graduation") by removing that toggle** — the
+   production broadcaster now requests system audio on every start
+   (`BROADCASTER_CAPTURE_CONFIG` in `BroadcasterScreen`), the store field
+   and its `gawk.audioEnabled` key are gone, and the frozen `#/debug/*`
+   surfaces keep plain `DEFAULT_CAPTURE_CONFIG` (audio absent). Because the
+   toggle was also field finding 1's only escape hatch, `capture.ts` now
+   **remembers an audio-source refusal for the page session** — the first
+   start can still die on `NotReadableError`, the next asks video-only and
+   broadcasts; not persisted, so a reload retries audio. The viewer still
+   shows audio controls (mute/volume, overlay Audio section) **only when
+   audio is actually received**. Direction (settled over reliable-stream Opus, raw
    PCM, and MediaRecorder+MSE alternatives): **Opus via WebCodecs over
    datagrams** — 48 kHz stereo, 128 kbps, 20 ms frames ≈ 320 B, so **one
    Opus packet per datagram** (no chunking/reassembly/keyframes/reliable
@@ -923,8 +933,8 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `BroadcastPipeline` (processing off — game audio, not voice);
    no-audio-track = graceful video-only (Firefox broadcasters, unchecked
    picker box); worker path transfers the audio `track.clone()` beside the
-   video clone. **The toggle applies on the next broadcast start** — the
-   one R13 live-apply exception, forced by `getDisplayMedia` (an audio
+   video clone. **Audio is decided at broadcast start, never mid-stream** —
+   the one R13 live-apply exception, forced by `getDisplayMedia` (an audio
    track can't be added without re-prompting). Viewer: `AudioDecoder` in
    the viewer worker, decoded `AudioData` **transferred to a main-thread
    `AudioWorklet` ring buffer** (`AudioContext` can't live in a worker —
@@ -954,8 +964,7 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    symmetric bound late-dropped forever after a short-session restart); and
    the audio buffer's profile re-seed is keyed on **profile identity, not
    value range** (the default and resilient envelopes overlap at 150 ms).
-   **Manual browser verification is pending** — audio has never played on
-   real hardware. **Field finding 1 (2026-07-19, docs/20)**: the first
+   **Field finding 1 (2026-07-19, docs/20)**: the first
    real-hardware attempt never reached the audio code — `getDisplayMedia`
    audio is **all-or-nothing in Chromium**: when the browser can't start a
    system-audio source it rejects the *whole* request with
@@ -1089,7 +1098,9 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    *refused* (which used to take the whole stream video-only), and no
    main-thread code converts frames to ms any more. New overlay rows: **Sink
    rate** (annotated `(resampling)`) and **Gaps filled / skipped**.
-   **Hardware re-verification of all eight findings pending.**
+   **Owner verdict 2026-07-23: with all findings fixed, audio plays
+   reliably on real hardware** — the basis for the graduation above; the
+   formal docs/20 verification-plan pass is still not re-run.
 21. iOS native fullscreen — **U1–U3 implemented 2026-07-16 (automated gates
    green); U4 verdict 2026-07-19: the native path still does not work on
    iPhone — `webkitEnterFullscreen` enters but shows a black video across

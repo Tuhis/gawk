@@ -64,8 +64,27 @@ export interface DisplayStreamGrant {
 // made the experimental audio toggle a broadcast-killer, which docs/20
 // Decision 6 forbids ("audio may annotate, never abort"). So: ask again
 // without audio, and remember that we had to.
+//
+// 2026-07-23 (docs/20): that toggle is gone — the broadcaster always asks for
+// system audio — so the refusal path needs the escape hatch the toggle used
+// to be. The retry below needs its own transient activation and usually has
+// none left, which left the broadcast dead with "turn the toggle off" as the
+// only way out. A refusal is now remembered for the rest of the page session:
+// the next start asks for video only and succeeds. Deliberately NOT persisted
+// — finding 1's device-state class is transient (a woken output endpoint, a
+// tab share instead of a screen), so a reload earns a fresh audio attempt.
+let audioSourceRefused = false;
+
 export async function acquireDisplayStream(config: CaptureConfig): Promise<DisplayStreamGrant> {
-  if (!config.audio) return { ...(await requestDisplayStream(config, false)), audioUnavailable: false };
+  if (!config.audio || audioSourceRefused) {
+    return {
+      ...(await requestDisplayStream(config, false)),
+      // Two different silences: the caller asked for none, versus this
+      // browser already proved it cannot start a source. Only the second is
+      // 'unavailable' on the overlay.
+      audioUnavailable: Boolean(config.audio) && audioSourceRefused,
+    };
+  }
 
   try {
     return { ...(await requestDisplayStream(config, true)), audioUnavailable: false };
@@ -75,6 +94,10 @@ export async function acquireDisplayStream(config: CaptureConfig): Promise<Displ
     // about telling "the server said no" from "the user said no" applies to
     // capture too.
     if (!isSourceStartFailure(e)) throw e;
+    // Set before the retry, so it holds whichever way the retry lands: this
+    // browser cannot start an audio source, and the next start must not
+    // spend its one grant finding that out again.
+    audioSourceRefused = true;
     log.warn('Capture with audio was refused; retrying video-only:', e);
     try {
       return { ...(await requestDisplayStream(config, false)), audioUnavailable: true };
@@ -82,13 +105,14 @@ export async function acquireDisplayStream(config: CaptureConfig): Promise<Displ
       // The usual landing spot: getDisplayMedia needs transient activation
       // and the seconds the user spent in the picker have already spent it,
       // so the retry cannot re-prompt. Surface the original cause plus the
-      // way out — the retry's activation complaint would only mislead.
+      // way out — the retry's activation complaint would only mislead. The
+      // way out is now simply "start again": the refusal recorded above makes
+      // the next attempt a video-only one.
       log.warn('Video-only retry after the audio refusal also failed:', retryError);
       throw new Error(
         `${e instanceof Error ? e.message : String(e)} — capture was requested with audio. ` +
           'Chromium can only capture system audio on Windows/ChromeOS, or from a shared tab ' +
-          'with "share tab audio" checked. Turn off "Enable audio (experimental)" in the ' +
-          'broadcaster settings and start again.',
+          'with "share tab audio" checked. Start the broadcast again to continue without audio.',
         { cause: e },
       );
     }

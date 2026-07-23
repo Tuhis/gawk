@@ -12,7 +12,7 @@ import { BroadcastStartError, type BroadcastSessionLike, type BroadcastStats } f
 import { createBroadcastSession } from './workerBroadcastSession';
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
-import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
+import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
 import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { useTransportStore } from '../../state/transportStore';
 import { isDevEnvironment, requiresPublishSecret } from '../../config';
@@ -24,6 +24,14 @@ import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
 
 type Status = 'idle' | 'connecting' | 'broadcasting' | 'reconnecting' | 'stopping' | 'error';
+
+// R15 (docs/20): system audio is unconditional on the production broadcaster
+// since 2026-07-23 — the experimental toggle is gone. capture.ts owns the
+// degradation (a browser that can't start a source gets a video-only grant,
+// reported as audioState 'unavailable'), so there is nothing to decide here.
+// The frozen `#/debug/*` surfaces keep plain DEFAULT_CAPTURE_CONFIG — audio
+// absent — and stay byte-identical.
+const BROADCASTER_CAPTURE_CONFIG: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG, audio: true };
 
 function selectionLabel(selection: ResolutionSelection): string {
   if (selection === 'auto') return 'auto';
@@ -134,7 +142,7 @@ export function BroadcasterScreen() {
       },
     });
 
-    const { resolutionSelection: res, framerateSelection, audioEnabled } =
+    const { resolutionSelection: res, framerateSelection } =
       useBroadcastSettingsStore.getState();
     let activeId = broadcastId;
     let triedReclaim = false;
@@ -143,9 +151,7 @@ export function BroadcasterScreen() {
       triedReclaim = true;
       setStatus('connecting');
       const pipeline = await createBroadcastSession(
-        // R15: the audio toggle is snapshot here — applies on the next
-        // broadcast start, never mid-stream (docs/20 Decision 6).
-        { ...DEFAULT_CAPTURE_CONFIG, audio: audioEnabled },
+        BROADCASTER_CAPTURE_CONFIG,
         serverUrl,
         // R17 W2: the reclaim needs the resume token from the prior session.
         { certHashHex, publishSecret, resumeToken: resumeTokenRef.current ?? undefined },
@@ -181,7 +187,7 @@ export function BroadcasterScreen() {
 
     setStatus('connecting');
     const pipeline = await createBroadcastSession(
-      { ...DEFAULT_CAPTURE_CONFIG, audio: audioEnabled },
+      BROADCASTER_CAPTURE_CONFIG,
       serverUrl,
       { certHashHex, publishSecret },
       makeCallbacks(triedReclaim),
