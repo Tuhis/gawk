@@ -443,6 +443,22 @@ DV5 is separable and may be declined, DV6 closes it.
 | DV5 | **done** — audio ring on its own stream, cursor held to the video cursor |
 | DV6 | not started (hardware verification + tuning) |
 
+**Field finding 1 (2026-07-23, hardware): a DVR subscriber must be excluded
+from the LIVE keyframe paths.** `onKeyframe`'s fan-out and the join prime both
+send the *current* keyframe to every subscriber. For a cursor sitting seconds
+behind live that is a second, contradictory timeline — the viewer's reorder
+buffer sees frameIds jump forward to live and back to the cursor, parks in
+waiting-for-keyframe and ages out every delta. **Video freezes completely while
+every counter says data is arriving**, which is the most misleading shape this
+failure could have taken.
+
+The client's own numbers named it before any server capture was needed:
+`keyframeStreamsReceived` climbing at ~2x the `carrierStreams` rate, i.e. two
+keyframes per 500 ms GOP, with `decoderFps` 0 and `reorderKeyframeWaitDrops`
+climbing at the full frame rate. Worth remembering as a diagnostic: **in DVR
+mode those two counters must climb at the same rate**, one keyframe and one
+carrier per GOP. Any ratio other than 1:1 means two timelines.
+
 Deviations worth knowing before touching this:
 
 - **The drain waits on a failed write; it does not skip.** The first version
