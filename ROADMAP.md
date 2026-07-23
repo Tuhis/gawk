@@ -42,6 +42,7 @@ feature set exists).
 | R21 | [Relay DVR ring buffer for resilient mode](#r21--relay-dvr-ring-buffer-for-resilient-mode) | 🔧 designed 2026-07-23, not started (DV1–DV6) ([docs/26](docs/26-relay-dvr-buffer.md)) |
 | R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔧 designed 2026-07-23, not started (MF1–MF5); MSE-backed native fullscreen **spike-confirmed on iPhone** — supersedes R16's rejected MediaStream tee ([docs/27](docs/27-ios-mse-fullscreen.md)) |
 | R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 📝 not designed, not started |
+| R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 💡 idea — not designed, no doc yet |
 
 ---
 
@@ -1548,6 +1549,70 @@ deployment concern.
 **Status**: not designed, not started. Would get the next doc number in the
 `docs/NN-*.md` series and a chunk prefix following R22's two-letter
 convention (`MF` is claimed).
+
+---
+
+## R24 — Broadcaster capture & audio guidance
+
+**Goal**: the broadcaster surface tells a first-time streamer *what to pick in
+the share picker and why*, in a few short lines they read once — **whole
+screen vs. a single window**, and **how to actually get audio through**. Today
+both are tribal knowledge: the UI offers the browser's picker and says nothing,
+so a broadcaster picks a window, alt-tabs out of their game, and streams a
+frozen rectangle — or ticks "Enable audio", picks a window, and gets silence
+(or a broadcast that refuses to start at all).
+
+**Why**: these are the two most common self-inflicted broadcast failures, and
+both are *documented* — in `CLAUDE.md`, in
+[docs/20 field finding 1](docs/20-system-audio.md) — nowhere the person
+starting a broadcast will ever look. The facts are settled; what's missing is
+that they reach the surface where the decision is made. It is also the cheapest
+possible follow-up to R15: the audio path's dominant failure mode is not a bug
+we can fix in code, it is a picker choice made without information.
+
+**Scope sketch** (no design doc yet — it should get one if it grows past
+static copy):
+
+- **Whole screen vs. window** — whole screen is the recommended default:
+  exclusive-fullscreen games are frequently *not* capturable as a window, and
+  a window share stops updating (or shows nothing) the moment the game is
+  alt-tabbed, minimized, or renders through an overlay. Window share is the
+  right pick when the broadcaster deliberately wants to show one app and keep
+  the rest of the desktop private.
+- **How to share audio** — the two-step nature is the whole point: the
+  broadcaster must enable audio in gawk's advanced settings **and** tick the
+  picker's "Share system audio" / "Share tab audio" checkbox; the checkbox is
+  what the OS actually acts on. Worth stating plainly:
+  - audio is **experimental and off by default**, and the toggle applies at
+    the **next broadcast start** (`getDisplayMedia` can't add an audio track
+    without re-prompting — the one R13 live-apply exception);
+  - **system audio is Chromium-on-Windows in practice**; Linux and macOS
+    screen/window shares have no loopback source at all;
+  - **a tab share carries tab audio everywhere** (internal mirroring, no OS
+    loopback involved) — the reliable fallback, and the way to sanity-check
+    that audio works at all;
+  - Chromium's audio request is **all-or-nothing**: if the audio source can't
+    start, the *entire* capture fails (`NotReadableError`). The pipeline
+    already retries once without audio and reports `audioState:
+    'unavailable'`, so the UI has a truthful signal to explain rather than a
+    mystery.
+- **Placement**: near the start-broadcast control (before the picker opens —
+  after it, the advice arrives too late to act on) and echoed compactly in the
+  advanced settings' audio row. Short, skimmable, dismissible; not a wizard,
+  not a modal wall of text.
+- **Reactive follow-up (small)**: when a broadcast ends up video-only after
+  the audio retry, or capture dimensions suggest a window share went static,
+  say so where the broadcaster can see it — the guidance is most useful
+  *after* the mistake, not only before it.
+
+**Non-goals**: platform detection heuristics that promise more than we can
+verify; automating the picker (browsers deliberately don't allow it);
+per-OS screenshot walkthroughs to maintain; re-litigating R15's audio
+architecture — this item ships *words*, not pipeline changes.
+
+**Status**: idea captured 2026-07-23, not designed. Prerequisite for it being
+worth much: R15's pending hardware re-verification, so the audio advice
+describes what actually happens today.
 
 ---
 
