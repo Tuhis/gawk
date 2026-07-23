@@ -117,6 +117,13 @@ type Config struct {
 	// protects the pod, since 3 s of a 50 Mbps broadcaster is 18 MB.
 	DVRWindow   time.Duration
 	DVRMaxBytes int
+	// DVRMaxCatchup caps a recovering DVR subscriber's send rate as a multiple
+	// of the broadcast's own bitrate. Negative disables the ceiling.
+	DVRMaxCatchup float64
+	// DVRAudio puts audio in the ring too. On by default: a video-only DVR
+	// fixes the picture and leaves the sound full of holes, which is the half
+	// users notice. Off restores docs/20 field finding 5's behaviour exactly.
+	DVRAudio bool
 
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
@@ -129,6 +136,21 @@ type Config struct {
 // ParseFlags parses args (without the program name) into a Config.
 // getenv supplies environment lookups, injectable for tests.
 func ParseFlags(args []string, getenv func(string) string) (Config, error) {
+	// envBool reads a boolean env var that defaults to TRUE. The plain
+	// `env(...) == "true"` idiom the default-false flags use cannot express
+	// that: an unset variable and an explicit "false" both read as empty
+	// there, so a default-true flag written that way could never be turned
+	// off. Uses the injected getenv like env does, so tests can drive it.
+	envBool := func(key string, def bool) bool {
+		switch strings.ToLower(strings.TrimSpace(getenv(key))) {
+		case "true", "1", "yes":
+			return true
+		case "false", "0", "no":
+			return false
+		default:
+			return def
+		}
+	}
 	env := func(key, def string) string {
 		if v := getenv(key); v != "" {
 			return v
@@ -180,6 +202,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"R21 DVR ring depth per broadcast: how long a stall a resilient viewer can ride out")
 	dvrMaxBytes := fs.String("dvr-max-bytes", env("GAWK_DVR_MAX_BYTES", "25165824"),
 		"maximum bytes one broadcast's DVR ring may retain (default 24 MiB)")
+	dvrMaxCatchup := fs.String("dvr-max-catchup", env("GAWK_DVR_MAX_CATCHUP", "4"),
+		"how much faster than live a recovering DVR subscriber may send, as a multiple of the broadcast bitrate; negative disables")
+	dvrAudio := fs.Bool("dvr-audio", envBool("GAWK_DVR_AUDIO", true),
+		"put audio in the DVR ring too, on its own stream (R21 DV5); off leaves audio live-edge")
 	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
@@ -267,6 +293,16 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if err != nil || dvrBytes < 1 {
 		return Config{}, fmt.Errorf("invalid dvr-max-bytes %q: want a positive integer", *dvrMaxBytes)
 	}
+	dvrCatchup, err := strconv.ParseFloat(*dvrMaxCatchup, 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid dvr-max-catchup %q: want a number", *dvrMaxCatchup)
+	}
+	if dvrCatchup >= 0 && dvrCatchup < 1 {
+		// Below 1x the ceiling would throttle a subscriber BELOW live and
+		// manufacture the backlog it exists to bound — always an operator
+		// mistake, never a policy.
+		return Config{}, fmt.Errorf("invalid dvr-max-catchup %q: want >= 1 (or negative to disable)", *dvrMaxCatchup)
+	}
 	mAddr := strings.TrimSpace(*metricsAddr)
 	if strings.EqualFold(mAddr, "off") {
 		mAddr = ""
@@ -314,6 +350,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		KeyframeWriteTimeout: kfWriteTimeout,
 		DVRWindow:            dvrWin,
 		DVRMaxBytes:          dvrBytes,
+		DVRMaxCatchup:        dvrCatchup,
+		DVRAudio:             *dvrAudio,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,

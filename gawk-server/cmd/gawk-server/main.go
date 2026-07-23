@@ -72,6 +72,8 @@ func run() error {
 		"keyframe_write_timeout", cfg.KeyframeWriteTimeout,
 		"dvr_window", cfg.DVRWindow,
 		"dvr_max_bytes", cfg.DVRMaxBytes,
+		"dvr_max_catchup", cfg.DVRMaxCatchup,
+		"dvr_audio", cfg.DVRAudio,
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
@@ -177,6 +179,8 @@ func registryOptions(cfg config.Config) hub.Options {
 		MaxKeyframeBytes:     cfg.MaxKeyframeBytes,
 		KeyframeWriteTimeout: cfg.KeyframeWriteTimeout,
 		DVR:                  hub.DVROptions{Window: cfg.DVRWindow, MaxBytes: cfg.DVRMaxBytes},
+		DVRMaxCatchup:        cfg.DVRMaxCatchup,
+		DVRAudio:             cfg.DVRAudio,
 		StatsKey:             cfg.StatsKey,
 	}
 }

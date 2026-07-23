@@ -403,9 +403,9 @@ DV5 is separable and may be declined, DV6 closes it.
 | wire | **done** — `TypeDeliveryAck` 0x0C, 5 B, mirrored in all three homes with identical golden vectors |
 | DV1 | **done** — `internal/hub/dvr.go`, race-clean under concurrent append + 4 readers |
 | DV2 | **done** — cursor drain, with a same-conditions R19 control proving the difference |
-| DV3 | **done except the catch-up ceiling** — negotiation, ack, knobs flag→env→chart→`registryOptions`, viewer request + grant |
+| DV3 | **done** — negotiation, ack, knobs flag→env→chart→`registryOptions`, viewer request + grant, catch-up ceiling |
 | DV4 | **done** — cursor-progress eviction, `/statusz` + Prometheus + playbook rows |
-| DV5 | not started (audio ring) |
+| DV5 | **done** — audio ring on its own stream, cursor held to the video cursor |
 | DV6 | not started (hardware verification + tuning) |
 
 Deviations worth knowing before touching this:
@@ -427,6 +427,25 @@ Deviations worth knowing before touching this:
 - **The viewer applies the deeper floor only on a granted ack**, never on
   request. Against a relay that cannot keep it filled a deep buffer is pure
   latency. The grant resets on every reconnect.
+- **The catch-up ceiling is a multiple of the broadcast's own bitrate**
+  (`-dvr-max-catchup`, default **4x**), estimated from the ring itself — bytes
+  over the span they cover, so no extra bookkeeping. Two deliberate
+  non-throttles: a non-positive multiple disables it, and an unknown live rate
+  (under 500 ms of history) passes everything, because guessing low on a fresh
+  broadcast would stall every viewer on it. One bucket per *subscriber* shared
+  by both its drains — splitting it per lane would let one viewer draw 2x the
+  configured multiple. Values in [0, 1) are rejected at parse: below live the
+  ceiling would manufacture the backlog it exists to bound.
+- **The audio ring uses the same carrier framing on its own stream.** Records
+  are audio datagrams behind the ordinary 0x0A prologue, so the viewer's
+  existing datagram path routes them by type and needs **no changes at all** —
+  and QUIC stream independence is what keeps docs/20 finding 5's head-of-line
+  blocking away. No rotation: audio has no GOPs, and a resync is a timestamp
+  discontinuity the jitter buffer already handles.
+- **The audio cursor is paced off an atomic, not off the video cursor.**
+  `dvrCursor` is owned by the video drain goroutine; the audio drain reads a
+  published `dvrCursorAtMs` instead. Reading the cursor directly is a data race
+  and `-race` caught it — do not "simplify" it back.
 
 ## Verification plan
 

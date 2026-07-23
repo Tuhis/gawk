@@ -146,6 +146,14 @@ const MinDVRBufferMs = 1000
 // merely riding out a bad minute is never caught by it.
 const DefaultDVRProgressTimeout = 30 * time.Second
 
+// DefaultDVRMaxCatchup is how much faster than live a recovering DVR
+// subscriber may send. Covering a stall S with buffer B needs B/(B−S) times
+// the stream bitrate (docs/26 Decision 6), so 4x carries a 2 s stall on a
+// 2.67 s buffer — comfortably inside the 3 s default window and buffer —
+// while still bounding a herd that recovers together after one shared network
+// event. A negative value disables the ceiling.
+const DefaultDVRMaxCatchup = 4.0
+
 // ViewerCountInterval paces the R18 count pump (docs/23 Decision 4): one
 // recompute-and-emit pass per tick, which is also what makes a reconnect
 // storm structurally unable to spam clients — emits can never exceed
@@ -211,6 +219,16 @@ type Options struct {
 	// DVR bounds the R21 per-broadcast ring (docs/26). Only allocated for
 	// broadcasts that actually have a DVR subscriber.
 	DVR DVROptions
+
+	// DVRAudio puts audio in the ring too (docs/26 Decision 8). Off leaves
+	// audio on the live-edge sideband, which is docs/20 field finding 5's
+	// behaviour exactly.
+	DVRAudio bool
+
+	// DVRMaxCatchup caps how much faster than live a recovering DVR subscriber
+	// may send, as a multiple of the broadcast's own bitrate (docs/26
+	// Decision 6). Negative disables the ceiling.
+	DVRMaxCatchup float64
 
 	// DVRProgressTimeout is how long a DVR subscriber may make no progress at
 	// all before it is evicted (docs/26 Decision 9). Health in this mode is
@@ -540,6 +558,8 @@ type broadcastHub struct {
 	// dvr is this broadcast's R21 window, nil until a DVR subscriber joins
 	// (docs/26 Decision 11) and shared by every one of them.
 	dvr *DVRRing
+	// dvrAudio is the same window for the audio lane, allocated beside it.
+	dvrAudio *DVRAudioRing
 	// Count-pump emit tracking (origin hubs only): the last count pushed and
 	// when, making emits change-driven with a keepalive re-send (Decision 4).
 	lastViewerCount        uint32
@@ -620,6 +640,9 @@ func (l *bandwidthLimiter) consume(n int) bool {
 func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	if opts.MaxSubscribers <= 0 {
 		opts.MaxSubscribers = 15
+	}
+	if opts.DVRMaxCatchup == 0 {
+		opts.DVRMaxCatchup = DefaultDVRMaxCatchup
 	}
 	if opts.DVRProgressTimeout <= 0 {
 		opts.DVRProgressTimeout = DefaultDVRProgressTimeout
@@ -1231,6 +1254,9 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		// pays nothing, and one DVR viewer's ring serves every later joiner.
 		if b.dvr == nil {
 			b.dvr = NewDVRRing(r.opts.DVR)
+			if r.opts.DVRAudio {
+				b.dvrAudio = NewDVRAudioRing(r.opts.DVR)
+			}
 			// Seed from the cached keyframe so a joiner has a decodable entry
 			// point immediately, exactly as the join prime does.
 			if b.cachedKeyframe != nil {
@@ -1241,6 +1267,11 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		s.dvrBufferMs = so.bufferMs
 		s.dvrCursor = b.dvr.NewCursor()
 		s.dvrStop = make(chan struct{})
+		s.dvrPace = newDVRPacer(r.opts.DVRMaxCatchup, time.Now)
+		if b.dvrAudio != nil {
+			s.dvrAudio = b.dvrAudio
+			s.dvrAudioCur = b.dvrAudio.Newest()
+		}
 	}
 	b.subs[s] = struct{}{}
 	go s.drain()
@@ -1902,6 +1933,16 @@ func (p *Publisher) Close() {
 	}
 }
 
+// cachedAudioConfigSnapshot returns the latest AudioConfig datagram for the
+// audio DVR's resync re-emit. Under the registry lock: the drain reads it from
+// its own goroutine.
+func (b *broadcastHub) cachedAudioConfigSnapshot() []byte {
+	r := b.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return b.cachedAudioConfig
+}
+
 func (b *broadcastHub) countBad() {
 	r := b.registry
 	r.mu.Lock()
@@ -1958,6 +1999,9 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	// never delayed by the depth of its video cursor.
 	if b.dvr != nil && isVideoChunkDatagram(dgram) {
 		b.dvr.AppendRecord(dgram, time.Now())
+	}
+	if b.dvrAudio != nil && isAudioDatagram(dgram) {
+		b.dvrAudio.Append(dgram, time.Now())
 	}
 	for s := range b.subs {
 		s.enqueueLocked(dgram)
@@ -2065,6 +2109,11 @@ type Subscriber struct {
 	dvrResyncs    atomic.Uint64
 	dvrLagMs      atomic.Int64
 	dvrProgressAt atomic.Int64
+	dvrCursorAtMs atomic.Int64
+	dvrPace       *dvrPacer
+	dvrAudio      *DVRAudioRing
+	dvrAudioCur   DVRAudioCursor
+	dvrAudioCar   KeyframeStream
 	dvrGopSeq     atomic.Int64
 
 	carrierStreams        atomic.Uint64
@@ -2093,6 +2142,9 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 	// A DVR subscriber reads its video from the ring at its own cursor, so the
 	// queue would only duplicate it. Everything else still rides the queue.
 	if s.dvr != nil && isVideoChunkDatagram(dgram) {
+		return
+	}
+	if s.dvrAudio != nil && isAudioDatagram(dgram) {
 		return
 	}
 	if s.audioQueue != nil && isAudioDatagram(dgram) {
@@ -2215,6 +2267,9 @@ func (s *Subscriber) drain() {
 		// The queue still carries this subscriber's control traffic; a
 		// separate goroutine drains it so neither can stall the other.
 		go s.drainControlSideband()
+		if s.dvrAudio != nil {
+			go s.drainDVRAudio()
+		}
 		s.drainDVR()
 		return
 	}

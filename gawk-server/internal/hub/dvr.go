@@ -266,11 +266,43 @@ func (r *DVRRing) OldestGopSeq() int64 {
 	return r.gops[0].seq
 }
 
+// GopAt is the arrival time of the cursor's GOP — the reference the audio
+// cursor is held to (docs/26 Decision 8b). Zero when the GOP is gone.
+func (r *DVRRing) GopAt(c DVRCursor) time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if g := r.findLocked(c.gopSeq); g != nil {
+		return g.at
+	}
+	if len(r.gops) > 0 {
+		return r.gops[len(r.gops)-1].at
+	}
+	return time.Time{}
+}
+
 // Bytes is the retained payload size, for the byte cap and /statusz.
 func (r *DVRRing) Bytes() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.bytes
+}
+
+// LiveRateBps estimates the broadcast's current bitrate from what the ring
+// itself holds — bytes over the span they cover. No extra bookkeeping: the
+// ring already is a time-bounded sample of the stream. Returns 0 when the span
+// is too short to estimate, which the pacer treats as "do not throttle": a low
+// guess on a fresh broadcast would stall every viewer on it.
+func (r *DVRRing) LiveRateBps() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.gops) < 2 {
+		return 0
+	}
+	span := r.gops[len(r.gops)-1].at.Sub(r.gops[0].at)
+	if span < dvrMinRateSpan {
+		return 0
+	}
+	return int(float64(r.bytes) / span.Seconds())
 }
 
 // Gops is the retained GOP count, for /statusz.
@@ -323,6 +355,11 @@ func (r *DVRRing) dropOldestLocked() {
 // instantly (egress cap, refused stream open). A parked write already costs a
 // full carrierWriteTimeout and needs no floor of its own.
 const dvrRetryFloor = 20 * time.Millisecond
+
+// dvrMinRateSpan is how much history the ring needs before its bitrate
+// estimate is worth acting on. Below it the estimate swings with GOP size and
+// the catch-up ceiling would throttle on noise.
+const dvrMinRateSpan = 500 * time.Millisecond
 
 // drainDVR is the R21 replacement for drainReliable on a DVR subscriber. It
 // reads the broadcast's ring at this subscriber's own cursor instead of a
@@ -450,8 +487,13 @@ func (s *Subscriber) dvrResync() {
 	s.dvrNoteCursor()
 }
 
+// dvrNoteCursor publishes the cursor's observable position. dvrCursor itself
+// is owned by the video drain goroutine and must never be read from another —
+// the audio drain needs the GOP's arrival time to pace against, so it is
+// published here as an atomic rather than shared (caught by -race).
 func (s *Subscriber) dvrNoteCursor() {
 	s.dvrGopSeq.Store(s.dvrCursor.GopSeq())
+	s.dvrCursorAtMs.Store(s.dvr.GopAt(s.dvrCursor).UnixMilli())
 }
 
 // dvrSendKeyframe writes the cursor's keyframe on its own stream, reusing the
@@ -461,6 +503,12 @@ func (s *Subscriber) dvrNoteCursor() {
 func (s *Subscriber) dvrSendKeyframe() bool {
 	msg, ok := s.dvr.Keyframe(s.dvrCursor)
 	if !ok {
+		return false
+	}
+	// The ceiling covers keyframes too: they are the largest single thing a
+	// recovering cursor sends, so exempting them would leave the biggest
+	// bursts unbounded. Not-yet is a wait, not a drop — the caller retries.
+	if !s.dvrPace.allow(len(msg), s.dvr.LiveRateBps()) {
 		return false
 	}
 	if !s.hub.registry.consumeBandwidth(len(msg)) {
@@ -508,6 +556,14 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	n := len(framed)
 	if needsOpen {
 		n += wire.CarrierPrologueSize
+	}
+	// Catch-up ceiling (docs/26 Decision 6): a recovering subscriber must
+	// outrun live or it never closes its backlog, but not without bound —
+	// every viewer on the pod shares one egress budget, and they usually
+	// recover together. Checked before the global cap so a throttled record is
+	// a retry rather than a charged drop.
+	if !s.dvrPace.allow(n, s.dvr.LiveRateBps()) {
+		return false
 	}
 	if !s.hub.registry.consumeBandwidth(n) {
 		s.dropped.Add(1)

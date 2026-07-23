@@ -156,6 +156,17 @@ config:
   # broadcaster is 18 MB, and nothing else stops several of those at once.
   dvrWindow: 3s
   dvrMaxBytes: "25165824"
+  # How much faster than live a recovering viewer may send, as a multiple of
+  # the broadcast's own bitrate. Covering a stall S with buffer B needs
+  # B/(B-S)x, so 4x carries a 2 s stall on a 2.67 s buffer. The ceiling exists
+  # because the egress budget is one bucket shared with every other viewer on
+  # the pod, and a network event that stalls one viewer usually stalls them
+  # all. Negative disables it.
+  dvrMaxCatchup: "4"
+  # Put audio in the ring too, on its own reliable stream. On by default: a
+  # video-only DVR fixes the picture and leaves the sound full of holes, which
+  # is the half users notice. Off restores live-edge audio (docs/20 finding 5).
+  dvrAudio: true
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers
