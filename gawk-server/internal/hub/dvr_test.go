@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 func gopBytes(n int) []byte { return bytes.Repeat([]byte{byte(n)}, 16) }
@@ -338,4 +340,41 @@ func TestDVRSubscriberResyncsWhenItFallsOffTheTail(t *testing.T) {
 		}
 		return false
 	}, "delivery to resume after the resync")
+}
+
+// DV3 (docs/26 Decision 7): the `buffer` param is a hint from a client that
+// may be older, newer or simply wrong, so NO value may reject the session.
+// Below the minimum it downgrades to plain carrier delivery; above the ring it
+// clamps; garbage reads as absent.
+func TestDVRBufferNegotiation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		raw      string
+		wantMode wire.DeliveryMode
+		wantMs   int
+	}{
+		{"absent", "", wire.DeliveryReliable, 0},
+		{"below minimum downgrades", "150", wire.DeliveryReliable, 0},
+		{"exactly the minimum", "1000", wire.DeliveryDVR, 1000},
+		{"in range", "3000", wire.DeliveryDVR, 3000},
+		{"above the window clamps", "600000", wire.DeliveryDVR, 5000},
+		{"zero", "0", wire.DeliveryReliable, 0},
+		{"negative", "-1", wire.DeliveryReliable, 0},
+		{"not a number", "abc", wire.DeliveryReliable, 0},
+		{"overflows", "99999999999999999999", wire.DeliveryReliable, 0},
+		{"float", "1500.5", wire.DeliveryReliable, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mode, ms := NegotiateDelivery(true, tc.raw, 5*time.Second)
+			if mode != tc.wantMode || ms != tc.wantMs {
+				t.Errorf("NegotiateDelivery(%q) = %d/%d, want %d/%d", tc.raw, mode, ms, tc.wantMode, tc.wantMs)
+			}
+		})
+	}
+
+	// Without ?delivery=reliable, `buffer` is meaningless and must not
+	// silently upgrade a datagram viewer into a mode it never asked for.
+	if mode, ms := NegotiateDelivery(false, "3000", 5*time.Second); mode != wire.DeliveryDatagrams || ms != 0 {
+		t.Errorf("datagram viewer with a buffer param = %d/%d, want datagrams/0", mode, ms)
+	}
 }

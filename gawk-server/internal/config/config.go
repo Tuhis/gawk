@@ -111,6 +111,13 @@ type Config struct {
 	// usual; the Helm chart turns it on.
 	QuietProbeLogs bool
 
+	// R21 DVR ring (docs/26). DVRWindow is how much history a broadcast
+	// retains for resilient subscribers and is also the ceiling a viewer's
+	// requested buffer is clamped to; DVRMaxBytes is the bound that actually
+	// protects the pod, since 3 s of a 50 Mbps broadcaster is 18 MB.
+	DVRWindow   time.Duration
+	DVRMaxBytes int
+
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
 	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
@@ -169,6 +176,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"how long a keyframe write to one subscriber may block before the stream is cancelled")
 	// "off" (not just "") disables, because an empty env var reads as unset
 	// and would silently fall back to the default instead of disabling.
+	dvrWindow := fs.String("dvr-window", env("GAWK_DVR_WINDOW", "3s"),
+		"R21 DVR ring depth per broadcast: how long a stall a resilient viewer can ride out")
+	dvrMaxBytes := fs.String("dvr-max-bytes", env("GAWK_DVR_MAX_BYTES", "25165824"),
+		"maximum bytes one broadcast's DVR ring may retain (default 24 MiB)")
 	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
@@ -248,6 +259,14 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if err != nil || kfWriteTimeout <= 0 {
 		return Config{}, fmt.Errorf("invalid keyframe-write-timeout %q: want a positive duration", *keyframeWriteTimeout)
 	}
+	dvrWin, err := time.ParseDuration(*dvrWindow)
+	if err != nil || dvrWin <= 0 {
+		return Config{}, fmt.Errorf("invalid dvr-window %q: want a positive duration", *dvrWindow)
+	}
+	dvrBytes, err := strconv.Atoi(*dvrMaxBytes)
+	if err != nil || dvrBytes < 1 {
+		return Config{}, fmt.Errorf("invalid dvr-max-bytes %q: want a positive integer", *dvrMaxBytes)
+	}
 	mAddr := strings.TrimSpace(*metricsAddr)
 	if strings.EqualFold(mAddr, "off") {
 		mAddr = ""
@@ -293,6 +312,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 		MaxKeyframeBytes:     kfBytes,
 		KeyframeWriteTimeout: kfWriteTimeout,
+		DVRWindow:            dvrWin,
+		DVRMaxBytes:          dvrBytes,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,

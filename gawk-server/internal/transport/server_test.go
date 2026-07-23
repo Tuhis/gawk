@@ -1721,10 +1721,25 @@ waitForRecords:
 	if !res.sawDelta || !res.sawDelta2 {
 		t.Errorf("carrier records incomplete: sawDelta=%v sawDelta2=%v", res.sawDelta, res.sawDelta2)
 	}
-	select {
-	case d := <-dgramCh:
-		t.Errorf("reliable subscriber received a datagram (type 0x%02x)", d[1])
-	default:
+	// R21: every subscriber's first datagram is now the DeliveryAck (docs/26
+	// Decision 7a). What this test cares about is that no *video* arrives as a
+	// datagram on the reliable path, so skip the ack and fail on anything else.
+	for {
+		select {
+		case d := <-dgramCh:
+			if len(d) >= 2 && d[1] == wire.TypeDeliveryAck {
+				mode, _, err := wire.ParseDeliveryAck(d)
+				if err != nil {
+					t.Errorf("malformed delivery ack: %v", err)
+				} else if mode != wire.DeliveryReliable {
+					t.Errorf("delivery ack says mode %d, want reliable", mode)
+				}
+				continue
+			}
+			t.Errorf("reliable subscriber received a datagram (type 0x%02x)", d[1])
+		default:
+		}
+		break
 	}
 
 	stats := r.Stats().Broadcasts[r.ObfuscateID(id)]
@@ -1760,11 +1775,27 @@ func TestSubscribeUnknownDeliveryFallsBackToDatagrams(t *testing.T) {
 	}
 	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer recvCancel()
-	got, err := sub.ReceiveDatagram(recvCtx)
-	if err != nil {
-		t.Fatalf("ReceiveDatagram: %v", err)
-	}
-	if !bytes.Equal(got, delta) {
-		t.Errorf("datagram mismatch")
+	// R21: the DeliveryAck leads (docs/26 Decision 7a) and reports the
+	// fallback honestly — which is the whole point of the message here, since
+	// an unknown ?delivery value must not silently look like a success.
+	for {
+		got, err := sub.ReceiveDatagram(recvCtx)
+		if err != nil {
+			t.Fatalf("ReceiveDatagram: %v", err)
+		}
+		if len(got) >= 2 && got[1] == wire.TypeDeliveryAck {
+			mode, _, err := wire.ParseDeliveryAck(got)
+			if err != nil {
+				t.Fatalf("malformed delivery ack: %v", err)
+			}
+			if mode != wire.DeliveryDatagrams {
+				t.Errorf("delivery ack says mode %d, want datagrams for an unknown ?delivery", mode)
+			}
+			continue
+		}
+		if !bytes.Equal(got, delta) {
+			t.Errorf("datagram mismatch")
+		}
+		return
 	}
 }

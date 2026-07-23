@@ -27,6 +27,8 @@ package hub
 // than registry.mu so a drain reading history never contends with fan-out.
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -519,3 +521,36 @@ func (s *Subscriber) DVRResyncs() uint64 { return s.dvrResyncs.Load() }
 
 // DVRLagMs is how far behind the live edge this subscriber's cursor sits.
 func (s *Subscriber) DVRLagMs() int64 { return s.dvrLagMs.Load() }
+
+// --- DV3: negotiation ------------------------------------------------------
+
+// NegotiateDelivery turns the subscribe query into a delivery mode and an
+// accepted buffer (docs/26 Decision 7). raw is the `buffer` parameter exactly
+// as it arrived; window is the relay's configured ring depth.
+//
+// The governing rule is that a query parameter must never reject a session: it
+// is a hint from a client that may be older, newer, or simply wrong. Every
+// unusable value degrades to a working subscriber instead.
+func NegotiateDelivery(reliable bool, raw string, window time.Duration) (wire.DeliveryMode, int) {
+	if !reliable {
+		// `buffer` without `delivery=reliable` is meaningless, and must not
+		// silently upgrade a datagram viewer into a mode it never asked for.
+		return wire.DeliveryDatagrams, 0
+	}
+	ms, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || ms <= 0 {
+		// Absent, malformed, negative, zero, or wider than an int: this viewer
+		// gets R19 carrier delivery, which is what it would have got from any
+		// relay predating R21.
+		return wire.DeliveryReliable, 0
+	}
+	if ms < MinDVRBufferMs {
+		// Honest downgrade: below this every replayed record would arrive past
+		// its due time at the viewer, so a ring would only add latency.
+		return wire.DeliveryReliable, 0
+	}
+	if max := int(window / time.Millisecond); ms > max {
+		ms = max
+	}
+	return wire.DeliveryDVR, ms
+}

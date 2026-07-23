@@ -147,6 +147,15 @@ config:
   # the stream is cancelled and that subscriber recovers at the next keyframe.
   maxKeyframeBytes: "8388608"
   keyframeWriteTimeout: 1s
+  # R21 DVR ring (docs/26): per-broadcast history retained for resilient
+  # viewers, so a stalled link costs delay instead of frames. The window is
+  # also the ceiling a viewer's requested buffer is clamped to; a viewer's
+  # buffer must strictly exceed the stall it covers, so 3 s of ring backs a
+  # ~2 s stall. Allocated only for broadcasts that actually have a resilient
+  # viewer. dvrMaxBytes is the bound that protects the pod: 3 s of a 50 Mbps
+  # broadcaster is 18 MB, and nothing else stops several of those at once.
+  dvrWindow: 3s
+  dvrMaxBytes: "25165824"
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers

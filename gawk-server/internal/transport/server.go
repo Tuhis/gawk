@@ -925,12 +925,23 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// the WebTransport JS API can't set headers (publish-secret precedent).
 	// Unknown values fall back to datagram delivery; a mode change is a
 	// reconnect, never an in-session morph.
+	// R21 (docs/26 Decision 7): ?buffer=<ms> additionally opts into DVR
+	// delivery, served from the broadcast's ring at this subscriber's own
+	// cursor. The value is the viewer's guaranteed MINIMUM playout offset, not
+	// its current one. No value can reject the session — every unusable one
+	// degrades to a working mode.
 	reliable := r.URL.Query().Get("delivery") == "reliable"
-	subscribe := s.registry.Subscribe
-	if reliable {
-		subscribe = s.registry.SubscribeReliable
+	mode, bufferMs := hub.NegotiateDelivery(reliable, r.URL.Query().Get("buffer"), s.cfg.DVRWindow)
+	adapter := &webtransportSessionAdapter{sess}
+	var sub *hub.Subscriber
+	switch mode {
+	case wire.DeliveryDVR:
+		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs)
+	case wire.DeliveryReliable:
+		sub, err = s.registry.SubscribeReliable(id, adapter)
+	default:
+		sub, err = s.registry.Subscribe(id, adapter)
 	}
-	sub, err := subscribe(id, &webtransportSessionAdapter{sess})
 	if err != nil {
 		s.log.Warn("subscribe rejected after upgrade", "id", id, "remote", sess.RemoteAddr(), "err", err)
 		if errors.Is(err, hub.ErrNotFound) {
@@ -955,6 +966,18 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)
 	if reliable {
 		log = log.With("delivery", "reliable")
+	}
+	if mode == wire.DeliveryDVR {
+		log = log.With("delivery", "dvr", "buffer_ms", bufferMs)
+	}
+	// R21 (docs/26 Decision 7a): tell the viewer what it was ACTUALLY served.
+	// A DVR-replayed GOP is byte-identical to a live one, so without this the
+	// viewer cannot tell an honoured request from a downgrade, or from a relay
+	// too old to know the parameter — and a viewer that cannot name what it
+	// got is what made the 2026-07-22 investigation so expensive (BUGS.md).
+	// Best-effort: a failed ack costs a diagnostics row, never the session.
+	if err := sess.SendDatagram(wire.AppendDeliveryAck(nil, mode, uint16(bufferMs))); err != nil {
+		log.Warn("delivery ack not sent; the viewer cannot report its served mode", "err", err)
 	}
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
