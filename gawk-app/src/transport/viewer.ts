@@ -27,6 +27,8 @@ import {
 } from './av-sync';
 import { LiveEdgeTracker } from './live-edge';
 import {
+  DVR_BUFFER_MS,
+  setDvrGranted,
   getPlayoutMode,
   getPlayoutOffsetMs,
   resetPlayoutController,
@@ -39,7 +41,14 @@ import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates'
 import type { TeeStats } from './tee-render-sink';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
-import { TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, type DecoderConfigMessage } from './wire';
+import {
+  TYPE_AUDIO_CONFIG,
+  TYPE_AUDIO_FRAME,
+  TYPE_DELIVERY_ACK,
+  parseDeliveryAck,
+  type DecoderConfigMessage,
+  type DeliveryServedMode,
+} from './wire';
 import { getMaxDecoderQueueSize } from '../config';
 
 // How often the reorder buffer is advanced (its bounded waits and the
@@ -188,7 +197,10 @@ export interface ViewerStats extends ReassemblerStats {
   // 'reliable-requested' is the Decision 8 degradation — reliable was
   // requested but no carrier has appeared (old relay, or none rotated in
   // yet), so buffering is resilient while delivery stays datagrams.
-  deliveryMode: 'datagrams' | 'reliable' | 'reliable-requested';
+  deliveryMode: 'datagrams' | 'reliable' | 'reliable-requested' | 'dvr';
+  // R21 (docs/26): the buffer the relay accepted, from the join-time ack.
+  // 0 when it is not serving from a ring, or against a relay too old to say.
+  dvrBufferMs: number;
   // R18 (docs/23 Decision 8): the live "N watching" number the relay fans
   // out (~1 s cadence; the fleet-global total in cluster mode). Null until
   // the first push — usually the join-prime — lands.
@@ -336,6 +348,10 @@ export class ViewerPipeline {
   // one arrives, so a viewer that joins an away broadcast and waits for its
   // first keepalive is never torn down by the dead-session watchdog.
   private lastInboundAt: number | null = null;
+  // R21: what the relay says it is serving, from the join-time DeliveryAck.
+  // Null until it arrives (or forever, against a relay that predates it).
+  private servedDelivery: DeliveryServedMode | null = null;
+  private servedBufferMs = 0;
   private videoBytesReceived = 0;
   // The codec of the last applied config — for a clear "can't decode" message.
   private lastCodec: string | null = null;
@@ -460,6 +476,11 @@ export class ViewerPipeline {
     // time via the query param — the WebTransport JS API can't set headers.
     if (this.connectOpts.deliveryMode === 'reliable') {
       url.searchParams.set('delivery', 'reliable');
+      // R21 (docs/26 Decision 7): ask to be served from the relay's ring, and
+      // declare the buffer floor we will hold if it agrees. A relay that does
+      // not know the parameter ignores it and serves R19 carriers, which is
+      // exactly the degradation we want.
+      url.searchParams.set('buffer', String(DVR_BUFFER_MS));
     }
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
@@ -474,6 +495,10 @@ export class ViewerPipeline {
           // Audio rides the same datagram path but is not video: counting it
           // here overstated "Video bitrate (recv)" by the whole audio lane
           // whenever audio was on (BUGS.md, 2026-07-22).
+          // R21: the relay's join-time statement of what we are ACTUALLY being
+          // served. Consumed here, before the reassembler ever sees it — it is
+          // a pipeline fact, not media.
+          if (this.handleDeliveryAck(dgram)) return;
           if (!isAudioDatagram(dgram)) this.videoBytesReceived += dgram.byteLength;
           this.reassembler?.push(dgram);
         },
@@ -523,6 +548,25 @@ export class ViewerPipeline {
     });
     this.audioState = 'active';
     return this.audioLane;
+  }
+
+  // Consumes a DeliveryAck (R21, docs/26 Decision 7a) and returns whether the
+  // datagram was one. The relay states the served mode once at join; a
+  // malformed one is dropped and simply leaves the row unknown, because a
+  // diagnostics message must never be able to break playback.
+  private handleDeliveryAck(dgram: Uint8Array): boolean {
+    if (dgram.length < 2 || dgram[1] !== TYPE_DELIVERY_ACK) return false;
+    try {
+      const ack = parseDeliveryAck(dgram);
+      this.servedDelivery = ack.mode;
+      this.servedBufferMs = ack.bufferMs;
+      // Only now is the deeper buffer justified: against a relay that cannot
+      // keep it filled it would be pure latency (docs/26 Decision 7).
+      setDvrGranted(ack.mode === 'dvr');
+    } catch (e) {
+      log.warn('malformed delivery ack; served mode stays unknown:', e);
+    }
+    return true;
   }
 
   private handleKeyframeStream(kf: KeyframeStreamFrame): void {
@@ -872,12 +916,18 @@ export class ViewerPipeline {
     const carrier = this.transport?.sampleCarrierStats?.() ?? null;
     // Live lane if it exists, else the folded snapshot from its death.
     const audioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
+    // R21: the relay's own statement wins where we have it — it is the only
+    // thing that can distinguish ring-backed delivery from plain carriers,
+    // since a replayed GOP is byte-identical to a live one. Falls back to the
+    // R19 inference (carriers observed) against a relay too old to say.
     const deliveryMode: ViewerStats['deliveryMode'] =
-      this.connectOpts.deliveryMode === 'reliable'
-        ? carrier && carrier.streamsOpened > 0
-          ? 'reliable'
-          : 'reliable-requested'
-        : 'datagrams';
+      this.servedDelivery === 'dvr'
+        ? 'dvr'
+        : this.connectOpts.deliveryMode === 'reliable'
+          ? carrier && carrier.streamsOpened > 0
+            ? 'reliable'
+            : 'reliable-requested'
+          : 'datagrams';
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -933,6 +983,7 @@ export class ViewerPipeline {
       videoBytesReceived: this.videoBytesReceived,
       viewerCount: this.viewerCount,
       deliveryMode,
+      dvrBufferMs: this.servedBufferMs,
       carrierStreams: carrier?.streamsOpened ?? null,
       carrierRecords: carrier?.recordsReceived ?? null,
       carrierStreamsAborted: carrier?.streamsAborted ?? null,

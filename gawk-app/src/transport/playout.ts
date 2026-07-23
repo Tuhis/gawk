@@ -120,9 +120,43 @@ export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
   stepUpAboveMs: 150,
 };
 
+// R21 (docs/26): the buffer a viewer requests from the relay, and the floor it
+// applies once the relay confirms it is serving from a ring. Deliberately NOT
+// applied on request: against a relay that cannot honour it, a deep buffer is
+// pure latency for no benefit, so the floor only deepens on a DeliveryAck
+// saying `dvr`. The value must strictly exceed the stall it covers — 3 s of
+// buffer backs a ~2 s stall at 3x recovery bandwidth (docs/26 Decision 6).
+export const DVR_BUFFER_MS = 3000;
+
+// R21 DVR profile: the resilient envelope with its floor raised to what the
+// relay is now able to keep filled. maxMs rises with it so the adaptive
+// controller is not clamped below its own floor.
+export const DVR_PLAYOUT_PROFILE: PlayoutProfile = {
+  ...RESILIENT_PLAYOUT_PROFILE,
+  seedMs: DVR_BUFFER_MS,
+  minMs: DVR_BUFFER_MS,
+  maxMs: Math.max(RESILIENT_PLAYOUT_PROFILE.maxMs, DVR_BUFFER_MS),
+  quantileRangeMs: Math.max(RESILIENT_PLAYOUT_PROFILE.quantileRangeMs, DVR_BUFFER_MS + 500),
+};
+
+// Whether the relay confirmed ring-backed delivery for this session. Module
+// state like the resilient flag itself, set from the DeliveryAck and reset on
+// every reconnect — a new session must re-earn the deeper buffer rather than
+// inherit it from a relay that may have been replaced mid-view.
+let dvrGranted = false;
+
+export function setDvrGranted(granted: boolean): void {
+  dvrGranted = granted;
+}
+
+export function getDvrGranted(): boolean {
+  return dvrGranted;
+}
+
 // The profile in force in this JS context.
 export function getPlayoutProfile(): PlayoutProfile {
-  return getResilientMode() ? RESILIENT_PLAYOUT_PROFILE : DEFAULT_PLAYOUT_PROFILE;
+  if (!getResilientMode()) return DEFAULT_PLAYOUT_PROFILE;
+  return dvrGranted ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
 }
 
 export class PlayoutController {

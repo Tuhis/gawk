@@ -39,6 +39,7 @@ function fullStats(): ViewerStats {
     transport: 'worker',
     timeSinceLastFrameMs: 33,
     timeSinceLastInboundMs: 12,
+    dvrBufferMs: 0,
     lastKeyframeAgeMs: 210,
     liveEdgeDriftMs: 42,
     capToRenderMs: 384,
