@@ -536,3 +536,50 @@ describe('AudioSink depth reconciliation', () => {
     sink.dispose();
   });
 });
+
+// docs/20 field finding 11 (2026-07-23, measured against the homelab). Toggling
+// Paced playback moves the video presentation schedule — capToRenderMs went
+// 204 → 65 ms — but audio kept the alignment it chose at start, so `avSkewMs`
+// jumped 142 → 333 ms and stayed there. Unlike finding 10 there is no flush to
+// get wrong: a playout toggle is a worker command with no reconnect, and after
+// release the worklet runs at 1×, so no amount of buffering can move a sample.
+// Re-anchoring is the only lever, and it costs a short silence — which is the
+// right trade on a deliberate user action that already changes playback.
+describe('AudioSink video-schedule re-anchor', () => {
+  it('re-anchors when the video presentation schedule shifts materially', async () => {
+    stubWebAudio(() => {});
+    const sink = new AudioSink({}, undefined, { now: () => 1000 });
+    await sink.start(SAMPLE_RATE);
+
+    // Paced: a frame is presented 200 ms after the timestamp it carries.
+    sink.setVideoSchedule((ts) => ts / 1000 + 200);
+    for (let i = 0; i < 20; i++) sink.push(chunk(i * 20_000));
+    const before = sink.getStats().resets;
+
+    // The viewer turns Paced playback off: video snaps to the live edge.
+    sink.setVideoSchedule((ts) => ts / 1000);
+
+    expect(sink.getStats().resets).toBe(before + 1);
+    sink.dispose();
+  });
+
+  it('ignores the adaptive controller slewing the schedule a few ms per tick', async () => {
+    stubWebAudio(() => {});
+    const sink = new AudioSink({}, undefined, { now: () => 1000 });
+    await sink.start(SAMPLE_RATE);
+
+    sink.setVideoSchedule((ts) => ts / 1000 + 200);
+    for (let i = 0; i < 20; i++) sink.push(chunk(i * 20_000));
+    const before = sink.getStats().resets;
+
+    // PlayoutController slews at most 50 ms/s, so a ~500 ms stats tick can
+    // legitimately move the schedule ~25 ms. Re-anchoring on that would shred
+    // audio on a perfectly healthy adaptive session.
+    for (const offset of [215, 190, 210, 225, 205]) {
+      sink.setVideoSchedule((ts) => ts / 1000 + offset);
+    }
+
+    expect(sink.getStats().resets).toBe(before);
+    sink.dispose();
+  });
+});
