@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.19.3...gawk-server-v0.20.0) (2026-07-23)
+
+
+### Features
+
+* relay DVR ring so resilient viewers ride out dropouts (R21) ([#111](https://github.com/Tuhis/gawk/issues/111)) ([b92de77](https://github.com/Tuhis/gawk/commit/b92de77f8a2e9fbeaf22a05a112d89e89cdf88b5))
+
+
+### Bug Fixes
+
+* **viewer:** recover from a dead session instead of freezing forever ([ba58c1e](https://github.com/Tuhis/gawk/commit/ba58c1eb51d9477f02707610d2480803e466f569))
+
 ## [0.19.3](https://github.com/Tuhis/gawk/compare/gawk-server-v0.19.2...gawk-server-v0.19.3) (2026-07-22)
 
 

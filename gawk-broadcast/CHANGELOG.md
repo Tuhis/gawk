@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.3.1...gawk-broadcast-v1.4.0) (2026-07-23)
+
+
+### Features
+
+* relay DVR ring so resilient viewers ride out dropouts (R21) ([#111](https://github.com/Tuhis/gawk/issues/111)) ([b92de77](https://github.com/Tuhis/gawk/commit/b92de77f8a2e9fbeaf22a05a112d89e89cdf88b5))
+
 ## [1.3.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.3.0...gawk-broadcast-v1.3.1) (2026-07-21)
 
 
