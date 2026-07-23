@@ -219,3 +219,123 @@ func TestDVRRingConcurrentAppendAndReaders(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// DV2's headline property (docs/26): a DVR subscriber whose link stalls loses
+// nothing. The relay keeps appending to the ring while the write is parked,
+// and when the link returns the drain resumes FROM THE CURSOR — so every delta
+// captured during the stall is still delivered, in order, verbatim.
+//
+// This is the exact scenario the 2026-07-22 capture froze on, where the 500 ms
+// carrier deadline killed the GOP and docs/24 finding 17's purge discarded it.
+func TestDVRSubscriberLosesNothingAcrossAStall(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR: DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+
+	f := &fakeSender{}
+	block := make(chan struct{})
+	f.setCarBlock(block) // the link is down: every carrier write parks
+	sub, err := r.SubscribeDVR(id, f, 3000)
+	if err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	// Same-conditions control: an R19 reliable subscriber, equally stalled.
+	// Without it this test proves the property but not the difference — and
+	// the difference is the entire milestone.
+	control := &fakeSender{}
+	controlBlock := make(chan struct{})
+	control.setCarBlock(controlBlock)
+	if _, err := r.SubscribeReliable(id, control); err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+
+	// Four GOPs go by while the link is down — 2 s at the 500 ms default.
+	var want [][]byte
+	for g := range 4 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		for i := range 5 {
+			d := chunkDgram(t, false, uint32(g*100+i+1), 0, 1, fmt.Sprintf("g%d-d%d", g, i))
+			want = append(want, d)
+			p.HandleDatagram(d)
+		}
+	}
+
+	// The stall must outlive CarrierWriteTimeout, or the old path never gets
+	// the chance to fail and the control proves nothing.
+	time.Sleep(CarrierWriteTimeout + 200*time.Millisecond)
+
+	// Both links come back.
+	close(block)
+	close(controlBlock)
+
+	waitFor(t, 10*time.Second, func() bool { return len(f.carrierRecords(t)) >= len(want) },
+		"every stalled delta to be replayed from the ring")
+
+	got := f.carrierRecords(t)
+	if len(got) != len(want) {
+		t.Fatalf("delivered %d records, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("record %d = %q, want %q — the replay is not verbatim or not in order", i, got[i], want[i])
+		}
+	}
+	if n := sub.DVRResyncs(); n != 0 {
+		t.Errorf("dvrResyncs = %d, want 0 — nothing should have fallen off a 30 s ring", n)
+	}
+
+	// The control lost GOPs to the 500 ms carrier deadline, which is exactly
+	// the behaviour R21 exists to replace. If this ever stops being true, the
+	// assertion above has stopped distinguishing the two paths.
+	if got := len(control.carrierRecords(t)); got >= len(want) {
+		t.Errorf("control delivered %d/%d records — it was supposed to lose some", got, len(want))
+	}
+}
+
+// A stall longer than the ring is the mode's one frame loss (docs/26
+// Decision 4): the cursor falls off the tail and the subscriber is resynced to
+// the newest keyframe. It must recover there rather than wedge or spin.
+func TestDVRSubscriberResyncsWhenItFallsOffTheTail(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		// A ring far too small to hold what follows.
+		DVR: DVROptions{Window: 30 * time.Second, MaxBytes: 512},
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	block := make(chan struct{})
+	f.setCarBlock(block)
+	sub, err := r.SubscribeDVR(id, f, 3000)
+	if err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	for g := range 12 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		for i := range 8 {
+			p.HandleDatagram(chunkDgram(t, false, uint32(g*100+i+1), 0, 1, fmt.Sprintf("g%02d-d%d", g, i)))
+		}
+	}
+	close(block)
+
+	waitFor(t, 10*time.Second, func() bool { return sub.DVRResyncs() > 0 },
+		"the subscriber to notice it fell off the tail")
+	// Recovery, not a wedge: fresh content still flows afterwards.
+	ingestKeyframe(t, p, keyframeMsg(t, 9000, "vp8", "KEY"))
+	p.HandleDatagram(chunkDgram(t, false, 9001, 0, 1, "after-resync"))
+	waitFor(t, 10*time.Second, func() bool {
+		for _, rec := range f.carrierRecords(t) {
+			if bytes.Contains(rec, []byte("after-resync")) {
+				return true
+			}
+		}
+		return false
+	}, "delivery to resume after the resync")
+}
