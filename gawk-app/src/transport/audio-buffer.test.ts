@@ -840,4 +840,37 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
     buffer.tick();
     expect(emitted.length).toBeGreaterThan(0);
   });
+
+  it('honours the output-latency lead under a schedule instead of gating on the full deep depth', () => {
+    // The schedule already subtracts the sink's output latency (dueAt =
+    // present − lead) so audio is HEARD when the frame is shown. But the depth
+    // gate needs targetMs (= B in deep mode) buffered, and audio arrives ~real
+    // time, so it is only met at arrival + B — LEAD ms AFTER the schedule wanted
+    // the release. Requiring the full depth on top of the schedule defeats the
+    // lead: audio releases late and plays output-latency behind video. Under a
+    // schedule the depth check must be only a small anti-starvation cushion.
+    const emitted: AudioChunk[] = [];
+    const clock = { t: 1000 };
+    const B = 3000;
+    const LEAD = 200; // exaggerated output latency, to make the lead observable
+    // First chunk arrives at t=1000 (arrival baseline 1000), video offset B, so
+    // the frame for ts is shown at ts/1000 + 1000 + B; the sink asks to be
+    // released LEAD ms early.
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), { seedMs: B, minMs: B, maxMs: B }, {
+      now: () => clock.t,
+      schedule: () => (ts: number) => ts / 1000 + 1000 + B - LEAD,
+    });
+    // Feed audio in real time until it releases.
+    for (let i = 0; emitted.length === 0 && i < 400; i++) {
+      clock.t = 1000 + i * 20;
+      buffer.push(chunk(i * FRAME_US));
+    }
+    expect(emitted.length).toBeGreaterThan(0);
+    // Released at the lead-compensated schedule (dueAt(T0) = 1000 + B − LEAD),
+    // NOT LEAD ms later when the full B depth would finally be buffered.
+    expect(clock.t).toBeLessThanOrEqual(1000 + B - LEAD + 40);
+    const hold = buffer.getStats().alignmentHoldMs!;
+    expect(hold).toBeLessThan(B - LEAD / 2); // clearly short of the full B
+    expect(hold).toBeGreaterThan(B - LEAD - 100); // ≈ B − LEAD
+  });
 });

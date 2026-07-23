@@ -87,6 +87,16 @@ export const MAX_AUDIO_LEAD_MS = 100;
 // How long the depth estimate may be extrapolated between the sink's ~4 Hz
 // playhead reports before the ceiling stops trusting it. See queuedNowMs().
 const MAX_DRAIN_EXTRAPOLATION_MS = 500;
+// The anti-starvation cushion required at the alignment release WHEN the video
+// schedule governs the hold. The schedule already sets the (lead-compensated)
+// release time; the depth check is then only a guard against releasing into an
+// empty worklet, not the alignment target — so it must be small. Requiring the
+// full profile target here instead gates the release ~target ms after the
+// schedule wants it (audio arrives ~real time, so `targetMs` of it takes
+// `targetMs` to accumulate), which for deep/resilient modes lands `lead` ms
+// late and leaves audio output-latency behind video. 150 ms comfortably covers
+// arrival jitter; live-edge's own target is smaller, so min() leaves it alone.
+const SCHEDULED_START_CUSHION_MS = 150;
 // Timeline-change thresholds, deliberately asymmetric — the same lesson the
 // video path learned in R10 (docs/14 finding 5): a *serially backwards* jump
 // is the restart signal, and treating it as lateness strands the viewer.
@@ -411,9 +421,20 @@ export class AudioJitterBuffer {
     // the arrival jitter). So the adaptive jitter target is a *floor* in every
     // mode: never release below it. In paced modes the schedule hold already
     // exceeds the floor, so gating on both changes nothing there.
-    const scheduleDue =
-      this.alignOnSchedule && this.dueAtMs !== null ? nowMs >= this.dueAtMs : true;
-    const depthReady = this.bufferedMs() >= this.targetMs;
+    const haveSchedule = this.alignOnSchedule && this.dueAtMs !== null;
+    const scheduleDue = haveSchedule ? nowMs >= this.dueAtMs! : true;
+    // Depth gate. With NO schedule it is the whole alignment target (finding 5's
+    // deep fallback: hold B even when the video baseline never arrives). With a
+    // schedule it is only an anti-starvation cushion — the schedule already sets
+    // the hold, and does so lead-compensated (dueAt = present − output latency),
+    // so requiring the full target on top would defeat that compensation and
+    // leave audio ~output-latency behind video (the depth is only met `lead` ms
+    // after the schedule is due, because `targetMs` of audio takes `targetMs` to
+    // arrive at 1×). See SCHEDULED_START_CUSHION_MS.
+    const depthTarget = haveSchedule
+      ? Math.min(this.targetMs, SCHEDULED_START_CUSHION_MS)
+      : this.targetMs;
+    const depthReady = this.bufferedMs() >= depthTarget;
     // Field finding 7: never release the cushion into a sink that can't receive
     // it — the released chunks would be dropped and the worklet would start at
     // ~0 ms depth (finding 6 redux). Hold until the worklet node exists.
