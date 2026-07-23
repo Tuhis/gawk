@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.28.2...gawk-app-v0.29.0) (2026-07-23)
+
+
+### Features
+
+* **broadcaster:** graduate system audio — remove the experimental toggle ([#121](https://github.com/Tuhis/gawk/issues/121)) ([55427dd](https://github.com/Tuhis/gawk/commit/55427dde74c85a1ebd75f4e0a85ebc13d36078e4))
+
 ## [0.28.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.28.1...gawk-app-v0.28.2) (2026-07-23)
 
 
