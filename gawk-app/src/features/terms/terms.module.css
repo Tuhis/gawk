@@ -1,0 +1,108 @@
+/* R23 (docs/29). The terms surface: R6 design system, long-form readable
+   typography. A scrollable page (not a centered card like landing) — the
+   document is long. */
+.root {
+  position: relative;
+  min-height: 100vh;
+  padding: 2rem 1.5rem 4rem;
+  background: var(--bg);
+  overflow-x: hidden;
+}
+
+/* Same quiet gradient wash as the landing/broadcaster surfaces, pinned so it
+   doesn't scroll with the document. */
+.bg {
+  position: fixed;
+  inset: -25%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 42% at 30% 32%, rgba(107, 138, 254, 0.1), transparent 70%),
+    radial-gradient(34% 40% at 72% 68%, rgba(134, 59, 255, 0.08), transparent 70%);
+  filter: blur(30px);
+}
+
+.card {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 720px);
+  margin: 0 auto;
+  padding: 1.25rem 1.5rem 2rem;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 1rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+/* The readable long-form measure. Descendant selectors so the same styling
+   covers both the bundled <BundledTerms> React tree and a sanitized operator
+   HTML fragment. */
+.doc {
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: 1.65;
+  max-width: 68ch;
+}
+
+.doc :global(h1) {
+  font-size: var(--fs-hero);
+  font-weight: 700;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.01em;
+}
+
+.doc :global(h2) {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  margin: 1.9rem 0 0.5rem;
+  color: var(--text);
+}
+
+.doc :global(h3) {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  margin: 1.4rem 0 0.4rem;
+}
+
+.doc :global(p) {
+  margin: 0.6rem 0;
+  color: var(--muted);
+}
+
+.doc :global(strong) {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.doc :global(.effective) {
+  font-size: var(--fs-sm);
+  color: var(--faint);
+  margin: 0 0 1.25rem;
+}
+
+.doc :global(ul),
+.doc :global(ol) {
+  margin: 0.6rem 0;
+  padding-left: 1.4rem;
+  color: var(--muted);
+}
+
+.doc :global(li) {
+  margin: 0.3rem 0;
+}
+
+.doc :global(a) {
+  color: var(--accent);
+}

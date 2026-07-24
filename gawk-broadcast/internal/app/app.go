@@ -172,6 +172,24 @@ func JoinLink(appURL, id string) string {
 	return strings.TrimSuffix(appURL, "/") + "/#/view/" + id
 }
 
+// TermsLink builds the operator's terms-of-use URL from the app URL. Empty
+// when no app URL is configured. R23 (docs/29 TC5): the native broadcaster
+// publishes under the same operator's terms as the browser; it does not gate,
+// it just points at them.
+func (a *App) TermsLink() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return TermsLink(a.cfg.AppURL)
+}
+
+// TermsLink builds a terms-of-use URL.
+func TermsLink(appURL string) string {
+	if appURL == "" {
+		return ""
+	}
+	return strings.TrimSuffix(appURL, "/") + "/#/terms"
+}
+
 // Start begins a broadcast. id empty mints a new code; non-empty reclaims.
 func (a *App) Start(ctx context.Context, id string) {
 	a.mu.Lock()

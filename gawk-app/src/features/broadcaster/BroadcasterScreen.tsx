@@ -16,6 +16,7 @@ import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
 import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { useTransportStore } from '../../state/transportStore';
 import { isDevEnvironment, requiresPublishSecret } from '../../config';
+import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
@@ -62,6 +63,9 @@ export function BroadcasterScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [secretPrompt, setSecretPrompt] = useState(false);
   const [secretDraft, setSecretDraft] = useState('');
+  // R23 (docs/29): one-time terms acknowledgment, shown before the first
+  // broadcast's transport connect (ahead of the secret prompt below).
+  const [termsPrompt, setTermsPrompt] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [statsCopied, setStatsCopied] = useState(false);
 
@@ -215,10 +219,10 @@ export function BroadcasterScreen() {
     await pipelineRef.current.stop();
   }, []);
 
-  // "Start a stream" entry point: when the deploy requires a publish secret,
-  // ask for it first (pre-filled with any stored value so returning
-  // broadcasters just confirm). Otherwise start straight away.
-  const beginStart = useCallback(() => {
+  // Past the terms gate: when the deploy requires a publish secret, ask for it
+  // first (pre-filled with any stored value so returning broadcasters just
+  // confirm). Otherwise start straight away.
+  const proceedStart = useCallback(() => {
     if (requiresPublishSecret()) {
       setSecretDraft(useTransportStore.getState().publishSecret);
       setSecretPrompt(true);
@@ -226,6 +230,24 @@ export function BroadcasterScreen() {
     }
     void handleStart();
   }, [handleStart]);
+
+  // "Start a stream" entry point. R23 (docs/29 D5): the terms acknowledgment
+  // gate comes first — before connect, before the secret prompt — so nothing
+  // touches the transport until the broadcaster has accepted (once per terms
+  // version). Viewers are never gated; only broadcasting carries the gate.
+  const beginStart = useCallback(() => {
+    if (!hasAcceptedCurrentTerms()) {
+      setTermsPrompt(true);
+      return;
+    }
+    proceedStart();
+  }, [proceedStart]);
+
+  const acceptTermsAndContinue = useCallback(() => {
+    acceptCurrentTerms();
+    setTermsPrompt(false);
+    proceedStart();
+  }, [proceedStart]);
 
   const submitSecret = useCallback(() => {
     useTransportStore.getState().setPublishSecret(secretDraft.trim());
@@ -329,6 +351,11 @@ export function BroadcasterScreen() {
             </label>
           </section>
         )}
+
+        {/* R23 (docs/29): terms reachable from the broadcaster's settings. */}
+        <div className={styles.settingsFoot}>
+          <a href="#/terms">Terms of use</a>
+        </div>
       </GlassPanel>
     </>
   );
@@ -455,6 +482,35 @@ export function BroadcasterScreen() {
         </GlassPanel>
       </div>
       {settingsPanel}
+
+      {termsPrompt && (
+        <>
+          <div className={styles.scrim} onClick={() => setTermsPrompt(false)} />
+          <div className={styles.modalCenter}>
+            <GlassPanel className={styles.modal} role="dialog" aria-label="Terms of use">
+              <h2 className={styles.modalTitle}>Before you broadcast</h2>
+              <p className={styles.cardText}>
+                You are about to publish your screen to anyone holding your join code. You are
+                responsible for the content you stream, which must be lawful where you are. The
+                service is provided as is, with no warranty.
+              </p>
+              <p className={styles.cardText}>
+                By continuing you agree to the{' '}
+                <a href="#/terms" target="_blank" rel="noopener noreferrer">
+                  Terms of use
+                </a>
+                .
+              </p>
+              <div className={styles.modalActions}>
+                <Button variant="secondary" onClick={() => setTermsPrompt(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={acceptTermsAndContinue}>Agree &amp; continue</Button>
+              </div>
+            </GlassPanel>
+          </div>
+        </>
+      )}
 
       {secretPrompt && (
         <>

@@ -55,3 +55,30 @@ config:
   # [1000, 30000]; below 1000 the relay downgrades to plain resilient
   # delivery, since every replayed record would arrive past due.
   dvrBufferMs: 3000
+
+  # ── R23 (docs/29): terms & conditions ──────────────────────────────────
+  # The app ships a default Terms of Use text. These values let you present it
+  # as YOUR deployment's terms without rebuilding the image.
+  #
+  # NOTE: the default text is a protective template, NOT legal advice. Before
+  # exposing a deployment beyond people you know, have a Finnish lawyer review
+  # the terms — especially the liability, consumer-law, and personal-data
+  # clauses, which interact with mandatory EU/Finnish provisions no contract
+  # can waive.
+  #
+  # Bump this whenever you make a meaningful edit to the terms — it re-prompts
+  # every broadcaster to acknowledge them. Empty ⇒ the version baked into the
+  # release. A date-stamp is the recommended form.
+  termsVersion: ""
+  # Substituted into the default text as the operating party + the contact
+  # point. Leaving them empty shows neutral placeholders.
+  operatorName: ""     # e.g. "Juho's homelab"
+  operatorContact: ""  # e.g. "gawk@example.com"
+  # Full-text override. To replace the whole terms document with your own:
+  #   1. put your (lawful, inert) HTML in config.termsHtml below, and
+  #   2. set config.termsUrl to "/terms.html".
+  # The app fetches it on the terms page, sanitizes it (allowlist — scripts,
+  # styles, iframes, event handlers stripped), and renders it in place of the
+  # default. Leave termsUrl empty to keep the bundled default.
+  termsUrl: ""
+  termsHtml: ""

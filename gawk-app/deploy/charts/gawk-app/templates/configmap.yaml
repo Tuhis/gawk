@@ -12,5 +12,16 @@ data:
     window.__GAWK_CONFIG__ = {
       "requirePublishSecret": {{ .Values.config.requirePublishSecret | default false }},
       "maxDecoderQueueSize": {{ .Values.config.maxDecoderQueueSize | default 5 }},
-      "dvrBufferMs": {{ .Values.config.dvrBufferMs | default 3000 }}
+      "dvrBufferMs": {{ .Values.config.dvrBufferMs | default 3000 }},
+      "termsVersion": {{ .Values.config.termsVersion | default "" | toJson }},
+      "operatorName": {{ .Values.config.operatorName | default "" | toJson }},
+      "operatorContact": {{ .Values.config.operatorContact | default "" | toJson }},
+      "termsUrl": {{ .Values.config.termsUrl | default "" | toJson }}
     };
+  # R23 (docs/29): optional full-body terms override, mounted over
+  # /usr/share/nginx/html/terms.html and served at /terms.html. It is only
+  # fetched + rendered when config.termsUrl is set to /terms.html; otherwise the
+  # app renders its bundled default and never requests this. Keep it lawful and
+  # inert HTML — the app sanitizes it (allowlist) before rendering.
+  terms.html: |
+{{ .Values.config.termsHtml | default "<!-- No terms override configured; the app renders its bundled default. -->" | indent 4 }}

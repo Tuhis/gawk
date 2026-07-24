@@ -7,6 +7,7 @@ export type Route =
   | { view: 'landing' }
   | { view: 'broadcaster' }
   | { view: 'viewer'; broadcastId: string }
+  | { view: 'terms' }
   | { view: 'debug-index' }
   | { view: 'debug-broadcast' }
   | { view: 'debug-view' }
@@ -23,6 +24,9 @@ export function parseRoute(hash: string): Route {
 
   if (path === '') return { view: 'landing' };
   if (path === 'broadcast') return { view: 'broadcaster' };
+  // R23 (docs/29): the terms surface, reachable from every surface, gated
+  // behind nothing.
+  if (path === 'terms') return { view: 'terms' };
 
   if (path === 'view' || path.startsWith('view/')) {
     const id = path.slice('view/'.length).toUpperCase();

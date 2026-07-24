@@ -475,6 +475,18 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       ? [{ label: audio.muted ? 'Unmute ✓' : 'Mute', onSelect: () => audio.setMuted(!audio.muted) }]
       : []),
     { label: 'Copy link', onSelect: copyLink },
+    // R23 (docs/29): terms reachable from the viewer without adding chrome.
+    // Opens in a new tab so reading the terms never tears down the live
+    // stream (a hash change would unmount the viewer).
+    {
+      label: 'Terms of use',
+      onSelect: () =>
+        window.open(
+          `${window.location.origin}${window.location.pathname}#/terms`,
+          '_blank',
+          'noopener',
+        ),
+    },
     { label: 'Leave', onSelect: leave },
   ];
 

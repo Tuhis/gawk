@@ -1,0 +1,7 @@
+<!-- R23 (docs/29): shipped default terms-override placeholder.
+
+  This file is intentionally empty. The app renders its BUILT-IN default terms
+  text unless an operator opts into a full-text override by BOTH setting
+  config.termsUrl = "/terms.html" AND providing config.termsHtml (gawk-app Helm
+  chart), which mounts a ConfigMap over this file. When termsUrl is unset (the
+  default) the app never fetches this file. -->

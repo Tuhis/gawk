@@ -437,7 +437,9 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   annotation, because unlike the two pacing entries this toggle still does
   what it says under resilient mode),
   `docs/29-terms-and-conditions.md` for R23 (terms & conditions / usage terms:
-  **designed 2026-07-24, not started**; chunks TC1–TC5, frontend-only — zero
+  **designed + TC1–TC5 implemented 2026-07-24, automated gates green (gawk-app
+  tsc/765 vitest/oxlint/build + helm lint/render + gawk-broadcast vet/gofmt/app
+  tests/GUI build), manual browser verify pending**; frontend-only — zero
   server/wire/broadcaster-protocol change. A `#/terms` hash route + a bundled
   default terms text (R6 chrome), a **one-time *blocking* broadcaster
   acknowledgment before the first transport connect** (versioned

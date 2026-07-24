@@ -12,6 +12,12 @@ describe('parseRoute', () => {
     expect(parseRoute('#/broadcast')).toEqual({ view: 'broadcaster' });
   });
 
+  it('maps #/terms to the terms surface (R23)', () => {
+    expect(parseRoute('#/terms')).toEqual({ view: 'terms' });
+    // Trailing-slash normalization, same as the other routes.
+    expect(parseRoute('#/terms/')).toEqual({ view: 'terms' });
+  });
+
   it('maps #/view/<valid-id> to the viewer, uppercasing the id', () => {
     expect(parseRoute('#/view/AB2CD3')).toEqual({ view: 'viewer', broadcastId: 'AB2CD3' });
     expect(parseRoute('#/view/ab2cd3')).toEqual({ view: 'viewer', broadcastId: 'AB2CD3' });

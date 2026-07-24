@@ -233,6 +233,23 @@
   font-weight: 600;
 }
 
+/* R23: the terms link at the foot of the settings panel. */
+.settingsFoot {
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-soft);
+  font-size: var(--fs-sm);
+}
+
+.settingsFoot a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.settingsFoot a:hover {
+  color: var(--text);
+}
+
 /* ── Pre-start ── */
 .bg {
   position: absolute;
