@@ -3,6 +3,7 @@ import { parseRoute, type Route } from './routing';
 import { LandingPage } from './features/landing/LandingPage';
 import { BroadcasterScreen } from './features/broadcaster/BroadcasterScreen';
 import { ViewerScreen } from './features/viewer/ViewerScreen';
+import { TermsPage } from './features/terms/TermsPage';
 import { DebugShell } from './features/debug/DebugShell';
 import { DebugIndex } from './features/debug/DebugIndex';
 import { BroadcastPage } from './features/stream/BroadcastPage';
@@ -38,6 +39,8 @@ export default function App() {
       return <BroadcasterScreen />;
     case 'viewer':
       return <ViewerScreen broadcastId={route.broadcastId} />;
+    case 'terms':
+      return <TermsPage />;
     case 'debug-index':
       return (
         <DebugShell>

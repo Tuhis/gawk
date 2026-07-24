@@ -52,6 +52,8 @@ vi.mock('./workerBroadcastSession', () => ({
 
 import { BroadcasterScreen } from './BroadcasterScreen';
 import { BroadcastStartError } from '../../transport/broadcaster';
+import { acceptCurrentTerms } from '../terms/acceptance';
+import { BUNDLED_TERMS_VERSION } from '../../config';
 
 const fakeStream = { getTracks: () => [] } as unknown as MediaStream;
 
@@ -61,6 +63,10 @@ beforeEach(() => {
   // Skip the publish-secret modal (vitest runs with import.meta.env.DEV, and
   // requiresPublishSecret() falls back to isDevEnvironment()).
   window.__GAWK_CONFIG__ = { requirePublishSecret: false };
+  // R23: pre-accept the terms so these behaviour tests exercise the start
+  // flow, not the gate. The gate has its own describe below (which clears it).
+  localStorage.clear();
+  acceptCurrentTerms();
   // jsdom's HTMLMediaElement implements neither srcObject nor play(); the
   // preview effect touches both.
   Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', {
@@ -74,6 +80,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   delete window.__GAWK_CONFIG__;
+  localStorage.clear();
 });
 
 function startBroadcast() {
@@ -125,5 +132,66 @@ describe('BroadcasterScreen start failure after capture', () => {
 
     await waitFor(() => expect(screen.getByText('Couldn’t start')).toBeTruthy());
     expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+// R23 (docs/29 D5): the terms acknowledgment gate. It sits ahead of connect —
+// nothing touches the transport until the broadcaster has agreed (once per
+// terms version). Viewers are never gated (covered elsewhere); this is the
+// broadcaster gate.
+describe('BroadcasterScreen terms acknowledgment gate', () => {
+  beforeEach(() => {
+    // Undo the outer pre-accept so these tests see the gate.
+    localStorage.clear();
+  });
+
+  it('first start shows the terms modal and connects nothing', () => {
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    expect(screen.getByText('Before you broadcast')).toBeTruthy();
+    // The strong guarantee: no session was created (no connect happened).
+    expect(created.length).toBe(0);
+  });
+
+  it('Agree persists acceptance and proceeds to start', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    fireEvent.click(screen.getByRole('button', { name: /agree/i }));
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(created.length).toBe(1);
+    expect(localStorage.getItem('gawk:terms-accepted')).toBe(BUNDLED_TERMS_VERSION);
+  });
+
+  it('Cancel connects nothing and stays idle', () => {
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(screen.queryByText('Before you broadcast')).toBeNull();
+    expect(created.length).toBe(0);
+    expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy();
+  });
+
+  it('does not re-prompt once the current version is accepted', async () => {
+    acceptCurrentTerms();
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByText('Before you broadcast')).toBeNull();
+  });
+
+  it('re-prompts when the terms version has been bumped', () => {
+    acceptCurrentTerms(); // accepts the bundled version
+    window.__GAWK_CONFIG__ = { requirePublishSecret: false, termsVersion: '2099-01-01' };
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    expect(screen.getByText('Before you broadcast')).toBeTruthy();
+    expect(created.length).toBe(0);
   });
 });

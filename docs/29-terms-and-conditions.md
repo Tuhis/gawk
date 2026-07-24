@@ -1,10 +1,14 @@
 # R23 — Terms & conditions / usage terms (docs/29)
 
-**Status**: designed 2026-07-24, not started. Chunks **TC1–TC5** (`TC` =
+**Status**: designed 2026-07-24; **TC1–TC5 implemented 2026-07-24, automated
+gates green (gawk-app: tsc + 765 vitest tests + oxlint + vite build; helm lint
++ render validated; gawk-broadcast: go vet + gofmt + app tests + GUI builds),
+manual browser verify pending** (see §10). Chunks **TC1–TC5** (`TC` =
 Terms & Conditions; two-letter prefix per the R21+ convention — `NA`/`MF`/`DV`
-are claimed). Would ship as `gawk-app-vX.Y.Z`; **frontend-only, zero
-server / wire / broadcaster-protocol changes** — the one server-adjacent
-touch is a new `gawk-app` chart value + ConfigMap key, no relay code.
+are claimed). Ships as `gawk-app-vX.Y.Z` (+ a `gawk-broadcast` doc/GUI touch);
+**frontend-only, zero server / wire / broadcaster-protocol changes** — the one
+server-adjacent touch is a new `gawk-app` chart value + ConfigMap key, no relay
+code.
 
 > **Legal caveat (load-bearing, restated in the shipped text).** The default
 > terms in §7 below are a **protective template written to the operator's
@@ -427,3 +431,32 @@ prior understanding on that subject. Section headings are for convenience only.
   from full terms — possible R6-polish follow-up, not part of R23.
 - **Machine-readable acceptance receipts** — out of scope; contradicts the
   no-identity model (non-goal).
+
+## 10. Implementation status (2026-07-24)
+
+TC1–TC5 landed together; automated gates green in both modules. Deviations
+from the design above, all immaterial:
+
+- **New feature dir** `gawk-app/src/features/terms/`: `TermsPage.tsx` (route
+  chrome + override fetch/fallback), `BundledTerms.tsx` (the §7 default text),
+  `sanitize.ts` (+ `sanitize.test.ts`, the XSS corpus), `acceptance.ts` (+
+  test), `terms.module.css`.
+- **Override fetch happens only on the `#/terms` route open**, not also at
+  acknowledgment time as §4.2's diagram allowed — the acknowledgment modal
+  shows a short summary + a link, so it never needs the full override body. Boot
+  stays fetch-free (the load-bearing property is preserved).
+- **`getTermsVersion` treats an empty string as unset** (falls back to
+  `BUNDLED_TERMS_VERSION`), so the ConfigMap renders an empty `termsVersion`
+  default instead of duplicating the version constant across app + chart.
+- **Chart**: `config.termsHtml` → ConfigMap `terms.html` key → mounted over
+  `public/terms.html`; opting in is `config.termsUrl: /terms.html`. A default
+  install renders the bundled default and issues **no** `/terms.html` fetch.
+  `toJson` quoting verified against hostile operator names (quotes/`&`).
+- **Viewer menu opens `#/terms` in a new tab** (`window.open`), not an in-place
+  hash change — reading the terms never tears down the live view.
+- **TC5**: `internal/app.TermsLink()` derives `<app-url>/#/terms` (mirrors
+  `JoinLink`); the Gio GUI settings card shows a `Caption` notice + the link
+  when an app URL is set; `gawk-broadcast/README.md` gained a Terms section.
+  No native gate (D8).
+- The sanitizer returns `''` without a DOM (SSR/node), so its tests carry the
+  `@vitest-environment jsdom` directive (as do `acceptance`/`TermsPage`).

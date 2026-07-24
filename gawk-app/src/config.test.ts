@@ -4,6 +4,11 @@ import { getRuntimeConfig, requiresPublishSecret,
   DEFAULT_DVR_BUFFER_MS,
   MIN_DVR_BUFFER_MS,
   MAX_DVR_BUFFER_MS,
+  BUNDLED_TERMS_VERSION,
+  getTermsVersion,
+  getOperatorName,
+  getOperatorContact,
+  getTermsUrl,
 } from './config';
 
 beforeEach(() => {
@@ -71,5 +76,42 @@ describe('getDvrBufferMs', () => {
     expect(getDvrBufferMs()).toBe(DEFAULT_DVR_BUFFER_MS);
     window.__GAWK_CONFIG__ = { dvrBufferMs: 'lots' as unknown as number };
     expect(getDvrBufferMs()).toBe(DEFAULT_DVR_BUFFER_MS);
+  });
+});
+
+// R23 (docs/29): terms metadata accessors. Empty/whitespace strings count as
+// unset so the ConfigMap can render empty defaults without duplicating the
+// version constant or printing blank attribution.
+describe('terms config', () => {
+  afterEach(() => {
+    delete window.__GAWK_CONFIG__;
+  });
+
+  it('falls back to the bundled version when unset or blank', () => {
+    window.__GAWK_CONFIG__ = {};
+    expect(getTermsVersion()).toBe(BUNDLED_TERMS_VERSION);
+    window.__GAWK_CONFIG__ = { termsVersion: '   ' };
+    expect(getTermsVersion()).toBe(BUNDLED_TERMS_VERSION);
+  });
+
+  it('takes a configured version', () => {
+    window.__GAWK_CONFIG__ = { termsVersion: '2027-01-01' };
+    expect(getTermsVersion()).toBe('2027-01-01');
+  });
+
+  it('shows a neutral operator name when unset', () => {
+    window.__GAWK_CONFIG__ = {};
+    expect(getOperatorName()).toBe('the operator of this deployment');
+    window.__GAWK_CONFIG__ = { operatorName: 'Juho’s homelab' };
+    expect(getOperatorName()).toBe('Juho’s homelab');
+  });
+
+  it('returns null contact/url when unset (so the UI degrades, no blank/fetch)', () => {
+    window.__GAWK_CONFIG__ = {};
+    expect(getOperatorContact()).toBeNull();
+    expect(getTermsUrl()).toBeNull();
+    window.__GAWK_CONFIG__ = { operatorContact: 'x@y.z', termsUrl: '/terms.html' };
+    expect(getOperatorContact()).toBe('x@y.z');
+    expect(getTermsUrl()).toBe('/terms.html');
   });
 });

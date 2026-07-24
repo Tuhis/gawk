@@ -583,6 +583,23 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					}),
 				)
 			}),
+			// R23 (docs/29 TC5): a non-gating reference to the operator's terms,
+			// with the link when an app URL is set (derived like the join link).
+			layout.Rigid(spacer(10)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				t := material.Caption(u.th, "By broadcasting you accept the operator's terms of use.")
+				t.Color = colFaint
+				return t.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				link := u.app.TermsLink()
+				if link == "" {
+					return layout.Dimensions{}
+				}
+				t := material.Caption(u.th, link)
+				t.Color = colFaint
+				return t.Layout(gtx)
+			}),
 		)
 	})
 }

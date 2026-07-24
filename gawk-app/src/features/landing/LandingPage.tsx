@@ -44,6 +44,11 @@ export function LandingPage() {
           Start a stream <span aria-hidden="true">→</span>
         </button>
       </GlassPanel>
+
+      {/* R23 (docs/29): terms reachable from the front door, unobtrusively. */}
+      <a className={styles.terms} href="#/terms">
+        Terms of use
+      </a>
     </div>
   );
 }

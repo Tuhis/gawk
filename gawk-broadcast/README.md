@@ -135,6 +135,17 @@ over a real network — the homelab case.)
 credential — anything that can read it can publish to the relay under your
 broadcaster identity.
 
+## Terms of use
+
+This broadcaster publishes to the operator's relay under **the same terms of
+use as the browser broadcaster** (R23, [`docs/29`](../docs/29-terms-and-conditions.md)):
+you are responsible for the content you stream, it must be lawful where you are,
+and the service is provided as is, with no warranty. Read the operator's terms
+at `<app-url>/#/terms` — the GUI shows the link once you set the app URL, and
+the CLI's `-app-url` is the same value. Unlike the browser broadcaster, the
+native app does not present a one-time acknowledgment gate; running it is the
+acknowledgment.
+
 ## How it works
 
 The shape to hold in your head: **the picture stays on the GPU the whole way,

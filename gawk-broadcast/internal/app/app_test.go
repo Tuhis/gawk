@@ -230,6 +230,21 @@ func TestJoinLinkNeedsAnAppURL(t *testing.T) {
 	}
 }
 
+// R23 (docs/29 TC5): the terms link is derived from the app URL like the join
+// link, and is empty without one.
+func TestTermsLink(t *testing.T) {
+	if got := TermsLink(""); got != "" {
+		t.Errorf("TermsLink with no app URL = %q, want empty", got)
+	}
+	if got := TermsLink("https://gawk.example"); got != "https://gawk.example/#/terms" {
+		t.Errorf("TermsLink = %q", got)
+	}
+	// A trailing slash must not produce a double slash.
+	if got := TermsLink("https://gawk.example/"); got != "https://gawk.example/#/terms" {
+		t.Errorf("TermsLink = %q", got)
+	}
+}
+
 // Every error a user can hit becomes a sentence, never a Go error string.
 func TestMessageProducesSentences(t *testing.T) {
 	for _, tc := range []struct {

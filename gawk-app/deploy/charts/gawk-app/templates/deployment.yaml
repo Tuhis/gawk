@@ -51,6 +51,12 @@ spec:
             - name: runtime-config
               mountPath: /usr/share/nginx/html/config.js
               subPath: config.js
+            # R23 (docs/29): the optional terms-body override, from the same
+            # ConfigMap. Harmless when unused (config.termsHtml empty ⇒ a
+            # placeholder comment the app never fetches).
+            - name: runtime-config
+              mountPath: /usr/share/nginx/html/terms.html
+              subPath: terms.html
       volumes:
         - name: runtime-config
           configMap:
