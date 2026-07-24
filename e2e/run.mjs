@@ -380,7 +380,13 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null }) {
       // is negotiated at connect, so it has to be set before the app runs.
       if (deliveryMode) localStorage.setItem('gawk:viewer-delivery', deliveryMode);
       // The shipped public/config.js assigns nothing, so this seed survives.
-      window.__GAWK_CONFIG__ = { requirePublishSecret: false };
+      // R23: pin the terms version and pre-accept it so the broadcaster's
+      // one-time acknowledgment modal never gates "Start a stream" — the same
+      // move as requirePublishSecret:false above (skip a pre-start modal the
+      // gate has its own unit coverage for). Pinning the version keeps this
+      // robust when the bundled version bumps. Viewers are never gated.
+      window.__GAWK_CONFIG__ = { requirePublishSecret: false, termsVersion: 'e2e' };
+      localStorage.setItem('gawk:terms-accepted', 'e2e');
       window.__gawkClipboard = [];
       Object.defineProperty(Navigator.prototype, 'clipboard', {
         configurable: true,
