@@ -148,8 +148,8 @@ From `gawk-server/wire/wire_test.go`:
   offsetUs −1 000 000 (int64 two's complement): `0106fffffffffff0bdc0`
 
 **Validation limit (added in R2, [docs/07](07-hardening.md))**: `chunkCount`
-is capped at **1000** (`wire.MaxChunkCount` / `MAX_CHUNK_COUNT`, ~1.2 MB per
-keyframe) — the relay counts anything above it as a bad datagram to bound
+is capped at **3000** (`wire.MaxChunkCount` / `MAX_CHUNK_COUNT`, ~3.5 MB per
+keyframe; the R2 draft used 1000, later raised) — the relay counts anything above it as a bad datagram to bound
 keyframe-reassembly memory, and the TS side rejects it in both encode and
 parse so an over-limit frame fails loudly at the broadcaster instead of
 being silently dropped server-side.

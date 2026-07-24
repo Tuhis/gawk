@@ -41,7 +41,7 @@ the same underlying event (datagram read loop ending vs. `wt.closed`),
 their settle order is unspecified. Pick the signal that carries the
 semantics (only `wt.closed` has the close code) and make the others defer
 to it — never let whichever-fires-first decide behavior. See the README
-gotcha and `viewer.ts handleReadLoopEnd`.
+gotcha and `transport/viewer-transport.ts` (`handleReadLoopEnd`).
 
 **Shared constants have exactly one definition per language.** Go's
 `wire` package and `wire.ts` are the two homes; nothing else hardcodes

@@ -6,8 +6,9 @@
 // access-unit delimiters, which is adversarial parsing over a byte stream we
 // then have to trust. MPEG-TS gives the boundary structurally —
 // payload_unit_start_indicator marks each PES, and one PES is one access unit
-// — and throws in the PES PTS for free, which is the upgrade path if the
-// arrival-stamp bias gate (Decision 6) ever fails.
+// — and throws in the PES PTS for free, which the engine uses to clock-anchor
+// each access unit's timestamp (Decision 6's upgrade path, taken 2026-07-17 —
+// see internal/gst/pts.go and docs/19 deviation 11).
 //
 // The scope here is exactly the pipeline we build in internal/gst: one
 // program, one video stream (H.264), no scrambling, no PCR use, sections that

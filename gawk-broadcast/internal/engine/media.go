@@ -86,13 +86,17 @@ type AccessUnit struct {
 	// in-band, which is what makes it self-sufficient for the relay's
 	// cached-keyframe priming of late joiners.
 	Keyframe bool
-	// TimestampUs is when the AU was fully read from the pipe, on the
-	// engine's Clock — the same clock TimeSync reads (Decision 6).
+	// TimestampUs is the AU's presentation time on the engine's Clock — the
+	// same clock TimeSync reads (Decision 6). Since 2026-07-17 it is the PES
+	// PTS mapped onto that clock by ptsAnchor (internal/gst/pts.go), so stamps
+	// carry the capture cadence instead of the pipe's delivery pattern; it
+	// falls back to the pipe-arrival time only when the container carried no
+	// PTS. See docs/19 deviation 11.
 	TimestampUs uint64
-	// PTSUs is the PES presentation timestamp, if the container carried one.
-	// Unused today: it is kept because Decision 6's upgrade path (if V4's
-	// 15 ms bias gate fails) is clock-anchored PTS, and this is the half of
-	// it that comes free with the framing.
+	// PTSUs is the raw PES presentation timestamp, if the container carried
+	// one. Carried for diagnostics only — the value actually shipped is the
+	// clock-anchored TimestampUs above (ptsAnchor consumes the PTS directly);
+	// nothing downstream reads this field.
 	PTSUs  uint64
 	HasPTS bool
 }

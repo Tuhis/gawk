@@ -82,7 +82,7 @@ fixes below). Acceptance per goal:
 - Validate inputs during `ParseFlags`. Add helper `parseBandwidth` to handle bandwidth suffix strings.
 
 #### [MODIFY] gawk-server/wire/wire.go
-- Add constant `MaxChunkCount = 1000`.
+- Add constant `MaxChunkCount = 1000`. *(Later raised to 3000 — see docs/02 and `wire.go`.)*
 - Update `ParseVideoChunk` to reject `h.ChunkCount > MaxChunkCount` with `ErrBadChunkCount`.
 
 #### [MODIFY] gawk-server/internal/hub/hub.go

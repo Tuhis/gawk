@@ -95,10 +95,17 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs (currently none; the
-  Chrome 152 `getStats()` entry was root-caused 2026-07-14 as an upstream
-  API removal, not a gawk bug — no browser ships `WebTransport.getStats()`
-  today; see docs/13 D7). Check it before debugging anything
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Six open entries (plus a
+  lint-hygiene note) as of 2026-07-24: two Safari viewer stalls (keyframe
+  delivery stops; a dead-session freeze that now recovers but whose WebKit
+  root cause is still unknown), the iPhone native-fullscreen black video, a
+  misleading "Streamer offline" join-reject card, a broadcaster stuck on LIVE
+  after a silent worker death, and the viewer `avSkewMs` metric over-reporting
+  on long/stressed sessions (the audio itself is fine); plus a recorded set of
+  `gawk-broadcast/internal/mpegts` lint advisories that are not runtime
+  defects. (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
+  as an upstream API removal, not a gawk bug — no browser ships
+  `WebTransport.getStats()` today; see docs/13 D7.) Check it before debugging anything
   overlay/stats-related; remove entries when fixed.
 - `CODE-REVIEW.md` — **coding + review guidelines; bug fixes are test-first
   (failing test before the fix, always). Follow it for every change and
@@ -197,7 +204,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   (shared capture clock, adaptive audio jitter buffer, **video-master**
   pacing since 2026-07-20 — docs/20 field finding 4); N1–N6 chunks; designed 2026-07-15, refreshed
   2026-07-19 post-R16–R20; **N1–N6 implemented 2026-07-19, automated gates
-  green in all three modules, manual browser verify pending** — deviations
+  green in all three modules; graduated from experimental 2026-07-23 after
+  the owner confirmed reliable playback on real hardware — twelve field
+  findings, eleven fixed, finding 12 open; the formal docs/20 verification
+  pass still needs a full re-run** — deviations
   in the doc's "Implementation status"),
   `docs/21-ios-video-fullscreen.md` for R16 (iOS native fullscreen:
   iPhone has **no Element Fullscreen API** — today's viewer fullscreen
@@ -517,7 +527,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   only the iPhone-native presentation stays manual; zero server/wire/broadcaster
   changes. Chunks **MF1–MF5** — two-letter prefix, A–Z claimed),
   `docs/26-relay-dvr-buffer.md` for R21 (relay DVR ring buffer for resilient
-  mode: **designed 2026-07-23, not started**. R19 shipped the viewer half of
+  mode: **DV1–DV5 implemented 2026-07-23 (wire type 0x0C `TypeDeliveryAck`,
+  5 B; `-dvr-window`/`-dvr-max-bytes`/`-dvr-max-catchup`/`-dvr-audio` flags;
+  `internal/hub/dvr*.go`; viewer "Deep buffer" delivery mode) — DV6
+  on-hardware verification pending**. R19 shipped the viewer half of
   the latency trade (a deep adaptive playout buffer) but not the relay half,
   so the mode survives loss/jitter on a *connected* link and still freezes on
   an actual outage — the viewer's buffer is made of **delay, not pre-fetched
@@ -967,9 +980,17 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    container/chart/CI-deploy component — binaries you run on your own PC.
 20. System audio — **designed 2026-07-15 (N1–N6); refreshed 2026-07-19
    against R16–R20; N1–N6 implemented 2026-07-19, automated gates green;
-   nine hardware field findings fixed 2026-07-19→07-23, and the owner
-   reports audio working reliably as of 2026-07-23 — which is what
-   graduated it from experimental (below)** (R15,
+   twelve hardware field findings — findings 1–8 detailed below, plus 9
+   (`avSkewMs` measured buffering depth + estimator lag, not lip-sync —
+   fixed by measuring at presentation and snapping the mapping on a
+   re-anchor), 10 (a stale flush left Deep-buffer audio ~2.8 s behind), 11
+   (toggling paced playback left audio behind), and the still-open 12
+   (`avSkewMs` still over-reports on long/stressed sessions — a metric
+   artifact; audio itself is fine); eleven fixed 2026-07-19→07-24, and the
+   owner reports audio playing reliably on real hardware as of 2026-07-23 —
+   which is what graduated it from experimental (below), though the formal
+   docs/20 verification pass reached only step 3 of 9 (2026-07-24) and still
+   needs a full re-run** (R15,
    `docs/20-system-audio.md`). Shipped **experimental, default-off** behind
    an "Enable audio (experimental)" toggle; **graduated 2026-07-23 (user
    decision, docs/20 "Graduation") by removing that toggle** — the
@@ -1327,7 +1348,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    Manual toggle first ("Resilient mode (mobile networks)", persisted
    `gawk:resilient-mode`, default off; mode change = deliberate reconnect;
    while on, the paced/smooth entries are annotated as governed by it and
-   the stored playout mode survives untouched); auto-detect deferred
+   the stored playout mode survives untouched). **Since R21 (docs/26) this is
+   a three-way delivery menu — live / resilient / "Deep buffer" — persisted
+   as `gawk:viewer-delivery`; the old `gawk:resilient-mode` key is now read
+   only to migrate existing viewers.** Auto-detect deferred
    as a suggest-banner design sketch. Supersedes docs/12 Decision 1 for
    this opt-in mode only; default mode keeps datagrams. Observability:
    overlay Delivery-mode + carrier rows, `/statusz`
@@ -1386,6 +1410,21 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    confirmed the one load-bearing unknown:
    **hash-pinned WebTransport works in headless Chrome as-is** (no SPKI
    flag, no Xvfb — docs/25 findings).
+25. Relay DVR ring buffer for resilient mode — **DV1–DV5 implemented
+   2026-07-23; DV6 on-hardware verification + tuning pending** (R21,
+   `docs/26-relay-dvr-buffer.md`; server-side + a viewer "Deep buffer"
+   delivery mode). Gives each broadcast a short (2–3 s, `-dvr-window`) relay
+   ring of whole GOPs with a per-subscriber cursor, so a resilient/deep
+   viewer rides out a multi-second outage with no freeze and no lost frames
+   (R19 shipped only the viewer-side delay buffer, which relocates the freeze
+   rather than covering the stall). New wire type **0x0C `TypeDeliveryAck`**
+   (5 B) acks the negotiated delivery mode; knobs `-dvr-window` (3s),
+   `-dvr-max-bytes` (24 MiB), `-dvr-max-catchup` (4×), `-dvr-audio` (on) are
+   plumbed through `registryOptions`; a DVR subscriber is excluded from the
+   LIVE keyframe fan-out (docs/26 field finding 1). Viewer delivery is now a
+   three-way menu (live / resilient / Deep buffer) persisted as
+   `gawk:viewer-delivery`. Automated gates green incl. an e2e deep-buffer
+   viewer pass; on-hardware tuning is the remaining DV6 work.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,
