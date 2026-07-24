@@ -41,7 +41,7 @@ feature set exists).
 | R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers green in real CI** (tier-1 `e2e` on every PR; `e2e-cluster` on the 2026-07-18 release PRs — Z3's green-on-a-release-PR acceptance met, origin/edge split + browser viewer asserted); Z5 browser-broadcaster implemented 2026-07-19 (spike: viable headless via tab capture — screen capture delivers black frames); Z4 burn-in → required flip pending ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 | R21 | [Relay DVR ring buffer for resilient mode](#r21--relay-dvr-ring-buffer-for-resilient-mode) | 🔧 designed 2026-07-23, not started (DV1–DV6) ([docs/26](docs/26-relay-dvr-buffer.md)) |
 | R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔧 designed 2026-07-23, not started (MF1–MF5); MSE-backed native fullscreen **spike-confirmed on iPhone** — supersedes R16's rejected MediaStream tee ([docs/27](docs/27-ios-mse-fullscreen.md)) |
-| R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 📝 not designed, not started |
+| R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 🔧 designed 2026-07-24, not started (TC1–TC5) ([docs/29](docs/29-terms-and-conditions.md)) |
 | R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 💡 idea — not designed, no doc yet |
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
 
@@ -1556,9 +1556,23 @@ deployment concern.
   binary you run on your own PC, outside the deployment. Probably a one-line
   reference in its GUI + README rather than a gate; decide explicitly.
 
-**Status**: not designed, not started. Would get the next doc number in the
-`docs/NN-*.md` series and a chunk prefix following R22's two-letter
-convention (`MF` is claimed).
+**Status**: designed 2026-07-24 (chunks TC1–TC5) — full design, decisions,
+and the default terms text in
+[`docs/29-terms-and-conditions.md`](docs/29-terms-and-conditions.md). Not
+started. Owner decisions locked: **Finnish governing-law one-liner** (no
+explicit forum clause); **no hard age gate** — the text states 18+ with
+under-18 parental/guardian consent, nothing recorded; **monitoring posture
+reserves broad rights *and* states current practice** (broad
+monitor/analyze/record/block/remove discretion, plus a factual "as currently
+operated, no persistent media recording — not a warranty"); **English only**.
+Frontend-only (zero server / wire / broadcaster-protocol change): a `#/terms`
+route + bundled default text, a one-time *blocking* broadcaster acknowledgment
+before the first connect (viewers never gated), and operator customization via
+the existing runtime `config.js`/ConfigMap plus an optional
+sanitized-HTML body override. The text is a **protective template written to
+the operator's priorities, not legal advice** — the doc carries that caveat
+and reproduces it in the chart README. The native broadcaster (R14) gets a
+one-line reference + link, not a gate.
 
 ---
 

@@ -426,6 +426,27 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   server/wire/broadcaster changes; no "governed by Resilient mode"
   annotation, because unlike the two pacing entries this toggle still does
   what it says under resilient mode),
+  `docs/29-terms-and-conditions.md` for R23 (terms & conditions / usage terms:
+  **designed 2026-07-24, not started**; chunks TC1–TC5, frontend-only — zero
+  server/wire/broadcaster-protocol change. A `#/terms` hash route + a bundled
+  default terms text (R6 chrome), a **one-time *blocking* broadcaster
+  acknowledgment before the first transport connect** (versioned
+  `gawk:terms-accepted` localStorage key, re-prompts on a `termsVersion` bump;
+  **viewers are never gated** — read-only from landing footer / broadcaster
+  Settings / the viewer "⋮" menu), and operator customization via the
+  **existing runtime `config.js`/ConfigMap** (new `termsVersion` /
+  `operatorName` / `operatorContact` / optional `termsUrl` fields) plus a
+  full-body override that is a **sanitized HTML fragment** — the one
+  security-review line. Owner decisions: **Finnish governing-law one-liner**
+  (no forum clause); **no hard age gate / nothing recorded** — text states 18+
+  with under-18 parental/guardian consent; **monitoring reserves broad rights
+  *and* states current practice** (broad monitor/analyze/record/block/remove
+  discretion + a factual "as currently operated, no persistent media
+  recording — not a warranty", worded to stay true if R21's DVR ring lands);
+  **English only**. The default text is a **protective template written to the
+  operator's priorities, NOT legal advice** — the doc and the chart README both
+  carry that caveat. The native broadcaster (R14) gets a one-line reference +
+  link, not a gate (TC5, droppable)),
   `docs/28-native-broadcaster-audio.md` for R25 (native broadcaster audio:
   **designed 2026-07-23, not started**; flips docs/20's "audio in the R14
   native broadcaster" non-goal, which had already written down the shape.
