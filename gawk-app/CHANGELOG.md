@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.29.1...gawk-app-v0.30.0) (2026-07-24)
+
+
+### Features
+
+* **r23:** terms & conditions surface + broadcaster acknowledgment ([#129](https://github.com/Tuhis/gawk/issues/129)) ([1b855f9](https://github.com/Tuhis/gawk/commit/1b855f97d8caea538cf6fb15099eac7b1d1c8adc))
+
 ## [0.29.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.29.0...gawk-app-v0.29.1) (2026-07-24)
 
 
