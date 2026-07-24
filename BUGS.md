@@ -316,6 +316,51 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   terminate, fire `onEnded`). The screen's `onError`/`onEnded` handling
   already lands on the right card.
 
+## Viewer `avSkewMs` over-reports A/V skew on long or stressed sessions
+
+- **Found**: 2026-07-24 (docs/20 field finding 12), from a multi-hour
+  Chrome/macOS viewer field capture that reported **`avSkewMs` ≈ 18788 ms**
+  while — per the owner watching the stream — audio was visibly near-correct.
+- **Impact**: diagnostic only. The **audio path is fine**; this is a metric
+  artifact, so the danger is a future operator (or a future fix) trusting
+  `avSkewMs` and "correcting" a lip-sync error that isn't there. A resync/flush
+  "fix" was considered and **rejected** (owner, 2026-07-24): flushing audio to
+  chase the phantom would inject real gaps to catch up to a number, not to live.
+- **Signature**: `avSkewMs` in the thousands of ms while the corroborating rows
+  are all healthy — `audioPacketsReceived == audioPacketsDecoded` (zero wire
+  loss), `resets` 0, buffer depth ~195/150 ms and alignment hold ~160 ms. Real
+  lip-sync error would show loss, resets, or a starved buffer; none are present.
+- **Cause**: a residual of finding 9 (`avSkewMs` measured buffering depth +
+  estimator lag, not lip-sync). Finding 9's fix (measure at presentation, snap
+  the ClockMapping on a re-anchor) bounded the *steady-state* over-report but
+  did not eliminate it on long/stressed sessions.
+- **Fix would start**: `transport/av-sync.ts` — the fix belongs in **how the
+  metric is taken** (as finding 9's did), never in the audio path. Anything
+  that flushes or reschedules audio to lower the number is wrong, because the
+  premise (audio has fallen behind) is false here. Open, deferred — audio is
+  actually near-correct.
+
+## Lint advisories in `gawk-broadcast/internal/mpegts` (not runtime defects)
+
+- **Found**: 2026-07-24, from the editor linter while touching `mpegts.go`'s
+  package comment during the docs-freshness pass. Pre-existing, not introduced
+  by that change.
+- **Impact**: cosmetic / hygiene. Neither affects the shipped demuxer's
+  behavior; recorded here so they aren't rediscovered as "new" each time the
+  package is edited.
+- **The two advisories**:
+  - `mpegts.go:138` (`Demuxer.resync`) — `for i := 0; i < len(p); i++` can be
+    modernized to `for i := range len(p)` (`rangeint`). Purely stylistic.
+  - `mpegts_test.go:17` — const `fixtureGOPFrames = 15` is **unused**. It is
+    defined with a comment describing the fixture's GOP-15 (500 ms @ 30 fps)
+    structure but no test references it, so it reads as either a leftover or a
+    missing assertion.
+- **Fix would start**: modernize the `resync` loop; and decide whether
+  `fixtureGOPFrames` should back a real test — e.g. assert IDR access units
+  recur every 15 frames in the demuxed fixture — or just be removed. The latter
+  is trivial; the former is more valuable (it gives the demuxer a keyframe-
+  spacing assertion it currently lacks).
+
 (The Chrome 152 `WebTransport.getStats()` entry was resolved 2026-07-14: not
 a gawk defect — Chromium removed the API entirely; see the gotcha in
 `docs/13-observability.md` D7 and the README gotcha list.)

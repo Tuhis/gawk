@@ -95,12 +95,15 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Five open entries as of
-  2026-07-24: two Safari viewer stalls (keyframe delivery stops; a
-  dead-session freeze that now recovers but whose WebKit root cause is still
-  unknown), the iPhone native-fullscreen black video, a misleading "Streamer
-  offline" join-reject card, and a broadcaster stuck on LIVE after a silent
-  worker death. (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Six open entries (plus a
+  lint-hygiene note) as of 2026-07-24: two Safari viewer stalls (keyframe
+  delivery stops; a dead-session freeze that now recovers but whose WebKit
+  root cause is still unknown), the iPhone native-fullscreen black video, a
+  misleading "Streamer offline" join-reject card, a broadcaster stuck on LIVE
+  after a silent worker death, and the viewer `avSkewMs` metric over-reporting
+  on long/stressed sessions (the audio itself is fine); plus a recorded set of
+  `gawk-broadcast/internal/mpegts` lint advisories that are not runtime
+  defects. (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
   as an upstream API removal, not a gawk bug — no browser ships
   `WebTransport.getStats()` today; see docs/13 D7.) Check it before debugging anything
   overlay/stats-related; remove entries when fixed.
