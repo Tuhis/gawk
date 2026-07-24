@@ -47,6 +47,24 @@ const drainWindow = time.Second
 // an anonymous drop (still recovered, but on the slower abrupt-error path).
 const drainFlushDelay = 250 * time.Millisecond
 
+// How many times a subscriber is told what delivery it was served, and how far
+// apart (R21, docs/26 Decision 7a). The announcement rides an unreliable
+// datagram and never changes, so a small bounded repeat removes a single point
+// of failure for 20 bytes.
+//
+// The burst is deliberately tight rather than spread over seconds. What it
+// defends against is a *startup* race — datagrams arriving before the viewer's
+// reader is draining — which resolves in well under a second; and a datagram is
+// ack-eliciting, so a repeat spread across seconds is indistinguishable from a
+// keepalive and holds the QUIC connection open past -max-idle-timeout. A
+// 1 s idle timeout with keepalives off is exactly what
+// TestIdleSubscriberTimesOutWithoutKeepalive pins, and a 4 s version of this
+// broke it. Finish long before any sane idle timeout.
+const (
+	deliveryAckAnnouncements   = 4
+	deliveryAckReannounceEvery = 150 * time.Millisecond
+)
+
 // drainSession is the slice of a webtransport.Session the drain needs;
 // narrowed to an interface so the drain logic is unit-testable with fakes.
 type drainSession interface {
@@ -976,9 +994,33 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// too old to know the parameter — and a viewer that cannot name what it
 	// got is what made the 2026-07-22 investigation so expensive (BUGS.md).
 	// Best-effort: a failed ack costs a diagnostics row, never the session.
-	if err := sess.SendDatagram(wire.AppendDeliveryAck(nil, mode, uint16(bufferMs))); err != nil {
+	ack := wire.AppendDeliveryAck(nil, mode, uint16(bufferMs))
+	if err := sess.SendDatagram(ack); err != nil {
 		log.Warn("delivery ack not sent; the viewer cannot report its served mode", "err", err)
 	}
+	// ...and re-announce it a few times. This one datagram is the viewer's
+	// only way to name what it was served, and it was sent exactly once, at
+	// the instant the CONNECT was accepted — the moment a viewer is least
+	// likely to be draining its datagram queue. Unreliable delivery plus a
+	// one-shot announcement means a single loss leaves the viewer reporting
+	// the wrong mode for the whole session, with no way to ask again (the
+	// one-way data flow is deliberate — docs/15 Decision 6). Re-emitting is
+	// the same answer the cached DecoderConfig and the 1 Hz audio config
+	// already use, bounded here because unlike those this never changes.
+	go func() {
+		t := time.NewTicker(deliveryAckReannounceEvery)
+		defer t.Stop()
+		for i := 1; i < deliveryAckAnnouncements; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-t.C:
+				if err := sess.SendDatagram(ack); err != nil {
+					return
+				}
+			}
+		}
+	}()
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
 	for {

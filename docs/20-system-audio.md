@@ -5,13 +5,14 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
 **N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-23 produced
-ten field findings, all fixed — including the Decision 10 inversion to
+eleven field findings, all fixed — including the Decision 10 inversion to
 **video-master** A/V sync, the Decision 12 reversal taking audio back off
 the R19 reliable carrier, a live-edge audio buffer-depth floor, honest
 jitter-buffer depth accounting with worklet-stall recovery (finding 7 — the
-crackle-then-silence fix), and the re-anchor fix for leaving Deep buffer
-(finding 10, reproduced against the homelab); hardware re-verification
-pending** — see [Status](#status)). Adds the broadcaster's
+crackle-then-silence fix), and the two re-anchor fixes — leaving Deep buffer
+(finding 10) and toggling paced playback (finding 11), both reproduced
+against the homelab; hardware re-verification pending** — see
+[Status](#status)). Adds the broadcaster's
 **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
 (Opus) on the broadcaster, one Opus packet per WebTransport datagram through
@@ -1138,6 +1139,57 @@ passes on the fix), zero wire/relay/broadcaster changes.
 is how a re-anchor defect shipped green. The fix is pinned at the
 `AudioJitterBuffer` seam, where the defect actually lived; the reset *wiring*
 remains untested and is worth closing separately.
+
+### Field finding 11 (2026-07-23): toggling paced playback left audio behind
+
+Found running **step 3 of the verification plan below** (the playout-mode
+sweep), measured against the homelab deployment. Step 3's stated expectation —
+*"the same in every mode — skew ≈ 0"* — does not hold.
+
+| | adaptive paced (default) | → Paced playback **off** |
+|---|---|---|
+| `capToRenderMs` | 204 ms | **65 ms** (video moved 139 ms earlier ✓) |
+| `playoutOffsetMs` | 174 | 0 ✓ |
+| `alignmentHoldMs` | 160 ms | **160 ms — unchanged** |
+| `avSkewMs` | 142 ms | **333 ms** |
+
+Video re-paces correctly and audio does not move at all: the anchor stays where
+it was while the picture jumps a playout offset earlier, and the skew grows by
+about that much. It is permanent for the session.
+
+**Distinct from finding 10, and not fixed by it.** Finding 10 was a *flush that
+re-anchored against a stale schedule*. Here there is no flush to get wrong: a
+playout toggle is a worker command with no reconnect, so nothing re-anchors at
+all. And after release the alignment is immutable — the worklet consumes exactly
+`sampleRate` samples/s at 1×, so no buffering can move a sample (finding 4).
+The `AudioRateController` trim is the only other lever and is far too slow for a
+step this size: ±0.4 % walks out 190 ms in ~48 s of visibly wrong lip sync.
+
+**Fix.** `AudioSink` probes the video schedule's offset at a fixed timestamp on
+every refresh — the schedule is affine in the timestamp, so `present(0)`
+isolates exactly the part a playout change moves and is otherwise stable — and
+re-anchors (flush + re-prime) when it moves by more than
+`SCHEDULE_REANCHOR_MS` (100 ms). That threshold sits between the two
+populations it must separate: `PlayoutController` slews at most 50 ms/s, so a
+~500 ms stats tick legitimately moves the schedule ~25 ms, while the toggle this
+exists for moves it 140–190 ms. A `SCHEDULE_REANCHOR_COOLDOWN_MS` (2 s) floor
+keeps an oscillating baseline from turning the fix into a stutter — one silence
+is a fix, ten is the bug.
+
+**Accepted cost:** re-anchoring drops the pending cushion, so toggling pacing
+now costs a brief audio gap. That is the right trade against minutes of wrong
+lip sync, and it only fires on a deliberate user action that already changes
+playback — the same reasoning R19 used for "mode change = deliberate
+reconnect". The re-anchor is visible as the overlay's **Recoveries** row.
+
+Viewer-only, test-first (a material shift must re-anchor; a slew-sized sequence
+must not), zero wire/relay/broadcaster changes.
+
+**Measurement caveat for anyone re-running this:** the link degraded during the
+session (`arrivalJitterMs` climbed 78 → 91 → 140 → 402 ms), so the later
+absolute numbers are about the network, not the code. The finding above does not
+depend on them — it rests on `alignmentHoldMs` staying pinned at 160 while
+`capToRenderMs` moved 204 → 65.
 
 ### Post-implementation review (2026-07-19)
 

@@ -195,6 +195,16 @@ const STALL_RECOVERY_MS = 1000;
 // the correct outcome rather than a defect worth counting (BUGS.md).
 const AUDIO_EXPECTED_MS = 1000;
 
+// How far the video presentation schedule must move before audio re-anchors to
+// it (docs/20 field finding 11). Sits between the two populations it has to
+// separate: PlayoutController slews at most 50 ms/s, so a ~500 ms stats tick
+// moves the schedule ~25 ms at the very most, while the pacing toggle this
+// exists for moves it by the whole playout offset (140–190 ms measured).
+const SCHEDULE_REANCHOR_MS = 100;
+// Floor on the interval between re-anchors, so a baseline that oscillates can
+// never turn the fix into a stutter.
+const SCHEDULE_REANCHOR_COOLDOWN_MS = 2000;
+
 export class AudioSink {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
@@ -225,6 +235,10 @@ export class AudioSink {
   // presented, in this context's performance.now() ms. Set by the owner from
   // the pipeline's stats; null until the video baseline exists.
   private videoPresentationMs: ((timestampUs: number) => number | null) | null = null;
+  // The video schedule's offset at the last refresh, and when we last acted on
+  // a change in it (docs/20 field finding 11).
+  private lastScheduleProbeMs: number | null = null;
+  private lastReanchorAtMs = -Infinity;
 
   constructor(
     callbacks: AudioSinkCallbacks = {},
@@ -267,7 +281,42 @@ export class AudioSink {
   // settles. Only consulted while audio is still waiting to start.
   setVideoSchedule(present: ((timestampUs: number) => number | null) | null): void {
     this.videoPresentationMs = present;
+    this.reanchorIfScheduleMoved();
     this.buffer.tick();
+  }
+
+  // docs/20 field finding 11: when the video presentation schedule moves under
+  // already-playing audio — turning Paced playback off drops it by the whole
+  // playout offset — the alignment chosen at start is simply wrong from then
+  // on, and nothing downstream can repair it: the worklet runs at 1×, so after
+  // release no buffering can move a sample (finding 4). Unlike finding 10 there
+  // is no reconnect and therefore no flush to correct; re-anchoring has to be
+  // deliberate. It costs a short silence, which is the right trade against
+  // minutes of visible lip-sync error, and it only ever fires on a deliberate
+  // user action that already changes playback.
+  private reanchorIfScheduleMoved(): void {
+    const present = this.videoPresentationMs;
+    if (!present) {
+      // No baseline (yet, or any more): the next real schedule is a fresh
+      // reference, not a shift away from this one.
+      this.lastScheduleProbeMs = null;
+      return;
+    }
+    // Probe the mapping's offset at a fixed timestamp: the schedule is affine
+    // in the timestamp, so present(0) isolates exactly the part a playout
+    // change moves, and is otherwise stable.
+    const at = present(0);
+    if (at === null) return;
+    const probeMs = at - this.outputLatencyMs();
+    const prev = this.lastScheduleProbeMs;
+    this.lastScheduleProbeMs = probeMs;
+    if (prev === null || Math.abs(probeMs - prev) < SCHEDULE_REANCHOR_MS) return;
+    // A pathological baseline that oscillates must not be able to shred audio
+    // with back-to-back re-anchors; one silence is a fix, ten is the bug.
+    const nowMs = this.now();
+    if (nowMs - this.lastReanchorAtMs < SCHEDULE_REANCHOR_COOLDOWN_MS) return;
+    this.lastReanchorAtMs = nowMs;
+    this.flush();
   }
 
   // Drift trim (av-sync AudioRateController): a sub-audible playback rate.
