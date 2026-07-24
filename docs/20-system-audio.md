@@ -4,15 +4,18 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 2026-07-15; **design refreshed 2026-07-19** against everything landed since —
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
-**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-23 produced
-eleven field findings, all fixed — including the Decision 10 inversion to
-**video-master** A/V sync, the Decision 12 reversal taking audio back off
-the R19 reliable carrier, a live-edge audio buffer-depth floor, honest
-jitter-buffer depth accounting with worklet-stall recovery (finding 7 — the
-crackle-then-silence fix), and the two re-anchor fixes — leaving Deep buffer
-(finding 10) and toggling paced playback (finding 11), both reproduced
-against the homelab; hardware re-verification pending** — see
-[Status](#status)). Adds the broadcaster's
+**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-24 produced
+twelve field findings — eleven fixed, one (finding 12) open — including the
+Decision 10 inversion to **video-master** A/V sync, the Decision 12 reversal
+taking audio back off the R19 reliable carrier, a live-edge audio
+buffer-depth floor, honest jitter-buffer depth accounting with worklet-stall
+recovery (finding 7 — the crackle-then-silence fix), and the two re-anchor
+fixes — leaving Deep buffer (finding 10) and toggling paced playback
+(finding 11), both reproduced against the homelab; **finding 12** — `avSkewMs`
+still over-reports on long/stressed sessions — is a metric bug (audio is
+actually near-correct), left open pending a clean drift run; the manual
+verification pass reached step 3 of 9 (2026-07-24) then stopped on test-machine
+performance trouble** — see [Status](#status)). Adds the broadcaster's
 **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
 (Opus) on the broadcaster, one Opus packet per WebTransport datagram through
@@ -523,6 +526,34 @@ re-run since. Deviations and decisions taken during implementation:
 **Status update (2026-07-23, owner)**: with findings 1–9 fixed, audio is
 **verified working and reliable on real hardware** — which is what made the
 graduation below an explicit decision rather than a guess.
+
+**Verification session (2026-07-24)**: a pass through the verification plan
+below, driven against the homelab deployment (Chrome/macOS, tab-audio
+substitute per finding 1). Reached **step 3 of 9, then stopped** — the test
+machine developed performance trouble that starved the audio worklet and made
+further absolute-timing measurements untrustworthy. Outcome:
+
+- **Step 1** (audio-off baseline) is now **obsolete** — the graduation below
+  removed the "Enable audio (experimental)" toggle, so there is no audio-off
+  state to test on the production broadcaster. The step needs rewriting.
+- **Step 2** (audio ON, happy path): audio plays; `avMaster` = video (audio
+  aligned), zero wire loss, `overflowDrops`/`resets` low. Two re-anchor
+  defects surfaced and were fixed on the way — **[finding 10](#field-finding-10-2026-07-23-leaving-deep-buffer-stranded-audio-28-s-behind)**
+  (leaving Deep buffer) and a coherent/re-announced **DeliveryAck** (relay).
+- **Step 3** (playout-mode sweep): surfaced and fixed
+  **[finding 11](#field-finding-11-2026-07-23-toggling-paced-playback-left-audio-behind)**
+  (toggling paced playback did not re-anchor audio).
+- **[Finding 12](#field-finding-12-2026-07-24-avskewms-still-over-reports-on-longstressed-sessions--open-deferred)**
+  opened: `avSkewMs` still over-reports on long/stressed sessions (a residual
+  of finding 9). Left OPEN, deferred — audio is actually near-correct; it is a
+  metric-reporting bug, and a clean drift run on a healthy machine is the
+  prerequisite for characterising and fixing it.
+- **Steps 4–9** (30-min drift, loss/stress, resilient interplay, graceful
+  states, autoplay/iPhone) **not run.** Findings 10 and 11 landed as merged PRs
+  (#123, #125); their fixes are viewer-only, test-first, zero
+  wire/relay/broadcaster change, but reach `gawk.ioio.fi` only once a release
+  ships. **The plan still needs a full re-run on a healthy machine**, starting
+  with a rewritten step 1.
 
 ### Field finding 1 (2026-07-19): the audio toggle killed the broadcast
 
@@ -1190,6 +1221,16 @@ session (`arrivalJitterMs` climbed 78 → 91 → 140 → 402 ms), so the later
 absolute numbers are about the network, not the code. The finding above does not
 depend on them — it rests on `alignmentHoldMs` staying pinned at 160 while
 `capToRenderMs` moved 204 → 65.
+
+### Field finding 12 (2026-07-24): `avSkewMs` still over-reports on long/stressed sessions — OPEN, deferred
+
+A residual of [finding 9](#field-finding-9-2026-07-23-avskewms-measured-buffering-depth--estimator-lag-not-lip-sync). Finding 9's fix (measure at presentation, snap the mapping on a re-anchor) bounded the *steady-state* over-report, but did not eliminate it. A ~multi-hour Chrome/macOS field capture reported **`avSkewMs` = 18788 ms** while — per the owner watching the video — **audio was visibly near-correct**. So this is a **metric artifact, not real lip-sync error**; the audio path is fine. Corroborating: `audioPacketsReceived == audioPacketsDecoded` (zero loss), `resets` 0, buffer depth 195/150 ms and alignment hold 160 ms both healthy.
+
+**Not yet root-caused, and deliberately left open.** An accelerated capture on 2026-07-24 (10 s sampling, fresh session) was **confounded by the test machine's performance trouble**: the worklet starved (underruns climbed ~50/s), and `avSkewMs` ramped 8 → 1986 ms in 30 s locked to the underrun storm — the playhead freezes during an underrun (`audioSink.ts` worklet, `playheadUs` only updates when a chunk is present) while video stays live, so the metric's video-minus-playhead subtraction grows. That reproduced *a* skew-inflation mechanism but **on a struggling machine, not a representative link**, so it does not cleanly isolate the multi-hour residual and is not a sound basis for a fix.
+
+**A resync/flush "fix" was considered and rejected (owner, 2026-07-24):** the premise — that audio had really fallen behind live — is false here (audio was near-correct), so flushing audio to "catch up" would inject gaps to chase a phantom. Whatever the fix is, it belongs in how the metric is *taken* (as finding 9's did), not in the audio path.
+
+**Status: OPEN.** Needs a clean characterisation pass — the 30-min drift run (verification step 4) on a healthy machine, sampling `avSkewMs` + the audio-buffer counters over time to read the growth *shape* (steady ramp vs stepped vs jump) — before a metric fix is designed test-first. Until then, treat the overlay's **A/V skew** row as unreliable on long or CPU-stressed sessions; the buffer-health rows (`underruns`, `bufferedMs`, `Recoveries`) are the trustworthy signals.
 
 ### Post-implementation review (2026-07-19)
 
