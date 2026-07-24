@@ -1,6 +1,8 @@
 # R21 — Relay DVR ring buffer for resilient mode
 
-**Status**: designed 2026-07-23, not started. Supersedes the delivery half of
+**Status**: designed 2026-07-23; **DV1–DV5 implemented the same day** (see the
+Implementation status table below), DV6 (on-hardware verification + tuning)
+pending. Supersedes the delivery half of
 docs/24 Decision 5 (drops-over-stalls at GOP granularity) **for resilient
 subscribers only**; the datagram path and non-resilient reliable delivery are
 untouched.

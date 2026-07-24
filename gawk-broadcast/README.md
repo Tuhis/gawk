@@ -187,8 +187,9 @@ the actual device. Trials encode `videotestsrc`, never the portal — probing mu
 not pop share dialogs. The last-good encoder is cached and *re-verified* (not
 trusted) on the next run, and because a `videotestsrc` trial can't prove the real
 path's dmabuf import, **the live start is the final probe**: a child that dies
-immediately retries with the capture pinned to system memory, then advances the
-cascade — every retry reusing the portal grant.
+immediately walks a three-rung capture ladder — zero-copy (capped) → zero-copy
+→ system memory (`CaptureModes` in `internal/gst/pipeline.go`) — before
+advancing to the next encoder, every retry reusing the portal grant.
 
 ## Fixed rung
 
@@ -216,9 +217,10 @@ encoders drain frames without that signal ever firing.
   capture problem, not an encoder problem.** The compositor's chosen screencast
   format sometimes can't be mapped onto the downstream caps (DMA-BUF
   modifier/DRM-caps skew between `gst-plugin-pipewire` and the encoder's
-  converter, or 10-bit HDR desktop formats). The live start retries each
-  encoder with system-memory capture (bare `video/x-raw` pinned at the source)
-  before advancing, and an all-`pipewiresrc` failure reports as a capture
+  converter, or 10-bit HDR desktop formats). The live start walks the
+  three-rung capture ladder (zero-copy capped → zero-copy → system-memory, the
+  last pinning bare `video/x-raw` at the source) for each encoder before
+  advancing, and an all-`pipewiresrc` failure reports as a capture
   error, never "no hardware encoder". Diagnose with `GST_DEBUG=pipewire*:5` in
   the environment — the child inherits it and its stderr lands in the debug
   log.

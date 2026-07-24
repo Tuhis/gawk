@@ -479,18 +479,25 @@ folded into the decisions above and the N-table criteria below:
 
 ## Status
 
-**Implementation status (2026-07-19)**: N1–N6 implemented; automated gates
+**Implementation status (2026-07-24)**: N1–N6 implemented; automated gates
 green in all three modules (`gofmt`/`go vet`/`go test -race`, `npm test` +
-`lint` + `build`, `helm lint`). **Manual browser verification is pending** —
-the plan below has not been executed, and audio has never played on real
-hardware as designed. Seven field findings so far: **1** (the audio toggle
-failed the whole broadcast, before a single Opus packet was encoded); once
-audio did play, **2** (video froze — two clocks driving one pipeline) and
-**3** (the jitter buffer never buffered); **4** (video-master inversion) and
-**5** (audio off the R19 carrier); **6** (live-edge starved for buffer depth);
-and **7** (the jitter-buffer depth estimate counted undelivered audio → the
-crackle-then-silence). All are fixed; the verification pass has **not** been
-re-run since. Deviations and decisions taken during implementation:
+`lint` + `build`, `helm lint`). Audio now plays reliably on real hardware
+(owner-verified 2026-07-23) — which graduated it from experimental — but the
+formal browser verification plan below still needs a full re-run (the
+2026-07-24 attempt reached only step 3 of 9 before a test-machine performance
+problem stopped it). Getting there took **twelve field findings, eleven
+fixed**: **1** (the audio toggle failed the whole broadcast, before a single
+Opus packet was encoded); once audio did play, **2** (video froze — two clocks
+driving one pipeline) and **3** (the jitter buffer never buffered); **4**
+(video-master inversion) and **5** (audio off the R19 carrier); **6**
+(live-edge starved for buffer depth); **7** (the depth estimate counted
+undelivered audio → crackle-then-silence); **8** (overflow drops and gap
+concealment fought each other on Safari); **9** (`avSkewMs` measured buffering
+depth + estimator lag, not lip-sync); **10** (leaving Deep buffer stranded
+audio ~2.8 s behind) and **11** (toggling paced playback left audio behind).
+**Finding 12** (`avSkewMs` still over-reports on long/stressed sessions — a
+metric artifact; audio itself is fine) is **open, deferred**. Deviations and
+decisions taken during implementation:
 
 1. **Decoded audio crosses as planar PCM, not a transferred `AudioData`**
    (Decision 7 said the latter). The sink must reach an `AudioWorklet`,
