@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.29.0...gawk-app-v0.29.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **viewer:** re-anchor audio against the live video schedule after a flush ([#123](https://github.com/Tuhis/gawk/issues/123)) ([b8bb721](https://github.com/Tuhis/gawk/commit/b8bb72107ce8a1bf1fbb57a1da5768c075a212bf))
+* **viewer:** re-anchor audio when the video presentation schedule shifts ([#125](https://github.com/Tuhis/gawk/issues/125)) ([bcbf342](https://github.com/Tuhis/gawk/commit/bcbf3420c85dcc5a355e209c9f88a6802048c197))
+
 ## [0.29.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.28.2...gawk-app-v0.29.0) (2026-07-23)
 
 

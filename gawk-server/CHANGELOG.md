@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.2](https://github.com/Tuhis/gawk/compare/gawk-server-v0.20.1...gawk-server-v0.20.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **viewer:** re-anchor audio when the video presentation schedule shifts ([#125](https://github.com/Tuhis/gawk/issues/125)) ([bcbf342](https://github.com/Tuhis/gawk/commit/bcbf3420c85dcc5a355e209c9f88a6802048c197))
+
 ## [0.20.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.20.0...gawk-server-v0.20.1) (2026-07-23)
 
 
