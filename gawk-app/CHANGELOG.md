@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.30.0...gawk-app-v0.31.0) (2026-07-25)
+
+
+### Features
+
+* **r24:** browser-aware broadcaster capture & audio guidance (docs/30) ([#133](https://github.com/Tuhis/gawk/issues/133)) ([af63c18](https://github.com/Tuhis/gawk/commit/af63c182295ef3b9d96490ec7f6b46245e253490))
+
 ## [0.30.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.29.1...gawk-app-v0.30.0) (2026-07-24)
 
 
