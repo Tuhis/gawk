@@ -150,19 +150,19 @@ supported here" instead of the misleading "No audio shared".
    fire *only* where audio is actually achievable (`audioLaneSupported()` true
    and the outcome was `'no-track'` or `'unavailable'`).
 
-8. **One definition, one home (CODE-REVIEW).** `captureGuidance.ts` imports the
-   `audioState` union as `BroadcastStats['audioState']` rather than
-   re-declaring its six members, and re-exports `audioLaneSupported` rather
-   than re-deriving the capability. All guidance copy lives as named constants
-   in `captureGuidance.ts`; CG2's disclosure, CG3's notes, and CG4's echoes
-   *import* those strings — no surface inlines a second copy.
-
 7. **Frozen-canvas / static-window detection is out.** Detecting "this window
    share stopped updating" reliably means frame-diffing, and a false positive
    ("your stream looks frozen") on a legitimately static screen is worse than
    silence. R24 instead nudges *toward the whole screen* whenever a **window**
    is shared (the categorical, false-positive-free signal), and leaves
    frozen-frame detection as a possible future item.
+
+8. **One definition, one home (CODE-REVIEW).** `captureGuidance.ts` imports the
+   `audioState` union as `BroadcastStats['audioState']` rather than
+   re-declaring its six members, and re-exports `audioLaneSupported` rather
+   than re-deriving the capability. All guidance copy lives as named constants
+   in `captureGuidance.ts`; CG2's disclosure, CG3's notes, and CG4's echoes
+   *import* those strings — no surface inlines a second copy.
 
 ## Non-goals
 
