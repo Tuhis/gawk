@@ -46,7 +46,7 @@ getDisplayMedia
 |------|------|
 | `ROADMAP.md` | High-level roadmap for post-v0.5 work (R1–R25), with ordering rationale and per-item scope sketches |
 | `gawk-app/` | React SPA (Vite + TypeScript + Zustand). Production surfaces: `#/` (landing/join), `#/broadcast`, `#/view/<id>`; the stats-heavy diagnostics live frozen under `#/debug/*` (`broadcast`/`view`/`loopback`). `deploy/`: Dockerfile + Helm chart |
-| `docs/` | Per-milestone design notes and gotchas (`01`–`28`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
+| `docs/` | Per-milestone design notes and gotchas (`01`–`30`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `wire/` is public so the native broadcaster can import it. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `gawk-broadcast/` | Go native Linux broadcaster (R14): Gio GUI + CLI over a shared engine, hardware encode via portal + GStreamer. Own module, own release; no image or chart — a binary you run on your own PC. Also home of `gawk-pubsim` (R20): the engine replaying the committed H.264 fixture as a deterministic synthetic publisher for CI and drills. See its [README](gawk-broadcast/README.md) |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
@@ -263,6 +263,23 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   bits + a duplicated NALU-type byte); the viewer repairs it in
   `normalizeAvccExtradata` before configuring the decoder.
   ([docs/11](docs/11-cross-browser-compatibility.md))
+- **System audio is Chromium-only, and even there it needs the picker's
+  checkbox** — the broadcaster always *requests* system audio (R15 graduated it
+  to always-on), but the OS only shares it when the user ticks "Share audio" /
+  "Share tab audio" in the share picker; there is no system-audio source on
+  macOS/Linux screen shares (a **tab** share carries audio everywhere via
+  internal mirroring — the reliable fallback), and Firefox lacks WebCodecs
+  `AudioEncoder`/MSTP so it streams video-only. R24 surfaces this **browser-aware
+  by feature detection** (`audioLaneSupported()`, never UA sniffing) as
+  dismissible pre-start tips + reactive notes, and never gates the start path.
+  A note **fires only where audio is achievable** — Firefox is told video-only
+  up front, never nagged at runtime. ([docs/30](docs/30-broadcaster-capture-audio-guidance.md))
+- **A single-window share is the classic "frozen rectangle"** — it stops
+  updating (or was never capturable) when the game goes exclusive-fullscreen or
+  is alt-tabbed. Whole-screen is the recommended default for games; R24 nudges
+  toward it whenever a `window` capture surface is detected
+  (`displaySurface`, an advisory category only — never pipeline config).
+  ([docs/30](docs/30-broadcaster-capture-audio-guidance.md))
 
 **Media pipeline**
 

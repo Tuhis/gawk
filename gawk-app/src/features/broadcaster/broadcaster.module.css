@@ -428,3 +428,126 @@
   gap: 0.6rem;
   justify-content: center;
 }
+
+/* ── R24 (docs/30): capture & audio guidance ── */
+
+/* CG3: reactive live notes, under the top bar. Quiet glass pills, dismissible;
+   they describe a correctable condition, so they do not auto-hide. The
+   container is click-through — only the pills take pointer events, so the rest
+   of the preview stays interactive. */
+.hints {
+  position: absolute;
+  top: 3.4rem;
+  left: 1.1rem;
+  right: 1.1rem;
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.hint {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  max-width: min(92vw, 460px);
+  padding: 0.55rem 0.5rem 0.55rem 0.8rem;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: var(--r-md);
+}
+
+.hint > span {
+  min-width: 0;
+}
+
+.hintDismiss {
+  flex: none;
+  margin-top: -0.05rem;
+}
+
+/* CG2: the collapsed pre-start "Sharing tips" disclosure. A single quiet line
+   an experienced broadcaster's eye skips; opening it reveals two short tips.
+   Native <details>, so toggling it touches nothing on the start path. */
+.tips {
+  width: 100%;
+  margin-top: 0.75rem;
+  text-align: center;
+}
+
+/* A quiet button styled like the old <summary>, with a chevron that rotates
+   as it opens. */
+.tipsSummary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  user-select: none;
+}
+
+.tipsSummary::before {
+  content: '›';
+  font-size: 1.1em;
+  line-height: 1;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.tipsSummary[aria-expanded='true']::before {
+  transform: rotate(90deg);
+}
+
+.tipsSummary:hover {
+  color: var(--text);
+}
+
+/* The reveal: a real height animation via grid-template-rows 0fr↔1fr, so the
+   card grows/shrinks smoothly with the content (not a snap). Runs in both
+   directions; the global prefers-reduced-motion rule collapses it to instant. */
+.tipsBody {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
+}
+
+.tipsBodyOpen {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.tipsInner {
+  overflow: hidden;
+  min-height: 0;
+  text-align: left;
+}
+
+.tipText {
+  margin: 0.6rem 0 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* CG4: the read-only audio-status echo in the settings panel. */
+.settingsAudioNote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--muted);
+}

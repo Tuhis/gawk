@@ -233,4 +233,39 @@ describe('BroadcasterStatsOverlay audio section (R15)', () => {
     expect(screen.getByText('Audio')).toBeTruthy();
     expect(screen.getByText(/opus · 48000 Hz · 2ch/)).toBeTruthy();
   });
+
+  // R24 (docs/30 CG4.2): a browser that can't do audio reads the honest "Not
+  // supported here" even though the raw audioState is 'no-track' (Firefox's
+  // actual landing spot), where the default would misleadingly say "No audio
+  // shared" — as if a picker checkbox would fix it.
+  it('reads "Not supported here" when audio is unsupported, whatever the raw state', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), audioState: 'no-track', audioCodec: null }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        audioSupported={false}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('State').nextSibling?.textContent).toBe('Not supported here');
+    expect(screen.queryByText('No audio shared')).toBeNull();
+  });
+
+  it('keeps "No audio shared" when audio is supported but unshared', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), audioState: 'no-track', audioCodec: null }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        audioSupported={true}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('State').nextSibling?.textContent).toBe('No audio shared');
+  });
 });

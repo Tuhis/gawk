@@ -4,12 +4,18 @@ import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { fmt, fmtBits, fmtInt } from '../../lib/format';
 import type { BroadcastStats } from '../../transport/broadcaster';
 import type { EncoderConfigured } from '../../media/encoder';
+import { OVERLAY_UNSUPPORTED } from './captureGuidance';
 
 interface Props {
   stats: BroadcastStats | null;
   encoderInfo: EncoderConfigured | null;
   // Sent video bitrate derived from the sample window (bits/s).
   bitrateBps: number | null;
+  // R24 (docs/30 CG4): whether this browser can do audio at all. When false, the
+  // Audio State row reads the honest "Not supported here" instead of the raw
+  // audioState ('no-track' → the misleading "No audio shared"). Optional so the
+  // frozen #/debug overlay and older call sites are unaffected.
+  audioSupported?: boolean;
   onClose: () => void;
   onCopy: () => void;
   copied: boolean;
@@ -19,7 +25,7 @@ interface Props {
 // viewer's — the encode funnel (capture → post-gate → encoded → sent) plus
 // this leg's connection health, so "is it my machine or my uplink" is
 // answerable without leaving the stream.
-export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClose, onCopy, copied }: Props) {
+export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, audioSupported = true, onClose, onCopy, copied }: Props) {
   const conn = stats?.connection ?? null;
   const sections: StatsSection[] = [
     {
@@ -82,15 +88,21 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, onClos
             rows: [
               [
                 'State',
-                stats.audioState === 'active'
-                  ? 'Active'
-                  : stats.audioState === 'no-track'
-                    ? 'No audio shared'
-                    : stats.audioState === 'unavailable'
-                      ? 'Not capturable here'
-                      : stats.audioState === 'unsupported'
-                        ? 'Unsupported here'
-                        : 'Error',
+                // R24 (docs/30 CG4): a browser that can't do audio reads the
+                // honest "Not supported here" whatever the raw state (Firefox
+                // lands on 'no-track'/'unavailable', which would otherwise read
+                // "No audio shared" — as if a checkbox would fix it).
+                !audioSupported
+                  ? OVERLAY_UNSUPPORTED
+                  : stats.audioState === 'active'
+                    ? 'Active'
+                    : stats.audioState === 'no-track'
+                      ? 'No audio shared'
+                      : stats.audioState === 'unavailable'
+                        ? 'Not capturable here'
+                        : stats.audioState === 'unsupported'
+                          ? 'Unsupported here'
+                          : 'Error',
               ],
               [
                 'Format',

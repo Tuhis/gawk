@@ -459,6 +459,39 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   operator's priorities, NOT legal advice** — the doc and the chart README both
   carry that caveat. The native broadcaster (R14) gets a one-line reference +
   link, not a gate (TC5, droppable)),
+  `docs/30-broadcaster-capture-audio-guidance.md` for R24 (broadcaster capture
+  & audio guidance: **designed + CG1–CG5 implemented 2026-07-24, automated
+  gates green (gawk-app tsc/vitest/oxlint/build), manual browser verify
+  pending**; **frontend-only — zero server/wire/broadcaster-protocol/media-
+  pipeline change**, ships *words* + a little dismissible reactive UI state.
+  Tells a first-time streamer whole-screen-vs-window and how to get audio,
+  **browser-aware by feature detection** (`audioLaneSupported()`, never UA
+  sniffing) — the load-bearing fact being **audio is Chromium-only in
+  practice** (Firefox has neither `AudioEncoder` nor MSTP; system audio has no
+  loopback on macOS/Linux screen shares — a **tab** share carries audio
+  everywhere). Reconciles the ROADMAP sketch's staleness: R15 graduated the
+  audio toggle away (docs/20), so gawk always requests audio and the only user
+  step is the picker's "Share audio" checkbox. New pure
+  `features/broadcaster/captureGuidance.ts` (the copy + decisions, one home;
+  imports `BroadcastStats['audioState']`, re-exports `audioLaneSupported`);
+  a **collapsed-by-default pre-start "Sharing tips" `<details>`** (never on the
+  start path — no modal, no extra click; the terms gate stays the only
+  pre-connect gate); **dismissible reactive live notes** (audio-missing when
+  `audioState` is `'no-track'`/`'unavailable'` AND audio is achievable;
+  window-share when `displaySurface === 'window'` — an advisory category only,
+  never pipeline config), dismissal persisted per `gawk:hint-*` key (a
+  conscious "don't nag experienced users" trade — the notes are an onboarding
+  aid, not a durable guard rail); a compact settings echo; and an **honest
+  stats-overlay audio State** — `BroadcasterStatsOverlay` gained an
+  `audioSupported` prop so Firefox reads "Not supported here" instead of the
+  misleading "No audio shared". **Gated on the capability, never the
+  `audioState` string** — Firefox lands on `'no-track'` (the `!track` branch
+  wins before the `'unsupported'` check), which the string can't tell from a
+  Chromium unticked box. Adversarial design review (self + independent
+  subagent) ran **before** implementation; its must-fix findings (the Firefox
+  `'unsupported'` error, the persisted-dismissal one-shot framing, test-map
+  holes) are folded into docs/30. Chunks **CG1–CG5** (two-letter prefix; single
+  letters A–Z claimed)),
   `docs/28-native-broadcaster-audio.md` for R25 (native broadcaster audio:
   **designed 2026-07-23, not started**; flips docs/20's "audio in the R14
   native broadcaster" non-goal, which had already written down the shape.
