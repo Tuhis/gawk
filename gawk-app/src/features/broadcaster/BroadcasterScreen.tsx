@@ -6,7 +6,7 @@ import { useCodecMatrices, useSupportMatrix } from '../stream/useSupportMatrix';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
-import { CopyIcon, EyeIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
+import { CloseIcon, CopyIcon, EyeIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
 import { BroadcasterStatsOverlay } from './BroadcasterStatsOverlay';
 import { BroadcastStartError, type BroadcastSessionLike, type BroadcastStats } from '../../transport/broadcaster';
 import { createBroadcastSession } from './workerBroadcastSession';
@@ -23,6 +23,22 @@ import { useHotkey } from '../../lib/useHotkey';
 import { fmt, fmtWatching } from '../../lib/format';
 import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
+// R24 (docs/30): browser-aware capture & audio guidance — words + dismissible
+// reactive notes, gated on the real audio capability (never UA sniffing) and
+// never on the start path.
+import {
+  AUDIO_SETTINGS,
+  AUDIO_TIP,
+  audioGuidanceForBrowser,
+  audioLaneSupported,
+  audioReactiveNote,
+  captureSurfaceNote,
+  dismissHint,
+  HINT_AUDIO_MISSING_KEY,
+  HINT_WINDOW_SHARE_KEY,
+  isHintDismissed,
+  WHOLE_SCREEN_TIP,
+} from './captureGuidance';
 
 type Status = 'idle' | 'connecting' | 'broadcasting' | 'reconnecting' | 'stopping' | 'error';
 
@@ -68,6 +84,20 @@ export function BroadcasterScreen() {
   const [termsPrompt, setTermsPrompt] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [statsCopied, setStatsCopied] = useState(false);
+
+  // R24 (docs/30): audio capability answered once, by feature detection. Drives
+  // the browser-aware copy and gates the runtime audio-missing note — Firefox
+  // (unsupported) is never nagged about audio it cannot have.
+  const [audioSupported] = useState(() => audioLaneSupported());
+  const guidance = audioGuidanceForBrowser(audioSupported);
+  // Reactive notes are an onboarding aid: dismissible, and the dismissal is
+  // remembered so an experienced broadcaster is never nagged (decisions 3–4).
+  const [audioHintDismissed, setAudioHintDismissed] = useState(() =>
+    isHintDismissed(HINT_AUDIO_MISSING_KEY),
+  );
+  const [windowHintDismissed, setWindowHintDismissed] = useState(() =>
+    isHintDismissed(HINT_WINDOW_SHARE_KEY),
+  );
 
   // R9 M7: rolling stat samples backing "Copy diagnostics" + the sent bitrate.
   const diagRef = useRef(new DiagnosticsBuffer<BroadcastStats>());
@@ -325,6 +355,14 @@ export function BroadcasterScreen() {
           />
         </section>
 
+        {/* R24 (docs/30 CG4): a read-only echo of the browser-aware audio
+            status — there is no audio *setting* to offer (R15 graduated to
+            always-on), so this is information, not a control. */}
+        <section className={styles.group}>
+          <h3 className={styles.groupTitle}>Audio</h3>
+          <p className={styles.settingsAudioNote}>{AUDIO_SETTINGS[guidance]}</p>
+        </section>
+
         {showDevSettings && (
           <section className={styles.group}>
             <h3 className={styles.groupTitle}>Development settings</h3>
@@ -359,6 +397,17 @@ export function BroadcasterScreen() {
       </GlassPanel>
     </>
   );
+
+  // R24 (docs/30 CG3): reactive live notes, read from signals that already
+  // exist — stats.audioState (from the pipeline) and the preview stream's
+  // capture surface (UI-local, fully optional-chained so a teardown race or a
+  // trackless test fake yields undefined → no hint, never a throw). Each fires
+  // only where it is actionable and not previously dismissed.
+  const displaySurface = sourceStream?.getVideoTracks?.()[0]?.getSettings?.().displaySurface;
+  const audioNote = audioHintDismissed
+    ? null
+    : audioReactiveNote(stats?.audioState ?? 'off', audioSupported);
+  const windowNote = windowHintDismissed ? null : captureSurfaceNote(displaySurface);
 
   // ── Live stage ──
   if (onStage) {
@@ -417,9 +466,45 @@ export function BroadcasterScreen() {
           </div>
         </div>
 
+        {(audioNote || windowNote) && (
+          <div className={styles.hints}>
+            {audioNote && (
+              <div className={styles.hint} role="status">
+                <span>{audioNote.text}</span>
+                <IconButton
+                  label="Dismiss audio note"
+                  className={styles.hintDismiss}
+                  onClick={() => {
+                    dismissHint(HINT_AUDIO_MISSING_KEY);
+                    setAudioHintDismissed(true);
+                  }}
+                >
+                  <CloseIcon />
+                </IconButton>
+              </div>
+            )}
+            {windowNote && (
+              <div className={styles.hint} role="status">
+                <span>{windowNote.text}</span>
+                <IconButton
+                  label="Dismiss window note"
+                  className={styles.hintDismiss}
+                  onClick={() => {
+                    dismissHint(HINT_WINDOW_SHARE_KEY);
+                    setWindowHintDismissed(true);
+                  }}
+                >
+                  <CloseIcon />
+                </IconButton>
+              </div>
+            )}
+          </div>
+        )}
+
         {showStats && (
           <BroadcasterStatsOverlay
             stats={stats}
+            audioSupported={audioSupported}
             encoderInfo={encoderInfo}
             bitrateBps={(() => {
               const bytesRate = diagRef.current.rate((s) => s.bytesSent);
@@ -466,6 +551,15 @@ export function BroadcasterScreen() {
               <Button className={styles.startBtn} onClick={beginStart}>
                 <PlayIcon /> Start a stream
               </Button>
+              {/* R24 (docs/30 CG2): a collapsed-by-default disclosure — a
+                  native <details> so toggling it touches nothing on the start
+                  path. Experienced eyes skip the one quiet line; a first-timer
+                  opens the two browser-aware tips. */}
+              <details className={styles.tips}>
+                <summary className={styles.tipsSummary}>Sharing tips</summary>
+                <p className={styles.tipText}>{WHOLE_SCREEN_TIP}</p>
+                <p className={styles.tipText}>{AUDIO_TIP[guidance]}</p>
+              </details>
             </>
           )}
 

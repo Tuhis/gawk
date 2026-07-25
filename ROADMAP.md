@@ -42,7 +42,7 @@ feature set exists).
 | R21 | [Relay DVR ring buffer for resilient mode](#r21--relay-dvr-ring-buffer-for-resilient-mode) | 🔧 designed 2026-07-23; **DV1–DV5 implemented same day** (wire 0x0C `TypeDeliveryAck`, `-dvr-*` flags, `internal/hub/dvr*.go`, viewer "Deep buffer" mode; automated gates green incl. e2e deep-buffer pass), DV6 on-hardware verification + tuning pending ([docs/26](docs/26-relay-dvr-buffer.md)) |
 | R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔧 designed 2026-07-23, not started (MF1–MF5); MSE-backed native fullscreen **spike-confirmed on iPhone** — supersedes R16's rejected MediaStream tee ([docs/27](docs/27-ios-mse-fullscreen.md)) |
 | R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 🚧 implemented 2026-07-24 (TC1–TC5); automated gates green (gawk-app + gawk-broadcast + helm), manual browser verify pending ([docs/29](docs/29-terms-and-conditions.md)) |
-| R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 💡 idea — not designed, no doc yet |
+| R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 🚧 designed + CG1–CG5 implemented 2026-07-24 (browser-aware share/audio tips + reactive notes; frontend-only, zero server/wire/pipeline change); automated gates green, manual browser verify pending ([docs/30](docs/30-broadcaster-capture-audio-guidance.md)) |
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
 
 ---
@@ -1637,9 +1637,21 @@ verify; automating the picker (browsers deliberately don't allow it);
 per-OS screenshot walkthroughs to maintain; re-litigating R15's audio
 architecture — this item ships *words*, not pipeline changes.
 
-**Status**: idea captured 2026-07-23, not designed. Prerequisite for it being
-worth much: R15's pending hardware re-verification, so the audio advice
-describes what actually happens today.
+**Status**: **designed + CG1–CG5 implemented 2026-07-24** (full design in
+[`docs/30`](docs/30-broadcaster-capture-audio-guidance.md)); automated gates
+green (gawk-app tsc/vitest/oxlint/build), manual browser verify pending
+(needs Chromium on Windows + a no-system-audio OS + Firefox — owner-run).
+Frontend-only; **zero server/wire/broadcaster-protocol/media-pipeline change**.
+Reconciled with the sketch's staleness: R15 graduated the audio toggle away on
+2026-07-23, so gawk always requests audio and the only step the user owns is
+the picker's "Share audio" checkbox. Shipped as a **collapsed pre-start
+"Sharing tips" disclosure** (never on the start path), **dismissible reactive
+live notes** (audio-missing / window-share, gated on the real
+`audioLaneSupported()` capability so Firefox is never nagged about audio it
+can't have), a **compact settings echo**, and an **honest stats-overlay
+audio-state** on unsupported browsers. An adversarial design review (self +
+independent subagent) ran before implementation; its findings — chiefly that
+Firefox surfaces `'no-track'`, not `'unsupported'` — are folded into the doc.
 
 ---
 

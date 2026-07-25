@@ -51,11 +51,53 @@ vi.mock('./workerBroadcastSession', () => ({
 }));
 
 import { BroadcasterScreen } from './BroadcasterScreen';
-import { BroadcastStartError } from '../../transport/broadcaster';
+import { BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import { acceptCurrentTerms } from '../terms/acceptance';
 import { BUNDLED_TERMS_VERSION } from '../../config';
+import {
+  AUDIO_NOTE,
+  AUDIO_SETTINGS,
+  AUDIO_TIP,
+  HINT_AUDIO_MISSING_KEY,
+  HINT_WINDOW_SHARE_KEY,
+  WHOLE_SCREEN_TIP,
+  WINDOW_NOTE,
+} from './captureGuidance';
 
 const fakeStream = { getTracks: () => [] } as unknown as MediaStream;
+
+// R24: a display stream whose single video track reports a capture surface, so
+// the window-share note (CG3) can be exercised. Fully shaped for the
+// optional-chained read in BroadcasterScreen.
+function streamWithSurface(surface?: string): MediaStream {
+  const track = { getSettings: () => ({ displaySurface: surface }) } as unknown as MediaStreamTrack;
+  return {
+    getTracks: () => [track],
+    getVideoTracks: () => [track],
+  } as unknown as MediaStream;
+}
+
+// R24: make audioLaneSupported() report true (jsdom lacks both globals, so the
+// default is Firefox-like / unsupported).
+function enableChromiumAudio(): void {
+  (globalThis as Record<string, unknown>).AudioEncoder = function () {};
+  (globalThis as Record<string, unknown>).MediaStreamTrackProcessor = function () {};
+}
+function disableChromiumAudio(): void {
+  delete (globalThis as Record<string, unknown>).AudioEncoder;
+  delete (globalThis as Record<string, unknown>).MediaStreamTrackProcessor;
+}
+
+// R24: drive a session straight to a live broadcast with the given capture
+// surface + audio state, so the reactive notes can be asserted.
+function goLive(surface: string, audioState: BroadcastStats['audioState']) {
+  scripts.push(async (cbs) => {
+    cbs.onSourceStream(streamWithSurface(surface));
+    cbs.onStats({ audioState } as BroadcastStats);
+  });
+  render(<BroadcasterScreen />);
+  startBroadcast();
+}
 
 beforeEach(() => {
   created.length = 0;
@@ -193,5 +235,116 @@ describe('BroadcasterScreen terms acknowledgment gate', () => {
     startBroadcast();
     expect(screen.getByText('Before you broadcast')).toBeTruthy();
     expect(created.length).toBe(0);
+  });
+});
+
+// R24 (docs/30): browser-aware capture & audio guidance. The two hard UX
+// constraints are the load-bearing assertions here — it must not add a step to
+// Start, and it must not fire on a healthy broadcast.
+describe('BroadcasterScreen capture & audio guidance (R24)', () => {
+  afterEach(disableChromiumAudio);
+
+  // ── CG2: pre-start "Sharing tips" ──
+  it('CG2.1: the tips disclosure is present and collapsed by default', () => {
+    const { container } = render(<BroadcasterScreen />);
+    const details = container.querySelector('details') as HTMLDetailsElement | null;
+    expect(details).not.toBeNull();
+    expect(details!.open).toBe(false);
+    expect(screen.getByText('Sharing tips')).toBeTruthy();
+  });
+
+  it('CG2.2: shows the whole-screen tip and the Chromium audio tip on Chromium', () => {
+    enableChromiumAudio();
+    render(<BroadcasterScreen />);
+    expect(screen.getByText(WHOLE_SCREEN_TIP)).toBeTruthy();
+    expect(screen.getByText(AUDIO_TIP.chromium)).toBeTruthy();
+    expect(screen.queryByText(AUDIO_TIP.unsupported)).toBeNull();
+  });
+
+  it('CG2.2: shows the unsupported audio tip on Firefox (no audio globals)', () => {
+    render(<BroadcasterScreen />);
+    expect(screen.getByText(AUDIO_TIP.unsupported)).toBeTruthy();
+    expect(screen.queryByText(AUDIO_TIP.chromium)).toBeNull();
+  });
+
+  it('CG2.3: toggling the tips fires no session (the Start path is untouched)', () => {
+    render(<BroadcasterScreen />);
+    fireEvent.click(screen.getByText('Sharing tips'));
+    expect(created.length).toBe(0);
+    // The Start button is still the one, unchanged entry point.
+    expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy();
+  });
+
+  // ── CG3: reactive live notes ──
+  it('CG3.1: renders and dismisses the audio note on Chromium no-track', async () => {
+    enableChromiumAudio();
+    goLive('monitor', 'no-track');
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+
+    expect(screen.getByText(AUDIO_NOTE.noTrack)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Dismiss audio note'));
+    expect(screen.queryByText(AUDIO_NOTE.noTrack)).toBeNull();
+    expect(localStorage.getItem(HINT_AUDIO_MISSING_KEY)).toBe('1');
+  });
+
+  it('CG3.2: never renders an audio note on Firefox (no audio capability)', async () => {
+    // No audio globals → audioLaneSupported() false → no nag, any state.
+    goLive('monitor', 'no-track');
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByText(AUDIO_NOTE.noTrack)).toBeNull();
+  });
+
+  it('CG3.3: the window note tracks the capture surface', async () => {
+    enableChromiumAudio();
+    goLive('window', 'active'); // active audio isolates the window note
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.getByText(WINDOW_NOTE)).toBeTruthy();
+
+    cleanup();
+    scripts.length = 0;
+    created.length = 0;
+    goLive('monitor', 'active');
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByText(WINDOW_NOTE)).toBeNull();
+  });
+
+  it('CG3.4: a previously-dismissed note does not re-render', async () => {
+    enableChromiumAudio();
+    localStorage.setItem(HINT_AUDIO_MISSING_KEY, '1');
+    goLive('monitor', 'no-track');
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByText(AUDIO_NOTE.noTrack)).toBeNull();
+  });
+
+  it('CG3.5: the happy path renders ZERO notes (active audio, whole screen)', async () => {
+    enableChromiumAudio();
+    goLive('monitor', 'active');
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByText(AUDIO_NOTE.noTrack)).toBeNull();
+    expect(screen.queryByText(AUDIO_NOTE.unavailable)).toBeNull();
+    expect(screen.queryByText(WINDOW_NOTE)).toBeNull();
+  });
+
+  it('CG3.6: the two notes dismiss independently', async () => {
+    enableChromiumAudio();
+    goLive('window', 'no-track'); // both notes present
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.getByText(AUDIO_NOTE.noTrack)).toBeTruthy();
+    expect(screen.getByText(WINDOW_NOTE)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Dismiss audio note'));
+    expect(screen.queryByText(AUDIO_NOTE.noTrack)).toBeNull();
+    // The window note survives — and its own key was not written.
+    expect(screen.getByText(WINDOW_NOTE)).toBeTruthy();
+    expect(localStorage.getItem(HINT_WINDOW_SHARE_KEY)).toBeNull();
+  });
+
+  // ── CG4: settings echo ──
+  it('CG4.1: the settings panel shows the browser-correct audio line', () => {
+    enableChromiumAudio();
+    render(<BroadcasterScreen />);
+    fireEvent.click(screen.getByRole('button', { name: /settings/i }));
+    expect(screen.getByText(AUDIO_SETTINGS.chromium)).toBeTruthy();
+    expect(screen.queryByText(AUDIO_SETTINGS.unsupported)).toBeNull();
   });
 });
