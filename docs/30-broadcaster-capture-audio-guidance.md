@@ -229,6 +229,16 @@ yet, so the advice is still actionable (decision 4 / ROADMAP placement note).
 The disclosure adds one skippable line to the card and **nothing** to the Start
 path.
 
+**Motion.** The disclosure is a **controlled** toggle (a `<button
+aria-expanded>` + an animated region), *not* a native `<details>`: native
+details snaps its height (and the card snaps with it). The body is a
+`grid-template-rows: 0fr ↔ 1fr` transition over an `overflow: hidden` inner, so
+the **real height** animates in both directions (`var(--dur)`/`var(--ease)`,
+the surface's motion tokens) — and because the pre-start card's height is
+content-driven and centered, it grows/shrinks smoothly *with* the reveal
+instead of jumping. A chevron rotates on `aria-expanded`. The global
+`prefers-reduced-motion` reset collapses all of it to instant.
+
 ### CG3 — reactive live notes (the safety net)
 
 While broadcasting (the live stage), a small stack of dismissible info notes
@@ -300,7 +310,7 @@ here.
 
 | # | Criterion | Verified by |
 |---|---|---|
-| CG2.1 | The disclosure is **collapsed by default**; the card renders no tip body until opened | `BroadcasterScreen.test.tsx` |
+| CG2.1 | The disclosure is **collapsed by default** (`aria-expanded="false"`) | `BroadcasterScreen.test.tsx` |
 | CG2.2 | Opening shows the whole-screen line and the **browser-correct** audio line (Chromium vs unsupported) | test with `audioLaneSupported` faked both ways |
 | CG2.3 | Toggling the tips disclosure fires **no** transport/capture call (the Start path is untouched) | test: render, click the disclosure, assert the injected session factory was never called |
 | CG2.4 | No new blocking element on the start path (no modal/dialog added by R24) | code review + manual |

@@ -98,6 +98,10 @@ export function BroadcasterScreen() {
   const [windowHintDismissed, setWindowHintDismissed] = useState(() =>
     isHintDismissed(HINT_WINDOW_SHARE_KEY),
   );
+  // Controlled (not native <details>) so the reveal animates its real height in
+  // both directions — the card's height is content-driven, so it reflows
+  // smoothly with it instead of snapping.
+  const [tipsOpen, setTipsOpen] = useState(false);
 
   // R9 M7: rolling stat samples backing "Copy diagnostics" + the sent bitrate.
   const diagRef = useRef(new DiagnosticsBuffer<BroadcastStats>());
@@ -551,18 +555,34 @@ export function BroadcasterScreen() {
               <Button className={styles.startBtn} onClick={beginStart}>
                 <PlayIcon /> Start a stream
               </Button>
-              {/* R24 (docs/30 CG2): a collapsed-by-default disclosure — a
-                  native <details> so toggling it touches nothing on the start
-                  path. Experienced eyes skip the one quiet line; a first-timer
-                  opens the two browser-aware tips. */}
-              <details className={styles.tips}>
-                <summary className={styles.tipsSummary}>Sharing tips</summary>
-                {/* Wrapper so the reveal animates on open (see .tipsBody). */}
-                <div className={styles.tipsBody}>
-                  <p className={styles.tipText}>{WHOLE_SCREEN_TIP}</p>
-                  <p className={styles.tipText}>{AUDIO_TIP[guidance]}</p>
+              {/* R24 (docs/30 CG2): a collapsed-by-default disclosure —
+                  controlled (not native <details>) so the reveal animates its
+                  real height, letting the card grow smoothly with it. Toggling
+                  it touches nothing on the start path. Experienced eyes skip
+                  the one quiet line; a first-timer opens the browser-aware
+                  tips. */}
+              <div className={styles.tips}>
+                <button
+                  type="button"
+                  className={styles.tipsSummary}
+                  aria-expanded={tipsOpen}
+                  aria-controls="sharing-tips"
+                  onClick={() => setTipsOpen((o) => !o)}
+                >
+                  Sharing tips
+                </button>
+                <div
+                  id="sharing-tips"
+                  className={`${styles.tipsBody} ${tipsOpen ? styles.tipsBodyOpen : ''}`}
+                >
+                  {/* overflow-hidden inner: the grid row animates 0fr↔1fr and
+                      clips the content during the transition. */}
+                  <div className={styles.tipsInner}>
+                    <p className={styles.tipText}>{WHOLE_SCREEN_TIP}</p>
+                    <p className={styles.tipText}>{AUDIO_TIP[guidance]}</p>
+                  </div>
                 </div>
-              </details>
+              </div>
             </>
           )}
 

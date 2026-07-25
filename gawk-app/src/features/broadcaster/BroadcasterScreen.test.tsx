@@ -246,11 +246,9 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
 
   // ── CG2: pre-start "Sharing tips" ──
   it('CG2.1: the tips disclosure is present and collapsed by default', () => {
-    const { container } = render(<BroadcasterScreen />);
-    const details = container.querySelector('details') as HTMLDetailsElement | null;
-    expect(details).not.toBeNull();
-    expect(details!.open).toBe(false);
-    expect(screen.getByText('Sharing tips')).toBeTruthy();
+    render(<BroadcasterScreen />);
+    const toggle = screen.getByRole('button', { name: /sharing tips/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('CG2.2: shows the whole-screen tip and the Chromium audio tip on Chromium', () => {
@@ -269,7 +267,9 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
 
   it('CG2.3: toggling the tips fires no session (the Start path is untouched)', () => {
     render(<BroadcasterScreen />);
-    fireEvent.click(screen.getByText('Sharing tips'));
+    const toggle = screen.getByRole('button', { name: /sharing tips/i });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(created.length).toBe(0);
     // The Start button is still the one, unchanged entry point.
     expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy();

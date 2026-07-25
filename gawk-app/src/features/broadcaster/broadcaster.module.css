@@ -480,37 +480,61 @@
 .tips {
   width: 100%;
   margin-top: 0.75rem;
-  text-align: left;
+  text-align: center;
 }
 
+/* A quiet button styled like the old <summary>, with a chevron that rotates
+   as it opens. */
 .tipsSummary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   cursor: pointer;
+  font-family: inherit;
   font-size: var(--fs-xs);
   color: var(--muted);
-  text-align: center;
-  list-style-position: inside;
+  background: none;
+  border: none;
+  padding: 0;
   user-select: none;
+}
+
+.tipsSummary::before {
+  content: '›';
+  font-size: 1.1em;
+  line-height: 1;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.tipsSummary[aria-expanded='true']::before {
+  transform: rotate(90deg);
 }
 
 .tipsSummary:hover {
   color: var(--text);
 }
 
-/* The reveal runs on open only (the user asked for the opening animation);
-   the global prefers-reduced-motion rule collapses it to instant. */
-.tips[open] .tipsBody {
-  animation: tipsReveal var(--dur) var(--ease);
+/* The reveal: a real height animation via grid-template-rows 0fr↔1fr, so the
+   card grows/shrinks smoothly with the content (not a snap). Runs in both
+   directions; the global prefers-reduced-motion rule collapses it to instant. */
+.tipsBody {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
 }
 
-@keyframes tipsReveal {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.tipsBodyOpen {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.tipsInner {
+  overflow: hidden;
+  min-height: 0;
+  text-align: left;
 }
 
 .tipText {
