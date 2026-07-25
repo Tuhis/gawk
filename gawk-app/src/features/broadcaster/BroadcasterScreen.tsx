@@ -557,8 +557,11 @@ export function BroadcasterScreen() {
                   opens the two browser-aware tips. */}
               <details className={styles.tips}>
                 <summary className={styles.tipsSummary}>Sharing tips</summary>
-                <p className={styles.tipText}>{WHOLE_SCREEN_TIP}</p>
-                <p className={styles.tipText}>{AUDIO_TIP[guidance]}</p>
+                {/* Wrapper so the reveal animates on open (see .tipsBody). */}
+                <div className={styles.tipsBody}>
+                  <p className={styles.tipText}>{WHOLE_SCREEN_TIP}</p>
+                  <p className={styles.tipText}>{AUDIO_TIP[guidance]}</p>
+                </div>
               </details>
             </>
           )}

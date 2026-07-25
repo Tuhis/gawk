@@ -496,6 +496,23 @@
   color: var(--text);
 }
 
+/* The reveal runs on open only (the user asked for the opening animation);
+   the global prefers-reduced-motion rule collapses it to instant. */
+.tips[open] .tipsBody {
+  animation: tipsReveal var(--dur) var(--ease);
+}
+
+@keyframes tipsReveal {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .tipText {
   margin: 0.6rem 0 0;
   font-size: var(--fs-xs);
