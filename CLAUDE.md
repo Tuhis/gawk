@@ -1612,7 +1612,14 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `webkitEnterFullscreen()` with pause-on-exit (loaded-but-paused arming —
    no dual decode while inline). The muxer's output is CI-proven to play in
    Chrome `MediaSource` (`e2e/run.mjs --muxer-check`, first step of the `e2e`
-   job); only the iPhone-native presentation stays manual (MF5).
+   job) — but that step drives the muxer/presenter **modules** directly and
+   **never goes through the device gate**, so what stays manual is more than the
+   iPhone-native presentation: the gate/arming/worker wiring (jsdom-covered
+   instead), everything `ManagedMediaSource`-specific (Chrome has no MMS at all —
+   `streaming` parking, MMS eviction, the `srcObject` wiring), and WebKit's
+   pause-on-underrun, which is definitionally what Chrome does *not* do and is
+   why docs/27 finding 1 shipped green. See docs/27 Decision 10's coverage
+   boundary before trusting a green muxer check.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,
