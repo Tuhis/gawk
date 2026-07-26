@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.20.3...gawk-server-v0.21.0) (2026-07-26)
+
+
+### Features
+
+* **r28:** advanced diagnostics & telemetry (docs/33 TM1–TM8) ([#151](https://github.com/Tuhis/gawk/issues/151)) ([034ad97](https://github.com/Tuhis/gawk/commit/034ad97496918c21a6f9242b3f9b291461436088))
+
 ## [0.20.3](https://github.com/Tuhis/gawk/compare/gawk-server-v0.20.2...gawk-server-v0.20.3) (2026-07-26)
 
 
