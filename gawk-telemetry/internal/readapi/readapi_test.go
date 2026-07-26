@@ -637,3 +637,52 @@ func TestReadPathEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 		}
 	}
 }
+
+// Ingest is at-least-once and the rollup store is append-only, so one session
+// CAN legitimately produce two rows — a client that resumes after an outage
+// longer than the finalize tombstone, or a crash-recovery sweep rolling up a
+// session a previous process had already finalized. Duplicate rows double
+// every count derived from them, which is what the writer's own comment calls
+// corrupting the permanent artifact (review finding 8).
+func TestDuplicateRollupRowsCollapseToTheLatest(t *testing.T) {
+	f := newFixture(t)
+	date := f.now.UTC().Format(store.DateLayout)
+	row := func(stalls int) []byte {
+		b, err := json.Marshal(rollup.Row{
+			SessionID: "aa11aa11aa11aa11aa11aa11", BroadcastKey: bkey, Role: "viewer",
+			StartedAt: f.now.UnixMilli(), EndedAt: f.now.UnixMilli() + 60000,
+			Samples: 100, Stalls: stalls,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	// The second write saw more of the session than the first.
+	if err := f.store.AppendRollup(date, row(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.AppendRollup(date, row(3)); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := f.api.ListSessions(ListSessionsQuery{Since: f.now.Add(-time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("sessions = %d, want 1 — one session must not appear twice", len(rows))
+	}
+	if rows[0].Stalls != 3 {
+		t.Errorf("stalls = %d, want the later row's 3", rows[0].Stalls)
+	}
+
+	// And the broadcast summary counts it once, not twice.
+	bs, err := f.api.ListBroadcasts(f.now.Add(-time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bs) != 1 || bs[0].Sessions != 1 {
+		t.Errorf("broadcast summary counted %d sessions, want 1", bs[0].Sessions)
+	}
+}

@@ -535,3 +535,82 @@ func TestFinalizedTombstoneExpires(t *testing.T) {
 		t.Error("the tombstone never expired; the id is blocklisted forever")
 	}
 }
+
+// --- at-least-once ingest (review finding 8) -------------------------------
+
+// A POST the service processed but whose response was lost is retried by both
+// collectors. Appending it again counts its samples and events twice in the
+// permanent rollup — the writer's own comment calls duplicate rows corrupting
+// every query over the artifact, and double-counted samples inside one row are
+// the same lie one level down.
+func TestAReplayedBatchIsNotCountedTwice(t *testing.T) {
+	h := newHarness(t)
+	a := batch(0, false, fpsSamples(0, 30, 30, 30), []ingest.Event{{TMs: 100, Kind: "watching"}})
+	a.ReceivedAt = h.now
+	for range 3 { // the original plus two retries of the same batch
+		if err := h.writer.Accept(a); err != nil {
+			t.Fatalf("Accept: %v", err)
+		}
+	}
+	next := batch(1, true, fpsSamples(6000, 30), nil)
+	next.ReceivedAt = h.now
+	if err := h.writer.Accept(next); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	if len(h.rows) != 1 {
+		t.Fatalf("rollup rows = %d, want 1", len(h.rows))
+	}
+	if got := h.rows[0].Samples; got != 4 {
+		t.Errorf("samples = %d, want 4 — the retried batch was counted again", got)
+	}
+	if got := h.rows[0].Events; got != 1 {
+		t.Errorf("events = %d, want 1", got)
+	}
+	if got := h.writer.Duplicates(); got != 2 {
+		t.Errorf("duplicates = %d, want 2 — dropping them silently is not the same as counting them", got)
+	}
+	if h.rows[0].SeqGaps != 0 {
+		t.Errorf("seqGaps = %d; a duplicate is not a gap", h.rows[0].SeqGaps)
+	}
+}
+
+// A gap is still a gap: dropping duplicates must not swallow the signal that
+// says coverage here is imperfect.
+func TestAGapIsStillRecordedAfterADuplicate(t *testing.T) {
+	h := newHarness(t)
+	for _, seq := range []int{0, 0, 3} {
+		a := batch(seq, false, fpsSamples(float64(seq)*2000, 30), nil)
+		a.ReceivedAt = h.now
+		if err := h.writer.Accept(a); err != nil {
+			t.Fatalf("Accept: %v", err)
+		}
+	}
+	h.writer.FinalizeAll()
+	if len(h.rows) != 1 {
+		t.Fatalf("rollup rows = %d, want 1", len(h.rows))
+	}
+	if h.rows[0].SeqGaps != 2 {
+		t.Errorf("seqGaps = %d, want 2 (batches 1 and 2 never arrived)", h.rows[0].SeqGaps)
+	}
+}
+
+// A session that resumes after an outage longer than the finalize tombstone
+// starts numbering where it left off, not at zero. It is a new row, and its
+// first batch must not be mistaken for a duplicate of a session that ended.
+func TestAResumedSessionIsNotTreatedAsADuplicate(t *testing.T) {
+	h := newHarness(t)
+	a := batch(7, false, fpsSamples(14000, 30), nil)
+	a.ReceivedAt = h.now
+	if err := h.writer.Accept(a); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	h.writer.FinalizeAll()
+	if len(h.rows) != 1 || h.rows[0].Samples != 1 {
+		t.Fatalf("rows = %d, samples = %d; a resumed session was dropped as a duplicate",
+			len(h.rows), h.rows[0].Samples)
+	}
+	if h.rows[0].SeqGaps != 0 {
+		t.Errorf("seqGaps = %d; the batches before a resume were never this session's to lose", h.rows[0].SeqGaps)
+	}
+}

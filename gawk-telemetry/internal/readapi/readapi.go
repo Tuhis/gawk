@@ -766,6 +766,15 @@ func (a *API) rollups(since time.Time) ([]rollup.Row, error) {
 		return nil, err
 	}
 	out := make([]rollup.Row, 0, len(lines))
+	// Dedup by sessionId, keeping the LAST row written for it (review finding
+	// 8). The store is append-only and one session can legitimately produce two
+	// rows — a client that resumes after an outage longer than the finalize
+	// tombstone, or a crash-recovery sweep rolling up a session a previous
+	// process had already finalized. Duplicate rows double every count derived
+	// from them, which the writer's own comment calls corrupting the permanent
+	// artifact; the last row wins because a later write saw more of the
+	// session.
+	at := make(map[string]int, len(lines))
 	for _, ln := range lines {
 		var r rollup.Row
 		// An older row simply lacks newer fields — that is the additive-forever
@@ -773,6 +782,11 @@ func (a *API) rollups(since time.Time) ([]rollup.Row, error) {
 		if err := json.Unmarshal(ln, &r); err != nil {
 			continue
 		}
+		if i, seen := at[r.SessionID]; seen && r.SessionID != "" {
+			out[i] = r
+			continue
+		}
+		at[r.SessionID] = len(out)
 		out = append(out, r)
 	}
 	return out, nil

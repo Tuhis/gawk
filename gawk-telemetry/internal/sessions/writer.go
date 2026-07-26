@@ -114,6 +114,7 @@ type Writer struct {
 	// samples is strictly better than losing the ability to trust a count.
 	finalized   map[string]time.Time
 	lateBatches uint64
+	duplicates  uint64
 }
 
 // NewWriter builds the session writer.
@@ -177,15 +178,31 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 		}
 		w.live[a.SessionID] = s
 	}
+	// Ingest is at-least-once: a POST the service processed but whose response
+	// was lost is retried by both collectors, and appending it again would
+	// count its samples and events twice in the permanent rollup. A batch
+	// numbered below what this session has already seen is that retry, and it
+	// is dropped — the client is told 204, because from its side the delivery
+	// did succeed (review finding 8).
+	if !ok && a.Seq > 0 {
+		// A first-batch-for-this-session that is not seq 0 is a resumed
+		// session, not a duplicate: accept it and let the gap accounting say
+		// what was missed.
+		s.nextExpected = a.Seq
+	}
+	if a.Seq < s.nextExpected {
+		w.duplicates++
+		w.mu.Unlock()
+		w.log.Debug("dropped a duplicate batch", "session", a.SessionID, "seq", a.Seq)
+		return nil
+	}
 	// A gap in `seq` means a batch was dropped after its retries (the client
 	// says so by numbering, not by apologising). Recorded, never fatal — it is
 	// exactly the "coverage is imperfect here" signal a verdict needs.
 	if a.Seq > s.nextExpected {
 		s.SeqGaps += a.Seq - s.nextExpected
 	}
-	if a.Seq >= s.nextExpected {
-		s.nextExpected = a.Seq + 1
-	}
+	s.nextExpected = a.Seq + 1
 	s.LastSeen = now
 	s.Samples += len(a.Samples)
 	s.Events += len(a.Events)
@@ -293,6 +310,16 @@ func (w *Writer) LateBatches() uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.lateBatches
+}
+
+// Duplicates counts batches dropped because their sequence number had already
+// been stored. A steady trickle is normal on a lossy network — it is the
+// at-least-once delivery working — and it is counted so it can never be
+// mistaken for the client sending more data than it does.
+func (w *Writer) Duplicates() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.duplicates
 }
 
 // LiveSessions returns a snapshot of what is currently open.
