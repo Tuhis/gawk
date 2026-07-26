@@ -147,32 +147,38 @@ func TestSeverityOrdersTheLiveGroup(t *testing.T) {
 	c := &clock{t: time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)}
 	p := New(c.now)
 
-	// Three broadcasts: healthy, warn, bad. They are folded into ONE round,
-	// which is the production shape — a scrape pass lists every broadcast the
-	// fleet is carrying, and a broadcast missing from a complete round is a
-	// broadcast that has ended.
-	var obs []relayscrape.Observation
-	mk := func(key, session string, stats map[string]any, sub relayscrape.Subscriber) {
-		a := batch(session, "viewer", stats)
-		a.BroadcastKey = key
-		p.ObserveClient(a, "Chrome 152", "Windows", "0.33.2")
-		bc := relayscrape.Broadcast{
-			PublisherActive: true, Role: "origin", Subscribers: 1,
-			FramesRelayed: 10000, SubscriberDetails: []relayscrape.Subscriber{sub},
+	// Three broadcasts: healthy, warn, bad. Each round is ONE scrape pass over
+	// the whole fleet, which is the production shape — a pass lists every
+	// broadcast, and a broadcast missing from a complete pass has ended.
+	// Two rounds, because relay counters are read as a WINDOW: the bad
+	// broadcast is bad because its viewer is overflowing NOW, not because it
+	// once did.
+	feed := func(overflow uint64) {
+		var obs []relayscrape.Observation
+		mk := func(key, session string, stats map[string]any, sub relayscrape.Subscriber) {
+			a := batch(session, "viewer", stats)
+			a.BroadcastKey = key
+			p.ObserveClient(a, "Chrome 152", "Windows", "0.33.2")
+			bc := relayscrape.Broadcast{
+				PublisherActive: true, Role: "origin", Subscribers: 1,
+				FramesRelayed: 10000, SubscriberDetails: []relayscrape.Subscriber{sub},
+			}
+			obs = append(obs,
+				relayscrape.Observation{Kind: "broadcast", Pod: "pod-a", BroadcastKey: key, Broadcast: &bc},
+				relayscrape.Observation{Kind: "subscriber", Pod: "pod-a", BroadcastKey: key, SessionID: session, Subscriber: &sub},
+			)
 		}
-		obs = append(obs,
-			relayscrape.Observation{Kind: "broadcast", Pod: "pod-a", BroadcastKey: key, Broadcast: &bc},
-			relayscrape.Observation{Kind: "subscriber", Pod: "pod-a", BroadcastKey: key, SessionID: session, Subscriber: &sub},
-		)
+		mk("111111111111", "111111111111111111111111", healthyViewer(), relayscrape.Subscriber{SessionID: "111111111111111111111111"})
+		warn := healthyViewer()
+		warn["decoderFps"] = 5.0
+		mk("222222222222", "222222222222222222222222", warn, relayscrape.Subscriber{SessionID: "222222222222222222222222"})
+		mk("333333333333", "333333333333333333333333", healthyViewer(),
+			relayscrape.Subscriber{SessionID: "333333333333333333333333", CarrierQueueOverflow: overflow})
+		p.ObserveRelay(round(obs))
 	}
-	mk("111111111111", "111111111111111111111111", healthyViewer(), relayscrape.Subscriber{SessionID: "111111111111111111111111"})
-	warn := healthyViewer()
-	warn["decoderFps"] = 5.0
-	mk("222222222222", "222222222222222222222222", warn, relayscrape.Subscriber{SessionID: "222222222222222222222222"})
-	bad := healthyViewer()
-	mk("333333333333", "333333333333333333333333", bad,
-		relayscrape.Subscriber{SessionID: "333333333333333333333333", CarrierQueueOverflow: 20})
-	p.ObserveRelay(round(obs))
+	feed(0)
+	c.add(5 * time.Second)
+	feed(20)
 
 	// Hysteresis: escalation takes two consecutive evaluations, so a single
 	// blip cannot light the page up.
@@ -520,21 +526,23 @@ func TestEndedRowsAgeOut(t *testing.T) {
 // pods concurrently and appends in completion order, so if broadcast-level
 // facts are last-writer-wins the whole card — role, counts, rule outcomes —
 // flaps at scrape cadence depending on which pod was quicker.
-func clusterObs(originFirst bool) []relayscrape.Observation {
-	originSub := relayscrape.Subscriber{SessionID: "aa11aa11aa11aa11aa11aa11", Dropped: 2}
+// `gen` scales the cumulative counters, so feeding gen 1 then gen 2 makes each
+// window's delta exactly the per-gen figure — the shape the live path reads.
+func clusterObs(originFirst bool, gen uint64) []relayscrape.Observation {
+	originSub := relayscrape.Subscriber{SessionID: "aa11aa11aa11aa11aa11aa11", Dropped: 2 * gen}
 	edgeSub1 := relayscrape.Subscriber{SessionID: "bb22bb22bb22bb22bb22bb22"}
 	edgeSub2 := relayscrape.Subscriber{SessionID: "cc33cc33cc33cc33cc33cc33"}
 	origin := relayscrape.Broadcast{
 		PublisherActive: true, Role: "origin", Subscribers: 2, EdgeSessions: 1,
-		ViewersGlobal: 3, FramesRelayed: 1200, IngressFramesLost: 4,
-		DatagramsDropped: 10,
+		ViewersGlobal: 3, FramesRelayed: 1200 * gen, IngressFramesLost: 4 * gen,
+		DatagramsDropped: 10 * gen,
 		SubscriberDetails: []relayscrape.Subscriber{
 			originSub, {Key: "edge", Internal: true},
 		},
 	}
 	edge := relayscrape.Broadcast{
 		PublisherActive: true, Role: "edge", Subscribers: 2,
-		FramesRelayed: 1180, DatagramsDropped: 5,
+		FramesRelayed: 1180 * gen, DatagramsDropped: 5 * gen,
 		SubscriberDetails: []relayscrape.Subscriber{edgeSub1, edgeSub2},
 	}
 	a := []relayscrape.Observation{
@@ -554,8 +562,10 @@ func clusterObs(originFirst bool) []relayscrape.Observation {
 
 func TestClusterFactsDoNotDependOnPodAnswerOrder(t *testing.T) {
 	render := func(originFirst bool) Snapshot {
-		p, _ := newProj()
-		p.ObserveRelay(round(clusterObs(originFirst)))
+		p, c := newProj()
+		p.ObserveRelay(round(clusterObs(originFirst, 1)))
+		c.add(5 * time.Second)
+		p.ObserveRelay(round(clusterObs(originFirst, 2)))
 		return p.Snapshot()
 	}
 	a, err := json.Marshal(render(true))
@@ -572,8 +582,10 @@ func TestClusterFactsDoNotDependOnPodAnswerOrder(t *testing.T) {
 }
 
 func TestFleetSubscriberTotalSumsRealViewersAcrossPods(t *testing.T) {
-	p, _ := newProj()
-	p.ObserveRelay(round(clusterObs(true)))
+	p, c := newProj()
+	p.ObserveRelay(round(clusterObs(true, 1)))
+	c.add(5 * time.Second)
+	p.ObserveRelay(round(clusterObs(true, 2)))
 	snap := p.Snapshot()
 	if len(snap.Live) != 1 {
 		t.Fatalf("live broadcasts = %d, want 1 — both pods carry ONE broadcast", len(snap.Live))
@@ -599,4 +611,121 @@ func TestFleetSubscriberTotalSumsRealViewersAcrossPods(t *testing.T) {
 	if bv.Role != "origin" || bv.Pod != "pod-a" {
 		t.Errorf("card reports role %q on pod %q; the origin is the broadcast's home", bv.Role, bv.Pod)
 	}
+}
+
+// --- windowed evaluation (review finding 4) --------------------------------
+//
+// /statusz counters are cumulative and the playbook's counter rules are
+// written for a session rollup, where the total IS the session. Fed lifetime
+// totals, the same rules can only ratchet — and hysteresis can never clear a
+// number that never comes down.
+
+// twoPodlessRounds feeds `n` rounds for one viewer whose relay counters are
+// whatever `at` returns for that round.
+func feedRounds(p *Projection, c *clock, n int, at func(i int) relayscrape.Subscriber) {
+	for i := range n {
+		if i > 0 {
+			c.add(5 * time.Second)
+		}
+		p.ObserveRelay(relayRound(at(i)))
+		p.Snapshot()
+	}
+}
+
+func TestASingleCounterEventDoesNotMarkAViewerBadForever(t *testing.T) {
+	p, c := newProj()
+	// One carrier overflow burst early on, then a clean stream for minutes.
+	feedRounds(p, c, 12, func(i int) relayscrape.Subscriber {
+		var overflow uint64
+		if i >= 2 {
+			overflow = 20 // happened once, at round 2, and never again
+		}
+		return relayscrape.Subscriber{SessionID: "d0d0d0d0d0d0d0d0d0d0d0d0", CarrierQueueOverflow: overflow}
+	})
+
+	v := findSession(p.Snapshot(), "d0d0d0d0d0d0d0d0d0d0d0d0")
+	if v == nil {
+		t.Fatal("session missing")
+	}
+	for _, f := range v.Findings {
+		if f.ID == "carrier-queue-overflow" {
+			t.Errorf("a single overflow event at round 2 is still accusing the viewer %d rounds later", 12)
+		}
+	}
+	if v.Severity == rules.SeverityBad {
+		t.Error("severity is still bad long after the event that caused it stopped happening")
+	}
+}
+
+func TestAnOngoingCounterEventStillFires(t *testing.T) {
+	p, c := newProj()
+	// The delta must not simply disable the rule: overflow every round.
+	feedRounds(p, c, 6, func(i int) relayscrape.Subscriber {
+		return relayscrape.Subscriber{
+			SessionID: "d1d1d1d1d1d1d1d1d1d1d1d1", CarrierQueueOverflow: uint64(10 * i),
+		}
+	})
+
+	v := findSession(p.Snapshot(), "d1d1d1d1d1d1d1d1d1d1d1d1")
+	found := false
+	for _, f := range v.Findings {
+		if f.ID == "carrier-queue-overflow" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a viewer overflowing every single window is not being reported")
+	}
+}
+
+func TestTheFirstObservationReportsNoCounterFacts(t *testing.T) {
+	p, _ := newProj()
+	// A session already three hours old when telemetry first sees it: its
+	// lifetime totals say nothing about now, so they must not be presented as
+	// if they did. `unavailable` is the honest state for one scrape interval.
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{
+		SessionID: "d2d2d2d2d2d2d2d2d2d2d2d2", CarrierQueueOverflow: 9000, Dropped: 100000,
+	}))
+	v := findSession(p.Snapshot(), "d2d2d2d2d2d2d2d2d2d2d2d2")
+	for _, f := range v.Findings {
+		if f.ID == "carrier-queue-overflow" {
+			t.Error("a lifetime total was read as if it had happened in the last five seconds")
+		}
+	}
+}
+
+func TestACounterGoingBackwardsIsNotNegativeTraffic(t *testing.T) {
+	p, c := newProj()
+	// A relay restart (or a re-created hub) resets the counters. The window is
+	// void; it must not produce a negative delta or a spurious clean bill.
+	feedRounds(p, c, 3, func(i int) relayscrape.Subscriber {
+		return relayscrape.Subscriber{SessionID: "d3d3d3d3d3d3d3d3d3d3d3d3", Dropped: uint64(1000 * (i + 1))}
+	})
+	c.add(5 * time.Second)
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: "d3d3d3d3d3d3d3d3d3d3d3d3", Dropped: 0}))
+	if got, ok := relayFact(p, "d3d3d3d3d3d3d3d3d3d3d3d3", "subscriberDropped"); ok && got < 0 {
+		t.Errorf("subscriberDropped = %v after a counter reset", got)
+	}
+
+	// And the window after the reset measures from the new baseline.
+	c.add(5 * time.Second)
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: "d3d3d3d3d3d3d3d3d3d3d3d3", Dropped: 7}))
+	if got, _ := relayFact(p, "d3d3d3d3d3d3d3d3d3d3d3d3", "subscriberDropped"); got != 7 {
+		t.Errorf("subscriberDropped = %v after the reset, want the 7 measured since", got)
+	}
+}
+
+// relayFact reads a session's relay-side fact directly. Relay facts are inputs
+// to the rules rather than row metrics, so there is no rendered surface to
+// assert delta arithmetic against.
+func relayFact(p *Projection, sessionID, name string) (float64, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, b := range p.bcasts {
+		if s, ok := b.sessions[sessionID]; ok {
+			v, ok := s.relayFacts[name]
+			return v, ok
+		}
+	}
+	return 0, false
 }

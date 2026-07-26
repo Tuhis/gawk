@@ -136,6 +136,11 @@ type sessionState struct {
 	relayFacts  map[string]float64
 	clientFacts map[string]float64
 	textFacts   map[string]string
+	// prevSub is the previous scrape's subscriber record, so counter facts can
+	// be reported as this window's delta rather than as a lifetime total that
+	// can only ratchet upward.
+	prevSub     relayscrape.Subscriber
+	havePrevSub bool
 	// Hysteresis state.
 	pendingSeverity rules.Severity
 	pendingCount    int
@@ -167,11 +172,25 @@ type broadcastState struct {
 	missedRounds int
 }
 
-// podView is one pod's latest broadcast-level answer.
+// podView is one pod's latest broadcast-level answer, and the one before it.
+//
+// The previous answer is what makes the live path honest. /statusz counters are
+// CUMULATIVE, and the playbook's counter rules ("did this happen?") are written
+// for a session rollup, where the total is the session. Fed lifetime totals
+// instead, they can only ratchet: one carrier overflow at minute 3 marks a
+// viewer bad for the rest of a four-hour stream, and no hysteresis can clear it
+// because the number never comes down. So the live path feeds the same rules a
+// WINDOW — the delta since the previous scrape — under the same fact names.
+// One engine, two windows: the rollup's window is the session, the dashboard's
+// is a scrape interval.
 type podView struct {
-	pod  string
-	role string
-	cur  relayscrape.Broadcast
+	pod    string
+	role   string
+	cur    relayscrape.Broadcast
+	prev   relayscrape.Broadcast
+	have   bool // a previous answer exists, so a delta is meaningful
+	at     time.Time
+	prevAt time.Time
 }
 
 // endedEntry keeps the end INSTANT beside the stored view. The view carries
@@ -270,7 +289,14 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			if o.Broadcast == nil {
 				continue
 			}
-			b.pods[o.Pod] = &podView{pod: o.Pod, role: o.Role, cur: *o.Broadcast}
+			pv, ok := b.pods[o.Pod]
+			if !ok {
+				pv = &podView{pod: o.Pod}
+				b.pods[o.Pod] = pv
+			} else {
+				pv.prev, pv.prevAt, pv.have = pv.cur, pv.at, true
+			}
+			pv.role, pv.cur, pv.at = o.Role, *o.Broadcast, now
 		case "subscriber":
 			if o.Subscriber == nil || o.SessionID == "" {
 				continue
@@ -292,13 +318,21 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			}
 			sub := o.Subscriber
 			s.lastRelay = now
-			s.relayFacts["subscriberDropped"] = float64(sub.Dropped)
-			s.relayFacts["queueDepth"] = float64(sub.QueueDepth)
-			s.relayFacts["keyframesDropped"] = float64(sub.KeyframesDropped)
-			s.relayFacts["carrierQueueOverflow"] = float64(sub.CarrierQueueOverflow)
-			s.relayFacts["carrierRecordsDropped"] = float64(sub.CarrierRecordsDropped)
-			s.relayFacts["dvrResyncs"] = float64(sub.DVRResyncs)
-			s.relayFacts["dvrLagMs"] = float64(sub.DVRLagMs)
+			// Gauges are read as they stand; counters become this window's
+			// delta, and are ABSENT until there is a window to measure (the
+			// alternative — reporting the lifetime total for one scrape — is
+			// the very thing this change exists to stop).
+			s.relayFacts = map[string]float64{
+				"queueDepth": float64(sub.QueueDepth),
+				"dvrLagMs":   float64(sub.DVRLagMs),
+			}
+			prev, have := s.prevSub, s.havePrevSub
+			setDelta(s.relayFacts, "subscriberDropped", sub.Dropped, prev.Dropped, have)
+			setDelta(s.relayFacts, "keyframesDropped", sub.KeyframesDropped, prev.KeyframesDropped, have)
+			setDelta(s.relayFacts, "carrierQueueOverflow", sub.CarrierQueueOverflow, prev.CarrierQueueOverflow, have)
+			setDelta(s.relayFacts, "carrierRecordsDropped", sub.CarrierRecordsDropped, prev.CarrierRecordsDropped, have)
+			setDelta(s.relayFacts, "dvrResyncs", sub.DVRResyncs, prev.DVRResyncs, have)
+			s.prevSub, s.havePrevSub = *sub, true
 		}
 	}
 
@@ -426,43 +460,113 @@ func (b *broadcastState) aggregateLocked() {
 	f := map[string]float64{}
 	origin := b.originLocked()
 
-	var realSubs, dropping int
-	var dropped, bwDropped, keyframesIn uint64
+	realSubs := 0
+	var dropped, bwDropped, keyframesIn sum
+	var dropping sum
 	for _, pv := range b.pods {
-		dropped += pv.cur.DatagramsDropped
-		bwDropped += pv.cur.BandwidthDroppedDatagrams
-		keyframesIn += pv.cur.KeyframeStreamsIn
+		dropped.add(deltaOf(pv.cur.DatagramsDropped, pv.prev.DatagramsDropped, pv.have))
+		bwDropped.add(deltaOf(pv.cur.BandwidthDroppedDatagrams, pv.prev.BandwidthDroppedDatagrams, pv.have))
+		keyframesIn.add(deltaOf(pv.cur.KeyframeStreamsIn, pv.prev.KeyframeStreamsIn, pv.have))
+
+		// "Dropping" has to mean "in this window" for the same reason: on a
+		// drops-over-stalls relay, "has ever dropped one datagram" converges to
+		// true for every subscriber on any long broadcast, so the lifetime form
+		// of this discriminator eventually accuses every healthy fleet.
+		was := map[string]uint64{}
+		for _, sub := range pv.prev.SubscriberDetails {
+			was[subKey(sub)] = sub.Dropped
+		}
+		n := 0
 		for _, sub := range pv.cur.SubscriberDetails {
 			if sub.Internal {
 				continue
 			}
 			realSubs++
-			if sub.Dropped > 0 {
-				dropping++
+			if before, known := was[subKey(sub)]; known && sub.Dropped > before {
+				n++
 			}
 		}
+		dropping.add(float64(n), pv.have)
 	}
-	f["datagramsDropped"] = float64(dropped)
-	f["bandwidthDroppedDatagrams"] = float64(bwDropped)
-	f["keyframeStreamsIn"] = float64(keyframesIn)
-	f["subscribersDropping"] = float64(dropping)
+	set(f, "datagramsDropped", dropped)
+	set(f, "bandwidthDroppedDatagrams", bwDropped)
+	set(f, "keyframeStreamsIn", keyframesIn)
+	set(f, "subscribersDropping", dropping)
+	// Gauges: what is true right now, not what accumulated.
 	f["subscribersFleetTotal"] = float64(realSubs)
 	f["subscribers"] = float64(realSubs)
 
 	if origin != nil {
 		f["publisherActive"] = boolToF(origin.cur.PublisherActive)
 		f["viewersGlobal"] = float64(origin.cur.ViewersGlobal)
-		f["framesRelayed"] = float64(origin.cur.FramesRelayed)
-		f["ingressFramesLost"] = float64(origin.cur.IngressFramesLost)
-		total := origin.cur.IngressFramesLost + origin.cur.FramesRelayed
-		if total > 0 {
-			f["ingressLossRatio"] = float64(origin.cur.IngressFramesLost) / float64(total)
-		} else {
-			f["ingressLossRatio"] = 0
+		relayed, relayedOK := deltaOf(origin.cur.FramesRelayed, origin.prev.FramesRelayed, origin.have)
+		lost, lostOK := deltaOf(origin.cur.IngressFramesLost, origin.prev.IngressFramesLost, origin.have)
+		if relayedOK {
+			f["framesRelayed"] = relayed
+		}
+		if lostOK {
+			f["ingressFramesLost"] = lost
+		}
+		// A lifetime average keeps a past loss episode firing leg-A long after
+		// the link recovered; the ratio is computed over the window too.
+		if relayedOK && lostOK {
+			if total := relayed + lost; total > 0 {
+				f["ingressLossRatio"] = lost / total
+			} else {
+				f["ingressLossRatio"] = 0
+			}
 		}
 		b.pod, b.role = origin.pod, origin.role
 	}
 	b.relayFacts = f
+}
+
+// sum accumulates deltas across pods, remembering whether ANY pod had a window
+// to measure. If none did, the fact is omitted entirely rather than reported as
+// zero: "no measurement yet" and "measured, and nothing happened" are different
+// claims, and only the second one is evidence.
+type sum struct {
+	v  float64
+	ok bool
+}
+
+func (s *sum) add(v float64, ok bool) {
+	if ok {
+		s.v += v
+		s.ok = true
+	}
+}
+
+func set(f map[string]float64, name string, s sum) {
+	if s.ok {
+		f[name] = s.v
+	}
+}
+
+func setDelta(f map[string]float64, name string, cur, prev uint64, have bool) {
+	if v, ok := deltaOf(cur, prev, have); ok {
+		f[name] = v
+	}
+}
+
+// deltaOf is one window's worth of a cumulative counter. A counter that went
+// BACKWARDS is a relay restart or a re-created hub, never negative traffic: the
+// window is void and the next one measures from the new baseline.
+func deltaOf(cur, prev uint64, have bool) (float64, bool) {
+	if !have || cur < prev {
+		return 0, false
+	}
+	return float64(cur - prev), true
+}
+
+// subKey identifies a subscriber across scrapes. The sessionId is the real
+// identity (TM1); the /statusz key is the fallback for the internal sessions
+// that are never issued one.
+func subKey(s relayscrape.Subscriber) string {
+	if s.SessionID != "" {
+		return s.SessionID
+	}
+	return s.Key
 }
 
 // originLocked picks the pod whose answer speaks for the broadcast: the origin
