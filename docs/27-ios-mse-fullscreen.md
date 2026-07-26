@@ -238,12 +238,15 @@ all normal viewing and given up only inside the native player — see Decision 9
     muxer's correctness — valid fMP4 that decodes and presents — is verifiable
     in **headless Chrome**, which has `MediaSource` and plays fMP4/H.264, even
     though `webkitEnterFullscreen`'s native *presentation* is iPhone-only. The
-    R20 tier-1 harness gains a step that feeds the production viewer's muxer
-    output into a Chrome `<video>` and asserts frames present
-    (`requestVideoFrameCallback` fires, `currentTime` advances). Only the
-    iPhone-specific native-player rendering stays manual (MF5) — and the spike
-    already settled that. This is R20's "browser E2E where possible,
-    platform-specific manual" split.
+    R20 tier-1 harness gains a **standalone** step that drives the production
+    muxer and presenter *modules* — committed fixture in, a Chrome `<video>`
+    out — and asserts frames present (`requestVideoFrameCallback` fires,
+    `currentTime` advances). It is a component proof that happens to run in a
+    real browser, **not a run of the viewer surface**: the viewer under Chrome is
+    ungated, so it never builds a muxer at all. The iPhone-specific native-player
+    rendering stays manual (MF5) — the spike already settled that — and so does
+    everything the boundary below names. This is R20's "browser E2E where
+    possible, platform-specific manual" split.
 
     **Where that coverage stops** (recorded after MF5 pass 1, because a green
     Chrome check reads as more than it is): the check imports the muxer and
