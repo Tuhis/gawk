@@ -23,7 +23,7 @@ import {
 } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import type { MuxSegmentEvent, ViewerWorkerEvent } from '../../transport/viewer-worker-core';
-import { probeMsePresentation, type MseProbeResult } from './msePresentation';
+import { probeMseAudio, probeMsePresentation, type MseProbeResult } from './msePresentation';
 import { WorkerViewerController } from './workerViewerController';
 import { AudioSink, audioSinkSupported } from './audioSink';
 import { AudioRateController, notePlayhead, resetAvSync } from '../../transport/av-sync';
@@ -47,6 +47,10 @@ export type ViewerStatus = 'connecting' | 'watching' | 'reconnecting' | 'ended' 
 // and the hook routes each muxSegment event straight into it.
 export interface PresentationState {
   probe: MseProbeResult | null;
+  // R22 audio: the Opus-in-MP4 verdict for this stream's audio lane. Null until
+  // audio is observed (a video-only broadcast never probes); false-supported
+  // keeps the native player video-only with the inline AudioWorklet unchanged.
+  audioProbe: MseProbeResult | null;
   arm: () => void;
   setSegmentSink: (cb: ((seg: MuxSegmentEvent) => void) | null) => void;
 }
@@ -63,6 +67,11 @@ export interface AudioState {
   setMuted: (muted: boolean) => void;
   setVolume: (volume: number) => void;
   resume: () => void;
+  // R22 audio (docs/27 finding 2): silence the inline AudioWorklet sink WITHOUT
+  // touching the persisted mute preference — used while the native fullscreen
+  // player is presenting the muxed audio track, so the same audio isn't heard
+  // twice from two independently-clocked outputs.
+  setSuppressed: (suppressed: boolean) => void;
 }
 
 export interface ViewerConnectionState {
@@ -144,6 +153,11 @@ export function useViewerConnection(
   // change — a broadcaster restart with a different encoder — updates the
   // gate). Session-long otherwise.
   const [mseProbe, setMseProbe] = useState<MseProbeResult | null>(null);
+  // R22 audio: probed once, from the first stats tick that reports an audio
+  // codec (the lane's config). A ref mirrors it so the per-tick check stays a
+  // single null test on a video-only stream.
+  const [mseAudioProbe, setMseAudioProbe] = useState<MseProbeResult | null>(null);
+  const mseAudioProbedRef = useRef(false);
   // Flips true if a would-be worker reports (at boot, before any canvas
   // transfer) that it lacks the codecs/transport — then we use the main thread.
   const [workerUnsupported, setWorkerUnsupported] = useState(false);
@@ -175,6 +189,9 @@ export function useViewerConnection(
   deliveryModeRef.current = deliveryMode;
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
+  // R22 audio: an override, not a preference — the sink is muted while either
+  // the user's toggle or the native-fullscreen handoff says so.
+  const suppressedRef = useRef(false);
   const volumeRef = useRef(volume);
   volumeRef.current = volume;
 
@@ -206,7 +223,7 @@ export function useViewerConnection(
       },
       profile,
     );
-    sink.setMuted(mutedRef.current);
+    sink.setMuted(mutedRef.current || suppressedRef.current);
     sink.setVolume(volumeRef.current);
     sinkRef.current = sink;
     return sink;
@@ -258,15 +275,31 @@ export function useViewerConnection(
     };
   }, []);
 
-  const setMuted = useCallback((next: boolean) => {
-    setMutedState(next);
-    sinkRef.current?.setMuted(next);
-    try {
-      localStorage.setItem(MUTED_KEY, next ? '1' : '0');
-    } catch {
-      // private mode etc. — the toggle still works for this session
-    }
+  const applySinkMute = useCallback(() => {
+    sinkRef.current?.setMuted(mutedRef.current || suppressedRef.current);
   }, []);
+
+  const setMuted = useCallback(
+    (next: boolean) => {
+      setMutedState(next);
+      mutedRef.current = next;
+      applySinkMute();
+      try {
+        localStorage.setItem(MUTED_KEY, next ? '1' : '0');
+      } catch {
+        // private mode etc. — the toggle still works for this session
+      }
+    },
+    [applySinkMute],
+  );
+
+  const setAudioSuppressed = useCallback(
+    (next: boolean) => {
+      suppressedRef.current = next;
+      applySinkMute();
+    },
+    [applySinkMute],
+  );
 
   const setVolume = useCallback((next: number) => {
     const v = Math.max(0, Math.min(1, next));
@@ -370,6 +403,22 @@ export function useViewerConnection(
               contextSampleRate: b.contextSampleRate,
             },
           };
+        }
+        // R22 audio (docs/27 finding 2): the audio lane's codec only becomes
+        // known once a packet has arrived, so the Opus-in-MP4 verdict lands here
+        // rather than beside the video probe. A pass arms the worker's audio
+        // fork; a refusal is recorded once and never retried (the codec can't
+        // change without a new config, which would re-probe by identity anyway).
+        if (
+          presentationMuxRef.current &&
+          useWorkerRef.current &&
+          !mseAudioProbedRef.current &&
+          next.audioCodec != null
+        ) {
+          mseAudioProbedRef.current = true;
+          const verdict = probeMseAudio(next.audioCodec, next.audioChannels);
+          setMseAudioProbe(verdict);
+          if (verdict.supported) controllerRef.current?.armPresentationAudio();
         }
         setStats(next);
         break;
@@ -600,6 +649,7 @@ export function useViewerConnection(
     retryNote,
     presentation: {
       probe: mseProbe,
+      audioProbe: mseAudioProbe,
       arm: armPresentation,
       setSegmentSink,
     },
@@ -611,6 +661,7 @@ export function useViewerConnection(
       setMuted,
       setVolume,
       resume: resumeAudio,
+      setSuppressed: setAudioSuppressed,
     },
   };
 }

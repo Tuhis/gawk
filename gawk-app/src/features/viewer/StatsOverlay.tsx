@@ -232,10 +232,27 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               ],
               ['Appends', `${surface.segmentsAppended} · ${surface.appendErrors} err`],
               [
+                'Live duration',
+                surface.liveDuration == null
+                  ? '—'
+                  : surface.liveDuration
+                    ? 'infinite (LIVE)'
+                    : 'finite — no LIVE badge',
+              ],
+              [
+                'Audio track',
+                surface.audioMode === 'muxed'
+                  ? `muxed · ${surface.audioSegmentsAppended} appended (${surface.muxAudioSegments} muxed, ${surface.muxAudioHoles} holes)${surface.audioTrackActive ? '' : ' · awaiting first sample'}`
+                  : surface.audioMode,
+              ],
+              [
                 'Buffered',
                 surface.bufferedMs == null
                   ? '—'
-                  : `${(surface.bufferedMs / 1000).toFixed(1)} s · ${((surface.bufferedAheadMs ?? 0) / 1000).toFixed(1)} s behind edge`,
+                  : `${(surface.bufferedMs / 1000).toFixed(1)} s · ${((surface.bufferedAheadMs ?? 0) / 1000).toFixed(1)} s behind edge` +
+                    (surface.bufferedRanges != null && surface.bufferedRanges > 1
+                      ? ` · ${surface.bufferedRanges} ranges (hole)`
+                      : ''),
               ],
               [
                 'Video element',

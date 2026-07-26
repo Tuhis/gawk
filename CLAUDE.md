@@ -95,13 +95,17 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Five open entries (plus a
-  lint-hygiene note) as of 2026-07-25: two Safari viewer stalls (keyframe
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Eight open entries (plus a
+  lint-hygiene note) as of 2026-07-26: two Safari viewer stalls (keyframe
   delivery stops; a dead-session freeze that now recovers but whose WebKit
   root cause is still unknown), a misleading "Streamer offline" join-reject
-  card, a broadcaster stuck on LIVE after a silent worker death, and the
+  card, a broadcaster stuck on LIVE after a silent worker death, the
   viewer `avSkewMs` metric over-reporting on long/stressed sessions (the audio
-  itself is fine); plus a recorded set of `gawk-broadcast/internal/mpegts`
+  itself is fine), and three **iPhone-native-fullscreen-only** entries from the
+  first R22 on-device pass (docs/27 findings 3–5, diagnosed by code reading:
+  the ~100 ms MSE cushion that structurally cannot grow, no stall watchdog on
+  the presentation element, and MMS parking manufacturing buffered holes while
+  armed); plus a recorded set of `gawk-broadcast/internal/mpegts`
   lint advisories that are not runtime defects. (The iPhone
   native-fullscreen black video was resolved 2026-07-25 by R22's MSE path —
   docs/27.) (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
@@ -1518,7 +1522,17 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `gawk:viewer-delivery`. Automated gates green incl. an e2e deep-buffer
    viewer pass; on-hardware tuning is the remaining DV6 work.
 26. iOS native fullscreen via MSE — **MF1–MF4 + MF5's observability/docs half
-   implemented 2026-07-25; MF5 on-device verification pending** (R22,
+   implemented 2026-07-25; first on-device pass 2026-07-26 CONFIRMED the design
+   (real video in native fullscreen) and produced five findings — 1 (no
+   `duration = Infinity`: no LIVE badge, and WebKit pauses + fires `ended` on an
+   MSE underrun where Chromium stalls and resumes, so every hiccup killed
+   playback until a manual tap) and 2 (audio muxed into the presentation as a
+   second Opus SourceBuffer, probed via `isTypeSupported` and CI-proven in
+   Chrome, with an exclusive inline-sink/native-player audio handoff) are FIXED;
+   3–5 are diagnosed and open (the ~100 ms live-edge cushion that structurally
+   cannot grow because the muxer is fed after the paced release; no stall
+   watchdog on the element; MMS parking + the bounded queue manufacturing
+   buffered holes while armed) — a second on-device pass is pending** (R22,
    `docs/27-ios-mse-fullscreen.md`; viewer-client only, zero server/wire/
    broadcaster changes). The iPhone fullscreen button's hidden `<video>` (R16
    scaffolding: gate, tiers, hiding rules, `NativeVideoFullscreen` gate — all

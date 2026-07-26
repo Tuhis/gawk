@@ -241,7 +241,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // menu needs the button as its anchor (see ContextMenu's `anchorRef`).
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  const { probe: mseProbe, arm: armMux, setSegmentSink } = presentation;
+  const { probe: mseProbe, audioProbe: mseAudioProbe, arm: armMux, setSegmentSink } = presentation;
+  // R22 audio (docs/27 finding 2): true once the muxed audio track is what the
+  // native player will output — which is when the inline sink must go quiet and
+  // the hidden element must be audible.
+  const nativeAudio = mseAudioProbe?.supported === true;
 
   // R22 (docs/27 Decision 3): the main-thread presenter — MMS + SourceBuffer
   // behind the hidden <video>. One per screen, created lazily on the gated
@@ -261,8 +265,13 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     setSegmentSink((seg) => {
       presenter.pushSegment(
         seg.kind === 'init'
-          ? { kind: 'init', mime: seg.mime, data: new Uint8Array(seg.data) }
-          : { kind: 'media', keyframe: seg.keyframe, data: new Uint8Array(seg.data) },
+          ? { kind: 'init', track: seg.track, mime: seg.mime, data: new Uint8Array(seg.data) }
+          : {
+              kind: 'media',
+              track: seg.track,
+              keyframe: seg.keyframe,
+              data: new Uint8Array(seg.data),
+            },
       );
     });
     armMux();
@@ -321,7 +330,36 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     };
   }, [presentationVideo]);
 
-  const { isFullscreen, tier, toggle: toggleFullscreen } = useFullscreen(rootRef, presentationVideo);
+  // R22 audio (docs/27 finding 2): the audio handoff. Only one output may be
+  // audible at a time — the inline AudioWorklet sink (paced to the inline canvas)
+  // and the native player (paced by its own MSE playhead) are independently
+  // clocked, so both at once is an echo, not stereo. Video-only muxing (probe
+  // refused, or a broadcast without audio) leaves the inline sink alone: the
+  // native player is then silent by construction, and suppressing it would make
+  // fullscreen mute.
+  const suppressAudio = audio.setSuppressed;
+  const onNativeEnter = useCallback(() => {
+    if (nativeAudio) suppressAudio(true);
+  }, [nativeAudio, suppressAudio]);
+  const onNativeExit = useCallback(() => {
+    suppressAudio(false);
+  }, [suppressAudio]);
+  const {
+    isFullscreen,
+    tier,
+    toggle: toggleFullscreen,
+  } = useFullscreen(rootRef, presentationVideo, { onNativeEnter, onNativeExit });
+
+  // The native player has no access to the viewer's volume slider, so mirror it
+  // onto the element. (Mute rides the declarative `muted` prop below.)
+  useEffect(() => {
+    if (!presentationVideo) return;
+    try {
+      presentationVideo.volume = audio.volume;
+    } catch {
+      // volume is best-effort — iOS honors the hardware switch regardless
+    }
+  }, [presentationVideo, audio.volume]);
 
   // R16 Decision 9 / R22 Decision 8: the Feature Gates readout — derived
   // state, rendered on every viewer (the one deliberate overlay-only change
@@ -350,9 +388,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // buffered live edge (the fullscreen half of the live-edge delta).
   let bufferedMs: number | null = null;
   let bufferedAheadMs: number | null = null;
+  let bufferedRanges: number | null = null;
   if (presentationVideo) {
     try {
       const b = presentationVideo.buffered;
+      bufferedRanges = b.length;
       if (b.length > 0) {
         bufferedMs = (b.end(b.length - 1) - b.start(0)) * 1000;
         bufferedAheadMs = (b.end(b.length - 1) - presentationVideo.currentTime) * 1000;
@@ -369,8 +409,26 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     muxErrors: stats?.presentationMux?.errors ?? 0,
     segmentsAppended: presenterStats?.segmentsAppended ?? 0,
     appendErrors: presenterStats?.appendErrors ?? 0,
+    liveDuration: presenterStats?.sourceOpen ? presenterStats.liveDuration : null,
+    // The audio verdict, resolved: no audio in the stream reads 'none', a passing
+    // probe 'muxed', and a refusal carries its reason (e.g. 'unsupported:
+    // audio/mp4; codecs="opus"') — which is the row that says whether iOS took
+    // Opus in MP4 at all.
+    audioMode:
+      mseAudioProbe == null
+        ? stats?.audioCodec == null
+          ? 'none'
+          : 'probing'
+        : mseAudioProbe.supported
+          ? 'muxed'
+          : mseAudioProbe.reason,
+    audioSegmentsAppended: presenterStats?.audioSegmentsAppended ?? 0,
+    audioTrackActive: presenterStats?.audioTrack ?? false,
+    muxAudioSegments: stats?.presentationMux?.audioSegments ?? 0,
+    muxAudioHoles: stats?.presentationMux?.audioHoles ?? 0,
     bufferedMs,
     bufferedAheadMs,
+    bufferedRanges,
     elementReadyState: presentationVideo?.readyState ?? null,
     elementPaused: presentationVideo?.paused ?? null,
     elementWidth: presentationVideo?.videoWidth ?? null,
@@ -536,7 +594,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           ref={setPresentationVideo}
           className={styles.presentationVideo}
           playsInline
-          muted
+          // R22 audio: muted unless the muxed audio track is what the native
+          // player will output — declarative so React owns it, and correct before
+          // the tap because both inputs are known in advance (an unmuted element
+          // is silent anyway while it sits paused inline).
+          muted={!nativeAudio || audio.muted}
           aria-hidden="true"
         />
       )}

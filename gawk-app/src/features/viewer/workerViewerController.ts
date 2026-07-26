@@ -49,6 +49,11 @@ export class WorkerViewerController {
   private pendingStart: StartParams | null = null;
   private armRequested = false;
   private armSent = false;
+  // R22 audio: audio is armed separately because it becomes known later — the
+  // Opus-in-MP4 verdict needs the stream's audio config, which arrives (at 1 Hz)
+  // well after the video arm. A second `arm` is idempotent in the worker.
+  private armAudioRequested = false;
+  private armAudioSent = false;
 
   constructor(canvas: HTMLCanvasElement, cb: WorkerViewerCallbacks, opts: WorkerViewerOptions = {}) {
     this.canvas = canvas;
@@ -93,9 +98,18 @@ export class WorkerViewerController {
       );
     }
     this.post({ type: 'start', ...params });
+    this.flushArm();
+  }
+
+  private flushArm(): void {
+    if (!this.canvasTransferred || this.disposed) return;
     if (this.armRequested && !this.armSent) {
       this.post({ type: 'arm' });
       this.armSent = true;
+    }
+    if (this.armAudioRequested && !this.armAudioSent) {
+      this.post({ type: 'arm', audio: true });
+      this.armAudioSent = true;
     }
   }
 
@@ -151,10 +165,16 @@ export class WorkerViewerController {
   armPresentation(): void {
     if (this.disposed || this.armRequested || !this.presentationMux) return;
     this.armRequested = true;
-    if (this.canvasTransferred && !this.armSent) {
-      this.post({ type: 'arm' });
-      this.armSent = true;
-    }
+    this.flushArm();
+  }
+
+  // R22 audio: start muxing the encoded audio lane too (the screen calls this
+  // once the audio config has probed supported). Never un-armed — an audio track
+  // that stopped is handled in the presenter, not by silencing the fork.
+  armPresentationAudio(): void {
+    if (this.disposed || this.armAudioRequested || !this.presentationMux) return;
+    this.armAudioRequested = true;
+    this.flushArm();
   }
 
   dispose(): void {

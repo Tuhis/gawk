@@ -10,6 +10,7 @@
 
 import type { ViewerDeliveryMode } from './resilient';
 import type { ConnectOptions } from './connection';
+import type { AudioTapEvent, Fmp4Track } from './fmp4-muxer';
 import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
 import type { ReleasedFrame } from './reorder-buffer';
@@ -42,7 +43,10 @@ export type ViewerWorkerCommand =
   // R22 (docs/27 Decision 5): start muxing — create the Fmp4Muxer at the
   // worker-shell level (it survives pipeline attempts/reconnects) and begin
   // posting segments. Idempotent; a no-op when init carried no mux flag.
-  | { type: 'arm' }
+  // `audio` (R22 audio, docs/27 finding 2) is the main thread's Opus-in-MP4
+  // verdict — isTypeSupported for the audio SourceBuffer's mime. Absent/false
+  // keeps the presentation video-only, exactly as before audio muxing existed.
+  | { type: 'arm'; audio?: boolean }
   // R15 N5 (docs/20 Decision 10): the audio sink's ~4 Hz playhead report,
   // travelling the reverse direction of the stats flow. The AudioContext is
   // main-thread-only, so this is how the worker's pipeline gets an audio
@@ -80,10 +84,22 @@ export type ViewerWorkerEvent =
   // re-anchor before the new timeline's packets arrive.
   | { type: 'audioReset' };
 
-// R22: the muxer's output events (see ViewerWorkerEvent above).
+// R22: the muxer's output events (see ViewerWorkerEvent above). `track` routes
+// the segment to its own SourceBuffer on the main thread — video and audio are
+// separate MSE streams (docs/27 finding 2).
 export type MuxSegmentEvent =
-  | { type: 'muxSegment'; kind: 'init'; mime: string; data: ArrayBuffer }
-  | { type: 'muxSegment'; kind: 'media'; keyframe: boolean; data: ArrayBuffer };
+  | { type: 'muxSegment'; kind: 'init'; track: Fmp4Track; mime: string; data: ArrayBuffer }
+  | {
+      type: 'muxSegment';
+      kind: 'media';
+      track: Fmp4Track;
+      keyframe: boolean;
+      data: ArrayBuffer;
+    };
+
+// R22 audio: what the pipeline forks to the shell's muxer (defined beside the
+// muxer; re-exported here because the shell's host wiring is the only consumer).
+export type { AudioTapEvent } from './fmp4-muxer';
 
 // Shell-level boot handshake (posted by viewer.worker.ts on load, before any
 // command): reports whether this worker's global scope actually has the codecs
@@ -108,6 +124,8 @@ export interface WorkerHost {
   // muxer (idle until 'arm') turns them into fMP4. Host-level so it survives
   // pipeline attempts/reconnects.
   frameTap?: (frame: ReleasedFrame) => void;
+  // R22 audio: the encoded-audio fork, present under the same gate as frameTap.
+  audioTap?: (ev: AudioTapEvent) => void;
 }
 
 // Injectable for tests; the default wires a real ViewerSession whose pipeline
@@ -213,6 +231,15 @@ export class ViewerWorkerCore {
         ? {
             onReleasedFrame: (frame: ReleasedFrame) => {
               if (current()) this.host.frameTap!(frame);
+            },
+          }
+        : {}),
+      // R22 audio: same generation guard — a superseded session's audio must
+      // not interleave into the (session-long) mux timeline.
+      ...(this.host.audioTap
+        ? {
+            onAudioMux: (ev: AudioTapEvent) => {
+              if (current()) this.host.audioTap!(ev);
             },
           }
         : {}),

@@ -543,6 +543,15 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       appendErrors: 0,
       bufferedMs: null,
       bufferedAheadMs: null,
+      // R22: no MediaSource on this path, so no live-duration verdict; and with
+      // no audio in the fixture stream there is nothing to mux or probe.
+      liveDuration: null,
+      audioMode: 'none',
+      audioSegmentsAppended: 0,
+      audioTrackActive: false,
+      muxAudioSegments: 0,
+      muxAudioHoles: 0,
+      bufferedRanges: null,
       // Element-side fields are null while no presentation <video> exists
       // (main-thread fallback ⇒ never armed ⇒ no element).
       elementReadyState: null,

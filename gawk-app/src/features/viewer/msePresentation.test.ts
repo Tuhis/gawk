@@ -7,12 +7,14 @@
 // classic MediaSource) is simulated.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Fmp4Track } from '../../transport/fmp4-muxer';
 import {
   MAX_QUEUED_SEGMENTS,
   MsePresenter,
   PRUNE_KEEP_S,
   PRUNE_TRIGGER_S,
   getMediaSourceCtor,
+  probeMseAudio,
   probeMsePresentation,
   type MediaSourceCtor,
   type PresenterSegment,
@@ -69,7 +71,11 @@ class FakeSourceBuffer implements SourceBufferLike {
 interface FakeMsOptions {
   managed?: boolean; // expose `streaming`
   addSourceBufferThrows?: boolean;
+  // Throw only from the Nth addSourceBuffer onwards — an MMS that takes the
+  // video mime and refuses the audio one (the plausible iOS Opus-in-MP4 shape).
+  addSourceBufferThrowsAfter?: number;
   sourceBufferChangeType?: boolean;
+  durationThrows?: boolean;
 }
 
 function makeFakeMsCtor(opts: FakeMsOptions = {}) {
@@ -77,12 +83,33 @@ function makeFakeMsCtor(opts: FakeMsOptions = {}) {
   class FakeMediaSource {
     readyState = 'closed';
     streaming: boolean | undefined = opts.managed ? true : undefined;
+    // Every SourceBuffer this source handed out, in creation order (video then
+    // audio); `sb` stays the first for the single-track tests.
+    buffers: FakeSourceBuffer[] = [];
     sb: FakeSourceBuffer | null = null;
     mimes: string[] = [];
+    durationValue = NaN;
+    durationWrites: number[] = [];
     private listeners = new Map<string, Set<() => void>>();
 
     constructor() {
       instances.push(this);
+    }
+
+    // Spec-shaped duration: NaN until set, and the setter is only legal on an
+    // open source with nothing updating (MSE "duration change algorithm").
+    get duration(): number {
+      return this.durationValue;
+    }
+
+    set duration(value: number) {
+      this.durationWrites.push(value);
+      if (opts.durationThrows) throw new DOMException('nope', 'InvalidStateError');
+      if (this.readyState !== 'open') throw new DOMException('not open', 'InvalidStateError');
+      if (this.buffers.some((b) => b.updating)) {
+        throw new DOMException('updating', 'InvalidStateError');
+      }
+      this.durationValue = value;
     }
 
     static isTypeSupported(): boolean {
@@ -91,12 +118,19 @@ function makeFakeMsCtor(opts: FakeMsOptions = {}) {
 
     addSourceBuffer(mime: string): SourceBufferLike {
       if (opts.addSourceBufferThrows) throw new DOMException('nope', 'NotSupportedError');
+      if (
+        opts.addSourceBufferThrowsAfter != null &&
+        this.buffers.length >= opts.addSourceBufferThrowsAfter
+      ) {
+        throw new DOMException('nope', 'NotSupportedError');
+      }
       this.mimes.push(mime);
       const sb = new FakeSourceBuffer();
       if (opts.sourceBufferChangeType === false) {
         (sb as { changeType?: unknown }).changeType = undefined;
       }
-      this.sb = sb;
+      this.buffers.push(sb);
+      this.sb ??= sb;
       return sb;
     }
 
@@ -149,13 +183,18 @@ function setBuffered(video: HTMLVideoElement, ranges: Array<[number, number]>): 
   });
 }
 
-const init = (mime = 'video/mp4; codecs="avc1.42C01E"'): PresenterSegment => ({
+const init = (
+  mime = 'video/mp4; codecs="avc1.42C01E"',
+  track: Fmp4Track = 'video',
+): PresenterSegment => ({
   kind: 'init',
+  track,
   mime,
   data: new Uint8Array([1, 1, 1]),
 });
-const media = (keyframe: boolean, tag = 0): PresenterSegment => ({
+const media = (keyframe: boolean, tag = 0, track: Fmp4Track = 'video'): PresenterSegment => ({
   kind: 'media',
+  track,
   keyframe,
   data: new Uint8Array([2, keyframe ? 1 : 0, tag & 0xff, (tag >> 8) & 0xff]),
 });
@@ -175,6 +214,35 @@ describe('probeMsePresentation', () => {
     vi.stubGlobal('ManagedMediaSource', mms);
     vi.stubGlobal('MediaSource', ms);
     expect(getMediaSourceCtor()).toBe(mms);
+  });
+
+  // R22 audio: the Opus-in-MP4 question is answered at runtime, per device —
+  // WebKit 17 added Opus in MP4, but nothing promises it through
+  // ManagedMediaSource, so the verdict is probed and never assumed.
+  it('probes the audio lane independently, and refuses what MP4 Opus cannot carry', () => {
+    vi.stubGlobal('MediaSource', makeFakeMsCtor().ctor);
+    expect(probeMseAudio('opus', 2)).toMatchObject({
+      supported: true,
+      mime: 'audio/mp4; codecs="opus"',
+    });
+    // No audio in the broadcast at all.
+    expect(probeMseAudio(null, null).supported).toBe(false);
+    // A codec the muxer has no encapsulation for.
+    expect(probeMseAudio('mp4a.40.2', 2).reason).toContain('not Opus');
+    // RFC 7845 channel-mapping family 0 (and WebKit's support) is 1–2 channels.
+    expect(probeMseAudio('opus', 6).reason).toContain('6 channels');
+  });
+
+  it('reports an audio refusal from isTypeSupported without touching the video verdict', () => {
+    const { ctor } = makeFakeMsCtor();
+    (ctor as { isTypeSupported: (m: string) => boolean }).isTypeSupported = (m) =>
+      !m.startsWith('audio/');
+    vi.stubGlobal('MediaSource', ctor);
+    vi.stubGlobal('ManagedMediaSource', undefined);
+    expect(probeMsePresentation('avc1.42E01F').supported).toBe(true);
+    const r = probeMseAudio('opus', 2);
+    expect(r.supported).toBe(false);
+    expect(r.reason).toBe('unsupported: audio/mp4; codecs="opus"');
   });
 
   it('probes true for H.264 where MSE exists', () => {
@@ -237,6 +305,175 @@ describe('MsePresenter', () => {
     sb.finishUpdate();
     expect(sb.appended).toHaveLength(3); // delta
     expect(p.getStats()).toMatchObject({ segmentsAppended: 3, appendErrors: 0, failed: false });
+  });
+
+  // docs/27 finding 1: without an explicit infinite duration, MSE keeps raising
+  // duration to the newest appended end timestamp — so the native player draws
+  // a finite scrub bar instead of the LIVE badge, and "the playhead reached the
+  // buffered end" becomes indistinguishable from "the media ended" (WebKit
+  // pauses and fires `ended` there).
+  it('declares an infinite duration as soon as the source opens', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+
+    p.attach(video);
+    expect(instances[0].duration).toBeNaN(); // not before sourceopen: the setter would throw
+    instances[0].open();
+
+    expect(instances[0].duration).toBe(Infinity);
+    expect(instances[0].durationWrites).toEqual([Infinity]);
+    expect(p.getStats().liveDuration).toBe(true);
+  });
+
+  it('does not re-write the duration once it is infinite', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+
+    p.attach(video);
+    instances[0].open();
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    instances[0].sb!.finishUpdate();
+    instances[0].sb!.finishUpdate();
+
+    // One write, ever — re-asserting per append would throw mid-update.
+    expect(instances[0].durationWrites).toEqual([Infinity]);
+  });
+
+  // A fresh MediaSource per attach: the new one needs its own declaration.
+  it('re-declares the infinite duration on a re-attach', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const first = makeVideo();
+    const second = makeVideo();
+
+    p.attach(first.video);
+    instances[0].open();
+    p.attach(second.video);
+    instances[1].open();
+
+    expect(instances[1].duration).toBe(Infinity);
+    expect(p.getStats().liveDuration).toBe(true);
+  });
+
+  it('survives a refusing duration setter — appends still flow, the gate reports it', () => {
+    const { ctor, instances } = makeFakeMsCtor({ durationThrows: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+
+    p.attach(video);
+    instances[0].open();
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+
+    expect(instances[0].sb!.appended).toHaveLength(1);
+    expect(p.getStats()).toMatchObject({ liveDuration: false, failed: false });
+  });
+
+  // R22 audio (docs/27 finding 2): video and audio are separate SourceBuffers.
+  // The element's `buffered` is their INTERSECTION, which drives the two rules
+  // under test: an audio SourceBuffer is never created before a sample can
+  // follow its init (an empty audio track empties the intersection and stalls
+  // video), and a refused audio track must leave video untouched.
+  const AUDIO_MIME = 'audio/mp4; codecs="opus"';
+
+  it('holds the audio init until a sample can follow it, then adds a second SourceBuffer', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    p.attach(video);
+    instances[0].open();
+
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    // Audio config arrives (1 Hz), but no packet has been muxed yet.
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    expect(instances[0].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
+    expect(p.getStats().audioTrack).toBe(false);
+
+    // The first audio sample primes the track: its init goes in first.
+    p.pushSegment(media(true, 1, 'audio'));
+    expect(instances[0].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"', AUDIO_MIME]);
+    const audioSb = instances[0].buffers[1];
+    expect(audioSb.appended).toHaveLength(1); // the held init
+    audioSb.finishUpdate();
+    expect(audioSb.appended).toHaveLength(2); // then the sample
+    expect(p.getStats()).toMatchObject({ audioTrack: true, audioSegmentsAppended: 2 });
+  });
+
+  it('appends the two tracks independently — neither waits on the other', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    p.attach(video);
+    instances[0].open();
+
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    p.pushSegment(media(true, 1, 'audio'));
+    const [videoSb, audioSb] = instances[0].buffers;
+
+    // Video has an append in flight and a queued segment behind it; audio must
+    // still be able to make progress (its own SourceBuffer, its own in-flight).
+    p.pushSegment(media(false, 2));
+    expect(videoSb.appended).toHaveLength(1);
+    audioSb.finishUpdate();
+    p.pushSegment(media(true, 3, 'audio'));
+    expect(audioSb.appended).toHaveLength(2);
+    expect(videoSb.appended).toHaveLength(1); // untouched by audio's progress
+  });
+
+  it('keeps video presenting when the audio SourceBuffer is refused (the iOS Opus risk)', () => {
+    // Second addSourceBuffer throws: exactly the shape of an MMS that takes
+    // avc1 but not Opus in MP4.
+    const { ctor, instances } = makeFakeMsCtor({ addSourceBufferThrowsAfter: 1 });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    p.attach(video);
+    instances[0].open();
+
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    p.pushSegment(media(true, 1, 'audio'));
+
+    // Video is unharmed and the gate stays up; audio is dropped for good.
+    expect(p.getStats()).toMatchObject({ failed: false, audioTrack: false });
+    const videoSb = instances[0].buffers[0];
+    videoSb.finishUpdate();
+    p.pushSegment(media(false, 2));
+    expect(videoSb.appended).toHaveLength(2);
+    // Further audio never queues (no cached init to prime from), so nothing
+    // accumulates behind the dropped track.
+    videoSb.finishUpdate();
+    p.pushSegment(media(true, 3, 'audio'));
+    p.pushSegment(media(false, 4, 'audio'));
+    expect(instances[0].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
+    expect(p.getStats()).toMatchObject({ queued: 0, audioSegmentsAppended: 0 });
+  });
+
+  it('prunes both tracks to the same window, so the intersection cannot shrink', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setBuffered(video, [[0, PRUNE_TRIGGER_S + 5]]);
+    p.attach(video);
+    instances[0].open();
+
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    p.pushSegment(media(true, 1, 'audio'));
+    const [videoSb, audioSb] = instances[0].buffers;
+    videoSb.finishUpdate();
+    audioSb.finishUpdate();
+
+    const window: [number, number] = [0, PRUNE_TRIGGER_S + 5 - PRUNE_KEEP_S];
+    expect(videoSb.removed).toContainEqual(window);
+    expect(audioSb.removed).toContainEqual(window);
   });
 
   it('falls back to an object URL when srcObject rejects the MediaSource (Chromium)', () => {
