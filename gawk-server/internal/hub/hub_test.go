@@ -2269,8 +2269,23 @@ func TestCarrierOpenFailuresFeedEvictionStreak(t *testing.T) {
 		frameID := uint32(i * 2)
 		ingestKeyframe(t, p, keyframeMsg(t, frameID, "vp8", "KEY"))
 		p.HandleDatagram(chunkDgram(t, false, frameID+1, 0, 1, "d"))
-		// Each rotation permits exactly one carrier open attempt; wait for it
-		// so the next cycle's failure lands on a fresh rotation.
+		// Each rotation permits exactly one carrier open attempt; wait for it so
+		// the next cycle's failure lands on a fresh rotation.
+		//
+		// Not on the final GOP, though: there is no next rotation to separate
+		// from, and on that GOP both streaks cross their threshold at once — so
+		// the keyframe path's `go s.evict()` races this subscriber's own drain,
+		// and an evicted subscriber does not open carriers. Waiting here asserted
+		// something the product deliberately does not promise (that a carrier
+		// open is still attempted while the subscriber is being torn down), which
+		// made the test load-dependent: it failed a 2-core CI runner on
+		// 2026-07-26 and reproduces reliably with `-cpu=1`. What this test is
+		// actually about — eviction with 4001 — is asserted below, and the nine
+		// waits that do run prove carrier opens are attempted once per rotation
+		// and failing.
+		if i == CarrierOpenFailEvictThreshold-1 {
+			continue
+		}
 		wantOpens := i + 1
 		waitFor(t, 5*time.Second, func() bool { return f.carrierOpens() >= wantOpens }, "carrier open attempt")
 	}
