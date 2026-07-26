@@ -36,6 +36,9 @@ export interface PresentationSurfaceStats {
   // Main-thread SourceBuffer side.
   segmentsAppended: number;
   appendErrors: number;
+  // docs/27 finding 6: the reason for the most recent append failure, captured
+  // at the failure (see MsePresenterStats.lastError). Null until one happens.
+  lastAppendError: string | null;
   // R22 finding 1: whether this MediaSource accepted duration = Infinity — i.e.
   // whether the native player gets the LIVE badge and treats a buffer underrun
   // as a stall rather than end-of-media. Null before a source exists.
@@ -50,6 +53,13 @@ export interface PresentationSurfaceStats {
   audioTranscode: string | null;
   audioSegmentsAppended: number;
   audioTrackActive: boolean;
+  // docs/27 finding 6: how many audio tracks the ELEMENT ended up with, which is
+  // the only end-of-chain confirmation that a muxed track really became playable
+  // audio — `audioTrackActive` says a SourceBuffer exists, not that the demuxer
+  // accepted its content. Read 0 on the device throughout the silent session.
+  // Null where HTMLMediaElement.audioTracks is unavailable (it exists on iOS
+  // 18.7; webkitAudioDecodedByteCount, measured, does not).
+  elementAudioTracks: number | null;
   muxAudioSegments: number;
   muxAudioHoles: number;
   // How many disjoint buffered ranges the element holds. > 1 means a hole in the

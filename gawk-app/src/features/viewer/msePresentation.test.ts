@@ -485,6 +485,50 @@ describe('MsePresenter', () => {
   });
 
   // The element's buffered range is the INTERSECTION of the tracks, so a dead
+  // docs/27 finding 6: the media error is the one fact that localizes a rejected
+  // init segment, and it is only readable before the rebuild.
+  it('records the element media error and MediaSource state at the failure', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    Object.defineProperty(video, 'error', {
+      configurable: true,
+      get: () => ({ code: 4, message: 'Media resource could not be decoded' }),
+    });
+    p.attach(video);
+    instances[0].open();
+    p.setExpectedAudioMime(AUDIO_MIME);
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    p.pushSegment(media(true, 1, 'audio'));
+
+    expect(p.getStats().lastError).toBeNull();
+    instances[0].buffers[1].fireError();
+
+    const { lastError } = p.getStats();
+    expect(lastError).toContain('audio');
+    expect(lastError).toContain('code 4');
+    expect(lastError).toContain('Media resource could not be decoded');
+  });
+
+  it('records a refused addSourceBuffer as the last error', () => {
+    // The video buffer is created first; the audio one is the second, so it is
+    // the one refused — the plausible shape on a runtime that accepts the mime
+    // in isTypeSupported and still refuses a second buffer.
+    const { ctor, instances } = makeFakeMsCtor({ addSourceBufferThrowsAfter: 1 });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    p.attach(video);
+    instances[0].open();
+    p.setExpectedAudioMime(AUDIO_MIME);
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+
+    expect(p.getStats().audioTrack).toBe(false);
+    expect(p.getStats().lastError).toContain('addSourceBuffer');
+  });
+
   // audio buffer would freeze video. Audio is additive: it must be able to fail
   // without taking the presentation down.
   it('rebuilds video-only when the audio SourceBuffer errors', () => {
@@ -505,6 +549,11 @@ describe('MsePresenter', () => {
     // The audio buffer rejects its content (a malformed transcode, say).
     audioSb.fireError();
     expect(p.getStats()).toMatchObject({ failed: false, audioTrack: false });
+    // docs/27 finding 6: the WHY has to be captured here, at the error, or it is
+    // gone — dropAudioTrack rebuilds the MediaSource and the element's error
+    // clears with it, which is exactly why the first on-device capture could say
+    // "one append error" and nothing about what WebKit objected to.
+    expect(p.getStats().lastError).toContain('audio');
 
     // A fresh MediaSource carrying video alone, re-primed from the cached init.
     expect(instances).toHaveLength(2);

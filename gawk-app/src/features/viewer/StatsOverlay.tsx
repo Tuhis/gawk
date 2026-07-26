@@ -231,6 +231,12 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                 `${surface.armed ? 'armed' : 'idle'} · ${surface.muxMediaSegments} seg (${surface.muxInitSegments} init) · ${surface.muxErrors} err`,
               ],
               ['Appends', `${surface.segmentsAppended} · ${surface.appendErrors} err`],
+              // docs/27 finding 6: the reason, not just the count — an append
+              // error is otherwise indistinguishable from a quota drop, and the
+              // difference is a dead audio track versus a routine resync.
+              ...(surface.lastAppendError
+                ? ([['Last append error', surface.lastAppendError]] as StatsRow[])
+                : []),
               [
                 'Live duration',
                 surface.liveDuration == null
@@ -245,6 +251,21 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                   ? `${surface.audioMode} · ${surface.audioSegmentsAppended} appended (${surface.muxAudioSegments} muxed, ${surface.muxAudioHoles} holes)${surface.audioTrackActive ? '' : ' · awaiting first sample'}`
                   : surface.audioMode,
               ],
+              // The element's own count is the only proof the demuxer ACCEPTED
+              // the muxed audio: appends can succeed into a track that never
+              // materializes (docs/27 finding 6).
+              ...(surface.audioMode.startsWith('muxed')
+                ? ([
+                    [
+                      'Element audio tracks',
+                      surface.elementAudioTracks == null
+                        ? '— (unavailable)'
+                        : surface.elementAudioTracks === 0
+                          ? '0 — muxed audio not accepted'
+                          : String(surface.elementAudioTracks),
+                    ],
+                  ] as StatsRow[])
+                : []),
               ...(surface.audioTranscode
                 ? ([['Audio transcode', surface.audioTranscode]] as StatsRow[])
                 : []),
