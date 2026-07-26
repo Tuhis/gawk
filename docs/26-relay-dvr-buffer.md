@@ -571,6 +571,45 @@ below the cushion, so the `min()` leaves it alone. Both halves are needed:
 `everReleased` keeps the schedule governing, this makes the governing schedule
 actually lead-compensate.
 
+**Field finding 7 (2026-07-26, iPhone capture `XN73GU`): the progress timer
+measured quiet, not unreachability — and 30 s was far too long anyway.** A
+WebKit stream wedge (BUGS.md, still not root-caused) froze a Deep-buffer viewer
+for 31 s, and this timer was the only remedy that could see the failure at all:
+in this mode *both* media rings ride streams (video carriers + keyframe streams,
+and DV5's audio carrier), so the wedge stops everything while the sideband keeps
+the viewer's own dead-session watchdog fed — by design. Two changes, test-first,
+relay-only:
+
+- **`dvrNoteIdle` at both data-availability parks** (`dvr.go`), noted *after*
+  the wait. `drainDVR` parks on the ring's wake channel when the cursor is
+  caught up, and `dvrStalled` is only re-evaluated when an append wakes it — so
+  with an away broadcaster the stamp aged through the entire absence and the
+  *returning* broadcaster's first frame evicted every Deep-buffer viewer on the
+  pod (`TestDVRSubscriberSurvivesAnAwayBroadcaster`). Deliberately **not** noted
+  on the retry-after-failure path: a write that could not land is exactly the
+  unreachability this timer exists to catch, and noting idle there would disarm
+  it. That distinction is what made the next change safe.
+- **`DefaultDVRProgressTimeout` 30 s → 6 s.** Now that the timer only runs while
+  the ring holds data the cursor cannot take, waiting buys nothing: a subscriber
+  that has taken nothing for six seconds against a 3 s ring has already lost
+  every frame in it. Sized to match the viewer's own `MEDIA_STALL_MS` so the two
+  backstops fire together; 4001 is non-terminal, so being wrong costs one
+  reconnect. **Pinned by a deliberately expensive test**
+  (`TestDVRDefaultProgressTimeoutBracketsSixSeconds`, ~7 s of real wall clock —
+  it takes the hub package from ~11 s to ~17 s under `-race`). A viewer's
+  recovery time is not expressed as a symbol anywhere else, so the only way to
+  stop it drifting back to 30 s is to wait it out; the bounds are hard-coded
+  rather than derived from the constant, which would pass at any value.
+
+Also fixed in the same pass: **`dvrSendKeyframe`'s stream opens now feed the
+shared `kfConsecOpenFailed` streak.** The DVR drain opens its own keyframe
+streams, so the exhausted-stream-credit zombie the live path has evicted since
+R10 was counted here (`kfDroppedOpenFailed`) and then ignored. One open per GOP
+is the cadence `KeyframeOpenFailEvictThreshold` was sized against. The audio
+carrier is deliberately left out of it: `writeAudioRecord` retries every
+`dvrRetryFloor` (20 ms), so a 10-strike streak there would evict on a 200 ms
+transient.
+
 Deviations worth knowing before touching this:
 
 - **The drain waits on a failed write; it does not skip.** The first version
@@ -578,10 +617,12 @@ Deviations worth knowing before touching this:
   exact loss R21 removes. It was caught by the control subscriber *passing*
   when it should not have. What bounds the wait is the tail and staleness
   checks, never a write deadline.
-- **Health is progress, not position** (`DVRProgressTimeout`, default 30 s).
-  The shared keyframe/carrier eviction streaks key on lag and would evict
-  exactly the viewers this mode exists for, so the DVR drain has its own check
-  and a test asserts the other two modes' eviction is unchanged.
+- **Health is progress, not position** (`DVRProgressTimeout`, default **6 s**
+  since finding 7; 30 s as shipped). The shared keyframe/carrier eviction
+  streaks key on lag and would evict exactly the viewers this mode exists for,
+  so the DVR drain has its own check and a test asserts the other two modes'
+  eviction is unchanged. "Progress" means *could not send*, never *had nothing
+  to send* — see finding 7's `dvrNoteIdle`.
 - **Control traffic is not in the ring and not behind the cursor.**
   ClockMapping, DecoderConfig and the R18 ViewerCount keepalive go out on the
   sideband from their own goroutine — a two-second-old viewer count is worse

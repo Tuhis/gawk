@@ -399,10 +399,19 @@ func (s *Subscriber) drainDVR() {
 		}
 		if s.dvrCursor.NeedsKeyframe() {
 			if !s.dvrSendKeyframe() {
+				// Two reasons to be here, and only one is a failure to reach
+				// the peer: the ring has no keyframe for this cursor yet (a
+				// joiner on an away broadcast sits here for as long as the
+				// broadcaster is gone), or the catch-up ceiling is throttling
+				// us. The first is idleness.
+				_, available := s.dvr.Keyframe(s.dvrCursor)
 				select {
 				case <-wake:
 				case <-s.dvrStop:
 					return
+				}
+				if !available {
+					s.dvrNoteIdle()
 				}
 				continue
 			}
@@ -445,11 +454,16 @@ func (s *Subscriber) drainDVR() {
 				continue
 			}
 		}
+		// Caught up: the cursor is at the live edge and there is nothing left to
+		// write. Idleness is not unreachability — see dvrNoteIdle. Noted after
+		// the wait, not before: the wait itself is the idle time, and an away
+		// broadcaster's can be minutes.
 		select {
 		case <-wake:
 		case <-s.dvrStop:
 			return
 		}
+		s.dvrNoteIdle()
 	}
 }
 
@@ -520,11 +534,19 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	}
 	st, err := s.sender.OpenKeyframeStream()
 	if err != nil {
+		// Same streak as the live path (hub.go sendKeyframe): a peer that
+		// refuses KeyframeOpenFailEvictThreshold consecutive keyframe streams
+		// has exhausted its stream credit and is a zombie, whatever mode it
+		// subscribed in. drainDVR opens its own streams, so without this the
+		// DVR mode counted the failures and never acted on them — and one open
+		// per GOP is the same cadence the threshold was sized against.
+		s.noteKeyframeOpenFailed()
 		s.kfDroppedOpenFailed.Add(1)
 		s.dvrCursor = s.dvrCursor.AtFirstRecord()
 		s.dvrNoteCursor()
 		return true
 	}
+	s.noteKeyframeOpenSucceeded()
 	_ = st.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.KeyframeWriteTimeout))
 	if _, err := st.Write(msg); err != nil {
 		st.CancelWrite()
@@ -596,6 +618,20 @@ func (s *Subscriber) dvrStalled() bool {
 
 // dvrNoteProgress records that bytes actually reached this subscriber.
 func (s *Subscriber) dvrNoteProgress() {
+	s.dvrProgressAt.Store(time.Now().UnixMilli())
+}
+
+// dvrNoteIdle records that the drain had nothing to send. It keeps the stall
+// timer measuring what it is named for: a drain sitting at the live edge writes
+// nothing for the same reason a healthy connection does, and dvrStalled cannot
+// tell "wrote nothing because there was nothing" from "wrote nothing because
+// the peer is gone". Without this the check is only ever re-evaluated when an
+// append wakes the parked drain — so an away broadcaster's *return* is what
+// trips it, and every Deep-buffer viewer is evicted at the moment its broadcast
+// resumes (TestDVRSubscriberSurvivesAnAwayBroadcaster). Deliberately not called
+// on the retry-after-failure path: a write that could not land is exactly the
+// unreachability this timer exists to catch.
+func (s *Subscriber) dvrNoteIdle() {
 	s.dvrProgressAt.Store(time.Now().UnixMilli())
 }
 

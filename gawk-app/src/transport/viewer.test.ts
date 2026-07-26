@@ -117,6 +117,11 @@ function frameDgram(frameId: number, keyframe: boolean): Uint8Array {
     new Uint8Array([1, 2, 3]),
   );
 }
+// One Opus packet. The audio lane is the media-stall watchdog's continuous
+// reference medium (video capture is damage-driven; audio is not).
+function audioDgram(seq: number): Uint8Array {
+  return encodeAudioFrame({ seq, timestampUs: BigInt(seq * 20_000) }, new Uint8Array([1, 2, 3]));
+}
 // Lets the decoder op-chain (promise microtasks) settle after delivering.
 async function flush(): Promise<void> {
   await new Promise((r) => setTimeout(r, 0));
@@ -272,6 +277,167 @@ describe('ViewerPipeline', () => {
       for (let i = 0; i < 6; i++) {
         deliver(encodeViewerCount(1));
         await vi.advanceTimersByTimeAsync(5_000);
+      }
+
+      expect(errors).toEqual([]);
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconnects when all media stops while the broadcaster keeps publishing (stream wedge)', async () => {
+    // BUGS.md (2026-07-26, iPhone Deep-buffer capture `XN73GU`): in Deep buffer
+    // every medium rides the stream path — video carriers, keyframe streams and
+    // (R21 DV5) audio's own carrier — so a WebKit stream wedge stops all of it
+    // dead. That disqualifies checkKeyframeStall, which requires frames to still
+    // be arriving, while the relay's control sideband keeps landing on datagrams
+    // and holds checkSessionStall off. Both watchdogs blind, 31 s frozen.
+    //
+    // The discriminators are the broadcaster's ClockMapping (published every 5 s
+    // *only while capturing*, on datagrams) and audio having stopped too — see
+    // the static-screen guard below for why audio is not optional here.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      let deliver!: (d: Uint8Array) => void;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          deliver = cb.onDatagram;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      deliver(audioDgram(1));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Both media are gone; the sideband keeps arriving — the keepalive every
+      // 5 s and the broadcaster's mapping on its own 5 s cadence.
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        deliver(encodeViewerCount(1));
+        deliver(encodeClockMapping(1_000n));
+      }
+
+      expect(errors.length).toBeGreaterThan(0);
+      // Reconnectable, not fatal: no close code means ViewerSession retries.
+      expect((errors[0] as Error & { closeCode?: number }).closeCode).toBeUndefined();
+      // Specifically the media watchdog: the sideband never goes quiet for more
+      // than 5 s here, so the dead-session one cannot be what fired.
+      expect(errors[0].message).toContain('still publishing');
+
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not fire the media watchdog on a static screen (damage-driven capture)', async () => {
+    // The case that makes "no video while mappings arrive" unsound on its own:
+    // screen capture is damage-driven and stops entirely on a static screen
+    // (docs/19, docs/28), so a paused game produces no frames for minutes while
+    // the broadcaster is perfectly healthy and its 5 s mappings keep coming.
+    // Audio is what separates the two — it is not damage-driven, so it keeps
+    // flowing here and must veto the watchdog.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      let deliver!: (d: Uint8Array) => void;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          deliver = cb.onDatagram;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // 30 s of static screen: no frames at all, audio and mappings unaffected.
+      for (let i = 0; i < 30; i++) {
+        deliver(audioDgram(i + 1));
+        await vi.advanceTimersByTimeAsync(1_000);
+        if (i % 5 === 0) deliver(encodeClockMapping(1_000n));
+      }
+
+      expect(errors).toEqual([]);
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not fire the media watchdog when the broadcaster stops publishing', async () => {
+    // The away transition, which must NOT reconnect: the broadcaster's last
+    // mapping can land right after its last media, so one mapping after the
+    // silence starts proves nothing. Requiring two is what makes the watchdog
+    // structurally safe here — a publisher that stopped sends no more.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      let deliver!: (d: Uint8Array) => void;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          deliver = cb.onDatagram;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      deliver(audioDgram(1));
+      await vi.advanceTimersByTimeAsync(0);
+      // One trailing mapping, then the publisher is gone — only the relay's
+      // keepalive remains, for well past the media threshold.
+      deliver(encodeClockMapping(1_000n));
+      for (let i = 0; i < 2; i++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        deliver(encodeViewerCount(1));
       }
 
       expect(errors).toEqual([]);
