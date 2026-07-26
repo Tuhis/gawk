@@ -665,6 +665,17 @@ function descriptor(w: BoxWriter, tag: number, body: () => void): void {
 function writeMp4aEntry(w: BoxWriter, cfg: AudioMuxConfig): void {
   const asc = cfg.description;
   if (!asc || asc.length === 0) throw new Error('AAC needs an AudioSpecificConfig description');
+  // docs/27 finding 6: an ES_Descriptor (tag 0x03) or DecoderConfigDescriptor
+  // (tag 0x04) is what Safari's AudioEncoder hands back as `description`;
+  // audio-transcode.ts unwraps it to the ASC. If an un-normalized one gets here,
+  // nesting it inside our own DecoderSpecificInfo yields an init segment WebKit
+  // rejects with MEDIA_ERR_SRC_NOT_SUPPORTED — which closes the MediaSource
+  // rather than failing visibly. An ASC's first byte carries the 5-bit
+  // audioObjectType in its high bits, so it can never be 0x03/0x04 (AOT 0 is
+  // "NULL" and never encoded): refuse those outright.
+  if (asc[0] === 0x03 || asc[0] === 0x04) {
+    throw new Error(`AAC description is a descriptor (tag 0x0${asc[0]}), not an AudioSpecificConfig`);
+  }
   w.box('mp4a', () => {
     w.zeros(6); // reserved
     w.u16(1); // data_reference_index

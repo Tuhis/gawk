@@ -757,6 +757,27 @@ describe('Fmp4Muxer audio track', () => {
     expect(muxer.getStats().audioInitSegments).toBe(1);
   });
 
+  it('refuses an AAC description that is a descriptor rather than an AudioSpecificConfig', () => {
+    // docs/27 finding 6: Safari's AudioEncoder returns the whole ES_Descriptor
+    // as `description`. audio-transcode.ts unwraps it, but if an un-normalized
+    // one ever reaches here, nesting it inside our own DecoderSpecificInfo
+    // produces an init segment WebKit rejects with MEDIA_ERR_SRC_NOT_SUPPORTED —
+    // and a rejected init is invisible until it kills the whole MediaSource. A
+    // visible refusal (audioSkipped, video-only) beats a silent teardown.
+    const muxer = anchored();
+    const esDescriptor = Uint8Array.from([0x03, 0x04, 0x00, 0x01, 0x00, 0x06]);
+    expect(
+      muxer.setAudioConfig({
+        codec: 'mp4a.40.2',
+        sampleRate: 48_000,
+        channels: 2,
+        description: esDescriptor,
+      }),
+    ).toHaveLength(0);
+    expect(muxer.getStats().audioInitSegments).toBe(0);
+    expect(muxer.getStats().audioSkipped).toBe(1);
+  });
+
   it('refuses a non-Opus lane rather than guessing its encapsulation', () => {
     const muxer = anchored();
     expect(muxer.setAudioConfig({ ...OPUS_CFG, codec: 'mp4a.40.2' })).toHaveLength(0);
