@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.31.0...gawk-app-v0.32.0) (2026-07-26)
+
+
+### Features
+
+* **r22:** iOS native fullscreen via MSE — fMP4 muxer + ManagedMediaSource tier (docs/27 MF1–MF4) ([#136](https://github.com/Tuhis/gawk/issues/136)) ([6303feb](https://github.com/Tuhis/gawk/commit/6303feb661bc17c1499d18f4cc54e9884e70625f))
+
 ## [0.31.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.30.0...gawk-app-v0.31.0) (2026-07-25)
 
 
