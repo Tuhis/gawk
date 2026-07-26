@@ -235,19 +235,12 @@ export class AudioJitterBuffer {
   private now: () => number;
   private schedule: () => AudioScheduleFn | null;
   private ready: SinkReadyFn;
-  // True while the pending release is the *alignment* one (start, or after a
-  // flush). An underrun re-prime clears it: by then the schedule for the
-  // oldest pending chunk is already past — that's why we ran dry — so honoring
-  // it would release instantly and rebuild no cushion at all. Depth floor
-  // there instead, and let the rate trim walk the residual skew back out.
-  private alignOnSchedule = true;
   // Whether any audio has ever been released to the sink on this timeline (set
   // at the first release, cleared on flush). Before the first release the
   // connected worklet pulls silence while we deliberately hold the cushion, and
   // those "underruns" are expected pre-roll — not the dry-after-playback event
-  // noteUnderrun's re-prime is for. Without this flag a multi-second deep hold's
-  // ~1100 pre-roll underruns clear alignOnSchedule and drop the buffer onto the
-  // depth floor, losing the video-schedule lip sync before it ever applies.
+  // noteUnderrun's re-prime is for. Without this flag a multi-second deep hold
+  // logs ~1100 of them and buries the counter's real signal.
   private everReleased = false;
   // The hold actually applied at the alignment release, for the overlay.
   private alignmentHoldMs: number | null = null;
@@ -421,10 +414,8 @@ export class AudioJitterBuffer {
     // the live edge, permanently (alignment is a start-time decision). A
     // momentarily absent schedule keeps the last known due time instead of
     // clearing it, so the no-schedule depth-floor path is unchanged.
-    if (this.alignOnSchedule) {
-      const next = this.schedule()?.(oldest.timestampUs) ?? null;
-      if (next !== null) this.dueAtMs = next;
-    }
+    const next = this.schedule()?.(oldest.timestampUs) ?? null;
+    if (next !== null) this.dueAtMs = next;
     const nowMs = this.now();
     // The video schedule decides *lip sync* — when audio is heard relative to
     // its frame. But in live-edge mode the frame is presented on arrival, so
@@ -434,7 +425,7 @@ export class AudioJitterBuffer {
     // the arrival jitter). So the adaptive jitter target is a *floor* in every
     // mode: never release below it. In paced modes the schedule hold already
     // exceeds the floor, so gating on both changes nothing there.
-    const haveSchedule = this.alignOnSchedule && this.dueAtMs !== null;
+    const haveSchedule = this.dueAtMs !== null;
     const scheduleDue = haveSchedule ? nowMs >= this.dueAtMs! : true;
     // Depth gate. With NO schedule it is the whole alignment target (finding 5's
     // deep fallback: hold B even when the video baseline never arrives). With a
@@ -444,6 +435,16 @@ export class AudioJitterBuffer {
     // leave audio ~output-latency behind video (the depth is only met `lead` ms
     // after the schedule is due, because `targetMs` of audio takes `targetMs` to
     // arrive at 1×). See SCHEDULED_START_CUSHION_MS.
+    //
+    // Since the schedule is consulted on every priming episode — including the
+    // rebuild after an underrun (docs/20 field finding 13) — this cap now also
+    // governs those, where the whole target used to apply. Deliberate: in
+    // resilient mode `targetMs` rides the *video* arrival-jitter estimate and
+    // seeds at 500 ms, which is a cushion sized by the wrong medium (audio is
+    // one packet per datagram and far smoother), and when the schedule has
+    // already gone by it is pure lip-sync error, since holding longer cannot
+    // make a late release earlier. Live-edge is unaffected: its target is
+    // already ≤ the cap, so min() leaves it alone.
     const depthTarget = haveSchedule
       ? Math.min(this.targetMs, SCHEDULED_START_CUSHION_MS)
       : this.targetMs;
@@ -561,11 +562,9 @@ export class AudioJitterBuffer {
     // Before the first release the worklet is connected and pulling silence
     // while we deliberately hold the alignment cushion (a deep buffer holds
     // ~B ms). That is expected pre-roll, not a dry-after-playback event:
-    // counting it inflates the stat (a 3 s deep hold logs ~1100 "underruns")
-    // and, worse, the re-prime below clears alignOnSchedule and would drop the
-    // deep buffer onto the depth floor — anchored to audio arrival, missing the
-    // output-latency lead — instead of the video playhead it is meant to align
-    // to (docs/20 field finding 4). Ignore it and keep waiting for the schedule.
+    // counting it inflates the stat (a 3 s deep hold logs ~1100 "underruns"),
+    // burying the signal a reader is looking for. Ignore it and keep waiting
+    // for the schedule.
     if (!this.everReleased) return;
     this.stats.underruns += count;
     // Only when it is *still* dry at the report: queuedMs comes from the same
@@ -583,10 +582,30 @@ export class AudioJitterBuffer {
     // old one is meaningless — and the silence the worklet just played for
     // itself has already pushed audio the other way.
     this.skipLeadMs = 0;
-    // Alignment is already lost (the sink played silence): rebuild depth, and
-    // leave the residual skew to the rate trim rather than re-deciding the
-    // alignment against a schedule that has already gone past.
-    this.alignOnSchedule = false;
+    // Forget the timeline as well, for the same reason (docs/20 field finding
+    // 13). Keeping `nextExpectedUs` made the first chunk after the dry period
+    // read as a gap and pay for it in synthesized silence — for a hole the
+    // worklet had *already* filled with silence of its own by running dry.
+    // Worse than the double payment: that concealment chunk carries the stale
+    // pre-gap timestamp, so it lands at the head of the rebuild and anchors
+    // the release against a schedule slot that has long passed, discarding the
+    // realignment this re-prime exists to make. The next chunk re-anchors the
+    // timeline exactly as it does after a flush.
+    this.nextExpectedUs = null;
+    // `alignOnSchedule` deliberately stays TRUE (docs/20 field finding 13).
+    // It used to be cleared here, on the reasoning that the oldest pending
+    // chunk's slot "is already past by definition — that is why we ran dry".
+    // That holds for a live-edge schedule, where the hold is ~0 anyway. In a
+    // paced mode the hold is the whole playout offset, so audio arriving after
+    // the dry-out is due a few hundred ms in the FUTURE and its schedule is
+    // the alignment, freely available: abandoning it for the depth floor
+    // leaves audio (hold − floor) ms ahead of its picture until the rate trim
+    // walks it back at ≤4 ms/s — minutes, and only within the trim's 20 ms
+    // deadband. When the schedule really is past, maybeRelease() already falls
+    // through to the depth gate, which is what rebuilds the cushion, so the
+    // live-edge case is unchanged. The cost is a longer silence at the
+    // re-prime (the hold rather than the floor); alignment is a start-time
+    // decision and this is the only chance to get it right.
   }
 
   // Drops everything pending and forgets the timeline: a broadcaster restart
@@ -604,11 +623,8 @@ export class AudioJitterBuffer {
     this.pendingMs = 0;
     this.priming = true;
     this.shedding = false;
-    // A fresh timeline gets a fresh alignment decision — the one case where
-    // re-deciding against the video schedule is exactly right.
-    this.alignOnSchedule = true;
-    // Back to pre-roll: the new timeline's hold will underrun the worklet again
-    // and those reports must not re-prime it off the schedule (see noteUnderrun).
+    // Back to pre-roll: the new timeline's hold will underrun the worklet
+    // again, and those reports must not inflate the counter (see noteUnderrun).
     this.everReleased = false;
     this.dueAtMs = null;
     this.alignmentHoldMs = null;

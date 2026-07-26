@@ -340,6 +340,65 @@ describe('AudioJitterBuffer alignment', () => {
     expect(emitted).toHaveLength(before + 3);
   });
 
+  // docs/20 field finding 13 (2026-07-26): the "schedule already past" premise
+  // above holds for a live-edge schedule, where the hold is ~0 by definition.
+  // In a paced mode the hold is the whole playout offset, so a chunk arriving
+  // AFTER the dry-out is still due a few hundred ms in the future — its
+  // schedule is not past at all, and abandoning it strands audio that far
+  // ahead of its picture for the rest of the session. The depth floor is an
+  // anti-starvation guard, not an alignment; only the schedule is an
+  // alignment, and after a re-prime it is available again.
+  it('re-anchors a dry underrun against a schedule whose slots are still ahead', () => {
+    // Paced: audio for timestamp T arrives 300 ms before its frame is shown.
+    const { emitted, buffer, clock } = scheduled((ts) => 1300 + ts / 1000);
+    for (let i = 0; i < 5; i++) buffer.push(chunk(i * FRAME_US));
+    clock.t = 1300;
+    buffer.tick();
+    expect(emitted).toHaveLength(5);
+    const before = emitted.length;
+
+    // The sink runs dry (a network hiccup drained the cushion).
+    clock.t = 1400;
+    buffer.noteDepth(0);
+    buffer.noteUnderrun(4);
+
+    // Fresh audio arrives in real time. Its slots are 300 ms out, so the
+    // rebuild must hold for the schedule — not release the moment the 60 ms
+    // depth floor is met, which would leave audio 240 ms early forever.
+    for (let i = 0; i < 5; i++) {
+      clock.t = 1400 + i * 20;
+      buffer.push(chunk((400 + i * 20) * 1000));
+    }
+    expect(emitted).toHaveLength(before);
+
+    clock.t = 1700; // the first rebuilt chunk's slot
+    buffer.tick();
+    expect(emitted.length).toBeGreaterThan(before);
+    expect(buffer.getStats().alignmentHoldMs).toBeCloseTo(100, 5);
+  });
+
+  // The other half of consulting the schedule on every priming pass: when it
+  // IS past, the depth gate is `min(target, SCHEDULED_START_CUSHION_MS)` and no
+  // longer the whole target. That matters most in resilient mode, whose audio
+  // target rides the *video* arrival-jitter estimate and can seed at 500 ms —
+  // a cushion sized by the wrong medium, and one that is pure lip-sync error
+  // when the schedule has already gone by (holding longer cannot make a late
+  // release earlier). 150 ms is a real cushion for audio, which arrives as one
+  // packet per datagram with far lower jitter than video's carriers.
+  it('caps the rebuild cushion at the scheduled-start floor, not the video-derived target', () => {
+    const emitted: AudioChunk[] = [];
+    const clock = { t: 1000 };
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), RESILIENT_AUDIO_PROFILE, {
+      now: () => clock.t,
+      schedule: () => (ts) => 900 + ts / 1000, // every slot already past
+    });
+    // 150 ms of audio = 8 chunks (the 500 ms seed would need 25).
+    for (let i = 0; i < 7; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted).toHaveLength(0);
+    buffer.push(chunk(7 * FRAME_US));
+    expect(emitted).toHaveLength(8);
+  });
+
   it('flush re-arms the alignment decision for the new timeline', () => {
     const { emitted, buffer, clock } = scheduled((ts) => 2000 + ts / 1000);
     buffer.push(chunk(0));

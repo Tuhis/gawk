@@ -147,6 +147,20 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               // R15 N5: the sync numbers. Positive skew = video ahead of
               // audio (the forgiving direction); target median ≤ 60 ms.
               ['A/V skew', stats.avSkewMs == null ? '—' : `${fmt(stats.avSkewMs)} ms`],
+              // docs/20 field finding 12: the discriminator for the row above.
+              // ~1× means the audio timeline is keeping up, so a skew there is
+              // a real lip-sync offset; below 1× the worklet is starving and
+              // the skew is starvation debt accruing at (1 − ratio) per second
+              // — the shape that read in the thousands while audio sounded
+              // fine. A skew without this number cannot be interpreted.
+              [
+                'Playhead advance',
+                stats.avPlayheadAdvance == null
+                  ? '—'
+                  : `${stats.avPlayheadAdvance.toFixed(3)}×${
+                      stats.avPlayheadAdvance < 0.99 ? ' (starving)' : ''
+                    }`,
+              ],
               [
                 'Sync master',
                 stats.avMaster === 'video'
@@ -169,6 +183,18 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                       stats.audioBuffer.alignmentHoldMs == null
                         ? '—'
                         : `${fmt(stats.audioBuffer.alignmentHoldMs)} ms`,
+                    ],
+                    // docs/20 field finding 13: what the device adds between a
+                    // sample being written and heard. Both the alignment hold
+                    // and A/V skew correct for it, so a big number here is not
+                    // itself a fault — but it IS the size of the lip-sync
+                    // error either correction would cost if it regressed, and
+                    // on Bluetooth/HDMI that is a quarter second.
+                    [
+                      'Output latency',
+                      stats.audioBuffer.outputLatencyMs == null
+                        ? '—'
+                        : `${fmt(stats.audioBuffer.outputLatencyMs)} ms`,
                     ],
                     ['Underruns', String(stats.audioBuffer.underruns)],
                     // Filled vs skipped separates "loss was concealed" from

@@ -7,6 +7,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AudioSink, PROCESSOR_SOURCE } from './audioSink';
+import {
+  AudioRateController,
+  notePlayhead,
+  observeVideoPresented,
+  resetAvSync,
+} from '../../transport/av-sync';
 import type { AudioChunk } from '../../transport/audio-buffer';
 
 const SAMPLE_RATE = 48000;
@@ -580,6 +586,199 @@ describe('AudioSink video-schedule re-anchor', () => {
     }
 
     expect(sink.getStats().resets).toBe(before);
+    sink.dispose();
+  });
+});
+
+// docs/20 field finding 13 (2026-07-26): the sink is the only place that knows
+// where the speaker is. The worklet reports the sample it is WRITING into the
+// output buffer; that sample reaches the listener `outputLatency` later. The
+// alignment release already compensates (it hands the cushion over early by
+// exactly that much) — but av-sync's drift trim then servos the *measured*
+// skew to zero, and if that measurement is taken at the write position, zero
+// means "audio heard outputLatency late". The trim therefore spends the
+// session undoing the alignment: a simulation of the real loop settles at
+// `outputLatency - RATE_TRIM_DEADBAND_MS` of lateness (100 ms on a 120 ms
+// device, 280 ms on a 300 ms one) while the overlay reads ~0.
+describe('AudioSink playhead reference point', () => {
+  function stubWithLatency(latency: { outputLatency?: number; baseLatency?: number } & {
+    getOutputTimestamp?: () => { contextTime: number; performanceTime: number };
+  }) {
+    const node = {
+      port: {
+        postMessage: vi.fn(),
+        onmessage: null as ((e: { data: unknown }) => void) | null,
+      },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const ctx = {
+      state: 'running' as AudioContextState,
+      sampleRate: SAMPLE_RATE,
+      destination: {},
+      audioWorklet: { addModule: vi.fn(() => Promise.resolve()) },
+      createGain: vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() })),
+      resume: vi.fn(() => Promise.resolve()),
+      close: vi.fn(() => Promise.resolve()),
+      ...latency,
+    };
+    vi.stubGlobal('AudioContext', function () {
+      return ctx;
+    } as unknown as typeof AudioContext);
+    vi.stubGlobal('AudioWorkletNode', function () {
+      return node;
+    } as unknown as typeof AudioWorkletNode);
+    vi.stubGlobal('Blob', class {});
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:stub'), revokeObjectURL: vi.fn() });
+    return { ctx, node };
+  }
+
+  function report(
+    node: { port: { onmessage: ((e: { data: unknown }) => void) | null } },
+    playheadUs: number,
+    contextTime: number,
+  ) {
+    node.port.onmessage!({
+      data: { type: 'playhead', playheadUs, queuedMs: 200, receivedMs: 0, underruns: 0, contextTime },
+    });
+  }
+
+  it('reports the sample at the listener, not the one being written', async () => {
+    const { node } = stubWithLatency({ outputLatency: 0.12 });
+    const reports: { heardUs: number | null; atEpochMs: number }[] = [];
+    const sink = new AudioSink({ onPlayhead: (r) => reports.push(r) });
+    await sink.start(SAMPLE_RATE);
+
+    report(node, 1_000_000, 5);
+    expect(reports).toHaveLength(1);
+    // Being written: 1.000 s. Being heard: 120 ms of device buffer earlier.
+    expect(reports[0].heardUs).toBeCloseTo(880_000, -1);
+    // And the number is on the overlay, because it is the one that decides how
+    // far the trim will walk audio if this ever regresses.
+    expect(sink.getStats().outputLatencyMs).toBeCloseTo(120, 5);
+    sink.dispose();
+  });
+
+  it('prefers getOutputTimestamp, which also absorbs the report hop', async () => {
+    // The exact answer: contextTime is the position actually audible and
+    // performanceTime is when it is audible, so the pair needs no latency
+    // estimate and self-corrects for however long the message sat in the
+    // main thread's task queue.
+    const { node } = stubWithLatency({
+      outputLatency: 0.12,
+      // Report generated at contextTime 5; by the time we handle it the
+      // device is playing what was written at 4.9 (a 100 ms true latency).
+      getOutputTimestamp: () => ({ contextTime: 4.9, performanceTime: 7000 }),
+    });
+    const reports: { heardUs: number | null; atEpochMs: number }[] = [];
+    const sink = new AudioSink({ onPlayhead: (r) => reports.push(r) });
+    await sink.start(SAMPLE_RATE);
+
+    report(node, 1_000_000, 5);
+    expect(reports[0].heardUs).toBeCloseTo(900_000, -1);
+    // Anchored at the moment that sample is at the listener, not at receipt.
+    expect(reports[0].atEpochMs).toBeCloseTo(performance.timeOrigin + 7000, 5);
+    sink.dispose();
+  });
+
+  it('falls back to baseLatency, then to a nominal value', async () => {
+    const first = stubWithLatency({ baseLatency: 0.05 });
+    const a = new AudioSink({}, undefined, {});
+    await a.start(SAMPLE_RATE);
+    expect(a.getStats().outputLatencyMs).toBeCloseTo(50, 5);
+    a.dispose();
+    void first;
+
+    stubWithLatency({});
+    const b = new AudioSink({}, undefined, {});
+    await b.start(SAMPLE_RATE);
+    expect(b.getStats().outputLatencyMs).toBeCloseTo(20, 5);
+    b.dispose();
+  });
+
+  it('ignores an implausible getOutputTimestamp instead of snapping to it', async () => {
+    // A stale or nonsensical reading is not a measurement, and av-sync would
+    // *snap* to a jump this large rather than slew it — one bad report would
+    // poison the mapping. Fall back to the latency estimate.
+    const { node } = stubWithLatency({
+      outputLatency: 0.12,
+      getOutputTimestamp: () => ({ contextTime: 1, performanceTime: 7000 }),
+    });
+    const reports: { heardUs: number | null }[] = [];
+    const sink = new AudioSink({ onPlayhead: (r) => reports.push(r) });
+    await sink.start(SAMPLE_RATE);
+
+    report(node, 1_000_000, 5); // a 4 s "correction" — not a device buffer
+    expect(reports[0].heardUs).toBeCloseTo(880_000, -1);
+    sink.dispose();
+  });
+
+  // The bug was in the COMPOSITION, not in either half: the alignment release
+  // compensated for output latency and the trim then removed the compensation,
+  // each behaving exactly as written. So close the loop across the real sink,
+  // the real av-sync mapping and the real controller, and assert the thing
+  // neither half can assert alone — that a stream synced at the speaker stays
+  // synced.
+  it('leaves a speaker-aligned stream alone across the whole loop', async () => {
+    const LATENCY_S = 0.12;
+    let contextTime = 5;
+    const { node } = stubWithLatency({
+      outputLatency: LATENCY_S,
+      // The device is always playing what was written outputLatency ago.
+      getOutputTimestamp: () => ({
+        contextTime: contextTime - LATENCY_S,
+        performanceTime: contextTime * 1000,
+      }),
+    });
+    resetAvSync();
+    const controller = new AudioRateController();
+    // One clock for the whole loop: the sink's own `now` must advance with the
+    // context, or the mapping anchors every report at the same instant and the
+    // loop is self-consistent for the wrong reason (this test passed under a
+    // mutation until the injection was added).
+    const sink = new AudioSink({ onPlayhead: (r) => notePlayhead(r, contextTime * 1000) }, undefined, {
+      now: () => contextTime * 1000,
+    });
+    await sink.start(SAMPLE_RATE);
+
+    // Perfect sync at the speaker: the sample heard at wall time T carries
+    // broadcaster timestamp T, so the one being WRITTEN is T + outputLatency.
+    let errorMs = 0; // positive = audio heard behind the picture
+    let rate = 1;
+    for (let step = 0; step < 1200; step++) {
+      contextTime += 0.25;
+      const nowMs = contextTime * 1000;
+      const writtenUs = (nowMs - errorMs + LATENCY_S * 1000) * 1000;
+      node.port.onmessage!({
+        data: {
+          type: 'playhead',
+          playheadUs: writtenUs,
+          queuedMs: 200,
+          receivedMs: 0,
+          underruns: 0,
+          contextTime,
+        },
+      });
+      rate = controller.update(observeVideoPresented(nowMs * 1000, nowMs), nowMs);
+      errorMs += (1 - rate) * 250;
+    }
+    // Five minutes of loop. Pre-fix this reads ~100 ms (outputLatency minus
+    // the trim's deadband) with avSkewMs sitting at a clean zero throughout.
+    expect(Math.abs(errorMs)).toBeLessThan(1);
+    sink.dispose();
+    resetAvSync();
+  });
+
+  it('reports no heard sample before anything has played', async () => {
+    const { node } = stubWithLatency({ outputLatency: 0.12 });
+    const reports: { heardUs: number | null }[] = [];
+    const sink = new AudioSink({ onPlayhead: (r) => reports.push(r) });
+    await sink.start(SAMPLE_RATE);
+
+    node.port.onmessage!({
+      data: { type: 'playhead', playheadUs: null, queuedMs: 0, receivedMs: 0, underruns: 0, contextTime: 1 },
+    });
+    expect(reports[0].heardUs).toBeNull();
     sink.dispose();
   });
 });

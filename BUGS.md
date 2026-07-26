@@ -282,30 +282,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   terminate, fire `onEnded`). The screen's `onError`/`onEnded` handling
   already lands on the right card.
 
-## Viewer `avSkewMs` over-reports A/V skew on long or stressed sessions
-
-- **Found**: 2026-07-24 (docs/20 field finding 12), from a multi-hour
-  Chrome/macOS viewer field capture that reported **`avSkewMs` ≈ 18788 ms**
-  while — per the owner watching the stream — audio was visibly near-correct.
-- **Impact**: diagnostic only. The **audio path is fine**; this is a metric
-  artifact, so the danger is a future operator (or a future fix) trusting
-  `avSkewMs` and "correcting" a lip-sync error that isn't there. A resync/flush
-  "fix" was considered and **rejected** (owner, 2026-07-24): flushing audio to
-  chase the phantom would inject real gaps to catch up to a number, not to live.
-- **Signature**: `avSkewMs` in the thousands of ms while the corroborating rows
-  are all healthy — `audioPacketsReceived == audioPacketsDecoded` (zero wire
-  loss), `resets` 0, buffer depth ~195/150 ms and alignment hold ~160 ms. Real
-  lip-sync error would show loss, resets, or a starved buffer; none are present.
-- **Cause**: a residual of finding 9 (`avSkewMs` measured buffering depth +
-  estimator lag, not lip-sync). Finding 9's fix (measure at presentation, snap
-  the ClockMapping on a re-anchor) bounded the *steady-state* over-report but
-  did not eliminate it on long/stressed sessions.
-- **Fix would start**: `transport/av-sync.ts` — the fix belongs in **how the
-  metric is taken** (as finding 9's did), never in the audio path. Anything
-  that flushes or reschedules audio to lower the number is wrong, because the
-  premise (audio has fallen behind) is false here. Open, deferred — audio is
-  actually near-correct.
-
 ## iPhone native fullscreen: the MSE playhead has ~100 ms of cushion that cannot grow
 
 - **Found**: 2026-07-26, investigating the first on-device MF5 pass ("plays

@@ -305,3 +305,70 @@ describe('AudioLaneCore', () => {
     expect(cfg.sampleRate).toBe(48000);
   });
 });
+
+// docs/20 field finding 13 (2026-07-26): audio timestamps must be anchored on
+// the same pipeline stage video's are — capture arrival — or the encoder's own
+// latency is written into the labels and the viewer plays audio that much
+// behind its picture, permanently and invisibly. `capture.ts` stamps a
+// VideoFrame with `performance.now()` at MSTP arrival, *before* encode; the
+// audio anchor used to be established in the encoder's output callback, so it
+// carried MSTP delivery + Opus algorithmic delay + queueing + the one-shot
+// encoder init. Nothing downstream can see it: the timestamps ARE the sync
+// reference, so `avSkewMs` reads a clean zero while lip sync is wrong.
+describe('AudioLaneCore timestamp reference point', () => {
+  it('stamps packets from the input arrival, not the encoder output', async () => {
+    const { factory, encoders } = fakeEncoderFactory();
+    const sender = collectingSender();
+    let nowMs = 1000;
+    const core = new AudioLaneCore({ send: sender.send, onError: () => {} }, factory, () => nowMs);
+
+    // The AudioData for media time 0 arrives at t=1000 ms…
+    core.pushAudioData(audioData(0));
+    // …and the encoder emits it 80 ms later (init + algorithmic delay).
+    nowMs = 1080;
+    encoders[0].emit(chunkOf(0, [1]));
+    await Promise.resolve();
+
+    const frame = parseAudioFrame(sender.sent[0][1]);
+    expect(Number(frame.header.timestampUs)).toBe(1_000_000);
+    // The lag is now measured instead of baked in — the number to read when
+    // lip sync is off and the viewer's own metrics look clean.
+    expect(core.getStats().encodeLagMs).toBeCloseTo(80, 5);
+  });
+
+  it('keeps the input anchor for every later packet', async () => {
+    const { factory, encoders } = fakeEncoderFactory();
+    const sender = collectingSender();
+    let nowMs = 1000;
+    const core = new AudioLaneCore({ send: sender.send, onError: () => {} }, factory, () => nowMs);
+
+    // Steady state: input every 20 ms, output 80 ms behind it.
+    for (let i = 0; i < 4; i++) {
+      nowMs = 1000 + i * 20;
+      core.pushAudioData(audioData(i * 20_000));
+    }
+    for (let i = 0; i < 4; i++) {
+      nowMs = 1080 + i * 20;
+      encoders[0].emit(chunkOf(i * 20_000, [i]));
+    }
+    await Promise.resolve();
+
+    const stamps = sender.sent.map((d) =>
+      Number(parseAudioFrame(d[d.length - 1]!).header.timestampUs),
+    );
+    expect(stamps).toEqual([1_000_000, 1_020_000, 1_040_000, 1_060_000]);
+    expect(core.getStats().anchorReanchors).toBe(0);
+  });
+
+  it('has no mapping until an input has been observed', () => {
+    // The encoder's output callback must be able to ask "what wall time does
+    // this media timestamp mean?" without supplying a clock reading of its
+    // own — that reading is precisely the contamination. Null before the
+    // first input keeps the fallback explicit instead of silently re-anchoring.
+    const anchor = new AudioTimestampAnchor();
+    expect(anchor.stamped(20_000)).toBeNull();
+    anchor.stamp(0, 5_000_000);
+    expect(anchor.stamped(20_000)).toBe(5_020_000);
+    expect(anchor.reanchors).toBe(0);
+  });
+});

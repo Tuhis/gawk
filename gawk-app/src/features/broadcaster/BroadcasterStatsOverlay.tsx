@@ -114,6 +114,21 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, audioS
               ['Sent/s', fmt(stats.audioSentPerSec)],
               ['Packets sent', String(stats.audioPacketsSent)],
               ['Configs sent', String(stats.audioConfigsSent)],
+              // docs/20 field finding 13: the encoder's own delay, which used
+              // to be written into every audio timestamp and is now measured
+              // instead. It costs no lip sync as long as it stays out of the
+              // stamps — this row is what says whether it did. Re-anchors are
+              // beside it because each one steps the audio timeline.
+              [
+                'Encode lag',
+                stats.audioEncodeLagMs == null
+                  ? '—'
+                  : `${fmt(stats.audioEncodeLagMs)} ms${
+                      stats.audioAnchorReanchors > 0
+                        ? ` · ${stats.audioAnchorReanchors} re-anchor${stats.audioAnchorReanchors === 1 ? '' : 's'}`
+                        : ''
+                    }`,
+              ],
             ] as StatsRow[],
           },
         ]
