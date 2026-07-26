@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.3](https://github.com/Tuhis/gawk/compare/gawk-server-v0.20.2...gawk-server-v0.20.3) (2026-07-26)
+
+
+### Bug Fixes
+
+* **r21:** recover a wedged Deep-buffer viewer in ~6 s instead of 31 ([#146](https://github.com/Tuhis/gawk/issues/146)) ([2ac53ca](https://github.com/Tuhis/gawk/commit/2ac53caf3f42a7b56c4e46ec7f1edfb0bc0ae9c1))
+
 ## [0.20.2](https://github.com/Tuhis/gawk/compare/gawk-server-v0.20.1...gawk-server-v0.20.2) (2026-07-24)
 
 

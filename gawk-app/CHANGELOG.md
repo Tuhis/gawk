@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.33.3](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.2...gawk-app-v0.33.3) (2026-07-26)
+
+
+### Bug Fixes
+
+* **app:** hold a screen wake lock while streaming ([#150](https://github.com/Tuhis/gawk/issues/150)) ([2ac3979](https://github.com/Tuhis/gawk/commit/2ac3979a61f21de1f86efaf9a773c9943e8891e4))
+* **r21:** recover a wedged Deep-buffer viewer in ~6 s instead of 31 ([#146](https://github.com/Tuhis/gawk/issues/146)) ([2ac53ca](https://github.com/Tuhis/gawk/commit/2ac53caf3f42a7b56c4e46ec7f1edfb0bc0ae9c1))
+* **r22:** prime the MSE surface through MMS parking (docs/27 finding 7) ([#149](https://github.com/Tuhis/gawk/issues/149)) ([ce42e9a](https://github.com/Tuhis/gawk/commit/ce42e9a4ff7115d042081f32a014ce9331b30363))
+
 ## [0.33.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.1...gawk-app-v0.33.2) (2026-07-26)
 
 
