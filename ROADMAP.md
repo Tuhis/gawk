@@ -43,7 +43,7 @@ feature set exists).
 | R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔶 MF1–MF4 implemented 2026-07-25 (+ MF5 observability/docs; automated gates green incl. the Chrome `MediaSource` playback check; R16 tee deleted); **MF5 on-device verification pending** ([docs/27](docs/27-ios-mse-fullscreen.md)) |
 | R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 🚧 implemented 2026-07-24 (TC1–TC5); automated gates green (gawk-app + gawk-broadcast + helm), manual browser verify pending ([docs/29](docs/29-terms-and-conditions.md)) |
 | R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 🚧 designed + CG1–CG5 implemented 2026-07-24 (browser-aware share/audio tips + reactive notes; frontend-only, zero server/wire/pipeline change); automated gates green, manual browser verify pending ([docs/30](docs/30-broadcaster-capture-audio-guidance.md)) |
-| R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
+| R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23; **NA1 spike done 2026-07-27** on Debian 13/KDE — Decisions 2/3/4/5 confirmed on hardware, both risks closed, NA2–NA5 unblocked; NA2–NA8 not started ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
 | R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed 2026-07-26 (owner-locked architecture/retention/read-surfaces/collection policy; wire 0x0D correlation ID, files-first `gawk-telemetry`, docs/13 playbook as `diagnose()`), not started (TM1–TM9) ([docs/33](docs/33-telemetry-and-diagnostics.md)) |
@@ -1697,10 +1697,13 @@ one way to stream from Linux with hardware encode, and it is silent.
   128 kbps). Moving it into Go means cgo, which would put libopus headers on
   `gawk-pubsim`'s build path and break the CI harness's whole reason for
   existing.
-- **One child, one pipe: audio is muxed into the existing MPEG-TS.** Verified:
-  `mpegtsmux` takes `audio/x-opus` and is `GstAggregator`-based (so it does not
-  hold audio hostage to damage-driven video). The cost is teaching
-  `internal/mpegts` one more shape; the prize is the next bullet.
+- **One child, one pipe: audio is muxed into the existing MPEG-TS.** Verified
+  on hardware by NA1: `mpegtsmux` takes `audio/x-opus`, carries it (PMT
+  `stream_type 0x06` + `"Opus"` registration, PES `0xBD`, one access unit per
+  PES, 20.0 ms PTS steps), and does **not** hold audio hostage to
+  damage-driven video — with the video pad starved for 4.6 s, audio still
+  arrived every 20.0 ms. The cost is teaching `internal/mpegts` one more
+  shape; the prize is the next bullet.
 - **One PTS anchor for both media** — the load-bearing sync decision. Both
   media share one PTS timeline, so one anchor maps both with one affine
   function and relative A/V skew is zero by construction, exactly as
@@ -1714,9 +1717,18 @@ one way to stream from Linux with hardware encode, and it is silent.
   default-off `gawk-pubsim` flag, so tier-1 exercises the real engine send path
   while keeping the existing no-audio assertion running.
 
-Chunks **NA1–NA8** (two-letter prefix; A–Z claimed). NA1 is an on-hardware
-spike that confirms or overturns the muxing decision before NA3/NA4 are
-written. Designed 2026-07-23, not started.
+Chunks **NA1–NA8** (two-letter prefix; A–Z claimed). Designed 2026-07-23;
+**NA1 done 2026-07-27** — two runs on a Debian 13 / KDE machine via a
+self-contained tester script (`gawk-broadcast/scripts/na1-audio-spike.sh`),
+written so someone with a Linux box and no context can run one command and send
+back one tarball. It confirmed the muxing decision rather than overturning it,
+closed both of the design's unverified risks (`stream.capture.sink` forwarding
+and `@DEFAULT_MONITOR@` resolution — and all six probed source spellings
+captured real system audio), showed candidate 1 surviving a mid-recording
+default-output switch, and pinned the Opus-in-TS control header to real bytes:
+it begins **`7F E0`, not `FF E0`**, because the spec's 11-bit prefix holds
+`0x3FF` — ten ones, not eleven. NA4's fixture is committed at
+`gawk-broadcast/internal/mpegts/testdata/`. NA2–NA8 not started.
 
 **Sequencing note**: the manual A/V pass should follow R15's pending hardware
 re-verification. The lip-sync criterion is measured with `avSkewMs`, which only

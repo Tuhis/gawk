@@ -741,6 +741,24 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   This is why capture is a GStreamer subprocess. Don't re-propose it
   without verifying it actually merged.
   ([docs/19](docs/19-linux-native-broadcaster.md))
+- **The Opus-in-MPEG-TS control header begins `7F E0`, not `FF E0`.** The
+  mapping spec's 11-bit prefix holds the value `0x3FF`, which is *ten* ones —
+  so an 11-bit field carrying it is one zero bit followed by ten ones, and the
+  first byte is `0x7F`. A demuxer that syncs on `0xFF` finds nothing, ever.
+  Measured on real muxer output, and pinned by the committed fixture in
+  `gawk-broadcast/internal/mpegts/testdata/`. Also: GStreamer writes one Opus
+  access unit per PES, ffmpeg batches five — the format permits both, so parse
+  a loop. ([docs/28](docs/28-native-broadcaster-audio.md))
+- **A muxer's audio cadence follows the *declared* caps framerate, not actual
+  frame arrival.** `mpegtsmux` is `GstAggregator`-based and aggregates against
+  a clock deadline derived from the pipeline's declared latency. Starve the
+  video pad for 4.6 s with 30 fps caps and audio keeps flowing every 20 ms;
+  declare `framerate=1/5` and the same starvation clumps audio into 5-second
+  bursts, because one video frame interval *is* the pipeline's latency. This
+  is a second, non-obvious reason `BuildPipeline` pins `framerate=<fps>/1` on
+  the encoder caps — docs/19 added it for rate control, and audio smoothness
+  on a motionless screen rides on it too.
+  ([docs/28](docs/28-native-broadcaster-audio.md))
 - **Notifications must be critical urgency or the broadcaster never sees
   them** — KDE's portal inhibits normal notifications *while screen
   casting*, so the act of broadcasting suppresses exactly the notifications

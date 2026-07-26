@@ -4,3 +4,4 @@ e2e/out/
 e2e/out-browser-broadcast/
 .claude/worktrees
 
+.DS_Store
