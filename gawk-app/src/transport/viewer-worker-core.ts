@@ -12,6 +12,7 @@ import type { ViewerDeliveryMode } from './resilient';
 import type { ConnectOptions } from './connection';
 import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
+import type { ReleasedFrame } from './reorder-buffer';
 import { ViewerPipeline } from './viewer';
 import type { ViewerStats } from './viewer';
 import { ViewerSession, type ViewerErrorKind, type ViewerSessionCallbacks } from './viewer-session';
@@ -19,11 +20,12 @@ import { LocalViewerTransport, type ViewerTransportFactory } from './viewer-tran
 
 // Main thread → worker.
 export type ViewerWorkerCommand =
-  // R16: `presentationTee` is sent ONLY on gated (element-fullscreen-less)
-  // devices — non-gated devices' init messages are byte-identical to before
-  // (docs/21 Decision 1). It makes the worker probe the tee capability and,
-  // if supported, build the sink chain with the (idle) TeeRenderSink inside.
-  | { type: 'init'; canvas: OffscreenCanvas; presentationTee?: boolean }
+  // R22 (docs/27, keeping R16's Decision-1 constraint): `presentationMux` is
+  // sent ONLY on gated (element-fullscreen-less) devices — non-gated devices'
+  // init messages are byte-identical to before. It routes the reorder
+  // buffer's released frames through the host frame tap so the (arm-created)
+  // fMP4 muxer can feed the iPhone native-fullscreen video.
+  | { type: 'init'; canvas: OffscreenCanvas; presentationMux?: boolean }
   | { type: 'start'; serverUrl: string; broadcastId: string; connectOpts: ConnectOptions }
   | { type: 'stop' }
   // R5 Q3 + R12 T2: set the playout mode in the worker's context (the reorder
@@ -37,9 +39,9 @@ export type ViewerWorkerCommand =
   // negotiation itself rides connectOpts.deliveryMode into the subscribe
   // URL); a mode change is a deliberate reconnect, not a live flip.
   | { type: 'resilient'; mode: ViewerDeliveryMode }
-  // R16 Decision 4: activate the tee — create the VideoTrackGenerator in the
-  // worker, post its track back (transferred), start capturing presented
-  // frames. Idempotent; a no-op when init carried no tee or the probe failed.
+  // R22 (docs/27 Decision 5): start muxing — create the Fmp4Muxer at the
+  // worker-shell level (it survives pipeline attempts/reconnects) and begin
+  // posting segments. Idempotent; a no-op when init carried no mux flag.
   | { type: 'arm' }
   // R15 N5 (docs/20 Decision 10): the audio sink's ~4 Hz playhead report,
   // travelling the reverse direction of the stats flow. The AudioContext is
@@ -58,13 +60,11 @@ export type ViewerWorkerEvent =
   // `message` is console-only detail; the screen renders copy keyed on `kind`.
   | { type: 'error'; message: string; fatal: boolean; kind: ViewerErrorKind }
   | { type: 'ended' }
-  // R16 (gated devices only, in response to init.presentationTee): whether
-  // VideoTrackGenerator + VideoFrame-from-canvas work in this worker. False ⇒
-  // the screen never arms and fullscreen stays tier 3 (pseudo).
-  | { type: 'presentationProbe'; supported: boolean }
-  // R16: the generator's track, transferred once on arm. Host-level in the
-  // worker — it survives pipeline attempts/reconnects (docs/21 Decision 4).
-  | { type: 'presentationTrack'; track: MediaStreamTrack }
+  // R22 (gated devices only, after 'arm'): one fMP4 segment from the worker
+  // muxer, buffer transferred. Init segments carry the authoritative mime
+  // (codec derived from the bitstream); media segments carry the keyframe
+  // flag so the main-thread queue can drop to a decodable restart point.
+  | MuxSegmentEvent
   // R15 (docs/20 Decision 7): decoded planar PCM for the main-thread
   // AudioWorklet sink — the first deliberate decoded-media crossing (an
   // AudioContext cannot exist in a dedicated worker). The channel buffers
@@ -79,6 +79,11 @@ export type ViewerWorkerEvent =
   // R15 (docs/20 Decision 8): restart/reconnect — the sink must flush and
   // re-anchor before the new timeline's packets arrive.
   | { type: 'audioReset' };
+
+// R22: the muxer's output events (see ViewerWorkerEvent above).
+export type MuxSegmentEvent =
+  | { type: 'muxSegment'; kind: 'init'; mime: string; data: ArrayBuffer }
+  | { type: 'muxSegment'; kind: 'media'; keyframe: boolean; data: ArrayBuffer };
 
 // Shell-level boot handshake (posted by viewer.worker.ts on load, before any
 // command): reports whether this worker's global scope actually has the codecs
@@ -97,6 +102,12 @@ export interface WorkerHost {
   // a nested-transport-worker factory where nested workers exist; omitted, the
   // pipeline runs its transport in-process (this worker) as before.
   transportFactory?: ViewerTransportFactory;
+  // R22 (docs/27 Decision 3): the encoded-frame fork. Present only when init
+  // carried `presentationMux` (gated devices) — the pipeline then hands every
+  // reorder-released frame here, upstream of the decoder, and the shell's
+  // muxer (idle until 'arm') turns them into fMP4. Host-level so it survives
+  // pipeline attempts/reconnects.
+  frameTap?: (frame: ReleasedFrame) => void;
 }
 
 // Injectable for tests; the default wires a real ViewerSession whose pipeline
@@ -195,6 +206,16 @@ export class ViewerWorkerCore {
       onAudioReset: () => {
         if (current()) this.host.post({ type: 'audioReset' });
       },
+      // R22: the encoded-frame fork for the shell's muxer. Generation-guarded
+      // so a superseded session's late releases can't interleave a stale
+      // timeline into the (session-long) mux stream.
+      ...(this.host.frameTap
+        ? {
+            onReleasedFrame: (frame: ReleasedFrame) => {
+              if (current()) this.host.frameTap!(frame);
+            },
+          }
+        : {}),
     };
 
     const session = this.createSession(

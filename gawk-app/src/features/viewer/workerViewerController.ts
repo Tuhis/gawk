@@ -30,17 +30,17 @@ export interface WorkerViewerCallbacks {
 }
 
 export interface WorkerViewerOptions {
-  // R16 (docs/21): request the presentation tee at init. Set only on gated
-  // (element-fullscreen-less) devices — when false, the init message is
-  // byte-identical to before R16 and no tee/probe code runs in the worker.
-  presentationTee?: boolean;
+  // R22 (docs/27): request the encoded-frame mux fork at init. Set only on
+  // gated (element-fullscreen-less) devices — when false, the init message is
+  // byte-identical to before and no mux code runs in the worker.
+  presentationMux?: boolean;
 }
 
 export class WorkerViewerController {
   private worker: Worker;
   private canvas: HTMLCanvasElement;
   private cb: WorkerViewerCallbacks;
-  private presentationTee: boolean;
+  private presentationMux: boolean;
 
   private booted = false;
   private supported = false;
@@ -53,7 +53,7 @@ export class WorkerViewerController {
   constructor(canvas: HTMLCanvasElement, cb: WorkerViewerCallbacks, opts: WorkerViewerOptions = {}) {
     this.canvas = canvas;
     this.cb = cb;
-    this.presentationTee = opts.presentationTee ?? false;
+    this.presentationMux = opts.presentationMux ?? false;
     this.worker = new Worker(new URL('../../transport/viewer.worker.ts', import.meta.url), {
       type: 'module',
     });
@@ -85,10 +85,10 @@ export class WorkerViewerController {
     if (!this.canvasTransferred) {
       const offscreen = this.canvas.transferControlToOffscreen();
       this.canvasTransferred = true;
-      // The tee flag is spread in only when set, keeping non-gated init
-      // messages byte-identical to pre-R16 (docs/21 Decision 1).
+      // The mux flag is spread in only when set, keeping non-gated init
+      // messages byte-identical (docs/27, carrying R16 Decision 1 forward).
       this.post(
-        { type: 'init', canvas: offscreen, ...(this.presentationTee ? { presentationTee: true } : {}) },
+        { type: 'init', canvas: offscreen, ...(this.presentationMux ? { presentationMux: true } : {}) },
         [offscreen],
       );
     }
@@ -142,11 +142,14 @@ export class WorkerViewerController {
     this.post({ type: 'resilient', mode });
   }
 
-  // R16: activate the presentation tee (gated devices, at `watching`). Sent
-  // at most once — the worker's generator/track are session-long and survive
-  // reconnects (docs/21 Decision 4). Buffered until the canvas/init exist.
+  // R22: start the worker muxer (gated devices, at `watching`). Sent at most
+  // once — the muxer and its output timeline are session-long and survive
+  // reconnects (docs/27 Decision 3). Buffered until the canvas/init exist.
+  // Guarded on the mux opt-in so a stray call can't break the non-gated
+  // byte-identity guarantee (the worker would ignore it, but the message
+  // itself is the contract).
   armPresentation(): void {
-    if (this.disposed || this.armRequested) return;
+    if (this.disposed || this.armRequested || !this.presentationMux) return;
     this.armRequested = true;
     if (this.canvasTransferred && !this.armSent) {
       this.post({ type: 'arm' });

@@ -20,7 +20,7 @@ import { StatsOverlay } from './StatsOverlay';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import type { FeatureGate, PresentationSurfaceStats } from '../../lib/featureGates';
-import { log } from '../../lib/logger';
+import { MsePresenter } from './msePresentation';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
@@ -241,45 +241,63 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // menu needs the button as its anchor (see ContextMenu's `anchorRef`).
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  const { probe: teeProbe, track: teeTrack, arm: armTee } = presentation;
+  const { probe: mseProbe, arm: armMux, setSegmentSink } = presentation;
 
-  // R16 Decision 5: pre-arm at `watching`, not lazily on the fullscreen tap —
+  // R22 (docs/27 Decision 3): the main-thread presenter — MMS + SourceBuffer
+  // behind the hidden <video>. One per screen, created lazily on the gated
+  // path only; survives re-renders in a ref (its cached init segment is what
+  // lets a remounted video element re-prime without a worker round-trip).
+  const presenterRef = useRef<MsePresenter | null>(null);
+  const [armed, setArmed] = useState(false);
+
+  // R22 Decision 5: pre-arm at `watching`, not lazily on the fullscreen tap —
   // webkitEnterFullscreen must run synchronously inside the gesture on a
-  // video that already has media, and the arm chain is async.
+  // video that already has media, and the MMS arm chain (mux → transfer →
+  // append → metadata) is async.
   useEffect(() => {
-    if (gated && status === 'watching' && teeProbe === true) armTee();
-  }, [gated, status, teeProbe, armTee]);
+    if (!gated || status !== 'watching' || mseProbe?.supported !== true) return;
+    presenterRef.current ??= new MsePresenter();
+    const presenter = presenterRef.current;
+    setSegmentSink((seg) => {
+      presenter.pushSegment(
+        seg.kind === 'init'
+          ? { kind: 'init', mime: seg.mime, data: new Uint8Array(seg.data) }
+          : { kind: 'media', keyframe: seg.keyframe, data: new Uint8Array(seg.data) },
+      );
+    });
+    armMux();
+    setArmed(true);
+    return () => setSegmentSink(null);
+  }, [gated, status, mseProbe, armMux, setSegmentSink]);
 
-  // R16 Decision 6: the hidden presentation <video>, rendered only on gated
-  // devices once the track exists. State (not a ref) so the effects and
-  // useFullscreen re-run when it mounts.
+  // Presenter teardown on real unmount. (On StrictMode's synchronous initial
+  // cleanup→remount nothing exists yet — arming starts at `watching` — so a
+  // plain cleanup is safe here.)
+  useEffect(() => {
+    return () => {
+      presenterRef.current?.dispose();
+      presenterRef.current = null;
+    };
+  }, []);
+
+  // R16 Decision 6 (kept by R22): the hidden presentation <video>, rendered
+  // only on gated devices once armed. State (not a ref) so the effects and
+  // useFullscreen re-run when it mounts. Attached to the presenter's
+  // MediaSource; kept loaded-but-paused near live until the in-gesture play
+  // (docs/27 Decision 5 — no continuous dual decode while inline).
   const [presentationVideo, setPresentationVideo] = useState<HTMLVideoElement | null>(null);
   useEffect(() => {
     const video = presentationVideo;
-    if (!video || !teeTrack) return;
-    // Imperative on purpose: React's `muted` prop does not reliably reach the
-    // DOM property, and an unmuted autoplay rejects on iOS — leaving exactly
-    // the paused video that renders black in the native player (U4 finding).
-    video.muted = true;
-    video.srcObject = new MediaStream([teeTrack]);
-    // Defensive: autoplay+muted should start it, but a paused hidden video
-    // would fail webkitEnterFullscreen's readiness check. A rejection here is
-    // recoverable (the fullscreen toggle retries play() in the gesture) but
-    // worth seeing in a remote Safari inspector.
-    void video.play()?.catch?.((e) => log.warn('presentation video play() rejected:', e));
-    return () => {
-      video.srcObject = null;
-    };
-  }, [presentationVideo, teeTrack]);
+    const presenter = presenterRef.current;
+    if (!video || !presenter) return;
+    presenter.attach(video);
+    return () => presenter.detach();
+  }, [presentationVideo, armed]);
 
-  // U4: count frames the element actually presents (rVFC), and periodically
-  // sample their content — the max RGB channel of a 4×4 downscale. This is
-  // the discriminator the first two passes lacked: rVFC climbing proves
-  // frames present, but only a pixel sample tells "presenting black frames"
-  // from "the native player renders black". Refs, not state — sampled into
-  // presentationSurface on each stats-tick render.
+  // Count frames the element actually presents (rVFC) — kept from R16: it is
+  // what separates "segments appended" from "the element presents them".
+  // A ref, not state — sampled into presentationSurface on each stats render.
   const elementFramesRef = useRef<number | null>(null);
-  const elementContentPeakRef = useRef<number | null>(null);
   useEffect(() => {
     const video = presentationVideo as
       | (HTMLVideoElement & {
@@ -289,33 +307,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       | null;
     if (!video || typeof video.requestVideoFrameCallback !== 'function') return;
     elementFramesRef.current = 0;
-    elementContentPeakRef.current = null;
     let live = true;
     let handle = 0;
-    let sampleCanvas: HTMLCanvasElement | null = null;
-    const samplePeak = () => {
-      try {
-        sampleCanvas ??= document.createElement('canvas');
-        sampleCanvas.width = 4;
-        sampleCanvas.height = 4;
-        const ctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return;
-        ctx.drawImage(video, 0, 0, 4, 4);
-        const d = ctx.getImageData(0, 0, 4, 4).data;
-        let peak = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          peak = Math.max(peak, d[i], d[i + 1], d[i + 2]);
-        }
-        elementContentPeakRef.current = peak;
-      } catch {
-        // Best-effort diagnostics — never let sampling break the counter.
-      }
-    };
     const onFrame = () => {
       if (!live) return;
-      const n = (elementFramesRef.current ?? 0) + 1;
-      elementFramesRef.current = n;
-      if (n % 60 === 1) samplePeak();
+      elementFramesRef.current = (elementFramesRef.current ?? 0) + 1;
       handle = video.requestVideoFrameCallback!(onFrame);
     };
     handle = video.requestVideoFrameCallback(onFrame);
@@ -324,40 +320,62 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       video.cancelVideoFrameCallback?.(handle);
     };
   }, [presentationVideo]);
-  // Track teardown lives with the controller (useViewerConnection's deferred
-  // dispose): stopping it here on effect cleanup would kill it for good
-  // across a StrictMode remount.
 
   const { isFullscreen, tier, toggle: toggleFullscreen } = useFullscreen(rootRef, presentationVideo);
 
-  // R16 Decision 9: the Feature Gates readout — derived state, rendered on
-  // every viewer (the one deliberate overlay-only R16 change on non-gated
-  // devices). Active ⇔ the native path would actually be used on the next tap.
-  const armed = teeTrack != null;
+  // R16 Decision 9 / R22 Decision 8: the Feature Gates readout — derived
+  // state, rendered on every viewer (the one deliberate overlay-only change
+  // on non-gated devices). Active ⇔ probe passed AND the MMS surface is armed
+  // and healthy — i.e. the native path would actually be used on the next tap.
+  const presenterStats = presenterRef.current?.getStats() ?? null;
+  const surfaceHealthy = armed && presenterStats?.failed !== true;
   const featureGates: FeatureGate[] = [
     {
       name: 'NativeVideoFullscreen',
-      active: gated && teeProbe === true && armed,
+      active: gated && mseProbe?.supported === true && surfaceHealthy,
       detail: !gated
         ? 'element fullscreen available'
-        : teeProbe === false
-          ? 'probe failed → pseudo'
-          : armed
-            ? 'armed'
-            : 'arming',
+        : mseProbe == null
+          ? 'probing'
+          : !mseProbe.supported
+            ? `${mseProbe.reason} → pseudo`
+            : presenterStats?.failed
+              ? 'MSE surface failed → pseudo'
+              : armed
+                ? 'armed'
+                : 'arming',
     },
   ];
+  // The element's buffered window — span, and how far the playhead trails the
+  // buffered live edge (the fullscreen half of the live-edge delta).
+  let bufferedMs: number | null = null;
+  let bufferedAheadMs: number | null = null;
+  if (presentationVideo) {
+    try {
+      const b = presentationVideo.buffered;
+      if (b.length > 0) {
+        bufferedMs = (b.end(b.length - 1) - b.start(0)) * 1000;
+        bufferedAheadMs = (b.end(b.length - 1) - presentationVideo.currentTime) * 1000;
+      }
+    } catch {
+      // buffered access quirks are diagnostics-only
+    }
+  }
   const presentationSurface: PresentationSurfaceStats = {
     tier,
     armed,
-    teedFrames: stats?.presentationTee?.teedFrames ?? 0,
-    teeErrors: stats?.presentationTee?.teeErrors ?? 0,
+    muxInitSegments: stats?.presentationMux?.initSegments ?? 0,
+    muxMediaSegments: stats?.presentationMux?.mediaSegments ?? 0,
+    muxErrors: stats?.presentationMux?.errors ?? 0,
+    segmentsAppended: presenterStats?.segmentsAppended ?? 0,
+    appendErrors: presenterStats?.appendErrors ?? 0,
+    bufferedMs,
+    bufferedAheadMs,
     elementReadyState: presentationVideo?.readyState ?? null,
     elementPaused: presentationVideo?.paused ?? null,
     elementWidth: presentationVideo?.videoWidth ?? null,
     elementHeight: presentationVideo?.videoHeight ?? null,
     elementFrames: elementFramesRef.current,
-    elementContentPeak: elementContentPeakRef.current,
   };
 
   // R9 M7: rolling stat-sample window backing "Copy diagnostics" and the
@@ -504,16 +522,21 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     >
       <canvas ref={canvasRef} className={styles.canvas} />
 
-      {/* R16: the hidden native-fullscreen surface — exists only on gated
-          devices once the tee's track arrived. Hidden by size/position, never
-          display:none (that breaks webkitEnterFullscreen). */}
-      {gated && teeTrack != null && (
+      {/* R22 (keeping R16 Decision 6's hiding rules): the hidden native-
+          fullscreen surface — exists only on gated devices once armed AND
+          while the probe still passes: a mid-view codec change to a VP
+          broadcast flips the probe false, and keeping the ready video
+          mounted would let the next tap native-present stale frozen content
+          instead of falling to pseudo. Hidden by size/position, never
+          display:none (that breaks webkitEnterFullscreen). Loaded but NOT
+          autoplaying: the video sits paused near live until the in-gesture
+          play (docs/27 Decision 5). */}
+      {gated && armed && mseProbe?.supported === true && (
         <video
           ref={setPresentationVideo}
           className={styles.presentationVideo}
           playsInline
           muted
-          autoPlay
           aria-hidden="true"
         />
       )}

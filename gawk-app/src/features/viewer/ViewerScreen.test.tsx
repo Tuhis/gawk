@@ -460,12 +460,13 @@ describe('ViewerScreen menu button (touch reachability)', () => {
   });
 });
 
-// R16 (docs/21): the device gate, the hidden presentation video, and the
-// Feature Gates overlay section. jsdom has no Element Fullscreen API, so a
-// bare render is a *gated* device on the main-thread pipeline (worker
-// unavailable in jsdom ⇒ probe false, tier 3 only); the non-gated cases
-// install document.documentElement.requestFullscreen first.
-describe('ViewerScreen R16 presentation surface', () => {
+// R16 gate + R22 MSE surface (docs/21 Decision 1, docs/27): the device gate,
+// the hidden presentation video, and the Feature Gates overlay section. jsdom
+// has no Element Fullscreen API, so a bare render is a *gated* device on the
+// main-thread pipeline (worker unavailable in jsdom ⇒ tier 3 only, probe
+// verdict false — docs/27 Decision 11); the non-gated cases install
+// document.documentElement.requestFullscreen first.
+describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
   const installElementFullscreen = () => {
     (document.documentElement as { requestFullscreen?: unknown }).requestFullscreen = vi.fn();
   };
@@ -492,7 +493,7 @@ describe('ViewerScreen R16 presentation surface', () => {
     expect(value.getAttribute('title')).toBe('element fullscreen available');
   });
 
-  it('gated without worker support: no video element, gate row reads probe failed → pseudo', async () => {
+  it('gated without worker support: no video element, gate row reads the failed verdict', async () => {
     const { container } = render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
@@ -501,7 +502,7 @@ describe('ViewerScreen R16 presentation surface', () => {
     openStats();
     const value = screen.getByText('NativeVideoFullscreen').nextSibling as HTMLElement;
     expect(value.textContent).toBe('✗');
-    expect(value.getAttribute('title')).toBe('probe failed → pseudo');
+    expect(value.getAttribute('title')).toBe('main-thread pipeline → pseudo');
   });
 
   it('gated: the fullscreen button falls back to pseudo-fullscreen (never a dead tap)', async () => {
@@ -530,21 +531,25 @@ describe('ViewerScreen R16 presentation surface', () => {
     const blob = JSON.parse((writeText.mock.calls[0] as unknown as [string])[0]);
     expect(blob.samples).toHaveLength(1);
     expect(blob.samples[0].stats.featureGates).toEqual([
-      { name: 'NativeVideoFullscreen', active: false, detail: 'probe failed → pseudo' },
+      { name: 'NativeVideoFullscreen', active: false, detail: 'main-thread pipeline → pseudo' },
     ]);
     expect(blob.samples[0].stats.presentationSurface).toEqual({
       tier: null,
       armed: false,
-      teedFrames: 0,
-      teeErrors: 0,
-      // U4: element-side fields are null while no presentation <video> exists
-      // (main-thread fallback ⇒ no track ⇒ no element).
+      muxInitSegments: 0,
+      muxMediaSegments: 0,
+      muxErrors: 0,
+      segmentsAppended: 0,
+      appendErrors: 0,
+      bufferedMs: null,
+      bufferedAheadMs: null,
+      // Element-side fields are null while no presentation <video> exists
+      // (main-thread fallback ⇒ never armed ⇒ no element).
       elementReadyState: null,
       elementPaused: null,
       elementWidth: null,
       elementHeight: null,
       elementFrames: null,
-      elementContentPeak: null,
     });
   });
 });

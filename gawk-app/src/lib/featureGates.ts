@@ -17,19 +17,30 @@ export interface FeatureGate {
 // API), the iPhone-only native video fullscreen, or CSS pseudo-fullscreen.
 export type FullscreenTier = 'element' | 'video' | 'pseudo';
 
-// R16: raw presentation-surface diagnostics for Copy diagnostics; the
-// NativeVideoFullscreen gate row is derived from these. (Named
-// presentationSurface in ViewerStats — `presentation` was already taken by
-// the R12 pacing-placement field.) The element* fields (U4 black-screen
-// finding) report the presentation <video>'s own view of the tee stream, so
-// a black native fullscreen localizes remotely: tee writing but element
-// starved (elementFrames stuck) vs element presenting black content
-// (elementFrames climbing) vs a paused element (black by definition).
+// R16, reshaped by R22 (docs/27 Decision 8): raw presentation-surface
+// diagnostics for Copy diagnostics; the NativeVideoFullscreen gate row is
+// derived from these. (Named presentationSurface in ViewerStats —
+// `presentation` was already taken by the R12 pacing-placement field.) The
+// pipeline is worker muxer → transferred segments → main-thread
+// ManagedMediaSource → hidden <video>, and each hop reports here so a broken
+// native fullscreen localizes remotely: muxer producing but nothing appended
+// (segmentsAppended stuck) vs appends erroring vs the element never reaching
+// readiness vs a paused element.
 export interface PresentationSurfaceStats {
   tier: FullscreenTier | null;
   armed: boolean;
-  teedFrames: number;
-  teeErrors: number;
+  // Worker-side muxer output (from ViewerStats.presentationMux).
+  muxInitSegments: number;
+  muxMediaSegments: number;
+  muxErrors: number;
+  // Main-thread SourceBuffer side.
+  segmentsAppended: number;
+  appendErrors: number;
+  // Buffered span of the element (last end − first start) and how far the
+  // playhead sits behind the buffered live edge — the fullscreen half of the
+  // inline-vs-fullscreen live-edge delta. Null until media is buffered.
+  bufferedMs: number | null;
+  bufferedAheadMs: number | null;
   // HTMLMediaElement.readyState (0–4); null until the element exists.
   elementReadyState: number | null;
   elementPaused: boolean | null;
@@ -39,8 +50,4 @@ export interface PresentationSurfaceStats {
   // Frames the element actually presented, counted via
   // requestVideoFrameCallback; null where rVFC (or the element) is absent.
   elementFrames: number | null;
-  // Max RGB channel (0–255) from a periodic 4×4 pixel sample of the element —
-  // 0 with a bright inline stream ⇒ the element is presenting black frames;
-  // high ⇒ content is fine and any black fullscreen is the player itself.
-  elementContentPeak: number | null;
 }

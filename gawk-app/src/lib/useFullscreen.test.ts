@@ -38,16 +38,40 @@ function installElementFullscreen() {
 }
 
 // A stub of the iPhone presentation <video> — jsdom's video element plus the
-// WebKit-prefixed fullscreen API, a settable readyState/paused, and a play()
-// mock (jsdom's own play() is unimplemented).
-function fakeVideo({ readyState = 1, enterThrows = false, paused = false } = {}) {
+// WebKit-prefixed fullscreen API, a settable readyState/paused, play()/pause()
+// mocks (jsdom's own are unimplemented), and R22's buffered/currentTime for
+// the seek-to-live path.
+function fakeVideo({
+  readyState = 1,
+  enterThrows = false,
+  paused = false,
+  buffered = [] as Array<[number, number]>,
+  currentTime = 0,
+} = {}) {
   const video = document.createElement('video') as HTMLVideoElement & {
     webkitEnterFullscreen: () => void;
     webkitExitFullscreen: () => void;
   };
   Object.defineProperty(video, 'readyState', { configurable: true, get: () => readyState });
   Object.defineProperty(video, 'paused', { configurable: true, get: () => paused });
+  Object.defineProperty(video, 'buffered', {
+    configurable: true,
+    get: () => ({
+      length: buffered.length,
+      start: (i: number) => buffered[i][0],
+      end: (i: number) => buffered[i][1],
+    }),
+  });
+  let ct = currentTime;
+  Object.defineProperty(video, 'currentTime', {
+    configurable: true,
+    get: () => ct,
+    set: (v: number) => {
+      ct = v;
+    },
+  });
   video.play = vi.fn(() => Promise.resolve());
+  video.pause = vi.fn();
   video.webkitEnterFullscreen = vi.fn(() => {
     if (enterThrows) throw new DOMException('not ready', 'InvalidStateError');
     video.dispatchEvent(new Event('webkitbeginfullscreen'));
@@ -154,6 +178,48 @@ describe('useFullscreen tier 2 (gated, native video fullscreen)', () => {
     act(() => result.current.toggle());
     expect(video.webkitExitFullscreen).toHaveBeenCalledTimes(1);
     expect(result.current.isFullscreen).toBe(false);
+  });
+
+  // R22 (docs/27 Decision 5): the armed MSE video sits paused while its
+  // buffer follows the live edge — entering must jump to the newest buffered
+  // range or the native player would resume minutes behind live.
+  it('seeks a lagging video to the live edge inside the entry gesture', () => {
+    const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: 2 });
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    expect(video.currentTime).toBeCloseTo(29.9, 5);
+    expect(video.play).toHaveBeenCalledTimes(1);
+    expect(video.webkitEnterFullscreen).toHaveBeenCalledTimes(1);
+    expect(result.current.tier).toBe('video');
+  });
+
+  it('leaves a near-live playhead alone on entry', () => {
+    const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: 29.8 });
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    expect(video.currentTime).toBeCloseTo(29.8, 5);
+    expect(result.current.tier).toBe('video');
+  });
+
+  // R22: playback exists only for the native player — exiting (system UI or
+  // toggle) pauses the hidden video so a second decode doesn't keep burning
+  // battery under the inline canvas.
+  it('pauses the hidden video when the system UI exits fullscreen', () => {
+    const video = fakeVideo();
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    expect(result.current.tier).toBe('video');
+    act(() => void video.dispatchEvent(new Event('webkitendfullscreen')));
+    expect(video.pause).toHaveBeenCalled();
+    expect(result.current.isFullscreen).toBe(false);
+  });
+
+  it('pauses the hidden video when the toggle exits fullscreen', () => {
+    const video = fakeVideo();
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    act(() => result.current.toggle());
+    expect(video.pause).toHaveBeenCalled();
   });
 
   it('falls through to pseudo when the video is not ready (readyState < metadata)', () => {

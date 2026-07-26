@@ -12,6 +12,7 @@ import { log } from '../lib/logger';
 import type { ConnectOptions } from './connection';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { DecodedAudioChunk } from './audio-decode';
+import type { ReleasedFrame } from './reorder-buffer';
 import { CLOSE_CODE_BROADCAST_ENDED, type DecoderConfigMessage } from './wire';
 import type { DecodedFrame } from '../media/decoder';
 import { RECONNECT_MAX_ATTEMPTS, reconnectDelayMs, type ReconnectInfo } from './reconnect';
@@ -54,6 +55,10 @@ export interface ViewerSessionCallbacks {
   // pipeline, and the new one's first packets need a re-anchored sink.
   onAudioChunk?: (chunk: DecodedAudioChunk) => void;
   onAudioReset?: () => void;
+  // R22 (docs/27 Decision 3): the encoded-frame fork for the fMP4 muxer,
+  // forwarded from every pipeline attempt so the mux stream continues across
+  // reconnects. Absent = no fork is ever installed (non-gated devices).
+  onReleasedFrame?: (frame: ReleasedFrame) => void;
 }
 
 // The subset of ViewerPipeline the session drives; injectable for tests.
@@ -168,6 +173,7 @@ export class ViewerSession {
       // timeline — reset the sink before its first packets land.
       ...(this.cb.onAudioChunk ? { onAudioChunk: (c) => this.cb.onAudioChunk?.(c) } : {}),
       ...(this.cb.onAudioReset ? { onAudioReset: () => this.cb.onAudioReset?.() } : {}),
+      ...(this.cb.onReleasedFrame ? { onReleasedFrame: (f) => this.cb.onReleasedFrame?.(f) } : {}),
     };
     this.cb.onAudioReset?.();
     return this.createPipeline(this.serverUrl, this.broadcastId, this.connectOpts, inner);

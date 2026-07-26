@@ -230,40 +230,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   viewer sat on the edge) and take the client's Copy-diagnostics in the same
   minute, before touching the tab.
 
-## iPhone native fullscreen enters but shows a black video
-
-- **Found**: 2026-07-16, first R16 U4 on-device pass (the predecessor bug —
-  the button being a *silent no-op* — was fixed by R16 U1–U3 the same day:
-  the tap now enters real native fullscreen).
-- **Impact**: iPhone viewers using the fullscreen button get the system
-  player over black instead of the stream; exiting returns to the working
-  inline viewer.
-- **Cause** (narrowed over two on-device passes — see the U4 findings
-  section of
-  [`docs/21-ios-video-fullscreen.md`](docs/21-ios-video-fullscreen.md)):
-  pass 1 shipped defenses for three WebKit candidates (tee-local PTS,
-  `preserveDrawingBuffer`, gesture-context `play()` + element diagnostics);
-  pass 2 showed frames flowing end-to-end (tee climbing, element playing
-  and presenting) yet still black — ruling the `VideoFrame`-from-WebGL-
-  canvas readback content the operative cause (black even with
-  `preserveDrawingBuffer`).
-- **Verdict (2026-07-19): native fullscreen is not viable on iPhone —
-  remove tier 2, ship pseudo-fullscreen.** The pre-registered clone-tee fix
-  landed 2026-07-16 (the tee writes **clones of the decoded frames it
-  presents** — `new VideoFrame(frame, { timestamp })`, no canvas readback
-  anywhere — plus an overlay "Content sample" peak-RGB row to separate black
-  frame content from a black native player). The **third on-device pass
-  (2026-07-19) was still black** with the clone tee: since the tee no longer
-  touches the WebGL canvas, the operative cause is the one the pre-registered
-  criteria name — the native `webkitEnterFullscreen` player cannot present a
-  locally generated `MediaStreamTrack` (`VideoTrackGenerator` output) on iOS
-  WebKit. **Remaining fix**: a code cleanup deleting the tier-2 tee /
-  generator / hidden-`<video>` path in the viewer so the black native player
-  is never reached (the gate/probe already fall back to pseudo-fullscreen);
-  until that lands, an iPhone that passes the tee probe still hits the black
-  native player. Worth an upstream WebKit report. Remove this entry when the
-  cleanup ships. See docs/21 "U4 findings" (third pass).
-
 ## Viewer "Streamer offline" card is misleading when the relay rejects the join
 
 - **Found**: 2026-07-16, introduced knowingly with the viewer error-copy
