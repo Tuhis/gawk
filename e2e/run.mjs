@@ -50,7 +50,7 @@
 // arrive, decode, and render, and that drops stay bounded.
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -1239,7 +1239,13 @@ async function main() {
       if (!existsSync(TELEMETRY_BIN)) {
         fail(`${TELEMETRY_BIN} not found — build it: (cd gawk-telemetry && go build -o ../e2e/bin/gawk-telemetry ./cmd/gawk-telemetry)`);
       }
+      // A fresh store per run. Sessions are permanent by design (rollups are
+      // never pruned), so a re-run against a dirty directory sees the previous
+      // run's sessions and fails its join assertion for a reason that has
+      // nothing to do with the product — and a test that fails confusingly is
+      // a test that gets ignored.
       const dataDir = join(OUT, 'telemetry-data');
+      rmSync(dataDir, { recursive: true, force: true });
       mkdirSync(dataDir, { recursive: true });
       launch('telemetry', TELEMETRY_BIN, [
         '-telemetry-key', TELEMETRY_KEY,

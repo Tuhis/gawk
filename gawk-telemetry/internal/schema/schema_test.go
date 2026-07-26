@@ -23,6 +23,24 @@ func TestReassemblerStatsAreFullyTyped(t *testing.T) {
 	}
 }
 
+// The audio fields R15's finding-13 fix added (#152) must be typed. They exist
+// to make `avSkewMs` believable — and `avSkewMs` over-reporting on long
+// sessions is the open question docs/33 §1.1 cites as R28's motivation — so
+// arriving as untyped unknowns would leave the one thing this store was built
+// to answer out of every numeric query.
+func TestFinding13AudioFieldsAreTyped(t *testing.T) {
+	for _, f := range []string{"avSkewMs", "avMaster", "avPlayheadAdvance"} {
+		if _, ok := ViewerFields[f]; !ok {
+			t.Errorf("viewer audio field %q is not typed", f)
+		}
+	}
+	for _, f := range []string{"audioEncodeLagMs", "audioAnchorReanchors"} {
+		if _, ok := BroadcasterFields[f]; !ok {
+			t.Errorf("broadcaster audio field %q is not typed", f)
+		}
+	}
+}
+
 // The funnel fields every diagnose() rule reads must be typed, or the rule
 // silently lands in "unavailable" instead of firing.
 func TestRuleInputFieldsAreTyped(t *testing.T) {

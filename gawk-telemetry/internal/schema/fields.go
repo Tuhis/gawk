@@ -88,15 +88,20 @@ var ViewerFields = map[string]Kind{
 	"viewerCount": KindNumber,
 
 	// R15 audio.
-	"audioState":               KindString,
-	"audioPacketsReceived":     KindNumber,
-	"audioPacketsDecoded":      KindNumber,
-	"audioBytesReceived":       KindNumber,
-	"audioCodec":               KindString,
-	"audioSampleRate":          KindNumber,
-	"audioChannels":            KindNumber,
-	"avSkewMs":                 KindNumber,
-	"avMaster":                 KindString,
+	"audioState":           KindString,
+	"audioPacketsReceived": KindNumber,
+	"audioPacketsDecoded":  KindNumber,
+	"audioBytesReceived":   KindNumber,
+	"audioCodec":           KindString,
+	"audioSampleRate":      KindNumber,
+	"audioChannels":        KindNumber,
+	"avSkewMs":             KindNumber,
+	"avMaster":             KindString,
+	// docs/20 finding 13 (#152): the ratio at which the audio playhead is
+	// actually advancing. Typed here because a *stalled* playhead is what made
+	// avSkewMs unbelievable — the very metric docs/33 §1.1 cites as R28's
+	// motivating open question — so it must be queryable, not an unknown.
+	"avPlayheadAdvance":        KindNumber,
 	"videoScheduleBaseEpochMs": KindNumber,
 	"audioBuffer":              KindObject,
 
@@ -145,17 +150,20 @@ var BroadcasterFields = map[string]Kind{
 	"viewerCount":     KindNumber,
 
 	// R15 audio lane.
-	"audioState":          KindString,
-	"audioEncodedPackets": KindNumber,
-	"audioPacketsSent":    KindNumber,
-	"audioBytesSent":      KindNumber,
-	"audioConfigsSent":    KindNumber,
-	"audioEncodedPerSec":  KindNumber,
-	"audioSentPerSec":     KindNumber,
-	"audioSampleRate":     KindNumber,
-	"audioChannels":       KindNumber,
-	"audioCodec":          KindString,
-	"audioBitrateBps":     KindNumber,
+	"audioState": KindString,
+	// docs/20 finding 13 (#152): send-side encode lag and anchor re-anchors.
+	"audioEncodeLagMs":     KindNumber,
+	"audioAnchorReanchors": KindNumber,
+	"audioEncodedPackets":  KindNumber,
+	"audioPacketsSent":     KindNumber,
+	"audioBytesSent":       KindNumber,
+	"audioConfigsSent":     KindNumber,
+	"audioEncodedPerSec":   KindNumber,
+	"audioSentPerSec":      KindNumber,
+	"audioSampleRate":      KindNumber,
+	"audioChannels":        KindNumber,
+	"audioCodec":           KindString,
+	"audioBitrateBps":      KindNumber,
 
 	// The native broadcaster (R14) marshals engine.Stats with Go's default
 	// capitalized field names. Typed here so one query covers both producers

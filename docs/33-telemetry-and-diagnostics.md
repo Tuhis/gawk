@@ -35,9 +35,16 @@ single pasted 10-second window cannot support:
   identified only once someone thought to look at concealment-vs-overflow
   together — a comparison the store should make automatic.
 - **docs/20 finding 12** (`avSkewMs` over-reports on long/stressed sessions)
-  is *still open*, and it is open for a structural reason: it manifests on
-  **long** sessions, and nobody has a long session's worth of samples. The
-  R15 verification plan asks for "short healthy sessions" as a workaround.
+  stayed open for two days for a structural reason: it manifests on **long**
+  sessions, and nobody had a long session's worth of samples — the R15
+  verification plan asked for "short healthy sessions" as a workaround, and
+  the one multi-hour capture that existed (`avSkewMs` = 18788 ms) could not be
+  reproduced on demand. *(Resolved 2026-07-26 by #152, after this design was
+  written, by driving the module with synthetic playhead traces instead of
+  waiting for another field capture. That does not weaken the argument — it
+  sharpens it: the fix took a second hand-shuttled capture, a confounded
+  accelerated retry, and finally a reconstruction from first principles,
+  which is exactly the cycle a 14-day window of real sessions replaces.)*
 - **docs/27 findings 1–5** were found across three on-device iPhone passes,
   each costing a full manual cycle, because the device is where the data was
   and the data did not survive the session.
