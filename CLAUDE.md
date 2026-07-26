@@ -502,6 +502,61 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   median gap ⇒ remove/confine — documented rejection is valid completion).
   Chunks **LI1–LI4**; LI3's hardware leg + LI4 sequenced after R15's
   pending re-verification, `avSkewMs` finding 12 being open),
+  `docs/33-telemetry-and-diagnostics.md` for R28 (advanced diagnostics &
+  telemetry: **designed 2026-07-26, not started**; pulls the trigger R9's
+  Non-goals set — "client→server metrics push… revisit if remote
+  troubleshooting of friends' sessions becomes routine". It became routine:
+  R15's twelve field findings, R19/R21/R22's cycles all ran on hand-shuttled
+  Copy-diagnostics blobs, and the ones still open need *history*
+  (`avSkewMs` finding 12 manifests on **long** sessions, which is why nobody
+  has the data). **Adds no measurement layer** — `ViewerStats` (~80 fields),
+  `BroadcastStats`, `engine.Stats`, `RegistryStats`/`subscriberDetails` and
+  `lib/diagnostics.ts` already exist; R28 is a pipe, a store and a query
+  surface. Owner-locked: an **optional `gawk-telemetry` service, files-first**
+  (hive-partitioned gzipped NDJSON on a PVC, chart-gated default off);
+  **14 days raw + permanent per-session rollups**; **four read surfaces** (MCP
+  with `diagnose()`, HTTP JSON, a built-in dashboard, and the Grafana
+  dashboard deferred since R9 M8); **always-on collection, zero PII**. The
+  load-bearing gap it closes: `/statusz` has `subscriberDetails[].key` and
+  **nothing ever tells the client its own key**, so relay-side and
+  client-side views of one viewer cannot be joined — TM1 mints a per-session
+  token delivered in-band as new wire type **0x0D `TypeTelemetryHello`**
+  (35 B: flags + reportInterval + 24-byte token + the **obfuscated**
+  broadcast key, so the client never learns an ID it shouldn't send), a
+  stateless HMAC on R17's resume-token pattern that lets the service verify
+  ingest with no lookup. Decisions worth not re-deriving: collection is
+  **out-of-band HTTPS on a same-origin path** of the existing frontend
+  Ingress — telemetry must outlive the transport it reports on, and
+  same-origin is what makes the `sendBeacon` unload flush work without a
+  preflight it can't perform; the **relay is scraped, never pushes** (no
+  outbound HTTP client or queue in the process carrying every broadcast's hot
+  path — sub-scrape-interval sessions get `relayCoverage: "none"` rather than
+  a silent gap, and the relay chart gains an optional *headless* companion
+  Service because a ClusterIP would load-balance the per-pod scrape);
+  **DuckDB is a query option, not a runtime dependency** (first-class
+  endpoints are plain Go over rollups, keeping the module cgo-free);
+  **relay numbers anchor, client numbers are testimony** (docs/20 finding 7's
+  lesson — a wedged client's own accounting is the least reliable evidence in
+  the system and is exactly what it sends — so evidence carries provenance
+  and client-only rules cap their confidence); **collection lives on the
+  main thread**, zero worker/pipeline/wire changes on the client beyond 0x0D;
+  and validation is **strict envelope, tolerant payload, typed rollup** (D15)
+  — the envelope is protocol and rejects, but the `stats` objects are data and
+  must never reject, because **version skew is permanent, not transient**: a
+  closed field list would make shipping a gawk-app with a new field reject
+  every batch from updated clients until the service redeploys, and an old
+  open tab forever, losing telemetry exactly during a deploy. Known fields are
+  typed (wrong type dropped + counted, never fatal — a string `"30"` must not
+  enter an fps series), unknown fields survive verbatim, `app.version` **is**
+  the schema version, structural bounds hold regardless of types, and the
+  coerced/dropped/unknown tally rides the rollup as `schemaAnomalies` so a
+  verdict computed over junk is visibly a verdict to distrust.
+  The item's point is `diagnose()`: **docs/13's bottleneck playbook as code**,
+  returning ranked verdicts + evidence, never raw samples — an MCP surface
+  that dumps 80-field series is *worse* than today's copy-paste, so a 32 KB
+  default-response ceiling is an acceptance criterion, not a habit. Chunks
+  **TM1–TM8**; TM6 decides whether the item succeeded, TM8 is the droppable
+  half),
   `docs/31-quick-start-links.md` for R26 (quick-start broadcast links:
   **designed 2026-07-25, not started**; frontend-only — zero server / wire /
   broadcaster-protocol change, and the cheapest item on the roadmap. A hash

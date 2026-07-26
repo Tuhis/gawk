@@ -46,6 +46,7 @@ feature set exists).
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
+| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed 2026-07-26 (owner-locked architecture/retention/read-surfaces/collection policy; wire 0x0D correlation ID, files-first `gawk-telemetry`, docs/13 playbook as `diagnose()`), not started (TM1–TM8) ([docs/33](docs/33-telemetry-and-diagnostics.md)) |
 
 ---
 
@@ -1918,6 +1919,168 @@ finding 12 still open — measure short healthy sessions).
 (timestamp-scheduled mechanism; variable-fps slew/dwell policy; A/V sync
 simplified to the fixed ≈16.7 ms audio delay; Decision 4 accepted);
 not started.
+
+---
+
+## R28 — Advanced diagnostics & telemetry
+
+**Goal**: every broadcast and every viewer session records what actually
+happened, automatically, into a store that answers three questions without a
+human copy-pasting anything: *how is this stream going right now*, *what was
+that specific viewer's experience*, and *how does this compare to the average*.
+The headline consumer is **Claude, not a dashboard** — "the stream stuttered
+last night, find out why" should start from data the machine can fetch and
+narrow itself.
+
+**Why now**: R9 named this and deferred it — "Client→server metrics push.
+Browser clients can't be scraped… The copy-diagnostics-JSON button covers the
+'get me that viewer's numbers' case. Deferred, not rejected — **revisit if
+remote troubleshooting of friends' sessions becomes routine**"
+([docs/13](docs/13-observability.md) Non-goals). It became routine. Every
+field-finding cycle in R15 (twelve findings), R19, R21 and R22 ran on
+hand-shuttled diagnostics blobs, and the ones that took longest — audio
+finding 8's overflow/concealment latch, finding 12's still-open `avSkewMs`
+over-report — are exactly the ones needing *history* and *comparison across
+sessions*, which a single pasted 10-second window structurally cannot give.
+
+**Why it's cheap-ish**: the measurement work is already done. `ViewerStats`
+(~80 fields), `BroadcastStats`, the native engine's `Stats`, the relay's
+`RegistryStats`/`subscriberDetails` and R9's Prometheus families all exist and
+are maintained; `lib/diagnostics.ts` already builds precisely the JSON blob
+this item wants to send. R28 adds a **pipe, a store, and a query surface** —
+not a measurement layer.
+
+### Decisions locked with the owner (2026-07-26)
+
+| Axis | Decision |
+|------|----------|
+| Architecture | A new **optional `gawk-telemetry` service**, **files-first**: gzipped NDJSON session artifacts on a PVC + DuckDB queried over them on demand. No relational schema, no migrations, no time-series DB to operate. Chart-gated, default off; a deployment that doesn't enable it is byte-identical to today |
+| Retention | **14 days full fidelity**, then pruned — plus a **permanent per-session rollup** (a small summary row: peak/median funnel rates, stall count and duration, drift/latency percentiles, delivery mode, verdict). Trends survive forever at a size that never needs thinking about |
+| Read surfaces | **All four**: an **MCP server with a `diagnose()` tool** (primary, machine-facing), a **plain HTTP JSON API**, a **minimal built-in web dashboard** served by `gawk-telemetry`, and the **Grafana dashboard deferred since R9 M8** |
+| Collection | **Always on for every viewer and broadcaster, zero PII** — no IP addresses stored, coarse browser/OS class instead of the full UA string, no cross-broadcast identity or fingerprinting. The R23 terms text is updated to say so plainly |
+
+### The load-bearing missing piece
+
+`/statusz` already carries `subscriberDetails[].key`, a per-session random
+handle for each subscriber — and **nothing ever tells the client its own key**.
+So the relay's view of a viewer and that viewer's own view of itself are two
+datasets that cannot be joined, which is precisely what "per-viewer experience"
+requires. R28's first chunk is a relay-minted **correlation ID delivered to the
+client** (new wire type — `0x0D` is the next free one; 0x0C is R21's
+`TypeDeliveryAck`, whose join-time delivery is the template). Everything else
+is downstream of that ID existing.
+
+### Scope sketch
+
+- **Collection is out-of-band HTTPS, not in-band WebTransport** — the expert
+  call, stated so it isn't relitigated: telemetry must **outlive the transport
+  it is reporting on**. The freeze cases are transport failures, and stats that
+  ride the failing session die exactly when they get interesting. Out-of-band
+  also allows `navigator.sendBeacon` on tab close/freeze and retry-with-backoff.
+  The ingest is a **path on the existing frontend Ingress host** (`nginx-int`,
+  cert-manager TLS already there) routed to the `gawk-telemetry` Service — no
+  new LoadBalancer, no new DNS record, no CORS.
+- **Batched and downsampled at the client**: the stats tick stays 500 ms for
+  the overlays; reporting is coarser (~2 s) and flushed every ~10 s, gzipped,
+  under a hard per-session byte budget. Arithmetic, because it is what justifies
+  files-first: a sample is ~1.5 KB of JSON, so ~750 B/s/viewer, and NDJSON of
+  near-identical records compresses ~10×. Ten viewers for two hours a day is
+  ~5 MB/day stored, ~75 MB for the full 14-day window. A PVC and a prune job
+  cover it; ClickHouse would be answering a question nobody asked.
+- **All three clients report**: browser viewer, browser broadcaster, and the
+  R14 native Linux broadcaster (a Go client — same envelope, same endpoint).
+- **The relay reports its own side**: per-broadcast and per-subscriber session
+  records emitted at close/GC (where the hub already folds counters), plus
+  periodic snapshots, keyed by the same correlation ID. In cluster mode the
+  serving pod owns the subscriber record; the origin owns the broadcast record.
+  Prometheus keeps its job (fleet health, live graphs); telemetry owns
+  per-session forensics.
+- **The docs/13 playbook becomes code.** That symptom→signature→verdict table
+  is already written and already correct; `diagnose(broadcast|session)` executes
+  it and returns the *discriminating signals plus ranked verdict candidates* —
+  not a raw dump. This is the difference between the AI use case working and it
+  being a slower copy-paste: an 80-field × 200-sample dump is context
+  incineration, a narrowed answer is a diagnosis.
+- **Client numbers are self-reported; relay numbers are the anchor.** A verdict
+  must never let a client's claim override a relay counter that contradicts it.
+  Not a security posture (the trust model is a known operator) — a correctness
+  one: a wedged viewer's self-report is the least reliable evidence in the
+  system, and it is exactly what a wedged viewer sends.
+- **Never on the media hot path.** Collection is idle-time work with a byte
+  budget; a failing or absent ingest endpoint is fire-and-forget and must be
+  invisible to playback. If telemetry can degrade a stream, the item has failed.
+
+### Key design questions (answered in [docs/33](docs/33-telemetry-and-diagnostics.md))
+
+- **Ingest hardening**: this is the system's first *unauthenticated inbound
+  write surface* (the relay only accepts media from token-holders). Body size
+  caps, per-IP rate limiting at the ingress (using IPs without storing them),
+  a per-session budget, and whether the relay-minted correlation ID doubles as
+  a weak ingest token — it is already unguessable and already scoped to a live
+  session.
+- **The rollup schema**: what a permanent per-session summary must contain to
+  answer "is p95 viewer experience better than a month ago" without the raw
+  window. Chosen once, kept forever — the one place a schema decision is
+  genuinely costly to revise.
+- **Artifact layout and GC**: partitioning (by day / broadcast / session), so
+  DuckDB can prune by path instead of scanning, and so the 14-day prune is a
+  directory delete.
+- **Whether MCP is a mode of `gawk-telemetry` or a separate binary**, and how
+  it authenticates from wherever Claude runs.
+- **Own dashboard vs Grafana division of labour** — both were asked for, so the
+  doc should say which question each answers rather than building the same view
+  twice.
+- **Terms wording** (R23): the current text's factual "no persistent media
+  recording" stays true — telemetry is metrics, not media — but silence about
+  metrics collection is not good enough for an always-on policy.
+
+### Non-goals
+
+- **No media recording**, and nothing that makes R23's statement untrue.
+- **No PII**: no IP storage, no full UA strings, no viewer identity across
+  broadcasts, no fingerprinting. Coarse browser/OS class is the ceiling.
+- **Not a Prometheus replacement.** Fleet health, live graphs and the M8
+  dashboard stay Prometheus's job; R28 is per-session forensics beside it.
+- **No OpenTelemetry / distributed tracing** — docs/13's stance stands.
+- **No alerting or paging rules** for a hobby stream.
+- **No hosted SaaS export.** Viewer telemetry stays in the homelab; that was
+  the whole point of self-hosting.
+- **No sampling or opt-in gating** — the owner chose always-on, and an opt-in
+  scheme reliably lacks data from the one viewer having the problem.
+
+### Named risks
+
+- **Context blowup** — the failure mode this item exists to prevent, reachable
+  by building it carelessly. If the MCP tools hand Claude raw samples, R28 is a
+  regression against copy-paste. `diagnose()` narrowing is a hard requirement,
+  not a nicety.
+- **A new public write endpoint** on a deployment that currently exposes only
+  UDP 4433 and static files.
+- **Storage growth** if the byte budget or prune job is wrong; the arithmetic
+  above is comfortable, an unbudgeted 60-viewer stress test is not.
+- **Verdicts that are confidently wrong.** The playbook was written for a human
+  reading it with judgement; as code it will be believed. Verdicts must carry
+  the signals they rest on, and rank candidates rather than assert one.
+
+Chunks **TM1–TM8** (two-letter prefix; A–Z claimed): TM1 correlation ID
+(wire + relay + client plumbing), TM2 client collectors (browser viewer +
+broadcaster, native engine, zero-PII envelope, R23 terms update), TM3
+`gawk-telemetry` service (ingest, validation, NDJSON writer, retention, chart —
+default off), TM4 relay-side session records incl. cluster-mode attribution,
+TM5 rollups + DuckDB query layer, TM6 HTTP JSON read API + the `diagnose()`
+engine (docs/13 playbook as code), TM7 MCP server, TM8 human surfaces (built-in
+dashboard + the deferred R9 M8 Grafana dashboard). TM1→TM3 are the dependency
+spine; TM6 is the one that decides whether the item succeeded — if schedule
+pressure appears, TM8 is the droppable half, never TM6.
+
+**Status**: designed 2026-07-26 —
+[docs/33](docs/33-telemetry-and-diagnostics.md); not started. The design doc
+refines two things sketched above: **DuckDB is a query option, not a runtime
+dependency** (all first-class endpoints are plain Go over rollups + session
+files, which keeps the service cgo-free — docs/33 D11), and **the relay is
+scraped rather than pushing** (no outbound HTTP client, no telemetry queue in
+the process that carries every broadcast's hot path — D5, with the
+sub-scrape-interval blindness recorded as an accepted cost).
 
 ---
 
