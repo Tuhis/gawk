@@ -46,6 +46,32 @@ const (
 	// The asymmetry is deliberate for an ops view: problems should appear
 	// promptly and must not vanish before the human finishes looking at them.
 	ClearDwell = 15 * time.Second
+	// EndedAfterMissedRounds is how many CONSECUTIVE complete scrape rounds may
+	// omit a broadcast before it is declared ended. Absence from a complete
+	// round is the relay's own statement that the hub is gone — a broadcaster
+	// merely away keeps its hub, and its /statusz entry, through the whole R1
+	// grace. Two rounds rather than one only because a broadcast created
+	// between a pod's answer and the next round's start should cost a scrape
+	// interval of latency, not a wrong verdict.
+	EndedAfterMissedRounds = 2
+	// EndedAfterQuiet ends a broadcast that nothing has said anything about
+	// from EITHER side. It is the backstop, not the mechanism: it covers a
+	// client-only deployment (no relay configured, so no round ever arrives to
+	// declare an absence) and a fleet whose scraping has broken entirely.
+	// Deliberately far longer than any freshness bound, and matched to the
+	// relay's own 5-minute GC grace so it can never fire on a broadcast the
+	// relay is still holding open.
+	EndedAfterQuiet = 5 * time.Minute
+	// SessionQuietAfter evicts a row neither side has mentioned. Matched to the
+	// writer's default idle timeout, so a viewer's row leaves the live page at
+	// about the moment its permanent rollup is written. A session that reported
+	// and then stopped is removed by EndSession long before this; this is what
+	// removes the ones that never reported at all, which no finalize covers.
+	SessionQuietAfter = 2 * time.Minute
+	// sweepEvery bounds how often the maintenance pass runs. It is cheap (a
+	// walk of the fleet, no I/O) but ObserveClient runs per batch, and on a
+	// thousand-viewer fleet that is a hundred calls a second.
+	sweepEvery = 5 * time.Second
 )
 
 // SessionView is one row in the broadcast detail table — a broadcaster or a
@@ -121,19 +147,35 @@ type broadcastState struct {
 	key        string
 	firstSeen  time.Time
 	lastSeen   time.Time
+	lastRelay  time.Time
 	pod        string
 	role       string
 	relayFacts map[string]float64
 	sessions   map[string]*sessionState
+	// missedRounds counts CONSECUTIVE complete scrape rounds that did not
+	// mention this broadcast. Only meaningful once the relay has seen it at
+	// all: a broadcast the relay has never observed (client-only, or shorter
+	// than one scrape interval) is not absent from a round — it was never in
+	// one, and its absence proves nothing.
+	missedRounds int
+}
+
+// endedEntry keeps the end INSTANT beside the stored view. The view carries
+// only an age, which has to be recomputed per snapshot; storing the age would
+// make the row's own retention arithmetic drift with every render.
+type endedEntry struct {
+	view BroadcastView
+	at   time.Time
 }
 
 // Projection holds the fleet's current state.
 type Projection struct {
-	mu     sync.Mutex
-	now    func() time.Time
-	bcasts map[string]*broadcastState
-	ended  []BroadcastView
-	rs     []rules.Rule
+	mu        sync.Mutex
+	now       func() time.Time
+	bcasts    map[string]*broadcastState
+	ended     []endedEntry
+	rs        []rules.Rule
+	lastSweep time.Time
 }
 
 // New builds an empty projection.
@@ -167,6 +209,7 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 	}
 	s.lastClient = now
 	b.lastSeen = now
+	defer p.sweepLocked(now)
 
 	// The LAST sample in the batch is "now" for this session.
 	if n := len(a.Samples); n > 0 {
@@ -196,14 +239,18 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 }
 
 // ObserveRelay folds a scrape round into the projection.
-func (p *Projection) ObserveRelay(obs []relayscrape.Observation) {
+func (p *Projection) ObserveRelay(r relayscrape.Round) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
+	seen := make(map[string]bool, len(r.Observations))
 
-	for _, o := range obs {
+	for _, o := range r.Observations {
+		seen[o.BroadcastKey] = true
 		b := p.broadcast(o.BroadcastKey, now)
 		b.lastSeen = now
+		b.lastRelay = now
+		b.missedRounds = 0
 		if o.Pod != "" {
 			b.pod = o.Pod
 		}
@@ -290,6 +337,80 @@ func (p *Projection) ObserveRelay(obs []relayscrape.Observation) {
 			s.relayFacts["publisherActive"] = b.relayFacts["publisherActive"]
 		}
 	}
+
+	// A broadcast the relay has stopped listing has ENDED — but only a round
+	// in which every pod answered is allowed to say so (see relayscrape.Round).
+	if r.Complete {
+		for key, b := range p.bcasts {
+			if seen[key] || b.lastRelay.IsZero() {
+				continue
+			}
+			b.missedRounds++
+			if b.missedRounds >= EndedAfterMissedRounds {
+				p.endBroadcastLocked(b, now)
+			}
+		}
+	}
+	p.sweepLocked(now)
+}
+
+// sweepLocked is the maintenance pass: it ends broadcasts nothing has
+// mentioned, evicts sessions neither side has mentioned, and expires the
+// history group. Without it every viewer that ever connected stays a row
+// forever — a leak, and worse, a dashboard that buries anything actually wrong
+// under a wall of dead rows.
+//
+// It runs from every entry point rather than from a goroutine of its own: the
+// projection's lock is already held on each of those paths, and a background
+// ticker would be a second reason for this state to move.
+func (p *Projection) sweepLocked(now time.Time) {
+	if now.Sub(p.lastSweep) < sweepEvery {
+		return
+	}
+	p.lastSweep = now
+
+	for _, b := range p.bcasts {
+		for id, s := range b.sessions {
+			last := s.lastClient
+			if s.lastRelay.After(last) {
+				last = s.lastRelay
+			}
+			if !last.IsZero() && now.Sub(last) > SessionQuietAfter {
+				delete(b.sessions, id)
+			}
+		}
+		if now.Sub(b.lastSeen) > EndedAfterQuiet {
+			p.endBroadcastLocked(b, now)
+		}
+	}
+
+	keep := p.ended[:0]
+	for _, e := range p.ended {
+		if now.Sub(e.at) <= EndedRetention {
+			keep = append(keep, e)
+		}
+	}
+	p.ended = keep
+}
+
+// endBroadcastLocked renders the broadcast one last time, files it under the
+// recessed history group with that FINAL verdict, and evicts it. Rendering
+// through the same path a live row uses is deliberate: an ended card that
+// disagreed with the last live card an operator saw would be worse than no
+// card at all.
+func (p *Projection) endBroadcastLocked(b *broadcastState, now time.Time) {
+	v := p.renderBroadcastLocked(b, now)
+	v.Lifecycle = "ended"
+	p.appendEndedLocked(v, now)
+	delete(p.bcasts, b.key)
+}
+
+func (p *Projection) appendEndedLocked(v BroadcastView, at time.Time) {
+	v.Lifecycle = "ended"
+	p.ended = append([]endedEntry{{view: v, at: at}}, p.ended...)
+	if len(p.ended) > MaxRecentEnded {
+		p.ended = p.ended[:MaxRecentEnded]
+	}
 }
 
 func (p *Projection) broadcast(key string, now time.Time) *broadcastState {
@@ -304,7 +425,10 @@ func (p *Projection) broadcast(key string, now time.Time) *broadcastState {
 	return b
 }
 
-// EndSession removes a finished session from the live view.
+// EndSession removes a finished session from the live view. Called from the
+// writer's finalize path — the ONE place that knows a session is over, and the
+// same place that writes its permanent row, so the live view and the artifact
+// agree about when it ended.
 func (p *Projection) EndSession(broadcastKey, sessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -319,11 +443,7 @@ func (p *Projection) EndSession(broadcastKey, sessionID string) {
 func (p *Projection) NoteEnded(v BroadcastView) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	v.Lifecycle = "ended"
-	p.ended = append([]BroadcastView{v}, p.ended...)
-	if len(p.ended) > MaxRecentEnded {
-		p.ended = p.ended[:MaxRecentEnded]
-	}
+	p.appendEndedLocked(v, p.now())
 }
 
 // Snapshot renders the current fleet, evaluating the SAME rules diagnose()
@@ -333,65 +453,11 @@ func (p *Projection) Snapshot() Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
+	p.sweepLocked(now)
 	out := Snapshot{AtMs: now.UnixMilli()}
 
 	for _, b := range p.bcasts {
-		bv := BroadcastView{
-			BroadcastKey: b.key,
-			Pod:          b.pod,
-			Role:         b.role,
-			UptimeMs:     now.Sub(b.firstSeen).Milliseconds(),
-			Metrics:      copyF(b.relayFacts),
-		}
-		// Lifecycle is carried SEPARATELY from severity: a broadcaster in the
-		// R1 grace period is `away`, which is not a fault.
-		switch {
-		case b.relayFacts["publisherActive"] == 1:
-			bv.Lifecycle = "live"
-		case now.Sub(b.lastSeen) < RelayStaleAfter:
-			bv.Lifecycle = "away"
-		default:
-			bv.Lifecycle = "away"
-		}
-
-		bf := rules.NewFacts(b.key, "broadcast", "")
-		for k, v := range b.relayFacts {
-			bf.SetRelay(k, v)
-		}
-		rep := rules.Evaluate(bf, p.rs)
-		bv.Severity = rep.Severity()
-		bv.Findings = rep.Findings
-
-		worst := rules.SeverityOK
-		haveViewer := false
-		for _, s := range b.sessions {
-			sv := p.renderSession(s, now)
-			bv.Sessions = append(bv.Sessions, sv)
-			if sv.Role == "viewer" {
-				haveViewer = true
-				bv.Viewers++
-				if sv.Severity.Rank() > worst.Rank() {
-					worst = sv.Severity
-				}
-			}
-		}
-		if !haveViewer {
-			worst = rules.SeverityUnknown
-		}
-		bv.WorstViewer = worst
-		// The broadcaster is pinned first: it is the same kind of row, but it
-		// is the one whose problems explain everyone else's.
-		sort.SliceStable(bv.Sessions, func(i, j int) bool {
-			a, c := bv.Sessions[i], bv.Sessions[j]
-			if (a.Role == "broadcaster") != (c.Role == "broadcaster") {
-				return a.Role == "broadcaster"
-			}
-			if a.Severity.Rank() != c.Severity.Rank() {
-				return a.Severity.Rank() > c.Severity.Rank()
-			}
-			return a.SessionID < c.SessionID
-		})
-		out.Live = append(out.Live, bv)
+		out.Live = append(out.Live, p.renderBroadcastLocked(b, now))
 	}
 
 	// Severity, NOT recency, sorts the live group: problems float to the top
@@ -406,14 +472,73 @@ func (p *Projection) Snapshot() Snapshot {
 		return a.BroadcastKey < b.BroadcastKey
 	})
 
-	cutoff := now.Add(-EndedRetention).UnixMilli()
 	for _, e := range p.ended {
-		if e.EndedAgoMs > 0 && now.UnixMilli()-e.EndedAgoMs < cutoff {
-			continue
-		}
-		out.Ended = append(out.Ended, e)
+		v := e.view
+		v.EndedAgoMs = now.Sub(e.at).Milliseconds()
+		out.Ended = append(out.Ended, v)
 	}
 	return out
+}
+
+// renderBroadcastLocked builds one card. Shared by the live group and by the
+// end path, so an ended broadcast's stored card is the same computation an
+// operator was looking at a second earlier.
+func (p *Projection) renderBroadcastLocked(b *broadcastState, now time.Time) BroadcastView {
+	bv := BroadcastView{
+		BroadcastKey: b.key,
+		Pod:          b.pod,
+		Role:         b.role,
+		UptimeMs:     now.Sub(b.firstSeen).Milliseconds(),
+		Metrics:      copyF(b.relayFacts),
+	}
+	// Lifecycle is carried SEPARATELY from severity: a broadcaster in the R1
+	// grace period is `away`, which is not a fault. `ended` is not decided
+	// here — absence from a complete scrape round decides it, and this render
+	// is what that decision stores.
+	if b.relayFacts["publisherActive"] == 1 {
+		bv.Lifecycle = "live"
+	} else {
+		bv.Lifecycle = "away"
+	}
+
+	bf := rules.NewFacts(b.key, "broadcast", "")
+	for k, v := range b.relayFacts {
+		bf.SetRelay(k, v)
+	}
+	rep := rules.Evaluate(bf, p.rs)
+	bv.Severity = rep.Severity()
+	bv.Findings = rep.Findings
+
+	worst := rules.SeverityOK
+	haveViewer := false
+	for _, s := range b.sessions {
+		sv := p.renderSession(s, now)
+		bv.Sessions = append(bv.Sessions, sv)
+		if sv.Role == "viewer" {
+			haveViewer = true
+			bv.Viewers++
+			if sv.Severity.Rank() > worst.Rank() {
+				worst = sv.Severity
+			}
+		}
+	}
+	if !haveViewer {
+		worst = rules.SeverityUnknown
+	}
+	bv.WorstViewer = worst
+	// The broadcaster is pinned first: it is the same kind of row, but it is
+	// the one whose problems explain everyone else's.
+	sort.SliceStable(bv.Sessions, func(i, j int) bool {
+		a, c := bv.Sessions[i], bv.Sessions[j]
+		if (a.Role == "broadcaster") != (c.Role == "broadcaster") {
+			return a.Role == "broadcaster"
+		}
+		if a.Severity.Rank() != c.Severity.Rank() {
+			return a.Severity.Rank() > c.Severity.Rank()
+		}
+		return a.SessionID < c.SessionID
+	})
+	return bv
 }
 
 func (p *Projection) renderSession(s *sessionState, now time.Time) SessionView {

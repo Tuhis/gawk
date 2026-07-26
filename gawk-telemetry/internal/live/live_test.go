@@ -35,7 +35,19 @@ func healthyViewer() map[string]any {
 	}
 }
 
-func relayRound(subs ...relayscrape.Subscriber) []relayscrape.Observation {
+// round wraps observations as one COMPLETE scrape pass — every configured pod
+// answered. That is the shape the lifecycle rules are allowed to draw
+// conclusions from, so it is the default in tests; a partial round is spelled
+// out explicitly where it is the point.
+func round(obs []relayscrape.Observation) relayscrape.Round {
+	return relayscrape.Round{Observations: obs, Complete: true, Pods: 1, PodsAnswered: 1}
+}
+
+func relayRound(subs ...relayscrape.Subscriber) relayscrape.Round {
+	return round(relayObs(subs...))
+}
+
+func relayObs(subs ...relayscrape.Subscriber) []relayscrape.Observation {
 	bc := relayscrape.Broadcast{
 		PublisherActive: true, Role: "origin", Subscribers: len(subs),
 		FramesRelayed: 10000, SubscriberDetails: subs,
@@ -135,7 +147,11 @@ func TestSeverityOrdersTheLiveGroup(t *testing.T) {
 	c := &clock{t: time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)}
 	p := New(c.now)
 
-	// Three broadcasts: healthy, warn, bad.
+	// Three broadcasts: healthy, warn, bad. They are folded into ONE round,
+	// which is the production shape — a scrape pass lists every broadcast the
+	// fleet is carrying, and a broadcast missing from a complete round is a
+	// broadcast that has ended.
+	var obs []relayscrape.Observation
 	mk := func(key, session string, stats map[string]any, sub relayscrape.Subscriber) {
 		a := batch(session, "viewer", stats)
 		a.BroadcastKey = key
@@ -144,10 +160,10 @@ func TestSeverityOrdersTheLiveGroup(t *testing.T) {
 			PublisherActive: true, Role: "origin", Subscribers: 1,
 			FramesRelayed: 10000, SubscriberDetails: []relayscrape.Subscriber{sub},
 		}
-		p.ObserveRelay([]relayscrape.Observation{
-			{Kind: "broadcast", Pod: "pod-a", BroadcastKey: key, Broadcast: &bc},
-			{Kind: "subscriber", Pod: "pod-a", BroadcastKey: key, SessionID: session, Subscriber: &sub},
-		})
+		obs = append(obs,
+			relayscrape.Observation{Kind: "broadcast", Pod: "pod-a", BroadcastKey: key, Broadcast: &bc},
+			relayscrape.Observation{Kind: "subscriber", Pod: "pod-a", BroadcastKey: key, SessionID: session, Subscriber: &sub},
+		)
 	}
 	mk("111111111111", "111111111111111111111111", healthyViewer(), relayscrape.Subscriber{SessionID: "111111111111111111111111"})
 	warn := healthyViewer()
@@ -156,6 +172,7 @@ func TestSeverityOrdersTheLiveGroup(t *testing.T) {
 	bad := healthyViewer()
 	mk("333333333333", "333333333333333333333333", bad,
 		relayscrape.Subscriber{SessionID: "333333333333333333333333", CarrierQueueOverflow: 20})
+	p.ObserveRelay(round(obs))
 
 	// Hysteresis: escalation takes two consecutive evaluations, so a single
 	// blip cannot light the page up.
@@ -372,5 +389,126 @@ func TestEndSessionRemovesItFromTheView(t *testing.T) {
 	p.EndSession("1a2b3c4d5e6f", "1a1a1a1a1a1a1a1a1a1a1a1a")
 	if findSession(p.Snapshot(), "1a1a1a1a1a1a1a1a1a1a1a1a") != nil {
 		t.Error("session still live after EndSession")
+	}
+}
+
+// --- lifecycle (review finding 1) -----------------------------------------
+//
+// Before this, `EndSession`/`NoteEnded` had no production caller at all: the
+// Ended group could never appear, and nothing ever left `bcasts`/`sessions`.
+// The tests below drive the lifecycle the way production does — through scrape
+// rounds and the clock — rather than by calling the end methods directly,
+// which is precisely why the defect survived the original suite.
+
+func TestABroadcastEndsWhenCompleteRoundsStopListingIt(t *testing.T) {
+	p, c := newProj()
+	p.ObserveClient(batch("1b1b1b1b1b1b1b1b1b1b1b1b", "viewer", healthyViewer()), "Chrome 152", "Windows", "0.33.2")
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: "1b1b1b1b1b1b1b1b1b1b1b1b"}))
+	if len(p.Snapshot().Live) != 1 {
+		t.Fatal("broadcast missing while it is being scraped")
+	}
+
+	// The hub is gone from /statusz — the relay's own statement that the
+	// broadcast is over. One omission is tolerated; the second is the verdict.
+	c.add(5 * time.Second)
+	p.ObserveRelay(round(nil))
+	if len(p.Snapshot().Live) != 1 {
+		t.Fatal("a single missed round ended the broadcast; it must take EndedAfterMissedRounds")
+	}
+	c.add(5 * time.Second)
+	p.ObserveRelay(round(nil))
+
+	c.add(2 * time.Second)
+	snap := p.Snapshot()
+	if len(snap.Live) != 0 {
+		t.Errorf("live broadcasts = %d, want 0 after the relay stopped listing it", len(snap.Live))
+	}
+	if len(snap.Ended) != 1 {
+		t.Fatalf("ended broadcasts = %d, want 1 — the recessed group can never appear otherwise", len(snap.Ended))
+	}
+	if snap.Ended[0].Lifecycle != "ended" {
+		t.Errorf("ended lifecycle = %q", snap.Ended[0].Lifecycle)
+	}
+	// The age is measured from the end INSTANT, so it grows with the clock
+	// rather than being frozen at whatever the ending render happened to see.
+	if snap.Ended[0].EndedAgoMs != 2000 {
+		t.Errorf("EndedAgoMs = %d, want 2000; an ended row that cannot say when it ended cannot be aged out either",
+			snap.Ended[0].EndedAgoMs)
+	}
+	// The leak half of the finding: the projection must actually shrink.
+	if len(p.bcasts) != 0 {
+		t.Errorf("bcasts still holds %d entries after the broadcast ended", len(p.bcasts))
+	}
+}
+
+func TestAPartialRoundNeverEndsABroadcast(t *testing.T) {
+	p, c := newProj()
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: "2b2b2b2b2b2b2b2b2b2b2b2b"}))
+
+	// A pod timing out mid-rollout: the fleet's answer is incomplete, so an
+	// absence proves nothing. Ten of these must change nothing at all.
+	for range 10 {
+		c.add(5 * time.Second)
+		p.ObserveRelay(relayscrape.Round{Complete: false, Pods: 2, PodsAnswered: 1})
+	}
+	if len(p.Snapshot().Live) != 1 {
+		t.Error("an incomplete scrape round ended a broadcast; one dead pod would sweep the whole dashboard")
+	}
+}
+
+func TestAClientOnlyBroadcastSurvivesRoundsAndEndsOnQuiet(t *testing.T) {
+	p, c := newProj()
+	// No relay configured (or a session shorter than a scrape interval): the
+	// relay never observed this broadcast, so its absence from a round is not
+	// evidence of anything.
+	p.ObserveClient(batch("3b3b3b3b3b3b3b3b3b3b3b3b", "viewer", healthyViewer()), "Chrome 152", "Windows", "0.33.2")
+	for range 5 {
+		c.add(5 * time.Second)
+		p.ObserveRelay(round(nil))
+		p.ObserveClient(batch("3b3b3b3b3b3b3b3b3b3b3b3b", "viewer", healthyViewer()), "Chrome 152", "Windows", "0.33.2")
+	}
+	if len(p.Snapshot().Live) != 1 {
+		t.Fatal("a reporting client-only broadcast was ended by rounds that never covered it")
+	}
+
+	// It goes quiet on both sides: the backstop, not the mechanism.
+	c.add(EndedAfterQuiet + time.Second)
+	snap := p.Snapshot()
+	if len(snap.Live) != 0 || len(snap.Ended) != 1 {
+		t.Errorf("live = %d, ended = %d; a broadcast nothing has said anything about must not live forever",
+			len(snap.Live), len(snap.Ended))
+	}
+}
+
+func TestAQuietSessionIsEvictedFromItsBroadcast(t *testing.T) {
+	p, c := newProj()
+	// A viewer the relay saw but which never reported: it must render as
+	// `unknown` while it is there, and it must not be there forever.
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: "4b4b4b4b4b4b4b4b4b4b4b4b"}))
+	if findSession(p.Snapshot(), "4b4b4b4b4b4b4b4b4b4b4b4b") == nil {
+		t.Fatal("session missing while the relay still saw it")
+	}
+	// The relay stops listing that subscriber, but the broadcast lives on.
+	for range 40 {
+		c.add(5 * time.Second)
+		p.ObserveRelay(relayRound())
+	}
+	if len(p.Snapshot().Live) != 1 {
+		t.Fatal("the broadcast itself was ended; only the session should have been")
+	}
+	if findSession(p.Snapshot(), "4b4b4b4b4b4b4b4b4b4b4b4b") != nil {
+		t.Error("a session neither side has mentioned for minutes is still a row")
+	}
+}
+
+func TestEndedRowsAgeOut(t *testing.T) {
+	p, c := newProj()
+	p.NoteEnded(BroadcastView{BroadcastKey: "5b5b5b5b5b5b"})
+	if len(p.Snapshot().Ended) != 1 {
+		t.Fatal("ended row missing immediately after it ended")
+	}
+	c.add(EndedRetention + time.Minute)
+	if n := len(p.Snapshot().Ended); n != 0 {
+		t.Errorf("ended rows = %d after the retention window; the group must not grow forever", n)
 	}
 }

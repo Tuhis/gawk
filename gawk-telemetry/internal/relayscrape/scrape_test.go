@@ -15,6 +15,7 @@ type fakeSink struct {
 	mu       sync.Mutex
 	byPod    map[string][][]byte
 	observed []Observation
+	rounds   []Round
 }
 
 func newFakeSink() *fakeSink { return &fakeSink{byPod: map[string][][]byte{}} }
@@ -26,10 +27,11 @@ func (f *fakeSink) StoreRelay(_ string, pod string, lines [][]byte) error {
 	return nil
 }
 
-func (f *fakeSink) ObserveRelay(obs []Observation) {
+func (f *fakeSink) ObserveRelay(r Round) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.observed = append(f.observed, obs...)
+	f.observed = append(f.observed, r.Observations...)
+	f.rounds = append(f.rounds, r)
 }
 
 func (f *fakeSink) records(t *testing.T) []Observation {
@@ -308,5 +310,42 @@ func TestPodNameIsFilenameSafe(t *testing.T) {
 		if got := podName(addr); got != want {
 			t.Errorf("podName(%q) = %q, want %q", addr, got, want)
 		}
+	}
+}
+
+// A round's `Complete` flag is what licenses the live projection to read a
+// broadcast's ABSENCE as its ending, so the accounting behind it has to be
+// exact in both directions: a pod that answered with no broadcasts at all
+// still answered (its empty answer IS the evidence that its broadcasts are
+// over), and a pod that failed makes the whole round unusable for that
+// inference.
+func TestRoundCompletenessDistinguishesEmptyFromAbsent(t *testing.T) {
+	empty := podServing(t, `{"totals":{},"broadcasts":{}}`)
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(dead.Close)
+
+	quiet := newFakeSink()
+	s, err := New(Options{Resolve: StaticResolver([]string{addrOf(empty)}), Sink: quiet})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	s.ScrapeOnce(t.Context())
+	if len(quiet.rounds) != 1 {
+		t.Fatalf("rounds = %d, want 1", len(quiet.rounds))
+	}
+	if r := quiet.rounds[0]; !r.Complete || r.PodsAnswered != 1 {
+		t.Errorf("a pod carrying no broadcasts read as unanswered: %+v — the fleet's quietest moment would be its least trustworthy", r)
+	}
+
+	partial := newFakeSink()
+	s2, err := New(Options{Resolve: StaticResolver([]string{addrOf(empty), addrOf(dead)}), Sink: partial})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	s2.ScrapeOnce(t.Context())
+	if r := partial.rounds[0]; r.Complete || r.PodsAnswered != 1 || r.Pods != 2 {
+		t.Errorf("a round with a dead pod claimed to be complete: %+v", r)
 	}
 }

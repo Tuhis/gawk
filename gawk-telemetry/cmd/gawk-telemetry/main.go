@@ -82,28 +82,7 @@ func run() error {
 		return err
 	}
 
-	writer := sessions.NewWriter(sessions.Options{
-		Store:       st,
-		Log:         log,
-		IdleTimeout: cfg.sessionIdle,
-		// The stored verdict and a later diagnose() of the same session come
-		// out of ONE code path, so "has this got better since the R15 fix?"
-		// compares like with like.
-		Finalize: sessions.RollupFinalizer(st, log, func(row *rollup.Row, in rollup.Input) json.RawMessage {
-			relayLines, _ := st.ReadRelay(time.UnixMilli(in.EndedAtMs).UTC().Format(store.DateLayout))
-			// TM4's join, then TM6's verdict over the joined row.
-			readapi.JoinRelay(row, relayLines, cfg.scrapeInterval)
-			rep := api.DiagnoseRow(*row, in, relayLines)
-			b, err := json.Marshal(rep)
-			if err != nil {
-				return nil
-			}
-			return b
-		}, nil),
-		Observe: func(l sessions.Live, a ingest.Accepted) {
-			projection.ObserveClient(a, l.App.Browser, l.App.OS, l.App.Version)
-		},
-	})
+	writer := newWriter(st, log, cfg, api, projection)
 
 	handler, err := ingest.New(ingest.Options{
 		Key: cfg.key, Sink: writer, Log: log,
@@ -269,6 +248,45 @@ func sweepInterval(idle time.Duration) time.Duration {
 	return d
 }
 
+// newWriter builds the session writer with its two hooks into the rest of the
+// service. It is a named function, not an inline literal in run(), so the
+// wiring itself is reachable from a test: review finding 1 was a hook with no
+// production caller, and the projection's own lifecycle tests could not have
+// caught it while the only thing connecting the two lived inside run().
+func newWriter(st *store.Store, log *slog.Logger, cfg config, api *readapi.API, projection *live.Projection) *sessions.Writer {
+	// The stored verdict and a later diagnose() of the same session come out of
+	// ONE code path, so "has this got better since the R15 fix?" compares like
+	// with like.
+	rollupRow := sessions.RollupFinalizer(st, log, func(row *rollup.Row, in rollup.Input) json.RawMessage {
+		relayLines, _ := st.ReadRelay(time.UnixMilli(in.EndedAtMs).UTC().Format(store.DateLayout))
+		// TM4's join, then TM6's verdict over the joined row.
+		readapi.JoinRelay(row, relayLines, cfg.scrapeInterval)
+		rep := api.DiagnoseRow(*row, in, relayLines)
+		b, err := json.Marshal(rep)
+		if err != nil {
+			return nil
+		}
+		return b
+	}, nil)
+
+	return sessions.NewWriter(sessions.Options{
+		Store:       st,
+		Log:         log,
+		IdleTimeout: cfg.sessionIdle,
+		Finalize: func(l sessions.Live, lines [][]byte) {
+			rollupRow(l, lines)
+			// The live view drops the row in the same breath that writes the
+			// permanent one. Every end converges here — a `final` batch, the
+			// idle sweep, and shutdown — so no ending leaves a row behind,
+			// which is what made the dashboard grow without bound.
+			projection.EndSession(l.Ref.BroadcastKey, l.Ref.SessionID)
+		},
+		Observe: func(l sessions.Live, a ingest.Accepted) {
+			projection.ObserveClient(a, l.App.Browser, l.App.OS, l.App.Version)
+		},
+	})
+}
+
 // scrapeSink stores relay observations and refreshes the live projection.
 type scrapeSink struct {
 	store      *store.Store
@@ -279,8 +297,8 @@ func (s *scrapeSink) StoreRelay(date, pod string, lines [][]byte) error {
 	return s.store.AppendRelay(date, pod, lines)
 }
 
-func (s *scrapeSink) ObserveRelay(obs []relayscrape.Observation) {
-	s.projection.ObserveRelay(obs)
+func (s *scrapeSink) ObserveRelay(r relayscrape.Round) {
+	s.projection.ObserveRelay(r)
 }
 
 // basicAuth is the optional gate for operators who route the read listener

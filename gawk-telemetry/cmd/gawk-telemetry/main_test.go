@@ -1,11 +1,17 @@
 package main
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/readapi"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/store"
 )
 
 func noEnv(string) string { return "" }
@@ -212,4 +218,55 @@ func TestIngestRoutesAcceptPreflights(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The wiring finding (review finding 1). `Projection.EndSession` existed, was
+// unit-tested, and had no production caller: a viewer's row stayed on the
+// dashboard forever after its session ended. The point of this test is that it
+// goes through the REAL writer construction — the seam the projection's own
+// tests could not reach, and the reason a green suite shipped a dead hook.
+func TestFinalizingASessionRemovesItFromTheLiveView(t *testing.T) {
+	st, err := store.New(store.Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	projection := live.New(nil)
+	api, err := readapi.New(readapi.Options{Store: st, Live: projection})
+	if err != nil {
+		t.Fatalf("readapi: %v", err)
+	}
+	cfg := config{sessionIdle: time.Minute, scrapeInterval: 5 * time.Second}
+	w := newWriter(st, slog.New(slog.DiscardHandler), cfg, api, projection)
+
+	accepted := ingest.Accepted{
+		SessionID: "1c1c1c1c1c1c1c1c1c1c1c1c", BroadcastKey: "1a2b3c4d5e6f", Role: "viewer",
+		App:     ingest.AppInfo{Version: "0.33.2", Surface: "viewer", Browser: "Chrome 152", OS: "Windows"},
+		Samples: []ingest.Sample{{TMs: 0, Stats: map[string]any{"receivedFps": 60.0}}},
+	}
+	if err := w.Accept(accepted); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if n := countSessions(projection.Snapshot()); n != 1 {
+		t.Fatalf("live sessions after one batch = %d, want 1", n)
+	}
+
+	// The clean end: a `final` batch. The idle sweep and shutdown converge on
+	// the same finalize, so covering one covers the shape of all three.
+	accepted.Seq, accepted.Final = 1, true
+	if err := w.Accept(accepted); err != nil {
+		t.Fatalf("final accept: %v", err)
+	}
+	if n := countSessions(projection.Snapshot()); n != 0 {
+		t.Errorf("live sessions after finalize = %d; the row outlives the session it describes", n)
+	}
+}
+
+func countSessions(snap live.Snapshot) int {
+	n := 0
+	for _, b := range snap.Live {
+		n += len(b.Sessions)
+	}
+	return n
 }

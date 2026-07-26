@@ -123,12 +123,31 @@ type Observation struct {
 	Extra      json.RawMessage `json:"-"`
 }
 
+// Round is one scrape pass over the whole fleet.
+//
+// `Complete` is the field that matters, and it exists for exactly one reason:
+// the live projection reads a broadcast's ABSENCE from a round as "this
+// broadcast is over" (a GC'd hub disappears from /statusz, while a broadcaster
+// merely away stays listed with publisherActive=false through the R1 grace).
+// That inference is only sound when every resolved pod actually answered. A
+// partial round — one pod timing out, a rollout mid-flight, a resolution that
+// came back short — must never end anything, or a five-second blip would sweep
+// the dashboard into the ended group and take every live problem with it.
+type Round struct {
+	AtMs         int64
+	Observations []Observation
+	// Complete is true only when PodsAnswered == Pods and Pods > 0.
+	Complete     bool
+	Pods         int
+	PodsAnswered int
+}
+
 // Sink stores observations. Implemented by the store writer and by the TM8
 // live projection.
 type Sink interface {
 	StoreRelay(date string, pod string, lines [][]byte) error
-	// ObserveRelay refreshes the live projection. Optional; may be nil.
-	ObserveRelay(obs []Observation)
+	// ObserveRelay refreshes the live projection with one whole round.
+	ObserveRelay(r Round)
 }
 
 // Resolver returns the current set of pod addresses to scrape.
@@ -215,6 +234,7 @@ func (s *Scraper) ScrapeOnce(ctx context.Context) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var all []Observation
+	answered := 0
 
 	for _, addr := range addrs {
 		wg.Add(1)
@@ -225,6 +245,14 @@ func (s *Scraper) ScrapeOnce(ctx context.Context) {
 				s.log.Debug("relay scrape: pod failed", "addr", addr, "err", err)
 				return
 			}
+			// Counted BEFORE the emptiness check: a pod carrying no broadcasts
+			// answered, and its empty answer is exactly the evidence that the
+			// broadcasts it used to carry are gone. Treating it as a failure
+			// would make the fleet's quietest moment its least trustworthy one.
+			mu.Lock()
+			answered++
+			all = append(all, obs...)
+			mu.Unlock()
 			if len(obs) == 0 {
 				return
 			}
@@ -248,7 +276,13 @@ func (s *Scraper) ScrapeOnce(ctx context.Context) {
 
 	s.noteSeen(all, now)
 	if s.opts.Sink != nil {
-		s.opts.Sink.ObserveRelay(all)
+		s.opts.Sink.ObserveRelay(Round{
+			AtMs:         now.UnixMilli(),
+			Observations: all,
+			Complete:     answered == len(addrs),
+			Pods:         len(addrs),
+			PodsAnswered: answered,
+		})
 	}
 }
 
