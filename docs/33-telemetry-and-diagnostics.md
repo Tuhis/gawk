@@ -734,6 +734,114 @@ configuration. The fleet view is the whole product for the common case.
 
 ---
 
+## 4.9 Implementation status & deviations (2026-07-26)
+
+**TM1–TM8 implemented; TM9 (Grafana) dropped by owner decision.** Automated
+gates green in all four modules (`gawk-server` gofmt/vet/`-race`,
+`gawk-telemetry` gofmt/vet/`-race`, `gawk-broadcast` vet/tests,
+`gawk-app` tsc/vitest/oxlint/build) plus `helm lint`/`helm template` on all
+three charts. **Manual verification (§6) is pending** — none of the eight
+numbered passes has been run.
+
+Deviations from the design as written, recorded rather than silently absorbed:
+
+1. **The hello rides a reliable uni stream, not a datagram** (owner decision).
+   §4.1 said "sent once per session, after upgrade" without naming a carrier,
+   and the two precedents disagree: ResumeToken (0x09) uses a uni stream,
+   DeliveryAck (0x0C) used a datagram and had to grow a re-announce loop
+   because one-shot join-time datagrams get lost. A lost hello is worse than a
+   mislabelled row — it is a session that silently never reports — so the
+   ResumeToken precedent won. The viewer already dispatches server uni streams
+   by wire type, so 0x0D slots in beside StreamFrame and ReliableCarrier.
+
+2. **D13's "no worker message" holds for collection, not for the hello.**
+   Collection genuinely lives on the main thread and adds no worker traffic.
+   But wire 0x0D *arrives* inside the viewer's nested transport worker, so it
+   crosses as its own message on both worker hops (`telemetryHello`).
+   Deliberately its own message rather than a `ViewerStats` field: the token is
+   a bearer credential, and `ViewerStats` is what Copy diagnostics serializes
+   for pasting into a chat.
+
+3. **D8's framing was loose; the mechanism is what was implemented.** A viewer
+   obviously *does* know the raw broadcast ID — it is in `#/view/<id>`. What
+   prevents it being reported is that the session token's HMAC binds the
+   *obfuscated* key, so a batch carrying anything else fails verification. The
+   ingest rejects it as a 400 before a byte is written.
+
+4. **A payload number can never reject a batch.** Go's JSON decoder *errors* on
+   a number overflowing float64, so decoding `stats` inline would have let one
+   absurd value inside a payload reject the whole batch — exactly the
+   strictness D15 rules out for payload data. `stats` is therefore kept raw at
+   envelope-decode time and decoded separately with `UseNumber`, turning the
+   overflow into a drop-and-count. Found by the test written for D15's
+   tolerance criterion.
+
+5. **Truncation is announced, not just flagged.** Setting the byte-budget flag
+   was not enough: once samples stop, every later flush is empty and returns
+   early, so the marker would never have reached the wire and a clipped session
+   would have read as one that simply ended. Crossing the budget now emits a
+   `telemetry-budget-exhausted` event, which guarantees at least one more
+   batch carrying `truncated`.
+
+6. **p05 does not catch a short freeze, and the rollup says so.** The
+   acceptance criterion's "mean hides a freeze" argument stops working at
+   percentiles too: two bad samples in 122 is 1.6 %, below the 5th percentile,
+   so `p05` correctly reads 30 fps through a 4-second stall. That is precisely
+   why the row carries explicit `stalls`/`longestStallMs`/`totalStallMs`
+   fields, counted as *episodes* rather than samples. The test asserts both
+   halves, including the limit.
+
+7. **Freshness overrides severity *after* hysteresis, not before.**
+   Hysteresis is for rule-derived severity, which is a judgement over noisy
+   measurements. "This client has been silent for 30 s" is a clock reading with
+   no blip to filter; delaying it would have shown a viewer as healthy after it
+   demonstrably stopped reporting — the exact failure the override exists to
+   prevent.
+
+8. **Stored sessions are self-describing on read.** `ParseTimeline` originally
+   took the role from the live state only, so a session read back from disk
+   lost it and every role-scoped rule was silently skipped. Identity now comes
+   from the records, which already carry it on every line.
+
+9. **MCP is streamable HTTP on the read listener** (owner decision), and the
+   JSON-RPC surface is implemented directly rather than through an SDK — three
+   methods over one POST endpoint did not justify a dependency tree, following
+   the same instinct that kept DuckDB out of the runtime (D11).
+
+10. **`diagnose()` on a healthy session returns a positive verdict** (owner
+    decision, closing the §8 open question): the checks that passed, the
+    signals that were unavailable, and any caveats. Returning nothing is honest
+    but reads as a failure and gives a caller no way to tell a clean session
+    from an analysis that never ran.
+
+11. **The rule set is 15, not 14.** docs/13's fourteen rows plus
+    `audio-overflow-latch` — docs/20 finding 8's concealment-vs-overflow ratio,
+    which took a human noticing two counters together. Institutionalizing it is
+    exactly what D6 says new rules are for.
+
+12. **`gawk-telemetry` does not scale horizontally, and the chart refuses to
+    try.** One writer per session file (D3) and one in-memory live projection;
+    `replicaCount > 1` fails template rendering, and the strategy is `Recreate`
+    so two pods never hold the same PVC.
+
+13. **The app chart's default render is not byte-identical** — it gains one
+    inert `"telemetryUrl": ""` line in `config.js`, which `getTelemetryUrl()`
+    reads as unset. The relay chart's default render *is* byte-identical,
+    asserted by diff against `HEAD`, and both are checked in CI.
+
+14. **`relayCoverage` "full" requires two scrape intervals**, not one. A
+    session sampled once cannot support a claim of full coverage even if the
+    scrape happened to catch it.
+
+15. **Native telemetry needs an explicit `-telemetry-url`.** The browser
+    defaults to a same-origin path on the page it was served from; a native
+    binary has only the relay origin, which is a different host by construction
+    (the relay is a UDP LoadBalancer, the frontend an Ingress — the same reason
+    `config.AppURL` exists separately). Unset means off.
+
+16. **TM9 (Grafana) dropped**, per the owner's scope decision and the doc's own
+    "TM9 is the droppable one". The §8 rollup-datasource question stays open.
+
 ## 5. Chunks and acceptance criteria
 
 | Chunk | Scope | Acceptance criteria |
@@ -839,6 +947,9 @@ Automated criteria are per-chunk above. Manual verify (the usual posture):
 - **Open: Grafana over rollups.** Prometheus panels (M8's original scope) are
   settled; rollup-driven panels would need a JSON/Infinity datasource against
   the read API. Deliberately unresolved until TM9 has the data to justify it.
+  **TM9 was dropped from the R28 implementation (owner scope decision,
+  2026-07-26)**, so R9 M8 stays open — trends can wait, and the built-in
+  dashboard (TM8) covers the live question TM9 never would have.
 - **The dashboard's health model is the same rules as `diagnose()` (§4.8.3),
   so a bad rule is now wrong in two places at once** — on a live page a human
   trusts at a glance, as well as in a verdict. That is the correct trade (two
@@ -855,9 +966,13 @@ Automated criteria are per-chunk above. Manual verify (the usual posture):
 - **Open: token lifetime vs very long broadcasts.** 24 h covers every
   plausible session; a broadcast outliving it would need a re-issued hello. A
   periodic re-hello is the obvious fix and is deferred until it is real.
-- **Open: what `diagnose()` should do with a session that is simply healthy.**
-  Returning nothing is honest but reads as a failure; a "no issues found, here
-  is why you should believe that" shape is likely better and is a TM6 question.
+- ~~**Open: what `diagnose()` should do with a session that is simply
+  healthy.**~~ **Resolved (owner, 2026-07-26): a positive verdict with its
+  basis.** The report carries `healthy: true`, the `passed` rule ids, the
+  `unavailable` ones with the signal each was missing, and any caveats — so "no
+  issues found" is distinguishable from "the analysis never ran", which is the
+  same honesty rule TM8 applies to unknown/stale. `Severity()` returns
+  `unknown` rather than `ok` when nothing could be evaluated at all.
 
 ---
 

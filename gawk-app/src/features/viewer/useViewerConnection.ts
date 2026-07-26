@@ -38,6 +38,7 @@ import {
   type AudioBufferProfile,
 } from '../../transport/audio-buffer';
 import { useTransportStore } from '../../state/transportStore';
+import { useTelemetryCollector } from '../../lib/useTelemetry';
 import { log } from '../../lib/logger';
 
 export type ViewerStatus = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'error';
@@ -344,6 +345,11 @@ export function useViewerConnection(
     setRetryNote(null);
   }, []);
 
+  // R28 (docs/33 D13): telemetry rides the SAME event funnel both paths
+  // already go through, so the worker and main-thread pipelines report
+  // identically and neither one grows a collection path of its own.
+  const telemetry = useTelemetryCollector<ViewerStats>('viewer');
+
   // Shared mapping from a worker event (or a synthesized main-thread event) to
   // view state, so both paths render identically.
   const applyEvent = useCallback((ev: ViewerWorkerEvent) => {
@@ -354,6 +360,13 @@ export function useViewerConnection(
         break;
       case 'reconnecting':
         setStatus('reconnecting');
+        // An event, not a sample: a 2 s grid cannot represent a reconnect, and
+        // the close code is exactly what a human narrates about what went
+        // wrong (docs/33 §4.3).
+        telemetry.event(
+          'reconnect',
+          `attempt ${ev.attempt}${ev.closeCode == null ? '' : ` close ${ev.closeCode}`}: ${ev.reason}`,
+        );
         // A 4002 drain is a planned relay rollout with an instant retry —
         // show calmer copy than the generic attempt counter (R17 W1).
         setRetryNote(
@@ -440,6 +453,7 @@ export function useViewerConnection(
           }
         }
         setStats(next);
+        telemetry.sample(next);
         break;
       }
       case 'error':
@@ -447,6 +461,7 @@ export function useViewerConnection(
         // passes through — the detailed message lives here in the console,
         // the card renders friendly copy keyed on `kind`.
         log.error(`viewer error (${ev.kind}):`, ev.message);
+        telemetry.event(ev.fatal ? 'error-fatal' : 'error', `${ev.kind}: ${ev.message}`);
         setError(ev.message);
         setErrorKind(ev.kind);
         setErrorFatal(ev.fatal);
@@ -454,6 +469,11 @@ export function useViewerConnection(
         break;
       case 'ended':
         setRetryNote(null);
+        // A clean end is the one moment the service can finalize this session
+        // without waiting out an idle timeout — so it is a final flush, not
+        // just an event.
+        telemetry.event('ended');
+        telemetry.finish();
         // A drop before we ever connected is an error, not a clean end.
         setStatus((prev) => (prev === 'connecting' || prev === 'error' ? 'error' : 'ended'));
         break;
@@ -471,8 +491,14 @@ export function useViewerConnection(
       case 'audioReset':
         handleAudioReset();
         break;
+      // R28: this session's telemetry identity. Adopting it is what starts
+      // collection at all; without one (an old relay, or telemetry off) the
+      // collector stays inert and issues zero requests.
+      case 'telemetryHello':
+        telemetry.begin(ev.hello);
+        break;
     }
-  }, [handleAudioChunk, handleAudioReset]);
+  }, [handleAudioChunk, handleAudioReset, telemetry]);
 
   // ---- Worker path ---------------------------------------------------------
   const controllerRef = useRef<WorkerViewerController | null>(null);
@@ -619,6 +645,9 @@ export function useViewerConnection(
         },
         onAudioReset: () => {
           if (active) handleAudioReset();
+        },
+        onTelemetryHello: (hello) => {
+          if (active) applyEvent({ type: 'telemetryHello', hello });
         },
       },
     );

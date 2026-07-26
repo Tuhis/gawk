@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Golden vectors, computed by hand from the wire format spec.
@@ -148,6 +149,44 @@ const (
 
 	// AudioConfig: as above but with a 3-byte description 01 02 03.
 	goldenAudioConfigDescHex = "010800046f7075730000bb8002010203"
+
+	// TelemetryHello: Enabled=true, ReportIntervalMs=2000, a synthetic token
+	// and broadcast key (R28, docs/33 §4.1). The token bytes here are
+	// deliberately NOT a real HMAC — this vector pins the message framing, and
+	// the token's own construction is pinned separately by
+	// TestGoldenTelemetrySessionToken, so a change to either is visible on its
+	// own.
+	//
+	//   01                          version
+	//   0d                          type = TelemetryHello
+	//   01                          flags (bit0 enabled = 1)
+	//   07 d0                       reportIntervalMs = 2000
+	//   00 01 23 45                 token: expHour
+	//   00 01 02 03 04 05 06 07 08 09 0a 0b   token: nonce
+	//   a1 a2 a3 a4 a5 a6 a7 a8     token: tag
+	//   1a 2b 3c 4d 5e 6f           obfuscated broadcast key
+	goldenTelemetryHelloHex = "010d0107d000012345000102030405060708090a0ba1a2a3a4a5a6a7a81a2b3c4d5e6f"
+
+	// TelemetryHello with collection off: the fleet has no telemetry key, so
+	// the client collects nothing and ignores every other field. Same shape as
+	// the enabled one — zero-value token and key rather than a shorter message,
+	// because a fixed-width message is what makes the strict parse trivial.
+	goldenTelemetryHelloDisabledHex = "010d000000" + "000000000000000000000000000000000000000000000000000000000000"
+
+	// The token minted for key=0x42*32, nonce=00..0b, broadcast key
+	// 1a2b3c4d5e6f, role "viewer", at 2026-07-26T00:00:00Z. Pins expHour
+	// arithmetic, field order and HMAC truncation together.
+	goldenTelemetrySessionTokenHex = "000791b8000102030405060708090a0b9d4e7750cdf69a2b"
+)
+
+// Fixtures for the TelemetryHello + token vectors above.
+var (
+	goldenTelemetryToken = []byte{
+		0x00, 0x01, 0x23, 0x45,
+		0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+		0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8,
+	}
+	goldenTelemetryBroadcastKey = []byte{0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f}
 )
 
 var (
@@ -1418,5 +1457,242 @@ func TestParseAudioConfigErrors(t *testing.T) {
 				t.Errorf("error = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+// --- R28 TelemetryHello (0x0D) + session tokens (docs/33 TM1) ---
+
+func TestGoldenTelemetryHello(t *testing.T) {
+	want := mustHex(t, goldenTelemetryHelloHex)
+	got, err := AppendTelemetryHello(nil, TelemetryHello{
+		Enabled:          true,
+		ReportIntervalMs: 2000,
+		Token:            goldenTelemetryToken,
+		BroadcastKey:     goldenTelemetryBroadcastKey,
+	})
+	if err != nil {
+		t.Fatalf("AppendTelemetryHello: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("AppendTelemetryHello = %x, want %x", got, want)
+	}
+	if len(got) != TelemetryHelloSize {
+		t.Errorf("hello is %d bytes, want %d", len(got), TelemetryHelloSize)
+	}
+
+	h, err := ParseTelemetryHello(want)
+	if err != nil {
+		t.Fatalf("ParseTelemetryHello: %v", err)
+	}
+	if !h.Enabled || h.ReportIntervalMs != 2000 {
+		t.Errorf("enabled/interval = %v/%d, want true/2000", h.Enabled, h.ReportIntervalMs)
+	}
+	if !bytes.Equal(h.Token, goldenTelemetryToken) {
+		t.Errorf("token = %x, want %x", h.Token, goldenTelemetryToken)
+	}
+	if !bytes.Equal(h.BroadcastKey, goldenTelemetryBroadcastKey) {
+		t.Errorf("broadcastKey = %x, want %x", h.BroadcastKey, goldenTelemetryBroadcastKey)
+	}
+}
+
+// A fleet with telemetry off still produces a well-formed message; the client
+// reads enabled=0 and collects nothing. Same bytes as a relay predating R28
+// producing nothing at all, in observable client behaviour.
+func TestGoldenTelemetryHelloDisabled(t *testing.T) {
+	want := mustHex(t, goldenTelemetryHelloDisabledHex)
+	got, err := AppendTelemetryHello(nil, TelemetryHello{
+		Token:        make([]byte, TelemetrySessionTokenSize),
+		BroadcastKey: make([]byte, TelemetryBroadcastKeySize),
+	})
+	if err != nil {
+		t.Fatalf("AppendTelemetryHello: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("AppendTelemetryHello disabled = %x, want %x", got, want)
+	}
+	h, err := ParseTelemetryHello(want)
+	if err != nil {
+		t.Fatalf("ParseTelemetryHello: %v", err)
+	}
+	if h.Enabled {
+		t.Error("Enabled = true, want false")
+	}
+}
+
+func TestAppendTelemetryHelloRejectsWrongFieldSizes(t *testing.T) {
+	good := TelemetryHello{
+		Token:        make([]byte, TelemetrySessionTokenSize),
+		BroadcastKey: make([]byte, TelemetryBroadcastKeySize),
+	}
+	shortToken := good
+	shortToken.Token = make([]byte, TelemetrySessionTokenSize-1)
+	longKey := good
+	longKey.BroadcastKey = make([]byte, TelemetryBroadcastKeySize+1)
+	for name, h := range map[string]TelemetryHello{"short token": shortToken, "long key": longKey} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := AppendTelemetryHello(nil, h); !errors.Is(err, ErrBadTelemetryHello) {
+				t.Errorf("error = %v, want ErrBadTelemetryHello", err)
+			}
+		})
+	}
+}
+
+func TestParseTelemetryHelloStrict(t *testing.T) {
+	valid := mustHex(t, goldenTelemetryHelloHex)
+
+	badVersion := append([]byte(nil), valid...)
+	badVersion[0] = 0x02
+	badType := append([]byte(nil), valid...)
+	badType[1] = TypeDeliveryAck
+	// A set reserved bit means a field this build would misread; strict parse
+	// rejects rather than masking it away.
+	reservedFlag := append([]byte(nil), valid...)
+	reservedFlag[2] = 0x02
+
+	cases := []struct {
+		name string
+		msg  []byte
+		want error
+	}{
+		{"empty", nil, ErrBadLength},
+		{"short", valid[:TelemetryHelloSize-1], ErrBadLength},
+		{"long", append(append([]byte(nil), valid...), 0x00), ErrBadLength},
+		{"bad version", badVersion, ErrBadVersion},
+		{"bad type", badType, ErrBadType},
+		{"reserved flag bit", reservedFlag, ErrBadTelemetryHello},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseTelemetryHello(tc.msg); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// The token's construction, pinned independently of the message framing.
+// Deterministic inputs: a fixed key, a fixed nonce, a fixed mint time.
+func TestGoldenTelemetrySessionToken(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, TelemetryKeySize)
+	nonce := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+	// 2026-07-26T00:00:00Z; +24h expiry lands on unix hour 0x000856F8.
+	mintedAt := time.Unix(1785715200, 0).UTC()
+
+	token, err := mintTelemetrySessionToken(key, goldenTelemetryBroadcastKey, TelemetryRoleViewer, mintedAt, nonce)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if got, want := hex.EncodeToString(token), goldenTelemetrySessionTokenHex; got != want {
+		t.Errorf("token = %s, want %s", got, want)
+	}
+	if len(token) != TelemetrySessionTokenSize {
+		t.Fatalf("token is %d bytes, want %d", len(token), TelemetrySessionTokenSize)
+	}
+	// The sessionId is the nonce, and it is the ONLY part that is ever stored.
+	sid, err := TelemetrySessionID(token)
+	if err != nil {
+		t.Fatalf("TelemetrySessionID: %v", err)
+	}
+	if sid != hex.EncodeToString(nonce) || len(sid) != TelemetrySessionIDLen {
+		t.Errorf("sessionId = %q (%d chars), want %q (%d)", sid, len(sid), hex.EncodeToString(nonce), TelemetrySessionIDLen)
+	}
+}
+
+func TestTelemetryTokenMintVerifyRoundTrip(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, TelemetryKeySize)
+	now := time.Unix(1785715200, 0).UTC()
+	for _, role := range []TelemetryRole{TelemetryRoleViewer, TelemetryRoleBroadcaster} {
+		token, err := MintTelemetrySessionToken(key, goldenTelemetryBroadcastKey, role, now)
+		if err != nil {
+			t.Fatalf("mint %s: %v", role, err)
+		}
+		sid, err := VerifyTelemetrySessionToken(key, token, goldenTelemetryBroadcastKey, role, now)
+		if err != nil {
+			t.Fatalf("verify %s: %v", role, err)
+		}
+		unverified, err := TelemetrySessionID(token)
+		if err != nil || sid != unverified {
+			t.Errorf("verified sessionId %q != %q (err %v)", sid, unverified, err)
+		}
+	}
+}
+
+// Two mints of the same session are two different sessions: the nonce is
+// random, so sessionIds never collide across a fleet and can't be guessed.
+func TestTelemetryTokenNonceIsFresh(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, TelemetryKeySize)
+	now := time.Unix(1785715200, 0).UTC()
+	seen := map[string]bool{}
+	for i := 0; i < 64; i++ {
+		token, err := MintTelemetrySessionToken(key, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now)
+		if err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+		sid, _ := TelemetrySessionID(token)
+		if seen[sid] {
+			t.Fatalf("duplicate sessionId %q", sid)
+		}
+		seen[sid] = true
+	}
+}
+
+func TestTelemetryTokenVerifyRejects(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, TelemetryKeySize)
+	otherKey := bytes.Repeat([]byte{0x22}, TelemetryKeySize)
+	otherBroadcast := []byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	now := time.Unix(1785715200, 0).UTC()
+	token, err := MintTelemetrySessionToken(key, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	tampered := append([]byte(nil), token...)
+	tampered[TelemetrySessionTokenSize-1] ^= 0xFF
+
+	cases := []struct {
+		name         string
+		key          []byte
+		token        []byte
+		broadcastKey []byte
+		role         TelemetryRole
+		now          time.Time
+		want         error
+	}{
+		// Cross-fleet rejection is what makes the public write surface
+		// tolerable: only clients that connected to THIS fleet can ingest.
+		{"other fleet key", otherKey, token, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now, ErrTelemetryTokenInvalid},
+		{"tampered broadcast key", key, token, otherBroadcast, TelemetryRoleViewer, now, ErrTelemetryTokenInvalid},
+		// A viewer's token must not submit broadcaster-shaped records.
+		{"tampered role", key, token, goldenTelemetryBroadcastKey, TelemetryRoleBroadcaster, now, ErrTelemetryTokenInvalid},
+		{"unknown role", key, token, goldenTelemetryBroadcastKey, TelemetryRole("edge"), now, ErrTelemetryTokenInvalid},
+		{"tampered tag", key, tampered, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now, ErrTelemetryTokenInvalid},
+		{"short token", key, token[:len(token)-1], goldenTelemetryBroadcastKey, TelemetryRoleViewer, now, ErrTelemetryTokenInvalid},
+		{"short key", key[:16], token, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now, ErrTelemetryKey},
+		// Expiry is actionable (the client needs a fresh hello), so it is its
+		// own error rather than folded into "invalid".
+		{"expired", key, token, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now.Add(TelemetryTokenTTL + time.Hour), ErrTelemetryTokenExpired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := VerifyTelemetrySessionToken(tc.key, tc.token, tc.broadcastKey, tc.role, tc.now); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// Inside the TTL a token stays valid right up to its final hour — a long
+// broadcast must not lose its telemetry identity mid-session.
+func TestTelemetryTokenValidUntilExpiry(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, TelemetryKeySize)
+	now := time.Unix(1785715200, 0).UTC()
+	token, err := MintTelemetrySessionToken(key, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	for _, d := range []time.Duration{0, time.Hour, TelemetryTokenTTL - time.Minute, TelemetryTokenTTL} {
+		if _, err := VerifyTelemetrySessionToken(key, token, goldenTelemetryBroadcastKey, TelemetryRoleViewer, now.Add(d)); err != nil {
+			t.Errorf("verify at +%v: %v", d, err)
+		}
 	}
 }

@@ -34,6 +34,15 @@ export interface GawkRuntimeConfig {
   operatorName?: string;
   operatorContact?: string;
 
+  // R28 (docs/33 D1): where telemetry batches are POSTed. The default is a
+  // SAME-ORIGIN path on this frontend's own Ingress, which is what makes the
+  // `sendBeacon` unload flush work without a CORS preflight it cannot perform
+  // during unload. Override only when the telemetry service is split onto
+  // another origin — and then that origin has to answer preflights itself.
+  // Collection is gated by the RELAY (wire 0x0D), not by this value: an
+  // unconfigured install with telemetry off never sends a single request.
+  telemetryUrl?: string;
+
   // Optional full-body terms override. When set, the terms page renders this
   // document (fetched on route open, sanitized) instead of the bundled
   // default. Recommended shape: "/terms.html", a ConfigMap-mounted static
@@ -97,10 +106,20 @@ export function getDvrBufferMs(): number {
   return Math.min(Math.max(Math.round(v), MIN_DVR_BUFFER_MS), MAX_DVR_BUFFER_MS);
 }
 
+// R28 (docs/33 D1): the same-origin ingest path. A relative URL by default so
+// no CORS, no second DNS name and no second certificate are involved, and the
+// unload beacon works as-is.
+export const DEFAULT_TELEMETRY_URL = '/api/telemetry/v1/ingest';
+
+export function getTelemetryUrl(): string {
+  const v = getRuntimeConfig().telemetryUrl;
+  return (typeof v === 'string' && v.trim()) || DEFAULT_TELEMETRY_URL;
+}
+
 // R23 (docs/29): terms & conditions. The version baked into this release; the
 // acknowledgment key stores whichever version a broadcaster last agreed to, so
 // an operator bumps config.termsVersion to re-prompt on a meaningful edit (D7).
-export const BUNDLED_TERMS_VERSION = '2026-07-24';
+export const BUNDLED_TERMS_VERSION = '2026-07-26';
 
 // Empty string counts as unset — the ConfigMap renders an empty default rather
 // than duplicating the version constant, so an un-configured install falls

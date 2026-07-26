@@ -25,6 +25,8 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
+	telemetryPkg "github.com/Tuhis/gawk/gawk-broadcast/internal/telemetry"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 func main() {
@@ -57,6 +59,7 @@ func run() error {
 		encoder    = fs.String("encoder", "", "force an encoder ("+strings.Join(gst.CandidateNames(), ", ")+"); default probes them in order")
 		verbose    = fs.Bool("v", false, "verbose logging (the GStreamer child's stderr included)")
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
+		telemetry  = fs.String("telemetry-url", "", "R28 telemetry ingest endpoint, e.g. https://gawk.example/api/telemetry/v1/ingest (env GAWK_TELEMETRY_URL); empty disables reporting")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "gawk-broadcast — publish your screen to a gawk relay, with hardware encode.\n\n")
@@ -78,6 +81,7 @@ func run() error {
 	// command line is visible in ps output.
 	applyString(&cfg.RelayURL, *relayURL, os.Getenv("GAWK_URL"))
 	applyString(&cfg.AppURL, *appURL, os.Getenv("GAWK_APP_URL"))
+	applyString(&cfg.TelemetryURL, *telemetry, os.Getenv("GAWK_TELEMETRY_URL"))
 	applyString(&cfg.PublishSecret, *secret, os.Getenv("GAWK_SECRET"))
 	applyString(&cfg.Origin, *origin, os.Getenv("GAWK_ORIGIN"))
 	applyString(&cfg.Encoder, *encoder, os.Getenv("GAWK_ENCODER"))
@@ -135,6 +139,12 @@ func run() error {
 		resumeToken = cfg.LastResumeToken
 	}
 
+	// R28 (docs/33 TM2): the telemetry reporter. Inert unless an ingest URL is
+	// configured AND the relay's hello enables collection — either missing
+	// means not a single request leaves this process.
+	reporter := telemetryPkg.New(telemetryPkg.Options{URL: cfg.TelemetryURL, Log: log})
+	defer reporter.Close()
+
 	ended := make(chan struct{})
 	var endOnce = make(chan struct{}, 1)
 	sess := engine.New(
@@ -166,15 +176,22 @@ func run() error {
 					gst.EncoderAPI(enc), enc, media.Width, media.Height, media.Fps, float64(media.BitrateBps)/1e6)
 			},
 			OnError: func(err error) {
+				reporter.Event("error", err.Error())
 				fmt.Fprintln(os.Stderr, "\n"+userMessage(err))
 			},
 			OnEnded: func() {
+				// A clean end lets the service finalize this session without
+				// waiting out an idle timeout.
+				reporter.Event("ended", "")
+				reporter.Finish()
 				select {
 				case endOnce <- struct{}{}:
 					close(ended)
 				default:
 				}
 			},
+			OnStats:          func(s engine.Stats) { reporter.Report(s) },
+			OnTelemetryHello: func(h wire.TelemetryHello) { reporter.Begin(h) },
 		},
 		engine.Options{
 			Log: log,

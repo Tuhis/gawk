@@ -1,0 +1,40 @@
+# The PUBLIC-facing half: the ingest path only. The frontend's Ingress routes
+# /api/telemetry/ here (docs/33 D1), which is what makes the browser's unload
+# beacon same-origin and preflight-free.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gawk-telemetry.fullname" . }}
+  labels:
+    {{- include "gawk-telemetry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gawk-telemetry.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: ingest
+      protocol: TCP
+---
+# The NON-PUBLIC half: dashboard, read API and MCP. Deliberately a SEPARATE
+# Service so the frontend Ingress can route the ingest path without ever
+# exposing the read side (D14) — the read side aggregates every broadcast on
+# the fleet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gawk-telemetry.fullname" . }}-read
+  labels:
+    {{- include "gawk-telemetry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: read
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gawk-telemetry.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: read
+      port: {{ .Values.read.port }}
+      targetPort: read
+      protocol: TCP

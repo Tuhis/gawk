@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gawk-telemetry.fullname" . }}
+  labels:
+    {{- include "gawk-telemetry.labels" . | nindent 4 }}
+spec:
+  # Pinned to 1 by design, not by omission: the service owns per-session files
+  # with one writer per file (docs/33 D3) and an in-memory live projection that
+  # a second replica would hold only half of.
+  {{- if gt (int .Values.replicaCount) 1 }}
+  {{- fail "gawk-telemetry does not scale horizontally: one writer per session file, one in-memory live projection. Keep replicaCount: 1." }}
+  {{- end }}
+  replicas: 1
+  # Recreate, not RollingUpdate: two pods must never hold the same PVC and the
+  # same session files at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gawk-telemetry.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gawk-telemetry.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # The image runs as uid 65532 (distroless :nonroot); fsGroup lets it
+        # write the PVC without an init container chowning it.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gawk-telemetry
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: ingest
+              containerPort: {{ .Values.ingest.port }}
+              protocol: TCP
+            - name: read
+              containerPort: {{ .Values.read.port }}
+              protocol: TCP
+          env:
+            - name: GAWK_TELEMETRY_INGEST_ADDR
+              value: ":{{ .Values.ingest.port }}"
+            - name: GAWK_TELEMETRY_READ_ADDR
+              value: ":{{ .Values.read.port }}"
+            - name: GAWK_TELEMETRY_DATA_DIR
+              value: /data
+            # The fleet session-token key — the SAME value the relay mints
+            # with. The service refuses to start without it.
+            - name: GAWK_TELEMETRY_KEY
+              {{- if .Values.telemetryKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.telemetryKeyRef.name | quote }}
+                  key: {{ .Values.telemetryKeyRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.telemetryKey | quote }}
+              {{- end }}
+            - name: GAWK_TELEMETRY_RETENTION_DAYS
+              value: {{ .Values.config.retentionDays | quote }}
+            - name: GAWK_TELEMETRY_SCRAPE_INTERVAL
+              value: {{ .Values.config.scrapeInterval | quote }}
+            - name: GAWK_TELEMETRY_SESSION_IDLE
+              value: {{ .Values.config.sessionIdle | quote }}
+            - name: GAWK_TELEMETRY_RELAY_HEADLESS
+              value: {{ .Values.config.relayHeadlessService | quote }}
+            - name: GAWK_TELEMETRY_RELAY_PORT
+              value: {{ .Values.config.relayMetricsPort | quote }}
+            - name: GAWK_TELEMETRY_DASHBOARD_BASE
+              value: {{ .Values.config.dashboardBase | quote }}
+            - name: GAWK_TELEMETRY_MCP
+              value: {{ .Values.config.mcp | quote }}
+            - name: GAWK_TELEMETRY_QUERY_SQL
+              value: {{ .Values.config.querySql | quote }}
+            - name: GAWK_TELEMETRY_INGEST_RATE
+              value: {{ .Values.config.ingestRate | quote }}
+            - name: GAWK_TELEMETRY_INGEST_BURST
+              value: {{ .Values.config.ingestBurst | quote }}
+            - name: GAWK_TELEMETRY_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: GAWK_TELEMETRY_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            {{- if .Values.read.basicAuth.enabled }}
+            - name: GAWK_TELEMETRY_READ_USER
+              value: {{ .Values.read.basicAuth.user | quote }}
+            - name: GAWK_TELEMETRY_READ_PASSWORD
+              {{- if .Values.read.basicAuth.passwordRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.read.basicAuth.passwordRef.name | quote }}
+                  key: {{ .Values.read.basicAuth.passwordRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.read.basicAuth.password | quote }}
+              {{- end }}
+            {{- end }}
+          # Only the PUBLIC listener is probed: it is the one whose failure
+          # means clients cannot report. A read-listener outage costs an
+          # operator a page, not a fleet's telemetry.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: ingest
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ingest
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "gawk-telemetry.fullname" .)) }}
+          {{- else }}
+          # No PVC: everything is lost on restart. Only useful for a smoke test
+          # — a telemetry store that forgets is not one.
+          emptyDir: {}
+          {{- end }}

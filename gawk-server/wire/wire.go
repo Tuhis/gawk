@@ -134,6 +134,24 @@ const (
 	// "reliable requested / datagrams served" row exists for the same reason
 	// and extends naturally from this. Clients parse it and never send it.
 	TypeDeliveryAck = 0x0C
+
+	// TypeTelemetryHello identifies a TelemetryHello message (R28, docs/33
+	// D2): relay→client, sent once per session on its own reliable
+	// unidirectional stream right after the upgrade — the ResumeToken (0x09)
+	// precedent, chosen over DeliveryAck's datagram because a lost hello is a
+	// session that silently never reports, and DeliveryAck's own re-announce
+	// loop exists precisely because one-shot join-time datagrams get lost.
+	//
+	// It carries the three things a client cannot otherwise know: its
+	// telemetry session token (the ingest credential AND the join key that
+	// makes the relay's view of a viewer and the viewer's view of itself one
+	// dataset), the OBFUSCATED broadcast key (so a client never reports a
+	// joinable raw ID — R9 D3), and whether the fleet collects telemetry at
+	// all and at what cadence. Never sent on /internal/subscribe: an edge is
+	// plumbing, not a client. Clients parse it and never send it — a
+	// TelemetryHello arriving where a client is the sender is dropped,
+	// matching TypeViewerCount's rule.
+	TypeTelemetryHello = 0x0D
 )
 
 // DeliveryMode names what a subscriber is actually being served, as carried
@@ -228,6 +246,12 @@ const (
 	// AudioFrameHeaderSize is the fixed size of an AudioFrame header (R15),
 	// including the common 2-byte version/type prefix.
 	AudioFrameHeaderSize = 16
+	// TelemetryHelloSize is the exact size of a TelemetryHello message (R28).
+	TelemetryHelloSize = 35
+	// TelemetryBroadcastKeySize is the byte length of the obfuscated broadcast
+	// key a TelemetryHello carries — the raw digest behind Registry.ObfuscateID,
+	// which the client hex-encodes for the ingest envelope.
+	TelemetryBroadcastKeySize = 6
 	// MaxAudioPayload is the largest payload a single AudioFrame may carry —
 	// one Opus packet. 20 ms at 128 kbps is ~320 bytes; anything up to
 	// ~470 kbps fits, so a conforming encoder never comes near this.
@@ -279,6 +303,9 @@ var (
 	// ErrBadAudioConfig indicates an AudioConfig with a zero sample rate or
 	// zero channels (R15).
 	ErrBadAudioConfig = errors.New("wire: invalid audio config")
+	// ErrBadTelemetryHello indicates a TelemetryHello whose token or broadcast
+	// key is the wrong length, or which sets a reserved flag bit (R28).
+	ErrBadTelemetryHello = errors.New("wire: invalid telemetry hello")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -577,6 +604,88 @@ func ParseDeliveryAck(dgram []byte) (mode DeliveryMode, bufferMs uint16, err err
 		return 0, 0, fmt.Errorf("%w: unknown delivery mode %d", ErrBadType, dgram[2])
 	}
 	return mode, binary.BigEndian.Uint16(dgram[3:5]), nil
+}
+
+// TelemetryHello is the parsed contents of a TelemetryHello message (R28,
+// docs/33 §4.1). Layout, big-endian, exactly TelemetryHelloSize bytes:
+//
+//	byte 0      Version
+//	byte 1      TypeTelemetryHello
+//	byte 2      flags — bit 0 Enabled; bits 1-7 reserved, must be 0
+//	bytes 3-4   uint16 ReportIntervalMs
+//	bytes 5-28  session token (TelemetrySessionTokenSize)
+//	bytes 29-34 obfuscated broadcast key (TelemetryBroadcastKeySize)
+type TelemetryHello struct {
+	// Enabled reports whether this fleet collects telemetry at all. False
+	// means the client collects nothing and ignores the remaining fields —
+	// which is also, deliberately, exactly what a client does when a relay
+	// predating R28 sends no hello at all.
+	Enabled bool
+	// ReportIntervalMs is the sampling cadence the relay asks clients to use.
+	// The relay is the authority so a fleet can turn the volume down without
+	// shipping a new frontend.
+	ReportIntervalMs uint16
+	// Token is the stateless-verifiable session credential. Never logged,
+	// never stored: the service verifies it and keeps only the sessionId
+	// derived from its nonce.
+	Token []byte
+	// BroadcastKey is the raw obfuscated-ID digest (Registry.ObfuscateID's
+	// pre-hex bytes). Aliases the input message when produced by Parse.
+	BroadcastKey []byte
+}
+
+// flagTelemetryEnabled is bit 0 of the TelemetryHello flags byte.
+const flagTelemetryEnabled = 0x01
+
+// AppendTelemetryHello appends a TelemetryHello message encoding h to dst and
+// returns the extended slice. It returns ErrBadTelemetryHello if the token or
+// broadcast key is not exactly its fixed size — both are fixed-width fields,
+// so a wrong length is a bug on the minting side, never a truncation to paper
+// over.
+func AppendTelemetryHello(dst []byte, h TelemetryHello) ([]byte, error) {
+	if len(h.Token) != TelemetrySessionTokenSize {
+		return nil, fmt.Errorf("%w: token %d bytes, want %d", ErrBadTelemetryHello, len(h.Token), TelemetrySessionTokenSize)
+	}
+	if len(h.BroadcastKey) != TelemetryBroadcastKeySize {
+		return nil, fmt.Errorf("%w: broadcast key %d bytes, want %d", ErrBadTelemetryHello, len(h.BroadcastKey), TelemetryBroadcastKeySize)
+	}
+	var flags uint8
+	if h.Enabled {
+		flags |= flagTelemetryEnabled
+	}
+	dst = append(dst, Version, TypeTelemetryHello, flags)
+	dst = binary.BigEndian.AppendUint16(dst, h.ReportIntervalMs)
+	dst = append(dst, h.Token...)
+	dst = append(dst, h.BroadcastKey...)
+	return dst, nil
+}
+
+// ParseTelemetryHello parses a TelemetryHello message. The returned Token and
+// BroadcastKey alias msg (no copy), consistent with every other parser here.
+// Strict: exact length, right version and type, and reserved flag bits clear —
+// a set reserved bit means a future field this build would misread, so it is
+// an error rather than a mask-and-hope.
+func ParseTelemetryHello(msg []byte) (TelemetryHello, error) {
+	if len(msg) != TelemetryHelloSize {
+		return TelemetryHello{}, fmt.Errorf("%w: %d bytes, want exactly %d for telemetry hello",
+			ErrBadLength, len(msg), TelemetryHelloSize)
+	}
+	if msg[0] != Version {
+		return TelemetryHello{}, fmt.Errorf("%w: 0x%02x", ErrBadVersion, msg[0])
+	}
+	if msg[1] != TypeTelemetryHello {
+		return TelemetryHello{}, fmt.Errorf("%w: got 0x%02x, want telemetry hello 0x%02x",
+			ErrBadType, msg[1], TypeTelemetryHello)
+	}
+	if msg[2]&^flagTelemetryEnabled != 0 {
+		return TelemetryHello{}, fmt.Errorf("%w: reserved flag bits set (0x%02x)", ErrBadTelemetryHello, msg[2])
+	}
+	return TelemetryHello{
+		Enabled:          msg[2]&flagTelemetryEnabled != 0,
+		ReportIntervalMs: binary.BigEndian.Uint16(msg[3:5]),
+		Token:            msg[5 : 5+TelemetrySessionTokenSize],
+		BroadcastKey:     msg[5+TelemetrySessionTokenSize:],
+	}, nil
 }
 
 // AudioFrameHeader is the parsed header of an AudioFrame datagram (R15).

@@ -90,6 +90,9 @@ export class WorkerViewerTransport implements ViewerTransport {
             }
             break;
           }
+          case 'telemetryHello':
+            if (!this.closing) cb.onTelemetryHello?.(ev.hello);
+            break;
           case 'connStats':
             this.latestStats = ev.stats;
             this.latestTimeSync = ev.timeSync;

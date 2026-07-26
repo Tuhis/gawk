@@ -242,6 +242,30 @@ jobs:
   # must be `go mod tidy`-clean, checked independently of any build. `go mod
   # tidy` resolves the module graph without compiling cgo, so this stays
   # header-free and fast.
+  # R28 (docs/33): the optional telemetry service. Its own job for the same
+  # reason gawk-broadcast has one — it is a separate module — but unlike that
+  # one it needs no extra headers: DuckDB is a query OPTION, never a runtime
+  # dependency (D11), so this stays a plain cgo-free Go build.
+  telemetry:
+    runs-on: ioio-k8s
+    defaults:
+      run:
+        working-directory: gawk-telemetry
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-telemetry/go.mod
+          # go.mod, not go.sum: this module's ONLY dependency is the locally
+          # `replace`d gawk-server, so it legitimately has no checksum file.
+          cache-dependency-path: gawk-telemetry/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+
   tidy:
     runs-on: ioio-k8s
     steps:
@@ -254,7 +278,7 @@ jobs:
             gawk-broadcast/go.sum
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-broadcast; do
+          for mod in gawk-server gawk-broadcast gawk-telemetry; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -267,8 +291,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
+      - run: helm lint gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00
       - run: helm template gawk-server/deploy/charts/gawk-server > /dev/null
       - run: helm template gawk-app/deploy/charts/gawk-app > /dev/null
+      - run: helm template gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00 > /dev/null
+      # R28 (docs/33 TM3): telemetry OFF must render exactly as it did before
+      # R28 — an install that never enables it is byte-identical to today.
+      # Asserted against the templates rather than trusted.
+      - name: relay chart with telemetry off renders no telemetry objects
+        run: |
+          out=$(helm template gawk-server/deploy/charts/gawk-server)
+          if echo "$out" | grep -qE "GAWK_TELEMETRY|metrics-headless"; then
+            echo "::error::telemetry.enabled=false still renders telemetry objects"
+            exit 1
+          fi
+      - name: relay chart with telemetry on renders the key and headless Service
+        run: |
+          out=$(helm template gawk-server/deploy/charts/gawk-server \
+                  --set telemetry.enabled=true --set telemetry.key=00)
+          echo "$out" | grep -q GAWK_TELEMETRY_KEY
+          echo "$out" | grep -q metrics-headless
 
   # R20 tier 1 (docs/25): browser E2E on every PR — the real relay
   # (-dev-cert), the real native engine publishing the committed H.264
@@ -542,6 +584,11 @@ jobs:
             dockerfile: gawk-server/deploy/Dockerfile
           - context: gawk-app
             dockerfile: gawk-app/deploy/Dockerfile
+          # R28: the build context is the REPO ROOT, not the module dir —
+          # gawk-telemetry consumes gawk-server/wire through a local `replace`
+          # (docs/33 D12), so the relay module's tree must be present.
+          - context: .
+            dockerfile: gawk-telemetry/deploy/Dockerfile
     steps:
       - uses: actions/checkout@v7
       # Host networking on both levels: the ioio-k8s pod network MTU is 1480

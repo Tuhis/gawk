@@ -16,7 +16,8 @@ data:
       "termsVersion": {{ .Values.config.termsVersion | default "" | toJson }},
       "operatorName": {{ .Values.config.operatorName | default "" | toJson }},
       "operatorContact": {{ .Values.config.operatorContact | default "" | toJson }},
-      "termsUrl": {{ .Values.config.termsUrl | default "" | toJson }}
+      "termsUrl": {{ .Values.config.termsUrl | default "" | toJson }},
+      "telemetryUrl": {{ .Values.config.telemetryUrl | default "" | toJson }}
     };
   # R23 (docs/29): optional full-body terms override, mounted over
   # /usr/share/nginx/html/terms.html and served at /terms.html. It is only

@@ -87,6 +87,8 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-stateless-reset-key` | `GAWK_STATELESS_RESET_KEY` | (empty = disabled; 64 hex chars, shared fleet-wide) |
 | `-resume-token-key` | `GAWK_RESUME_TOKEN_KEY` | (empty; wins over the publish-secret derivation when set — recommended for fleets, R17) |
 | `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars — R17) |
+| `-telemetry-key` | `GAWK_TELEMETRY_KEY` | (empty = telemetry disabled; 64 hex chars, shared with gawk-telemetry — R28) |
+| `-telemetry-report-interval` | `GAWK_TELEMETRY_REPORT_INTERVAL` | `2s` (500ms–60s) |
 | `-cluster-mode` | `GAWK_CLUSTER_MODE` | `false` |
 | `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
 | `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |

@@ -1,0 +1,109 @@
+# gawk-telemetry (R28, docs/33) — OPTIONAL per-session diagnostics.
+#
+# Install it together with:
+#   * the relay chart's  telemetry.enabled=true  (mints session tokens, wire 0x0D)
+#   * the app chart's    telemetry.enabled=true  (routes the same-origin ingest path)
+# All three share ONE telemetry key. Without it the relay sends no hello and
+# every client collects nothing, so this service would sit idle.
+
+image:
+  repository: ghcr.io/tuhis/gawk-telemetry
+  # Empty = the chart's appVersion, which release-please keeps in lockstep
+  # with the published image tag.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# GHCR is private — the same pull secret as the other charts.
+imagePullSecrets: []
+
+# ONE replica, always. The service owns per-session files on a PVC with one
+# writer per file (D3), and an in-memory live projection that a second replica
+# would only ever hold half of. Scaling it is not a knob, it is a redesign.
+replicaCount: 1
+
+# The session-token HMAC key: 64 hex chars (32 bytes), the SAME value the
+# relay chart's telemetry.key carries. The service refuses to start without it
+# — with no key it could only reject everything or accept anything.
+#   kubectl -n gawk create secret generic gawk-telemetry-key \
+#     --from-literal=key=$(openssl rand -hex 32)
+telemetryKey: ""
+telemetryKeyRef: {}
+
+persistence:
+  enabled: true
+  # 14 days of raw sessions is ~75 MB at ten viewers × 2 h/day (docs/33 §4.3);
+  # rollups are permanent but tiny (a few thousand JSON lines). 2 Gi leaves
+  # room for a far busier fleet and for a stress test.
+  size: 2Gi
+  storageClass: ""
+  # An existing claim, if you manage PVCs outside this chart.
+  existingClaim: ""
+
+config:
+  # How long RAW sessions are kept. Rollups are never pruned regardless — that
+  # split is the whole point of the design (D4): raw is disposable, the
+  # per-session summary is permanent.
+  retentionDays: 14
+  # How often each relay pod's /statusz is polled. Sessions shorter than this
+  # have no relay-side view at all, and their rollups honestly say
+  # relayCoverage "none" rather than pretending (D5).
+  scrapeInterval: 5s
+  # How long a session may go unheard-from before it is finalized. Longer than
+  # the client's 10 s batch cadence plus its retries, so a client riding out a
+  # blip is not finalized underneath itself and re-opened as a second session.
+  sessionIdle: 2m
+  # The relay's headless companion Service (the relay chart's
+  # telemetry.headlessService). A plain ClusterIP would load-balance, so
+  # scraping it hits one random pod.
+  relayHeadlessService: gawk-server-metrics-headless
+  relayMetricsPort: 2112
+  # Base URL for the deep links a verdict carries, so a machine can hand a
+  # human something to LOOK at. Empty = no links.
+  dashboardBase: ""
+  # The MCP endpoint on the read listener. On by default: it is the item's
+  # primary read surface.
+  mcp: true
+  # The DuckDB passthrough tool. OFF by default (D11): DuckDB is a query
+  # option, not a runtime dependency, and arbitrary SQL on an ops surface
+  # should be a deliberate act.
+  querySql: false
+  # Per-IP ingest rate limiting. The IP is used and NEVER persisted (D8).
+  ingestRate: 5
+  ingestBurst: 20
+  logLevel: info
+  logFormat: json
+
+# The PUBLIC listener. Only the ingest path is routed here, from a same-origin
+# path on the frontend's Ingress (set the app chart's telemetry.enabled) —
+# never a LoadBalancer or an Ingress of its own.
+ingest:
+  port: 8080
+
+# The NON-PUBLIC listener: dashboard, read API and MCP. It aggregates every
+# broadcast on the fleet and should be no more reachable than /statusz is
+# today (R9 D1's posture). ClusterIP only by default; reach it with
+#   kubectl -n gawk port-forward svc/gawk-telemetry-read 8081:8081
+read:
+  port: 8081
+  # Optional internal-only Ingress for operators who want the dashboard at a
+  # URL. Turn basicAuth on if you do.
+  ingress:
+    enabled: false
+    className: nginx-int
+    host: ""
+    annotations: {}
+    tls:
+      enabled: false
+      secretName: ""
+  basicAuth:
+    enabled: false
+    user: ""
+    password: ""
+    passwordRef: {}
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 512Mi

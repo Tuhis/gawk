@@ -52,6 +52,7 @@ import {
   type AudioConfigMessage,
   type DecoderConfigMessage,
   type DeliveryServedMode,
+  type TelemetryHelloMessage,
 } from './wire';
 import { getMaxDecoderQueueSize } from '../config';
 
@@ -368,6 +369,9 @@ export interface ViewerCallbacks {
   // stream the decoder eats, upstream of decode. The worker shell muxes it to
   // fMP4 for iPhone native fullscreen. Absent = zero per-frame work.
   onReleasedFrame?: (frame: ReleasedFrame) => void;
+  // R28 (docs/33 D2): this session's telemetry identity, straight off wire
+  // 0x0D. Absent callback = this consumer does not do telemetry.
+  onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   // R22 audio (docs/27 finding 2): the encoded-AUDIO fork for the same muxer.
   // Forked at the demux point, not at a playout gate — the muxed timeline is
   // built from broadcaster timestamps, so arrival order is all this needs, and
@@ -638,6 +642,11 @@ export class ViewerPipeline {
           this.reassembler?.push(dgram);
         },
         onKeyframe: (kf) => this.handleKeyframeStream(kf),
+        // R28 (docs/33 D2/D13): pass the session's telemetry identity straight
+        // through. The pipeline neither collects nor sends — it is the wrong
+        // context for both (it may be inside two nested workers), and keeping
+        // the token off ViewerStats keeps it out of Copy diagnostics.
+        onTelemetryHello: (hello) => this.cb.onTelemetryHello?.(hello),
         onClosed: (info) => this.handleClosed(info),
       });
     } catch (e) {

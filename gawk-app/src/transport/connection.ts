@@ -9,13 +9,17 @@ import {
   MAX_DATAGRAM_SIZE,
   MAX_KEYFRAME_BYTES,
   STREAM_FRAME_HEADER_SIZE,
+  TELEMETRY_HELLO_SIZE,
   TYPE_RELIABLE_CARRIER,
   TYPE_STREAM_FRAME,
+  TYPE_TELEMETRY_HELLO,
   WIRE_VERSION,
   WireError,
   parseDecoderConfig,
   parseStreamFrameHeader,
+  parseTelemetryHello,
   type DecoderConfigMessage,
+  type TelemetryHelloMessage,
 } from './wire';
 
 export interface ConnectOptions {
@@ -133,6 +137,11 @@ export function newCarrierCounters(): CarrierCounters {
 
 export interface ServerStreamCallbacks {
   onKeyframe: (kf: KeyframeStreamFrame) => void;
+  // R28 (docs/33 D2): this session's telemetry identity, arriving on its own
+  // reliable uni stream. Optional — a relay predating R28, or one with
+  // telemetry off, sends none, and the correct client behaviour is then to
+  // collect nothing rather than to wait for a message that will not come.
+  onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   // R19: one verbatim datagram record off a reliable carrier stream. The
   // transport feeds it into the same handler as a received datagram — the
   // whole point of the carrier design (docs/24 Decision 2).
@@ -225,12 +234,35 @@ async function readOneServerStream(
     }
     const head0 = chunks[0][0];
     const head1 = chunks[0].length > 1 ? chunks[0][1] : chunks[1][0];
-    if (head0 !== WIRE_VERSION || (head1 !== TYPE_STREAM_FRAME && head1 !== TYPE_RELIABLE_CARRIER)) {
+    if (
+      head0 !== WIRE_VERSION ||
+      (head1 !== TYPE_STREAM_FRAME &&
+        head1 !== TYPE_RELIABLE_CARRIER &&
+        head1 !== TYPE_TELEMETRY_HELLO)
+    ) {
       // Unknown stream kind or version: cancel without wedging the accept
       // loop. Counted as malformed so it is visible in stats.
       carrier.malformed++;
       log.warn(`unknown server stream kind 0x${head0.toString(16)} 0x${head1.toString(16)}; cancelling`);
       void reader.cancel().catch(() => {});
+      return;
+    }
+
+    if (head1 === TYPE_TELEMETRY_HELLO) {
+      // Fixed 35 bytes; read to EOF (it is a whole stream) and parse strictly.
+      // A malformed hello costs telemetry for this session and nothing else —
+      // it must never disturb the media path, so it is counted as malformed
+      // and dropped like any other unreadable server stream.
+      for (;;) {
+        if (total > TELEMETRY_HELLO_SIZE) break;
+        if (!(await readMore())) break;
+      }
+      try {
+        cb.onTelemetryHello?.(parseTelemetryHello(concatChunks(chunks, total)));
+      } catch (e) {
+        carrier.malformed++;
+        log.warn('telemetry hello unreadable; this session will not report:', e);
+      }
       return;
     }
 

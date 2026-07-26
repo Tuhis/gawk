@@ -13,7 +13,11 @@ import type { ConnectOptions } from './connection';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { DecodedAudioChunk } from './audio-decode';
 import type { ReleasedFrame } from './reorder-buffer';
-import { CLOSE_CODE_BROADCAST_ENDED, type DecoderConfigMessage } from './wire';
+import {
+  CLOSE_CODE_BROADCAST_ENDED,
+  type DecoderConfigMessage,
+  type TelemetryHelloMessage,
+} from './wire';
 import type { DecodedFrame } from '../media/decoder';
 import { RECONNECT_MAX_ATTEMPTS, reconnectDelayMs, type ReconnectInfo } from './reconnect';
 
@@ -59,6 +63,11 @@ export interface ViewerSessionCallbacks {
   // forwarded from every pipeline attempt so the mux stream continues across
   // reconnects. Absent = no fork is ever installed (non-gated devices).
   onReleasedFrame?: (frame: ReleasedFrame) => void;
+  // R28 (docs/33 D2): the telemetry identity, forwarded from every pipeline
+  // attempt. A reconnect is a NEW relay session and gets a NEW token, so this
+  // fires again — the collector must treat each as a fresh session rather than
+  // as a repeat of the first.
+  onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
 }
 
 // The subset of ViewerPipeline the session drives; injectable for tests.
@@ -174,6 +183,7 @@ export class ViewerSession {
       ...(this.cb.onAudioChunk ? { onAudioChunk: (c) => this.cb.onAudioChunk?.(c) } : {}),
       ...(this.cb.onAudioReset ? { onAudioReset: () => this.cb.onAudioReset?.() } : {}),
       ...(this.cb.onReleasedFrame ? { onReleasedFrame: (f) => this.cb.onReleasedFrame?.(f) } : {}),
+      ...(this.cb.onTelemetryHello ? { onTelemetryHello: (h) => this.cb.onTelemetryHello?.(h) } : {}),
     };
     this.cb.onAudioReset?.();
     return this.createPipeline(this.serverUrl, this.broadcastId, this.connectOpts, inner);

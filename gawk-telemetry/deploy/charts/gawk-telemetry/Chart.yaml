@@ -1,0 +1,8 @@
+apiVersion: v2
+name: gawk-telemetry
+description: Optional per-session diagnostics for a gawk relay fleet (R28) — client + relay telemetry, permanent per-session rollups, a diagnose() rule engine, a live operator dashboard and an MCP surface.
+type: application
+# Both fields are bumped by release-please; the image tag defaults to
+# appVersion, so chart version == image version always holds.
+version: 0.1.0 # x-release-please-version
+appVersion: "0.1.0" # x-release-please-version
