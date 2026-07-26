@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.0...gawk-app-v0.33.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* **r22:** AAC audio for iPhone fullscreen + successor-interval sample durations (docs/27 findings 3–5) ([#142](https://github.com/Tuhis/gawk/issues/142)) ([658a7e3](https://github.com/Tuhis/gawk/commit/658a7e3d797b8f3043c99aed1361e44a446801fc))
+
 ## [0.33.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.32.0...gawk-app-v0.33.0) (2026-07-26)
 
 
