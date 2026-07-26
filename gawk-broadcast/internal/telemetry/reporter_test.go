@@ -363,3 +363,35 @@ func TestReporterBoundsPendingBuffers(t *testing.T) {
 		t.Errorf("newest sample = %v, want the most recent one to survive", last["i"])
 	}
 }
+
+// 429 is the one 4xx that means "later, not never" (review finding 2): the
+// service is shedding load and the batch itself is fine. Treating it as
+// permanent made the two collectors disagree about the same status, and threw
+// telemetry away exactly when the fleet was busy enough for it to matter.
+func TestPostRetriesOn429ButNotOnOther4xx(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		wantRetry bool
+	}{
+		{"too many requests", http.StatusTooManyRequests, true},
+		{"bad request", http.StatusBadRequest, false},
+		{"unauthorized", http.StatusUnauthorized, false},
+		{"server error", http.StatusInternalServerError, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			t.Cleanup(srv.Close)
+			r := &Reporter{opts: Options{URL: srv.URL, Client: srv.Client()}}
+			done, retry := r.post([]byte(`{}`))
+			if done {
+				t.Errorf("status %d reported as delivered", tc.status)
+			}
+			if retry != tc.wantRetry {
+				t.Errorf("status %d: retry = %v, want %v", tc.status, retry, tc.wantRetry)
+			}
+		})
+	}
+}

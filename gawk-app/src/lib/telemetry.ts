@@ -96,13 +96,23 @@ export interface TelemetryBatch<T> {
   truncated?: true;
 }
 
+// What one delivery attempt concluded. `retryable` separates "later" from
+// "never": a 429 is the service shedding load and the batch is fine, while a
+// 4xx rejection will fail identically forever, so retrying it is pure noise at
+// exactly the wrong moment. A bare boolean stays accepted and means
+// "retryable if it failed" — the behaviour before this split.
+export interface TelemetrySendOutcome {
+  ok: boolean;
+  retryable?: boolean;
+}
+
 // The one network call, injectable so tests never touch fetch/sendBeacon.
 // `beacon` asks for the unload-safe path; the transport may ignore it.
 export type TelemetryTransport = (
   url: string,
   body: string,
   beacon: boolean,
-) => Promise<boolean>;
+) => Promise<boolean | TelemetrySendOutcome>;
 
 export interface TelemetryCollectorOptions<T> {
   url: string;
@@ -342,13 +352,24 @@ export class TelemetryCollector<T> {
   }
 
   private async send(body: string, beacon: boolean, attempt: number): Promise<void> {
-    let ok = false;
+    let outcome: boolean | TelemetrySendOutcome = false;
     try {
-      ok = await this.opts.transport(this.opts.url, body, beacon);
+      outcome = await this.opts.transport(this.opts.url, body, beacon);
     } catch {
-      ok = false;
+      outcome = false;
     }
+    const ok = typeof outcome === 'boolean' ? outcome : outcome.ok;
+    const retryable = typeof outcome === 'boolean' ? true : outcome.retryable !== false;
     if (ok || this.stopped) return;
+    if (!retryable) {
+      // A rejection that will fail the same way every time. Retrying it would
+      // only add load; the gap shows up honestly in the `seq` sequence.
+      if (!this.givenUp) {
+        this.givenUp = true;
+        log.info('telemetry batch rejected; collection continues');
+      }
+      return;
+    }
     if (attempt >= MAX_SEND_ATTEMPTS) {
       // Dropped, silently and forever. The missing window shows up honestly
       // as a gap in the batch `seq` sequence (docs/33 §4.5), which is a
@@ -410,7 +431,8 @@ const defaultTransport: TelemetryTransport = async (url, body, beacon) => {
       // of collecting out-of-band (D1).
       keepalive: body.length < 60_000,
     });
-    return res.ok;
+    // 429 and 5xx are worth another attempt; every other rejection is final.
+    return { ok: res.ok, retryable: res.status === 429 || res.status >= 500 };
   } catch {
     return false;
   }

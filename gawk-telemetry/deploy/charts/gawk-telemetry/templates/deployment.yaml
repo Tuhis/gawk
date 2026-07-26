@@ -89,6 +89,10 @@ spec:
               value: {{ .Values.config.ingestRate | quote }}
             - name: GAWK_TELEMETRY_INGEST_BURST
               value: {{ .Values.config.ingestBurst | quote }}
+            - name: GAWK_TELEMETRY_INGEST_SESSION_RATE
+              value: {{ .Values.config.ingestSessionRate | quote }}
+            - name: GAWK_TELEMETRY_INGEST_SESSION_BURST
+              value: {{ .Values.config.ingestSessionBurst | quote }}
             - name: GAWK_TELEMETRY_LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
             - name: GAWK_TELEMETRY_LOG_FORMAT

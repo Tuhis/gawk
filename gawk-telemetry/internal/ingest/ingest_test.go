@@ -725,3 +725,81 @@ func TestNestedUnknownsCountOnce(t *testing.T) {
 		t.Errorf("nested children = %d, want 5 kept verbatim", len(nested))
 	}
 }
+
+// post drives one request through the whole handler, which is where the
+// limiter lives — Validate alone does not see it.
+func post(t *testing.T, h *Handler, b []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest", bytes.NewReader(b))
+	req.RemoteAddr = "10.42.0.7:34512" // the Ingress: every viewer shares it
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// --- rate limiting (review finding 2) --------------------------------------
+//
+// The limiter used to key on RemoteAddr, but the DEFAULT deployment routes
+// every browser through the frontend Ingress, so every viewer on the fleet
+// arrives from one or two proxy IPs and the "per-IP" bucket was fleet-global
+// with a per-IP budget. At a 10 s flush cadence that capped the service at
+// ~50 concurrent sessions — against a project target of ~1000 viewers on one
+// hot broadcast — and it failed at exactly the moment an operator would open
+// the dashboard to find out why.
+
+func TestAThousandSessionsAreNotThrottledByEachOther(t *testing.T) {
+	sink := &recordingSink{}
+	h := newHandler(t, sink)
+	// One flush from each of a hot broadcast's viewers, all arriving from the
+	// Ingress within the same second.
+	for i := range 1000 {
+		rec := post(t, h, body(t, nil))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("session %d rejected with %d; the fleet cap is below its own stated target", i, rec.Code)
+		}
+	}
+}
+
+func TestOneSessionCannotDrownTheFleet(t *testing.T) {
+	sink := &recordingSink{}
+	h := newHandler(t, sink)
+	loud := mintToken(t, testKey, wire.TelemetryRoleViewer)
+
+	throttled := false
+	for i := range 200 {
+		rec := post(t, h, body(t, map[string]any{"token": loud, "seq": i}))
+		if rec.Code == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Error("one session sent 200 batches in a second and was never throttled")
+	}
+	// And a well-behaved neighbour is unaffected: the bucket that filled up is
+	// that session's, not the fleet's.
+	if rec := post(t, h, body(t, nil)); rec.Code != http.StatusNoContent {
+		t.Errorf("an unrelated session got %d after a noisy neighbour was throttled", rec.Code)
+	}
+}
+
+func TestTheGlobalCapIsEnforcedBeforeAnyWork(t *testing.T) {
+	sink := &recordingSink{}
+	h, err := New(Options{
+		Key: testKey, Sink: sink, Now: func() time.Time { return testNow },
+		RatePerSec: 1, Burst: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes := map[int]int{}
+	for range 10 {
+		codes[post(t, h, body(t, nil)).Code]++
+	}
+	if codes[http.StatusTooManyRequests] == 0 {
+		t.Error("the global cap never engaged")
+	}
+	if codes[http.StatusNoContent] == 0 {
+		t.Error("the global cap rejected everything, including the burst it should allow")
+	}
+}

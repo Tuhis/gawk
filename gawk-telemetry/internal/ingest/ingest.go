@@ -30,7 +30,6 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -128,11 +127,18 @@ type Options struct {
 	Sink Sink
 	Log  *slog.Logger
 	Now  func() time.Time
-	// RatePerSec / Burst bound one source IP's request rate. The IP is used
-	// and NEVER persisted (D8) — the limiter's map is keyed by a truncated
-	// form and swept, and nothing it holds reaches a file or a log line.
+	// RatePerSec / Burst bound what the PROCESS will accept in total, before a
+	// body is read — a cheap backstop against load, not a fairness mechanism.
+	// It must be sized for the whole fleet: every browser reaches this through
+	// the frontend Ingress, so there is no per-client discrimination available
+	// here that a client could not forge (D8 — no IP is consulted or stored).
 	RatePerSec float64
 	Burst      float64
+	// SessionRatePerSec / SessionBurst bound ONE verified session, applied
+	// after the token check. This is where fairness lives: the session id is
+	// authenticated, so unlike an IP or a header it cannot be borrowed.
+	SessionRatePerSec float64
+	SessionBurst      float64
 	// AllowedOrigins enables CORS for the SPLIT-ORIGIN deployment only — an
 	// operator who pointed config.telemetryUrl at a different host (D1). The
 	// default same-origin deployment needs none of this and gets none of it:
@@ -148,9 +154,23 @@ type Options struct {
 
 // Handler serves POST /v1/ingest.
 type Handler struct {
-	opts    Options
-	log     *slog.Logger
-	limiter *ipLimiter
+	opts Options
+	log  *slog.Logger
+	// Two tiers, in this order (review finding 2):
+	//
+	//   - `global` bounds the work this process will do at all, before a body
+	//     is even read. It is one bucket for the whole fleet because that is
+	//     what it actually was before — keyed on RemoteAddr, it degenerated to
+	//     one bucket behind the frontend Ingress, just with a per-IP budget
+	//     that capped the service far below its own target. Sizing it honestly
+	//     is better than a per-IP number that only looks per-IP.
+	//   - `perSession` is the real fairness bound, applied AFTER the token is
+	//     verified: an authenticated session id is an identity the service can
+	//     trust, unlike a header, and using it means no client IP is ever
+	//     consulted, stored or bucketed (D8) — the promise the old comment made
+	//     and the code did not quite keep.
+	global     *keyLimiter
+	perSession *keyLimiter
 }
 
 // New builds the ingest handler.
@@ -168,15 +188,22 @@ func New(opts Options) (*Handler, error) {
 		opts.Now = time.Now
 	}
 	if opts.RatePerSec <= 0 {
-		opts.RatePerSec = 5
+		opts.RatePerSec = DefaultGlobalRatePerSec
 	}
 	if opts.Burst <= 0 {
-		opts.Burst = 20
+		opts.Burst = DefaultGlobalBurst
+	}
+	if opts.SessionRatePerSec <= 0 {
+		opts.SessionRatePerSec = DefaultSessionRatePerSec
+	}
+	if opts.SessionBurst <= 0 {
+		opts.SessionBurst = DefaultSessionBurst
 	}
 	return &Handler{
-		opts:    opts,
-		log:     opts.Log,
-		limiter: newIPLimiter(opts.RatePerSec, opts.Burst, opts.Now),
+		opts:       opts,
+		log:        opts.Log,
+		global:     newKeyLimiter(opts.RatePerSec, opts.Burst, opts.Now),
+		perSession: newKeyLimiter(opts.SessionRatePerSec, opts.SessionBurst, opts.Now),
 	}, nil
 }
 
@@ -205,7 +232,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.limiter.allow(clientIPBucket(r)) {
+	if !h.global.allow(globalBucket) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		return
 	}
@@ -227,6 +254,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// logged (without the IP or the token).
 		h.log.Debug("ingest rejected", "status", status, "err", err)
 		w.WriteHeader(status)
+		return
+	}
+	// Per-session, and therefore only now: the identity this bounds is the one
+	// the token proved. A session that talks far faster than its own flush
+	// cadence is either broken or hostile, and either way it must not spend
+	// the fleet's budget.
+	if !h.perSession.allow(accepted.SessionID) {
+		w.WriteHeader(http.StatusTooManyRequests)
 		return
 	}
 	if err := h.opts.Sink.Accept(accepted); err != nil {
@@ -396,28 +431,10 @@ func clip(s string, n int) string {
 	return s
 }
 
-// clientIPBucket derives a rate-limit key from the request WITHOUT persisting
-// it (D8). The value never leaves this process's memory, never reaches a file
-// and never reaches a log line — the limiter's whole state is swept on a
-// timer.
-func clientIPBucket(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	// Behind the frontend Ingress every request arrives from the proxy, so an
-	// X-Forwarded-For would be the real discriminator. It is deliberately NOT
-	// consulted: it is client-controlled, trivially spoofed to defeat exactly
-	// this limiter, and consulting it would mean handling real client IPs the
-	// service has promised not to handle. Rate limiting here is a cheap
-	// backstop, not the security boundary — the token is.
-	return host
-}
-
-// ipLimiter is a small token-bucket map. Deliberately not a general-purpose
+// keyLimiter is a small token-bucket map. Deliberately not a general-purpose
 // limiter: it holds nothing but a float and a timestamp per bucket, and it is
-// swept so a long-running process cannot accumulate a record of who connected.
-type ipLimiter struct {
+// swept so a long-running process cannot accumulate a record of who was here.
+type keyLimiter struct {
 	mu      sync.Mutex
 	rate    float64
 	burst   float64
@@ -431,11 +448,11 @@ type bucket struct {
 	last   time.Time
 }
 
-func newIPLimiter(rate, burst float64, now func() time.Time) *ipLimiter {
-	return &ipLimiter{rate: rate, burst: burst, now: now, buckets: map[string]*bucket{}, lastGC: now()}
+func newKeyLimiter(rate, burst float64, now func() time.Time) *keyLimiter {
+	return &keyLimiter{rate: rate, burst: burst, now: now, buckets: map[string]*bucket{}, lastGC: now()}
 }
 
-func (l *ipLimiter) allow(key string) bool {
+func (l *keyLimiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -467,3 +484,31 @@ func (l *ipLimiter) allow(key string) bool {
 	b.tokens--
 	return true
 }
+
+// Limiter defaults. The global figures are sized from the product target
+// rather than from a habit: ~1000 viewers on one hot broadcast, each flushing
+// every 10 s, is ~100 requests/s steady, and unload flushes plus retry chains
+// arrive in bursts around it. Bodies are already bounded at 1 MB and every
+// accepted one is token-gated, so hundreds a second is cheap to serve and far
+// below what the old effective ~50-session ceiling allowed.
+//
+// The burst covers the whole fleet flushing at once, which is not a
+// hypothetical here: R17's rolling relay updates send every client to reconnect
+// within the same second, and a limiter that sheds telemetry during a rollout
+// would be blind exactly when a rollout goes wrong.
+//
+// The per-session figures are deliberately tight: a well-behaved client sends
+// about one batch every 10 s, so 1/s with a burst of 10 covers a flush, an
+// unload beacon and a full retry chain several times over while still catching
+// a client that has come loose.
+const (
+	DefaultGlobalRatePerSec  = 300
+	DefaultGlobalBurst       = 1200
+	DefaultSessionRatePerSec = 1
+	DefaultSessionBurst      = 10
+)
+
+// globalBucket is the single key the process-wide limiter uses. The limiter is
+// a keyed map because the per-session tier needs one; the global tier is the
+// degenerate case with one bucket, spelled out rather than special-cased.
+const globalBucket = ""

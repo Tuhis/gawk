@@ -29,7 +29,7 @@ interface Sent {
 
 // A collector wired to fake time and a recording transport. Timers are driven
 // explicitly so nothing here waits on a wall clock.
-function harness(opts: { fail?: boolean; reportIntervalMs?: number } = {}) {
+function harness(opts: { fail?: boolean; reportIntervalMs?: number; retryable?: boolean } = {}) {
   const sent: Sent[] = [];
   const timers: { fn: () => void; ms: number }[] = [];
   let clock = 0;
@@ -41,7 +41,8 @@ function harness(opts: { fail?: boolean; reportIntervalMs?: number } = {}) {
     now: () => 1_700_000_000_000,
     transport: async (url, body, beacon) => {
       sent.push({ url, body, beacon });
-      return !opts.fail;
+      if (!opts.fail) return true;
+      return opts.retryable === undefined ? false : { ok: false, retryable: opts.retryable };
     },
     setTimer: (fn, ms) => {
       timers.push({ fn, ms });
@@ -406,5 +407,46 @@ describe('TelemetryCollector — byte budget (§4.3)', () => {
     expect(later.truncated).toBe(true);
     expect(later.samples).toEqual([]);
     expect(later.events.map((e) => e.kind)).toEqual(['reconnect']);
+  });
+});
+
+describe('TelemetryCollector — retry semantics', () => {
+  // 429 means "later"; every other rejection means "never" (review finding 2).
+  // Retrying a batch the service will reject identically forever is pure noise
+  // at exactly the moment the fleet is busiest.
+  it('does not retry a rejection the service will repeat', async () => {
+    const h = harness({ fail: true, retryable: false });
+    h.begin();
+    h.advance(3000);
+    h.collector.sample({ fps: 30 });
+    h.collector.flush(false);
+
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      await Promise.resolve();
+      h.runTimers();
+    }
+    await Promise.resolve();
+
+    expect(h.sent.length).toBe(1);
+    // And the session keeps collecting: one bad batch is not a dead session.
+    expect(h.collector.active).toBe(true);
+  });
+
+  it('retries a rejection the service says is transient', async () => {
+    const h = harness({ fail: true, retryable: true });
+    h.begin();
+    h.advance(3000);
+    h.collector.sample({ fps: 30 });
+    h.collector.flush(false);
+
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      await Promise.resolve();
+      h.runTimers();
+    }
+    await Promise.resolve();
+
+    expect(h.sent.length).toBe(MAX_SEND_ATTEMPTS);
   });
 });

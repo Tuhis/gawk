@@ -67,9 +67,21 @@ config:
   # option, not a runtime dependency, and arbitrary SQL on an ops surface
   # should be a deliberate act.
   querySql: false
-  # Per-IP ingest rate limiting. The IP is used and NEVER persisted (D8).
-  ingestRate: 5
-  ingestBurst: 20
+  # Ingest rate limiting, in two tiers. No client IP is ever consulted or
+  # stored (D8): every browser reaches this through the frontend Ingress, so a
+  # per-IP bucket would be fleet-wide anyway — just wearing a misleading name.
+  #
+  # ingestRate/ingestBurst bound the PROCESS, before a body is read. Size them
+  # for the fleet: ~1000 viewers flushing every 10 s is ~100/s steady, and the
+  # burst covers everyone flushing at once after a relay rollout.
+  ingestRate: 300
+  ingestBurst: 1200
+  # ingestSessionRate/ingestSessionBurst bound ONE verified session, applied
+  # after the token check — the fairness tier. A well-behaved client sends one
+  # batch every 10 s, so this is generous by an order of magnitude and still
+  # catches a client that has come loose.
+  ingestSessionRate: 1
+  ingestSessionBurst: 10
   logLevel: info
   logFormat: json
 

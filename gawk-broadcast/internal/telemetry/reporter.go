@@ -419,6 +419,13 @@ func (r *Reporter) post(body []byte) (done, retry bool) {
 	switch {
 	case resp.StatusCode < 300:
 		return true, false
+	case resp.StatusCode == http.StatusTooManyRequests:
+		// 429 is the one 4xx that says "later, not never": the service is
+		// shedding load, and the batch itself is fine. Treating it as
+		// permanent — as this did — makes the two collectors disagree about
+		// the same status, and drops telemetry precisely when the fleet is
+		// busy enough to be worth having.
+		return false, true
 	case resp.StatusCode >= 500:
 		return false, true
 	default:

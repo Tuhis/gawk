@@ -87,6 +87,7 @@ func run() error {
 	handler, err := ingest.New(ingest.Options{
 		Key: cfg.key, Sink: writer, Log: log,
 		RatePerSec: cfg.rateLimit, Burst: cfg.rateBurst,
+		SessionRatePerSec: cfg.sessionRate, SessionBurst: cfg.sessionBurst,
 		AllowedOrigins: cfg.corsOrigins,
 	})
 	if err != nil {
@@ -336,6 +337,8 @@ type config struct {
 	basicAuthPass  string
 	rateLimit      float64
 	rateBurst      float64
+	sessionRate    float64
+	sessionBurst   float64
 	corsOrigins    []string
 	logFormat      string
 	logLevel       string
@@ -401,10 +404,14 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		"optional basic-auth user for the read listener (empty = no auth, cluster-internal)")
 	fs.StringVar(&c.basicAuthPass, "read-password", env("GAWK_TELEMETRY_READ_PASSWORD"),
 		"basic-auth password for the read listener")
-	rate := fs.Float64("ingest-rate", orFloat(env("GAWK_TELEMETRY_INGEST_RATE"), 5),
-		"per-IP ingest requests per second (the IP is used and never stored)")
-	burst := fs.Float64("ingest-burst", orFloat(env("GAWK_TELEMETRY_INGEST_BURST"), 20),
-		"per-IP ingest burst")
+	rate := fs.Float64("ingest-rate", orFloat(env("GAWK_TELEMETRY_INGEST_RATE"), ingest.DefaultGlobalRatePerSec),
+		"process-wide ingest requests per second — size for the whole fleet (no client IP is consulted or stored)")
+	burst := fs.Float64("ingest-burst", orFloat(env("GAWK_TELEMETRY_INGEST_BURST"), ingest.DefaultGlobalBurst),
+		"process-wide ingest burst; covers the fleet flushing at once after a rollout")
+	sessionRate := fs.Float64("ingest-session-rate", orFloat(env("GAWK_TELEMETRY_INGEST_SESSION_RATE"), ingest.DefaultSessionRatePerSec),
+		"per-VERIFIED-SESSION ingest requests per second — the fairness tier, applied after the token check")
+	sessionBurst := fs.Float64("ingest-session-burst", orFloat(env("GAWK_TELEMETRY_INGEST_SESSION_BURST"), ingest.DefaultSessionBurst),
+		"per-verified-session ingest burst")
 	corsOrigins := fs.String("cors-origin", env("GAWK_TELEMETRY_CORS_ORIGIN"),
 		"comma-separated origins allowed to POST cross-origin — the SPLIT-ORIGIN deployment only; empty (the default, same-origin) adds no CORS surface at all")
 	fs.StringVar(&c.logLevel, "log-level", or(env("GAWK_TELEMETRY_LOG_LEVEL"), "info"), "debug|info|warn|error")
@@ -439,6 +446,7 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		}
 	}
 	c.rateLimit, c.rateBurst = *rate, *burst
+	c.sessionRate, c.sessionBurst = *sessionRate, *sessionBurst
 	for _, o := range strings.Split(*corsOrigins, ",") {
 		if o = strings.TrimSpace(o); o != "" {
 			c.corsOrigins = append(c.corsOrigins, o)
