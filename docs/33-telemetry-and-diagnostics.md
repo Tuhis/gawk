@@ -679,6 +679,23 @@ stream disagreeing on a dashboard would be worse than no dashboard, so there
 is one engine; live evaluation simply uses the subset of rules whose signals
 are available continuously.
 
+The window is what makes "one engine" work, and it is a property of the
+**facts**, not of the rules (deviation 21). Relay counters are cumulative, and
+the playbook's counter rules are written for a rollup, where the total *is* the
+session; fed lifetime totals they could only ratchet, and no hysteresis can
+clear a number that never comes down. So the live projection feeds per-scrape
+**deltas under the same fact names**: the rollup's window is the session, the
+dashboard's is a scrape interval, and each rule reads one name either way.
+Gauges (queue depth, DVR lag, subscriber counts) stay absolute — a delta of
+"how deep is the queue" is not a thing.
+
+A rule may only require a signal a producer actually emits. That is not a
+convention but a test: `rules.ProducibleFacts` lists every producible fact
+tagged by producer, every rule's `Requires` must be listed, and each producer's
+emitted set must equal exactly its share. Row 10 shipped requiring a signal
+nothing produced, which fails invisibly — the rule reads `unavailable` forever
+and looks like a rule.
+
 Four states, deliberately few: **ok · warn · bad · unknown**. Lifecycle
 (`live` / `away` / `ended`) is carried *separately* — a broadcaster in the
 R1 grace period is `away`, which is not a fault.
@@ -863,6 +880,124 @@ Deviations from the design as written, recorded rather than silently absorbed:
     Default-off is asserted on **every other** pass: the standard viewer run
     fails if it sees a single telemetry request.
 
+### Review-round fixes (2026-07-27)
+
+An adversarial review of the whole change (PR #151) found eleven defects and
+four nits. What changed, and the reasoning worth not re-deriving:
+
+18. **The live projection had no lifecycle** (finding 1). `EndSession` and
+    `NoteEnded` had no production caller, so `Snapshot().Ended` was always
+    empty — the recessed "Recently ended" group, a headline TM8 requirement,
+    could never render — and nothing ever left `bcasts`/`sessions`, so every
+    viewer that ever connected stayed a row forever. **A broadcast ends when a
+    scrape round stops listing it**: that is the relay's own statement, since a
+    GC'd hub disappears from `/statusz` while a broadcaster merely away keeps
+    its entry through the whole R1 grace, so no threshold had to be invented.
+    `relayscrape.Round` therefore carries `Complete` — only a round in which
+    every pod answered may be read as an absence — and **a pod that answers
+    with no broadcasts counts as having answered**, because its empty answer IS
+    the evidence. Two quiet-timeout backstops sit under it (5 min per
+    broadcast, matched to the relay's GC grace; 2 min per session, matched to
+    the writer's idle timeout) for the client-only deployment, where no round
+    ever arrives to declare anything absent. Session ends are wired at the
+    writer's finalize, so all three endings converge. `newWriter` was extracted
+    from `run()` so the wiring itself is testable — the original suite called
+    the end methods directly, which is precisely why a dead hook shipped green.
+
+19. **The ingest limiter was fleet-global wearing a per-IP name** (finding 2).
+    Every browser arrives through the frontend Ingress, so `RemoteAddr` keying
+    gave the whole fleet one bucket with a per-IP budget: ~50 concurrent
+    sessions at the shipped defaults, against this project's ~1000-viewer
+    target. It is now two tiers — a **global** cap sized from the target
+    (300/s, burst 1200, which covers the whole fleet flushing at once after an
+    R17 rolling update) and a **per-verified-session** bucket applied after the
+    token check (1/s, burst 10). The fairness tier is now stronger than what it
+    replaced: a session id is authenticated, so unlike an IP or a header it
+    cannot be borrowed — and no client IP is consulted or bucketed at all,
+    which is what D8 claimed and the code did not quite do.
+
+20. **429 meant different things to the two collectors** (finding 2's tail).
+    The native reporter treated every non-5xx as permanent; the browser retried
+    everything blind. Both now retry 429 and only 429 — the one 4xx that says
+    "later, not never" — and drop a rejection the service will repeat
+    identically. The browser transport gained an outcome shape to carry that; a
+    bare boolean still means what it meant.
+
+21. **The live path evaluated cumulative counters** (finding 4). §4.8.3
+    promised "the same rule engine … over a live window" and no window existed:
+    `carrier-queue-overflow` marked a viewer bad for four hours over one event
+    at minute 3, and `relay-egress-saturation`'s "every subscriber has dropped
+    something" converges to true on any long broadcast of a drops-over-stalls
+    relay. The projection now keeps each pod's and each subscriber's previous
+    scrape and feeds **deltas under the same fact names** — one engine, two
+    windows: the rollup's is the session, the dashboard's is a scrape interval.
+    Counters and gauges are enumerated rather than guessed; a first observation
+    emits no counter fact at all (a session already hours old has lifetime
+    totals that say nothing about now); a counter going backwards is a relay
+    restart, so that window is void.
+
+22. **Broadcast facts were last-writer-wins across pods** (finding 6). Origin
+    and edge report the same key by design and the scraper collects them
+    concurrently, so role, counts and rule outcomes flapped at scrape cadence.
+    Facts are held per pod and derived deterministically: the **origin** is
+    authoritative for the publisher's leg and for `viewersGlobal` (R18 already
+    aggregates it there — a second fleet total that could disagree would be
+    worse than none), egress is additive, and the audience is the sum of each
+    pod's real subscribers with edges excluded.
+
+23. **One advertised rule could never fire, and five could not fire where it
+    matters** (finding 5). Row 10 required `relay.framesRelayedPerSec`, which
+    no producer set. The signal is now produced on both paths, and the guard
+    the review asked for came with it: `rules.ProducibleFacts` is the inventory
+    of what the producers actually emit, tagged by producer, held from both
+    sides — every rule's `Requires` must be listed, and each producer's emitted
+    set must equal exactly its share. Writing it immediately found **four more
+    rules dead on the read path** (`leg-b-single-viewer`,
+    `relay-egress-saturation`, `bandwidth-cap`, `viewer-count-gap`), which had
+    required broadcast-level signals only ever derived for the dashboard — so
+    `diagnose()`, the surface this item exists for, could not fire a third of
+    the playbook. It also caught four fact names invented while writing the
+    inventory, which is the argument for pinning it against real emission
+    rather than against a hand-maintained list.
+
+24. **Ingest had no idempotency** (finding 8). A replayed batch was appended and
+    counted twice; a client offline past the finalize tombstone produced a
+    second rollup row for one session. A batch numbered below what its session
+    has stored is now dropped and counted, and the read path collapses rollup
+    rows by sessionId keeping the last. Both stay tolerant of the legitimate
+    cases: a gap is still a gap, and a first batch numbered above zero is a
+    resumed session rather than a duplicate.
+
+25. **StrictMode killed the browser collector** (finding 7). Cleanup called the
+    terminal `stop()`, and StrictMode's mount→cleanup→remount reuses the same
+    ref, so every dev session collected nothing. Cleanup now runs `finish()`
+    synchronously and defers only the terminal flag, which the next effect
+    setup cancels — the shape `useViewerConnection`'s worker teardown already
+    uses. Recreating the collector was rejected: both screens close over the
+    returned value inside `useCallback`s and StrictMode does not re-render
+    between cleanup and remount, so a swapped instance would bind them to a
+    dead object — an invisible failure in place of a visible one.
+
+26. **Read-listener credentials were compared with `!=`** (finding 11), on the
+    one surface an operator may route through an Ingress. Now `crypto/subtle`,
+    both halves evaluated.
+
+27. **Truncation split characters, and oversized objects dropped fields in map
+    order** (nits). Byte-boundary truncation stored invalid UTF-8 that
+    `json.Marshal` rewrites to U+FFFD — a corrupted value, not a shortened one
+    — in three Go helpers and, one encoding layer down, in the browser's
+    UTF-16 `slice`. `sanitizeObject` now visits known fields first, then
+    unknown, both lexical, so which fields survive an oversized payload is
+    reproducible. D15's contract is unchanged: still tolerant, still
+    drop-and-count.
+
+28. **The telemetry-off CI claim was stronger than the check** (nit). The PR
+    body said "asserted by diff"; the step grepped for two tokens. It is now a
+    whole-render, case-insensitive absence check — deliberately not a golden
+    byte-diff, because the render carries the chart version, appVersion and
+    image tag, so a golden file would need regenerating at every release-please
+    bump and would fail for reasons that have nothing to do with telemetry.
+
 ### Defects the e2e pass found on its first run
 
 All five were fixed at the source; none was reachable from the unit suite.
@@ -921,7 +1056,7 @@ field of that interface is typed.
 |-------|-------|---------------------|
 | **TM1** | **Correlation ID**: `TypeTelemetryHello` (0x0D) + token mint/verify in `gawk-server/wire`; relay sends it on publish/subscribe (never `/internal/subscribe`); `subscriberDetails` gains `sessionId`; TS + `wirecheck` mirrors | Golden vectors byte-identical across Go/TS/`wirecheck`, incl. a strict-parse suite (wrong version/type/length, reserved flag bits set, expired token, tampered `broadcastKey`, tampered `role`); mint→verify round-trip and cross-fleet-key rejection; edge sessions provably receive none; `/statusz` gains `sessionId` additively with every existing key unchanged; no `telemetryKey` ⇒ `enabled: 0` and no behaviour change |
 | **TM2** | **Client collectors**: browser viewer + broadcaster (main-thread, D13), native engine reporter, zero-PII envelope, batching/budget/beacon, R23 terms update + `termsVersion` bump | Unit tests: envelope carries obfuscated key + coarse browser/OS and **never** the raw UA or raw broadcast ID (asserted by grepping the serialized body); budget exhaustion degrades to events-only and records it; POST failure is silently dropped after N retries with **no** user-visible effect and no unbounded buffer; `enabled: 0` / no hello ⇒ zero network requests; jsdom test of the `visibilitychange` beacon path; **stats-tick timing unchanged** and no worker message added (asserted against the existing worker-protocol tests); terms page renders the new practice sentence; gawk-app gates green |
-| **TM3** | **`gawk-telemetry` service**: module + image + chart (default off), ingest handler (token verify, D15 validation, size caps, per-IP rate limit without persistence), NDJSON writer, finalize + orphan sweep, 14-day prune | **Envelope strictness**: ingest rejects bad/expired/tampered token, oversize body, wrong `v`, role mismatch, malformed JSON, and a malformed `samples`/`events` *structure* — each with its own test and **no partial write**. **Payload tolerance (D15)**: a batch whose `stats` carries an unknown field is accepted and the field survives verbatim into the NDJSON; a wrongly-typed known field (string, `null`, non-finite) is dropped, counted, and does **not** reject the batch or reach any numeric series; a synthetic "next release" stats object with 20 new fields ingests cleanly against the current build (the skew case that motivates the whole decision). **Structural bounds** rejected independently of types (samples/events per batch, fields per object, nesting depth, string length), each with a boundary test. Plus: a valid batch lands as exactly N lines in the right partition; crash mid-session leaves a `.ndjson` that the startup sweep finalizes; prune deletes only partitions older than the window (property test around the boundary); **source IP appears in no file and no log line** (asserted over the whole data dir + captured logs); `helm template` with `telemetry.enabled: false` renders byte-identically to the pre-R28 chart |
+| **TM3** | **`gawk-telemetry` service**: module + image + chart (default off), ingest handler (token verify, D15 validation, size caps, two-tier rate limit — a fleet-sized global cap plus a per-verified-session bucket, no IP consulted or stored), NDJSON writer, finalize + orphan sweep, 14-day prune | **Envelope strictness**: ingest rejects bad/expired/tampered token, oversize body, wrong `v`, role mismatch, malformed JSON, and a malformed `samples`/`events` *structure* — each with its own test and **no partial write**. **Payload tolerance (D15)**: a batch whose `stats` carries an unknown field is accepted and the field survives verbatim into the NDJSON; a wrongly-typed known field (string, `null`, non-finite) is dropped, counted, and does **not** reject the batch or reach any numeric series; a synthetic "next release" stats object with 20 new fields ingests cleanly against the current build (the skew case that motivates the whole decision). **Structural bounds** rejected independently of types (samples/events per batch, fields per object, nesting depth, string length), each with a boundary test. Plus: a valid batch lands as exactly N lines in the right partition; crash mid-session leaves a `.ndjson` that the startup sweep finalizes; prune deletes only partitions older than the window (property test around the boundary); **source IP appears in no file and no log line** (asserted over the whole data dir + captured logs); `helm template` with `telemetry.enabled: false` renders nothing telemetry-related at all (a whole-render absence check; see deviation 28 for why not a golden byte-diff) |
 | **TM4** | **Relay scrape + join**: headless companion Service in the relay chart, per-pod `/statusz` poll, relay records, `relayCoverage` | Fake multi-pod `/statusz` fixture (origin + edge, R17 shapes) produces one record per broadcast and per subscriber per pod; join by `sessionId` reconstructs a session's two-sided view; a session shorter than the interval yields `relayCoverage: "none"` and is never silently treated as full; a pod disappearing mid-scrape does not lose other pods' records; existing metrics Service + ServiceMonitor renders unchanged |
 | **TM5** | **Rollups**: finalize-time computation, permanent row, additive-schema guarantee, `schemaAnomalies` | Scripted session → rollup row matches expected percentiles (incl. the "mean hides a freeze" case: a session with one 4 s stall must show it in p95 and in the stall fields); a rollup row from a synthetic *older* schema version still loads and queries; rollups survive a raw-partition prune (the point of the split). **Typed by construction (D15)**: every emitted numeric field is a finite number or **absent** — never a coerced guess, a `null`, or a zero standing in for "unknown" — asserted over a session whose samples are deliberately full of dropped/wrong-typed fields; that same session's `schemaAnomalies` counts match the ingest-side tally, and a session that hit its byte budget or has `seq` gaps says so on the row |
 | **TM6** | **Read API + `diagnose()`**: HTTP JSON handlers, the docs/13 rule set, evidence provenance + confidence capping | Each transcribed playbook row has a test driving a synthetic session that fires it and one that does not; a client-only-evidence rule caps confidence (D7); relay/client disagreement surfaces as a finding rather than resolving silently; missing signals appear in `unavailable` instead of changing the verdict; **every default response ≤ 32 KB against a synthetic 4-hour session** (D10) |

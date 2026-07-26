@@ -295,14 +295,23 @@ jobs:
       - run: helm template gawk-server/deploy/charts/gawk-server > /dev/null
       - run: helm template gawk-app/deploy/charts/gawk-app > /dev/null
       - run: helm template gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00 > /dev/null
-      # R28 (docs/33 TM3): telemetry OFF must render exactly as it did before
-      # R28 — an install that never enables it is byte-identical to today.
-      # Asserted against the templates rather than trusted.
-      - name: relay chart with telemetry off renders no telemetry objects
+      # R28 (docs/33 TM3): with telemetry off, the relay chart must render
+      # nothing telemetry-related at all — an install that never enables it
+      # carries no trace of R28.
+      #
+      # This is a whole-render absence check, not a byte-diff against the
+      # pre-R28 output (review nit): a golden render would have to be
+      # regenerated on every release-please version bump, since the chart
+      # version, appVersion and image tag all appear in it. So what is asserted
+      # is exactly what the check can hold — no telemetry token anywhere in the
+      # default render, case-insensitively, which covers env vars, Service and
+      # label names, annotations and comments alike.
+      - name: relay chart with telemetry off renders nothing telemetry-related
         run: |
           out=$(helm template gawk-server/deploy/charts/gawk-server)
-          if echo "$out" | grep -qE "GAWK_TELEMETRY|metrics-headless"; then
-            echo "::error::telemetry.enabled=false still renders telemetry objects"
+          if echo "$out" | grep -qi "telemetry"; then
+            echo "::error::telemetry.enabled=false still renders telemetry content"
+            echo "$out" | grep -i telemetry
             exit 1
           fi
       - name: relay chart with telemetry on renders the key and headless Service
