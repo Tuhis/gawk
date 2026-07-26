@@ -203,6 +203,47 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     expect(events).toEqual([{ type: 'connected' }]);
   });
 
+  // R22: the host frame tap rides the session callbacks so the shell's muxer
+  // sees released frames; without a tap the callbacks stay byte-identical.
+  it('threads host.frameTap into the session callbacks as onReleasedFrame', () => {
+    const { sink } = fakeSink();
+    const tap = vi.fn();
+    const host: WorkerHost = { post: () => {}, renderSink: sink, frameTap: tap };
+    const { factory, sessions } = fakeFactory();
+    new ViewerWorkerCore(host, factory).start(startParams);
+    const frame = {
+      frameId: 7,
+      keyframe: true,
+      timestampUs: 0n,
+      data: new Uint8Array([1]),
+      config: null,
+    };
+    sessions[0].cbs.onReleasedFrame?.(frame);
+    expect(tap).toHaveBeenCalledWith(frame);
+
+    const hostNoTap: WorkerHost = { post: () => {}, renderSink: sink };
+    new ViewerWorkerCore(hostNoTap, factory).start(startParams);
+    expect(sessions[1].cbs.onReleasedFrame).toBeUndefined();
+  });
+
+  it('drops a superseded session’s released frames (generation guard on the tap)', () => {
+    const { sink } = fakeSink();
+    const tap = vi.fn();
+    const host: WorkerHost = { post: () => {}, renderSink: sink, frameTap: tap };
+    const { factory, sessions } = fakeFactory();
+    const core = new ViewerWorkerCore(host, factory);
+    core.start(startParams);
+    core.start({ ...startParams, broadcastId: 'AB2CD3' }); // supersede
+    sessions[0].cbs.onReleasedFrame?.({
+      frameId: 1,
+      keyframe: false,
+      timestampUs: 0n,
+      data: new Uint8Array([1]),
+      config: null,
+    });
+    expect(tap).not.toHaveBeenCalled();
+  });
+
   it('surfaces a first-connect failure as an error (no onEnded fires)', async () => {
     const { sink } = fakeSink();
     const { host, events } = fakeHost(sink);

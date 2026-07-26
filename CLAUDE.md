@@ -95,15 +95,16 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Six open entries (plus a
-  lint-hygiene note) as of 2026-07-24: two Safari viewer stalls (keyframe
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Five open entries (plus a
+  lint-hygiene note) as of 2026-07-25: two Safari viewer stalls (keyframe
   delivery stops; a dead-session freeze that now recovers but whose WebKit
-  root cause is still unknown), the iPhone native-fullscreen black video, a
-  misleading "Streamer offline" join-reject card, a broadcaster stuck on LIVE
-  after a silent worker death, and the viewer `avSkewMs` metric over-reporting
-  on long/stressed sessions (the audio itself is fine); plus a recorded set of
-  `gawk-broadcast/internal/mpegts` lint advisories that are not runtime
-  defects. (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
+  root cause is still unknown), a misleading "Streamer offline" join-reject
+  card, a broadcaster stuck on LIVE after a silent worker death, and the
+  viewer `avSkewMs` metric over-reporting on long/stressed sessions (the audio
+  itself is fine); plus a recorded set of `gawk-broadcast/internal/mpegts`
+  lint advisories that are not runtime defects. (The iPhone
+  native-fullscreen black video was resolved 2026-07-25 by R22's MSE path —
+  docs/27.) (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
   as an upstream API removal, not a gawk bug — no browser ships
   `WebTransport.getStats()` today; see docs/13 D7.) Check it before debugging anything
   overlay/stats-related; remove entries when fixed.
@@ -502,8 +503,15 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   `pipewiresrc`'s `stream.capture.sink` forwarding, and pipewire-pulse's
   `@DEFAULT_MONITOR@`),
   `docs/27-ios-mse-fullscreen.md` for R22 (iOS native fullscreen via MSE:
-  **designed 2026-07-23, spike-confirmed on iPhone the same day, not started**;
-  supersedes R16's rejected native tier. R16's `VideoTrackGenerator`
+  **designed 2026-07-23, spike-confirmed on iPhone the same day; MF1–MF4 +
+  MF5's observability/docs half implemented 2026-07-25 — automated gates green
+  incl. a new `e2e/run.mjs --muxer-check` Chrome `MediaSource` playback step in
+  the `e2e` CI job; the R16 tee is deleted and its BUGS.md black-video entry
+  closed; MF5's on-device verification pass is pending** (deviations in the
+  doc's "Implementation status & deviations" — notably the muxer's
+  keyframe-decided sticky wire format: an AVCC 4-byte length prefix for a
+  256–511-byte NAL is byte-identical to an Annex-B start code, so a per-frame
+  sniff misparses real AVCC frames); supersedes R16's rejected native tier. R16's `VideoTrackGenerator`
   MediaStream tee showed **black** across three on-device passes (docs/21 U4),
   and R16 had rejected MSE up front as survey option C — but a real-iPhone
   spike proved a **`ManagedMediaSource`-backed `<video>` presents real frames**
@@ -1427,6 +1435,33 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    three-way menu (live / resilient / Deep buffer) persisted as
    `gawk:viewer-delivery`. Automated gates green incl. an e2e deep-buffer
    viewer pass; on-hardware tuning is the remaining DV6 work.
+26. iOS native fullscreen via MSE — **MF1–MF4 + MF5's observability/docs half
+   implemented 2026-07-25; MF5 on-device verification pending** (R22,
+   `docs/27-ios-mse-fullscreen.md`; viewer-client only, zero server/wire/
+   broadcaster changes). The iPhone fullscreen button's hidden `<video>` (R16
+   scaffolding: gate, tiers, hiding rules, `NativeVideoFullscreen` gate — all
+   kept) is now fed by a **worker-side fMP4 muxer over the reorder buffer's
+   release stream** through **`ManagedMediaSource`** — encoded bytes, upstream
+   of the decoder, which is why it renders where R16's presented-frame
+   MediaStream tee was black (spike-confirmed on iPhone 2026-07-23; the tee is
+   deleted and its BUGS.md entry closed). Inline WebCodecs/canvas byte-identical
+   everywhere; non-gated devices byte-identical, period. Key pieces:
+   `transport/fmp4-muxer.ts` (pure; golden-vectored against a committed
+   18-frame Annex-B fixture, `transport/h264-fixture.ts`; keyframe-decided
+   sticky wire format — see the README gotcha on the AVCC length-prefix /
+   start-code collision; muxer-owned monotonic output timeline re-anchoring
+   across restarts), the `onReleasedFrame` callback fork
+   (viewer → session → worker-core `frameTap`, generation-guarded),
+   `muxSegment` worker events (transferred buffers),
+   `features/viewer/msePresentation.ts` (probe: MMS/MSE presence + H.264-only +
+   `isTypeSupported`; `MsePresenter`: serialized appends, MMS `streaming`
+   pacing, cached-init re-prime on remount/overflow, `changeType` on codec
+   change, keyframe-resync drops, prune, playing-only live catch-up), and
+   `useFullscreen` tier 2's in-gesture seek-to-live → `play()` →
+   `webkitEnterFullscreen()` with pause-on-exit (loaded-but-paused arming —
+   no dual decode while inline). The muxer's output is CI-proven to play in
+   Chrome `MediaSource` (`e2e/run.mjs --muxer-check`, first step of the `e2e`
+   job); only the iPhone-native presentation stays manual (MF5).
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component** (`gawk-server/deploy/charts/gawk-server/`,

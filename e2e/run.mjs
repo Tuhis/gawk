@@ -25,6 +25,16 @@
 //                             encode funnel from the broadcaster's own
 //                             diagnostics, then runs the unchanged viewer
 //                             scenario against the minted ID.
+//   node run.mjs --muxer-check
+//                             R22 MF1 (docs/27 Decision 10) — the production
+//                             fMP4 muxer's output must PLAY in a real Chrome
+//                             MediaSource <video> (frames present, currentTime
+//                             advances). Standalone: no relay, publisher or
+//                             preview — rolldown-bundles the in-page driver
+//                             (gawk-app/src/e2e/muxer-check-entry.ts) and runs
+//                             it in headless Chrome. Fast (~10 s); the iPhone
+//                             native *presentation* stays manual (MF5), this
+//                             proves the bytes are real media.
 //
 // Environment (all optional in tier 1):
 //   GAWK_E2E_SERVER_BIN  path to gawk-server        (default e2e/bin/gawk-server)
@@ -53,6 +63,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, process.env.GAWK_E2E_OUT_DIR ?? 'out');
 const EXTERNAL = process.argv.includes('--external');
 const BROWSER_BROADCAST = process.argv.includes('--browser-broadcast');
+const MUXER_CHECK = process.argv.includes('--muxer-check');
 
 const RELAY_PORT = Number(process.env.GAWK_E2E_RELAY_PORT ?? 4433);
 const OPS_PORT = Number(process.env.GAWK_E2E_OPS_PORT ?? 2112);
@@ -744,6 +755,78 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
 }
 
 // ---------------------------------------------------------------------------
+// Muxer check (R22 MF1, docs/27 Decision 10)
+// ---------------------------------------------------------------------------
+
+// Bundles the production muxer + MSE presenter with the committed fixture into
+// an IIFE, loads it into a blank headless-Chrome page, and asserts the video
+// element actually presents frames from the muxed bytes. Chrome's classic
+// MediaSource is the stand-in for iPhone's ManagedMediaSource (same
+// SourceBuffer contract); only the native-player *presentation* is
+// iPhone-manual.
+async function muxerCheckScenario() {
+  const bundle = join(OUT, 'muxer-check.js');
+  const rolldown = join(APP_DIR, 'node_modules', '.bin', 'rolldown');
+  if (!existsSync(rolldown)) fail(`${rolldown} not found — run npm ci in ${APP_DIR}`);
+  const build = launch('rolldown', rolldown, [
+    'src/e2e/muxer-check-entry.ts',
+    '--format', 'iife',
+    '--platform', 'browser',
+    '-o', bundle,
+  ], { cwd: APP_DIR });
+  await pollFor(
+    () => build.exited != null,
+    60_000,
+    200,
+    'the muxer-check bundle build',
+  );
+  if (build.exited.code !== 0) fail('rolldown failed to bundle the muxer check (see out/rolldown.log)');
+
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    wirePageLogs(page, 'console-muxer-check');
+    await page.goto('about:blank');
+    await page.addScriptTag({ path: bundle });
+    const res = await page.evaluate(() => window.__gawkMuxerCheck());
+    writeFileSync(join(OUT, 'muxer-check.json'), JSON.stringify(res, null, 2));
+
+    const problems = [];
+    const check = (ok, msg) => {
+      if (!ok) problems.push(msg);
+    };
+    check(res.videoError === null, `video element errored: ${res.videoError}`);
+    check(/^video\/mp4; codecs="avc1\./.test(res.mime ?? ''), `mime = ${res.mime}, want an avc1 fMP4 mime`);
+    check(res.initSegments === 1, `initSegments = ${res.initSegments}, want 1`);
+    check(res.mediaSegments === 18, `mediaSegments = ${res.mediaSegments}, want 18 (the fixture)`);
+    check(res.muxErrors === 0, `muxer counted ${res.muxErrors} errors`);
+    check(res.appendErrors === 0, `presenter counted ${res.appendErrors} append errors`);
+    check(
+      res.segmentsAppended === 19,
+      `segmentsAppended = ${res.segmentsAppended}, want 19 (init + 18 media)`,
+    );
+    // The two load-bearing verdicts (docs/27 MF1): frames present and the
+    // clock advances — buffered-but-black media satisfies neither.
+    check(res.framesPresented >= 10, `only ${res.framesPresented} frames presented, want >= 10`);
+    check(res.currentTime >= 0.3, `currentTime = ${res.currentTime}, want >= 0.3 s`);
+    // Dimensions come from the SPS via the muxer's init segment.
+    check(
+      res.videoWidth === 320 && res.videoHeight === 240,
+      `video reports ${res.videoWidth}x${res.videoHeight}, want 320x240`,
+    );
+    if (problems.length > 0) {
+      fail(`muxer-check assertions failed:\n  - ${problems.join('\n  - ')}`);
+    }
+    log(
+      `muxer check ok: ${res.framesPresented} frames presented, currentTime ${res.currentTime.toFixed(2)} s, ` +
+        `${res.segmentsAppended} segments appended (${res.mime})`,
+    );
+  } finally {
+    await browser.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Relay-side assertions (tier 1 / when an ops endpoint is reachable)
 // ---------------------------------------------------------------------------
 
@@ -782,6 +865,13 @@ async function main() {
     cleanup();
     process.exit(1);
   }, WATCHDOG_MS);
+
+  // R22: the muxer check is self-contained — bundle, browser, verdict.
+  if (MUXER_CHECK) {
+    await muxerCheckScenario();
+    log('PASS');
+    return;
+  }
 
   let relayUrl, certHash, id, opsUrl;
   if (EXTERNAL) {

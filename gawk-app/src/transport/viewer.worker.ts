@@ -5,17 +5,12 @@
 //
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
-import { log } from '../lib/logger';
 import { notePlayhead } from './av-sync';
+import { Fmp4Muxer } from './fmp4-muxer';
 import { setInterpolationEnabled } from './interpolation';
 import { getPlayoutMode, setPlayoutMode, setViewerDeliveryMode } from './playout';
-import {
-  PacedPresentationSink,
-  createContextSink,
-  createRenderSink,
-  type RenderSink,
-} from './render-sink';
-import { TeeRenderSink, getVideoTrackGenerator, probePresentationTee } from './tee-render-sink';
+import { createRenderSink, type RenderSink } from './render-sink';
+import type { ReleasedFrame } from './reorder-buffer';
 import {
   ViewerWorkerCore,
   type ViewerWorkerCommand,
@@ -57,17 +52,49 @@ const transportFactory: ViewerTransportFactory | undefined =
 
 let core: ViewerWorkerCore | null = null;
 let sink: RenderSink | null = null;
-// R16: the presentation tee + its generator live here at the host level,
-// beside the sink — they survive pipeline attempts/reconnects, so the track
-// keeps flowing across a reconnect without re-arming (docs/21 Decision 4).
-let tee: TeeRenderSink | null = null;
-let teeArmed = false;
+// R22 (docs/27 Decision 3): the fMP4 muxer lives here at the host level,
+// beside the sink — it survives pipeline attempts/reconnects, so the segment
+// stream continues across a reconnect without re-arming. Created on 'arm'
+// (gated devices only); until then the frame tap is a null check per frame.
+let muxRequested = false;
+let muxer: Fmp4Muxer | null = null;
 
-// R16: the tee's counters ride the existing stats events (only when a tee
-// exists — non-gated stats are byte-identical).
+// The encoded-frame fork (upstream of the decoder — the whole reason MSE
+// renders where the R16 presented-frame tee was black, docs/27). Segments
+// post with their buffers transferred; the muxer allocates exact-size
+// buffers, so no copies happen here.
+const frameTap = (frame: ReleasedFrame): void => {
+  const m = muxer;
+  if (!m) return;
+  for (const seg of m.push(frame)) {
+    const data = seg.data.buffer as ArrayBuffer;
+    if (seg.kind === 'init') {
+      ctx.postMessage({ type: 'muxSegment', kind: 'init', mime: seg.mime, data }, [data]);
+    } else {
+      ctx.postMessage({ type: 'muxSegment', kind: 'media', keyframe: seg.keyframe, data }, [data]);
+    }
+  }
+};
+
+// R22: the muxer's counters ride the existing stats events (only when the mux
+// fork was requested — non-gated stats are byte-identical).
 const post = (ev: ViewerWorkerEvent, transfer?: Transferable[]): void => {
-  if (ev.type === 'stats' && tee) {
-    ctx.postMessage({ ...ev, stats: { ...ev.stats, presentationTee: tee.teeStats() } });
+  if (ev.type === 'stats' && muxRequested) {
+    ctx.postMessage({
+      ...ev,
+      stats: {
+        ...ev.stats,
+        presentationMux: {
+          armed: muxer !== null,
+          ...(muxer?.getStats() ?? {
+            initSegments: 0,
+            mediaSegments: 0,
+            skippedAwaitingInit: 0,
+            errors: 0,
+          }),
+        },
+      },
+    });
   } else {
     // R15: audio chunks arrive with their channel buffers in the transfer
     // list; everything else posts as before.
@@ -81,39 +108,23 @@ ctx.onmessage = (e: MessageEvent) => {
     case 'init': {
       // WebGL (2D fallback) wrapped in the paced presentation sink — R10 P1
       // semantics by default, display-slot pacing in adaptive mode (R12).
-      // R16 (gated devices only): probe the tee capability, and when it holds,
-      // slip the idle TeeRenderSink between the paced sink and the context
-      // sink — pass-through-only until armed.
-      if (cmd.presentationTee) {
-        const supported = probePresentationTee();
-        ctx.postMessage({ type: 'presentationProbe', supported });
-        if (supported) {
-          tee = new TeeRenderSink(createContextSink(cmd.canvas));
-          sink = new PacedPresentationSink(tee);
-        }
-      }
-      sink ??= createRenderSink(cmd.canvas);
+      // R22 (gated devices only): install the frame tap so the pipeline
+      // forks released frames to the (idle-until-armed) muxer.
+      muxRequested = Boolean(cmd.presentationMux);
+      sink = createRenderSink(cmd.canvas);
       core = new ViewerWorkerCore({
         post,
         renderSink: sink,
         transportFactory,
+        ...(muxRequested ? { frameTap } : {}),
       });
       break;
     }
     case 'arm': {
-      // Idempotent: one generator/track per worker, ever — a repeat arm (or
-      // one after a reconnect) must not mint a second track.
-      if (!tee || teeArmed) break;
-      try {
-        const Generator = getVideoTrackGenerator();
-        if (!Generator) break; // probe said no; arm should never arrive
-        const generator = new Generator();
-        tee.arm(generator.writable.getWriter());
-        teeArmed = true;
-        ctx.postMessage({ type: 'presentationTrack', track: generator.track }, [generator.track]);
-      } catch (e) {
-        log.warn('presentation tee arm failed:', e);
-      }
+      // Idempotent: one muxer per worker, ever — a repeat arm (or one after a
+      // reconnect) must not restart the segment timeline.
+      if (!muxRequested || muxer) break;
+      muxer = new Fmp4Muxer();
       break;
     }
     case 'start':

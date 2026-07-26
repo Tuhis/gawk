@@ -1,7 +1,11 @@
 # R22 — iOS Native Fullscreen via MSE / ManagedMediaSource
 
 Design doc for [ROADMAP R22](../ROADMAP.md#r22--ios-native-fullscreen-via-mse)
-(designed 2026-07-23; **not started**). Supersedes the native-fullscreen tier
+(designed 2026-07-23; **MF1–MF4 implemented 2026-07-25 + MF5's
+observability/docs half — automated gates green incl. the new Chrome
+`MediaSource` playback check; MF5's on-device verification pass is
+pending** — see "Implementation status & deviations"). Supersedes the
+native-fullscreen tier
 of [R16](21-ios-video-fullscreen.md), whose `VideoTrackGenerator` MediaStream
 tee was rejected after three on-device passes showed a **black** native player
 (docs/21 "U4 findings"). This item makes the iPhone fullscreen button actually
@@ -288,11 +292,11 @@ the entire feature, exactly as today.
 
 | Chunk | Scope | Acceptance criteria | Status |
 |-------|-------|---------------------|--------|
-| **MF1** | **fMP4 muxer (pure, worker-side, test-first)** — init segment (`ftyp`/`moov`/`avcC`) from `DecoderConfig`; SPS/PPS + dimensions from the bitstream on the empty-extradata Annex-B path; media segments (`moof`/`mdat`) with Annex-B→AVCC length-prefixing; `CTS == DTS` (no B-frames); monotonic `baseMediaDecodeTime`; fresh init segment on config change | DOM-free module; golden-vector byte-stable fMP4 from the committed fixture (box structure asserted); **AVCC and Annex-B inputs both produce valid init + media segments**; empty-extradata Annex-B synthesizes the `avcC` from in-band SPS/PPS; a codec/resolution change emits a new init segment; **the muxer output plays in a Chrome `MediaSource` `<video>` — frames present, `currentTime` advances** (the CI proof the bytes are real, iPhone-independent) | ⬜ not started |
-| **MF2** | **MMS capability probe + gate wiring** — feature-detect `ManagedMediaSource`/`MediaSource` + `isTypeSupported(negotiated H.264 mime)` + a trial `addSourceBuffer`/tiny-append; surface to the main thread; map to the R16 `NativeVideoFullscreen` gate; H.264-only boundary | Probe correct on gated/non-gated and H.264-vs-VP; **non-gated byte-identical** (no MMS, no `<video>`, no new worker messages — explicit test); probe-fail (incl. VP codec) ⇒ tier-3 pseudo, no arm command sent; gate `active`/`detail` reflect the MSE state | ⬜ not started |
-| **MF3** | **Encoded-fork + MMS surface + native tier + R16 cleanup** — fork `ReorderBuffer` release to the worker muxer; post segments (transferable) to main; MMS `<video>` fed via `appendBuffer` on `startstreaming`/`endstreaming`; `useFullscreen` tier-2 seek-to-live + `play()` + `webkitEnterFullscreen`; arm-at-`watching` (paused-near-live); **delete `TeeRenderSink`/generator/MediaStream path** | Gated + capable: tap → `webkitEnterFullscreen` synchronously in-gesture on a ready MMS video (stubbed-video test); not-ready → pseudo without a dead tap; non-gated DOM has no video/MMS; teardown releases MMS/SourceBuffer/video (StrictMode-safe per R16's deferred-dispose finding); the R16 tee code is gone and the BUGS.md black-video entry is closed | ⬜ not started |
-| **MF4** | **Live-edge + config-change hardening** — MMS managed buffering (streaming events, bounded buffer), seek-to-live on play; mid-stream resolution/codec re-init; broadcaster-restart / frameID-wrap recovery via the reorder restart signals; (optional here) suspend inline decode during native fullscreen | Fullscreen live-edge delta within a small measured bound of inline; MMS buffer bounded over a long session; a mid-stream resolution/codec change re-inits without wedging the fullscreen video; a broadcaster restart recovers; seek-to-live keeps native fullscreen near live | ⬜ not started |
-| **MF5** | **Observability + on-device verification + docs sync** — MSE overlay rows (buffered depth, segments, append errors, `readyState`/`paused`, inline-vs-fullscreen live-edge) on gated devices; on-device passes; README/ROADMAP/CLAUDE sync; replace the R16 BUGS.md entry | Manual plan executed + findings recorded; **verdicts**: native fullscreen shows real frames (spike-confirmed — re-confirm in-app), latency acceptable, no thermal/battery red flags over ~20 min (this drives the Decision-5/MF4 suspend-canvas call), reconnect-while-armed works, config-change-while-fullscreen recovers; `NativeVideoFullscreen ✓` on iPhone; the R16 black-video BUGS.md entry becomes "resolved via MSE (R22)" | ⬜ not started |
+| **MF1** | **fMP4 muxer (pure, worker-side, test-first)** — init segment (`ftyp`/`moov`/`avcC`) from `DecoderConfig`; SPS/PPS + dimensions from the bitstream on the empty-extradata Annex-B path; media segments (`moof`/`mdat`) with Annex-B→AVCC length-prefixing; `CTS == DTS` (no B-frames); monotonic `baseMediaDecodeTime`; fresh init segment on config change | DOM-free module; golden-vector byte-stable fMP4 from the committed fixture (box structure asserted); **AVCC and Annex-B inputs both produce valid init + media segments**; empty-extradata Annex-B synthesizes the `avcC` from in-band SPS/PPS; a codec/resolution change emits a new init segment; **the muxer output plays in a Chrome `MediaSource` `<video>` — frames present, `currentTime` advances** (the CI proof the bytes are real, iPhone-independent) | ✅ 2026-07-25 (`transport/fmp4-muxer.ts` + committed fixture `transport/h264-fixture.ts`; Chrome playback via `e2e/run.mjs --muxer-check`) |
+| **MF2** | **MMS capability probe + gate wiring** — feature-detect `ManagedMediaSource`/`MediaSource` + `isTypeSupported(negotiated H.264 mime)` + a trial `addSourceBuffer`/tiny-append; surface to the main thread; map to the R16 `NativeVideoFullscreen` gate; H.264-only boundary | Probe correct on gated/non-gated and H.264-vs-VP; **non-gated byte-identical** (no MMS, no `<video>`, no new worker messages — explicit test); probe-fail (incl. VP codec) ⇒ tier-3 pseudo, no arm command sent; gate `active`/`detail` reflect the MSE state | ✅ 2026-07-25 (`features/viewer/msePresentation.ts` probe; deviation 2 below on the trial-append) |
+| **MF3** | **Encoded-fork + MMS surface + native tier + R16 cleanup** — fork `ReorderBuffer` release to the worker muxer; post segments (transferable) to main; MMS `<video>` fed via `appendBuffer` on `startstreaming`/`endstreaming`; `useFullscreen` tier-2 seek-to-live + `play()` + `webkitEnterFullscreen`; arm-at-`watching` (paused-near-live); **delete `TeeRenderSink`/generator/MediaStream path** | Gated + capable: tap → `webkitEnterFullscreen` synchronously in-gesture on a ready MMS video (stubbed-video test); not-ready → pseudo without a dead tap; non-gated DOM has no video/MMS; teardown releases MMS/SourceBuffer/video (StrictMode-safe per R16's deferred-dispose finding); the R16 tee code is gone and the BUGS.md black-video entry is closed | ✅ 2026-07-25 |
+| **MF4** | **Live-edge + config-change hardening** — MMS managed buffering (streaming events, bounded buffer), seek-to-live on play; mid-stream resolution/codec re-init; broadcaster-restart / frameID-wrap recovery via the reorder restart signals; (optional here) suspend inline decode during native fullscreen | Fullscreen live-edge delta within a small measured bound of inline; MMS buffer bounded over a long session; a mid-stream resolution/codec change re-inits without wedging the fullscreen video; a broadcaster restart recovers; seek-to-live keeps native fullscreen near live | ✅ 2026-07-25 (except the live-edge-delta *measurement*, which is on-device — MF5; suspend-inline-decode not taken, as scoped) |
+| **MF5** | **Observability + on-device verification + docs sync** — MSE overlay rows (buffered depth, segments, append errors, `readyState`/`paused`, inline-vs-fullscreen live-edge) on gated devices; on-device passes; README/ROADMAP/CLAUDE sync; replace the R16 BUGS.md entry | Manual plan executed + findings recorded; **verdicts**: native fullscreen shows real frames (spike-confirmed — re-confirm in-app), latency acceptable, no thermal/battery red flags over ~20 min (this drives the Decision-5/MF4 suspend-canvas call), reconnect-while-armed works, config-change-while-fullscreen recovers; `NativeVideoFullscreen ✓` on iPhone; the R16 black-video BUGS.md entry becomes "resolved via MSE (R22)" | 🔶 overlay rows + docs sync + BUGS.md done 2026-07-25; **the on-device verification pass is pending** (not CI-reachable) |
 
 Ordering: MF1 (pure muxer, CI-provable in Chrome) and MF2 (probe/gate) are
 independently valuable and low-risk; MF3 is the behavioral landing that also
@@ -300,6 +304,93 @@ removes the dead R16 tier; MF4 hardens latency; MF5 verifies and closes. The
 spike already de-risked the one load-bearing platform unknown, so **no chunk is
 gated on an unverified iOS fact** — a difference from R16, whose U-chunks built
 the whole native path before U4 could test it.
+
+## Implementation status & deviations (2026-07-25)
+
+MF1–MF4 implemented; MF5's observability/docs half done, its on-device pass
+pending. Automated gates green: gawk-app tsc/vitest/oxlint/build (810 tests
+incl. the new muxer, presenter, fullscreen-tier, worker-tap and
+controller-message-shape suites), plus
+the full tier-1 e2e (fixture publisher → relay → production viewer, live +
+resilient + deep-buffer passes) and the new `run.mjs --muxer-check` Chrome
+`MediaSource` playback proof — both run locally and wired into the `e2e` CI
+job (the muxer check runs first as its own step; failure artifacts land in
+`out-muxer-check/`).
+
+Where things live: the muxer is `gawk-app/src/transport/fmp4-muxer.ts` (pure,
+DOM-free; golden vectors in its test against the committed
+`transport/h264-fixture.ts` — the first 18 AUs of the same 320x240 stream
+`gawk-broadcast/internal/fixture` embeds); the main-thread MMS surface is
+`features/viewer/msePresentation.ts` (probe + `MsePresenter`); the encoded
+fork rides the pipeline callbacks as `onReleasedFrame`
+(`viewer.ts` → `viewer-session.ts` → `viewer-worker-core.ts`'s
+`WorkerHost.frameTap`, generation-guarded); the worker shell owns the muxer
+and posts `muxSegment` events with transferred buffers; the in-page CI driver
+is `src/e2e/muxer-check-entry.ts`.
+
+Deviations from the letter of the design, recorded so nobody "fixes" them
+back:
+
+1. **The muxer decides the wire format at keyframes and holds it sticky
+   between them** — a per-frame Annex-B sniff (the viewer.ts precedent the
+   design pointed at) is structurally unsafe here: an AVCC 4-byte length
+   prefix for any 256–511-byte NAL is `00 00 01 xx`, byte-identical to a
+   start code, and fixture frame 16 is exactly that (the AVCC/Annex-B
+   equivalence test caught it producing a mangled sample). Keyframes are
+   unambiguous — avcC-bearing config ⇒ AVCC, leading start code + in-band
+   SPS/PPS ⇒ Annex-B — so the decision is made there and deltas inherit it.
+2. **MF2's "trial `addSourceBuffer`/tiny-append" is the arm itself, not a
+   separate probe step**: `addSourceBuffer` is only legal on an open,
+   element-attached MediaSource, and the arm happens at `watching` — well
+   before any fullscreen tap — so a real failure there degrades the gate to
+   pseudo exactly as a pre-probe would have (`MsePresenter.failed` →
+   `NativeVideoFullscreen ✗ / MSE surface failed → pseudo`). The synchronous
+   probe half (ctor presence + H.264-only + `isTypeSupported`) runs on the
+   first codec event.
+3. **Broadcaster-restart recovery is timestamp-driven inside the muxer, not
+   wired to the reorder buffer's restart callback**: the release stream the
+   muxer taps already reflects the reorder buffer's restart resync, and the
+   muxer re-anchors its own monotonic output timeline whenever input
+   timestamps jump backwards (or absurdly forward, > 5 s) — so a restart
+   plays through as a seamless continuation with `baseMediaDecodeTime` never
+   moving backwards, no second signal path needed.
+4. **The output timeline is muxer-owned and strictly monotonic** (input
+   timestamps are the broadcaster's clock — huge, and reset by restarts);
+   `timescale` is 1 MHz so wire µs map with no rounding, and the one-sample
+   fragment layout makes `moof` a constant 100 B with `data_offset` 108
+   (pinned by tests, so a box edit can't silently break the offset).
+5. **Samples are rewritten to 4-byte-length AVCC NALs with AUD/SPS/PPS
+   stripped** (parameter sets live in the avcC; in-band sets are an `avc3`
+   affordance and Safari is strict about `avc1`); SEI and slices pass
+   through byte-identical — asserted by the golden vectors and by ffmpeg
+   decoding the concatenated output clean during development.
+6. **`presentationSurfaceStats` reshaped, not extended**: the R16 tee fields
+   (`teedFrames`/`teeErrors`/`elementContentPeak` and the "Content sample"
+   row) died with the tee; the section now reports the muxer counters
+   (worker), append counters + buffered span/behind-edge (main thread), and
+   the element readyState/paused/size/rVFC rows that carry over.
+7. **The hidden `<video>` no longer autoplays** — Decision 5's
+   loaded-but-paused state is literal now: the element renders (gated +
+   armed) without `autoPlay`, `useFullscreen` tier 2 does
+   seek-to-live → `play()` → `webkitEnterFullscreen()` in-gesture, and both
+   exit paths (system UI event and the toggle) pause it again so the second
+   decode never outlives the native player.
+8. **`MsePresenter` survives element remounts by caching the newest init
+   segment**: a re-attach builds a fresh MediaSource, re-primes it from the
+   cache and drops queued media up to the next keyframe (their references
+   live in the old SourceBuffer). The same cache re-primes when queue
+   overflow drops an init before it could append.
+9. **Attachment tries `srcObject` first and falls back to an object URL** —
+   WebKit's MMS-recommended wiring vs. Chromium (which rejects a MediaSource
+   as `srcObject`); the CI muxer check exercises the object-URL path against
+   real Chrome.
+10. **A codec probe re-runs on every codec event** (not once): a broadcaster
+    restart that lands on a VP codec flips the gate to
+    `✗ codec … is not H.264 → pseudo` mid-view instead of leaving an armed
+    surface whose muxer has silently stopped producing — and the hidden
+    `<video>` unmounts with it (review finding), so the next tap actually
+    falls to pseudo rather than native-presenting the stale, frozen
+    pre-restart content off a still-ready element.
 
 ## Verification plan (manual, MF5)
 

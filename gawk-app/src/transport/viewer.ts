@@ -3,6 +3,7 @@
 // encode half is replaced by the network.
 
 import { log } from '../lib/logger';
+import { normalizeAvccExtradata } from './avcc';
 import { Decoder, type DecodedFrame } from '../media/decoder';
 import {
   AudioDecodeLane,
@@ -39,7 +40,7 @@ import {
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { timeOriginMs } from './time-sync';
 import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates';
-import type { TeeStats } from './tee-render-sink';
+import type { Fmp4MuxerStats } from './fmp4-muxer';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
 import {
@@ -97,6 +98,9 @@ export const SESSION_STALL_MS = 15000;
 function isAudioDatagram(dgram: Uint8Array): boolean {
   return dgram.length >= 2 && (dgram[1] === TYPE_AUDIO_FRAME || dgram[1] === TYPE_AUDIO_CONFIG);
 }
+
+// R22: the worker muxer's counters as merged into stats by the worker shell.
+export type PresentationMuxStats = Fmp4MuxerStats & { armed: boolean };
 
 export interface ViewerStats extends ReassemblerStats {
   decodedFrames: number;
@@ -242,12 +246,12 @@ export interface ViewerStats extends ReassemblerStats {
   // the reader's context. The audio sink aligns playback start to it; null
   // until the arrival baseline exists.
   videoScheduleBaseEpochMs: number | null;
-  // R16 (docs/21 Decision 9). The pipeline itself never sets these three:
-  // presentationTee is merged in by the viewer *worker shell* when the
-  // presentation tee exists (gated devices only); featureGates and
+  // R16, reshaped by R22 (docs/27 Decision 8). The pipeline itself never sets
+  // these three: presentationMux is merged in by the viewer *worker shell*
+  // when the mux fork was requested (gated devices only); featureGates and
   // presentationSurface are attached on the main thread by the viewer screen
   // before stats reach the overlay / Copy diagnostics.
-  presentationTee?: TeeStats;
+  presentationMux?: PresentationMuxStats;
   featureGates?: FeatureGate[];
   presentationSurface?: PresentationSurfaceStats;
   // R15 (docs/20 field finding 6): the audio jitter-buffer's own counters.
@@ -294,6 +298,11 @@ export interface ViewerCallbacks {
   // Broadcaster restart / resync: the sink must flush and re-anchor, or every
   // packet on the new timeline is late forever (docs/20 Decision 8).
   onAudioReset?: () => void;
+  // R22 (docs/27 Decision 3): the encoded-frame fork, fired for every frame
+  // the reorder buffer releases — the same in-order, freeze-on-gap-applied
+  // stream the decoder eats, upstream of decode. The worker shell muxes it to
+  // fMP4 for iPhone native fullscreen. Absent = zero per-frame work.
+  onReleasedFrame?: (frame: ReleasedFrame) => void;
 }
 
 export class ViewerPipeline {
@@ -698,6 +707,8 @@ export class ViewerPipeline {
   // Called by the reorder buffer in decode order. A keyframe may carry a config
   // (stream-embedded); apply it before decoding that keyframe.
   private decodeReleased(frame: ReleasedFrame): void {
+    // R22: the mux fork sees exactly what the decoder is about to see.
+    this.cb.onReleasedFrame?.(frame);
     if (frame.config) this.maybeApplyConfig(frame.config);
     this.feedDecoder(frame.keyframe, frame.timestampUs, frame.data);
   }
@@ -1112,78 +1123,3 @@ export class ViewerPipeline {
   }
 }
 
-function normalizeAvccExtradata(extradata: Uint8Array): Uint8Array {
-  if (extradata.length < 7 || extradata[0] !== 0x01) return extradata;
-
-  const out: number[] = [];
-  
-  // Bytes 0-3: Version, Profile, Compat, Level
-  out.push(extradata[0], extradata[1], extradata[2], extradata[3]);
-
-  // Byte 4: Fix reserved bits (set top 6 bits to 1, Chrome strictly requires this)
-  out.push(extradata[4] | 0xfc);
-
-  // Byte 5: Fix reserved bits (set top 3 bits to 1)
-  const numOfSps = extradata[5] & 0x1f;
-  out.push(numOfSps | 0xe0);
-
-  let offset = 6;
-  let spsWasBuggy = false;
-  
-  // Parse SPS
-  for (let i = 0; i < numOfSps; i++) {
-    if (offset + 2 > extradata.length) break;
-    let len = (extradata[offset] << 8) | extradata[offset + 1];
-    offset += 2;
-    if (offset + len > extradata.length) break;
-    
-    const originalLen = len;
-    let naluData = extradata.subarray(offset, offset + len);
-    
-    // Detect Firefox double-byte bug: NALU type (e.g. 0x67) is duplicated, 
-    // shifting the true profile_idc to index 2.
-    if (naluData.length > 2 && (naluData[0] & 0x1f) === 7) {
-      if (naluData[0] === naluData[1] && naluData[2] === extradata[1]) {
-        log.warn('Normalizing Firefox SPS double-byte bug');
-        naluData = naluData.subarray(1);
-        len -= 1;
-        spsWasBuggy = true;
-      }
-    }
-    
-    out.push((len >> 8) & 0xff, len & 0xff);
-    for (let j = 0; j < len; j++) out.push(naluData[j]);
-    offset += originalLen;
-  }
-
-  // Parse PPS
-  if (offset < extradata.length) {
-    const numOfPps = extradata[offset++];
-    out.push(numOfPps);
-    
-    for (let i = 0; i < numOfPps; i++) {
-      if (offset + 2 > extradata.length) break;
-      let len = (extradata[offset] << 8) | extradata[offset + 1];
-      offset += 2;
-      if (offset + len > extradata.length) break;
-      
-      const originalLen = len;
-      let naluData = extradata.subarray(offset, offset + len);
-      
-      // Fix PPS double-byte bug if SPS was buggy
-      if (naluData.length > 2 && (naluData[0] & 0x1f) === 8) {
-        if (spsWasBuggy && naluData[0] === naluData[1]) {
-          log.warn('Normalizing Firefox PPS double-byte bug');
-          naluData = naluData.subarray(1);
-          len -= 1;
-        }
-      }
-      
-      out.push((len >> 8) & 0xff, len & 0xff);
-      for (let j = 0; j < len; j++) out.push(naluData[j]);
-      offset += originalLen;
-    }
-  }
-
-  return new Uint8Array(out);
-}

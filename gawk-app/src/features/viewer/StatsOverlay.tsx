@@ -217,8 +217,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
           },
         ]
       : []),
-    // R16 U4: the native-fullscreen debugging section (gated devices only) —
-    // "is the tee writing frames" vs "is the <video> receiving/playing them".
+    // R16 U4, reshaped by R22 (docs/27 Decision 8): the native-fullscreen
+    // debugging section (gated devices only) — each hop of the worker-muxer →
+    // MMS → <video> chain reports, so a broken fullscreen localizes remotely.
     ...(surface
       ? [
           {
@@ -226,8 +227,15 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
             rows: [
               ['Fullscreen tier', surface.tier ?? '—'],
               [
-                'Tee',
-                `${surface.armed ? 'armed' : 'idle'} · ${surface.teedFrames} frames · ${surface.teeErrors} err`,
+                'Muxer',
+                `${surface.armed ? 'armed' : 'idle'} · ${surface.muxMediaSegments} seg (${surface.muxInitSegments} init) · ${surface.muxErrors} err`,
+              ],
+              ['Appends', `${surface.segmentsAppended} · ${surface.appendErrors} err`],
+              [
+                'Buffered',
+                surface.bufferedMs == null
+                  ? '—'
+                  : `${(surface.bufferedMs / 1000).toFixed(1)} s · ${((surface.bufferedAheadMs ?? 0) / 1000).toFixed(1)} s behind edge`,
               ],
               [
                 'Video element',
@@ -240,10 +248,6 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                 surface.elementWidth ? `${surface.elementWidth}×${surface.elementHeight}` : '—',
               ],
               ['Element frames', surface.elementFrames == null ? '—' : String(surface.elementFrames)],
-              [
-                'Content sample',
-                surface.elementContentPeak == null ? '—' : `peak ${surface.elementContentPeak}/255`,
-              ],
             ] as StatsRow[],
           },
         ]

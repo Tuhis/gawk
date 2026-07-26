@@ -40,7 +40,7 @@ feature set exists).
 | R19 | [Resilient viewer mode for lossy networks](#r19--resilient-viewer-mode-for-lossy-networks) | ✅ X2–X5 implemented 2026-07-18, automated gates green; X1 netem/browser baseline + X6 verification done 2026-07-19 (lossy-network behaviour — not CI-reachable) ([docs/24](docs/24-viewer-network-resilience.md)) |
 | R20 | [E2E testing in CI](#r20--e2e-testing-in-ci) | 🔧 Z1 done + Z2/Z3 implemented 2026-07-18; **both tiers green in real CI** (tier-1 `e2e` on every PR; `e2e-cluster` on the 2026-07-18 release PRs — Z3's green-on-a-release-PR acceptance met, origin/edge split + browser viewer asserted); Z5 browser-broadcaster implemented 2026-07-19 (spike: viable headless via tab capture — screen capture delivers black frames); Z4 burn-in → required flip pending ([docs/25](docs/25-e2e-testing-in-ci.md)) |
 | R21 | [Relay DVR ring buffer for resilient mode](#r21--relay-dvr-ring-buffer-for-resilient-mode) | 🔧 designed 2026-07-23; **DV1–DV5 implemented same day** (wire 0x0C `TypeDeliveryAck`, `-dvr-*` flags, `internal/hub/dvr*.go`, viewer "Deep buffer" mode; automated gates green incl. e2e deep-buffer pass), DV6 on-hardware verification + tuning pending ([docs/26](docs/26-relay-dvr-buffer.md)) |
-| R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔧 designed 2026-07-23, not started (MF1–MF5); MSE-backed native fullscreen **spike-confirmed on iPhone** — supersedes R16's rejected MediaStream tee ([docs/27](docs/27-ios-mse-fullscreen.md)) |
+| R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔶 MF1–MF4 implemented 2026-07-25 (+ MF5 observability/docs; automated gates green incl. the Chrome `MediaSource` playback check; R16 tee deleted); **MF5 on-device verification pending** ([docs/27](docs/27-ios-mse-fullscreen.md)) |
 | R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 🚧 implemented 2026-07-24 (TC1–TC5); automated gates green (gawk-app + gawk-broadcast + helm), manual browser verify pending ([docs/29](docs/29-terms-and-conditions.md)) |
 | R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 💡 idea — not designed, no doc yet |
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
@@ -1483,7 +1483,11 @@ now the *only known-working* native-fullscreen path on iPhone.
   (a VP-codec broadcast probes false on iPhone → CSS pseudo-fullscreen).
 
 Chunks **MF1–MF5** (two-letter prefix — A–Z taken). Designed 2026-07-23,
-spike-confirmed on iPhone the same day, not started.
+spike-confirmed on iPhone the same day; **MF1–MF4 implemented 2026-07-25**
+(+ MF5's observability/docs half; the R16 tee is deleted and the muxer's
+output is CI-proven to play in Chrome `MediaSource` via
+`e2e/run.mjs --muxer-check`); MF5's on-device verification pass is pending —
+see docs/27 "Implementation status & deviations".
 
 ---
 

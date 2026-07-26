@@ -319,6 +319,15 @@ jobs:
         working-directory: gawk-app
       - run: npm ci
         working-directory: e2e
+      # R22 MF1 (docs/27 Decision 10): the fMP4 muxer's output plays in a real
+      # Chrome MediaSource <video>. Standalone (no relay/publisher) and fast
+      # (~10 s), so it runs first — a broken muxer fails here with its own
+      # verdict instead of as noise in a full-stack run.
+      - name: Run the fMP4 muxer playback check (R22)
+        run: node run.mjs --muxer-check
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-muxer-check
       - name: Run the browser E2E (headless system Chrome)
         run: node run.mjs
         working-directory: e2e
@@ -339,6 +348,7 @@ jobs:
           path: |
             e2e/out/
             e2e/out-browser-broadcast/
+            e2e/out-muxer-check/
           retention-days: 7
 
   # R20 tier 2 (docs/25 Decision 7): cluster-mode E2E — the real chart with

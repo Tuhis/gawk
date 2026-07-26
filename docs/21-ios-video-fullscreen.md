@@ -6,7 +6,11 @@ Design doc for [ROADMAP R16](../ROADMAP.md#r16--ios-native-fullscreen)
 fullscreen enters but shows a **black video** across three on-device passes,
 and the decoded-frame clone tee (no canvas readback) did not cure it. Per the
 pre-registered U4 criteria the native tier is **rejected**: pseudo-fullscreen
-(CSS) is the shipping path — see “U4 findings”, BUGS.md). Makes the viewer's fullscreen button
+(CSS) is the shipping path — see “U4 findings”, BUGS.md.
+**Superseded 2026-07-25 by R22 ([docs/27](27-ios-mse-fullscreen.md))**, which
+deleted the tee/generator path described below and re-fed the same hidden
+`<video>` from an fMP4 muxer via `ManagedMediaSource` — the gate, tiers,
+hiding rules and Feature Gates section all live on there). Makes the viewer's fullscreen button
 actually work on iPhone — today it is a **silent no-op** — by teeing the
 already-presented canvas output into a `MediaStreamTrack` (via the
 worker-only `VideoTrackGenerator` API) that feeds a hidden, pre-armed

@@ -10,6 +10,13 @@ import type { FullscreenTier } from './featureGates';
 // the presentation video, and falls through to CSS pseudo-fullscreen so the
 // button always visibly does something.
 //
+// R22 (docs/27 Decision 2): the presentation video's media source changed
+// from the R16 MediaStream tee (black on iOS — docs/21 U4) to an
+// MSE/ManagedMediaSource feed; tier 2 gains a seek-to-live before the
+// in-gesture play (the armed video sits paused while its buffer follows the
+// live edge — docs/27 Decision 5) and pauses the hidden video again on exit
+// so the second decode stops with the native player.
+//
 // State tracking is per tier: `fullscreenchange` (tier 1),
 // `webkitbeginfullscreen`/`webkitendfullscreen` on the video (tier 2 — the
 // native fullscreen does NOT fire fullscreenchange), local state (tier 3).
@@ -26,6 +33,29 @@ export function elementFullscreenAvailable(): boolean {
 
 // webkitEnterFullscreen needs media at readyState ≥ HAVE_METADATA.
 const HAVE_METADATA = 1;
+
+// R22: how far behind the buffered end the playhead may sit before the
+// in-gesture entry seeks it forward, and where the seek lands (a hair inside
+// the buffered range — seeking to the exact end can stall HAVE_CURRENT_DATA).
+const SEEK_IF_BEHIND_S = 0.5;
+const LIVE_EDGE_REJOIN_S = 0.1;
+
+// The armed video is paused at (near) the live edge; its buffered ranges keep
+// growing under it. Jump to the newest range's end before playing, or the
+// native player would resume seconds — eventually minutes — behind live.
+// Best-effort: a seek failure must not void the gesture path.
+function seekToLiveEdge(video: HTMLVideoElement): void {
+  try {
+    const b = video.buffered;
+    if (b.length === 0) return;
+    const end = b.end(b.length - 1);
+    if (end - video.currentTime > SEEK_IF_BEHIND_S) {
+      video.currentTime = Math.max(b.start(b.length - 1), end - LIVE_EDGE_REJOIN_S);
+    }
+  } catch {
+    // buffered/seek quirks — the entry attempt proceeds from wherever it is
+  }
+}
 
 interface WebKitVideoElement extends HTMLVideoElement {
   webkitEnterFullscreen?: () => void;
@@ -68,11 +98,20 @@ export function useFullscreen(
 
   // Tier 2 tracking: webkitEnterFullscreen does not fire fullscreenchange —
   // state travels on these WebKit-prefixed video events (incl. the system
-  // UI's own exit affordance).
+  // UI's own exit affordance). On exit the hidden video pauses again (R22):
+  // playback only exists for the native player, and leaving it running would
+  // keep a second decode burning battery under the inline canvas.
   useEffect(() => {
     if (tier1Available || !presentationVideo) return;
     const onBegin = () => setState({ fullscreen: true, tier: 'video' });
-    const onEnd = () => setState({ fullscreen: false, tier: null });
+    const onEnd = () => {
+      try {
+        presentationVideo.pause();
+      } catch {
+        // pausing a hidden video is best-effort
+      }
+      setState({ fullscreen: false, tier: null });
+    };
     presentationVideo.addEventListener('webkitbeginfullscreen', onBegin);
     presentationVideo.addEventListener('webkitendfullscreen', onEnd);
     return () => {
@@ -96,15 +135,24 @@ export function useFullscreen(
       if (current.tier === 'video') {
         const video = presentationVideo as WebKitVideoElement | null;
         video?.webkitExitFullscreen?.();
-        // webkitendfullscreen confirms; update eagerly so the button follows
-        // the tap even if the event is late.
+        // webkitendfullscreen confirms (and pauses the hidden video); update
+        // eagerly so the button follows the tap even if the event is late,
+        // and pause eagerly too — a missed event must not leave a second
+        // decode running under the canvas (R22).
+        try {
+          video?.pause();
+        } catch {
+          // best-effort
+        }
       }
       setState({ fullscreen: false, tier: null });
       return;
     }
 
     // Tier 2: the native video fullscreen, synchronously inside the user
-    // gesture (an async hop here would void the gesture — docs/21).
+    // gesture (an async hop here would void the gesture — docs/21). The
+    // armed MSE video is loaded-but-paused (docs/27 Decision 5): seek to the
+    // live edge, play, enter — all in-gesture.
     const video = presentationVideo as WebKitVideoElement | null;
     if (
       video &&
@@ -112,10 +160,10 @@ export function useFullscreen(
       video.readyState >= HAVE_METADATA
     ) {
       try {
-        // A paused MediaStream video is exactly a black native player (U4
-        // finding). This play() runs inside the user gesture, so it succeeds
-        // even where the muted autoplay at arm time was blocked (e.g. iOS
-        // Low Power Mode).
+        seekToLiveEdge(video);
+        // In-gesture play(): succeeds even where a muted autoplay would be
+        // blocked (e.g. iOS Low Power Mode) — and a paused video is exactly
+        // what the native player must not be handed (docs/21 U4).
         if (video.paused) void video.play()?.catch?.(() => {});
         video.webkitEnterFullscreen();
         setState({ fullscreen: true, tier: 'video' });

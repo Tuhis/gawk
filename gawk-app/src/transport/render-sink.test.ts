@@ -15,7 +15,6 @@ import {
   OffscreenCanvasRenderSink,
   PacedPresentationSink,
   WebGLRenderSink,
-  createContextSink,
   createRenderSink,
   type RenderSink,
 } from './render-sink';
@@ -614,11 +613,11 @@ describe('createRenderSink (R10 P2)', () => {
   });
 });
 
-describe('createContextSink (R16)', () => {
+describe('context sink options', () => {
   it('requests the standard context options (no per-caller overrides)', () => {
     const gl = fakeGL();
     const { canvas } = fakeCanvas((type) => (type === 'webgl2' ? gl : null));
-    createContextSink(canvas);
+    createRenderSink(canvas, (cb) => cb());
     const getContext = (canvas as unknown as { getContext: ReturnType<typeof vi.fn> }).getContext;
     expect(getContext).toHaveBeenCalledWith('webgl2', {
       alpha: false,

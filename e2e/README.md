@@ -71,6 +71,23 @@ worker offload path doesn't engage headlessly (no worker MSTP, no track
 transfer — finding 12), so the broadcaster runs the main-thread pipeline;
 the placement is recorded, not asserted.
 
+## fMP4 muxer playback check (R22)
+
+```sh
+cd e2e && node run.mjs --muxer-check
+```
+
+Standalone and fast (~10 s): no relay, publisher or preview. Bundles the
+production R22 muxer + MSE presenter with the committed H.264 fixture
+(rolldown, `gawk-app/src/e2e/muxer-check-entry.ts`), loads the bundle into a
+blank headless-Chrome page, and asserts the muxed bytes actually PLAY in a
+`MediaSource` `<video>` — frames present via `requestVideoFrameCallback`,
+`currentTime` advances, dimensions match the SPS (docs/27 Decision 10). This
+is the CI proof the fMP4 is real media; the iPhone-native *presentation* stays
+manual (docs/27 MF5). Runs first in the `e2e` job; artifacts in
+`out-muxer-check/`. Prerequisites: `npm ci` in `gawk-app` (rolldown bundles
+straight from source — no `npm run build` needed) and `npm ci` here.
+
 ## Tier 2 locally (kind)
 
 Mirror the `e2e-cluster` job in `.github/workflows/ci.yml` — it is written to
