@@ -149,7 +149,7 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 24. ✅ Resilient viewer mode for lossy networks (R19): an opt-in per-viewer mode (`?delivery=reliable`) where the relay re-frames the subscriber's deltas as length-prefixed records on per-GOP reliable uni "carrier" streams (QUIC recovers loss; the relay stays a byte forwarder), paired with a wider adaptive playout profile (clamp [150, 2000] ms) so a clean mobile link sits under 1 s behind live instead of freezing on loss. One stream-kind byte 0x0A `TypeReliableCarrier`; zero broadcaster changes — `docs/24` (X2–X5 implemented 2026-07-18, X1/X6 verification 2026-07-19; the carrier path is now covered under injected loss in CI)
 25. ✅ E2E testing in CI (R20): a real headless-Chromium viewer decoding real relayed frames as a GitHub Actions gate. Tier 1 (every PR) publishes a committed H.264 fixture through the real native engine via a new `gawk-pubsim` CLI and asserts flow-shaped criteria from the viewer's Copy-diagnostics JSON; Tier 2 (release PRs only) stands up a 2-pod kind cluster and proves the origin/edge split. A headless browser-broadcaster pass drives the production broadcaster via tab capture — `docs/25` (Z1–Z3 + Z5 implemented 2026-07-18/19; both tiers green in real CI; Z4 burn-in → required-check flip pending)
 26. 🔧 Relay DVR ring buffer for resilient mode (R21): each broadcast gets a short (2–3 s, `-dvr-window`) relay ring of whole GOPs with a per-subscriber cursor, so a "Deep buffer" viewer rides out a multi-second outage with no freeze and no lost frames — R19 shipped only the viewer-side delay buffer, which relocates the freeze rather than covering the stall. New wire type 0x0C `TypeDeliveryAck`; viewer delivery is now a three-way menu (live / resilient / Deep buffer). Server-side + viewer — `docs/26` (DV1–DV5 implemented 2026-07-23, automated gates green incl. an e2e deep-buffer pass; DV6 on-hardware verification + tuning pending)
-27. 🔶 iOS native fullscreen via MSE (R22): the iPhone fullscreen button feeds the (kept) hidden `<video>` from a **worker-side fMP4 muxer over the encoded stream** through `ManagedMediaSource` — upstream of the decoder, which is exactly why it renders where R16's presented-frame MediaStream tee was black (spike-confirmed on a real iPhone 2026-07-23). The inline WebCodecs/canvas path is byte-identical everywhere; the R16 tee/generator code is deleted; H.264-only in v1 (VP broadcasts fall back to CSS pseudo-fullscreen). Viewer-only — zero server/wire changes — `docs/27` (MF1–MF4 implemented 2026-07-25; muxer playback CI-proven in Chrome `MediaSource` via `e2e/run.mjs --muxer-check`; MF5 on-device verification pending)
+27. 🔶 iOS native fullscreen via MSE (R22): the iPhone fullscreen button feeds the (kept) hidden `<video>` from a **worker-side fMP4 muxer over the encoded stream** through `ManagedMediaSource` — upstream of the decoder, which is exactly why it renders where R16's presented-frame MediaStream tee was black (spike-confirmed on a real iPhone 2026-07-23). The inline WebCodecs/canvas path is byte-identical everywhere; the R16 tee/generator code is deleted; H.264-only in v1 (VP broadcasts fall back to CSS pseudo-fullscreen). Since the first on-device pass (2026-07-26) the presentation also carries **audio**: the R15 Opus lane is muxed as a second SourceBuffer (probed with `isTypeSupported` — a refusal keeps the native player video-only), and entering native fullscreen hands the audio over exclusively, silencing the inline AudioWorklet sink. Viewer-only — zero server/wire changes — `docs/27` (MF1–MF4 implemented 2026-07-25; muxer + Opus-track playback CI-proven in Chrome `MediaSource` via `e2e/run.mjs --muxer-check`; **on-device pass 1 confirmed real video in native fullscreen** and produced five findings — infinite duration and muxed audio fixed, three open; a second pass is pending)
 
 What comes next (the R11/R13 manual browser verifies; R14's V8 direct Vulkan
 Video encode now the gaming-PC verify has passed; the R15 system audio build;
@@ -477,6 +477,32 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   frames (the muxer fixture's frame 16 is exactly that). Decide the wire
   format at keyframes — avcC-bearing config ⇒ AVCC, leading start code with
   in-band SPS/PPS ⇒ Annex-B — and keep it sticky for the deltas.
+  ([docs/27](docs/27-ios-mse-fullscreen.md))
+- **A live MSE presentation must set `duration = Infinity`** — otherwise MSE
+  keeps raising duration to the newest appended end timestamp, and two things
+  break: the native player draws a finite scrub bar instead of the LIVE badge,
+  and "the playhead reached the buffered end" becomes indistinguishable from
+  "the media ended". **WebKit resolves that by pausing and firing `ended` on an
+  MSE buffer underrun, where Chromium stalls and resumes** — so on iPhone every
+  hiccup killed playback until the user tapped play, and no Chrome-based CI
+  could see it. Set it in the `sourceopen` handler: the setter throws unless
+  readyState is `open` with no SourceBuffer updating.
+  ([docs/27](docs/27-ios-mse-fullscreen.md))
+- **`HTMLMediaElement.buffered` is the INTERSECTION of the SourceBuffers'
+  ranges** — so with a muxed audio track, a hole in audio is a hole in playback
+  and stalls the *video* the native player is showing. Hence one packet of
+  lookahead in the audio muxer (a sample's declared duration must be the real
+  interval to its successor, which also lets a lost datagram be absorbed by
+  stretching the preceding sample over the gap), and hence the audio
+  SourceBuffer is created on the first audio *sample*, never when its config
+  arrives — an audio track with no samples empties the intersection.
+  ([docs/27](docs/27-ios-mse-fullscreen.md))
+- **WebCodecs is `[SecureContext]`, and `about:blank` is not one** — an e2e page
+  loaded via `about:blank` has `AudioEncoder`/`VideoEncoder` undefined (while
+  non-gated APIs like `AudioData` and `MediaSource` are present, so it looks
+  like a codec-support problem rather than an origin problem). Serve the page
+  from a `localhost` origin — the `--muxer-check` harness fulfills one
+  intercepted request in memory rather than starting a server.
   ([docs/27](docs/27-ios-mse-fullscreen.md))
 - **iPhone has no Element Fullscreen API** — `Element.requestFullscreen`
   ships on iPadOS (16.4+) but not iPhone, in every iOS browser (all WebKit),

@@ -307,8 +307,12 @@ the whole native path before U4 could test it.
 
 ## Implementation status & deviations (2026-07-25)
 
-MF1–MF4 implemented; MF5's observability/docs half done, its on-device pass
-pending. Automated gates green: gawk-app tsc/vitest/oxlint/build (810 tests
+MF1–MF4 implemented; MF5's observability/docs half done, and its first on-device
+pass is **done** — see "On-device findings" below: native fullscreen shows real
+video (the design's premise holds), with two liveness defects found and fixed
+(infinite duration; audio muxed into the presentation) and three more diagnosed
+and left open. A second on-device pass is needed for the fixes.
+Automated gates green: gawk-app tsc/vitest/oxlint/build (855 tests
 incl. the new muxer, presenter, fullscreen-tier, worker-tap and
 controller-message-shape suites), plus
 the full tier-1 e2e (fixture publisher → relay → production viewer, live +
@@ -391,6 +395,154 @@ back:
     `<video>` unmounts with it (review finding), so the next tap actually
     falls to pseudo rather than native-presenting the stale, frozen
     pre-restart content off a still-ready element.
+
+## On-device findings (MF5 pass 1, 2026-07-26)
+
+The first real-iPhone test of the shipped MF1–MF4 path. **The headline result is
+positive and supersedes docs/21's verdict: native fullscreen shows real video.**
+Two defects came with it, both in the *liveness* of the presentation rather than
+in the media, and both fixed below. The owner's report:
+
+> Video now actually shows up in full screen. For a while.. The native player
+> doesn't show "live" badge anymore. The video (in fullscreen) plays sometimes
+> for a second, sometimes for 10, but always pauses after that. When I click the
+> native "play" icon, it'll continue for another moment.
+
+### Finding 1 — a live MSE presentation must declare `duration = Infinity` (fixed)
+
+`MsePresenter` never set `MediaSource.duration`. Left unset, MSE's coded-frame
+processing raises duration to the newest appended end timestamp, so the element
+reports a **finite, growing** duration. That costs two distinct things:
+
+* **The LIVE badge.** WebKit's native player draws a live UI when
+  `duration === Infinity`; with a finite duration it draws an ordinary scrub bar.
+  Every live MSE player (hls.js, dash.js, shaka) sets this explicitly for exactly
+  this reason — it is not a detail we can leave to the default.
+* **The pauses.** With a finite duration, "the playhead reached the buffered end"
+  is indistinguishable from "the media resource ended". WebKit resolves that
+  ambiguity by **pausing and firing `ended`** where Chromium stalls and resumes
+  when more data arrives — which is also why CI (Chrome) could not have caught
+  it. A manual tap then resumes, because by then more media has been appended and
+  `currentTime < duration` again: precisely the reported "continues for another
+  moment", on a loop.
+
+Fixed in `declareLive()`, called from the `sourceopen` handler — the one moment
+the setter is legal (readyState `open`, no SourceBuffer updating; a fresh source
+has none). Infinity is never less than the highest end timestamp, so appends
+cannot lower it and one write per MediaSource suffices; a re-attach re-declares
+on the new source. A refusal is non-fatal (`failed` stays false — a finite
+duration degrades the player's UI and stall behavior, it does not stop it
+presenting) and surfaces as the overlay's **Live duration** row plus
+`presentationSurface.liveDuration` in Copy diagnostics. CI asserts both the
+presenter's verdict and `video.duration === Infinity` in real Chrome.
+
+### Finding 2 — audio in native fullscreen (implemented, on-device pending)
+
+The muxed presentation was video-only, so entering native fullscreen lost audio
+entirely: the inline AudioWorklet sink keeps playing, but the native player
+covers the page and the two are independently clocked. Owner decision: **mux the
+R15 Opus lane into the presentation as a second track.**
+
+Design, as implemented:
+
+* **Two SourceBuffers on one MediaSource** (`video/mp4; codecs="avc1…"` +
+  `audio/mp4; codecs="opus"`), the standard MSE shape — not one interleaved file.
+  It keeps the working video path untouched when audio is absent, refused, or
+  dies.
+* **Opus-in-MP4 is probed, never assumed** (`probeMseAudio`). WebKit 17 added
+  "one or two channel Opus audio in WebM and MPEG-4 containers", but nothing
+  documents it *through* ManagedMediaSource, and Apple's own HLS mandates AAC. A
+  refusal keeps the native player video-only with the inline sink unchanged, and
+  reports the reason in the overlay's **Audio track** row. If the iPhone refuses
+  it, the follow-up is transcoding to AAC in the viewer worker (the decoded
+  `AudioData` is already in hand for the worklet) — the muxer, presenter, tap and
+  timeline plumbing are all reusable.
+* **One shared timeline.** The muxer republishes the video path's input→output
+  offset on every frame, and audio maps through it. Both media carry timestamps
+  on the same broadcaster `performance.now()` clock (docs/20's load-bearing sync
+  decision), so relative A/V skew is zero by construction. Audio before the first
+  video frame has no anchor and is dropped.
+* **The audio track's timescale is its sample rate**, so every duration is an
+  exact sample count (960 for a 20 ms frame) and the track cannot accumulate
+  rounding drift against video.
+* **Sample durations come from one packet of lookahead.** This is the
+  load-bearing rule: `HTMLMediaElement.buffered` is the **intersection** of the
+  tracks' ranges, so a hole in audio is a hole in playback and stalls the video
+  the native player is showing. A sample's duration is therefore the real
+  interval to its successor — which also means a lost datagram is absorbed by
+  *stretching* the preceding sample over the gap (the range stays continuous and
+  the audio renderer pads). Past `AUDIO_MAX_STRETCH_MS` (1 s) the loss is an
+  outage rather than jitter: the sample is declared honestly, the hole is counted
+  (`audioHoles`), and on a link that bad the video datagrams are gone too.
+* **The audio SourceBuffer is created lazily, on the first audio *sample***, not
+  when the config arrives. An audio track with no samples empties the buffered
+  intersection — it would stall the video and could keep the element from ever
+  reaching the readiness `webkitEnterFullscreen` requires.
+* **Audio faults never touch video**: a refused `addSourceBuffer` (the plausible
+  iOS outcome) drops the audio track for good and leaves `failed` false.
+* **The handoff is exclusive.** Entering tier-2 fullscreen suppresses the inline
+  sink (a new `audio.setSuppressed`, an override that never touches the persisted
+  mute preference) and the hidden `<video>` is unmuted — declaratively, since
+  both inputs are known before the tap, and honoring the viewer's own mute
+  toggle; the viewer's volume is mirrored onto the element. Exit restores the
+  inline sink. Without a muxed track nothing is suppressed, or fullscreen would
+  be silent.
+* **The stream's audio format now comes from the config message**, not the decode
+  lane: they agree whenever decoding works, and where it doesn't (no
+  `AudioDecoder` in scope) only the config knows the format at all — which is
+  exactly the case this feature covers, an iPhone that cannot decode Opus itself
+  still handing it to the native player.
+
+**CI proof.** `run.mjs --muxer-check` now runs an audio leg: the page encodes
+real Opus with the browser's own `AudioEncoder` (which forced the page onto a
+`localhost` origin — `about:blank` is not a secure context and WebCodecs is
+`[SecureContext]`), muxes it interleaved with the fixture video, and asserts the
+`Opus`/`dOps` init segment is accepted, the track is created, and no holes
+appear. The pre-existing "frames present + currentTime advances" assertions do
+the heaviest lifting here for free: with both tracks appended the element only
+plays where their ranges intersect, so a malformed audio timeline fails the video
+verdict. Chrome reports `isTypeSupported('audio/mp4; codecs="opus"')` true; where
+a runtime says false the leg is skipped **loudly**, never silently.
+
+### Still open from the same investigation (diagnosed, not fixed)
+
+Recorded so the next pass starts here rather than re-deriving it, and tracked as
+three entries in [`BUGS.md`](../BUGS.md) (all three are iPhone-native-fullscreen
+only — the inline canvas path has no equivalent failure mode). Findings 1 and
+2 may well be enough on their own — the point of the fixes is that an underrun
+becomes a recoverable stall instead of a dead player — but these three are real
+and independent. **They were deliberately not fixed in the same change**: 1 and 2
+are what the owner scoped, and shipping the rest unverified would mean changing
+the live-edge budget and adding a seek-issuing watchdog in the same pass that
+first proved native fullscreen works at all — landing them separately keeps pass
+2's verdict attributable.
+
+3. **The live-edge cushion is ~100 ms and cannot grow.** `LIVE_EDGE_REJOIN_S`
+   (0.1) in *both* `useFullscreen.seekToLiveEdge` and `MsePresenter.maybeCatchUp`
+   — a duplicated constant, itself worth unifying. The subtlety is that the muxer
+   is fed from `decodeReleased`, i.e. **after** the reorder buffer's paced
+   release, so appends arrive at playback rate: the SourceBuffer can never build
+   ahead while the element plays. Whatever the entry seek leaves is the entire
+   budget for the session, and 100 ms is below the arrival jitter this project has
+   already measured in the field (72–158 ms, docs/20 finding 6). `maybeCatchUp`
+   then re-creates the condition every time lag exceeds 2 s. A shared
+   `TARGET_LAG_S` of ~0.4–0.6 s is the fix; with audio now muxed it costs
+   fullscreen latency but no lip-sync, since both tracks come off the same
+   timeline.
+4. **Nothing watches for a stalled element.** WebKit's pause-on-underrun (finding
+   1) and any hole in either track leave the native player stopped with no
+   recovery path — no listener for `waiting`/`stalled`/`ended`/`pause` exists.
+   Production players all ship this (hls.js's gap-controller nudges, seeks over
+   holes, and re-plays). A tier-2-only watchdog that seeks into the newest
+   buffered range and re-`play()`s is the general answer to both.
+5. **MMS parking plus the bounded queue can manufacture holes while armed.**
+   `pump()` parks on `streaming === false`; while armed the element is paused, so
+   MMS's buffered-ahead only grows and it stops asking for data, while the queue
+   fills and front-drops past `MAX_QUEUED_SEGMENTS`. Any arming period longer than
+   the queue depth (~2–4 s) therefore leaves a hole between the last appended
+   segment and where appends resume. Either keep the armed playhead following the
+   buffered edge so MMS never parks, or treat resume-after-park as a
+   discontinuity and seek into the newest range.
 
 ## Verification plan (manual, MF5)
 

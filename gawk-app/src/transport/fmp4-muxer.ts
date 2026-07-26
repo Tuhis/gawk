@@ -38,25 +38,62 @@ export interface MuxInputFrame {
   config: DecoderConfigMessage | null;
 }
 
+// R22 audio (docs/27 finding 2): video and audio ride SEPARATE SourceBuffers on
+// one MediaSource — the standard MSE shape, and the one that keeps the working
+// video path untouched when audio is absent, unsupported, or dies mid-stream.
+export type Fmp4Track = 'video' | 'audio';
+
 export interface Fmp4InitSegment {
   kind: 'init';
-  codec: string; // e.g. 'avc1.42C01E', derived from the bitstream/avcC
-  mime: string; // video/mp4; codecs="..."
-  width: number;
-  height: number;
+  track: Fmp4Track;
+  codec: string; // e.g. 'avc1.42C01E' / 'opus', derived from the bitstream/config
+  mime: string; // video/mp4; codecs="..." | audio/mp4; codecs="opus"
+  width: number; // 0 on the audio track
+  height: number; // 0 on the audio track
   data: Uint8Array;
 }
 
 export interface Fmp4MediaSegment {
   kind: 'media';
+  track: Fmp4Track;
+  // Video: a sync sample. Audio samples are all sync samples, so the flag is
+  // always true there — the presenter's resync-at-keyframe policy is a no-op
+  // for audio, which is correct: any Opus packet is a decodable restart point.
   keyframe: boolean;
   data: Uint8Array;
 }
 
 export type Fmp4Segment = Fmp4InitSegment | Fmp4MediaSegment;
 
+// The R15 audio lane's config, as the muxer needs it (docs/20 wire type 0x08).
+export interface AudioMuxConfig {
+  codec: string;
+  sampleRate: number;
+  channels: number;
+}
+
+export interface AudioMuxInput {
+  timestampUs: bigint;
+  data: Uint8Array; // exactly one Opus packet (docs/20: one packet per datagram)
+}
+
+// What the pipeline forks to the muxer: the encoded audio lane in wire order.
+// Lives here (not in the worker core) so `viewer.ts` can name it without a
+// type cycle through the core.
+export type AudioTapEvent =
+  | { kind: 'config'; config: AudioMuxConfig }
+  | { kind: 'packet'; packet: AudioMuxInput };
+
 export function h264Mime(codec: string): string {
   return `video/mp4; codecs="${codec}"`;
+}
+
+// Opus-in-MP4 (RFC 7845 §4 encapsulation, 'Opus' sample entry + dOps). Whether
+// iOS accepts it is a runtime question — isTypeSupported decides, and a refusal
+// simply leaves the native player video-only (probeMseAudio in
+// features/viewer/msePresentation.ts).
+export function opusMime(): string {
+  return 'audio/mp4; codecs="opus"';
 }
 
 // One movie timescale for everything: microseconds, so wire timestamps map
@@ -67,6 +104,19 @@ export const MOVIE_TIMESCALE = 1_000_000;
 // the step used when re-anchoring across a restart. 30 fps — the fleet's
 // default fan-out cadence (docs/08).
 export const DEFAULT_FRAME_DURATION_US = 33_333;
+
+// Opus is always 48 kHz out, and the audio track's timescale IS its sample rate
+// so every duration is an exact sample count (docs/20: 20 ms frames = 960).
+export const OPUS_FRAME_MS = 20;
+
+// A live MSE audio track must be hole-free: HTMLMediaElement.buffered is the
+// INTERSECTION of the SourceBuffers' ranges, so a hole in audio is a hole in
+// playback — it stalls the video the native player is showing. A lost datagram
+// (or two) is therefore absorbed by stretching the preceding sample's declared
+// duration to cover the gap: the range stays continuous and the audio renderer
+// pads the missing content. Beyond this bound the loss is a real outage, not
+// jitter — the sample is declared honestly and the hole is counted.
+export const AUDIO_MAX_STRETCH_MS = 1000;
 
 // An input timestamp jumping backwards, or forward by more than this, is a
 // timeline discontinuity (broadcaster restart / clock change), not a frame
@@ -564,12 +614,152 @@ export function buildInitSegment(avcc: Uint8Array, width: number, height: number
   return w.take();
 }
 
+// The audio counterpart of buildInitSegment: one Opus track, timescale ==
+// sample rate. Deliberately a sibling rather than a parameterization of the
+// video builder — the video moov is pinned by golden vectors and must not move.
+export function buildAudioInitSegment(cfg: AudioMuxConfig): Uint8Array {
+  const w = new BoxWriter();
+
+  w.box('ftyp', () => {
+    w.ascii('isom');
+    w.u32(0x200);
+    w.ascii('isom');
+    w.ascii('iso5');
+    w.ascii('mp41');
+    w.ascii('opus');
+  });
+
+  w.box('moov', () => {
+    w.fullBox('mvhd', 0, 0, () => {
+      w.u32(0);
+      w.u32(0);
+      w.u32(1000);
+      w.u32(0); // duration: unknown/live
+      w.u32(0x00010000);
+      w.u16(0x0100);
+      w.u16(0);
+      w.u32(0);
+      w.u32(0);
+      writeUnityMatrix(w);
+      w.zeros(24);
+      w.u32(2); // next_track_ID
+    });
+
+    w.box('trak', () => {
+      w.fullBox('tkhd', 0, 0x3, () => {
+        w.u32(0);
+        w.u32(0);
+        w.u32(1); // track_ID — its own file, so 1 again (not the video's 2)
+        w.u32(0);
+        w.u32(0); // duration
+        w.u32(0);
+        w.u32(0);
+        w.u16(0); // layer
+        w.u16(1); // alternate_group: audio
+        w.u16(0x0100); // volume 1.0
+        w.u16(0);
+        writeUnityMatrix(w);
+        w.u32(0); // width/height: none
+        w.u32(0);
+      });
+
+      w.box('mdia', () => {
+        w.fullBox('mdhd', 0, 0, () => {
+          w.u32(0);
+          w.u32(0);
+          // Timescale == sample rate: durations are exact sample counts, so the
+          // track can never accumulate rounding drift against the video.
+          w.u32(cfg.sampleRate);
+          w.u32(0); // duration
+          w.u16(0x55c4); // 'und'
+          w.u16(0);
+        });
+        w.fullBox('hdlr', 0, 0, () => {
+          w.u32(0);
+          w.ascii('soun');
+          w.zeros(12);
+          w.ascii('gawk');
+          w.u8(0);
+        });
+        w.box('minf', () => {
+          w.fullBox('smhd', 0, 0, () => {
+            w.u16(0); // balance
+            w.u16(0); // reserved
+          });
+          w.box('dinf', () => {
+            w.fullBox('dref', 0, 0, () => {
+              w.u32(1);
+              w.fullBox('url ', 0, 1, () => {});
+            });
+          });
+          w.box('stbl', () => {
+            w.fullBox('stsd', 0, 0, () => {
+              w.u32(1);
+              // AudioSampleEntry('Opus'), 28 bytes then child boxes.
+              w.box('Opus', () => {
+                w.zeros(6); // reserved
+                w.u16(1); // data_reference_index
+                w.u32(0); // version + revision
+                w.u32(0); // vendor
+                w.u16(cfg.channels);
+                w.u16(16); // samplesize
+                w.u16(0); // pre_defined
+                w.u16(0); // reserved
+                // 16.16 fixed. Multiplication, not `<< 16`: 48000 << 16 overflows
+                // int32 in JS (the bytes come out right either way, but the
+                // expression should not read as a negative number).
+                w.u32(cfg.sampleRate * 0x10000);
+                // OpusSpecificBox (RFC 7845 §5.1) — a plain box carrying its own
+                // version byte, NOT a fullBox.
+                w.box('dOps', () => {
+                  w.u8(0); // Version
+                  w.u8(cfg.channels); // OutputChannelCount
+                  // PreSkip 0: WebCodecs exposes no encoder delay (docs/20 leaves
+                  // the AudioDecoder description empty for the same reason), so
+                  // there is nothing honest to declare. The cost is the encoder's
+                  // ~6.5 ms ramp-up being audible-in-principle at stream start —
+                  // an order below the 60 ms A/V skew target.
+                  w.u16(0);
+                  w.u32(cfg.sampleRate); // InputSampleRate (informational)
+                  w.u16(0); // OutputGain (Q7.8, 0 dB)
+                  w.u8(0); // ChannelMappingFamily: mono/stereo
+                });
+              });
+            });
+            w.fullBox('stts', 0, 0, () => w.u32(0));
+            w.fullBox('stsc', 0, 0, () => w.u32(0));
+            w.fullBox('stsz', 0, 0, () => {
+              w.u32(0);
+              w.u32(0);
+            });
+            w.fullBox('stco', 0, 0, () => w.u32(0));
+          });
+        });
+      });
+    });
+
+    w.box('mvex', () => {
+      w.fullBox('trex', 0, 0, () => {
+        w.u32(1); // track_ID
+        w.u32(1); // default_sample_description_index
+        w.u32(0);
+        w.u32(0);
+        w.u32(0);
+      });
+    });
+  });
+
+  return w.take();
+}
+
 // One-sample moof+mdat. The layout is fixed (one track, one sample, explicit
 // duration/size/flags), which is what makes MOOF_SIZE/TRUN_DATA_OFFSET
 // constants — pinned by tests so a box edit can't silently break the offset.
+// `decodeTime`/`duration` are in the TRACK's timescale: microseconds for video
+// (MOVIE_TIMESCALE), sample counts for audio.
 export function buildMediaSegment(
   sample: Uint8Array,
-  opts: { sequence: number; decodeTimeUs: number; durationUs: number; keyframe: boolean },
+  opts: { sequence: number; decodeTime: number; duration: number; keyframe: boolean },
 ): Uint8Array {
   const w = new BoxWriter();
   w.box('moof', () => {
@@ -577,13 +767,13 @@ export function buildMediaSegment(
     w.box('traf', () => {
       // default-base-is-moof: sample data offsets are relative to moof start.
       w.fullBox('tfhd', 0, 0x020000, () => w.u32(1));
-      w.fullBox('tfdt', 1, 0, () => w.u64(opts.decodeTimeUs));
+      w.fullBox('tfdt', 1, 0, () => w.u64(opts.decodeTime));
       // data-offset + per-sample duration/size/flags; no composition offset —
       // CTS == DTS is the no-B-frames invariant on the wire.
       w.fullBox('trun', 0, 0x000701, () => {
         w.u32(1); // sample_count
         w.u32(TRUN_DATA_OFFSET);
-        w.u32(opts.durationUs);
+        w.u32(opts.duration);
         w.u32(sample.length);
         // sample_flags: sync sample (depends on nothing) vs non-sync.
         w.u32(opts.keyframe ? 0x02000000 : 0x01010000);
@@ -603,6 +793,14 @@ export interface Fmp4MuxerStats {
   // Frames skipped before the first keyframe made an init segment possible.
   skippedAwaitingInit: number;
   errors: number;
+  // R22 audio. audioSkipped counts packets that could not be placed on the
+  // output timeline (no video anchor yet, no config, or a non-Opus codec);
+  // audioHoles counts gaps too long to absorb by stretching, i.e. the ones that
+  // do reach the buffered ranges.
+  audioInitSegments: number;
+  audioSegments: number;
+  audioSkipped: number;
+  audioHoles: number;
 }
 
 export class Fmp4Muxer {
@@ -621,11 +819,30 @@ export class Fmp4Muxer {
   private prevOutputUs = 0;
   private lastDurationUs = DEFAULT_FRAME_DURATION_US;
 
+  // The video path's input→output shift, republished on every frame (including
+  // each re-anchor). This is what keeps audio in sync: both media carry
+  // timestamps on the same broadcaster performance.now() clock (docs/20's
+  // load-bearing sync decision), so one shared offset puts both tracks on one
+  // output timeline and relative A/V skew is zero by construction. Null until
+  // the first video frame — audio cannot be placed before then.
+  private outputOffsetUs: number | null = null;
+
+  private audioConfig: AudioMuxConfig | null = null;
+  private audioSequence = 0;
+  // One packet of lookahead: a sample's duration is the interval to its
+  // SUCCESSOR, which is only knowable once the successor arrives (see pushAudio).
+  private pendingAudio: { dts: number; data: Uint8Array } | null = null;
+  private audioNominalSamples = 0;
+
   private stats: Fmp4MuxerStats = {
     initSegments: 0,
     mediaSegments: 0,
     skippedAwaitingInit: 0,
     errors: 0,
+    audioInitSegments: 0,
+    audioSegments: 0,
+    audioSkipped: 0,
+    audioHoles: 0,
   };
 
   getStats(): Fmp4MuxerStats {
@@ -710,20 +927,117 @@ export class Fmp4Muxer {
     }
     this.prevInputUs = inputUs;
     this.prevOutputUs = outputUs;
+    this.outputOffsetUs = outputUs - inputUs;
 
     this.sequence++;
     out.push({
       kind: 'media',
+      track: 'video',
       keyframe: frame.keyframe,
       data: buildMediaSegment(sample, {
         sequence: this.sequence,
-        decodeTimeUs: outputUs,
-        durationUs: this.lastDurationUs,
+        decodeTime: outputUs,
+        duration: this.lastDurationUs,
         keyframe: frame.keyframe,
       }),
     });
     this.stats.mediaSegments++;
     return out;
+  }
+
+  // R22 audio (docs/27 finding 2): the R15 audio config (wire 0x08). Returns an
+  // init segment when the track parameters actually change — the broadcaster
+  // re-sends the config at 1 Hz, and re-initing per repeat would reset the
+  // SourceBuffer for nothing. Emitted eagerly (it carries no timestamps), but
+  // the presenter deliberately holds it until the first audio sample: an audio
+  // track with a SourceBuffer and no samples empties the element's buffered
+  // intersection and would stall the video.
+  setAudioConfig(cfg: AudioMuxConfig): Fmp4Segment[] {
+    // Opus only. A non-Opus lane can't be muxed here and must not be guessed at.
+    if (!/^opus$/i.test(cfg.codec) || cfg.sampleRate <= 0 || cfg.channels < 1) {
+      this.stats.audioSkipped++;
+      return [];
+    }
+    const cur = this.audioConfig;
+    if (cur && cur.sampleRate === cfg.sampleRate && cur.channels === cfg.channels) return [];
+    this.audioConfig = { codec: 'opus', sampleRate: cfg.sampleRate, channels: cfg.channels };
+    this.pendingAudio = null;
+    this.audioNominalSamples = Math.round((OPUS_FRAME_MS / 1000) * cfg.sampleRate);
+    this.stats.audioInitSegments++;
+    return [
+      {
+        kind: 'init',
+        track: 'audio',
+        codec: 'opus',
+        mime: opusMime(),
+        width: 0,
+        height: 0,
+        data: buildAudioInitSegment(this.audioConfig),
+      },
+    ];
+  }
+
+  // Feed one Opus packet. Emits the PREVIOUS packet's segment: a sample's
+  // duration must be the interval to the next sample, or the audio timeline
+  // grows holes (on a slowdown) and overlaps (on a speed-up) exactly the way the
+  // video timeline did — and because buffered is the intersection of both
+  // tracks, an audio hole freezes the native player's video. One packet of
+  // lookahead is 20 ms; the audio track already runs ahead of the paced video
+  // release by more than that.
+  pushAudio(pkt: AudioMuxInput): Fmp4Segment[] {
+    const cfg = this.audioConfig;
+    if (!cfg || this.outputOffsetUs === null) {
+      this.stats.audioSkipped++;
+      return [];
+    }
+    const rate = cfg.sampleRate;
+    const outUs = Number(pkt.timestampUs) + this.outputOffsetUs;
+    if (outUs < 0) {
+      // Audio for a timeline the video hasn't reached (join order, or a restart
+      // seam): unplaceable, and negative decode times are illegal.
+      this.stats.audioSkipped++;
+      return [];
+    }
+    const dts = Math.round((outUs * rate) / 1_000_000);
+
+    const prev = this.pendingAudio;
+    if (!prev) {
+      this.pendingAudio = { dts, data: pkt.data };
+      return [];
+    }
+    const gap = dts - prev.dts;
+    if (gap <= 0) {
+      // Duplicate or reordered packet — the datagram lane has no ordering
+      // guarantee. Keep the sample already in hand; a rewritten past would make
+      // baseMediaDecodeTime non-monotonic.
+      this.stats.audioSkipped++;
+      return [];
+    }
+    const maxStretch = Math.round((AUDIO_MAX_STRETCH_MS / 1000) * rate);
+    let duration = gap;
+    if (gap > maxStretch) {
+      // A real outage, not jitter: declare the sample honestly and leave the
+      // hole visible (stretching a second of silence would desync everything
+      // after it).
+      duration = this.audioNominalSamples;
+      this.stats.audioHoles++;
+    }
+
+    this.audioSequence++;
+    const seg: Fmp4Segment = {
+      kind: 'media',
+      track: 'audio',
+      keyframe: true, // every Opus packet is a sync sample
+      data: buildMediaSegment(prev.data, {
+        sequence: this.audioSequence,
+        decodeTime: prev.dts,
+        duration,
+        keyframe: true,
+      }),
+    };
+    this.pendingAudio = { dts, data: pkt.data };
+    this.stats.audioSegments++;
+    return [seg];
   }
 
   // Emit a fresh init segment when the parameter sets actually changed
@@ -739,6 +1053,7 @@ export class Fmp4Muxer {
     this.stats.initSegments++;
     return {
       kind: 'init',
+      track: 'video',
       codec: this.codec,
       mime: h264Mime(this.codec),
       width: info.width,

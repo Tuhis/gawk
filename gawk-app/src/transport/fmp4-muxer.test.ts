@@ -575,3 +575,198 @@ describe('Fmp4Muxer edge behavior', () => {
     expect(medias(muxer.push(annexBFrame(1)))).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R22 audio (docs/27 finding 2): the Opus track. The invariant under test
+// throughout is ABUTMENT — sample N's decode time plus its declared duration
+// must equal sample N+1's decode time. HTMLMediaElement.buffered is the
+// intersection of the tracks' ranges, so a hole in audio is a hole in playback,
+// and the native player stops there.
+
+const OPUS_CFG = { codec: 'opus', sampleRate: 48_000, channels: 2 };
+const OPUS_FRAME_US = 20_000;
+const OPUS_FRAME_SAMPLES = 960;
+
+function opusPacket(i: number, ts: bigint): { timestampUs: bigint; data: Uint8Array } {
+  // Payload content is irrelevant to the muxer (it never parses Opus); size and
+  // identity are what the assertions follow.
+  return { timestampUs: ts, data: new Uint8Array([0xfc, i & 0xff, 0x00]) };
+}
+
+// Decode time + declared duration of a one-sample fragment, in track units.
+function sampleTiming(seg: Fmp4MediaSegment): { dts: number; duration: number } {
+  const boxes = parseBoxes(seg.data);
+  const dts = u64At(find(boxes, 'moof.traf.tfdt').body, 4);
+  const trun = find(boxes, 'moof.traf.trun').body;
+  // version/flags(4) sample_count(4) data_offset(4) → duration
+  return { dts, duration: u32At(trun, 12) };
+}
+
+// Walk into stsd's single sample entry (stsd is not a generic container: its
+// body starts with version/flags + entry_count).
+function sampleEntry(init: Uint8Array): Box {
+  const stsd = find(parseBoxes(init), 'moov.trak.mdia.minf.stbl.stsd');
+  const entries = parseBoxes(stsd.body, 8, stsd.body.length);
+  return entries[0];
+}
+
+describe('Fmp4Muxer audio track', () => {
+  // The video frame that anchors the shared output timeline. Both media carry
+  // broadcaster-clock timestamps, so audio needs the video path's anchor before
+  // it can be placed at all.
+  function anchored(): Fmp4Muxer {
+    const muxer = new Fmp4Muxer();
+    muxer.push(annexBFrame(0));
+    return muxer;
+  }
+
+  it('builds an Opus init segment with a dOps box and a sample-rate timescale', () => {
+    const muxer = anchored();
+    const segs = muxer.setAudioConfig(OPUS_CFG);
+    expect(segs).toHaveLength(1);
+    const init = segs[0] as Fmp4InitSegment;
+    expect(init).toMatchObject({ kind: 'init', track: 'audio', codec: 'opus' });
+    expect(init.mime).toBe('audio/mp4; codecs="opus"');
+
+    const boxes = parseBoxes(init.data);
+    // Timescale == sample rate, so every duration is an exact sample count.
+    expect(u32At(find(boxes, 'moov.trak.mdia.mdhd').body, 12)).toBe(48_000);
+    // hdlr body: version/flags(4) pre_defined(4) handler_type(4)
+    expect(find(boxes, 'moov.trak.mdia.hdlr').body.subarray(8, 12)).toEqual(
+      new Uint8Array([0x73, 0x6f, 0x75, 0x6e]), // 'soun'
+    );
+
+    const entry = sampleEntry(init.data);
+    expect(entry.type).toBe('Opus');
+    // AudioSampleEntry: channelcount at +16, samplerate (16.16) at +24.
+    expect((entry.body[16] << 8) | entry.body[17]).toBe(2);
+    expect(u32At(entry.body, 24)).toBe(48_000 * 0x10000); // 16.16 fixed
+
+    const dOps = parseBoxes(entry.body, 28, entry.body.length)[0];
+    expect(dOps.type).toBe('dOps');
+    expect(dOps.body[0]).toBe(0); // Version
+    expect(dOps.body[1]).toBe(2); // OutputChannelCount
+    expect((dOps.body[2] << 8) | dOps.body[3]).toBe(0); // PreSkip
+    expect(u32At(dOps.body, 4)).toBe(48_000); // InputSampleRate
+    expect(dOps.body[10]).toBe(0); // ChannelMappingFamily: mono/stereo
+  });
+
+  it('re-emits no init for the broadcaster’s 1 Hz config repeats', () => {
+    const muxer = anchored();
+    expect(muxer.setAudioConfig(OPUS_CFG)).toHaveLength(1);
+    expect(muxer.setAudioConfig(OPUS_CFG)).toHaveLength(0);
+    expect(muxer.setAudioConfig({ ...OPUS_CFG })).toHaveLength(0);
+    expect(muxer.getStats().audioInitSegments).toBe(1);
+  });
+
+  it('refuses a non-Opus lane rather than guessing its encapsulation', () => {
+    const muxer = anchored();
+    expect(muxer.setAudioConfig({ ...OPUS_CFG, codec: 'mp4a.40.2' })).toHaveLength(0);
+    expect(muxer.pushAudio(opusPacket(0, BASE_TS_US))).toHaveLength(0);
+    expect(muxer.getStats().audioSegments).toBe(0);
+  });
+
+  it('holds one packet back and then emits abutting samples', () => {
+    const muxer = anchored();
+    muxer.setAudioConfig(OPUS_CFG);
+
+    // First packet: nothing yet — its duration is the interval to the NEXT one.
+    expect(muxer.pushAudio(opusPacket(0, BASE_TS_US))).toHaveLength(0);
+
+    const timings: Array<{ dts: number; duration: number }> = [];
+    for (let i = 1; i <= 5; i++) {
+      const segs = muxer.pushAudio(opusPacket(i, BASE_TS_US + BigInt(i * OPUS_FRAME_US)));
+      expect(segs).toHaveLength(1);
+      const seg = segs[0] as Fmp4MediaSegment;
+      expect(seg.track).toBe('audio');
+      expect(seg.keyframe).toBe(true); // every Opus packet is a sync sample
+      timings.push(sampleTiming(seg));
+    }
+
+    expect(timings[0].dts).toBe(0);
+    for (const t of timings) expect(t.duration).toBe(OPUS_FRAME_SAMPLES);
+    // The invariant: no holes, no overlaps.
+    for (let i = 1; i < timings.length; i++) {
+      expect(timings[i].dts).toBe(timings[i - 1].dts + timings[i - 1].duration);
+    }
+  });
+
+  it('puts audio and video on ONE timeline — equal timestamps, equal output time', () => {
+    const muxer = new Fmp4Muxer();
+    // The first video frame anchors output time 0 at its own timestamp.
+    const v = medias(muxer.push(annexBFrame(0)));
+    expect(sampleTiming(v[0]).dts).toBe(0);
+
+    muxer.setAudioConfig(OPUS_CFG);
+    // An audio packet stamped at the SAME broadcaster time must land at output 0.
+    muxer.pushAudio(opusPacket(0, BASE_TS_US));
+    const a = muxer.pushAudio(opusPacket(1, BASE_TS_US + BigInt(OPUS_FRAME_US)));
+    expect(sampleTiming(a[0] as Fmp4MediaSegment).dts).toBe(0);
+
+    // And one 40 ms later lands 40 ms later, in samples.
+    muxer.pushAudio(opusPacket(2, BASE_TS_US + BigInt(2 * OPUS_FRAME_US)));
+    const a2 = muxer.pushAudio(opusPacket(3, BASE_TS_US + BigInt(3 * OPUS_FRAME_US)));
+    expect(sampleTiming(a2[0] as Fmp4MediaSegment).dts).toBe(2 * OPUS_FRAME_SAMPLES);
+  });
+
+  it('absorbs a lost datagram by stretching the preceding sample (no hole)', () => {
+    const muxer = anchored();
+    muxer.setAudioConfig(OPUS_CFG);
+    muxer.pushAudio(opusPacket(0, BASE_TS_US));
+    // Packet 1 never arrives: the next one is 40 ms after packet 0.
+    const segs = muxer.pushAudio(opusPacket(2, BASE_TS_US + BigInt(2 * OPUS_FRAME_US)));
+    const t = sampleTiming(segs[0] as Fmp4MediaSegment);
+    expect(t.dts).toBe(0);
+    // Covers the gap, so the buffered range stays continuous.
+    expect(t.duration).toBe(2 * OPUS_FRAME_SAMPLES);
+    expect(muxer.getStats().audioHoles).toBe(0);
+
+    const next = muxer.pushAudio(opusPacket(3, BASE_TS_US + BigInt(3 * OPUS_FRAME_US)));
+    expect(sampleTiming(next[0] as Fmp4MediaSegment).dts).toBe(t.dts + t.duration);
+  });
+
+  it('declares a real outage honestly instead of stretching seconds of silence', () => {
+    const muxer = anchored();
+    muxer.setAudioConfig(OPUS_CFG);
+    muxer.pushAudio(opusPacket(0, BASE_TS_US));
+    const segs = muxer.pushAudio(opusPacket(1, BASE_TS_US + 3_000_000n)); // 3 s later
+    const t = sampleTiming(segs[0] as Fmp4MediaSegment);
+    expect(t.duration).toBe(OPUS_FRAME_SAMPLES);
+    expect(muxer.getStats().audioHoles).toBe(1);
+  });
+
+  it('drops audio it cannot place: before the video anchor, and backwards in time', () => {
+    const muxer = new Fmp4Muxer();
+    muxer.setAudioConfig(OPUS_CFG);
+    // No video frame yet ⇒ no shared anchor ⇒ unplaceable.
+    expect(muxer.pushAudio(opusPacket(0, BASE_TS_US))).toHaveLength(0);
+    expect(muxer.pushAudio(opusPacket(1, BASE_TS_US + BigInt(OPUS_FRAME_US)))).toHaveLength(0);
+    expect(muxer.getStats().audioSegments).toBe(0);
+    expect(muxer.getStats().audioSkipped).toBe(2);
+
+    muxer.push(annexBFrame(0));
+    muxer.pushAudio(opusPacket(2, BASE_TS_US + BigInt(2 * OPUS_FRAME_US)));
+    // A duplicate/reordered packet must never rewrite the past: dropped, and the
+    // pending sample is kept.
+    expect(muxer.pushAudio(opusPacket(2, BASE_TS_US + BigInt(2 * OPUS_FRAME_US)))).toHaveLength(0);
+    expect(muxer.pushAudio(opusPacket(1, BASE_TS_US + BigInt(OPUS_FRAME_US)))).toHaveLength(0);
+    const segs = muxer.pushAudio(opusPacket(3, BASE_TS_US + BigInt(3 * OPUS_FRAME_US)));
+    expect(sampleTiming(segs[0] as Fmp4MediaSegment).dts).toBe(2 * OPUS_FRAME_SAMPLES);
+  });
+
+  it('leaves the video track byte-identical when audio is muxed alongside', () => {
+    const frames = [0, 1, 2, 3].map((i) => annexBFrame(i));
+    const videoOnly = medias(muxAll(frames).segments).map((s) => sha256(s.data));
+
+    const muxer = new Fmp4Muxer();
+    const withAudio: string[] = [];
+    muxer.setAudioConfig(OPUS_CFG);
+    frames.forEach((f, i) => {
+      for (const seg of muxer.push(f)) {
+        if (seg.kind === 'media' && seg.track === 'video') withAudio.push(sha256(seg.data));
+      }
+      muxer.pushAudio(opusPacket(i, BASE_TS_US + BigInt(i * OPUS_FRAME_US)));
+    });
+    expect(withAudio).toEqual(videoOnly);
+  });
+});

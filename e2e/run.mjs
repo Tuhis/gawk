@@ -786,7 +786,14 @@ async function muxerCheckScenario() {
   try {
     const page = await browser.newPage();
     wirePageLogs(page, 'console-muxer-check');
-    await page.goto('about:blank');
+    // A localhost origin, fulfilled from memory (no server): `about:blank` is
+    // NOT a secure context, and WebCodecs is [SecureContext] — the audio leg
+    // needs a real AudioEncoder to produce real Opus packets. localhost is
+    // potentially-trustworthy, so this costs one intercepted request.
+    await page.route('http://localhost/gawk-muxer-check', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>muxer check</title>' }),
+    );
+    await page.goto('http://localhost/gawk-muxer-check');
     await page.addScriptTag({ path: bundle });
     const res = await page.evaluate(() => window.__gawkMuxerCheck());
     writeFileSync(join(OUT, 'muxer-check.json'), JSON.stringify(res, null, 2));
@@ -796,14 +803,21 @@ async function muxerCheckScenario() {
       if (!ok) problems.push(msg);
     };
     check(res.videoError === null, `video element errored: ${res.videoError}`);
+    // R22 finding 1: a live presentation must declare an infinite duration —
+    // without it the native player draws a finite timeline (no LIVE badge) and
+    // WebKit treats reaching the buffered end as end-of-media.
+    check(res.liveDuration === true, 'the MediaSource did not accept duration = Infinity');
+    check(res.durationIsInfinite === true, 'video.duration is not Infinity');
     check(/^video\/mp4; codecs="avc1\./.test(res.mime ?? ''), `mime = ${res.mime}, want an avc1 fMP4 mime`);
     check(res.initSegments === 1, `initSegments = ${res.initSegments}, want 1`);
     check(res.mediaSegments === 18, `mediaSegments = ${res.mediaSegments}, want 18 (the fixture)`);
     check(res.muxErrors === 0, `muxer counted ${res.muxErrors} errors`);
     check(res.appendErrors === 0, `presenter counted ${res.appendErrors} append errors`);
+    // segmentsAppended totals both tracks; the video half is the pinned number.
     check(
-      res.segmentsAppended === 19,
-      `segmentsAppended = ${res.segmentsAppended}, want 19 (init + 18 media)`,
+      res.segmentsAppended - res.audioSegmentsAppended === 19,
+      `video segments appended = ${res.segmentsAppended - res.audioSegmentsAppended} ` +
+        `(total ${res.segmentsAppended}, audio ${res.audioSegmentsAppended}), want 19 (init + 18 media)`,
     );
     // The two load-bearing verdicts (docs/27 MF1): frames present and the
     // clock advances — buffered-but-black media satisfies neither.
@@ -814,12 +828,37 @@ async function muxerCheckScenario() {
       res.videoWidth === 320 && res.videoHeight === 240,
       `video reports ${res.videoWidth}x${res.videoHeight}, want 320x240`,
     );
+    // R22 audio (docs/27 finding 2): the Opus track, where this Chrome takes
+    // Opus in MP4. The assertions above already carry most of the weight — the
+    // element plays only where the two tracks' buffered ranges INTERSECT, so a
+    // malformed audio timeline shows up as framesPresented/currentTime failing.
+    // These add the audio-specific verdicts on top.
+    if (res.audioSupported) {
+      check(res.audioPackets > 0, 'no Opus packets were encoded (AudioEncoder unavailable?)');
+      check(
+        res.audioMime === 'audio/mp4; codecs="opus"',
+        `audioMime = ${res.audioMime}, want audio/mp4; codecs="opus"`,
+      );
+      check(res.audioTrack, 'the presenter never created the audio SourceBuffer');
+      check(res.audioMuxHoles === 0, `muxer left ${res.audioMuxHoles} audio holes in a clean feed`);
+      check(
+        res.audioSegmentsAppended >= res.audioMuxSegments,
+        `audio appends (${res.audioSegmentsAppended}) < muxed audio segments (${res.audioMuxSegments})`,
+      );
+    } else {
+      // Never a silent skip: an unsupported audio container is a real finding
+      // about the runtime, and it is exactly the question iOS answers too.
+      log(`muxer check: audio leg SKIPPED — ${res.audioError}`);
+    }
     if (problems.length > 0) {
       fail(`muxer-check assertions failed:\n  - ${problems.join('\n  - ')}`);
     }
     log(
       `muxer check ok: ${res.framesPresented} frames presented, currentTime ${res.currentTime.toFixed(2)} s, ` +
-        `${res.segmentsAppended} segments appended (${res.mime})`,
+        `${res.segmentsAppended} segments appended (${res.mime})` +
+        (res.audioSupported
+          ? `, audio ${res.audioSegmentsAppended} appended (${res.audioMime})`
+          : ', audio unsupported here'),
     );
   } finally {
     await browser.close();

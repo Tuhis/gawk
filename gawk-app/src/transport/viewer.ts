@@ -40,7 +40,7 @@ import {
 import { Reassembler, type ReassemblerStats } from './reassembler';
 import { timeOriginMs } from './time-sync';
 import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates';
-import type { Fmp4MuxerStats } from './fmp4-muxer';
+import type { AudioTapEvent, Fmp4MuxerStats } from './fmp4-muxer';
 import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
 import {
@@ -48,6 +48,7 @@ import {
   TYPE_AUDIO_FRAME,
   TYPE_DELIVERY_ACK,
   parseDeliveryAck,
+  type AudioConfigMessage,
   type DecoderConfigMessage,
   type DeliveryServedMode,
 } from './wire';
@@ -303,6 +304,12 @@ export interface ViewerCallbacks {
   // stream the decoder eats, upstream of decode. The worker shell muxes it to
   // fMP4 for iPhone native fullscreen. Absent = zero per-frame work.
   onReleasedFrame?: (frame: ReleasedFrame) => void;
+  // R22 audio (docs/27 finding 2): the encoded-AUDIO fork for the same muxer.
+  // Forked at the demux point, not at a playout gate — the muxed timeline is
+  // built from broadcaster timestamps, so arrival order is all this needs, and
+  // audio landing ahead of the paced video release is the audio SourceBuffer's
+  // cushion rather than a skew. Absent = zero per-packet work.
+  onAudioMux?: (ev: AudioTapEvent) => void;
 }
 
 export class ViewerPipeline {
@@ -393,6 +400,9 @@ export class ViewerPipeline {
   // changes for broadcasts without audio.
   private audioLane: AudioDecodeLane | null = null;
   private audioState: ViewerStats['audioState'] = 'absent';
+  // The last audio config the stream declared (wire 0x08), independent of
+  // whether a decoder was ever built from it — see the stats assembly.
+  private lastAudioConfig: AudioConfigMessage | null = null;
   // The lane's last counters, retained across its death (CODE-REVIEW.md:
   // counters survive their owner's deletion). Without this, an audio error
   // reports "State: Error, decoded 0, format —", which reads as "audio never
@@ -467,10 +477,26 @@ export class ViewerPipeline {
       // no-ops without an onAudioChunk consumer, so a viewer that can't play
       // audio never builds a decoder.
       onAudioConfig: (config) => {
+        this.lastAudioConfig = config;
+        // R22 audio: the mux fork is independent of the decode lane — an iPhone
+        // whose WebCodecs can't decode Opus can still hand it to the native
+        // player, and a lane that dies must not take the muxed track with it.
+        this.cb.onAudioMux?.({
+          kind: 'config',
+          config: {
+            codec: config.codec,
+            sampleRate: config.sampleRate,
+            channels: config.channels,
+          },
+        });
         const lane = this.ensureAudioLane();
         lane?.configure(config);
       },
       onAudioFrame: (packet) => {
+        this.cb.onAudioMux?.({
+          kind: 'packet',
+          packet: { timestampUs: packet.timestampUs, data: packet.payload },
+        });
         const lane = this.ensureAudioLane();
         lane?.push(packet);
       },
@@ -1025,9 +1051,14 @@ export class ViewerPipeline {
       audioPacketsReceived: reasm?.audioPacketsReceived ?? 0,
       audioPacketsDecoded: audioStats?.packetsDecoded ?? 0,
       audioBytesReceived: reasm?.audioBytesReceived ?? 0,
-      audioCodec: audioStats?.codec ?? null,
-      audioSampleRate: audioStats?.sampleRate ?? null,
-      audioChannels: audioStats?.channels ?? null,
+      // The STREAM's declared audio format, from the config message — not the
+      // decode lane's. They agree whenever decoding works, and where it doesn't
+      // (no AudioDecoder in this scope) only the config knows the format at all,
+      // which is exactly the case R22's audio muxing exists to cover: an iPhone
+      // that can't decode Opus itself can still hand it to the native player.
+      audioCodec: this.lastAudioConfig?.codec ?? audioStats?.codec ?? null,
+      audioSampleRate: this.lastAudioConfig?.sampleRate ?? audioStats?.sampleRate ?? null,
+      audioChannels: this.lastAudioConfig?.channels ?? audioStats?.channels ?? null,
       avSkewMs: getAvSkewMs(),
       avMaster:
         this.audioState === 'active'

@@ -306,6 +306,88 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   premise (audio has fallen behind) is false here. Open, deferred — audio is
   actually near-correct.
 
+## iPhone native fullscreen: the MSE playhead has ~100 ms of cushion that cannot grow
+
+- **Found**: 2026-07-26, investigating the first on-device MF5 pass ("plays
+  sometimes for a second, sometimes for 10, but always pauses"). Diagnosed by
+  code reading, not yet reproduced against an instrumented build — the two
+  *other* causes found in the same investigation (docs/27 findings 1 and 2, no
+  `duration = Infinity` and no muxed audio) are fixed, and they may mask this
+  one by turning an underrun into a recoverable stall instead of a dead player.
+- **Impact**: iPhone native fullscreen only (tier 2). The inline canvas path is
+  untouched and has no equivalent failure mode. Expect micro-stalls under normal
+  arrival jitter, worst in **live delivery mode** and during recovery in
+  resilient / Deep buffer mode.
+- **Cause**: `LIVE_EDGE_REJOIN_S` is `0.1` — and the cushion it sets is the
+  whole budget for the session, because the muxer is fed from `decodeReleased`,
+  i.e. **after** the reorder buffer's paced release. Appends therefore arrive at
+  playback rate: the SourceBuffer can never build ahead while the element plays,
+  so `bufferedAhead` is a constant of the motion that only a seek (shrink) or a
+  pause (grow) changes. 100 ms is below the arrival jitter measured in this
+  project's own field captures (72–158 ms, docs/20 finding 6), and
+  `MsePresenter.maybeCatchUp` re-creates the condition every time lag passes
+  `LIVE_CATCHUP_LAG_S` (2 s) — which is exactly the state a manual play leaves.
+- **Relation to the delivery modes** (worth not re-deriving): a deeper playout
+  buffer (R19 resilient, R21 Deep buffer) makes the append stream *smoother*, so
+  the cushion drains more slowly — but it adds **zero** cushion, because the
+  delay is spent upstream of the release point and the output is still 1×. And
+  during a DVR catch-up burst, when real cushion does arrive for free,
+  `maybeCatchUp` throws it away by seeking back to `end − 0.1`.
+- **Signature**: overlay/Copy-diagnostics `presentationSurface.bufferedAheadMs`
+  sitting at ~100 ms and `elementPaused` flipping true with no `appendErrors`
+  and `bufferedRanges === 1` (a hole would be the *other* open entry below).
+- **Fix would start**: one shared `TARGET_LAG_S` (~0.4–0.6 s) replacing the
+  constant that is currently **duplicated** in `lib/useFullscreen.ts`
+  (`seekToLiveEdge`) and `features/viewer/msePresentation.ts`
+  (`maybeCatchUp`) — a drift hazard in its own right. Scaling it by delivery
+  mode is the natural refinement (live small, resilient ~1 s, Deep buffer
+  larger): it is pure fullscreen-only latency, and those viewers have already
+  bought latency for smoothness. Since docs/27 finding 2 muxed audio onto the
+  same timeline, raising it no longer costs lip-sync. See docs/27 "Still open".
+
+## iPhone native fullscreen: nothing recovers a stalled presentation element
+
+- **Found**: 2026-07-26, same investigation. Diagnosed by code reading.
+- **Impact**: iPhone native fullscreen only. Any stall that does happen is
+  permanent until the user taps the native play button — which is what made
+  docs/27 finding 1 so visible, and what would make the entry above visible too.
+- **Cause**: no listener for `waiting` / `stalled` / `ended` / unexpected
+  `pause` exists on the presentation `<video>`; the only listeners are
+  `webkitbeginfullscreen`/`webkitendfullscreen` (`lib/useFullscreen.ts`) and
+  rVFC frame counting (`ViewerScreen.tsx`). WebKit pauses and fires `ended` on
+  an MSE buffer underrun where Chromium stalls and resumes (docs/27 finding 1),
+  so "the element recovers itself" is not an assumption that holds here.
+- **Fix would start**: a tier-2-only watchdog — on those events, if the playhead
+  is behind the newest buffered range, seek into it and `play()` again, counting
+  recoveries into `presentationSurface` so a recovering-but-unhealthy player is
+  distinguishable from a healthy one. This is what production players ship
+  (hls.js's gap-controller nudges, seeks over holes, and re-plays). It is also
+  the general remedy for the hole entry below, which is why it is worth doing
+  even if the cushion fix alone appears to settle the symptom.
+
+## iPhone native fullscreen: MMS parking can leave holes in the buffered timeline
+
+- **Found**: 2026-07-26, same investigation. Diagnosed by code reading; the
+  frequency depends on Apple's undocumented `ManagedMediaSource` water marks, so
+  it is unquantified.
+- **Impact**: iPhone native fullscreen only. A hole in the buffered timeline
+  stalls the native player at the hole — and because
+  `HTMLMediaElement.buffered` is the **intersection** of the SourceBuffers'
+  ranges, a hole in either track (video or the newly muxed audio) does it.
+- **Cause**: `MsePresenter.pump()` parks on `streaming === false`. While armed
+  the element is *paused* (docs/27 Decision 5), so MMS's buffered-ahead only
+  grows and it stops asking for data; meanwhile live segments accumulate in the
+  JS queue and front-drop past `MAX_QUEUED_SEGMENTS` (128 ≈ 2–4 s). Any arming
+  period longer than the queue depth therefore leaves a gap between the last
+  appended segment and the keyframe appends resume at.
+- **Signature**: `presentationSurface.bufferedRanges > 1` (the overlay's
+  **Buffered** row prints `N ranges (hole)`) with `appendErrors` 0.
+- **Fix would start**: either keep the armed playhead following the buffered
+  edge so MMS never parks and the buffer stays bounded, or treat
+  resume-after-park as a discontinuity — discard the stale backlog, re-anchor,
+  and seek the element into the newest range. The watchdog above covers the
+  symptom generically; this entry is about not manufacturing the hole.
+
 ## Lint advisories in `gawk-broadcast/internal/mpegts` (not runtime defects)
 
 - **Found**: 2026-07-24, from the editor linter while touching `mpegts.go`'s

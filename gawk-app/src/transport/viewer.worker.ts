@@ -6,13 +6,14 @@
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
 import { notePlayhead } from './av-sync';
-import { Fmp4Muxer } from './fmp4-muxer';
+import { Fmp4Muxer, type Fmp4Segment } from './fmp4-muxer';
 import { setInterpolationEnabled } from './interpolation';
 import { getPlayoutMode, setPlayoutMode, setViewerDeliveryMode } from './playout';
 import { createRenderSink, type RenderSink } from './render-sink';
 import type { ReleasedFrame } from './reorder-buffer';
 import {
   ViewerWorkerCore,
+  type AudioTapEvent,
   type ViewerWorkerCommand,
   type ViewerWorkerEvent,
   type ViewerWorkerOutbound,
@@ -57,23 +58,47 @@ let sink: RenderSink | null = null;
 // stream continues across a reconnect without re-arming. Created on 'arm'
 // (gated devices only); until then the frame tap is a null check per frame.
 let muxRequested = false;
+let muxAudio = false;
 let muxer: Fmp4Muxer | null = null;
 
 // The encoded-frame fork (upstream of the decoder — the whole reason MSE
 // renders where the R16 presented-frame tee was black, docs/27). Segments
 // post with their buffers transferred; the muxer allocates exact-size
 // buffers, so no copies happen here.
+const postSegments = (segments: Fmp4Segment[]): void => {
+  for (const seg of segments) {
+    const data = seg.data.buffer as ArrayBuffer;
+    if (seg.kind === 'init') {
+      ctx.postMessage(
+        { type: 'muxSegment', kind: 'init', track: seg.track, mime: seg.mime, data },
+        [data],
+      );
+    } else {
+      ctx.postMessage(
+        { type: 'muxSegment', kind: 'media', track: seg.track, keyframe: seg.keyframe, data },
+        [data],
+      );
+    }
+  }
+};
+
 const frameTap = (frame: ReleasedFrame): void => {
   const m = muxer;
   if (!m) return;
-  for (const seg of m.push(frame)) {
-    const data = seg.data.buffer as ArrayBuffer;
-    if (seg.kind === 'init') {
-      ctx.postMessage({ type: 'muxSegment', kind: 'init', mime: seg.mime, data }, [data]);
-    } else {
-      ctx.postMessage({ type: 'muxSegment', kind: 'media', keyframe: seg.keyframe, data }, [data]);
-    }
-  }
+  postSegments(m.push(frame));
+};
+
+// R22 audio (docs/27 finding 2): the encoded-audio fork. Installed only when
+// the main thread's probe said this device accepts Opus in MP4 — a refusal keeps
+// the native player video-only rather than muxing a track nothing can decode.
+// Forked at arrival (not at a playout gate): both tracks carry broadcaster-clock
+// timestamps mapped through one shared offset, so *when* a packet is appended
+// doesn't affect where it plays — and audio arriving ahead of the paced video
+// release is exactly the cushion the audio SourceBuffer wants.
+const audioTap = (ev: AudioTapEvent): void => {
+  const m = muxer;
+  if (!m || !muxAudio) return;
+  postSegments(ev.kind === 'config' ? m.setAudioConfig(ev.config) : m.pushAudio(ev.packet));
 };
 
 // R22: the muxer's counters ride the existing stats events (only when the mux
@@ -91,6 +116,10 @@ const post = (ev: ViewerWorkerEvent, transfer?: Transferable[]): void => {
             mediaSegments: 0,
             skippedAwaitingInit: 0,
             errors: 0,
+            audioInitSegments: 0,
+            audioSegments: 0,
+            audioSkipped: 0,
+            audioHoles: 0,
           }),
         },
       },
@@ -116,13 +145,16 @@ ctx.onmessage = (e: MessageEvent) => {
         post,
         renderSink: sink,
         transportFactory,
-        ...(muxRequested ? { frameTap } : {}),
+        ...(muxRequested ? { frameTap, audioTap } : {}),
       });
       break;
     }
     case 'arm': {
       // Idempotent: one muxer per worker, ever — a repeat arm (or one after a
-      // reconnect) must not restart the segment timeline.
+      // reconnect) must not restart the segment timeline. `audio` is the main
+      // thread's Opus-in-MP4 verdict; a later arm may only ever turn it on
+      // (audio can start after the first arm — the config is a 1 Hz message).
+      muxAudio = muxAudio || Boolean(cmd.audio);
       if (!muxRequested || muxer) break;
       muxer = new Fmp4Muxer();
       break;

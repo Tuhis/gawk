@@ -67,13 +67,26 @@ interface FullscreenState {
   tier: FullscreenTier | null;
 }
 
+// R22 audio: the tier-2 transitions the caller needs to react to. Both fire
+// synchronously — the enter hook runs inside the user gesture, before play().
+export interface FullscreenHooks {
+  onNativeEnter?: (video: HTMLVideoElement) => void;
+  onNativeExit?: (video: HTMLVideoElement) => void;
+}
+
 export function useFullscreen(
   ref: RefObject<HTMLElement | null>,
   // R16: the hidden presentation <video> on gated devices (null elsewhere and
   // until armed) — tier 2's target. Passed as an element, not a ref, so the
   // event listeners re-attach when it mounts.
   presentationVideo: HTMLVideoElement | null = null,
+  hooks: FullscreenHooks = {},
 ) {
+  // Read through a ref: the hooks close over live state (mute preference, the
+  // audio sink) and must not re-create `toggle` — which is a dependency of the
+  // control bar and the keyboard handler — on every change.
+  const hooksRef = useRef(hooks);
+  hooksRef.current = hooks;
   // The gate is per-device; sampled once per mount (stable across renders).
   const [tier1Available] = useState(elementFullscreenAvailable);
 
@@ -110,6 +123,9 @@ export function useFullscreen(
       } catch {
         // pausing a hidden video is best-effort
       }
+      // R22 audio: the inline sink takes the audio back (the native player is
+      // the only thing that was playing the muxed track).
+      hooksRef.current.onNativeExit?.(presentationVideo);
       setState({ fullscreen: false, tier: null });
     };
     presentationVideo.addEventListener('webkitbeginfullscreen', onBegin);
@@ -144,6 +160,7 @@ export function useFullscreen(
         } catch {
           // best-effort
         }
+        if (video) hooksRef.current.onNativeExit?.(video);
       }
       setState({ fullscreen: false, tier: null });
       return;
@@ -161,6 +178,10 @@ export function useFullscreen(
     ) {
       try {
         seekToLiveEdge(video);
+        // R22 audio: hand the audio over BEFORE play() — still inside the
+        // gesture, so an unmuted start is allowed, and the inline sink goes quiet
+        // before the native player's first sample instead of overlapping it.
+        hooksRef.current.onNativeEnter?.(video);
         // In-gesture play(): succeeds even where a muted autoplay would be
         // blocked (e.g. iOS Low Power Mode) — and a paused video is exactly
         // what the native player must not be handed (docs/21 U4).

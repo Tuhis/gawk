@@ -36,6 +36,21 @@ export interface PresentationSurfaceStats {
   // Main-thread SourceBuffer side.
   segmentsAppended: number;
   appendErrors: number;
+  // R22 finding 1: whether this MediaSource accepted duration = Infinity — i.e.
+  // whether the native player gets the LIVE badge and treats a buffer underrun
+  // as a stall rather than end-of-media. Null before a source exists.
+  liveDuration: boolean | null;
+  // R22 finding 2, the audio track. `audioMode` is the resolved verdict for the
+  // stream's audio lane: 'none' (no audio in the broadcast), 'muxed' (Opus in MP4
+  // accepted — the native player has its own audio), or the refusal reason.
+  audioMode: string;
+  audioSegmentsAppended: number;
+  audioTrackActive: boolean;
+  muxAudioSegments: number;
+  muxAudioHoles: number;
+  // How many disjoint buffered ranges the element holds. > 1 means a hole in the
+  // playable (intersection) timeline — the shape that stalls the native player.
+  bufferedRanges: number | null;
   // Buffered span of the element (last end − first start) and how far the
   // playhead sits behind the buffered live edge — the fullscreen half of the
   // inline-vs-fullscreen live-edge delta. Null until media is buffered.
