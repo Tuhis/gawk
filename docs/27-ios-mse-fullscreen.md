@@ -573,11 +573,18 @@ mandates, by re-encoding the already-decoded PCM in the viewer worker.
   video anchor) is codec-agnostic and unchanged.
 * The tier is negotiated on the main thread and carried on the `arm` message, so
   the worker transcodes only when asked.
-* **CI proves the AAC path too**: `--muxer-check` now runs twice, the second pass
-  forcing the AAC tier (`?aac=1`), and asserts the `mp4a`/`esds` init segment is
-  accepted, the transcoder reaches `active`, and video still presents — which,
-  because `buffered` is the intersection of the tracks, also validates the AAC
-  timeline. Both passes green in Chrome.
+* **CI coverage, stated precisely** — `--muxer-check` runs twice, the second pass
+  forcing the AAC tier (`?aac=1`), but what it proves *depends on the runner*, and
+  the difference matters: **Chrome's AAC encoder is platform-dependent**. On macOS
+  it is present, so that pass really does validate the `mp4a`/`esds` init segment,
+  the transcoder reaching `active`, and video still presenting (which, because
+  `buffered` is the intersection of the tracks, validates the AAC timeline too) —
+  verified locally. On the **Linux CI runners it is absent**
+  (`NotSupportedError: Unsupported codec type`), so there the same pass proves
+  something different and equally worth guarding: that a runtime which cannot fill
+  an audio track ends up video-only instead of stuck. So the AAC *muxing* is not
+  CI-proven on Linux; the AAC *fallback* is. A committed AAC fixture would close
+  that gap and is the obvious follow-up.
 
 ### Finding 5 — both SourceBuffers must exist before the first append (fixed)
 
@@ -606,7 +613,25 @@ after the video buffer already exists, the MediaSource is rebuilt (video re-prim
 from its cached init at the next keyframe — a ≤1-GOP hiccup, invisible while the
 armed element is paused).
 
-Two robustness bugs surfaced in the same work, both fixed with tests:
+Finding 5's up-front creation has a cost that took two CI runs to pin down, and
+it is worth stating exactly, because the two implementations disagree. **An audio
+SourceBuffer that never receives even its init segment is not merely idle:**
+Chromium's demuxer waits for every added buffer's init segment before reporting
+metadata at all, so video appended into the same MediaSource never becomes
+playable — the first CI attempt hung for six minutes on a `play()` promise that
+could never resolve. Other implementations treat a track-less buffer as absent and
+play video regardless (macOS Chrome does).
+
+So the presenter carries an **audio watchdog** (`AUDIO_FIRST_SAMPLE_TIMEOUT_MS`,
+3 s) that fires on a real timer — not on the append tick, because the case it
+exists for is precisely one where nothing is appending — and acts only on the
+**observable symptom**: video appended, yet the element still reports no metadata
+and no buffered range. Gating on the symptom rather than the proxy ("audio
+produced nothing") is deliberate and was itself a bug first: rebuilding whenever
+audio was quiet destroyed a *working* presentation on the implementation that
+plays video anyway.
+
+Two further robustness bugs surfaced in the same work, both fixed with tests:
 
 * **A shared `error` handler let an audio failure blank the video.** Handlers are
   per-track now: a video error degrades the gate to pseudo, an audio error does

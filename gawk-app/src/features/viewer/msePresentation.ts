@@ -191,6 +191,16 @@ export const PRUNE_KEEP_S = 10;
 // While the (fullscreen) video is playing, jumping this far behind the
 // buffered end triggers a catch-up seek — MF4's "seek-to-live keeps native
 // fullscreen near live". Paused (inline, armed) playback never seeks.
+// How long the audio SourceBuffer may exist without receiving a single sample
+// before audio is given up on. Creating it up front (docs/27 finding 5) is what
+// makes the pair addable at all, but it has a cost: until audio appends, the
+// element's buffered range — the INTERSECTION of the tracks — is empty, so video
+// cannot play either. An audio path that never produces (no AAC encoder on this
+// runtime, a transcoder error) must therefore be detected and dropped, or the
+// presentation is worse than video-only: it is dead. Generous enough for a
+// transcoder to warm up, short enough that nobody watches a blank fullscreen.
+export const AUDIO_FIRST_SAMPLE_TIMEOUT_MS = 3000;
+
 export const LIVE_CATCHUP_LAG_S = 2;
 export const LIVE_EDGE_REJOIN_S = 0.1;
 
@@ -257,6 +267,9 @@ export class MsePresenter {
   // and keeps producing them, so without this a later init would resurrect the
   // track that just failed.
   private audioDropped = false;
+  // A real timer, not a per-append tick: appends are what would normally drive
+  // this, but the pathological case is precisely one where nothing is appending.
+  private audioTimer: ReturnType<typeof setTimeout> | null = null;
   private get tracks(): TrackState[] {
     return [this.videoBuf, this.audioBuf];
   }
@@ -460,6 +473,7 @@ export class MsePresenter {
   }
 
   dispose(): void {
+    this.clearAudioWatchdog();
     this.detach();
     for (const t of this.tracks) {
       t.cachedInit = null;
@@ -577,6 +591,7 @@ export class MsePresenter {
       if (t.track === 'video' && this.expectedAudioMime && !this.audioBuf.sb) {
         this.ensureSourceBuffer(this.audioBuf, this.expectedAudioMime);
       }
+      if (t.track === 'audio') this.armAudioWatchdog();
       return true;
     } catch (e) {
       // The trial-addSourceBuffer half of the probe, failing for real: mark
@@ -604,6 +619,7 @@ export class MsePresenter {
   private dropAudioTrack(rebuild = false): void {
     this.audioDropped = true;
     this.expectedAudioMime = null;
+    this.clearAudioWatchdog();
     this.audioBuf.cachedInit = null;
     this.audioBuf.queue = [];
     this.audioBuf.needKeyframe = false;
@@ -612,6 +628,47 @@ export class MsePresenter {
       this.detach();
       this.attach(video);
     }
+  }
+
+  // An audio buffer that never receives a sample holds the whole presentation
+  // hostage (see AUDIO_FIRST_SAMPLE_TIMEOUT_MS): `buffered` is the intersection of
+  // the tracks, so video cannot play past an empty audio range.
+  private armAudioWatchdog(): void {
+    this.clearAudioWatchdog();
+    this.audioTimer = setTimeout(() => {
+      this.audioTimer = null;
+      if (this.audioBuf.appended > 0) return;
+      // Only act on the OBSERVABLE symptom, never on the proxy. An audio buffer
+      // that never received even its init segment contributes no active track, so
+      // some implementations play video regardless — and rebuilding there would
+      // destroy a working presentation for nothing. Chromium's demuxer, by
+      // contrast, waits for every added buffer's init segment before it reports
+      // metadata at all, and that is what being held hostage looks like: video
+      // appended, yet the element has no buffered range and no metadata.
+      const held = this.videoBuf.appended > 0 && !this.hasMedia();
+      if (!held) return;
+      log.warn('MSE presentation: audio never produced and video is blocked on it;'
+        + ' presenting video only');
+      this.dropAudioTrack(true);
+    }, AUDIO_FIRST_SAMPLE_TIMEOUT_MS);
+  }
+
+  // Whether the element has anything to play. `readyState >= HAVE_METADATA` is the
+  // spec-level "the demuxer initialized"; the buffered check covers the same thing
+  // for implementations that report metadata earlier.
+  private hasMedia(): boolean {
+    const video = this.video;
+    if (!video) return false;
+    try {
+      return video.readyState >= 1 && video.buffered.length > 0;
+    } catch {
+      return true; // never rebuild on a diagnostics failure
+    }
+  }
+
+  private clearAudioWatchdog(): void {
+    if (this.audioTimer !== null) clearTimeout(this.audioTimer);
+    this.audioTimer = null;
   }
 
   // MF4: while the (fullscreen) video plays, a playhead that fell behind the

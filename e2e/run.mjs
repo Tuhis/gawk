@@ -851,21 +851,42 @@ async function runMuxerCheckPass(page, bundle, tier) {
       check(res.audioPackets > 0, 'no Opus packets were encoded (AudioEncoder unavailable?)');
       const wantMime =
         res.audioTier === 'aac' ? 'audio/mp4; codecs="mp4a.40.2"' : 'audio/mp4; codecs="opus"';
-      check(res.audioMime === wantMime, `audioMime = ${res.audioMime}, want ${wantMime}`);
-      // The AAC tier is the one iOS lands on (docs/27 finding 4), so its
-      // transcoder must be alive, not merely constructed.
-      if (res.audioTier === 'aac') {
+      if (res.audioTier !== 'aac' || res.audioTranscode === 'active') {
+        check(res.audioMime === wantMime, `audioMime = ${res.audioMime}, want ${wantMime}`);
+      }
+      // The AAC tier is the one iOS lands on (docs/27 finding 4). Chrome's AAC
+      // *encoder* is platform-dependent, though — present on macOS, absent on the
+      // Linux runners ("NotSupportedError: Unsupported codec type") — so where it
+      // is missing this pass proves something else that matters just as much: that
+      // an audio track producing NOTHING gets dropped instead of holding video
+      // hostage through the buffered intersection. Video assertions still apply.
+      if (res.audioTier === 'aac' && res.audioTranscode !== 'active') {
+        log(
+          `muxer check: AAC transcode unavailable here (${res.audioTranscode}: ` +
+            `${res.audioTranscodeDetail}) — asserting the audio-drop path instead`,
+        );
+        check(
+          res.audioSegmentsAppended === 0,
+          `audio appended ${res.audioSegmentsAppended} segments with a dead transcoder`,
+        );
+      } else if (res.audioTier === 'aac') {
         check(
           res.audioTranscode === 'active',
           `audio transcode state = ${res.audioTranscode} (${res.audioTranscodeDetail})`,
         );
       }
-      check(res.audioTrack, 'the presenter never created the audio SourceBuffer');
-      check(res.audioMuxHoles === 0, `muxer left ${res.audioMuxHoles} audio holes in a clean feed`);
-      check(
-        res.audioSegmentsAppended >= res.audioMuxSegments,
-        `audio appends (${res.audioSegmentsAppended}) < muxed audio segments (${res.audioMuxSegments})`,
-      );
+      const audioRan = res.audioTier !== 'aac' || res.audioTranscode === 'active';
+      if (audioRan) {
+        check(res.audioTrack, 'the presenter never created the audio SourceBuffer');
+        check(
+          res.audioMuxHoles === 0,
+          `muxer left ${res.audioMuxHoles} audio holes in a clean feed`,
+        );
+        check(
+          res.audioSegmentsAppended >= res.audioMuxSegments,
+          `audio appends (${res.audioSegmentsAppended}) < muxed audio segments (${res.audioMuxSegments})`,
+        );
+      }
     } else {
       // Never a silent skip: an unsupported audio container is a real finding
       // about the runtime, and it is exactly the question iOS answers too.

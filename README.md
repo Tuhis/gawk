@@ -485,6 +485,17 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   costs one frame of lookahead. Constant-cadence fixtures cannot catch this: the
   forward and backward intervals are equal there, which is why it shipped twice.
   ([docs/27](docs/27-ios-mse-fullscreen.md))
+- **An MSE SourceBuffer that never receives its init segment can block the whole
+  MediaSource** — Chromium's demuxer waits for every added buffer's init segment
+  before reporting metadata, so video appended alongside an unfed audio buffer
+  never becomes playable and `play()` returns a promise that can never resolve
+  (this hung a CI run for six minutes; `play()` resolves only when playback
+  *begins*, so always race it against a timeout in a test harness). Other
+  implementations treat a track-less buffer as absent and play video regardless —
+  so a watchdog for this must act on the observable symptom (video appended, still
+  no metadata and no buffered range), never on the proxy "the other track is
+  quiet", or it destroys working presentations on the forgiving implementations.
+  ([docs/27](docs/27-ios-mse-fullscreen.md))
 - **All of an MSE MediaSource's SourceBuffers must be added before the first init
   segment is appended** — Chromium's demuxer accepts new IDs only while
   initializing and throws `QuotaExceededError` ("reached the limit of SourceBuffer

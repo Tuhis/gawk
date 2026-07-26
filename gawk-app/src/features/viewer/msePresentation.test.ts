@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Fmp4Track } from '../../transport/fmp4-muxer';
 import {
+  AUDIO_FIRST_SAMPLE_TIMEOUT_MS,
   MAX_QUEUED_SEGMENTS,
   MsePresenter,
   PRUNE_KEEP_S,
@@ -518,6 +519,72 @@ describe('MsePresenter', () => {
     p.pushSegment(media(true, 4, 'audio'));
     expect(p.getStats().audioSegmentsAppended).toBe(appendedBefore);
     expect(instances[1].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
+  });
+
+  // The failure CI caught on a Linux runner with no AAC encoder: the audio buffer
+  // exists, nothing ever appends to it, and because `buffered` is the tracks'
+  // INTERSECTION the video cannot play either — worse than video-only.
+  it('leaves a working presentation alone when audio produces nothing', () => {
+    // The audio buffer never received even an init segment, so it contributes no
+    // active track and this implementation plays video regardless. Rebuilding
+    // would destroy a working presentation for nothing.
+    vi.useFakeTimers();
+    try {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      const { video } = makeVideo();
+      setBuffered(video, [[0, 5]]);
+      Object.defineProperty(video, 'readyState', { configurable: true, get: () => 2 });
+      p.attach(video);
+      instances[0].open();
+      p.setExpectedAudioMime(AUDIO_MIME);
+      p.pushSegment(init());
+      p.pushSegment(media(true));
+      vi.advanceTimersByTime(AUDIO_FIRST_SAMPLE_TIMEOUT_MS + 10);
+      expect(instances).toHaveLength(1); // untouched
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops audio when no sample ever arrives AND video is blocked on it', () => {
+    vi.useFakeTimers();
+    try {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      const { video } = makeVideo();
+      // Chromium's shape while it waits for every added buffer's init segment:
+      // video appended, but no metadata and no buffered range.
+      setBuffered(video, []);
+      Object.defineProperty(video, 'readyState', { configurable: true, get: () => 0 });
+      p.attach(video);
+      instances[0].open();
+      p.setExpectedAudioMime(AUDIO_MIME);
+
+      p.pushSegment(init());
+      p.pushSegment(media(true));
+      expect(instances[0].buffers).toHaveLength(2); // the pair, created together
+      const videoSb = instances[0].buffers[0];
+
+      // Audio produces nothing (no encoder on this runtime). The watchdog must
+      // fire on its own timer — the case it exists for is one where nothing is
+      // appending, so an append-driven tick would never come.
+      videoSb.finishUpdate();
+      vi.advanceTimersByTime(AUDIO_FIRST_SAMPLE_TIMEOUT_MS - 1);
+      expect(instances).toHaveLength(1);
+
+      vi.advanceTimersByTime(2);
+      // Rebuilt video-only, and audio is refused for good.
+      expect(instances).toHaveLength(2);
+      instances[1].open();
+      p.pushSegment(media(true, 1));
+      expect(instances[1].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
+      p.pushSegment(init(AUDIO_MIME, 'audio'));
+      p.pushSegment(media(true, 2, 'audio'));
+      expect(p.getStats()).toMatchObject({ audioTrack: false, failed: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('prunes both tracks to the same window, so the intersection cannot shrink', () => {

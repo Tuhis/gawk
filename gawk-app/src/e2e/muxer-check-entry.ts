@@ -189,11 +189,12 @@ async function runMuxerCheck(): Promise<MuxerCheckResult> {
   // video one — an MSE implementation may refuse a second buffer once the first
   // init segment is parsed. The mime is known from the tier; the init bytes are
   // not (the AAC path learns its AudioSpecificConfig from the encoder).
-  if (audioProbe.supported) {
-    presenter.setExpectedAudioMime(
-      audioProbe.codec === 'aac' ? `audio/mp4; codecs="${AAC_CODEC}"` : 'audio/mp4; codecs="opus"',
-    );
-  }
+  //
+  // On the AAC tier, prime the transcoder FIRST: Chrome's AAC *encoder* is
+  // platform-dependent (present on macOS, absent on the Linux runners), and
+  // declaring an audio track this runtime cannot fill would leave Chromium's
+  // demuxer waiting on an init segment that never comes. Production has the same
+  // ordering — the audio config always precedes the tier being armed.
   // The AAC tier re-encodes what the viewer decoded; here the fixture tone is
   // already PCM, so it feeds the transcoder directly — same muxer entry point.
   const transcoder =
@@ -218,6 +219,19 @@ async function runMuxerCheck(): Promise<MuxerCheckResult> {
           }
         })
       : null;
+  if (transcoder) {
+    // Two chunks is enough for the encoder to either produce or refuse.
+    transcoder.push(pcmFor(0));
+    transcoder.push(pcmFor(20_000));
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const audioUsable =
+    audioProbe.supported && (!transcoder || transcoder.getStats().state === 'active');
+  if (audioUsable) {
+    presenter.setExpectedAudioMime(
+      audioProbe.codec === 'aac' ? `audio/mp4; codecs="${AAC_CODEC}"` : 'audio/mp4; codecs="opus"',
+    );
+  }
   if (!transcoder && audioPackets.length > 0) {
     for (const seg of muxer.setAudioConfig({
       codec: 'opus',
@@ -254,7 +268,7 @@ async function runMuxerCheck(): Promise<MuxerCheckResult> {
     ) {
       const p = audioPackets[audioNext++];
       if (transcoder) {
-        transcoder.push(pcmFor(p.ts));
+        if (audioUsable) transcoder.push(pcmFor(p.ts));
       } else {
         for (const seg of muxer.pushAudio({ timestampUs: BigInt(p.ts), data: p.data })) {
           presenter.pushSegment(seg);
@@ -270,11 +284,15 @@ async function runMuxerCheck(): Promise<MuxerCheckResult> {
 
   // Play through the fixture (18 frames @ 30 fps = 600 ms of media) and give
   // the pipeline a bounded moment to present it.
-  try {
-    await video.play();
-  } catch {
-    // a play() rejection shows up as framesPresented staying 0
-  }
+  // play() resolves only when playback actually BEGINS, so it stays pending
+  // forever if the element never has data — which is exactly what an audio track
+  // that produces nothing does, since `buffered` is the tracks' intersection.
+  // (This hung a CI run for 6 minutes.) Race it: a rejection or a timeout both
+  // show up as framesPresented staying 0.
+  await Promise.race([
+    video.play().catch(() => {}),
+    new Promise((r) => setTimeout(r, 2000)),
+  ]);
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline && (framesPresented < 10 || video.currentTime < 0.3)) {
     await new Promise((r) => setTimeout(r, 100));
