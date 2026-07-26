@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.32.0...gawk-app-v0.33.0) (2026-07-26)
+
+
+### Features
+
+* **r22:** live MSE duration + Opus audio track in iPhone native fullscreen (docs/27 findings 1-2) ([#139](https://github.com/Tuhis/gawk/issues/139)) ([4ef53b4](https://github.com/Tuhis/gawk/commit/4ef53b4ae47b40063cfdf5beb6439c4e05740aad))
+
 ## [0.32.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.31.0...gawk-app-v0.32.0) (2026-07-26)
 
 
