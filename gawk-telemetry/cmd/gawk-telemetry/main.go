@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -308,7 +309,13 @@ func (s *scrapeSink) ObserveRelay(r relayscrape.Round) {
 func basicAuth(next http.Handler, user, pass string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
-		if !ok || u != user || p != pass {
+		// Constant-time, and BOTH halves evaluated: `!=` short-circuits, which
+		// leaks which field was wrong and how far the match got. This gate is
+		// what stands between a public Ingress and a surface that aggregates
+		// every broadcast on the fleet.
+		okUser := subtle.ConstantTimeCompare([]byte(u), []byte(user)) == 1
+		okPass := subtle.ConstantTimeCompare([]byte(p), []byte(pass)) == 1
+		if !ok || !okUser || !okPass {
 			w.Header().Set("WWW-Authenticate", `Basic realm="gawk-telemetry"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return

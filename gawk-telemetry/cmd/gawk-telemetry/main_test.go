@@ -270,3 +270,42 @@ func countSessions(snap live.Snapshot) int {
 	}
 	return n
 }
+
+// The optional gate for exposing the fleet-wide read listener through an
+// Ingress — which is exactly the configuration where a timing side channel on
+// the comparison would matter, since everything behind it aggregates every
+// broadcast on the fleet.
+func TestBasicAuthAcceptsOnlyTheExactCredentials(t *testing.T) {
+	h := basicAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), "ops", "s3cret")
+
+	for _, tc := range []struct {
+		name       string
+		user, pass string
+		creds      bool
+		want       int
+	}{
+		{"correct", "ops", "s3cret", true, http.StatusOK},
+		{"wrong password", "ops", "wrong", true, http.StatusUnauthorized},
+		{"wrong user", "nope", "s3cret", true, http.StatusUnauthorized},
+		{"both wrong", "nope", "wrong", true, http.StatusUnauthorized},
+		{"prefix of the password", "ops", "s3cre", true, http.StatusUnauthorized},
+		{"no credentials at all", "", "", false, http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/live", nil)
+			if tc.creds {
+				req.SetBasicAuth(tc.user, tc.pass)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("status = %d, want %d", rec.Code, tc.want)
+			}
+			if tc.want == http.StatusUnauthorized && rec.Header().Get("WWW-Authenticate") == "" {
+				t.Error("a 401 without WWW-Authenticate leaves a browser with no way to authenticate")
+			}
+		})
+	}
+}
