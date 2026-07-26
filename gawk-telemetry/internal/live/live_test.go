@@ -512,3 +512,91 @@ func TestEndedRowsAgeOut(t *testing.T) {
 		t.Errorf("ended rows = %d after the retention window; the group must not grow forever", n)
 	}
 }
+
+// --- cluster aggregation (review finding 6) --------------------------------
+
+// One broadcast, two pods (R17's origin/edge cascade), reported under the SAME
+// obfuscated key because the fleet shares one statsKey. The scraper answers
+// pods concurrently and appends in completion order, so if broadcast-level
+// facts are last-writer-wins the whole card — role, counts, rule outcomes —
+// flaps at scrape cadence depending on which pod was quicker.
+func clusterObs(originFirst bool) []relayscrape.Observation {
+	originSub := relayscrape.Subscriber{SessionID: "aa11aa11aa11aa11aa11aa11", Dropped: 2}
+	edgeSub1 := relayscrape.Subscriber{SessionID: "bb22bb22bb22bb22bb22bb22"}
+	edgeSub2 := relayscrape.Subscriber{SessionID: "cc33cc33cc33cc33cc33cc33"}
+	origin := relayscrape.Broadcast{
+		PublisherActive: true, Role: "origin", Subscribers: 2, EdgeSessions: 1,
+		ViewersGlobal: 3, FramesRelayed: 1200, IngressFramesLost: 4,
+		DatagramsDropped: 10,
+		SubscriberDetails: []relayscrape.Subscriber{
+			originSub, {Key: "edge", Internal: true},
+		},
+	}
+	edge := relayscrape.Broadcast{
+		PublisherActive: true, Role: "edge", Subscribers: 2,
+		FramesRelayed: 1180, DatagramsDropped: 5,
+		SubscriberDetails: []relayscrape.Subscriber{edgeSub1, edgeSub2},
+	}
+	a := []relayscrape.Observation{
+		{Kind: "broadcast", Pod: "pod-a", Role: "origin", BroadcastKey: "1a2b3c4d5e6f", Broadcast: &origin},
+		{Kind: "subscriber", Pod: "pod-a", Role: "origin", BroadcastKey: "1a2b3c4d5e6f", SessionID: originSub.SessionID, Subscriber: &originSub},
+	}
+	b := []relayscrape.Observation{
+		{Kind: "broadcast", Pod: "pod-b", Role: "edge", BroadcastKey: "1a2b3c4d5e6f", Broadcast: &edge},
+		{Kind: "subscriber", Pod: "pod-b", Role: "edge", BroadcastKey: "1a2b3c4d5e6f", SessionID: edgeSub1.SessionID, Subscriber: &edgeSub1},
+		{Kind: "subscriber", Pod: "pod-b", Role: "edge", BroadcastKey: "1a2b3c4d5e6f", SessionID: edgeSub2.SessionID, Subscriber: &edgeSub2},
+	}
+	if originFirst {
+		return append(a, b...)
+	}
+	return append(b, a...)
+}
+
+func TestClusterFactsDoNotDependOnPodAnswerOrder(t *testing.T) {
+	render := func(originFirst bool) Snapshot {
+		p, _ := newProj()
+		p.ObserveRelay(round(clusterObs(originFirst)))
+		return p.Snapshot()
+	}
+	a, err := json.Marshal(render(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(render(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Errorf("the card depends on which pod answered last\norigin first: %s\nedge first:   %s", a, b)
+	}
+}
+
+func TestFleetSubscriberTotalSumsRealViewersAcrossPods(t *testing.T) {
+	p, _ := newProj()
+	p.ObserveRelay(round(clusterObs(true)))
+	snap := p.Snapshot()
+	if len(snap.Live) != 1 {
+		t.Fatalf("live broadcasts = %d, want 1 — both pods carry ONE broadcast", len(snap.Live))
+	}
+	bv := snap.Live[0]
+	// One real viewer on the origin plus two on the edge. The origin's own
+	// internal edge session is plumbing and must never be counted as audience.
+	if got := bv.Metrics["subscribersFleetTotal"]; got != 3 {
+		t.Errorf("subscribersFleetTotal = %v, want 3 (one pod's count is not a fleet total)", got)
+	}
+	// R18 already computes the authoritative audience count at the origin.
+	if got := bv.Metrics["viewersGlobal"]; got != 3 {
+		t.Errorf("viewersGlobal = %v, want the origin's aggregate 3", got)
+	}
+	// Ingress is measured on the publisher's leg, which only the origin has.
+	if got := bv.Metrics["ingressFramesLost"]; got != 4 {
+		t.Errorf("ingressFramesLost = %v, want the origin's 4", got)
+	}
+	// Egress is per pod, so it adds up.
+	if got := bv.Metrics["datagramsDropped"]; got != 15 {
+		t.Errorf("datagramsDropped = %v, want 15 (10 + 5 across pods)", got)
+	}
+	if bv.Role != "origin" || bv.Pod != "pod-a" {
+		t.Errorf("card reports role %q on pod %q; the origin is the broadcast's home", bv.Role, bv.Pod)
+	}
+}

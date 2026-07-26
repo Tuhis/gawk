@@ -151,13 +151,27 @@ type broadcastState struct {
 	pod        string
 	role       string
 	relayFacts map[string]float64
-	sessions   map[string]*sessionState
+	// pods holds each pod's own latest view of this broadcast. In cluster mode
+	// the origin and every edge report the SAME obfuscated key (one statsKey
+	// per fleet, by design), and the scraper appends their answers in
+	// completion order — so a single fact map would be last-writer-wins in
+	// nondeterministic order, flapping role, counts and rule outcomes at scrape
+	// cadence. The card is derived from all of them instead (aggregateLocked).
+	pods     map[string]*podView
+	sessions map[string]*sessionState
 	// missedRounds counts CONSECUTIVE complete scrape rounds that did not
 	// mention this broadcast. Only meaningful once the relay has seen it at
 	// all: a broadcast the relay has never observed (client-only, or shorter
 	// than one scrape interval) is not absent from a round — it was never in
 	// one, and its absence proves nothing.
 	missedRounds int
+}
+
+// podView is one pod's latest broadcast-level answer.
+type podView struct {
+	pod  string
+	role string
+	cur  relayscrape.Broadcast
 }
 
 // endedEntry keeps the end INSTANT beside the stored view. The view carries
@@ -251,41 +265,12 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 		b.lastSeen = now
 		b.lastRelay = now
 		b.missedRounds = 0
-		if o.Pod != "" {
-			b.pod = o.Pod
-		}
-		if o.Role != "" {
-			b.role = o.Role
-		}
 		switch o.Kind {
 		case "broadcast":
 			if o.Broadcast == nil {
 				continue
 			}
-			bc := o.Broadcast
-			b.relayFacts["publisherActive"] = boolToF(bc.PublisherActive)
-			b.relayFacts["subscribers"] = float64(bc.Subscribers)
-			b.relayFacts["viewersGlobal"] = float64(bc.ViewersGlobal)
-			b.relayFacts["framesRelayed"] = float64(bc.FramesRelayed)
-			b.relayFacts["datagramsDropped"] = float64(bc.DatagramsDropped)
-			b.relayFacts["bandwidthDroppedDatagrams"] = float64(bc.BandwidthDroppedDatagrams)
-			b.relayFacts["ingressFramesLost"] = float64(bc.IngressFramesLost)
-			b.relayFacts["keyframeStreamsIn"] = float64(bc.KeyframeStreamsIn)
-			if bc.FramesRelayed > 0 {
-				b.relayFacts["ingressLossRatio"] =
-					float64(bc.IngressFramesLost) / float64(bc.IngressFramesLost+bc.FramesRelayed)
-			} else {
-				b.relayFacts["ingressLossRatio"] = 0
-			}
-			// Dropping subscribers, for the "all of them" discriminator.
-			dropping := 0
-			for _, sub := range bc.SubscriberDetails {
-				if !sub.Internal && sub.Dropped > 0 {
-					dropping++
-				}
-			}
-			b.relayFacts["subscribersDropping"] = float64(dropping)
-			b.relayFacts["subscribersFleetTotal"] = float64(bc.Subscribers)
+			b.pods[o.Pod] = &podView{pod: o.Pod, role: o.Role, cur: *o.Broadcast}
 		case "subscriber":
 			if o.Subscriber == nil || o.SessionID == "" {
 				continue
@@ -314,6 +299,14 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			s.relayFacts["carrierRecordsDropped"] = float64(sub.CarrierRecordsDropped)
 			s.relayFacts["dvrResyncs"] = float64(sub.DVRResyncs)
 			s.relayFacts["dvrLagMs"] = float64(sub.DVRLagMs)
+		}
+	}
+
+	// Every pod's answer is in hand now, so the broadcast-level facts can be
+	// derived from all of them at once rather than from whichever landed last.
+	for key := range seen {
+		if b, ok := p.bcasts[key]; ok {
+			b.aggregateLocked()
 		}
 	}
 
@@ -413,11 +406,88 @@ func (p *Projection) appendEndedLocked(v BroadcastView, at time.Time) {
 	}
 }
 
+// aggregateLocked derives one broadcast's fact set from every pod carrying it.
+//
+// Which pod a number comes from is not a detail — it is the difference between
+// a fact and a coincidence:
+//
+//   - The ORIGIN is authoritative for anything measured on the publisher's leg
+//     (ingress loss, publisherActive) because only the origin has that leg, and
+//     for `viewersGlobal`, which R18 already aggregates there as
+//     `ownExternalSubs + Σ edge reports`. Recomputing a second fleet total that
+//     could disagree with the one the broadcaster is being shown would be worse
+//     than having none.
+//   - EGRESS is per pod and therefore additive: each pod sends to its own
+//     subscribers and drops its own datagrams.
+//   - The AUDIENCE is the sum of each pod's real subscribers. Edge sessions are
+//     already excluded by the scraper — an edge is plumbing, never an audience
+//     member, or every hop would manufacture a viewer nobody is.
+func (b *broadcastState) aggregateLocked() {
+	f := map[string]float64{}
+	origin := b.originLocked()
+
+	var realSubs, dropping int
+	var dropped, bwDropped, keyframesIn uint64
+	for _, pv := range b.pods {
+		dropped += pv.cur.DatagramsDropped
+		bwDropped += pv.cur.BandwidthDroppedDatagrams
+		keyframesIn += pv.cur.KeyframeStreamsIn
+		for _, sub := range pv.cur.SubscriberDetails {
+			if sub.Internal {
+				continue
+			}
+			realSubs++
+			if sub.Dropped > 0 {
+				dropping++
+			}
+		}
+	}
+	f["datagramsDropped"] = float64(dropped)
+	f["bandwidthDroppedDatagrams"] = float64(bwDropped)
+	f["keyframeStreamsIn"] = float64(keyframesIn)
+	f["subscribersDropping"] = float64(dropping)
+	f["subscribersFleetTotal"] = float64(realSubs)
+	f["subscribers"] = float64(realSubs)
+
+	if origin != nil {
+		f["publisherActive"] = boolToF(origin.cur.PublisherActive)
+		f["viewersGlobal"] = float64(origin.cur.ViewersGlobal)
+		f["framesRelayed"] = float64(origin.cur.FramesRelayed)
+		f["ingressFramesLost"] = float64(origin.cur.IngressFramesLost)
+		total := origin.cur.IngressFramesLost + origin.cur.FramesRelayed
+		if total > 0 {
+			f["ingressLossRatio"] = float64(origin.cur.IngressFramesLost) / float64(total)
+		} else {
+			f["ingressLossRatio"] = 0
+		}
+		b.pod, b.role = origin.pod, origin.role
+	}
+	b.relayFacts = f
+}
+
+// originLocked picks the pod whose answer speaks for the broadcast: the origin
+// if one is known, otherwise the lowest pod name — deterministic, so a
+// single-role fleet (or a scrape that caught only edges mid-rehome) still
+// renders the same card twice in a row.
+func (b *broadcastState) originLocked() *podView {
+	var fallback *podView
+	for _, pv := range b.pods {
+		if pv.role == "origin" {
+			return pv
+		}
+		if fallback == nil || pv.pod < fallback.pod {
+			fallback = pv
+		}
+	}
+	return fallback
+}
+
 func (p *Projection) broadcast(key string, now time.Time) *broadcastState {
 	b, ok := p.bcasts[key]
 	if !ok {
 		b = &broadcastState{
 			key: key, firstSeen: now, relayFacts: map[string]float64{},
+			pods:     map[string]*podView{},
 			sessions: map[string]*sessionState{},
 		}
 		p.bcasts[key] = b
