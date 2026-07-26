@@ -503,6 +503,13 @@ func (b *broadcastState) aggregateLocked() {
 		lost, lostOK := deltaOf(origin.cur.IngressFramesLost, origin.prev.IngressFramesLost, origin.have)
 		if relayedOK {
 			f["framesRelayed"] = relayed
+			// The RATE, which playbook row 10 requires and which nothing
+			// produced before (review finding 5): "a publisher is attached but
+			// nothing is being relayed" is a question about now, and the
+			// scraper has had two consecutive observations in hand all along.
+			if secs := origin.at.Sub(origin.prevAt).Seconds(); secs > 0 {
+				f["framesRelayedPerSec"] = relayed / secs
+			}
 		}
 		if lostOK {
 			f["ingressFramesLost"] = lost
@@ -728,17 +735,7 @@ func (p *Projection) renderSession(s *sessionState, now time.Time) SessionView {
 		v.RelayState = "observed"
 	}
 
-	f := rules.NewFacts(v.SessionID, "session", v.Role)
-	for k, val := range s.clientFacts {
-		f.SetClient(k, val)
-	}
-	for k, val := range s.relayFacts {
-		f.SetRelay(k, val)
-	}
-	for k, val := range s.textFacts {
-		f.SetText(k, val)
-	}
-	rep := rules.Evaluate(f, p.rs)
+	rep := rules.Evaluate(s.facts(v), p.rs)
 	v.Findings = rep.Findings
 	v.Verdict = rep.Summary()
 
@@ -761,6 +758,24 @@ func (p *Projection) renderSession(s *sessionState, now time.Time) SessionView {
 		}
 	}
 	return v
+}
+
+// facts assembles one session's fact set. Extracted from renderSession so a
+// test can assert what this producer actually emits against the inventory a
+// rule is allowed to require (rules.ProducibleFacts) — the guard for a rule
+// requiring a signal nobody produces (review finding 5).
+func (s *sessionState) facts(v SessionView) *rules.Facts {
+	f := rules.NewFacts(v.SessionID, "session", v.Role)
+	for k, val := range s.clientFacts {
+		f.SetClient(k, val)
+	}
+	for k, val := range s.relayFacts {
+		f.SetRelay(k, val)
+	}
+	for k, val := range s.textFacts {
+		f.SetText(k, val)
+	}
+	return f
 }
 
 // hysteresis follows the project's dwell instinct (R4, R27): a state must hold

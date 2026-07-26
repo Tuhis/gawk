@@ -402,10 +402,29 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 
 	// Relay side, joined by sessionId (TM4).
 	coverage := "none"
+	// The relayed RATE is a first/last pair, not a total: playbook row 10 asks
+	// whether frames were moving while a publisher was attached, and a total
+	// cannot answer that (review finding 5 — nothing produced this signal at
+	// all, so the rule was dead on both paths). Only the ORIGIN's observations
+	// are used: an edge's counter is a different leg, and a re-home would make
+	// the pair a comparison between two unrelated counters.
+	var first, last *relayObservation
 	for _, ln := range relayLines {
 		var o relayObservation
 		if err := json.Unmarshal(ln, &o); err != nil {
 			continue
+		}
+		if o.Broadcast != nil && o.BroadcastKey == row.BroadcastKey && o.Role != "edge" &&
+			o.AtMs >= in.StartedAtMs && (in.EndedAtMs == 0 || o.AtMs <= in.EndedAtMs) {
+			cur := o
+			if first == nil || cur.AtMs < first.AtMs {
+				f := cur
+				first = &f
+			}
+			if last == nil || cur.AtMs > last.AtMs {
+				l := cur
+				last = &l
+			}
 		}
 		if o.SessionID == row.SessionID && o.Subscriber != nil {
 			coverage = "full"
@@ -415,6 +434,7 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 			f.SetRelay("carrierRecordsDropped", float64(o.Subscriber.CarrierRecordsDropped))
 			f.SetRelay("dvrResyncs", float64(o.Subscriber.DVRResyncs))
 			f.SetRelay("dvrLagMs", float64(o.Subscriber.DVRLagMs))
+			f.SetRelay("queueDepth", float64(o.Subscriber.QueueDepth))
 		}
 		if o.BroadcastKey == row.BroadcastKey && o.Broadcast != nil {
 			f.SetRelay("publisherActive", boolF(o.Broadcast.PublisherActive))
@@ -423,6 +443,47 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 				f.SetRelay("ingressLossRatio", float64(o.Broadcast.IngressFramesLost)/total)
 			}
 		}
+	}
+
+	// The broadcast-level facts the LIVE path has always had and this one
+	// silently lacked. Four more rules were dead here for the same reason row
+	// 10 was dead everywhere — leg-B-single-viewer, relay-egress-saturation,
+	// bandwidth-cap and viewer-count-gap all require signals that were only
+	// ever derived for the dashboard, so diagnose() could not fire a third of
+	// the playbook. The stored observations carried the numbers all along.
+	if last != nil {
+		bc := last.Broadcast
+		f.SetRelay("framesRelayed", float64(bc.FramesRelayed))
+		f.SetRelay("ingressFramesLost", float64(bc.IngressFramesLost))
+		f.SetRelay("viewersGlobal", float64(bc.ViewersGlobal))
+		f.SetRelay("datagramsDropped", float64(bc.DatagramsDropped))
+		f.SetRelay("bandwidthDroppedDatagrams", float64(bc.BandwidthDroppedDatagrams))
+		f.SetRelay("keyframeStreamsIn", float64(bc.KeyframeStreamsIn))
+
+		var drops []float64
+		dropping := 0
+		for _, sub := range bc.SubscriberDetails {
+			if sub.Internal {
+				continue
+			}
+			drops = append(drops, float64(sub.Dropped))
+			if sub.Dropped > 0 {
+				dropping++
+			}
+		}
+		f.SetRelay("subscribers", float64(len(drops)))
+		f.SetRelay("subscribersFleetTotal", float64(len(drops)))
+		f.SetRelay("subscribersDropping", float64(dropping))
+		if len(drops) > 0 {
+			sort.Float64s(drops)
+			f.SetRelay("peerMedianDropped", drops[len(drops)/2])
+		}
+	}
+	if first != nil && last != nil && last.AtMs > first.AtMs &&
+		last.Broadcast.FramesRelayed >= first.Broadcast.FramesRelayed {
+		secs := float64(last.AtMs-first.AtMs) / 1000
+		f.SetRelay("framesRelayedPerSec",
+			float64(last.Broadcast.FramesRelayed-first.Broadcast.FramesRelayed)/secs)
 	}
 	if row.RelayCoverage != "" && row.RelayCoverage != "none" {
 		coverage = row.RelayCoverage
@@ -442,17 +503,28 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 
 type relayObservation struct {
 	Kind         string `json:"kind"`
+	AtMs         int64  `json:"atMs"`
 	Pod          string `json:"pod"`
 	Role         string `json:"role"`
 	BroadcastKey string `json:"broadcastKey"`
 	SessionID    string `json:"sessionId"`
 	Broadcast    *struct {
-		PublisherActive   bool   `json:"publisherActive"`
-		FramesRelayed     uint64 `json:"framesRelayed"`
-		IngressFramesLost uint64 `json:"ingressFramesLost"`
+		PublisherActive           bool   `json:"publisherActive"`
+		FramesRelayed             uint64 `json:"framesRelayed"`
+		IngressFramesLost         uint64 `json:"ingressFramesLost"`
+		ViewersGlobal             uint32 `json:"viewersGlobal"`
+		DatagramsDropped          uint64 `json:"datagramsDropped"`
+		BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
+		KeyframeStreamsIn         uint64 `json:"keyframeStreamsIn"`
+		SubscriberDetails         []struct {
+			SessionID string `json:"sessionId"`
+			Dropped   uint64 `json:"dropped"`
+			Internal  bool   `json:"internal"`
+		} `json:"subscriberDetails"`
 	} `json:"broadcast"`
 	Subscriber *struct {
 		Dropped               uint64 `json:"dropped"`
+		QueueDepth            int    `json:"queueDepth"`
 		KeyframesDropped      uint64 `json:"keyframesDropped"`
 		CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow"`
 		CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"`

@@ -153,7 +153,7 @@ func TestSeverityOrdersTheLiveGroup(t *testing.T) {
 	// Two rounds, because relay counters are read as a WINDOW: the bad
 	// broadcast is bad because its viewer is overflowing NOW, not because it
 	// once did.
-	feed := func(overflow uint64) {
+	feed := func(gen uint64, overflow uint64) {
 		var obs []relayscrape.Observation
 		mk := func(key, session string, stats map[string]any, sub relayscrape.Subscriber) {
 			a := batch(session, "viewer", stats)
@@ -161,7 +161,9 @@ func TestSeverityOrdersTheLiveGroup(t *testing.T) {
 			p.ObserveClient(a, "Chrome 152", "Windows", "0.33.2")
 			bc := relayscrape.Broadcast{
 				PublisherActive: true, Role: "origin", Subscribers: 1,
-				FramesRelayed: 10000, SubscriberDetails: []relayscrape.Subscriber{sub},
+				// Frames keep flowing, or row 10 would (correctly) call every
+				// one of these broadcasts dead.
+				FramesRelayed: 10000 * gen, SubscriberDetails: []relayscrape.Subscriber{sub},
 			}
 			obs = append(obs,
 				relayscrape.Observation{Kind: "broadcast", Pod: "pod-a", BroadcastKey: key, Broadcast: &bc},
@@ -176,9 +178,9 @@ func TestSeverityOrdersTheLiveGroup(t *testing.T) {
 			relayscrape.Subscriber{SessionID: "333333333333333333333333", CarrierQueueOverflow: overflow})
 		p.ObserveRelay(round(obs))
 	}
-	feed(0)
+	feed(1, 0)
 	c.add(5 * time.Second)
-	feed(20)
+	feed(2, 20)
 
 	// Hysteresis: escalation takes two consecutive evaluations, so a single
 	// blip cannot light the page up.
@@ -728,4 +730,70 @@ func relayFact(p *Projection, sessionID, name string) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// --- producer coverage (review finding 5) ----------------------------------
+
+// What this producer emits must be exactly its share of the inventory a rule
+// is allowed to require. Both directions matter: a fact emitted but unlisted
+// weakens the guard, and a fact listed but never emitted is precisely what
+// playbook row 10 was — a rule that reads `unavailable` forever because its
+// input does not exist.
+func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
+	p, c := newProj()
+	full := relayscrape.Subscriber{
+		SessionID: "e0e0e0e0e0e0e0e0e0e0e0e0", QueueDepth: 3, Dropped: 5, SendErrors: 1,
+		KeyframesSent: 9, KeyframesDropped: 2, Reliable: true, CarrierStreams: 4,
+		CarrierRecords: 100, CarrierRecordsDropped: 3, CarrierQueueOverflow: 1,
+		DVR: true, DVRBufferMs: 2000, DVRLagMs: 900, DVRGopSeq: 12, DVRResyncs: 1,
+	}
+	stats := map[string]any{"isHardwareAccelerated": true}
+	for _, f := range liveNumericFields {
+		stats[f] = 1.0
+	}
+	for _, f := range liveTextFields {
+		stats[f] = "x"
+	}
+	stats["audioBuffer"] = map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0}
+
+	// Two rounds, so every counter has a window and every delta fact exists.
+	for i := range 2 {
+		if i > 0 {
+			c.add(5 * time.Second)
+			full.Dropped += 3
+			full.CarrierQueueOverflow++
+		}
+		p.ObserveClient(batch("e0e0e0e0e0e0e0e0e0e0e0e0", "viewer", stats), "Chrome 152", "Windows", "0.33.2")
+		p.ObserveRelay(relayRound(full))
+	}
+
+	emitted := map[string]bool{}
+	p.mu.Lock()
+	for _, b := range p.bcasts {
+		bf := rules.NewFacts(b.key, "broadcast", "")
+		for k, v := range b.relayFacts {
+			bf.SetRelay(k, v)
+		}
+		for _, n := range bf.Names() {
+			emitted[n] = true
+		}
+		for _, s := range b.sessions {
+			for _, n := range s.facts(s.view).Names() {
+				emitted[n] = true
+			}
+		}
+	}
+	p.mu.Unlock()
+
+	want := rules.ProducedBy("live")
+	for n := range emitted {
+		if !want[n] {
+			t.Errorf("live emits %q, which rules.ProducibleFacts does not list", n)
+		}
+	}
+	for n := range want {
+		if !emitted[n] {
+			t.Errorf("rules.ProducibleFacts claims live emits %q, but a maximal round produced no such fact", n)
+		}
+	}
 }

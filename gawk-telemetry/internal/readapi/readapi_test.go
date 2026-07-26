@@ -558,3 +558,82 @@ func TestSustainedDecoderStarvationStillFires(t *testing.T) {
 		t.Errorf("sustained decoder starvation was not caught: %+v", rep.Findings)
 	}
 }
+
+// --- producer coverage (review finding 5) ----------------------------------
+
+// The read path's half of the two-sided contract in rules.ProducibleFacts. A
+// rule may only require what a producer emits; playbook row 10 required
+// `relay.framesRelayedPerSec`, which neither path set, so it read `unavailable`
+// on every session forever while looking like a working rule.
+func TestReadPathEmitsExactlyItsShareOfTheInventory(t *testing.T) {
+	f := newFixture(t)
+	stats := map[string]any{"isHardwareAccelerated": true,
+		"audioBuffer": map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0}}
+	for _, n := range factClientFields {
+		stats[n] = 30.0
+	}
+	in := rollup.Input{
+		SessionID: "aa11aa11aa11aa11aa11aa11", BroadcastKey: bkey, Role: "viewer",
+		StartedAtMs: 1000, EndedAtMs: 61000,
+		Samples: []rollup.Sample{{TMs: 0, Stats: stats}},
+	}
+	row := rollup.Compute(in)
+	row.Config = map[string]string{
+		"deliveryMode": "datagrams", "playoutMode": "adaptive", "renderer": "webgl",
+		"pipelineContext": "worker", "transport": "worker", "audioState": "playing",
+		"autoRung": "1080p", "Encoder": "nvh264enc", "Codec": "avc1.42E02A",
+	}
+	row.LongestStallMs = 900
+	if row.Series == nil {
+		row.Series = map[string]*rollup.Stat{}
+	}
+	for _, n := range []string{"liveEdgeDriftMs", "capToRenderMs", "arrivalJitterMs",
+		"avSkewMs", "lastKeyframeAgeMs", "viewerCount", "EncoderFps", "SentFps"} {
+		row.Series[n] = &rollup.Stat{Median: 5, P95: 9}
+	}
+
+	line := func(v any) []byte {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	relayLines := [][]byte{
+		line(map[string]any{"kind": "subscriber", "atMs": 2000, "pod": "pod-a", "role": "origin",
+			"broadcastKey": bkey, "sessionId": in.SessionID,
+			"subscriber": map[string]any{"dropped": 3, "queueDepth": 2, "keyframesDropped": 1,
+				"carrierQueueOverflow": 1, "carrierRecordsDropped": 2, "dvrResyncs": 1, "dvrLagMs": 800}}),
+		line(map[string]any{"kind": "broadcast", "atMs": 2000, "pod": "pod-a", "role": "origin",
+			"broadcastKey": bkey,
+			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 100,
+				"ingressFramesLost": 2, "subscribers": 3, "viewersGlobal": 3,
+				"datagramsDropped": 4, "bandwidthDroppedDatagrams": 1, "keyframeStreamsIn": 5}}),
+		line(map[string]any{"kind": "broadcast", "atMs": 12000, "pod": "pod-a", "role": "origin",
+			"broadcastKey": bkey,
+			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 400,
+				"ingressFramesLost": 3, "subscribers": 3, "viewersGlobal": 3,
+				"datagramsDropped": 6, "bandwidthDroppedDatagrams": 2, "keyframeStreamsIn": 9,
+				"subscriberDetails": []map[string]any{
+					{"sessionId": in.SessionID, "dropped": 3},
+					{"sessionId": "bb22bb22bb22bb22bb22bb22", "dropped": 1},
+					{"key": "edge", "internal": true, "dropped": 0},
+				}}}),
+	}
+
+	emitted := map[string]bool{}
+	for _, n := range f.api.factsFor(row, in, relayLines).Names() {
+		emitted[n] = true
+	}
+	want := rules.ProducedBy("readapi")
+	for n := range emitted {
+		if !want[n] {
+			t.Errorf("the read path emits %q, which rules.ProducibleFacts does not list", n)
+		}
+	}
+	for n := range want {
+		if !emitted[n] {
+			t.Errorf("rules.ProducibleFacts claims the read path emits %q, but a maximal session produced no such fact", n)
+		}
+	}
+}

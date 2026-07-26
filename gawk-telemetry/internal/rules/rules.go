@@ -186,6 +186,28 @@ func (f *Facts) Relay(name string) (float64, bool) { v, ok := f.relay[name]; ret
 // Fleet reads a fleet median.
 func (f *Facts) Fleet(name string) (float64, bool) { v, ok := f.fleet[name]; return v, ok }
 
+// Names lists every fact present, qualified by side. It exists so a producer
+// can be checked against the inventory a rule is allowed to require
+// (ProducibleFacts): review finding 5 was a rule requiring a signal nothing
+// anywhere produced, which is invisible at runtime — the rule simply reads
+// `unavailable` forever, honestly and uselessly.
+func (f *Facts) Names() []string {
+	out := make([]string, 0, len(f.client)+len(f.relay)+len(f.fleet)+len(f.text))
+	for _, pair := range []struct {
+		side string
+		m    map[string]float64
+	}{{"client", f.client}, {"relay", f.relay}, {"fleet", f.fleet}} {
+		for k := range pair.m {
+			out = append(out, pair.side+"."+k)
+		}
+	}
+	for k := range f.text {
+		out = append(out, "text."+k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Signal names in a rule's `Requires` are qualified: "relay.x" or "client.x".
 // Qualifying them is what makes "which side is missing?" answerable — an
 // unqualified name would hide the difference between "the relay is not
