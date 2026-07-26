@@ -173,6 +173,18 @@ function makeVideo({ srcObjectThrows = false } = {}) {
   return { video, captured };
 }
 
+// jsdom's <video> reports readyState 0 and throws on `buffered`, so "does the
+// element hold media" — which decides whether MMS parking is legal (docs/27
+// finding 7) — has to be stated explicitly by any test that cares.
+function setElementMedia(
+  video: HTMLVideoElement,
+  readyState: number,
+  ranges: Array<[number, number]>,
+): void {
+  Object.defineProperty(video, 'readyState', { configurable: true, get: () => readyState });
+  setBuffered(video, ranges);
+}
+
 function setBuffered(video: HTMLVideoElement, ranges: Array<[number, number]>): void {
   Object.defineProperty(video, 'buffered', {
     configurable: true,
@@ -688,6 +700,9 @@ describe('MsePresenter', () => {
     const { ctor, instances } = makeFakeMsCtor({ managed: true });
     const p = new MsePresenter(ctor);
     const { video } = makeVideo();
+    // A fed element: it holds media, so the system's "stop sending" is about
+    // pacing and the presenter must honor it.
+    setElementMedia(video, 1, [[0, 5]]);
     p.attach(video);
     instances[0].open();
 
@@ -700,6 +715,73 @@ describe('MsePresenter', () => {
     expect(instances[0].sb!.appended).toHaveLength(1);
     instances[0].sb!.finishUpdate();
     expect(instances[0].sb!.appended).toHaveLength(2);
+  });
+
+  // docs/27 finding 7 — the 2026-07-26 regression. An MMS that has never been
+  // asked for anything opens with `streaming` false and stays there: the system
+  // asks when the element needs more data, and an element with no init segment
+  // needs nothing. Parking there is a deadlock, and its signature is a capture
+  // with segmentsAppended 0 / appendErrors 0 / elementReadyState 0 and a
+  // healthy open source — i.e. no visible failure anywhere.
+  it('primes an element with no media even while MMS never asks for data', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 0, []); // readyState 0, nothing buffered
+    p.attach(video);
+    instances[0].open();
+    instances[0].streaming = false; // and startstreaming never fires
+
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    p.pushSegment(media(false, 1));
+    // The init went in on its own (one append in flight per track)…
+    expect(instances[0].sb!.appended).toHaveLength(1);
+    instances[0].sb!.finishUpdate();
+    // …and the keyframe behind it, so the element can reach HAVE_METADATA and
+    // tier 2 becomes reachable at all.
+    expect(instances[0].sb!.appended).toHaveLength(2);
+
+    // Once the element reports media, the pacing contract applies again: the
+    // priming exemption is not a licence to ignore `streaming` forever, so the
+    // delta behind the keyframe waits for the system to ask.
+    setElementMedia(video, 1, [[0, 0.5]]);
+    instances[0].sb!.finishUpdate();
+    expect(instances[0].sb!.appended).toHaveLength(2);
+    instances[0].setStreaming(true);
+    expect(instances[0].sb!.appended).toHaveLength(3);
+  });
+
+  // The capture that started this could not say whether the presenter was
+  // holding segments or had never been handed any: both read appended 0,
+  // errors 0. These three counters are what tells them apart remotely.
+  it('reports what it received, what it is holding, and whether MMS is asking', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 1, [[0, 5]]);
+    p.attach(video);
+    instances[0].open();
+    instances[0].streaming = false;
+
+    // Media arriving before any init is dropped on the floor — the shape a
+    // sink that missed the muxer's one init segment produces forever.
+    p.pushSegment(media(true));
+    expect(p.getStats()).toMatchObject({ received: 1, droppedNoInit: 1, queued: 0 });
+
+    p.pushSegment(init());
+    p.pushSegment(media(true, 1));
+    expect(p.getStats()).toMatchObject({
+      received: 3,
+      droppedNoInit: 1,
+      queued: 2,
+      streaming: false,
+      segmentsAppended: 0,
+      appendErrors: 0,
+    });
+
+    instances[0].setStreaming(true);
+    expect(p.getStats().streaming).toBe(true);
   });
 
   it('bounds the queue and resumes only at a keyframe after dropping', () => {

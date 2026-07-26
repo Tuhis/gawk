@@ -115,6 +115,30 @@ describe('ViewerScreen R22 arm lifecycle (gated, mocked connection)', () => {
     expect(container.querySelector('video')).toBeNull();
   });
 
+  // docs/27 finding 7: the worker muxer emits its init segment exactly ONCE
+  // per session and survives reconnects, so any window with no sink registered
+  // costs the presentation every segment after it — permanently and silently
+  // (the presenter drops media it has no init for). A reconnect flips status
+  // away from 'watching', which is exactly such a window, so the sink must
+  // outlive it: it is cleared with the presenter, on unmount.
+  it('keeps the segment sink registered across a reconnect', async () => {
+    conn.state.probe = SUPPORTED;
+    const { rerender, unmount } = render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(conn.state.setSegmentSink).toHaveBeenCalled());
+    expect(conn.state.setSegmentSink.mock.calls.at(-1)?.[0]).toBeTypeOf('function');
+
+    conn.state.status = 'reconnecting';
+    rerender(<ViewerScreen broadcastId="AB2CD3" />);
+    expect(conn.state.setSegmentSink.mock.calls.at(-1)?.[0]).toBeTypeOf('function');
+
+    conn.state.status = 'watching';
+    rerender(<ViewerScreen broadcastId="AB2CD3" />);
+    expect(conn.state.setSegmentSink.mock.calls.at(-1)?.[0]).toBeTypeOf('function');
+
+    unmount();
+    expect(conn.state.setSegmentSink).toHaveBeenLastCalledWith(null);
+  });
+
   // A broadcaster restart can change the codec mid-view (R13 pin, or a
   // different broadcaster reclaiming the ID). If the new codec probes false,
   // the armed surface is stale: keeping the ready <video> mounted would let

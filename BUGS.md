@@ -390,6 +390,15 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   JS queue and front-drop past `MAX_QUEUED_SEGMENTS` (128 ≈ 2–4 s). Any arming
   period longer than the queue depth therefore leaves a gap between the last
   appended segment and the keyframe appends resume at.
+- **Partly fixed 2026-07-26 (docs/27 finding 7)**: parking before the element
+  has media was a *deadlock*, not a hole — MMS asks for data when the element
+  needs more, and an element with no init segment needs nothing, so a source
+  that opened with `streaming` false never took a byte and native fullscreen
+  was unreachable for the whole session. Priming (SourceBuffer, init, first
+  keyframes) now goes through regardless of `streaming`; parking resumes once
+  the element reports playable media. **This entry stays open** for the
+  steady-state case above, which is unchanged: a fed, paused element still
+  parks and the queue still front-drops.
 - **Signature**, and how to tell it from the (fixed) sample-duration cause:
   `bufferedRanges > 1` with `segmentsAppended` **lagging** `muxInitSegments +
   muxMediaSegments` — the shortfall is the queue's front-drops. Where those two

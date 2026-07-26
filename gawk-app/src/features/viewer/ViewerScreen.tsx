@@ -301,7 +301,14 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     });
     armMux();
     setArmed(true);
-    return () => setSegmentSink(null);
+    // Deliberately no cleanup that unregisters the sink (docs/27 finding 7).
+    // The worker muxer emits its init segment exactly once per session and
+    // survives reconnects, while this effect re-runs whenever `status` leaves
+    // 'watching' — so clearing the sink here opens a window in which that one
+    // init can be posted with nobody to receive it, after which the presenter
+    // drops every media segment for want of it, for the rest of the session,
+    // with no error anywhere. The sink is cleared with the presenter instead,
+    // on unmount.
   }, [gated, status, mseProbe, armMux, setSegmentSink]);
 
   // R22 audio: hand the presenter the audio mime the moment the tier is known —
@@ -316,10 +323,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // plain cleanup is safe here.)
   useEffect(() => {
     return () => {
+      setSegmentSink(null);
       presenterRef.current?.dispose();
       presenterRef.current = null;
     };
-  }, []);
+  }, [setSegmentSink]);
 
   // R16 Decision 6 (kept by R22): the hidden presentation <video>, rendered
   // only on gated devices once armed. State (not a ref) so the effects and
@@ -441,6 +449,10 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     muxErrors: stats?.presentationMux?.errors ?? 0,
     segmentsAppended: presenterStats?.segmentsAppended ?? 0,
     appendErrors: presenterStats?.appendErrors ?? 0,
+    segmentsReceived: presenterStats?.received ?? 0,
+    segmentsQueued: presenterStats?.queued ?? 0,
+    segmentsDroppedNoInit: presenterStats?.droppedNoInit ?? 0,
+    mmsStreaming: presenterStats?.streaming ?? null,
     lastAppendError: presenterStats?.lastError ?? null,
     liveDuration: presenterStats?.sourceOpen ? presenterStats.liveDuration : null,
     // The audio verdict, resolved: no audio in the stream reads 'none', a passing

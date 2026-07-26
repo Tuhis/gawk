@@ -855,6 +855,86 @@ less than either would have.
   (`audioTrack && audioSegmentsAppended > 0`, plus a surfaced `audioDropped`) is
   the standing fix, independent of finding 6.
 
+## On-device findings (MF5 pass 4, 2026-07-26)
+
+Native fullscreen stopped working entirely: the button fell to CSS
+pseudo-fullscreen for a whole session, on the build that had just been verified
+audible. The capture localizes it precisely, and the chain runs backwards
+through every hop:
+
+```
+tier: "pseudo"                     ← useFullscreen tier 2 needs readyState >= HAVE_METADATA
+elementReadyState: 0, elementPaused: true, bufferedRanges: 0
+segmentsAppended: 0, appendErrors: 0, lastAppendError: null
+liveDuration: true                 ← so the MediaSource IS open and took duration = Infinity
+armed: true, muxMediaSegments: 1043, muxErrors: 0   ← the worker muxer is healthy
+```
+
+`liveDuration` is only reported on an open source, so attach → `sourceopen` →
+`duration = Infinity` all succeeded. With `failed` false (the gate reads
+`armed`), that leaves exactly one code path in `pump()`: it returned before
+appending anything, every single time, for a thousand segments.
+
+### Finding 7 — MMS parking is a deadlock before the element has media (fixed)
+
+`pump()` parked on `streaming === false`, and **that gate covered priming too** —
+`addSourceBuffer`, the init segment, the first keyframe. But
+ManagedMediaSource's `streaming` is the system saying *"I need more data"*, and
+an element that has never been given an init segment needs nothing: `buffered`
+is empty, `readyState` is 0, there is no decode to feed. So an MMS that opens
+with `streaming` already false never asks, the presenter never primes, and
+neither side ever moves — with **zero appends and zero errors** to show for it,
+which is why nothing in the previous capture pointed at it.
+
+The fix separates pacing from priming: parking is honored only once the element
+reports playable media (`readyState >= HAVE_METADATA` **and** a buffered range).
+Before that, appends go through regardless of `streaming`. Both readings come
+from one `elementMediaState()`, three-valued so the two callers can disagree
+about an unreadable `buffered`: the audio watchdog must not rebuild on an
+unknown (it assumes media), priming must not park on one (it assumes none) — a
+few appends the system did not ask for cost buffer, never the whole surface.
+
+Steady-state parking is unchanged, so [`BUGS.md`](../BUGS.md)'s hole-while-armed
+entry stays open on its own mechanism; this is only about never reaching the
+first append.
+
+**Honesty about the diagnosis**: the capture proves the append loop never ran,
+and cannot by itself distinguish *parked with segments in hand* from *never
+handed a segment* — both read `appended 0, errors 0`. Parking is the leading
+explanation because the wiring did not change between the working pass 3 and
+this one, and because the device probe already had to write
+`video.load(); video.play()` with the comment *"MMS only opens once the element
+wants data"* to get its own raw run moving. The other branch got a fix too (see
+below), and the diagnostics below make the next capture decisive instead of
+inferential.
+
+### The sink window: one lost init segment kills the session (fixed)
+
+The second branch is real and was one badly-timed reconnect away. The worker
+muxer emits its init segment **exactly once per session** and survives
+reconnects by design (Decision 3) — while `ViewerScreen`'s arm effect
+unregistered the segment sink whenever `status` left `'watching'`, which is what
+a reconnect does. A segment posted into that window is gone, and
+`MsePresenter.pushSegment` drops every later media segment for want of a cached
+init: silently, permanently, with the same all-zero signature. The sink now
+outlives status changes and is cleared with the presenter, on unmount.
+
+### Diagnostics: make "nothing was appended" say where it stopped
+
+Four fields, chosen so the next capture answers this without a round trip
+(`presentationSurface`, plus two overlay rows):
+
+| Field | What it settles |
+| --- | --- |
+| `segmentsReceived` | 0 against a climbing `muxMediaSegments` ⇒ the worker→main→sink hop, not the appender |
+| `segmentsQueued` | at `MAX_QUEUED_SEGMENTS` with 0 appended ⇒ the appender is holding data the system will not take |
+| `segmentsDroppedNoInit` | > 0 ⇒ the lost-init path above (permanent once it starts) |
+| `mmsStreaming` | ManagedMediaSource's own flag; null on classic MediaSource |
+
+The presenter already counted `queued`; it simply never left `getStats()`. That
+is the recurring lesson of this milestone — every silent drop path needs a
+counter, or an on-device capture cannot tell a broken hop from a paced one.
+
 ## Verification plan (manual, MF5)
 
 On a real iPhone (Safari, plus Chrome-on-iOS for the same-WebKit check),

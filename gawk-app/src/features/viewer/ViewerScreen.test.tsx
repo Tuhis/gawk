@@ -546,6 +546,13 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       muxErrors: 0,
       segmentsAppended: 0,
       appendErrors: 0,
+      // docs/27 finding 7: no presenter on this path, so nothing was received,
+      // queued or dropped, and there is no MediaSource to report a `streaming`
+      // state for.
+      segmentsReceived: 0,
+      segmentsQueued: 0,
+      segmentsDroppedNoInit: 0,
+      mmsStreaming: null,
       // docs/27 finding 6: null until an append actually fails.
       lastAppendError: null,
       bufferedMs: null,

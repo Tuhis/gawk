@@ -1680,11 +1680,23 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    (`initAppended` is now tracked separately from the buffer existing); plus
    per-track SourceBuffer error handling (an audio error no longer blanks video)
    and a sticky, rebuild-video-only audio drop (a dead audio range would freeze
-   video, since `buffered` is the tracks' INTERSECTION). Still open: the ~100 ms
+   video, since `buffered` is the tracks' INTERSECTION). Pass 4 (2026-07-26) found the tier gone entirely — CSS pseudo for a whole
+   session, `segmentsAppended: 0` with `appendErrors: 0` on a healthy open
+   source: **`pump()` was parking the PRIMING appends on MMS `streaming`**, which
+   deadlocks by construction (the system asks for data when the element needs
+   more; an element with no init segment needs nothing), so priming now goes
+   through regardless and parking resumes only once the element reports playable
+   media (finding 7). Two silent paths closed alongside it: the segment sink no
+   longer disappears while `status` leaves 'watching' (the muxer emits its init
+   ONCE per session, so a reconnect could lose it and every segment after it),
+   and `presentationSurface` gained `segmentsReceived`/`segmentsQueued`/
+   `segmentsDroppedNoInit`/`mmsStreaming` — the four fields that separate "the
+   hop is broken" from "the appender is parked", which no capture could tell
+   apart before. Still open: the ~100 ms
    live-edge cushion that structurally cannot grow because the muxer is fed after
-   the paced release; no stall watchdog on the element; MMS parking as an
-   unmeasured hole source; 20+ s of 7 MP media buffered on the phone. A third
-   on-device pass is pending** (R22,
+   the paced release; no stall watchdog on the element; steady-state MMS parking
+   as an unmeasured hole source; 20+ s of 7 MP media buffered on the phone. A
+   further on-device pass is pending** (R22,
    `docs/27-ios-mse-fullscreen.md`; viewer-client only, zero server/wire/
    broadcaster changes). The iPhone fullscreen button's hidden `<video>` (R16
    scaffolding: gate, tiers, hiding rules, `NativeVideoFullscreen` gate — all
