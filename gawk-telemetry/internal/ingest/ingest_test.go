@@ -380,7 +380,7 @@ func TestIngestDropsWronglyTypedKnownFields(t *testing.T) {
 	h := newHandler(t, &recordingSink{})
 	bad := map[string]any{
 		"receivedFps":           "30", // the string that must never become a data point
-		"decoderFps":            nil,
+		"decoderFps":            true, // a bool where a number belongs
 		"capToRenderMs":         map[string]any{"oops": 1},
 		"isHardwareAccelerated": "yes",
 		"deliveryMode":          7,
@@ -504,5 +504,203 @@ func TestNewRequiresAKeyAndASink(t *testing.T) {
 	}
 	if _, err := New(Options{Key: testKey}); err == nil {
 		t.Error("New accepted a missing sink")
+	}
+}
+
+// --- CORS: the split-origin deployment only (D1) -------------------------
+
+// The DEFAULT deployment is same-origin and must have no cross-origin surface
+// at all: no headers, and a preflight that is simply refused.
+func TestNoCORSWithoutAnAllowlist(t *testing.T) {
+	h := newHandler(t, &recordingSink{})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(body(t, nil)))
+	req.Header.Set("Origin", "https://gawk.example")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q with no allowlist, want none", got)
+	}
+
+	req, _ = http.NewRequest(http.MethodOptions, srv.URL, nil)
+	req.Header.Set("Origin", "https://gawk.example")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("preflight status = %d with no allowlist, want 403", resp.StatusCode)
+	}
+}
+
+func TestCORSForListedOriginsOnly(t *testing.T) {
+	sink := &recordingSink{}
+	h, err := New(Options{
+		Key: testKey, Sink: sink, Now: func() time.Time { return testNow },
+		AllowedOrigins: []string{"https://gawk.example", "http://127.0.0.1:4173"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	t.Run("preflight from a listed origin", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodOptions, srv.URL, nil)
+		req.Header.Set("Origin", "https://gawk.example")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("status = %d, want 204", resp.StatusCode)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://gawk.example" {
+			t.Errorf("allow-origin = %q, want the echoed origin (never *)", got)
+		}
+		// Content-Type must be permitted or the JSON POST can never follow.
+		if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type" {
+			t.Errorf("allow-headers = %q", got)
+		}
+		if resp.Header.Get("Vary") != "Origin" {
+			t.Error("no Vary: Origin — the response would be cached across origins")
+		}
+	})
+
+	t.Run("post from a listed origin", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(body(t, nil)))
+		req.Header.Set("Origin", "http://127.0.0.1:4173")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("status = %d, want 204", resp.StatusCode)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://127.0.0.1:4173" {
+			t.Errorf("allow-origin = %q", got)
+		}
+	})
+
+	t.Run("an unlisted origin gets nothing", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodOptions, srv.URL, nil)
+		req.Header.Set("Origin", "https://evil.example")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("preflight status = %d for an unlisted origin, want 403", resp.StatusCode)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("allow-origin = %q for an unlisted origin", got)
+		}
+	})
+
+	// Exact match only: a prefix/suffix rule is how allowlists get bypassed.
+	t.Run("near-miss origins are not allowed", func(t *testing.T) {
+		for _, o := range []string{
+			"https://gawk.example.evil.com",
+			"https://evil.com?https://gawk.example",
+			"http://gawk.example",
+			"https://gawk.example/",
+		} {
+			req, _ := http.NewRequest(http.MethodOptions, srv.URL, nil)
+			req.Header.Set("Origin", o)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("origin %q was allowed", o)
+			}
+		}
+	})
+}
+
+// A null is ABSENCE, not a type error. ViewerStats declares dozens of fields
+// as `T | null` by design — avSkewMs with no audio, connection because no
+// browser ships getStats(), renderedFps on the main-thread path — so a client
+// sending one is reporting correctly.
+//
+// Counting those as anomalies made a healthy session's tally read as nonsense:
+// the e2e pass produced 70 "dropped" fields across 13 samples, which
+// distrustReason() then reported as a likely client bug. This is the
+// false-alarm mirror of a confidently-wrong verdict.
+func TestNullIsAbsenceNotAnAnomaly(t *testing.T) {
+	h := newHandler(t, &recordingSink{})
+	// Exactly the shape a real viewer sends on a video-only stream.
+	stats := map[string]any{
+		"receivedFps":     30.0,
+		"decoderFps":      30.0,
+		"framesAssembled": 900.0,
+		"avSkewMs":        nil,
+		"avMaster":        nil,
+		"audioCodec":      nil,
+		"audioChannels":   nil,
+		"audioSampleRate": nil,
+		"connection":      nil,
+		"renderedFps":     nil,
+	}
+	a, _, err := h.Validate(body(t, map[string]any{
+		"samples": []any{map[string]any{"tMs": 0, "stats": stats}},
+	}))
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if a.Anomalies.Dropped != 0 {
+		t.Errorf("dropped = %d for a video-only viewer's nulls, want 0 — absence is not a bug",
+			a.Anomalies.Dropped)
+	}
+	if a.Anomalies.Unknown != 0 {
+		t.Errorf("unknown = %d, want 0", a.Anomalies.Unknown)
+	}
+	// The null fields are OMITTED rather than stored as null, so a reader
+	// never has to distinguish "absent" from "present and null".
+	for _, f := range []string{"avSkewMs", "connection", "renderedFps", "audioCodec"} {
+		if _, present := a.Samples[0].Stats[f]; present {
+			t.Errorf("%s was stored despite being null", f)
+		}
+	}
+	// And the real values survive untouched.
+	if v, ok := schema.Number(a.Samples[0].Stats, "receivedFps"); !ok || v != 30 {
+		t.Errorf("receivedFps = %v/%v", v, ok)
+	}
+}
+
+// A new NESTED field must count once, not once per child — the tally answers
+// "are clients running ahead of the service?", not "how deep is this tree?".
+func TestNestedUnknownsCountOnce(t *testing.T) {
+	h := newHandler(t, &recordingSink{})
+	a, _, err := h.Validate(body(t, map[string]any{
+		"samples": []any{map[string]any{"tMs": 0, "stats": map[string]any{
+			"receivedFps": 30.0,
+			"brandNewSubsystem": map[string]any{
+				"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0, "e": 5.0,
+			},
+		}}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Anomalies.Unknown != 1 {
+		t.Errorf("unknown = %d for one new nested field, want 1", a.Anomalies.Unknown)
+	}
+	// It still survives verbatim, children and all.
+	nested, _ := a.Samples[0].Stats["brandNewSubsystem"].(map[string]any)
+	if len(nested) != 5 {
+		t.Errorf("nested children = %d, want 5 kept verbatim", len(nested))
 	}
 }

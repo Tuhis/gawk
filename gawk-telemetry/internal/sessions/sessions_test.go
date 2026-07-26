@@ -465,3 +465,73 @@ func TestRollupOfAnEmptySession(t *testing.T) {
 		t.Errorf("empty row does not serialize: %v", err)
 	}
 }
+
+// One session must produce exactly ONE permanent rollup row. A late batch —
+// a retry that outlived the idle sweep, or a final flush that lost the race —
+// must not re-create the session, because finalizing it again writes a second
+// row and duplicate rows corrupt every query over the permanent artifact (D4).
+//
+// Found by the e2e pass: with an idle timeout shorter than the client's flush
+// interval, ONE viewer session produced THREE rollup rows.
+func TestLateBatchDoesNotDuplicateARollupRow(t *testing.T) {
+	h := newHarness(t)
+
+	a := batch(0, false, fpsSamples(0, 30, 30), nil)
+	a.ReceivedAt = h.now
+	if err := h.writer.Accept(a); err != nil {
+		t.Fatal(err)
+	}
+
+	// The idle sweep finalizes it while the client is still alive.
+	h.now = h.now.Add(DefaultIdleTimeout + time.Second)
+	if n := h.writer.SweepIdle(); n != 1 {
+		t.Fatalf("swept %d, want 1", n)
+	}
+	if len(h.rows) != 1 {
+		t.Fatalf("rows after the sweep = %d, want 1", len(h.rows))
+	}
+
+	// The client's next flush arrives afterwards — and its final one too.
+	for _, seq := range []int{1, 2} {
+		late := batch(seq, seq == 2, fpsSamples(float64(seq)*2000, 30), nil)
+		late.ReceivedAt = h.now
+		if err := h.writer.Accept(late); err != nil {
+			t.Fatalf("a late batch must not error: %v", err)
+		}
+	}
+
+	if len(h.rows) != 1 {
+		t.Errorf("rows = %d after late batches, want exactly 1 per session", len(h.rows))
+	}
+	if len(h.writer.LiveSessions()) != 0 {
+		t.Error("a late batch re-opened a finalized session")
+	}
+	if n := h.writer.LateBatches(); n != 2 {
+		t.Errorf("lateBatches = %d, want 2 — the drops must be visible, not silent", n)
+	}
+}
+
+// The tombstone expires: it exists to absorb a retry chain, not to blocklist
+// an id forever.
+func TestFinalizedTombstoneExpires(t *testing.T) {
+	h := newHarness(t)
+	a := batch(0, true, fpsSamples(0, 30), nil)
+	a.ReceivedAt = h.now
+	if err := h.writer.Accept(a); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(h.rows))
+	}
+
+	// Well past the tombstone window.
+	h.now = h.now.Add(2*DefaultIdleTimeout + time.Minute)
+	b := batch(0, false, fpsSamples(0, 30), nil)
+	b.ReceivedAt = h.now
+	if err := h.writer.Accept(b); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.writer.LiveSessions()) != 1 {
+		t.Error("the tombstone never expired; the id is blocklisted forever")
+	}
+}

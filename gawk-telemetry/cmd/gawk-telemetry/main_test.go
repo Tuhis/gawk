@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +132,84 @@ func TestStaticRelayAddrsOverrideTheHeadlessService(t *testing.T) {
 	}
 	if len(addrs) != 2 || addrs[0] != "10.0.0.1:2112" {
 		t.Errorf("addrs = %v", addrs)
+	}
+}
+
+// CORS is for the SPLIT-ORIGIN deployment only (D1). The same-origin default
+// must add no cross-origin surface at all.
+func TestCORSOriginsAreOptIn(t *testing.T) {
+	c, err := parseFlags([]string{"-telemetry-key", key64}, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.corsOrigins) != 0 {
+		t.Errorf("corsOrigins = %v by default, want none", c.corsOrigins)
+	}
+
+	c, err = parseFlags([]string{
+		"-telemetry-key", key64,
+		"-cors-origin", "https://gawk.example, http://127.0.0.1:4173",
+	}, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.corsOrigins) != 2 || c.corsOrigins[0] != "https://gawk.example" {
+		t.Errorf("corsOrigins = %v", c.corsOrigins)
+	}
+}
+
+// A fixed housekeeping ticker would silently dominate any shorter
+// -session-idle, making the knob appear to do nothing.
+func TestSweepIntervalFollowsTheIdleTimeout(t *testing.T) {
+	for idle, want := range map[time.Duration]time.Duration{
+		2 * time.Second:  2 * time.Second,  // floor
+		6 * time.Second:  2 * time.Second,  // floor
+		40 * time.Second: 10 * time.Second, // idle/4
+		2 * time.Minute:  30 * time.Second, // ceiling
+		1 * time.Hour:    30 * time.Second, // ceiling
+	} {
+		if got := sweepInterval(idle); got != want {
+			t.Errorf("sweepInterval(%v) = %v, want %v", idle, got, want)
+		}
+	}
+}
+
+// The routes must be registered WITHOUT a method. Go's ServeMux matches on
+// method, so a "POST /v1/ingest" pattern 404s the CORS preflight — leaving the
+// handler's own OPTIONS branch unreachable and every cross-origin POST blocked
+// by the browser before it is ever sent.
+//
+// This is a MUX-level test on purpose: every handler-level test calls
+// ServeHTTP directly and would pass with the bug present. It was found by the
+// e2e pass, not by the unit suite.
+func TestIngestRoutesAcceptPreflights(t *testing.T) {
+	mux := http.NewServeMux()
+	probe := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Reached-Handler", r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// Mirrors the registration in run().
+	mux.Handle("/api/telemetry/v1/ingest", probe)
+	mux.Handle("/v1/ingest", probe)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	for _, path := range []string{"/api/telemetry/v1/ingest", "/v1/ingest"} {
+		for _, method := range []string{http.MethodOptions, http.MethodPost} {
+			req, err := http.NewRequest(method, srv.URL+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if got := resp.Header.Get("X-Reached-Handler"); got != method {
+				t.Errorf("%s %s did not reach the handler (status %d) — a method-scoped "+
+					"route would block the CORS preflight", method, path, resp.StatusCode)
+			}
+		}
 	}
 }

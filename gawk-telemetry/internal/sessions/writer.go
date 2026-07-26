@@ -105,6 +105,15 @@ type Writer struct {
 
 	mu   sync.Mutex
 	live map[string]*Live
+	// finalized remembers sessions whose permanent rollup row has already been
+	// written. A late batch — a retry that outlived the idle sweep, or a final
+	// flush that lost the race — must NOT re-create the session, because
+	// finalizing it again writes a SECOND rollup row for one session and
+	// duplicate rows corrupt every query over the permanent artifact (D4).
+	// Such a batch is dropped and counted instead: losing a few seconds of
+	// samples is strictly better than losing the ability to trust a count.
+	finalized   map[string]time.Time
+	lateBatches uint64
 }
 
 // NewWriter builds the session writer.
@@ -118,7 +127,11 @@ func NewWriter(opts Options) *Writer {
 	if opts.IdleTimeout <= 0 {
 		opts.IdleTimeout = DefaultIdleTimeout
 	}
-	return &Writer{opts: opts, log: opts.Log, live: map[string]*Live{}}
+	return &Writer{
+		opts: opts, log: opts.Log,
+		live:      map[string]*Live{},
+		finalized: map[string]time.Time{},
+	}
 }
 
 // Accept stores one validated batch.
@@ -129,6 +142,21 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 	}
 
 	w.mu.Lock()
+	// A batch for a session that has already been finalized is dropped rather
+	// than re-opening it (see the `finalized` field). The tombstone is kept
+	// for one idle timeout — long enough to cover a retry chain, short enough
+	// that a genuinely new session reusing the id (impossible in practice: the
+	// nonce is random) would never collide.
+	if when, done := w.finalized[a.SessionID]; done {
+		if now.Sub(when) < w.opts.IdleTimeout {
+			w.lateBatches++
+			w.mu.Unlock()
+			w.log.Debug("dropped a batch for an already-finalized session",
+				"session", a.SessionID, "seq", a.Seq, "final", a.Final)
+			return nil
+		}
+		delete(w.finalized, a.SessionID)
+	}
 	s, ok := w.live[a.SessionID]
 	if !ok {
 		s = &Live{
@@ -257,6 +285,16 @@ func (w *Writer) FinalizeAll() {
 	}
 }
 
+// LateBatches counts batches dropped because their session was already
+// finalized. A nonzero value on a healthy fleet means the idle timeout is
+// shorter than the clients' flush cadence — the configuration that shreds one
+// session into several rows.
+func (w *Writer) LateBatches() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lateBatches
+}
+
 // LiveSessions returns a snapshot of what is currently open.
 func (w *Writer) LiveSessions() []Live {
 	w.mu.Lock()
@@ -276,6 +314,15 @@ func (w *Writer) finalize(sessionID string, clean bool) {
 		return
 	}
 	delete(w.live, sessionID)
+	w.finalized[sessionID] = w.opts.Now()
+	// Bound the tombstone map: entries older than two idle timeouts can no
+	// longer suppress anything.
+	cutoff := w.opts.Now().Add(-2 * w.opts.IdleTimeout)
+	for id, when := range w.finalized {
+		if when.Before(cutoff) {
+			delete(w.finalized, id)
+		}
+	}
 	s.EndedCleanly = clean
 	snapshot := *s
 	w.mu.Unlock()

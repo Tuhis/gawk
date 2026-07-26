@@ -167,6 +167,15 @@ describe('TelemetryCollector — zero PII (D8)', () => {
       browser: 'Firefox 145',
       os: 'Linux',
     });
+    // Headless Chrome says "HeadlessChrome/", never "Chrome/" — a bare Chrome
+    // rule reports a real, shipping browser as "unknown", which is exactly how
+    // the e2e harness's own browser looked until it was measured. Headlessness
+    // is not a browser family.
+    expect(
+      describeClient(
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36',
+      ),
+    ).toEqual({ browser: 'Chrome 141', os: 'macOS' });
     expect(describeClient('something nobody has ever shipped')).toEqual({
       browser: 'unknown',
       os: 'unknown',

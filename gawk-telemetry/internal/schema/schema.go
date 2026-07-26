@@ -156,21 +156,45 @@ func sanitizeObject(obj map[string]any, known map[string]Kind, depth int, an *An
 			// Unknown fields survive VERBATIM — that is the whole point (D15).
 			// They still pass through the structural walk, which is what
 			// protects the store from a nested blob arriving under a new name.
+			if v == nil {
+				// Absence again: a null under an unfamiliar name says nothing
+				// about whether clients are running ahead of the service.
+				continue
+			}
 			cleaned, ok := sanitizeAny(v, depth, an)
 			if !ok {
 				continue
 			}
-			an.Unknown++
+			// Counted only at the TOP level of a stats object. A nested
+			// object's children are not independently "unknown" — counting
+			// them would make one new nested field look like ten, and the
+			// tally is meant to answer "are clients ahead of us?", not "how
+			// deep is this tree?".
+			if depth == 1 {
+				an.Unknown++
+			}
 			out[k] = cleaned
 			kept++
 			continue
 		}
-		cleaned, ok := sanitizeTyped(v, kind, depth, an)
-		if !ok {
+		cleaned, status := sanitizeTyped(v, kind, depth, an)
+		switch status {
+		case fieldBad:
 			// Dropped, counted, and NOT fatal. Crucially it also never reaches
 			// a numeric series: a string "30" in an fps field is exactly the
 			// case this exists to stop.
 			an.Dropped++
+			continue
+		case fieldAbsent:
+			// An explicit null is the client saying "I do not have this", not
+			// a client bug — and the stats objects are FULL of legitimately
+			// nullable fields (avSkewMs with no audio, connection because no
+			// browser ships getStats(), renderedFps on the main-thread path).
+			// Counting those as anomalies made a healthy session's tally read
+			// as nonsense: the e2e pass produced 70 "dropped" fields across 13
+			// samples, which distrustReason() then reported as a likely client
+			// bug. Absence is omitted from the stored object and counted as
+			// nothing.
 			continue
 		}
 		out[k] = cleaned
@@ -179,37 +203,56 @@ func sanitizeObject(obj map[string]any, known map[string]Kind, depth int, an *An
 	return out
 }
 
-func sanitizeTyped(v any, kind Kind, depth int, an *Anomalies) (any, bool) {
+// fieldStatus is the three-way outcome of typing one known field. The middle
+// state is the one that matters: "absent" is not "bad", and conflating them
+// turns every nullable field into a data-quality alarm.
+type fieldStatus uint8
+
+const (
+	fieldOK fieldStatus = iota
+	// fieldAbsent: the client explicitly sent null. Omitted, not counted.
+	fieldAbsent
+	// fieldBad: a non-null value of the wrong type. Dropped AND counted.
+	fieldBad
+)
+
+func sanitizeTyped(v any, kind Kind, depth int, an *Anomalies) (any, fieldStatus) {
+	// Null is absence for EVERY kind. ViewerStats declares dozens of fields as
+	// `T | null` by design, and a client sending one is reporting correctly.
+	if v == nil {
+		return nil, fieldAbsent
+	}
 	switch kind {
 	case KindNumber:
 		f, ok := toNumber(v)
 		if !ok {
-			return nil, false
+			return nil, fieldBad
 		}
-		return f, true
+		return f, fieldOK
 	case KindBool:
 		b, ok := v.(bool)
-		return b, ok
+		if !ok {
+			return nil, fieldBad
+		}
+		return b, fieldOK
 	case KindString:
 		s, ok := v.(string)
 		if !ok {
-			return nil, false
+			return nil, fieldBad
 		}
-		return truncate(s, an), true
+		return truncate(s, an), fieldOK
 	case KindObject:
 		m, ok := v.(map[string]any)
 		if !ok {
-			// A null where an object is expected is how the clients spell
-			// "this subsystem is not present" (audioBuffer on a video-only
-			// stream). That is information, not an anomaly.
-			if v == nil {
-				return nil, true
-			}
-			return nil, false
+			return nil, fieldBad
 		}
-		return sanitizeObject(m, nil, depth+1, an), true
+		return sanitizeObject(m, nil, depth+1, an), fieldOK
 	default:
-		return sanitizeAny(v, depth, an)
+		cleaned, ok := sanitizeAny(v, depth, an)
+		if !ok {
+			return nil, fieldBad
+		}
+		return cleaned, fieldOK
 	}
 }
 

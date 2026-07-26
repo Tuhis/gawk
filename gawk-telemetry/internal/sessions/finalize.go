@@ -9,10 +9,17 @@ import (
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/store"
 )
 
-// Verdicter computes a session's stored verdict at finalize (TM6). Optional:
-// TM3 alone runs with none, and the row then simply carries no `verdict` —
-// which an old-row reader must tolerate anyway (D4's additive rule).
-type Verdicter func(rollup.Row, rollup.Input) json.RawMessage
+// Verdicter enriches a row at finalize and computes its stored verdict (TM6).
+//
+// The row is passed by POINTER so this hook can also fill the relay-side join
+// (TM4) — `relayCoverage` and the joined counters are only knowable here, with
+// the scraped observations in hand, and a hook that received a copy could
+// compute a verdict about a coverage the stored row would then contradict.
+//
+// Optional: TM3 alone runs with none, and the row then carries no `verdict`
+// and a "none" coverage — which an old-row reader must tolerate anyway (D4's
+// additive rule).
+type Verdicter func(*rollup.Row, rollup.Input) json.RawMessage
 
 // RollupFinalizer returns a Finalizer that computes the permanent row from a
 // session's stored timeline and appends it (docs/33 TM5).
@@ -36,7 +43,10 @@ func RollupFinalizer(st *store.Store, log *slog.Logger, verdict Verdicter, now f
 		}
 		row := rollup.Compute(in)
 		if verdict != nil {
-			row.Verdict = verdict(row, in)
+			// Enrich first, then verdict: a verdict computed before the relay
+			// join would caveat itself as client-only on a session the relay
+			// actually watched end to end.
+			row.Verdict = verdict(&row, in)
 		}
 		b, err := json.Marshal(row)
 		if err != nil {

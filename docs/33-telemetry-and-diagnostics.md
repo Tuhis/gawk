@@ -842,6 +842,72 @@ Deviations from the design as written, recorded rather than silently absorbed:
 16. **TM9 (Grafana) dropped**, per the owner's scope decision and the doc's own
     "TM9 is the droppable one". The §8 rollup-datasource question stays open.
 
+17. **An R20 e2e pass was added** (`e2e/run.mjs --telemetry`), which the chunk
+    table never asked for. Every other R28 test runs against fakes, in-memory
+    sinks or handler-level calls — the same shape as the gap docs/24 finding 10
+    found in R19, where "every carrier test ran against in-memory fakes or a
+    zero-loss loopback, so a regression degrading carriers back to lossy
+    delivery would ship green". The pass proves the pipe EXISTS: a real relay
+    mints a real 0x0D onto a real uni stream, a real browser parses it and
+    POSTs a real batch, and a real service verifies the token and stores a
+    session `diagnose()` can answer about — with **the join** (the relay's
+    `subscriberDetails[].sessionId` equalling the stored session's) as the
+    headline assertion, because that is the gap R28 exists to close.
+    Default-off is asserted on **every other** pass: the standard viewer run
+    fails if it sees a single telemetry request.
+
+### Defects the e2e pass found on its first run
+
+All five were fixed at the source; none was reachable from the unit suite.
+
+- **The CORS preflight could never reach the handler.** The ingest routes were
+  registered method-scoped (`"POST /v1/ingest"`), and Go's `ServeMux` matches
+  on method — so an `OPTIONS` preflight 404'd, the handler's own OPTIONS branch
+  was unreachable dead code, and the browser blocked every cross-origin POST
+  before sending it. Handler-level tests call `ServeHTTP` directly and pass
+  with the bug present; the regression test is deliberately at the mux level.
+  (Split-origin CORS itself was unimplemented until this pass needed it —
+  D1 acknowledges the mode and nothing served it.)
+
+- **A late batch duplicated the permanent rollup row.** With an idle timeout
+  shorter than the client's flush interval, the sweep finalized a live session
+  between its own flushes and every later batch re-created it: ONE viewer
+  produced THREE rows. Duplicate rows corrupt every query over the permanent
+  artifact (D4), so a finalized session now carries a tombstone for one idle
+  timeout and a late batch is dropped and counted (`LateBatches`) rather than
+  resurrecting it.
+
+- **`relayCoverage` was never joined.** The rollup hardcoded `"none"`; TM4's
+  join existed for `diagnose()`'s facts but was never written back to the row.
+  That is not a missing field but an active lie — every verdict would be
+  caveated as client-only even when the relay watched the whole session. The
+  `Verdicter` hook now takes the row by pointer so the join happens before the
+  verdict that reasons about it.
+
+- **`diagnose()` was confidently wrong about a clean stream.** It fired
+  `decoder-choking` on a healthy 30 fps loopback viewer because `factsFor` took
+  the **median** of `receivedFps` and the **p05** of `decoderFps` — comparing
+  "typical received" against "worst decoded", which any session with a warmup
+  ramp fails. Both sides of a funnel ratio are now medians. This is exactly the
+  §8 "verdicts that are confidently wrong" risk, and mixing statistics across a
+  ratio is how you manufacture one.
+
+- **Legitimate absence was counted as a data-quality anomaly.** `ViewerStats`
+  declares dozens of fields as `T | null` (`avSkewMs` with no audio,
+  `connection` because no browser ships `getStats()`, `renderedFps` on the
+  main-thread path). Counting those as `dropped` gave a healthy 13-sample
+  session 70 anomalies, which `distrustReason()` then reported as *"a client
+  bug is likely"* — the false-alarm mirror of the wrong verdict above. A null
+  is now **absence**: omitted from the stored object, counted as nothing. Only
+  a wrongly-typed *non-null* value is an anomaly. Nested unknowns also count
+  once rather than once per child.
+
+Two smaller things the same run surfaced: the collector classified headless
+Chrome as `"unknown"` (it reports `HeadlessChrome/`, never `Chrome/`), and four
+`ReassemblerStats` counters were missing from the known-field table, arriving
+as unknowns on every sample. Both fixed; a structural test now pins that every
+field of that interface is typed.
+
 ## 5. Chunks and acceptance criteria
 
 | Chunk | Scope | Acceptance criteria |

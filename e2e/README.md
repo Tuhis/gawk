@@ -19,12 +19,57 @@ This directory is top-level because the harness spans all three components;
 mkdir -p e2e/bin
 (cd gawk-server && go build -o ../e2e/bin/gawk-server ./cmd/gawk-server)
 (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+(cd gawk-telemetry && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-telemetry ./cmd/gawk-telemetry)  # --telemetry only
 (cd gawk-app && npm ci && npm run build)
 (cd e2e && npm ci)
 
 # the run
 cd e2e && node run.mjs
 ```
+
+## The telemetry pass (R28, docs/33)
+
+```sh
+cd e2e && node run.mjs --telemetry
+```
+
+Every other R28 test runs against fakes, in-memory sinks or handler-level
+calls. This is the only thing that proves the pipe EXISTS end to end: the relay
+starts with a fleet telemetry key and mints a real `TelemetryHello` (0x0D) onto
+a real uni stream; the production viewer parses it and POSTs a real batch
+cross-origin (preflight included); and a real `gawk-telemetry` verifies the
+token, stores the session, and answers `diagnose()` about it.
+
+The assertion that matters is **the join**: the `sessionId` in the relay's
+`/statusz` `subscriberDetails` is the same one in the stored session. Before
+TM1 those were two datasets with no shared key, which is the gap R28 exists to
+close — so it is the one claim worth proving against real processes.
+
+It also checks what only real data can: that a clean loopback stream is
+diagnosed **healthy** (the boring case must not invent problems), that the
+stored `browser` is a coarse class and never a raw UA, that `relayCoverage` is
+not `"none"` when the relay was scraped, and that the live projection and
+dashboard serve.
+
+Its first run found five defects the unit suite structurally could not:
+
+| Defect | Why unit tests missed it |
+|---|---|
+| A method-scoped mux route (`"POST /v1/ingest"`) 404'd the CORS preflight, so the handler's OPTIONS branch was unreachable dead code and the browser blocked every POST | Handler tests call `ServeHTTP` directly, bypassing the mux |
+| A late batch re-created a finalized session, writing a **second** permanent rollup row (one viewer → three rows) | Needed a real client flushing on its own schedule against a real idle sweep |
+| `relayCoverage` was hardcoded `"none"` — the TM4 join was never wired into the row | No test joined a real scrape against a real session |
+| `diagnose()` called a clean 30 fps stream "decoder choking" — it compared median received against **p05** decoded, so any warmup ramp looked like starvation | Synthetic fixtures had no warmup |
+| Legitimate `null`s (`avSkewMs` with no audio, `connection` — no browser ships `getStats()`) were counted as data-quality anomalies, tripping the "a client bug is likely" flag on a healthy session | Fixtures sent tidy objects, not a real `ViewerStats` |
+
+**Default-off is asserted on every other pass**, not only here: the standard
+viewer run records every request to a telemetry path and fails if there is
+one. Without a fleet key the relay sends no hello, so a viewer must issue
+literally zero — and the same filter counted 3 when telemetry was on, so the
+guard is load-bearing rather than vacuous.
+
+`-session-idle` must exceed the client's 10 s flush interval. A shorter one
+finalizes a live session between its own flushes; that is how the duplicate
+rows above were produced.
 
 The runner spawns `gawk-server -dev-cert` (scraping `cert_hash_hex` from its
 log), `gawk-pubsim` (scraping `GAWK_PUBSIM_ID=` from stdout), and

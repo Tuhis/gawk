@@ -132,6 +132,17 @@ type Options struct {
 	// form and swept, and nothing it holds reaches a file or a log line.
 	RatePerSec float64
 	Burst      float64
+	// AllowedOrigins enables CORS for the SPLIT-ORIGIN deployment only — an
+	// operator who pointed config.telemetryUrl at a different host (D1). The
+	// default same-origin deployment needs none of this and gets none of it:
+	// an empty list means no CORS headers and no preflight handling at all,
+	// so the common case has no cross-origin surface to reason about.
+	//
+	// Note what this does NOT rescue: `sendBeacon` cannot perform a
+	// preflight, so in split-origin mode the unload flush is lost and only
+	// the periodic one survives. That is a property of the browser, not of
+	// this allowlist, and it is why same-origin is the default.
+	AllowedOrigins []string
 }
 
 // Handler serves POST /v1/ingest.
@@ -169,8 +180,27 @@ func New(opts Options) (*Handler, error) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// CORS, only where an operator explicitly split the origins. Echoing the
+	// request's Origin (rather than "*") keeps the allowlist meaningful and
+	// keeps the response uncacheable across origins.
+	origin := r.Header.Get("Origin")
+	if origin != "" && h.originAllowed(origin) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
+	if r.Method == http.MethodOptions {
+		if origin == "" || !h.originAllowed(origin) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "600")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
+		w.Header().Set("Allow", "POST, OPTIONS")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -206,6 +236,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 204: there is nothing useful to say back, and a body would only be
 	// parsed by a client that should be fire-and-forget.
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// originAllowed reports whether an explicitly-listed origin may post here.
+// Exact match only: a prefix or suffix rule on an origin is how allowlists
+// get bypassed.
+func (h *Handler) originAllowed(origin string) bool {
+	for _, o := range h.opts.AllowedOrigins {
+		if o == origin {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate applies the D15 split: strict envelope, tolerant payload. Exported

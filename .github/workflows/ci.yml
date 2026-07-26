@@ -348,6 +348,7 @@ jobs:
           # gawk-pubsim imports engine+wire only — no Gio, so unlike the
           # broadcast job this needs no cgo or apt headers (docs/25 D3).
           (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+          (cd gawk-telemetry && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-telemetry ./cmd/gawk-telemetry)
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -373,6 +374,24 @@ jobs:
       - name: Run the browser E2E (headless system Chrome)
         run: node run.mjs
         working-directory: e2e
+      # R28 (docs/33): the telemetry pipe, end to end. Every other R28 test
+      # runs against fakes, in-memory sinks or handler-level calls; this is the
+      # only thing that proves the pipe EXISTS — a real relay mints a real 0x0D
+      # hello onto a real uni stream, a real browser parses it and POSTs a real
+      # batch, and a real service verifies the token and stores a session that
+      # diagnose() can answer about. Its own step because it starts a fourth
+      # process and spends ~25 s of dwell waiting for a real flush.
+      #
+      # It found five defects on its first run that the unit suite could not:
+      # a method-scoped mux route that 404'd the CORS preflight, duplicate
+      # rollup rows from late batches, an unimplemented relayCoverage join, a
+      # false-positive diagnose() verdict on a clean stream, and legitimate
+      # nulls counted as data-quality anomalies.
+      - name: Run the telemetry E2E (R28)
+        run: node run.mjs --telemetry
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-telemetry
       # Z5 (docs/25 Decision 9): the browser publishes — the production
       # broadcaster surface captures an animated tab, auto-granted via
       # --auto-select-tab-capture-source-by-title. The Z5 spike found headless
@@ -390,6 +409,7 @@ jobs:
           path: |
             e2e/out/
             e2e/out-browser-broadcast/
+            e2e/out-telemetry/
             e2e/out-muxer-check/
           retention-days: 7
 

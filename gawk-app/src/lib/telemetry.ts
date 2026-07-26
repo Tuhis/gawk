@@ -413,6 +413,13 @@ function browserClass(ua: string): string {
     [/\bEdg\/(\d+)/, 'Edge'],
     [/\bOPR\/(\d+)/, 'Opera'],
     [/\bFirefox\/(\d+)/, 'Firefox'],
+    // Headless Chrome says "HeadlessChrome/141", never "Chrome/141", so a
+    // bare Chrome rule reports it as "unknown" — which is how the R20 e2e
+    // harness's own browser looked until it was measured. Headlessness is not
+    // a browser family, so it reports as Chrome; the CI-only distinction is
+    // not worth a field, and telling them apart would edge toward a
+    // fingerprint.
+    [/\bHeadlessChrome\/(\d+)/, 'Chrome'],
     [/\bChrome\/(\d+)/, 'Chrome'],
     [/\bVersion\/(\d+).*\bSafari\//, 'Safari'],
   ];

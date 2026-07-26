@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rules"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sessions"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/store"
@@ -434,5 +435,126 @@ func TestCompareFlagsAWeakBaseline(t *testing.T) {
 	}
 	if cmp.Note == "" {
 		t.Error("a one-session fleet baseline was presented without a caveat")
+	}
+}
+
+// TM4's join, which the rollup could not do on its own: relayCoverage stayed
+// at its "none" default forever, so every verdict was caveated as client-only
+// even when the relay watched the whole session. Found by the e2e pass.
+func TestJoinRelayFillsCoverageAndCounters(t *testing.T) {
+	const sid = "000102030405060708090a0b"
+	obs := func(sessionID string) []byte {
+		return []byte(`{"kind":"subscriber","pod":"pod-a","role":"origin",` +
+			`"broadcastKey":"` + bkey + `","sessionId":"` + sessionID + `",` +
+			`"subscriber":{"dropped":7,"keyframesDropped":1,"carrierQueueOverflow":0,"dvrResyncs":0}}`)
+	}
+	broadcastObs := []byte(`{"kind":"broadcast","pod":"pod-a","role":"origin",` +
+		`"broadcastKey":"` + bkey + `","broadcast":{"publisherActive":true,"framesRelayed":9000,"ingressFramesLost":3}}`)
+
+	base := func(durationMs int64) rollup.Row {
+		return rollup.Row{
+			SessionID: sid, BroadcastKey: bkey, Role: "viewer",
+			StartedAt: 1785715200000, EndedAt: 1785715200000 + durationMs,
+			RelayCoverage: "none",
+		}
+	}
+
+	t.Run("a watched session is joined and covered", func(t *testing.T) {
+		row := base(60_000)
+		JoinRelay(&row, [][]byte{obs(sid), broadcastObs}, 5*time.Second)
+		if row.RelayCoverage != "full" {
+			t.Errorf("relayCoverage = %q, want full", row.RelayCoverage)
+		}
+		if row.RelayPod != "pod-a" || row.RelayRole != "origin" {
+			t.Errorf("pod/role = %q/%q", row.RelayPod, row.RelayRole)
+		}
+		if row.Relay["dropped"] != 7 || row.Relay["ingressFramesLost"] != 3 {
+			t.Errorf("joined counters = %v", row.Relay)
+		}
+	})
+
+	t.Run("a session the relay never saw stays none", func(t *testing.T) {
+		row := base(60_000)
+		JoinRelay(&row, [][]byte{obs("ffffffffffffffffffffffff")}, 5*time.Second)
+		if row.RelayCoverage != "none" {
+			t.Errorf("relayCoverage = %q for an unobserved session, want none", row.RelayCoverage)
+		}
+	})
+
+	t.Run("a session shorter than two intervals is only partial", func(t *testing.T) {
+		row := base(4_000)
+		JoinRelay(&row, [][]byte{obs(sid)}, 5*time.Second)
+		if row.RelayCoverage != "partial" {
+			t.Errorf("relayCoverage = %q, want partial — one scrape cannot cover a 4 s session", row.RelayCoverage)
+		}
+	})
+}
+
+// A healthy session with a WARMUP RAMP must not be diagnosed as broken.
+//
+// Every real session starts with a sample or two before the decoder is
+// running, so a funnel rule that compares one stage's median against another's
+// p05 fires on every clean stream. That is exactly what happened in the e2e
+// pass: a 30 fps loopback stream came back as "decoder choking". Both sides of
+// a ratio have to be measured the same way.
+func TestWarmupRampDoesNotFakeAFunnelGap(t *testing.T) {
+	f := newFixture(t)
+	sid := "beefbeefbeefbeefbeefbeef"
+
+	stats := make([]map[string]any, 0, 40)
+	// The first two ticks: frames arriving, decoder not yet producing.
+	for i := range 2 {
+		stats = append(stats, map[string]any{
+			"receivedFps": 30.0, "decoderFps": float64(i) * 5,
+			"timeSinceLastFrameMs": 33.0, "deliveryMode": "datagrams",
+			"keyframeStreamsReceived": 1.0, "reorderGapResyncs": 0.0,
+		})
+	}
+	// Then a long, entirely healthy run.
+	for range 38 {
+		stats = append(stats, map[string]any{
+			"receivedFps": 30.0, "decoderFps": 30.0,
+			"timeSinceLastFrameMs": 33.0, "deliveryMode": "datagrams",
+			"keyframeStreamsReceived": 10.0, "reorderGapResyncs": 0.0,
+		})
+	}
+	f.seed(t, sid, "viewer", stats, nil)
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Healthy {
+		t.Errorf("a healthy session with a warmup ramp was diagnosed unhealthy: %+v", rep.Findings)
+	}
+}
+
+// The converse still fires: a decoder that genuinely cannot keep up for most
+// of the session is caught. Fixing the false positive must not buy silence.
+func TestSustainedDecoderStarvationStillFires(t *testing.T) {
+	f := newFixture(t)
+	sid := "feedfeedfeedfeedfeedfeed"
+	stats := make([]map[string]any, 0, 40)
+	for range 40 {
+		stats = append(stats, map[string]any{
+			"receivedFps": 30.0, "decoderFps": 6.0,
+			"timeSinceLastFrameMs": 33.0, "deliveryMode": "datagrams",
+			"keyframeStreamsReceived": 10.0, "reorderGapResyncs": 0.0,
+		})
+	}
+	f.seed(t, sid, "viewer", stats, nil)
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, fd := range rep.Findings {
+		if fd.ID == "decoder-choking" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("sustained decoder starvation was not caught: %+v", rep.Findings)
 	}
 }

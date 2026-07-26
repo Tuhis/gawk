@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rules"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
@@ -367,23 +368,31 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 			f.SetText(name, v)
 		}
 	}
-	// Percentile-backed overrides: a verdict about a SESSION should fire on
-	// its bad window, not on whatever the last sample happened to be.
-	if st := row.Series["receivedFps"]; st != nil {
-		f.SetClient("receivedFps", st.Median)
+	// Session-level overrides, computed over the whole timeline rather than
+	// whatever the last sample happened to be.
+	//
+	// Every funnel rule compares two rates, and both sides MUST be measured
+	// the same way. An earlier version took the median of one side and the p05
+	// of the other, which made the comparison "typical received vs. worst
+	// decoded" — guaranteed to look like a gap on any session with a warmup
+	// ramp, and it fired `decoder-choking` on a clean 30 fps loopback stream in
+	// the e2e pass. A verdict that is confidently wrong is the risk docs/33 §8
+	// names; mixing statistics across a ratio is how you manufacture one.
+	//
+	// Medians on both sides answer the question a session verdict actually
+	// asks: did this stage keep up for MOST of the session? The bad tail is
+	// still recorded — it is on the rollup row, and the stall fields name the
+	// episodes — it just does not get to masquerade as one side of a ratio.
+	for _, name := range []string{
+		"receivedFps", "decoderFps", "renderedFps",
+		"captureFps", "encoderFps", "sentFps",
+	} {
+		if st := row.Series[name]; st != nil {
+			f.SetClient(name, st.Median)
+		}
 	}
-	if st := row.Series["decoderFps"]; st != nil {
-		f.SetClient("decoderFps", st.P05)
-	}
-	if st := row.Series["encoderFps"]; st != nil {
-		f.SetClient("encoderFps", st.P05)
-	}
-	if st := row.Series["captureFps"]; st != nil {
-		f.SetClient("captureFps", st.Median)
-	}
-	if st := row.Series["sentFps"]; st != nil {
-		f.SetClient("sentFps", st.P05)
-	}
+	// The playout offset is not half of a ratio: its rule asks whether the
+	// buffer ever pinned at its clamp, which is a tail question.
 	if st := row.Series["playoutOffsetMs"]; st != nil {
 		f.SetClient("playoutOffsetMs", st.P95)
 	}
@@ -433,6 +442,8 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 
 type relayObservation struct {
 	Kind         string `json:"kind"`
+	Pod          string `json:"pod"`
+	Role         string `json:"role"`
 	BroadcastKey string `json:"broadcastKey"`
 	SessionID    string `json:"sessionId"`
 	Broadcast    *struct {
@@ -603,6 +614,66 @@ func (a *API) Compare(sessionID string, since time.Time) (*Comparison, error) {
 		c.Note = fmt.Sprintf("fleet baseline is only %d sessions; treat the comparison as weak", g.Sessions)
 	}
 	return c, nil
+}
+
+// JoinRelay fills a rollup row's relay-side fields from the scraped
+// observations (docs/33 TM4). Without this the row's `relayCoverage` would
+// stay at its "none" default forever — which is not merely a missing field but
+// an active lie: every verdict would be caveated as client-only even when the
+// relay watched the whole session.
+//
+// `interval` is the scrape interval, which is what decides whether the
+// observations amount to full coverage or merely partial (D5): a session
+// shorter than two intervals cannot have been sampled enough to claim full,
+// even if one scrape happened to catch it.
+func JoinRelay(row *rollup.Row, relayLines [][]byte, interval time.Duration) {
+	var seen bool
+	relay := map[string]float64{}
+	for _, ln := range relayLines {
+		var o relayObservation
+		if err := json.Unmarshal(ln, &o); err != nil {
+			continue
+		}
+		if o.SessionID == row.SessionID && o.Subscriber != nil {
+			seen = true
+			if o.Pod != "" {
+				row.RelayPod = o.Pod
+			}
+			if o.Role != "" {
+				row.RelayRole = o.Role
+			}
+			// Cumulative counters: the LAST observation is the session total
+			// the relay saw. Close-time folded totals are missed by
+			// construction (D5) — the delta is bounded by the interval.
+			relay["dropped"] = float64(o.Subscriber.Dropped)
+			relay["keyframesDropped"] = float64(o.Subscriber.KeyframesDropped)
+			relay["carrierQueueOverflow"] = float64(o.Subscriber.CarrierQueueOverflow)
+			relay["carrierRecordsDropped"] = float64(o.Subscriber.CarrierRecordsDropped)
+			relay["dvrResyncs"] = float64(o.Subscriber.DVRResyncs)
+		}
+		if o.BroadcastKey == row.BroadcastKey && o.Broadcast != nil {
+			if row.Role == "broadcaster" && o.SessionID == row.SessionID {
+				seen = true
+				if o.Pod != "" {
+					row.RelayPod = o.Pod
+				}
+				if o.Role != "" {
+					row.RelayRole = o.Role
+				}
+			}
+			relay["ingressFramesLost"] = float64(o.Broadcast.IngressFramesLost)
+			relay["framesRelayed"] = float64(o.Broadcast.FramesRelayed)
+		}
+	}
+	if len(relay) > 0 {
+		row.Relay = relay
+	}
+	start := time.UnixMilli(row.StartedAt)
+	end := time.UnixMilli(row.EndedAt)
+	if row.EndedAt <= row.StartedAt {
+		end = start
+	}
+	row.RelayCoverage = relayscrape.CoverageFor(seen, start, end, interval)
 }
 
 // LiveSnapshot is the TM8 projection, or an empty one where no projection is

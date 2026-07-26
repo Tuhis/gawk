@@ -89,9 +89,11 @@ func run() error {
 		// The stored verdict and a later diagnose() of the same session come
 		// out of ONE code path, so "has this got better since the R15 fix?"
 		// compares like with like.
-		Finalize: sessions.RollupFinalizer(st, log, func(row rollup.Row, in rollup.Input) json.RawMessage {
+		Finalize: sessions.RollupFinalizer(st, log, func(row *rollup.Row, in rollup.Input) json.RawMessage {
 			relayLines, _ := st.ReadRelay(time.UnixMilli(in.EndedAtMs).UTC().Format(store.DateLayout))
-			rep := api.DiagnoseRow(row, in, relayLines)
+			// TM4's join, then TM6's verdict over the joined row.
+			readapi.JoinRelay(row, relayLines, cfg.scrapeInterval)
+			rep := api.DiagnoseRow(*row, in, relayLines)
 			b, err := json.Marshal(rep)
 			if err != nil {
 				return nil
@@ -106,6 +108,7 @@ func run() error {
 	handler, err := ingest.New(ingest.Options{
 		Key: cfg.key, Sink: writer, Log: log,
 		RatePerSec: cfg.rateLimit, Burst: cfg.rateBurst,
+		AllowedOrigins: cfg.corsOrigins,
 	})
 	if err != nil {
 		return err
@@ -131,6 +134,10 @@ func run() error {
 		"relay_targets", cfg.relayTargetDescription(),
 		"mcp_enabled", cfg.mcpEnabled,
 		"query_sql_enabled", cfg.enableSQL,
+		// Non-empty means an operator split the origins; the same-origin
+		// default has no cross-origin surface, and the unload beacon only
+		// works in that default.
+		"cors_origins", len(cfg.corsOrigins),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -141,10 +148,16 @@ func run() error {
 
 	// --- public listener: ingest ONLY -------------------------------------
 	ingestMux := http.NewServeMux()
-	ingestMux.Handle("POST /api/telemetry/v1/ingest", handler)
+	// Registered WITHOUT a method, deliberately. A method-scoped pattern
+	// ("POST /v1/ingest") makes Go's mux 404 the CORS preflight, because an
+	// OPTIONS request does not match a POST route — which would leave the
+	// handler's own OPTIONS branch unreachable and every cross-origin POST
+	// blocked by the browser before it was ever sent. The handler does the
+	// method check itself and answers 405 with an Allow header.
+	ingestMux.Handle("/api/telemetry/v1/ingest", handler)
 	// Also mounted without the Ingress prefix, so a path-stripping proxy and a
 	// direct dial both work without a second deployment shape.
-	ingestMux.Handle("POST /v1/ingest", handler)
+	ingestMux.Handle("/v1/ingest", handler)
 	ingestMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -210,7 +223,7 @@ func serve(s *http.Server, name string, log *slog.Logger) error {
 // release idle file handles, and prune expired raw partitions. Rollups are
 // never pruned — that split is the whole point of D4.
 func maintenance(ctx context.Context, log *slog.Logger, st *store.Store, w *sessions.Writer, cfg config) {
-	t := time.NewTicker(30 * time.Second)
+	t := time.NewTicker(sweepInterval(cfg.sessionIdle))
 	defer t.Stop()
 	lastPrune := time.Time{}
 	for {
@@ -237,6 +250,23 @@ func maintenance(ctx context.Context, log *slog.Logger, st *store.Store, w *sess
 			}
 		}
 	}
+}
+
+// sweepInterval derives the housekeeping cadence from the idle timeout rather
+// than pinning it to a constant. A fixed 30 s ticker silently dominates any
+// shorter -session-idle, so a deployment (or a test) that asks for a 6 s idle
+// would still wait half a minute for the sweep — the knob would appear to do
+// nothing. Bounded at both ends: never busier than every 2 s, never lazier
+// than every 30 s.
+func sweepInterval(idle time.Duration) time.Duration {
+	d := idle / 4
+	if d < 2*time.Second {
+		d = 2 * time.Second
+	}
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
 }
 
 // scrapeSink stores relay observations and refreshes the live projection.
@@ -288,6 +318,7 @@ type config struct {
 	basicAuthPass  string
 	rateLimit      float64
 	rateBurst      float64
+	corsOrigins    []string
 	logFormat      string
 	logLevel       string
 }
@@ -356,6 +387,8 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		"per-IP ingest requests per second (the IP is used and never stored)")
 	burst := fs.Float64("ingest-burst", orFloat(env("GAWK_TELEMETRY_INGEST_BURST"), 20),
 		"per-IP ingest burst")
+	corsOrigins := fs.String("cors-origin", env("GAWK_TELEMETRY_CORS_ORIGIN"),
+		"comma-separated origins allowed to POST cross-origin — the SPLIT-ORIGIN deployment only; empty (the default, same-origin) adds no CORS surface at all")
 	fs.StringVar(&c.logLevel, "log-level", or(env("GAWK_TELEMETRY_LOG_LEVEL"), "info"), "debug|info|warn|error")
 	fs.StringVar(&c.logFormat, "log-format", or(env("GAWK_TELEMETRY_LOG_FORMAT"), "json"), "text|json")
 
@@ -388,6 +421,11 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		}
 	}
 	c.rateLimit, c.rateBurst = *rate, *burst
+	for _, o := range strings.Split(*corsOrigins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			c.corsOrigins = append(c.corsOrigins, o)
+		}
+	}
 	return c, nil
 }
 

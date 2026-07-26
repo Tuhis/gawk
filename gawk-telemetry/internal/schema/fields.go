@@ -23,7 +23,14 @@ package schema
 
 // ViewerFields types what a browser viewer reports.
 var ViewerFields = map[string]Kind{
-	// Reassembler / delivery funnel.
+	// Reassembler / delivery funnel. ViewerStats EXTENDS ReassemblerStats, so
+	// every field of that interface belongs here too — the four counters
+	// below were missing until the e2e pass measured a real client and found
+	// them arriving as "unknown" on every sample.
+	"framesCompleted":            KindNumber,
+	"badDatagrams":               KindNumber,
+	"duplicateChunks":            KindNumber,
+	"duplicateConfigs":           KindNumber,
 	"framesAssembled":            KindNumber,
 	"framesDroppedIncomplete":    KindNumber,
 	"framesDroppedLate":          KindNumber,
