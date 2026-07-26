@@ -725,11 +725,13 @@ func TestUnreachableSubscriberEvictedAfterConsecutiveOpenFailures(t *testing.T) 
 		return singleBroadcastStats(t, r).Subscribers == 1
 	}, "evicted subscriber to be removed from the broadcast")
 
-	// The healthy peer got every keyframe; the drops were all counted.
+	// The healthy peer got every keyframe; the drops were all counted. Waited
+	// for rather than read once, for the same removal-before-fold reason as the
+	// slow-drop test below — the same shape, and the same latent flake.
 	waitKeyframes(t, healthy, KeyframeOpenFailEvictThreshold)
-	if st := singleBroadcastStats(t, r); st.KeyframeDrops.OpenFailed != KeyframeOpenFailEvictThreshold {
-		t.Errorf("KeyframeDrops.OpenFailed = %d, want %d", st.KeyframeDrops.OpenFailed, KeyframeOpenFailEvictThreshold)
-	}
+	waitFor(t, 5*time.Second, func() bool {
+		return singleBroadcastStats(t, r).KeyframeDrops.OpenFailed == KeyframeOpenFailEvictThreshold
+	}, "the evicted subscriber's open-failure drops to fold into the broadcast total")
 }
 
 func TestOpenFailureStreakResetsOnSuccess(t *testing.T) {
@@ -811,9 +813,20 @@ func TestStalledSubscriberEvictedAfterConsecutiveSlowKeyframes(t *testing.T) {
 	}, "evicted subscriber to be removed from the broadcast")
 
 	// Every drop was attributed to the stall, not miscounted as superseded.
-	if st := singleBroadcastStats(t, r); st.KeyframeDrops.Slow != KeyframeSlowEvictThreshold {
-		t.Errorf("KeyframeDrops.Slow = %d, want %d", st.KeyframeDrops.Slow, KeyframeSlowEvictThreshold)
-	}
+	//
+	// Waited for, not read once: an evicted subscriber leaves b.subs (which is
+	// what the Subscribers == 1 above observes) *before* its counters fold into
+	// the hub, because Subscriber.Close deliberately folds only after both
+	// drains have finished — folding earlier loses whatever they drop on the
+	// way out. Between those two points the broadcast-level total reads 0, and
+	// on a contended runner the gap is wide enough to sample. Seen once in CI
+	// (run 30214200242: "KeyframeDrops.Slow = 0, want 10"); the value is
+	// eventually consistent, so wait for it. This still fails if a drop is
+	// miscounted as superseded — the total then settles below the threshold and
+	// never arrives, which is what the assertion is actually for.
+	waitFor(t, 5*time.Second, func() bool {
+		return singleBroadcastStats(t, r).KeyframeDrops.Slow == KeyframeSlowEvictThreshold
+	}, "the evicted subscriber's slow drops to fold into the broadcast total")
 }
 
 func TestSlowStreakResetsOnDeliveredKeyframe(t *testing.T) {
