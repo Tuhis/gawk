@@ -36,6 +36,18 @@ export interface PresentationSurfaceStats {
   // Main-thread SourceBuffer side.
   segmentsAppended: number;
   appendErrors: number;
+  // docs/27 finding 7: the three fields that localize "nothing was appended".
+  // `segmentsReceived` 0 means the worker→main→sink hop is broken (the muxer's
+  // own counters live in the worker and keep climbing regardless);
+  // `segmentsQueued` at the bound with nothing appended means the appender is
+  // holding data the system will not take; `segmentsDroppedNoInit` counts media
+  // discarded for want of an init segment, which is permanent once it starts
+  // (the muxer emits its init exactly once per session). `mmsStreaming` is
+  // ManagedMediaSource's own "I want data" flag — null on classic MediaSource.
+  segmentsReceived: number;
+  segmentsQueued: number;
+  segmentsDroppedNoInit: number;
+  mmsStreaming: boolean | null;
   // docs/27 finding 6: the reason for the most recent append failure, captured
   // at the failure (see MsePresenterStats.lastError). Null until one happens.
   lastAppendError: string | null;

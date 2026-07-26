@@ -231,6 +231,26 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                 `${surface.armed ? 'armed' : 'idle'} · ${surface.muxMediaSegments} seg (${surface.muxInitSegments} init) · ${surface.muxErrors} err`,
               ],
               ['Appends', `${surface.segmentsAppended} · ${surface.appendErrors} err`],
+              // docs/27 finding 7: where segments stop. Received counts what
+              // reached the main thread (0 against a climbing muxer = a broken
+              // sink), queued what the appender is holding (full against 0
+              // appends = the system is not taking them), no-init what was
+              // discarded for want of the session's one init segment.
+              [
+                'Segments',
+                `${surface.segmentsReceived} recv · ${surface.segmentsQueued} queued` +
+                  (surface.segmentsDroppedNoInit > 0
+                    ? ` · ${surface.segmentsDroppedNoInit} dropped (no init)`
+                    : ''),
+              ],
+              [
+                'MMS streaming',
+                surface.mmsStreaming == null
+                  ? '— (classic MediaSource)'
+                  : surface.mmsStreaming
+                    ? 'on — system is asking for data'
+                    : 'off — parked',
+              ],
               // docs/27 finding 6: the reason, not just the count — an append
               // error is otherwise indistinguishable from a quota drop, and the
               // difference is a dead audio track versus a routine resync.

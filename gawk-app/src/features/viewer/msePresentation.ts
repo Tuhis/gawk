@@ -165,6 +165,18 @@ export type PresenterSegment =
 export interface MsePresenterStats {
   attached: boolean;
   sourceOpen: boolean;
+  // docs/27 finding 7: ManagedMediaSource's `streaming` — whether the system is
+  // currently asking for data. Null on classic MediaSource (no such attribute)
+  // or before a source exists. The one field that separates "the presenter got
+  // nothing to append" from "the presenter is holding segments the system won't
+  // take", which a capture previously could not tell apart at all.
+  streaming: boolean | null;
+  // Segments handed to pushSegment, and media segments dropped there because
+  // their track had no cached init segment. Both silent paths before: the
+  // muxer's counters live in the worker, so a broken worker→main→sink hop and a
+  // parked appender produced byte-identical stats (appended 0, errors 0).
+  received: number;
+  droppedNoInit: number;
   // R22 audio: whether an audio SourceBuffer exists (i.e. audio segments are
   // actually being presented), and how many samples it has taken.
   audioTrack: boolean;
@@ -214,6 +226,10 @@ export const AUDIO_FIRST_SAMPLE_TIMEOUT_MS = 3000;
 
 export const LIVE_CATCHUP_LAG_S = 2;
 export const LIVE_EDGE_REJOIN_S = 0.1;
+
+// HTMLMediaElement.HAVE_METADATA — the readiness `webkitEnterFullscreen`
+// requires (useFullscreen tier 2 checks the same bar).
+const HAVE_METADATA = 1;
 
 // Per-track appender state. Video and audio are independent MSE streams with
 // independent queues, SourceBuffers and in-flight appends; what couples them is
@@ -287,6 +303,8 @@ export class MsePresenter {
 
   private segmentsAppended = 0;
   private appendErrors = 0;
+  private segmentsReceived = 0;
+  private droppedNoInit = 0;
   private lastError: string | null = null;
   // Per-MediaSource: whether duration = Infinity stuck (see declareLive).
   private liveDuration = false;
@@ -342,6 +360,9 @@ export class MsePresenter {
     return {
       attached: this.video !== null,
       sourceOpen: this.sourceOpen,
+      streaming: this.ms?.streaming ?? null,
+      received: this.segmentsReceived,
+      droppedNoInit: this.droppedNoInit,
       liveDuration: this.liveDuration,
       audioTrack: this.audioBuf.sb !== null,
       audioSegmentsAppended: this.audioBuf.appended,
@@ -474,6 +495,7 @@ export class MsePresenter {
   // Feed one worker segment. Init segments are cached (re-attach priming) and
   // queued in-order; media segments queue behind them.
   pushSegment(seg: PresenterSegment): void {
+    this.segmentsReceived++;
     if (seg.track === 'audio' && this.audioDropped) return;
     const t = seg.track === 'audio' ? this.audioBuf : this.videoBuf;
     if (seg.kind === 'init') {
@@ -485,7 +507,11 @@ export class MsePresenter {
       // change and must be appended in order.
       if (t.track === 'audio' && !t.initAppended) return;
     } else if (!t.cachedInit) {
-      // Media before any init cannot ever decode; don't queue it.
+      // Media before any init cannot ever decode; don't queue it. Counted,
+      // because the muxer emits its init exactly once per session: a sink that
+      // was not registered for that one segment drops every segment after it,
+      // for good, and this counter is the only trace that would leave.
+      this.droppedNoInit++;
       return;
     }
     t.queue.push(seg);
@@ -534,11 +560,12 @@ export class MsePresenter {
   }
 
   // Serialized appender: one appendBuffer in flight (updateend re-drives),
-  // parked while MMS says streaming is off.
+  // parked while MMS says streaming is off — but never before the element has
+  // media (see canPark).
   private pump(): void {
     if (this.failed || !this.ms || !this.sourceOpen) return;
     // MMS pacing: `streaming` false parks the queue until startstreaming.
-    if (this.ms.streaming === false) return;
+    if (this.ms.streaming === false && this.canPark()) return;
     // Each track appends independently — a video append in flight must not hold
     // audio back (and vice versa), or the two buffers drift by a whole append
     // round-trip each frame.
@@ -679,16 +706,47 @@ export class MsePresenter {
     }, AUDIO_FIRST_SAMPLE_TIMEOUT_MS);
   }
 
+  // docs/27 finding 7: whether MMS's `streaming === false` may park the queue.
+  // Parking is right for a fed element — it is how MMS saves power and bounds
+  // its buffer — but it is a DEADLOCK before the element has media: the system
+  // asks for data when the element needs more, and an element with no init
+  // segment has nothing to need. Left unguarded, an MMS that opens with
+  // `streaming` already false never takes a single byte, so the element sits at
+  // readyState 0 forever and `useFullscreen` tier 2 (which requires
+  // HAVE_METADATA) falls to CSS pseudo-fullscreen for the whole session — with
+  // zero appends and zero errors to show for it, which is exactly what the
+  // 2026-07-26 capture reported.
+  //
+  // So priming appends (the init segment, its SourceBuffer, and the first
+  // keyframes behind it) always go through; parking resumes once the element
+  // reports playable media. Deliberately the OPPOSITE default to hasMedia() on
+  // an unreadable `buffered`: there an unknown must not trigger a rebuild, here
+  // it must not park the priming that breaks the deadlock — a few appends the
+  // system did not ask for cost buffer, never the whole surface.
+  private canPark(): boolean {
+    return this.elementMediaState() === true;
+  }
+
   // Whether the element has anything to play. `readyState >= HAVE_METADATA` is the
   // spec-level "the demuxer initialized"; the buffered check covers the same thing
   // for implementations that report metadata earlier.
   private hasMedia(): boolean {
+    // Unreadable (null) counts as "has media": never rebuild on a diagnostics
+    // failure. canPark() reads the same measurement the other way round.
+    return this.elementMediaState() !== false;
+  }
+
+  // One reading of "does the element hold playable media", three-valued so the
+  // two callers can disagree about what an unreadable answer means: true/false
+  // as measured, null when the element cannot be asked (no element at all is a
+  // definite false — there is nothing holding media).
+  private elementMediaState(): boolean | null {
     const video = this.video;
     if (!video) return false;
     try {
-      return video.readyState >= 1 && video.buffered.length > 0;
+      return video.readyState >= HAVE_METADATA && video.buffered.length > 0;
     } catch {
-      return true; // never rebuild on a diagnostics failure
+      return null;
     }
   }
 
