@@ -7,8 +7,33 @@
 // It deliberately runs the *production* pieces end to end: the committed
 // Annex-B fixture → Fmp4Muxer (worker-side code) → MsePresenter (the
 // main-thread append path, exercising its Chromium object-URL fallback)
-// → <video>. Only the worker/postMessage crossing is elided — bytes don't
-// change shape crossing it.
+// → <video>.
+//
+// WHAT THIS DOES NOT COVER, and why (do not read a green run as more):
+//   * It does not go through R16/R22's device gate at all — it imports the
+//     muxer and presenter directly and never renders ViewerScreen. The gate is
+//     the *absence* of Element.requestFullscreen, which Chrome has, so in the
+//     production viewer under Chrome `gated` is false and NO R22 code runs (no
+//     presentationMux in the worker init, no frame tap, no muxer, no hidden
+//     <video>) — that is R16 Decision 1's byte-identity guarantee, and it means
+//     the tier-1 viewer scenario proves nothing about this path by design.
+//     So the gate is not stubbed or worked around here; it is simply not on the
+//     path. What is elided with it: arm-at-watching, the worker/postMessage
+//     crossing, the audio probe firing off the stats tick, useFullscreen's tier
+//     selection, and the inline-sink audio handoff — all covered by jsdom tests
+//     against the connection seam (ViewerScreen.mse.test.tsx et al), not here.
+//   * Chrome has no ManagedMediaSource (verified: `typeof ManagedMediaSource
+//     === 'undefined'`), so everything MMS-specific is unexercised — the
+//     `streaming` parking that pump() honors, MMS's own buffer eviction, and the
+//     srcObject-with-MediaSource wiring (Chrome takes the object-URL fallback).
+//   * WebKit's pause-and-fire-`ended` on an MSE underrun is, definitionally,
+//     what Chrome does NOT do — it stalls and resumes. That divergence is why
+//     docs/27 finding 1 shipped with CI green, and no Chrome check can catch
+//     its class of bug.
+// What it does prove: the muxer emits valid fMP4 that a production MSE
+// implementation accepts, demuxes and PLAYS (video + the Opus track), and the
+// presenter's real append/dual-SourceBuffer/duration logic drives a real
+// MediaSource + SourceBuffer correctly.
 
 import { MsePresenter, probeMseAudio } from '../features/viewer/msePresentation';
 import { Fmp4Muxer } from '../transport/fmp4-muxer';

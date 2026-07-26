@@ -245,6 +245,25 @@ all normal viewing and given up only inside the native player — see Decision 9
     already settled that. This is R20's "browser E2E where possible,
     platform-specific manual" split.
 
+    **Where that coverage stops** (recorded after MF5 pass 1, because a green
+    Chrome check reads as more than it is): the check imports the muxer and
+    presenter directly and **never goes through the device gate** — the gate is
+    the *absence* of `Element.requestFullscreen`, which Chrome has, so in the
+    production viewer under Chrome `gated` is false and no R22 code runs at all
+    (Decision 1's byte-identity guarantee; the tier-1 viewer scenario therefore
+    proves nothing about this path, by design). The gate is not stubbed here, it
+    is simply off the path — and elided with it are arm-at-`watching`, the
+    worker/postMessage crossing, the audio probe firing off the stats tick,
+    `useFullscreen`'s tier selection and the audio handoff, all of which are
+    covered by jsdom tests against the connection seam instead. Two further gaps
+    are structural rather than deferrable: **Chrome has no
+    `ManagedMediaSource`** (verified), so MMS `streaming` parking, MMS's own
+    eviction, and the `srcObject`-with-MediaSource wiring are unexercised (Chrome
+    takes the object-URL fallback) — which is why open finding 5 below cannot be
+    caught in CI; and **WebKit's pause-and-fire-`ended` on an MSE underrun is
+    definitionally what Chrome does not do**, which is exactly why finding 1
+    shipped with every check green.
+
 11. **Scope boundaries.** Viewer-client only: zero server/wire/broadcaster
     changes; `#/debug/*` untouched; the main-thread pipeline fallback gets tier
     3 only (the muxer lives in the worker like R16's generator, and iOS is

@@ -369,7 +369,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
 - **Found**: 2026-07-26, same investigation. Diagnosed by code reading; the
   frequency depends on Apple's undocumented `ManagedMediaSource` water marks, so
-  it is unquantified.
+  it is unquantified. **Not CI-catchable**: Chrome has no `ManagedMediaSource`
+  at all, so `pump()`'s `streaming === false` branch never runs there and the
+  `--muxer-check` step cannot exercise this (docs/27 Decision 10's coverage
+  boundary). It needs an on-device capture.
 - **Impact**: iPhone native fullscreen only. A hole in the buffered timeline
   stalls the native player at the hole — and because
   `HTMLMediaElement.buffered` is the **intersection** of the SourceBuffers'
