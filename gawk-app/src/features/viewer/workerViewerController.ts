@@ -9,6 +9,7 @@
 
 import type { ViewerDeliveryMode } from '../../transport/resilient';
 import type { ConnectOptions } from '../../transport/connection';
+import type { AudioMuxCodec } from '../../transport/fmp4-muxer';
 import type { PlayoutMode } from '../../transport/playout';
 import type {
   ViewerWorkerCommand,
@@ -54,6 +55,7 @@ export class WorkerViewerController {
   // well after the video arm. A second `arm` is idempotent in the worker.
   private armAudioRequested = false;
   private armAudioSent = false;
+  private armAudioCodec: AudioMuxCodec | null = null;
 
   constructor(canvas: HTMLCanvasElement, cb: WorkerViewerCallbacks, opts: WorkerViewerOptions = {}) {
     this.canvas = canvas;
@@ -107,8 +109,8 @@ export class WorkerViewerController {
       this.post({ type: 'arm' });
       this.armSent = true;
     }
-    if (this.armAudioRequested && !this.armAudioSent) {
-      this.post({ type: 'arm', audio: true });
+    if (this.armAudioRequested && !this.armAudioSent && this.armAudioCodec) {
+      this.post({ type: 'arm', audio: this.armAudioCodec });
       this.armAudioSent = true;
     }
   }
@@ -171,9 +173,10 @@ export class WorkerViewerController {
   // R22 audio: start muxing the encoded audio lane too (the screen calls this
   // once the audio config has probed supported). Never un-armed — an audio track
   // that stopped is handled in the presenter, not by silencing the fork.
-  armPresentationAudio(): void {
+  armPresentationAudio(codec: AudioMuxCodec): void {
     if (this.disposed || this.armAudioRequested || !this.presentationMux) return;
     this.armAudioRequested = true;
+    this.armAudioCodec = codec;
     this.flushArm();
   }
 

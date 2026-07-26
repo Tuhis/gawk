@@ -241,10 +241,13 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               ],
               [
                 'Audio track',
-                surface.audioMode === 'muxed'
-                  ? `muxed · ${surface.audioSegmentsAppended} appended (${surface.muxAudioSegments} muxed, ${surface.muxAudioHoles} holes)${surface.audioTrackActive ? '' : ' · awaiting first sample'}`
+                surface.audioMode.startsWith('muxed')
+                  ? `${surface.audioMode} · ${surface.audioSegmentsAppended} appended (${surface.muxAudioSegments} muxed, ${surface.muxAudioHoles} holes)${surface.audioTrackActive ? '' : ' · awaiting first sample'}`
                   : surface.audioMode,
               ],
+              ...(surface.audioTranscode
+                ? ([['Audio transcode', surface.audioTranscode]] as StatsRow[])
+                : []),
               [
                 'Buffered',
                 surface.bufferedMs == null

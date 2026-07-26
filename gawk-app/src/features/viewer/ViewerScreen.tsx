@@ -279,6 +279,13 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     return () => setSegmentSink(null);
   }, [gated, status, mseProbe, armMux, setSegmentSink]);
 
+  // R22 audio: hand the presenter the audio mime the moment the tier is known —
+  // both SourceBuffers must be created before the first init segment is appended
+  // (docs/27 finding 5), so this cannot wait for the first audio segment.
+  useEffect(() => {
+    presenterRef.current?.setExpectedAudioMime(mseAudioProbe?.mime ?? null);
+  }, [mseAudioProbe]);
+
   // Presenter teardown on real unmount. (On StrictMode's synchronous initial
   // cleanup→remount nothing exists yet — arming starts at `watching` — so a
   // plain cleanup is safe here.)
@@ -420,8 +427,14 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           ? 'none'
           : 'probing'
         : mseAudioProbe.supported
-          ? 'muxed'
+          ? `muxed as ${mseAudioProbe.codec}`
           : mseAudioProbe.reason,
+    audioTranscode: stats?.presentationMux?.audioTranscode
+      ? stats.presentationMux.audioTranscode +
+        (stats.presentationMux.audioTranscodeDetail
+          ? ` (${stats.presentationMux.audioTranscodeDetail})`
+          : '')
+      : null,
     audioSegmentsAppended: presenterStats?.audioSegmentsAppended ?? 0,
     audioTrackActive: presenterStats?.audioTrack ?? false,
     muxAudioSegments: stats?.presentationMux?.audioSegments ?? 0,

@@ -160,6 +160,15 @@ function u64At(b: Uint8Array, off: number): number {
   return u32At(b, off) * 0x100000000 + u32At(b, off + 4);
 }
 
+// Decode time + declared duration of a one-sample fragment, in track units.
+function sampleTiming(seg: Fmp4MediaSegment): { dts: number; duration: number } {
+  const boxes = parseBoxes(seg.data);
+  const dts = u64At(find(boxes, 'moof.traf.tfdt').body, 4);
+  const trun = find(boxes, 'moof.traf.trun').body;
+  // version/flags(4) sample_count(4) data_offset(4) → duration
+  return { dts, duration: u32At(trun, 12) };
+}
+
 // Self-contained synchronous SHA-256 (FIPS 180-4): the app tsconfig carries
 // no node types (so no node:crypto) and crypto.subtle is async. Verifiable
 // against `shasum -a 256` on the same bytes.
@@ -225,9 +234,13 @@ function sha256(data: Uint8Array): string {
   return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
+// The muxer holds one frame back (its duration is the interval to its
+// successor), so a finite input ends with flush() — the end-of-input the live
+// pipeline never has.
 function muxAll(frames: MuxInputFrame[]): { segments: Fmp4Segment[]; muxer: Fmp4Muxer } {
   const muxer = new Fmp4Muxer();
   const segments = frames.flatMap((f) => muxer.push(f));
+  segments.push(...muxer.flush());
   return { segments, muxer };
 }
 
@@ -475,7 +488,10 @@ describe('Fmp4Muxer on the AVCC shape', () => {
     // test below); the format decision is sticky from the keyframe instead.
     const muxer = new Fmp4Muxer();
     muxer.push(avccFrame(0));
-    const seg = medias(muxer.push(avccFrame(16)))[0];
+    muxer.push(avccFrame(16));
+    // One frame of lookahead: frame 16's segment comes out when its duration is
+    // known (flush stands in for the successor here).
+    const seg = medias(muxer.flush())[0];
     expect(avccFrame(16).data.subarray(0, 3)).toEqual(new Uint8Array([0, 0, 1]));
     const mdat = find(parseBoxes(seg.data), 'mdat');
     expect(splitAvcc(mdat.body, 4).map(nalType)).toEqual([1, 1, 1]);
@@ -491,12 +507,99 @@ describe('Fmp4Muxer on the AVCC shape', () => {
     // The next config-bearing keyframe recovers.
     const out2 = muxer.push(avccFrame(0));
     expect(inits(out2)).toHaveLength(1);
-    expect(medias(out2)).toHaveLength(1);
+    expect(medias(out2)).toHaveLength(0); // held for its duration
+    expect(medias(muxer.flush())).toHaveLength(1);
   });
 });
 
 // ---------------------------------------------------------------------------
 // Edge behavior
+
+// docs/27 finding 3 (on-device pass 2): a sample's declared duration must be the
+// interval to its SUCCESSOR. Declaring the interval from its PREDECESSOR instead
+// (what shipped) leaves a hole exactly as big as any cadence increase — and the
+// release stream's cadence jumps a whole keyframe interval on every reorder-gap
+// resync, so the iPhone capture showed 5 buffered ranges (4 holes). Because
+// HTMLMediaElement.buffered is the intersection of the tracks, a hole stalls the
+// native player. Same invariant the audio track already holds.
+describe('Fmp4Muxer sample timing (holes)', () => {
+  // Cumulative timestamps for the given inter-frame intervals.
+  function atIntervals(indices: number[], intervalsUs: number[]): MuxInputFrame[] {
+    let t = BASE_TS_US;
+    return indices.map((idx, i) => {
+      if (i > 0) t += BigInt(intervalsUs[i - 1]);
+      return annexBFrame(idx, { timestampUs: t });
+    });
+  }
+
+  function timings(segs: Fmp4Segment[]) {
+    return medias(segs).map(sampleTiming);
+  }
+
+  it('holds one frame back: a sample is emitted once its successor fixes its duration', () => {
+    const muxer = new Fmp4Muxer();
+    // The keyframe produces its init segment immediately (it carries no
+    // timestamps) but its media segment waits for frame 1.
+    const first = muxer.push(annexBFrame(0));
+    expect(inits(first)).toHaveLength(1);
+    expect(medias(first)).toHaveLength(0);
+
+    expect(medias(muxer.push(annexBFrame(1)))).toHaveLength(1);
+    expect(medias(muxer.push(annexBFrame(2)))).toHaveLength(1);
+    // End of input: the held frame goes out on its own.
+    expect(medias(muxer.flush())).toHaveLength(1);
+    expect(muxer.flush()).toEqual([]); // idempotent
+  });
+
+  it('abuts exactly across a reorder-gap resync (the 500 ms cadence jump)', () => {
+    // Frames 0-2 at 30 fps, then a gap resync discards the rest of the GOP and
+    // the next keyframe (frame 15) lands 500 ms later.
+    const frames = atIntervals([0, 1, 2, 15, 16], [FRAME_US, FRAME_US, 500_000, FRAME_US]);
+    const { segments } = muxAll(frames);
+    const t = timings(segments);
+    expect(t).toHaveLength(5);
+
+    for (let i = 1; i < t.length; i++) {
+      // No hole and no overlap — the whole point.
+      expect(t[i].dts).toBe(t[i - 1].dts + t[i - 1].duration);
+    }
+    // And the sample spanning the gap declares the gap, so the native player
+    // holds that frame rather than finding nothing to show.
+    expect(t[2].duration).toBe(500_000);
+  });
+
+  it('abuts under ordinary capture jitter, in both directions', () => {
+    // Damage-driven capture never delivers an exact cadence; a slowdown used to
+    // leave a hole and a speed-up used to overlap (which MSE resolves by
+    // REMOVING the overlapped frame).
+    const frames = atIntervals([0, 1, 2, 3, 4, 5], [40_000, 20_000, 33_000, 60_000, 16_000]);
+    const t = timings(muxAll(frames).segments);
+    expect(t.map((x) => x.duration)).toEqual([40_000, 20_000, 33_000, 60_000, 16_000, 16_000]);
+    for (let i = 1; i < t.length; i++) {
+      expect(t[i].dts).toBe(t[i - 1].dts + t[i - 1].duration);
+    }
+    // The last sample has no successor: it inherits the last observed interval.
+  });
+
+  it('emits the held frame BEFORE a re-init, so it is parsed under its own config', () => {
+    const muxer = new Fmp4Muxer();
+    muxer.push(annexBFrame(0));
+    muxer.push(annexBFrame(1));
+    // A config change arrives with the next keyframe. The frame still held
+    // belongs to the OLD parameter sets, so its media segment must precede the
+    // new init segment or the SourceBuffer parses it with the new config.
+    const { sps, pps } = fixtureSpsPps();
+    const sps2 = sps.slice();
+    sps2[3] = 0x28; // level 4.0
+    const out = muxer.push({
+      ...avccFrame(15),
+      timestampUs: BASE_TS_US + BigInt(2 * FRAME_US),
+      config: { codec: 'avc1.42E01F', extradata: buildAvcc(sps2, pps) },
+      data: toAvcc(FIXTURE_FRAMES[15].data),
+    });
+    expect(out.map((s) => s.kind)).toEqual(['media', 'init']);
+  });
+});
 
 describe('Fmp4Muxer edge behavior', () => {
   it('skips Annex-B deltas before the first keyframe', () => {
@@ -504,7 +607,9 @@ describe('Fmp4Muxer edge behavior', () => {
     const out = muxer.push(annexBFrame(1)); // a delta
     expect(out).toEqual([]);
     expect(muxer.getStats().skippedAwaitingInit).toBe(1);
-    expect(muxer.push(annexBFrame(0)).length).toBe(2); // init + media
+    // Init only: the keyframe's own media segment is held for its duration.
+    expect(muxer.push(annexBFrame(0)).length).toBe(1);
+    expect(medias(muxer.push(annexBFrame(1)))).toHaveLength(1);
   });
 
   it('keeps baseMediaDecodeTime monotonic across a broadcaster restart (backwards timestamps)', () => {
@@ -516,6 +621,7 @@ describe('Fmp4Muxer edge behavior', () => {
     segs.push(
       ...muxer.push(annexBFrame(15, { timestampUs: 500n, keyframe: true })),
       ...muxer.push(annexBFrame(16, { timestampUs: 500n + BigInt(FRAME_US) })),
+      ...muxer.flush(),
     );
     const times = medias(segs).map((seg) => u64At(find(parseBoxes(seg.data), 'moof.traf.tfdt').body, 4));
     expect(times[0]).toBe(0);
@@ -532,6 +638,7 @@ describe('Fmp4Muxer edge behavior', () => {
     segs.push(...muxer.push(annexBFrame(0)));
     // 60 s forward — a stall/clock discontinuity, not a frame interval.
     segs.push(...muxer.push(annexBFrame(1, { timestampUs: BASE_TS_US + 60_000_000n })));
+    segs.push(...muxer.flush());
     const times = medias(segs).map((seg) => u64At(find(parseBoxes(seg.data), 'moof.traf.tfdt').body, 4));
     expect(times[1]).toBe(times[0] + DEFAULT_FRAME_DURATION_US);
   });
@@ -591,15 +698,6 @@ function opusPacket(i: number, ts: bigint): { timestampUs: bigint; data: Uint8Ar
   // Payload content is irrelevant to the muxer (it never parses Opus); size and
   // identity are what the assertions follow.
   return { timestampUs: ts, data: new Uint8Array([0xfc, i & 0xff, 0x00]) };
-}
-
-// Decode time + declared duration of a one-sample fragment, in track units.
-function sampleTiming(seg: Fmp4MediaSegment): { dts: number; duration: number } {
-  const boxes = parseBoxes(seg.data);
-  const dts = u64At(find(boxes, 'moof.traf.tfdt').body, 4);
-  const trun = find(boxes, 'moof.traf.trun').body;
-  // version/flags(4) sample_count(4) data_offset(4) → duration
-  return { dts, duration: u32At(trun, 12) };
 }
 
 // Walk into stsd's single sample entry (stsd is not a generic container: its
@@ -693,8 +791,10 @@ describe('Fmp4Muxer audio track', () => {
 
   it('puts audio and video on ONE timeline — equal timestamps, equal output time', () => {
     const muxer = new Fmp4Muxer();
-    // The first video frame anchors output time 0 at its own timestamp.
-    const v = medias(muxer.push(annexBFrame(0)));
+    // The first video frame anchors output time 0 at its own timestamp (its
+    // segment is held one frame, which does not move the anchor).
+    muxer.push(annexBFrame(0));
+    const v = medias(muxer.push(annexBFrame(1)));
     expect(sampleTiming(v[0]).dts).toBe(0);
 
     muxer.setAudioConfig(OPUS_CFG);
@@ -767,6 +867,9 @@ describe('Fmp4Muxer audio track', () => {
       }
       muxer.pushAudio(opusPacket(i, BASE_TS_US + BigInt(i * OPUS_FRAME_US)));
     });
+    for (const seg of muxer.flush()) {
+      if (seg.kind === 'media' && seg.track === 'video') withAudio.push(sha256(seg.data));
+    }
     expect(withAudio).toEqual(videoOnly);
   });
 });

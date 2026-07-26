@@ -95,7 +95,7 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Eight open entries (plus a
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Ten open entries (plus a
   lint-hygiene note) as of 2026-07-26: two Safari viewer stalls (keyframe
   delivery stops; a dead-session freeze that now recovers but whose WebKit
   root cause is still unknown), a misleading "Streamer offline" join-reject
@@ -105,7 +105,13 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   first R22 on-device pass (docs/27 findings 3–5, diagnosed by code reading:
   the ~100 ms MSE cushion that structurally cannot grow, no stall watchdog on
   the presentation element, and MMS parking manufacturing buffered holes while
-  armed); plus a recorded set of `gawk-broadcast/internal/mpegts`
+  armed — though the holes actually *measured* on device turned out to be the
+  video sample-duration bug instead, now fixed; that entry carries the
+  correction), plus two more from on-device pass 2: resilient/Deep-buffer viewers
+  losing video **entirely** to the known Safari stream wedge (all video rides
+  streams in those modes, audio rides datagrams — so it freezes with sound), and
+  the MSE presentation buffering 20+ s of 7 MP media on a phone; plus a recorded
+  set of `gawk-broadcast/internal/mpegts`
   lint advisories that are not runtime defects. (The iPhone
   native-fullscreen black video was resolved 2026-07-25 by R22's MSE path —
   docs/27.) (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
@@ -1577,17 +1583,35 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `gawk:viewer-delivery`. Automated gates green incl. an e2e deep-buffer
    viewer pass; on-hardware tuning is the remaining DV6 work.
 26. iOS native fullscreen via MSE — **MF1–MF4 + MF5's observability/docs half
-   implemented 2026-07-25; first on-device pass 2026-07-26 CONFIRMED the design
-   (real video in native fullscreen) and produced five findings — 1 (no
+   implemented 2026-07-25; two on-device passes 2026-07-26 CONFIRMED the design
+   (real video AND audio in native fullscreen). Pass 1: 1 (no
    `duration = Infinity`: no LIVE badge, and WebKit pauses + fires `ended` on an
    MSE underrun where Chromium stalls and resumes, so every hiccup killed
-   playback until a manual tap) and 2 (audio muxed into the presentation as a
-   second Opus SourceBuffer, probed via `isTypeSupported` and CI-proven in
-   Chrome, with an exclusive inline-sink/native-player audio handoff) are FIXED;
-   3–5 are diagnosed and open (the ~100 ms live-edge cushion that structurally
-   cannot grow because the muxer is fed after the paced release; no stall
-   watchdog on the element; MMS parking + the bounded queue manufacturing
-   buffered holes while armed) — a second on-device pass is pending** (R22,
+   playback until a manual tap) and 2 (audio muxed as a second SourceBuffer with
+   an exclusive inline-sink/native-player handoff) — both FIXED. Pass 2: **iOS
+   18.7 refuses `audio/mp4; codecs="opus"` through ManagedMediaSource**
+   (measured), so the probe gained a second tier — **AAC-LC transcoded from the
+   decoded PCM in the worker** (`transport/audio-transcode.ts` + an `mp4a`/`esds`
+   init segment carrying the encoder's own AudioSpecificConfig), CI-proven in
+   Chrome by a forced-AAC `--muxer-check` pass. Finding 3 REVISED: the buffered
+   holes measured on device were **not** MMS parking (zero presenter-side drops —
+   `segmentsAppended == muxInitSegments + muxMediaSegments`) but the **video
+   sample-duration** scheme, which declared each sample's duration as the interval
+   from its PREDECESSOR, so every cadence increase (a reorder-gap resync jumps
+   ~33 ms → ~500 ms) left a hole that big; fixed with the same one-frame lookahead
+   audio already had, and constant-cadence fixtures are exactly why tests never
+   caught it. Finding 5 (found by CI, not the device): **every SourceBuffer must
+   be created before the first init segment is appended** — Chromium throws
+   `QuotaExceededError` otherwise — so the buffer is created up front from the
+   mime while the init segment is still withheld until a sample can follow it
+   (`initAppended` is now tracked separately from the buffer existing); plus
+   per-track SourceBuffer error handling (an audio error no longer blanks video)
+   and a sticky, rebuild-video-only audio drop (a dead audio range would freeze
+   video, since `buffered` is the tracks' INTERSECTION). Still open: the ~100 ms
+   live-edge cushion that structurally cannot grow because the muxer is fed after
+   the paced release; no stall watchdog on the element; MMS parking as an
+   unmeasured hole source; 20+ s of 7 MP media buffered on the phone. A third
+   on-device pass is pending** (R22,
    `docs/27-ios-mse-fullscreen.md`; viewer-client only, zero server/wire/
    broadcaster changes). The iPhone fullscreen button's hidden `<video>` (R16
    scaffolding: gate, tiers, hiding rules, `NativeVideoFullscreen` gate — all

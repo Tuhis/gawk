@@ -373,23 +373,74 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   at all, so `pump()`'s `streaming === false` branch never runs there and the
   `--muxer-check` step cannot exercise this (docs/27 Decision 10's coverage
   boundary). It needs an on-device capture.
+- **CORRECTION (2026-07-26, on-device pass 2)**: the 4 holes actually measured on
+  the iPhone were **not** this. `segmentsAppended == muxInitSegments +
+  muxMediaSegments` with `appendErrors: 0` proves nothing was shed by the queue,
+  so those holes were in the *timeline*, not in what got appended — the video
+  sample-duration bug, now fixed by one-frame lookahead (docs/27 finding 3
+  revised). This entry stays open because the mechanism below is still reachable
+  and still unmeasured; it is no longer supported by that capture.
 - **Impact**: iPhone native fullscreen only. A hole in the buffered timeline
   stalls the native player at the hole — and because
   `HTMLMediaElement.buffered` is the **intersection** of the SourceBuffers'
-  ranges, a hole in either track (video or the newly muxed audio) does it.
+  ranges, a hole in either track (video or the muxed audio) does it.
 - **Cause**: `MsePresenter.pump()` parks on `streaming === false`. While armed
   the element is *paused* (docs/27 Decision 5), so MMS's buffered-ahead only
   grows and it stops asking for data; meanwhile live segments accumulate in the
   JS queue and front-drop past `MAX_QUEUED_SEGMENTS` (128 ≈ 2–4 s). Any arming
   period longer than the queue depth therefore leaves a gap between the last
   appended segment and the keyframe appends resume at.
-- **Signature**: `presentationSurface.bufferedRanges > 1` (the overlay's
-  **Buffered** row prints `N ranges (hole)`) with `appendErrors` 0.
+- **Signature**, and how to tell it from the (fixed) sample-duration cause:
+  `bufferedRanges > 1` with `segmentsAppended` **lagging** `muxInitSegments +
+  muxMediaSegments` — the shortfall is the queue's front-drops. Where those two
+  agree, the holes are not this.
 - **Fix would start**: either keep the armed playhead following the buffered
   edge so MMS never parks and the buffer stays bounded, or treat
   resume-after-park as a discontinuity — discard the stale backlog, re-anchor,
   and seek the element into the newest range. The watchdog above covers the
   symptom generically; this entry is about not manufacturing the hole.
+
+## Resilient/Deep-buffer viewers lose video entirely to the Safari stream wedge
+
+- **Found**: 2026-07-26, from an iPhone (iOS 18.7 / Safari 26.5.2) Copy-
+  diagnostics capture on broadcast `FUHNMG`, reported as "video shows, until it
+  freezes" while audio kept playing. A severity note on the two Safari entries at
+  the top of this file rather than a new root cause.
+- **Impact**: in **resilient** or **Deep buffer** delivery mode, a wedged stream
+  path stops video completely (not the awaiting-keyframe slideshow the default
+  mode degrades to), while audio continues — so the viewer looks frozen with
+  sound. Recovery needs a manual reload.
+- **Why the mode matters**: R19 moved video *deltas* onto reliable carrier
+  streams, and keyframes were already on reliable uni streams (R8), while audio
+  deliberately stayed on datagrams (docs/20 field finding 5). QUIC datagrams are
+  not flow-controlled but streams are — so when WebKit's stream path wedges,
+  every video path is gone at once and the only surviving medium is audio.
+- **Signature**: every counter frozen across a whole capture window while
+  `timeSinceLastInboundMs` climbs without reset (10.6 s here) and no reconnect
+  happens (a new pipeline would zero the reassembler counters). Earlier in the
+  same session, frames stopped ~16 s before inbound did — the window where
+  streams were already dead and the 1 Hz `viewerCount` keepalive still arrived.
+- **Fix would start**: this is the existing Safari root cause, so nothing new to
+  fix here — but the *severity* argues for the viewer-side dead-session watchdog
+  to cover "streams stopped, datagrams flowing" and not only total silence
+  (`viewer.ts` `checkKeyframeStall` requires frames to still be arriving, which
+  is exactly what this failure removes). A `/statusz` capture taken **while
+  frozen** is still the missing evidence for the root cause itself.
+
+## MSE presentation buffers 20+ s of high-resolution media on a phone
+
+- **Found**: 2026-07-26, same capture: `bufferedMs: 21225` at **3360×2100**
+  (7 MP), decoded twice on the device — inline WebCodecs plus the native player.
+- **Impact**: memory pressure on the one platform that can least afford it.
+  Unproven as a cause of anything, but it is a plausible contributor to WebKit
+  tearing down the media pipeline mid-session, which is the failure above.
+- **Cause**: `PRUNE_TRIGGER_S` (30 s, keep 10 s) was sized as "generous — the
+  point is boundedness over a long session", without frames this large in mind,
+  and `ManagedMediaSource` did not evict on its own either.
+- **Fix would start**: scale the prune trigger by frame area rather than time
+  alone (a fixed byte budget is the honest bound), and consider whether the armed
+  element needs 10 s of history at all — the fullscreen player only ever seeks
+  forward, toward live.
 
 ## Lint advisories in `gawk-broadcast/internal/mpegts` (not runtime defects)
 

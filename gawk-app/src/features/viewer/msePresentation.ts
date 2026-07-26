@@ -13,7 +13,8 @@
 // CI proof, docs/27 Decision 10) the presenter prunes manually.
 
 import { log } from '../../lib/logger';
-import { opusMime, type Fmp4Track } from '../../transport/fmp4-muxer';
+import { aacMime, opusMime, type AudioMuxCodec, type Fmp4Track } from '../../transport/fmp4-muxer';
+import { AAC_CODEC } from '../../transport/audio-transcode';
 
 // ---------------------------------------------------------------------------
 // Capability probe (MF2)
@@ -23,6 +24,12 @@ export interface MseProbeResult {
   mime: string | null;
   // Human-readable verdict for the Feature Gates row / Copy diagnostics.
   reason: string;
+}
+
+// The audio verdict also says WHICH encapsulation won, since that decides
+// whether the worker transcodes (docs/27 finding 4).
+export interface MseAudioProbe extends MseProbeResult {
+  codec: AudioMuxCodec | null;
 }
 
 // Minimal structural types: lib.dom has MediaSource but not ManagedMediaSource,
@@ -87,36 +94,61 @@ export function probeMsePresentation(codec: string): MseProbeResult {
   return { supported: true, mime, reason: 'MSE available' };
 }
 
-// R22 audio (docs/27 finding 2): can this device take the R15 Opus lane as an
-// MSE audio track? Strictly additive — a refusal keeps the native player
-// video-only with audio still coming from the inline AudioWorklet, which is the
-// pre-audio-muxing behavior. Opus-in-MP4 is a WebKit 17 feature ("one or two
-// channel Opus audio in WebM and MPEG-4 containers"), but nothing in Apple's
-// documentation promises it through ManagedMediaSource, and HLS's own mandated
-// audio codec is AAC — so this is a runtime question by design, not an
-// assumption. `channels` guards the same one-or-two-channel limit.
-export function probeMseAudio(
-  codec: string | null,
-  channels: number | null,
-): MseProbeResult {
-  if (codec == null) return { supported: false, mime: null, reason: 'no audio' };
+// R22 audio (docs/27 findings 2 + 4): how (if at all) this device can take the
+// R15 audio lane as an MSE audio track. Two tiers, in cost order — Opus muxed
+// verbatim, else AAC re-encoded from the decoded PCM. Strictly additive: with
+// neither, the native player stays video-only and audio keeps coming from the
+// inline AudioWorklet exactly as before audio muxing existed.
+//
+// Why two tiers rather than one: Opus-in-MP4 is a WebKit 17 feature ("one or two
+// channel Opus audio in WebM and MPEG-4 containers") and Chrome accepts it, but
+// the on-device pass measured `isTypeSupported('audio/mp4; codecs="opus"')` as
+// **false** on iOS 18.7 through ManagedMediaSource — while AAC is the codec
+// Apple's own HLS mandates. `channels` guards MP4 Opus's one-or-two-channel
+// limit; it does not constrain the AAC tier.
+export function probeMseAudio(codec: string | null, channels: number | null): MseAudioProbe {
+  if (codec == null) return { supported: false, codec: null, mime: null, reason: 'no audio' };
   if (!/^opus$/i.test(codec)) {
-    return { supported: false, mime: null, reason: `codec ${codec} is not Opus` };
+    return { supported: false, codec: null, mime: null, reason: `codec ${codec} is not Opus` };
   }
   if (channels != null && (channels < 1 || channels > 2)) {
-    return { supported: false, mime: null, reason: `${channels} channels unsupported in MP4` };
+    return {
+      supported: false,
+      codec: null,
+      mime: null,
+      reason: `${channels} channels unsupported in MP4`,
+    };
   }
   const Ctor = getMediaSourceCtor();
-  if (!Ctor) return { supported: false, mime: null, reason: 'no MediaSource/ManagedMediaSource' };
-  const mime = opusMime();
-  let ok = false;
-  try {
-    ok = Ctor.isTypeSupported(mime);
-  } catch {
-    ok = false;
+  if (!Ctor) {
+    return { supported: false, codec: null, mime: null, reason: 'no MediaSource/ManagedMediaSource' };
   }
-  if (!ok) return { supported: false, mime: null, reason: `unsupported: ${mime}` };
-  return { supported: true, mime, reason: 'Opus in MP4 available' };
+  const supports = (mime: string): boolean => {
+    try {
+      return Ctor.isTypeSupported(mime);
+    } catch {
+      return false;
+    }
+  };
+  // Opus first: it needs no transcode, and where the runtime takes it (Chrome —
+  // the CI proof) the muxed track is the R15 lane verbatim.
+  const opus = opusMime();
+  if (supports(opus)) {
+    return { supported: true, codec: 'opus', mime: opus, reason: 'Opus in MP4 available' };
+  }
+  // iOS 18.7 / Safari 26.5.2 refuses Opus in MP4 through ManagedMediaSource
+  // (docs/27 finding 4, measured on device) — so fall back to AAC, the codec
+  // Apple's own HLS mandates, by re-encoding the decoded PCM in the worker.
+  const aac = aacMime(AAC_CODEC);
+  if (supports(aac)) {
+    return {
+      supported: true,
+      codec: 'aac',
+      mime: aac,
+      reason: `${opus} refused → transcoding to ${AAC_CODEC}`,
+    };
+  }
+  return { supported: false, codec: null, mime: null, reason: `unsupported: ${opus} and ${aac}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +191,16 @@ export const PRUNE_KEEP_S = 10;
 // While the (fullscreen) video is playing, jumping this far behind the
 // buffered end triggers a catch-up seek — MF4's "seek-to-live keeps native
 // fullscreen near live". Paused (inline, armed) playback never seeks.
+// How long the audio SourceBuffer may exist without receiving a single sample
+// before audio is given up on. Creating it up front (docs/27 finding 5) is what
+// makes the pair addable at all, but it has a cost: until audio appends, the
+// element's buffered range — the INTERSECTION of the tracks — is empty, so video
+// cannot play either. An audio path that never produces (no AAC encoder on this
+// runtime, a transcoder error) must therefore be detected and dropped, or the
+// presentation is worse than video-only: it is dead. Generous enough for a
+// transcoder to warm up, short enough that nobody watches a blank fullscreen.
+export const AUDIO_FIRST_SAMPLE_TIMEOUT_MS = 3000;
+
 export const LIVE_CATCHUP_LAG_S = 2;
 export const LIVE_EDGE_REJOIN_S = 0.1;
 
@@ -179,6 +221,14 @@ interface TrackState {
   // Opus packet is a sync sample.)
   needKeyframe: boolean;
   appended: number;
+  // The bound 'error' listener for this track's current SourceBuffer, kept so it
+  // can be removed on detach.
+  onError: (() => void) | null;
+  // Whether an init segment has been appended to the CURRENT SourceBuffer. The
+  // buffer existing is not the same thing: it is created up front (before any
+  // bytes) so both tracks can be added before the first append, and a media
+  // segment appended to a buffer that never saw its init is a decode error.
+  initAppended: boolean;
 }
 
 function newTrackState(track: Fmp4Track): TrackState {
@@ -190,6 +240,8 @@ function newTrackState(track: Fmp4Track): TrackState {
     queue: [],
     needKeyframe: false,
     appended: 0,
+    initAppended: false,
+    onError: null,
   };
 }
 
@@ -203,6 +255,21 @@ export class MsePresenter {
 
   private readonly videoBuf = newTrackState('video');
   private readonly audioBuf = newTrackState('audio');
+  // The audio SourceBuffer's mime, known from the negotiated tier before any
+  // audio bytes exist. It has to be known EARLY: an MSE implementation may
+  // refuse addSourceBuffer once the first init segment has been parsed (Chromium
+  // throws QuotaExceededError, "reached the limit of SourceBuffer objects"), so
+  // both buffers are created together with the video one — never lazily when the
+  // first audio sample shows up, which is always too late.
+  private expectedAudioMime: string | null = null;
+  // Sticky: once audio has been given up on, later audio segments are ignored for
+  // this presentation's life. The worker muxer has no idea the presenter gave up
+  // and keeps producing them, so without this a later init would resurrect the
+  // track that just failed.
+  private audioDropped = false;
+  // A real timer, not a per-append tick: appends are what would normally drive
+  // this, but the pathological case is precisely one where nothing is appending.
+  private audioTimer: ReturnType<typeof setTimeout> | null = null;
   private get tracks(): TrackState[] {
     return [this.videoBuf, this.audioBuf];
   }
@@ -222,13 +289,23 @@ export class MsePresenter {
     this.prune();
     this.pump();
   };
-  private readonly onSbError = () => {
-    // A SourceBuffer error is terminal for this MediaSource (readyState goes
-    // 'closed' per spec on decode errors surfaced here). The gate degrades;
-    // the inline canvas never depended on any of this.
+  // Per-track, because the two tracks are not equally load-bearing: a video
+  // SourceBuffer error degrades the gate to pseudo-fullscreen, but an AUDIO one
+  // must not take the video presentation down with it — audio is additive, and
+  // on the AAC path it is the least-proven part of the pipeline. (A shared
+  // handler did exactly that: a bad audio append blanked the video.)
+  private readonly onTrackError = (t: TrackState) => () => {
     this.appendErrors++;
-    this.failed = true;
-    log.warn('MSE presentation: SourceBuffer error; native fullscreen degraded');
+    if (t.track === 'video') {
+      this.failed = true;
+      log.warn('MSE presentation: video SourceBuffer error; native fullscreen degraded');
+      return;
+    }
+    log.warn('MSE presentation: audio SourceBuffer error; presenting video only');
+    // Rebuild video-only: a broken audio buffer cannot simply be abandoned,
+    // because `buffered` is the INTERSECTION of the tracks — a frozen audio range
+    // would freeze the video presentation with it.
+    this.dropAudioTrack(true);
   };
   private readonly onStartStreaming = () => this.pump();
 
@@ -248,6 +325,30 @@ export class MsePresenter {
       queued: this.videoBuf.queue.length + this.audioBuf.queue.length,
       failed: this.failed,
     };
+  }
+
+  // R22 audio: declare which audio mime this presentation will carry, as soon as
+  // the tier is negotiated (docs/27 findings 2 + 4). Called before any audio
+  // bytes exist — `addSourceBuffer` needs only the mime, while the init segment
+  // needs the codec's setup bytes, and those arrive later on the AAC path.
+  //
+  // If the video SourceBuffer already exists, the window for adding another has
+  // closed, so the whole MediaSource is rebuilt: video re-primes from its cached
+  // init at the next keyframe (a ≤1-GOP hiccup, invisible while the armed element
+  // is paused) and both buffers are created up front on the fresh source.
+  setExpectedAudioMime(mime: string | null): void {
+    if (this.audioDropped || this.expectedAudioMime === mime) return;
+    this.expectedAudioMime = mime;
+    if (!mime || this.audioBuf.sb) return;
+    if (this.videoBuf.sb && this.video) {
+      const video = this.video;
+      this.detach();
+      this.attach(video);
+      return;
+    }
+    // No video SourceBuffer yet: the pair is created together in
+    // ensureSourceBuffer.
+    this.pump();
   }
 
   // Attach the hidden <video>: creates a fresh MediaSource and wires it up.
@@ -317,10 +418,12 @@ export class MsePresenter {
     for (const t of this.tracks) {
       if (t.sb) {
         t.sb.removeEventListener('updateend', this.onUpdateEnd);
-        t.sb.removeEventListener('error', this.onSbError);
+        if (t.onError) t.sb.removeEventListener('error', t.onError);
       }
+      t.onError = null;
       t.sb = null;
       t.sbMime = null;
+      t.initAppended = false;
     }
     this.ms = null;
     this.sourceOpen = false;
@@ -345,15 +448,16 @@ export class MsePresenter {
   // Feed one worker segment. Init segments are cached (re-attach priming) and
   // queued in-order; media segments queue behind them.
   pushSegment(seg: PresenterSegment): void {
+    if (seg.track === 'audio' && this.audioDropped) return;
     const t = seg.track === 'audio' ? this.audioBuf : this.videoBuf;
     if (seg.kind === 'init') {
       t.cachedInit = { mime: seg.mime, data: seg.data };
-      // An audio track that exists but has no samples empties the element's
-      // buffered intersection — so the audio init is only *cached* until a
-      // sample is ready to follow it, and pump() primes the SourceBuffer with it
-      // then. Once the SourceBuffer exists, a later init is a real parameter
+      // The FIRST audio init is only *cached*, never queued: an audio track whose
+      // buffer holds an init and no samples still contributes an empty range to
+      // the element's buffered intersection, so pump() primes from the cache when
+      // the first sample is ready to follow it. A later init is a real parameter
       // change and must be appended in order.
-      if (t.track === 'audio' && !t.sb) return;
+      if (t.track === 'audio' && !t.initAppended) return;
     } else if (!t.cachedInit) {
       // Media before any init cannot ever decode; don't queue it.
       return;
@@ -369,6 +473,7 @@ export class MsePresenter {
   }
 
   dispose(): void {
+    this.clearAudioWatchdog();
     this.detach();
     for (const t of this.tracks) {
       t.cachedInit = null;
@@ -423,10 +528,11 @@ export class MsePresenter {
         t.queue.shift();
         continue;
       }
-      if (seg.kind === 'media' && !t.sb && t.cachedInit) {
-        // No SourceBuffer yet — either the init fell off the queue (overflow) or
-        // this is the audio track priming lazily. Either way the cached init
-        // goes first, then this segment is reprocessed.
+      if (seg.kind === 'media' && !t.initAppended && t.cachedInit) {
+        // This buffer has never taken an init segment: either it was created up
+        // front for the track pair, or its init fell off the queue (overflow), or
+        // a re-attach built a fresh MediaSource. Prime from the cache, then
+        // reprocess this segment.
         t.queue.unshift({ kind: 'init', track: t.track, ...t.cachedInit });
         continue;
       }
@@ -440,6 +546,7 @@ export class MsePresenter {
       if (seg.kind === 'media' && seg.keyframe) t.needKeyframe = false;
       try {
         t.sb!.appendBuffer(seg.data as BufferSource);
+        if (seg.kind === 'init') t.initAppended = true;
         t.appended++;
         this.segmentsAppended++;
       } catch (e) {
@@ -475,9 +582,16 @@ export class MsePresenter {
     try {
       const sb = this.ms!.addSourceBuffer(mime);
       sb.addEventListener('updateend', this.onUpdateEnd);
-      sb.addEventListener('error', this.onSbError);
+      t.onError = this.onTrackError(t);
+      sb.addEventListener('error', t.onError);
       t.sb = sb;
       t.sbMime = mime;
+      // The audio buffer must exist before this video init segment is appended
+      // (see setExpectedAudioMime). Its failure is non-fatal: video carries on.
+      if (t.track === 'video' && this.expectedAudioMime && !this.audioBuf.sb) {
+        this.ensureSourceBuffer(this.audioBuf, this.expectedAudioMime);
+      }
+      if (t.track === 'audio') this.armAudioWatchdog();
       return true;
     } catch (e) {
       // The trial-addSourceBuffer half of the probe, failing for real: mark
@@ -496,10 +610,65 @@ export class MsePresenter {
   // Give up on the audio track without disturbing video: no SourceBuffer is left
   // half-created, and nothing further is queued (pushSegment drops media with no
   // cachedInit). The inline AudioWorklet sink keeps playing the audio either way.
-  private dropAudioTrack(): void {
+  // Give up on audio without losing video. `rebuild` is for the case where an
+  // audio SourceBuffer already exists and has data: since the element's
+  // `buffered` is the intersection of the tracks, leaving a dead audio range
+  // attached would freeze video, so the MediaSource is rebuilt video-only (video
+  // re-primes from its cached init at the next keyframe). Where no audio buffer
+  // was ever created — a refused addSourceBuffer — clearing state is enough.
+  private dropAudioTrack(rebuild = false): void {
+    this.audioDropped = true;
+    this.expectedAudioMime = null;
+    this.clearAudioWatchdog();
     this.audioBuf.cachedInit = null;
     this.audioBuf.queue = [];
     this.audioBuf.needKeyframe = false;
+    const video = this.video;
+    if (rebuild && video) {
+      this.detach();
+      this.attach(video);
+    }
+  }
+
+  // An audio buffer that never receives a sample holds the whole presentation
+  // hostage (see AUDIO_FIRST_SAMPLE_TIMEOUT_MS): `buffered` is the intersection of
+  // the tracks, so video cannot play past an empty audio range.
+  private armAudioWatchdog(): void {
+    this.clearAudioWatchdog();
+    this.audioTimer = setTimeout(() => {
+      this.audioTimer = null;
+      if (this.audioBuf.appended > 0) return;
+      // Only act on the OBSERVABLE symptom, never on the proxy. An audio buffer
+      // that never received even its init segment contributes no active track, so
+      // some implementations play video regardless — and rebuilding there would
+      // destroy a working presentation for nothing. Chromium's demuxer, by
+      // contrast, waits for every added buffer's init segment before it reports
+      // metadata at all, and that is what being held hostage looks like: video
+      // appended, yet the element has no buffered range and no metadata.
+      const held = this.videoBuf.appended > 0 && !this.hasMedia();
+      if (!held) return;
+      log.warn('MSE presentation: audio never produced and video is blocked on it;'
+        + ' presenting video only');
+      this.dropAudioTrack(true);
+    }, AUDIO_FIRST_SAMPLE_TIMEOUT_MS);
+  }
+
+  // Whether the element has anything to play. `readyState >= HAVE_METADATA` is the
+  // spec-level "the demuxer initialized"; the buffered check covers the same thing
+  // for implementations that report metadata earlier.
+  private hasMedia(): boolean {
+    const video = this.video;
+    if (!video) return false;
+    try {
+      return video.readyState >= 1 && video.buffered.length > 0;
+    } catch {
+      return true; // never rebuild on a diagnostics failure
+    }
+  }
+
+  private clearAudioWatchdog(): void {
+    if (this.audioTimer !== null) clearTimeout(this.audioTimer);
+    this.audioTimer = null;
   }
 
   // MF4: while the (fullscreen) video plays, a playhead that fell behind the

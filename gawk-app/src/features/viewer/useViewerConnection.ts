@@ -23,7 +23,12 @@ import {
 } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import type { MuxSegmentEvent, ViewerWorkerEvent } from '../../transport/viewer-worker-core';
-import { probeMseAudio, probeMsePresentation, type MseProbeResult } from './msePresentation';
+import {
+  probeMseAudio,
+  probeMsePresentation,
+  type MseAudioProbe,
+  type MseProbeResult,
+} from './msePresentation';
 import { WorkerViewerController } from './workerViewerController';
 import { AudioSink, audioSinkSupported } from './audioSink';
 import { AudioRateController, notePlayhead, resetAvSync } from '../../transport/av-sync';
@@ -50,7 +55,7 @@ export interface PresentationState {
   // R22 audio: the Opus-in-MP4 verdict for this stream's audio lane. Null until
   // audio is observed (a video-only broadcast never probes); false-supported
   // keeps the native player video-only with the inline AudioWorklet unchanged.
-  audioProbe: MseProbeResult | null;
+  audioProbe: MseAudioProbe | null;
   arm: () => void;
   setSegmentSink: (cb: ((seg: MuxSegmentEvent) => void) | null) => void;
 }
@@ -156,7 +161,7 @@ export function useViewerConnection(
   // R22 audio: probed once, from the first stats tick that reports an audio
   // codec (the lane's config). A ref mirrors it so the per-tick check stays a
   // single null test on a video-only stream.
-  const [mseAudioProbe, setMseAudioProbe] = useState<MseProbeResult | null>(null);
+  const [mseAudioProbe, setMseAudioProbe] = useState<MseAudioProbe | null>(null);
   const mseAudioProbedRef = useRef(false);
   // Flips true if a would-be worker reports (at boot, before any canvas
   // transfer) that it lacks the codecs/transport — then we use the main thread.
@@ -418,7 +423,9 @@ export function useViewerConnection(
           mseAudioProbedRef.current = true;
           const verdict = probeMseAudio(next.audioCodec, next.audioChannels);
           setMseAudioProbe(verdict);
-          if (verdict.supported) controllerRef.current?.armPresentationAudio();
+          if (verdict.supported && verdict.codec) {
+            controllerRef.current?.armPresentationAudio(verdict.codec);
+          }
         }
         setStats(next);
         break;
