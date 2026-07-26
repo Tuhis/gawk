@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.34.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.3...gawk-app-v0.34.0) (2026-07-26)
+
+
+### Features
+
+* **r28:** advanced diagnostics & telemetry (docs/33 TM1–TM8) ([#151](https://github.com/Tuhis/gawk/issues/151)) ([034ad97](https://github.com/Tuhis/gawk/commit/034ad97496918c21a6f9242b3f9b291461436088))
+
+
+### Bug Fixes
+
+* **r15:** measure A/V skew at the listener (docs/20 findings 13 + 12) ([#152](https://github.com/Tuhis/gawk/issues/152)) ([87f2dea](https://github.com/Tuhis/gawk/commit/87f2deab1e3b901c4e895d64f9aee1f8be98b9b1))
+
 ## [0.33.3](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.2...gawk-app-v0.33.3) (2026-07-26)
 
 
