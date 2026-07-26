@@ -40,6 +40,9 @@ func TestDefaults(t *testing.T) {
 		DVRMaxCatchup:        4,
 		DVRAudio:             true,
 		MetricsAddr:          ":2112",
+		// R28: telemetry is off by default (no key), but the cadence it would
+		// ask for still has a default so enabling it is one value, not two.
+		TelemetryReportInterval: 2 * time.Second,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -376,5 +379,70 @@ func TestClusterModeFlag(t *testing.T) {
 	}
 	if _, err := ParseFlags([]string{"-cluster-mode", "-internal-psk", "x"}, noEnv); err == nil {
 		t.Error("cluster-mode without internal-server-name accepted")
+	}
+}
+
+// R28 TM1: the fleet telemetry key. Its presence IS the feature switch
+// (docs/33 D12) — absent, the relay mints no session tokens and sends no
+// hello, so every client collects nothing.
+func TestTelemetryKey(t *testing.T) {
+	key64 := "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+
+	cfg, err := ParseFlags([]string{"-telemetry-key", key64}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if len(cfg.TelemetryKey) != 32 || cfg.TelemetryKey[0] != 0x5a {
+		t.Errorf("TelemetryKey = %x, want decoded 32 bytes", cfg.TelemetryKey)
+	}
+
+	cfg, err = ParseFlags(nil, envMap(map[string]string{"GAWK_TELEMETRY_KEY": key64}))
+	if err != nil {
+		t.Fatalf("ParseFlags env: %v", err)
+	}
+	if len(cfg.TelemetryKey) != 32 {
+		t.Errorf("env TelemetryKey = %x, want 32 bytes", cfg.TelemetryKey)
+	}
+
+	cfg, err = ParseFlags(nil, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags default: %v", err)
+	}
+	if cfg.TelemetryKey != nil {
+		t.Errorf("default TelemetryKey = %x, want nil (telemetry disabled)", cfg.TelemetryKey)
+	}
+
+	// A short key is a misconfiguration, not a weaker mode.
+	for _, bad := range []string{"zz", "0102", key64 + "00"} {
+		if _, err := ParseFlags([]string{"-telemetry-key", bad}, noEnv); err == nil {
+			t.Errorf("ParseFlags accepted invalid telemetry-key %q", bad)
+		}
+	}
+}
+
+// The reporting cadence the relay asks clients to use. Bounded because it
+// rides a uint16 of milliseconds and a client cannot report faster than its
+// own stats tick.
+func TestTelemetryReportInterval(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-telemetry-report-interval", "5s"}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.TelemetryReportInterval != 5*time.Second {
+		t.Errorf("TelemetryReportInterval = %v, want 5s", cfg.TelemetryReportInterval)
+	}
+
+	cfg, err = ParseFlags(nil, envMap(map[string]string{"GAWK_TELEMETRY_REPORT_INTERVAL": "10s"}))
+	if err != nil {
+		t.Fatalf("ParseFlags env: %v", err)
+	}
+	if cfg.TelemetryReportInterval != 10*time.Second {
+		t.Errorf("env TelemetryReportInterval = %v, want 10s", cfg.TelemetryReportInterval)
+	}
+
+	for _, bad := range []string{"nonsense", "100ms", "5m", "0s", "-2s"} {
+		if _, err := ParseFlags([]string{"-telemetry-report-interval", bad}, noEnv); err == nil {
+			t.Errorf("ParseFlags accepted out-of-range telemetry-report-interval %q", bad)
+		}
 	}
 }

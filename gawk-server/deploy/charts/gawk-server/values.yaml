@@ -61,6 +61,34 @@ metrics:
     interval: 15s
     scrapeTimeout: 10s
 
+# R28 (docs/33): per-session telemetry. OFF by default — a deployment that
+# leaves it off renders byte-identically to the pre-R28 chart, mints no session
+# tokens, sends no TelemetryHello, and every client therefore collects nothing.
+# Enable it together with the gawk-telemetry chart, sharing ONE key.
+telemetry:
+  enabled: false
+  # The session-token HMAC key: 64 hex chars (32 bytes), shared by every relay
+  # pod AND by gawk-telemetry, which verifies tokens with it and no lookup.
+  # Generate once and put it in a Secret referenced by both charts:
+  #   kubectl -n gawk create secret generic gawk-telemetry-key \
+  #     --from-literal=key=$(openssl rand -hex 32)
+  # then set: keyRef: {name: gawk-telemetry-key, key: key}.
+  # Rotating it revokes every outstanding session token.
+  key: ""
+  keyRef: {}
+  # The sampling cadence the relay asks clients to use, carried in the hello —
+  # so the volume can be turned down fleet-wide without shipping a frontend.
+  # 500ms-60s; the client stats tick is 500 ms, so anything faster only
+  # resends the same numbers.
+  reportInterval: 2s
+  # D5: the headless companion Service that gives gawk-telemetry a per-pod
+  # address list to scrape. The existing metrics Service is a ClusterIP and
+  # load-balances, so scraping it would hit one random pod. Requires
+  # metrics.enabled.
+  headlessService:
+    enabled: true
+    annotations: {}
+
 certificate:
   # cert-manager Certificate for the relay's public name. The server's
   # tlsutil.Reloader picks up renewals on the fly — no pod restart needed.

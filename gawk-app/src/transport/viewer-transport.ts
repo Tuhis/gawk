@@ -16,6 +16,7 @@ import {
   type KeyframeStreamFrame,
 } from './connection';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
+import type { TelemetryHelloMessage } from './wire';
 import { TimeSyncClient, type TimeSyncStats } from './time-sync';
 
 // The one authoritative "session is over" signal (see CODE-REVIEW: one event,
@@ -30,6 +31,11 @@ export interface TransportClosedInfo {
 export interface ViewerTransportCallbacks {
   onDatagram: (dgram: Uint8Array) => void;
   onKeyframe: (kf: KeyframeStreamFrame) => void;
+  // R28 (docs/33 D2): this session's telemetry identity. The transport is
+  // where it arrives (it rides a server uni stream), but nothing here acts on
+  // it — it is forwarded to the pipeline and out to the main thread, which is
+  // the only place collection happens (D13).
+  onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   // Fires at most once, and never after close() was called locally.
   onClosed: (info: TransportClosedInfo) => void;
 }
@@ -143,7 +149,11 @@ export class LocalViewerTransport implements ViewerTransport {
     // and the pipeline never learns which transport delivered the bytes.
     void readServerStreams(
       wt,
-      { onKeyframe: cb.onKeyframe, onCarrierRecord: (record) => cb.onDatagram(record) },
+      {
+        onKeyframe: cb.onKeyframe,
+        onCarrierRecord: (record) => cb.onDatagram(record),
+        onTelemetryHello: (hello) => cb.onTelemetryHello?.(hello),
+      },
       this.carrier,
       this.abort.signal,
     ).catch((e) => {

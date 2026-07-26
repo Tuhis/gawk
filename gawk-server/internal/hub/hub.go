@@ -321,7 +321,13 @@ func (k *KeyframeDrops) add(o KeyframeDrops) {
 // deliberately JSON-only — per-subscriber Prometheus labels would be
 // pointless series churn.
 type SubscriberStats struct {
-	Key              string `json:"key"`        // random per-session key, stable across /statusz polls
+	Key string `json:"key"` // random per-session key, stable across /statusz polls
+	// SessionID is the R28 telemetry join key (docs/33 D2) — the same handle
+	// this viewer's own reports carry, and the one field that lets the relay's
+	// view of a session and the client's view of itself become one dataset.
+	// Omitted when telemetry is disabled, so /statusz is unchanged on a fleet
+	// that never enabled it.
+	SessionID        string `json:"sessionId,omitempty"`
 	QueueDepth       int    `json:"queueDepth"` // current datagram queue occupancy
 	Dropped          uint64 `json:"dropped"`
 	SendErrors       uint64 `json:"sendErrors"`
@@ -354,6 +360,12 @@ type SubscriberStats struct {
 // GET /statusz endpoint (the json tags are its response shape).
 type Stats struct {
 	PublisherActive bool `json:"publisherActive"`
+	// PublisherSessionID is the R28 telemetry session handle of the CURRENT
+	// publisher session (docs/33 D2) — the broadcaster's half of the same
+	// join the subscriber rows carry. Cleared when the publisher goes away,
+	// so a graced broadcast does not attribute relay observations to a
+	// session that has ended. Omitted when telemetry is disabled.
+	PublisherSessionID string `json:"publisherSessionId,omitempty"`
 	// Role of this hub in the R17 federation: "origin" (hosts the real
 	// publisher — the only role in single-pod mode) or "edge" (derived state
 	// fed by an upstream pull, docs/22 Decision 10).
@@ -515,6 +527,11 @@ type broadcastHub struct {
 	log      *slog.Logger
 
 	publisherActive bool
+	// publisherSessionID is the R28 telemetry handle of the session currently
+	// holding the publisher slot (docs/33 D2). Cleared alongside
+	// publisherActive so a graced broadcast never attributes relay
+	// observations to a broadcaster session that has already ended.
+	publisherSessionID string
 	// publisher is the handle currently holding the slot (nil when inactive).
 	// TakeOverPublish needs it to depose the incumbent.
 	publisher  *Publisher
@@ -925,6 +942,10 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	}
 
 	b.publisherActive = true
+	// A new publisher session has not been handed its telemetry hello yet
+	// (the transport does that after the upgrade), and the outgoing session's
+	// handle must not be attributed to it.
+	b.publisherSessionID = ""
 	b.generation++
 
 	// Reset the keyframe cache on a new publisher session (frameIDs reset, the
@@ -1410,6 +1431,7 @@ func (r *Registry) Stats() RegistryStats {
 			egressCar += s.egressCarrierBytes.Load()
 			details = append(details, SubscriberStats{
 				Key:                   s.statsKey,
+				SessionID:             s.sessionID,
 				QueueDepth:            len(s.queue),
 				Dropped:               s.dropped.Load(),
 				SendErrors:            s.sendErrors.Load(),
@@ -1463,6 +1485,7 @@ func (r *Registry) Stats() RegistryStats {
 		obf := r.ObfuscateID(id)
 		broadcasts[obf] = Stats{
 			PublisherActive:           b.publisherActive,
+			PublisherSessionID:        b.publisherSessionID,
 			Role:                      role,
 			Subscribers:               b.externalSubsLocked(),
 			ViewersGlobal:             viewersGlobal,
@@ -1687,6 +1710,25 @@ func (p *Publisher) BindConn(c SessionCloser) bool {
 	}
 	p.conn = c
 	return true
+}
+
+// SetTelemetrySession records the R28 telemetry session handle this publisher
+// session was told in its TelemetryHello (docs/33 D2), so /statusz's
+// publisherSessionId can join the broadcaster's own reports. Called by the
+// transport right after the hello is sent; a no-op with an empty id (the
+// telemetry-disabled path) or on a publisher already closed or deposed —
+// a superseded session must never relabel the live one.
+func (p *Publisher) SetTelemetrySession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	r := p.hub.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed || p.hub.publisher != p {
+		return
+	}
+	p.hub.publisherSessionID = sessionID
 }
 
 // BindSend attaches the relay→publisher datagram sender (R18): the count
@@ -1936,6 +1978,7 @@ func (p *Publisher) Close() {
 	p.closed = true
 	p.send = nil
 	b.publisherActive = false
+	b.publisherSessionID = ""
 	b.publisher = nil
 
 	if r.opts.BroadcastGrace > 0 {
@@ -2051,6 +2094,16 @@ type Subscriber struct {
 	// per-session, so a slow viewer can be watched across polls without
 	// exposing anything identifying or joinable.
 	statsKey string
+	// sessionID is the R28 telemetry session handle (docs/33 D2): the nonce
+	// of the token this session was handed in its TelemetryHello. Empty when
+	// telemetry is off or this is an edge session. It is deliberately NOT
+	// derived from statsKey and does not replace it — statsKey stays the
+	// 32-bit /statusz display handle it has always been, and deriving one
+	// from the other would leak part of a bearer credential into a public-ish
+	// JSON endpoint for no benefit. The relay is the only party that sees
+	// both, which is exactly where the client↔relay join happens.
+	// Guarded by the registry lock.
+	sessionID string
 	// internal marks a downstream edge session (R17 W4): exempt from viewer
 	// caps and counted as an edge, not an audience member.
 	internal bool
@@ -2827,6 +2880,21 @@ func (s *Subscriber) Close() {
 // PSK-authenticated, generation-fenced edge (docs/23 Decision 6).
 func (s *Subscriber) RecordDownstreamViewers(count uint32) {
 	s.downstreamViewers.Store(uint64(count))
+}
+
+// SetTelemetrySession records the R28 telemetry session handle this
+// subscriber was told in its TelemetryHello (docs/33 D2), so /statusz can
+// carry it and the two sides of one viewer become joinable. Called by the
+// transport right after the hello is sent; a no-op with an empty id, which is
+// the telemetry-disabled path.
+func (s *Subscriber) SetTelemetrySession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	r := s.hub.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s.sessionID = sessionID
 }
 
 // Dropped reports dropped datagrams count.

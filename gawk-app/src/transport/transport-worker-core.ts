@@ -9,7 +9,7 @@
 import type { CarrierCounters, ConnectOptions, KeyframeStreamFrame } from './connection';
 import type { TransportConnectionStats } from './net-stats';
 import type { TimeSyncStats } from './time-sync';
-import type { DecoderConfigMessage } from './wire';
+import type { DecoderConfigMessage, TelemetryHelloMessage } from './wire';
 import {
   LocalViewerTransport,
   type TransportClosedInfo,
@@ -36,6 +36,11 @@ export type TransportWorkerEvent =
       streamBytes: number;
     }
   | { type: 'closed'; closeCode?: number; reason?: string; message: string }
+  // R28 (docs/33 D2): the session's telemetry identity, forwarded once. It
+  // gets its own message rather than riding the stats push because it is a
+  // bearer credential — keeping it out of ViewerStats is what keeps it out of
+  // the Copy-diagnostics blob a user pastes into a chat.
+  | { type: 'telemetryHello'; hello: TelemetryHelloMessage }
   // Pushed at the stats cadence: connection health + the relay clock-sync
   // sample (R5 Q2 — measured in this worker, where the reply timing is jitter-
   // free; bigint crosses postMessage via structured clone) + the R19 carrier
@@ -87,6 +92,7 @@ export class TransportWorkerCore {
             },
             keyframeTransferables(kf),
           ),
+        onTelemetryHello: (hello) => this.host.post({ type: 'telemetryHello', hello }),
         onClosed: (info: TransportClosedInfo) => {
           this.stopStats();
           this.host.post({ type: 'closed', ...info });

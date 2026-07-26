@@ -744,6 +744,14 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.Connection("publish", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
+
+	// R28 TM1: hand this session its telemetry identity and record the same
+	// handle on the hub, so /statusz's publisherSessionId joins the
+	// broadcaster's own reports. Sent last of the three uni messages — a
+	// telemetry failure must never cost a broadcast, so it is the one that
+	// cannot abort setup.
+	pub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleBroadcaster, log))
+
 	log.Info("publisher session started")
 
 	// Keyframes arrive on publisher-initiated unidirectional streams (R8),
@@ -1021,6 +1029,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+	// R28 TM1: the viewer half of the correlation ID. Best-effort, and after
+	// the delivery ack — a subscriber whose hello fails still watches, it just
+	// never reports, which the dashboard shows as unknown rather than ok.
+	sub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleViewer, log))
+
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
 	for {

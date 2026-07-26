@@ -18,6 +18,9 @@ import {
   DELIVERY_ACK_SIZE,
   encodeDeliveryAck,
   parseDeliveryAck,
+  encodeTelemetryHello,
+  parseTelemetryHello,
+  TELEMETRY_HELLO_SIZE,
   TYPE_VIEWER_COUNT,
   TIME_SYNC_SIZE,
   CLOCK_MAPPING_SIZE,
@@ -705,5 +708,81 @@ describe('DeliveryAck (R21)', () => {
     expect(() => parseDeliveryAck(fromHex('010b020bb8'))).toThrow(); // type
     // An unknown mode must throw, not silently read as datagrams.
     expect(() => parseDeliveryAck(fromHex('010c090bb8'))).toThrow();
+  });
+});
+
+// R28 (docs/33 §4.1): the telemetry hello. Golden vectors are byte-identical
+// to gawk-server/wire's and gawk-broadcast's wirecheck — this is one of the
+// three mirrors that keeps them so.
+describe('TelemetryHello (R28)', () => {
+  const GOLDEN_HEX =
+    '010d0107d000012345000102030405060708090a0ba1a2a3a4a5a6a7a81a2b3c4d5e6f';
+  const GOLDEN_DISABLED_HEX =
+    '010d000000' + '000000000000000000000000000000000000000000000000000000000000';
+  const GOLDEN_TOKEN = '00012345000102030405060708090a0ba1a2a3a4a5a6a7a8';
+  const GOLDEN_KEY = '1a2b3c4d5e6f';
+
+  it('matches the Go golden vectors', () => {
+    expect(
+      toHex(
+        encodeTelemetryHello({
+          enabled: true,
+          reportIntervalMs: 2000,
+          token: GOLDEN_TOKEN,
+          broadcastKey: GOLDEN_KEY,
+        }),
+      ),
+    ).toBe(GOLDEN_HEX);
+    expect(
+      toHex(
+        encodeTelemetryHello({
+          enabled: false,
+          reportIntervalMs: 0,
+          token: '0'.repeat(48),
+          broadcastKey: '0'.repeat(12),
+        }),
+      ),
+    ).toBe(GOLDEN_DISABLED_HEX);
+  });
+
+  it('parses the Go golden vectors', () => {
+    expect(parseTelemetryHello(fromHex(GOLDEN_HEX))).toEqual({
+      enabled: true,
+      reportIntervalMs: 2000,
+      token: GOLDEN_TOKEN,
+      broadcastKey: GOLDEN_KEY,
+    });
+    const off = parseTelemetryHello(fromHex(GOLDEN_DISABLED_HEX));
+    expect(off.enabled).toBe(false);
+  });
+
+  it('round-trips', () => {
+    for (const enabled of [true, false]) {
+      for (const reportIntervalMs of [0, 1, 500, 2000, 65535]) {
+        const msg = { enabled, reportIntervalMs, token: GOLDEN_TOKEN, broadcastKey: GOLDEN_KEY };
+        expect(parseTelemetryHello(encodeTelemetryHello(msg))).toEqual(msg);
+      }
+    }
+  });
+
+  it('rejects malformed hellos strictly', () => {
+    const good = encodeTelemetryHello({
+      enabled: true,
+      reportIntervalMs: 2000,
+      token: GOLDEN_TOKEN,
+      broadcastKey: GOLDEN_KEY,
+    });
+    expect(() => parseTelemetryHello(good.subarray(0, TELEMETRY_HELLO_SIZE - 1))).toThrow(WireError);
+    expect(() => parseTelemetryHello(fromHex(GOLDEN_HEX + '00'))).toThrow(WireError);
+    expect(() => parseTelemetryHello(fromHex('02' + GOLDEN_HEX.slice(2)))).toThrow(/version/);
+    expect(() => parseTelemetryHello(fromHex('010c' + GOLDEN_HEX.slice(4)))).toThrow(/type/);
+    // A reserved flag bit means a future field this build would misread.
+    expect(() => parseTelemetryHello(fromHex('010d02' + GOLDEN_HEX.slice(6)))).toThrow(/reserved/);
+  });
+
+  it('rejects fixed-width fields of the wrong size on encode', () => {
+    const base = { enabled: true, reportIntervalMs: 2000, token: GOLDEN_TOKEN, broadcastKey: GOLDEN_KEY };
+    expect(() => encodeTelemetryHello({ ...base, token: GOLDEN_TOKEN.slice(2) })).toThrow(WireError);
+    expect(() => encodeTelemetryHello({ ...base, broadcastKey: 'zzzzzzzzzzzz' })).toThrow(WireError);
   });
 });

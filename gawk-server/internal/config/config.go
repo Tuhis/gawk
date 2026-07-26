@@ -16,6 +16,15 @@ import (
 	"time"
 )
 
+// Telemetry reporting-cadence bounds (R28, docs/33). The floor is the client
+// stats tick — reporting faster only resends the same numbers; the ceiling is
+// what a uint16 of milliseconds can carry, and past it a session's shape is
+// lost between samples anyway.
+const (
+	MinTelemetryReportInterval = 500 * time.Millisecond
+	MaxTelemetryReportInterval = 60 * time.Second
+)
+
 // Config is the fully-resolved server configuration.
 type Config struct {
 	Addr           string // UDP listen address, e.g. ":4433"
@@ -94,6 +103,21 @@ type Config struct {
 	// relay pods. Empty: HKDF from the publish secret when one is set, else
 	// a per-process random key (dev parity with process-lifetime reclaim).
 	ResumeTokenKey []byte
+
+	// TelemetryKey keys the R28 telemetry session token (docs/33 D2/§4.2):
+	// 32 bytes from 64 hex chars, shared by every relay pod AND the
+	// gawk-telemetry service, which verifies tokens statelessly with it.
+	// Its presence IS the feature switch — with no key the relay cannot mint
+	// a token, so it sends no TelemetryHello and every client collects
+	// nothing, which is byte-identical to a relay predating R28. Never
+	// logged. Rotating it revokes every outstanding token.
+	TelemetryKey []byte
+
+	// TelemetryReportInterval is the sampling cadence the relay asks clients
+	// to use, carried in the hello so a fleet can turn the volume down
+	// without shipping a new frontend. Clamped to something a uint16 of
+	// milliseconds can carry and a client can honour.
+	TelemetryReportInterval time.Duration
 
 	// StatelessResetKey is the 32-byte QUIC stateless reset key (R17 W1,
 	// docs/22 Decision 3), decoded from 64 hex chars. Shared across every
@@ -223,6 +247,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"comma-separated CIDRs that bypass the per-IP connection rate limiter (node/pod CIDRs under SNAT)")
 	statsKey := fs.String("stats-key", env("GAWK_STATS_KEY", ""),
 		"statusz/metrics broadcast-ID obfuscation key as 64 hex chars (32 bytes), shared fleet-wide; empty = per-process random")
+	telemetryKey := fs.String("telemetry-key", env("GAWK_TELEMETRY_KEY", ""),
+		"R28 telemetry session-token HMAC key as 64 hex chars (32 bytes), shared with the gawk-telemetry service; empty disables telemetry entirely (no hello is sent)")
+	telemetryReportInterval := fs.String("telemetry-report-interval", env("GAWK_TELEMETRY_REPORT_INTERVAL", "2s"),
+		"sampling cadence the relay asks telemetry clients to use")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -326,6 +354,20 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	telemetryKeyBytes, err := parseHexKey32("telemetry-key", *telemetryKey)
+	if err != nil {
+		return Config{}, err
+	}
+	telemetryInterval, err := time.ParseDuration(*telemetryReportInterval)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid telemetry-report-interval %q: %w", *telemetryReportInterval, err)
+	}
+	// The hello carries the interval as a uint16 of milliseconds, and a client
+	// that reports faster than the stats tick just resends the same numbers.
+	if telemetryInterval < MinTelemetryReportInterval || telemetryInterval > MaxTelemetryReportInterval {
+		return Config{}, fmt.Errorf("invalid telemetry-report-interval %q: want %v-%v",
+			*telemetryReportInterval, MinTelemetryReportInterval, MaxTelemetryReportInterval)
+	}
 
 	return Config{
 		Addr:           *addr,
@@ -361,6 +403,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		StatsKey:           statsKeyBytes,
 		ResumeTokenKey:     resumeKey,
 		StatelessResetKey:  resetKey,
+
+		TelemetryKey:            telemetryKeyBytes,
+		TelemetryReportInterval: telemetryInterval,
 
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,

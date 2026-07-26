@@ -46,7 +46,7 @@ feature set exists).
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
-| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed 2026-07-26 (owner-locked architecture/retention/read-surfaces/collection policy; wire 0x0D correlation ID, files-first `gawk-telemetry`, docs/13 playbook as `diagnose()`), not started (TM1–TM9) ([docs/33](docs/33-telemetry-and-diagnostics.md)) |
+| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
 
 ---
 
@@ -1923,6 +1923,14 @@ not started.
 ---
 
 ## R28 — Advanced diagnostics & telemetry
+
+**Status (2026-07-26)**: **TM1–TM8 implemented**, automated gates green in all
+four modules. **TM9 (Grafana) dropped** by owner scope decision — R9 M8 stays
+open. **Manual verification (docs/33 §6) is pending**; deviations are recorded
+in [docs/33 §4.9](docs/33-telemetry-and-diagnostics.md). Everything is
+**default off**: without a fleet telemetry key the relay sends no hello and
+every client collects nothing, and both the relay and telemetry charts render
+byte-identically to pre-R28 (asserted in CI).
 
 **Goal**: every broadcast and every viewer session records what actually
 happened, automatically, into a store that answers three questions without a

@@ -26,6 +26,21 @@ ingress:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-production
 
+# R28 (docs/33 D1): route the telemetry ingest path to the gawk-telemetry
+# service from THIS host, so the browser collector talks same-origin. OFF by
+# default — with it off this chart renders exactly as it did before R28, and
+# clients never collect anything anyway (the relay gates that, wire 0x0D).
+#
+# Enable it together with the gawk-telemetry chart and the relay's
+# telemetry.enabled, all three sharing one telemetry key.
+telemetry:
+  enabled: false
+  # Must match the client default in gawk-app/src/config.ts, and the service's
+  # own ingest route. Change it only if you also set config.telemetryUrl.
+  path: /api/telemetry/
+  serviceName: gawk-telemetry
+  servicePort: 80
+
 resources:
   requests:
     cpu: 10m
@@ -82,3 +97,10 @@ config:
   # default. Leave termsUrl empty to keep the bundled default.
   termsUrl: ""
   termsHtml: ""
+
+  # R28: where the browser posts telemetry batches. Empty ⇒ the app's built-in
+  # same-origin default (/api/telemetry/v1/ingest), which is what the
+  # telemetry.path route above serves. Set this only when the telemetry
+  # service lives on a DIFFERENT origin — and then that origin has to answer
+  # CORS preflights, which the unload beacon cannot perform.
+  telemetryUrl: ""

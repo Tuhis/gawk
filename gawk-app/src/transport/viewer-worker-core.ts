@@ -14,6 +14,7 @@ import type { DecodedAudioChunk } from './audio-decode';
 import type { AudioMuxCodec, AudioTapEvent, Fmp4Track } from './fmp4-muxer';
 import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
+import type { TelemetryHelloMessage } from './wire';
 import type { ReleasedFrame } from './reorder-buffer';
 import { ViewerPipeline } from './viewer';
 import type { ViewerStats } from './viewer';
@@ -86,7 +87,12 @@ export type ViewerWorkerEvent =
     }
   // R15 (docs/20 Decision 8): restart/reconnect — the sink must flush and
   // re-anchor before the new timeline's packets arrive.
-  | { type: 'audioReset' };
+  | { type: 'audioReset' }
+  // R28 (docs/33 D2): the session's telemetry identity, forwarded to the main
+  // thread where collection lives (D13). Its own message rather than a field
+  // on 'stats' because the token is a bearer credential and ViewerStats is
+  // what Copy diagnostics serializes for pasting into a chat.
+  | { type: 'telemetryHello'; hello: TelemetryHelloMessage };
 
 // R22: the muxer's output events (see ViewerWorkerEvent above). `track` routes
 // the segment to its own SourceBuffer on the main thread — video and audio are
@@ -234,6 +240,12 @@ export class ViewerWorkerCore {
       },
       onAudioReset: () => {
         if (current()) this.host.post({ type: 'audioReset' });
+      },
+      // R28: the session's telemetry identity, out to the main thread where
+      // collection lives. Generation-guarded like every other forward, so a
+      // superseded attempt's hello can't relabel the live session.
+      onTelemetryHello: (hello) => {
+        if (current()) this.host.post({ type: 'telemetryHello', hello });
       },
       // R22: the encoded-frame fork for the shell's muxer. Generation-guarded
       // so a superseded session's late releases can't interleave a stale

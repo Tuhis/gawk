@@ -1,0 +1,20 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+# The store is files-first (docs/33 D3): hive-partitioned NDJSON, one file per
+# session, one writer per file. ReadWriteOnce is correct and not a limitation —
+# replicaCount is pinned to 1 by design.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "gawk-telemetry.fullname" . }}-data
+  labels:
+    {{- include "gawk-telemetry.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

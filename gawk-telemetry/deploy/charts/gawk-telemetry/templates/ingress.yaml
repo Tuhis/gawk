@@ -1,0 +1,38 @@
+{{- if .Values.read.ingress.enabled }}
+{{- if not .Values.read.basicAuth.enabled }}
+{{- fail "read.ingress.enabled requires read.basicAuth.enabled: the read surface aggregates every broadcast on the fleet and must not be reachable unauthenticated once it leaves the cluster (docs/33 D14)" }}
+{{- end }}
+# An INTERNAL-only Ingress for the read surface, at the operator's discretion.
+# Never the public path that carries ingest: this is the surface that shows
+# every broadcast and every viewer, and R9 D1's posture for /metrics applies
+# unchanged.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gawk-telemetry.fullname" . }}-read
+  labels:
+    {{- include "gawk-telemetry.labels" . | nindent 4 }}
+  {{- with .Values.read.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.read.ingress.className }}
+  {{- if .Values.read.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.read.ingress.host | quote }}
+      secretName: {{ .Values.read.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.read.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gawk-telemetry.fullname" . }}-read
+                port:
+                  number: {{ .Values.read.port }}
+{{- end }}

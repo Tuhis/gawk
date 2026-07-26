@@ -28,6 +28,22 @@ describe('TermsPage', () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  // R28 (docs/33 D8): always-on collection has to be stated, not merely
+  // permitted by the broad rights Section 6 already reserves. The text must
+  // name both what IS collected and what is NOT — silence about the second
+  // half is what makes a privacy claim unverifiable.
+  it('states the telemetry practice, including what is not collected', () => {
+    render(<TermsPage />);
+    expect(screen.getByText(/technical performance measurements/i)).toBeTruthy();
+    expect(screen.getByText(/coarse browser and operating-system category/i)).toBeTruthy();
+    const notCollected = screen.getByText(/does not include any broadcast audio or video/i);
+    expect(notCollected.textContent).toMatch(/your IP address/i);
+    expect(notCollected.textContent).toMatch(/full browser user-agent string/i);
+    expect(notCollected.textContent).toMatch(/follows you between sessions/i);
+    // And it must not undermine Section 7's existing no-media-recording claim.
+    expect(screen.getByText(/does not persistently record or store broadcast media/i)).toBeTruthy();
+  });
+
   it('renders a fetched override in place of the default', async () => {
     window.__GAWK_CONFIG__ = { termsUrl: '/terms.html' };
     mockFetch(() => new Response('<h1>Custom terms</h1><p>house rules</p>', { status: 200 }));

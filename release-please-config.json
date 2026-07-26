@@ -29,6 +29,17 @@
       "release-type": "go",
       "component": "gawk-broadcast",
       "changelog-path": "CHANGELOG.md"
+    },
+    "gawk-telemetry": {
+      "release-type": "go",
+      "component": "gawk-telemetry",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/charts/gawk-telemetry/Chart.yaml"
+        }
+      ]
     }
   }
 }

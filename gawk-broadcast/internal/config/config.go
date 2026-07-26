@@ -31,6 +31,16 @@ type Config struct {
 	AppURL string `json:"appUrl,omitempty"`
 	// PublishSecret is R2's pre-shared publish secret.
 	PublishSecret string `json:"publishSecret,omitempty"`
+	// TelemetryURL is the R28 ingest endpoint (docs/33 D1), e.g.
+	// https://gawk.example/api/telemetry/v1/ingest. Empty disables reporting
+	// entirely — this binary makes no telemetry request at all.
+	//
+	// It is NOT derivable from RelayURL: telemetry is served from the frontend
+	// origin, which is a different host by construction (the relay is a UDP
+	// LoadBalancer, the app an Ingress) — the same reason AppURL exists as its
+	// own field. Left empty by default so a native broadcaster never reports
+	// anywhere its operator did not point it.
+	TelemetryURL string `json:"telemetryUrl,omitempty"`
 	// Origin overrides the Origin header sent on the CONNECT dial. Empty uses
 	// engine.DefaultOrigin. Set it to reuse an already-whitelisted origin (e.g.
 	// the frontend's) instead of adding a new -allowed-origins entry on the

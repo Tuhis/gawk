@@ -134,6 +134,23 @@ export function BundledTerms() {
         protect the Service; questions about personal data may be directed to the contact in Section
         13.
       </p>
+      <p>
+        The Service also collects <strong>technical performance measurements</strong> from
+        broadcasters and viewers, automatically and for every session, in order to diagnose
+        streaming problems. What is collected is limited to playback and network statistics — for
+        example frame rates, latency, buffering, packet loss, reconnects, and error codes — together
+        with a coarse browser and operating-system category (such as &ldquo;Chrome 152&rdquo; and
+        &ldquo;Windows&rdquo;), a per-session identifier that exists only for the duration of that
+        session, and an obscured form of the broadcast code. It{' '}
+        <strong>
+          does not include any broadcast audio or video, any screen contents, your IP address, your
+          full browser user-agent string, any account or contact details, or any identifier that
+          follows you between sessions or between broadcasts
+        </strong>
+        . These measurements are retained in full for a short period (currently 14 days) and
+        thereafter only as aggregate per-session summaries. Like Section 6, this paragraph describes
+        present operation rather than a warranty.
+      </p>
 
       <h2>8. Limitation of liability.</h2>
       <p>

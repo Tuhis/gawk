@@ -55,12 +55,15 @@ import {
   nextFrameId,
   parseBroadcastAnnounce,
   parseResumeToken,
+  parseTelemetryHello,
   parseViewerCount,
   peekType,
   TYPE_BROADCAST_ANNOUNCE,
   TYPE_RESUME_TOKEN,
+  TYPE_TELEMETRY_HELLO,
   TYPE_VIEWER_COUNT,
   VIEWER_COUNT_SIZE,
+  type TelemetryHelloMessage,
 } from './wire';
 
 export interface BroadcastStats {
@@ -203,6 +206,12 @@ export interface BroadcastCallbacks {
   onReconnecting?: (info: ReconnectInfo) => void;
   // The transport reconnected; the pipeline forced a fresh keyframe.
   onResumed?: () => void;
+  // R28 (docs/33 D2): this session's telemetry identity, straight off wire
+  // 0x0D. Optional on purpose — a relay predating R28, or one with telemetry
+  // off, never sends it, and the collector's correct behaviour then is to
+  // collect nothing. Fires once per transport session, so an auto-resume
+  // delivers a fresh identity for the new session.
+  onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
 }
 
 function roundDownToEven(n: number): number {
@@ -544,6 +553,16 @@ export class BroadcastPipeline {
         case TYPE_RESUME_TOKEN: {
           this.resumeToken = bytesToHex(parseResumeToken(data));
           if (!this.stopping) this.cb.onResumeToken?.(this.resumeToken);
+          break;
+        }
+        // R28 (docs/33 D2): this session's telemetry identity. Parsed here and
+        // handed straight out — the pipeline never collects or sends anything
+        // itself (D13: collection lives on the main thread). A relay predating
+        // R28 sends no such stream, which is why the callback is optional on
+        // both sides rather than a required handshake step.
+        case TYPE_TELEMETRY_HELLO: {
+          const hello = parseTelemetryHello(data);
+          if (!this.stopping) this.cb.onTelemetryHello?.(hello);
           break;
         }
         default:

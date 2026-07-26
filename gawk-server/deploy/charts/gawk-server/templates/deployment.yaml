@@ -191,6 +191,24 @@ spec:
               {{- else }}
               value: {{ .Values.config.resumeTokenKey | quote }}
               {{- end }}
+            {{- if .Values.telemetry.enabled }}
+            # R28 (docs/33 D2): the telemetry session-token key. Its presence
+            # is the feature switch — the relay mints a token per session and
+            # sends wire 0x0D only while it is set, so the whole client-side
+            # collection path is gated on this one value. Shared with the
+            # gawk-telemetry service, which verifies tokens statelessly.
+            - name: GAWK_TELEMETRY_KEY
+              {{- if .Values.telemetry.keyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.telemetry.keyRef.name | quote }}
+                  key: {{ .Values.telemetry.keyRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.telemetry.key | quote }}
+              {{- end }}
+            - name: GAWK_TELEMETRY_REPORT_INTERVAL
+              value: {{ .Values.telemetry.reportInterval | quote }}
+            {{- end }}
             # R17 W1: the QUIC stateless reset key (docs/22 Decision 3) —
             # SHARED across all relay pods (that is the whole point), so it
             # belongs in a Secret via statelessResetKeyRef in any multi-pod

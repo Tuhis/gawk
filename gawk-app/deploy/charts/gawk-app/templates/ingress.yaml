@@ -20,6 +20,27 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
+          {{- if .Values.telemetry.enabled }}
+          # R28 (docs/33 D1): telemetry ingest, routed to gawk-telemetry from a
+          # SAME-ORIGIN path on this frontend's own host. That is the whole
+          # point — a cross-origin `sendBeacon` with Content-Type:
+          # application/json needs a preflight it cannot perform during unload,
+          # and the usual workaround is to lie about the content type.
+          # Same-origin needs neither, and costs no LoadBalancer, no DNS record
+          # and no certificate.
+          #
+          # ONLY the ingest path is public. The read API and the dashboard live
+          # on the service's other listener and are never routed here — the
+          # read side aggregates every broadcast on the fleet and should be no
+          # more reachable than /statusz is today (R9 D1's posture).
+          - path: {{ .Values.telemetry.path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.telemetry.serviceName }}
+                port:
+                  number: {{ .Values.telemetry.servicePort }}
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:

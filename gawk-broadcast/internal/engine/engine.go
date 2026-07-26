@@ -90,6 +90,12 @@ type Callbacks struct {
 	// OnEncoderChosen fires once the cascade settles on a candidate
 	// (Decision 4: the chosen encoder is reported at startup and in stats).
 	OnEncoderChosen func(encoder string)
+	// OnTelemetryHello fires once per relay session with this session's
+	// telemetry identity (R28, wire 0x0D): the ingest token, the obfuscated
+	// broadcast key, and whether the fleet collects at all. Absent on a relay
+	// predating R28 or with telemetry off — which is exactly the same thing
+	// as a shell that installs no callback: nothing is collected or sent.
+	OnTelemetryHello func(hello wire.TelemetryHello)
 	// OnViewerCount fires whenever the relay pushes the live "N watching"
 	// number (R18, docs/23 — the SubscriberCount R14 deferred as Decision
 	// 18; the wire message exists now, TypeViewerCount 0x0B). The count is
@@ -107,6 +113,12 @@ func (c Callbacks) broadcastID(id string) {
 func (c Callbacks) resumeToken(token string) {
 	if c.OnResumeToken != nil {
 		c.OnResumeToken(token)
+	}
+}
+
+func (c Callbacks) telemetryHello(h wire.TelemetryHello) {
+	if c.OnTelemetryHello != nil {
+		c.OnTelemetryHello(h)
 	}
 }
 
@@ -423,6 +435,18 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 		s.cfg.ResumeToken = token
 		s.mu.Unlock()
 		s.cb.resumeToken(token)
+	case wire.TypeTelemetryHello:
+		// R28 (docs/33 D2): this session's telemetry identity. Parsed and
+		// handed out; the engine itself never collects or sends anything —
+		// the reporter lives in the shell, beside the notification and stats
+		// wiring, so a session with no reporter attached is byte-identical to
+		// one before R28.
+		hello, err := wire.ParseTelemetryHello(buf)
+		if err != nil {
+			s.log.Warn("telemetry hello parse failed", "err", err)
+			return
+		}
+		s.cb.telemetryHello(hello)
 	default:
 		s.log.Debug("server message ignored: unknown type", "type", buf[1])
 	}

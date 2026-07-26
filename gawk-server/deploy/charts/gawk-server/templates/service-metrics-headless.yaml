@@ -1,0 +1,41 @@
+{{- if and .Values.metrics.enabled .Values.telemetry.enabled .Values.telemetry.headlessService.enabled }}
+# R28 TM4 (docs/33 D5): the per-pod address source for gawk-telemetry.
+#
+# The relay is SCRAPED, never pushed from — the process carrying every
+# broadcast's hot path must not grow an outbound HTTP client or a queue. But
+# scraping needs per-pod addresses, and the metrics Service above is a
+# ClusterIP that load-balances, so polling it hits one random pod each time and
+# a fleet's sessions would appear and vanish at random.
+#
+# A headless Service (clusterIP: None) publishes one DNS A record per ready
+# pod, so the telemetry service resolves the set each interval and scrapes
+# every member. It is a COMPANION, deliberately not a change to the existing
+# metrics Service or its ServiceMonitor: Prometheus's scrape path must not
+# change shape because telemetry showed up.
+#
+# publishNotReadyAddresses is deliberately false: a pod that is not ready is
+# either starting (no sessions yet) or draining (its sessions are being 4002'd
+# away), and scraping it would attribute a dying pod's counters to live
+# sessions.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-metrics-headless
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics-headless
+  {{- with .Values.telemetry.headlessService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "gawk-server.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

@@ -13,7 +13,14 @@ import {
   readServerStreams,
   type KeyframeStreamFrame,
 } from './connection';
-import { encodeCarrierPrologue, encodeCarrierRecord, encodeStreamFrame, encodeVideoChunk } from './wire';
+import {
+  encodeCarrierPrologue,
+  encodeCarrierRecord,
+  encodeStreamFrame,
+  encodeTelemetryHello,
+  encodeVideoChunk,
+  type TelemetryHelloMessage,
+} from './wire';
 
 function stubWebTransport(maxDatagramSize: number): void {
   vi.stubGlobal(
@@ -306,6 +313,96 @@ describe('readServerStreams — reliable carriers (R19)', () => {
     // Records before the reset still delivered; the reset itself is counted.
     expect(records).toHaveLength(1);
     expect(counters.streamsAborted).toBe(1);
+    expect(counters.malformed).toBe(0);
+  });
+});
+
+// R28 (docs/33 D2): the telemetry hello arrives as its own server uni stream,
+// and must be dispatched by its wire type rather than mistaken for a keyframe
+// or a carrier — the three now share the same accept loop.
+describe('readServerStreams — telemetry hello (R28)', () => {
+  const hello = () =>
+    encodeTelemetryHello({
+      enabled: true,
+      reportIntervalMs: 2000,
+      token: '00012345000102030405060708090a0ba1a2a3a4a5a6a7a8',
+      broadcastKey: '1a2b3c4d5e6f',
+    });
+
+  it('dispatches a hello to its own callback, never to the media path', async () => {
+    const wt = wtWithStreams([[hello()]]);
+    const hellos: TelemetryHelloMessage[] = [];
+    const keyframes: KeyframeStreamFrame[] = [];
+    const records: Uint8Array[] = [];
+    const counters = newCarrierCounters();
+    await readServerStreams(
+      wt,
+      {
+        onKeyframe: (kf) => keyframes.push(kf),
+        onCarrierRecord: (r) => records.push(r),
+        onTelemetryHello: (h) => hellos.push(h),
+      },
+      counters,
+    );
+
+    expect(hellos).toEqual([
+      {
+        enabled: true,
+        reportIntervalMs: 2000,
+        token: '00012345000102030405060708090a0ba1a2a3a4a5a6a7a8',
+        broadcastKey: '1a2b3c4d5e6f',
+      },
+    ]);
+    expect(keyframes).toHaveLength(0);
+    expect(records).toHaveLength(0);
+    expect(counters.malformed).toBe(0);
+    expect(counters.streamsOpened).toBe(0);
+  });
+
+  it('reassembles a hello split across reads', async () => {
+    const msg = hello();
+    const wt = wtWithStreams([[msg.subarray(0, 3), msg.subarray(3, 20), msg.subarray(20)]]);
+    const hellos: TelemetryHelloMessage[] = [];
+    await readServerStreams(
+      wt,
+      { onKeyframe: () => {}, onCarrierRecord: () => {}, onTelemetryHello: (h) => hellos.push(h) },
+      newCarrierCounters(),
+    );
+    expect(hellos).toHaveLength(1);
+  });
+
+  // A viewer that does not do telemetry (or an unreadable hello) must lose
+  // nothing but telemetry: the media path is untouched and the session runs on.
+  it('survives a malformed hello and keeps serving keyframes', async () => {
+    const truncated = hello().subarray(0, 20);
+    const kf = encodeStreamFrame(
+      { keyframe: true, frameId: 9, timestampUs: 900n },
+      new Uint8Array(0),
+      new Uint8Array(8).fill(3),
+    );
+    const wt = wtWithStreams([[truncated], [kf]]);
+    const keyframes: KeyframeStreamFrame[] = [];
+    const hellos: TelemetryHelloMessage[] = [];
+    const counters = newCarrierCounters();
+    await readServerStreams(
+      wt,
+      {
+        onKeyframe: (k) => keyframes.push(k),
+        onCarrierRecord: () => {},
+        onTelemetryHello: (h) => hellos.push(h),
+      },
+      counters,
+    );
+    expect(hellos).toHaveLength(0);
+    expect(counters.malformed).toBe(1);
+    expect(keyframes).toHaveLength(1);
+    expect(keyframes[0].frameId).toBe(9);
+  });
+
+  it('ignores a hello when the consumer does not do telemetry', async () => {
+    const wt = wtWithStreams([[hello()]]);
+    const counters = newCarrierCounters();
+    await readServerStreams(wt, { onKeyframe: () => {}, onCarrierRecord: () => {} }, counters);
     expect(counters.malformed).toBe(0);
   });
 });

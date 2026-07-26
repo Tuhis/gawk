@@ -82,6 +82,13 @@ export const TYPE_VIEWER_COUNT = 0x0b;
 // one, so without this the viewer cannot tell an honoured request from a
 // downgrade or from a relay too old to know the parameter.
 export const TYPE_DELIVERY_ACK = 0x0c;
+// TelemetryHello (R28, docs/33 D2): relay→client, once per session on its own
+// reliable uni stream. Carries this session's telemetry token, the OBFUSCATED
+// broadcast key (so a client never reports a joinable ID), and whether the
+// fleet collects telemetry at all. Clients parse it and never send it; a relay
+// predating R28 sends nothing, which the client treats exactly like
+// enabled: false.
+export const TYPE_TELEMETRY_HELLO = 0x0d;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -518,6 +525,79 @@ export function parseResumeToken(msg: Uint8Array): Uint8Array {
     throw new WireError(`invalid resume token: declared ${tokenLen} bytes in ${msg.length}-byte message`);
   }
   return msg.subarray(3);
+}
+
+// TelemetryHello (R28, docs/33 §4.1): exactly 35 bytes — version, type 0x0d,
+// a flags byte (bit 0 = enabled), uint16 reportIntervalMs, a 24-byte session
+// token, and the 6-byte obfuscated broadcast key. Strict fixed-length parse
+// like TimeSync/ClockMapping/ViewerCount, including reserved flag bits, which
+// must be clear: a set bit means a field this build would misread. The
+// encoder exists for tests and golden vectors; browsers only ever parse it.
+
+export const TELEMETRY_HELLO_SIZE = 35;
+export const TELEMETRY_SESSION_TOKEN_SIZE = 24;
+export const TELEMETRY_BROADCAST_KEY_SIZE = 6;
+const TELEMETRY_FLAG_ENABLED = 0x01;
+
+export interface TelemetryHelloMessage {
+  enabled: boolean;
+  reportIntervalMs: number;
+  // Hex, ready for the ingest envelope. The token is a bearer credential:
+  // it is held in memory by the collector, sent only to the ingest endpoint,
+  // and deliberately never placed in ViewerStats or a Copy-diagnostics blob.
+  token: string;
+  broadcastKey: string;
+}
+
+export function encodeTelemetryHello(msg: TelemetryHelloMessage): Uint8Array<ArrayBuffer> {
+  const token = hexToBytes(msg.token, TELEMETRY_SESSION_TOKEN_SIZE, 'telemetry token');
+  const key = hexToBytes(msg.broadcastKey, TELEMETRY_BROADCAST_KEY_SIZE, 'telemetry broadcast key');
+  const out = new Uint8Array(TELEMETRY_HELLO_SIZE);
+  const view = new DataView(out.buffer);
+  out[0] = WIRE_VERSION;
+  out[1] = TYPE_TELEMETRY_HELLO;
+  out[2] = msg.enabled ? TELEMETRY_FLAG_ENABLED : 0;
+  view.setUint16(3, msg.reportIntervalMs);
+  out.set(token, 5);
+  out.set(key, 5 + TELEMETRY_SESSION_TOKEN_SIZE);
+  return out;
+}
+
+export function parseTelemetryHello(msg: Uint8Array): TelemetryHelloMessage {
+  if (msg.length !== TELEMETRY_HELLO_SIZE) {
+    throw new WireError(`telemetry hello must be exactly ${TELEMETRY_HELLO_SIZE} bytes, got ${msg.length}`);
+  }
+  if (msg[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${msg[0].toString(16)}`);
+  }
+  if (msg[1] !== TYPE_TELEMETRY_HELLO) {
+    throw new WireError(`unexpected message type 0x${msg[1].toString(16)}, want telemetry hello`);
+  }
+  if ((msg[2] & ~TELEMETRY_FLAG_ENABLED) !== 0) {
+    throw new WireError(`telemetry hello sets reserved flag bits (0x${msg[2].toString(16)})`);
+  }
+  const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength);
+  return {
+    enabled: (msg[2] & TELEMETRY_FLAG_ENABLED) !== 0,
+    reportIntervalMs: view.getUint16(3),
+    token: bytesToHex(msg.subarray(5, 5 + TELEMETRY_SESSION_TOKEN_SIZE)),
+    broadcastKey: bytesToHex(msg.subarray(5 + TELEMETRY_SESSION_TOKEN_SIZE)),
+  };
+}
+
+function bytesToHex(b: Uint8Array): string {
+  let s = '';
+  for (const byte of b) s += byte.toString(16).padStart(2, '0');
+  return s;
+}
+
+function hexToBytes(hex: string, want: number, what: string): Uint8Array {
+  if (hex.length !== want * 2 || !/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new WireError(`invalid ${what}: want ${want * 2} hex chars, got ${JSON.stringify(hex)}`);
+  }
+  const out = new Uint8Array(want);
+  for (let i = 0; i < want; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
 }
 
 // AudioFrame + AudioConfig (R15, docs/20). Mirrors gawk-server/wire; the

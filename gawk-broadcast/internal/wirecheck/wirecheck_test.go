@@ -37,6 +37,11 @@ const (
 	// this module unnoticed.
 	goldenAudioFrameHex  = "01070000010203040000005d21dba5f0616263"
 	goldenAudioConfigHex = "010800046f7075730000bb8002"
+	// R28 telemetry hello (docs/33 §4.1). The native broadcaster DOES receive
+	// this one — it is a publisher, and the relay hands it a telemetry
+	// identity like any other client — so unlike the carrier/audio vectors
+	// above this is coupling on a message this module actually parses.
+	goldenTelemetryHelloHex = "010d0107d000012345000102030405060708090a0ba1a2a3a4a5a6a7a81a2b3c4d5e6f"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -287,5 +292,38 @@ func TestGoldenAudioConfig(t *testing.T) {
 	}
 	if want := mustHex(t, goldenAudioConfigHex); !bytes.Equal(got, want) {
 		t.Errorf("AudioConfig bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+}
+
+// R28 (docs/33 §4.1): the telemetry hello the relay sends this module's
+// publisher sessions. Parsed, never sent — asserted from the consumer side.
+func TestGoldenTelemetryHello(t *testing.T) {
+	want := mustHex(t, goldenTelemetryHelloHex)
+	got, err := wire.AppendTelemetryHello(nil, wire.TelemetryHello{
+		Enabled:          true,
+		ReportIntervalMs: 2000,
+		Token: []byte{
+			0x00, 0x01, 0x23, 0x45,
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+			0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8,
+		},
+		BroadcastKey: []byte{0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f},
+	})
+	if err != nil {
+		t.Fatalf("AppendTelemetryHello: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("TelemetryHello bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+
+	h, err := wire.ParseTelemetryHello(want)
+	if err != nil {
+		t.Fatalf("ParseTelemetryHello: %v", err)
+	}
+	if !h.Enabled || h.ReportIntervalMs != 2000 {
+		t.Errorf("enabled/interval = %v/%d, want true/2000", h.Enabled, h.ReportIntervalMs)
+	}
+	if hex.EncodeToString(h.BroadcastKey) != "1a2b3c4d5e6f" {
+		t.Errorf("broadcastKey = %x, want 1a2b3c4d5e6f", h.BroadcastKey)
 	}
 }

@@ -50,7 +50,7 @@
 // arrive, decode, and render, and that drops stay bounded.
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -64,16 +64,34 @@ const OUT = join(HERE, process.env.GAWK_E2E_OUT_DIR ?? 'out');
 const EXTERNAL = process.argv.includes('--external');
 const BROWSER_BROADCAST = process.argv.includes('--browser-broadcast');
 const MUXER_CHECK = process.argv.includes('--muxer-check');
+// R28 (docs/33): the telemetry pass. Off by default — it starts a fourth
+// process and spends ~20 s of dwell waiting for a real batch to flush, so it
+// is its own CI step rather than a tax on every viewer run.
+const TELEMETRY_CHECK = process.argv.includes('--telemetry');
 
 const RELAY_PORT = Number(process.env.GAWK_E2E_RELAY_PORT ?? 4433);
 const OPS_PORT = Number(process.env.GAWK_E2E_OPS_PORT ?? 2112);
+const TM_INGEST_PORT = Number(process.env.GAWK_E2E_TM_INGEST_PORT ?? 8090);
+const TM_READ_PORT = Number(process.env.GAWK_E2E_TM_READ_PORT ?? 8091);
 const PREVIEW_PORT = Number(process.env.GAWK_E2E_PREVIEW_PORT ?? 4173);
 const APP_DIR = resolve(HERE, process.env.GAWK_E2E_APP_DIR ?? '../gawk-app');
 const SERVER_BIN = resolve(HERE, process.env.GAWK_E2E_SERVER_BIN ?? 'bin/gawk-server');
 const PUBSIM_BIN = resolve(HERE, process.env.GAWK_E2E_PUBSIM_BIN ?? 'bin/gawk-pubsim');
+const TELEMETRY_BIN = resolve(HERE, process.env.GAWK_E2E_TELEMETRY_BIN ?? 'bin/gawk-telemetry');
 const APP_URL = `http://127.0.0.1:${PREVIEW_PORT}`;
 // ~5 s between the two diagnostics captures (Decision 6: "sustained").
 const SAMPLE_GAP_MS = 5000;
+
+// R28: the collector flushes every 10 s (FLUSH_INTERVAL_MS in
+// gawk-app/src/lib/telemetry.ts), so a pass that watched for less than that
+// would assert on a batch that was never due. 25 s buys two flushes — one to
+// prove the periodic path, one so a single unlucky one is not the whole
+// result.
+const TELEMETRY_DWELL_MS = 25_000;
+// A fixed, obviously-fake fleet key. It is a TEST key in a loopback harness;
+// the point it proves is that both ends derive the same tokens from the same
+// value, which any 32 bytes shows equally well.
+const TELEMETRY_KEY = 'e2e'.padEnd(64, '0');
 // The viewer-side decoded-fps floor (Decision 6: flow, not performance). Kept
 // well below the 30 fps source rate — a contended 2-core CI runner cannot
 // promise the source rate, only that frames keep flowing. Lowered 10 → 8 after
@@ -381,10 +399,10 @@ function launchBrowser(extraArgs = []) {
 // dev environments, where the prompt defaults on) — all before any app code
 // runs. `resilient` seeds R19's persisted toggle, which is the only way in:
 // the mode is negotiated at connect, so it has to be set before the app runs.
-async function newAppContext(browser, { relayUrl, certHash, delivery = null }) {
+async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
-    ({ serverUrl, hash, deliveryMode }) => {
+    ({ serverUrl, hash, deliveryMode, tmUrl }) => {
       localStorage.setItem('gawk.serverUrl', serverUrl);
       if (hash) localStorage.setItem('gawk.certHashHex', hash);
       // R19/R21: the persisted delivery choice is the only way in — the mode
@@ -397,6 +415,10 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null }) {
       // gate has its own unit coverage for). Pinning the version keeps this
       // robust when the bundled version bumps. Viewers are never gated.
       window.__GAWK_CONFIG__ = { requirePublishSecret: false, termsVersion: 'e2e' };
+      // R28: the split-origin override (docs/33 D1). Only set for the
+      // telemetry pass — every other pass leaves it unset, which is what makes
+      // the zero-request assertion below a real check rather than a tautology.
+      if (tmUrl) window.__GAWK_CONFIG__.telemetryUrl = tmUrl;
       localStorage.setItem('gawk:terms-accepted', 'e2e');
       window.__gawkClipboard = [];
       Object.defineProperty(Navigator.prototype, 'clipboard', {
@@ -409,7 +431,7 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null }) {
         }),
       });
     },
-    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery },
+    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl },
   );
   return context;
 }
@@ -526,12 +548,30 @@ function assertCarrierFlow(d1, d2) {
   );
 }
 
-async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec, delivery = null }) {
+async function browserScenario({
+  relayUrl, certHash, id, attempt, expectedCodec, delivery = null, telemetryUrl = null,
+  dwellMs = 0, duringDwell = null,
+}) {
   const browser = await launchBrowser();
   try {
-    const context = await newAppContext(browser, { relayUrl, certHash, delivery });
+    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl });
     const page = await context.newPage();
     wirePageLogs(page, `console-${attempt}`);
+
+    // R28 (docs/33 D12): "default off" is a RUNTIME claim, not only a
+    // chart-render one. Without a fleet telemetry key the relay sends no
+    // hello, so a viewer must issue literally zero telemetry requests — and
+    // every pass except the telemetry one runs exactly that way. Recording it
+    // here makes the guarantee a standing assertion on every PR instead of a
+    // property nobody re-checks.
+    const telemetryRequests = [];
+    page.on('request', (req) => {
+      const url = req.url();
+      if (url.includes('/api/telemetry/') || url.includes('/v1/ingest') ||
+          url.includes(`:${TM_INGEST_PORT}`)) {
+        telemetryRequests.push(`${req.method()} ${url}`);
+      }
+    });
 
     await page.goto(`${APP_URL}/#/view/${id}`);
 
@@ -599,9 +639,216 @@ async function browserScenario({ relayUrl, certHash, id, attempt, expectedCodec,
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
     assertNonBlack(shot);
+
+    // R28: hold the session open past the collector's flush interval, then
+    // navigate away so the unmount path sends its final batch. Both halves
+    // matter — the periodic flush is what a long session relies on, and the
+    // final one is what lets the service finalize without waiting out an idle
+    // timeout.
+    if (dwellMs > 0) {
+      await sleep(dwellMs);
+      log(`telemetry dwell complete after ${dwellMs / 1000}s; ${telemetryRequests.length} ingest request(s) observed`);
+      // Anything that needs the session to still EXIST has to run here. The
+      // relay's subscriberDetails is the obvious one: once the page navigates
+      // away the subscriber is gone and /statusz can no longer be joined
+      // against — which is how the first version of this pass managed to
+      // "prove" the relay had minted no telemetry identity at all.
+      if (duringDwell) await duringDwell();
+      await page.goto('about:blank');
+      await sleep(1500);
+    }
+
+    // R28: the default-off runtime guarantee. On the telemetry pass this is
+    // inverted — the point there is that requests DID happen.
+    if (telemetryUrl === null && telemetryRequests.length > 0) {
+      fail(
+        `telemetry is off (no fleet key) but the viewer made ${telemetryRequests.length} ` +
+          `telemetry request(s): ${telemetryRequests.slice(0, 3).join(', ')}`,
+      );
+    }
+    if (telemetryUrl !== null && telemetryRequests.length === 0) {
+      fail('telemetry is enabled but the viewer made no ingest request at all');
+    }
+    return { telemetryRequests };
   } finally {
     await browser.close();
   }
+}
+
+// ---------------------------------------------------------------------------
+// R28 telemetry (docs/33): the whole pipe, for real
+// ---------------------------------------------------------------------------
+//
+// Every other R28 test runs against fakes, in-memory sinks or handler-level
+// calls. This is the only thing that proves the pipe EXISTS end to end: a real
+// relay mints a real 0x0D hello onto a real uni stream, a real browser parses
+// it and POSTs a real batch, and a real service verifies the token and stores
+// a session that diagnose() can then answer about.
+//
+// It is the R19 finding-10 lesson applied before it costs anything: the
+// carrier path shipped with every test against fakes, so a regression
+// degrading it back to lossy delivery would have shipped green.
+
+// Captured while the viewer is still attached: once it leaves, /statusz no
+// longer lists it and there is nothing left to join against.
+async function captureRelayView(opsUrl) {
+  const st = await (await fetch(`${opsUrl}/statusz`)).json();
+  const broadcast = Object.values(st.broadcasts ?? {}).find((b) => b.publisherActive);
+  return {
+    sessionIds: new Set(
+      (broadcast?.subscriberDetails ?? []).map((d) => d.sessionId).filter(Boolean),
+    ),
+    publisherSessionId: broadcast?.publisherSessionId,
+    subscriberKeys: (broadcast?.subscriberDetails ?? []).map((d) => d.key).filter(Boolean),
+  };
+}
+
+async function assertTelemetryPipe({ readUrl, relayView, id }) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+
+  const relaySessionIds = relayView.sessionIds;
+  check(
+    relaySessionIds.size > 0,
+    'no subscriberDetails[].sessionId on /statusz — the relay minted no telemetry identity',
+  );
+  // D2: the display key and the join key stay INDEPENDENT handles. Deriving
+  // one from the other would leak part of a bearer credential into a
+  // public-ish JSON endpoint.
+  for (const key of relayView.subscriberKeys) {
+    check(!relaySessionIds.has(key), `subscriber key ${key} is also a sessionId; they must stay independent`);
+  }
+  // pubsim is a Go publisher with no telemetry client of its own, but the
+  // RELAY still mints it an identity — which is what makes a broadcaster
+  // session joinable the day a native reporter is pointed at the service.
+  check(
+    typeof relayView.publisherSessionId === 'string' && relayView.publisherSessionId.length === 24,
+    `publisherSessionId = ${relayView.publisherSessionId}, want a 24-hex handle`,
+  );
+
+  // The service's view. Poll: the collector flushes on its own schedule and
+  // finalize runs on the sweep. pollFor is a predicate (it returns nothing),
+  // so the rows are captured on the way past.
+  let sessions = [];
+  await pollFor(
+    async () => {
+      const rsp = await fetch(`${readUrl}/v1/sessions?since=1h`);
+      if (!rsp.ok) return false;
+      const rows = await rsp.json();
+      if (!Array.isArray(rows) || rows.length === 0) return false;
+      sessions = rows;
+      return true;
+    },
+    60_000,
+    2000,
+    'a finalized session in the telemetry store',
+  );
+
+  const viewers = sessions.filter((r) => r.role === 'viewer');
+  check(viewers.length > 0, `no viewer sessions stored (got ${JSON.stringify(sessions)})`);
+
+  // THE JOIN — the thing R28 exists for, and the one claim no unit test can
+  // make: the relay's view of a viewer and the viewer's own report are the
+  // same session (docs/33 D2). Before TM1 these were two datasets with no
+  // shared key at all.
+  const joined = viewers.filter((r) => relaySessionIds.has(r.sessionId));
+  check(
+    joined.length > 0,
+    `no stored session's id appears in the relay's subscriberDetails — ` +
+      `relay had [${[...relaySessionIds].join(', ')}], store had ` +
+      `[${viewers.map((r) => r.sessionId).join(', ')}]`,
+  );
+
+  const target = joined[0] ?? viewers[0];
+  if (target) {
+    // Zero PII, asserted on what is actually STORED rather than on what the
+    // client intended to send (docs/33 D8).
+    check(
+      /^[A-Za-z]+ \d+$/.test(target.browser ?? ''),
+      `browser = ${JSON.stringify(target.browser)}, want a coarse class like "Chrome 152"`,
+    );
+    check(
+      target.relayCoverage === 'full' || target.relayCoverage === 'partial',
+      `relayCoverage = ${target.relayCoverage}; the relay was scraped, so it must not be "none"`,
+    );
+
+    // diagnose() answers about a real session, and answers cheaply.
+    const rsp = await fetch(`${readUrl}/v1/sessions/${target.sessionId}/diagnose`);
+    check(rsp.ok, `diagnose: HTTP ${rsp.status}`);
+    if (rsp.ok) {
+      const raw = await rsp.text();
+      const rep = JSON.parse(raw);
+      writeFileSync(join(OUT, 'telemetry-diagnose.json'), raw);
+      check(
+        typeof rep.healthy === 'boolean' && Array.isArray(rep.passed),
+        `diagnose returned no verdict shape: ${raw.slice(0, 200)}`,
+      );
+      // A loopback fixture stream is healthy by construction. A verdict that
+      // invents problems here is the "boring case must not invent problems"
+      // criterion failing (docs/33 §6.1).
+      check(
+        rep.healthy === true,
+        `diagnose called a clean loopback session unhealthy: ${JSON.stringify(rep.findings)}`,
+      );
+      check(rep.passed.length > 0, 'a healthy verdict named no passed checks — its basis is missing');
+      // D10's ceiling, on a real response rather than a synthetic one.
+      check(
+        raw.length <= 32 * 1024,
+        `diagnose response is ${raw.length} bytes, over the 32 KB ceiling`,
+      );
+      // And it must carry no series (D6/D10).
+      for (const forbidden of ['samples', 'points', 'series']) {
+        check(!(forbidden in rep), `diagnose returned "${forbidden}" — it must return verdicts, not series`);
+      }
+    }
+  }
+
+  // The live projection sees the broadcast while it is still running.
+  const liveRsp = await fetch(`${readUrl}/live`);
+  check(liveRsp.ok, `live: HTTP ${liveRsp.status}`);
+  if (liveRsp.ok) {
+    const snap = await liveRsp.json();
+    writeFileSync(join(OUT, 'telemetry-live.json'), JSON.stringify(snap, null, 2));
+    check(Array.isArray(snap.live), 'live snapshot has no live array');
+    check(
+      (snap.live ?? []).length > 0,
+      'the live projection shows no broadcasts while one is streaming',
+    );
+    const b = (snap.live ?? [])[0];
+    if (b) {
+      // Never green on absence: every session row must carry an explicit
+      // freshness state, and a broadcast with viewers must show them.
+      for (const sv of b.sessions ?? []) {
+        check(
+          ['reporting', 'stale', 'unknown'].includes(sv.clientState),
+          `session ${sv.sessionId} has clientState ${JSON.stringify(sv.clientState)}`,
+        );
+        check(
+          ['ok', 'warn', 'bad', 'unknown'].includes(sv.severity),
+          `session ${sv.sessionId} has severity ${JSON.stringify(sv.severity)}`,
+        );
+      }
+    }
+  }
+
+  // The dashboard is served, self-contained, from the same listener.
+  const dashRsp = await fetch(`${readUrl}/`);
+  check(dashRsp.ok, `dashboard: HTTP ${dashRsp.status}`);
+  if (dashRsp.ok) {
+    const html = await dashRsp.text();
+    check(html.includes('<title>gawk telemetry'), 'dashboard did not serve its page');
+  }
+
+  if (problems.length > 0) {
+    fail(`telemetry pipe assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `telemetry pipe ok: ${sessions.length} stored session(s), ` +
+      `${joined.length} joined to the relay's own view by sessionId`,
+  );
+  void id;
 }
 
 // ---------------------------------------------------------------------------
@@ -973,15 +1220,58 @@ async function main() {
   } else {
     relayUrl = `https://127.0.0.1:${RELAY_PORT}`;
     opsUrl = `http://127.0.0.1:${OPS_PORT}`;
-    const relay = launch('relay', SERVER_BIN, [
+    const relayArgs = [
       '-dev-cert',
       '-addr', `127.0.0.1:${RELAY_PORT}`,
       '-metrics-addr', `127.0.0.1:${OPS_PORT}`,
-    ]);
+    ];
+    // R28: the key's presence IS the feature switch. Every other pass runs
+    // without it, which is what makes the zero-request assertion in
+    // browserScenario a real check.
+    if (TELEMETRY_CHECK) relayArgs.push('-telemetry-key', TELEMETRY_KEY);
+    const relay = launch('relay', SERVER_BIN, relayArgs);
     // Decision 5: scrape the ephemeral dev cert's hash from the startup log
     // and seed it into the app's serverCertificateHashes setting.
     certHash = await waitForLine(relay, /cert_hash_hex\W*"?([0-9a-f]{64})/, 15_000, 'the dev cert hash');
     await waitForHttp(`${opsUrl}/healthz`, 15_000, 'the relay ops endpoint');
+
+    if (TELEMETRY_CHECK) {
+      if (!existsSync(TELEMETRY_BIN)) {
+        fail(`${TELEMETRY_BIN} not found — build it: (cd gawk-telemetry && go build -o ../e2e/bin/gawk-telemetry ./cmd/gawk-telemetry)`);
+      }
+      // A fresh store per run. Sessions are permanent by design (rollups are
+      // never pruned), so a re-run against a dirty directory sees the previous
+      // run's sessions and fails its join assertion for a reason that has
+      // nothing to do with the product — and a test that fails confusingly is
+      // a test that gets ignored.
+      const dataDir = join(OUT, 'telemetry-data');
+      rmSync(dataDir, { recursive: true, force: true });
+      mkdirSync(dataDir, { recursive: true });
+      launch('telemetry', TELEMETRY_BIN, [
+        '-telemetry-key', TELEMETRY_KEY,
+        '-ingest-addr', `127.0.0.1:${TM_INGEST_PORT}`,
+        '-read-addr', `127.0.0.1:${TM_READ_PORT}`,
+        '-data-dir', dataDir,
+        // Static, not the headless Service: there is one relay here and DNS
+        // resolution is the cluster's problem, not this harness's.
+        '-relay-addrs', `127.0.0.1:${OPS_PORT}`,
+        '-scrape-interval', '2s',
+        // MUST exceed the client's 10 s flush interval. A shorter idle
+        // finalizes a live session between its own flushes, and every later
+        // batch then arrives for an already-finalized session — which is how
+        // the first run of this pass produced THREE rollup rows for one
+        // viewer. Short enough to still finalize inside the run (the sweep
+        // cadence follows this knob).
+        '-session-idle', '15s',
+        // The harness serves the app from a different port, so this exercises
+        // the split-origin path D1 documents — including the preflight, which
+        // is the part that would silently break.
+        '-cors-origin', APP_URL,
+        '-log-level', 'debug',
+      ]);
+      await waitForHttp(`http://127.0.0.1:${TM_INGEST_PORT}/healthz`, 15_000, 'the telemetry ingest listener');
+      log(`telemetry service up: ingest :${TM_INGEST_PORT}, read :${TM_READ_PORT}`);
+    }
 
     if (!BROWSER_BROADCAST) {
       const pubsim = launch('pubsim', PUBSIM_BIN, [
@@ -1047,6 +1337,29 @@ async function main() {
   };
 
   try {
+    if (TELEMETRY_CHECK) {
+      // One viewer, held long enough for the collector's 10 s flush to fire
+      // twice. The dwell is the whole cost of this pass and it is unavoidable:
+      // a shorter one would assert on a batch that was never due.
+      log(`running the telemetry viewer pass (dwell ${TELEMETRY_DWELL_MS / 1000}s for two flushes)`);
+      let relayView = null;
+      await runViewer('telemetry', MAX_RESILIENT_RETRIES, {
+        telemetryUrl: `http://127.0.0.1:${TM_INGEST_PORT}/v1/ingest`,
+        dwellMs: TELEMETRY_DWELL_MS,
+        duringDwell: async () => {
+          relayView = await captureRelayView(opsUrl);
+        },
+      });
+      await assertTelemetryPipe({
+        readUrl: `http://127.0.0.1:${TM_READ_PORT}`,
+        relayView,
+        id,
+      });
+      if (opsUrl) await assertRelaySide(opsUrl);
+      log('PASS');
+      return;
+    }
+
     await runViewer('', MAX_VIEWER_RETRIES, {});
 
     // R19 resilient mode, on the same live broadcast (PRODUCT-1): the only

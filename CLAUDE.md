@@ -137,6 +137,15 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   `gawk-server/wire` unchanged rather than mirroring it; see
   `gawk-broadcast/README.md`. Not a container/chart/deploy component: it's a
   binary you run on your own PC.
+- `gawk-telemetry` is the optional per-session diagnostics service (R28) — the
+  **fourth** top-level Go module, importing `gawk-server/wire` through the same
+  local `replace` gawk-broadcast uses (for the 0x0D session tokens). Ships an
+  image + chart like the relay and app, but is **default off** everywhere:
+  without a fleet telemetry key the relay sends no hello and every client
+  collects nothing. Two listeners, and the split IS the security posture —
+  ingest is public (a same-origin path on the frontend Ingress), while the
+  dashboard/read API/MCP live on a listener that is never routed publicly.
+  See `gawk-telemetry/README.md`.
 - `docs/` — per-build-step design notes and gotchas. **Every design doc must
   define explicit acceptance criteria for its milestones and chunks of work**
   (a per-chunk criteria table à la `docs/implementation-tasks.md`, or a
@@ -508,7 +517,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   Chunks **LI1–LI4**; LI3's hardware leg + LI4 sequenced after R15's
   pending re-verification, `avSkewMs` finding 12 being open),
   `docs/33-telemetry-and-diagnostics.md` for R28 (advanced diagnostics &
-  telemetry: **designed 2026-07-26, not started**; pulls the trigger R9's
+  telemetry: **designed + TM1–TM8 implemented 2026-07-26, automated gates
+  green in all four modules; TM9 (Grafana) dropped by owner scope decision so
+  R9 M8 stays open; manual verification pending — deviations in the doc's
+  §4.9 "Implementation status"**; pulls the trigger R9's
   Non-goals set — "client→server metrics push… revisit if remote
   troubleshooting of friends' sessions becomes routine". It became routine:
   R15's twelve field findings, R19/R21/R22's cycles all ran on hand-shuttled
@@ -1769,6 +1781,63 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   or any other metadata source** — Chrome's `getSettings()` has been observed
   to disagree with the frames MSTP actually delivers. Configure encoders and
   compute layout from the frames themselves. See `docs/01-loopback-test.md`.
+27. Advanced diagnostics & telemetry — **TM1–TM8 implemented 2026-07-26;
+   automated gates green in all four modules; TM9 (Grafana) dropped by owner
+   scope decision (R9 M8 stays open); manual verification pending** (R28,
+   `docs/33-telemetry-and-diagnostics.md`; deviations in its §4.9). A new
+   **optional, default-off `gawk-telemetry` module** — the fourth — that adds
+   **no measurement**: `ViewerStats`/`BroadcastStats`/`engine.Stats`/
+   `RegistryStats` already exist, and this is a pipe, a store and a query
+   surface. The load-bearing gap it closes: `/statusz` names a subscriber by a
+   random key and **nothing ever told the client its own key**, so the relay's
+   view of a viewer and the viewer's view of itself could not be joined. New
+   wire type **0x0D `TypeTelemetryHello`** (35 B) closes it — a stateless HMAC
+   session token on R17's resume-token pattern, delivered on a **reliable uni
+   stream** (the ResumeToken precedent; DeliveryAck's datagram needed a
+   re-announce loop because one-shot join-time datagrams get lost), carrying
+   the token, the **obfuscated** broadcast key and whether the fleet collects
+   at all. `subscriberDetails` gains `sessionId`; `/statusz` gains
+   `publisherSessionId`. **Everything is gated on the relay's `-telemetry-key`:
+   absent, no hello is sent and the relay + telemetry charts render
+   byte-identically to pre-R28** (asserted in CI by diff). Collection is
+   out-of-band HTTPS on a **same-origin** path of the frontend Ingress —
+   telemetry must outlive the transport it reports on, and same-origin is what
+   makes the `sendBeacon` unload flush work without a preflight it cannot
+   perform. The **relay is scraped, never pushes** (no outbound HTTP client or
+   queue in the process carrying every broadcast's hot path); the relay chart
+   gains an optional **headless** companion Service because a ClusterIP would
+   load-balance the per-pod scrape, and sub-scrape-interval sessions get
+   `relayCoverage: "none"` rather than a silent gap. Storage is files-first:
+   hive-partitioned gzipped NDJSON on a PVC, **14 days raw + permanent
+   per-session rollups**, retention a directory delete rather than a query;
+   DuckDB is a **query option, not a runtime dependency**, which keeps the
+   module cgo-free. Validation is **strict envelope, tolerant payload, typed
+   rollup** (D15) — version skew is permanent, not transient, so a closed
+   field list would lose telemetry exactly during a deploy: known fields are
+   typed (wrong type dropped + counted, never fatal), unknown fields survive
+   verbatim, `app.version` IS the schema version, and the anomaly tally rides
+   the rollup as `schemaAnomalies`. **`diagnose()` is docs/13's bottleneck
+   playbook as code** — 15 rules (the 14 rows plus docs/20 finding 8's
+   concealment-vs-overflow latch), returning ranked verdicts + evidence and
+   **never raw series**; each evidence item is tagged `relay | client |
+   derived`, and a verdict resting only on client testimony **caps its own
+   confidence** (docs/20 finding 7: a wedged client's own accounting is the
+   least reliable evidence in the system and is exactly what it sends). A
+   healthy session gets a **positive** verdict with the checks that passed, so
+   "no issues" is distinguishable from "the analysis never ran". Every default
+   response is bounded at **32 KB**, asserted against a synthetic 4-hour
+   session — `diagnose()` there costs 765 bytes. The **live dashboard** (TM8,
+   non-droppable) is one page listing every live broadcast with its
+   broadcaster and every viewer, severity-sorted with recently-ended
+   broadcasts in a **separate recessed group below** (the grouping IS the
+   precedence — a live `warn` outranks an ended `bad`), the **same rule
+   engine** as `diagnose()`, hysteresis on escalation, and a hard rule that a
+   missing report reads stale/unknown and **never** green. MCP rides
+   streamable HTTP on the read listener. Zero PII: no IP storage (the rate
+   limiter uses one and never persists it), no raw UA (reduced on-device to
+   `"Chrome 152"`/`"Windows"`), no cross-session identity, never media; R23's
+   terms gained a practice paragraph naming what is and is not collected, and
+   `termsVersion` bumped to 2026-07-26.
 
 ## Explicitly set aside (don't suggest reintroducing without discussion)
 - WebRTC + self-hosted SFU (OvenMediaEngine, LiveKit, mediasoup) — more mature,

@@ -18,6 +18,8 @@ import { useTransportStore } from '../../state/transportStore';
 import { isDevEnvironment, requiresPublishSecret } from '../../config';
 import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
+import { useTelemetryCollector } from '../../lib/useTelemetry';
+import type { TelemetryHelloMessage } from '../../transport/wire';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -107,6 +109,11 @@ export function BroadcasterScreen() {
   // R9 M7: rolling stat samples backing "Copy diagnostics" + the sent bitrate.
   const diagRef = useRef(new DiagnosticsBuffer<BroadcastStats>());
 
+  // R28 (docs/33 D13): the send-side collector. Same objects the overlay
+  // renders and the diagnostics buffer already holds — this adds a pipe, not
+  // a measurement.
+  const telemetry = useTelemetryCollector<BroadcastStats>('broadcaster');
+
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
 
   // R13 (docs/18 L4): probe matrices for picker + codec-pin annotations —
@@ -149,6 +156,7 @@ export function BroadcasterScreen() {
       onCapturePathChosen: () => {},
       onStats: (s: BroadcastStats) => {
         diagRef.current.push(s);
+        telemetry.sample(s);
         setStats(s);
       },
       onBroadcastId: (id: string) => {
@@ -163,21 +171,34 @@ export function BroadcasterScreen() {
       // R17 W2 auto-resume: session death mid-broadcast is no longer
       // terminal — amber "reconnecting" until the transport re-attaches.
       onReconnecting: (info: { attempt: number }) => {
+        telemetry.event('reconnect', `attempt ${info.attempt}`);
         setResumeAttempt(info.attempt);
         setStatus('reconnecting');
       },
       onResumed: () => {
+        telemetry.event('resumed');
         setResumeAttempt(null);
         setStatus('broadcasting');
       },
       onError: (err: Error) => {
+        telemetry.event('error', err.message);
         setError(err.message);
         setStatus('error');
       },
       onEnded: () => {
+        // The broadcast is over — final flush now rather than making the
+        // service wait out an idle timeout to finalize the session.
+        telemetry.event('ended');
+        telemetry.finish();
         setSourceStream(null);
         pipelineRef.current = null;
         setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+      },
+      // R28: this session's telemetry identity (wire 0x0D). A transport
+      // auto-resume delivers a new one, which begins a new telemetry session —
+      // the relay session it describes really is a different one.
+      onTelemetryHello: (hello: TelemetryHelloMessage) => {
+        telemetry.begin(hello);
       },
     });
 
@@ -246,7 +267,7 @@ export function BroadcasterScreen() {
       setStatus('error');
       pipelineRef.current = null;
     }
-  }, [broadcastId]);
+  }, [broadcastId, telemetry]);
 
   const handleStop = useCallback(async () => {
     if (!pipelineRef.current) return;

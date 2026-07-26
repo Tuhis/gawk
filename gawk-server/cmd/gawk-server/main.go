@@ -80,6 +80,11 @@ func run() error {
 		"metrics_addr", cfg.MetricsAddr,
 		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
 		"resume_token_key_mode", resumeTokenKeyMode(cfg),
+		// R28: the key's presence is the feature switch, so logging whether it
+		// is set is how an operator confirms a fleet is collecting at all —
+		// the key itself is never logged.
+		"telemetry_enabled", len(cfg.TelemetryKey) > 0,
+		"telemetry_report_interval", cfg.TelemetryReportInterval,
 		"cluster_mode", cfg.ClusterMode,
 	)
 

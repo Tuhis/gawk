@@ -21,6 +21,8 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/telemetry"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // State is what the window renders.
@@ -83,6 +85,11 @@ type App struct {
 	// ring per broadcast, on the count's first 0 → ≥1 transition. Reset on
 	// every Start.
 	firstViewerSeen bool
+
+	// R28 (docs/33 TM2): the telemetry reporter. Owned here rather than by the
+	// engine so a session with none configured is byte-identical to pre-R28,
+	// and so it survives across Start/Stop cycles like the config does.
+	telemetry *telemetry.Reporter
 }
 
 // Options configure the app.
@@ -118,6 +125,10 @@ func New(opts Options) *App {
 			return engine.New(cfg, cb, opts)
 		}
 	}
+	// Inert unless BOTH an ingest URL is configured and the relay's hello
+	// enables collection: either missing means this process makes no telemetry
+	// request at all.
+	a.telemetry = telemetry.New(telemetry.Options{URL: opts.Config.TelemetryURL, Log: a.log})
 	return a
 }
 
@@ -259,13 +270,25 @@ func (a *App) run(ctx context.Context, id string) {
 				a.mu.Lock()
 				a.stats = s
 				a.mu.Unlock()
+				a.telemetry.Report(s)
 				a.invalidate()
 			},
 			OnError: func(err error) {
+				a.telemetry.Event("error", err.Error())
 				a.fail(err)
 			},
 			OnEnded: func() {
+				// A clean end lets the service finalize this session rather
+				// than waiting out an idle timeout.
+				a.telemetry.Event("ended", "")
+				a.telemetry.Finish()
 				a.ended()
+			},
+			// R28: this session's telemetry identity (wire 0x0D). A relay
+			// predating R28, or one with telemetry off, sends none — and the
+			// reporter then stays inert.
+			OnTelemetryHello: func(h wire.TelemetryHello) {
+				a.telemetry.Begin(h)
 			},
 			OnViewerCount: func(count uint32) {
 				a.onViewerCount(count)
@@ -396,6 +419,10 @@ func (a *App) Stop() {
 // nothing is publishing.
 func (a *App) Quit() {
 	a.Stop()
+	// R28: flush the session's last batch and stop the sender. Folded into the
+	// one existing shutdown path rather than adding a second the GUI has to
+	// remember — Decision 15 is that closing the window ends everything.
+	a.telemetry.Close()
 	a.notifier.Close()
 }
 
