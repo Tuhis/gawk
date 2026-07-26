@@ -146,6 +146,15 @@ export function useViewerConnection(
   // pipeline's context before the session starts.
   deliveryMode = 'live' as ViewerDeliveryMode,
 ): ViewerConnectionState {
+  // The relay address is a settings value exactly like the delivery mode above:
+  // read through a SUBSCRIPTION, not getState(), so changing it re-runs the
+  // session effect as a deliberate teardown + reconnect. Read imperatively it
+  // would only take effect on some later accidental reconnect, which is worse
+  // than not applying at all — the viewer would look connected to a relay it is
+  // not talking to. Only the dev-build UI can change it (the broadcaster's
+  // settings panel and, since this change, the viewer's menu).
+  const serverUrl = useTransportStore((s) => s.serverUrl);
+  const certHashHex = useTransportStore((s) => s.certHashHex);
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [stats, setStats] = useState<ViewerStats | null>(null);
   const [codec, setCodec] = useState<string | null>(null);
@@ -511,7 +520,6 @@ export function useViewerConnection(
   // process in order, so the profile is live before the session starts.
   useEffect(() => {
     if (!useWorker) return;
-    const { serverUrl, certHashHex } = useTransportStore.getState();
     resetState();
     controllerRef.current?.setViewerDeliveryMode(deliveryMode);
     controllerRef.current?.start({
@@ -522,7 +530,7 @@ export function useViewerConnection(
     return () => {
       controllerRef.current?.stop();
     };
-  }, [useWorker, broadcastId, deliveryMode, resetState]);
+  }, [useWorker, broadcastId, deliveryMode, serverUrl, certHashHex, resetState]);
 
   // R5 Q3 + R12 T2: the playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -546,7 +554,6 @@ export function useViewerConnection(
   useEffect(() => {
     if (useWorker) return;
     let active = true;
-    const { serverUrl, certHashHex } = useTransportStore.getState();
     resetState();
     // R19: the profile lives in this (main-thread) context here; set it
     // before the session starts so it is live from the first frame.
@@ -629,6 +636,8 @@ export function useViewerConnection(
     useWorker,
     broadcastId,
     deliveryMode,
+    serverUrl,
+    certHashHex,
     applyEvent,
     canvasRef,
     resetState,

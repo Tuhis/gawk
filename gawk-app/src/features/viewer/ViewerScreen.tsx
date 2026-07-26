@@ -30,6 +30,7 @@ import type { ViewerErrorKind } from '../../transport/viewer-session';
 import type { PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import { HOME } from '../../routing';
+import { useTransportStore } from '../../state/transportStore';
 
 const CONTROL_IDLE_MS = 3000;
 
@@ -163,6 +164,30 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // dev build the two remain mutually exclusive.
   const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
   const showFixedPlayout = isDevEnvironment();
+
+  // Developer-only relay override, the viewer counterpart of the broadcaster's
+  // "Development settings" panel. Both write the same `transportStore`, so a dev
+  // build cannot end up with the two surfaces pointed at different relays — what
+  // was missing was only a way to reach it from here, which matters because a
+  // viewer is usually opened straight from a share link (an iPhone joining a
+  // code against a laptop's relay never passes through #/broadcast).
+  const showDevSettings = isDevEnvironment();
+  const storedServerUrl = useTransportStore((s) => s.serverUrl);
+  const storedCertHash = useTransportStore((s) => s.certHashHex);
+  const setStoredServerUrl = useTransportStore((s) => s.setServerUrl);
+  const setStoredCertHash = useTransportStore((s) => s.setCertHashHex);
+  // Draft state: the store is only written on Connect, because writing it live
+  // would reconnect on every keystroke (the session effect depends on it).
+  const [devDraft, setDevDraft] = useState<{ url: string; hash: string } | null>(null);
+  const openDevSettings = useCallback(() => {
+    setDevDraft({ url: storedServerUrl, hash: storedCertHash });
+  }, [storedServerUrl, storedCertHash]);
+  const applyDevSettings = useCallback(() => {
+    if (!devDraft) return;
+    setStoredServerUrl(devDraft.url.trim());
+    setStoredCertHash(devDraft.hash.trim());
+    setDevDraft(null);
+  }, [devDraft, setStoredServerUrl, setStoredCertHash]);
   const togglePlayoutMode = useCallback((mode: 'fixed' | 'adaptive') => {
     setPlayoutModeState((current) => {
       const next = current === mode ? 'off' : mode;
@@ -416,6 +441,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     muxErrors: stats?.presentationMux?.errors ?? 0,
     segmentsAppended: presenterStats?.segmentsAppended ?? 0,
     appendErrors: presenterStats?.appendErrors ?? 0,
+    lastAppendError: presenterStats?.lastError ?? null,
     liveDuration: presenterStats?.sourceOpen ? presenterStats.liveDuration : null,
     // The audio verdict, resolved: no audio in the stream reads 'none', a passing
     // probe 'muxed', and a refusal carries its reason (e.g. 'unsupported:
@@ -437,6 +463,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       : null,
     audioSegmentsAppended: presenterStats?.audioSegmentsAppended ?? 0,
     audioTrackActive: presenterStats?.audioTrack ?? false,
+    // docs/27 finding 6: the end of the chain. A SourceBuffer that exists and has
+    // taken bytes still yields 0 tracks if the demuxer rejected them, which is
+    // precisely the state the silent session was in.
+    elementAudioTracks:
+      (presentationVideo as (HTMLVideoElement & { audioTracks?: { length: number } }) | null)
+        ?.audioTracks?.length ?? null,
     muxAudioSegments: stats?.presentationMux?.audioSegments ?? 0,
     muxAudioHoles: stats?.presentationMux?.audioHoles ?? 0,
     bufferedMs,
@@ -564,6 +596,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       ? [{ label: audio.muted ? 'Unmute ✓' : 'Mute', onSelect: () => audio.setMuted(!audio.muted) }]
       : []),
     { label: 'Copy link', onSelect: copyLink },
+    // Dev builds only, same gate as the broadcaster's panel — a real viewer
+    // never sees it and cannot be talked into repointing its relay.
+    ...(showDevSettings
+      ? [{ label: 'Relay server (dev)…', onSelect: openDevSettings }]
+      : []),
     // R23 (docs/29): terms reachable from the viewer without adding chrome.
     // Opens in a new tab so reading the terms never tears down the live
     // stream (a hash change would unmount the viewer).
@@ -614,6 +651,45 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           muted={!nativeAudio || audio.muted}
           aria-hidden="true"
         />
+      )}
+
+      {/* Developer-only relay override. Applying is a deliberate reconnect:
+          useViewerConnection depends on these store values, so Connect tears the
+          session down and dials the new address. */}
+      {devDraft && (
+        <div className={styles.devOverlay}>
+          <GlassPanel className={styles.devPanel}>
+            <h2 className={styles.cardTitle}>Relay server (dev)</h2>
+            <label className={styles.devField}>
+              <span>Server URL</span>
+              <input
+                value={devDraft.url}
+                onChange={(e) => setDevDraft((d) => (d ? { ...d, url: e.target.value } : d))}
+                placeholder="https://localhost:4433"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+            </label>
+            <label className={styles.devField}>
+              <span>Dev cert hash (hex; empty for a real cert)</span>
+              <input
+                value={devDraft.hash}
+                onChange={(e) => setDevDraft((d) => (d ? { ...d, hash: e.target.value } : d))}
+                placeholder="cert_hash_hex from the server startup log"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+            </label>
+            <div className={styles.devActions}>
+              <Button variant="ghost" onClick={() => setDevDraft(null)}>
+                Cancel
+              </Button>
+              <Button onClick={applyDevSettings}>Connect</Button>
+            </div>
+          </GlassPanel>
+        </div>
       )}
 
       {(status === 'connecting' || status === 'ended' || status === 'error') && (

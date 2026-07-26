@@ -276,3 +276,63 @@
 .unmutePrompt:hover {
   border-color: var(--text);
 }
+
+/* Developer-only relay override (dev builds). Deliberately reuses .center /
+   GlassPanel so it reads as the same surface as the connecting/ended cards —
+   it is a debugging affordance, not a product surface, and it must never grow
+   its own visual language. Left-aligned because it holds labelled fields
+   rather than a centred message. */
+/* Its own layer, deliberately ABOVE .center's 15: the status cards
+   (connecting / ended / error) are full-inset siblings at that z-index and come
+   later in DOM order, so sharing it put the panel *under* the error card — i.e.
+   unreachable in the one situation it exists for, a dev build pointed at a
+   relay that will not answer. Below ContextMenu's 50, so the menu that opens it
+   still stacks on top. */
+.devOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 30;
+}
+
+.devPanel {
+  width: min(92vw, 420px);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  text-align: left;
+}
+
+.devField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.devField > span {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.devField input {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-family: ui-monospace, monospace;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0.5rem 0.6rem;
+}
+
+.devActions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
