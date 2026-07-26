@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
@@ -433,6 +434,26 @@ func TestIngestDropsNonFiniteNumbers(t *testing.T) {
 	}
 	if v, _ := schema.Number(stats, "framesAssembled"); v != 5 {
 		t.Errorf("framesAssembled = %v, want 5", v)
+	}
+}
+
+// clip() truncates event Kind/Detail. A byte slice can land inside a
+// multi-byte rune (an emoji or accented letter in a free-text detail
+// string), storing invalid UTF-8 that json.Marshal then silently rewrites to
+// U+FFFD — corrupting the value rather than merely shortening it. Built so
+// the emoji's first byte lands exactly on the cut: n-1 leading ASCII bytes
+// plus the 3-byte rune's opening byte is exactly n bytes.
+func TestClipTruncatesOnARuneBoundary(t *testing.T) {
+	s := strings.Repeat("a", 63) + "世" + strings.Repeat("z", 10)
+	got := clip(s, 64)
+	if len(got) > 64 {
+		t.Fatalf("clip exceeded the byte budget: len=%d, value=%q", len(got), got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("clip produced invalid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("a", 63); got != want {
+		t.Errorf("clip(...) = %q, want %q (the split rune dropped whole)", got, want)
 	}
 }
 

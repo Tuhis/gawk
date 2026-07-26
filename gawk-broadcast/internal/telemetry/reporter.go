@@ -35,6 +35,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -456,11 +457,25 @@ func (r *Reporter) stopLoop() {
 	}
 }
 
+// truncateStr bounds a string to n bytes. A plain byte slice can land inside
+// a multi-byte rune, storing invalid UTF-8 that json.Marshal on the ingest
+// service then silently rewrites to U+FFFD — corrupting the value rather
+// than merely shortening it. Trim back to the last complete rune: never past
+// n, only short of it, which is fine because n is a size cap, not a target
+// length (same fix as gawk-telemetry/internal/ingest's clip()).
 func truncateStr(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	s = s[:n]
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // clientOS is the coarse OS class, matching the browser collector's vocabulary

@@ -35,7 +35,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Structural bounds. These protect the disk and the JSON parser and are
@@ -146,7 +148,8 @@ func sanitizeObject(obj map[string]any, known map[string]Kind, depth int, an *An
 	}
 	out := make(map[string]any, len(obj))
 	kept := 0
-	for k, v := range obj {
+	for _, k := range fieldOrder(obj, known) {
+		v := obj[k]
 		if kept >= MaxFieldsPerObject {
 			an.Dropped++
 			continue
@@ -201,6 +204,39 @@ func sanitizeObject(obj map[string]any, known map[string]Kind, depth int, an *An
 		kept++
 	}
 	return out
+}
+
+// fieldOrder walks obj's keys in a fixed order, so that WHICH fields survive
+// an oversized object (the MaxFieldsPerObject cut in sanitizeObject) is
+// reproducible from one request to the next. Go's map iteration order is
+// randomized per range statement, not merely once per process — ranging over
+// the identical map twice can, and does, visit keys in a different order —
+// so the naive `for k := range obj` walk this replaced made an oversized
+// payload's survivor set a coin flip. That is intolerable here specifically:
+// this service exists to diagnose reproducibility problems in OTHER
+// systems, so its own output must not itself be a variable.
+//
+// Known (typed) fields sort first, ahead of unknown ones: they are what
+// diagnose() and the rollup actually read (docs/33 D15), so when a field has
+// to be cut, the cut should land on a field nothing downstream consumes yet
+// rather than on, say, receivedFps. A stable-but-useless survivor set (e.g.
+// plain alphabetical over everything) would still be strictly worse than one
+// that is also USEFUL. Within each group, keys sort lexically — arbitrary,
+// but stable.
+func fieldOrder(obj map[string]any, known map[string]Kind) []string {
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		_, iKnown := known[keys[i]]
+		_, jKnown := known[keys[j]]
+		if iKnown != jKnown {
+			return iKnown
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
 }
 
 // fieldStatus is the three-way outcome of typing one known field. The middle
@@ -337,7 +373,22 @@ func truncate(s string, an *Anomalies) string {
 		return s
 	}
 	an.Coerced++
-	return s[:MaxStringLen]
+	// A plain byte slice can land inside a multi-byte rune, storing invalid
+	// UTF-8 that json.Marshal then silently rewrites to U+FFFD — corrupting
+	// the value rather than merely shortening it (same fix as ingest.clip,
+	// kept as a separate copy since the two packages share no util home).
+	// Trim back to the last complete rune: never past MaxStringLen, only
+	// short of it, which is fine because the bound caps stored size rather
+	// than demanding an exact length.
+	s = s[:MaxStringLen]
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // Number reads a known-numeric field from a sanitized stats object. The second

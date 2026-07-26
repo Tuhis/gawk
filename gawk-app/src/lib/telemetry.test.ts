@@ -224,6 +224,26 @@ describe('TelemetryCollector — sampling and batching', () => {
     expect(batch.events).toEqual([{ tMs: 0, kind: 'reconnect', detail: 'close 4002' }]);
   });
 
+  // A plain `.slice(0, n)` truncates at a UTF-16 CODE UNIT boundary, which
+  // can land inside a surrogate pair (an emoji or other astral character) and
+  // leave a lone high surrogate. That is not valid UTF-16 text — sendBeacon
+  // and fetch both encode the request body to UTF-8, which silently rewrites
+  // an unpaired surrogate to U+FFFD, so the stored value would be corrupted
+  // rather than merely shortened (the same class of bug as the ingest
+  // service's byte-boundary clip()). Built so the emoji's leading surrogate
+  // lands exactly on the cut.
+  it('truncates event fields on a UTF-16 boundary instead of splitting a surrogate pair', () => {
+    const h = harness();
+    h.begin();
+    const kind = 'a'.repeat(63) + '😀' + 'zzzzzzzzzz';
+    const detail = 'x'.repeat(255) + '😀' + 'zzzzzzzzzz';
+    h.collector.event(kind, detail);
+    h.collector.flush(false);
+    const event = h.batches()[0].events[0];
+    expect(event.kind).toBe('a'.repeat(63));
+    expect(event.detail).toBe('x'.repeat(255));
+  });
+
   it('skips an empty non-final flush entirely', () => {
     const h = harness();
     h.begin();

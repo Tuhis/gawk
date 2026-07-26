@@ -225,8 +225,8 @@ export class TelemetryCollector<T> {
     if (!this.active) return;
     this.events.push({
       tMs: Math.round(perfNow() - this.startedAtPerf),
-      kind: kind.slice(0, 64),
-      ...(detail === undefined ? {} : { detail: String(detail).slice(0, 256) }),
+      kind: truncateUtf16Safe(kind, 64),
+      ...(detail === undefined ? {} : { detail: truncateUtf16Safe(String(detail), 256) }),
     });
     if (this.events.length > MAX_PENDING_EVENTS) {
       this.events.splice(0, this.events.length - MAX_PENDING_EVENTS);
@@ -366,6 +366,24 @@ export class TelemetryCollector<T> {
 
 function perfNow(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+// Bound a string to n UTF-16 code units without splitting a surrogate pair.
+// A plain `.slice(0, n)` cuts at a code-unit boundary, which can land inside
+// a pair (an emoji or other astral character) and leave a lone high
+// surrogate. That is not valid UTF-16 text: sendBeacon/fetch both encode the
+// request body to UTF-8, which silently rewrites an unpaired surrogate to
+// U+FFFD — corrupting the stored value rather than merely shortening it (the
+// same class of bug as the ingest service's byte-boundary clip(), just one
+// encoding down). So drop the whole trailing high surrogate rather than keep
+// it half-formed: never longer than n, only shorter, which is fine because n
+// is a size cap, not a target length.
+function truncateUtf16Safe(s: string, n: number): string {
+  if (s.length <= n) return s;
+  let end = n;
+  const last = s.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return s.slice(0, end);
 }
 
 // The production transport. Same-origin by default (docs/33 D1), which is what

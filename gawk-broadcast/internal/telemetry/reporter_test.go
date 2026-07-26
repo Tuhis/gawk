@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -121,6 +122,27 @@ func TestReporterInertWhenFleetDisabled(t *testing.T) {
 	r.Close()
 	if c.count() != 0 {
 		t.Errorf("sent %d batches with telemetry disabled, want 0", c.count())
+	}
+}
+
+// truncateStr() bounds Event Kind/Detail (gawk-telemetry/internal/ingest has
+// the same fix under the name clip() — the two Go modules share no util
+// package, so the fix is duplicated rather than shared). A byte slice can
+// land inside a multi-byte rune, storing invalid UTF-8 that json.Marshal on
+// the receiving service then silently rewrites to U+FFFD — corrupting the
+// value rather than merely shortening it. Built so the emoji's first byte
+// lands exactly on the cut.
+func TestTruncateStrStopsOnARuneBoundary(t *testing.T) {
+	s := strings.Repeat("a", 63) + "世" + strings.Repeat("z", 10)
+	got := truncateStr(s, 64)
+	if len(got) > 64 {
+		t.Fatalf("truncateStr exceeded the byte budget: len=%d, value=%q", len(got), got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateStr produced invalid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("a", 63); got != want {
+		t.Errorf("truncateStr(...) = %q, want %q (the split rune dropped whole)", got, want)
 	}
 }
 
