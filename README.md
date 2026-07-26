@@ -284,6 +284,17 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 
 **Media pipeline**
 
+- **A canvas player gets no free display wake lock — take one explicitly.**
+  Browsers keep the screen awake only while an `HTMLMediaElement` plays video.
+  Both gawk surfaces paint canvases instead (the viewer's WebCodecs → WebGL
+  sink; the broadcaster's screen capture), so the OS sees an idle page and runs
+  its normal idle timer: on macOS the display dims a few minutes in and then
+  sleeps, mid-stream, **fullscreen included** — fullscreen has never controlled
+  display sleep, so there is no fullscreen flag to look for. Both screens hold a
+  `navigator.wakeLock` screen lock while live (`lib/useWakeLock.ts`). The trap
+  when touching it: the UA **auto-releases the lock whenever the document is
+  hidden and never re-acquires it**, so it must be re-requested on
+  `visibilitychange` or one tab switch loses it for the rest of the stream.
 - **Trust the actual `VideoFrame`, never `MediaStreamTrack.getSettings()`** —
   Chrome has been observed reporting one resolution while delivering frames
   at another. Configure encoders from the first real frame.

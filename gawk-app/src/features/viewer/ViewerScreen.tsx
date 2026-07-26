@@ -24,6 +24,7 @@ import { MsePresenter } from './msePresentation';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
+import { useWakeLock } from '../../lib/useWakeLock';
 import { fmtWatching } from '../../lib/format';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
 import type { ViewerErrorKind } from '../../transport/viewer-session';
@@ -520,6 +521,14 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // ('ended' while 'connecting') — read it as the stream being unreachable.
   const errorCopy =
     status === 'error' ? errorCardCopy(errorKind ?? 'unreachable', broadcastId, codec) : null;
+
+  // Keep the display awake while a stream is on screen. The viewer paints a
+  // canvas, never a playing <video>, so nothing tells the OS that anything is
+  // being watched and it dims/sleeps the screen on its normal idle timer —
+  // fullscreen included. Held through 'reconnecting' too: a blip is still
+  // someone sitting there watching, and dropping the lock for it would restart
+  // the idle countdown. See lib/useWakeLock.ts.
+  useWakeLock(status === 'watching' || status === 'reconnecting');
 
   const controlsVisible = useAutoHide(CONTROL_IDLE_MS, status === 'watching' && !menu);
   const showControls = controlsVisible || status !== 'watching' || showStats || !!menu;

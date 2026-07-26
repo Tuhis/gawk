@@ -20,6 +20,7 @@ import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
+import { useWakeLock } from '../../lib/useWakeLock';
 import { fmt, fmtWatching } from '../../lib/format';
 import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
@@ -303,6 +304,15 @@ export function BroadcasterScreen() {
       void pipelineRef.current?.stop();
     };
   }, []);
+
+  // Keep the display awake while live. Capturing a screen is not "playing
+  // media" to the browser, so an idle broadcaster's OS dims and then sleeps
+  // the display — and on macOS a slept display can stop delivering
+  // getDisplayMedia frames, which takes the whole broadcast down rather than
+  // just dimming one desk. Held through 'reconnecting' (R17 auto-resume keeps
+  // capture and the encoder alive across it — the broadcast never stopped).
+  // See lib/useWakeLock.ts.
+  useWakeLock(status === 'broadcasting' || status === 'reconnecting');
 
   const copyDiagnostics = useCallback(() => {
     const { resolutionSelection: res, framerateSelection, hwPreference, bitrateOverride, codecOverride } =
