@@ -309,3 +309,76 @@ func TestBasicAuthAcceptsOnlyTheExactCredentials(t *testing.T) {
 		})
 	}
 }
+
+// Crash recovery (review finding 3). A process that dies with sessions open
+// leaves their `.ndjson` files behind; the next process gzipped them and wrote
+// no rollup row at all, so once `retentionDays` pruned the raw partition the
+// session had never existed — the opposite of D4's promise that the
+// per-session summary is permanent. The sweep has the whole timeline in hand,
+// and every stored line is self-describing, so it can roll one up.
+func TestOrphanedSessionsFromACrashStillGetTheirRollup(t *testing.T) {
+	dir := t.TempDir()
+	ref := store.SessionRef{
+		Date: "2026-07-26", BroadcastKey: "1a2b3c4d5e6f", SessionID: "2c2c2c2c2c2c2c2c2c2c2c2c",
+	}
+
+	// The dead process: a session with a real timeline on disk and no finalize.
+	dead, err := store.New(store.Options{Root: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := [][]byte{
+		[]byte(`{"kind":"meta","sessionId":"2c2c2c2c2c2c2c2c2c2c2c2c","broadcastKey":"1a2b3c4d5e6f","role":"viewer","app":{"version":"0.33.2","surface":"viewer","browser":"Chrome 152","os":"Windows"},"startedAtMs":1785715200000,"receivedAtMs":1785715200000}`),
+		[]byte(`{"kind":"sample","sessionId":"2c2c2c2c2c2c2c2c2c2c2c2c","broadcastKey":"1a2b3c4d5e6f","role":"viewer","tMs":0,"stats":{"receivedFps":30},"receivedAtMs":1785715200000}`),
+		[]byte(`{"kind":"sample","sessionId":"2c2c2c2c2c2c2c2c2c2c2c2c","broadcastKey":"1a2b3c4d5e6f","role":"viewer","tMs":2000,"stats":{"receivedFps":30},"receivedAtMs":1785715202000}`),
+	}
+	if err := dead.AppendSession(ref, lines); err != nil {
+		t.Fatal(err)
+	}
+	if err := dead.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next process, wired exactly as run() wires it.
+	st, err := store.New(store.Options{Root: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	projection := live.New(nil)
+	api, err := readapi.New(readapi.Options{Store: st, Live: projection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{sessionIdle: time.Minute, scrapeInterval: 5 * time.Second}
+	cfg.sessionIdle = 0
+	if n, err := startupRecovery(st, slog.New(slog.DiscardHandler), cfg, api); err != nil || n != 1 {
+		t.Fatalf("startup recovery finalized %d sessions (err %v), want 1", n, err)
+	}
+
+	rows, err := api.ListSessions(readapi.ListSessionsQuery{Since: time.UnixMilli(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rollup rows = %d, want 1 — a session open at a crash left no permanent trace", len(rows))
+	}
+	if rows[0].SessionID != ref.SessionID || rows[0].Role != "viewer" {
+		t.Errorf("row identity = %q/%q; identity must come from the records themselves",
+			rows[0].SessionID, rows[0].Role)
+	}
+
+	// Running the sweep again must not write a second row for the same session
+	// — the file is gzipped now, and duplicate rows corrupt every query over
+	// the permanent artifact.
+	if _, err := st.SweepOrphans(0); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = api.ListSessions(readapi.ListSessionsQuery{Since: time.UnixMilli(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("rollup rows after a second sweep = %d, want 1", len(rows))
+	}
+}

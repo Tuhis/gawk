@@ -83,9 +83,10 @@ type Store struct {
 	// claimed paths are being gzipped and unlinked by the orphan sweep. An
 	// append to one must wait rather than write into a file about to be
 	// removed.
-	claimed map[string]bool
-	nowFn   func() time.Time
-	closed  bool
+	claimed  map[string]bool
+	nowFn    func() time.Time
+	closed   bool
+	onOrphan func(SessionRef, [][]byte)
 }
 
 // claim reserves a path for an exclusive operation (the orphan sweep's
@@ -128,6 +129,15 @@ type Options struct {
 	// Now is injectable so tests drive partitioning and idle timeouts without
 	// wall clocks.
 	Now func() time.Time
+	// OnOrphan is called for each orphaned session the sweep finalizes, with
+	// its stored lines, BEFORE it is compressed. It is how a session that was
+	// open when the process died still gets its permanent rollup row: this
+	// package cannot compute one (the rollup layer imports this one), so the
+	// recovery hook is injected from where both are in scope.
+	//
+	// Optional. With no hook the sweep is what it always was: a directory scan
+	// that gzips.
+	OnOrphan func(SessionRef, [][]byte)
 }
 
 // New opens (and creates) the data directory.
@@ -145,8 +155,17 @@ func New(opts Options) (*Store, error) {
 	}
 	return &Store{
 		root: opts.Root, open: map[string]*openFile{},
-		claimed: map[string]bool{}, nowFn: opts.Now,
+		claimed: map[string]bool{}, nowFn: opts.Now, onOrphan: opts.OnOrphan,
 	}, nil
+}
+
+// SetOrphanHook installs the recovery hook after construction. The hook needs
+// the rollup and read layers, which need the store — so the cycle is broken by
+// wiring it in run() once everything exists, before the first sweep.
+func (s *Store) SetOrphanHook(fn func(SessionRef, [][]byte)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onOrphan = fn
 }
 
 // Root returns the data directory.
@@ -369,6 +388,27 @@ func gzipFile(src, dst string) error {
 	return os.Remove(src)
 }
 
+// refFromPath recovers a SessionRef from a stored session's path. The layout
+// is the identity — sessions/date=…/broadcast=…/<sessionId>.ndjson — which is
+// what lets a crashed process's leftovers be recognised by a directory scan.
+func refFromPath(path string) (SessionRef, bool) {
+	name := strings.TrimSuffix(filepath.Base(path), ".ndjson")
+	bdir := filepath.Base(filepath.Dir(path))
+	ddir := filepath.Base(filepath.Dir(filepath.Dir(path)))
+	if !strings.HasPrefix(bdir, "broadcast=") || !strings.HasPrefix(ddir, "date=") {
+		return SessionRef{}, false
+	}
+	r := SessionRef{
+		Date:         strings.TrimPrefix(ddir, "date="),
+		BroadcastKey: strings.TrimPrefix(bdir, "broadcast="),
+		SessionID:    name,
+	}
+	if r.Validate() != nil {
+		return SessionRef{}, false
+	}
+	return r, true
+}
+
 // appendFile appends src's bytes to dst.
 func appendFile(dst, src string) error {
 	in, err := os.Open(src)
@@ -425,6 +465,22 @@ func (s *Store) SweepOrphans(idle time.Duration) (int, error) {
 		}
 		if testHookSweepBeforeGzip != nil {
 			testHookSweepBeforeGzip(path)
+		}
+		// Recovery, while the claim is held and the plain file still exists:
+		// a session open at a crash has a full timeline on disk and nothing
+		// that will ever turn it into a permanent row otherwise. Gzipping it
+		// first and moving on is how a crashed session used to vanish
+		// completely once the raw partition was pruned — the opposite of D4's
+		// "the per-session summary is permanent".
+		s.mu.Lock()
+		hook := s.onOrphan
+		s.mu.Unlock()
+		if hook != nil {
+			if ref, ok := refFromPath(path); ok {
+				if lines, rerr := readLines(path); rerr == nil {
+					hook(ref, lines)
+				}
+			}
 		}
 		err = gzipFile(path, path+".gz")
 		s.release(path)

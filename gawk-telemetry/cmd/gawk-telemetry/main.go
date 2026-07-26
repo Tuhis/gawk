@@ -66,15 +66,6 @@ func run() error {
 	}
 	defer st.Close()
 
-	// Crash recovery, at startup: a process that died mid-session left plain
-	// .ndjson files behind, and a directory scan that gzips them is obviously
-	// correct in a way appending to a gzip stream would not be (D3).
-	if n, err := st.SweepOrphans(cfg.sessionIdle); err != nil {
-		log.Warn("orphan sweep failed", "err", err)
-	} else if n > 0 {
-		log.Info("finalized orphaned sessions from a previous run", "count", n)
-	}
-
 	projection := live.New(nil)
 	api, err := readapi.New(readapi.Options{
 		Store: st, Live: projection, DashboardBase: cfg.dashboardBase,
@@ -84,6 +75,12 @@ func run() error {
 	}
 
 	writer := newWriter(st, log, cfg, api, projection)
+
+	if n, err := startupRecovery(st, log, cfg, api); err != nil {
+		log.Warn("orphan sweep failed", "err", err)
+	} else if n > 0 {
+		log.Info("recovered orphaned sessions from a previous run", "count", n)
+	}
 
 	handler, err := ingest.New(ingest.Options{
 		Key: cfg.key, Sink: writer, Log: log,
@@ -256,21 +253,7 @@ func sweepInterval(idle time.Duration) time.Duration {
 // production caller, and the projection's own lifecycle tests could not have
 // caught it while the only thing connecting the two lived inside run().
 func newWriter(st *store.Store, log *slog.Logger, cfg config, api *readapi.API, projection *live.Projection) *sessions.Writer {
-	// The stored verdict and a later diagnose() of the same session come out of
-	// ONE code path, so "has this got better since the R15 fix?" compares like
-	// with like.
-	rollupRow := sessions.RollupFinalizer(st, log, func(row *rollup.Row, in rollup.Input) json.RawMessage {
-		relayLines, _ := st.ReadRelay(time.UnixMilli(in.EndedAtMs).UTC().Format(store.DateLayout))
-		// TM4's join, then TM6's verdict over the joined row.
-		readapi.JoinRelay(row, relayLines, cfg.scrapeInterval)
-		rep := api.DiagnoseRow(*row, in, relayLines)
-		b, err := json.Marshal(rep)
-		if err != nil {
-			return nil
-		}
-		return b
-	}, nil)
-
+	rollupRow := rollupFinalize(st, log, cfg, api)
 	return sessions.NewWriter(sessions.Options{
 		Store:       st,
 		Log:         log,
@@ -287,6 +270,54 @@ func newWriter(st *store.Store, log *slog.Logger, cfg config, api *readapi.API, 
 			projection.ObserveClient(a, l.App.Browser, l.App.OS, l.App.Version)
 		},
 	})
+}
+
+// rollupFinalize is the one path from a session's stored lines to its
+// permanent row. Shared by the writer's finalize and by crash recovery, so the
+// stored verdict and a later diagnose() of the same session come out of ONE
+// code path — "has this got better since the R15 fix?" then compares like with
+// like — and a recovered session is indistinguishable from a gracefully ended
+// one except in the `endedCleanly` flag that says so.
+func rollupFinalize(st *store.Store, log *slog.Logger, cfg config, api *readapi.API) sessions.Finalizer {
+	return sessions.RollupFinalizer(st, log, func(row *rollup.Row, in rollup.Input) json.RawMessage {
+		relayLines, _ := st.ReadRelay(time.UnixMilli(in.EndedAtMs).UTC().Format(store.DateLayout))
+		// TM4's join, then TM6's verdict over the joined row.
+		readapi.JoinRelay(row, relayLines, cfg.scrapeInterval)
+		rep := api.DiagnoseRow(*row, in, relayLines)
+		b, err := json.Marshal(rep)
+		if err != nil {
+			return nil
+		}
+		return b
+	}, nil)
+}
+
+// startupRecovery installs the rollup hook and runs the first sweep. It is one
+// function because the two halves are only correct together: a sweep without
+// the hook archives a crashed session with no permanent row — which is what
+// review finding 3 was — and the hook without a sweep does nothing. Installing
+// it here also covers the periodic sweep in maintenance(), which shares the
+// store.
+//
+// It runs after the writer exists because recovery goes through the same
+// finalize path a graceful end uses (D3/D4).
+func startupRecovery(st *store.Store, log *slog.Logger, cfg config, api *readapi.API) (int, error) {
+	st.SetOrphanHook(orphanRecovery(st, log, cfg, api))
+	return st.SweepOrphans(cfg.sessionIdle)
+}
+
+// orphanRecovery turns a crashed process's leftover session file into the same
+// permanent row a graceful end would have written. Identity comes from the
+// records themselves (every stored line is self-describing), so an empty Live
+// is enough — and `EndedCleanly` stays false, which is exactly what happened.
+func orphanRecovery(st *store.Store, log *slog.Logger, cfg config, api *readapi.API) func(store.SessionRef, [][]byte) {
+	rollupRow := rollupFinalize(st, log, cfg, api)
+	return func(ref store.SessionRef, lines [][]byte) {
+		if len(lines) == 0 {
+			return
+		}
+		rollupRow(sessions.Live{Ref: ref}, lines)
+	}
 }
 
 // scrapeSink stores relay observations and refreshes the live projection.
