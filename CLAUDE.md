@@ -437,6 +437,55 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   server/wire/broadcaster changes; no "governed by Resilient mode"
   annotation, because unlike the two pacing entries this toggle still does
   what it says under resilient mode),
+  `docs/31-quick-start-links.md` for R26 (quick-start broadcast links:
+  **designed 2026-07-25, not started**; frontend-only — zero server / wire /
+  broadcaster-protocol change, and the cheapest item on the roadmap. A hash
+  query grammar on the existing route (`#/broadcast?start=1&res=720&fps=30`)
+  plus a **primed one-click surface**, so a bookmark or an embedded link goes
+  from cold browser to share picker in **one click** instead of four. The
+  load-bearing fact, stated so it is never re-litigated as a bug:
+  **`getDisplayMedia` requires transient user activation, so zero clicks is
+  impossible** — a fresh document has none and navigation doesn't carry it
+  across documents (`media/capture.ts` already records this in the R15
+  finding-1 comment explaining why the video-only retry can't re-prompt). What
+  the link removes is every *other* click and every decision. Containment is
+  the design: the armed surface calls the existing `beginStart` and nothing
+  else, so reclaim→mint, `StartError.phase` and the LIVE stage are
+  byte-identical, and a bare `#/broadcast` renders exactly as today — R26
+  changes what the pre-start card looks like and what the settings store
+  holds, nothing at or after the click. The grammar (`res`/`fps`/`hw`/
+  `bitrate` in Mbps/`codec`) can express **nothing the settings panel
+  cannot**, validated against *imported* vocabularies so no second list can
+  drift; invalid params are ignored with a quiet note, never fatal. Owner
+  decisions: the **publish secret is never carryable in a link** (a link gets
+  bookmarked, synced, pasted and screenshotted — a credential must not inherit
+  that lifecycle; secret-required deploys prompt once per device, then armed
+  links are one-click); link settings are a **session-only store override**
+  that never touches `localStorage` (a 480p quick-share bookmark must not
+  rewrite the 1080p gaming default); a **dedicated minimal surface**, not the
+  existing card; and **no pre-connect on load** — an abandoned bookmark tab
+  would otherwise hold one of the relay's 5 default broadcast slots for the
+  5-minute GC grace. R23's terms gate is never bypassed, only repositioned:
+  an armed link presents an unmet gate *on load*, and its "Agree & continue"
+  click **is** the capture gesture. Named risk: the ~5 s activation window
+  already contains **three** async stages before `getDisplayMedia` — the R11
+  worker boot + capability gate (`BOOT_TIMEOUT_MS` 2 s, a hard worst case),
+  the WebTransport dial, and R13's `refreshMatrix()` probes — so click→picker
+  becomes a measured criterion (< 2 s). Lever ranking is recorded rather than
+  guessed: **worker boot is the safest to pre-warm** (no relay slot, no
+  encoder contexts), the dial cannot move (= pre-connect, rejected), and
+  **probing at load is the least attractive** — it is exactly what
+  OOM-crashed a tab on 2026-07-15 (`MAX_CONCURRENT_PROBES` = 4 exists because
+  every pending `isConfigSupported` holds a real encoder instance), so if
+  pre-warmed at all it must be armed-path only.
+  Non-goals: zero-click autostart; a **stable bookmarkable broadcast ID**
+  (R17 requires a relay-minted resume token for all `/publish/{id}` claims, so
+  a client can't choose its own ID, and carrying that token is a publish
+  credential — persistent channels stay R1's deferred item); viewer-side link
+  params (a join link is a *shared* artifact whose params travel to other
+  people's devices — deliberate follow-up). Chunks **QL1–QL6**; QL1 also fixes
+  a latent bug — `#/view/<id>?utm_source=…` currently bounces to the landing
+  page),
   `docs/29-terms-and-conditions.md` for R23 (terms & conditions / usage terms:
   **designed + TC1–TC5 implemented 2026-07-24, automated gates green (gawk-app
   tsc/765 vitest/oxlint/build + helm lint/render + gawk-broadcast vet/gofmt/app

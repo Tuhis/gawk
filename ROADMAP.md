@@ -44,6 +44,7 @@ feature set exists).
 | R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 🚧 implemented 2026-07-24 (TC1–TC5); automated gates green (gawk-app + gawk-broadcast + helm), manual browser verify pending ([docs/29](docs/29-terms-and-conditions.md)) |
 | R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 🚧 designed + CG1–CG5 implemented 2026-07-24 (browser-aware share/audio tips + reactive notes; frontend-only, zero server/wire/pipeline change); automated gates green, manual browser verify pending ([docs/30](docs/30-broadcaster-capture-audio-guidance.md)) |
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
+| R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 
 ---
 
@@ -1721,6 +1722,96 @@ became a lip-sync metric in docs/20 field finding 9 (before it, it read over
 2000 ms on a healthy session) — and that fix has not had its own field pass
 yet. Debugging a new audio lane through an unverified instrument would indict
 the wrong half.
+
+---
+
+## R26 — Quick-start broadcast links
+
+**Goal**: a link that lands you at the share picker. Bookmark it on the gaming
+PC, or embed it on another page/tool, and going from cold browser to live costs
+**one click** instead of four — with quality settings carried in the URL rather
+than chosen in a panel every time.
+
+**Why here**: pure UX polish on top of a feature set that is now complete, and
+the cheapest item on the roadmap by a wide margin — frontend-only, zero
+server/wire/protocol change, four existing seams (`parseRoute`,
+`broadcastSettingsStore`, `BroadcasterScreen.beginStart`, the R23 terms gate)
+carry all of it. Nothing else depends on it, so it can slot in whenever.
+
+**The constraint that shapes everything**: `getDisplayMedia` requires
+**transient user activation**, so no link can reach zero clicks — a fresh
+document has no activation and navigation does not carry it across documents.
+`media/capture.ts` already records this the hard way (the R15 finding-1 comment
+explaining why the video-only retry usually cannot re-prompt). R26 therefore
+removes every click that is *not* the capture gesture, and every decision:
+the "Start a stream" click, the settings-panel visit, and — where already
+satisfied — the terms and secret prompts.
+
+**Scope sketch**:
+
+- **Query grammar on the existing route**, in the hash:
+  `#/broadcast?start=1&res=720&fps=30`. The fragment is never sent to the
+  server and never appears in a `Referer`. `parseRoute` splits the query off
+  before matching, which also fixes a latent bug — `#/view/<id>?utm_source=…`
+  currently bounces to the landing page.
+- **The grammar can express nothing the settings panel cannot**: `res`, `fps`,
+  `hw`, `bitrate` (Mbps), `codec`, each validated against the *imported*
+  vocabulary from `media/ladder.ts` / `probe.ts` / `types.ts`, so there is no
+  second list to drift. Unknown or invalid params are ignored with a quiet
+  note, never fatal — a link is hand-authored and long-lived.
+- **A dedicated minimal surface** when armed: brand, one button, one line of
+  what will happen. It calls the existing `beginStart` and nothing else, so
+  reclaim→mint, `StartError.phase` handling and the LIVE stage stay
+  byte-identical. A bare `#/broadcast` renders exactly as today. **Minimal ≠
+  tipless**: R24's sharing tips still render when undismissed, since they are
+  advice about the very next action (which surface to share, ticking "Share
+  audio" *in the picker*) and an armed link is exactly the flow that reaches
+  that picker with the least context.
+- **Link settings are a session-only override** — applied to the store without
+  touching `localStorage`, so a bookmarked 480p "quick share" link can't
+  silently rewrite the 1080p default used for gaming. A manual change during
+  the session still persists.
+- **Gates move ahead of the button, never away**: an armed link with unaccepted
+  terms opens the R23 modal on load, and its "Agree & continue" click *is* the
+  capture gesture. On a secret-required deployment the prompt is skipped when a
+  secret is already stored (a wrong one then fails at connect, recoverably).
+- **A "Copy quick-start link" builder** in the settings panel, emitting only
+  non-default values. A URL grammar with no UI is a feature only its author
+  can use.
+
+**Decisions already locked with the owner** (2026-07-25, full table in the
+doc): the publish secret is **never** carryable in a link (a link gets
+bookmarked, synced, pasted and screenshotted — a credential must not inherit
+that lifecycle); settings are session-only; the armed surface is dedicated, not
+the existing card; and **no pre-connect on page load** — an abandoned bookmark
+tab would otherwise hold one of the relay's 5 default broadcast slots for the
+5-minute GC grace, so five stray tabs would lock out the deployment.
+
+**Risk worth naming**: the activation window (~5 s in Chrome) already contains
+**three** async stages before `getDisplayMedia` is reached — the R11 worker
+boot and capability gate (`BOOT_TIMEOUT_MS` is 2 s, a hard worst case), the
+WebTransport dial, and R13's `refreshMatrix()` probes. R26 doesn't add to it,
+but a one-click surface is where a lost activation reads as "the link is
+broken" — so click→picker becomes a measured acceptance criterion (< 2 s).
+Which stage dominates is deliberately left to measurement; the doc ranks the
+levers instead: **worker boot is the safest to pre-warm** (holds no relay slot,
+allocates no encoder contexts), the dial cannot move (that is pre-connect,
+rejected above), and **probing at load is the least attractive** despite being
+the obvious one — it is precisely what OOM-crashed a tab on 2026-07-15, since
+each pending `isConfigSupported` holds a real encoder instance. An
+activation-specific "click again" recovery ships regardless.
+
+**Non-goals**: zero-click autostart (browser-enforced; an operator can add
+Chrome's `--auto-select-desktop-capture-source` on their own PC to drop the
+picker *dialog*, never the click); a **stable bookmarkable broadcast ID** —
+R17 requires a relay-minted resume token for all `/publish/{id}` claims so a
+client cannot choose its own ID, and carrying that token in a link is a publish
+credential; persistent channels remain R1's deferred item. Viewer-side link
+params are a deliberate follow-up, not part of R26 — a join link is a *shared*
+artifact whose parameters travel to other people's devices.
+
+Chunks **QL1–QL6**. Designed 2026-07-25, not started —
+[docs/31](docs/31-quick-start-links.md).
 
 ---
 
