@@ -111,6 +111,11 @@ The default ingest URL is therefore **the same-origin path, with no
 configuration at all**; `config.js` may override it (an operator splitting the
 services), and that override is the only case that has to think about CORS.
 
+**Only the ingest path is routed publicly.** The read API and the dashboard
+sit on a separate listener that the public Ingress never exposes (D14) — the
+write surface has to be reachable by every viewer, the read surface has no
+reason to be reachable by any of them.
+
 ### D2 — The correlation ID: a relay-minted, stateless-verifiable session token (wire `0x0D`)
 
 The relay mints a per-session token and delivers it **in-band** after upgrade
@@ -329,20 +334,40 @@ subscribes to the same stats the overlay renders. **No worker message, no
 transport change, no pipeline change**, on either surface. The native
 broadcaster (R14/R25) gets a small reporter goroutine over `engine.Stats`.
 
-### D14 — Grafana and the built-in dashboard answer different questions
+### D14 — The built-in dashboard is a first-class surface, and Grafana answers a different question
 
-Both were asked for; building the same view twice would be the way to waste
-that. The split:
+Both were asked for; building the same view twice would waste that. The split
+is by question, and by *time horizon*:
 
 - **Built-in dashboard** (served by `gawk-telemetry`, Go `embed`, no build
-  step): *what is happening now, and what happened in this session*. Live
-  broadcasts, the viewer list with per-viewer health, one session detail page
-  with sparklines and the `diagnose()` verdict. This is the surface that
-  replaces "ask the friend to paste a blob".
-- **Grafana** (finally closing R9 M8): *trends and fleet health over time*,
-  driven by Prometheus as originally designed. Rollup-derived panels are a
-  stretch and would go through a JSON/Infinity datasource pointed at the read
-  API — flagged as an open question (§8), not a commitment.
+  step): **what is happening right now** — every live broadcast, its
+  broadcaster, and every one of its viewers, with anything obviously wrong
+  **highlighted without the operator going looking for it**. Plus the
+  after-the-fact session page with sparklines and the `diagnose()` verdict.
+  This is the surface that replaces "ask the friend to paste a blob", and it
+  is the only surface a human uses *while a stream is live*. Full design in
+  §4.8.
+- **Grafana** (finally closing R9 M8): **trends over time** — fleet health,
+  release-over-release comparison, capacity — driven by Prometheus as R9
+  designed it. Rollup-derived panels are a stretch that would need a
+  JSON/Infinity datasource pointed at the read API; flagged as an open
+  question (§8), not a commitment.
+
+The consequence, recorded because it reverses an earlier ordering in this
+doc's own drafting: **the dashboard is not the droppable half.** A live
+operational view is the thing an owner reaches for at 21:00 when a friend says
+"it's stuttering", and it is what makes the always-on collection worth having
+before any AI is involved. Grafana (TM9) is the part that can slip; the
+dashboard (TM8) cannot.
+
+**Exposure**: only the *ingest* path is public (D1). The dashboard and the
+read API live on a **separate listener**, exposed via ClusterIP and, at the
+operator's discretion, an internal-only Ingress — never on the public path
+that carries ingest. That is R9 D1's posture for `/metrics`, for the same
+reason: the read side aggregates every broadcast on the fleet, and it should
+be no more reachable than `/statusz` is today. Consistent with that
+precedent, it carries no auth by default (cluster-internal), with optional
+basic auth for operators who route it through an Ingress.
 
 ### D15 — Strict envelope, tolerant payload, typed rollup
 
@@ -578,6 +603,103 @@ concealment-vs-overflow ratio is a rule; finding 12's `avSkewMs` over-report
 becomes a rule the moment its signature is known — and the 14-day window is
 what will let it be known.
 
+### 4.8 The live dashboard
+
+The operator-facing half of the item (D14). Its single design goal:
+**someone who opens it during a live stream should see whether anything is
+wrong before they click anything.** Everything below follows from that.
+
+#### 4.8.1 Three views, deep-linkable
+
+1. **Fleet view** (the landing page) — one row per **live broadcast**:
+   short broadcast key, uptime, broadcaster health, viewer count, **worst
+   viewer health**, and the two or three relay signals that matter at a
+   glance (ingress loss, egress drops, publisher present/away). Default sort
+   is **severity, not recency** — problems float to the top, and a healthy
+   fleet is a short quiet list.
+2. **Broadcast detail** — the broadcaster and its viewers **in one table**,
+   because they are the same kind of thing: both are sessions with tokens,
+   distinguished by a `role` column, with the broadcaster pinned first. The
+   broadcaster row carries the send-side funnel (capture → gate → encode →
+   sent), encoder queue and pressure, active rung/codec, and uplink signals;
+   each viewer row carries delivery mode, received/decoded/rendered fps,
+   stall state, live-edge drift and capture→render latency, audio state, and
+   its own health. Any row expands to a sparkline strip over the last few
+   minutes.
+3. **Session detail** — the after-the-fact view of one ended session: the
+   full timeline, the events (reconnects, close codes, ladder steps, mode
+   changes), and the stored `diagnose()` verdict with its evidence.
+
+Every view is **deep-linkable** (hash routes, matching the main app's
+convention), so "look at this" is a pasted URL. `diagnose()` output includes
+the dashboard URL for the session it analysed — which is what lets Claude hand
+a human something to *look* at rather than a wall of numbers.
+
+#### 4.8.2 Where "live" comes from
+
+The live view is served from an **in-memory projection**, not from disk: the
+relay scraper (D5) refreshes the relay side every ~5 s, and ingest refreshes
+the client side as batches land (~10 s). Disk is for history; the live page
+never reads a session file.
+
+That means the two halves of a row have **different freshness**, and the UI
+says so rather than painting them as one instant: relay-side values are ≤ 5 s
+old, client-side values ≤ ~15 s. A viewer whose client telemetry has gone
+quiet while the relay still sees the subscriber is shown as **stale**, and a
+subscriber that never reports at all (an old client, a blocked endpoint) is
+shown as **unknown** — never as healthy. Painting an absence of evidence as
+green is the one thing an ops dashboard must not do.
+
+The page **polls one endpoint** (`/live`) every 2 s. Not SSE or WebSocket:
+polling has no connection state to lose, survives any proxy, is trivially
+debuggable with `curl`, and 2 s against an in-memory projection costs
+nothing at this scale.
+
+#### 4.8.3 Health model — one rule engine, two windows
+
+Severity comes from **the same rules as `diagnose()`** (D6), evaluated over
+the live rolling window instead of a stored session. Two truths about the same
+stream disagreeing on a dashboard would be worse than no dashboard, so there
+is one engine; live evaluation simply uses the subset of rules whose signals
+are available continuously.
+
+Four states, deliberately few: **ok · warn · bad · unknown**. Lifecycle
+(`live` / `away` / `ended`) is carried *separately* — a broadcaster in the
+R1 grace period is `away`, which is not a fault.
+
+What lights a row up, by side:
+
+| Side | Warn / bad signals |
+|---|---|
+| Broadcast | relay ingress loss above threshold; publisher active but no frames relayed; egress drops with `reason="bandwidth"`; keyframe drops with `reason="slow"` across *all* subscribers; approaching a configured limit |
+| Broadcaster session | encode funnel gap (post-gate fps ≫ encoder fps), encoder queue growing, sent fps below encoded fps, repeated reconnects |
+| Viewer session | stalled (`timeSinceLastFrameMs` beyond a GOP multiple); received fps far below the broadcaster's sent fps; decoded ≪ received; that subscriber's queue/carrier drops or DVR resyncs climbing; playout offset pinned at its clamp; audio underruns/overflow drops; reconnect churn |
+| Either | no telemetry despite the relay seeing the session (**unknown**, never ok) |
+
+**Escalation is hysteretic**, following the project's dwell instinct (R4, R27):
+a state must hold for two consecutive evaluations to escalate, and clears only
+after a dwell (~15 s). For an ops view the asymmetry is deliberate — problems
+should appear promptly and must not vanish before the human finishes looking
+at them.
+
+#### 4.8.4 Presentation
+
+Plain HTML + a small vanilla JS file, embedded in the binary (Go `embed`),
+**no build step and no external asset fetch** — the dashboard must work on a
+port-forward from a laptop with no network.
+
+It is deliberately **not** part of R6's design system: different origin,
+different build, no shared tokens, and coupling an ops page to the product's
+component library buys nothing. It does borrow R6's **monochrome restraint**,
+for a functional reason — in an otherwise monochrome table, one amber row is
+unmissable. Colour is therefore reserved *exclusively* for severity, and
+severity is **never encoded by colour alone**: each state carries a glyph and
+a text label, so the page survives a colour-blind reader and a greyscale
+screenshot pasted into a chat.
+
+No login, no time-range picker on the live view (it is live), no
+configuration. The fleet view is the whole product for the common case.
+
 ---
 
 ## 5. Chunks and acceptance criteria
@@ -591,12 +713,15 @@ what will let it be known.
 | **TM5** | **Rollups**: finalize-time computation, permanent row, additive-schema guarantee, `schemaAnomalies` | Scripted session → rollup row matches expected percentiles (incl. the "mean hides a freeze" case: a session with one 4 s stall must show it in p95 and in the stall fields); a rollup row from a synthetic *older* schema version still loads and queries; rollups survive a raw-partition prune (the point of the split). **Typed by construction (D15)**: every emitted numeric field is a finite number or **absent** — never a coerced guess, a `null`, or a zero standing in for "unknown" — asserted over a session whose samples are deliberately full of dropped/wrong-typed fields; that same session's `schemaAnomalies` counts match the ingest-side tally, and a session that hit its byte budget or has `seq` gaps says so on the row |
 | **TM6** | **Read API + `diagnose()`**: HTTP JSON handlers, the docs/13 rule set, evidence provenance + confidence capping | Each transcribed playbook row has a test driving a synthetic session that fires it and one that does not; a client-only-evidence rule caps confidence (D7); relay/client disagreement surfaces as a finding rather than resolving silently; missing signals appear in `unavailable` instead of changing the verdict; **every default response ≤ 32 KB against a synthetic 4-hour session** (D10) |
 | **TM7** | **MCP server**: the tools of §4.6 over the TM6 handlers, auth, docs | Each tool round-trips against a seeded store; the same query through HTTP and MCP returns the same data (one implementation, asserted); default bounds hold; `query_sql` is absent unless explicitly enabled; a documented end-to-end transcript: "diagnose yesterday's broadcast" from cold |
-| **TM8** | **Human surfaces**: embedded dashboard (live broadcasts, viewer list, session detail + verdict) + the R9 M8 Grafana dashboard | Dashboard served from the binary with no build step and no external asset fetch; renders live, empty and degraded (missing relay coverage) states; Grafana JSON imports cleanly against a scraping Prometheus and every panel returns data during a test broadcast (M8's original criterion, unchanged) |
+| **TM8** | **Live dashboard** (§4.8): in-memory live projection + `/live` endpoint, the three views, the shared-engine health model with hysteresis, embedded assets, separate non-public listener | **The headline criterion — an operator opening the fleet view during a staged-bad broadcast identifies the faulty stream, and which side is at fault, without clicking anything.** Plus: severity ordering puts the worst broadcast first (property test over generated fleets); a viewer whose client telemetry stops renders **stale**, and one that never reported renders **unknown** — neither ever `ok` (both asserted); the broadcaster and its viewers appear in one table with the broadcaster pinned first; live severity for a given window equals `diagnose()`'s verdict for the same window (one engine, asserted — they may not disagree); hysteresis holds (a single-sample blip does not escalate; a cleared fault persists through the dwell); relay-side and client-side freshness are labelled separately; served with no build step and **no external asset fetch** (asserted by loading with the network blocked); renders empty / live / degraded / relay-coverage-missing states; severity is never colour-only (glyph + label present in the DOM for each state); the read listener is absent from the public Ingress in `helm template` |
+| **TM9** | *(droppable)* **Grafana dashboard** — closing R9 M8 | Dashboard JSON imports cleanly against a scraping Prometheus and every panel returns data during a test broadcast (M8's original criterion, unchanged); if the rollup-datasource question (§8) resolves negative, Prometheus-only panels ship and the finding is written back here |
 
 Chunk prefix **TM** (two letters; A–Z claimed). Dependency spine:
-TM1 → TM2/TM3 → TM4 → TM5 → TM6 → TM7/TM8. **TM6 is the chunk that decides
-whether the item succeeded**; if schedule pressure appears, TM8 is the
-droppable half, never TM6.
+TM1 → TM2/TM3 → TM4 → TM5 → TM6 → TM7/TM8 → TM9. Two chunks carry the
+item's value and neither is droppable: **TM6** (`diagnose()`) is what makes it
+work for the machine, **TM8** (the live dashboard) is what makes it work for a
+human at 21:00 during a live stream. **TM9 is the droppable one** — trends can
+wait, a stuttering broadcast cannot.
 
 Every chunk follows [CODE-REVIEW.md](../CODE-REVIEW.md) — tests with the
 change, bug fixes test-first.
@@ -623,10 +748,22 @@ Automated criteria are per-chunk above. Manual verify (the usual posture):
    staged-bad broadcast using only MCP. Criterion — **a correct verdict inside
    ~3 tool calls and well under the context a pasted blob costs today**. If it
    takes a raw dump to get there, TM6 is not done.
-5. **Privacy audit**: after a mixed session, grep the entire data directory
+5. **The human loop, measured**: with a broadcast running and one viewer
+   deliberately degraded (devtools throttle), open the dashboard cold on a
+   phone or a second machine. Criterion — **the bad stream is identifiable,
+   and attributable to the right side, from the fleet view alone, within
+   seconds and without clicking**. Then repeat with the *broadcaster* degraded
+   instead, and confirm the highlight moves to the broadcaster row rather than
+   smearing across every viewer. If the operator has to drill in to find out
+   something is wrong, TM8 is not done.
+6. **Dashboard honesty**: kill one viewer's telemetry (block the ingest path
+   in devtools) while it keeps watching happily, and confirm it reads
+   **stale/unknown** rather than `ok` or `bad`; stop a broadcaster and confirm
+   `away` is presented as a lifecycle state, not a fault.
+7. **Privacy audit**: after a mixed session, grep the entire data directory
    and service logs for the raw broadcast ID, any full UA string, and any
    source IP. Zero hits, or the chunk is not done.
-6. **Disabled-by-default**: an install with telemetry off shows no new
+8. **Disabled-by-default**: an install with telemetry off shows no new
    requests from any client, no new Service, and no behaviour delta.
 
 ---
@@ -669,7 +806,16 @@ Automated criteria are per-chunk above. Manual verify (the usual posture):
   is what bounds it.
 - **Open: Grafana over rollups.** Prometheus panels (M8's original scope) are
   settled; rollup-driven panels would need a JSON/Infinity datasource against
-  the read API. Deliberately unresolved until TM8 has the data to justify it.
+  the read API. Deliberately unresolved until TM9 has the data to justify it.
+- **The dashboard's health model is the same rules as `diagnose()` (§4.8.3),
+  so a bad rule is now wrong in two places at once** — on a live page a human
+  trusts at a glance, as well as in a verdict. That is the correct trade (two
+  disagreeing truths would be worse), but it raises the cost of a sloppy rule,
+  and it is why TM8's criteria assert the two agree rather than assuming it.
+- **Open: what the fleet view shows when nothing is live.** An empty page is
+  honest and useless; the last few ended broadcasts with their verdicts is
+  probably right, but it blurs the live/history line the design otherwise
+  keeps sharp. A TM8 question.
 - **Open: token lifetime vs very long broadcasts.** 24 h covers every
   plausible session; a broadcast outliving it would need a re-issued hello. A
   periodic re-hello is the obvious fix and is deferred until it is real.

@@ -46,7 +46,7 @@ feature set exists).
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
-| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed 2026-07-26 (owner-locked architecture/retention/read-surfaces/collection policy; wire 0x0D correlation ID, files-first `gawk-telemetry`, docs/13 playbook as `diagnose()`), not started (TM1–TM8) ([docs/33](docs/33-telemetry-and-diagnostics.md)) |
+| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed 2026-07-26 (owner-locked architecture/retention/read-surfaces/collection policy; wire 0x0D correlation ID, files-first `gawk-telemetry`, docs/13 playbook as `diagnose()`), not started (TM1–TM9) ([docs/33](docs/33-telemetry-and-diagnostics.md)) |
 
 ---
 
@@ -2001,6 +2001,17 @@ is downstream of that ID existing.
   not a raw dump. This is the difference between the AI use case working and it
   being a slower copy-paste: an 80-field × 200-sample dump is context
   incineration, a narrowed answer is a diagnosis.
+- **A live operator dashboard is a first-class half of the item**, not a
+  garnish on the machine-facing surfaces: one page listing every active
+  broadcast with its broadcaster **and** each of its viewers, anything
+  obviously wrong **highlighted before the operator clicks anything**, and
+  severity — not recency — as the default sort, so problems float to the top
+  and a healthy fleet is a short quiet list. It runs the **same rule engine**
+  as `diagnose()` (two disagreeing truths about one stream would be worse than
+  no dashboard) over a live window, with four states (ok/warn/bad/**unknown**)
+  and a hard rule that an *absence* of telemetry is never painted as health.
+  This is what an owner reaches for at 21:00 when a friend says "it's
+  stuttering", and it earns its keep before any AI is involved.
 - **Client numbers are self-reported; relay numbers are the anchor.** A verdict
   must never let a client's claim override a relay counter that contradicts it.
   Not a security posture (the trust model is a known operator) — a correctness
@@ -2062,16 +2073,18 @@ is downstream of that ID existing.
   reading it with judgement; as code it will be believed. Verdicts must carry
   the signals they rest on, and rank candidates rather than assert one.
 
-Chunks **TM1–TM8** (two-letter prefix; A–Z claimed): TM1 correlation ID
+Chunks **TM1–TM9** (two-letter prefix; A–Z claimed): TM1 correlation ID
 (wire + relay + client plumbing), TM2 client collectors (browser viewer +
 broadcaster, native engine, zero-PII envelope, R23 terms update), TM3
 `gawk-telemetry` service (ingest, validation, NDJSON writer, retention, chart —
 default off), TM4 relay-side session records incl. cluster-mode attribution,
 TM5 rollups + DuckDB query layer, TM6 HTTP JSON read API + the `diagnose()`
-engine (docs/13 playbook as code), TM7 MCP server, TM8 human surfaces (built-in
-dashboard + the deferred R9 M8 Grafana dashboard). TM1→TM3 are the dependency
-spine; TM6 is the one that decides whether the item succeeded — if schedule
-pressure appears, TM8 is the droppable half, never TM6.
+engine (docs/13 playbook as code), TM7 MCP server, TM8 the live operator
+dashboard, TM9 the deferred R9 M8 Grafana dashboard. TM1→TM3 are the
+dependency spine. **Two chunks carry the item's value and neither is
+droppable**: TM6 makes it work for the machine, TM8 makes it work for a human
+during a live stream. **TM9 is the droppable one** — trends can wait, a
+stuttering broadcast cannot.
 
 **Status**: designed 2026-07-26 —
 [docs/33](docs/33-telemetry-and-diagnostics.md); not started. The design doc

@@ -555,8 +555,18 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   returning ranked verdicts + evidence, never raw samples — an MCP surface
   that dumps 80-field series is *worse* than today's copy-paste, so a 32 KB
   default-response ceiling is an acceptance criterion, not a habit. Chunks
-  **TM1–TM8**; TM6 decides whether the item succeeded, TM8 is the droppable
-  half),
+  **TM1–TM9**; two of them carry the value and neither is droppable — TM6
+  (`diagnose()`) for the machine, and **TM8, a first-class live operator
+  dashboard**: one page listing every active broadcast with its broadcaster
+  **and** each viewer, anything obviously wrong highlighted before the
+  operator clicks anything, severity — not recency — as the default sort,
+  the **same rule engine** as `diagnose()` over a live window (two
+  disagreeing truths about one stream would be worse than no dashboard),
+  four states ok/warn/bad/**unknown** with hysteresis, and a hard rule that
+  a missing report reads stale/unknown and **never** green. Only the ingest
+  path is public; the dashboard + read API sit on a separate non-public
+  listener (R9 D1's posture). TM9 (Grafana) is the droppable one — trends
+  can wait, a stuttering broadcast cannot),
   `docs/31-quick-start-links.md` for R26 (quick-start broadcast links:
   **designed 2026-07-25, not started**; frontend-only — zero server / wire /
   broadcaster-protocol change, and the cheapest item on the roadmap. A hash
