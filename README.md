@@ -478,6 +478,27 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   format at keyframes — avcC-bearing config ⇒ AVCC, leading start code with
   in-band SPS/PPS ⇒ Annex-B — and keep it sticky for the deltas.
   ([docs/27](docs/27-ios-mse-fullscreen.md))
+- **An fMP4 sample's declared duration must be the interval to its SUCCESSOR,
+  not from its predecessor** — otherwise every cadence increase leaves a hole
+  exactly that big in the buffered timeline, and a live stream's cadence is never
+  constant (a reorder-gap resync discards a GOP and jumps ~33 ms → ~500 ms). It
+  costs one frame of lookahead. Constant-cadence fixtures cannot catch this: the
+  forward and backward intervals are equal there, which is why it shipped twice.
+  ([docs/27](docs/27-ios-mse-fullscreen.md))
+- **All of an MSE MediaSource's SourceBuffers must be added before the first init
+  segment is appended** — Chromium's demuxer accepts new IDs only while
+  initializing and throws `QuotaExceededError` ("reached the limit of SourceBuffer
+  objects") afterwards. So create the buffer from its **mime** as soon as the
+  track is known, and withhold only the init *segment* until you have bytes for
+  it; a track's buffer existing and a track's init being appended are two
+  different things worth tracking separately.
+  ([docs/27](docs/27-ios-mse-fullscreen.md))
+- **iOS refuses Opus in MP4 through ManagedMediaSource** — measured on iOS 18.7 /
+  Safari 26.5.2: `isTypeSupported('audio/mp4; codecs="opus"')` is false, even
+  though WebKit 17 added Opus-in-MP4 for file playback and Chrome's MSE accepts
+  it. AAC-LC (`mp4a.40.2`), the codec Apple's own HLS mandates, is the fallback —
+  which for a WebCodecs pipeline means transcoding the decoded PCM.
+  ([docs/27](docs/27-ios-mse-fullscreen.md))
 - **A live MSE presentation must set `duration = Infinity`** — otherwise MSE
   keeps raising duration to the newest appended end timestamp, and two things
   break: the native player draws a finite scrub bar instead of the LIVE badge,

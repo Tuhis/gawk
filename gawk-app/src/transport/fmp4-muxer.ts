@@ -66,11 +66,30 @@ export interface Fmp4MediaSegment {
 export type Fmp4Segment = Fmp4InitSegment | Fmp4MediaSegment;
 
 // The R15 audio lane's config, as the muxer needs it (docs/20 wire type 0x08).
+// `description` carries the codec's out-of-band setup bytes where the format
+// needs them: unused for Opus (dOps is built from the fields above), required
+// for AAC — the AudioSpecificConfig that goes inside `esds`, taken verbatim from
+// the encoder's own `decoderConfig.description` rather than synthesized.
 export interface AudioMuxConfig {
   codec: string;
   sampleRate: number;
   channels: number;
+  description?: Uint8Array;
 }
+
+// Which audio encapsulation the muxer is producing. Opus is the R15 lane
+// muxed verbatim (no transcode); AAC is the iOS path — iOS refuses
+// `audio/mp4; codecs="opus"` through ManagedMediaSource (docs/27 finding 4), so
+// the decoded PCM is re-encoded to AAC, which Apple's own HLS mandates.
+export type AudioMuxCodec = 'opus' | 'aac';
+
+export function aacMime(codec: string): string {
+  return `audio/mp4; codecs="${codec}"`;
+}
+
+// AAC-LC frames are 1024 samples, not Opus's 960 — the nominal fallback duration
+// when a sample has no successor to measure against.
+export const AAC_FRAME_SAMPLES = 1024;
 
 export interface AudioMuxInput {
   timestampUs: bigint;
@@ -123,6 +142,8 @@ export const AUDIO_MAX_STRETCH_MS = 1000;
 // interval — re-anchor instead of encoding a multi-second freeze into the
 // output timeline. Same 5 s judgement as CADENCE_MAX_INTERVAL_MS.
 export const RESTART_JUMP_US = 5_000_000;
+
+const EMPTY = new Uint8Array(0);
 
 // The fixed one-sample fragment layout (see buildMediaSegment): moof is a
 // constant 100 bytes, so the trun data_offset — from moof start to the first
@@ -475,6 +496,16 @@ class BoxWriter {
     });
   }
 
+  // Current write offset, and a single-byte backpatch — the ISO 14496-1
+  // descriptor sizes inside `esds` are not box sizes, so `box()` can't do it.
+  mark(): number {
+    return this.len;
+  }
+
+  patchU8(at: number, v: number): void {
+    this.buf[at] = v & 0xff;
+  }
+
   take(): Uint8Array {
     return this.buf.slice(0, this.len);
   }
@@ -614,10 +645,93 @@ export function buildInitSegment(avcc: Uint8Array, width: number, height: number
   return w.take();
 }
 
-// The audio counterpart of buildInitSegment: one Opus track, timescale ==
+// ISO 14496-1 descriptor header: tag + a variable-length size (7 bits/byte).
+// Every descriptor here is far under 128 bytes, so one size byte is enough —
+// asserted rather than assumed, because a silent truncation would produce an
+// init segment that parses as garbage.
+function descriptor(w: BoxWriter, tag: number, body: () => void): void {
+  w.u8(tag);
+  const sizeAt = w.mark();
+  w.u8(0); // backpatched
+  body();
+  const size = w.mark() - sizeAt - 1;
+  if (size > 0x7f) throw new Error(`descriptor ${tag} too large for a 1-byte size: ${size}`);
+  w.patchU8(sizeAt, size);
+}
+
+// The AAC sample entry: `mp4a` + `esds` carrying the encoder's own
+// AudioSpecificConfig. Apple's mandated HLS audio codec, and the iOS path for
+// R22 audio (docs/27 finding 4).
+function writeMp4aEntry(w: BoxWriter, cfg: AudioMuxConfig): void {
+  const asc = cfg.description;
+  if (!asc || asc.length === 0) throw new Error('AAC needs an AudioSpecificConfig description');
+  w.box('mp4a', () => {
+    w.zeros(6); // reserved
+    w.u16(1); // data_reference_index
+    w.u32(0); // version + revision
+    w.u32(0); // vendor
+    w.u16(cfg.channels);
+    w.u16(16); // samplesize
+    w.u16(0); // pre_defined
+    w.u16(0); // reserved
+    w.u32(cfg.sampleRate * 0x10000); // 16.16 fixed
+    w.fullBox('esds', 0, 0, () => {
+      descriptor(w, 0x03, () => {
+        // ES_Descriptor
+        w.u16(1); // ES_ID
+        w.u8(0); // no stream dependency / URL / OCR, priority 0
+        descriptor(w, 0x04, () => {
+          // DecoderConfigDescriptor
+          w.u8(0x40); // objectTypeIndication: Audio ISO/IEC 14496-3
+          w.u8(0x15); // streamType 0x05 (audio) << 2, upStream 0, reserved 1
+          w.u8(0); // bufferSizeDB (24-bit)
+          w.u16(0);
+          w.u32(0); // maxBitrate — unknown for a live re-encode
+          w.u32(0); // avgBitrate
+          descriptor(w, 0x05, () => w.bytes(asc)); // DecoderSpecificInfo
+        });
+        descriptor(w, 0x06, () => w.u8(0x02)); // SLConfigDescriptor: MP4 default
+      });
+    });
+  });
+}
+
+// The Opus sample entry: 'Opus' + dOps (RFC 7845 §5.1).
+function writeOpusEntry(w: BoxWriter, cfg: AudioMuxConfig): void {
+  w.box('Opus', () => {
+    w.zeros(6); // reserved
+    w.u16(1); // data_reference_index
+    w.u32(0); // version + revision
+    w.u32(0); // vendor
+    w.u16(cfg.channels);
+    w.u16(16); // samplesize
+    w.u16(0); // pre_defined
+    w.u16(0); // reserved
+    // 16.16 fixed. Multiplication, not `<< 16`: 48000 << 16 overflows int32 in
+    // JS (the bytes come out right either way, but the expression should not
+    // read as a negative number).
+    w.u32(cfg.sampleRate * 0x10000);
+    // OpusSpecificBox — a plain box carrying its own version byte, NOT a fullBox.
+    w.box('dOps', () => {
+      w.u8(0); // Version
+      w.u8(cfg.channels); // OutputChannelCount
+      // PreSkip 0: WebCodecs exposes no encoder delay (docs/20 leaves the
+      // AudioDecoder description empty for the same reason), so there is nothing
+      // honest to declare. The cost is the encoder's ~6.5 ms ramp-up being
+      // audible-in-principle at stream start — an order below the 60 ms A/V
+      // skew target.
+      w.u16(0);
+      w.u32(cfg.sampleRate); // InputSampleRate (informational)
+      w.u16(0); // OutputGain (Q7.8, 0 dB)
+      w.u8(0); // ChannelMappingFamily: mono/stereo
+    });
+  });
+}
+
+// The audio counterpart of buildInitSegment: one audio track, timescale ==
 // sample rate. Deliberately a sibling rather than a parameterization of the
 // video builder — the video moov is pinned by golden vectors and must not move.
-export function buildAudioInitSegment(cfg: AudioMuxConfig): Uint8Array {
+export function buildAudioInitSegment(cfg: AudioMuxConfig, codec: AudioMuxCodec): Uint8Array {
   const w = new BoxWriter();
 
   w.box('ftyp', () => {
@@ -626,7 +740,7 @@ export function buildAudioInitSegment(cfg: AudioMuxConfig): Uint8Array {
     w.ascii('isom');
     w.ascii('iso5');
     w.ascii('mp41');
-    w.ascii('opus');
+    if (codec === 'opus') w.ascii('opus');
   });
 
   w.box('moov', () => {
@@ -695,36 +809,10 @@ export function buildAudioInitSegment(cfg: AudioMuxConfig): Uint8Array {
           w.box('stbl', () => {
             w.fullBox('stsd', 0, 0, () => {
               w.u32(1);
-              // AudioSampleEntry('Opus'), 28 bytes then child boxes.
-              w.box('Opus', () => {
-                w.zeros(6); // reserved
-                w.u16(1); // data_reference_index
-                w.u32(0); // version + revision
-                w.u32(0); // vendor
-                w.u16(cfg.channels);
-                w.u16(16); // samplesize
-                w.u16(0); // pre_defined
-                w.u16(0); // reserved
-                // 16.16 fixed. Multiplication, not `<< 16`: 48000 << 16 overflows
-                // int32 in JS (the bytes come out right either way, but the
-                // expression should not read as a negative number).
-                w.u32(cfg.sampleRate * 0x10000);
-                // OpusSpecificBox (RFC 7845 §5.1) — a plain box carrying its own
-                // version byte, NOT a fullBox.
-                w.box('dOps', () => {
-                  w.u8(0); // Version
-                  w.u8(cfg.channels); // OutputChannelCount
-                  // PreSkip 0: WebCodecs exposes no encoder delay (docs/20 leaves
-                  // the AudioDecoder description empty for the same reason), so
-                  // there is nothing honest to declare. The cost is the encoder's
-                  // ~6.5 ms ramp-up being audible-in-principle at stream start —
-                  // an order below the 60 ms A/V skew target.
-                  w.u16(0);
-                  w.u32(cfg.sampleRate); // InputSampleRate (informational)
-                  w.u16(0); // OutputGain (Q7.8, 0 dB)
-                  w.u8(0); // ChannelMappingFamily: mono/stereo
-                });
-              });
+              // AudioSampleEntry: 28 bytes of common fields, then the
+              // codec-specific setup box.
+              if (codec === 'aac') writeMp4aEntry(w, cfg);
+              else writeOpusEntry(w, cfg);
             });
             w.fullBox('stts', 0, 0, () => w.u32(0));
             w.fullBox('stsc', 0, 0, () => w.u32(0));
@@ -818,6 +906,10 @@ export class Fmp4Muxer {
   private prevInputUs: number | null = null;
   private prevOutputUs = 0;
   private lastDurationUs = DEFAULT_FRAME_DURATION_US;
+  // One frame of lookahead (docs/27 finding 3). A sample's declared duration
+  // must be the interval to its SUCCESSOR, which is only knowable once the
+  // successor arrives — so the newest frame is held here until then.
+  private pendingVideo: { outputUs: number; keyframe: boolean; sample: Uint8Array } | null = null;
 
   // The video path's input→output shift, republished on every frame (including
   // each re-anchor). This is what keeps audio in sync: both media carry
@@ -866,6 +958,10 @@ export class Fmp4Muxer {
 
   private pushInner(frame: MuxInputFrame): Fmp4Segment[] {
     const out: Fmp4Segment[] = [];
+    // A re-init is held back with the frame that triggers it: the sample still
+    // pending belongs to the OLD parameter sets, and appending the new init
+    // segment first would have the SourceBuffer parse it with the new config.
+    let pendingInit: Fmp4InitSegment | null = null;
 
     if (frame.keyframe) {
       const extradata = frame.config?.extradata;
@@ -874,8 +970,7 @@ export class Fmp4Muxer {
         this.format = 'avcc';
         const normalized = normalizeAvccExtradata(extradata);
         const parsed = parseAvcc(normalized);
-        const init = this.maybeReinit(normalized.slice(), parsed.sps);
-        if (init) out.push(init);
+        pendingInit = this.maybeReinit(normalized.slice(), parsed.sps);
       } else if (startsWithStartCode(frame.data)) {
         // A genuine start code at offset 0: the native broadcaster's Annex-B
         // shape, parameter sets in-band (an AVCC sample can only fake a start
@@ -886,8 +981,7 @@ export class Fmp4Muxer {
         const pps = nals.find((n) => nalType(n) === NAL_PPS);
         if (sps && pps) {
           this.format = 'annexb';
-          const init = this.maybeReinit(buildAvcc(sps, pps), sps);
-          if (init) out.push(init);
+          pendingInit = this.maybeReinit(buildAvcc(sps, pps), sps);
         }
         // No in-band parameter sets and no avcC config: this keyframe cannot
         // (re)init anything — if a config is already active it still muxes
@@ -899,6 +993,7 @@ export class Fmp4Muxer {
       // Nothing to init from yet (deltas before the first keyframe, or an
       // AVCC keyframe whose config was lost).
       this.stats.skippedAwaitingInit++;
+      if (pendingInit) out.push(pendingInit);
       return out;
     }
 
@@ -929,20 +1024,45 @@ export class Fmp4Muxer {
     this.prevOutputUs = outputUs;
     this.outputOffsetUs = outputUs - inputUs;
 
+    // The held frame's duration is now known: exactly the interval to this one,
+    // so consecutive samples abut and the buffered range has no hole. A long
+    // interval (a capture stall, or a reorder-gap resync that discarded a GOP)
+    // becomes a long-held frame — which is what the inline canvas does too.
+    const pending = this.pendingVideo;
+    if (pending) out.push(this.emitVideo(pending, outputUs - pending.outputUs));
+    if (pendingInit) out.push(pendingInit);
+    this.pendingVideo = { outputUs, keyframe: frame.keyframe, sample };
+    return out;
+  }
+
+  // End of input: emit the held frame with the last observed interval, since no
+  // successor will ever fix its duration. The live pipeline never calls this —
+  // a live stream has no end, and the held frame is one frame of latency in the
+  // MSE path only. Idempotent.
+  flush(): Fmp4Segment[] {
+    const pending = this.pendingVideo;
+    if (!pending) return [];
+    this.pendingVideo = null;
+    return [this.emitVideo(pending, this.lastDurationUs)];
+  }
+
+  private emitVideo(
+    pending: { outputUs: number; keyframe: boolean; sample: Uint8Array },
+    durationUs: number,
+  ): Fmp4MediaSegment {
     this.sequence++;
-    out.push({
+    this.stats.mediaSegments++;
+    return {
       kind: 'media',
       track: 'video',
-      keyframe: frame.keyframe,
-      data: buildMediaSegment(sample, {
+      keyframe: pending.keyframe,
+      data: buildMediaSegment(pending.sample, {
         sequence: this.sequence,
-        decodeTime: outputUs,
-        duration: this.lastDurationUs,
-        keyframe: frame.keyframe,
+        decodeTime: pending.outputUs,
+        duration: durationUs,
+        keyframe: pending.keyframe,
       }),
-    });
-    this.stats.mediaSegments++;
-    return out;
+    };
   }
 
   // R22 audio (docs/27 finding 2): the R15 audio config (wire 0x08). Returns an
@@ -953,26 +1073,56 @@ export class Fmp4Muxer {
   // track with a SourceBuffer and no samples empties the element's buffered
   // intersection and would stall the video.
   setAudioConfig(cfg: AudioMuxConfig): Fmp4Segment[] {
-    // Opus only. A non-Opus lane can't be muxed here and must not be guessed at.
-    if (!/^opus$/i.test(cfg.codec) || cfg.sampleRate <= 0 || cfg.channels < 1) {
+    // Two encapsulations, no guessing: Opus (the R15 lane verbatim) or AAC (the
+    // iOS transcode path). Anything else can't be muxed here.
+    const isOpus = /^opus$/i.test(cfg.codec);
+    const isAac = /^mp4a\./i.test(cfg.codec);
+    if ((!isOpus && !isAac) || cfg.sampleRate <= 0 || cfg.channels < 1) {
       this.stats.audioSkipped++;
       return [];
     }
+    const codec: AudioMuxCodec = isAac ? 'aac' : 'opus';
     const cur = this.audioConfig;
-    if (cur && cur.sampleRate === cfg.sampleRate && cur.channels === cfg.channels) return [];
-    this.audioConfig = { codec: 'opus', sampleRate: cfg.sampleRate, channels: cfg.channels };
+    if (
+      cur &&
+      cur.codec === cfg.codec &&
+      cur.sampleRate === cfg.sampleRate &&
+      cur.channels === cfg.channels &&
+      bytesEqual(cur.description ?? EMPTY, cfg.description ?? EMPTY)
+    ) {
+      return [];
+    }
+    const next: AudioMuxConfig = {
+      codec: isAac ? cfg.codec : 'opus',
+      sampleRate: cfg.sampleRate,
+      channels: cfg.channels,
+      ...(cfg.description ? { description: cfg.description.slice() } : {}),
+    };
+    let data: Uint8Array;
+    try {
+      data = buildAudioInitSegment(next, codec);
+    } catch (e) {
+      // A missing AudioSpecificConfig is the only way here: refuse the track
+      // rather than append an init segment no demuxer can read.
+      this.stats.audioSkipped++;
+      log.warn('fmp4 muxer: audio init segment rejected:', e);
+      return [];
+    }
+    this.audioConfig = next;
     this.pendingAudio = null;
-    this.audioNominalSamples = Math.round((OPUS_FRAME_MS / 1000) * cfg.sampleRate);
+    this.audioNominalSamples = isAac
+      ? AAC_FRAME_SAMPLES
+      : Math.round((OPUS_FRAME_MS / 1000) * cfg.sampleRate);
     this.stats.audioInitSegments++;
     return [
       {
         kind: 'init',
         track: 'audio',
-        codec: 'opus',
-        mime: opusMime(),
+        codec: next.codec,
+        mime: isAac ? aacMime(next.codec) : opusMime(),
         width: 0,
         height: 0,
-        data: buildAudioInitSegment(this.audioConfig),
+        data,
       },
     ];
   }

@@ -101,7 +101,15 @@ function isAudioDatagram(dgram: Uint8Array): boolean {
 }
 
 // R22: the worker muxer's counters as merged into stats by the worker shell.
-export type PresentationMuxStats = Fmp4MuxerStats & { armed: boolean };
+export type PresentationMuxStats = Fmp4MuxerStats & {
+  armed: boolean;
+  // R22 audio, iOS path (docs/27 finding 4): the AAC transcoder's state, null
+  // when this presentation isn't on the AAC path at all. `detail` carries the
+  // runtime's own words when it refuses ('unsupported') or dies ('error') —
+  // which is how an iPhone tells us whether AAC encode is available there.
+  audioTranscode?: 'idle' | 'active' | 'unsupported' | 'error' | null;
+  audioTranscodeDetail?: string | null;
+};
 
 export interface ViewerStats extends ReassemblerStats {
   decodedFrames: number;

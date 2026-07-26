@@ -10,7 +10,8 @@
 
 import type { ViewerDeliveryMode } from './resilient';
 import type { ConnectOptions } from './connection';
-import type { AudioTapEvent, Fmp4Track } from './fmp4-muxer';
+import type { DecodedAudioChunk } from './audio-decode';
+import type { AudioMuxCodec, AudioTapEvent, Fmp4Track } from './fmp4-muxer';
 import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
 import type { ReleasedFrame } from './reorder-buffer';
@@ -43,10 +44,11 @@ export type ViewerWorkerCommand =
   // R22 (docs/27 Decision 5): start muxing — create the Fmp4Muxer at the
   // worker-shell level (it survives pipeline attempts/reconnects) and begin
   // posting segments. Idempotent; a no-op when init carried no mux flag.
-  // `audio` (R22 audio, docs/27 finding 2) is the main thread's Opus-in-MP4
-  // verdict — isTypeSupported for the audio SourceBuffer's mime. Absent/false
+  // `audio` (R22 audio, docs/27 findings 2 + 4) is the main thread's negotiated
+  // encapsulation: 'opus' muxes the R15 lane verbatim (what Chrome takes),
+  // 'aac' transcodes the decoded PCM because iOS refuses Opus in MP4. Absent
   // keeps the presentation video-only, exactly as before audio muxing existed.
-  | { type: 'arm'; audio?: boolean }
+  | { type: 'arm'; audio?: AudioMuxCodec }
   // R15 N5 (docs/20 Decision 10): the audio sink's ~4 Hz playhead report,
   // travelling the reverse direction of the stats flow. The AudioContext is
   // main-thread-only, so this is how the worker's pipeline gets an audio
@@ -126,6 +128,10 @@ export interface WorkerHost {
   frameTap?: (frame: ReleasedFrame) => void;
   // R22 audio: the encoded-audio fork, present under the same gate as frameTap.
   audioTap?: (ev: AudioTapEvent) => void;
+  // R22 audio, iOS path (docs/27 finding 4): the DECODED-audio fork, for the
+  // AAC transcode iOS needs because it refuses Opus in MP4. Fired before the
+  // decoded buffers are transferred to the main thread.
+  audioPcmTap?: (chunk: DecodedAudioChunk) => void;
 }
 
 // Injectable for tests; the default wires a real ViewerSession whose pipeline
@@ -210,6 +216,9 @@ export class ViewerWorkerCore {
       // channel buffers transferred.
       onAudioChunk: (chunk) => {
         if (!current()) return;
+        // R22 audio, iOS path: transcode BEFORE the post — the channel buffers
+        // are transferred below, which detaches them.
+        this.host.audioPcmTap?.(chunk);
         this.host.post(
           {
             type: 'audioChunk',

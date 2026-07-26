@@ -223,6 +223,7 @@ describe('probeMsePresentation', () => {
     vi.stubGlobal('MediaSource', makeFakeMsCtor().ctor);
     expect(probeMseAudio('opus', 2)).toMatchObject({
       supported: true,
+      codec: 'opus',
       mime: 'audio/mp4; codecs="opus"',
     });
     // No audio in the broadcast at all.
@@ -242,7 +243,29 @@ describe('probeMsePresentation', () => {
     expect(probeMsePresentation('avc1.42E01F').supported).toBe(true);
     const r = probeMseAudio('opus', 2);
     expect(r.supported).toBe(false);
-    expect(r.reason).toBe('unsupported: audio/mp4; codecs="opus"');
+    expect(r.codec).toBeNull();
+    // Both tiers named, so the row says what was actually tried.
+    expect(r.reason).toContain('audio/mp4; codecs="opus"');
+    expect(r.reason).toContain('mp4a.40.2');
+  });
+
+  // docs/27 finding 4, measured on iOS 18.7: MMS refuses Opus in MP4 but takes
+  // AAC — the codec Apple's own HLS mandates. That is the tier the iPhone lands
+  // on, and it is the one that costs a transcode.
+  it('falls back to the AAC tier when Opus in MP4 is refused', () => {
+    const { ctor } = makeFakeMsCtor();
+    (ctor as { isTypeSupported: (m: string) => boolean }).isTypeSupported = (m) =>
+      !m.includes('opus');
+    vi.stubGlobal('MediaSource', ctor);
+    vi.stubGlobal('ManagedMediaSource', undefined);
+    const r = probeMseAudio('opus', 2);
+    expect(r).toMatchObject({ supported: true, codec: 'aac', mime: 'audio/mp4; codecs="mp4a.40.2"' });
+    expect(r.reason).toContain('refused');
+  });
+
+  it('prefers Opus where it is supported — no transcode for nothing', () => {
+    vi.stubGlobal('MediaSource', makeFakeMsCtor().ctor);
+    expect(probeMseAudio('opus', 2)).toMatchObject({ codec: 'opus' });
   });
 
   it('probes true for H.264 where MSE exists', () => {
@@ -386,16 +409,21 @@ describe('MsePresenter', () => {
     p.attach(video);
     instances[0].open();
 
+    // docs/27 finding 5: the audio mime is declared up front, so BOTH buffers are
+    // created with the first video init — an MSE implementation may refuse a
+    // second buffer once the first init segment has been parsed.
+    p.setExpectedAudioMime(AUDIO_MIME);
     p.pushSegment(init());
     p.pushSegment(media(true));
     // Audio config arrives (1 Hz), but no packet has been muxed yet.
     p.pushSegment(init(AUDIO_MIME, 'audio'));
-    expect(instances[0].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
-    expect(p.getStats().audioTrack).toBe(false);
+    expect(instances[0].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"', AUDIO_MIME]);
+    // The buffer exists, but nothing has been appended to it yet: an audio track
+    // holding an init and no samples still empties the buffered intersection.
+    expect(p.getStats().audioSegmentsAppended).toBe(0);
 
     // The first audio sample primes the track: its init goes in first.
     p.pushSegment(media(true, 1, 'audio'));
-    expect(instances[0].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"', AUDIO_MIME]);
     const audioSb = instances[0].buffers[1];
     expect(audioSb.appended).toHaveLength(1); // the held init
     audioSb.finishUpdate();
@@ -453,6 +481,43 @@ describe('MsePresenter', () => {
     p.pushSegment(media(false, 4, 'audio'));
     expect(instances[0].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
     expect(p.getStats()).toMatchObject({ queued: 0, audioSegmentsAppended: 0 });
+  });
+
+  // The element's buffered range is the INTERSECTION of the tracks, so a dead
+  // audio buffer would freeze video. Audio is additive: it must be able to fail
+  // without taking the presentation down.
+  it('rebuilds video-only when the audio SourceBuffer errors', () => {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    p.attach(video);
+    instances[0].open();
+    p.setExpectedAudioMime(AUDIO_MIME);
+
+    p.pushSegment(init());
+    p.pushSegment(media(true));
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    p.pushSegment(media(true, 1, 'audio'));
+    const audioSb = instances[0].buffers[1];
+    expect(audioSb).toBeDefined();
+
+    // The audio buffer rejects its content (a malformed transcode, say).
+    audioSb.fireError();
+    expect(p.getStats()).toMatchObject({ failed: false, audioTrack: false });
+
+    // A fresh MediaSource carrying video alone, re-primed from the cached init.
+    expect(instances).toHaveLength(2);
+    instances[1].open();
+    p.pushSegment(media(true, 2));
+    expect(instances[1].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
+    expect(instances[1].buffers[0].appended.length).toBeGreaterThan(0);
+    // Further audio is inert (the counter is cumulative, so it must not grow).
+    const appendedBefore = p.getStats().audioSegmentsAppended;
+    p.pushSegment(media(true, 3, 'audio'));
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    p.pushSegment(media(true, 4, 'audio'));
+    expect(p.getStats().audioSegmentsAppended).toBe(appendedBefore);
+    expect(instances[1].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
   });
 
   it('prunes both tracks to the same window, so the intersection cannot shrink', () => {

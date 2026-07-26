@@ -547,6 +547,7 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       // no audio in the fixture stream there is nothing to mux or probe.
       liveDuration: null,
       audioMode: 'none',
+      audioTranscode: null,
       audioSegmentsAppended: 0,
       audioTrackActive: false,
       muxAudioSegments: 0,

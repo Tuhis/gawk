@@ -6,7 +6,9 @@
 // Vite bundles this via `new Worker(new URL('./viewer.worker.ts', ...))`.
 
 import { notePlayhead } from './av-sync';
-import { Fmp4Muxer, type Fmp4Segment } from './fmp4-muxer';
+import { AAC_CODEC, AacTranscoder } from './audio-transcode';
+import type { DecodedAudioChunk } from './audio-decode';
+import { Fmp4Muxer, type AudioMuxCodec, type Fmp4Segment } from './fmp4-muxer';
 import { setInterpolationEnabled } from './interpolation';
 import { getPlayoutMode, setPlayoutMode, setViewerDeliveryMode } from './playout';
 import { createRenderSink, type RenderSink } from './render-sink';
@@ -58,8 +60,11 @@ let sink: RenderSink | null = null;
 // stream continues across a reconnect without re-arming. Created on 'arm'
 // (gated devices only); until then the frame tap is a null check per frame.
 let muxRequested = false;
-let muxAudio = false;
+// Which audio encapsulation the main thread negotiated (docs/27 findings 2 + 4):
+// 'opus' muxes the R15 lane verbatim, 'aac' transcodes the decoded PCM for iOS.
+let muxAudio: AudioMuxCodec | null = null;
 let muxer: Fmp4Muxer | null = null;
+let transcoder: AacTranscoder | null = null;
 
 // The encoded-frame fork (upstream of the decoder — the whole reason MSE
 // renders where the R16 presented-frame tee was black, docs/27). Segments
@@ -97,8 +102,33 @@ const frameTap = (frame: ReleasedFrame): void => {
 // release is exactly the cushion the audio SourceBuffer wants.
 const audioTap = (ev: AudioTapEvent): void => {
   const m = muxer;
-  if (!m || !muxAudio) return;
+  // The encoded lane only feeds the muxer where the runtime takes Opus in MP4.
+  // On the AAC path the encoded Opus is of no use to the presentation — the
+  // transcoded PCM is (see audioPcmTap).
+  if (!m || muxAudio !== 'opus') return;
   postSegments(ev.kind === 'config' ? m.setAudioConfig(ev.config) : m.pushAudio(ev.packet));
+};
+
+// R22 audio, iOS path (docs/27 finding 4): decoded PCM → AAC → the audio track.
+// The transcoder lives here beside the muxer so it survives pipeline attempts;
+// its own init segment rides the first output's AudioSpecificConfig.
+const audioPcmTap = (chunk: DecodedAudioChunk): void => {
+  const m = muxer;
+  if (!m || muxAudio !== 'aac') return;
+  transcoder ??= new AacTranscoder((out) => {
+    if (out.description) {
+      postSegments(
+        m.setAudioConfig({
+          codec: AAC_CODEC,
+          sampleRate: chunk.sampleRate,
+          channels: chunk.channels.length,
+          description: out.description,
+        }),
+      );
+    }
+    postSegments(m.pushAudio({ timestampUs: BigInt(Math.round(out.timestampUs)), data: out.data }));
+  });
+  transcoder.push(chunk);
 };
 
 // R22: the muxer's counters ride the existing stats events (only when the mux
@@ -111,6 +141,8 @@ const post = (ev: ViewerWorkerEvent, transfer?: Transferable[]): void => {
         ...ev.stats,
         presentationMux: {
           armed: muxer !== null,
+          audioTranscode: transcoder?.getStats().state ?? (muxAudio === 'aac' ? 'idle' : null),
+          audioTranscodeDetail: transcoder?.getStats().detail ?? null,
           ...(muxer?.getStats() ?? {
             initSegments: 0,
             mediaSegments: 0,
@@ -145,7 +177,7 @@ ctx.onmessage = (e: MessageEvent) => {
         post,
         renderSink: sink,
         transportFactory,
-        ...(muxRequested ? { frameTap, audioTap } : {}),
+        ...(muxRequested ? { frameTap, audioTap, audioPcmTap } : {}),
       });
       break;
     }
@@ -154,7 +186,7 @@ ctx.onmessage = (e: MessageEvent) => {
       // reconnect) must not restart the segment timeline. `audio` is the main
       // thread's Opus-in-MP4 verdict; a later arm may only ever turn it on
       // (audio can start after the first arm — the config is a 1 Hz message).
-      muxAudio = muxAudio || Boolean(cmd.audio);
+      muxAudio = muxAudio ?? cmd.audio ?? null;
       if (!muxRequested || muxer) break;
       muxer = new Fmp4Muxer();
       break;

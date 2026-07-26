@@ -790,13 +790,27 @@ async function muxerCheckScenario() {
     // NOT a secure context, and WebCodecs is [SecureContext] — the audio leg
     // needs a real AudioEncoder to produce real Opus packets. localhost is
     // potentially-trustworthy, so this costs one intercepted request.
-    await page.route('http://localhost/gawk-muxer-check', (route) =>
+    await page.route('http://localhost/gawk-muxer-check*', (route) =>
       route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>muxer check</title>' }),
     );
-    await page.goto('http://localhost/gawk-muxer-check');
+    // Two passes: the tier this runtime picks on its own (Chrome → Opus), and
+    // the AAC tier forced, because that is the one iOS lands on (docs/27
+    // finding 4) and the only way to exercise the mp4a/esds boxes in CI.
+    for (const tier of ['auto', 'aac']) {
+      await runMuxerCheckPass(page, bundle, tier);
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+async function runMuxerCheckPass(page, bundle, tier) {
+  {
+    const suffix = tier === 'aac' ? '?aac=1' : '';
+    await page.goto(`http://localhost/gawk-muxer-check${suffix}`);
     await page.addScriptTag({ path: bundle });
     const res = await page.evaluate(() => window.__gawkMuxerCheck());
-    writeFileSync(join(OUT, 'muxer-check.json'), JSON.stringify(res, null, 2));
+    writeFileSync(join(OUT, `muxer-check${tier === 'aac' ? '-aac' : ''}.json`), JSON.stringify(res, null, 2));
 
     const problems = [];
     const check = (ok, msg) => {
@@ -835,10 +849,17 @@ async function muxerCheckScenario() {
     // These add the audio-specific verdicts on top.
     if (res.audioSupported) {
       check(res.audioPackets > 0, 'no Opus packets were encoded (AudioEncoder unavailable?)');
-      check(
-        res.audioMime === 'audio/mp4; codecs="opus"',
-        `audioMime = ${res.audioMime}, want audio/mp4; codecs="opus"`,
-      );
+      const wantMime =
+        res.audioTier === 'aac' ? 'audio/mp4; codecs="mp4a.40.2"' : 'audio/mp4; codecs="opus"';
+      check(res.audioMime === wantMime, `audioMime = ${res.audioMime}, want ${wantMime}`);
+      // The AAC tier is the one iOS lands on (docs/27 finding 4), so its
+      // transcoder must be alive, not merely constructed.
+      if (res.audioTier === 'aac') {
+        check(
+          res.audioTranscode === 'active',
+          `audio transcode state = ${res.audioTranscode} (${res.audioTranscodeDetail})`,
+        );
+      }
       check(res.audioTrack, 'the presenter never created the audio SourceBuffer');
       check(res.audioMuxHoles === 0, `muxer left ${res.audioMuxHoles} audio holes in a clean feed`);
       check(
@@ -851,17 +872,15 @@ async function muxerCheckScenario() {
       log(`muxer check: audio leg SKIPPED — ${res.audioError}`);
     }
     if (problems.length > 0) {
-      fail(`muxer-check assertions failed:\n  - ${problems.join('\n  - ')}`);
+      fail(`muxer-check (${tier}) assertions failed:\n  - ${problems.join('\n  - ')}`);
     }
     log(
       `muxer check ok: ${res.framesPresented} frames presented, currentTime ${res.currentTime.toFixed(2)} s, ` +
         `${res.segmentsAppended} segments appended (${res.mime})` +
         (res.audioSupported
-          ? `, audio ${res.audioSegmentsAppended} appended (${res.audioMime})`
+          ? `, audio ${res.audioSegmentsAppended} appended (${res.audioMime}, tier ${res.audioTier})`
           : ', audio unsupported here'),
     );
-  } finally {
-    await browser.close();
   }
 }
 

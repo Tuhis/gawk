@@ -44,6 +44,10 @@ export interface PresentationSurfaceStats {
   // stream's audio lane: 'none' (no audio in the broadcast), 'muxed' (Opus in MP4
   // accepted — the native player has its own audio), or the refusal reason.
   audioMode: string;
+  // R22 finding 4: the AAC transcoder's state where the presentation is on that
+  // path ('idle' | 'active' | 'unsupported' | 'error'), null otherwise. This is
+  // the row that says whether an iPhone can encode AAC at all.
+  audioTranscode: string | null;
   audioSegmentsAppended: number;
   audioTrackActive: boolean;
   muxAudioSegments: number;

@@ -526,6 +526,153 @@ plays where their ranges intersect, so a malformed audio timeline fails the vide
 verdict. Chrome reports `isTypeSupported('audio/mp4; codecs="opus"')` true; where
 a runtime says false the leg is skipped **loudly**, never silently.
 
+## On-device findings (MF5 pass 2, 2026-07-26)
+
+Video and audio both play; the pass produced one measured platform verdict, one
+defect whose cause I had **mis-attributed**, and one design error that CI caught
+while fixing them. The owner's report: video shows until it freezes, audio is
+audible, A/V sync is off except in live-edge mode, and "I'm not sure if the video
++ audio muxing together in full screen is actually working."
+
+**It was not.** The capture answers that directly:
+
+```
+"audioMode": "unsupported: audio/mp4; codecs=\"opus\"",
+"audioTrackActive": false,  "audioSegmentsAppended": 0,
+presentationMux: { "audioInitSegments": 0, "audioSegments": 0, "audioSkipped": 0 }
+```
+
+`audioSkipped: 0` is the tell — the fork never ran at all, because the probe
+refused before the worker was ever armed for audio. The audio being heard was the
+inline AudioWorklet, which the code deliberately does **not** suppress when there
+is no muxed track. That also explains the sync complaint: audio was following the
+inline schedule while the fullscreen picture came from the MSE playhead, which
+sits anywhere in the catch-up band (`bufferedAheadMs: 1672` at capture, with
+`maybeCatchUp` only intervening past 2 s). Two independently-clocked outputs.
+
+### Finding 4 — iOS refuses Opus in MP4; AAC is the answer (fixed)
+
+Measured, not inferred: on iOS 18.7 / Safari 26.5.2,
+`isTypeSupported('audio/mp4; codecs="opus"')` is **false** through
+`ManagedMediaSource` — on the one device this whole feature exists for. Chrome
+accepts it (the CI proof), so the Opus path stays as the cheap tier; below it the
+probe now falls back to **AAC-LC (`mp4a.40.2`)**, the codec Apple's own HLS
+mandates, by re-encoding the already-decoded PCM in the viewer worker.
+
+* `transport/audio-transcode.ts` (`AacTranscoder`) taps the decoded stream the
+  AudioWorklet sink already consumes — decode once, encode once, and the inline
+  audio path is untouched. DOM-free and injectable, so it unit-tests with fakes.
+  Any failure (no `AudioEncoder`, `configure()` refused, a mid-stream error) goes
+  quiet and leaves the presentation video-only.
+* The muxer gained an `mp4a` sample entry with a real **`esds`** descriptor chain
+  (ES → DecoderConfig → DecoderSpecificInfo → SLConfig, ISO 14496-1 sizes
+  asserted rather than assumed), carrying the **encoder's own**
+  AudioSpecificConfig rather than a synthesized one — it is the encoder that
+  decides the profile. AAC's 1024-sample frames replace Opus's 960 as the nominal
+  duration; everything else in the audio timeline (lookahead, stretch, the shared
+  video anchor) is codec-agnostic and unchanged.
+* The tier is negotiated on the main thread and carried on the `arm` message, so
+  the worker transcodes only when asked.
+* **CI proves the AAC path too**: `--muxer-check` now runs twice, the second pass
+  forcing the AAC tier (`?aac=1`), and asserts the `mp4a`/`esds` init segment is
+  accepted, the transcoder reaches `active`, and video still presents — which,
+  because `buffered` is the intersection of the tracks, also validates the AAC
+  timeline. Both passes green in Chrome.
+
+### Finding 5 — both SourceBuffers must exist before the first append (fixed)
+
+Found by the new CI pass, not on the device, and it would have made finding 4
+useless on the phone:
+
+```
+QuotaExceededError: Failed to execute 'addSourceBuffer': This MediaSource has
+reached the limit of SourceBuffer objects it can handle.
+```
+
+An MSE implementation may refuse `addSourceBuffer` once the first init segment
+has been parsed (Chromium's demuxer accepts new IDs only while initializing). The
+audio buffer was created **lazily, on the first audio sample** — a rule finding 2
+introduced for a good reason (an audio track holding an init and no samples still
+empties the buffered intersection) but which is *always* too late on the AAC path,
+where the encoder's config only exists after video has been appending for a while.
+
+Fixed by separating the two things that were conflated: the **buffer** is created
+up front, alongside the video one, from the mime alone (`setExpectedAudioMime`,
+called as soon as the tier is negotiated — `addSourceBuffer` needs no bytes),
+while the **init segment** is still withheld until a sample can follow it. Track
+state now records `initAppended` rather than inferring it from the buffer's
+existence, which is what the prime-from-cache path keys on. If the tier is learnt
+after the video buffer already exists, the MediaSource is rebuilt (video re-primes
+from its cached init at the next keyframe — a ≤1-GOP hiccup, invisible while the
+armed element is paused).
+
+Two robustness bugs surfaced in the same work, both fixed with tests:
+
+* **A shared `error` handler let an audio failure blank the video.** Handlers are
+  per-track now: a video error degrades the gate to pseudo, an audio error does
+  not. Audio is additive, and on the AAC path it is the least-proven piece.
+* **An abandoned audio buffer would freeze video anyway** — `buffered` being the
+  intersection means a dead audio range stops the playable region advancing. So
+  giving up on audio rebuilds the MediaSource video-only, and the drop is
+  **sticky**: the worker muxer has no idea the presenter gave up and keeps
+  producing segments, which would otherwise resurrect the track that just failed.
+
+### Finding 3 (revised) — the buffered holes are the video sample durations
+
+The capture shows `bufferedRanges: 5` — four holes across a 21 s span — which
+confirms the hole problem is real on device. But my BUGS.md entry blamed MMS
+parking, and the numbers rule that out:
+
+```
+segmentsAppended 7206 == muxInitSegments 1 + muxMediaSegments 7205   appendErrors: 0
+```
+
+Zero presenter-side drops. Nothing was shed by the queue, so the holes are in the
+**timeline**, not in what got appended. The cause is the video sample-duration
+scheme: `decodeTime = prevOut + delta_N` with `duration = delta_N`, so sample N
+ends before N+1 begins by exactly `delta_{N+1} − delta_N` — every cadence increase
+leaves a hole that big. With `reorderGapResyncs: 10`, each resync discards a GOP
+and jumps the interval ~33 ms → ~500 ms, leaving a **~467 ms hole**.
+
+This was finding #1 of the original investigation and I dropped it when
+reorganizing into fixed/open — the audio track got one-frame lookahead in the
+same change while video, where the bug was first identified, did not. Now fixed
+the same way: a video sample's declared duration is the interval to its
+**successor**, so consecutive samples abut and a long interval (a capture stall,
+a discarded GOP) becomes a long-held frame — which is what the inline canvas does
+anyway. Costs one frame of latency in the MSE path only. `flush()` covers
+end-of-input for finite inputs (the fixture, the CI driver); the live pipeline
+never calls it, because a live stream has no end.
+
+The golden vectors are unchanged: the fixture's constant cadence makes the
+forward and backward intervals equal, which is exactly why constant-cadence tests
+could never have caught this. The new tests feed variable cadence and assert
+abutment directly.
+
+### Not the MSE path: the freeze is the known Safari stream wedge
+
+Worth separating, because it wasted a pass' worth of suspicion. Every counter in
+the capture is identical across all 20 samples (9.5 s) — `datagramsReceived`
+37607, `carrierRecords` 34839, `audioPacketsReceived` 2713, even the 1 Hz
+`viewerCount` — while `timeSinceLastInboundMs` climbs 1122 → 10652 with no reset
+and no reconnect (a new pipeline would zero those counters). Earlier still, frames
+had stopped 15.9 s before capture while inbound was 1.1 s stale.
+
+In resilient mode that is decisive: video deltas ride reliable **carrier
+streams**, keyframes ride reliable **uni streams**, audio rides **datagrams**
+(docs/20 field finding 5). Streams wedged; datagrams kept flowing — which is
+BUGS.md's known Safari signature, and exactly why video froze while audio kept
+playing. **New severity note**: in default mode only keyframes ride streams, so
+the same wedge degrades to an awaiting-keyframe slideshow; in resilient/Deep
+buffer mode it kills video outright. The viewer-side keyframe backstop cannot
+fire, because it requires frames to still be arriving.
+
+Also recorded from the same capture: the stream was **3360×2100** (7 MP, decoded
+twice on the phone — inline WebCodecs plus the native player) with 21 s buffered,
+so `PRUNE_TRIGGER_S`'s 30 s was sized without frames this large in mind. A
+plausible contributor to WebKit tearing down the pipeline, unproven from this
+capture, and left open.
+
 ### Still open from the same investigation (diagnosed, not fixed)
 
 Recorded so the next pass starts here rather than re-deriving it, and tracked as
