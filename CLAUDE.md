@@ -559,7 +559,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   (`diagnose()`) for the machine, and **TM8, a first-class live operator
   dashboard**: one page listing every active broadcast with its broadcaster
   **and** each viewer, anything obviously wrong highlighted before the
-  operator clicks anything, severity — not recency — as the default sort,
+  operator clicks anything, severity — not recency — sorting the live group
+  with **recently ended broadcasts as a separate recessed group below**
+  (their stored verdicts, past-tense labels; the grouping IS the precedence —
+  a live `warn` outranks an ended `bad`),
   the **same rule engine** as `diagnose()` over a live window (two
   disagreeing truths about one stream would be worse than no dashboard),
   four states ok/warn/bad/**unknown** with hysteresis, and a hard rule that

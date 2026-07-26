@@ -2005,8 +2005,13 @@ is downstream of that ID existing.
   garnish on the machine-facing surfaces: one page listing every active
   broadcast with its broadcaster **and** each of its viewers, anything
   obviously wrong **highlighted before the operator clicks anything**, and
-  severity — not recency — as the default sort, so problems float to the top
-  and a healthy fleet is a short quiet list. It runs the **same rule engine**
+  severity — not recency — as the sort within the live group, so problems
+  float to the top and a healthy fleet is a short quiet list. **Recently
+  ended broadcasts render as a separate recessed group below** (owner
+  decision), carrying their stored verdicts — so an empty fleet is honest
+  *and* useful — with the grouping itself acting as precedence: a live
+  `warn` always outranks an ended `bad`, because only the live one can still
+  be acted on. It runs the **same rule engine**
   as `diagnose()` (two disagreeing truths about one stream would be worse than
   no dashboard) over a live window, with four states (ok/warn/bad/**unknown**)
   and a hard rule that an *absence* of telemetry is never painted as health.

@@ -611,12 +611,21 @@ wrong before they click anything.** Everything below follows from that.
 
 #### 4.8.1 Three views, deep-linkable
 
-1. **Fleet view** (the landing page) — one row per **live broadcast**:
-   short broadcast key, uptime, broadcaster health, viewer count, **worst
-   viewer health**, and the two or three relay signals that matter at a
-   glance (ingress loss, egress drops, publisher present/away). Default sort
-   is **severity, not recency** — problems float to the top, and a healthy
-   fleet is a short quiet list.
+1. **Fleet view** (the landing page) — two groups, never interleaved.
+   **Live** first: one row per live broadcast with short broadcast key,
+   uptime, broadcaster health, viewer count, **worst viewer health**, and the
+   two or three relay signals that matter at a glance (ingress loss, egress
+   drops, publisher present/away), sorted by **severity, not recency** — so
+   problems float to the top and a healthy fleet is a short quiet list. Then
+   **Recently ended** below it (owner decision 2026-07-26): the last ~10
+   broadcasts within ~6 h, recency-sorted, each carrying its stored
+   `diagnose()` verdict. That group is served straight from the rollup index
+   (permanent, tiny), not the live projection — so it costs nothing and it
+   shows the *final* verdict rather than a re-computation.
+   **A live `warn` always outranks an ended `bad`**: the grouping is the
+   precedence, because only the live one can still be acted on. An empty
+   fleet is then honest *and* useful — you land on what just happened instead
+   of a blank page.
 2. **Broadcast detail** — the broadcaster and its viewers **in one table**,
    because they are the same kind of thing: both are sessions with tokens,
    distinguished by a `role` column, with the broadcaster pinned first. The
@@ -667,6 +676,15 @@ Four states, deliberately few: **ok · warn · bad · unknown**. Lifecycle
 (`live` / `away` / `ended`) is carried *separately* — a broadcaster in the
 R1 grace period is `away`, which is not a fault.
 
+The two dimensions are orthogonal and mean different things, which the
+presentation has to respect (§4.8.4). A **live** row's severity is a claim
+about *right now*, computed over the rolling window; an **ended** row's is a
+claim about *how the whole session went*, read from the stored verdict. So
+they are labelled differently — `LIVE · warn` against `ended 14 min ago ·
+2 issues` — because "is stuttering" and "stuttered" are not the same
+statement, and a dashboard that renders them identically invites acting on a
+problem that is already over.
+
 What lights a row up, by side:
 
 | Side | Warn / bad signals |
@@ -692,10 +710,24 @@ It is deliberately **not** part of R6's design system: different origin,
 different build, no shared tokens, and coupling an ops page to the product's
 component library buys nothing. It does borrow R6's **monochrome restraint**,
 for a functional reason — in an otherwise monochrome table, one amber row is
-unmissable. Colour is therefore reserved *exclusively* for severity, and
-severity is **never encoded by colour alone**: each state carries a glyph and
-a text label, so the page survives a colour-blind reader and a greyscale
-screenshot pasted into a chat.
+unmissable.
+
+Colour therefore carries **two orthogonal channels, and nothing else**:
+
+- **Severity → hue.** Amber and red accents, reserved exclusively for
+  `warn`/`bad`; `ok` and `unknown` spend no hue at all.
+- **Lifecycle → contrast.** Live rows at full contrast, ended rows
+  **recessed** (desaturated, lower contrast), `away` between them. So an
+  ended `bad` still shows its red — you can see at a glance that last
+  night went badly — but it cannot out-shout a live `warn` sitting above
+  it. Recession is what lets the ended group be present without competing
+  for attention, which is the whole reason it is safe to show it.
+
+**Neither channel is ever encoded by colour alone.** Every row carries a
+status glyph and a text label (`LIVE`, `away`, `ended 14 min ago`) alongside
+the severity word, so the page survives a colour-blind reader, a greyscale
+screenshot pasted into a chat, and the ended group being distinguishable at
+all if the CSS fails to load.
 
 No login, no time-range picker on the live view (it is live), no
 configuration. The fleet view is the whole product for the common case.
@@ -713,7 +745,7 @@ configuration. The fleet view is the whole product for the common case.
 | **TM5** | **Rollups**: finalize-time computation, permanent row, additive-schema guarantee, `schemaAnomalies` | Scripted session → rollup row matches expected percentiles (incl. the "mean hides a freeze" case: a session with one 4 s stall must show it in p95 and in the stall fields); a rollup row from a synthetic *older* schema version still loads and queries; rollups survive a raw-partition prune (the point of the split). **Typed by construction (D15)**: every emitted numeric field is a finite number or **absent** — never a coerced guess, a `null`, or a zero standing in for "unknown" — asserted over a session whose samples are deliberately full of dropped/wrong-typed fields; that same session's `schemaAnomalies` counts match the ingest-side tally, and a session that hit its byte budget or has `seq` gaps says so on the row |
 | **TM6** | **Read API + `diagnose()`**: HTTP JSON handlers, the docs/13 rule set, evidence provenance + confidence capping | Each transcribed playbook row has a test driving a synthetic session that fires it and one that does not; a client-only-evidence rule caps confidence (D7); relay/client disagreement surfaces as a finding rather than resolving silently; missing signals appear in `unavailable` instead of changing the verdict; **every default response ≤ 32 KB against a synthetic 4-hour session** (D10) |
 | **TM7** | **MCP server**: the tools of §4.6 over the TM6 handlers, auth, docs | Each tool round-trips against a seeded store; the same query through HTTP and MCP returns the same data (one implementation, asserted); default bounds hold; `query_sql` is absent unless explicitly enabled; a documented end-to-end transcript: "diagnose yesterday's broadcast" from cold |
-| **TM8** | **Live dashboard** (§4.8): in-memory live projection + `/live` endpoint, the three views, the shared-engine health model with hysteresis, embedded assets, separate non-public listener | **The headline criterion — an operator opening the fleet view during a staged-bad broadcast identifies the faulty stream, and which side is at fault, without clicking anything.** Plus: severity ordering puts the worst broadcast first (property test over generated fleets); a viewer whose client telemetry stops renders **stale**, and one that never reported renders **unknown** — neither ever `ok` (both asserted); the broadcaster and its viewers appear in one table with the broadcaster pinned first; live severity for a given window equals `diagnose()`'s verdict for the same window (one engine, asserted — they may not disagree); hysteresis holds (a single-sample blip does not escalate; a cleared fault persists through the dwell); relay-side and client-side freshness are labelled separately; served with no build step and **no external asset fetch** (asserted by loading with the network blocked); renders empty / live / degraded / relay-coverage-missing states; severity is never colour-only (glyph + label present in the DOM for each state); the read listener is absent from the public Ingress in `helm template` |
+| **TM8** | **Live dashboard** (§4.8): in-memory live projection + `/live` endpoint, the three views, the shared-engine health model with hysteresis, embedded assets, separate non-public listener | **The headline criterion — an operator opening the fleet view during a staged-bad broadcast identifies the faulty stream, and which side is at fault, without clicking anything.** Plus: severity ordering puts the worst broadcast first (property test over generated fleets); a viewer whose client telemetry stops renders **stale**, and one that never reported renders **unknown** — neither ever `ok` (both asserted); the broadcaster and its viewers appear in one table with the broadcaster pinned first; live severity for a given window equals `diagnose()`'s verdict for the same window (one engine, asserted — they may not disagree); hysteresis holds (a single-sample blip does not escalate; a cleared fault persists through the dwell); relay-side and client-side freshness are labelled separately; served with no build step and **no external asset fetch** (asserted by loading with the network blocked); renders empty / live / degraded / relay-coverage-missing states; severity is never colour-only (glyph + label present in the DOM for each state); **the ended group renders below the live group and never interleaves — a live `warn` outranks an ended `bad`** — reads its verdict from the rollup index rather than recomputing, is recessed rather than hue-suppressed (an ended `bad` still shows red), and labels its claim in the past tense; the fleet view with zero live broadcasts shows recent history rather than an empty page; the read listener is absent from the public Ingress in `helm template` |
 | **TM9** | *(droppable)* **Grafana dashboard** — closing R9 M8 | Dashboard JSON imports cleanly against a scraping Prometheus and every panel returns data during a test broadcast (M8's original criterion, unchanged); if the rollup-datasource question (§8) resolves negative, Prometheus-only panels ship and the finding is written back here |
 
 Chunk prefix **TM** (two letters; A–Z claimed). Dependency spine:
@@ -812,10 +844,14 @@ Automated criteria are per-chunk above. Manual verify (the usual posture):
   trusts at a glance, as well as in a verdict. That is the correct trade (two
   disagreeing truths would be worse), but it raises the cost of a sloppy rule,
   and it is why TM8's criteria assert the two agree rather than assuming it.
-- **Open: what the fleet view shows when nothing is live.** An empty page is
-  honest and useless; the last few ended broadcasts with their verdicts is
-  probably right, but it blurs the live/history line the design otherwise
-  keeps sharp. A TM8 question.
+- ~~Open: what the fleet view shows when nothing is live.~~ **Resolved
+  (owner, 2026-07-26): show recent ended broadcasts, distinguished by status
+  and colour.** The live/history line the concern was about is kept by
+  *grouping* rather than omission — a separate recency-sorted group below the
+  live one, recessed in contrast, labelled in the past tense, and never
+  interleaved, so a live `warn` always outranks an ended `bad` (§4.8.1,
+  §4.8.4). Colour keeps carrying severity in hue; lifecycle rides contrast,
+  which is what lets both be visible at once without competing.
 - **Open: token lifetime vs very long broadcasts.** 24 h covers every
   plausible session; a broadcast outliving it would need a re-issued hello. A
   periodic re-hello is the obvious fix and is deferred until it is real.
