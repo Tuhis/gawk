@@ -45,6 +45,7 @@ feature set exists).
 | R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 🚧 designed + CG1–CG5 implemented 2026-07-24 (browser-aware share/audio tips + reactive notes; frontend-only, zero server/wire/pipeline change); automated gates green, manual browser verify pending ([docs/30](docs/30-broadcaster-capture-audio-guidance.md)) |
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23, not started (NA1–NA8); flips docs/20's "audio in the R14 native broadcaster" non-goal ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
+| R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
 
 ---
 
@@ -1812,6 +1813,111 @@ artifact whose parameters travel to other people's devices.
 
 Chunks **QL1–QL6**. Designed 2026-07-25, not started —
 [docs/31](docs/31-quick-start-links.md).
+
+---
+
+## R27 — Frame interpolation in live-edge mode
+
+**Goal**: the "Frame interpolation (experimental)" toggle (R12 T4) works in
+**live-edge** mode too, not only under paced playback. A viewer who turned
+Paced playback off — the lowest-latency mode — can still get 30 fps content
+presented at 60 fps, at a cost of a hold offset `H` of **about one source
+frame gap** (≈33 ms at 30 fps), paid only while interpolation has something
+to buy. Today interpolation is structurally unreachable there: mid-frames
+need both endpoints in hand, live-edge presents each frame the moment it
+decodes, so frame N+1 doesn't exist yet when N paints — ≥1 frame of latency
+is the price of admission, and the design's job is making that price exact,
+bounded, and conditional.
+
+**Why**: interpolation + adaptive pacing is the viewer default, but the
+live-edge opt-out currently forces an all-or-nothing choice — minimum latency
+*or* interpolation. Adaptive at its floor adds ≥50 ms and grows with jitter
+(clamp 350 ms) — a jitter envelope; the live-edge hold offset is derived from
+the **frame interval** and never grows past a hard cap. On the ~50 ms
+glass-to-glass reference path that difference is material. Feasibility was
+investigated 2026-07-25: **feasible and small** — presenting frames at
+timestamp slots with display targets is exactly what the T4 paced machinery
+already does, so the change confines to the pipeline supplying targets in
+live-edge, a small pure hold-offset policy, and stats/menu gating.
+
+**Scope sketch** (full design in
+[`docs/32-live-edge-interpolation.md`](docs/32-live-edge-interpolation.md);
+mechanism revised in owner review from arrival-triggered to
+timestamp-scheduled — the rejected variant is recorded in its Decision 1):
+
+- **Timestamp-scheduled hold offset `H`**: in live-edge with interpolation
+  active, each frame gets `displayTargetMs = ts + arrivalBaseline + H` — the
+  same schedule shape and anchor adaptive mode uses (the baseline is already
+  maintained in every mode) — and the **unmodified** T4 paced-sink machinery
+  does the rest: slot presentation, early-upload, `midSlotMs` mid-blends.
+  Blends land **timestamp-true** (source-timeline midpoints through one
+  affine schedule), not at jittery arrival instants. `H` ≈ one median source
+  gap, from a pure estimator, capped at `MAX_LIVE_EDGE_HOLD_MS = 67`; frames
+  whose jitter exceeds `H` present ASAP (never worse than live-edge today),
+  intervals whose next frame is late simply aren't interpolated — bounded
+  latency with opportunistic smoothness, vs. adaptive's guaranteed
+  smoothness with jitter-sized latency.
+- **Variable game framerate is the designed-for case** (owner review): fps
+  swings with GPU load, so `H` is a prediction committed one frame ahead —
+  it **slews** toward the windowed median (never steps; the R12 rate-nudge
+  lesson — video cadence only, audio is insulated by the fixed delay) with
+  dual-threshold engage/disengage hysteresis + dwell so fps oscillating
+  around a boundary can't flap the video timing, and the median shrugs off
+  100 ms+ hitches. Both prediction-error directions degrade gracefully (too
+  small ⇒ the interval isn't interpolated; too large ⇒ a few ms extra hold
+  inside the cap), and blend *placement* stays exact regardless — mids are
+  computed from both frames' actual timestamps, `H` only gates availability.
+  Net effect: a **dips smoother** — engages in the ~20–40 fps heavy-load
+  regime where sample-and-hold judder is worst, disengages near display Hz.
+- **Zero latency when there's nothing to buy**: `H = 0` (pure live-edge,
+  byte-identical) when no mid rAF tick fits (60 fps on a 60 Hz display),
+  when the median gap exceeds the cap (≲15 fps content), and whenever the
+  toggle is off; `H` is additionally capped by a low percentile of recent
+  gaps so a 60 fps burst can never ask the sink to hold more than
+  `MAX_HELD_FRAMES` (the docs/20 finding-2 failure shape). Release stays
+  immediate — the reorder buffer is untouched; the sink is the only holder
+  (≤2 frames).
+- **One toggle, gate widened** — **accepted (owner decision 2026-07-25,
+  docs/32 Decision 4)**: the existing menu entry + `gawk:interpolation` key
+  govern both modes; `stats.interpolation` becomes capability-based and the
+  ViewerScreen gate reduces to `stats.interpolation != null`. Accepted
+  consequence: with interpolation defaulting on, turning Paced playback off
+  lands on live-edge + `H` (≈1 frame) unless interpolation is also unticked.
+- **A/V sync = a fixed ≈16.7 ms audio delay** (owner decision 2026-07-26,
+  superseding the earlier schedule-coupled variant — docs/32 Decision 5
+  records it): one 60 fps interval, applied on the audio-alignment side
+  whenever the live-edge interpolation gate is open; the live `H` **never
+  touches the audio schedule**. 16.7 ms sits below the audio rate trim's
+  20 ms deadband, so every transition (toggle, engage/disengage) is
+  absorbed silently — which deletes the slew-vs-trim sizing, engage-step
+  absorption and finding-11 re-anchor coupling wholesale. Residuals are
+  bounded and named: ≈ `H` − 16.7 audio lead when engaged (~16 ms at
+  30 fps, imperceptible; exact on 120/144 Hz displays where 60 fps
+  engages), ≈ 16.7 ms lag when disengaged; `avSkewMs` verifies, the
+  constant is the knob.
+- **Cost visible**: new overlay "Interpolation hold" row (live `H`); the
+  `presentation` stat reports `paced-*` whenever targets are in effect while
+  `playoutMode` stays `'off'`; `capToRenderMs`/`liveEdgeDriftMs`
+  measurement-point caveat recorded (sampled at decode, exclude the sink
+  hold).
+- **Pre-registered kill criteria** (T4/T5 precedent): interpolated-interval
+  rate under ~50 % on a clean link, side-by-side reading worse than plain
+  live-edge, or added latency > 1.5× the median gap ⇒ remove/confine — a
+  documented rejection is a valid completion.
+- Viewer-client only: zero server/wire/broadcaster changes, zero new worker
+  messages; paced/adaptive path byte-identical; resilient/Deep-buffer modes
+  unaffected (they force adaptive); main-thread/2D/WebGL1 paths unchanged.
+
+Chunks **LI1–LI4** (two-letter prefix; A–Z claimed): LI1 hold-offset policy +
+pipeline targets (pure, test-first), LI2 gating + observability, LI3 fixed
+A/V audio delay, LI4 verification + keep/kill verdict. LI3's hardware leg
+and LI4 should follow R15's pending hardware re-verification (`avSkewMs`
+finding 12 still open — measure short healthy sessions).
+
+**Status**: designed 2026-07-25; revised in owner review through 2026-07-26
+(timestamp-scheduled mechanism; variable-fps slew/dwell policy; A/V sync
+simplified to the fixed ≈16.7 ms audio delay; Decision 4 accepted);
+not started.
 
 ---
 
