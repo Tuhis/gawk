@@ -199,7 +199,13 @@ final sub-frame alignment (Decision 4 below).
      pacing already owns display timing, so 30→60 means each source
      interval gets two vsync slots: the real frame at α=0, one synthesized
      at α=0.5. This is why interpolation **requires `'adaptive'` mode on**
-     (the fixed mode has no presentation slots to drive it).
+     (the fixed mode has no presentation slots to drive it). *(Forward
+     pointer: R27 — [docs/32](32-live-edge-interpolation.md), designed
+     2026-07-25, not started — extends interpolation to **live-edge** mode
+     by supplying timestamp-scheduled display targets there too, with a
+     ~one-source-gap hold offset. The constraint above is about slots
+     existing, not about adaptive itself; once R27 lands, "requires
+     adaptive" becomes "requires display targets".)*
    - **Own toggle, tightly gated**: "Frame interpolation (experimental)" in
      the right-click menu, default off, persisted, offered only when the
      sink is WebGL2 on the worker path *and* paced mode is on. Firefox/2D/

@@ -437,6 +437,61 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   server/wire/broadcaster changes; no "governed by Resilient mode"
   annotation, because unlike the two pacing entries this toggle still does
   what it says under resilient mode),
+  `docs/32-live-edge-interpolation.md` for R27 (frame interpolation in
+  live-edge mode: **designed 2026-07-25, revised in owner review through
+  2026-07-26, not started**; viewer-client only — zero
+  server/wire/broadcaster changes, zero new worker messages. Extends the
+  R12 T4 experimental interpolation to `playoutMode 'off'`, where it is
+  structurally unreachable today (mid-frames need both endpoints; live-edge
+  presents on decode, so N+1 doesn't exist when N paints — ≥1 frame of
+  latency is the price of admission). Mechanism (**timestamp-scheduled**,
+  owner decision — the first-draft arrival-triggered hold-one is recorded
+  rejected in Decision 1: its blends inherited arrival jitter and its hold
+  was invisible to the A/V schedule): in live-edge with interpolation
+  active the pipeline supplies `displayTargetMs = ts + arrivalBaseline + H`
+  — the same schedule shape and anchor adaptive mode uses (the baseline is
+  maintained in every mode) — and the **unmodified** T4 paced-sink
+  machinery does the rest (slot presentation, early-upload, `midSlotMs`),
+  so blends land timestamp-true. **`H` ≈ one median source gap** (~33 ms @
+  30 fps) from a pure estimator, hard-capped at `MAX_LIVE_EDGE_HOLD_MS =
+  67` and **derived from the frame interval, never from jitter** (frames
+  whose jitter exceeds `H` present ASAP; late intervals just aren't
+  interpolated — bounded latency with opportunistic smoothness, vs.
+  adaptive's jitter-envelope). **Variable game fps (GPU-load swings) is the
+  designed-for case**: `H` is a prediction committed one frame ahead, so it
+  **slews, never steps** (R12's rate-nudge lesson — video cadence only),
+  engage/disengage carries dual thresholds + a dwell (no video-timing
+  flapping around the ~40 fps boundary), the median ignores hitches, both
+  prediction-error directions degrade gracefully, and blend *placement*
+  stays exact under any fps variation (mids come from both frames' actual
+  timestamps; `H` only gates availability) — a **dips smoother** engaging
+  exactly in the ~20–40 fps judder regime. **Zero when there's nothing to
+  buy**: `H = 0` when no mid rAF tick fits (60 on 60 Hz), past the low-fps
+  bound, or toggle off — byte-identical then; also capped by a low
+  percentile of recent gaps so bursts can't exceed `MAX_HELD_FRAMES` (the
+  docs/20 finding-2 shape). **Release stays immediate — the reorder buffer
+  is untouched**; the sink is the only holder (≤2 frames). One toggle
+  governs both modes — **accepted (owner decision 2026-07-25)**:
+  `stats.interpolation` goes capability-based, menu gate reduces to
+  `!= null`; paced-off now implies the ≈1-frame hold unless interpolation
+  is also unticked. **A/V sync = a fixed ≈16.7 ms audio delay** (owner
+  decision 2026-07-26, superseding the schedule-coupled variant recorded
+  in Decision 5): applied on the audio-alignment side whenever the
+  live-edge interpolation gate is open; `H` **never touches the audio
+  schedule**. 16.7 ms is below the trim's 20 ms deadband, so every
+  transition (toggle, engage/disengage) is absorbed silently — the
+  slew-vs-trim sizing, engage-step absorption and finding-11 coupling all
+  deleted. Bounded residuals: ≈ `H` − 16.7 audio lead engaged (~16 ms @
+  30 fps, imperceptible; exact on 120/144 Hz where 60 fps engages),
+  ≈ 16.7 ms lag disengaged; `avSkewMs` verifies, the constant is the knob.
+  Cost visible (new "Interpolation hold" overlay row; `presentation`
+  reports `paced-*` with `playoutMode 'off'`; `capToRenderMs` samples at
+  decode and excludes the hold — recorded caveat). **Kill criteria
+  pre-registered** (interpolated-interval rate < ~50 % on a clean link,
+  reads worse than plain live-edge side-by-side, or added latency > 1.5×
+  median gap ⇒ remove/confine — documented rejection is valid completion).
+  Chunks **LI1–LI4**; LI3's hardware leg + LI4 sequenced after R15's
+  pending re-verification, `avSkewMs` finding 12 being open),
   `docs/31-quick-start-links.md` for R26 (quick-start broadcast links:
   **designed 2026-07-25, not started**; frontend-only — zero server / wire /
   broadcaster-protocol change, and the cheapest item on the roadmap. A hash
