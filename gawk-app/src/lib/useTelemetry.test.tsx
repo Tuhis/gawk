@@ -5,6 +5,7 @@
 // These are the two paths that only exist in a document, so they get a jsdom
 // test rather than a pure-unit one.
 
+import { StrictMode } from 'react';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -111,5 +112,35 @@ describe('useTelemetryCollector', () => {
     // And the listener is gone — a later hidden must not resurrect anything.
     setVisibility('hidden');
     expect(beacons).toHaveLength(0);
+  });
+
+  // Review finding 7 (R28 / PR #151): gawk-app renders <StrictMode> in
+  // main.tsx, whose dev-mode mount -> cleanup -> remount runs this hook's
+  // effect setup, cleanup, then setup again against the SAME component
+  // instance (same fiber, same useRef). Before the fix, cleanup called
+  // collector.stop() — terminal, per telemetry.ts — so the collector was
+  // permanently dead by the time the real wire-0x0D hello arrived over the
+  // transport: every dev session collected nothing.
+  it('still collects after a hello that arrives following a StrictMode double-invoke', () => {
+    let collector!: TelemetryCollector<{ fps: number }>;
+    render(
+      <StrictMode>
+        <Probe onReady={(c) => (collector = c)} />
+      </StrictMode>,
+    );
+
+    // By the time render() returns, React has already run this hook's effect
+    // through setup -> cleanup -> setup once (synchronously, in the same
+    // commit) — the exact sequence the finding describes. The hello (and
+    // every sample after it) arrives only now, as it would in the real app.
+    collector.begin(HELLO);
+    collector.sample({ fps: 30 });
+    collector.flush(false);
+
+    expect(collector.active).toBe(true);
+    expect(fetches).toHaveLength(1);
+    const batch = JSON.parse(fetches[0]) as { samples: { stats: { fps: number } }[] };
+    expect(batch.samples).toHaveLength(1);
+    expect(batch.samples[0].stats.fps).toBe(30);
   });
 });
