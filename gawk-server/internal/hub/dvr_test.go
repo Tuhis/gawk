@@ -6,6 +6,7 @@ package hub
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -441,6 +442,130 @@ func TestDVRStuckSubscriberIsEvicted(t *testing.T) {
 		code, closed := f.getCloseInfo()
 		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
 	}, "a stuck DVR subscriber to be evicted with 4001")
+}
+
+// The DEFAULT progress timeout, on a registry configured with nothing at all —
+// the one thing every other test in this file opts out of by setting its own.
+// Without this, DefaultDVRProgressTimeout could go back to the 30 s it was
+// until 2026-07-26 (BUGS.md, docs/26 finding 7) and the whole suite would stay
+// green, because a viewer's recovery time is not expressed anywhere else.
+//
+// EXPENSIVE, deliberately: it waits out a real DefaultDVRProgressTimeout, so it
+// costs ~7 s of wall clock on its own — by far the slowest test in the package.
+// That is the price of asserting a duration rather than a symbol. The bounds are
+// hard-coded on purpose: deriving them from DefaultDVRProgressTimeout would make
+// the test pass at *any* value of it, which is precisely what it exists to stop.
+func TestDVRDefaultProgressTimeoutBracketsSixSeconds(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	f.setCarBlock(make(chan struct{})) // every record write parks: no progress, ever
+	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	// A short burst, then the publisher goes quiet. Keyframe writes succeed in
+	// the fake, so it is the burst *ending* that stops progress being noted and
+	// starts the clock — the same shape as TestDVRStuckSubscriberIsEvicted.
+	for g := range 6 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, uint32(g*100+1), 0, 1, "d"))
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Lower bound: a viewer riding out a few seconds of trouble keeps its
+	// session. Costs no extra wall clock — it is inside the wait below.
+	time.Sleep(3 * time.Second)
+	if _, closed := f.getCloseInfo(); closed {
+		t.Fatal("evicted within 3 s — the default is far more aggressive than 6 s")
+	}
+
+	// Upper bound: comfortably past 6 s and comfortably short of the old 30 s.
+	waitFor(t, 12*time.Second, func() bool {
+		code, closed := f.getCloseInfo()
+		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
+	}, "the default progress timeout to evict an unreachable DVR subscriber")
+}
+
+// A broadcaster who steps away longer than DVRProgressTimeout must not cost
+// every Deep-buffer viewer its session the instant they come back.
+//
+// The stall check is "nothing was written for DVRProgressTimeout", and a
+// caught-up drain writes nothing because there is nothing to write: it parks on
+// the ring's wake channel with its progress stamp frozen at the last record.
+// The check is only ever re-evaluated when an append wakes it — so the first
+// frame of the *returning* broadcaster is what trips it, and the viewer is
+// evicted at the exact moment its broadcast resumes. "No progress because there
+// is nothing to send" is not the unreachability this timer exists to catch.
+func TestDVRSubscriberSurvivesAnAwayBroadcaster(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR:                DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+		DVRProgressTimeout: 300 * time.Millisecond,
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	ingestKeyframe(t, p, keyframeMsg(t, 100, "vp8", "KEY"))
+	p.HandleDatagram(chunkDgram(t, false, 101, 0, 1, "d"))
+	waitFor(t, 10*time.Second, func() bool { return len(f.carrierRecords(t)) > 0 }, "records to flow")
+
+	// Away: the ring receives nothing, so the drain has nothing to write and
+	// nothing wakes it. Well past the timeout.
+	time.Sleep(3 * 300 * time.Millisecond)
+	if _, closed := f.getCloseInfo(); closed {
+		t.Fatal("evicted while merely idle — nothing woke the drain, so this cannot be right")
+	}
+
+	// Back: the first append must be served, not answered with a 4001.
+	ingestKeyframe(t, p, keyframeMsg(t, 200, "vp8", "BACK"))
+	p.HandleDatagram(chunkDgram(t, false, 201, 0, 1, "d2"))
+	waitFor(t, 10*time.Second, func() bool { return len(f.receivedKeyframes()) >= 2 },
+		"the returning broadcaster's keyframe to reach the DVR subscriber")
+
+	if _, closed := f.getCloseInfo(); closed {
+		t.Error("a Deep-buffer viewer was evicted the moment its away broadcaster returned")
+	}
+}
+
+// A DVR subscriber that cannot accept keyframe streams is the same zombie the
+// live path evicts on KeyframeOpenFailEvictThreshold (exhausted stream credit,
+// R10 field finding) — but drainDVR opens its keyframe streams itself and never
+// touched that streak, so in this mode the signal was counted (kfDroppedOpenFailed)
+// and then ignored. The progress timeout is set out of reach here so only the
+// streak can end this session.
+func TestDVRKeyframeOpenFailuresEvict(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR:                DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+		DVRProgressTimeout: time.Minute,
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	f.setKfOpenErr(errors.New("no stream credit"))
+	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+
+	for g := range KeyframeOpenFailEvictThreshold + 2 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		p.HandleDatagram(chunkDgram(t, false, uint32(g*100+1), 0, 1, "d"))
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		code, closed := f.getCloseInfo()
+		return closed && code == uint32(wire.CloseCodeSubscriberUnresponsive)
+	}, "a DVR subscriber whose keyframe opens all fail to be evicted with 4001")
 }
 
 // Mode isolation (docs/26 Decision 12): the DVR subscriber's lag must not

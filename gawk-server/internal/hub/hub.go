@@ -141,10 +141,21 @@ const MinDVRBufferMs = 1000
 // all before the relay calls it unreachable (docs/26 Decision 9). It cannot be
 // expressed as lag, which is this mode's whole point, so it is expressed as
 // progress: not one record or keyframe landing in this long means the peer is
-// gone, not slow. Comfortably past any tolerable stall — the ring is seconds
-// deep and the viewer's own dead-session watchdog fires at 15 s — so a viewer
-// merely riding out a bad minute is never caught by it.
-const DefaultDVRProgressTimeout = 30 * time.Second
+// gone, not slow.
+//
+// 30 s until 2026-07-26, on the reasoning that it should sit "comfortably past
+// any tolerable stall". The iPhone Deep-buffer capture showed what that bought:
+// a wedged stream path froze a viewer for 31 s (a 16 s media blackout, then the
+// viewer's own 15 s dead-session watchdog on top), and this timer — the one
+// remedy that can see the failure at all in this mode — was still 14 s from
+// firing. It only ever runs while the ring holds data the cursor cannot get out
+// (dvrNoteIdle), so it measures unreachability rather than quiet, and there is
+// nothing to be gained by waiting: a subscriber that has taken nothing for six
+// seconds against a 3 s ring has already lost every frame in it. 4001 is
+// non-terminal, so the cost of being wrong is one reconnect. Sized to match the
+// viewer's own MEDIA_STALL_MS so the two backstops fire together rather than
+// leaving a window where neither does.
+const DefaultDVRProgressTimeout = 6 * time.Second
 
 // DefaultDVRMaxCatchup is how much faster than live a recovering DVR
 // subscriber may send. Covering a stall S with buffer B needs B/(B−S) times
@@ -2442,6 +2453,38 @@ func (s *Subscriber) sendSidebandDatagram(dgram []byte) {
 	s.egressDatagramBytes.Add(uint64(len(dgram)))
 }
 
+// noteKeyframeOpenFailedLocked advances the consecutive-open-failure streak and
+// reports whether this failure is the one that evicts. Requires kfMu: the live
+// path maintains the streak under a lock it already holds across the supersede
+// decision, so this is the shared definition rather than a second one.
+func (s *Subscriber) noteKeyframeOpenFailedLocked() bool {
+	s.kfConsecOpenFailed++
+	evict := !s.evicting && s.kfConsecOpenFailed >= KeyframeOpenFailEvictThreshold
+	if evict {
+		s.evicting = true
+	}
+	return evict
+}
+
+// noteKeyframeOpenFailed is the same streak for a caller that holds no lock —
+// the R21 DVR drain, which opens its keyframe streams itself.
+func (s *Subscriber) noteKeyframeOpenFailed() {
+	s.kfMu.Lock()
+	evict := s.noteKeyframeOpenFailedLocked()
+	s.kfMu.Unlock()
+	if evict {
+		go s.evict()
+	}
+}
+
+// noteKeyframeOpenSucceeded clears the streak; only consecutive failures mean
+// a peer that cannot take streams at all.
+func (s *Subscriber) noteKeyframeOpenSucceeded() {
+	s.kfMu.Lock()
+	s.kfConsecOpenFailed = 0
+	s.kfMu.Unlock()
+}
+
 func (s *Subscriber) currentCarrier() KeyframeStream {
 	s.carMu.Lock()
 	defer s.carMu.Unlock()
@@ -2586,11 +2629,7 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 		// unreachable for good (exhausted stream credit) — evict it. The evict
 		// itself runs off-goroutine: Close takes the registry lock and
 		// CloseWithError is a network op, neither belongs under kfMu.
-		s.kfConsecOpenFailed++
-		evict := !s.evicting && s.kfConsecOpenFailed >= KeyframeOpenFailEvictThreshold
-		if evict {
-			s.evicting = true
-		}
+		evict := s.noteKeyframeOpenFailedLocked()
 		s.kfMu.Unlock()
 		s.kfDroppedOpenFailed.Add(1)
 		if evict {

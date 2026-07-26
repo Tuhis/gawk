@@ -109,7 +109,12 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   video sample-duration bug instead, now fixed; that entry carries the
   correction), plus two more from on-device pass 2: resilient/Deep-buffer viewers
   losing video **entirely** to the known Safari stream wedge (all video rides
-  streams in those modes, audio rides datagrams — so it freezes with sound), and
+  streams in those modes; audio rides datagrams in *resilient* mode so it freezes
+  with sound, but R21 DV5 puts a **Deep-buffer** viewer's audio on its own
+  carrier stream too — there the wedge is a total blackout, corrected 2026-07-26
+  from a second capture, which also shipped the viewer `checkMediaStall`
+  watchdog and cut `DefaultDVRProgressTimeout` 30 s → 6 s so the freeze recovers
+  in ~6 s instead of 31), and
   the MSE presentation buffering 20+ s of 7 MP media on a phone; plus a recorded
   set of `gawk-broadcast/internal/mpegts`
   lint advisories that are not runtime defects. (The iPhone

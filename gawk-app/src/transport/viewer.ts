@@ -93,6 +93,48 @@ const FRAMES_FLOWING_WINDOW_MS = 1000;
 // unambiguous and still well inside the ~30 s QUIC idle timeout.
 export const SESSION_STALL_MS = 15000;
 
+// Media-stall watchdog (BUGS.md, 2026-07-26 iPhone Deep-buffer capture). The
+// two watchdogs above leave one gap between them, and it is exactly where the
+// resilient and Deep-buffer modes live: in those modes ALL video rides the
+// stream path (R19 carriers + R8 keyframe streams, and in Deep buffer R21 puts
+// audio on a carrier too), so a wedged stream path stops frames dead — which
+// disqualifies checkKeyframeStall — while the relay's control sideband keeps
+// arriving on datagrams, which holds checkSessionStall off. The captured freeze
+// ran 31 s: 16 s of media death before the relay's own eviction ended the
+// session, then the full SESSION_STALL_MS of silence on top.
+//
+// Two signals gate it, and both are needed.
+//
+// 1. The broadcaster's own ClockMapping (R5 Q2) is published every
+//    CLOCK_MAPPING_INTERVAL_MS (5 s) *only while that broadcaster is capturing*,
+//    and it rides datagrams, so it survives a stream wedge. Requiring
+//    MAPPINGS_PROVING_LIVE of them *since the last media* is what makes this
+//    safe against the away transition rather than merely tuned: a publisher that
+//    stopped sends at most one more (the periodic one that can land just after
+//    its last frame), while one still running sends another every 5 s forever.
+//    The relay replays its cached mapping to joiners, so one means nothing.
+//
+// 2. Media here is video OR audio, and the audio half is load-bearing:
+//    **screen capture is damage-driven and stops entirely on a static screen**
+//    (docs/19, docs/28), so "no video" is a normal state on a paused game and
+//    can never on its own justify tearing a session down (docs/30 says as much
+//    about even *saying* so to the user). Audio is not damage-driven — it flows
+//    at ~50 packets/s for as long as it is shared — so silence on both media at
+//    once cannot be produced by a static screen. It takes a transport failure.
+//
+// Consequences, deliberately accepted:
+//   - A broadcast with no audio at all is not covered (audioEverActive gates
+//     the whole check). Nothing client-side can distinguish its wedge from its
+//     static screen; firing anyway would reconnect-loop on a paused game.
+//   - A *resilient*-mode wedge is not covered either, for the same reason: audio
+//     rides datagrams there (docs/20 finding 5) and keeps arriving, which is
+//     also what a static screen looks like. Deep buffer is covered because R21
+//     DV5 puts audio on its own carrier, so the wedge takes both.
+// Closing those two needs the relay to say "I have video for you and cannot
+// deliver it", which is a wire addition — see BUGS.md.
+const MEDIA_STALL_MS = 6000;
+const MAPPINGS_PROVING_LIVE = 2;
+
 // Whether a datagram belongs to the R15 audio lane. Used only to keep audio
 // bytes out of the *video* byte counter; a too-short datagram is left to the
 // reassembler's strict parsing, exactly as before.
@@ -378,6 +420,15 @@ export class ViewerPipeline {
   // one arrives, so a viewer that joins an away broadcast and waits for its
   // first keepalive is never torn down by the dead-session watchdog.
   private lastInboundAt: number | null = null;
+  // Media-stall watchdog state. lastMediaAt is the last video frame OR audio
+  // packet — see MEDIA_STALL_MS for why audio has to be in there — and
+  // mappingsSinceMedia is the broadcaster's proof that it is still publishing
+  // into a path delivering us nothing. audioEverActive gates the whole check:
+  // without an audio lane there is no non-damage-driven medium to compare
+  // against, and a static screen is indistinguishable from a wedge.
+  private lastMediaAt: number | null = null;
+  private mappingsSinceMedia = 0;
+  private audioEverActive = false;
   // R21: what the relay says it is serving, from the join-time DeliveryAck.
   // Null until it arrives (or forever, against a relay that predates it).
   private servedDelivery: DeliveryServedMode | null = null;
@@ -476,6 +527,7 @@ export class ViewerPipeline {
       // late joiners by the relay's cache.
       onClockMapping: (offsetUs) => {
         this.broadcastClockOffsetUs = offsetUs;
+        this.mappingsSinceMedia++;
       },
       // R18: the relay's live viewer count (join-primed, then ~1 s cadence).
       onSubscriberCount: (count) => {
@@ -501,6 +553,10 @@ export class ViewerPipeline {
         lane?.configure(config);
       },
       onAudioFrame: (packet) => {
+        // The media-stall watchdog's reference medium: audio is continuous
+        // where video is damage-driven (see MEDIA_STALL_MS).
+        this.audioEverActive = true;
+        this.noteMediaArrived();
         this.cb.onAudioMux?.({
           kind: 'packet',
           packet: { timestampUs: packet.timestampUs, data: packet.payload },
@@ -514,6 +570,7 @@ export class ViewerPipeline {
       onFrame: (frame) => {
         if (!this.reorder) return;
         this.lastFrameReceivedAt = performance.now();
+        this.noteMediaArrived();
         if (frame.keyframe) {
           this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
           this.reorder.pushKeyframe({
@@ -645,6 +702,7 @@ export class ViewerPipeline {
     this.lastFrameReceivedAt = performance.now();
     this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
     this.lastInboundAt = this.lastFrameReceivedAt;
+    this.noteMediaArrived();
     this.reorder.pushKeyframe({
       frameId: kf.frameId,
       timestampUs: kf.timestampUs,
@@ -691,11 +749,39 @@ export class ViewerPipeline {
     );
   }
 
+  // Any media arriving clears the media-stall watchdog: the mapping count only
+  // means anything measured from the last thing we actually received.
+  private noteMediaArrived(): void {
+    this.lastMediaAt = performance.now();
+    this.mappingsSinceMedia = 0;
+  }
+
+  // Fails the pipeline when both media have stopped while the broadcaster is
+  // provably still publishing — the gap between the two watchdogs above, and
+  // the whole failure in Deep buffer, where every medium rides the stream path.
+  // See MEDIA_STALL_MS for why audio is required and what that leaves uncovered.
+  private checkMediaStall(): void {
+    if (!this.audioEverActive) return; // no continuous medium to compare against
+    const lastMedia = this.lastMediaAt;
+    if (lastMedia === null) return; // never armed before the first media
+    if (this.mappingsSinceMedia < MAPPINGS_PROVING_LIVE) return;
+    const stalledMs = performance.now() - lastMedia;
+    if (stalledMs < MEDIA_STALL_MS) return;
+    this.fail(
+      new Error(
+        `no video or audio for ${Math.round(stalledMs)}ms while the broadcaster is still ` +
+          'publishing (media path stalled); reconnecting',
+      ),
+    );
+  }
+
   private reorderTick(): void {
     if (this.stopping || !this.reorder) return;
     this.checkSessionStall();
     if (this.stopping) return; // the watchdog just tore the pipeline down
     this.checkKeyframeStall();
+    if (this.stopping) return; // the watchdog just tore the pipeline down
+    this.checkMediaStall();
     if (this.stopping) return; // the watchdog just tore the pipeline down
     // Decoder backpressure: if the decode queue is deep, stop feeding it and
     // resync at the next keyframe so the viewer catches up to live.
