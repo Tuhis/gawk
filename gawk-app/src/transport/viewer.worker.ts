@@ -212,7 +212,7 @@ ctx.onmessage = (e: MessageEvent) => {
     case 'audioPlayhead':
       // R15 N5: module state in this worker's context, read live by the
       // pipeline on every decoded frame (same pattern as playout/resilient).
-      notePlayhead({ playheadUs: cmd.playheadUs, atEpochMs: cmd.atEpochMs });
+      notePlayhead({ heardUs: cmd.heardUs, atEpochMs: cmd.atEpochMs });
       break;
     case 'resilient':
       // R19: module state for the resilient reorder/playout profile. The

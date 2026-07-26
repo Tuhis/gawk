@@ -63,6 +63,8 @@ function fullStats(): BroadcastStats {
     audioChannels: 2,
     audioCodec: 'opus',
     audioBitrateBps: 128_000,
+    audioEncodeLagMs: 21.5,
+    audioAnchorReanchors: 0,
   };
 }
 
@@ -232,6 +234,24 @@ describe('BroadcasterStatsOverlay audio section (R15)', () => {
     );
     expect(screen.getByText('Audio')).toBeTruthy();
     expect(screen.getByText(/opus · 48000 Hz · 2ch/)).toBeTruthy();
+    // docs/20 field finding 13: the encoder delay that used to be written into
+    // every audio timestamp, now measured beside the anchor re-pins that would
+    // step the timeline.
+    expect(screen.getByText('Encode lag').nextSibling?.textContent).toBe('21.5 ms');
+  });
+
+  it('annotates encode lag with anchor re-pins, which step the audio timeline', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), audioEncodeLagMs: 44, audioAnchorReanchors: 2 }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Encode lag').nextSibling?.textContent).toBe('44.0 ms · 2 re-anchors');
   });
 
   // R24 (docs/30 CG4.2): a browser that can't do audio reads the honest "Not

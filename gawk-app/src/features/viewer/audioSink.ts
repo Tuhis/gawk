@@ -14,6 +14,7 @@
 
 import { log } from '../../lib/logger';
 import { AudioJitterBuffer, type AudioBufferProfile, type AudioChunk } from '../../transport/audio-buffer';
+import { timeOriginMs } from '../../transport/time-sync';
 
 // The worklet: a dumb FIFO. Policy (gaps, late, overflow) is decided by
 // AudioJitterBuffer before anything reaches here; the worklet owns only the
@@ -165,6 +166,13 @@ export interface AudioSinkStats {
   contextState: AudioContextState | null;
   playheadUs: number | null;
   contextTime: number | null;
+  // What the device adds between a sample being written and being heard
+  // (docs/20 field finding 13). Load-bearing twice over: the alignment release
+  // hands the cushion over this much early, and the skew metric subtracts it
+  // before the drift trim ever sees a number. On a high-latency output
+  // (Bluetooth, HDMI, a soundbar) it is the difference between lip sync and
+  // a quarter-second of lag, so it is on the overlay rather than implicit.
+  outputLatencyMs: number | null;
   // The rate the AudioContext actually runs at, which is not necessarily the
   // one we asked for (docs/20 field finding 8). Diagnostic only — the worklet
   // resamples to it and all accounting is in content ms — but when audio
@@ -173,8 +181,12 @@ export interface AudioSinkStats {
 }
 
 export interface AudioSinkCallbacks {
-  // The worklet's ~4 Hz report — N5 turns this into avSkewMs.
-  onPlayhead?: (info: { playheadUs: number | null; contextTime: number }) => void;
+  // The worklet's ~4 Hz report, converted to listener terms — N5 turns this
+  // into avSkewMs. The sink reports both halves of the pair because only it
+  // can produce them coherently: `heardUs` is the sample at the speaker and
+  // `atEpochMs` is when it is there, which `getOutputTimestamp()` gives as one
+  // measurement (docs/20 field finding 13).
+  onPlayhead?: (report: { heardUs: number | null; atEpochMs: number }) => void;
 }
 
 export function audioSinkSupported(): boolean {
@@ -204,6 +216,16 @@ const SCHEDULE_REANCHOR_MS = 100;
 // Floor on the interval between re-anchors, so a baseline that oscillates can
 // never turn the fix into a stutter.
 const SCHEDULE_REANCHOR_COOLDOWN_MS = 2000;
+
+// Bounds on the correction getOutputTimestamp() may imply, i.e. on
+// `outTs.contextTime − report.contextTime` = (message hop) − (output latency).
+// The hop is milliseconds and the latency is at most a few hundred ms even on
+// the worst Bluetooth path, so anything outside this is a stale or nonsensical
+// reading, not a measurement — and av-sync would *snap* to it rather than slew
+// (a large step reads as a re-anchor), poisoning the mapping in one report.
+// Outside the bounds, fall back to subtracting outputLatency.
+const OUTPUT_TIMESTAMP_MIN_DELTA_S = -1;
+const OUTPUT_TIMESTAMP_MAX_DELTA_S = 0.1;
 
 export class AudioSink {
   private ctx: AudioContext | null = null;
@@ -275,6 +297,55 @@ export class AudioSink {
     const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
     const seconds = ctx?.outputLatency || ctx?.baseLatency || 0.02;
     return seconds * 1000;
+  }
+
+  // The worklet's report, translated from "the sample being written" to "the
+  // sample being heard, and when" — the pair av-sync's mapping anchors on
+  // (docs/20 field finding 13).
+  //
+  // getOutputTimestamp() is the exact answer and needs no latency estimate:
+  // contextTime is the position actually audible and performanceTime is the
+  // moment it is audible, so the difference against the report's own
+  // contextTime absorbs the device buffer *and* however long the message sat
+  // in this thread's task queue. (It converts at 1x, ignoring the ±0.4 % drift
+  // trim — under a ms across any real output latency.) Where the API is
+  // missing or not yet meaningful, fall back to subtracting outputLatency and
+  // anchoring at receipt, which is the same correction with a coarser clock.
+  private heardSample(playheadUs: number | null, reportContextTime: number): {
+    heardUs: number | null;
+    atEpochMs: number;
+  } {
+    const receivedAtEpochMs = timeOriginMs() + this.now();
+    if (playheadUs === null) return { heardUs: null, atEpochMs: receivedAtEpochMs };
+    const ctx = this.ctx as (AudioContext & { getOutputTimestamp?: () => AudioTimestamp }) | null;
+    let out: AudioTimestamp | undefined;
+    try {
+      out = ctx?.getOutputTimestamp?.();
+    } catch {
+      // Some engines throw on a context that is not running; the fallback
+      // below is correct there anyway.
+    }
+    const contextTime = out?.contextTime;
+    const performanceTime = out?.performanceTime;
+    if (
+      typeof contextTime === 'number' &&
+      typeof performanceTime === 'number' &&
+      contextTime > 0 &&
+      performanceTime > 0 &&
+      Number.isFinite(reportContextTime)
+    ) {
+      const deltaS = contextTime - reportContextTime;
+      if (deltaS >= OUTPUT_TIMESTAMP_MIN_DELTA_S && deltaS <= OUTPUT_TIMESTAMP_MAX_DELTA_S) {
+        return {
+          heardUs: playheadUs + deltaS * 1e6,
+          atEpochMs: timeOriginMs() + performanceTime,
+        };
+      }
+    }
+    return {
+      heardUs: playheadUs - this.outputLatencyMs() * 1000,
+      atEpochMs: receivedAtEpochMs,
+    };
   }
 
   // The video schedule, refreshed by the owner as the pipeline's baseline
@@ -414,7 +485,7 @@ export class AudioSink {
         // cushion instead of restarting at ~0 ms depth (field finding 6).
         this.buffer.noteUnderrun(this.audioExpected() ? msg.underruns : 0);
       }
-      this.cb.onPlayhead?.({ playheadUs: msg.playheadUs, contextTime: msg.contextTime });
+      this.cb.onPlayhead?.(this.heardSample(msg.playheadUs, msg.contextTime));
     };
     const gain = ctx.createGain();
     gain.gain.value = this.muted ? 0 : this.volume;
@@ -549,6 +620,7 @@ export class AudioSink {
       contextState: this.contextState,
       playheadUs: this.lastPlayheadUs,
       contextTime: this.lastContextTime,
+      outputLatencyMs: this.ctx === null ? null : this.outputLatencyMs(),
       contextSampleRate: this.contextSampleRate,
     };
   }

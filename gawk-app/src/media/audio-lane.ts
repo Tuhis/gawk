@@ -27,10 +27,24 @@ export const AUDIO_ANCHOR_DRIFT_LIMIT_US = 50_000;
 // timeline — the same clock video capture stamps (docs/20 Decision 3). The
 // media clock provides drift-free 20 ms spacing; the anchor pins it to the
 // shared wall clock.
+//
+// **Which clock reading pins it is the whole point** (docs/20 field finding
+// 13). `capture.ts` stamps a VideoFrame at MSTP arrival, *before* encode, so
+// audio must be pinned at the same stage — `stamp()` is fed the arrival of an
+// AudioData, and `stamped()` is what the encoder's output callback uses, with
+// no clock of its own. Pinning in the output callback instead (as this did
+// until 2026-07-26) writes the encoder's whole latency — MSTP delivery, Opus
+// algorithmic delay, queueing, and the one-shot `configure()` init — into
+// every audio timestamp for the session, and the viewer then plays audio that
+// far behind its picture. Nothing downstream can see it: these timestamps
+// *are* the reference both media are compared against, so `avSkewMs` reads a
+// clean zero while lip sync is visibly wrong.
 export class AudioTimestampAnchor {
   private anchorUs: number | null = null;
   reanchors = 0;
 
+  // Observes one input frame's arrival, establishing or maintaining the
+  // mapping, and returns its shared-clock timestamp.
   stamp(mediaTsUs: number, nowUs: number): number {
     if (this.anchorUs === null) this.anchorUs = nowUs - mediaTsUs;
     let stamped = this.anchorUs + mediaTsUs;
@@ -40,6 +54,15 @@ export class AudioTimestampAnchor {
       this.reanchors++;
     }
     return stamped;
+  }
+
+  // Applies the established mapping without observing a clock — for the
+  // encoder's output side, which is downstream of the delay being excluded.
+  // Null before any input has been observed (unreachable through the real
+  // pump, where encode() is what produces output, but the caller must not
+  // silently re-anchor on its own clock if it ever happens).
+  stamped(mediaTsUs: number): number | null {
+    return this.anchorUs === null ? null : this.anchorUs + mediaTsUs;
   }
 }
 
@@ -135,6 +158,16 @@ export interface AudioLaneStats {
   channels: number | null;
   codec: string;
   bitrateBps: number;
+  // How long the encoder took to hand back the packet for an input frame, in
+  // ms (docs/20 field finding 13). This delay used to be *inside* the audio
+  // timestamps and therefore unobservable; now that it is excluded, this is
+  // the number that says how much lip-sync error a regression here would cost.
+  // Null until the first packet is encoded.
+  encodeLagMs: number | null;
+  // Times the media clock drifted far enough from the wall clock to re-pin the
+  // mapping. Each one steps the whole audio timeline against video, so a
+  // climbing count is a lip-sync event, not a curiosity.
+  anchorReanchors: number;
 }
 
 const realAudioEncoderFactory: AudioEncoderFactory = (config, callbacks) => {
@@ -182,6 +215,8 @@ export class AudioLaneCore {
     channels: null,
     codec: 'opus',
     bitrateBps: AUDIO_BITRATE_BPS,
+    encodeLagMs: null,
+    anchorReanchors: 0,
   };
 
   constructor(
@@ -208,6 +243,11 @@ export class AudioLaneCore {
         return;
       }
     }
+    // Pin the shared-clock mapping HERE, at capture arrival — the stage video
+    // is stamped at (docs/20 field finding 13). Before the encoder, so none of
+    // its latency reaches the wire.
+    this.anchor.stamp(data.timestamp, this.now() * 1000);
+    this.stats.anchorReanchors = this.anchor.reanchors;
     try {
       this.encoder!.encode(data);
     } catch (e) {
@@ -256,7 +296,12 @@ export class AudioLaneCore {
     const payload = new Uint8Array(chunk.byteLength);
     chunk.copyTo(payload);
     const nowMs = this.now();
-    const stampedUs = this.anchor.stamp(chunk.timestamp, nowMs * 1000);
+    // The mapping was pinned on the input side; this side only applies it, so
+    // the encoder's own latency stays out of the timestamp and becomes a
+    // measurement instead (docs/20 field finding 13). The fallback is the old
+    // behavior, for a packet whose input was never observed.
+    const stampedUs = this.anchor.stamped(chunk.timestamp) ?? this.anchor.stamp(chunk.timestamp, nowMs * 1000);
+    this.stats.encodeLagMs = nowMs - stampedUs / 1000;
     let datagrams: Uint8Array<ArrayBuffer>[];
     try {
       datagrams = this.packetizer.packetize(payload, stampedUs, nowMs);

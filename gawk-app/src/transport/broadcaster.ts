@@ -134,6 +134,15 @@ export interface BroadcastStats {
   audioChannels: number | null;
   audioCodec: string | null;
   audioBitrateBps: number | null;
+  // docs/20 field finding 13: how long the encoder took to hand back the
+  // packet for a captured frame. Audio timestamps are pinned at capture
+  // arrival (the stage video is stamped at), so this delay is measured rather
+  // than written into them — which is what it used to be, invisibly, putting
+  // every viewer's audio that far behind its picture.
+  audioEncodeLagMs: number | null;
+  // Times the audio media clock drifted far enough to be re-pinned. Each one
+  // steps the audio timeline against video.
+  audioAnchorReanchors: number;
 }
 
 const EMPTY_BROADCAST_STATS: BroadcastStats = {
@@ -174,6 +183,8 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   audioChannels: null,
   audioCodec: null,
   audioBitrateBps: null,
+  audioEncodeLagMs: null,
+  audioAnchorReanchors: 0,
 };
 
 export interface BroadcastCallbacks {
@@ -1255,6 +1266,8 @@ export class BroadcastPipeline {
       this.stats.audioChannels = audio.channels;
       this.stats.audioCodec = audio.codec;
       this.stats.audioBitrateBps = audio.bitrateBps;
+      this.stats.audioEncodeLagMs = audio.encodeLagMs;
+      this.stats.audioAnchorReanchors = audio.anchorReanchors;
       if (dt > 0) {
         this.stats.audioEncodedPerSec = (audio.encodedPackets - this.lastAudioEncoded) / dt;
         this.stats.audioSentPerSec = (audio.packetsSent - this.lastAudioSent) / dt;

@@ -52,9 +52,11 @@ export type ViewerWorkerCommand =
   // R15 N5 (docs/20 Decision 10): the audio sink's ~4 Hz playhead report,
   // travelling the reverse direction of the stats flow. The AudioContext is
   // main-thread-only, so this is how the worker's pipeline gets an audio
-  // clock to derive video display targets from. atEpochMs is absolute
-  // (timeOrigin + now) because the two contexts have different timeOrigins.
-  | { type: 'audioPlayhead'; playheadUs: number | null; atEpochMs: number };
+  // clock. atEpochMs is absolute (timeOrigin + now) because the two contexts
+  // have different timeOrigins. `heardUs` is the sample **at the listener**,
+  // not the worklet's write position — the sink converts before sending,
+  // since it owns the only API that can (docs/20 field finding 13).
+  | { type: 'audioPlayhead'; heardUs: number | null; atEpochMs: number };
 
 // Worker → main thread. Small control/telemetry messages only — decoded frames
 // are drawn in the worker and never appear here.

@@ -1229,7 +1229,7 @@ absolute numbers are about the network, not the code. The finding above does not
 depend on them — it rests on `alignmentHoldMs` staying pinned at 160 while
 `capToRenderMs` moved 204 → 65.
 
-### Field finding 12 (2026-07-24): `avSkewMs` still over-reports on long/stressed sessions — OPEN, deferred
+### Field finding 12 (2026-07-24): `avSkewMs` over-reports on long/stressed sessions — RESOLVED 2026-07-26
 
 A residual of [finding 9](#field-finding-9-2026-07-23-avskewms-measured-buffering-depth--estimator-lag-not-lip-sync). Finding 9's fix (measure at presentation, snap the mapping on a re-anchor) bounded the *steady-state* over-report, but did not eliminate it. A ~multi-hour Chrome/macOS field capture reported **`avSkewMs` = 18788 ms** while — per the owner watching the video — **audio was visibly near-correct**. So this is a **metric artifact, not real lip-sync error**; the audio path is fine. Corroborating: `audioPacketsReceived == audioPacketsDecoded` (zero loss), `resets` 0, buffer depth 195/150 ms and alignment hold 160 ms both healthy.
 
@@ -1237,7 +1237,144 @@ A residual of [finding 9](#field-finding-9-2026-07-23-avskewms-measured-bufferin
 
 **A resync/flush "fix" was considered and rejected (owner, 2026-07-24):** the premise — that audio had really fallen behind live — is false here (audio was near-correct), so flushing audio to "catch up" would inject gaps to chase a phantom. Whatever the fix is, it belongs in how the metric is *taken* (as finding 9's did), not in the audio path.
 
-**Status: OPEN.** Needs a clean characterisation pass — the 30-min drift run (verification step 4) on a healthy machine, sampling `avSkewMs` + the audio-buffer counters over time to read the growth *shape* (steady ramp vs stepped vs jump) — before a metric fix is designed test-first. Until then, treat the overlay's **A/V skew** row as unreliable on long or CPU-stressed sessions; the buffer-health rows (`underruns`, `bufferedMs`, `Recoveries`) are the trustworthy signals.
+**Root-caused 2026-07-26**, by driving the real module with synthetic playhead traces rather than waiting for another field capture. The recorded ramp is reproduced *exactly*: a playhead advancing at **0.934×** of wall time yields **1986 ms over 30 s**, the accelerated capture's figure to the digit. That is the whole shape of the bug — the reading was never a lip-sync offset at all, it was the audio **timeline** losing ground at `(1 − ratio)` per second, and one number was being asked to mean both things.
+
+Four separable components, three of them the estimator's own error and one of them true:
+
+1. **The mapping low-passed an exact measurement.** Each report was slewed toward the mapping's own prediction at 20 ms/s (with finding 9's snap above 250 ms bolted on). A worklet playhead that moves in jumps — the buffer skipping a hole, a re-prime resuming at live — outruns that cap, leaving a standing error for as long as the motion continues: **22.5 ms** in the sawtooth the regression test drives, invisible and unbounded in principle. The report *is* ground truth; it is now the anchor as it stands, and the snap disappears with the smoothing it was patching. Between reports the worklet drains at exactly 1×, so extrapolating one interval costs ~1 ms.
+2. **Blind extrapolation ran to 1.5 s.** `PLAYHEAD_STALE_MS` bounded how long the mapping would keep extrapolating with no report, and at 1500 ms against a 4 Hz reporter the module could invent **up to 1.5 s of skew out of an assumption** — on a congested main thread, which is precisely the "stressed session" the report came from. Now 750 ms (three report intervals): past that the position is unknown, and unknown is a better answer than a guess with no error bar.
+3. **Late-stamped reports over-reported by exactly the delay.** Driving the pre-[finding 13](#field-finding-13-2026-07-26-audio-settled-outputlatency-behind-the-picture-and-avskewms-read-zero-the-whole-time) stamping (`atEpochMs` = main-thread receipt) with a sustained delay gives a phantom skew equal to it — 50 ms ⇒ 50, 200 ⇒ 200, 500 ⇒ 500. Fixed by finding 13's `getOutputTimestamp()` anchoring, whose `performanceTime` belongs to the sample rather than to whenever the message was handled.
+4. **The remainder is real, and finding 13 stopped it from becoming permanent.** A starving worklet genuinely falls behind, and the metric should say so. What made it *stick* was the re-prime keeping `nextExpectedUs`: the first chunk after a dry period read as a hole and bought a concealment, re-inserting the lost time as silence and pinning audio that much further back — for good, since alignment is a start-time decision. Finding 13's re-anchor removes that ratchet, so a storm now leaves a transient instead of a standing offset.
+
+**The fix that ends the ambiguity is the fifth thing**: `avSkewMs` never had a companion saying whether the audio timeline was keeping up, which is why three findings have argued over one number. `getPlayheadAdvanceRatio()` reports how far the playhead moved against the wall clock over the last ~1 s, and the viewer overlay carries it as **Playhead advance** (annotated `(starving)` below 0.99×). Read together the two are unambiguous: `1.000×` with a skew means a genuine lip-sync offset worth acting on; `0.934×` with a skew means starvation debt still being accrued, and the buffer-health rows are where to look. It is deliberately *reported*, never used to suppress the skew — when audio really has fallen behind, that reading is true, and hiding it would be the same mistake pointing the other way.
+
+| Goal | Verified by |
+|------|-------------|
+| The mapping tracks the playhead instead of trailing it | `av-sync.test.ts` "anchors on each report instead of slewing toward it" — mutation-checked: restoring the slew reads 22.5 ms of standing error. The test measures **at** each report, because extrapolating across a jump not yet reported is the 4 Hz sampling limit and not the estimator's fault |
+| No skew is invented from an unheard playhead | `av-sync.test.ts` "stops reporting once it has not heard from the playhead" (500 ms fine, 900 ms null) |
+| The reading can be attributed | `av-sync.test.ts` "reports how fast the audio timeline is advancing" — 1.000× healthy, 0.934× under the captured storm, and the 1980 ms of skew that ratio predicts over 30 s; `StatsOverlay.test.tsx` pins the row and its `(starving)` annotation |
+| Report-arrival jitter cannot become a bias | `av-sync.test.ts` "stays within the arrival jitter it is handed" — ±40 ms in, bounded by ±40 ms out, where smoothing traded that bounded noise for an unbounded one-directional error |
+
+**One thing is not yet re-measured**: the original multi-hour 18788 ms capture predates all of this, and no long session has been captured since. The components above are each removed and regression-tested, so the arithmetic says a healthy long session should now read near zero with `Playhead advance` at ~1.000× — but the confirming capture is a **verification task, not a design question**, and the new row makes it conclusive either way in one glance.
+
+### Field finding 13 (2026-07-26): audio settled ~`outputLatency` behind the picture, and `avSkewMs` read zero the whole time
+
+A Firefox/macOS viewer in **resilient mode with paced playback + interpolation**
+reported audio "a little bit behind" the video. The capture said the opposite:
+`avSkewMs` averaged **+1.6 ms** across the samples where video was actually
+being presented, `audioPacketsReceived == audioPacketsDecoded` (zero loss),
+`overflowDrops` 0, buffer depth 250 / 180 ms. Every corroborating row healthy,
+the sync metric clean, and the owner still hearing it late.
+
+Three defects, all of which converge on one root: **the skew metric is the only
+long-run determinant of where audio sits**, because alignment is a start-time
+decision (finding 4) and the drift trim integrates away from it thereafter. So
+the metric's reference point and the metric's freshness are not diagnostics —
+they are the control loop.
+
+**(a) The trim servoed to the wrong point.** `observeVideoPresented` compared
+the presented video timestamp against the **worklet's playhead**, which is the
+sample being *written* into the output buffer — the device plays it
+`outputLatency` later. `audioSink.ts` had this right at the alignment release
+(it hands the cushion over early by exactly that much) but `AudioRateController`
+then drove the *measured* skew to zero, and zero at the write position means
+audio is *heard* `outputLatency` late. Given minutes, the trim always wins:
+simulating the real loop from perfect alignment settles at
+`outputLatency − RATE_TRIM_DEADBAND_MS`.
+
+| device `outputLatency` | audio lateness @ 1 min | @ 5 min | settled |
+|---|---|---|---|
+| ≤ 20 ms | 0 | 0 | **0** (inside the deadband) |
+| 40 ms | 9 ms | 20 ms | **20 ms** |
+| 120 ms | 26 ms | 84 ms | **100 ms** |
+| 300 ms | 63 ms | 209 ms | **280 ms** |
+
+Built-in speakers hide it; Bluetooth, HDMI or a soundbar do not. Fixed by
+measuring at the listener: `AudioSink` converts the worklet report before it
+reaches av-sync, preferring `getOutputTimestamp()` — whose `contextTime` /
+`performanceTime` pair *is* the audible position and the moment it is audible,
+so it needs no latency estimate and also absorbs however long the message sat
+in the main thread's task queue — and falling back to subtracting
+`outputLatency`. `PlayheadReport.playheadUs` is renamed `heardUs` across the
+worker command, because the field's meaning is the fix. A pleasant consequence:
+the trim now *repairs* an imperfect alignment release instead of creating the
+error it was correcting for.
+
+**(b) The trim ran open-loop whenever presentation stalled.** `lastSkewMs` is
+written only where a frame is presented, but read on the stats tick and fed
+straight to the trim. The capture's first 13 samples have `renderedFps: 0` and
+`renderCadenceStdDevMs: null` — nothing painted for 6.5 s (a hidden tab, an
+occluded window, worker rAF throttled) — with `avSkewMs` frozen at −61.5 and the
+controller still consuming it every tick, integrating a ghost into real,
+permanent delay that nothing was measuring. `getAvSkewMs(now)` now returns null
+past `PRESENTATION_STALE_MS` (1 s), which the trim already handles by slewing
+back to 1×.
+
+**(c) The underrun re-prime threw away the alignment it could have rebuilt.**
+`noteUnderrun` cleared `alignOnSchedule`, on the reasoning that the oldest
+pending chunk's slot "is already past by definition — that is why we ran dry".
+True for a live-edge schedule, where the hold is ~0 anyway; false in a paced
+mode, where the hold is the whole playout offset and audio arriving after the
+dry-out is due a few hundred ms in the **future**. The flag is gone: the
+schedule is consulted on every priming pass, and when it really is past,
+`maybeRelease` already falls through to the depth gate — so live-edge is
+unchanged and paced re-primes realign instead of stranding audio
+`hold − floor` ms out for the minutes the trim needs at ≤4 ms/s.
+
+One deliberate consequence: because the schedule is now consulted on every
+priming episode, the rebuild's depth gate is `min(targetMs,
+SCHEDULED_START_CUSHION_MS)` rather than the whole target. In resilient mode
+that target rides the **video** arrival-jitter estimate and seeds at 500 ms — a
+cushion sized by the wrong medium (audio is one packet per datagram, with far
+lower jitter than video's carriers), and one that is pure lip-sync error when
+the schedule has already gone by, since holding longer cannot make a late
+release earlier. Live-edge and Deep buffer are unaffected: the former's target
+is already below the cap, the latter's schedule is seconds ahead and so never
+takes this path.
+
+The same re-prime also double-paid for the gap: it kept `nextExpectedUs`, so
+the first chunk after the dry period read as a hole and bought a concealment —
+synthesized silence for a hole **the worklet had already filled with silence by
+running dry** — and that concealment chunk carries the stale pre-gap timestamp,
+so it lands at the head of the rebuild and anchors the release against a slot
+long past, discarding the realignment. The timeline is now forgotten too, as it
+is after a flush.
+
+**(d) The broadcaster labelled audio later than video.** Upstream of all of the
+above, and invisible to every viewer-side metric because these timestamps *are*
+the reference the two media are compared against. `capture.ts` stamps a
+`VideoFrame` at MSTP arrival, **before** encode; `AudioTimestampAnchor` was
+pinned in the encoder's **output** callback, so the anchor absorbed MSTP
+delivery + Opus algorithmic delay + queueing + the one-shot `configure()` init
+and wrote all of it into every audio timestamp for the session. `avSkewMs`
+cannot see it — the viewer plays audio exactly where the labels say. The anchor
+is now pinned in `pushAudioData` (capture arrival, the stage video uses) and
+the output side calls a new `stamped()` that applies the mapping without a
+clock of its own. The excluded delay became a measurement: `encodeLagMs` (+
+`anchorReanchors`, since each re-pin steps the whole audio timeline) on the
+broadcaster overlay.
+
+**Observability, because none of this was visible.** New overlay rows: viewer
+**Output latency** (`audioBuffer.outputLatencyMs`) and broadcaster **Encode
+lag** (annotated with re-anchors). Both ride Copy diagnostics. A capture that
+shows a clean `avSkewMs` on a 200 ms output device now says so out loud.
+
+| Goal | Verified by |
+|------|-------------|
+| A stream aligned at the speaker is left there | `av-sync.test.ts` "leaves a stream aligned at the speaker exactly where it is" — 15 min of the real loop, \|error\| < 1 ms; pre-fix the same loop walks to `outputLatency − 20` |
+| The sink reports the audible sample, not the written one | `audioSink.test.ts` "reports the sample at the listener…" (120 ms device ⇒ 880 ms of a 1.000 s playhead) and "prefers getOutputTimestamp, which also absorbs the report hop" |
+| Output latency is discoverable | `audioSink.test.ts` fallback chain (`outputLatency` → `baseLatency` → 20 ms) + `StatsOverlay.test.tsx` "Output latency" row |
+| A frozen skew is not fed to the trim | `av-sync.test.ts` "stops reporting a skew once video presentation stalls" |
+| A paced re-prime realigns instead of floating free | `audio-buffer.test.ts` "re-anchors a dry underrun against a schedule whose slots are still ahead"; the live-edge case still covered by "re-primes on a dry underrun by depth, not by a schedule already past", unchanged |
+| Audio timestamps exclude the encoder | `audio-lane.test.ts` "stamps packets from the input arrival, not the encoder output" (80 ms encode delay ⇒ stamp at arrival) and "keeps the input anchor for every later packet" |
+| The excluded delay is measured, not lost | `audio-lane.test.ts` `encodeLagMs` assertion + `BroadcasterStatsOverlay.test.tsx` "Encode lag" rows |
+
+**Still owner-verifiable only**: the *size* of (d) on real hardware. The fix is
+sound regardless — the anchor now matches video's stage by construction — but
+how much lip sync it was costing depends on the encoder's init timing, which is
+exactly what the new `encodeLagMs` row is there to report. Read it on the
+gaming PC alongside the viewer's **Output latency**; between them they account
+for every constant offset this finding removed.
 
 ### Post-implementation review (2026-07-19)
 

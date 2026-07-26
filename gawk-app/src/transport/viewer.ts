@@ -23,6 +23,7 @@ import { getInterpolationEnabled } from './interpolation';
 import {
   audioClockAvailable,
   getAvSkewMs,
+  getPlayheadAdvanceRatio,
   observeVideoPresented,
   resetAvSync,
 } from './av-sync';
@@ -285,6 +286,13 @@ export interface ViewerStats extends ReassemblerStats {
   // expected sign in live-edge mode). Null when there is no audio clock.
   // Target: median |skew| ≤ 60 ms, p95 ≤ 120 ms.
   avSkewMs: number | null;
+  // How fast the audio timeline advanced against the wall clock over the last
+  // ~1 s: 1 = playing normally, 0 = frozen, null until measurable (docs/20
+  // field finding 12). The discriminator `avSkewMs` never had — a skew read
+  // while this is below 1 is starvation debt still being accrued (it grows at
+  // (1 − ratio) per second and collapses when audio recovers), not a stable
+  // lip-sync offset. Read the two together, or neither means much.
+  avPlayheadAdvance: number | null;
   // Which clock is in charge (docs/20 Decision 10, revised 2026-07-20). Video
   // always is: 'video' means audio is aligned to the video presentation
   // schedule as intended, 'free' means audio is playing without one (no video
@@ -327,6 +335,12 @@ export interface ViewerStats extends ReassemblerStats {
     // Re-anchors: timeline restarts + field-finding-7 stall recoveries. A
     // climbing count with audio present means the sink keeps stalling.
     resets: number;
+    // What the output device adds between a sample being written and heard
+    // (docs/20 field finding 13). Read it whenever audio "feels late" and
+    // avSkewMs reads clean: the alignment and the skew metric both correct for
+    // it, so a large value is normal — but it is also the size of the error if
+    // either correction ever regresses.
+    outputLatencyMs: number | null;
     // The rate the AudioContext actually runs at — not necessarily the one
     // requested (docs/20 field finding 8). The worklet resamples to it; a
     // value differing from the stream's rate is normal on macOS, and is the
@@ -1153,7 +1167,10 @@ export class ViewerPipeline {
       audioCodec: this.lastAudioConfig?.codec ?? audioStats?.codec ?? null,
       audioSampleRate: this.lastAudioConfig?.sampleRate ?? audioStats?.sampleRate ?? null,
       audioChannels: this.lastAudioConfig?.channels ?? audioStats?.channels ?? null,
-      avSkewMs: getAvSkewMs(),
+      // `now` is this window's tick: a skew last measured before the previous
+      // presentation stalled is not a reading (docs/20 field finding 13).
+      avSkewMs: getAvSkewMs(now),
+      avPlayheadAdvance: getPlayheadAdvanceRatio(),
       avMaster:
         this.audioState === 'active'
           ? audioClockAvailable() && this.reorder?.arrivalBaselineMs() != null

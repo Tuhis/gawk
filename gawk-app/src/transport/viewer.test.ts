@@ -823,7 +823,7 @@ describe('ViewerPipeline', () => {
     // decode — the sink fires the observer when the frame is on screen.
     resetAvSync();
     // An audio clock: at local 0 the speaker is playing broadcaster ts 1.000 s.
-    notePlayhead({ playheadUs: 1_000_000, atEpochMs: timeOriginMs() }, 0);
+    notePlayhead({ heardUs: 1_000_000, atEpochMs: timeOriginMs() }, 0);
 
     let observer: ((ts: number, at: number) => void) | null = null;
     const draws: number[] = [];
@@ -858,12 +858,14 @@ describe('ViewerPipeline', () => {
       decodeEndMs: 1,
     });
     expect(draws).toEqual([1_050_000]);
-    expect(getAvSkewMs()).toBeNull(); // decode did not sample skew
+    expect(getAvSkewMs(0)).toBeNull(); // decode did not sample skew
 
     // The sink presents the frame (its own clock): skew is sampled now, and
-    // reads video − audio = 50 ms, not the buffering depth.
+    // reads video − audio = 50 ms, not the buffering depth. Read on the same
+    // clock the observer was given — a skew is only a reading while it is
+    // fresh (docs/20 field finding 13).
     observer!(1_050_000, 0);
-    expect(getAvSkewMs()).toBeCloseTo(50, 0);
+    expect(getAvSkewMs(0)).toBeCloseTo(50, 0);
 
     await pipeline.stop();
     resetAvSync();
@@ -877,7 +879,7 @@ describe('ViewerPipeline', () => {
     });
     try {
       resetAvSync();
-      notePlayhead({ playheadUs: 1_000_000, atEpochMs: timeOriginMs() }, 0);
+      notePlayhead({ heardUs: 1_000_000, atEpochMs: timeOriginMs() }, 0);
       connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
       readDatagrams.mockReturnValue(new Promise(() => {}));
       const { cbs } = makeCallbacks();

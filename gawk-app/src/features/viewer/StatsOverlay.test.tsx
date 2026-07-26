@@ -80,6 +80,7 @@ function fullStats(): ViewerStats {
     audioSampleRate: null,
     audioChannels: null,
     avSkewMs: null,
+    avPlayheadAdvance: null,
     avMaster: null,
   videoScheduleBaseEpochMs: null,
   };
@@ -342,6 +343,7 @@ describe('StatsOverlay audio section (R15)', () => {
           audioCodec: 'opus',
           audioSampleRate: 48_000,
           avSkewMs: 12,
+          avPlayheadAdvance: 0.934,
           avMaster: 'video',
           audioBuffer: {
             bufferedMs: 38.2,
@@ -354,6 +356,7 @@ describe('StatsOverlay audio section (R15)', () => {
             lateDrops: 1,
             overflowDrops: 0,
             resets: 0,
+            outputLatencyMs: 128,
           },
         }}
         codec="avc1.42E01F"
@@ -370,5 +373,14 @@ describe('StatsOverlay audio section (R15)', () => {
     expect(screen.getByText('Late / overflow drops').nextSibling?.textContent).toBe('1 / 0');
     // The stream is 48 kHz (fixture above), the context 44.1 kHz: annotated.
     expect(screen.getByText('Sink rate').nextSibling?.textContent).toBe('44100 Hz (resampling)');
+    // docs/20 field finding 13: the device's own delay. Without this row a
+    // capture cannot tell a correctly-synced Bluetooth session from one where
+    // the correction regressed — the two differ by exactly this number.
+    expect(screen.getByText('Output latency').nextSibling?.textContent).toBe('128.0 ms');
+    // docs/20 field finding 12: a skew read while the audio timeline is losing
+    // ground is starvation debt, not lip sync — the row says so out loud, so a
+    // capture can no longer be read as a lip-sync error it is not. 0.934x is
+    // the ratio that produced the field capture's 1986 ms over 30 s.
+    expect(screen.getByText('Playhead advance').nextSibling?.textContent).toBe('0.934× (starving)');
   });
 });

@@ -226,12 +226,14 @@ export function useViewerConnection(
         // R15 N5 (docs/20 Decision 10): the ~4 Hz playhead report reaches
         // whichever context runs the pipeline — into the worker as a
         // command, or into this context's module state on the fallback path.
-        onPlayhead: ({ playheadUs }) => {
-          const atEpochMs = timeOriginMs() + performance.now();
+        // The sink stamps the pair itself: with getOutputTimestamp() the
+        // moment a sample is at the listener is part of the measurement, not
+        // "whenever this callback ran" (docs/20 field finding 13).
+        onPlayhead: ({ heardUs, atEpochMs }) => {
           if (useWorkerRef.current) {
-            controllerRef.current?.sendAudioPlayhead(playheadUs, atEpochMs);
+            controllerRef.current?.sendAudioPlayhead(heardUs, atEpochMs);
           } else {
-            notePlayhead({ playheadUs, atEpochMs });
+            notePlayhead({ heardUs, atEpochMs });
           }
         },
       },
@@ -414,6 +416,7 @@ export function useViewerConnection(
               lateDrops: b.lateDrops,
               overflowDrops: b.overflowDrops,
               resets: b.resets,
+              outputLatencyMs: b.outputLatencyMs,
               contextSampleRate: b.contextSampleRate,
             },
           };
