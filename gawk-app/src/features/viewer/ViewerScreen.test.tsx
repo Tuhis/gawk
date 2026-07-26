@@ -763,3 +763,71 @@ describe('viewer development settings', () => {
     expect(useTransportStore.getState().serverUrl).toBe('https://localhost:4433');
   });
 });
+
+// The macOS idle-dim bug: the viewer paints a canvas, so the browser holds no
+// display power-save blocker and the OS dims/sleeps the screen mid-stream
+// (fullscreen included). The hook's own rules are pinned in
+// lib/useWakeLock.test.ts; what this covers is the wiring — that the lock
+// tracks the *watching* status and is given back when the stream is not on
+// screen.
+describe('ViewerScreen screen wake lock', () => {
+  const locks: Array<{ released: boolean }> = [];
+
+  beforeEach(() => {
+    locks.length = 0;
+    Object.defineProperty(navigator, 'wakeLock', {
+      configurable: true,
+      value: {
+        request: () => {
+          const sentinel = {
+            released: false,
+            release: () => {
+              sentinel.released = true;
+              return Promise.resolve();
+            },
+          };
+          locks.push(sentinel);
+          return Promise.resolve(sentinel);
+        },
+      },
+    });
+  });
+  afterEach(() => Reflect.deleteProperty(navigator, 'wakeLock'));
+
+  it('holds the display awake while watching and releases when the broadcast ends', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    // Still connecting — nothing to keep awake for yet.
+    expect(locks).toHaveLength(0);
+
+    await act(async () => sessions[0].cbs.onConnected());
+    await waitFor(() => expect(locks).toHaveLength(1));
+    expect(locks[0].released).toBe(false);
+
+    await act(async () => sessions[0].cbs.onEnded());
+    await waitFor(() => expect(locks[0].released).toBe(true));
+  });
+
+  it('keeps the lock across a reconnect — a blip is still someone watching', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    await act(async () => sessions[0].cbs.onConnected());
+    await waitFor(() => expect(locks).toHaveLength(1));
+
+    await act(async () => sessions[0].cbs.onReconnecting({ attempt: 1, reason: 'blip' }));
+    await act(async () => {});
+    expect(locks[0].released).toBe(false);
+    expect(locks).toHaveLength(1);
+  });
+
+  it('releases the lock on unmount', async () => {
+    const { unmount } = render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    await act(async () => sessions[0].cbs.onConnected());
+    await waitFor(() => expect(locks).toHaveLength(1));
+
+    unmount();
+    await act(async () => {});
+    expect(locks[0].released).toBe(true);
+  });
+});

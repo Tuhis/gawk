@@ -8,7 +8,7 @@
 // already flipped it to LIVE.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { BroadcastCallbacks } from '../../transport/broadcaster';
 
 const { created, scripts } = vi.hoisted(() => {
@@ -346,5 +346,74 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
     fireEvent.click(screen.getByRole('button', { name: /settings/i }));
     expect(screen.getByText(AUDIO_SETTINGS.chromium)).toBeTruthy();
     expect(screen.queryByText(AUDIO_SETTINGS.unsupported)).toBeNull();
+  });
+});
+
+// Same macOS idle-dim bug as the viewer, and worse here: capturing a screen is
+// not "playing media", so an idle broadcaster's display dims and then sleeps —
+// and a slept display can stop delivering getDisplayMedia frames, taking the
+// broadcast down rather than just dimming one desk. The hook's rules live in
+// lib/useWakeLock.test.ts; this covers the wiring to the live status.
+describe('BroadcasterScreen screen wake lock', () => {
+  const locks: Array<{ released: boolean }> = [];
+
+  beforeEach(() => {
+    locks.length = 0;
+    Object.defineProperty(navigator, 'wakeLock', {
+      configurable: true,
+      value: {
+        request: () => {
+          const sentinel = {
+            released: false,
+            release: () => {
+              sentinel.released = true;
+              return Promise.resolve();
+            },
+          };
+          locks.push(sentinel);
+          return Promise.resolve(sentinel);
+        },
+      },
+    });
+  });
+  afterEach(() => Reflect.deleteProperty(navigator, 'wakeLock'));
+
+  it('takes no lock while idle on the pre-start card', async () => {
+    render(<BroadcasterScreen />);
+    await act(async () => {});
+    expect(locks).toHaveLength(0);
+  });
+
+  it('holds the display awake while live and releases it on stop', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    await waitFor(() => expect(locks).toHaveLength(1));
+    expect(locks[0].released).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /stop broadcast/i }));
+    await waitFor(() => expect(locks[0].released).toBe(true));
+  });
+
+  it('keeps the lock through an auto-resume reconnect — capture never stopped', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(locks).toHaveLength(1));
+
+    await act(async () =>
+      created[0].callbacks.onReconnecting?.({ attempt: 1, delayMs: 250, reason: 'blip' }),
+    );
+    await act(async () => {});
+    expect(locks[0].released).toBe(false);
+    expect(locks).toHaveLength(1);
   });
 });
