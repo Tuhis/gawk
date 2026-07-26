@@ -237,7 +237,12 @@ export class AacTranscoder {
     metadata?: { decoderConfig?: { description?: unknown } },
   ): void {
     const desc = metadata?.decoderConfig?.description;
-    if (desc && !this.description) this.description = toBytes(desc);
+    // Normalize here, at the boundary where the encoder's answer enters our
+    // world: downstream (the muxer's `esds`) the contract stays "description IS
+    // the AudioSpecificConfig", so its golden vectors don't move.
+    if (desc && !this.description) {
+      this.description = extractAudioSpecificConfig(toBytes(desc));
+    }
     // Without an AudioSpecificConfig the muxer cannot build a usable esds, so
     // hold output until the encoder has provided one. WebCodecs delivers it with
     // the first chunk's metadata, so this drops nothing in practice.
@@ -262,6 +267,72 @@ export class AacTranscoder {
     log.warn(`AAC transcode ${what}:`, e);
     this.close();
   }
+}
+
+// ISO 14496-1 descriptor tags, as they appear inside an `esds`.
+const TAG_ES_DESCRIPTOR = 0x03;
+const TAG_DECODER_CONFIG = 0x04;
+const TAG_DECODER_SPECIFIC_INFO = 0x05;
+
+// R22 audio (docs/27 finding 6), measured on iPhone by the device probe: WebCodecs
+// says an AAC `decoderConfig.description` is the AudioSpecificConfig, and Chrome
+// hands back exactly that (`11 90` for AAC-LC 48 kHz stereo) — but **Safari hands
+// back the entire `esds` payload**, a complete ES_Descriptor with the ASC buried
+// three levels down. Taken at face value, the muxer nests that whole descriptor
+// inside its own DecoderSpecificInfo, and WebKit rejects the resulting init
+// segment with MEDIA_ERR_SRC_NOT_SUPPORTED and closes the MediaSource — which is
+// how iPhone native fullscreen ended up permanently video-only (the presenter's
+// sticky audio drop then made it silent for the rest of the session).
+//
+// So: unwrap a descriptor when we are handed one, and pass a bare ASC through.
+// The discriminator is the leading tag byte — an AudioSpecificConfig's first
+// byte carries the 5-bit audioObjectType in its high bits, so a valid one can
+// never be 0x03/0x04 (that would mean AOT 0, which is "NULL" and never encoded).
+// A shape we don't understand is returned unchanged rather than guessed at; the
+// muxer's own guard refuses to build an unusable init segment from it.
+export function extractAudioSpecificConfig(desc: Uint8Array): Uint8Array {
+  if (desc.length === 0) return desc;
+  if (desc[0] !== TAG_ES_DESCRIPTOR && desc[0] !== TAG_DECODER_CONFIG) return desc;
+  const found = findDescriptor(desc, 0, desc.length, TAG_DECODER_SPECIFIC_INFO);
+  return found ?? desc;
+}
+
+// Walk a descriptor list, recursing into the two containers that can hold a
+// DecoderSpecificInfo. Sizes use the 7-bits-per-byte continuation encoding, and
+// Apple writes the 4-byte long form even for a 2-byte payload.
+function findDescriptor(
+  buf: Uint8Array,
+  start: number,
+  end: number,
+  want: number,
+): Uint8Array | null {
+  let off = start;
+  while (off < end) {
+    const tag = buf[off++];
+    let size = 0;
+    for (let i = 0; i < 4 && off < end; i++) {
+      const b = buf[off++];
+      size = (size << 7) | (b & 0x7f);
+      if ((b & 0x80) === 0) break;
+    }
+    const bodyEnd = off + size;
+    // A size that runs past the buffer is a malformed descriptor, not something
+    // to read off the end of.
+    if (size < 0 || bodyEnd > end) return null;
+    if (tag === want) return buf.slice(off, bodyEnd);
+    if (tag === TAG_ES_DESCRIPTOR) {
+      // ES_ID (2) + flags/priority (1); no dependency/URL/OCR fields are used by
+      // any AAC encoder we've seen, and the flags byte says so.
+      const nested = findDescriptor(buf, off + 3, bodyEnd, want);
+      if (nested) return nested;
+    } else if (tag === TAG_DECODER_CONFIG) {
+      // OTI (1) + streamType byte (1) + bufferSizeDB (3) + max/avg bitrate (4+4).
+      const nested = findDescriptor(buf, off + 13, bodyEnd, want);
+      if (nested) return nested;
+    }
+    off = bodyEnd;
+  }
+  return null;
 }
 
 function toBytes(desc: unknown): Uint8Array {

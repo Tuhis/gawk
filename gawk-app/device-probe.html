@@ -1,0 +1,60 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>gawk device probe — R22 iOS audio</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 16px 16px 64px;
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: #0d0d0f; color: #e8e8ea;
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; letter-spacing: .2px; }
+  p.sub { margin: 0 0 16px; color: #8b8b93; font-size: 13px; }
+  button {
+    -webkit-appearance: none; appearance: none;
+    display: block; width: 100%; margin: 0 0 10px;
+    padding: 15px 16px; border-radius: 12px; border: 1px solid #35353c;
+    background: #1c1c21; color: #e8e8ea; font: inherit; font-weight: 600;
+    touch-action: manipulation;
+  }
+  button.primary { background: #e8e8ea; color: #0d0d0f; border-color: #e8e8ea; }
+  button:disabled { opacity: .4; }
+  #status { margin: 12px 0; padding: 10px 12px; border-radius: 10px;
+            background: #1c1c21; border: 1px solid #35353c; font-size: 13px;
+            white-space: pre-wrap; }
+  #summary { margin: 12px 0; font-size: 13px; }
+  #summary div { padding: 7px 10px; border-radius: 8px; margin-bottom: 5px;
+                 background: #1c1c21; border-left: 3px solid #4a4a52; }
+  #summary div.ok  { border-left-color: #3ea36b; }
+  #summary div.bad { border-left-color: #d05a5a; }
+  textarea {
+    width: 100%; height: 40vh; box-sizing: border-box; margin-top: 8px;
+    background: #08080a; color: #b9b9c0; border: 1px solid #35353c;
+    border-radius: 10px; padding: 10px; font: 11px/1.35 ui-monospace, Menlo, monospace;
+    -webkit-text-size-adjust: 100%;
+  }
+  video.stage { width: 100%; max-width: 320px; background: #000; border-radius: 8px;
+                display: block; margin: 8px auto; }
+  .hint { color: #8b8b93; font-size: 12px; margin: 4px 0 14px; }
+</style>
+
+<h1>gawk device probe</h1>
+<p class="sub">R22 / docs&#47;27 — why native fullscreen has no audio. Runs the production muxer, AAC transcoder and MSE presenter.</p>
+
+<button id="run" class="primary">1 · Run probe</button>
+
+<div id="status">Idle. Tap “Run probe”.</div>
+<div id="summary"></div>
+
+<video id="stage" class="stage" playsinline></video>
+<p class="hint">2 · The video above should show a moving test pattern and play a 440&nbsp;Hz tone. Turn the ringer switch ON and the volume UP.</p>
+<button id="fs" disabled>3 · Enter native fullscreen (listen for the tone)</button>
+<div id="heard" style="display:none">
+  <button id="yes">I HEARD the tone in fullscreen</button>
+  <button id="no">Fullscreen was SILENT</button>
+</div>
+
+<button id="copy">4 · Copy results JSON</button>
+<textarea id="out" readonly spellcheck="false"></textarea>
+
+<script type="module" src="/src/device-probe/main.ts"></script>

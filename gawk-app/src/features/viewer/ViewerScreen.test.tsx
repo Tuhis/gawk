@@ -33,9 +33,13 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
     // (`deliveryMode: 'reliable'` ⇔ resilient mode) — recorded so a toggle
     // can be asserted at the seam that actually reaches the relay.
     opts: unknown;
-    constructor(_url: string, _id: string, opts: unknown, cbs: Cbs) {
+    // The relay address this session was started against — the seam where the
+    // dev server-URL override has to land.
+    url: string;
+    constructor(url: string, _id: string, opts: unknown, cbs: Cbs) {
       this.cbs = cbs;
       this.opts = opts;
+      this.url = url;
       sessions.push(this);
     }
     async start(): Promise<void> {
@@ -66,6 +70,7 @@ vi.mock('../../config', async (importActual) => ({
 }));
 
 import { ViewerScreen } from './ViewerScreen';
+import { useTransportStore } from '../../state/transportStore';
 import {
   PLAYOUT_OFFSET_MS,
   getPlayoutMode,
@@ -541,6 +546,8 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       muxErrors: 0,
       segmentsAppended: 0,
       appendErrors: 0,
+      // docs/27 finding 6: null until an append actually fails.
+      lastAppendError: null,
       bufferedMs: null,
       bufferedAheadMs: null,
       // R22: no MediaSource on this path, so no live-duration verdict; and with
@@ -550,6 +557,7 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       audioTranscode: null,
       audioSegmentsAppended: 0,
       audioTrackActive: false,
+      elementAudioTracks: null,
       muxAudioSegments: 0,
       muxAudioHoles: 0,
       bufferedRanges: null,
@@ -658,5 +666,93 @@ describe('ViewerScreen audio UI (R15)', () => {
     fireEvent.click(screen.getByLabelText('Unmute'));
     await waitFor(() => expect(screen.queryByLabelText('Mute')).not.toBeNull());
     expect(localStorage.getItem('gawk:muted')).toBe('0');
+  });
+});
+
+// The viewer half of the developer server override. The broadcaster has had
+// "Development settings" in its settings panel since v0.2; the viewer read the
+// same store but offered no way to reach it, so a dev build could only be
+// pointed at another relay by first visiting #/broadcast — impossible when the
+// viewer is opened straight from a share link, which is exactly the on-device
+// case (an iPhone joining a code against a laptop's relay).
+describe('viewer development settings', () => {
+  const openMenu = () =>
+    fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
+
+  beforeEach(() => {
+    devEnv.value = true;
+    localStorage.removeItem('gawk.serverUrl');
+    localStorage.removeItem('gawk.certHashHex');
+    useTransportStore.setState({ serverUrl: 'https://localhost:4433', certHashHex: '' });
+  });
+
+  it('is not offered outside a dev build', async () => {
+    devEnv.value = false;
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    openMenu();
+    expect(screen.queryByText(/Relay server/)).toBeNull();
+  });
+
+  it('reconnects to the new relay when applied, and persists it', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(sessions[0].url).toBe('https://localhost:4433');
+
+    openMenu();
+    fireEvent.click(screen.getByText(/Relay server/));
+
+    fireEvent.change(screen.getByLabelText('Server URL'), {
+      target: { value: 'https://api.gawk.example:4433' },
+    });
+    fireEvent.change(screen.getByLabelText(/Dev cert hash/), {
+      target: { value: 'abc123' },
+    });
+    fireEvent.click(screen.getByText('Connect'));
+
+    // A settings change is a deliberate teardown + reconnect, exactly like an
+    // R19 delivery-mode flip — not a value the next reconnect happens to pick up.
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(sessions[1].url).toBe('https://api.gawk.example:4433');
+    expect((sessions[1].opts as { certHashHex: string }).certHashHex).toBe('abc123');
+    // Persisted through the same store the broadcaster writes, so the two
+    // surfaces cannot disagree about which relay this build talks to.
+    expect(localStorage.getItem('gawk.serverUrl')).toBe('https://api.gawk.example:4433');
+  });
+
+  // The situation the panel exists for: a dev build aimed at a relay that will
+  // not answer. It must be reachable *while the error card is up* — the first
+  // implementation shared the card's full-inset wrapper and z-index, so the
+  // later-in-DOM error card covered it and the panel was unreachable exactly
+  // here. jsdom cannot see stacking; this pins the requirement behaviourally,
+  // and the layering itself is verified in a real browser.
+  it('is reachable while the connection-failed card is showing', async () => {
+    sessionState.failStartWith = new Error('WebTransportError: Opening handshake failed.');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(screen.getByText('Streamer offline')).toBeTruthy());
+
+    fireEvent.contextMenu(screen.getByText('error').closest('div')!.parentElement!);
+    fireEvent.click(screen.getByText(/Relay server/));
+
+    expect(screen.getByLabelText('Server URL')).toBeTruthy();
+    // The error card is still mounted underneath — the panel is layered over it,
+    // not swapped for it.
+    expect(screen.getByText('Streamer offline')).toBeTruthy();
+  });
+
+  it('closes without reconnecting when cancelled', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    openMenu();
+    fireEvent.click(screen.getByText(/Relay server/));
+    fireEvent.change(screen.getByLabelText('Server URL'), {
+      target: { value: 'https://nope.example:4433' },
+    });
+    fireEvent.click(screen.getByText('Cancel'));
+
+    expect(screen.queryByLabelText('Server URL')).toBeNull();
+    expect(sessions).toHaveLength(1);
+    expect(useTransportStore.getState().serverUrl).toBe('https://localhost:4433');
   });
 });

@@ -151,6 +151,10 @@ export function probeMseAudio(codec: string | null, channels: number | null): Ms
   return { supported: false, codec: null, mime: null, reason: `unsupported: ${opus} and ${aac}` };
 }
 
+function errText(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+}
+
 // ---------------------------------------------------------------------------
 // The presenter (MF3/MF4)
 
@@ -171,6 +175,13 @@ export interface MsePresenterStats {
   liveDuration: boolean;
   segmentsAppended: number;
   appendErrors: number;
+  // docs/27 finding 6: WHAT the most recent append failure actually was. The
+  // count alone cost a whole on-device round trip — a capture could say "one
+  // append error" and nothing about WebKit's objection, because the only place
+  // the reason exists is `HTMLMediaElement.error` at the moment it fires, and
+  // the audio drop's rebuild clears it immediately after. Captured at every site
+  // that increments appendErrors; null until one does.
+  lastError: string | null;
   queued: number;
   failed: boolean;
 }
@@ -276,6 +287,7 @@ export class MsePresenter {
 
   private segmentsAppended = 0;
   private appendErrors = 0;
+  private lastError: string | null = null;
   // Per-MediaSource: whether duration = Infinity stuck (see declareLive).
   private liveDuration = false;
 
@@ -294,8 +306,21 @@ export class MsePresenter {
   // must not take the video presentation down with it — audio is additive, and
   // on the AAC path it is the least-proven part of the pipeline. (A shared
   // handler did exactly that: a bad audio append blanked the video.)
-  private readonly onTrackError = (t: TrackState) => () => {
+  // Compose the failure detail while it is still readable: `video.error` is the
+  // only place WebKit says WHY (a rejected init segment reads
+  // MEDIA_ERR_SRC_NOT_SUPPORTED, code 4), and `readyState: 'closed'` is how it
+  // shows that a bad append took the whole MediaSource down rather than one
+  // buffer (docs/27 finding 6).
+  private recordError(track: Fmp4Track, what: string): void {
     this.appendErrors++;
+    const media = this.video?.error;
+    const detail = media ? `; media error code ${media.code}${media.message ? `: ${media.message}` : ''}` : '';
+    const state = this.ms ? `; source ${this.ms.readyState}` : '';
+    this.lastError = `${track}: ${what}${detail}${state}`;
+  }
+
+  private readonly onTrackError = (t: TrackState) => () => {
+    this.recordError(t.track, 'SourceBuffer error event');
     if (t.track === 'video') {
       this.failed = true;
       log.warn('MSE presentation: video SourceBuffer error; native fullscreen degraded');
@@ -322,6 +347,7 @@ export class MsePresenter {
       audioSegmentsAppended: this.audioBuf.appended,
       segmentsAppended: this.segmentsAppended,
       appendErrors: this.appendErrors,
+      lastError: this.lastError,
       queued: this.videoBuf.queue.length + this.audioBuf.queue.length,
       failed: this.failed,
     };
@@ -552,7 +578,7 @@ export class MsePresenter {
       } catch (e) {
         // QuotaExceeded and friends: drop this segment, resync at the next
         // keyframe. The relay-side drops-over-stalls philosophy, locally.
-        this.appendErrors++;
+        this.recordError(t.track, `appendBuffer threw ${errText(e)}`);
         t.needKeyframe = true;
         log.warn(`MSE presentation: ${t.track} appendBuffer failed:`, e);
         continue;
@@ -571,7 +597,7 @@ export class MsePresenter {
           t.sb.changeType(mime);
           t.sbMime = mime;
         } catch (e) {
-          this.appendErrors++;
+          this.recordError(t.track, `changeType to ${mime} failed: ${errText(e)}`);
           if (t.track === 'video') this.failed = true;
           log.warn(`MSE presentation: ${t.track} codec change failed:`, e);
           return false;
@@ -599,7 +625,7 @@ export class MsePresenter {
       // Audio is additive: a refused audio SourceBuffer (the plausible
       // Opus-in-MP4 outcome on iOS) leaves the video presentation intact and
       // drops the audio track for good.
-      this.appendErrors++;
+      this.recordError(t.track, `addSourceBuffer(${mime}) failed: ${errText(e)}`);
       if (t.track === 'video') this.failed = true;
       else this.dropAudioTrack();
       log.warn(`MSE presentation: ${t.track} addSourceBuffer failed:`, e);

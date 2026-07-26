@@ -738,6 +738,123 @@ first proved native fullscreen works at all — landing them separately keeps pa
    buffered edge so MMS never parks, or treat resume-after-park as a
    discontinuity and seek into the newest range.
 
+## On-device findings (MF5 pass 3, 2026-07-26)
+
+Finding 4 shipped the AAC tier and finding 5 fixed the buffer-ordering error CI
+caught — and on the device the muxed audio track still died instantly, leaving
+native fullscreen **silent**. The stream capture's signature was unambiguous and
+identical every sample: `audioTranscode: "active"` with `muxAudioSegments`
+climbing past 800 and `muxAudioHoles: 0` (the worker end perfect), against
+`audioSegmentsAppended: 1`, `appendErrors: 1`, `audioTrackActive: false` (the
+presenter had appended exactly one audio buffer — its init — taken exactly one
+error, and had no audio SourceBuffer since). `segmentsAppended` carrying one more
+video init than the muxer ever produced confirmed the rebuild that
+`dropAudioTrack(true)` performs.
+
+### The device probe (new, and the reason this took one pass instead of three)
+
+Reasoning about WebKit from stats had already produced two wrong hypotheses (see
+below). `gawk-app/device-probe.html` + `src/device-probe/main.ts` is a standalone
+page that imports the **production** `Fmp4Muxer`, `AacTranscoder`, `MsePresenter`
+and `probeMseAudio` and runs them on the phone, reporting: the `isTypeSupported`
+matrix against `ManagedMediaSource` and `MediaSource` *separately*; the exact
+bytes the device's AAC encoder returns; a **raw**, step-by-step append of the
+production init segments capturing what `MsePresenter` swallows (`video.error`,
+`MediaSource.readyState`, the `error` event); and an audible
+`webkitEnterFullscreen` test mirroring `useFullscreen` tier 2. Built with
+`device-probe.vite.config.ts`, served over a `cloudflared` quick tunnel, with the
+same run on desktop Chrome as a control. Nothing imports it from the app bundle.
+It found the root cause on its first run.
+
+### Finding 6 — Safari returns an ES_Descriptor where the spec says AudioSpecificConfig (fixed)
+
+WebCodecs specifies an AAC `decoderConfig.description` as the
+**AudioSpecificConfig**, and Chrome returns exactly that — `11 90` for AAC-LC
+48 kHz stereo. **Safari on iOS 18.7 returns the entire `esds` payload**: a
+complete 39-byte `ES_Descriptor`, with the ASC three levels down and 4-byte
+`0x80`-continuation descriptor sizes even for a 2-byte payload.
+
+```
+ES_Descriptor (34)                      ← what Safari hands back as `description`
+└─ DecoderConfigDescriptor (20)            OTI 0x40, streamType byte 0x14, bufferSizeDB 6144
+   └─ DecoderSpecificInfo (2) = 11 90      ← the AudioSpecificConfig, which is all the spec promises
+```
+
+`writeMp4aEntry` took it at face value and nested that whole descriptor inside its
+own `DecoderSpecificInfo`, so on iOS we emitted an `esds` containing a second
+`ES_Descriptor`. WebKit rejected the init segment with **`MEDIA_ERR_SRC_NOT_SUPPORTED`
+(code 4)** and took the **whole MediaSource to `closed`** — not just the audio
+buffer. `onTrackError` then ran the sticky `dropAudioTrack(true)`, rebuilding
+video-only for the rest of the session. Every symptom followed from one malformed
+descriptor.
+
+The fix is `extractAudioSpecificConfig()` in `transport/audio-transcode.ts`,
+applied in `handleOutput` — the boundary where the encoder's answer enters our
+world, so downstream the muxer's contract stays "description **is** the ASC" and
+its golden vectors do not move. It walks the ISO 14496-1 descriptor tree
+(continuation sizes included), returns a bare ASC untouched (Chrome is
+byte-identical), and passes through a shape it does not recognize rather than
+guessing. `writeMp4aEntry` gained the matching guard: a description whose first
+byte is `0x03`/`0x04` is refused outright, because an ASC's first byte carries the
+5-bit audioObjectType in its high bits and so can never be either (AOT 0 is
+"NULL"). That converts a silent MediaSource teardown into a visible `audioSkipped`
+and a video-only presentation. Test-first, on the real 39 bytes from the device.
+
+**Verified on device 2026-07-26**: ASC `1190`, audio init accepted, audio audible
+in native fullscreen.
+
+### Two hypotheses this killed, recorded so they are not re-proposed
+
+Both were plausible from the stats alone and both were **wrong**; the probe cost
+less than either would have.
+
+* **"The codec string mismatches the encoder's real profile."**
+  `addSourceBuffer('audio/mp4; codecs="mp4a.40.2"')` **succeeds** on iOS 18.7 —
+  only the init *bytes* were ever refused. Deriving `mp4a.40.<AOT>` from the ASC
+  is not needed and, on this device, actively harmful: the first probe build did
+  exactly that, read AOT 0 out of the descriptor's leading `0x03` tag, and asked
+  for `mp4a.40.0`, which iOS refuses with `NotSupportedError`.
+* **"The element is silenced by the load-muted flip or by `video.volume`."**
+  The probe measures `volumeSettable: true` on this device (the property
+  round-trips; whether it moves the output route is still untested), and audio is
+  audible with the element unmuted in-gesture. Not a factor here.
+
+### Also measured, worth keeping
+
+* `MediaSource` is **`undefined`** on iPhone — `ManagedMediaSource` is the only
+  one. The MMS-only assumption is now measured, not assumed.
+* The `isTypeSupported` matrix re-confirms finding 4 and adds detail:
+  `codecs="opus"` **false**; `mp4a.40.2`, `mp4a.40.5`, `mp4a.40.29` and `mp4a.67`
+  all **true**; `mp4a.40.34` false. HE-AAC is available if bitrate ever matters.
+* **`webkitAudioDecodedByteCount` does not exist** on this Safari, so it is not
+  the diagnostic to add. `audioTracks` **does** (`audioTracksOnElement: true`, and
+  it read 0 while the track was dead) — that is the one-field addition to
+  `presentationSurface` that would have made this failure self-evident from a
+  stats capture, alongside `video.error.code/message` captured in `onTrackError`.
+* The encoder's first chunk begins `21 20 03 …` — raw AAC, no ADTS syncword, so
+  no de-framing is needed on this path.
+
+### Open from this pass
+
+* **Small audio glitches in native fullscreen.** Unattributed. The probe's own
+  feeder is a candidate (it tops up one second of media per second, so any hiccup
+  eats the cushion), but the leading suspect is the already-recorded **finding 3
+  item 1**: the ~100 ms live-edge cushion that structurally cannot grow, which is
+  below the 72–158 ms arrival jitter this project measured in docs/20 finding 6.
+  Now that audio is audible it is also *audible evidence* for that item, and the
+  shared `TARGET_LAG_S` fix should be measured against it.
+* **Inline silence during the probe is a harness artifact, not a product defect.**
+  `productionRun` mutes its element for the automated phase because iOS blocks
+  unmuted autoplay outside a gesture, and unmutes inside the fullscreen tap. In
+  the real viewer, inline audio comes from the AudioWorklet sink and is unaffected.
+* **The inline-sink handoff is still gated on the probe, not on the live track**
+  (`ViewerScreen.tsx` `nativeAudio = mseAudioProbe?.supported === true`, consumed
+  by `onNativeEnter`). That is why this failure was *total silence* rather than a
+  graceful degrade to inline audio: the one working output was deliberately muted
+  for a muxed track that no longer existed. Gating on presenter state
+  (`audioTrack && audioSegmentsAppended > 0`, plus a surfaced `audioDropped`) is
+  the standing fix, independent of finding 6.
+
 ## Verification plan (manual, MF5)
 
 On a real iPhone (Safari, plus Chrome-on-iOS for the same-WebKit check),
