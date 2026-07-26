@@ -1,6 +1,11 @@
 # R25 — Native broadcaster audio (gawk-broadcast)
 
-**Status**: designed 2026-07-23, not started. Flips the docs/20 non-goal
+**Status**: designed 2026-07-23; **NA1 done 2026-07-27** — two spike runs on
+Debian 13 / KDE (`gawk-broadcast/scripts/na1-audio-spike.sh`) answered all of
+it. **Decisions 2, 3, 4 and 5 confirmed on hardware**; both design-level risks
+closed; ten findings recorded below, one of them a retraction of a wrong
+pre-spike correction of mine. NA2–NA5 are unblocked; NA4's TS fixture is
+committed at `gawk-broadcast/internal/mpegts/testdata/`. Flips the docs/20 non-goal
 "**Audio in the R14 native broadcaster**", which already named the shape this
 doc fills in: *"the future lane there is a GStreamer audio chain
 (`pipewiresrc`/`pulsesrc` → `opusenc`) emitting the same 0x07/0x08 messages
@@ -421,6 +426,232 @@ Design (full acceptance criteria in NA7):
 NA1 gates NA3 and NA4 (it decides the framing). NA2 and NA5 are independent of
 it and can proceed in parallel. NA7 depends on NA5 only — the fixture path never
 touches GStreamer.
+
+## Implementation status & findings
+
+**NA1 (in progress, harness landed 2026-07-27).** The spike is packaged as a
+single self-contained script a non-contributor can run on a Linux desktop and
+send one tarball back from: `gawk-broadcast/scripts/na1-audio-spike.sh`, with
+`NA1-SPIKE.md` beside it written for someone who has never heard of this
+project. It probes the six source-candidate spellings, trials an H.264 encoder,
+muxes Opus + H.264 into one MPEG-TS, round-trips it through
+`tsdemux ! opusparse`, dumps the PES structure and control headers, and measures
+**arrival cadence** at the read end of the pipe.
+
+One deviation from NA1's acceptance criteria, and it is structural rather than a
+shortcut: the criteria ask for **a `GAWK_DUMP_TS` capture containing both
+streams**, and there is no build that can produce one — `gawk-broadcast` has no
+audio producer until NA3/NA5, which is the thing NA1 exists to unblock. So the
+spike hand-builds the same pipeline shape with `videotestsrc` where the portal
+would be. What that substitution does *not* cover is named rather than glossed:
+real damage-driven portal capture, and the dmabuf path into a hardware encoder
+feeding the same muxer. The aggregator question (does audio flow while video is
+idle?) is asked with a **1-frame-per-5-seconds** video pad as the proxy, which
+is the same question put to `GstAggregator` — the honest gap is that portal
+capture emits *nothing* on a static screen, where the proxy still emits
+something. A `GAWK_DUMP_TS` capture with both streams becomes possible at NA3
+and is the right place to close it.
+
+Two findings already, from validating the analyzer against a real muxed file
+(ffmpeg's `mpegtsenc` — **a different implementation of the same mapping spec
+than the one that matters**, so both need confirming against GStreamer's
+`gst_base_ts_mux_prepare_opus` output, which is exactly what the spike collects):
+
+1. **The Opus control header begins `7F E0`, not `FF E0`.** The mapping spec's
+   11-bit prefix has the value `0x3FF`, which is *ten* ones — so an 11-bit field
+   holding it is one zero bit followed by ten ones, and the first byte is `0x7F`.
+   A demuxer that syncs on `0xFF` finds nothing, forever. Confirmed against real
+   bytes: `7f f0 ff ff 58 01 38 fc …` decodes as prefix + `start_trim_flag=1`,
+   `payload_size=598`, `start_trim=312` samples, then TOC `0xfc` = CELT/fullband
+   20 ms stereo — every field landing where the spec says, which is what makes
+   the layout trustworthy rather than merely plausible.
+2. **A single PES can carry several Opus access units** — ffmpeg batches five
+   (one PES per 100 ms), each with its own control header. This lands directly
+   on NA4: the demuxer must **loop** over control headers within a PES payload
+   rather than assume one, and on Decision 5, because only the PES carries a
+   PTS — per-packet timestamps for AUs 2..N have to be derived by adding the
+   frame duration the TOC states. Whether GStreamer's muxer batches the same way
+   is unknown and is now an explicit spike output ("ONE PER PES" vs "BATCHED").
+
+**3. Retracted — Decision 2's trial pipeline was right all along.** A
+pre-spike reading claimed `fakesink num-buffers=25` was invalid because
+`num-buffers` is a `GstBaseSrc` property, and the doc was "corrected" to
+`identity eos-after=25 ! fakesink`. That was wrong: `GstFakeSink` has its own
+`num-buffers`, and run 2 ran the doc's literal spelling and exited 0 in well
+under a second. The snippet above is restored to what it said. Recorded rather
+than silently reverted because it is the reason the spike runs both spellings,
+and because a plausible-sounding correction from memory is exactly what an
+executable spike is for.
+
+### Run 1 — 2026-07-27, Debian 13 (trixie), KDE/Wayland
+
+GStreamer 1.26.2, PipeWire 1.4.2, `vah264enc` (no `vulkanh264enc`, no
+`nvh264enc`). Not the gaming PC — a second Linux machine, which is itself
+useful: R1 made gawk multi-broadcaster and friends publish from GPUs we cannot
+survey.
+
+**4. Harness bug — every `location=` pipeline died.** The run happened in
+`~/Downloads/Telegram Desktop/…`, and the spike builds each pipeline as one
+whitespace-separated string, so an absolute path with a space in it split into
+two tokens and gst-launch rejected the pipeline: `no element "Desktop"`. That
+took out all six candidate WAV captures, the muxed file, and with it Q2, Q3 and
+Q4 — which is why run 1 answers Q5 and little else. Fixed by running inside the
+output directory so every path in a pipeline is a relative name the script chose
+itself. Worth stating as a finding rather than a footnote: the failure was
+*silent in the shape that matters* — five of six probes still exited 0, and only
+the missing files gave it away.
+
+**5. All six source spellings are accepted here — but Q1 is still open.** Every
+candidate, including both `stream.capture.sink` spellings, bare `pipewiresrc`
+with no caps filter, `pulsesrc device=@DEFAULT_MONITOR@` and the explicit
+monitor, produced 25 Opus buffers and exited 0 in about a second (the run's
+total wall time leaves no room for any of them to have been the 8 s timeout).
+So risks 2 and 3 both look benign on this stack, and `identity eos-after=25`
+works as the trial's terminator. What is **not** answered is which of them
+carries actual system audio: the levels died with finding 4, and the run used
+`--no-tone` with nothing playing, so even a working capture would have recorded
+silence. A candidate that opens and records silence is indistinguishable from
+one that resolved to the wrong node — the summary now says so out loud instead
+of printing six confident `SILENT` lines.
+
+**6. The muxer starves audio when the video pad is slow — Decision 4's named
+risk, measured.** Three runs of the same audio branch, differing only in what
+the video pad was doing (arrival cadence at the read end of the pipe, which is
+exactly what the Go engine sees):
+
+| video pad | audio inter-arrival p50 | max gap |
+|---|---|---|
+| 30 fps | 30 ms | 35 ms |
+| none (audio-only mux) | 21 ms | 23 ms |
+| **1 frame / 5 s** | **0 ms** | **4999 ms** |
+
+The starved run delivered ~1000 Opus packets in five bursts aligned to the five
+video buffers: audio was held for up to 5 s and released the instant video
+advanced. The two controls are what make it a finding rather than an anomaly —
+the same muxer with no video pad at all runs at a clean 21 ms, so this is not
+`mpegtsmux`, `fdsink`, the pipe, or the analyzer.
+
+**This does not yet condemn Decision 4**, and the reason is worth writing down
+before someone reads the table and rewrites the design. Declaring
+`framerate=1/5` does three things at once: it makes each video buffer 5 s long,
+it gives the encoder a 5 s frame interval (so one frame of encoder latency *is*
+5 s), and it starves the pad. Two of those three would produce the same bursts
+with a perfectly well-behaved muxer. Run 2 separates them: the same starvation
+reached by dropping 97 % of frames from a **30 fps** source, where buffer
+durations stay 33 ms and encoder latency stays one 30 fps frame. If audio still
+bursts there, the muxer gates audio on video arrival and Decision 4's shared-mux
+design is unsound on a static screen — which is unbounded with real portal
+capture, where nothing arrives at all. If audio flows, run 1's burst was the
+proxy's own latency and Decision 4 survives.
+
+Run 2 also measures the **pre-registered fallback directly** — `opusenc ! tee`,
+one branch to the mux and one to `rtpopuspay timestamp-offset=0 ! rtpstreampay !
+fdsink`, under the same starved video — because if the shared mux does gate
+audio, the only question left is whether the fallback doesn't. And it tests one
+thing this doc asserts without evidence: the fallback is described as costing
+"two timebases instead of one", but a second **pipe** out of the same GStreamer
+pipeline is not a second **clock** — both branches are stamped from one pipeline
+running time. If the RTP timestamps confirm it, Decision 5's single-anchor
+property may survive the fallback, and the fallback stops being the expensive
+option.
+
+Two smaller confirmations: `mpegtsmux`'s sink caps do advertise `audio/x-opus`
+on 1.26.2 (Decision 4's premise holds at the caps level, though carrying it is
+what Q2 still has to show), and the full Decision 3 property set — including
+`audio-type=restricted-lowdelay`, enum value 2051 — is accepted by this
+`opusenc`.
+
+### Run 2 — 2026-07-27, same machine. NA1 is answered.
+
+Same environment, harness fixed, tone question fixed by the tester playing real
+audio. **Decision 4 survives, Decision 2's ranking is vindicated, and both of
+NA1's design-level risks are closed.**
+
+**7. Every source candidate works, and all six capture the same thing.** With
+audio actually playing, all six spellings recorded real stereo at healthy level
+(peak −2.8 to −4.8 dBFS). So **risk 2 is closed** — `pipewiresrc` does forward
+`stream.capture.sink=true` into the properties WirePlumber routes on, in both
+the `=true` and `=(string)true` spellings — and **risk 3 is closed** too:
+pipewire-pulse resolves `@DEFAULT_MONITOR@`. Bare `pipewiresrc` with no caps
+filter negotiates audio on its own.
+
+That they *ran* is not by itself proof they captured the **speakers** rather
+than the microphone, so the WAVs were compared rather than trusted: all six have
+matching per-channel levels (L and R within 0.5 dB), a real stereo image (L−R
+energy ~11 dB down, so not a duplicated mono signal), and 0.12–0.23 % **exactly
+zero** samples. That last number is the discriminating one — an analog capture
+essentially never produces exact zeros, and candidate C is
+`pulsesrc device=<default-sink>.monitor`, which cannot resolve to anything but
+the monitor and matches the others on every axis.
+
+**8. Decision 4 is confirmed: the muxer does *not* gate audio on video.** The
+run-1 confound, separated. Same audio branch, four video conditions:
+
+| video pad | audio p50 | audio max gap | video max gap |
+|---|---|---|---|
+| 30 fps | 24 ms | 35 ms | 44 ms |
+| none (audio-only mux) | 21 ms | 23 ms | — |
+| 1 frame / 5 s *(run 1's proxy)* | 0 ms | **4998 ms** | 5003 ms |
+| **30 fps caps, 97 % of frames dropped** | **20.0 ms** | **41 ms** | **4640 ms** |
+
+The last row is the answer. Video went missing for **4.6 seconds** and audio
+kept arriving at a metronomic 20 ms with **zero** gaps over 100 ms. So the burst
+pattern that made run 1 look alarming was the *proxy's* fault, exactly as
+suspected: declaring `framerate=1/5` gives the encoder a five-second frame
+interval, so the live pipeline's declared latency becomes five seconds and
+`GstAggregator` waits that long before aggregating without a pad buffer. Starve
+the same pad while the caps still say 30 fps and the deadline stays ~33 ms.
+
+This is the property Decision 4 was betting on — "in a live pipeline it
+aggregates against a clock deadline" — and it holds. It matters that the lever
+is the **declared caps framerate**, not actual arrival: `BuildPipeline` already
+pins `framerate=<fps>/1` on the encoder caps (docs/19's rate-control fix), so
+the real pipeline sits in the last row's regime by construction, on a screen
+that never moves.
+
+**9. Audio survives a default-output switch (goal criterion 2, met).** A 28 s
+capture from candidate 1 across a mid-recording device switch stayed audible in
+all four quarters (−3.4 / −4.0 / −15.3 / −3.1 dBFS peak; the dip is the switch
+itself, not a dropout). This is Decision 2's headline claim — WirePlumber
+follows the default sink and re-routes the stream — and it directly narrows
+Decision 6's stated mid-session hole: the common trigger for an audio element
+dying mid-session doesn't kill it.
+
+**10. The Decision 4 fallback works and is cheaper than the doc claims.** Moot
+now, kept because it is the escape hatch: under the same starved video, Opus on
+its own pipe (`rtpopuspay timestamp-offset=0 ! rtpstreampay`) delivered 1085
+packets at p50 21.3 ms, zero gaps, zero sequence discontinuities, RTP timestamp
+stepping exactly 960. And the first RTP timestamp was **67** — essentially
+pipeline running time zero — confirming the suspicion above: a second *pipe* out
+of the same GStreamer pipeline is not a second *clock*, so the fallback would
+not have cost Decision 5's single anchor. The "two timebases" framing in
+Decision 4 is pessimistic; if the fallback is ever taken, it costs framing code,
+not lip-sync.
+
+**Q2/Q3/Q4, answered plainly.** `mpegtsmux` carries Opus: PMT `stream_type 0x06`
+with registration `"Opus"` and DVB extension `0x80` `channel_config=2`, PES
+`stream_id 0xBD`, and the file round-trips through `tsdemux ! opusparse`. Audio
+PTS steps are **exactly 20.0 ms**, median and max. The control header is
+`7F E0`-based as finding 1 predicted, and GStreamer writes **one access unit per
+PES** — where ffmpeg batches five. NA4 should key on one and tolerate more: the
+mapping permits batching, and one muxer in the wild does it.
+
+A 263 KB slice of that capture is committed as
+`gawk-broadcast/internal/mpegts/testdata/opus-h264-na1.ts` (README beside it),
+which is NA4's "committed TS bytes from NA1" acceptance criterion satisfied
+ahead of the chunk. It contains both streams, the PMT descriptors, and — usefully
+— the *first* audio PES, whose `start_trim_flag=1` makes its control header 6
+bytes where every later one is 4.
+
+**What NA1 did not cover**, unchanged from the harness note above: real
+damage-driven portal capture and a dmabuf path into the encoder. Finding 8 makes
+that gap much less interesting than it looked yesterday — the starvation
+question is answered on the axis that mattered — but the first real
+`GAWK_DUMP_TS` with both streams still belongs to NA3.
+
+**NA1 is complete.** No design change falls out of it: Decisions 2, 3, 4 and 5
+stand as written, NA3 and NA4 are unblocked, and the only doc edits it caused
+were a retraction of my own.
 
 ## Verification plan
 

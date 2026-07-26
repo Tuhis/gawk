@@ -693,7 +693,9 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   holes) are folded into docs/30. Chunks **CG1–CG5** (two-letter prefix; single
   letters A–Z claimed)),
   `docs/28-native-broadcaster-audio.md` for R25 (native broadcaster audio:
-  **designed 2026-07-23, not started**; flips docs/20's "audio in the R14
+  **designed 2026-07-23; NA1 spike done 2026-07-27 on Debian 13/KDE —
+  Decisions 2/3/4/5 confirmed on hardware, both design-level risks closed,
+  NA2–NA5 unblocked; NA2–NA8 not started**; flips docs/20's "audio in the R14
   native broadcaster" non-goal, which had already written down the shape.
   R15 built the feature and only the *browser* got a producer — wire
   0x07/0x08 live in the **shared Go** `gawk-server/wire`, the relay's
@@ -730,10 +732,35 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   **committed Opus fixture behind a default-off flag** so tier-1 exercises the
   real engine send path while the no-audio pass keeps running. Chunks
   **NA1–NA8**, NA1 an on-hardware spike that confirms or overturns the muxing
-  decision before NA3/NA4 are written; three facts are explicitly *unverified*
-  in the doc rather than assumed — the Opus-in-TS control-header layout,
-  `pipewiresrc`'s `stream.capture.sink` forwarding, and pipewire-pulse's
-  `@DEFAULT_MONITOR@`),
+  decision before NA3/NA4 are written. **NA1 answered all three of the doc's
+  unverified facts (2026-07-27, two runs via a self-contained tester script,
+  `gawk-broadcast/scripts/na1-audio-spike.sh` + `NA1-SPIKE.md`, written so a
+  non-contributor with a Linux box can run one command and send back one
+  tarball)**: (1) the Opus-in-TS control header begins **`7F E0`, not
+  `FF E0`** — the mapping spec's 11-bit prefix holds `0x3FF`, which is *ten*
+  ones — and GStreamer writes **one access unit per PES** where ffmpeg batches
+  five (NA4 keys on one, tolerates more); (2) `pipewiresrc`'s
+  `stream.capture.sink` forwarding works, in both the `=true` and
+  `=(string)true` spellings; (3) pipewire-pulse resolves `@DEFAULT_MONITOR@`.
+  All six probed spellings captured real system audio, and candidate 1
+  **followed a mid-recording default-output switch** — Decision 2's headline
+  claim and goal criterion 2, met, which narrows Decision 6's mid-session hole.
+  The `GstAggregator` risk was measured rather than assumed and Decision 4
+  holds: with the video pad starved for **4.6 s**, audio still arrived every
+  20.0 ms with zero gaps over 100 ms. The lever is the **declared caps
+  framerate**, not actual arrival — a 1-frame-per-5-s *proxy* did burst audio
+  into 5 s clumps, because the encoder's frame interval becomes the live
+  pipeline's declared latency, so `BuildPipeline` pinning `framerate=<fps>/1`
+  (docs/19's rate-control fix) is what keeps audio smooth on a motionless
+  screen. NA4's fixture is committed at
+  `gawk-broadcast/internal/mpegts/testdata/opus-h264-na1.ts` (263 KB, real
+  muxer output, both streams, PMT descriptors, and the first audio PES whose
+  `start_trim_flag=1` makes its header 6 bytes where every later one is 4).
+  Two doc corrections fell out, both recorded in docs/28's findings rather
+  than silently applied — the second is a **retraction**: `fakesink
+  num-buffers=25` in Decision 2's trial pipeline is *valid* (`GstFakeSink` has
+  its own `num-buffers`), so a pre-spike "fix" to `identity eos-after=25` was
+  wrong and is reverted),
   `docs/27-ios-mse-fullscreen.md` for R22 (iOS native fullscreen via MSE:
   **designed 2026-07-23, spike-confirmed on iPhone the same day; MF1–MF4 +
   MF5's observability/docs half implemented 2026-07-25 — automated gates green
