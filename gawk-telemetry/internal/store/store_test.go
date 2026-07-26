@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -338,5 +339,108 @@ func TestAppendRelayAndRead(t *testing.T) {
 	empty, err := s.ReadRelay("2026-07-25")
 	if err != nil || len(empty) != 0 {
 		t.Errorf("missing partition = %v / %d lines, want no error and none", err, len(empty))
+	}
+}
+
+// --- read errors and the sweep race (review findings 9 and 10) -------------
+
+// A truncated tail is EXPECTED here — a file killed mid-write, or read while
+// being appended — and must read clean. Anything else must not be swallowed:
+// a line over the scanner's buffer used to truncate the read silently and drop
+// every line after it without a trace.
+func TestReadSessionSurfacesRealScannerErrors(t *testing.T) {
+	st := newTestStore(t, nil)
+	ref := SessionRef{Date: "2026-07-26", BroadcastKey: "1a2b3c4d5e6f", SessionID: "aa11aa11aa11aa11aa11aa11"}
+	if err := st.AppendSession(ref, [][]byte{[]byte(`{"kind":"meta"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	// A line past the scanner's 4 MB bound, followed by one that must not be
+	// lost silently.
+	huge := append([]byte(`{"kind":"sample","pad":"`), bytes.Repeat([]byte("x"), 5<<20)...)
+	huge = append(huge, []byte(`"}`)...)
+	if err := st.AppendSession(ref, [][]byte{huge, []byte(`{"kind":"event"}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.ReadSession(ref); err == nil {
+		t.Error("an unreadable line was swallowed: the read returned success having dropped every line after it")
+	}
+}
+
+// The sweep gzips and unlinks; a batch landing in that window reopens the
+// plain file and appends. If the sweep is not holding a claim on the path,
+// those appends go to an unlinked inode and vanish, and the recreated plain
+// file is permanently shadowed by the .gz (ReadSession prefers it) — silent
+// loss in the component whose whole job is not losing the session that ended
+// badly.
+func TestSweepOrphansDoesNotLoseAConcurrentAppend(t *testing.T) {
+	st := newTestStore(t, nil)
+	ref := SessionRef{Date: "2026-07-26", BroadcastKey: "1a2b3c4d5e6f", SessionID: "cc33cc33cc33cc33cc33cc33"}
+	if err := st.AppendSession(ref, [][]byte{[]byte(`{"kind":"meta"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	// Release the handle so the file looks like an orphan to the sweep.
+	st.CloseIdle(0)
+
+	// Deterministic race: the append happens while the sweep is between its
+	// claim and its unlink.
+	var appendErr error
+	testHookSweepBeforeGzip = func(path string) {
+		testHookSweepBeforeGzip = nil
+		appendErr = st.AppendSession(ref, [][]byte{[]byte(`{"kind":"event"}`)})
+	}
+	t.Cleanup(func() { testHookSweepBeforeGzip = nil })
+
+	if _, err := st.SweepOrphans(0); err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	// Refused, VISIBLY: the alternative is writing into an inode the sweep is
+	// about to unlink, which loses the lines and says nothing.
+	if appendErr == nil {
+		t.Fatal("an append landed in the middle of the sweep and reported success")
+	}
+
+	// And the retry — which ingest performs, idempotently — lands, and reads
+	// back together with the archived half rather than being shadowed by it.
+	if err := st.AppendSession(ref, [][]byte{[]byte(`{"kind":"event"}`)}); err != nil {
+		t.Fatalf("the retry after the sweep failed: %v", err)
+	}
+	lines, err := st.ReadSession(ref)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Errorf("lines = %d, want 2 — the resumed half is invisible behind the archive", len(lines))
+	}
+}
+
+// A session finalized twice — quiet long enough to be archived, then back, as
+// a phone out of a tunnel is — must keep BOTH halves. Renaming the new archive
+// over the old one would delete the first half outright.
+func TestFinalizingTwiceKeepsBothHalves(t *testing.T) {
+	st := newTestStore(t, nil)
+	r := ref()
+	if err := st.AppendSession(r, [][]byte{[]byte(`{"n":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinalizeSession(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendSession(r, [][]byte{[]byte(`{"n":2}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinalizeSession(r); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := st.ReadSession(r)
+	if err != nil {
+		t.Fatalf("ReadSession: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d, want both halves", len(lines))
+	}
+	if string(lines[0]) != `{"n":1}` || string(lines[1]) != `{"n":2}` {
+		t.Errorf("lines = %q — order or content lost across the second finalize", lines)
 	}
 }

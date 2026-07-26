@@ -69,15 +69,50 @@ var ErrBadIdentifier = errors.New("store: invalid identifier")
 // ErrNotFound reports a session with no stored file.
 var ErrNotFound = errors.New("store: not found")
 
+// errBusy reports an append to a file the orphan sweep is finalizing right
+// now. Transient by construction — the sweep holds a path only for the length
+// of one gzip.
+var errBusy = errors.New("store: session file is being finalized; retry")
+
 // Store owns the data directory. Safe for concurrent use.
 type Store struct {
 	root string
 
-	mu     sync.Mutex
-	open   map[string]*openFile
-	nowFn  func() time.Time
-	closed bool
+	mu   sync.Mutex
+	open map[string]*openFile
+	// claimed paths are being gzipped and unlinked by the orphan sweep. An
+	// append to one must wait rather than write into a file about to be
+	// removed.
+	claimed map[string]bool
+	nowFn   func() time.Time
+	closed  bool
 }
+
+// claim reserves a path for an exclusive operation (the orphan sweep's
+// gzip+unlink). It fails if the path is open for writing or already claimed.
+// While a claim is held, `append` refuses to open the file, so an arriving
+// batch is a visible error rather than lines written into a doomed inode.
+func (s *Store) claim(path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.open[path] != nil || s.claimed[path] {
+		return false
+	}
+	s.claimed[path] = true
+	return true
+}
+
+func (s *Store) release(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.claimed, path)
+}
+
+// testHookSweepBeforeGzip runs inside the sweep's claim, between claiming a
+// path and compressing it. Nil in production; a test uses it to make the
+// append-during-sweep race deterministic instead of hoping for a timing
+// window.
+var testHookSweepBeforeGzip func(path string)
 
 type openFile struct {
 	f        *os.File
@@ -108,7 +143,10 @@ func New(opts Options) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{root: opts.Root, open: map[string]*openFile{}, nowFn: opts.Now}, nil
+	return &Store{
+		root: opts.Root, open: map[string]*openFile{},
+		claimed: map[string]bool{}, nowFn: opts.Now,
+	}, nil
 }
 
 // Root returns the data directory.
@@ -185,6 +223,14 @@ func (s *Store) append(path string, lines [][]byte) error {
 	}
 	of, ok := s.open[path]
 	if !ok {
+		if s.claimed[path] {
+			// The orphan sweep is compressing this exact file. Refusing is the
+			// point: writing here would put lines in an inode about to be
+			// unlinked. The caller's retry lands after the sweep, and ingest
+			// retries are idempotent (the writer drops a replayed seq), so the
+			// batch is delayed rather than lost.
+			return errBusy
+		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
@@ -303,11 +349,42 @@ func gzipFile(src, dst string) error {
 		os.Remove(tmp)
 		return err
 	}
+	// A dst that already exists means this session was finalized once and came
+	// back. Renaming over it would delete the first half outright, so the new
+	// archive is APPENDED as a second gzip member — a concatenation of members
+	// is a valid gzip file and gzip.Reader reads it transparently, so nothing
+	// downstream has to know.
+	if _, err := os.Stat(dst); err == nil {
+		if err := appendFile(dst, tmp); err != nil {
+			os.Remove(tmp)
+			return err
+		}
+		os.Remove(tmp)
+		return os.Remove(src)
+	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return err
 	}
 	return os.Remove(src)
+}
+
+// appendFile appends src's bytes to dst.
+func appendFile(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // SweepOrphans finalizes every plain session file older than `idle` — the
@@ -324,13 +401,6 @@ func (s *Store) SweepOrphans(idle time.Duration) (int, error) {
 	cutoff := s.nowFn().Add(-idle)
 	n := 0
 
-	s.mu.Lock()
-	openPaths := make(map[string]bool, len(s.open))
-	for p := range s.open {
-		openPaths[p] = true
-	}
-	s.mu.Unlock()
-
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // a directory that vanished mid-walk is not our problem
@@ -342,12 +412,23 @@ func (s *Store) SweepOrphans(idle time.Duration) (int, error) {
 		if err != nil || info.ModTime().After(cutoff) {
 			return nil
 		}
-		// A file this process is actively writing is not an orphan, even if it
-		// has been quiet: CloseIdle owns that handle's lifetime.
-		if openPaths[path] {
+		// Claim the path under the lock before touching it. A file this
+		// process is actively writing is not an orphan (CloseIdle owns that
+		// handle's lifetime), and — the race this closes — a batch arriving
+		// between the check and the unlink would otherwise reopen the file and
+		// append into an inode gzipFile is about to remove: those lines vanish,
+		// and the recreated plain file is then permanently shadowed by the .gz,
+		// since ReadSession prefers it. FinalizeSession has always done this
+		// correctly under the lock; the asymmetry WAS the bug.
+		if !s.claim(path) {
 			return nil
 		}
-		if err := gzipFile(path, path+".gz"); err == nil {
+		if testHookSweepBeforeGzip != nil {
+			testHookSweepBeforeGzip(path)
+		}
+		err = gzipFile(path, path+".gz")
+		s.release(path)
+		if err == nil {
 			n++
 		}
 		return nil
@@ -406,16 +487,24 @@ func (s *Store) ReadSession(r SessionRef) ([][]byte, error) {
 	}
 	s.mu.Unlock()
 
-	if lines, err := readLines(s.sessionPath(r, true)); err == nil {
-		return lines, nil
-	} else if !os.IsNotExist(err) {
+	// BOTH parts, in order. A session can have a .gz and a plain file at once:
+	// one that goes quiet long enough to be finalized and then comes back — a
+	// phone out of a tunnel, R19's own target user — appends to a fresh plain
+	// file beside the archive. Reading only the .gz (which is what "prefer the
+	// .gz" did) made every line after the resume invisible to the rollup while
+	// looking perfectly healthy.
+	archived, err := readLines(s.sessionPath(r, true))
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	lines, err := readLines(s.sessionPath(r, false))
-	if os.IsNotExist(err) {
+	plain, err := readLines(s.sessionPath(r, false))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if archived == nil && plain == nil {
 		return nil, ErrNotFound
 	}
-	return lines, err
+	return append(archived, plain...), nil
 }
 
 // FindSession locates a session by ID alone, scanning the date partitions
@@ -586,10 +675,20 @@ func readLines(path string) ([][]byte, error) {
 		out = append(out, append([]byte(nil), line...))
 	}
 	// A truncated tail (killed mid-write, or read while being appended) is
-	// expected, not exceptional: return the complete lines and drop the
-	// partial one rather than failing the whole read.
+	// expected, not exceptional: the complete lines are returned and the
+	// partial one dropped, because the store exists to let you look at a
+	// session that ended badly. `bufio.Scanner` reports that case by simply
+	// stopping, so it needs no branch here.
+	//
+	// Anything else DOES get returned. Both branches used to return `out, nil`,
+	// so `bufio.ErrTooLong` — a line past the 4 MB buffer — truncated the read
+	// there and dropped every subsequent line in the file without a trace. The
+	// 1 MB ingest bound makes that unreachable from ingest today, but rollup
+	// and relay files are not ingest-bounded forever, and a reader that cannot
+	// tell "the file ends here" from "I stopped reading here" is the wrong
+	// thing to build a permanent artifact on.
 	if err := sc.Err(); err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return out, nil
+		return out, err
 	}
 	return out, nil
 }
