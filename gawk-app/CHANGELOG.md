@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.1...gawk-app-v0.33.2) (2026-07-26)
+
+
+### Bug Fixes
+
+* **r22:** iPhone native-fullscreen audio — unwrap Safari's ES_Descriptor ([#144](https://github.com/Tuhis/gawk/issues/144)) ([dd707ab](https://github.com/Tuhis/gawk/commit/dd707ab420198e151f4f41f7e5b26ca73d5b2d98))
+
 ## [0.33.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.0...gawk-app-v0.33.1) (2026-07-26)
 
 
