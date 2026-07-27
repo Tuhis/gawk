@@ -168,6 +168,21 @@ func TestResolveTelemetryURL(t *testing.T) {
 		{"off is case-insensitive", "", "OFF", ""},
 		{"off wins over an explicit relay too", "https://relay.example:4433", "off", ""},
 		{"whitespace is blank, not an endpoint", "", "  ", DefaultTelemetryURL},
+		// The pairing rule asks "is this the default fleet?", and that is a
+		// question about an address, not about a string. A trailing slash, a
+		// capitalized scheme or a capitalized host all name the very same relay
+		// — the one whose key mints the tokens — so answering "no" to any of
+		// them turns telemetry off for a user who did nothing but type the
+		// address out. Silently: the only symptom is a session that never
+		// appears, which is exactly the shape of the 2026-07-27 gap.
+		{"a trailing slash is the same relay", DefaultRelayURL + "/", "", DefaultTelemetryURL},
+		{"scheme case is the same relay", "HTTPS://api.gawk.ioio.fi:4433", "", DefaultTelemetryURL},
+		{"host case is the same relay", "https://API.GAWK.IOIO.FI:4433", "", DefaultTelemetryURL},
+		// Normalization must not go so far that a genuinely different relay
+		// pairs with the reference collector.
+		{"a different port is a different relay", "https://api.gawk.ioio.fi:5555", "", ""},
+		{"a different host is a different relay", "https://relay.example:4433", "", ""},
+		{"a path is a different relay", DefaultRelayURL + "/other", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ResolveTelemetryURL(tc.relay, tc.telemetry); got != tc.want {

@@ -520,6 +520,14 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 			s.log.Warn("telemetry hello parse failed", "err", err)
 			return
 		}
+		// Logged because its absence is otherwise invisible. Every other
+		// server message has a visible consequence — no announce means no
+		// broadcast code, no token means no reclaim — while a hello that never
+		// arrives costs nothing a broadcaster can see and everything an
+		// operator later needs. This line and the reporter's are a matched
+		// pair: together they say whether the hello arrived, and if it did,
+		// why the reporter did or did not act on it.
+		s.log.Info("telemetry hello received", "fleet_enabled", hello.Enabled)
 		s.cb.telemetryHello(hello)
 	default:
 		s.log.Debug("server message ignored: unknown type", "type", buf[1])
