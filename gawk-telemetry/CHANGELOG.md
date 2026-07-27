@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.1.1...gawk-telemetry-v1.2.0) (2026-07-27)
+
+
+### Features
+
+* **r28:** rebuild the telemetry dashboard as a React SPA ([#164](https://github.com/Tuhis/gawk/issues/164)) ([be07726](https://github.com/Tuhis/gawk/commit/be0772635e19750556eab6901817f74c2b52cd59))
+* **r28:** report tab visibility, and stop it polluting the rollup ([#166](https://github.com/Tuhis/gawk/issues/166)) ([7115f82](https://github.com/Tuhis/gawk/commit/7115f82310194ef691b792921b60d9322ebe4e92))
+
 ## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.1.0...gawk-telemetry-v1.1.1) (2026-07-27)
 
 

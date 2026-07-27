@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.35.0...gawk-app-v0.36.0) (2026-07-27)
+
+
+### Features
+
+* **r28:** let a viewer name its own telemetry session (docs/33 §4.13) ([#163](https://github.com/Tuhis/gawk/issues/163)) ([ef82e2c](https://github.com/Tuhis/gawk/commit/ef82e2c15b5e8fb0deaf764c6df9f3221d9471aa))
+* **r28:** report tab visibility, and stop it polluting the rollup ([#166](https://github.com/Tuhis/gawk/issues/166)) ([7115f82](https://github.com/Tuhis/gawk/commit/7115f82310194ef691b792921b60d9322ebe4e92))
+
 ## [0.35.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.34.0...gawk-app-v0.35.0) (2026-07-27)
 
 
