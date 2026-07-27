@@ -1214,6 +1214,42 @@ Annex-B (no avcC description) — if a viewer's diagnostics show software
 decode (`isHardwareAccelerated: false`) only on native streams, the AVCC
 question reopens with evidence, not before.
 
+**12. The GUI draws its own text fields — `gioui.org/x` is gone (field
+finding, 2026-07-27).** Reported from the gaming PC: `gawk-broadcast-gui` sat
+at 20–30 % CPU from launch, before anything was shared. Cause:
+`component.TextField` (gioui.org/x v0.10.1) executes an `op.InvalidateCmd`
+on **every frame a field holds text**. Its update rule sets `state = activated`
+whenever `Editor.Len() > 0` — a state the field never leaves while it has
+contents — and then starts a zero-duration animation unconditionally; that
+animation finishes inside the same frame, so the next frame restarts it, with
+the invalidate in between. With no `At`, the command means "redraw as soon as
+possible", so the window free-ran at the compositor's rate, re-shaping text
+and repainting the panel every pass.
+
+Two details explain why nobody caught it earlier, and both are the durable
+part. `newUI` pre-fills the settings fields from the saved config, so the spin
+started before the first paint and a *fresh* config did not reproduce it. And
+Decision 9 lays the settings panel out through `gtx.Disabled()` once live — a
+disabled context carries a zero `input.Source`, which silently swallows the
+invalidate — so the burn stopped exactly when a broadcast started, which is
+the only state V7's manual verification was watching.
+
+Fix: a local `textInput` (a caption over a bordered `widget.Editor`), in the
+same hand-rolled spirit as `dropdown`. It was the only thing `gioui.org/x` was
+imported for, so the dependency is dropped entirely. Measured on the dev Mac,
+same window, idle: **~12 % CPU before, 0.0 % after** (the reporter's Linux box
+showed 20–30 %; the shape is the same, the rate is the compositor's).
+
+The regression guard is `cmd/gawk-broadcast-gui/main_test.go`, and its shape
+is the point: it lays out the **whole window** for 20 frames against a real
+`input.Router` and asserts that none of them scheduled an already-due wakeup.
+A CPU threshold would have been machine-specific and would never have failed
+in CI; "an idle window schedules no frames" is exact, cheap, and catches any
+future widget with the same habit — not just the one that had it. A field's
+caret blink is a *scheduled* wakeup and is deliberately not counted. Note that
+adding a test to that package means `go test ./...` now links the GUI shell,
+which it previously only type-checked.
+
 ## Verification plan (manual)
 
 On the Linux gaming PC: launch the GUI → Start → desktop portal picker

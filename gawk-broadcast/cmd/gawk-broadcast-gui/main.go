@@ -31,6 +31,7 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/io/clipboard"
+	"gioui.org/io/input"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -39,7 +40,6 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
-	"gioui.org/x/component"
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
@@ -139,10 +139,10 @@ type ui struct {
 	copyDia widget.Clickable
 	details widget.Bool
 
-	relay   component.TextField
-	appURL  component.TextField
-	secret  component.TextField
-	bitrate component.TextField
+	relay   textInput
+	appURL  textInput
+	secret  textInput
+	bitrate textInput
 
 	resPick dropdown
 	fpsPick dropdown
@@ -166,7 +166,7 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	u.relay.SetText(cfg.RelayURL)
 	u.appURL.SetText(cfg.AppURL)
 	u.secret.SetText(cfg.PublishSecret)
-	u.secret.Mask = '•'
+	u.secret.ed.Mask = '•'
 	if cfg.BitrateBps > 0 {
 		u.bitrate.SetText(strconv.FormatFloat(float64(cfg.BitrateBps)/1e6, 'f', -1, 64))
 	}
@@ -666,6 +666,58 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 			}),
 		)
 	})
+}
+
+// textInput is a labelled single-line field: a caption over a bordered
+// editor, in the same hand-rolled spirit as dropdown below.
+//
+// It replaces gioui.org/x's component.TextField, which asked for an immediate
+// redraw on *every* frame a field held text — its floating-label animation
+// restarts from a state the field never leaves while it has contents. Since
+// newUI pre-fills these from the saved config, the window free-ran from launch
+// and burned 20-30 % of a core sitting idle (docs/19 finding 12; the spin was
+// invisible during a broadcast only because the panel is laid out disabled
+// then, and a disabled context drops the invalidate). Nothing here animates,
+// so an idle window schedules no frames at all — main_test.go holds that line
+// for the whole window, not just for this widget.
+type textInput struct {
+	ed widget.Editor
+}
+
+func (t *textInput) SetText(s string) { t.ed.SetText(s) }
+func (t *textInput) Text() string     { return t.ed.Text() }
+
+func (t *textInput) Layout(gtx layout.Context, th *material.Theme, hint string) layout.Dimensions {
+	t.ed.SingleLine = true
+	// The settings panel is laid out through gtx.Disabled() while live
+	// (Decision 9), which is a zero input.Source. Say so visually — otherwise
+	// a field that silently ignores typing is the only feedback.
+	disabled := gtx.Source == (input.Source{})
+	textCol, borderCol := colText, colFaint
+	switch {
+	case disabled:
+		textCol, borderCol = colMuted, colButton
+	case gtx.Source.Focused(&t.ed):
+		borderCol = colPrimary
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			c := material.Caption(th, hint)
+			c.Color = colFaint
+			return c.Layout(gtx)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return widget.Border{Color: borderCol, CornerRadius: unit.Dp(6), Width: unit.Dp(1)}.Layout(gtx,
+				func(gtx layout.Context) layout.Dimensions {
+					return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						e := material.Editor(th, &t.ed, "")
+						e.Color = textCol
+						return e.Layout(gtx)
+					})
+				})
+		}),
+	)
 }
 
 // dropdown is a picker built from stock buttons: the field toggles an inline
