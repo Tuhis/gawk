@@ -517,8 +517,8 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   Chunks **LI1–LI4**; LI3's hardware leg + LI4 sequenced after R15's
   pending re-verification, `avSkewMs` finding 12 being open),
   `docs/33-telemetry-and-diagnostics.md` for R28 (advanced diagnostics &
-  telemetry: **designed + TM1–TM8 implemented 2026-07-26, TM10 (dip episodes)
-  2026-07-27, automated gates
+  telemetry: **designed + TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) +
+  TM11 (configured target) 2026-07-27, automated gates
   green in all four modules; TM9 (Grafana) dropped by owner scope decision so
   R9 M8 stays open; manual verification pending — deviations in the doc's
   §4.9 "Implementation status"**; pulls the trigger R9's
@@ -1810,7 +1810,7 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   to disagree with the frames MSTP actually delivers. Configure encoders and
   compute layout from the frames themselves. See `docs/01-loopback-test.md`.
 27. Advanced diagnostics & telemetry — **TM1–TM8 implemented 2026-07-26,
-   TM10 (dip episodes) 2026-07-27;
+   TM10 (dip episodes) + TM11 (configured target) 2026-07-27;
    automated gates green in all four modules; TM9 (Grafana) dropped by owner
    scope decision (R9 M8 stays open); manual verification pending** (R28,
    `docs/33-telemetry-and-diagnostics.md`; deviations in its §4.9). A new
@@ -1907,6 +1907,40 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    because decimation drops exactly the transients the timeline is opened for.
    A dip is **not** folded into `stalls`: 2 fps is media flowing badly, a stall
    is media absent, and collapsing the two would make `stalls` mean two things.
+   **TM11 — the configured target (2026-07-27, docs/33 D17 + §4.11)**: the
+   exact complement of TM10, and neither subsumes the other. The dip detector
+   is **self-relative**, so it structurally cannot see a stream whose baseline
+   was wrong all along — a broadcaster that asked for 60 fps and delivered a
+   flawless 30 for the whole session has a flat baseline, **zero episodes** and
+   a perfect funnel (capture 30 → encode 30 → sent 30), and every rule
+   correctly passes it. Nothing *degraded*; it simply never was what it was
+   asked to be. That was invisible because **the target was never recorded**:
+   `BroadcastStats` carried no dims, no target fps and no video bitrate (only
+   `audioBitrateBps`), and the three fields it *did* carry — `autoRung`,
+   `autoCeiling`, `autoFps` — are `null` in explicit mode **by design**, so the
+   more deliberately a broadcaster configured the stream the less was recorded;
+   meanwhile the native engine reported `Width`/`Height`/`Fps`/`BitrateBps` and
+   the rollup listed them in neither `broadcasterConfig` nor
+   `broadcasterSeries`, so they were pruned at 14 days having never reached a
+   row. `Config["resolution"]` also read `frameWidth`/`frameHeight`, which only
+   a **viewer** reports, so broadcaster rows had no resolution and
+   `fleet_summary(groupBy:"resolution")` grouped them all under `unknown`.
+   Now: target dims/fps/bitrate/codec/acceleration are recorded **from
+   `EncoderConfigured`** — what the encoder *committed to*, never the settings
+   that asked (a rung can be refused, clamped or renegotiated, and re-running
+   on every encoder recreate means an R4 auto step moves the target with it) —
+   the rollup maps both producers' spellings onto one set of config keys, and
+   `resolution` resolves per role. One rule, **`delivered-below-target`**
+   (`targetShortfallRatio` 0.75). Its shape is set by an honesty problem worth
+   not re-deriving: gawk's capture is **damage-driven**, so a motionless screen
+   legitimately produces far fewer frames than the target (docs/09's
+   real-hardware finding, and why R4's ladder deliberately does not step for
+   it) — a rule reading any shortfall as a fault would accuse every quiet
+   stream on the fleet. So `captureFps` is the discriminator and rides in the
+   evidence either way: capture below target too ⇒ "source-limited", capture at
+   target ⇒ "the shortfall is in the pipeline". Severity is **`warn`, never
+   `bad`** — a discrepancy against intent is not a broken stream, and the rules
+   for an actually-broken one already exist.
 
 ## Explicitly set aside (don't suggest reintroducing without discussion)
 - WebRTC + self-hosted SFU (OvenMediaEngine, LiveKit, mediasoup) — more mature,

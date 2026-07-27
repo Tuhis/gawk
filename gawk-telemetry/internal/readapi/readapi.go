@@ -922,6 +922,8 @@ var factClientFields = []string{
 	"reorderGapResyncs", "keyframeStreamsReceived", "playoutOffsetMs",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"audioPacketsReceived",
+	// D17: what the broadcast was asked to be, so a shortfall is computable.
+	"targetFps", "targetBitrateBps",
 }
 
 // --- HTTP -----------------------------------------------------------------

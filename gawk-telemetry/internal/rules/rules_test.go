@@ -295,6 +295,25 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				return f
 			},
 		},
+		{
+			id: "delivered-below-target",
+			fires: func() *Facts {
+				f := castFacts()
+				// 60 asked for, 30 delivered, all session long — a flat
+				// baseline the dip rules cannot see and a perfect funnel.
+				f.SetClient("targetFps", 60)
+				f.SetClient("sentFps", 30)
+				f.SetClient("captureFps", 30)
+				return f
+			},
+			quiet: func() *Facts {
+				f := castFacts()
+				f.SetClient("targetFps", 30)
+				f.SetClient("sentFps", 30)
+				f.SetClient("captureFps", 30)
+				return f
+			},
+		},
 	}
 
 	covered := map[string]bool{}

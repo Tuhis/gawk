@@ -161,6 +161,11 @@ var viewerConfig = []string{
 var broadcasterConfig = []string{
 	"autoRung", "autoCeiling", "pipelineContext", "audioState", "audioCodec",
 	"Encoder", "Codec", "CapturePath",
+	// D17. `codec`/`acceleration` are the browser's spellings of what `Codec`
+	// and `Encoder` say for the native engine — both are kept so one query
+	// covers both producers, which is the same reason the capitalized native
+	// names appear throughout this file.
+	"codec", "acceleration",
 }
 
 // Input is one session's stored timeline, as the finalizer hands it over.
@@ -257,9 +262,43 @@ func Compute(in Input) Row {
 	}
 	// Resolution is worth having as one field rather than two, and it is the
 	// first thing anyone asks about a stuttering stream.
-	if w, okW := lastValue(in.Samples, "frameWidth"); okW {
-		if h, okH := lastValue(in.Samples, "frameHeight"); okH {
+	//
+	// The source differs by role and the difference is not cosmetic:
+	// `frameWidth`/`frameHeight` are what a VIEWER decoded, while a
+	// broadcaster's resolution is what it encoded. Reading the viewer fields
+	// for both is why broadcaster rows carried no resolution at all — and why
+	// `fleet_summary(groupBy: "resolution")` grouped every broadcaster under
+	// "unknown" (D17).
+	for _, dims := range [][2]string{
+		{"targetWidth", "targetHeight"}, // browser broadcaster (D17)
+		{"Width", "Height"},             // native engine's fixed rung
+		{"frameWidth", "frameHeight"},   // viewer, decoded
+	} {
+		w, okW := lastValue(in.Samples, dims[0])
+		h, okH := lastValue(in.Samples, dims[1])
+		if okW && okH {
 			r.Config["resolution"] = formatDims(w, h)
+			break
+		}
+	}
+	// The rest of the target (D17). Formatted into Config rather than left as
+	// a series because these describe what the session WAS, and a percentile
+	// of a constant is noise — while a target that MOVED mid-session (an R4
+	// auto step, an R13 live settings change) is visible as the last value
+	// differing from the first, which the raw window still holds.
+	for _, t := range []struct{ field, key string }{
+		{"targetFps", "targetFps"},
+		{"Fps", "targetFps"}, // native spelling, same meaning
+	} {
+		if v, ok := lastValue(in.Samples, t.field); ok {
+			r.Config[t.key] = strconv.Itoa(int(v))
+			break
+		}
+	}
+	for _, field := range []string{"targetBitrateBps", "BitrateBps"} {
+		if v, ok := lastValue(in.Samples, field); ok {
+			r.Config["targetBitrateKbps"] = strconv.Itoa(int(v / 1000))
+			break
 		}
 	}
 	if len(r.Config) == 0 {

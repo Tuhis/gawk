@@ -251,3 +251,67 @@ func TestTrimSampleKeepsWhatTheDetectorNeeds(t *testing.T) {
 		t.Errorf("trimming lost the interval minimum: %+v", ep)
 	}
 }
+
+// --- D17: the configured target ---------------------------------------------
+
+// A broadcaster row must carry what the stream was ASKED to be. Without it,
+// "30 fps" reads identically whether 30 or 60 was requested.
+func TestRollupCapturesTheBrowserBroadcasterTarget(t *testing.T) {
+	samples := []Sample{
+		{TMs: 0, Stats: map[string]any{
+			"sentFps": 30.0, "targetWidth": 1920.0, "targetHeight": 1080.0,
+			"targetFps": 60.0, "targetBitrateBps": 8_000_000.0,
+			"codec": "avc1.640028", "acceleration": "prefer-hardware",
+		}},
+		{TMs: 2000, Stats: map[string]any{"sentFps": 30.0}},
+	}
+	r := Compute(Input{SessionID: "s", Role: "broadcaster", Samples: samples})
+
+	for k, want := range map[string]string{
+		"resolution":        "1920x1080",
+		"targetFps":         "60",
+		"targetBitrateKbps": "8000",
+		"codec":             "avc1.640028",
+		"acceleration":      "prefer-hardware",
+	} {
+		if got := r.Config[k]; got != want {
+			t.Errorf("Config[%q] = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// The native engine marshals engine.Stats with Go's capitalized names. One
+// query must cover both producers, or half the fleet reports no configuration.
+func TestRollupCapturesTheNativeBroadcasterTarget(t *testing.T) {
+	samples := []Sample{
+		{TMs: 0, Stats: map[string]any{
+			"SentFps": 55.0, "Width": 2560.0, "Height": 1440.0,
+			"Fps": 60.0, "BitrateBps": 12_000_000.0, "Encoder": "nvh264enc",
+		}},
+		{TMs: 2000, Stats: map[string]any{"SentFps": 55.0}},
+	}
+	r := Compute(Input{SessionID: "s", Role: "broadcaster", Samples: samples})
+
+	if got := r.Config["resolution"]; got != "2560x1440" {
+		t.Errorf("resolution = %q, want 2560x1440", got)
+	}
+	if got := r.Config["targetFps"]; got != "60" {
+		t.Errorf("targetFps = %q, want 60", got)
+	}
+	if got := r.Config["targetBitrateKbps"]; got != "12000" {
+		t.Errorf("targetBitrateKbps = %q, want 12000", got)
+	}
+}
+
+// A viewer's resolution is what it DECODED, and must keep coming from the
+// viewer fields — the two are different measurements of different things.
+func TestViewerResolutionStillComesFromDecodedFrames(t *testing.T) {
+	samples := []Sample{
+		{TMs: 0, Stats: map[string]any{"receivedFps": 30.0, "frameWidth": 1280.0, "frameHeight": 720.0}},
+		{TMs: 2000, Stats: map[string]any{"receivedFps": 30.0}},
+	}
+	r := Compute(Input{SessionID: "s", Role: "viewer", Samples: samples})
+	if got := r.Config["resolution"]; got != "1280x720" {
+		t.Errorf("resolution = %q, want 1280x720", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -841,5 +842,112 @@ func TestDefaultTimelineNeverDownsamplesADipAway(t *testing.T) {
 	}
 	if lowest != 2 {
 		t.Errorf("lowest receivedFps in the default timeline = %v, want 2 — the dip was decimated away", lowest)
+	}
+}
+
+// --- D17: the configured target ---------------------------------------------
+
+// The steady-state miss, and the exact complement of the dip tests above. A
+// broadcaster that asked for 60 fps and delivered 30 for the WHOLE session has
+// a flat baseline (so zero dip episodes) and a perfect funnel (capture 30 →
+// encode 30 → sent 30). Before the target was recorded, nothing in the system
+// could tell this from a healthy 30 fps stream.
+func TestDiagnoseSeesASustainedShortfallAgainstTheTarget(t *testing.T) {
+	f := newFixture(t)
+	sid := "1717171717171717171717aa"
+	stats := make([]map[string]any, 0, 60)
+	for range 60 {
+		stats = append(stats, map[string]any{
+			// Asked for 1080p60 at 8 Mbps.
+			"targetWidth": 1920.0, "targetHeight": 1080.0,
+			"targetFps": 60.0, "targetBitrateBps": 8_000_000.0,
+			"codec": "avc1.640028", "acceleration": "prefer-hardware",
+			// Got a flawless 30 — the funnel has no gap anywhere.
+			"captureFps": 60.0, "encoderFps": 30.0, "sentFps": 30.0,
+			"encoderQueueDepth": 1.0,
+		})
+	}
+	f.seed(t, sid, "broadcaster", stats, nil)
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if !hasFinding(rep, "delivered-below-target") {
+		t.Fatalf("a 60 fps target delivering 30 all session was not reported; got %s (healthy=%v)",
+			findingIDs(rep), rep.Healthy)
+	}
+	// The dip rules cannot and must not claim this: nothing dipped.
+	if hasFinding(rep, "intermittent-fps-dips") {
+		t.Error("a flat shortfall was reported as intermittent dips")
+	}
+}
+
+// gawk's capture is damage-driven, so a motionless screen legitimately
+// produces far fewer frames than the target. That must be SAID, but it must
+// not read as a fault — otherwise every quiet stream on the fleet is accused.
+func TestSourceLimitedShortfallIsWordedAsSuchAndIsNotBad(t *testing.T) {
+	f := newFixture(t)
+	sid := "1717171717171717171717bb"
+	stats := make([]map[string]any, 0, 40)
+	for range 40 {
+		stats = append(stats, map[string]any{
+			"targetFps": 60.0,
+			// Capture itself is not producing frames — a static screen.
+			"captureFps": 4.0, "encoderFps": 4.0, "sentFps": 4.0,
+		})
+	}
+	f.seed(t, sid, "broadcaster", stats, nil)
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	var found *rules.Finding
+	for i := range rep.Findings {
+		if rep.Findings[i].ID == "delivered-below-target" {
+			found = &rep.Findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("shortfall not reported at all; got %s", findingIDs(rep))
+	}
+	if found.Severity == rules.SeverityBad {
+		t.Error("a static screen was reported as a broken stream")
+	}
+	if !strings.Contains(found.Verdict, "source-limited") {
+		t.Errorf("verdict does not name the source as the limit: %q", found.Verdict)
+	}
+	// The evidence must carry captureFps, or a reader cannot check the claim.
+	var hasCapture bool
+	for _, e := range found.Evidence {
+		if e.Signal == "captureFps" {
+			hasCapture = true
+		}
+	}
+	if !hasCapture {
+		t.Error("captureFps missing from the evidence — the discriminator is not shown")
+	}
+}
+
+// A broadcast delivering what it was configured for is healthy, whatever that
+// number happens to be. A 30 fps target met at 30 fps is not a shortfall.
+func TestMeetingTheTargetIsNotAShortfall(t *testing.T) {
+	f := newFixture(t)
+	sid := "1717171717171717171717cc"
+	stats := make([]map[string]any, 0, 40)
+	for range 40 {
+		stats = append(stats, map[string]any{
+			"targetFps": 30.0, "captureFps": 30.0, "encoderFps": 30.0, "sentFps": 30.0,
+		})
+	}
+	f.seed(t, sid, "broadcaster", stats, nil)
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if hasFinding(rep, "delivered-below-target") {
+		t.Error("a stream meeting its target was reported as falling short of it")
 	}
 }

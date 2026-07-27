@@ -81,6 +81,12 @@ var ProducibleFacts = map[string]string{
 	"client.EncoderFps":        live,
 	"client.SentFps":           live,
 
+	// --- client, the configured target (D17) ---------------------------------
+	// What the broadcast was ASKED to be. Every other client fact is an
+	// outcome; these are what make the difference computable at all.
+	"client.targetFps":        both,
+	"client.targetBitrateBps": both,
+
 	// --- text ----------------------------------------------------------------
 	"text.deliveryMode":    both,
 	"text.playoutMode":     both,

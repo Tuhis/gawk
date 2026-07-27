@@ -943,6 +943,8 @@ var liveNumericFields = []string{
 	"audioPacketsReceived",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
+	// D17: the target, so the live row can show a shortfall too.
+	"targetFps", "targetBitrateBps",
 }
 
 var liveTextFields = []string{

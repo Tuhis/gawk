@@ -98,7 +98,16 @@ function sessionTable(sessions) {
 
     const m = s.metrics || {};
     if (s.role === 'broadcaster') {
-      tr.appendChild(text('td', 'num', num(m.captureFps ?? m.CaptureFps) + ' / ' + num(m.encoderFps ?? m.EncoderFps)));
+      // Capture / encode, with the configured target beside them (D17) — the
+      // number a rate has to be read against to mean anything.
+      const target = m.targetFps === undefined ? '' : ' →' + num(m.targetFps);
+      tr.appendChild(
+        text(
+          'td',
+          'num',
+          num(m.captureFps ?? m.CaptureFps) + ' / ' + num(m.encoderFps ?? m.EncoderFps) + target,
+        ),
+      );
       tr.appendChild(text('td', 'num', dips(m)));
       tr.appendChild(text('td', 'num', num(m.encoderQueueDepth)));
       tr.appendChild(text('td', 'num', '—'));

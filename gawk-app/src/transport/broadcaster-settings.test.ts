@@ -99,6 +99,7 @@ import {
   BroadcastPipeline,
   DEFAULT_ENCODER_SETTINGS,
   type BroadcastCallbacks,
+  type BroadcastStats,
   type EncoderSettings,
 } from './broadcaster';
 import { EncoderSupportProber, type IsConfigSupportedFn } from '../media/probe';
@@ -161,6 +162,8 @@ async function flush() {
 
 const clock = { t: 1000 };
 const errors: Error[] = [];
+// Every stats push, so a test can assert on what telemetry would have seen.
+const statsLog: BroadcastStats[] = [];
 
 async function startPipeline(
   settings?: Partial<EncoderSettings>,
@@ -173,7 +176,7 @@ async function startPipeline(
     onSourceStream: vi.fn(),
     onEncoderConfigured: vi.fn(),
     onCapturePathChosen: vi.fn(),
-    onStats: vi.fn(),
+    onStats: (s) => statsLog.push(s),
     onError: (e) => errors.push(e),
     onEnded: vi.fn(),
     onBroadcastId: vi.fn(),
@@ -207,6 +210,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   clock.t = 1000;
   errors.length = 0;
+  statsLog.length = 0;
   connectWebTransport.mockReset();
   startCapture.mockReset();
   h.encoders.length = 0;
@@ -424,6 +428,43 @@ describe('capture alignment via applyConstraints (docs/18 Decision 6, L3)', () =
     await prime();
     expect(errors).toEqual([]);
     expect(h.encoders.length).toBe(1);
+    await p.stop();
+  });
+});
+
+// docs/33 D17: telemetry has to know what the stream was ASKED to be, or a
+// sustained shortfall is indistinguishable from a stream configured that way.
+// Recorded from what the encoder COMMITTED to, never from the settings that
+// asked for it — a rung can be refused, clamped or renegotiated.
+describe('the configured target reaches BroadcastStats (docs/33 D17)', () => {
+  it('reports the committed dims, framerate, bitrate, codec and acceleration', async () => {
+    const p = await startPipeline({ bitrateOverride: 6_000_000 });
+    await prime();
+
+    await vi.advanceTimersByTimeAsync(500); // fire the stats interval
+    const s = statsLog.at(-1)!;
+    expect(s).toBeDefined();
+    const enc = h.encoders[0].config;
+    expect(s.targetWidth).toBe(enc.width);
+    expect(s.targetHeight).toBe(enc.height);
+    expect(s.targetFps).toBe(enc.framerate);
+    // The clamped override, not the 80 Mbps a caller might have asked for.
+    expect(s.targetBitrateBps).toBe(6_000_000);
+    expect(s.codec).toBeTruthy();
+    expect(s.acceleration).toBeTruthy();
+
+    await p.stop();
+  });
+
+  it('has no target before the encoder configures — null, never a zero', async () => {
+    const p = await startPipeline();
+    await vi.advanceTimersByTimeAsync(500);
+    const s = statsLog.at(-1);
+    // Either no stats pushed yet, or pushed with no target — both are "no
+    // target", and neither may be a zero claiming one.
+    expect(s?.targetFps ?? null).toBeNull();
+    expect(s?.targetBitrateBps ?? null).toBeNull();
+    expect(s?.targetWidth ?? null).toBeNull();
     await p.stop();
   });
 });

@@ -42,6 +42,12 @@ const (
 	// would put two disagreeing truths about one stream in front of an operator.
 	dipShareBad = 0.1
 	dipCountBad = 4
+	// D17: how far under its configured target a broadcast may sit before the
+	// gap is worth naming. Same shape as funnelGapRatio and deliberately the
+	// same value — "a quarter down on what was asked for" is the same size of
+	// discrepancy whether the comparison is between two funnel stages or
+	// between intent and outcome.
+	targetShortfallRatio = 0.75
 )
 
 // Playbook returns the full rule set.
@@ -64,6 +70,67 @@ func Playbook() []Rule {
 		audioOverflowLatch(),
 		intermittentFpsDips(),
 		keyframeOnlyDelivery(),
+		deliveredBelowTarget(),
+	}
+}
+
+// The steady-state miss (docs/33 D17), and the exact complement of the dip
+// rules above. Those are SELF-RELATIVE: they catch a stream falling below its
+// own baseline. They structurally cannot catch a stream whose baseline was
+// wrong all along — a broadcaster that asked for 60 fps and delivered 30 for
+// the whole session has a flat baseline, zero episodes, and a perfect funnel
+// (capture 30 → encode 30 → sent 30). Every other rule passes it.
+//
+// What makes this answerable at all is that the target is now recorded. What
+// makes it HONEST is the capture comparison below: gawk's capture is
+// damage-driven, so a motionless screen legitimately produces far fewer frames
+// than the target, and a rule that read a shortfall as a fault would accuse
+// every quiet stream on the fleet.
+func deliveredBelowTarget() Rule {
+	return Rule{
+		ID:       "delivered-below-target",
+		Scope:    "broadcaster",
+		Requires: []string{"client.targetFps", "client.sentFps"},
+		Verdict:  "Delivered rate is below what this broadcast was configured for",
+		Action: "Compare against captureFps in the evidence: capture below target too means the " +
+			"SOURCE is not producing frames (a static screen does this legitimately, and R4's auto " +
+			"ladder deliberately does not step for it — docs/09). Capture at target with sent below " +
+			"it is a pipeline problem, and encoder-overload / send-path-gap localize it.",
+		Eval: func(f *Facts) *Finding {
+			target, _ := f.Client("targetFps")
+			sent, _ := f.Client("sentFps")
+			if target <= 0 || sent >= target*targetShortfallRatio {
+				return nil
+			}
+			ev := []Evidence{
+				{Signal: "targetFps", Value: target, Unit: "fps", From: FromClient, Comparison: "configured target"},
+				{Signal: "sentFps", Value: sent, Unit: "fps", From: FromClient, Comparison: "below target"},
+			}
+			verdict := "Delivered rate is below the configured target, and capture is keeping up — " +
+				"the shortfall is in the pipeline, not the source"
+			conf := 0.6
+			if capture, ok := f.Client("captureFps"); ok {
+				ev = append(ev, Evidence{Signal: "captureFps", Value: capture, Unit: "fps", From: FromClient})
+				if capture < target*targetShortfallRatio {
+					// Source-limited. Worth SAYING — a broadcaster who picked
+					// 60 should know they are getting 30 — but it is not a
+					// fault, and must not read as one.
+					verdict = "Capture is not producing the configured target rate — source-limited, " +
+						"which a static or low-motion screen does legitimately"
+					conf = 0.5
+				}
+			}
+			// The relay's own relayed rate turns this from the client's account
+			// of itself into a corroborated one (D7).
+			if relayed, ok := f.Relay("framesRelayedPerSec"); ok {
+				ev = append(ev, Evidence{Signal: "framesRelayedPerSec", Value: relayed, From: FromRelay})
+				conf += 0.2
+			}
+			// Never `bad`: a shortfall against a target is a discrepancy worth
+			// surfacing, not a broken stream. The rules that describe an
+			// actually-broken one are already in the playbook above.
+			return &Finding{Severity: SeverityWarn, Verdict: verdict, Confidence: conf, Evidence: ev}
+		},
 	}
 }
 

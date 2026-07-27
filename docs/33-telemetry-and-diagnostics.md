@@ -1212,6 +1212,78 @@ column is text, never colour-only.
 
 ---
 
+## 4.11 The configured target (D17)
+
+D16 made an *intermittent* collapse visible. This makes a **steady-state** one
+visible, and the two are exact complements — neither subsumes the other.
+
+The dip detector is self-relative: it asks whether a stream fell below **its
+own** baseline. It therefore cannot, by construction, see a stream whose
+baseline was wrong all along. A broadcaster that asked for 60 fps and delivered
+30 for the entire session has a flat baseline, **zero episodes**, and a perfect
+funnel (capture 30 → encode 30 → sent 30). Every rule in the playbook passes
+it, and correctly so: nothing *degraded*. It simply never was what it was asked
+to be.
+
+Nothing could see that because **the target was never recorded**. Two separate
+gaps:
+
+- **`BroadcastStats` carried no video configuration at all** — no dimensions,
+  no target framerate, no video bitrate (only `audioBitrateBps`). The R13
+  settings store holds all of it and it never reached telemetry. Worse, the
+  three fields that *were* reported — `autoRung`, `autoCeiling`, `autoFps` —
+  are `null` in explicit mode by design, so **the more deliberately a
+  broadcaster configured the stream, the less was recorded about it**.
+- **The native engine reported its rung and the rollup dropped it.** `Width`,
+  `Height`, `Fps` and `BitrateBps` were typed and landed in raw NDJSON, but
+  appeared in neither `broadcasterConfig` nor `broadcasterSeries` — so they
+  were pruned at 14 days having never reached a row, a rule or a verdict.
+
+And `Config["resolution"]` was derived from `frameWidth`/`frameHeight`, which
+only a **viewer** reports, so broadcaster rows carried no resolution and
+`fleet_summary(groupBy: "resolution")` grouped every broadcaster under
+`unknown`.
+
+**Recorded from what the encoder committed to, never from what asked for it.**
+The values come from `EncoderConfigured` at the one point the encoder is
+configured — the same "trust the real thing, not the metadata" rule the capture
+path follows, because a rung can be refused, clamped or renegotiated, and
+telemetry that reported the *request* would describe a stream that never ran.
+It re-runs on every encoder recreate, so an R4 auto step or an R13 live
+settings change moves the target with it.
+
+New client fields: `targetWidth`, `targetHeight`, `targetFps`,
+`targetBitrateBps`, `codec`, `acceleration`. The rollup persists them as
+`config.resolution` / `targetFps` / `targetBitrateKbps` (native spellings
+mapped, so one query covers both producers), and `resolution` now resolves
+per role — target dims for a broadcaster, decoded dims for a viewer.
+
+**One rule, `delivered-below-target`** (facts `client.targetFps`,
+`client.targetBitrateBps`), firing under `targetShortfallRatio` (0.75).
+
+The honesty problem is what shapes it. gawk's capture is **damage-driven**, so
+a motionless screen legitimately produces far fewer frames than the target —
+docs/09 records this as a real-hardware finding, and R4's auto ladder
+deliberately does *not* step for it. A rule that read any shortfall as a fault
+would accuse every quiet stream on the fleet. So `captureFps` is the
+discriminator and rides in the evidence either way:
+
+| Capture | Verdict |
+|---|---|
+| below target too | "Capture is not producing the configured target rate — source-limited, which a static or low-motion screen does legitimately" |
+| at target | "Delivered rate is below the configured target, and capture is keeping up — the shortfall is in the pipeline, not the source" |
+
+Severity is **`warn`, never `bad`**: a shortfall against a target is a
+discrepancy worth surfacing, not a broken stream — the rules that describe an
+actually-broken one are already in the playbook. Relay `framesRelayedPerSec`
+lifts confidence where present (D7).
+
+The dashboard's broadcaster row shows the target beside the rate
+(`30 / 30 →60`), because a rate means nothing without the number it is supposed
+to be.
+
+---
+
 ## 5. Chunks and acceptance criteria
 
 | Chunk | Scope | Acceptance criteria |
@@ -1227,6 +1299,8 @@ column is text, never colour-only.
 | **TM9** | *(droppable)* **Grafana dashboard** — closing R9 M8 | Dashboard JSON imports cleanly against a scraping Prometheus and every panel returns data during a test broadcast (M8's original criterion, unchanged); if the rollup-datasource question (§8) resolves negative, Prometheus-only panels ship and the finding is written back here |
 
 | **TM10** | **Dip episodes** (D16, §4.10): client `intervalMin`, rollup episode detection + counter deltas, `intermittent-fps-dips` + `keyframe-only-delivery` rules, live rolling window folding every sample, envelope-preserving `get_session` downsampling, dashboard Dips column | **The headline criterion — a synthetic session at a healthy steady rate with periodic collapses to the keyframe cadence produces a non-healthy verdict naming the dips, where the same session before this chunk produced `healthy`** (asserted as a pair, so the test proves the gap was real). Plus: session medians and every funnel ratio are **unchanged** by the presence of dips (asserted against the pre-change values — finding 1's false positive must not return); a genuinely steady session produces zero episodes and stays `healthy`; a deliberately slow stream below `MinBaselineFps` produces no episodes at any rate; episode duration comes from real sample timestamps, and a single-sample episode is counted with its real interval; counter deltas are attributed to the episode that contains them; `keyframe-only-delivery` fires on a keyframe-cadence dip and does **not** fire on a dip with no resync activity; the live projection folds every sample of a batch (asserted by a batch whose dip is not in its last sample) and an episode survives `EscalateSamples` where an instantaneous fact did not; `get_session`'s default downsampling never drops a dip (a synthetic session with one short dip shows it at default `points`, asserted against decimation); both producers emit the new facts, so `rules.ProducibleFacts` stays two-sided; the 32 KB default-response ceiling still holds |
+
+| **TM11** | **The configured target** (D17, §4.11): `BroadcastStats` target fields from `EncoderConfigured`, rollup config for both producer spellings, role-correct `resolution`, `delivered-below-target` rule, dashboard target column | **The headline criterion — a broadcaster session that asked for 60 fps and delivered a flawless 30 for its whole duration produces a non-healthy verdict naming the shortfall**, where no dip rule fires on it (asserted together: the two mechanisms are complements and neither may claim the other's case). Plus: a session meeting its target at any rate is not accused; a source-limited shortfall (capture below target too) is worded as source-limited, is **never `bad`**, and carries `captureFps` in its evidence so the claim is checkable; the target is recorded from `EncoderConfigured` and not from the settings store (so a refused or clamped rung reports what actually ran); `config.resolution` resolves from target dims for a broadcaster and decoded dims for a viewer, with the native `Width`/`Height`/`Fps`/`BitrateBps` spellings mapped to the same keys; both producers emit the new facts so `rules.ProducibleFacts` stays two-sided; the 32 KB ceiling still holds |
 
 Chunk prefix **TM** (two letters; A–Z claimed). Dependency spine:
 TM1 → TM2/TM3 → TM4 → TM5 → TM6 → TM7/TM8 → TM9. Two chunks carry the

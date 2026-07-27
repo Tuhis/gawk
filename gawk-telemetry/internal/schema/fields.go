@@ -204,6 +204,17 @@ var BroadcasterFields = map[string]Kind{
 	// D16, same reasoning as the viewer table: the broadcaster's dip detector
 	// judges sentFps, and its input must be typed.
 	"intervalMin": KindObject,
+
+	// D17: what the broadcast was ASKED to be. Every other field here is an
+	// outcome; without these no consumer can compute the difference, and
+	// "30 fps" reads identically whether 30 or 60 was requested. Typed
+	// because a shortfall verdict is computed from them.
+	"targetWidth":      KindNumber,
+	"targetHeight":     KindNumber,
+	"targetFps":        KindNumber,
+	"targetBitrateBps": KindNumber,
+	"codec":            KindString,
+	"acceleration":     KindString,
 }
 
 // FieldsForRole returns the table for a role. An unrecognized role yields nil,

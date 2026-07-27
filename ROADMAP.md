@@ -46,7 +46,7 @@ feature set exists).
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23; **NA1 spike done 2026-07-27** on Debian 13/KDE — Decisions 2/3/4/5 confirmed on hardware, both risks closed, NA2–NA5 unblocked; NA2–NA8 not started ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
-| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
+| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) + TM11 (configured target) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
 
 ---
 
@@ -1936,7 +1936,7 @@ not started.
 
 ## R28 — Advanced diagnostics & telemetry
 
-**Status (2026-07-27)**: **TM1–TM8 + TM10 implemented**, automated gates green
+**Status (2026-07-27)**: **TM1–TM8 + TM10/TM11 implemented**, automated gates green
 in all four modules. **TM9 (Grafana) dropped** by owner scope decision — R9 M8
 stays open. **Manual verification (docs/33 §6) is pending**; deviations are
 recorded in [docs/33 §4.9](docs/33-telemetry-and-diagnostics.md). Everything is
