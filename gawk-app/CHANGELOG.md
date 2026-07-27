@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.34.0...gawk-app-v0.35.0) (2026-07-27)
+
+
+### Features
+
+* **r28:** detect the dips a median hides (docs/33 D16, TM10) ([#158](https://github.com/Tuhis/gawk/issues/158)) ([19df933](https://github.com/Tuhis/gawk/commit/19df93323bd94a4df2da765e52c21125725395f8))
+
 ## [0.34.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.33.3...gawk-app-v0.34.0) (2026-07-26)
 
 
