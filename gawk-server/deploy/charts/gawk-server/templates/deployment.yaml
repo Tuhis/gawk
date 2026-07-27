@@ -245,6 +245,8 @@ spec:
               value: {{ .Values.config.dvrMaxCatchup | quote }}
             - name: GAWK_DVR_AUDIO
               value: {{ .Values.config.dvrAudio | quote }}
+            - name: GAWK_LIVE_EDGE_AUDIO_ON_RELIABLE_STREAM
+              value: {{ .Values.config.liveEdgeAudioOnReliableStream | quote }}
             - name: GAWK_MAX_IDLE_TIMEOUT
               value: {{ .Values.config.maxIdleTimeout | quote }}
             - name: GAWK_KEEPALIVE_PERIOD

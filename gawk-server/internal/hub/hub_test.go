@@ -35,10 +35,11 @@ type fakeSender struct {
 	// R19 carrier support: every opened carrier stream is retained so tests
 	// can inspect its bytes/state at any point in its life (a carrier is
 	// long-lived, unlike a keyframe stream).
-	carriers   []*fakeCarrierStream
-	carOpenErr error         // if non-nil, OpenCarrierStream fails
-	carBlock   chan struct{} // if non-nil, every carrier Write blocks on it (until deadline/cancel)
-	carOpens   int
+	carriers          []*fakeCarrierStream
+	carOpenErr        error         // if non-nil, OpenCarrierStream fails
+	carBlock          chan struct{} // if non-nil, carrier Writes block on it (until deadline/cancel)
+	carBlockVideoOnly bool          // if set, carBlock spares audio records (independent streams)
+	carOpens          int
 }
 
 func (f *fakeSender) SendDatagram(d []byte) error {
@@ -205,7 +206,11 @@ func (c *fakeCarrierStream) SetWriteDeadline(t time.Time) error {
 func (c *fakeCarrierStream) Write(p []byte) (int, error) {
 	c.parent.mu.Lock()
 	block := c.parent.carBlock
+	videoOnly := c.parent.carBlockVideoOnly
 	c.parent.mu.Unlock()
+	if videoOnly && !carrierWriteIsVideoRecord(p) {
+		block = nil
+	}
 	if block != nil {
 		c.mu.Lock()
 		deadline := c.deadline
@@ -239,6 +244,29 @@ func (f *fakeSender) setCarBlock(ch chan struct{}) {
 	f.mu.Lock()
 	f.carBlock = ch
 	f.mu.Unlock()
+}
+
+// blockVideoCarriersOnly parks non-audio carrier writes and lets audio records
+// through. One fakeSender stands in for one QUIC connection, whose streams are
+// independent — a parked write on the video carrier does not stall the audio
+// one — and a single global block cannot express that. Without this the fake
+// would model a shared stream, which is the very thing the audio carrier exists
+// to avoid.
+func (f *fakeSender) blockVideoCarriersOnly(ch chan struct{}) {
+	f.mu.Lock()
+	f.carBlock = ch
+	f.carBlockVideoOnly = true
+	f.mu.Unlock()
+}
+
+// carrierWriteIsVideoRecord reports whether one carrier Write carries a record
+// that is not audio — the only thing blockVideoCarriersOnly parks. The payload
+// is a framed record (uint16 length, then the datagram), so the datagram's type
+// byte sits at offset 3. A 2-byte prologue is shorter than that and is not a
+// record at all, so it is never parked: every stream, audio's included, has to
+// be able to establish itself.
+func carrierWriteIsVideoRecord(p []byte) bool {
+	return len(p) >= 4 && p[3] != wire.TypeAudioFrame && p[3] != wire.TypeAudioConfig
 }
 
 func (f *fakeSender) setCarOpenErr(err error) {
@@ -292,6 +320,32 @@ func (f *fakeSender) carrierStreams() []*fakeCarrierStream {
 	return append([]*fakeCarrierStream(nil), f.carriers...)
 }
 
+// records decodes one carrier stream's complete records. Per-stream rather than
+// per-sender because which stream a record landed on is itself an assertion:
+// audio rides a carrier of its OWN, and proving that needs the streams kept
+// apart (docs/20 field finding 5 as refined by docs/26 DV5).
+func (c *fakeCarrierStream) records(t *testing.T) [][]byte {
+	t.Helper()
+	buf := c.bytes()
+	if len(buf) == 0 {
+		return nil
+	}
+	if err := wire.ParseCarrierPrologue(buf); err != nil {
+		t.Fatalf("carrier stream prologue: %v", err)
+	}
+	var records [][]byte
+	rest := buf[wire.CarrierPrologueSize:]
+	for len(rest) > 0 {
+		record, remaining, err := wire.ParseCarrierRecord(rest)
+		if err != nil {
+			t.Fatalf("carrier record: %v", err)
+		}
+		records = append(records, append([]byte(nil), record...))
+		rest = remaining
+	}
+	return records
+}
+
 // carrierRecords decodes every complete record across all carrier streams, in
 // open order — the byte-identical datagrams a resilient viewer would feed its
 // datagram path.
@@ -299,22 +353,7 @@ func (f *fakeSender) carrierRecords(t *testing.T) [][]byte {
 	t.Helper()
 	var records [][]byte
 	for _, st := range f.carrierStreams() {
-		buf := st.bytes()
-		if len(buf) == 0 {
-			continue
-		}
-		if err := wire.ParseCarrierPrologue(buf); err != nil {
-			t.Fatalf("carrier stream prologue: %v", err)
-		}
-		rest := buf[wire.CarrierPrologueSize:]
-		for len(rest) > 0 {
-			record, remaining, err := wire.ParseCarrierRecord(rest)
-			if err != nil {
-				t.Fatalf("carrier record: %v", err)
-			}
-			records = append(records, append([]byte(nil), record...))
-			rest = remaining
-		}
+		records = append(records, st.records(t)...)
 	}
 	return records
 }
@@ -2803,11 +2842,11 @@ func TestReliableOverflowShedsGopTailUntilRotation(t *testing.T) {
 	}
 }
 
-// Audio must not be held hostage by a parked carrier write. It does not ride
-// the carrier (docs/20 field finding 5) and has no GOP to align to, so it gets
-// its own queue and its own drain goroutine — otherwise every audio packet
-// queues behind the one video write the drain is blocked on, which is a freeze
-// in the medium least able to hide one.
+// Audio must not be held hostage by a parked video write. It gets its own
+// queue, its own drain goroutine and — since the audio carrier landed — its own
+// stream, so a video write that parks for the full CarrierWriteTimeout cannot
+// delay a single Opus packet. That is the whole of docs/20 field finding 5's
+// concern, met without giving up reliable delivery.
 func TestAudioSidebandFlowsWhileCarrierWriteIsParked(t *testing.T) {
 	r := NewRegistry(discardLog, Options{KeyframeWriteTimeout: time.Minute})
 	id, p, err := r.StartPublish("")
@@ -2815,7 +2854,7 @@ func TestAudioSidebandFlowsWhileCarrierWriteIsParked(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	f.setCarBlock(make(chan struct{})) // the video drain parks forever
+	f.blockVideoCarriersOnly(make(chan struct{})) // the video drain parks forever
 	if _, err := r.SubscribeReliable(id, f); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2830,18 +2869,18 @@ func TestAudioSidebandFlowsWhileCarrierWriteIsParked(t *testing.T) {
 
 	// The parked write is bounded by CarrierWriteTimeout, after which the drain
 	// frees itself and would deliver the audio anyway — so the assertion is
-	// about *when*: audio that shares the video drain cannot arrive before that
-	// deadline expires, and audio on its own drain arrives immediately.
+	// about *when*: audio sharing the video lane cannot arrive before that
+	// deadline expires, and audio on a lane of its own arrives immediately.
 	t0 := time.Now()
 	waitFor(t, 5*time.Second, func() bool {
 		n := 0
-		for _, d := range f.received() {
-			if len(d) >= 2 && d[1] == wire.TypeAudioFrame {
+		for _, rec := range f.carrierRecords(t) {
+			if isAudioRecord(rec) {
 				n++
 			}
 		}
 		return n == packets
-	}, "audio delivered while the carrier write is parked")
+	}, "audio delivered while the video carrier write is parked")
 	if waited := time.Since(t0); waited >= CarrierWriteTimeout {
 		t.Errorf("audio took %v to arrive (>= the %v carrier deadline): it is still queued behind the parked video write",
 			waited, CarrierWriteTimeout)

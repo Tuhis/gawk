@@ -112,12 +112,12 @@ const CarrierOpenFailEvictThreshold = 10
 const CarrierWriteTimeout = 500 * time.Millisecond
 
 // AudioSidebandQueueDepth bounds the reliable subscriber's audio lane. Audio is
-// one Opus packet per datagram at 50/s, and this drain ends in SendDatagram,
-// which never parks — so the queue only has to absorb a scheduling hiccup, not
-// a stalled write, and ~1.3 s of packets is already generous. Deliberately not
-// QueueDepth: that number is sized for video chunks (~13 per frame), and reusing
-// it would let audio queue 20 s deep, which for a live-edge medium is backlog
-// nobody wants delivered.
+// one Opus packet per datagram at 50/s, and this drain writes to a carrier
+// nothing else shares — so the queue absorbs a scheduling hiccup and at most
+// one CarrierWriteTimeout, not a video GOP's worth of stalls, and ~1.3 s of
+// packets is already generous. Deliberately not QueueDepth: that number is
+// sized for video chunks (~13 per frame), and reusing it would let audio queue
+// 20 s deep, which for a live-edge medium is backlog nobody wants delivered.
 const AudioSidebandQueueDepth = 64
 
 // DefaultDVRWindow and DefaultDVRMaxBytes bound the R21 ring (docs/26
@@ -235,6 +235,18 @@ type Options struct {
 	// audio on the live-edge sideband, which is docs/20 field finding 5's
 	// behaviour exactly.
 	DVRAudio bool
+
+	// LiveEdgeAudioOnReliableStream gives plain live-edge viewers the audio carrier that
+	// reliable and DVR ones always get. Off by default, and the asymmetry is
+	// deliberate: a resilient viewer already buffers 150–2000 ms, so a
+	// retransmit is free, while a live-edge viewer holds only the ~90–150 ms
+	// audio depth floor (docs/20 finding 6) and a retransmit costs a stall
+	// once the RTT exceeds it — where the same loss is a concealed 20 ms gap
+	// today. Whether that trade pays depends on the viewer's RTT, which is
+	// measurable rather than guessable, so the operator turns it on and reads
+	// avPlayheadAdvance and the audio packet rate. Video is untouched either
+	// way: live-edge deltas stay unreliable datagrams, which is the mode.
+	LiveEdgeAudioOnReliableStream bool
 
 	// DVRMaxCatchup caps how much faster than live a recovering DVR subscriber
 	// may send, as a multiple of the broadcast's own bitrate (docs/26
@@ -1277,7 +1289,11 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		done:     make(chan struct{}),
 		statsKey: newSubscriberStatsKey(),
 	}
-	if reliable {
+	// The audio lane: always for reliable delivery, and for live-edge viewers
+	// only when the operator has opted in. An edge session is excluded on
+	// purpose — it re-ingests what it receives through the publisher dispatch,
+	// and the second hop makes its own delivery choice for its own viewers.
+	if reliable || (r.opts.LiveEdgeAudioOnReliableStream && !internal) {
 		s.audioQueue = make(chan []byte, AudioSidebandQueueDepth)
 		s.audioDone = make(chan struct{})
 	}
@@ -2084,11 +2100,14 @@ type Subscriber struct {
 	done   chan struct{}
 	// The audio sideband's own lane, on reliable subscribers only (nil
 	// otherwise — a datagram subscriber's drain never parks, so there is
-	// nothing to decouple it from). Audio does not ride the carrier and has no
-	// GOP to align to; giving it its own drain is what keeps a parked video
-	// write from freezing it.
+	// nothing to decouple it from). Audio has no GOP to align to; giving it its
+	// own drain is what keeps a parked video write from freezing it.
 	audioQueue chan []byte
 	audioDone  chan struct{}
+	// audioCar is that lane's reliable carrier — one long-lived stream of its
+	// own, never the video carrier (see "the audio carrier" below). Owned by
+	// drainAudioSideband alone, hence no lock.
+	audioCar KeyframeStream
 
 	// statsKey names this subscriber in /statusz subscriberDetails: random
 	// per-session, so a slow viewer can be watched across polls without
@@ -2382,15 +2401,13 @@ func (s *Subscriber) drainReliable() {
 	carDead := false
 	var scratch []byte
 	for dgram := range s.queue {
-		// The audio lane never rides the carrier (docs/20 field finding 5,
-		// reversing Decision 12's carrier-routing half). Audio is live-edge and
-		// loss-tolerant; reliable in-order delivery plus the per-GOP tail drop
-		// break it up worse than concealed single-packet datagram loss would
-		// (2026-07-20 hardware test). Send it unreliably, exactly as the normal
-		// drain does — only video deltas belong on the carrier. The audio
-		// jitter buffer still adopts the resilient depth profile: that half of
-		// Decision 12 stands, because audio aligns to the deep video playhead
-		// (field finding 4), not because it rides the carrier.
+		// Audio never rides the VIDEO carrier (docs/20 field finding 5): only
+		// video deltas belong here. It has a lane of its own — its own queue,
+		// drain and carrier stream — and enqueueLocked diverts it there before
+		// it can reach this queue, so this branch is unreachable in practice.
+		// It stays as a safety net, and it must stay a *datagram* one: the
+		// audio carrier belongs to drainAudioSideband's goroutine, and writing
+		// to it from here would be a data race.
 		if isAudioDatagram(dgram) {
 			s.sendSidebandDatagram(dgram)
 			continue
@@ -2456,15 +2473,129 @@ func (s *Subscriber) drainReliable() {
 }
 
 // drainAudioSideband is the reliable subscriber's second drain: audio only,
-// straight out to SendDatagram. It exists so the audio lane cannot inherit the
-// carrier's stalls — sendSidebandDatagram never parks, so this goroutine is
-// always ready, while drainReliable may be blocked in a record write for up to
-// CarrierWriteTimeout.
+// onto an audio carrier of its own. It exists so the audio lane cannot inherit
+// the video carrier's stalls — this goroutine is always ready, while
+// drainReliable may be blocked in a record write for up to CarrierWriteTimeout.
 func (s *Subscriber) drainAudioSideband() {
 	defer close(s.audioDone)
+	defer s.retireAudioCarrier(&s.audioCar)
+	var scratch []byte
 	for dgram := range s.audioQueue {
-		s.sendSidebandDatagram(dgram)
+		if s.closed.Load() {
+			continue // drain the channel without writing to a dead session
+		}
+		framed, n, ok := frameAudioRecord(dgram, &scratch, s.audioCar == nil)
+		if !ok {
+			s.carrierRecordsDropped.Add(1)
+			continue
+		}
+		if !s.hub.registry.consumeBandwidth(n) {
+			s.dropped.Add(1)
+			s.hub.countBandwidthDrop(n)
+			continue
+		}
+		if !s.emitAudioRecord(&s.audioCar, framed) {
+			s.carrierRecordsDropped.Add(1)
+		}
 	}
+}
+
+// --- the audio carrier -----------------------------------------------------
+//
+// Audio rides a reliable stream of its OWN on every subscriber that gets
+// reliable delivery at all — R19 resilient and R21 DVR alike.
+//
+// docs/20 field finding 5 moved audio off the carrier after a hardware test,
+// and it was right about the harm: audio queued behind a GOP's deltas inherits
+// their head-of-line blocking, and the per-GOP tail drop discards audio that
+// had nothing to do with the dead GOP. But both harms come from sharing the
+// VIDEO carrier, not from reliability. QUIC streams are independent and audio
+// has no GOPs to clump at, so a stream of its own has neither property — which
+// is what R21 DV5 already demonstrated for the DVR path (docs/26 Decision 8).
+// The datagram workaround it replaces was measurably costing audio: on a
+// 10 Mbps 1080p30 broadcast a live-edge viewer lost ~3.7% of its Opus packets,
+// one dropout every half second.
+//
+// There is no rotation. Audio has no keyframes, so there is no boundary to
+// rotate at, and a resync is just a timestamp discontinuity the viewer's
+// jitter buffer already handles. And there is no viewer change: the records
+// are audio datagrams, which the viewer's datagram path already routes by type.
+
+// frameAudioRecord frames one audio datagram and reports the bytes it will put
+// on the wire — the record, plus the prologue when this is the record whose
+// lazy open starts the carrier, so the egress cap is charged for the prologue
+// exactly once (docs/24 finding 13). ok is false only for a datagram that
+// cannot be framed at all, which is unreachable for queued datagrams.
+func frameAudioRecord(dgram []byte, scratch *[]byte, needsOpen bool) (framed []byte, n int, ok bool) {
+	framed, err := wire.AppendCarrierRecord((*scratch)[:0], dgram)
+	if err != nil {
+		return nil, 0, false
+	}
+	*scratch = framed
+	n = len(framed)
+	if needsOpen {
+		n += wire.CarrierPrologueSize
+	}
+	return framed, n, true
+}
+
+// emitAudioRecord opens the audio carrier if it is not up and writes one framed
+// record onto it, under the same per-record deadline the video carrier uses.
+// *car belongs to the single goroutine draining that lane, so it needs no lock
+// — unlike carCurrent, which Close cancels from elsewhere.
+//
+// A failure cancels the stream, nils *car and reports false: the caller drops
+// that packet and the next one (20 ms later) reopens. Audio is loss-tolerant
+// and has no keyframe to wait for, so a lane that self-heals within one packet
+// beats both stalling it and carrying a second delivery path for the failure
+// case. Deliberately NOT fed into the 4001 eviction streak: a peer that cannot
+// take streams at all already fails the keyframe and video-carrier opens, which
+// is where that judgement belongs.
+func (s *Subscriber) emitAudioRecord(car *KeyframeStream, framed []byte) bool {
+	deadline := time.Now().Add(s.hub.registry.opts.carrierWriteTimeout())
+	if *car == nil {
+		st, err := s.sender.OpenCarrierStream()
+		if err != nil {
+			return false
+		}
+		_ = st.SetWriteDeadline(deadline)
+		if _, err := st.Write(wire.AppendCarrierPrologue(nil)); err != nil {
+			st.CancelWrite()
+			return false
+		}
+		*car = st
+		s.egressCarrierBytes.Add(wire.CarrierPrologueSize)
+	}
+	_ = (*car).SetWriteDeadline(deadline)
+	if _, err := (*car).Write(framed); err != nil {
+		(*car).CancelWrite()
+		*car = nil
+		return false
+	}
+	s.carrierRecords.Add(1)
+	s.egressCarrierBytes.Add(uint64(len(framed)))
+	return true
+}
+
+// Note on accounting: the audio carrier deliberately does NOT increment
+// carrierStreams, matching the DVR audio path it shares. That counter answers
+// "how many GOPs got a carrier?", at ~2/s, and one long-lived audio stream per
+// session would be noise in it. Audio delivery is not thereby invisible — its
+// records count in carrierRecords and its bytes in egressCarrierBytes, which is
+// where a failing audio lane actually shows up.
+
+// retireAudioCarrier gracefully closes an audio carrier when its drain exits.
+// Same per-record budget as a write: this runs on the drain goroutine, so a
+// Close that blocks would hold the session's teardown.
+func (s *Subscriber) retireAudioCarrier(car *KeyframeStream) {
+	if *car == nil {
+		return
+	}
+	_ = (*car).SetWriteDeadline(time.Now().Add(s.hub.registry.opts.carrierWriteTimeout()))
+	if err := (*car).Close(); err != nil {
+		(*car).CancelWrite()
+	}
+	*car = nil
 }
 
 // isVideoChunkDatagram reports whether a fanned-out datagram is a video delta
@@ -2478,11 +2609,11 @@ func isVideoChunkDatagram(dgram []byte) bool {
 }
 
 // isAudioDatagram reports whether a fanned-out datagram belongs to the audio
-// lane (frame or config) — the messages a reliable subscriber must NOT receive
-// as carrier records (docs/20 field finding 5). A peek failure can't happen for
-// queued datagrams (the publisher dispatch validated each one before relaying);
-// treating it as non-audio keeps a malformed byte on the same path it would
-// take for a normal subscriber.
+// lane (frame or config) — the messages that take a lane of their own on a
+// reliable subscriber, never the video carrier (docs/20 field finding 5). A
+// peek failure can't happen for queued datagrams (the publisher dispatch
+// validated each one before relaying); treating it as non-audio keeps a
+// malformed byte on the same path it would take for a normal subscriber.
 func isAudioDatagram(dgram []byte) bool {
 	_, typ, err := wire.PeekType(dgram)
 	return err == nil && (typ == wire.TypeAudioFrame || typ == wire.TypeAudioConfig)
@@ -2490,9 +2621,9 @@ func isAudioDatagram(dgram []byte) bool {
 
 // sendSidebandDatagram delivers a datagram to a reliable subscriber over the
 // unreliable datagram path — byte-for-byte the normal drain's per-datagram
-// handling (bandwidth charge, send, egress + error counters). Audio uses this
-// so a resilient viewer's audio keeps its live-edge, loss-tolerant delivery
-// instead of being reliably in-order carriered (docs/20 field finding 5).
+// handling (bandwidth charge, send, egress + error counters). It is the
+// unreachable-safety-net sink for audio that somehow reaches the video drain;
+// the audio lane's real sink is its own carrier stream.
 func (s *Subscriber) sendSidebandDatagram(dgram []byte) {
 	if !s.hub.registry.consumeBandwidth(len(dgram)) {
 		s.dropped.Add(1)

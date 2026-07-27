@@ -1580,3 +1580,65 @@ exercises the entire path and is unblocked everywhere.
 - **Repurposing an existing toggle or defaulting audio on** — experimental
   features ship default-off with their own toggle, and viewer UI appears
   only when the feature is live in the stream (user decisions 2026-07-15).
+
+### Field finding 14 (2026-07-27): finding 5 was right about the harm and wrong about the cause
+
+**Symptom.** A viewer on the reference fleet reported "nasty drops, especially
+in audio" in live-edge and resilient mode, while Deep buffer was clean. The
+telemetry for viewer session `f44a47cc5a0eba2e1271e960` (Firefox 154/macOS,
+271 s, `class: reliable`) and its siblings on the same broadcast made the axis
+exact:
+
+| | Deep buffer | Resilient | Live edge |
+|---|---|---|---|
+| Audio arrival (expect 50.0/s) | 50.00/s | 49.95/s | **48.1/s (3.7 % lost)** |
+| `avPlayheadAdvance` | 0.997–1.002 flat | **<0.96 in ~28 % of windows, dips to 0.90** | 0.95–0.96 |
+| `reorderGapResyncs` | 1 in 95 s | 24 in 269 s | **28 in 14 s** |
+
+`avPlayheadAdvance` below 1 means the AudioWorklet is starving (`av-sync.ts`
+says so in as many words), so the numbers name the symptom directly rather than
+by inference. The broadcaster was healthy throughout — the native engine's own
+sample reads 1920×1080@30, 10 Mbps, `EncoderFps == SentFps == 30.0`, keyframe
+interval 495 ms — and ingress was clean, because the DVR ring stores exactly
+what the relay received and the Deep-buffer viewer saw zero holes across 95 s.
+The loss is on the relay→viewer leg, and it tracks datagram *pressure*: ~1000
+unreliable datagrams/s in live-edge, 50/s in resilient once video moves to
+carriers, 0 in Deep buffer.
+
+**Cause.** Deep buffer was the only mode delivering audio reliably. Finding 5
+took audio off the carrier after the 2026-07-20 hardware test, and its reading
+of the harm was correct — head-of-line blocking behind a GOP's video deltas,
+plus a per-GOP tail drop discarding audio that had nothing to do with the dead
+GOP. But both are properties of sharing the **video** carrier, not of reliable
+delivery. R21 DV5 established the distinction three days later (docs/26
+Decision 8) and gave the DVR path an audio carrier of its own; nothing carried
+that back to R19, so resilient mode kept the datagram workaround for a problem
+that had already been solved.
+
+**Fix.** Audio rides a long-lived reliable stream of its own on every
+subscriber that gets reliable delivery — R19 and R21 alike, one shared
+implementation (`frameAudioRecord` / `emitAudioRecord` / `retireAudioCarrier`
+in `internal/hub/hub.go`, which the DVR path now also uses). No rotation: audio
+has no keyframes, so there is no boundary to rotate at. **Zero viewer changes** —
+the records are audio datagrams and the viewer's stream reader has always
+dispatched by prologue with no mode gate.
+
+Live-edge gets the same treatment behind `-live-edge-audio-on-reliable-stream`
+(`config.liveEdgeAudioOnReliableStream`), **default off**, because there the
+trade is genuinely different and depends on a number we do not control: a
+resilient or DVR viewer buffers 150–3000 ms so a retransmit is free, while a
+live-edge viewer holds only finding 6's ~90–150 ms depth floor, and once RTT
+exceeds that a loss becomes a stall where today it is a concealed 20 ms gap.
+Video is untouched in every mode. Verify by turning it on and reading
+`avPlayheadAdvance` (~1.0) and the audio packet rate (50/s).
+
+**Accounting note.** For reliable subscribers, audio bytes move from
+`egress_bytes_total{kind="datagram"}` to `{kind="carrier"}`. The audio carrier
+deliberately does not increment `carrierStreams` (which answers "how many GOPs
+got a carrier?"); its records count in `carrierRecords`.
+
+**Superseded.** Finding 5's routing decision, and the "audio must not ride the
+carrier" line in Decision 12's history, now read: audio must not ride the
+*video* carrier. That much still holds and is asserted by
+`TestAudioSidebandFlowsWhileCarrierWriteIsParked`, which parks a video write for
+the full `CarrierWriteTimeout` and requires every Opus packet through on time.

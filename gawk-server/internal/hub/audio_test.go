@@ -4,9 +4,10 @@ package hub
 // verbatim, caches + primes + invalidates AudioConfig on the ClockMapping
 // lifecycle (both invalidation sites), never lets audio touch the video
 // ingress-loss window or framesRelayed, re-ingests audio on edge hubs through
-// the same dispatch, and — reversing Decision 12's carrier-routing half
-// (docs/20 field finding 5) — delivers audio to reliable subscribers over the
-// unreliable datagram path, never as carrier records.
+// the same dispatch, and delivers audio to reliable subscribers on a carrier
+// stream of its OWN — never the video carrier, which is the sharing docs/20
+// field finding 5 ruled out, and never as unreliable datagrams, which is what
+// that finding's workaround settled for.
 
 import (
 	"bytes"
@@ -277,7 +278,52 @@ func TestAudioEdgeHubReingestsAndPrimes(t *testing.T) {
 // loss-tolerant, so both AudioFrame and AudioConfig go out on the unreliable
 // datagram path even for a resilient viewer, while video deltas still ride the
 // carrier.
-func TestAudioToReliableSubscriberBypassesCarrier(t *testing.T) {
+// isAudioRecord reports whether a carrier record belongs to the audio lane.
+func isAudioRecord(rec []byte) bool {
+	return len(rec) >= 2 && (rec[1] == wire.TypeAudioFrame || rec[1] == wire.TypeAudioConfig)
+}
+
+// classifyCarriers splits a sender's carrier streams into the ones carrying
+// audio and the ones carrying everything else, failing if any stream mixes the
+// two — the mixing is precisely what docs/20 field finding 5 forbids.
+func classifyCarriers(t *testing.T, f *fakeSender) (audio, other []*fakeCarrierStream) {
+	t.Helper()
+	for _, st := range f.carrierStreams() {
+		recs := st.records(t)
+		if len(recs) == 0 {
+			continue
+		}
+		var hasAudio, hasOther bool
+		for _, rec := range recs {
+			if isAudioRecord(rec) {
+				hasAudio = true
+			} else {
+				hasOther = true
+			}
+		}
+		if hasAudio && hasOther {
+			t.Fatalf("a carrier stream mixed audio with video; audio must have a stream of its own")
+		}
+		if hasAudio {
+			audio = append(audio, st)
+		} else {
+			other = append(other, st)
+		}
+	}
+	return audio, other
+}
+
+// docs/20 field finding 5 moved audio off the carrier, and the harms it named —
+// head-of-line blocking behind video deltas, and the per-GOP tail drop taking
+// audio with it — are both properties of sharing the VIDEO carrier rather than
+// of reliable delivery as such. R21 DV5 then gave a DVR subscriber's audio a
+// carrier of its own and neither harm followed, because QUIC streams are
+// independent and audio has no GOPs to clump at. This is that same shape for
+// R19: audio is delivered reliably, on a stream nothing else uses.
+//
+// Pre-fix this fails at the first wait — audio went out as unreliable datagrams
+// and no audio record ever reached a carrier.
+func TestAudioToReliableSubscriberRidesItsOwnCarrier(t *testing.T) {
 	r := NewRegistry(discardLog, Options{})
 	id, p, err := r.StartPublish("")
 	if err != nil {
@@ -290,29 +336,168 @@ func TestAudioToReliableSubscriberBypassesCarrier(t *testing.T) {
 	}
 	defer sub.Close()
 
-	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0")) // opens/rotates the carrier
-	delta := chunkDgram(t, false, 1, 0, 1, "v1")           // video delta → carrier
-	a1 := audioDgram(t, 1, "opus-a")                       // audio frame → datagram
-	cfg := audioConfigDgram(t, 48000)                      // audio config → datagram
+	ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0")) // opens/rotates the video carrier
+	delta := chunkDgram(t, false, 1, 0, 1, "v1")           // video delta → video carrier
+	a1 := audioDgram(t, 1, "opus-a")                       // audio frame → audio carrier
+	cfg := audioConfigDgram(t, 48000)                      // audio config → audio carrier
 	p.HandleDatagram(delta)
 	p.HandleDatagram(a1)
 	p.HandleDatagram(cfg)
 
-	// Audio reaches the subscriber over the unreliable datagram path. On the
-	// pre-fix code these never arrive as datagrams (they ride the carrier), so
-	// these waits are what fails first.
-	waitFor(t, 5*time.Second, hasDgram(f, a1), "audio frame via SendDatagram")
-	waitFor(t, 5*time.Second, hasDgram(f, cfg), "audio config via SendDatagram")
+	waitCarrierRecords(t, f, 3)
 
-	// The video delta — and only it — rides the carrier; no audio leaks onto it.
-	waitCarrierRecords(t, f, 1)
+	// Audio is delivered verbatim, as records — the viewer's datagram path
+	// routes them by type, which is why this needs no viewer change at all.
 	records := f.carrierRecords(t)
-	if len(records) != 1 || !bytes.Equal(records[0], delta) {
-		t.Fatalf("carrier records = %d, want exactly [delta]", len(records))
+	for _, want := range [][]byte{delta, a1, cfg} {
+		found := false
+		for _, rec := range records {
+			if bytes.Equal(rec, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("carrier records missing a published datagram (type %#x)", want[1])
+		}
 	}
-	for _, rec := range records {
-		if bytes.Equal(rec, a1) || bytes.Equal(rec, cfg) {
-			t.Errorf("audio rode the carrier; it must be an unreliable datagram")
+
+	// Nothing audio-shaped goes out unreliably any more.
+	if n := countType(f, wire.TypeAudioFrame); n != 0 {
+		t.Errorf("audio frames sent as datagrams = %d, want 0", n)
+	}
+	if n := countType(f, wire.TypeAudioConfig); n != 0 {
+		t.Errorf("audio configs sent as datagrams = %d, want 0", n)
+	}
+
+	audioCarriers, videoCarriers := classifyCarriers(t, f)
+	if len(audioCarriers) != 1 {
+		t.Errorf("audio carrier streams = %d, want exactly 1", len(audioCarriers))
+	}
+	if len(videoCarriers) == 0 {
+		t.Error("no video carrier stream; the delta should still ride its own")
+	}
+}
+
+// Live-edge (plain datagram) viewers can have the audio carrier too, behind
+// -live-edge-audio-on-reliable-stream. The trade is genuinely different from resilient mode's:
+// a live-edge viewer holds only the ~90–150 ms audio depth floor of docs/20
+// finding 6, so a retransmit costs a stall if the RTT exceeds it, where today
+// the same loss is a concealed 20 ms gap. On the link that motivated this it is
+// plainly worth it — 3.7 % of Opus packets lost, a dropout every half second —
+// but that is one link, so the operator opts in and measures.
+func TestLiveEdgeAudioRidesCarrierWhenEnabled(t *testing.T) {
+	r := NewRegistry(discardLog, Options{LiveEdgeAudioOnReliableStream: true})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	delta := chunkDgram(t, false, 1, 0, 1, "v1")
+	a1 := audioDgram(t, 1, "opus-a")
+	p.HandleDatagram(delta)
+	p.HandleDatagram(a1)
+
+	waitFor(t, 5*time.Second, func() bool {
+		for _, rec := range f.carrierRecords(t) {
+			if bytes.Equal(rec, a1) {
+				return true
+			}
+		}
+		return false
+	}, "live-edge audio on a carrier")
+
+	if n := countType(f, wire.TypeAudioFrame); n != 0 {
+		t.Errorf("audio frames sent as datagrams = %d, want 0 once the carrier is on", n)
+	}
+	// Video is untouched: still unreliable datagrams, which is the whole point
+	// of live-edge and is not what this flag changes.
+	waitFor(t, 5*time.Second, hasDgram(f, delta), "video delta still a datagram")
+	audioCarriers, videoCarriers := classifyCarriers(t, f)
+	if len(audioCarriers) != 1 {
+		t.Errorf("audio carrier streams = %d, want exactly 1", len(audioCarriers))
+	}
+	if len(videoCarriers) != 0 {
+		t.Errorf("video carrier streams = %d, want 0: live-edge video stays on datagrams", len(videoCarriers))
+	}
+}
+
+// Default off means byte-identical: a live-edge viewer on a default fleet opens
+// no stream at all and gets its audio exactly as it did before.
+func TestLiveEdgeAudioStaysDatagramsByDefault(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	a1 := audioDgram(t, 1, "opus-a")
+	p.HandleDatagram(a1)
+
+	waitFor(t, 5*time.Second, hasDgram(f, a1), "audio frame via SendDatagram")
+	if got := len(f.carrierStreams()); got != 0 {
+		t.Errorf("carrier streams opened = %d, want 0 with the flag off", got)
+	}
+}
+
+// The audio carrier is long-lived where the video one rotates per GOP: audio
+// has no keyframes, so there is no boundary to rotate at and nothing a
+// rotation would resync. One stream must therefore carry every packet of the
+// session, in order, across any number of video rotations.
+func TestReliableAudioCarrierSurvivesVideoGOPRotation(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	sub, err := r.SubscribeReliable(id, f)
+	if err != nil {
+		t.Fatalf("SubscribeReliable: %v", err)
+	}
+	defer sub.Close()
+
+	var sent [][]byte
+	for gop := range 3 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(gop*10), "vp8", "KEY"))
+		a := audioDgram(t, uint32(gop)+1, "opus")
+		p.HandleDatagram(a)
+		sent = append(sent, a)
+		// Wait for each packet before rotating, so the assertion is about the
+		// carrier surviving rotation rather than about a race with the drain.
+		waitFor(t, 5*time.Second, func() bool {
+			for _, rec := range f.carrierRecords(t) {
+				if bytes.Equal(rec, a) {
+					return true
+				}
+			}
+			return false
+		}, "audio packet on a carrier")
+	}
+
+	audioCarriers, _ := classifyCarriers(t, f)
+	if len(audioCarriers) != 1 {
+		t.Fatalf("audio carrier streams = %d across 3 GOPs, want exactly 1", len(audioCarriers))
+	}
+	got := audioCarriers[0].records(t)
+	if len(got) != len(sent) {
+		t.Fatalf("audio records on the carrier = %d, want %d", len(got), len(sent))
+	}
+	for i := range sent {
+		if !bytes.Equal(got[i], sent[i]) {
+			t.Errorf("audio record %d differs from what was published", i)
 		}
 	}
 }

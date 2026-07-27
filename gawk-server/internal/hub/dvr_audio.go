@@ -29,8 +29,6 @@ package hub
 import (
 	"sync"
 	"time"
-
-	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // AudioSkewBudget is how far ahead of the video cursor the audio cursor may
@@ -164,7 +162,7 @@ func (r *DVRAudioRing) Bytes() int {
 // discontinuity the viewer's jitter buffer already handles (gap → conceal,
 // large jump → re-anchor).
 func (s *Subscriber) drainDVRAudio() {
-	defer s.retireAudioCarrier()
+	defer s.retireAudioCarrier(&s.dvrAudioCar)
 	var scratch []byte
 	for {
 		if s.closed.Load() {
@@ -236,21 +234,15 @@ func (s *Subscriber) sendCachedAudioConfig(scratch *[]byte) {
 	s.writeAudioRecord(cfg, scratch)
 }
 
-// writeAudioRecord frames one audio datagram onto the audio carrier, opening
-// it lazily. Same record framing as video (docs/24) so the viewer needs no new
-// parsing — these are audio datagrams and its datagram path routes them by
-// type — but on a stream of its own, which is what keeps docs/20 finding 5's
-// head-of-line blocking away.
+// writeAudioRecord frames one audio datagram onto the DVR audio carrier,
+// opening it lazily. The framing and the stream handling are the shared audio
+// carrier (hub.go, "the audio carrier"), which R19's resilient lane now uses
+// too; what stays here is the two things only a DVR subscriber has — the
+// catch-up pacer, and the progress note its health check reads.
 func (s *Subscriber) writeAudioRecord(dgram []byte, scratch *[]byte) bool {
-	framed, err := wire.AppendCarrierRecord((*scratch)[:0], dgram)
-	if err != nil {
+	framed, n, ok := frameAudioRecord(dgram, scratch, s.dvrAudioCar == nil)
+	if !ok {
 		return true // undeliverable by construction; skip it
-	}
-	*scratch = framed
-	needsOpen := s.dvrAudioCar == nil
-	n := len(framed)
-	if needsOpen {
-		n += wire.CarrierPrologueSize
 	}
 	if !s.dvrPace.allow(n, s.dvr.LiveRateBps()) {
 		return false
@@ -260,40 +252,9 @@ func (s *Subscriber) writeAudioRecord(dgram []byte, scratch *[]byte) bool {
 		s.hub.countBandwidthDrop(n)
 		return false
 	}
-	deadline := time.Now().Add(s.hub.registry.opts.carrierWriteTimeout())
-	if needsOpen {
-		st, err := s.sender.OpenCarrierStream()
-		if err != nil {
-			return false
-		}
-		s.dvrAudioCar = st
-		_ = st.SetWriteDeadline(deadline)
-		if _, err := st.Write(wire.AppendCarrierPrologue(nil)); err != nil {
-			st.CancelWrite()
-			s.dvrAudioCar = nil
-			return false
-		}
-		s.egressCarrierBytes.Add(wire.CarrierPrologueSize)
-	}
-	_ = s.dvrAudioCar.SetWriteDeadline(deadline)
-	if _, err := s.dvrAudioCar.Write(framed); err != nil {
-		s.dvrAudioCar.CancelWrite()
-		s.dvrAudioCar = nil
+	if !s.emitAudioRecord(&s.dvrAudioCar, framed) {
 		return false
 	}
-	s.carrierRecords.Add(1)
-	s.egressCarrierBytes.Add(uint64(len(framed)))
 	s.dvrNoteProgress()
 	return true
-}
-
-func (s *Subscriber) retireAudioCarrier() {
-	if s.dvrAudioCar == nil {
-		return
-	}
-	_ = s.dvrAudioCar.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.carrierWriteTimeout()))
-	if err := s.dvrAudioCar.Close(); err != nil {
-		s.dvrAudioCar.CancelWrite()
-	}
-	s.dvrAudioCar = nil
 }

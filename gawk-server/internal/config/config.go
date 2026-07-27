@@ -148,6 +148,11 @@ type Config struct {
 	// fixes the picture and leaves the sound full of holes, which is the half
 	// users notice. Off restores docs/20 field finding 5's behaviour exactly.
 	DVRAudio bool
+	// LiveEdgeAudioOnReliableStream extends the audio carrier to plain live-edge viewers.
+	// Off by default: reliable and DVR viewers buffer enough that a retransmit
+	// is free, a live-edge viewer may not, and which way that lands depends on
+	// its RTT. Measure before flipping it fleet-wide.
+	LiveEdgeAudioOnReliableStream bool
 
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
@@ -230,6 +235,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"how much faster than live a recovering DVR subscriber may send, as a multiple of the broadcast bitrate; negative disables")
 	dvrAudio := fs.Bool("dvr-audio", envBool("GAWK_DVR_AUDIO", true),
 		"put audio in the DVR ring too, on its own stream (R21 DV5); off leaves audio live-edge")
+	liveEdgeAudioOnReliableStream := fs.Bool("live-edge-audio-on-reliable-stream", envBool("GAWK_LIVE_EDGE_AUDIO_ON_RELIABLE_STREAM", false),
+		"deliver live-edge viewers' audio on its own reliable stream instead of datagrams; video stays unreliable")
 	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
@@ -388,12 +395,13 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		ConnBurstLimit:      burstLimit,
 		MaxBandwidthBytes:   bandwidthBytes,
 
-		MaxKeyframeBytes:     kfBytes,
-		KeyframeWriteTimeout: kfWriteTimeout,
-		DVRWindow:            dvrWin,
-		DVRMaxBytes:          dvrBytes,
-		DVRMaxCatchup:        dvrCatchup,
-		DVRAudio:             *dvrAudio,
+		MaxKeyframeBytes:              kfBytes,
+		KeyframeWriteTimeout:          kfWriteTimeout,
+		DVRWindow:                     dvrWin,
+		DVRMaxBytes:                   dvrBytes,
+		DVRMaxCatchup:                 dvrCatchup,
+		DVRAudio:                      *dvrAudio,
+		LiveEdgeAudioOnReliableStream: *liveEdgeAudioOnReliableStream,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,

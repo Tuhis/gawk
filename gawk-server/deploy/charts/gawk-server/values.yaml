@@ -195,6 +195,17 @@ config:
   # video-only DVR fixes the picture and leaves the sound full of holes, which
   # is the half users notice. Off restores live-edge audio (docs/20 finding 5).
   dvrAudio: true
+  # Deliver a plain live-edge viewer's audio on its own reliable stream instead
+  # of unreliable datagrams. Video is untouched — live-edge deltas stay
+  # datagrams, which is the mode. Off by default because the trade depends on
+  # the viewer's RTT: resilient and DVR viewers buffer 150-3000 ms so a
+  # retransmit is free, while a live-edge viewer holds only ~90-150 ms of audio
+  # and a retransmit costs a stall once the RTT exceeds that, where the same
+  # loss is a concealed 20 ms gap today. On a lossy link the win is large (a
+  # measured 3.7% of Opus packets lost, a dropout every half second); turn it on
+  # and read avPlayheadAdvance (~1.0 = the worklet is not starving) and the
+  # audio packet rate (50/s) before making it fleet policy.
+  liveEdgeAudioOnReliableStream: false
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers
