@@ -187,11 +187,17 @@ var viewerConfig = []string{
 
 var broadcasterConfig = []string{
 	"autoRung", "autoCeiling", "pipelineContext", "audioState", "audioCodec",
+	// Native-engine config, in the lowerCamelCase engine.Stats now tags. Its
+	// `encoder` (a GStreamer element name) stays its own key rather than being
+	// folded into the browser's `acceleration` (a tri-state setting): the two
+	// answer the same question with different vocabularies, and one column
+	// holding both would group into nonsense.
+	"encoder", "capturePath", "audioSource",
+	// LEGACY capitalized spellings, for sessions stored before the engine
+	// carried tags and for binaries still sending them. See schema/fields.go.
 	"Encoder", "Codec", "CapturePath",
-	// D17. `codec`/`acceleration` are the browser's spellings of what `Codec`
-	// and `Encoder` say for the native engine — both are kept so one query
-	// covers both producers, which is the same reason the capitalized native
-	// names appear throughout this file.
+	// D17. `codec` is shared by both producers; `acceleration` is the
+	// browser's.
 	"codec", "acceleration",
 }
 

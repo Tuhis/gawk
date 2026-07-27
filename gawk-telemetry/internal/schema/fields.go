@@ -177,9 +177,31 @@ var BroadcasterFields = map[string]Kind{
 	"audioCodec":           KindString,
 	"audioBitrateBps":      KindNumber,
 
-	// The native broadcaster (R14) marshals engine.Stats with Go's default
-	// capitalized field names. Typed here so one query covers both producers
-	// rather than the native one reading as 40 unknown fields per sample.
+	// Native broadcaster (R14) fields with no browser counterpart. The engine
+	// now tags engine.Stats in this same lowerCamelCase, so these are ordinary
+	// typed fields rather than a second dialect.
+	"encoder":                   KindString,
+	"capturePath":               KindString,
+	"captureFpsAvailable":       KindBool,
+	"keyframeIntervalAvailable": KindBool,
+	"keyframeIntervalMs":        KindNumber,
+	"sentFrames":                KindNumber,
+	"keyframeStreamsSuperseded": KindNumber,
+	"framesDroppedAtSend":       KindNumber,
+	"timeSyncAvailable":         KindBool,
+	"timeSyncOffsetUs":          KindNumber,
+	"viewerCountAvailable":      KindBool,
+	"resumes":                   KindNumber,
+	"resuming":                  KindBool,
+	"audioSource":               KindString,
+	"audioPacketsDropped":       KindNumber,
+
+	// LEGACY: the same fields under Go's default capitalized names, which the
+	// native broadcaster emitted before it carried JSON tags. Kept because
+	// version skew is permanent, not transient (D15) — sessions already on
+	// disk are in this spelling for the whole 14-day raw window, and a binary
+	// in the field goes on sending it until someone updates it. New readers
+	// should match the lowerCamelCase names above; nothing new belongs here.
 	"Encoder":                   KindString,
 	"Codec":                     KindString,
 	"Width":                     KindNumber,
