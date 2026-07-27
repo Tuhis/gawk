@@ -295,7 +295,16 @@ jobs:
       # strips types rather than checking them.
       - run: npm run build
       # The one §4.8.4 constraint the SPA does not relax: nothing may be fetched
-      # from another origin at runtime. Asserted against what actually ships.
+      # from another origin at runtime. Asserted against what actually ships,
+      # which is why it runs HERE and not in the `telemetry` job — that one does
+      # not build the bundle, so these two tests skip there by design.
+      #
+      # Hence a Go toolchain in an otherwise Node job. `ioio-k8s` runners carry
+      # the ubuntu-latest toolchain subset, which does not include Go.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-telemetry/go.mod
+          cache-dependency-path: gawk-telemetry/go.mod
       - name: the built page fetches nothing off-origin
         working-directory: gawk-telemetry
         run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
