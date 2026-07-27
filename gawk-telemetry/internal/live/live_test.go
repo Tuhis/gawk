@@ -688,6 +688,81 @@ func TestEndedRowsAgeOut(t *testing.T) {
 	}
 }
 
+// countKey is how many cards in a group carry one broadcast key. The identity
+// question the two tests below ask is "how many times does this key appear",
+// which no other helper answers.
+func countKey(views []BroadcastView, key string) int {
+	n := 0
+	for _, v := range views {
+		if v.BroadcastKey == key {
+			n++
+		}
+	}
+	return n
+}
+
+// A broadcast key identifies the CODE, not one session of it, and a code comes
+// back: a broadcaster resuming after the relay's grace expired, a native
+// broadcaster reclaiming its ID after a rollout, an auto-resume that took
+// longer than EndedAfterMissedRounds. The tombstone from the previous run then
+// sat beside the live card for the whole EndedRetention window — one broadcast
+// rendered twice, in two groups that make contradictory claims about it, the
+// recessed one saying "nothing here can still be acted on" about a stream that
+// is live right now.
+func TestABroadcastThatComesBackIsNotAlsoListedAsEnded(t *testing.T) {
+	p, c := newProj()
+	const key = "1a2b3c4d5e6f"
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: "6b6b6b6b6b6b6b6b6b6b6b6b"}))
+	for range EndedAfterMissedRounds {
+		c.add(5 * time.Second)
+		p.ObserveRelay(round(nil))
+	}
+	if n := countKey(p.Snapshot().Ended, key); n != 1 {
+		t.Fatalf("ended rows for the key = %d, want 1 before it comes back", n)
+	}
+
+	// The same code is streaming again.
+	c.add(5 * time.Second)
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: "7b7b7b7b7b7b7b7b7b7b7b7b"}))
+
+	snap := p.Snapshot()
+	if n := countKey(snap.Live, key); n != 1 {
+		t.Fatalf("live rows for the key = %d, want 1", n)
+	}
+	if n := countKey(snap.Ended, key); n != 0 {
+		t.Errorf("ended rows for the key = %d while it is live; a key must appear in exactly one group", n)
+	}
+}
+
+// The same defect's other half: nothing removed a key's previous tombstone
+// before filing a new one, so a code that ended, came back and ended again
+// filed a SECOND ended row under the same key — two cards claiming to be the
+// final word on one broadcast, and (since the page keys its list by the
+// broadcast key) two React children with the same key.
+func TestEndingTheSameBroadcastTwiceLeavesOneEndedRow(t *testing.T) {
+	p, c := newProj()
+	const key = "1a2b3c4d5e6f"
+	end := func(sessionID string) {
+		p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: sessionID}))
+		for range EndedAfterMissedRounds {
+			c.add(5 * time.Second)
+			p.ObserveRelay(round(nil))
+		}
+	}
+	end("8b8b8b8b8b8b8b8b8b8b8b8b")
+	c.add(time.Minute)
+	end("9b9b9b9b9b9b9b9b9b9b9b9b")
+
+	snap := p.Snapshot()
+	if n := countKey(snap.Ended, key); n != 1 {
+		t.Fatalf("ended rows for the key = %d, want 1 — one broadcast, one final verdict", n)
+	}
+	// The surviving row is the LATEST run's, not the one it replaced.
+	if got := snap.Ended[0].EndedAgoMs; got > time.Minute.Milliseconds() {
+		t.Errorf("EndedAgoMs = %d; the row kept is the older run's, not the one that just ended", got)
+	}
+}
+
 // --- cluster aggregation (review finding 6) --------------------------------
 
 // One broadcast, two pods (R17's origin/edge cascade), reported under the SAME
