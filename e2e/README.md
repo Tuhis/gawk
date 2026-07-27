@@ -97,6 +97,23 @@ covered deterministically by `gawk-server/internal/transport/resilient_loss_test
 (a UDP forwarder dropping 15 % of the relay→viewer packets). See docs/25
 finding 16 and docs/24 finding 10.
 
+Then an **R25 audio pass** (docs/28 NA7, artifacts tagged `audio-<attempt>`).
+It launches a *second* publisher — `gawk-pubsim -audio`, replaying the
+committed Opus fixture through the real engine send path — and points one
+viewer at it. A second publisher rather than a flag on the first, deliberately:
+tier-1's standing assertion is that the **no-audio path stays intact**, and
+that only means something while a video-only broadcast is still running beside
+this one. (It is also why `assertRelaySide` takes an expected active-publisher
+count instead of hardcoding 1.)
+
+The assertions are flow-shaped like the rest: `audioState` active, the
+advertised format (`opus` / 48000 / 2 ch) as the *viewer* parsed it, packets
+arriving, and ≥ 80 % of them decoding. NA7 pre-registered a kill criterion for
+the sink rows — if a browser exposes no `AudioWorklet` sink, `overflowDrops`
+and `gapsSkipped` go unasserted and the harness **says so in its output**
+rather than passing quietly (docs/25's no-silent-caps rule). In practice
+headless Chrome does drive the sink, so they are asserted.
+
 ## Browser broadcaster (Z5)
 
 ```sh

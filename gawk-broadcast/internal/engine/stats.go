@@ -89,4 +89,31 @@ type Stats struct {
 	// working broadcast on a failing path, and only this counter says so.
 	Resumes  uint64
 	Resuming bool
+
+	// System audio (R25, docs/28), mirroring the browser lane's audio stats
+	// so the two dumps read alike.
+	//
+	// AudioState is the honest summary: "off" when the broadcaster asked for
+	// silence, "unavailable" when audio was wanted and no source could give
+	// it, "active" when packets are flowing, "error" when the bitstream
+	// disagreed with the config we advertise (Decision 10). A machine with no
+	// usable audio source is *not* an error, and this vocabulary says so.
+	AudioState AudioState
+	// AudioSource names the winning cascade candidate ("pipewire-monitor"),
+	// which is the first thing to know when audio is present but wrong.
+	AudioSource string
+	// The format actually advertised to viewers. Empty until a lane starts.
+	AudioCodec      string
+	AudioSampleRate int
+	AudioChannels   int
+	AudioBitrateBps int
+
+	AudioPacketsSent uint64
+	AudioBytesSent   uint64
+	AudioConfigsSent uint64
+	// AudioPacketsDropped counts packets lost at the send path — oversize, or
+	// a datagram the transport refused. Deliberately its own counter: audio
+	// never touches FramesDroppedAtSend, so a glance at the two separates a
+	// saturated uplink from an audio-only problem.
+	AudioPacketsDropped uint64
 }

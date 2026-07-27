@@ -4,10 +4,12 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/webtransport-go"
 
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/opus"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -77,8 +79,34 @@ type sender struct {
 	closed   bool
 	kfWG     sync.WaitGroup
 
+	// The audio lane (R25, docs/28 Decision 9) — the Go mirror of
+	// gawk-app/src/media/audio-lane.ts's AudioPacketizer, deliberately so
+	// that the two broadcasters stay legible to each other. Written by the
+	// audio pump goroutine after setAudioFormat, which runs before it starts;
+	// the counters go through mu like the video ones, and the one field a
+	// second goroutine touches is called out below.
+	audioFormat AudioFormat
+	// audioConfigDatagram is the AudioConfig, re-sent at 1 Hz on the packet
+	// flow. Unlike video's DecoderConfig it *is* a standalone datagram: audio
+	// has no keyframe to embed it in, and repetition is the whole
+	// lossy-tolerance story (docs/20 Decision 5).
+	audioConfigDatagram []byte
+	// nextAudioSeq is audio's own uint32 sequence space, independent of video
+	// frameIDs and advanced with the same wrap-aware rule.
+	nextAudioSeq      uint32
+	audioConfigSentAt uint64 // ms on the engine clock; valid once audioConfigSent
+	// audioConfigSent is atomic because it is the one piece of this state a
+	// second goroutine touches: setRelay clears it from the resume supervisor
+	// while the audio pump is reading it. Everything else here stays
+	// pump-only, which is why nothing else needs guarding.
+	audioConfigSent atomic.Bool
+	audioChecked    bool
+
 	mu sync.Mutex
 	st Stats
+	// audioErrored latches Decision 10's refusal: a bitstream that disagrees
+	// with the config we are advertising is not shipped.
+	audioErrored bool
 	// lastKeyframeUs and the EMA behind Stats.KeyframeIntervalMs (guarded by
 	// mu). Measured on AU arrival stamps — the same clock TimeSync reads.
 	lastKeyframeUs uint64
@@ -114,10 +142,20 @@ func (s *sender) currentRelay() RelaySession {
 // just died. Cancelling it lets its writer goroutine finish now instead of
 // waiting on a dead stream, and clearing the slot stops the next keyframe
 // being counted as having superseded it.
+//
+// Neither does the audio config's 1 Hz cadence (R25). The same dropped cache
+// that video re-primes through its next keyframe leaves audio with nothing to
+// re-prime through — audio has no keyframe, so on the ordinary cadence the
+// lane would be undecodable for up to a second after every resume, and the
+// relay would have nothing to join-prime a new viewer with either. Resetting
+// here makes the *next* packet carry the config, which is what the browser
+// lane does whenever its config changes.
 func (s *sender) setRelay(r RelaySession) {
 	s.relayMu.Lock()
 	s.relay = r
 	s.relayMu.Unlock()
+
+	s.audioConfigSent.Store(false)
 
 	s.kfMu.Lock()
 	old := s.inflight
@@ -185,6 +223,163 @@ func (s *sender) ensureConfig(au []byte) {
 	s.configDatagram = dgram
 	s.codec = codec
 	s.log.Info("decoder config derived from SPS", "codec", codec)
+}
+
+// setAudioFormat prepares the AudioConfig this lane will advertise. Called
+// once, before the audio pump starts.
+func (s *sender) setAudioFormat(f AudioFormat) {
+	dgram, err := wire.AppendAudioConfig(nil, wire.AudioConfig{
+		Codec:      f.Codec,
+		SampleRate: uint32(f.SampleRate),
+		Channels:   uint8(f.Channels),
+		// Description stays empty, exactly as the browser lane sends it
+		// (docs/20): WebCodecs configures plain stereo Opus from the codec
+		// string alone, and an OpusHead here would be the only thing that
+		// could make a multistream layout decodable — which is precisely the
+		// layout the capture caps exist to prevent.
+	})
+	if err != nil {
+		s.log.Warn("failed to build audio config", "codec", f.Codec, "err", err)
+		return
+	}
+	s.audioFormat = f
+	s.audioConfigDatagram = dgram
+	s.mu.Lock()
+	s.st.AudioCodec = f.Codec
+	s.st.AudioSampleRate = f.SampleRate
+	s.st.AudioChannels = f.Channels
+	s.st.AudioBitrateBps = f.BitrateBps
+	s.st.AudioSource = f.Source
+	s.mu.Unlock()
+}
+
+// sendAudio routes one Opus packet (docs/28 Decision 9).
+//
+// Three properties distinguish it from the video path, and each is deliberate:
+//
+//   - **One datagram per packet. Never chunked.** A 320 B packet has no
+//     chunking story and the wire has no reassembly for one, so a packet that
+//     somehow exceeds MaxAudioPayload is dropped and counted, not split.
+//   - **The config is piggybacked at 1 Hz on the packet flow** — no separate
+//     timer, because 50 packets per second is already a scheduler.
+//   - **A failure here touches no video counter.** Audio never triggers the
+//     video frame-drop path, never affects FramesDroppedAtSend, and never
+//     shrinks the video chunk budget.
+func (s *sender) sendAudio(p AudioPacket) {
+	if s.audioConfigDatagram == nil {
+		return // no format: nothing on the wire could describe this packet
+	}
+	if !s.audioChecked {
+		s.audioChecked = true
+		s.checkAudioBitstream(p.Data)
+	}
+	if s.audioFailed() {
+		return
+	}
+	if len(p.Data) == 0 || len(p.Data) > wire.MaxAudioPayload {
+		s.countAudioDropped()
+		return
+	}
+
+	// One read of the relay for this packet, through the accessor: auto-resume
+	// swaps the session on the supervisor goroutine, and reading the field
+	// directly would both race that write and risk splitting one packet's
+	// config and frame across two sessions.
+	relay := s.currentRelay()
+	if relay == nil {
+		s.countAudioDropped()
+		return
+	}
+
+	// The config rides the flow: on the first packet, then at most once per
+	// AudioConfigResendMs.
+	nowMs := s.clock.NowUs() / 1000
+	if !s.audioConfigSent.Load() || nowMs-s.audioConfigSentAt >= AudioConfigResendMs {
+		if err := relay.SendDatagram(s.audioConfigDatagram); err != nil {
+			s.log.Debug("audio config send failed", "err", err)
+		} else {
+			s.audioConfigSentAt = nowMs
+			s.audioConfigSent.Store(true)
+			s.mu.Lock()
+			s.st.AudioConfigsSent++
+			s.mu.Unlock()
+		}
+	}
+
+	dgram, err := wire.AppendAudioFrame(nil, wire.AudioFrameHeader{
+		Seq:         s.nextAudioSeq,
+		TimestampUs: p.TimestampUs,
+	}, p.Data)
+	// The sequence advances whether or not the send succeeds: a viewer seeing
+	// a gap is seeing the truth, where reusing the number would hide a lost
+	// packet behind a duplicate.
+	s.nextAudioSeq++ // wraps at uint32 by construction
+	if err != nil {
+		s.log.Debug("audio frame encode failed", "bytes", len(p.Data), "err", err)
+		s.countAudioDropped()
+		return
+	}
+	if err := relay.SendDatagram(dgram); err != nil {
+		s.log.Debug("audio datagram send failed", "err", err)
+		s.countAudioDropped()
+		return
+	}
+	s.mu.Lock()
+	s.st.AudioPacketsSent++
+	s.st.AudioBytesSent += uint64(len(dgram))
+	s.st.BytesSent += uint64(len(dgram))
+	s.mu.Unlock()
+}
+
+// checkAudioBitstream verifies the first packet against the config we are
+// about to advertise (docs/28 Decision 10) — the audio counterpart of parsing
+// the codec string out of the SPS rather than assuming it.
+//
+// A disagreement means the caps filter did not do what we told it to. The
+// answer is to stop and say so loudly, not to ship a config that lies about
+// the stream: a viewer configured for stereo that receives mono produces a
+// confusing bug report three layers away from its cause.
+//
+// The sample rate is deliberately not checked here, and that is not an
+// oversight: Opus always operates at 48 kHz internally, so the bitstream
+// cannot disagree about it. Channels and frame duration are what the TOC
+// actually states, and they are what the caps filter can get wrong.
+func (s *sender) checkAudioBitstream(pkt []byte) {
+	toc, ok := opus.ParseTOC(pkt)
+	if !ok {
+		s.log.Error("audio: first packet has no readable Opus TOC; dropping the audio lane",
+			"bytes", len(pkt))
+		s.failAudio()
+		return
+	}
+	if toc.Channels() != s.audioFormat.Channels || toc.FrameDurationUs != AudioFrameMs*1000 {
+		s.log.Error("audio: the encoder produced a stream the advertised config does not describe; dropping the audio lane",
+			"bitstream_channels", toc.Channels(), "config_channels", s.audioFormat.Channels,
+			"bitstream_frame_us", toc.FrameDurationUs, "config_frame_us", AudioFrameMs*1000)
+		s.failAudio()
+		return
+	}
+	s.log.Info("audio lane verified against the bitstream",
+		"codec", s.audioFormat.Codec, "channels", toc.Channels(),
+		"frame_ms", toc.FrameDurationUs/1000, "source", s.audioFormat.Source)
+}
+
+func (s *sender) failAudio() {
+	s.mu.Lock()
+	s.audioErrored = true
+	s.mu.Unlock()
+}
+
+func (s *sender) audioFailed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.audioErrored
+}
+
+func (s *sender) countAudioDropped() {
+	s.mu.Lock()
+	s.st.AudioPacketsDropped++
+	s.mu.Unlock()
 }
 
 // sendKeyframe writes one StreamFrame on its own reliable uni stream.

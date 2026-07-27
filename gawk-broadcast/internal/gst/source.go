@@ -29,17 +29,38 @@ import (
 // was working.
 const liveProbeWindow = 3 * time.Second
 
+// audioProbeBudget bounds the *whole* audio pre-flight, not each candidate.
+//
+// A per-candidate timeout multiplies: two candidates that each open and then
+// never produce would push the share picker eight seconds further away for a
+// broadcaster who is waiting to start a game. One budget for the cascade keeps
+// the worst case flat as candidates are added, and running out of it is the
+// correct answer anyway — a source that has not produced a buffer in this long
+// is not one to publish with.
+const audioProbeBudget = 8 * time.Second
+
+// audioQueueDepth is the bounded channel between the demuxer and the sender:
+// ~32 packets ≈ 640 ms at 20 ms per packet (docs/28 Decision 9).
+const audioQueueDepth = 32
+
 // Options configure the capture factory.
 type Options struct {
 	// LastGoodEncoder is the cached cascade winner, re-verified before use.
 	LastGoodEncoder string
 	// OnEncoderChosen persists the winner.
 	OnEncoderChosen func(string)
+	// LastGoodAudioSource is the cached audio cascade winner, re-verified
+	// before use exactly like LastGoodEncoder.
+	LastGoodAudioSource string
+	// OnAudioSourceChosen persists the audio winner.
+	OnAudioSourceChosen func(string)
 
 	// Binary overrides gst-launch-1.0 (tests, unusual installs).
 	Binary string
 	// Trial overrides the trial-encode runner (tests).
 	Trial TrialFunc
+	// AudioTrial overrides the audio trial runner (tests).
+	AudioTrial AudioTrialFunc
 	// OpenPortal overrides the portal handshake (tests).
 	OpenPortal func(ctx context.Context, opts portal.Options) (*portal.Stream, error)
 	// LiveProbeWindow overrides how long a child must survive to be believed
@@ -60,6 +81,9 @@ func NewFactory(opts Options) engine.MediaSourceFactory {
 		}
 		if s.opts.Trial == nil {
 			s.opts.Trial = s.realTrial
+		}
+		if s.opts.AudioTrial == nil {
+			s.opts.AudioTrial = s.realAudioTrial
 		}
 		if s.opts.OpenPortal == nil {
 			s.opts.OpenPortal = portal.Open
@@ -91,7 +115,18 @@ type Source struct {
 	stopped        bool
 
 	frames chan engine.AccessUnit
-	wg     sync.WaitGroup
+	// audio carries Opus packets when a source won the pre-flight cascade;
+	// nil means this session is video-only and always was (R25). Its depth is
+	// the drop-oldest queue of Decision 9.
+	audio chan engine.AudioPacket
+	// audioCand is the winning candidate, audioOK whether audio is still
+	// expected to flow (a live failure can revoke it mid-start), and
+	// audioState what the shells report.
+	audioCand  *AudioCandidate
+	audioOK    bool
+	audioState engine.AudioState
+
+	wg sync.WaitGroup
 
 	// dump tees every child's MPEG-TS output to disk when GAWK_DUMP_TS is
 	// set — the ground-truth instrument for "is the picture black at the
@@ -147,6 +182,15 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 		return nil, err
 	}
 
+	// Audio's pre-flight runs here, before the picker (R25, docs/28 Decision
+	// 2). An audio trial opens no dialog, needs no permission and touches no
+	// GPU, so it belongs alongside EnsureBinary under the same ordering rule
+	// that keeps a machine without GStreamer from being asked to share its
+	// screen first: a broadcaster learns "no audio on this machine" before
+	// they pick a window, not after. It never returns an error — audio is
+	// subordinate and cannot fail a broadcast (Decision 6).
+	s.selectAudio(ctx)
+
 	// The picker appears on every Start, by decision (docs/19): we ask what to
 	// share each time rather than persisting the choice, so no restore token is
 	// passed and none is kept.
@@ -174,6 +218,98 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 		return nil, err
 	}
 	return s.frames, nil
+}
+
+// selectAudio runs the audio cascade and records the outcome. It never fails
+// the start: every path here ends in a usable state, and three of the four are
+// "publish video and say so".
+func (s *Source) selectAudio(ctx context.Context) {
+	if s.cfg.DisableAudio {
+		s.setAudioState(engine.AudioOff)
+		s.log.Info("system audio disabled by configuration")
+		return
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, audioProbeBudget)
+	defer cancel()
+	cand, err := SelectAudioSource(probeCtx, s.cfg.AudioDevice, s.opts.LastGoodAudioSource, s.opts.AudioTrial)
+	if err != nil {
+		// Not an error the user has to act on: a machine with no usable audio
+		// source publishes video exactly as it did before R25.
+		s.log.Warn("no system-audio source on this machine; publishing video only", "err", err)
+		s.setAudioState(engine.AudioUnavailable)
+		return
+	}
+
+	s.mu.Lock()
+	s.audioCand = &cand
+	s.audioOK = true
+	s.audioState = engine.AudioActive
+	s.audio = make(chan engine.AudioPacket, audioQueueDepth)
+	s.mu.Unlock()
+	if s.opts.OnAudioSourceChosen != nil {
+		s.opts.OnAudioSourceChosen(cand.Name)
+	}
+	s.log.Info("capturing system audio", "source", cand.Name, "detail", cand.Description)
+}
+
+func (s *Source) setAudioState(state engine.AudioState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audioState = state
+	s.audioOK = state == engine.AudioActive
+}
+
+// dropAudio revokes audio for the rest of this start. Called when the live
+// pipeline implicates an audio element (Decision 6), never on a video failure.
+func (s *Source) dropAudio(why string) {
+	s.mu.Lock()
+	s.audioCand = nil
+	s.audioOK = false
+	s.audioState = engine.AudioUnavailable
+	s.mu.Unlock()
+	s.log.Warn("dropping system audio for this broadcast; video continues", "reason", why)
+}
+
+// audioCandidate returns the winning candidate, or nil for a video-only start.
+func (s *Source) audioCandidate() *AudioCandidate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.audioCand
+}
+
+// Audio implements engine.AudioSource. Nil when this session has no audio to
+// give, which the engine reads as "video-only" and never pumps.
+func (s *Source) Audio() <-chan engine.AudioPacket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.audio == nil {
+		return nil
+	}
+	return s.audio
+}
+
+// AudioFormat implements engine.AudioSource. ok is false whenever audio is
+// off, unavailable, or was revoked during the cascade.
+func (s *Source) AudioFormat() (engine.AudioFormat, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.audioOK || s.audioCand == nil {
+		return engine.AudioFormat{}, false
+	}
+	return engine.DefaultAudioFormat(s.audioCand.Name), true
+}
+
+// AudioState reports what the shells show: off / unavailable / active. The
+// engine derives its own from AudioFormat plus the config, so this is the
+// source's own view, not the wire's.
+func (s *Source) AudioState() engine.AudioState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.audioState == "" {
+		return engine.AudioOff
+	}
+	return s.audioState
 }
 
 // openDump opens one debug-dump file named by env, or nil when unset.
@@ -208,62 +344,69 @@ func (s *Source) closeDumps() {
 // try with CPU-visible frames), then by advancing the cascade. Every retry
 // reuses the already-granted portal session, so it costs seconds rather than
 // another share dialog.
+// Audio is an *outer* dimension of the cascade, never a per-rung one (R25,
+// docs/28 Decision 7). Three encoders × three capture modes × audio-on/off
+// would be 18 attempts and a worst case near a minute of a broadcaster staring
+// at nothing. So: run the cascade with audio; on the first live failure whose
+// stderr implicates an audio element, drop audio for the rest of the pass; if
+// everything still fails, one clean re-run without it. Worst case grows by one
+// pass, not by a factor of two, and only on a machine already failing.
 func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, first Candidate) error {
+	audio := s.audioCandidate()
+	err := s.cascadePass(ctx, stream, first, audio)
+	if err == nil || audio == nil {
+		return err
+	}
+	// Everything failed with audio on. A machine that cannot encode video must
+	// not be told the problem is its sound card, so the diagnosis the user
+	// finally sees comes from a pass that had no audio in it at all.
+	s.log.Warn("every pipeline failed with audio enabled, retrying without it", "err", err)
+	s.dropAudio("every encoder and capture mode failed while audio was enabled")
+	return s.cascadePass(ctx, stream, first, nil)
+}
+
+// cascadePass walks encoders × capture modes once, for one audio decision.
+func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first Candidate, audio *AudioCandidate) error {
 	order := candidatesFrom(first, s.cfg.Encoder != "")
 	var failures []string
 
 	for _, cand := range order {
 		for _, mode := range CaptureModes {
-			kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, stream.NodeID, mode), stream.FD, s.log)
-			if err != nil {
-				failures = append(failures, fmt.Sprintf("%s (capture %s): %v", cand.Element, mode, err))
-				continue
-			}
-
-			// The pump starts with the child, not after the probe: an unread
-			// stdout pipe blocks fdsink at ~64 kB and stalls the encoder for
-			// the whole probe window (see pumpHandle).
-			h := &pumpHandle{done: make(chan struct{})}
-			s.wg.Add(1)
-			go func() {
-				defer s.wg.Done()
-				s.pump(kid, h)
-			}()
-
-			// The live probe: did it survive long enough to believe?
-			if err := liveProbe(kid, s.opts.LiveProbeWindow); err != nil {
+			// The inner loop runs twice at most: an audio-implicated failure
+			// retries this same rung with audio dropped, and dropping it sets
+			// `audio` to nil, so the retry cannot repeat.
+			for {
+				err := s.attempt(ctx, stream, cand, mode, audio)
+				if err == nil {
+					if s.opts.OnEncoderChosen != nil {
+						s.opts.OnEncoderChosen(cand.Element)
+					}
+					s.log.Info("encoding in hardware",
+						"encoder", cand.Element, "capture", mode.String(),
+						"width", s.cfg.Width, "height", s.cfg.Height,
+						"fps", s.cfg.Fps, "bitrate_bps", s.cfg.BitrateBps, "gop_ms", s.cfg.GOPMs,
+						"audio", audio != nil)
+					s.mu.Lock()
+					s.encoder = cand.Name
+					s.captureMode, s.captureModeSet = mode, true
+					s.mu.Unlock()
+					return nil
+				}
 				failures = append(failures, fmt.Sprintf("%s (capture %s): %v", cand.Element, mode, err))
 				s.log.Warn("live pipeline died inside its probe window, trying the next rung",
 					"encoder", cand.Element, "capture", mode, "err", err)
-				// The child is dead; let its pump drain and exit, then flush
-				// whatever it buffered — the next attempt may run a different
-				// encoder, and its viewers must never see two SPS lineages
-				// interleaved.
-				<-h.done
-				for drained := false; !drained; {
-					select {
-					case <-s.frames:
-					default:
-						drained = true
-					}
-				}
-				continue
-			}
 
-			h.adopted.Store(true)
-			s.mu.Lock()
-			s.kid = kid
-			s.encoder = cand.Name
-			s.captureMode, s.captureModeSet = mode, true
-			s.mu.Unlock()
-			if s.opts.OnEncoderChosen != nil {
-				s.opts.OnEncoderChosen(cand.Element)
+				if audio != nil && failureNamesAudioElement(err.Error(), *audio) {
+					// This rung was never given a fair chance: the pipeline
+					// died in the audio branch, so retry it exactly as it is,
+					// video-only. Advancing the cascade here would burn
+					// encoders over a sound card.
+					s.dropAudio("the live pipeline died naming an audio element")
+					audio = nil
+					continue
+				}
+				break
 			}
-			s.log.Info("encoding in hardware",
-				"encoder", cand.Element, "capture", mode.String(),
-				"width", s.cfg.Width, "height", s.cfg.Height,
-				"fps", s.cfg.Fps, "bitrate_bps", s.cfg.BitrateBps, "gop_ms", s.cfg.GOPMs)
-			return nil
 		}
 	}
 
@@ -275,6 +418,53 @@ func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, fi
 		return fmt.Errorf("encoder %s failed to start:\n  %s", order[0].Element, strings.Join(failures, "\n  "))
 	}
 	return fmt.Errorf("%w\n  tried: %v", engine.ErrNoHardwareEncoder, failures)
+}
+
+// attempt starts one child and runs the live probe, adopting it on success.
+//
+// On failure it waits out the child's pump and flushes both queues, so the
+// next attempt starts clean: the next attempt may run a different encoder, and
+// its viewers must never see two SPS lineages interleaved.
+func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candidate, mode CaptureMode, audio *AudioCandidate) error {
+	kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, stream.NodeID, mode, audio), stream.FD, s.log)
+	if err != nil {
+		return err
+	}
+
+	// The pump starts with the child, not after the probe: an unread stdout
+	// pipe blocks fdsink at ~64 kB and stalls the encoder for the whole probe
+	// window (see pumpHandle).
+	h := &pumpHandle{done: make(chan struct{})}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.pump(kid, h)
+	}()
+
+	// The live probe: did it survive long enough to believe?
+	if err := liveProbe(kid, s.opts.LiveProbeWindow); err != nil {
+		<-h.done
+		drain(s.frames)
+		drain(s.audio)
+		return err
+	}
+
+	h.adopted.Store(true)
+	s.mu.Lock()
+	s.kid = kid
+	s.mu.Unlock()
+	return nil
+}
+
+// drain empties a queue left behind by a dead attempt.
+func drain[T any](ch chan T) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
 }
 
 // allFailuresInsidePipeWireSrc reports whether every live failure died inside
@@ -338,30 +528,17 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 	// The AU bound is the relay's: an access unit larger than it would accept
 	// is useless to us anyway.
 	demux := mpegts.NewDemuxer(wire.MaxKeyframeBytes, func(au mpegts.AU) error {
-		// Timestamps are clock-anchored PES PTS (Decision 6's upgrade path,
-		// taken 2026-07-17 — see ptsAnchor): capture cadence on the engine
-		// clock, the same one TimeSync reads. Arrival stamping clumped
-		// timestamps behind the encode/mux/pipe buffering and intermittently
-		// cratered viewer decode fps via the R12 pacing path.
-		if s.dumpES != nil {
-			// Debug tee (GAWK_DUMP_H264): pre-policy, so the file is the
-			// demuxer's exact output. Best-effort — a dump problem must not
-			// take the capture down.
-			_, _ = s.dumpES.Write(au.Data)
-		}
-		s.offer(engine.AccessUnit{
-			// Cloned because the demuxer reclaims au.Data the moment this
-			// callback returns (mpegts.AU: "copy to retain"), while the frame
-			// outlives it in the channel — an aliased slice gets rewritten by
-			// the AUs demuxed behind it.
-			Data:        bytes.Clone(au.Data),
-			Keyframe:    engine.HasIDR(au.Data),
-			TimestampUs: h.anchor.stamp(s.clock.NowUs(), au.PTS, au.HasPTS),
-			PTSUs:       au.PTS,
-			HasPTS:      au.HasPTS,
-		}, h)
+		s.emitAU(h, au)
 		return nil
 	})
+
+	// Audio rides the same demuxer, the same goroutine and — the load-bearing
+	// part — the *same* ptsAnchor (R25, docs/28 Decision 5). Registered only
+	// when a source won the pre-flight: without it the demuxer never even
+	// resolves the audio PID.
+	if s.audioChan() != nil {
+		demux.OnAudioPacket(func(p mpegts.AudioPacket) { s.emitAudio(h, p) })
+	}
 
 	var src io.Reader = kid.stdout
 	if s.dump != nil {
@@ -382,6 +559,10 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 		return
 	}
 	defer close(s.frames)
+	if ch := s.audioChan(); ch != nil {
+		// The engine's audio pump ends the same way the frame pump does.
+		defer close(ch)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -396,6 +577,53 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 	default:
 		s.err = errors.New("capture ended: the GStreamer pipeline stopped unexpectedly")
 	}
+}
+
+// emitAU stamps one access unit and offers it to the frame channel.
+//
+// Timestamps are clock-anchored PES PTS (Decision 6's upgrade path, taken
+// 2026-07-17 — see ptsAnchor): capture cadence on the engine clock, the same
+// one TimeSync reads. Arrival stamping clumped timestamps behind the
+// encode/mux/pipe buffering and intermittently cratered viewer decode fps via
+// the R12 pacing path.
+func (s *Source) emitAU(h *pumpHandle, au mpegts.AU) {
+	if s.dumpES != nil {
+		// Debug tee (GAWK_DUMP_H264): pre-policy, so the file is the
+		// demuxer's exact output. Best-effort — a dump problem must not take
+		// the capture down.
+		_, _ = s.dumpES.Write(au.Data)
+	}
+	s.offer(engine.AccessUnit{
+		// Cloned because the demuxer reclaims au.Data the moment this
+		// callback returns (mpegts.AU: "copy to retain"), while the frame
+		// outlives it in the channel — an aliased slice gets rewritten by the
+		// AUs demuxed behind it.
+		Data:        bytes.Clone(au.Data),
+		Keyframe:    engine.HasIDR(au.Data),
+		TimestampUs: h.anchor.stamp(s.clock.NowUs(), au.PTS, au.HasPTS),
+		PTSUs:       au.PTS,
+		HasPTS:      au.HasPTS,
+	}, h)
+}
+
+// emitAudio stamps one Opus packet and offers it to the audio queue.
+//
+// It reads **h.anchor** — the same instance emitAU reads, which is the whole
+// of Decision 5. Both media are muxed by one mpegtsmux from one pipeline
+// running time, so they share one PTS timeline; one anchor maps both with one
+// affine function, and the relative A/V skew it introduces is exactly zero, by
+// construction. Giving audio its own anchor would look tidier and would
+// silently reintroduce a (video path latency − audio path latency) bias — a
+// constant lip-sync error the viewer can neither detect nor remove.
+// TestOneAnchorStampsBothMedia is what stops a later refactor splitting it.
+func (s *Source) emitAudio(h *pumpHandle, p mpegts.AudioPacket) {
+	s.offerAudio(engine.AudioPacket{
+		// Cloned for the same reason video is: the demuxer reclaims the
+		// buffer when this callback returns, while the packet outlives it in
+		// the channel.
+		Data:        bytes.Clone(p.Data),
+		TimestampUs: h.anchor.stamp(s.clock.NowUs(), p.PTS, p.HasPTS),
+	})
 }
 
 // offer applies the drop policy and hands one access unit to the frame
@@ -454,6 +682,49 @@ func (s *Source) offer(frame engine.AccessUnit, h *pumpHandle) {
 	if h.adopted.Load() {
 		s.log.Debug("sender is behind, dropping until the next keyframe", "keyframe", frame.Keyframe)
 	}
+}
+
+// audioChan returns the packet channel, or nil for a video-only session.
+func (s *Source) audioChan() chan engine.AudioPacket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.audio
+}
+
+// offerAudio hands one Opus packet to the queue, evicting the **oldest** on
+// overflow — deliberately the opposite of the video path's drop-newest
+// (docs/28 Decision 9, following docs/24 finding 14).
+//
+// Audio is an in-order, live-edge stream with no GOP, so there is nothing to
+// poison and nothing to resync to: shedding the backlog keeps the listener
+// near live, where shedding the newcomer would strand them as far behind as
+// the queue is deep. One dropped packet costs the viewer one 20 ms
+// concealment, which its buffer already knows how to do.
+//
+// Single producer (the pump goroutine); the engine is the only consumer, so
+// the eviction can only ever race the queue *emptier*, never fuller.
+func (s *Source) offerAudio(p engine.AudioPacket) {
+	ch := s.audioChan()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- p:
+		return
+	default:
+	}
+	select {
+	case <-ch:
+	default:
+	}
+	select {
+	case ch <- p:
+	default:
+		// The consumer refilled the slot between the two operations. Shedding
+		// the newcomer here is one 20 ms concealment, and the next packet is
+		// 20 ms away.
+	}
+	s.log.Debug("audio queue full, dropped the oldest packet")
 }
 
 // Stop kills the child and releases the portal session.
@@ -517,4 +788,12 @@ func (s *Source) realTrial(ctx context.Context, c Candidate, cfg engine.MediaCon
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return runToCompletion(ctx, s.opts.Binary, BuildTrialPipeline(c, cfg), s.log)
+}
+
+// realAudioTrial captures ~500 ms and encodes it. Bounded by the caller's
+// audioProbeBudget rather than its own timeout: a source that opens and never
+// produces is exactly as broken as one that fails to open, and neither may
+// hang startup.
+func (s *Source) realAudioTrial(ctx context.Context, c AudioCandidate, device string) error {
+	return runToCompletion(ctx, s.opts.Binary, BuildAudioTrialPipeline(c, device), s.log)
 }

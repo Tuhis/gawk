@@ -18,7 +18,7 @@ func TestEveryCandidatePinsTheEncoderInvariants(t *testing.T) {
 	for _, c := range Cascade {
 		for _, mode := range CaptureModes {
 			t.Run(c.Element+"/"+mode.String(), func(t *testing.T) {
-				p := pipelineString(BuildPipeline(c, cfg, 42, mode))
+				p := pipelineString(BuildPipeline(c, cfg, 42, mode, nil))
 
 				// VFR pass-through, drop-only. A CFR converter would hold the last
 				// frame until the next arrives (unbounded on a static screen) then
@@ -75,7 +75,7 @@ func TestEveryCandidatePinsTheEncoderInvariants(t *testing.T) {
 func TestSystemMemoryCapturePinsThePortalBoundary(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
-		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureSystemMemory))
+		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureSystemMemory, nil))
 		// The caps pin must sit directly on pipewiresrc, before anything else
 		// gets a say in negotiation.
 		if !strings.Contains(p, "do-timestamp=true ! video/x-raw ! videorate") {
@@ -96,7 +96,7 @@ func TestAutoCaptureKeepsZeroCopyNegotiation(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
 		for _, mode := range []CaptureMode{CaptureAutoCapped, CaptureAuto} {
-			p := pipelineString(BuildPipeline(c, cfg, 42, mode))
+			p := pipelineString(BuildPipeline(c, cfg, 42, mode, nil))
 			if strings.Contains(p, "do-timestamp=true ! video/x-raw !") {
 				t.Errorf("%s/%s: pins bare caps at the source, which forbids DMA-BUF:\n%s", c.Element, mode, p)
 			}
@@ -118,7 +118,7 @@ func TestEncoderCapsCarryTheNominalFramerate(t *testing.T) {
 	cfg := engine.DefaultMediaConfig() // 60 fps
 	for _, c := range Cascade {
 		for _, mode := range CaptureModes {
-			p := pipelineString(BuildPipeline(c, cfg, 1, mode))
+			p := pipelineString(BuildPipeline(c, cfg, 1, mode, nil))
 			if !strings.Contains(p, "framerate=60/1") {
 				t.Errorf("%s/%s: encoder caps carry no framerate — vah264enc will budget for 30 fps:\n%s",
 					c.Element, mode, p)
@@ -152,12 +152,12 @@ func TestRateCappedCaptureRequestsMaxFramerateAtTheSource(t *testing.T) {
 	cfg := engine.DefaultMediaConfig() // 60 fps
 	for _, c := range Cascade {
 		first := c.convert(cfg)[0]
-		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAutoCapped))
+		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAutoCapped, nil))
 		want := "do-timestamp=true ! video/x-raw(ANY),max-framerate=60/1 ! " + first
 		if !strings.Contains(p, want) {
 			t.Errorf("%s: capped rung does not request max-framerate on the source boundary:\n%s", c.Element, p)
 		}
-		if plain := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto)); strings.Contains(plain, "max-framerate") {
+		if plain := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto, nil)); strings.Contains(plain, "max-framerate") {
 			t.Errorf("%s: plain auto rung grew a max-framerate — it must stay the verified fallback:\n%s", c.Element, plain)
 		}
 	}
@@ -172,7 +172,7 @@ func TestRateCappedCaptureRequestsMaxFramerateAtTheSource(t *testing.T) {
 func TestAutoCapturePutsTheConverterOnThePortalBoundary(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
-		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto))
+		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto, nil))
 		first := c.convert(cfg)[0]
 		if !strings.Contains(p, "do-timestamp=true ! "+first) {
 			t.Errorf("%s: auto mode does not put %s directly on pipewiresrc:\n%s", c.Element, first, p)
@@ -196,7 +196,7 @@ func TestAutoCaptureEncoderCapsStayOnTheGpu(t *testing.T) {
 			t.Fatalf("%s is not in the cascade", tc.element)
 		}
 		for _, mode := range []CaptureMode{CaptureAutoCapped, CaptureAuto} {
-			p := pipelineString(BuildPipeline(c, cfg, 1, mode))
+			p := pipelineString(BuildPipeline(c, cfg, 1, mode, nil))
 			if !strings.Contains(p, "video/x-raw("+tc.feature+")") {
 				t.Errorf("%s/%s: encoder caps do not pin %s — the handoff drops to system memory:\n%s",
 					tc.element, mode, tc.feature, p)
@@ -204,7 +204,7 @@ func TestAutoCaptureEncoderCapsStayOnTheGpu(t *testing.T) {
 		}
 		// System-memory capture keeps bare caps on purpose: it is the proven
 		// fallback rung, and its negotiation semantics stay untouched.
-		ps := pipelineString(BuildPipeline(c, cfg, 1, CaptureSystemMemory))
+		ps := pipelineString(BuildPipeline(c, cfg, 1, CaptureSystemMemory, nil))
 		if strings.Contains(ps, "video/x-raw(") {
 			t.Errorf("%s: system-memory mode pins a GPU memory feature:\n%s", tc.element, ps)
 		}
@@ -225,7 +225,7 @@ func TestBFramesAreDisabledWhereTheEncoderHasThem(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s is not in the cascade", tc.element)
 		}
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: no %q — B-frames would break decode-order == presentation-order:\n%s", tc.element, tc.want, p)
 		}
 	}
@@ -246,7 +246,7 @@ func TestGOPReachesTheEncoder(t *testing.T) {
 		{"vah264enc", "key-int-max=30"},
 	} {
 		c, _ := FindCandidate(tc.element)
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: no %q:\n%s", tc.element, tc.want, p)
 		}
 	}
@@ -290,7 +290,7 @@ func TestEncoderCapsRoundToEvenDimensions(t *testing.T) {
 func TestPipelineLinksAreWellFormed(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
-		args := BuildPipeline(c, cfg, 1, CaptureAuto)
+		args := BuildPipeline(c, cfg, 1, CaptureAuto, nil)
 		if args[0] != "-q" {
 			t.Errorf("%s: first arg = %q, want -q", c.Element, args[0])
 		}
@@ -324,7 +324,7 @@ func TestBitrateIsConvertedToKbps(t *testing.T) {
 		{"vah264enc", "bitrate=8000"},
 	} {
 		c, _ := FindCandidate(tc.element)
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: want %q (kbps) for 8 Mbps:\n%s", tc.element, tc.want, p)
 		}
 	}
@@ -355,7 +355,7 @@ func TestRateControlIsVBRWithABitrateCeiling(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s is not in the cascade", tc.element)
 		}
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: want %q:\n%s", tc.element, tc.want, p)
 		}
 	}

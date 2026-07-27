@@ -53,10 +53,74 @@ func Demux(ts []byte) ([]engine.AccessUnit, error) {
 // engine calls it with its own Clock, which is what makes the frame stamps
 // and TimeSync read one timeline (docs/19 Decision 6) — pubsim must not
 // weaken that invariant just because its frames are canned.
-func Factory(aus []engine.AccessUnit, fps int) engine.MediaSourceFactory {
+//
+// packets non-empty makes the source implement engine.AudioSource as well
+// (R25, docs/28 Decision 12). Empty leaves it video-only, which is not a
+// degraded shape but the one R20 tier-1 asserts continuously — hence the
+// -audio flag defaulting to off.
+func Factory(aus []engine.AccessUnit, fps int, packets [][]byte) engine.MediaSourceFactory {
 	return func(_ engine.MediaConfig, clock engine.Clock, _ *slog.Logger) (engine.MediaSource, error) {
-		return NewSource(aus, fps, clock)
+		s, err := NewSource(aus, fps, clock)
+		if err != nil {
+			return nil, err
+		}
+		if len(packets) == 0 {
+			// Deliberately the *video-only type*: an audio source that returns
+			// nothing would still satisfy the type assertion, and the no-audio
+			// path would stop being the thing it claims to test.
+			return s, nil
+		}
+		return &audioSource{Source: s, packets: packets}, nil
 	}
+}
+
+// audioSource is Source plus a looping Opus lane.
+type audioSource struct {
+	*Source
+	packets [][]byte
+	audio   chan engine.AudioPacket
+}
+
+// Start begins both lanes. Audio is paced at engine.AudioFrameMs from the
+// **same clock instance** the access units use, so pubsim cannot weaken
+// docs/28 Decision 5's one-timeline invariant just because its packets are
+// canned — exactly what this package's doc comment already promises about
+// video stamps.
+func (s *audioSource) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
+	frames, err := s.Source.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.audio = make(chan engine.AudioPacket, 8)
+	go func() {
+		defer close(s.audio)
+		tick := time.NewTicker(engine.AudioFrameMs * time.Millisecond)
+		defer tick.Stop()
+		for i := 0; ; i = (i + 1) % len(s.packets) {
+			select {
+			case <-s.stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			p := engine.AudioPacket{Data: s.packets[i], TimestampUs: s.clock.NowUs()}
+			select {
+			case s.audio <- p:
+			case <-s.stop:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return frames, nil
+}
+
+func (s *audioSource) Audio() <-chan engine.AudioPacket { return s.audio }
+
+func (s *audioSource) AudioFormat() (engine.AudioFormat, bool) {
+	return engine.DefaultAudioFormat("fixture"), true
 }
 
 // Source is an engine.MediaSource that replays a fixed AU sequence in a loop

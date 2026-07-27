@@ -23,7 +23,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +36,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-var testLog = slog.New(slog.DiscardHandler)
+// testLog is declared in audio_test.go, which is not build-tagged.
 
 // The child is a real subprocess in these tests, standing in for
 // gst-launch-1.0. Supervision is exactly the kind of thing a mock would test
@@ -108,6 +107,14 @@ func newSource(t *testing.T, opts Options) *Source {
 	}
 	if opts.Trial == nil {
 		opts.Trial = newTrialer(CandidateNames()...).fn()
+	}
+	if opts.AudioTrial == nil {
+		// Audio off unless a test asks for it. These tests are about the video
+		// cascade, and the default must not be the *real* trial: it would run
+		// the fake binary against an audio pipeline it does not understand and
+		// then wait out audioProbeBudget inside Start — which is exactly the
+		// eight seconds TestStdoutIsDrainedDuringTheProbeWindow measures.
+		opts.AudioTrial = newAudioTrialer().fn()
 	}
 	src, err := NewFactory(opts)(engine.DefaultMediaConfig(), &engine.FakeClock{Us: 1000}, testLog)
 	if err != nil {

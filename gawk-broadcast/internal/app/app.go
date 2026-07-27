@@ -541,7 +541,31 @@ func (a *App) mediaConfig() engine.MediaConfig {
 		m.BitrateBps = a.cfg.BitrateBps
 	}
 	m.Encoder = a.cfg.Encoder
+	m.DisableAudio = a.cfg.DisableAudio
+	m.AudioDevice = a.cfg.AudioDevice
 	return m
+}
+
+// AudioStatus is the one line the window shows about sound. It is a sentence
+// rather than a state name because "unavailable" on its own invites a bug
+// report: a machine with no usable audio source is working as designed
+// (docs/28 Decision 6), and the text has to say so.
+func AudioStatus(s engine.Stats) string {
+	switch s.AudioState {
+	case engine.AudioActive:
+		if s.AudioSource != "" {
+			return fmt.Sprintf("System audio · %s", s.AudioSource)
+		}
+		return "System audio"
+	case engine.AudioOff:
+		return "No audio (turned off)"
+	case engine.AudioUnavailable:
+		return "No audio — this machine has no usable audio source"
+	case engine.AudioError:
+		return "No audio — the encoder produced a stream we could not publish"
+	default:
+		return "Audio n/a"
+	}
 }
 
 // Message turns an error into a sentence a friend can act on (V5's criterion:
@@ -628,6 +652,21 @@ type Diagnostics struct {
 	// ViewerCount is the relay's R18 "N watching" push; null until the first
 	// push lands (an old relay never sends one).
 	ViewerCount *uint32 `json:"viewerCount"`
+
+	// The R25 audio lane. AudioState is always present — "off",
+	// "unavailable", "active", "error" — so a silent stream is diagnosable
+	// from the dump alone rather than from an absent key.
+	AudioState      string `json:"audioState"`
+	AudioSource     string `json:"audioSource,omitempty"`
+	AudioCodec      string `json:"audioCodec,omitempty"`
+	AudioSampleRate int    `json:"audioSampleRate,omitempty"`
+	AudioChannels   int    `json:"audioChannels,omitempty"`
+	AudioBitrateBps int    `json:"audioBitrateBps,omitempty"`
+
+	AudioPacketsSent    uint64 `json:"audioPacketsSent"`
+	AudioBytesSent      uint64 `json:"audioBytesSent"`
+	AudioConfigsSent    uint64 `json:"audioConfigsSent"`
+	AudioPacketsDropped uint64 `json:"audioPacketsDropped"`
 }
 
 // Diagnostics builds the JSON dump.
@@ -674,6 +713,16 @@ func (a *App) Diagnostics() string {
 		count := s.ViewerCount
 		d.ViewerCount = &count
 	}
+	d.AudioState = string(s.AudioState)
+	d.AudioSource = s.AudioSource
+	d.AudioCodec = s.AudioCodec
+	d.AudioSampleRate = s.AudioSampleRate
+	d.AudioChannels = s.AudioChannels
+	d.AudioBitrateBps = s.AudioBitrateBps
+	d.AudioPacketsSent = s.AudioPacketsSent
+	d.AudioBytesSent = s.AudioBytesSent
+	d.AudioConfigsSent = s.AudioConfigsSent
+	d.AudioPacketsDropped = s.AudioPacketsDropped
 
 	b, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
