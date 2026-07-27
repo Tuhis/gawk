@@ -57,6 +57,8 @@ func run() error {
 		fpsFlag    = fs.Int("fps", 0, "frames per second (default 60)")
 		bitrate    = fs.Float64("bitrate", 0, "peak bitrate in Mbps (default 16; VBR targets ~75% of it)")
 		encoder    = fs.String("encoder", "", "force an encoder ("+strings.Join(gst.CandidateNames(), ", ")+"); default probes them in order")
+		audio      = fs.Bool("audio", true, "publish system audio (the default output's monitor)")
+		audioDev   = fs.String("audio-device", "", "capture audio from this device instead of probing (a pulsesrc device name, e.g. alsa_output.pci-0000_00_1f.3.analog-stereo.monitor)")
 		verbose    = fs.Bool("v", false, "verbose logging (the GStreamer child's stderr included)")
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
 		telemetry  = fs.String("telemetry-url", "", "R28 telemetry ingest endpoint (env GAWK_TELEMETRY_URL); default "+config.DefaultTelemetryURL+" on the default relay, "+config.Off+" disables reporting")
@@ -86,6 +88,12 @@ func run() error {
 	applyString(&cfg.PublishSecret, *secret, os.Getenv("GAWK_SECRET"))
 	applyString(&cfg.Origin, *origin, os.Getenv("GAWK_ORIGIN"))
 	applyString(&cfg.Encoder, *encoder, os.Getenv("GAWK_ENCODER"))
+	applyString(&cfg.AudioDevice, *audioDev, os.Getenv("GAWK_AUDIO_DEVICE"))
+	// -audio defaults to true, so only an explicit -audio=false is an
+	// override: a bare run must not clear a config that says disableAudio.
+	if isFlagSet(fs, "audio") {
+		cfg.DisableAudio = !*audio
+	}
 	// Blank is not an error any more: it means the default fleet. Only an
 	// emptied-out default could land here, and refusing is still better than
 	// dialling "".
@@ -106,6 +114,8 @@ func run() error {
 		media.BitrateBps = cfg.BitrateBps
 	}
 	media.Encoder = cfg.Encoder
+	media.DisableAudio = cfg.DisableAudio
+	media.AudioDevice = cfg.AudioDevice
 	if *resolution != "" {
 		w, h, err := engine.ParseResolution(*resolution)
 		if err != nil {
@@ -230,8 +240,10 @@ func run() error {
 		engine.Options{
 			Log: log,
 			MediaFactory: gst.NewFactory(gst.Options{
-				LastGoodEncoder: cfg.LastGoodEncoder,
-				OnEncoderChosen: func(enc string) { cfg.LastGoodEncoder = enc; saveCfg() },
+				LastGoodEncoder:     cfg.LastGoodEncoder,
+				OnEncoderChosen:     func(enc string) { cfg.LastGoodEncoder = enc; saveCfg() },
+				LastGoodAudioSource: cfg.LastGoodAudioSource,
+				OnAudioSourceChosen: func(src string) { cfg.LastGoodAudioSource = src; saveCfg() },
 			}),
 		},
 	)
@@ -254,6 +266,32 @@ func run() error {
 		// already said why, if there was a why.
 		return errors.New("broadcast ended")
 	}
+}
+
+// audioLine summarises the audio lane for the stats line. It always says
+// something — "audio off", "audio unavailable" — rather than omitting the
+// field, because an absent number reads as zero (Decision 20).
+func audioLine(s engine.Stats) string {
+	switch s.AudioState {
+	case engine.AudioActive:
+		return fmt.Sprintf("audio %s %d pkt (%d dropped)", orNA(s.AudioSource), s.AudioPacketsSent, s.AudioPacketsDropped)
+	case "":
+		return "audio n/a"
+	default:
+		return "audio " + string(s.AudioState)
+	}
+}
+
+// isFlagSet reports whether a flag was given on the command line, so a default
+// -true flag can stay distinguishable from an explicit one.
+func isFlagSet(fs *flag.FlagSet, name string) bool {
+	seen := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			seen = true
+		}
+	})
+	return seen
 }
 
 func orNA(s string) string {

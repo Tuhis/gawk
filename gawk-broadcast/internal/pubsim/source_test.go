@@ -161,7 +161,7 @@ func TestFactoryUsesEngineClock(t *testing.T) {
 		t.Fatalf("Demux: %v", err)
 	}
 	clock := &engine.FakeClock{Us: 42}
-	ms, err := Factory(aus, 30)(engine.MediaConfig{}, clock, slog.New(slog.DiscardHandler))
+	ms, err := Factory(aus, 30, nil)(engine.MediaConfig{}, clock, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
@@ -177,5 +177,86 @@ func TestFactoryUsesEngineClock(t *testing.T) {
 	}
 	if _, err := NewSource(nil, 30, clock); err == nil {
 		t.Fatal("want an error for an empty AU list")
+	}
+}
+
+// With packets supplied the source grows an audio lane; without them it stays
+// the *video-only type*. That distinction is the point of docs/28 Decision 8's
+// optional interface: R20 tier-1 asserts the no-audio path continuously, and
+// that assertion is only meaningful while video-only is a real shape rather
+// than an audio source returning nothing.
+func TestAudioLaneIsOptIn(t *testing.T) {
+	aus, err := Demux(fixture.TS)
+	if err != nil {
+		t.Fatalf("Demux: %v", err)
+	}
+	clock := &engine.FakeClock{Us: 42}
+	log := slog.New(slog.DiscardHandler)
+
+	videoOnly, err := Factory(aus, 30, nil)(engine.MediaConfig{}, clock, log)
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if _, ok := videoOnly.(engine.AudioSource); ok {
+		t.Error("a source built with no packets still satisfies engine.AudioSource")
+	}
+
+	packets, err := fixture.SplitAudio(fixture.Audio)
+	if err != nil {
+		t.Fatalf("SplitAudio: %v", err)
+	}
+	withAudio, err := Factory(aus, 30, packets)(engine.MediaConfig{}, clock, log)
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	as, ok := withAudio.(engine.AudioSource)
+	if !ok {
+		t.Fatal("a source built with packets does not satisfy engine.AudioSource")
+	}
+	format, ok := as.AudioFormat()
+	if !ok {
+		t.Fatal("AudioFormat reports nothing")
+	}
+	if format.Codec != engine.AudioCodec || format.SampleRate != engine.AudioSampleRate || format.Channels != engine.AudioChannels {
+		t.Errorf("AudioFormat = %+v, want 48 kHz stereo opus", format)
+	}
+}
+
+// The audio lane reads the engine's clock, like the video lane does — pubsim
+// must not weaken docs/28 Decision 5's one-timeline invariant just because its
+// packets are canned.
+func TestAudioPacketsAreStampedFromTheEngineClock(t *testing.T) {
+	aus, err := Demux(fixture.TS)
+	if err != nil {
+		t.Fatalf("Demux: %v", err)
+	}
+	packets, err := fixture.SplitAudio(fixture.Audio)
+	if err != nil {
+		t.Fatalf("SplitAudio: %v", err)
+	}
+	clock := &engine.FakeClock{Us: 7_000_000}
+	ms, err := Factory(aus, 30, packets)(engine.MediaConfig{}, clock, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	src := ms.(engine.AudioSource)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := ms.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer ms.Stop()
+
+	select {
+	case p := <-src.Audio():
+		if p.TimestampUs != clock.Us {
+			t.Errorf("TimestampUs = %d, want the engine clock's %d", p.TimestampUs, clock.Us)
+		}
+		if !bytes.Equal(p.Data, packets[0]) {
+			t.Error("the first packet is not the fixture's first packet")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no audio packet")
 	}
 }

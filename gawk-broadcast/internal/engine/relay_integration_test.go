@@ -37,6 +37,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/mpegts"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/pubsim"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -499,6 +500,114 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Errorf("viewer saw delta=%v mapping=%v, want both", sawDelta, sawMapping)
+	}
+}
+
+// What a viewer receives on the *audio* lane (R25, docs/28 NA5).
+//
+// The same reasoning as the video test above, one lane over: the relay's own
+// accounting says only that datagrams arrived, and every interop risk in a
+// second audio producer lives at the viewer's end — whether the config leads
+// the frames (a frame that arrives first is thrown away, because there is
+// nothing to configure the decoder with), whether the sequence space is its
+// own, and whether the packets are single, unchunked Opus.
+//
+// It publishes through the real relay with pubsim's audio source, which is the
+// same lane gawk-pubsim -audio drives in CI.
+func TestSubscriberReceivesAudio(t *testing.T) {
+	relayURL, _ := startRelay(t)
+
+	packets, err := fixture.SplitAudio(fixture.Audio)
+	if err != nil {
+		t.Fatalf("SplitAudio: %v", err)
+	}
+	aus, err := pubsim.Demux(fixture.TS)
+	if err != nil {
+		t.Fatalf("Demux: %v", err)
+	}
+
+	gotID := make(chan string, 1)
+	sess := engine.New(
+		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
+		engine.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		engine.Options{MediaFactory: pubsim.Factory(aus, 30, packets)},
+	)
+	if err := sess.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer sess.Stop()
+
+	var id string
+	select {
+	case id = <-gotID:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no broadcast code")
+	}
+
+	d := &webtransport.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{http3.NextProtoH3}},
+		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	rsp, viewer, err := d.Dial(ctx, relayURL+"/subscribe/"+id, nil)
+	if err != nil {
+		t.Fatalf("subscribe dial: %v (status %v)", err, rsp)
+	}
+	defer viewer.CloseWithError(0, "")
+
+	var (
+		sawConfig bool
+		seqs      []uint32
+	)
+	for len(seqs) < 5 {
+		dgram, err := viewer.ReceiveDatagram(ctx)
+		if err != nil {
+			t.Fatalf("datagram read after %d audio frames (config seen: %v): %v", len(seqs), sawConfig, err)
+		}
+		_, typ, err := wire.PeekType(dgram)
+		if err != nil {
+			continue
+		}
+		switch typ {
+		case wire.TypeAudioConfig:
+			cfg, err := wire.ParseAudioConfig(dgram)
+			if err != nil {
+				t.Fatalf("bad audio config: %v", err)
+			}
+			if cfg.Codec != engine.AudioCodec || cfg.SampleRate != engine.AudioSampleRate || cfg.Channels != engine.AudioChannels {
+				t.Errorf("audio config = %+v, want 48 kHz stereo opus", cfg)
+			}
+			sawConfig = true
+		case wire.TypeAudioFrame:
+			if !sawConfig {
+				t.Fatal("an audio frame arrived before any config: the viewer would have nothing to configure its decoder with")
+			}
+			h, payload, err := wire.ParseAudioFrame(dgram)
+			if err != nil {
+				t.Fatalf("bad audio frame: %v", err)
+			}
+			// One packet per datagram, never chunked — and it starts at the
+			// Opus TOC, so the container's control header really was stripped.
+			if len(payload) == 0 || len(payload) > wire.MaxAudioPayload {
+				t.Errorf("audio payload = %d bytes, want a single Opus packet", len(payload))
+			}
+			if payload[0]>>3 != 31 || payload[0]&0x04 == 0 {
+				t.Errorf("payload does not begin with a stereo fullband TOC: %#02x", payload[0])
+			}
+			seqs = append(seqs, h.Seq)
+		}
+	}
+
+	// Audio's own sequence space, monotonic and gapless on a loopback link.
+	for i, seq := range seqs {
+		if seq != uint32(i) {
+			t.Errorf("audio seq[%d] = %d, want %d", i, seq, i)
+		}
+	}
+
+	if st := sess.Stats(); st.AudioState != engine.AudioActive {
+		t.Errorf("AudioState = %q, want %q while packets are flowing", st.AudioState, engine.AudioActive)
 	}
 }
 

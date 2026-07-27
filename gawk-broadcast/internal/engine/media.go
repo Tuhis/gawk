@@ -30,6 +30,20 @@ type MediaConfig struct {
 	GOPMs int
 	// Encoder, when set, forces one cascade candidate and skips probing.
 	Encoder string
+
+	// DisableAudio turns the system-audio lane off entirely (R25, docs/28
+	// Decision 11). The zero value means *on*, deliberately: a broadcaster who
+	// wanted silence would not have installed a screen-sharing app, and
+	// Decision 6 makes "on" safe on machines where audio cannot work. This
+	// flag is for the broadcaster who genuinely wants silence, not a
+	// workaround for breakage — breakage needs no user involvement.
+	DisableAudio bool
+	// AudioDevice pins one capture device by name (pulsesrc's device
+	// property). Empty probes the cascade; set, it is the only candidate
+	// tried — the same rule as Encoder, and for the same reason: silently
+	// capturing something other than what the user named would be worse than
+	// failing.
+	AudioDevice string
 }
 
 // DefaultMediaConfig is the shipped rung.

@@ -121,6 +121,12 @@ const DEEP_BUFFER_SETTLE_MS = 6000;
 // External/cluster mode and the browser-broadcast step spend their budget
 // elsewhere (see the pass itself for why).
 const RESILIENT_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
+// R25 (docs/28 NA7): the audio pass. A *second* publisher rather than a flag
+// on the first one, deliberately — tier-1's standing assertion is that the
+// no-audio path stays intact, and that assertion only means something while a
+// video-only broadcast is still running beside this one. Same tier-1-only
+// budget rule as the resilient pass.
+const AUDIO_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
 // Fewer retries than the main pass: it runs after a viewer scenario that
 // already proved flow on this broadcast, so a failure here is far more likely
 // to be the carrier path than runner weather.
@@ -515,6 +521,72 @@ function assertDvrFlow(d1, d2) {
   );
 }
 
+// R25 (docs/28 NA7): the native broadcaster's audio lane, from the viewer's
+// end. gawk-pubsim -audio drives the *real* engine send path — seq stamping,
+// the 1 Hz config cadence, the wire encoding — so this covers what no Go test
+// can: that a browser configures its decoder from our AudioConfig and decodes
+// what follows.
+//
+// The kill criterion NA7 pre-registered is implemented here rather than
+// argued about later: if headless Chrome cannot drive an AudioWorklet, the
+// sink rows go unasserted and the harness SAYS SO (docs/25's no-silent-caps
+// rule). The decode counters are worker-side and need no audio device, so they
+// are asserted unconditionally — degrade the assertion, never drop the pass.
+function assertAudioFlow(d1, d2) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  check(s2.audioState === 'active', `audioState = ${s2.audioState}, want "active"`);
+  // The config the native lane advertises, as the viewer parsed it. A wrong
+  // channel count here is docs/28 Decision 10's failure mode arriving three
+  // layers from its cause — the difference being that the sender now refuses
+  // to produce it, so seeing it would mean the check itself regressed.
+  check(s2.audioCodec === 'opus', `audioCodec = ${s2.audioCodec}, want "opus"`);
+  check(s2.audioSampleRate === 48000, `audioSampleRate = ${s2.audioSampleRate}, want 48000`);
+  check(s2.audioChannels === 2, `audioChannels = ${s2.audioChannels}, want 2`);
+
+  const received = s2.audioPacketsReceived - s1.audioPacketsReceived;
+  const decoded = s2.audioPacketsDecoded - s1.audioPacketsDecoded;
+  check(received > 0, `no audio packets arrived between the captures (${s1.audioPacketsReceived} → ${s2.audioPacketsReceived})`);
+  check(decoded > 0, `no audio packets decoded between the captures (${s1.audioPacketsDecoded} → ${s2.audioPacketsDecoded})`);
+  // Flow-shaped, like every other assertion here: a ratio, not a rate. A
+  // contended 2-core runner may decode a few late, but a decoder that has
+  // fallen away from arrivals is the failure this pass exists to catch.
+  check(
+    decoded >= received * 0.8,
+    `decoded ${decoded} of ${received} arriving audio packets — the decoder is not keeping up`,
+  );
+
+  const sink = s2.audioBuffer;
+  if (!sink) {
+    log(
+      'audio sink rows UNASSERTED: this browser exposed no AudioWorklet sink (no audio device). ' +
+        'The decode counters above are asserted; overflowDrops/gapsSkipped are not (NA7 kill criterion).',
+    );
+  } else {
+    const overflow = sink.overflowDrops - (s1.audioBuffer?.overflowDrops ?? 0);
+    const skipped = sink.gapsSkipped - (s1.audioBuffer?.gapsSkipped ?? 0);
+    // docs/20 finding 8's latch: overflow drops climbing *with* concealments
+    // is the signature, and on a loopback link with a metronomic 20 ms
+    // producer neither should move at all.
+    check(overflow <= received * 0.05, `${overflow} audio overflow drops in ${received} packets (docs/20 finding 8's latch)`);
+    check(skipped <= received * 0.05, `${skipped} audio gaps skipped in ${received} packets`);
+  }
+
+  if (problems.length > 0) {
+    fail(`audio assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `audio ok: ${received} packets arrived, ${decoded} decoded, ` +
+      `${s2.audioCodec} ${s2.audioSampleRate} Hz ${s2.audioChannels} ch` +
+      (sink ? `, sink buffered ${sink.bufferedMs} ms` : ', sink rows unasserted'),
+  );
+}
+
 // Flow-shaped like every other assertion here (Decision 6) — counters that
 // must move, never a rate or a stream count that a contended runner could
 // legitimately miss.
@@ -560,7 +632,7 @@ function assertCarrierFlow(d1, d2) {
 
 async function browserScenario({
   relayUrl, certHash, id, attempt, expectedCodec, delivery = null, telemetryUrl = null,
-  dwellMs = 0, duringDwell = null,
+  dwellMs = 0, duringDwell = null, expectAudio = false,
 }) {
   const browser = await launchBrowser();
   try {
@@ -645,6 +717,7 @@ async function browserScenario({
     assertFlow(diag1, diag2, expectedCodec);
     if (delivery === 'resilient') assertCarrierFlow(diag1, diag2);
     if (delivery === 'deep') assertDvrFlow(diag1, diag2);
+    if (expectAudio) assertAudioFlow(diag1, diag2);
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
@@ -1200,28 +1273,40 @@ async function runMuxerCheckPass(page, bundle, tier) {
 // Relay-side assertions (tier 1 / when an ops endpoint is reachable)
 // ---------------------------------------------------------------------------
 
-async function assertRelaySide(opsUrl) {
+async function assertRelaySide(opsUrl, expectedActive = 1) {
   const rsp = await fetch(`${opsUrl}/statusz`);
   if (!rsp.ok) fail(`statusz: HTTP ${rsp.status}`);
   const st = await rsp.json();
-  // Exactly one *active* publisher. A retried browser-broadcaster attempt
-  // leaves its dead predecessor's hub in the GC grace period — inactive
-  // entries are expected there, never a second active one.
+  // An exact count of *active* publishers, not a floor. A retried
+  // browser-broadcaster attempt leaves its dead predecessor's hub in the GC
+  // grace period — inactive entries are expected there, an unexpected active
+  // one never is. The count is a parameter because the R25 audio pass runs a
+  // second publisher on purpose (docs/28 NA7).
   const entries = Object.values(st.broadcasts ?? {});
   const active = entries.filter((b) => b.publisherActive);
-  if (active.length !== 1) {
-    fail(`relay shows ${active.length} active broadcasts (${entries.length} total), want 1`);
+  if (active.length !== expectedActive) {
+    fail(`relay shows ${active.length} active broadcasts (${entries.length} total), want ${expectedActive}`);
   }
-  const b = active[0];
   const problems = [];
-  // Loopback link: loss here means our frame IDs disagree with the relay's
-  // ingress window — a real bug, not network weather.
-  if (b.ingressFramesLost !== 0 || b.ingressChunksLost !== 0) {
-    problems.push(`ingress loss ${b.ingressFramesLost} frames / ${b.ingressChunksLost} chunks on loopback`);
+  let framesRelayed = 0;
+  let keyframeStreamsIn = 0;
+  for (const b of active) {
+    // Loopback link: loss here means our frame IDs disagree with the relay's
+    // ingress window — a real bug, not network weather. Checked on *every*
+    // active publisher: the audio broadcast's ingress is exactly as
+    // load-bearing as the first one's, and R25 adds a whole second lane to it.
+    if (b.ingressFramesLost !== 0 || b.ingressChunksLost !== 0) {
+      problems.push(`ingress loss ${b.ingressFramesLost} frames / ${b.ingressChunksLost} chunks on loopback`);
+    }
+    if (b.badDatagrams !== 0) problems.push(`relay rejected ${b.badDatagrams} datagrams`);
+    framesRelayed += b.framesRelayed;
+    keyframeStreamsIn += b.keyframeStreamsIn;
   }
-  if (b.badDatagrams !== 0) problems.push(`relay rejected ${b.badDatagrams} datagrams`);
   if (problems.length > 0) fail(`relay-side assertions failed: ${problems.join('; ')}`);
-  log(`relay side ok: ${b.framesRelayed} frames relayed, ${b.keyframeStreamsIn} keyframe streams in, zero ingress loss`);
+  log(
+    `relay side ok: ${framesRelayed} frames relayed, ${keyframeStreamsIn} keyframe streams in, ` +
+      `zero ingress loss across ${active.length} publisher(s)`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1368,6 +1453,10 @@ async function main() {
     throw lastErr;
   };
 
+  // Set once the R25 audio publisher is up: the relay-side assertion counts
+  // active publishers exactly, and this pass deliberately runs a second one.
+  let audioPublisherLive = false;
+
   try {
     if (TELEMETRY_CHECK) {
       // One viewer, held long enough for the collector's 10 s flush to fire
@@ -1423,7 +1512,28 @@ async function main() {
       await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep' });
     }
 
-    if (opsUrl) await assertRelaySide(opsUrl);
+    // R25 (docs/28 NA7): the audio lane, on its own broadcast.
+    //
+    // A second publisher, launched here rather than beside the first, for two
+    // reasons: the video-only broadcast above must stay video-only (that is
+    // tier-1's standing no-audio assertion), and a 2-core runner should not
+    // carry two publishers for the whole run to serve one pass.
+    if (AUDIO_VIEWER_PASS) {
+      log('running the audio viewer pass (R25 native audio lane)');
+      audioPublisherLive = true;
+      const audioPubsim = launch('pubsim-audio', PUBSIM_BIN, [
+        '-url', relayUrl,
+        '-insecure',
+        '-audio',
+        '-duration', '180s',
+      ]);
+      const audioId = await waitForLine(
+        audioPubsim, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'the audio broadcast code');
+      log(`pubsim publishing audio as ${audioId}`);
+      await runViewer('audio', MAX_RESILIENT_RETRIES, { id: audioId, expectAudio: true });
+    }
+
+    if (opsUrl) await assertRelaySide(opsUrl, audioPublisherLive ? 2 : 1);
   } finally {
     await publisherBrowser?.close();
   }

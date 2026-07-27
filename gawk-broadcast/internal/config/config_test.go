@@ -20,16 +20,19 @@ func TestLoadMissingFileIsAFirstRunNotAnError(t *testing.T) {
 func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "broadcast.json")
 	c := &Config{
-		RelayURL:        "https://relay.example:4433",
-		AppURL:          "https://gawk.example",
-		PublishSecret:   "hunter2",
-		LastBroadcastID: "K7M2QP",
-		LastResumeToken: "abab1212abab1212abab1212abab1212",
-		LastGoodEncoder: "nvh264enc",
-		Width:           1920,
-		Height:          1080,
-		Fps:             60,
-		BitrateBps:      8_000_000,
+		RelayURL:            "https://relay.example:4433",
+		AppURL:              "https://gawk.example",
+		PublishSecret:       "hunter2",
+		LastBroadcastID:     "K7M2QP",
+		LastResumeToken:     "abab1212abab1212abab1212abab1212",
+		LastGoodEncoder:     "nvh264enc",
+		LastGoodAudioSource: "pipewire-monitor",
+		DisableAudio:        true,
+		AudioDevice:         "my-sink.monitor",
+		Width:               1920,
+		Height:              1080,
+		Fps:                 60,
+		BitrateBps:          8_000_000,
 	}
 	c.SetPath(path)
 	if err := c.Save(); err != nil {
@@ -43,8 +46,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if *got != (Config{
 		RelayURL: c.RelayURL, AppURL: c.AppURL, PublishSecret: c.PublishSecret,
 		LastBroadcastID: c.LastBroadcastID, LastResumeToken: c.LastResumeToken,
-		LastGoodEncoder: c.LastGoodEncoder,
-		Width:           c.Width, Height: c.Height,
+		LastGoodEncoder:     c.LastGoodEncoder,
+		LastGoodAudioSource: c.LastGoodAudioSource,
+		DisableAudio:        c.DisableAudio,
+		AudioDevice:         c.AudioDevice,
+		Width:               c.Width, Height: c.Height,
 		Fps: c.Fps, BitrateBps: c.BitrateBps, path: path,
 	}) {
 		t.Errorf("round trip lost fields:\n got %+v\nwant %+v", *got, *c)
@@ -205,5 +211,26 @@ func TestDefaultPathHonoursXDG(t *testing.T) {
 	}
 	if want := "/tmp/xdg-test/gawk/broadcast.json"; got != want {
 		t.Errorf("DefaultPath = %q, want %q", got, want)
+	}
+}
+
+// The audio flag is spelled as a *disable* on purpose: a config written before
+// R25 has no audio key at all, and the zero value has to mean audio on
+// (docs/28 Decision 11). A `enableAudio` field would have silenced every
+// existing installation on upgrade.
+func TestAPreR25ConfigMeansAudioOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broadcast.json")
+	if err := os.WriteFile(path, []byte(`{"relayUrl":"https://relay.example:4433"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DisableAudio {
+		t.Error("a config predating R25 reads as audio-disabled")
+	}
+	if c.AudioDevice != "" {
+		t.Errorf("AudioDevice = %q, want empty (probe the cascade)", c.AudioDevice)
 	}
 }

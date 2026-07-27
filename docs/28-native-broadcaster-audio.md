@@ -1,10 +1,20 @@
 # R25 — Native broadcaster audio (gawk-broadcast)
 
-**Status**: designed 2026-07-23; **NA1 done 2026-07-27** — two spike runs on
-Debian 13 / KDE (`gawk-broadcast/scripts/na1-audio-spike.sh`) answered all of
-it. **Decisions 2, 3, 4 and 5 confirmed on hardware**; both design-level risks
+**Status**: designed 2026-07-23; **NA1 done 2026-07-27**; **NA2–NA7 implemented
+2026-07-27**, automated gates green in both Go modules (`gofmt` / `go vet` /
+`go test` on Linux, where the Linux-only child-process tests actually run) and
+the tier-1 e2e harness green **including the new audio pass** — a real headless
+Chrome decoding real relayed Opus (250 packets arrived, 250 decoded, `opus`
+48000 Hz 2 ch). **NA8's on-hardware pass is the remaining work** and is the
+owner's to run; it stays sequenced after R15's pending re-verification, per the
+`avSkewMs` caveat in the goal section. Deviations and post-implementation
+findings are in "Implementation status & findings" below.
+
+The NA1 spike — two runs on Debian 13 / KDE
+(`gawk-broadcast/scripts/na1-audio-spike.sh`) — answered all of it.
+**Decisions 2, 3, 4 and 5 confirmed on hardware**; both design-level risks
 closed; ten findings recorded below, one of them a retraction of a wrong
-pre-spike correction of mine. NA2–NA5 are unblocked; NA4's TS fixture is
+pre-spike correction of mine. NA4's TS fixture is
 committed at `gawk-broadcast/internal/mpegts/testdata/`. Flips the docs/20 non-goal
 "**Audio in the R14 native broadcaster**", which already named the shape this
 doc fills in: *"the future lane there is a GStreamer audio chain
@@ -414,14 +424,14 @@ Design (full acceptance criteria in NA7):
 
 | Chunk | Work | Acceptance criteria |
 |---|---|---|
-| **NA1** | **Spike on the gaming PC.** Which source candidate resolves; does `mpegtsmux` carry Opus in this pipeline; what does its PES payload actually look like. | A `GAWK_DUMP_TS` capture containing both streams; `gst-launch … ! tsdemux ! opusparse ! fakesink -v` round-trips it; the PES payload's control-header layout is written down as bytes. **Decision 4 is confirmed or the fallback is taken — recorded in this doc either way.** |
-| **NA2** | Audio source cascade + injectable trial + last-good caching, mirroring `SelectEncoder`/`TrialFunc`. | Table-driven tests over candidate args and cascade order with a fake trial; a failing candidate advances, an explicit `-audio-device` pins exactly one; no hardware needed. Trial runs before the portal handshake (test asserts the ordering). |
-| **NA3** | `BuildPipeline` grows the audio branch; `BuildTrialPipeline` gains its audio form. | Arg-shape tests in `pipeline_test.go`'s idiom, including one pinning each Decision 3 property with its reason. **Audio off produces byte-identical args to today** — asserted, not assumed. |
-| **NA4** | `internal/mpegts` learns Opus: audio PID from the PMT (`stream_type 0x06` + `"Opus"` registration descriptor), PES `0xBD`, control-header strip, packets out via a second callback. | Test-first against committed TS bytes from NA1. Malformed/truncated headers drop the packet without disturbing video. A video-only stream produces zero audio callbacks and identical video output (regression pin). |
-| **NA5** | Engine lane: `AudioPacket`/`AudioFormat`/`AudioSource`, the shared anchor wiring, `sender.sendAudio` (seq, 1 Hz config, no chunking, drop-oldest), TOC check, `Stats` fields. | Fakes-based unit tests for seq/config cadence and drop accounting; a test pins **one anchor for both media** (Decision 5); `relay_integration_test.go` extended to assert audio datagrams reach a subscriber with the config ahead of them. |
-| **NA6** | Shells: `-audio=false`, `-audio-device`, CLI stats line, diagnostics JSON, GUI audio status row, config keys (`DisableAudio`, `AudioDevice`, `LastGoodAudioSource`), INSTALL package names per candidate. | Existing shell tests extended; diagnostics JSON carries the audio block; GUI renders "unavailable" without an audio source present. |
-| **NA7** | **Audio-capable `gawk-pubsim`** (Decision 12) + tier-1 CI pass. | Committed fixture + framing split with tests; `-audio` flag default **off**; a second tier-1 viewer pass asserts, flow-shaped: `audioPacketsReceived > 0`, `audioPacketsDecoded ≈ received`, audio reported present, and finding-8's `overflowDrops`/`gapsSkipped` near zero. **Kill criterion**: if headless Chrome cannot drive an `AudioWorklet`, assert the worker-side decode counters only, record the sink rows as unasserted, and **say so in the harness output** (docs/25's no-silent-caps rule) — degrade the assertion, don't drop the chunk. |
-| **NA8** | Verification pass: automated gates in both Go modules, then the on-hardware A/V run. | `gofmt`/`go vet`/`go test -race` green in `gawk-server` and `gawk-broadcast`; on the gaming PC, the three goal criteria at the top of this doc, plus a listening check on `audio-type=restricted-lowdelay` (Decision 3). Findings recorded here in docs/20's numbered-findings style. |
+| **NA1** ✅ | **Spike on the gaming PC.** Which source candidate resolves; does `mpegtsmux` carry Opus in this pipeline; what does its PES payload actually look like. | A `GAWK_DUMP_TS` capture containing both streams; `gst-launch … ! tsdemux ! opusparse ! fakesink -v` round-trips it; the PES payload's control-header layout is written down as bytes. **Decision 4 is confirmed or the fallback is taken — recorded in this doc either way.** |
+| **NA2** ✅ | Audio source cascade + injectable trial + last-good caching, mirroring `SelectEncoder`/`TrialFunc`. | Table-driven tests over candidate args and cascade order with a fake trial; a failing candidate advances, an explicit `-audio-device` pins exactly one; no hardware needed. Trial runs before the portal handshake (test asserts the ordering). |
+| **NA3** ✅ | `BuildPipeline` grows the audio branch; `BuildTrialPipeline` gains its audio form. | Arg-shape tests in `pipeline_test.go`'s idiom, including one pinning each Decision 3 property with its reason. **Audio off produces byte-identical args to today** — asserted, not assumed. |
+| **NA4** ✅ | `internal/mpegts` learns Opus: audio PID from the PMT (`stream_type 0x06` + `"Opus"` registration descriptor), PES `0xBD`, control-header strip, packets out via a second callback. | Test-first against committed TS bytes from NA1. Malformed/truncated headers drop the packet without disturbing video. A video-only stream produces zero audio callbacks and identical video output (regression pin). |
+| **NA5** ✅ | Engine lane: `AudioPacket`/`AudioFormat`/`AudioSource`, the shared anchor wiring, `sender.sendAudio` (seq, 1 Hz config, no chunking, drop-oldest), TOC check, `Stats` fields. | Fakes-based unit tests for seq/config cadence and drop accounting; a test pins **one anchor for both media** (Decision 5); `relay_integration_test.go` extended to assert audio datagrams reach a subscriber with the config ahead of them. |
+| **NA6** ✅ | Shells: `-audio=false`, `-audio-device`, CLI stats line, diagnostics JSON, GUI audio status row, config keys (`DisableAudio`, `AudioDevice`, `LastGoodAudioSource`), INSTALL package names per candidate. | Existing shell tests extended; diagnostics JSON carries the audio block; GUI renders "unavailable" without an audio source present. |
+| **NA7** ✅ | **Audio-capable `gawk-pubsim`** (Decision 12) + tier-1 CI pass. | Committed fixture + framing split with tests; `-audio` flag default **off**; a second tier-1 viewer pass asserts, flow-shaped: `audioPacketsReceived > 0`, `audioPacketsDecoded ≈ received`, audio reported present, and finding-8's `overflowDrops`/`gapsSkipped` near zero. **Kill criterion**: if headless Chrome cannot drive an `AudioWorklet`, assert the worker-side decode counters only, record the sink rows as unasserted, and **say so in the harness output** (docs/25's no-silent-caps rule) — degrade the assertion, don't drop the chunk. |
+| **NA8** ⏳ | Verification pass: automated gates in both Go modules, then the on-hardware A/V run. | `gofmt`/`go vet`/`go test -race` green in `gawk-server` and `gawk-broadcast`; on the gaming PC, the three goal criteria at the top of this doc, plus a listening check on `audio-type=restricted-lowdelay` (Decision 3). Findings recorded here in docs/20's numbered-findings style. |
 
 NA1 gates NA3 and NA4 (it decides the framing). NA2 and NA5 are independent of
 it and can proceed in parallel. NA7 depends on NA5 only — the fixture path never
@@ -652,6 +662,92 @@ question is answered on the axis that mattered — but the first real
 **NA1 is complete.** No design change falls out of it: Decisions 2, 3, 4 and 5
 stand as written, NA3 and NA4 are unblocked, and the only doc edits it caused
 were a retraction of my own.
+
+### NA2–NA7 — implemented 2026-07-27
+
+Every decision shipped as written. What follows is what a reader of the diff
+would otherwise have to reconstruct.
+
+**Where it lives.** A new `internal/opus` package (the TOC reader, ~90 lines,
+needed by both `internal/mpegts` and `internal/engine` and importable by
+neither of them from the other); `internal/gst/audio.go` (the cascade, the
+trial pipeline, the branch, the stderr attribution); `internal/engine/audio.go`
+(constants, `AudioPacket`/`AudioFormat`/`AudioSource`, `AudioState`);
+`sendAudio` and the TOC check in `internal/engine/send.go`; the demuxer's audio
+half in `internal/mpegts`.
+
+**11. `emitAU`/`emitAudio` were extracted so the shared anchor is testable.**
+Decision 5's invariant — one `ptsAnchor` for both media — had no behavioural
+test at the level it lives at, and the obvious one does not work: with the
+fixture delivered in bulk by `cat`, arrival is effectively constant while PTS
+advances, so the anchor's running minimum re-anchors on every sample and *both*
+media collapse onto the arrival time. A test built that way would pass with a
+split anchor. So the two stamping paths became methods, and
+`TestOneAnchorStampsBothMedia` drives them with a scripted clock at realistic
+per-medium latencies (video 5 ms behind its PTS, audio 1 ms — audio pays no GPU
+encode and no pipe backlog). One anchor gives both media the same offset; two
+give audio a constant 4 ms lead. Mutation-verified: splitting the anchor fails
+the test with exactly that number.
+
+**12. The audio trial's timeout is one budget for the cascade, not one per
+candidate.** `realTrial` bounds each video trial at 10 s, and copying that
+would have put up to 16 s of probing in front of the *share picker* on a
+machine whose sound is broken. `audioProbeBudget` (8 s) wraps the whole
+selection instead, so the worst case stays flat as candidates are added, and
+running out of it is the right answer anyway.
+
+**13. The `newSource` test helper defaults audio *off*, and that is not
+laziness.** The first Linux run of the new tests found two of them vacuous and
+one pre-existing test broken, both from the same cause: the shared helper did
+not inject an audio trial, so `Start` ran the *real* one against a fake
+GStreamer binary and waited out the full budget. That made
+`TestStdoutIsDrainedDuringTheProbeWindow` measure 8.5 s (it times `Start`) and
+made the two audio-cascade tests assert `AudioState == unavailable` for the
+wrong reason. The helper now injects a failing trial by default — these tests
+are about the video cascade, and an audio branch would change the pipelines
+they assert on — and the audio tests pass a working one explicitly. Worth
+recording because it is a general trap: a default that runs real I/O inside a
+shared test helper is invisible until something times it.
+
+**14. Queue evictions are logged, not counted.** Decision 9's drop-oldest queue
+lives in `gst.Source`, and surfacing a counter from there would need a third
+method on the `AudioSource` interface. The video path has the same gap (its
+channel drops are logged, not in `Stats`), so this stays symmetric rather than
+growing the seam for one number. `AudioPacketsDropped` covers the *sender*,
+which is where a drop means something reached the wire budget and did not fit.
+
+**15. `AudioState` is derived, not stored — which kept Decision 8's interface
+at two methods.** The shells need to distinguish "the broadcaster asked for
+silence" from "this machine has no usable audio source"; the obvious answer was
+a third interface method. It is not needed: the *session* already knows
+`DisableAudio`, and `AudioFormat()`'s ok flag answers the rest. So the
+interface is exactly what Decision 8 specifies, and `Session.audioState()`
+combines the two. The vocabulary mirrors the browser's
+`BroadcastStats.audioState` (`off` / `unavailable` / `active` / `error`);
+`no-track` and `unsupported` are browser-picker concepts with no analogue here.
+
+**16. The tier-1 audio pass runs a *second* publisher.** docs/25's tier-1
+asserts the no-audio path stays intact, and that assertion only means something
+while a video-only broadcast is still running. So `gawk-pubsim -audio` is
+launched for the audio pass alone, on its own broadcast, and
+`assertRelaySide` grew an expected-active-publisher count instead of hardcoding
+1 (it now also checks ingress loss on *every* active publisher, which it should
+always have done). NA7's pre-registered kill criterion — degrade to the
+worker-side decode counters if headless Chrome cannot drive an `AudioWorklet` —
+is implemented and did not need to fire: the sink works headlessly, and the
+harness reports `sink buffered N ms`. The fixture is committed as
+`internal/fixture/sample-audio.opus` (101 packets, a 440/880 Hz ping-pong so a
+human can hear whether it is right), generated with ffmpeg into MPEG-TS and
+repackaged through **this repo's own demuxer** — which is how the "no Ogg page
+parser anywhere" rule survives on a machine without GStreamer.
+
+**17. A correction to NA4's own fixture README.** It claimed the first audio
+PES in the committed capture carries `start_trim_flag=1` with a 6-byte control
+header. It does not, and none of the eight does: all are 4 or 5 bytes with no
+trim flags. That claim was finding 1's ffmpeg bytes carried across to a file
+describing GStreamer's output. The parser handles trim fields either way and a
+test pins each optional field's effect on the header length — but the fixture
+is not what proves it, and the README now says what the file actually contains.
 
 ## Verification plan
 

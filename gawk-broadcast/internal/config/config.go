@@ -115,6 +115,17 @@ type Config struct {
 	// LastGoodEncoder is the cached cascade winner (Decision 4). Re-verified
 	// on use, never trusted.
 	LastGoodEncoder string `json:"lastGoodEncoder,omitempty"`
+	// LastGoodAudioSource is the cached audio cascade winner (R25, docs/28
+	// Decision 2). Same rule as LastGoodEncoder: re-verified, never trusted.
+	LastGoodAudioSource string `json:"lastGoodAudioSource,omitempty"`
+
+	// DisableAudio turns the system-audio lane off. Spelled as a *disable*
+	// flag on purpose, so the zero value — a fresh config, or one written
+	// before R25 — means audio on (docs/28 Decision 11).
+	DisableAudio bool `json:"disableAudio,omitempty"`
+	// AudioDevice pins one capture device by name (pulsesrc's device
+	// property), skipping the cascade. Empty probes.
+	AudioDevice string `json:"audioDevice,omitempty"`
 
 	// Rung.
 	Width      int `json:"width,omitempty"`

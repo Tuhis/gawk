@@ -710,9 +710,14 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   holes) are folded into docs/30. Chunks **CG1–CG5** (two-letter prefix; single
   letters A–Z claimed)),
   `docs/28-native-broadcaster-audio.md` for R25 (native broadcaster audio:
-  **designed 2026-07-23; NA1 spike done 2026-07-27 on Debian 13/KDE —
-  Decisions 2/3/4/5 confirmed on hardware, both design-level risks closed,
-  NA2–NA5 unblocked; NA2–NA8 not started**; flips docs/20's "audio in the R14
+  **designed 2026-07-23; NA1 spike done + NA2–NA7 implemented 2026-07-27 —
+  Decisions 2/3/4/5 confirmed on hardware, both design-level risks closed;
+  automated gates green in both Go modules (run on Linux, where the
+  child-process tests actually execute) and a new tier-1 e2e audio pass green
+  in a real headless Chrome (250 packets arrived / 250 decoded, opus 48000 Hz
+  2 ch) beside a still-video-only broadcast; NA8's on-hardware A/V run is the
+  remaining work, sequenced after R15's re-verification because `avSkewMs` is
+  the instrument both need**; flips docs/20's "audio in the R14
   native broadcaster" non-goal, which had already written down the shape.
   R15 built the feature and only the *browser* got a producer — wire
   0x07/0x08 live in the **shared Go** `gawk-server/wire`, the relay's
@@ -777,7 +782,34 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   than silently applied — the second is a **retraction**: `fakesink
   num-buffers=25` in Decision 2's trial pipeline is *valid* (`GstFakeSink` has
   its own `num-buffers`), so a pre-spike "fix" to `identity eos-after=25` was
-  wrong and is reverted),
+  wrong and is reverted.
+  **As implemented (NA2–NA7, findings 11–17 in docs/28)**: a new
+  `internal/opus` TOC reader is its own package because `internal/mpegts`
+  (deriving per-packet timestamps inside a batched PES) and `internal/engine`
+  (Decision 10's config check) both need it and neither should import the
+  other; `emitAU`/`emitAudio` were **extracted as methods so the shared anchor
+  is testable** — the obvious behavioural test does not work, because a fixture
+  delivered in bulk makes arrival effectively constant and the anchor's running
+  minimum then collapses *both* media onto the arrival time, so
+  `TestOneAnchorStampsBothMedia` scripts the clock at realistic per-medium
+  latencies instead and is mutation-verified against a split anchor; the audio
+  trial's timeout is **one 8 s budget for the whole cascade**, not one per
+  candidate, because copying `realTrial`'s 10 s would put up to 16 s of probing
+  in front of the *share picker*; `newSource`'s test helper defaults audio
+  **off** after the first Linux run found two new tests vacuous and one
+  pre-existing test broken by the real trial running inside a shared helper (a
+  general trap worth remembering); queue evictions are **logged, not counted**,
+  symmetric with the video path, so Decision 8's interface stays at two
+  methods — and `AudioState` is **derived** from `DisableAudio` +
+  `AudioFormat()`'s ok flag for the same reason, mirroring the browser's
+  `off`/`unavailable`/`active`/`error` vocabulary; the tier-1 audio pass runs a
+  **second publisher** so the standing no-audio assertion keeps meaning
+  something (and `assertRelaySide` gained an expected-publisher count, plus
+  ingress checks on *every* active publisher); NA7's pre-registered
+  AudioWorklet kill criterion is implemented and did not need to fire; and
+  NA4's fixture README carried a **wrong claim** — the committed capture's
+  first audio PES has no `start_trim_flag`, that was finding 1's *ffmpeg*
+  bytes described as GStreamer's, now corrected against the measured file),
   `docs/27-ios-mse-fullscreen.md` for R22 (iOS native fullscreen via MSE:
   **designed 2026-07-23, spike-confirmed on iPhone the same day; MF1–MF4 +
   MF5's observability/docs half implemented 2026-07-25 — automated gates green

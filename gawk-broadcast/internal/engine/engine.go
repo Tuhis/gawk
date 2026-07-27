@@ -380,6 +380,8 @@ func (s *Session) startLive(ctx context.Context, relay RelaySession) error {
 		s.pump(ctx, frames)
 	}()
 
+	s.startAudio(ctx, media)
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -553,6 +555,59 @@ func (s *Session) setViewerCount(count uint32) {
 	s.cb.viewerCount(count)
 }
 
+// startAudio brings up the audio lane when the media source has one (R25,
+// docs/28 Decision 8).
+//
+// The type assertion is the whole mechanism: a source that does not implement
+// AudioSource is video-only, which stays a first-class shape rather than a
+// degraded one. Nothing here can fail the session — audio is subordinate, and
+// every "no" below simply means the broadcast publishes video.
+func (s *Session) startAudio(ctx context.Context, media MediaSource) {
+	src, ok := media.(AudioSource)
+	if !ok {
+		return
+	}
+	format, ok := src.AudioFormat()
+	if !ok {
+		return
+	}
+	packets := src.Audio()
+	if packets == nil {
+		return
+	}
+	s.sender.setAudioFormat(format)
+	s.log.Info("publishing system audio",
+		"source", format.Source, "codec", format.Codec,
+		"sample_rate", format.SampleRate, "channels", format.Channels)
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.pumpAudio(ctx, packets)
+	}()
+}
+
+// pumpAudio moves Opus packets from the media source to the relay.
+//
+// Deliberately not a copy of pump: the audio channel closing is **not**
+// session-fatal. The video channel closing means capture died and there is
+// nothing left to publish; audio ending means the picture carries on without
+// sound, which is the same outcome as a machine that never had a working
+// audio source at all (Decision 6).
+func (s *Session) pumpAudio(ctx context.Context, packets <-chan AudioPacket) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case p, ok := <-packets:
+			if !ok {
+				return
+			}
+			s.sender.sendAudio(p)
+		}
+	}
+}
+
 // pump moves access units from the media source to the relay.
 func (s *Session) pump(ctx context.Context, frames <-chan AccessUnit) {
 	for {
@@ -641,6 +696,7 @@ func (s *Session) Stats() Stats {
 		st.Encoder = m.Encoder()
 		st.CapturePath = m.CapturePath()
 	}
+	st.AudioState = s.audioState()
 	s.mu.Lock()
 	st.ViewerCountAvailable = s.viewerCountKnown
 	st.ViewerCount = s.viewerCount
@@ -655,6 +711,31 @@ func (s *Session) Stats() Stats {
 	// unobservable from here. Never fabricated from the requested rate.
 	st.CaptureFpsAvailable = false
 	return st
+}
+
+// audioState summarises the lane for the shells (R25).
+//
+// It is derived rather than stored, from the two things that actually know:
+// the session's own configuration, and whether a source offered a format. That
+// is what lets "the broadcaster asked for silence" and "this machine has no
+// usable audio source" stay distinguishable without a third method on
+// AudioSource — they are different answers to different questions, and a user
+// staring at a silent stream needs to know which one they are looking at.
+func (s *Session) audioState() AudioState {
+	if s.cfg.Media.DisableAudio {
+		return AudioOff
+	}
+	if s.sender != nil && s.sender.audioFailed() {
+		return AudioError
+	}
+	src, ok := s.mediaSource().(AudioSource)
+	if !ok {
+		return AudioUnavailable
+	}
+	if _, ok := src.AudioFormat(); !ok {
+		return AudioUnavailable
+	}
+	return AudioActive
 }
 
 // mediaSource returns the live source, or nil before the capture phase.

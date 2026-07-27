@@ -102,6 +102,22 @@ GST_DEBUG=pipewire*:5 set in the environment and save the log output.`
 //	! h264parse config-interval=-1     SPS/PPS before every IDR (load-bearing)
 //	! mpegtsmux ! fdsink fd=1          one PES = one AU (Decision 7)
 //
+// With audio (R25, docs/28 Decision 4) the muxer is named and a second chain
+// feeds it:
+//
+//	! mpegtsmux name=mux ! fdsink fd=1
+//	<audio source> ! queue ! audioconvert ! … ! opusenc … ! queue ! mux.
+//
+// One child, one pipe, one muxer — and therefore **one PTS timeline**, which is
+// the whole A/V sync design (Decision 5). A second pipe would be less code and
+// would reintroduce a constant lip-sync bias the viewer cannot measure. NA1
+// measured the risk this shape carries and cleared it: with the video pad
+// starved for 4.6 s, audio still arrived every 20.0 ms with zero gaps over
+// 100 ms, because mpegtsmux is a GstAggregator and aggregates against a clock
+// deadline set by the *declared caps framerate* — which BuildPipeline pins
+// (docs/28 finding 8). Without audio the args below are byte-identical to what
+// this function produced before R25, `name=mux` included: a test asserts it.
+//
 // The parts that are easy to get subtly wrong:
 //
 // **videorate drop-only=true** and never a plain CFR conversion. Portal
@@ -136,7 +152,9 @@ GST_DEBUG=pipewire*:5 set in the environment and save the log output.`
 // keyframe can only decode if the parameter sets are inside the keyframe AU
 // itself. Without this, late joiners see nothing and everyone already watching
 // is fine — the worst kind of bug.
-func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode CaptureMode) []string {
+// audio nil builds the video-only pipeline; non-nil appends the audio chain
+// and names the muxer so it has something to link to.
+func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode CaptureMode, audio *AudioCandidate) []string {
 	args := []string{"-q"}
 	args = append(args,
 		"pipewiresrc",
@@ -185,9 +203,23 @@ func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode Capt
 	args = append(args, "!")
 	args = append(args, c.encArgs(cfg)...)
 	args = append(args, "!", "h264parse", "config-interval=-1")
-	args = append(args, "!", "mpegtsmux", "!", "fdsink", "fd=1")
+	if audio == nil {
+		args = append(args, "!", "mpegtsmux", "!", "fdsink", "fd=1")
+		return withLinks(args)
+	}
+	args = append(args, "!", "mpegtsmux", "name="+muxName, "!", "fdsink", "fd=1")
+	// A second chain, not a branch of the first: gst-launch starts a new chain
+	// at the next element name, and it ends by linking into the named muxer.
+	args = append(args, audio.src(cfg.AudioDevice)...)
+	args = append(args, "!")
+	args = append(args, audioBranch()...)
+	args = append(args, "!", muxName+".")
 	return withLinks(args)
 }
+
+// muxName is what the audio chain links into. Only present when there is an
+// audio chain — see BuildPipeline's byte-identical guarantee.
+const muxName = "mux"
 
 // BuildTrialPipeline returns the arguments for a trial encode.
 //

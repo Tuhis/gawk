@@ -47,6 +47,11 @@ func run() error {
 	fps := flag.Int("fps", 30, "playback rate; the fixture's keyframe cadence is every 15 frames (500 ms at 30)")
 	statsEvery := flag.Duration("stats", 5*time.Second, "how often to print a stats line to stderr (0 disables)")
 	verbose := flag.Bool("v", false, "verbose engine logging")
+	// Default off, deliberately (docs/28 Decision 12): docs/25's tier-1 asserts
+	// the no-audio path stays intact, and that assertion must keep running. The
+	// audio pass is a *second* run with this flag seeded, following the
+	// docs/25 finding 16 precedent.
+	audio := flag.Bool("audio", false, "also publish the committed Opus fixture (R25 audio lane)")
 	flag.Parse()
 
 	if *secret == "" {
@@ -56,6 +61,12 @@ func run() error {
 	aus, err := pubsim.Demux(fixture.TS)
 	if err != nil {
 		return err
+	}
+	var packets [][]byte
+	if *audio {
+		if packets, err = fixture.SplitAudio(fixture.Audio); err != nil {
+			return err
+		}
 	}
 
 	level := slog.LevelWarn
@@ -106,7 +117,7 @@ func run() error {
 		},
 		engine.Options{
 			Log:          log,
-			MediaFactory: pubsim.Factory(aus, *fps),
+			MediaFactory: pubsim.Factory(aus, *fps, packets),
 		},
 	)
 
@@ -115,6 +126,10 @@ func run() error {
 	}
 	defer sess.Stop()
 	fmt.Fprintf(os.Stderr, "publishing the %d-frame fixture at %d fps to %s\n", len(aus), *fps, *url)
+	if *audio {
+		fmt.Fprintf(os.Stderr, "…with %d Opus packets on the audio lane (%d ms, looping)\n",
+			len(packets), len(packets)*engine.AudioFrameMs)
+	}
 
 	if *statsEvery > 0 {
 		go statsLoop(ctx, sess, *statsEvery)
@@ -150,4 +165,14 @@ func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {
 				s.KeyframeStreamsSuperseded, s.FramesDroppedAtSend, float64(s.BytesSent)/1e6, rtt)
 		}
 	}
+}
+
+// audioLine summarises the audio lane, or says it is off — never an absent
+// field a reader could mistake for zero (docs/19 Decision 20).
+func audioLine(s engine.Stats) string {
+	if s.AudioState != engine.AudioActive {
+		return "audio " + string(s.AudioState)
+	}
+	return fmt.Sprintf("audio %d pkt (%d cfg, %d dropped)",
+		s.AudioPacketsSent, s.AudioConfigsSent, s.AudioPacketsDropped)
 }

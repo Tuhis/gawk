@@ -610,3 +610,114 @@ func TestUnresumableLossEndsCritically(t *testing.T) {
 		t.Errorf("ending notification urgency = %d, want critical (%d)", last.urgency, notify.UrgencyCritical)
 	}
 }
+
+// R25: the diagnostics dump carries the audio lane, and carries it even when
+// there is no audio — a silent stream has to be diagnosable from the dump
+// alone. An absent key would read as zero, which is the whole reason
+// audioState is a word rather than a boolean.
+func TestDiagnosticsCarriesTheAudioLane(t *testing.T) {
+	fs := &fakeSession{stats: engine.Stats{
+		AudioState: engine.AudioActive, AudioSource: "pipewire-monitor",
+		AudioCodec: "opus", AudioSampleRate: 48000, AudioChannels: 2, AudioBitrateBps: 128_000,
+		AudioPacketsSent: 250, AudioBytesSent: 80_000, AudioConfigsSent: 5, AudioPacketsDropped: 1,
+	}}
+	a, _ := testApp(t, fs, notify.Discard{})
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+	fs.cb.OnStats(fs.stats)
+	waitFor(t, func() bool { return a.Stats().AudioPacketsSent == 250 }, "stats")
+
+	var d map[string]any
+	if err := json.Unmarshal([]byte(a.Diagnostics()), &d); err != nil {
+		t.Fatalf("diagnostics is not valid JSON: %v", err)
+	}
+	for k, want := range map[string]any{
+		"audioState":          "active",
+		"audioSource":         "pipewire-monitor",
+		"audioCodec":          "opus",
+		"audioSampleRate":     48000.0,
+		"audioChannels":       2.0,
+		"audioPacketsSent":    250.0,
+		"audioConfigsSent":    5.0,
+		"audioPacketsDropped": 1.0,
+	} {
+		if d[k] != want {
+			t.Errorf("%s = %v, want %v", k, d[k], want)
+		}
+	}
+}
+
+func TestDiagnosticsSaysWhyThereIsNoAudio(t *testing.T) {
+	for _, tc := range []struct {
+		state engine.AudioState
+		want  string
+	}{
+		{engine.AudioUnavailable, "unavailable"},
+		{engine.AudioOff, "off"},
+		{engine.AudioError, "error"},
+	} {
+		t.Run(string(tc.state), func(t *testing.T) {
+			fs := &fakeSession{stats: engine.Stats{AudioState: tc.state}}
+			a, _ := testApp(t, fs, notify.Discard{})
+			a.Start(context.Background(), "")
+			waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+			fs.cb.OnStats(fs.stats)
+			waitFor(t, func() bool { return a.Stats().AudioState == tc.state }, "stats")
+
+			var d map[string]any
+			if err := json.Unmarshal([]byte(a.Diagnostics()), &d); err != nil {
+				t.Fatal(err)
+			}
+			if d["audioState"] != tc.want {
+				t.Errorf("audioState = %v, want %q", d["audioState"], tc.want)
+			}
+			// The counters stay present at zero rather than vanishing: "no
+			// packets were sent" and "the field is missing" are different
+			// claims, and only one of them is true here.
+			if d["audioPacketsSent"] != 0.0 {
+				t.Errorf("audioPacketsSent = %v, want 0", d["audioPacketsSent"])
+			}
+		})
+	}
+}
+
+// The window shows a sentence, not a state name: "unavailable" on its own
+// invites a bug report, where a machine with no usable audio source is working
+// exactly as docs/28 Decision 6 designs it to.
+func TestAudioStatusReadsAsASentence(t *testing.T) {
+	for _, tc := range []struct {
+		stats engine.Stats
+		want  string
+	}{
+		{engine.Stats{AudioState: engine.AudioActive, AudioSource: "pipewire-monitor"}, "System audio · pipewire-monitor"},
+		{engine.Stats{AudioState: engine.AudioOff}, "No audio (turned off)"},
+		{engine.Stats{AudioState: engine.AudioUnavailable}, "No audio — this machine has no usable audio source"},
+		{engine.Stats{AudioState: engine.AudioError}, "No audio — the encoder produced a stream we could not publish"},
+		{engine.Stats{}, "Audio n/a"},
+	} {
+		if got := AudioStatus(tc.stats); got != tc.want {
+			t.Errorf("AudioStatus(%q) = %q, want %q", tc.stats.AudioState, got, tc.want)
+		}
+	}
+}
+
+// The config's audio keys reach the engine's media config. A knob that parses
+// and never arrives is the R2 finding CODE-REVIEW.md exists to prevent, and
+// the *disable* spelling is what makes a pre-R25 config mean "audio on".
+func TestAudioConfigKeysReachTheMediaConfig(t *testing.T) {
+	fs := &fakeSession{}
+	a, cfg := testApp(t, fs, notify.Discard{})
+	if m := a.mediaConfig(); m.DisableAudio || m.AudioDevice != "" {
+		t.Errorf("a fresh config gives %+v, want audio on with no pinned device", m)
+	}
+
+	cfg.DisableAudio = true
+	cfg.AudioDevice = "my-sink.monitor"
+	m := a.mediaConfig()
+	if !m.DisableAudio {
+		t.Error("disableAudio did not reach the media config")
+	}
+	if m.AudioDevice != "my-sink.monitor" {
+		t.Errorf("AudioDevice = %q, want the configured device", m.AudioDevice)
+	}
+}

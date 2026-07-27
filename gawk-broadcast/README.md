@@ -107,6 +107,9 @@ gawk-broadcast [flags]
   -resolution  1920x1080     -fps 60     -bitrate 16   (Mbps, the VBR peak;
                                             typical motion averages ~75% of it)
   -encoder     force one of vulkanh264enc, nvh264enc, vah264enc
+  -audio       publish system audio                          (default true)
+  -audio-device  capture from this device instead of probing
+                                            (env GAWK_AUDIO_DEVICE)
   -insecure    skip TLS verification (development certificates only)
   -config      path to the config file          (default ~/.config/gawk/broadcast.json)
   -stats       how often to print a stats line, 0 disables (default 5s)
@@ -216,6 +219,20 @@ simple.
    datagrams.** Exactly the browser's R8 design, because the bytes are
    identical.
 
+**System audio rides the same pipeline** (R25, docs/28). It is captured from
+the default output's *monitor* via PipeWire — not from the portal, which
+carries no audio — encoded to Opus by the same GStreamer child, and muxed into
+the same MPEG-TS. One muxer means **one PTS timeline**, which is the whole A/V
+sync design: both media are mapped onto the engine clock by one anchor, so the
+relative skew is zero by construction. A second pipe would have been less code
+and would have reintroduced a constant lip-sync bias nothing can measure.
+
+Audio is **subordinate**: no usable source means video-only and a stats line
+that says so, and a live pipeline that dies naming an audio element drops audio
+and retries the same encoder rung rather than burning the cascade over a sound
+card. `-audio=false` is for a broadcaster who wants silence, not a workaround
+for breakage.
+
 ## Encoders
 
 Hardware only, probed per machine at startup, **Vulkan first**:
@@ -264,6 +281,27 @@ encoders drain frames without that signal ever firing.
   extradata means a late joiner primed with the relay's cached keyframe can only
   decode if SPS/PPS travel *inside* the keyframe AU. Without it, late joiners
   see nothing while everyone already watching is fine — the worst kind of bug.
+- **The Opus-in-MPEG-TS control header starts `0x7F`, not `0xFF`.** The mapping
+  spec's 11-bit prefix holds `0x3FF` — which is *ten* ones — so an 11-bit field
+  containing it is one zero bit followed by ten ones, and the first byte is
+  `0x7F`. A demuxer syncing on `0xFF` finds nothing, forever. Also: one PES may
+  carry **several** Opus packets (GStreamer writes one, ffmpeg batches five),
+  and only the PES has a timestamp, so the rest are derived by adding what each
+  packet's TOC says it lasts.
+- **Audio's declared framerate keeps audio smooth on a still screen.**
+  `mpegtsmux` is a `GstAggregator`: it aggregates against a deadline derived
+  from the *declared caps framerate*, not from what actually arrives. Because
+  `BuildPipeline` pins `framerate=<fps>/1` on the encoder caps (originally a
+  rate-control fix, docs/19), audio keeps flowing at 20 ms while damage-driven
+  video delivers nothing. Measured: video absent for 4.6 s, zero audio gaps
+  over 100 ms. Declare `1/5` instead and audio bursts in five-second clumps
+  (docs/28 findings 6 and 8).
+- **One `ptsAnchor` maps both media, and that is the A/V sync design.** Audio
+  and video are muxed by one `mpegtsmux` from one pipeline running time, so one
+  anchor maps both with one affine function and the relative skew is zero by
+  construction. Giving audio its own anchor looks tidier and silently
+  reintroduces a constant lip-sync bias the viewer cannot measure or remove.
+  `TestOneAnchorStampsBothMedia` exists to stop that refactor.
 - **Don't gate on Wayland.** The portal works on X11 GNOME sessions too. Gate on
   the portal call succeeding.
 - **`pipewiresrc` dying in preroll with `stream error: unhandled format` is a

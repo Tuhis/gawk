@@ -43,6 +43,7 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 )
@@ -392,6 +393,10 @@ func (u *ui) header(gtx layout.Context) layout.Dimensions {
 			if s.CapturePath != "" {
 				line += " · " + s.CapturePath + " capture"
 			}
+			// R25: whether sound is going out is worth a glance without
+			// opening Details — a broadcast that is silently silent is the
+			// failure this line exists to prevent.
+			line += " · " + gawkapp.AudioStatus(s)
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(spacer(4)),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -673,6 +678,10 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 					{"Dropped at send", fmt.Sprintf("%d", s.FramesDroppedAtSend)},
 					{"Datagrams", fmt.Sprintf("%d · %.1f MB", s.DatagramsSent, float64(s.BytesSent)/1e6)},
 					{"RTT (time-sync)", rtt},
+					{"Audio", gawkapp.AudioStatus(s)},
+					{"Audio format", audioFormat(s)},
+					{"Audio packets", fmt.Sprintf("%d sent · %d configs · %d dropped · %.2f MB",
+						s.AudioPacketsSent, s.AudioConfigsSent, s.AudioPacketsDropped, float64(s.AudioBytesSent)/1e6)},
 				}
 				children := make([]layout.FlexChild, 0, len(rows)+2)
 				children = append(children, layout.Rigid(spacer(8)))
@@ -880,4 +889,16 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// audioFormat renders the format actually advertised to viewers, or a dash
+// when there is no lane. Read from the stats rather than from the constants:
+// what matters is what the AudioConfig on the wire says, not what the code
+// intended it to say.
+func audioFormat(s engine.Stats) string {
+	if s.AudioCodec == "" {
+		return "—"
+	}
+	return fmt.Sprintf("%s · %d Hz · %d ch · %.0f kbps",
+		s.AudioCodec, s.AudioSampleRate, s.AudioChannels, float64(s.AudioBitrateBps)/1000)
 }

@@ -42,3 +42,45 @@ So this fixture pins the demuxer and the parsers; the encoder invariants
 themselves stay a V2 trial check and a manual verification on the gaming PC.
 Using x264 here is **not** a software-encode rung sneaking back in (Decision 4's
 refusal is about what the app *runs*, not what generates test data).
+
+## `sample-audio.opus` — the Opus fixture (R25, docs/28 Decision 12)
+
+`sample-audio.opus` is 101 Opus packets — 48 kHz stereo, 20 ms each (~2 s),
+128 kbps — embedded as `fixture.Audio` and replayed by `gawk-pubsim -audio`.
+It is what lets CI exercise the **real engine send path** (seq stamping, the
+1 Hz config cadence, the wire encoding) rather than only the viewer.
+
+Framing on disk is a `uint16` big-endian length prefix per packet, repeated —
+deliberately the same shape as R19's carrier records, so the repo gains no new
+framing concept for a test fixture. `fixture.SplitAudio` reads it.
+
+Content is a **two-tone ping-pong**: 440 Hz and 880 Hz alternating every
+250 ms, in opposite phase on the two channels, so a human running the harness
+locally can hear at once whether audio is arriving, whether it is stereo, and
+whether it is stuttering.
+
+Regenerated in two steps — an encode, then a repackage using this repo's own
+demuxer, which is why there is no Ogg page parser anywhere:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=0.25" \
+       -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=0.25" \
+       -filter_complex "[0:a][1:a][0:a][1:a][0:a][1:a][0:a][1:a]concat=n=8:v=0:a=1[l];\
+[1:a][0:a][1:a][0:a][1:a][0:a][1:a][0:a]concat=n=8:v=0:a=1[r];\
+[l][r]amerge=inputs=2,volume=0.3[a]" \
+  -map "[a]" -c:a libopus -b:a 128k -ar 48000 -ac 2 -frame_duration 20 \
+  -vbr off -application audio -f mpegts tone.ts
+
+go run genaudio/main.go tone.ts sample-audio.opus
+```
+
+`genaudio` refuses anything that is not one stereo 20 ms frame per packet, so a
+regenerated fixture cannot silently drift away from what Decision 3's caps
+force and what the viewer is configured for.
+
+The docs/28 recipe reaches the same bytes through GStreamer
+(`opusenc ! multifilesink`, one packet per file). ffmpeg is used here for the
+same reason it is used above: it is what a contributor's machine and CI
+actually have. The **packets** are container-independent either way — which is
+also why ffmpeg's habit of batching five access units into one PES does not
+matter here (docs/28 NA1 finding 2): the demuxer loops over them.

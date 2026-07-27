@@ -70,6 +70,8 @@ sudo apt install \
   gstreamer1.0-tools gstreamer1.0-pipewire \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   xdg-desktop-portal
+# optional, for the system-audio fallback source (see "System audio" below):
+sudo apt install gstreamer1.0-pulseaudio
 # plus your desktop's portal backend, if it isn't already there:
 sudo apt install xdg-desktop-portal-gnome   # GNOME
 sudo apt install xdg-desktop-portal-kde     # KDE
@@ -99,8 +101,35 @@ What each is for:
 | `gstreamer1.0-tools` | `gst-launch-1.0` — the app runs capture + encode in it as a child process |
 | `gstreamer1.0-pipewire` | `pipewiresrc` — receives frames from the portal |
 | `-plugins-bad` | the encoders themselves (`vulkanh264enc`, `nvh264enc`, `vah264enc`), plus `h264parse` and `mpegtsmux`. Despite the name, this is where the hardware encoders live — it's not optional |
-| `-plugins-base`, `-good` | scaling, conversion, rate limiting |
+| `-plugins-base`, `-good` | scaling, conversion, rate limiting — and the audio chain: `opusenc`, `audioconvert`, `audioresample` |
+| `gstreamer1.0-pulseaudio` | **optional.** `pulsesrc`, the *fallback* system-audio source. The primary one is `pipewiresrc`, which you already have |
 | `xdg-desktop-portal` + backend | the share dialog. Your desktop almost certainly has one already |
+
+## System audio
+
+The broadcaster publishes your system audio — whatever is coming out of your
+speakers — alongside the picture, on by default. There is nothing to configure
+and nothing new in the share dialog: the audio does not come from the screen
+share at all (the portal carries no audio), it comes from PipeWire directly,
+capturing the **monitor of your default output device**.
+
+Two consequences worth knowing before you go looking for a setting:
+
+- It is whole-system output, never per-window. If you do not want a
+  notification sound in your broadcast, mute the app, not gawk.
+- Switching your output device mid-broadcast (headphones ↔ speakers) is
+  expected to keep working: the primary capture source follows your default
+  output rather than binding to one device at start.
+
+**If this machine has no usable audio source, the broadcast publishes video and
+says so** — in the window, in the stats and in the CLI's stats line. That is not
+an error and needs no action; audio never costs a broadcast.
+
+To turn it off entirely: `gawk-broadcast -audio=false`, or `"disableAudio":
+true` in the config file. To pin one specific device instead of probing:
+`-audio-device <name>` (a PulseAudio/pipewire-pulse device name, e.g.
+`alsa_output.pci-0000_00_1f.3.analog-stereo.monitor` — `pactl list short
+sources` lists them).
 
 **The GUI needs X11 libraries even on Wayland.** Both window backends are
 compiled in — the app picks Wayland at runtime and only falls back to X11 — but

@@ -43,7 +43,7 @@ feature set exists).
 | R22 | [iOS native fullscreen via MSE](#r22--ios-native-fullscreen-via-mse) | 🔶 MF1–MF4 implemented 2026-07-25 (+ MF5 observability/docs; automated gates green incl. the Chrome `MediaSource` playback check; R16 tee deleted); **MF5 on-device verification pending** ([docs/27](docs/27-ios-mse-fullscreen.md)) |
 | R23 | [Terms & conditions / usage terms](#r23--terms--conditions--usage-terms) | 🚧 implemented 2026-07-24 (TC1–TC5); automated gates green (gawk-app + gawk-broadcast + helm), manual browser verify pending ([docs/29](docs/29-terms-and-conditions.md)) |
 | R24 | [Broadcaster capture & audio guidance](#r24--broadcaster-capture--audio-guidance) | 🚧 designed + CG1–CG5 implemented 2026-07-24 (browser-aware share/audio tips + reactive notes; frontend-only, zero server/wire/pipeline change); automated gates green, manual browser verify pending ([docs/30](docs/30-broadcaster-capture-audio-guidance.md)) |
-| R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23; **NA1 spike done 2026-07-27** on Debian 13/KDE — Decisions 2/3/4/5 confirmed on hardware, both risks closed, NA2–NA5 unblocked; NA2–NA8 not started ([docs/28](docs/28-native-broadcaster-audio.md)) |
+| R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23; **NA1 spike done + NA2–NA7 implemented 2026-07-27**, automated gates green in both Go modules and a new tier-1 e2e audio pass green in a real headless Chrome; **NA8's on-hardware pass pending** ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
 | R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) + TM11 (configured target) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
@@ -1691,6 +1691,19 @@ GStreamer audio chain (`pipewiresrc`/`pulsesrc` → `opusenc`) emitting the same
 into `gawk-broadcast`'s `wirecheck` ahead of need. This is that follow-up, and
 it is a producer change and nothing else. Today the native broadcaster is the
 one way to stream from Linux with hardware encode, and it is silent.
+
+**Status (2026-07-27)**: NA1's spike answered every unverified fact on real
+hardware, and **NA2–NA7 are implemented**. A native broadcast now carries
+system audio by default: probed source cascade (`pipewiresrc` following the
+default sink, then `pulsesrc`), Opus encoded in the same GStreamer child, muxed
+into the same MPEG-TS, and stamped through the **same `ptsAnchor` as video** —
+so relative A/V skew is zero by construction. Zero relay, wire, viewer and
+`gawk-app` changes, as designed. `gawk-pubsim -audio` replays a committed Opus
+fixture through the real engine, and a new tier-1 e2e pass has a real headless
+Chrome decoding it (250 arrived / 250 decoded, `opus` 48000 Hz 2 ch) beside a
+still-video-only broadcast. **NA8** — the on-hardware A/V run and the
+`restricted-lowdelay` listening check — is the remaining work, sequenced after
+R15's pending re-verification because `avSkewMs` is the instrument both need.
 
 **Scope sketch** (full design in
 [`docs/28-native-broadcaster-audio.md`](docs/28-native-broadcaster-audio.md)):
