@@ -107,7 +107,8 @@ type Batch struct {
 // Options configures a Reporter. A zero URL disables it entirely.
 type Options struct {
 	// URL is the ingest endpoint, e.g. https://gawk.example.com/api/telemetry/v1/ingest.
-	// Empty disables the reporter — it then makes no requests at all.
+	// Empty disables the reporter — it then makes no requests at all. This is
+	// the starting value; SetURL repoints it when the settings change.
 	URL string
 	// Version is this build's version string; it doubles as the schema version.
 	Version string
@@ -124,7 +125,11 @@ type Reporter struct {
 	opts Options
 	log  *slog.Logger
 
-	mu               sync.Mutex
+	mu sync.Mutex
+	// url is Options.URL after any SetURL. It lives under the lock because the
+	// settings UI can repoint it between sessions while the sender goroutine is
+	// still draining the previous one's queue.
+	url              string
 	token            string
 	broadcastKey     string
 	reportInterval   time.Duration
@@ -145,8 +150,18 @@ type Reporter struct {
 	// sendQueueDepth). Created in New and closed exactly once by Close, so its
 	// lifetime needs no lock: buffered and non-blocking on the producer side,
 	// so a stalled endpoint can never block a caller on the media path.
-	sendCh    chan []byte
+	sendCh    chan outbound
 	closeOnce sync.Once
+}
+
+// outbound is one batch bound to the endpoint that was configured when it was
+// produced. Carrying the URL rather than reading it at send time is what keeps
+// a repoint from misdelivering the previous session's final batch: its token is
+// an HMAC only the old collector can verify, so sending it to the new one is
+// both a wasted request and the wrong session's data at the wrong address.
+type outbound struct {
+	url  string
+	body []byte
 }
 
 // New builds a Reporter. It never returns nil; a Reporter with no URL is inert.
@@ -163,19 +178,37 @@ func New(opts Options) *Reporter {
 	if opts.Version == "" {
 		opts.Version = "dev"
 	}
-	r := &Reporter{opts: opts, log: opts.Log, sendCh: make(chan []byte, sendQueueDepth)}
+	r := &Reporter{opts: opts, log: opts.Log, url: opts.URL, sendCh: make(chan outbound, sendQueueDepth)}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		for body := range r.sendCh {
-			r.deliver(body)
+		for o := range r.sendCh {
+			r.deliver(o)
 		}
 	}()
 	return r
 }
 
-// Enabled reports whether this reporter can ever send anything.
-func (r *Reporter) Enabled() bool { return r.opts.URL != "" }
+// Enabled reports whether this reporter can currently send anything.
+func (r *Reporter) Enabled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.url != ""
+}
+
+// SetURL repoints the reporter, "" turning it off. The settings UI owns this
+// value and the reporter outlives any one broadcast, so the endpoint has to be
+// re-readable rather than fixed at construction — otherwise a user who edits
+// the field has to restart the app for it to mean anything.
+//
+// It governs what is produced from here on. Batches already queued keep the
+// endpoint they were produced for and still go there; turning telemetry off
+// stops the next session, it does not retroactively unsend the last one.
+func (r *Reporter) SetURL(u string) {
+	r.mu.Lock()
+	r.url = u
+	r.mu.Unlock()
+}
 
 // Begin adopts a session identity from wire 0x0D. A reconnect is a NEW relay
 // session with a NEW token, so this closes the previous session with a final
@@ -277,6 +310,7 @@ func (r *Reporter) Flush(final bool) {
 	if crossed {
 		r.truncated = true
 	}
+	url := r.url
 	r.mu.Unlock()
 
 	if crossed {
@@ -286,7 +320,10 @@ func (r *Reporter) Flush(final bool) {
 		// a clipped session would read as one that simply ended here.
 		r.Event("telemetry-budget-exhausted", "events only from here")
 	}
-	r.enqueue(body)
+	if url == "" {
+		return
+	}
+	r.enqueue(outbound{url: url, body: body})
 }
 
 // Finish ends the current session: a final batch, then the flush loop stops
@@ -355,10 +392,10 @@ func (r *Reporter) take(final bool) (Batch, bool) {
 
 // enqueue hands a batch to the single sender goroutine. Never blocks: a
 // stalled endpoint must not stall a caller that may be on the media path.
-func (r *Reporter) enqueue(body []byte) {
+func (r *Reporter) enqueue(o outbound) {
 	for {
 		select {
-		case r.sendCh <- body:
+		case r.sendCh <- o:
 			return
 		default:
 		}
@@ -378,9 +415,9 @@ func (r *Reporter) enqueue(body []byte) {
 // it silently and forever. Retries block this goroutine only — which is the
 // point: a queue that keeps producing while an endpoint is dead would grow
 // without bound, and the bounded queue above sheds instead.
-func (r *Reporter) deliver(body []byte) {
+func (r *Reporter) deliver(o outbound) {
 	for attempt := 1; ; attempt++ {
-		done, retry := r.post(body)
+		done, retry := r.post(o)
 		if done {
 			return
 		}
@@ -402,10 +439,10 @@ func (r *Reporter) deliver(body []byte) {
 // an expired token — and resending the identical bytes would fail identically,
 // so it is dropped immediately rather than three times. Only 5xx and transport
 // errors are worth another attempt.
-func (r *Reporter) post(body []byte) (done, retry bool) {
+func (r *Reporter) post(o outbound) (done, retry bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.opts.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.url, bytes.NewReader(o.body))
 	if err != nil {
 		return true, false
 	}

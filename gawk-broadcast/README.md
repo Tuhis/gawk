@@ -4,7 +4,8 @@ Publish your screen to a gawk relay from Linux, **with hardware encode**.
 
 ```sh
 gawk-broadcast-gui                          # the app you actually use
-gawk-broadcast -url https://relay.example   # same engine, headless
+gawk-broadcast                              # same engine, headless, default relay
+gawk-broadcast -url https://relay.example   # …or somebody else's
 → Broadcast code: K7M2QP   join: https://gawk.example/#/view/K7M2QP
 ```
 
@@ -95,9 +96,10 @@ the CLI need none of them, so `go test ./internal/...` works without them.
 ## Usage
 
 ```
-gawk-broadcast -url https://relay.example:4433 [flags]
+gawk-broadcast [flags]
 
   -url         relay URL                       (env GAWK_URL)
+                 default https://api.gawk.ioio.fi:4433
   -app-url     frontend URL, for join links    (env GAWK_APP_URL)
   -secret      publish secret, if required     (env GAWK_SECRET)
   -origin      Origin header to send           (env GAWK_ORIGIN)
@@ -108,14 +110,50 @@ gawk-broadcast -url https://relay.example:4433 [flags]
   -insecure    skip TLS verification (development certificates only)
   -config      path to the config file          (default ~/.config/gawk/broadcast.json)
   -stats       how often to print a stats line, 0 disables (default 5s)
-  -telemetry-url  R28 telemetry ingest endpoint; empty disables reporting
-                                            (env GAWK_TELEMETRY_URL)
+  -telemetry-url  R28 telemetry ingest endpoint  (env GAWK_TELEMETRY_URL)
+                 default https://gawk.ioio.fi/api/telemetry/v1/ingest on the
+                 default relay; `off` sends nothing
   -v           verbose, including the GStreamer child's stderr
 ```
 
 Settings live in `~/.config/gawk/broadcast.json` (mode 0600); flags and env
 override them. The GUI writes the same file. Prefer the env vars for the secret:
 a command line is visible in `ps`.
+
+**Blank means "the default", not "nothing".** Neither the config file nor the
+GUI stores a resolved default, so a release that moves the fleet address moves
+with it instead of being frozen into every user's config the first time they
+pressed Save.
+
+### Diagnostics reporting
+
+Running against the default relay, the broadcaster reports session diagnostics
+to that fleet's R28 collector (`docs/33`) — the same numbers the GUI's **Copy
+diagnostics** button produces, sampled over time: encode/sent fps, keyframe and
+drop counters, RTT, viewer count. No screen content, no file names, no machine
+name, no IP stored; the broadcast is identified by the relay's obfuscated key,
+never the joinable code.
+
+Three ways to change it, in precedence order — `-telemetry-url` / the GUI's
+**Telemetry URL** field / `GAWK_TELEMETRY_URL`:
+
+| value | what happens |
+| --- | --- |
+| blank | the default fleet's collector — **only** when the relay is also the default one |
+| a URL | that endpoint, whichever relay you use |
+| `off` | nothing is sent, and no request of any kind leaves the process |
+
+The pairing in the first row is deliberate. A session's telemetry token is an
+HMAC minted by *the relay you connected to* (docs/33 D2), so a batch from a
+self-hosted relay could not be verified by someone else's collector anyway —
+and pointing a private deployment at a third party's collector by default would
+be the wrong default even though nothing would land. Point your own fleet at
+your own collector with an explicit URL.
+
+Reporting also requires the relay to have a telemetry key configured: without
+one it sends no R28 hello, and a client that never gets a hello never collects
+or sends anything. The CLI prints where it reports on startup; the GUI's
+settings card shows the same thing under the fields.
 
 ### If the relay restricts origins
 
@@ -314,8 +352,8 @@ internal/fixture   the committed H.264 MPEG-TS test stream, embedded (fixture.TS
 internal/pubsim    fixture demux + looping live-timestamped MediaSource
 internal/config    ~/.config/gawk/broadcast.json (0600)
 internal/notify    D-Bus notifications with urgency
-internal/telemetry R28 telemetry reporter (env GAWK_TELEMETRY_URL); off
-                        unless a target URL is set
+internal/telemetry R28 telemetry reporter (env GAWK_TELEMETRY_URL); on by
+                        default against the default relay, `off` disables
 internal/wirecheck golden wire-vector mirror, kept byte-identical to
                         gawk-server/wire and gawk-app/src/transport/wire.ts
 internal/app       the GUI's logic, without the GUI

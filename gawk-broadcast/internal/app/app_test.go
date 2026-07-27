@@ -481,6 +481,58 @@ func TestResumeCarriesThePersistedTokenOnlyForItsID(t *testing.T) {
 	}
 }
 
+// A never-configured app must still reach the default fleet: pressing Start on
+// a fresh install is the whole reason the default exists, and resolution has to
+// happen where the session is built, not at Save time.
+func TestUnconfiguredStartUsesTheDefaultRelay(t *testing.T) {
+	fs := &fakeSession{}
+	cfg := &config.Config{}
+	cfg.SetPath(filepath.Join(t.TempDir(), "broadcast.json"))
+	a := New(Options{
+		Config: cfg,
+		NewSession: func(ec engine.Config, cb engine.Callbacks, _ engine.Options) Session {
+			fs.cb, fs.cfg = cb, ec
+			return fs
+		},
+	})
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+
+	if fs.cfg.RelayURL != config.DefaultRelayURL {
+		t.Errorf("engine got RelayURL %q, want the default %q", fs.cfg.RelayURL, config.DefaultRelayURL)
+	}
+	if !a.telemetry.Enabled() {
+		t.Error("telemetry inert on the default fleet; reporting on by default is the point")
+	}
+}
+
+// The settings field has to mean something without an app restart: the
+// reporter outlives a broadcast, so Start re-reads it.
+func TestTelemetryFieldTakesEffectOnTheNextStart(t *testing.T) {
+	fs := &fakeSession{}
+	a, cfg := testApp(t, fs, notify.Discard{})
+	// testApp's relay is not the default one, so nothing reports until asked.
+	if a.telemetry.Enabled() {
+		t.Fatal("telemetry enabled against a non-default relay with no endpoint set")
+	}
+
+	cfg.TelemetryURL = "https://telemetry.example/api/telemetry/v1/ingest"
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+	if !a.telemetry.Enabled() {
+		t.Error("telemetry still inert after the field was set and Start pressed")
+	}
+
+	a.Stop()
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateIdle }, "idle")
+	cfg.TelemetryURL = config.Off
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+	if a.telemetry.Enabled() {
+		t.Errorf("telemetry still enabled after %q; off must mean off", config.Off)
+	}
+}
+
 // The relay-minted token must survive an app restart, or the very next
 // Resume is refused: OnResumeToken persists it to the config file.
 func TestResumeTokenIsPersistedOnReceipt(t *testing.T) {

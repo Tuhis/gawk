@@ -139,10 +139,11 @@ type ui struct {
 	copyDia widget.Clickable
 	details widget.Bool
 
-	relay   textInput
-	appURL  textInput
-	secret  textInput
-	bitrate textInput
+	relay     textInput
+	appURL    textInput
+	secret    textInput
+	bitrate   textInput
+	telemetry textInput
 
 	resPick dropdown
 	fpsPick dropdown
@@ -167,6 +168,7 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	u.appURL.SetText(cfg.AppURL)
 	u.secret.SetText(cfg.PublishSecret)
 	u.secret.ed.Mask = '•'
+	u.telemetry.SetText(cfg.TelemetryURL)
 	if cfg.BitrateBps > 0 {
 		u.bitrate.SetText(strconv.FormatFloat(float64(cfg.BitrateBps)/1e6, 'f', -1, 64))
 	}
@@ -311,6 +313,9 @@ func (u *ui) save() {
 	u.cfg.AppURL = strings.TrimSpace(u.appURL.Text())
 	u.cfg.PublishSecret = u.secret.Text()
 	u.cfg.BitrateBps = parseBitrateMbps(u.bitrate.Text())
+	// Stored verbatim, blanks and all: blank means "follow the default" and
+	// baking today's default in would pin this user to it forever.
+	u.cfg.TelemetryURL = strings.TrimSpace(u.telemetry.Text())
 	if i := u.resPick.sel; i >= 0 {
 		u.cfg.Width, u.cfg.Height = resRungs[i].w, resRungs[i].h
 	}
@@ -546,7 +551,7 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 				}
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return u.relay.Layout(gtx, u.th, "Relay URL (https://…)")
+						return u.relay.Layout(gtx, u.th, "Relay URL (blank = the default relay)")
 					}),
 					layout.Rigid(spacer(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -560,6 +565,10 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return u.bitrate.Layout(gtx, u.th, "Peak bitrate in Mbps (blank = 16)")
 					}),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.telemetry.Layout(gtx, u.th, `Telemetry URL (blank = default, "off" = send nothing)`)
+					}),
 					layout.Rigid(spacer(10)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return u.dropdownRow(gtx, &u.resPick)
@@ -570,35 +579,43 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					}),
 				)
 			}),
+			// Both fields default to something rather than to nothing, so blank
+			// is not self-explanatory: this says where the next broadcast
+			// actually goes and where its diagnostics actually go, computed
+			// from what is typed right now rather than from what was last
+			// saved. A default that sends data should be visible without
+			// reading the README.
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				relay := config.ResolveRelayURL(u.relay.Text())
+				ingest := config.ResolveTelemetryURL(u.relay.Text(), u.telemetry.Text())
+				if ingest == "" {
+					ingest = "off — nothing is sent"
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(caption(u.th, "Broadcasting to "+relay)),
+					layout.Rigid(caption(u.th, "Diagnostics to "+ingest)),
+				)
+			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				if !live {
 					return layout.Dimensions{}
 				}
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(spacer(6)),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						t := material.Caption(u.th, "Settings apply to the next broadcast.")
-						t.Color = colFaint
-						return t.Layout(gtx)
-					}),
+					layout.Rigid(caption(u.th, "Settings apply to the next broadcast.")),
 				)
 			}),
 			// R23 (docs/29 TC5): a non-gating reference to the operator's terms,
 			// with the link when an app URL is set (derived like the join link).
 			layout.Rigid(spacer(10)),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				t := material.Caption(u.th, "By broadcasting you accept the operator's terms of use.")
-				t.Color = colFaint
-				return t.Layout(gtx)
-			}),
+			layout.Rigid(caption(u.th, "By broadcasting you accept the operator's terms of use.")),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				link := u.app.TermsLink()
 				if link == "" {
 					return layout.Dimensions{}
 				}
-				t := material.Caption(u.th, link)
-				t.Color = colFaint
-				return t.Layout(gtx)
+				return caption(u.th, link)(gtx)
 			}),
 		)
 	})
@@ -799,6 +816,15 @@ func statRow(th *material.Theme, k, v string) layout.Widget {
 				return t.Layout(gtx)
 			}),
 		)
+	}
+}
+
+// caption is the settings card's small faint line.
+func caption(th *material.Theme, s string) layout.Widget {
+	return func(gtx layout.Context) layout.Dimensions {
+		t := material.Caption(th, s)
+		t.Color = colFaint
+		return t.Layout(gtx)
 	}
 }
 

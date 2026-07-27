@@ -988,7 +988,11 @@ Deviations from the design as written, recorded rather than silently absorbed:
     defaults to a same-origin path on the page it was served from; a native
     binary has only the relay origin, which is a different host by construction
     (the relay is a UDP LoadBalancer, the frontend an Ingress — the same reason
-    `config.AppURL` exists separately). Unset means off.
+    `config.AppURL` exists separately). Unset means off. — **Superseded
+    2026-07-27 by §4.15**: the premise (not derivable) still holds, the
+    conclusion (therefore off) did not survive contact with the fleet the
+    binaries are actually handed out for. Unset now means the default fleet's
+    collector, and `off` is the opt-out.
 
 16. **TM9 (Grafana) dropped**, per the owner's scope decision and the doc's own
     "TM9 is the droppable one". The §8 rollup-datasource question stays open.
@@ -1334,6 +1338,77 @@ The dashboard shades hidden spans on the timeline and names them in the legend,
 so the collapse reads as a fact rather than a mystery. The shading is
 low-contrast by design: it qualifies the data, it does not compete with it, and
 the words carry the meaning if the tint does not survive a screenshot.
+
+### 4.15 The native broadcaster reports by default (2026-07-27)
+
+Deviation 15 above made native telemetry opt-in — "unset means off" — reasoning
+from a fact that is still true: the ingest URL is not derivable from anything a
+native binary knows, because telemetry is a same-origin path on the *frontend*
+Ingress while the relay is a UDP LoadBalancer. What that argument establishes is
+that the address must be **written down somewhere**. It does not establish that
+the somewhere has to be the user.
+
+And the user was the wrong place to put it, for the same reason the default
+relay URL was: the native broadcaster is not a general-purpose tool people
+deploy, it is a binary handed to a friend so they can stream a game
+(`INSTALL.md` is addressed to exactly that person). Asking them for two URLs
+before anything works is friction paid on the first run, every time; asking them
+for the *telemetry* URL in particular is asking a question they cannot answer
+and would never think to. The consequence was that R28's entire native producer
+was, in practice, dark — the one broadcaster surface that runs on the hardware
+whose findings filled docs/19 and docs/20, reporting nothing, on a service built
+because hand-shuttled diagnostics blobs had stopped scaling.
+
+**What changed.** `config.DefaultRelayURL` and `config.DefaultTelemetryURL` name
+the reference fleet, both surfaces resolve at use rather than at save, and the
+CLI flag / GUI field / env var override as before. Three values, one rule each:
+
+| `telemetryUrl` | result |
+| --- | --- |
+| blank | `DefaultTelemetryURL`, **only** when the relay resolves to `DefaultRelayURL` |
+| a URL | that endpoint, on any relay |
+| `off` | nothing sent — no request of any kind leaves the process |
+
+**The pairing rule is the part worth not re-deriving.** Blank does not mean "the
+reference collector, always"; it means "this fleet's collector, and I am on the
+default fleet". A session's token is an HMAC minted by the relay it connected to
+(D2), so a batch produced against a self-hosted relay cannot be verified by
+someone else's collector — it would be rejected 4xx and dropped on the first
+attempt. Nothing would land either way; the reason to make it not *happen* is
+that silently POSTing a private deployment's session data to a third party's
+host is the wrong default even when the third party discards it. An operator
+running their own fleet sets their own URL and gets exactly what they asked for.
+
+**`off` needs a word because blank is taken.** Empty already means "use the
+default", so the opt-out cannot also be empty. The relay's `-metrics-addr off`
+(R9) had already spelled this idea, and reusing the spelling beats inventing a
+second one.
+
+**Resolution happens at use, never at save.** Neither the config file nor the
+GUI's Save writes a resolved default back, so a release that moves the fleet
+address moves with it instead of being pinned by whatever every user's config
+captured the first time they pressed Save — and blanking a field is how you get
+back to following the default. A test asserts `Save` writes neither constant.
+
+**The reporter's endpoint became mutable** (`Reporter.SetURL`, read per
+`Start`). It was fixed at construction, which was fine when it came from a flag
+and wrong the moment it came from a settings field: editing the field would
+otherwise have needed an app restart to mean anything. Queued batches keep the
+endpoint they were *produced* for rather than picking one up at send time — a
+repoint must not deliver the previous session's final batch to the new
+collector, whose key cannot verify that token anyway.
+
+**Default-on is disclosed, not buried.** The CLI prints where it reports on
+startup with the way to stop it; the GUI's settings card shows the resolved
+relay and the resolved collector (or "off — nothing is sent") computed live from
+what is typed, not from what was last saved. R23's terms already describe what
+is collected (`termsVersion` 2026-07-26), and the GUI's existing terms line is
+unchanged.
+
+Unchanged: everything downstream. Zero wire, relay, service, viewer and
+`gawk-app` changes; D8's zero-PII posture, the hello gate (a relay with no
+telemetry key sends no hello and a client that gets none collects nothing), and
+the byte-identical-when-off chart renders all stand.
 
 ## 4.10 Dip episodes (D16)
 

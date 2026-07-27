@@ -1887,6 +1887,26 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `"Chrome 152"`/`"Windows"`), no cross-session identity, never media; R23's
    terms gained a practice paragraph naming what is and is not collected, and
    `termsVersion` bumped to 2026-07-26.
+   **The native broadcaster reports by default (2026-07-27, docs/33 §4.15)** —
+   reversing deviation 15's "unset means off", which had left R28's native
+   producer dark on exactly the hardware whose findings filled docs/19 and
+   docs/20. `config.DefaultRelayURL` (`https://api.gawk.ioio.fi:4433`) and
+   `config.DefaultTelemetryURL` (`https://gawk.ioio.fi/api/telemetry/v1/ingest`)
+   name the reference fleet, so a first run needs no configuration; the CLI
+   flag, GUI field and env var still override, and **`off` is the opt-out
+   because blank is taken** (blank = "follow the default", the R9
+   `-metrics-addr off` spelling). Two rules worth not re-deriving: blank
+   telemetry resolves **only when the relay is also the default one** — a
+   session's token is an HMAC minted by the relay it connected to, so a
+   self-hosted relay's batch could not be verified elsewhere anyway, and
+   silently POSTing a private deployment's data to a third party is the wrong
+   default even when it is discarded — and **resolution happens at use, never
+   at save**, so a moved fleet address is not pinned by whatever each user's
+   config captured (a test asserts `Save` writes neither constant).
+   `Reporter.SetURL` makes the endpoint re-readable per `Start` (a settings
+   field that needed an app restart would not be a setting), with queued
+   batches keeping the endpoint they were *produced* for. Zero wire, relay,
+   service, viewer and `gawk-app` changes.
    **The viewer names its own session (2026-07-27, docs/33 §4.13)**: the mirror
    image of §4.12's find-a-broadcast-by-its-code. D8 makes every viewer on the
    dashboard anonymous by construction, so an operator on a call with a
