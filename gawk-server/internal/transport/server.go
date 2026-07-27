@@ -748,6 +748,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Connection("publish", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
 
+	// R29 (docs/34 §4.4): tell the producer what this fleet supports, so it
+	// knows whether to emit parity and at what level. Best-effort like the
+	// telemetry hello below — a producer that never receives it emits no
+	// parity, which is exactly the pre-R29 behaviour, so a failure here
+	// degrades the stream's loss resilience but never costs the broadcast.
+	s.sendRelayCapabilities(sess, log)
+
 	// R28 TM1: hand this session its telemetry identity and record the same
 	// handle on the hub, so /statusz's publisherSessionId joins the
 	// broadcaster's own reports. Sent last of the three uni messages — a
@@ -776,6 +783,31 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		pub.HandleDatagram(dgram)
+	}
+}
+
+// sendRelayCapabilities tells a client which optional features this fleet
+// supports (R29, docs/34 §4.4). Best-effort by design: a client that never
+// receives it behaves exactly as it did before R29 — the producer emits no
+// parity and the viewer requests none — so a failure degrades resilience
+// without breaking anything.
+//
+// Nothing is sent at all when the fleet level is 0, which is what makes
+// `parity.defaultLevel: 0` byte-identical to a relay predating the feature.
+func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Logger) {
+	if s.cfg.ParityDefault <= 0 {
+		return
+	}
+	msg, err := wire.AppendRelayCapabilities(nil, wire.RelayCapabilities{
+		Flags:       wire.CapParityChunks,
+		ParityLevel: uint8(s.cfg.ParityDefault),
+	})
+	if err != nil {
+		log.Warn("relay capabilities encode failed", "err", err)
+		return
+	}
+	if err := sendUniMessage(sess, msg); err != nil {
+		log.Warn("relay capabilities send failed", "err", err)
 	}
 }
 
@@ -961,6 +993,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// degrades to a working mode.
 	reliable := r.URL.Query().Get("delivery") == "reliable"
 	mode, bufferMs := hub.NegotiateDelivery(reliable, r.URL.Query().Get("buffer"), s.cfg.DVRWindow)
+	// R29 (docs/34 §5.1): ?parity=0|1|2 opts a live-edge viewer down from the
+	// fleet default. Carrier modes are served 0 regardless — their deltas ride
+	// QUIC retransmission, so parity would be pure egress waste.
+	parityRequested, parityServed := hub.NegotiateParity(
+		r.URL.Query().Get("parity"), s.cfg.ParityDefault, mode != wire.DeliveryDatagrams)
 	adapter := &webtransportSessionAdapter{sess}
 	var sub *hub.Subscriber
 	switch mode {
@@ -969,7 +1006,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	case wire.DeliveryReliable:
 		sub, err = s.registry.SubscribeReliable(id, adapter)
 	default:
-		sub, err = s.registry.Subscribe(id, adapter)
+		sub, err = s.registry.SubscribeParity(id, adapter, parityServed)
 	}
 	if err != nil {
 		s.log.Warn("subscribe rejected after upgrade", "id", id, "remote", sess.RemoteAddr(), "err", err)
@@ -995,6 +1032,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)
 	if reliable {
 		log = log.With("delivery", "reliable")
+	}
+	if parityRequested != parityServed || parityServed > 0 {
+		log = log.With("parity_requested", parityRequested, "parity_served", parityServed)
 	}
 	if mode == wire.DeliveryDVR {
 		log = log.With("delivery", "dvr", "buffer_ms", bufferMs)
@@ -1032,6 +1072,10 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+	// R29: the viewer is told the fleet level too, so its overlay can show
+	// "requested 2 / active 1" rather than leaving a refusal invisible.
+	s.sendRelayCapabilities(sess, log)
+
 	// R28 TM1: the viewer half of the correlation ID. Best-effort, and after
 	// the delivery ack — a subscriber whose hello fails still watches, it just
 	// never reports, which the dashboard shows as unknown rather than ok.

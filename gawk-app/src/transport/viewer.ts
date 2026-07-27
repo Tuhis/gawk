@@ -1127,6 +1127,10 @@ export class ViewerPipeline {
       framesCompleted: reasm?.framesCompleted ?? 0,
       framesDroppedIncomplete: reasm?.framesDroppedIncomplete ?? 0,
       framesDroppedLate: reasm?.framesDroppedLate ?? 0,
+      // R29 (docs/34 §7.1): what parity actually bought this viewer.
+      parityChunksReceived: reasm?.parityChunksReceived ?? 0,
+      framesRecoveredByParity: reasm?.framesRecoveredByParity ?? 0,
+      parityRecoveryFailures: reasm?.parityRecoveryFailures ?? 0,
       decodedFrames: this.decodedFrames,
       decoderQueueDepth: (this.decoder?.queueSize ?? 0) + this.pendingDecodes,
       decoderFps,

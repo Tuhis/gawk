@@ -206,6 +206,24 @@ config:
   # and read avPlayheadAdvance (~1.0 = the worklet is not starving) and the
   # audio packet rate (50/s) before making it fleet policy.
   liveEdgeAudioOnReliableStream: false
+  # R29 forward parity (docs/34): how many parity symbols producers emit per
+  # delta frame, and the ceiling on what any single subscriber can be served.
+  #
+  # 2 is the default and the recommended setting: it repairs any two lost
+  # chunks of a frame, which on a measured 3% loss link takes GOP freezes from
+  # ~99% to ~0.3% and decoded framerate from 8 to 43 fps. It costs ~22% extra
+  # egress per live-edge viewer, so watch gawk_relay_parity_forwarded_total
+  # against your uplink before assuming it is free at fleet scale.
+  #
+  # Viewers can opt DOWN (1 or 0) from their own menu; they can never opt up,
+  # because a viewer cannot conjure symbols the producer never emitted.
+  # Carrier modes (resilient / deep buffer) are always served 0 — QUIC
+  # retransmission already recovers their loss.
+  #
+  # 0 disables the feature fleet-wide from this one value: no capability is
+  # advertised, so producers emit nothing and the wire is byte-identical to a
+  # relay predating R29.
+  parityDefault: "2"
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers

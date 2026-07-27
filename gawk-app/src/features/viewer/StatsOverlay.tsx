@@ -107,6 +107,16 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Completed', String(stats?.framesCompleted ?? '—')],
         ['Dropped (incomplete)', String(stats?.framesDroppedIncomplete ?? '—')],
         ['Dropped (late)', String(stats?.framesDroppedLate ?? '—')],
+        // R29 (docs/34 §7.1): parity's own line. "Recovered" is the headline —
+        // frames that would have been dropped incomplete and instead decoded.
+        // Zero recovered while chunks arrive means the link is clean, which is
+        // the good case; chunks at zero while the fleet is on means the
+        // producer is not emitting, which is the case worth noticing.
+        ['Parity chunks', String(stats?.parityChunksReceived ?? '—')],
+        ['Parity recovered', String(stats?.framesRecoveredByParity ?? '—')],
+        ...(stats?.parityRecoveryFailures
+          ? ([['Parity too weak', String(stats.parityRecoveryFailures)]] as StatsRow[])
+          : []),
         ['Awaiting keyframe', String(stats?.framesDiscardedAwaitingKey ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],
         ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],

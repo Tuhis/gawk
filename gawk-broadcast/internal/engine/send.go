@@ -61,6 +61,14 @@ type sender struct {
 	// DatagramTooLargeError from this path.
 	chunkPayload int
 
+	// parityLevel is how many R29 parity symbols this producer emits per
+	// delta frame. It is set only by applyCapabilities — the relay decides,
+	// because the relay is what filters symbols per subscriber — and stays 0
+	// against a relay predating R29 or configured off. Guarded by mu: the
+	// capabilities stream lands on the reader goroutine while the pump is
+	// mid-frame.
+	parityLevel int
+
 	// configDatagram is the DecoderConfig, embedded in every keyframe stream
 	// so a delivered keyframe is self-sufficient to decode. It is never sent
 	// as a standalone datagram: that mirrors the browser broadcaster since R8
@@ -480,7 +488,7 @@ func (s *sender) countKeyframeFailed() {
 // sendDelta chunks a non-keyframe AU into datagrams.
 func (s *sender) sendDelta(frameID uint32, au AccessUnit) {
 	for attempt := 0; attempt < 2; attempt++ {
-		dgrams, err := s.chunk(frameID, au)
+		dgrams, parity, err := s.chunkWithParity(frameID, au)
 		if err != nil {
 			s.log.Warn("chunking failed", "err", err)
 			s.countFrameDropped()
@@ -499,6 +507,22 @@ func (s *sender) sendDelta(frameID uint32, au AccessUnit) {
 			s.st.DatagramsSent++
 			s.st.BytesSent += uint64(len(d))
 			s.mu.Unlock()
+		}
+		// R29: parity trails the data chunks — it is useless before the loss
+		// it repairs is known. A parity send failure is NOT a frame failure:
+		// the data chunks are already out, and a viewer without parity is
+		// exactly a pre-R29 viewer, so it must not trigger the re-chunk or
+		// drop path below.
+		if sendErr == nil {
+			for _, d := range parity {
+				if err := relay.SendDatagram(d); err != nil {
+					break
+				}
+				s.mu.Lock()
+				s.st.ParityChunksSent++
+				s.st.ParityBytesSent += uint64(len(d))
+				s.mu.Unlock()
+			}
 		}
 		if sendErr == nil {
 			s.mu.Lock()
@@ -567,6 +591,81 @@ func (s *sender) chunk(frameID uint32, au AccessUnit) ([][]byte, error) {
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// chunkWithParity splits an AU into VideoChunk datagrams and, when the fleet
+// has asked for parity, computes up to parityLevel RAID-6 P/Q symbols over the
+// chunk PAYLOADS (R29, docs/34) — the same rule packetizer.ts follows, and the
+// reason the two producers' bytes are asserted identical in parity_test.go.
+//
+// Parity covers payloads rather than whole datagrams because payloads are what
+// the viewer reassembles. Deltas only: keyframes ride reliable uni streams.
+//
+// A frame needing more than wire.MaxParityDataChunks chunks degrades to plain
+// datagrams instead of erroring — past that bound the Q coefficients wrap and
+// the code stops being MDS, and a ~300 KB delta is not worth failing a
+// broadcast over.
+func (s *sender) chunkWithParity(frameID uint32, au AccessUnit) (dgrams, parity [][]byte, err error) {
+	dgrams, err = s.chunk(frameID, au)
+	if err != nil {
+		return nil, nil, err
+	}
+	level := s.parityLevelNow()
+	if level <= 0 || len(dgrams) > wire.MaxParityDataChunks {
+		return dgrams, nil, nil
+	}
+	payloads := make([][]byte, len(dgrams))
+	for i, d := range dgrams {
+		_, p, err := wire.ParseVideoChunk(d)
+		if err != nil {
+			return nil, nil, err
+		}
+		payloads[i] = p
+	}
+	symbols, err := wire.ComputeParity(payloads, level)
+	if err != nil {
+		// Parity is an enhancement: a frame it cannot cover still ships.
+		return dgrams, nil, nil
+	}
+	parity = make([][]byte, 0, len(symbols))
+	for i, sym := range symbols {
+		d, err := wire.AppendParityChunk(nil, wire.ParityChunkHeader{
+			FrameID:     frameID,
+			ParityIndex: uint8(i),
+			ChunkCount:  uint16(len(dgrams)),
+			FrameBytes:  uint32(len(au.Data)),
+		}, sym)
+		if err != nil {
+			return nil, nil, err
+		}
+		parity = append(parity, d)
+	}
+	return dgrams, parity, nil
+}
+
+// applyCapabilities records what the relay says this fleet supports (R29,
+// docs/34 §4.4). A relay predating R29 sends no capabilities message, so
+// parityLevel stays 0 and nothing is ever emitted; a relay that has the
+// feature but is configured off sends level 0 for the same effect.
+//
+// The CapParityChunks flag is checked separately from the level because the
+// flag is what says the relay FILTERS parity per subscriber. Without it,
+// emitting would spray parity chunks at viewers that cannot parse them.
+func (s *sender) applyCapabilities(c wire.RelayCapabilities) {
+	level := 0
+	if c.Flags&wire.CapParityChunks != 0 {
+		level = int(c.ParityLevel)
+	}
+	s.mu.Lock()
+	s.parityLevel = level
+	s.st.ParityLevel = level
+	s.mu.Unlock()
+}
+
+func (s *sender) parityLevelNow() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.parityLevel
 }
 
 func (s *sender) countFrameDropped() {

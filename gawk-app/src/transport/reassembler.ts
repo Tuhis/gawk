@@ -20,7 +20,8 @@
 // - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
 //   the relay re-emits the config before every keyframe by design.
 
-import { frameIdAhead, parseAudioConfig, parseAudioFrame, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type AudioConfigMessage, type DecoderConfigMessage } from './wire';
+import { MAX_PARITY_SYMBOLS, parseParityChunk, recoverChunks } from './parity';
+import { frameIdAhead, parseAudioConfig, parseAudioFrame, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_PARITY_CHUNK, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type AudioConfigMessage, type DecoderConfigMessage } from './wire';
 
 const MAX_ASSEMBLIES = 8;
 
@@ -70,6 +71,14 @@ export interface ReassemblerStats {
   // story (it conceals them) — this is purely "what arrived".
   audioPacketsReceived: number;
   audioBytesReceived: number;
+  // R29 forward parity (docs/34 §7.1). parityChunksReceived is arrival;
+  // framesRecoveredByParity is the headline "is it working" signal — a frame
+  // that would have been dropped incomplete and instead decoded.
+  // parityRecoveryFailures counts frames where parity was present but there
+  // were more erasures than symbols: routine on a bad link, not a fault.
+  parityChunksReceived: number;
+  framesRecoveredByParity: number;
+  parityRecoveryFailures: number;
 }
 
 interface Assembly {
@@ -79,6 +88,13 @@ interface Assembly {
   payloads: (Uint8Array | null)[];
   received: number;
   bytes: number;
+  // R29: parity symbols held for this frame, indexed by parityIndex, and the
+  // total frame length their headers carry (the only thing that says how long
+  // the short final chunk is). Both stay null/0 until a parity chunk arrives,
+  // so a frame on a fleet with parity off allocates nothing extra.
+  parity: (Uint8Array | null)[] | null;
+  parityHeld: number;
+  frameBytes: number;
 }
 
 export class Reassembler {
@@ -98,6 +114,9 @@ export class Reassembler {
     framesDroppedLate: 0,
     audioPacketsReceived: 0,
     audioBytesReceived: 0,
+    parityChunksReceived: 0,
+    framesRecoveredByParity: 0,
+    parityRecoveryFailures: 0,
   };
 
   constructor(callbacks: ReassemblerCallbacks) {
@@ -144,6 +163,9 @@ export class Reassembler {
         break;
       case TYPE_VIDEO_CHUNK:
         this.pushChunk(dgram);
+        break;
+      case TYPE_PARITY_CHUNK:
+        this.pushParity(dgram);
         break;
       case TYPE_CLOCK_MAPPING:
         this.pushClockMapping(dgram);
@@ -250,6 +272,9 @@ export class Reassembler {
         payloads: new Array<Uint8Array | null>(header.chunkCount).fill(null),
         received: 0,
         bytes: 0,
+        parity: null,
+        parityHeld: 0,
+        frameBytes: 0,
       };
       this.assemblies.set(header.frameId, assembly);
     }
@@ -269,7 +294,96 @@ export class Reassembler {
     if (assembly.received === assembly.chunkCount) {
       this.assemblies.delete(header.frameId);
       this.completeFrame(header.frameId, assembly);
+      return;
     }
+    this.tryRecover(header.frameId, assembly);
+  }
+
+  // R29 (docs/34): a parity symbol for some frame. Held against the assembly
+  // until either the frame completes on its own (parity discarded) or enough
+  // chunks are in to solve for the missing ones.
+  //
+  // Parity for an unknown frame creates the assembly: on a lossy link the
+  // producer's parity can outrun the chunk that would have created it, and
+  // dropping it would waste exactly the symbol the frame needs.
+  private pushParity(dgram: Uint8Array): void {
+    let header, payload: Uint8Array;
+    try {
+      ({ header, payload } = parseParityChunk(dgram));
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    this.stats.parityChunksReceived++;
+
+    let assembly = this.assemblies.get(header.frameId);
+    if (!assembly) {
+      this.evictIfFull();
+      assembly = {
+        // Parity is delta-only by construction (keyframes ride reliable
+        // streams), so a parity-created assembly is never a keyframe. The
+        // timestamp is filled in by the first real chunk — a parity header
+        // deliberately does not carry one (docs/34 §4.2).
+        keyframe: false,
+        timestampUs: 0n,
+        chunkCount: header.chunkCount,
+        payloads: new Array<Uint8Array | null>(header.chunkCount).fill(null),
+        received: 0,
+        bytes: 0,
+        parity: null,
+        parityHeld: 0,
+        frameBytes: 0,
+      };
+      this.assemblies.set(header.frameId, assembly);
+    }
+    if (header.chunkCount !== assembly.chunkCount) {
+      this.stats.badDatagrams++;
+      return;
+    }
+    if (!assembly.parity) assembly.parity = new Array<Uint8Array | null>(MAX_PARITY_SYMBOLS).fill(null);
+    if (header.parityIndex >= assembly.parity.length) {
+      this.stats.badDatagrams++;
+      return;
+    }
+    if (assembly.parity[header.parityIndex] !== null) {
+      this.stats.duplicateChunks++;
+      return;
+    }
+    assembly.parity[header.parityIndex] = payload;
+    assembly.parityHeld++;
+    assembly.frameBytes = header.frameBytes;
+    this.tryRecover(header.frameId, assembly);
+  }
+
+  // Attempts recovery as soon as the erasures are within the symbols held.
+  // Eager by design: waiting would add latency to exactly the frames this
+  // feature exists to save.
+  private tryRecover(frameId: number, assembly: Assembly): void {
+    if (!assembly.parity || assembly.parityHeld === 0) return;
+    const missing = assembly.chunkCount - assembly.received;
+    if (missing <= 0 || missing > assembly.parityHeld) return;
+    // A frame whose only arrivals are parity has no timestamp yet; without it
+    // the decoder cannot be fed, so wait for a real chunk.
+    if (assembly.received === 0) return;
+    try {
+      recoverChunks(assembly.payloads, assembly.parity, assembly.frameBytes);
+    } catch {
+      // Routine on a bad link (more erasures than symbols, or a header that
+      // cannot describe the block) — never fatal, and the frame stays held so
+      // a straggler chunk can still complete it.
+      this.stats.parityRecoveryFailures++;
+      return;
+    }
+    let bytes = 0;
+    for (const p of assembly.payloads) {
+      if (!p) return; // recovery did not fill everything; leave it held
+      bytes += p.length;
+    }
+    assembly.received = assembly.chunkCount;
+    assembly.bytes = bytes;
+    this.assemblies.delete(frameId);
+    this.stats.framesRecoveredByParity++;
+    this.completeFrame(frameId, assembly);
   }
 
   private completeFrame(frameId: number, assembly: Assembly): void {

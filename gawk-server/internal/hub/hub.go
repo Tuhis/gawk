@@ -247,6 +247,12 @@ type Options struct {
 	// avPlayheadAdvance and the audio packet rate. Video is untouched either
 	// way: live-edge deltas stay unreliable datagrams, which is the mode.
 	LiveEdgeAudioOnReliableStream bool
+	// ParityDefault is the fleet's R29 forward-parity level (docs/34 §5.3):
+	// how many parity symbols producers are asked to emit per delta frame,
+	// and the ceiling on what any subscriber can be served. 0 disables the
+	// feature fleet-wide from one value — no capability is advertised, so
+	// producers emit nothing and the wire is byte-identical to pre-R29.
+	ParityDefault int
 
 	// DVRMaxCatchup caps how much faster than live a recovering DVR subscriber
 	// may send, as a multiple of the broadcast's own bitrate (docs/26
@@ -351,7 +357,12 @@ type SubscriberStats struct {
 	// Reliable marks an R19 resilient subscriber: deltas are delivered as
 	// records on carrier streams instead of datagrams (docs/24). The carrier
 	// counters below are zero (and omitted) for datagram subscribers.
-	Reliable              bool   `json:"reliable,omitempty"`
+	Reliable bool `json:"reliable,omitempty"`
+	// R29 (docs/34 §7.1): served vs. asked for. They differ when the fleet
+	// emits less than the viewer wanted, or when delivery mode suppressed it —
+	// which a single number could not distinguish from a deliberate opt-down.
+	ParityK               int    `json:"parityK,omitempty"`
+	ParityRequested       int    `json:"parityRequested,omitempty"`
 	CarrierStreams        uint64 `json:"carrierStreams,omitempty"`
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
@@ -422,6 +433,12 @@ type Stats struct {
 	IngressChunksLost    uint64            `json:"ingressChunksLost"`    // missing chunks of frames that did arrive
 	SubscriberDetails    []SubscriberStats `json:"subscriberDetails"`
 
+	// R29 forward parity (docs/34 §7.2): symbols forwarded vs. suppressed for
+	// this broadcast. Omitted when zero, so a fleet with parity off keeps
+	// /statusz byte-identical to pre-R29.
+	ParityDatagramsForwarded uint64 `json:"parityDatagramsForwarded,omitempty"`
+	ParitySuppressed         uint64 `json:"paritySuppressed,omitempty"`
+
 	// R19 reliable delivery (docs/24 Decision 10).
 	ReliableSubscribers   int    `json:"reliableSubscribers"`   // live local subscribers in reliable mode
 	CarrierStreams        uint64 `json:"carrierStreams"`        // carrier streams opened
@@ -483,6 +500,10 @@ type TotalStats struct {
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"`
 	CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow"`
 	EgressCarrierBytes    uint64 `json:"egressCarrierBytes"`
+	// R29 (docs/34 §7.2): fleet-wide parity forwarding, so the cost of the
+	// default level is measurable. Omitted when zero.
+	ParityDatagramsForwarded uint64 `json:"parityDatagramsForwarded,omitempty"`
+	ParitySuppressed         uint64 `json:"paritySuppressed,omitempty"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -633,7 +654,12 @@ type broadcastHub struct {
 	carrierRecords        uint64
 	carrierRecordsDropped uint64
 	carrierQueueOverflow  uint64
-	egressCarrierBytes    uint64
+	// R29: symbols actually forwarded, and symbols dropped because the
+	// subscriber's k was lower. Together they make the fleet cost of the
+	// default level measurable rather than modelled (docs/34 §7.2).
+	parityDatagramsForwarded uint64
+	paritySuppressed         uint64
+	egressCarrierBytes       uint64
 }
 
 type bandwidthLimiter struct {
@@ -1249,6 +1275,18 @@ type subscribeOpts struct {
 	reliable bool
 	dvr      bool
 	bufferMs int
+	// R29: symbols served / symbols asked for. Resolved by NegotiateParity at
+	// the transport layer, so the hub never re-derives policy.
+	parityK         int
+	parityRequested int
+}
+
+// SubscribeParity subscribes a datagram-delivery viewer served parityK
+// forward-parity symbols per delta frame (R29, docs/34). parityK is the
+// already-negotiated SERVED level — see NegotiateParity, which owns the
+// clamping policy so the hub never re-derives it.
+func (r *Registry) SubscribeParity(id string, conn Conn, parityK int) (*Subscriber, error) {
+	return r.subscribeOpts(id, conn, subscribeOpts{parityK: parityK, parityRequested: parityK})
 }
 
 func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Subscriber, error) {
@@ -1285,9 +1323,12 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		sender:   conn,
 		internal: internal,
 		reliable: reliable,
-		queue:    make(chan []byte, r.opts.QueueDepth),
-		done:     make(chan struct{}),
-		statsKey: newSubscriberStatsKey(),
+
+		parityK:         so.parityK,
+		parityRequested: so.parityRequested,
+		queue:           make(chan []byte, r.opts.QueueDepth),
+		done:            make(chan struct{}),
+		statsKey:        newSubscriberStatsKey(),
 	}
 	// The audio lane: always for reliable delivery, and for live-edge viewers
 	// only when the operator has opted in. An edge session is excluded on
@@ -1464,6 +1505,8 @@ func (r *Registry) Stats() RegistryStats {
 				DVRLagMs:              s.dvrLagMs.Load(),
 				DVRGopSeq:             s.dvrGopSeq.Load(),
 				DVRResyncs:            s.dvrResyncs.Load(),
+				ParityK:               s.parityK,
+				ParityRequested:       s.parityRequested,
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -1478,6 +1521,8 @@ func (r *Registry) Stats() RegistryStats {
 		totals.CarrierRecordsDropped += carDropped
 		totals.CarrierQueueOverflow += carOverflow
 		totals.EgressCarrierBytes += egressCar
+		totals.ParityDatagramsForwarded += b.parityDatagramsForwarded
+		totals.ParitySuppressed += b.paritySuppressed
 
 		var graceRemaining int
 		if !b.publisherActive && !b.graceStart.IsZero() {
@@ -1510,6 +1555,8 @@ func (r *Registry) Stats() RegistryStats {
 			CarrierRecords:            carRecords,
 			CarrierRecordsDropped:     carDropped,
 			CarrierQueueOverflow:      carOverflow,
+			ParityDatagramsForwarded:  b.parityDatagramsForwarded,
+			ParitySuppressed:          b.paritySuppressed,
 			DVRSubscribers:            dvrSubs,
 			DVRRingBytes:              ringBytes,
 			DVRRingGops:               ringGops,
@@ -1786,6 +1833,16 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 		p.relayVideoChunk(hdr, dgram)
 	case wire.TypeDecoderConfig:
 		if _, err := wire.ParseDecoderConfig(dgram); err != nil {
+			b.countBad()
+			return
+		}
+		p.relayDatagram(dgram)
+	case wire.TypeParityChunk:
+		// R29: validated then relayed verbatim. Deliberately NOT routed
+		// through relayVideoChunk — that path counts frames and feeds the R9
+		// ingress-loss window, and a parity datagram entering either would
+		// corrupt both.
+		if _, _, err := wire.ParseParityChunk(dgram); err != nil {
 			b.countBad()
 			return
 		}
@@ -2087,9 +2144,33 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	if b.dvrAudio != nil && isAudioDatagram(dgram) {
 		b.dvrAudio.Append(dgram, time.Now())
 	}
+	// R29: parity is served as a per-subscriber PREFIX. The symbols are the
+	// producer's bytes, shared across the fan-out exactly like data chunks —
+	// the relay computes nothing, so this costs one comparison per subscriber
+	// and never varies CPU with subscriber count (docs/34 §5.1).
+	if idx := parityIndexIfParity(dgram); idx >= 0 {
+		for s := range b.subs {
+			if idx < s.parityK {
+				s.enqueueLocked(dgram)
+				b.parityDatagramsForwarded++
+			} else {
+				b.paritySuppressed++
+			}
+		}
+		return
+	}
 	for s := range b.subs {
 		s.enqueueLocked(dgram)
 	}
+}
+
+// parityIndexIfParity returns the symbol index when dgram is a parity chunk,
+// else -1, so fanOutLocked's hot path pays a single type peek.
+func parityIndexIfParity(dgram []byte) int {
+	if !isParityDatagram(dgram) {
+		return -1
+	}
+	return parityIndexOf(dgram)
 }
 
 // Subscriber is one viewer's handle.
@@ -2130,6 +2211,14 @@ type Subscriber struct {
 	// queued datagrams as records on per-GOP carrier streams and never calls
 	// SendDatagram. Fixed at subscribe time — changing mode is a reconnect.
 	reliable bool
+	// parityK is how many R29 parity symbols this subscriber is SERVED
+	// (docs/34 §5.1): the fan-out forwards symbols with index < parityK and
+	// drops the rest. 0 for reliable/DVR subscribers (their deltas ride QUIC
+	// retransmission, so parity is waste) and whenever the fleet is off.
+	// parityRequested is what the viewer ASKED for, kept only so /statusz can
+	// show a refusal rather than silently serving less.
+	parityK         int
+	parityRequested int
 
 	// downstreamViewers is the local viewer count this INTERNAL (edge)
 	// subscriber last reported up (R18, docs/23 Decision 5b); always 0 for

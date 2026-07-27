@@ -75,6 +75,7 @@ func run() error {
 		"dvr_max_catchup", cfg.DVRMaxCatchup,
 		"dvr_audio", cfg.DVRAudio,
 		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
+		"parity_default", cfg.ParityDefault,
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
@@ -188,7 +189,11 @@ func registryOptions(cfg config.Config) hub.Options {
 		DVRMaxCatchup:                 cfg.DVRMaxCatchup,
 		DVRAudio:                      cfg.DVRAudio,
 		LiveEdgeAudioOnReliableStream: cfg.LiveEdgeAudioOnReliableStream,
-		StatsKey:                      cfg.StatsKey,
+		// R29: plumbed here, not only into the test helper — the R2
+		// post-implementation review's finding, and docs/34's FP4 acceptance
+		// criterion asserts this production path specifically.
+		ParityDefault: cfg.ParityDefault,
+		StatsKey:      cfg.StatsKey,
 	}
 }
 

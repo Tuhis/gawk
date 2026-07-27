@@ -42,6 +42,12 @@ const (
 	// identity like any other client — so unlike the carrier/audio vectors
 	// above this is coupling on a message this module actually parses.
 	goldenTelemetryHelloHex = "010d0107d000012345000102030405060708090a0ba1a2a3a4a5a6a7a81a2b3c4d5e6f"
+	// R29 forward parity (docs/34). This module DOES send parity chunks — it
+	// is a producer — and it DOES parse RelayCapabilities, which is what gates
+	// whether it sends them at all. So unlike the carrier/audio vectors above,
+	// both of these are coupling on messages this module actually uses.
+	goldenParityChunkHex       = "010e01020304010009000021c0deadbeef"
+	goldenRelayCapabilitiesHex = "010f000102"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -325,5 +331,62 @@ func TestGoldenTelemetryHello(t *testing.T) {
 	}
 	if hex.EncodeToString(h.BroadcastKey) != "1a2b3c4d5e6f" {
 		t.Errorf("broadcastKey = %x, want 1a2b3c4d5e6f", h.BroadcastKey)
+	}
+}
+
+// --- R29 forward parity ----------------------------------------------------
+
+func TestGoldenParityChunk(t *testing.T) {
+	got, err := wire.AppendParityChunk(nil, wire.ParityChunkHeader{
+		FrameID:     0x01020304,
+		ParityIndex: 1,
+		ChunkCount:  9,
+		FrameBytes:  8640,
+	}, []byte{0xde, 0xad, 0xbe, 0xef})
+	if err != nil {
+		t.Fatalf("AppendParityChunk: %v", err)
+	}
+	if want := mustHex(t, goldenParityChunkHex); !bytes.Equal(got, want) {
+		t.Errorf("ParityChunk bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+}
+
+func TestGoldenRelayCapabilities(t *testing.T) {
+	got, err := wire.AppendRelayCapabilities(nil, wire.RelayCapabilities{
+		Flags:       wire.CapParityChunks,
+		ParityLevel: 2,
+	})
+	if err != nil {
+		t.Fatalf("AppendRelayCapabilities: %v", err)
+	}
+	if want := mustHex(t, goldenRelayCapabilitiesHex); !bytes.Equal(got, want) {
+		t.Errorf("RelayCapabilities bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	// The producer reads this message; a parse regression would silently
+	// disable parity fleet-wide rather than fail loudly.
+	back, err := wire.ParseRelayCapabilities(got)
+	if err != nil {
+		t.Fatalf("ParseRelayCapabilities: %v", err)
+	}
+	if back.ParityLevel != 2 || back.Flags&wire.CapParityChunks == 0 {
+		t.Errorf("round trip = %+v, want parity level 2 with CapParityChunks set", back)
+	}
+}
+
+// TestParityFullPayloadFitsDatagram pins the sizing rule this module depends
+// on: a full delta chunk is MaxChunkPayload, so its parity symbol is too, and
+// the resulting datagram must still fit MaxDatagramSize. This is why the
+// parity header is 13 bytes and not 20 (docs/34 §4.2).
+func TestParityFullPayloadFitsDatagram(t *testing.T) {
+	got, err := wire.AppendParityChunk(nil, wire.ParityChunkHeader{
+		FrameID:    1,
+		ChunkCount: 9,
+		FrameBytes: 9 * wire.MaxChunkPayload,
+	}, bytes.Repeat([]byte{0x5a}, wire.MaxChunkPayload))
+	if err != nil {
+		t.Fatalf("AppendParityChunk: %v", err)
+	}
+	if len(got) > wire.MaxDatagramSize {
+		t.Errorf("full-payload parity datagram is %d bytes, exceeds MaxDatagramSize %d", len(got), wire.MaxDatagramSize)
 	}
 }

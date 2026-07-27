@@ -60,6 +60,16 @@ type Stats struct {
 	// that visible. Available is false until two keyframes have arrived.
 	KeyframeIntervalAvailable bool    `json:"keyframeIntervalAvailable"`
 	KeyframeIntervalMs        float64 `json:"keyframeIntervalMs"`
+
+	// ParityLevel is how many R29 forward-parity symbols this producer emits
+	// per delta frame (docs/34). It mirrors the browser's
+	// BroadcastStats.parityLevel: the level the RELAY advertised, not a local
+	// preference — a producer cannot choose to protect a stream the fleet has
+	// not asked it to, because the relay is what filters symbols per
+	// subscriber. 0 against a relay predating R29 or configured off.
+	ParityLevel      int    `json:"parityLevel"`
+	ParityChunksSent uint64 `json:"parityChunksSent"`
+	ParityBytesSent  uint64 `json:"parityBytesSent"`
 	// SentFrames counts frames whose bytes reached the transport without
 	// error — R9's funnel stage 4, "actually sent".
 	SentFrames uint64 `json:"sentFrames"`

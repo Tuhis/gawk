@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // Telemetry reporting-cadence bounds (R28, docs/33). The floor is the client
@@ -154,6 +156,18 @@ type Config struct {
 	// its RTT. Measure before flipping it fleet-wide.
 	LiveEdgeAudioOnReliableStream bool
 
+	// ParityDefault is the fleet's R29 forward-parity level (docs/34 §5.3):
+	// how many parity symbols producers emit per delta frame, and the ceiling
+	// on what any subscriber can be served. Default 2 — the owner's
+	// quality-first call: a viewer gets full protection without finding a
+	// menu, at ~22% egress, and the menu offers only opt-DOWN because a
+	// viewer cannot conjure symbols the producer never emitted.
+	//
+	// 0 disables the feature fleet-wide from one value: no capability is
+	// advertised, so producers emit nothing and the wire is byte-identical
+	// to a relay predating R29.
+	ParityDefault int
+
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
 	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
@@ -237,6 +251,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"put audio in the DVR ring too, on its own stream (R21 DV5); off leaves audio live-edge")
 	liveEdgeAudioOnReliableStream := fs.Bool("live-edge-audio-on-reliable-stream", envBool("GAWK_LIVE_EDGE_AUDIO_ON_RELIABLE_STREAM", false),
 		"deliver live-edge viewers' audio on its own reliable stream instead of datagrams; video stays unreliable")
+	parityDefault := fs.String("parity-default", env("GAWK_PARITY_DEFAULT", "2"),
+		"forward-parity symbols producers emit per delta frame, and the per-subscriber ceiling (R29); 0 disables fleet-wide")
 	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
@@ -291,6 +307,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	graceDuration, err := time.ParseDuration(*broadcastGrace)
 	if err != nil || graceDuration <= 0 {
 		return Config{}, fmt.Errorf("invalid broadcast-grace %q: want a positive duration", *broadcastGrace)
+	}
+	parityDef, err := strconv.Atoi(*parityDefault)
+	if err != nil || parityDef < 0 || parityDef > wire.MaxParitySymbols {
+		return Config{}, fmt.Errorf("invalid parity-default %q: want an integer in [0, %d]", *parityDefault, wire.MaxParitySymbols)
 	}
 	maxB, err := strconv.Atoi(*maxBroadcasts)
 	if err != nil || maxB < 1 {
@@ -402,6 +422,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		DVRMaxCatchup:                 dvrCatchup,
 		DVRAudio:                      *dvrAudio,
 		LiveEdgeAudioOnReliableStream: *liveEdgeAudioOnReliableStream,
+		ParityDefault:                 parityDef,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,
