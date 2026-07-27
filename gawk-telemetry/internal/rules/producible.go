@@ -97,6 +97,26 @@ var ProducibleFacts = map[string]string{
 	"text.autoRung":        both,
 	"text.Encoder":         both,
 	"text.Codec":           both,
+	// D17: the encoder's committed acceleration and codec. On the live surface
+	// too, because "is this broadcaster encoding in software right now?" is an
+	// operator question, not just a post-mortem one.
+	"text.acceleration": both,
+	"text.codec":        both,
+
+	// --- text, stored-session only -------------------------------------------
+	// Config the ROLLUP derives (resolution, the target trio) or that only a
+	// finished row carries. The live projection reads string fields straight
+	// off the last sample and never computes these, so claiming `both` would
+	// make the live producer fail its own half of the contract.
+	"text.resolution":        readapi,
+	"text.targetFps":         readapi,
+	"text.targetBitrateKbps": readapi,
+	"text.autoCeiling":       readapi,
+	"text.audioCodec":        readapi,
+	"text.CapturePath":       readapi,
+	"text.interpolation":     readapi,
+	"text.presentation":      readapi,
+	"text.avMaster":          readapi,
 }
 
 // The three producer tags. `both` is the common case: the same signal is read
@@ -110,8 +130,12 @@ var ProducibleFacts = map[string]string{
 const (
 	live = "live"
 	both = "live+readapi"
-	// A read-only tag would go here if a fact were ever derivable from a
-	// stored session but not from a scrape. None is today.
+	// readapi is the case this file anticipated and did not yet have: a fact
+	// derivable from a stored session but not from a scrape. The rollup DERIVES
+	// these (a formatted resolution, the target trio) or they are viewer config
+	// the live row does not carry, so the live projection cannot produce them
+	// and must not be asserted to.
+	readapi = "readapi"
 )
 
 // ProducedBy returns the names one producer is expected to emit.

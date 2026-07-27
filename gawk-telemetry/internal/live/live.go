@@ -950,4 +950,8 @@ var liveNumericFields = []string{
 var liveTextFields = []string{
 	"deliveryMode", "playoutMode", "renderer", "pipelineContext", "transport",
 	"audioState", "autoRung", "Encoder", "Codec",
+	// D17: the encoder's committed acceleration and codec. An operator looking
+	// at a broadcaster delivering half its target wants to know whether it is
+	// encoding in software before they look anywhere else.
+	"acceleration", "codec",
 }

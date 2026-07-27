@@ -77,8 +77,15 @@ func (s Severity) Rank() int {
 // Evidence is one number a rule fired on, with its provenance. This is what
 // makes a verdict inspectable instead of asserted.
 type Evidence struct {
-	Signal     string     `json:"signal"`
-	Value      float64    `json:"value"`
+	Signal string  `json:"signal"`
+	Value  float64 `json:"value"`
+	// Text carries evidence whose value is a WORD rather than a number — a
+	// codec, an acceleration mode, a delivery mode. Config is half of what
+	// explains a stream, and before this the only way to cite it was to encode
+	// it into a numeric's Comparison, which made the evidence unparseable by
+	// anything but a human. Additive and omitempty, so stored verdicts from
+	// older releases still load (D4).
+	Text       string     `json:"text,omitempty"`
 	Unit       string     `json:"unit,omitempty"`
 	From       Provenance `json:"from"`
 	Comparison string     `json:"comparison,omitempty"`
