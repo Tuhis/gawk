@@ -241,15 +241,17 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // exactly as before. Sampled once per mount.
   const [gated] = useState(() => !elementFullscreenAvailable());
 
-  const { status, stats, codec, errorKind, errorFatal, retryNote, presentation, audio } =
-    useViewerConnection(
-      broadcastId,
-      canvasRef,
-      playoutMode,
-      interpolation,
-      gated,
-      deliveryMode,
-    );
+  const {
+    status,
+    stats,
+    codec,
+    errorKind,
+    errorFatal,
+    retryNote,
+    telemetrySessionId,
+    presentation,
+    audio,
+  } = useViewerConnection(broadcastId, canvasRef, playoutMode, interpolation, gated, deliveryMode);
 
   const [showStats, setShowStats] = useState(false);
   const [menu, setMenu] = useState<{
@@ -519,12 +521,21 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   }, [broadcastId]);
 
   const copyDiagnostics = useCallback(() => {
-    const json = diagRef.current.build({ surface: 'viewer', broadcastId, codec });
+    // R28: the full 24-hex id travels here, where the overlay row shows only
+    // its first 8 — a pasted blob is what turns "my stream is stuttering" into
+    // a `diagnose(sessionId)` call. The token it derives from does not travel,
+    // and must not: this blob gets pasted into chats.
+    const json = diagRef.current.build({
+      surface: 'viewer',
+      broadcastId,
+      codec,
+      telemetrySessionId,
+    });
     void navigator.clipboard?.writeText(json).then(() => {
       setStatsCopied(true);
       setTimeout(() => setStatsCopied(false), 1800);
     });
-  }, [broadcastId, codec]);
+  }, [broadcastId, codec, telemetrySessionId]);
 
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
   useHotkey({ key: 'f' }, () => toggleFullscreen());
@@ -771,6 +782,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           // U4: the tee/element diagnostics section — gated devices only, so
           // every other viewer's overlay stays exactly as before.
           presentationSurface={gated ? presentationSurface : undefined}
+          telemetrySessionId={telemetrySessionId}
           onClose={() => setShowStats(false)}
           onCopy={copyDiagnostics}
           copied={statsCopied}

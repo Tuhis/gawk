@@ -109,6 +109,52 @@ describe('TelemetryCollector — off means off', () => {
   });
 });
 
+// docs/33 §4.13: the id a viewer reads off its own stats overlay. The property
+// that matters is not the derivation (wire.test.ts pins that) but the gating —
+// the collector names a session only while it is actually reporting one, so an
+// operator handed an id can always expect a dashboard row for it.
+describe('TelemetryCollector — sessionId (§4.13)', () => {
+  it('names the session it is reporting under, and nothing before or after', () => {
+    const h = harness();
+    expect(h.collector.sessionId).toBeNull();
+
+    h.begin();
+    // hex(nonce): the middle 12 bytes of HELLO's token, and the same value the
+    // relay recorded for this session.
+    expect(h.collector.sessionId).toBe('000102030405060708090a0b');
+
+    // A reconnect is a new relay session with a new token — and a new row.
+    h.collector.begin({ ...HELLO, token: '0009abcd' + 'aabbccddeeff001122334455' + '9d4e7750cdf69a2b' });
+    expect(h.collector.sessionId).toBe('aabbccddeeff001122334455');
+
+    h.collector.finish();
+    expect(h.collector.sessionId).toBeNull();
+  });
+
+  it('names no session on a fleet that collects nothing', () => {
+    const h = harness();
+    // The hello is well-formed and its token parses — but nothing is being
+    // collected, so there is no row to point an operator at.
+    h.collector.begin({ ...HELLO, enabled: false });
+    expect(h.collector.sessionId).toBeNull();
+    expect(h.collector.active).toBe(false);
+  });
+
+  it('collects anyway when a token cannot be named (D9)', () => {
+    const h = harness();
+    // Unreachable from the wire (parseTelemetryHello enforces 24 bytes), so
+    // this pins the choice rather than a real case: telemetry must never break
+    // a stream, least of all over a display detail.
+    h.collector.begin({ ...HELLO, token: 'abcd' });
+    expect(h.collector.sessionId).toBeNull();
+    expect(h.collector.active).toBe(true);
+    h.advance(3000);
+    h.collector.sample({ fps: 30 });
+    h.collector.flush(false);
+    expect(h.sent).toHaveLength(1);
+  });
+});
+
 describe('TelemetryCollector — zero PII (D8)', () => {
   it('carries the obfuscated key and coarse client class, never a raw UA', () => {
     const h = harness();

@@ -91,6 +91,12 @@ export interface ViewerConnectionState {
   errorKind: ViewerErrorKind | null;
   errorFatal: boolean;
   retryNote: string | null;
+  // R28: the id this viewer reports under, once a hello has enabled collection
+  // — the join key between what the operator sees on the telemetry dashboard
+  // and the person on the other end of the call. Null on a fleet that collects
+  // nothing (which, from here, is indistinguishable from a relay predating
+  // R28 — see lib/telemetry.ts).
+  telemetrySessionId: string | null;
   presentation: PresentationState;
   audio: AudioState;
 }
@@ -350,6 +356,14 @@ export function useViewerConnection(
   // identically and neither one grows a collection path of its own.
   const telemetry = useTelemetryCollector<ViewerStats>('viewer');
 
+  // R28: the collector's own id, mirrored into render state so the overlay can
+  // show it. Deliberately NOT cleared when the session ends — a viewer reading
+  // their id to an operator over a call is usually doing it *because* the
+  // stream just died, and the dashboard keeps ended sessions in its own group
+  // (docs/33 D14). A reconnect replaces it, because that is a new relay session
+  // with a new token and therefore a new row.
+  const [telemetrySessionId, setTelemetrySessionId] = useState<string | null>(null);
+
   // Shared mapping from a worker event (or a synthesized main-thread event) to
   // view state, so both paths render identically.
   const applyEvent = useCallback((ev: ViewerWorkerEvent) => {
@@ -496,6 +510,10 @@ export function useViewerConnection(
       // collector stays inert and issues zero requests.
       case 'telemetryHello':
         telemetry.begin(ev.hello);
+        // Read back from the collector rather than derived from the hello, so
+        // the overlay can only ever show an id that is actually being reported
+        // under (a disabled fleet carries a token and starts no session).
+        setTelemetrySessionId(telemetry.sessionId);
         break;
     }
   }, [handleAudioChunk, handleAudioReset, telemetry]);
@@ -695,6 +713,7 @@ export function useViewerConnection(
     errorKind,
     errorFatal,
     retryNote,
+    telemetrySessionId,
     presentation: {
       probe: mseProbe,
       audioProbe: mseAudioProbe,

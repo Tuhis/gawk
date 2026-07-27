@@ -1199,6 +1199,48 @@ lives in gawk-server's `internal/hub`), so it is pinned by a **golden vector**
 the way every other mirror in this repo is — verified three ways against the
 real implementation and against `openssl`.
 
+### 4.13 Telling a viewer which session it is (2026-07-27)
+
+§4.12's mirror image. That one gave an operator holding a join code a way to
+find the *broadcast*; this one gives an operator on a voice call a way to find
+the *person* — the actual shape of the problem R28 was built for, where a friend
+says "it keeps stuttering" and the dashboard is showing four viewers on that
+broadcast, all of them anonymous by design (D8: no IP, no UA, no cross-session
+identity). Nothing on either screen connected the two, so the operator was back
+to guessing from the numbers, which is exactly what `diagnose()` exists to stop.
+
+The viewer stats overlay now opens with a **Telemetry → Session id** row.
+
+- **The sessionId, never the token.** They are 24 bytes of one field and the
+  distinction is the whole security argument (§4.2): the sessionId *names* a
+  session — the relay already records the same value in
+  `subscriberDetails[].sessionId`, the ingest re-derives it from the verified
+  token — while the tag is what *authorizes* writing to one. So the id goes on
+  screen and into Copy diagnostics; `lib/telemetry.ts`'s standing rule that the
+  token reaches the ingest endpoint and nowhere else is untouched, and a test
+  pins that the blob never contains it.
+- **Eight characters on screen, twenty-four in the tooltip and the blob.** The
+  dashboard's session column prints `sessionId.slice(0, 8)`, so the row matches
+  it by construction, and eight hex characters is about what a person can read
+  down a phone line. `diagnose()` wants all 24, so the full id rides the
+  tooltip and the Copy-diagnostics JSON.
+- **Only an id that has a row.** The value is read back from the collector, not
+  derived from the hello: a fleet with telemetry off still sends a well-formed
+  token in a hello that starts no session, and naming that would send an
+  operator hunting for a row that cannot exist. No session ⇒ `—`, with the
+  reason in the tooltip.
+- **Kept after the session ends, replaced on reconnect.** A viewer reads their
+  id out *because* the stream just broke, and the dashboard keeps ended sessions
+  in their own group (D14). A reconnect is a new token and a new row, so the
+  row follows it.
+- **First, not last.** The one person who needs the row is being talked through
+  finding it on a phone; it should not be below six sections of funnel counters.
+
+Deliberately viewer-only for now: the broadcaster overlay belongs to the
+operator, who already knows which broadcast is theirs. The same row on that
+surface is a small, obvious follow-up if joining a broadcaster row by hand ever
+becomes the awkward step.
+
 ## 4.10 Dip episodes (D16)
 
 The detector, its facts and its two rules. Named constants throughout, shared

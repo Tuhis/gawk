@@ -585,6 +585,29 @@ export function parseTelemetryHello(msg: Uint8Array): TelemetryHelloMessage {
   };
 }
 
+// The sessionId a token names (R28, docs/33 §4.2): hex of the 12-byte nonce
+// sitting between the 4-byte expiry hour and the 8-byte tag. Mirrors Go's
+// `wire.TelemetrySessionID` — the token's layout is a wire fact, so it gets
+// exactly one definition per language (CODE-REVIEW.md).
+//
+// This is the only part of a token that is ever stored, shown or logged. It
+// NAMES a session on both sides of the join (the relay records the same value
+// as `/statusz subscriberDetails[].sessionId`, the ingest re-derives it from
+// the verified token); it does not authorize writing to one — that is the tag,
+// which stays behind. Which is exactly why a sessionId can be put on screen
+// while the token it came from cannot.
+export const TELEMETRY_NONCE_SIZE = 12;
+export const TELEMETRY_SESSION_ID_LEN = TELEMETRY_NONCE_SIZE * 2;
+
+export function telemetrySessionId(tokenHex: string): string {
+  if (tokenHex.length !== TELEMETRY_SESSION_TOKEN_SIZE * 2 || !/^[0-9a-fA-F]*$/.test(tokenHex)) {
+    throw new WireError(
+      `invalid telemetry token: want ${TELEMETRY_SESSION_TOKEN_SIZE * 2} hex chars, got ${JSON.stringify(tokenHex)}`,
+    );
+  }
+  return tokenHex.slice(8, 8 + TELEMETRY_SESSION_ID_LEN);
+}
+
 function bytesToHex(b: Uint8Array): string {
   let s = '';
   for (const byte of b) s += byte.toString(16).padStart(2, '0');

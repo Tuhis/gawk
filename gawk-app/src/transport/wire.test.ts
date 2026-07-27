@@ -20,7 +20,9 @@ import {
   parseDeliveryAck,
   encodeTelemetryHello,
   parseTelemetryHello,
+  telemetrySessionId,
   TELEMETRY_HELLO_SIZE,
+  TELEMETRY_SESSION_ID_LEN,
   TYPE_VIEWER_COUNT,
   TIME_SYNC_SIZE,
   CLOCK_MAPPING_SIZE,
@@ -784,5 +786,23 @@ describe('TelemetryHello (R28)', () => {
     const base = { enabled: true, reportIntervalMs: 2000, token: GOLDEN_TOKEN, broadcastKey: GOLDEN_KEY };
     expect(() => encodeTelemetryHello({ ...base, token: GOLDEN_TOKEN.slice(2) })).toThrow(WireError);
     expect(() => encodeTelemetryHello({ ...base, broadcastKey: 'zzzzzzzzzzzz' })).toThrow(WireError);
+  });
+
+  // The sessionId projection (docs/33 §4.2). The nonce below is the same one
+  // Go's TestGoldenTelemetrySessionToken mints against, so both languages pin
+  // the same 24 characters — this is the value the relay records, the ingest
+  // re-derives, the dashboard prints and (since docs/33 §4.13) the viewer
+  // overlay shows.
+  it('derives the sessionId a token names, from the nonce alone', () => {
+    expect(telemetrySessionId(GOLDEN_TOKEN)).toBe('000102030405060708090a0b');
+    expect(telemetrySessionId(GOLDEN_TOKEN)).toHaveLength(TELEMETRY_SESSION_ID_LEN);
+    // Neither the expiry hour nor the tag leaks into it: change them and the
+    // id is unmoved — the same session under a re-mint would be a different
+    // session, and the tag is the half that must never be displayed.
+    expect(telemetrySessionId('ffffffff' + GOLDEN_TOKEN.slice(8, 32) + '0'.repeat(16))).toBe(
+      telemetrySessionId(GOLDEN_TOKEN),
+    );
+    expect(() => telemetrySessionId(GOLDEN_TOKEN.slice(2))).toThrow(WireError);
+    expect(() => telemetrySessionId('z'.repeat(48))).toThrow(WireError);
   });
 });

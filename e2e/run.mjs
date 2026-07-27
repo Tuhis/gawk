@@ -261,6 +261,16 @@ function rowValue(page, label) {
     .textContent();
 }
 
+// Same row, its tooltip: where a value too long for the 320 px panel keeps its
+// full form (R16's gate detail, R28's 24-hex session id).
+function rowTitle(page, label) {
+  return page
+    .locator('dt')
+    .filter({ hasText: new RegExp(`^${label}$`) })
+    .locator('xpath=following-sibling::dd')
+    .getAttribute('title');
+}
+
 async function captureDiagnostics(page, name) {
   const before = await page.evaluate(() => window.__gawkClipboard.length);
   // The button flips to "Copied" for ~1.8 s after a click.
@@ -653,7 +663,7 @@ async function browserScenario({
       // away the subscriber is gone and /statusz can no longer be joined
       // against — which is how the first version of this pass managed to
       // "prove" the relay had minted no telemetry identity at all.
-      if (duringDwell) await duringDwell();
+      if (duringDwell) await duringDwell(page);
       await page.goto('about:blank');
       await sleep(1500);
     }
@@ -703,7 +713,7 @@ async function captureRelayView(opsUrl) {
   };
 }
 
-async function assertTelemetryPipe({ readUrl, relayView, id }) {
+async function assertTelemetryPipe({ readUrl, relayView, overlaySession, id }) {
   const problems = [];
   const check = (ok, msg) => {
     if (!ok) problems.push(msg);
@@ -727,6 +737,27 @@ async function assertTelemetryPipe({ readUrl, relayView, id }) {
     typeof relayView.publisherSessionId === 'string' && relayView.publisherSessionId.length === 24,
     `publisherSessionId = ${relayView.publisherSessionId}, want a 24-hex handle`,
   );
+
+  // docs/33 §4.13: the operator-facing half of the same join. Everything below
+  // proves the datasets CAN be joined; this proves a person on a call can
+  // perform the join, because the id is on their screen and it is the relay's.
+  // Read off the live overlay, so it covers the whole path a unit test fakes:
+  // wire 0x0D on a real uni stream → the worker hop → the collector → the row.
+  check(
+    typeof overlaySession?.full === 'string' && relaySessionIds.has(overlaySession.full),
+    `the viewer overlay shows session ${JSON.stringify(overlaySession?.full)}, ` +
+      `which is not one the relay minted ([${[...relaySessionIds].join(', ')}])`,
+  );
+  // And the visible value is the dashboard's own prefix — the eight characters
+  // someone reads down a phone line have to match the column they will be
+  // looked up in.
+  if (typeof overlaySession?.full === 'string') {
+    check(
+      overlaySession.short === `${overlaySession.full.slice(0, 8)}…`,
+      `the overlay shows ${JSON.stringify(overlaySession.short)}, ` +
+        `want the dashboard's prefix ${JSON.stringify(`${overlaySession.full.slice(0, 8)}…`)}`,
+    );
+  }
 
   // The service's view. Poll: the collector flushes on its own schedule and
   // finalize runs on the sweep. pollFor is a predicate (it returns nothing),
@@ -846,7 +877,8 @@ async function assertTelemetryPipe({ readUrl, relayView, id }) {
   }
   log(
     `telemetry pipe ok: ${sessions.length} stored session(s), ` +
-      `${joined.length} joined to the relay's own view by sessionId`,
+      `${joined.length} joined to the relay's own view by sessionId; ` +
+      `the viewer's own overlay named ${overlaySession?.short} (${overlaySession?.full})`,
   );
   void id;
 }
@@ -1343,16 +1375,25 @@ async function main() {
       // a shorter one would assert on a batch that was never due.
       log(`running the telemetry viewer pass (dwell ${TELEMETRY_DWELL_MS / 1000}s for two flushes)`);
       let relayView = null;
+      let overlaySession = null;
       await runViewer('telemetry', MAX_RESILIENT_RETRIES, {
         telemetryUrl: `http://127.0.0.1:${TM_INGEST_PORT}/v1/ingest`,
         dwellMs: TELEMETRY_DWELL_MS,
-        duringDwell: async () => {
+        duringDwell: async (page) => {
           relayView = await captureRelayView(opsUrl);
+          // Both halves of the §4.13 row, captured while the session is still
+          // attached (same reason as the relay view above): the tooltip's full
+          // 24-hex id and the eight characters actually on screen.
+          overlaySession = {
+            full: (await rowTitle(page, 'Session id'))?.trim() ?? null,
+            short: (await rowValue(page, 'Session id'))?.trim() ?? null,
+          };
         },
       });
       await assertTelemetryPipe({
         readUrl: `http://127.0.0.1:${TM_READ_PORT}`,
         relayView,
+        overlaySession,
         id,
       });
       if (opsUrl) await assertRelaySide(opsUrl);
