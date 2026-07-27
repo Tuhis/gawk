@@ -96,3 +96,20 @@
   text-align: right;
   height: 12px; /* reserved */
 }
+
+/*
+  A shaded span means "the lines here describe something other than the stream"
+  — a backgrounded tab, whose rAF the browser stopped firing. Deliberately low
+  contrast: it qualifies the data, it does not compete with it. The legend
+  entry carries the WORDS, so the meaning survives a greyscale screenshot.
+*/
+.shade {
+  fill: var(--text-dimmer);
+  opacity: 0.16;
+}
+
+.shadeSwatch {
+  height: 8px;
+  background: var(--text-dimmer);
+  opacity: 0.4;
+}

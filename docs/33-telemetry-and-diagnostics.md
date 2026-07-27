@@ -1244,7 +1244,6 @@ The construction is a mirror of code this module cannot import (`ObfuscateID`
 lives in gawk-server's `internal/hub`), so it is pinned by a **golden vector**
 the way every other mirror in this repo is — verified three ways against the
 real implementation and against `openssl`.
-
 ### 4.13 Telling a viewer which session it is (2026-07-27)
 
 §4.12's mirror image. That one gave an operator holding a join code a way to
@@ -1286,6 +1285,55 @@ Deliberately viewer-only for now: the broadcaster overlay belongs to the
 operator, who already knows which broadcast is theirs. The same row on that
 surface is a small, obvious follow-up if joining a broadcaster row by hand ever
 becomes the awkward step.
+
+### 4.14 Tab visibility (2026-07-27)
+
+A viewer whose tab is in the background reports `renderedFps: 0` while decode
+carries on perfectly: the browser stops firing rAF. Nothing in the data could
+tell that apart from a rendering failure, because the difference is not in any
+number — it is a fact only the document knows.
+
+**What was actually at risk, stated precisely, because the obvious answer is
+wrong.** No rule reads `renderedFps`, and the dip detector runs on
+`receivedFps`/`sentFps` (§4.10), so a backgrounded viewer has never produced a
+false verdict. The real exposure is the **permanent rollup row** (D4): a session
+where the tab was minimised for half its life recorded a `renderedFps` median
+describing tab state rather than rendering, on the one artifact that is never
+pruned. Second is the human reading the dashboard, who saw a cliff with no
+explanation. Third is any rule added later that reads a presentation series.
+
+The signal is two fields on both `ViewerStats` and `BroadcastStats`:
+`documentHidden` (state at the instant of the sample) and `documentHiddenMs`
+(**cumulative**). The counter is what makes an interval answerable — a sample is
+an instant, but every rate in these stats is measured over the gap between
+samples, so "hidden right now" cannot say whether the window that produced a
+number was clean. Counter-deltas are already how the live projection and the
+rollup read this class of signal (TM10), so it composes with machinery that
+exists. Collected on the main thread, because `document` does not exist in a
+worker — which keeps D13 intact: no worker message, on either surface.
+
+**The two roles are treated oppositely, and getting this backwards would hide a
+real fault.** For a *viewer*, a hidden window is not evidence of anything wrong
+— nothing was supposed to be rendered — so hidden samples are excluded from the
+viewer's **presentation** series (`renderedFps`, `renderCadenceP95Ms`) and from
+nothing else: received, decoded, jitter and latency all kept being measured by
+the worker, and filtering those would be the same error in the other direction.
+For a *broadcaster*, a hidden tab is throttled by the browser, so it genuinely
+sends fewer frames and **every viewer sees it** — that is a fault to explain,
+never one to filter away. No broadcaster series is filtered, and a test pins the
+difference.
+
+Absent visibility fields mean *keep the sample*: every client predating the
+signal reports nothing, and dropping their data would silently empty the series
+for the entire installed base. A session spent wholly in the background
+therefore has **no** presentation series rather than a confident zero — "not
+measured" and "measured, and it was zero" are different claims, and only the
+second is evidence.
+
+The dashboard shades hidden spans on the timeline and names them in the legend,
+so the collapse reads as a fact rather than a mystery. The shading is
+low-contrast by design: it qualifies the data, it does not compete with it, and
+the words carry the meaning if the tint does not survive a screenshot.
 
 ## 4.10 Dip episodes (D16)
 

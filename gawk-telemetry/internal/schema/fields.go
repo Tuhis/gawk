@@ -27,19 +27,25 @@ var ViewerFields = map[string]Kind{
 	// every field of that interface belongs here too — the four counters
 	// below were missing until the e2e pass measured a real client and found
 	// them arriving as "unknown" on every sample.
-	"framesCompleted":            KindNumber,
-	"badDatagrams":               KindNumber,
-	"duplicateChunks":            KindNumber,
-	"duplicateConfigs":           KindNumber,
-	"framesAssembled":            KindNumber,
-	"framesDroppedIncomplete":    KindNumber,
-	"framesDroppedLate":          KindNumber,
-	"datagramsReceived":          KindNumber,
-	"receivedFps":                KindNumber,
-	"decodedFrames":              KindNumber,
-	"decoderQueueDepth":          KindNumber,
-	"decoderFps":                 KindNumber,
-	"renderedFps":                KindNumber,
+	"framesCompleted":         KindNumber,
+	"badDatagrams":            KindNumber,
+	"duplicateChunks":         KindNumber,
+	"duplicateConfigs":        KindNumber,
+	"framesAssembled":         KindNumber,
+	"framesDroppedIncomplete": KindNumber,
+	"framesDroppedLate":       KindNumber,
+	"datagramsReceived":       KindNumber,
+	"receivedFps":             KindNumber,
+	"decodedFrames":           KindNumber,
+	"decoderQueueDepth":       KindNumber,
+	"decoderFps":              KindNumber,
+	"renderedFps":             KindNumber,
+	// Was this tab in the background, and cumulatively for how long? A hidden
+	// tab stops firing rAF, so renderedFps falls to 0 while decode carries on —
+	// a difference visible in no other number. Typed here so it feeds the
+	// rollup's presentation filter rather than arriving as an unknown.
+	"documentHidden":             KindBool,
+	"documentHiddenMs":           KindNumber,
 	"configsApplied":             KindNumber,
 	"framesDiscardedAwaitingKey": KindNumber,
 	"lastDecodeLatencyMs":        KindNumber,

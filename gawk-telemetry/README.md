@@ -212,6 +212,27 @@ Asset filenames are **stable, not content-hashed**: the page is served
 that lies about what it is measuring), which removes the only thing hashing
 would buy, and stable names mean a rebuild overwrites in place.
 
+### Tab visibility
+
+Every session reports `documentHidden` and a cumulative `documentHiddenMs`. A
+hidden tab stops firing rAF, so a viewer's `renderedFps` falls to 0 while decode
+carries on — a difference visible in no other number.
+
+The two roles are handled **oppositely**, and it matters:
+
+- A **viewer**'s hidden window is not evidence of anything wrong; nothing was
+  supposed to be rendered. Hidden samples are excluded from the viewer's
+  presentation series (`renderedFps`, `renderCadenceP95Ms`) in the permanent
+  rollup, and from nothing else — received, decoded, jitter and latency all kept
+  being measured by the worker.
+- A **broadcaster**'s hidden tab is throttled by the browser, so it genuinely
+  sends fewer frames and every viewer sees it. Nothing is filtered; the fact is
+  recorded so the collapse can be *explained*.
+
+A session spent wholly in the background has **no** presentation series rather
+than a zero, and clients predating the signal are never dropped from a series
+for failing to report it.
+
 ### Two traps worth knowing
 
 - **Chrome throttles a background tab's timers to ~1/min.** A dashboard left in

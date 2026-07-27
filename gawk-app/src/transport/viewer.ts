@@ -314,6 +314,20 @@ export interface ViewerStats extends ReassemblerStats {
   presentationMux?: PresentationMuxStats;
   featureGates?: FeatureGate[];
   presentationSurface?: PresentationSurfaceStats;
+  // R28 follow-up: was the tab in the background, and for how long?
+  //
+  // A hidden tab stops firing rAF, so renderedFps falls to 0 while decode
+  // carries on perfectly — a difference that is not visible in any other
+  // number. `documentHiddenMs` is CUMULATIVE so a reader can take a delta
+  // between two samples and get the hidden share of the interval that produced
+  // a rate; "hidden right now" alone cannot answer that, because a sample is an
+  // instant and every rate here is measured over a window.
+  //
+  // Attached on the main thread (the pipeline runs in a worker, where
+  // `document` does not exist), like featureGates and presentationSurface.
+  documentHidden?: boolean;
+  documentHiddenMs?: number;
+
   // R15 (docs/20 field finding 6): the audio jitter-buffer's own counters.
   // Like featureGates/presentationSurface the pipeline never sets these — the
   // AudioSink lives on the main thread, so the viewer connection merges them in

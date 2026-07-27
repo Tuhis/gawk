@@ -167,6 +167,20 @@ export interface BroadcastStats {
   // beside the targets rather than in the funnel.
   codec: string | null;
   acceleration: string | null;
+  // R28 follow-up: was the tab in the background, and for how long?
+  //
+  // A backgrounded broadcaster is not the same failure as a stalled one — the
+  // browser throttles a hidden tab, so capture and encode rates fall for a
+  // reason that is nothing to do with the pipeline. `documentHiddenMs` is
+  // CUMULATIVE so a reader can take a delta between two samples and get the
+  // hidden share of the interval that produced a rate; "hidden right now"
+  // alone cannot answer that, because a sample is an instant and every rate
+  // here is measured over a window.
+  //
+  // Attached on the main thread by BroadcasterScreen: the pipeline runs in a
+  // worker (R11), where `document` does not exist.
+  documentHidden?: boolean;
+  documentHiddenMs?: number;
 }
 
 const EMPTY_BROADCAST_STATS: BroadcastStats = {

@@ -19,6 +19,12 @@ const VIEWER_FPS: SeriesSpec[] = [
   { key: 'renderedFps', label: 'rendered', color: 'var(--warn)' },
 ];
 
+// A hidden tab stops firing rAF, so `renderedFps` falls to 0 while decode
+// carries on. Shading those spans is what turns "the render line collapsed"
+// from a mystery into a fact — and it is the reason the rollup excludes them
+// from a viewer's presentation percentiles.
+const HIDDEN_KEY = 'documentHidden';
+
 const VIEWER_EXPERIENCE: SeriesSpec[] = [
   { key: 'capToRenderMs', label: 'capture→render', color: 'var(--accent)' },
   { key: 'timeSinceLastFrameMs', label: 'since frame', color: 'var(--bad)' },
@@ -72,6 +78,8 @@ export function SessionTimeline({ session, history }: Props) {
           series={isBroadcaster ? BROADCASTER_FPS : VIEWER_FPS}
           windowMs={WINDOW_MS}
           minTop={30}
+          shadeKey={HIDDEN_KEY}
+          shadeLabel={isBroadcaster ? 'tab backgrounded (throttled)' : 'tab backgrounded'}
         />
         <TimelineChart
           title={isBroadcaster ? 'Encoder pressure' : 'Experience'}

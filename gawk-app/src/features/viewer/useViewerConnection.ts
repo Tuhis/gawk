@@ -39,6 +39,7 @@ import {
 } from '../../transport/audio-buffer';
 import { useTransportStore } from '../../state/transportStore';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
+import { readVisibility } from '../../lib/visibility';
 import { log } from '../../lib/logger';
 
 export type ViewerStatus = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'error';
@@ -466,6 +467,11 @@ export function useViewerConnection(
             controllerRef.current?.armPresentationAudio(verdict.codec);
           }
         }
+        // Tab visibility, merged here for the same reason audioBuffer is: the
+        // pipeline runs in a worker and `document` does not exist there. A
+        // hidden tab stops firing rAF, so renderedFps falls to 0 while decode
+        // carries on — and only the document can say which of those happened.
+        next = { ...next, ...readVisibility() };
         setStats(next);
         telemetry.sample(next);
         break;

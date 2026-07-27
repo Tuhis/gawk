@@ -23,6 +23,14 @@ interface Props {
   /** Floor for the y-axis top, so a flat-zero series is not auto-scaled to noise. */
   minTop?: number;
   height?: number;
+  /**
+   * Metric (0/1) marking spans the chart should shade as "do not read the lines
+   * here". Used for tab visibility: a hidden tab stops firing rAF, so a
+   * viewer's rendered line collapses for a reason that has nothing to do with
+   * the stream. Shading says which, instead of leaving a cliff to be guessed at.
+   */
+  shadeKey?: string;
+  shadeLabel?: string;
 }
 
 const PAD_L = 34;
@@ -49,6 +57,8 @@ export function TimelineChart({
   windowMs,
   minTop = 1,
   height = 96,
+  shadeKey,
+  shadeLabel,
 }: Props) {
   const model = useMemo(() => {
     if (points.length === 0) return null;
@@ -96,14 +106,44 @@ export function TimelineChart({
       return { spec: s, d: runs.join(' '), latest: last?.v[s.key] };
     });
 
-    return { top, paths, gridY: [0, 0.5, 1].map((f) => PAD_T + f * (height - PAD_T - PAD_B)) };
-  }, [points, series, windowMs, minTop, height]);
+    // Contiguous runs where the shade metric is truthy, as x-ranges. Built from
+    // the same point list, so a span can never drift out of step with the lines
+    // it qualifies.
+    const shades: Array<{ x: number; w: number }> = [];
+    if (shadeKey) {
+      let runStart: number | null = null;
+      for (const p of points) {
+        const on = !!p.v[shadeKey];
+        if (on && runStart === null) runStart = p.t;
+        if (!on && runStart !== null) {
+          shades.push({ x: x(runStart), w: Math.max(1, x(p.t) - x(runStart)) });
+          runStart = null;
+        }
+      }
+      if (runStart !== null) {
+        shades.push({ x: x(runStart), w: Math.max(1, x(tEnd) - x(runStart)) });
+      }
+    }
+
+    return {
+      top,
+      paths,
+      shades,
+      gridY: [0, 0.5, 1].map((f) => PAD_T + f * (height - PAD_T - PAD_B)),
+    };
+  }, [points, series, windowMs, minTop, height, shadeKey]);
 
   return (
     <figure className={styles.chart} style={{ ['--chart-h' as string]: `${height}px` }}>
       <figcaption className={styles.head}>
         <span className={styles.title}>{title}</span>
         <span className={styles.legend}>
+          {shadeLabel && model && model.shades.length > 0 && (
+            <span className={styles.legendItem}>
+              <span className={`${styles.swatch} ${styles.shadeSwatch}`} aria-hidden />
+              {shadeLabel}
+            </span>
+          )}
           {series.map((s) => {
             const latest = model?.paths.find((p) => p.spec.key === s.key)?.latest;
             return (
@@ -130,6 +170,17 @@ export function TimelineChart({
         role="img"
         aria-label={`${title} over the last ${Math.round(windowMs / 60000)} minutes`}
       >
+        {/* Shading goes down FIRST so the lines stay legible on top of it. */}
+        {model?.shades.map((s, i) => (
+          <rect
+            key={`shade-${i}`}
+            x={s.x}
+            y={PAD_T}
+            width={s.w}
+            height={height - PAD_T - PAD_B}
+            className={styles.shade}
+          />
+        ))}
         {model?.gridY.map((gy, i) => (
           <line
             key={i}

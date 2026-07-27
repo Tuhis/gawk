@@ -42,9 +42,17 @@ var ProducibleFacts = map[string]string{
 	"relay.peerMedianDropped":     both,
 
 	// --- client, viewer ------------------------------------------------------
-	"client.receivedFps":             both,
-	"client.decoderFps":              both,
-	"client.renderedFps":             both,
+	"client.receivedFps": both,
+	"client.decoderFps":  both,
+	"client.renderedFps": both,
+	// Tab visibility. Registered so a future rule reading renderedFps can
+	// REQUIRE it and be honest about the difference between "rendering failed"
+	// and "nothing was supposed to be rendered". No rule reads renderedFps
+	// today, which is why a backgrounded viewer has never produced a false
+	// verdict — the exposure this closes is the permanent rollup row, and any
+	// rule added later.
+	"client.documentHidden":          both,
+	"client.documentHiddenMs":        both,
 	"client.decoderQueueDepth":       both,
 	"client.timeSinceLastFrameMs":    both,
 	"client.timeSinceLastInboundMs":  both,
