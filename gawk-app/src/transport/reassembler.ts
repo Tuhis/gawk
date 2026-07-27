@@ -317,6 +317,23 @@ export class Reassembler {
     this.stats.parityChunksReceived++;
 
     let assembly = this.assemblies.get(header.frameId);
+    // Parity for a frame already emitted is redundant, and on a CLEAN link
+    // that is the normal case — the producer sends parity after the data
+    // chunks, so every frame completes before its symbols land. Creating an
+    // assembly here would leave one that can never complete, which later
+    // evicts as framesDroppedIncomplete: phantom drops on a lossless link,
+    // inflating the counter R29's whole diagnosis rests on.
+    //
+    // Serial comparison (wrap-aware), the same rule pushDelta uses. Keyed on
+    // the emitted watermark rather than on "have I seen this frame", because
+    // parity legitimately outruns its own data chunks under reorder.
+    if (
+      !assembly &&
+      this.lastEmittedFrameId !== null &&
+      !frameIdAhead(header.frameId, this.lastEmittedFrameId)
+    ) {
+      return;
+    }
     if (!assembly) {
       this.evictIfFull();
       assembly = {

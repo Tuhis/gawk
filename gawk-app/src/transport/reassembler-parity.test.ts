@@ -89,6 +89,41 @@ describe('Reassembler parity recovery', () => {
     expect(r.getStats().badDatagrams).toBe(0);
   });
 
+  it('does not inflate framesDroppedIncomplete on a CLEAN link', () => {
+    // The bug this pins, caught by the e2e telemetry pass rather than by the
+    // test above: the producer sends parity AFTER the frame's data chunks, so
+    // on a lossless link every frame completes and THEN its parity arrives.
+    // Creating an assembly for that parity leaves a frame that can never
+    // complete, which later evicts as "incomplete" — 832 phantom drops on a
+    // loopback e2e run, inflating the exact counter R29's whole diagnosis
+    // rests on and making diagnose() call a perfect session bursty.
+    //
+    // Asserting "frames still 1" was not enough to catch it. The counter is.
+    const { r, frames } = collector();
+    for (let i = 1; i <= 40; i++) {
+      const { datagrams, parity } = packetizeFrameWithParity(info(i), patternBytes(3000, i), 2);
+      for (const d of datagrams) r.push(d);
+      for (const p of parity) r.push(p);
+    }
+    expect(frames).toHaveLength(40);
+    expect(r.getStats().framesDroppedIncomplete).toBe(0);
+    expect(r.getStats().framesRecoveredByParity).toBe(0);
+  });
+
+  it('still attaches parity for a frame that has NOT been emitted yet', () => {
+    // The guard above must key on the emitted watermark, not on "have I seen
+    // this frame" — parity legitimately outruns its data chunks under reorder.
+    const { r, frames } = collector();
+    const data = patternBytes(5000, 21);
+    const { datagrams, parity } = packetizeFrameWithParity(info(30), data, 2);
+    for (const p of parity) r.push(p);
+    datagrams.forEach((d, i) => {
+      if (i !== 0) r.push(d);
+    });
+    expect(frames).toHaveLength(1);
+    expect(Array.from(frames[0].data)).toEqual(Array.from(data));
+  });
+
   it('recovers when parity arrives BEFORE the surviving chunks', () => {
     // Ordering is not guaranteed on a lossy link, and the producer sends
     // parity last — so out-of-order arrival is the normal case under reorder,

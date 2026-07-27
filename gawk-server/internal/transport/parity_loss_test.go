@@ -89,6 +89,15 @@ func (s *frameSink) parityCount() int {
 	return s.parityDatagrams
 }
 
+// frameCount is the locked read the settle loop needs. Reading len(s.chunks)
+// directly from the test goroutine races the reader goroutines writing it —
+// caught by -race in CI, and silently fine without it.
+func (s *frameSink) frameCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.chunks)
+}
+
 // verdict counts, over the frames the publisher sent, how many arrived whole
 // on their own and how many more became whole once parity was applied.
 type verdict struct {
@@ -272,7 +281,7 @@ func TestParityRecoversFramesLostOnALossyDownlink(t *testing.T) {
 
 	// Let the tail drain.
 	waitUntil(5*time.Second, func() bool {
-		return len(controlSink.chunks) >= frames && len(protectedSink.chunks) >= frames
+		return controlSink.frameCount() >= frames && protectedSink.frameCount() >= frames
 	})
 	time.Sleep(500 * time.Millisecond)
 
