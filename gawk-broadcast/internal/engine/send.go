@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/webtransport-go"
@@ -80,9 +81,10 @@ type sender struct {
 
 	// The audio lane (R25, docs/28 Decision 9) — the Go mirror of
 	// gawk-app/src/media/audio-lane.ts's AudioPacketizer, deliberately so
-	// that the two broadcasters stay legible to each other. Written only by
-	// the audio pump goroutine after setAudioFormat, which runs before it
-	// starts; the counters go through mu like the video ones.
+	// that the two broadcasters stay legible to each other. Written by the
+	// audio pump goroutine after setAudioFormat, which runs before it starts;
+	// the counters go through mu like the video ones, and the one field a
+	// second goroutine touches is called out below.
 	audioFormat AudioFormat
 	// audioConfigDatagram is the AudioConfig, re-sent at 1 Hz on the packet
 	// flow. Unlike video's DecoderConfig it *is* a standalone datagram: audio
@@ -93,8 +95,12 @@ type sender struct {
 	// frameIDs and advanced with the same wrap-aware rule.
 	nextAudioSeq      uint32
 	audioConfigSentAt uint64 // ms on the engine clock; valid once audioConfigSent
-	audioConfigSent   bool
-	audioChecked      bool
+	// audioConfigSent is atomic because it is the one piece of this state a
+	// second goroutine touches: setRelay clears it from the resume supervisor
+	// while the audio pump is reading it. Everything else here stays
+	// pump-only, which is why nothing else needs guarding.
+	audioConfigSent atomic.Bool
+	audioChecked    bool
 
 	mu sync.Mutex
 	st Stats
@@ -136,10 +142,20 @@ func (s *sender) currentRelay() RelaySession {
 // just died. Cancelling it lets its writer goroutine finish now instead of
 // waiting on a dead stream, and clearing the slot stops the next keyframe
 // being counted as having superseded it.
+//
+// Neither does the audio config's 1 Hz cadence (R25). The same dropped cache
+// that video re-primes through its next keyframe leaves audio with nothing to
+// re-prime through — audio has no keyframe, so on the ordinary cadence the
+// lane would be undecodable for up to a second after every resume, and the
+// relay would have nothing to join-prime a new viewer with either. Resetting
+// here makes the *next* packet carry the config, which is what the browser
+// lane does whenever its config changes.
 func (s *sender) setRelay(r RelaySession) {
 	s.relayMu.Lock()
 	s.relay = r
 	s.relayMu.Unlock()
+
+	s.audioConfigSent.Store(false)
 
 	s.kfMu.Lock()
 	old := s.inflight
@@ -265,14 +281,25 @@ func (s *sender) sendAudio(p AudioPacket) {
 		return
 	}
 
+	// One read of the relay for this packet, through the accessor: auto-resume
+	// swaps the session on the supervisor goroutine, and reading the field
+	// directly would both race that write and risk splitting one packet's
+	// config and frame across two sessions.
+	relay := s.currentRelay()
+	if relay == nil {
+		s.countAudioDropped()
+		return
+	}
+
 	// The config rides the flow: on the first packet, then at most once per
 	// AudioConfigResendMs.
 	nowMs := s.clock.NowUs() / 1000
-	if !s.audioConfigSent || nowMs-s.audioConfigSentAt >= AudioConfigResendMs {
-		if err := s.relay.SendDatagram(s.audioConfigDatagram); err != nil {
+	if !s.audioConfigSent.Load() || nowMs-s.audioConfigSentAt >= AudioConfigResendMs {
+		if err := relay.SendDatagram(s.audioConfigDatagram); err != nil {
 			s.log.Debug("audio config send failed", "err", err)
 		} else {
-			s.audioConfigSent, s.audioConfigSentAt = true, nowMs
+			s.audioConfigSentAt = nowMs
+			s.audioConfigSent.Store(true)
 			s.mu.Lock()
 			s.st.AudioConfigsSent++
 			s.mu.Unlock()
@@ -292,7 +319,7 @@ func (s *sender) sendAudio(p AudioPacket) {
 		s.countAudioDropped()
 		return
 	}
-	if err := s.relay.SendDatagram(dgram); err != nil {
+	if err := relay.SendDatagram(dgram); err != nil {
 		s.log.Debug("audio datagram send failed", "err", err)
 		s.countAudioDropped()
 		return

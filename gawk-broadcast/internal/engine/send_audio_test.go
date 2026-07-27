@@ -283,3 +283,60 @@ func TestNoFormatMeansNoAudio(t *testing.T) {
 		t.Errorf("sent %d datagrams with no audio format configured", n)
 	}
 }
+
+// Auto-resume (docs/19, #170) reclaims the broadcast on a *fresh* relay
+// session, and the relay drops its cached config when the new publisher
+// session claims the hub. Video re-primes immediately, because its
+// DecoderConfig rides every keyframe stream and a resume forces a keyframe.
+//
+// Audio has no keyframe. Left to the 1 Hz cadence it would re-prime up to a
+// second late, and for that second every audio frame reaching a viewer would
+// be undecodable — the relay having nothing to join-prime new viewers with
+// either. So a resume resets the cadence: the next packet carries the config,
+// which is the same thing the browser lane does when its config changes.
+func TestResumeRepromptsTheAudioConfig(t *testing.T) {
+	sess := newFakeSession()
+	clock := &FakeClock{}
+	s := newSender(sess, clock, testLog)
+	s.setAudioFormat(DefaultAudioFormat("pipewire-monitor"))
+
+	// A second of steady packets: one config, at the front.
+	for i := range 10 {
+		clock.Us = uint64(i) * 20_000
+		s.sendAudio(AudioPacket{Data: opusPacket(320), TimestampUs: clock.Us})
+	}
+	if configs, _ := audioDatagrams(t, sess); len(configs) != 1 {
+		t.Fatalf("sent %d configs before the resume, want 1", len(configs))
+	}
+
+	// The reclaim, well inside the resend interval — so an unreset cadence
+	// would send nothing.
+	resumed := newFakeSession()
+	s.setRelay(resumed)
+	clock.Us += 20_000
+	s.sendAudio(AudioPacket{Data: opusPacket(320), TimestampUs: clock.Us})
+
+	configs, frames := audioDatagrams(t, resumed)
+	if len(configs) != 1 {
+		t.Errorf("the first packet after a resume carried %d configs, want 1 — "+
+			"the relay dropped its cache when the new publisher session claimed the hub", len(configs))
+	}
+	if len(frames) != 1 {
+		t.Fatalf("sent %d audio frames after the resume, want 1", len(frames))
+	}
+	// The config leads the frame, for the same reason it does at session start.
+	sent := resumed.sentDatagrams()
+	if len(sent) < 2 || sent[0][1] != wire.TypeAudioConfig {
+		t.Error("the config did not lead the first frame after the resume")
+	}
+
+	// And the sequence space carries over: continuity is what tells a viewer
+	// this is the same lane, not a new one.
+	h, _, err := wire.ParseAudioFrame(frames[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Seq != 10 {
+		t.Errorf("audio seq after the resume = %d, want 10 — the lane restarted its numbering", h.Seq)
+	}
+}
