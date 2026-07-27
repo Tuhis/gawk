@@ -231,8 +231,9 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   pacing since 2026-07-20 — docs/20 field finding 4); N1–N6 chunks; designed 2026-07-15, refreshed
   2026-07-19 post-R16–R20; **N1–N6 implemented 2026-07-19, automated gates
   green in all three modules; graduated from experimental 2026-07-23 after
-  the owner confirmed reliable playback on real hardware — twelve field
-  findings, all twelve fixed (finding 12 root-caused and fixed 2026-07-26);
+  the owner confirmed reliable playback on real hardware — thirteen field
+  findings, all thirteen fixed (finding 13 moved the skew measurement to the
+  listener 2026-07-26 and root-caused finding 12 with it);
   the formal docs/20 verification pass still needs a full re-run** — deviations
   in the doc's "Implementation status"),
   `docs/21-ios-video-fullscreen.md` for R16 (iOS native fullscreen:
@@ -1253,14 +1254,18 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    container/chart/CI-deploy component — binaries you run on your own PC.
 20. System audio — **designed 2026-07-15 (N1–N6); refreshed 2026-07-19
    against R16–R20; N1–N6 implemented 2026-07-19, automated gates green;
-   twelve hardware field findings — findings 1–8 detailed below, plus 9
+   thirteen hardware field findings — findings 1–8 detailed below, plus 9
    (`avSkewMs` measured buffering depth + estimator lag, not lip-sync —
    fixed by measuring at presentation and snapping the mapping on a
    re-anchor), 10 (a stale flush left Deep-buffer audio ~2.8 s behind), 11
-   (toggling paced playback left audio behind), and 12
+   (toggling paced playback left audio behind), 12
    (`avSkewMs` over-reports on long/stressed sessions — a metric
-   artifact; audio itself is fine; root-caused and fixed 2026-07-26, see
-   docs/20 field finding 12); all twelve fixed 2026-07-19→07-26, and the
+   artifact; audio itself is fine), and 13 (audio settled ~`outputLatency`
+   behind the picture while `avSkewMs` read zero — the skew was measured at
+   the worklet's write position instead of the speaker, and the broadcaster
+   anchored audio timestamps at encoder output; measuring at the listener
+   2026-07-26 fixed both 13 and 12, see docs/20 field findings 12 + 13);
+   all thirteen fixed 2026-07-19→07-26, and the
    owner reports audio playing reliably on real hardware as of 2026-07-23 —
    which is what graduated it from experimental (below), though the formal
    docs/20 verification pass reached only step 3 of 9 (2026-07-24) and still
