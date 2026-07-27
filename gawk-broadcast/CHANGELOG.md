@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.7.0...gawk-broadcast-v1.7.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* give reliable viewers' audio its own carrier, and make the native broadcaster visible to telemetry ([#173](https://github.com/Tuhis/gawk/issues/173)) ([0758d66](https://github.com/Tuhis/gawk/commit/0758d668948a12e287428f4037dc32e9ba822595))
+
 ## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.6.0...gawk-broadcast-v1.7.0) (2026-07-27)
 
 

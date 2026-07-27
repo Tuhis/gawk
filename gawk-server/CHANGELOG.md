@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.21.0...gawk-server-v0.21.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* give reliable viewers' audio its own carrier, and make the native broadcaster visible to telemetry ([#173](https://github.com/Tuhis/gawk/issues/173)) ([0758d66](https://github.com/Tuhis/gawk/commit/0758d668948a12e287428f4037dc32e9ba822595))
+
 ## [0.21.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.20.3...gawk-server-v0.21.0) (2026-07-26)
 
 
