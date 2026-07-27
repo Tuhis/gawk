@@ -2140,7 +2140,8 @@ stuttering broadcast cannot.
 
 **Status**: designed 2026-07-26 —
 [docs/33](docs/33-telemetry-and-diagnostics.md); TM1–TM8 implemented the
-same day, automated gates green in all four modules; TM9 (Grafana) dropped
+same day, TM10 (dip episodes) + TM11 (configured target) on 2026-07-27,
+automated gates green in all four modules; TM9 (Grafana) dropped
 by owner scope decision (R9 M8 stays open); manual verification pending.
 The design doc
 refines two things sketched above: **DuckDB is a query option, not a runtime
