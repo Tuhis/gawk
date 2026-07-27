@@ -63,6 +63,7 @@ var (
 	colButton  = rgb(0x2a, 0x2d, 0x34) // secondary buttons
 	colPrimary = rgb(0x3f, 0x51, 0xb5) // Gio's stock material blue — Start wore it before the dark-palette rework, and it was missed
 	colLive    = rgb(0x3d, 0xd6, 0x8c) // the heartbeat dot
+	colResume  = rgb(0xe8, 0xb3, 0x39) // the heartbeat dot while reconnecting
 	colDanger  = rgb(0x8b, 0x2c, 0x2c) // stop
 	colError   = rgb(0xff, 0xa5, 0x9e) // error text
 )
@@ -354,10 +355,15 @@ func (u *ui) header(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					// The heartbeat: "am I live" at a glance (Decision 16 —
-					// this is what a preview would have been for).
+					// this is what a preview would have been for). Amber while
+					// auto-resume reclaims the broadcast: the code is still
+					// ours, but nothing is reaching viewers yet.
 					c := colFaint
 					if state == gawkapp.StateLive {
 						c = colLive
+						if u.app.Resuming() {
+							c = colResume
+						}
 					}
 					return dot(gtx, c)
 				}),

@@ -45,6 +45,15 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 - Routes: `CONNECT /publish` (mint ID), `CONNECT /publish/{id}` (reclaim ID),
   `CONNECT /subscribe/{id}` (subscribe to ID), `/echo` diagnostic, `GET /healthz`,
   `GET /statusz` (JSON RegistryStats snapshot)
+- **Session-end reasons are cause-recovered** (`internal/transport/endreason.go`,
+  2026-07-27): quic-go cancels the request *stream*'s context before the
+  connection's, and http3 links the two with a plain `context.AfterFunc`, so
+  every abrupt death used to log the useless `reason: "context canceled"` —
+  idle timeout, stateless reset and peer CONNECTION_CLOSE all identical, which
+  is why the docs/19 incident could not be diagnosed. The server now keeps the
+  QUIC connection's context via `http3.Server.ConnContext` and logs
+  `context.Cause` from it (with a bounded wait, because the stream always wins
+  that race); a reason that already says something is never overwritten.
 - **A token-bearing reclaim supersedes an active publisher session**
   ("newest publisher wins", since 2026-07-18 — docs/06 revision): a
   silently-dead publisher session holds its slot until the ~30s QUIC idle
@@ -1263,6 +1272,33 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    **Tray and global hotkeys deferred 2026-07-15** — research kept in the
    doc's Deferred section; don't re-derive it. Not a
    container/chart/CI-deploy component — binaries you run on your own PC.
+   **Auto-resume added 2026-07-27 (docs/19 Decision 21), after a production
+   incident**: R14 shipped without the transport auto-resume the browser has
+   had since R17 W2, and on 2026-07-27 broadcast `DE6G6P` died 78 minutes in
+   and was GC'd with three viewers attached because nothing reclaimed the ID
+   inside the grace. Three defects compounded: `finish()` fired `OnEnded`
+   **without `teardown()`**, so the GStreamer child, the portal ScreenCast
+   session and the pump all kept running forever (the machine still showed
+   the screen being shared); `App.ended()` nulls `a.sess`, so `Stop()`/`Quit()`
+   could not stop what was orphaned; and the relay-loss path set no `lastErr`,
+   so the "Broadcast ended" notification went out at **normal** urgency — which
+   KDE's portal inhibits *while casting*, i.e. exactly then (Decision 17's
+   trap). Now: `finish()` **is** teardown + `OnEnded` (one event, one
+   teardown); a recoverable loss reclaims the code transport-only (capture,
+   encoder, frameId space, derived config and learned chunk budget all
+   survive) with 250 ms→5 s backoff over a 5-minute window; new
+   `OnResuming`/`OnResumed` callbacks drive an amber "Reconnecting…" heartbeat
+   instead of a green "Live" or a spurious "Ready"; HTTP 404/401/403/409 stop
+   the retry; **close codes 4000 and 4004 are never resumed** — "newest
+   publisher wins" only converges because the deposed publisher stays down, so
+   an engine reclaiming after a 4004 would flap forever (the code is read back
+   through `OpenUniStream()`, the one place webtransport-go keeps the cause it
+   discards from the session context); a reclaim is **never** a mint; and the
+   TimeSync estimate + ClockMapping publisher are **reset on every resume**
+   because the relay's reference is its own *process* monotonic clock, so a
+   reclaim landing on another pod measures a different origin. New
+   `Stats.Resumes`/`Stats.Resuming`. The incident's *trigger* is still
+   unproven — see BUGS.md's fleet-LB entry.
 20. System audio — **designed 2026-07-15 (N1–N6); refreshed 2026-07-19
    against R16–R20; N1–N6 implemented 2026-07-19, automated gates green;
    thirteen hardware field findings — findings 1–8 detailed below, plus 9

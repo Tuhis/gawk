@@ -85,8 +85,19 @@ type Callbacks struct {
 	// OnError reports a session-fatal problem. Always followed by OnEnded.
 	OnError func(error)
 	// OnEnded fires exactly once per successful Start, when the session is
-	// over — whether by Stop, relay close, or child death.
+	// over — whether by Stop, an unrecoverable relay loss, or child death.
+	//
+	// A *recoverable* relay loss does not reach here: auto-resume reclaims the
+	// broadcast and the session continues (OnResuming → OnResumed).
 	OnEnded func()
+	// OnResuming fires before each reclaim attempt after the transport
+	// dropped. attempt counts from 1; lastErr is why the previous attempt
+	// failed, nil on the first. Capture and encode are still running — this is
+	// a transport-only interruption, and the shell should say so rather than
+	// present the broadcast as ended.
+	OnResuming func(attempt int, lastErr error)
+	// OnResumed fires when a reclaim succeeds and frames are flowing again.
+	OnResumed func()
 	// OnEncoderChosen fires once the cascade settles on a candidate
 	// (Decision 4: the chosen encoder is reported at startup and in stats).
 	OnEncoderChosen func(encoder string)
@@ -140,6 +151,18 @@ func (c Callbacks) ended() {
 	}
 }
 
+func (c Callbacks) resuming(attempt int, lastErr error) {
+	if c.OnResuming != nil {
+		c.OnResuming(attempt, lastErr)
+	}
+}
+
+func (c Callbacks) resumed() {
+	if c.OnResumed != nil {
+		c.OnResumed()
+	}
+}
+
 func (c Callbacks) encoderChosen(name string) {
 	if c.OnEncoderChosen != nil {
 		c.OnEncoderChosen(name)
@@ -188,14 +211,28 @@ type Session struct {
 	started bool
 	stopped bool
 	cancel  context.CancelFunc
-	relay   RelaySession
 	media   MediaSource
+
+	// relayCur is the session frames are travelling on right now. It changes
+	// under the supervisor when auto-resume reclaims the broadcast, so it has
+	// its own lock rather than living under mu: the send path reads it per
+	// frame, and mu is held across callbacks.
+	relayMu  sync.RWMutex
+	relayCur RelaySession
 
 	wg      sync.WaitGroup
 	endOnce sync.Once
 
 	sender *sender
 	ts     *TimeSyncClient
+
+	// clockPub is re-armed on every resume, so it outlives one connection.
+	clockPubMu sync.Mutex
+	clockPub   *clockMappingPublisher
+
+	// Auto-resume state (guarded by mu).
+	resumes  uint64
+	resuming bool
 
 	// Windowing state for the fps rates in Stats.
 	rateMu      sync.Mutex
@@ -279,8 +316,8 @@ func (s *Session) Start(ctx context.Context) error {
 	// "Error paths must release what they acquired"). One shared teardown,
 	// reached by success and failure alike.
 	sessCtx, cancel := context.WithCancel(context.Background())
+	s.setRelay(relay)
 	s.mu.Lock()
-	s.relay = relay
 	s.cancel = cancel
 	s.mu.Unlock()
 
@@ -297,27 +334,23 @@ func (s *Session) Start(ctx context.Context) error {
 
 // startLive brings up everything that runs for the session's lifetime.
 func (s *Session) startLive(ctx context.Context, relay RelaySession) error {
+	// Relay clock sync (R5 Q2). Pings ride the ordinary datagram path; the
+	// read loop exists solely to catch replies, since the relay sends a
+	// publisher nothing else as datagrams.
+	//
+	// Both of these outlive any one connection — the sender keeps its frameId
+	// space and derived config across a resume, and the TimeSync client keeps
+	// its cadence — so they take the *current* relay through s rather than
+	// capturing the one they were built with.
+	s.ts = NewTimeSyncClient(s.sendDatagram, s.clock)
+	s.sender = newSender(relay, s.clock, s.log)
+	s.clockPub = newClockMappingPublisher()
+
 	// The server-message read (announce + resume token) is detached on
 	// purpose: media must never wait on it (docs/06 says so twice, and R1's
 	// review found an implementation that awaited it before capture and
 	// could hang forever). Only the UI consumes the code and the token.
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.readServerMessages(ctx, relay)
-	}()
-
-	// Relay clock sync (R5 Q2). Pings ride the ordinary datagram path; the
-	// read loop exists solely to catch replies, since the relay sends a
-	// publisher nothing else as datagrams.
-	s.ts = NewTimeSyncClient(relay.SendDatagram, s.clock)
-	s.sender = newSender(relay, s.clock, s.log)
-
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.readDatagrams(ctx, relay)
-	}()
+	s.attach(ctx, relay)
 
 	// Capture + encode. Everything past this point is the capture phase: a
 	// failure here had a live publisher session, so the caller must not treat
@@ -350,24 +383,63 @@ func (s *Session) startLive(ctx context.Context, relay RelaySession) error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.periodic(ctx, relay)
+		s.periodic(ctx)
 	}()
 
-	// The session ending — for any reason — is one event with one
-	// authoritative signal (CODE-REVIEW.md: "One event, one authoritative
-	// signal"). The relay's context is it; Stop cancels ours, the relay
-	// cancels theirs, and both land here exactly once.
+	// The transport ending is one event with one authoritative signal
+	// (CODE-REVIEW.md): the relay session's context. What it means is now the
+	// supervisor's decision, not "the broadcast is over" — a lost transport is
+	// recoverable while the relay still holds the ID.
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		select {
-		case <-relay.Context().Done():
-			s.log.Info("relay session ended", "err", context.Cause(relay.Context()))
-			s.finish()
-		case <-ctx.Done():
-		}
+		s.supervise(ctx, relay)
 	}()
 	return nil
+}
+
+// attach wires the per-connection read loops and makes relay the one frames
+// travel on. Called once at start and once per successful resume.
+//
+// The wg.Add here happens on the supervisor goroutine, which is itself
+// inside wg — so the counter is never zero when Add runs, and Stop's Wait
+// cannot race it (sync.WaitGroup's contract).
+func (s *Session) attach(ctx context.Context, relay RelaySession) {
+	s.setRelay(relay)
+	s.sender.setRelay(relay)
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.readServerMessages(ctx, relay)
+	}()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.readDatagrams(ctx, relay)
+	}()
+}
+
+func (s *Session) currentRelay() RelaySession {
+	s.relayMu.RLock()
+	defer s.relayMu.RUnlock()
+	return s.relayCur
+}
+
+func (s *Session) setRelay(relay RelaySession) {
+	s.relayMu.Lock()
+	s.relayCur = relay
+	s.relayMu.Unlock()
+}
+
+// sendDatagram sends on whichever session is current — the indirection that
+// lets TimeSync and ClockMapping survive a resume without being rebuilt.
+func (s *Session) sendDatagram(b []byte) error {
+	relay := s.currentRelay()
+	if relay == nil {
+		return errors.New("engine: no relay session")
+	}
+	return relay.SendDatagram(b)
 }
 
 // readServerMessages reads the relay's server-initiated uni streams for the
@@ -505,7 +577,7 @@ func (s *Session) pump(ctx context.Context, frames <-chan AccessUnit) {
 
 // periodic drives the two cadences that are not frame-driven: TimeSync pings
 // and the ClockMapping publication, plus the stats callback.
-func (s *Session) periodic(ctx context.Context, relay RelaySession) {
+func (s *Session) periodic(ctx context.Context) {
 	pinger := time.NewTicker(TimeSyncInterval)
 	defer pinger.Stop()
 	// The mapping check runs faster than the mapping cadence so the first
@@ -516,7 +588,6 @@ func (s *Session) periodic(ctx context.Context, relay RelaySession) {
 	stats := time.NewTicker(s.statsInterval)
 	defer stats.Stop()
 
-	pub := newClockMappingPublisher()
 	s.ts.Ping()
 
 	for {
@@ -527,8 +598,8 @@ func (s *Session) periodic(ctx context.Context, relay RelaySession) {
 			s.ts.Ping()
 		case <-mapper.C:
 			sample, ok := s.ts.Sample()
-			if pub.due(s.clock.NowUs(), ok) {
-				if err := relay.SendDatagram(wire.AppendClockMapping(nil, sample.OffsetUs)); err != nil {
+			if s.clockMappingDue(s.clock.NowUs(), ok) {
+				if err := s.sendDatagram(wire.AppendClockMapping(nil, sample.OffsetUs)); err != nil {
 					s.log.Debug("clock mapping send failed", "err", err)
 				}
 			}
@@ -573,6 +644,8 @@ func (s *Session) Stats() Stats {
 	s.mu.Lock()
 	st.ViewerCountAvailable = s.viewerCountKnown
 	st.ViewerCount = s.viewerCount
+	st.Resumes = s.resumes
+	st.Resuming = s.resuming
 	s.mu.Unlock()
 	st.Width = s.cfg.Media.Width
 	st.Height = s.cfg.Media.Height
@@ -616,8 +689,9 @@ func (s *Session) teardown() {
 		return
 	}
 	s.stopped = true
-	cancel, relay, media := s.cancel, s.relay, s.media
+	cancel, media := s.cancel, s.media
 	s.mu.Unlock()
+	relay := s.currentRelay()
 
 	if cancel != nil {
 		cancel()
@@ -641,7 +715,17 @@ func (s *Session) teardown() {
 	}
 }
 
-// finish fires OnEnded exactly once per session.
+// finish ends the session: it releases everything the session holds, then
+// fires OnEnded exactly once.
+//
+// The teardown is not optional here, and its absence was a real bug. Before
+// this, the relay-loss and capture-death paths called finish() alone, so the
+// session context was never cancelled — the GStreamer child kept encoding, the
+// portal ScreenCast session kept the screen-sharing indicator lit, and the
+// pump kept feeding frames into a dead transport, indefinitely. The GUI shell
+// then dropped its Session reference on OnEnded, so nothing could ever stop
+// them short of killing the process. One event, one teardown.
 func (s *Session) finish() {
+	s.teardown()
 	s.endOnce.Do(func() { s.cb.ended() })
 }

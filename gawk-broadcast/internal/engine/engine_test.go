@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,9 +17,17 @@ import (
 )
 
 func testOpts(sess RelaySession, media *fakeMedia, clock Clock) Options {
+	// One dial succeeds; every later one 404s. That second half matters now
+	// that a lost transport is auto-resumed: without a terminal answer a test
+	// that drops the session would reclaim the same dead fake forever. Tests
+	// that exercise resuming supply their own dialer (resume_test.go).
+	var dials atomic.Int32
 	return Options{
 		Clock: clock,
 		Dial: func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
+			if dials.Add(1) > 1 {
+				return nil, http.StatusNotFound, errors.New("fake: broadcast not found")
+			}
 			return sess, http.StatusOK, nil
 		},
 		MediaFactory:  media.factory(),

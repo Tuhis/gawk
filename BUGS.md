@@ -512,6 +512,47 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   is trivial; the former is more valuable (it gives the demuxer a keyframe-
   spacing assertion it currently lacks).
 
+## Long-lived publisher connections die on a source-address change (fleet LB)
+
+- **Found**: 2026-07-27, investigating broadcast `DE6G6P` — a native
+  broadcaster's publisher session ended after 78 minutes with reason
+  `context canceled`, and the relay garbage-collected the broadcast 60 s later
+  with three viewers attached. Nothing on the fleet died at that instant, the
+  relay initiated nothing (no drain, takeover, lease loss or eviction), and the
+  session was not closed cleanly (that logs `EOF`, as the other two
+  broadcasters on the fleet did).
+- **Impact**: a broadcast drops for every viewer. Since 2026-07-27 the native
+  broadcaster auto-resumes (docs/19 Decision 21), so the visible cost is now a
+  ~1 s interruption rather than a dead broadcast — but the drops themselves
+  still happen, and the browser broadcaster's R17 auto-resume was already
+  masking them the same way.
+- **Hypothesis, not a diagnosis**: the relay Service is a UDP `LoadBalancer`
+  with `externalTrafficPolicy: Local` and `sessionAffinity: None`, behind
+  MetalLB in **BGP** mode — so ECMP hashes the 5-tuple to a node and etp=Local
+  pins it to that node's pod. Any change in the client's source IP:port (home
+  NAT rebind, CGNAT remap, DHCP renew, a few seconds of uplink loss) re-hashes
+  the flow to a *different* pod, which holds no state for that connection ID
+  and — because `GAWK_STATELESS_RESET_KEY` is set fleet-wide (R17 W1) —
+  answers with a stateless reset. Dead in ~1 RTT, silently. QUIC connection
+  migration cannot help: it covers the client's address changing while talking
+  to the same server, and here the server changes identity. A 78-minute
+  residential session is exactly the exposure window. This is the flip side of
+  the etp=Local trade docs/22 finding 10 took for BGP mode (real client IPs +
+  ECMP spread), and it is not recorded there.
+- **Competing explanation**, equally consistent with the evidence: a plain
+  >30 s uplink drop hitting `-max-idle-timeout` on both ends.
+- **Why it was undiagnosable**: the relay could not report the real reason —
+  see the `context canceled` gotcha in the README. That is **fixed** as of
+  2026-07-27 (`internal/transport/endreason.go`), so the *next* occurrence
+  should log `timeout: no recent network activity` (idle timeout) or a
+  stateless-reset error, which discriminates the two hypotheses outright.
+- **Fix would start**: with the next captured reason. If it is a stateless
+  reset, the options are `sessionAffinity: ClientIP` (which does not survive a
+  source-port change either, so probably not), accepting it and relying on
+  auto-resume, or routing publishers differently from viewers. Do not change
+  the LB shape speculatively — docs/22 finding 10 chose etp=Local deliberately.
+
+
 (The Chrome 152 `WebTransport.getStats()` entry was resolved 2026-07-14: not
 a gawk defect — Chromium removed the API entirely; see the gotcha in
 `docs/13-observability.md` D7 and the README gotcha list.)

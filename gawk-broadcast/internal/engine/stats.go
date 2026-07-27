@@ -81,4 +81,12 @@ type Stats struct {
 	// first push lands (an old relay never sends one).
 	ViewerCountAvailable bool
 	ViewerCount          uint32
+
+	// Resumes counts how many times auto-resume has reclaimed this broadcast
+	// on a fresh relay session, and Resuming says whether a reclaim is in
+	// flight right now (capture and encode still running, nothing reaching
+	// viewers). A broadcast that quietly resumes every few minutes is a
+	// working broadcast on a failing path, and only this counter says so.
+	Resumes  uint64
+	Resuming bool
 }

@@ -40,7 +40,12 @@ const keyframeSupersededCode webtransport.StreamErrorCode = 1
 
 // sender turns access units into wire messages and applies the send policy.
 type sender struct {
-	relay RelaySession
+	// relay is swapped by setRelay when auto-resume reclaims the broadcast on
+	// a fresh session (engine.go). Guarded because the swap happens on the
+	// supervisor goroutine while the pump is mid-frame.
+	relayMu sync.RWMutex
+	relay   RelaySession
+
 	clock Clock
 	log   *slog.Logger
 
@@ -87,6 +92,39 @@ func newSender(relay RelaySession, clock Clock, log *slog.Logger) *sender {
 		clock:        clock,
 		log:          log,
 		chunkPayload: wire.MaxChunkPayload,
+	}
+}
+
+func (s *sender) currentRelay() RelaySession {
+	s.relayMu.RLock()
+	defer s.relayMu.RUnlock()
+	return s.relay
+}
+
+// setRelay points the sender at a reclaimed session.
+//
+// The frameId space, the derived DecoderConfig and the shrunken chunk budget
+// all carry over deliberately: continuous frameIds are what tell the relay
+// this is a *resume* rather than a restart (docs/22 — there is no server-side
+// epoch), the relay dropped its config cache when the new publisher session
+// claimed the hub, and a path MTU learned the hard way is a property of the
+// uplink, not of the session.
+//
+// The in-flight keyframe does not carry over: it belongs to the session that
+// just died. Cancelling it lets its writer goroutine finish now instead of
+// waiting on a dead stream, and clearing the slot stops the next keyframe
+// being counted as having superseded it.
+func (s *sender) setRelay(r RelaySession) {
+	s.relayMu.Lock()
+	s.relay = r
+	s.relayMu.Unlock()
+
+	s.kfMu.Lock()
+	old := s.inflight
+	s.inflight = nil
+	s.kfMu.Unlock()
+	if old != nil {
+		old.CancelWrite(keyframeSupersededCode)
 	}
 }
 
@@ -172,7 +210,7 @@ func (s *sender) sendKeyframe(frameID uint32, au AccessUnit) {
 		s.mu.Unlock()
 	}
 
-	str, err := s.relay.OpenUniStream()
+	str, err := s.currentRelay().OpenUniStream()
 	if err != nil {
 		s.log.Debug("keyframe stream open failed", "err", err)
 		s.countKeyframeFailed()
@@ -255,8 +293,9 @@ func (s *sender) sendDelta(frameID uint32, au AccessUnit) {
 		}
 		sent := 0
 		var sendErr error
+		relay := s.currentRelay()
 		for _, d := range dgrams {
-			if err := s.relay.SendDatagram(d); err != nil {
+			if err := relay.SendDatagram(d); err != nil {
 				sendErr = err
 				break
 			}

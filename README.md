@@ -815,6 +815,25 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 
 **Relay fleet (R17)**
 
+- **`reason: "context canceled"` in a session-ended log meant "we don't
+  know"** — and it is the *normal* reason for any abrupt death, so an idle
+  timeout, a stateless reset and a peer's CONNECTION_CLOSE all looked
+  identical. quic-go tears streams down inside `handleCloseError` but only
+  cancels the connection context in a `defer` that runs after `Conn.run`
+  returns, and http3 links the request context to the *stream* with a plain
+  `context.AfterFunc(str.Context(), cancel)` — which discards the cause. The
+  relay now keeps the connection's context via `http3.Server.ConnContext` and
+  reports `context.Cause` from it (`internal/transport/endreason.go`); the
+  wait in there is load-bearing, because the stream always wins that race.
+  A real cause (`EOF`, `timeout: no recent network activity`) is never
+  overwritten. ([docs/19](docs/19-linux-native-broadcaster.md))
+- **A native broadcaster reclaims its own broadcast now** (2026-07-27): a
+  dropped transport is retried for up to 5 minutes rather than ending the
+  session, and `OnEnded` means the broadcast is genuinely over. Close codes
+  **4000 and 4004 are never resumed** — "newest publisher wins" only
+  converges because the deposed publisher stays down, so an engine that
+  reclaimed after a 4004 would flap forever against the one that deposed it.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
 - **Every `/publish/{id}` claim needs a resume token** (wire 0x09, the
   `resume` query param) — including reclaims that used to work bare. An old
   client's tokenless reclaim gets 403 and falls back to minting; that's the

@@ -121,6 +121,21 @@ func (c *TimeSyncClient) HandleDatagram(dgram []byte) bool {
 	return true
 }
 
+// Reset discards every sample.
+//
+// Mandatory when auto-resume reclaims the broadcast on a new relay session:
+// the reference these samples measure against is the relay's *process*
+// monotonic clock (transport/server.go's processStart), so a reclaim that
+// lands on a different pod — the normal case behind a load balancer — is
+// measuring a different origin entirely. Carrying the old offset over would
+// put every viewer's absolute capture→render latency out by the difference
+// between two pods' uptimes, with nothing in the numbers to say so.
+func (c *TimeSyncClient) Reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.est = TimeSyncEstimator{}
+}
+
 // Sample returns the current best estimate, if any pong has landed.
 func (c *TimeSyncClient) Sample() (TimeSyncStats, bool) {
 	c.mu.Lock()
@@ -142,6 +157,15 @@ type clockMappingPublisher struct {
 
 func newClockMappingPublisher() *clockMappingPublisher {
 	return &clockMappingPublisher{interval: ClockMappingInterval}
+}
+
+// reset re-arms the "publish as soon as there is a sample" rule. Used on a
+// resume: the relay dropped the broadcast's cached ClockMapping when the new
+// publisher session claimed the hub, so waiting out the ordinary interval
+// would leave every joining viewer without an offset for up to that long.
+func (p *clockMappingPublisher) reset() {
+	p.everSent = false
+	p.lastSentUs = 0
 }
 
 // due reports whether to publish now. haveSample is whether a pong has landed.
