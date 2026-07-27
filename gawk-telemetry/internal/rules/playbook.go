@@ -62,6 +62,7 @@ func Playbook() []Rule {
 		decoderChoking(),
 		stallAttribution(),
 		keyframeGapChurn(),
+		parityIneffective(),
 		configOrLimits(),
 		resilientUndersupply(),
 		carrierQueueOverflow(),
@@ -540,6 +541,71 @@ func keyframeGapChurn() Rule {
 				conf = 0.8
 			}
 			return &Finding{Severity: SeverityWarn, Confidence: conf, Evidence: ev}
+		},
+	}
+}
+
+// R29 (docs/34 §7.3): parity is being served and the viewer is STILL losing
+// frames.
+//
+// The whole value of this rule is in its action text, because the two causes
+// call for opposite responses:
+//
+//   - loss above what k covers → raise the fleet parity level;
+//   - BURSTY loss → raising k is useless. A burst inside one frame consumes
+//     several of its chunks at once, which is precisely the failure mode a
+//     per-frame code cannot cover at any k (docs/34 §9 kill criterion 1 puts
+//     the burst model at 37 % of GOPs still damaged even at k=4). The answer
+//     there is Resilient mode, whose QUIC retransmission does not care how
+//     the loss is distributed.
+//
+// The discriminator is how much parity RECOVERED relative to how much
+// arrived. An under-provisioned code still repairs plenty and simply cannot
+// keep up; a per-frame code facing bursts repairs almost nothing, because the
+// erasures cluster into the frames whose symbols they also took out.
+func parityIneffective() Rule {
+	return Rule{
+		ID:       "parity-ineffective",
+		Scope:    "viewer",
+		Requires: []string{"client.parityChunksReceived", "client.framesDroppedIncomplete"},
+		Verdict:  "Forward parity is being served and frames are still being lost",
+		Action: "Compare framesRecoveredByParity against parityChunksReceived in the evidence: a " +
+			"code that is merely under-provisioned still recovers plenty, and raising the fleet " +
+			"parity level helps. One recovering almost nothing is facing BURSTY loss, which no " +
+			"per-frame code covers at any level — route that viewer to Resilient mode instead.",
+		Eval: func(f *Facts) *Finding {
+			symbols, _ := f.Client("parityChunksReceived")
+			incomplete, _ := f.Client("framesDroppedIncomplete")
+			// Parity has to actually be in play, and there has to be enough
+			// traffic for the ratio below to mean anything.
+			if symbols < 50 || incomplete < 10 {
+				return nil
+			}
+			recovered, _ := f.Client("framesRecoveredByParity")
+			// Still losing a material share of what parity was asked to
+			// protect. Below this the code is working and the residue is the
+			// structural one every k has (docs/34 §11).
+			if incomplete < recovered*0.25 {
+				return nil
+			}
+			ev := []Evidence{
+				{Signal: "parityChunksReceived", Value: symbols, From: FromClient},
+				{Signal: "framesRecoveredByParity", Value: recovered, From: FromClient,
+					Comparison: "frames parity actually repaired"},
+				{Signal: "framesDroppedIncomplete", Value: incomplete, From: FromClient,
+					Comparison: "frames lost despite parity"},
+			}
+			// The verdict splits on the discriminator, so the operator reads
+			// the cause rather than deriving it.
+			verdict := "Forward parity is under-provisioned — loss exceeds what this level repairs"
+			if recovered < incomplete*0.5 {
+				verdict = "Forward parity is recovering almost nothing — the loss is bursty, and no per-frame code covers that"
+				ev = append(ev, Evidence{
+					Signal: "framesRecoveredByParity", Value: recovered, From: FromDerived,
+					Comparison: "far below the frames lost — the signature of clustered rather than independent loss",
+				})
+			}
+			return &Finding{Severity: SeverityWarn, Verdict: verdict, Confidence: 0.6, Evidence: ev}
 		},
 	}
 }

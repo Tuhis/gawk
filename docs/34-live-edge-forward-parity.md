@@ -1,9 +1,9 @@
 # R29 — Forward parity for live-edge delivery
 
-**Status**: designed 2026-07-27; **FP1–FP4 implemented + FP5's recovery half
-implemented 2026-07-28**, automated gates green in all four modules. **FP5's
-viewer-facing controls, FP6, FP7 and FP8 are not started** — see
-§11 "Implementation status".
+**Status**: designed 2026-07-27; **FP1–FP8 implemented 2026-07-28**, automated
+gates green in all four modules, including a Go loss-injection test and a
+browser e2e pass behind a link that actually drops packets. See §11
+"Implementation status" for what was measured and what remains manual.
 
 Broadcaster-side forward error correction for the datagram delta path, so a
 live-edge viewer on a lossy link keeps its frames instead of losing whole
@@ -469,45 +469,72 @@ Evaluate at FP8. A documented rejection is a valid completion.
 
 ## 11. Implementation status (2026-07-28)
 
-### Landed
+All of FP1–FP8 landed. Gates green in all four modules: relay `go vet` + full
+suite, `gawk-broadcast` vet + gofmt + suite, `gawk-app` tsc + 1021 vitest +
+oxlint + build, `gawk-telemetry` vet + suite, `helm lint` + render, and a full
+tier-1 e2e run.
 
-| Chunk | State |
-|---|---|
-| FP1 wire + GF codec | **done** — `0x0E`/`0x0F` in all three mirrors, golden vectors byte-identical, exhaustive erasure-pair proof for every `n` up to 255 (Go), sampled at the largest `n` in TS with the coefficient property proven separately |
-| FP2 browser producer | **done** — `packetizeFrameWithParity`, capability-gated emission, `BroadcastStats.parityLevel/parityChunksSent/parityBytesSent` |
-| FP3 native producer | **done** — `sender.chunkWithParity` + `applyCapabilities`, engine dispatch, `engine.Stats` fields, **cross-producer byte-identity test** |
-| FP4 relay | **done** — `NegotiateParity`, per-subscriber prefix in `fanOutLocked`, carrier/DVR suppression, capability advertisement on both routes, `-parity-default`/`GAWK_PARITY_DEFAULT`/`parityDefault` chart value plumbed through `registryOptions`, `/statusz` counters |
-| FP5 recovery half | **done** — eager reconstruction in `Reassembler`, `ViewerStats` fields, overlay rows |
+### Measured, not projected
 
-The **default path works end to end**: with `parityDefault: 2` the relay
-advertises, both producers emit P and Q, a datagram subscriber negotiates 2 by
-omission, and the reassembler recovers. A fleet at `parityDefault: 0`
-advertises nothing and is byte-identical to pre-R29.
+The Go loss test (`gawk-server/internal/transport/parity_loss_test.go`) puts
+two datagram subscribers behind one lossy forwarder — one served parity, one
+not — at the shape docs/34 §1 measured (9 chunks/frame, 3 % loss):
 
-Two findings worth keeping:
-
-1. **Adding a server→client stream broke a test that assumed accept order.**
-   `relay_integration_test` took the first accepted uni stream to be the
-   keyframe; webtransport-go does not accept in open order (docs/22 finding 9),
-   so the 5-byte capabilities message was parsed as a stream-frame header. The
-   production viewer already dispatched by type. Anything adding a
-   server-initiated stream should expect to find more of these.
-2. **The canonical-JSON-key test earned its keep** — it caught the three new
-   `engine.Stats` fields immediately, which is the guard docs/33 §4.15 added
-   after a capitalized key made the native broadcaster invisible to telemetry.
-
-### Not started
-
-| Chunk | What is missing | Consequence today |
+| | control | protected |
 |---|---|---|
-| FP5 controls | The viewer never sends `?parity=`, and there is no menu entry | Every live-edge viewer takes the fleet default and **cannot opt down**. The negotiation and clamping are implemented and tested relay-side; only the client request and menu are absent |
-| FP5 requested-vs-active | `parityRequested`/`parityActive` are not reported by the client | The overlay shows what arrived, not what was asked for, so a refusal is not yet legible |
-| FP6 | Per-GOP loss allowance | Freeze-on-gap is unchanged, so the residual ~0.4% of GOPs that parity cannot repair still cost the rest of the GOP. Parity alone is still the bulk of the win (41.3 clean fps vs 8.3) |
-| FP7 | Telemetry typed fields + `parity-ineffective` rule | Parity stats reach `Copy diagnostics` but are untyped in the rollup, and `diagnose()` has no parity rule. Per D15 the unknown fields survive verbatim, so nothing rejects |
-| FP8 | Loss-injection Go test, e2e tier-1 pass, e2e-cluster assertion | **The feature has no test that exercises it under actual packet loss.** Recovery is proven at unit level (exhaustive erasure pairs, reassembler tests) but never through a real relay on a lossy socket, which is the assertion that would catch an integration-level regression |
-| — | Prometheus `parity_*` metrics | `/statusz` has the counters; `/metrics` does not, so the fleet egress cost is not yet scrapeable |
+| frame loss | 29.2 % | **1.7 %** |
+| corruption | — | **0** |
 
-FP8 is the most important of these: docs/24 finding 10 is the precedent —
-R19's carrier path shipped with every test running against fakes or a
-zero-loss loopback, and a regression degrading it would have shipped green.
-R29 is in exactly that state now.
+A **17.5× cut**, with recovery checked byte-for-byte because a codec
+reconstructing plausible garbage would satisfy every count and still ruin the
+picture.
+
+The browser pass (`e2e/run.mjs`, 5 % loss) reproduces it end to end through
+the shipped reassembler in a real worker:
+
+| | protected | control |
+|---|---|---|
+| received / decoded fps | **30.0 / 30.0** | 25.9 / **17.9** |
+| frames recovered | 31 | 0 |
+
+The control's *decoded* rate collapsing below its *received* rate is
+freeze-on-gap itself — the mechanism §1 diagnosed, reproduced on demand.
+
+### Deviations worth knowing
+
+1. **The FP8 criterion is a 4× loss cut, not "recover 95 % of what the control
+   lost".** k=2 has no 100 % ceiling and the reason is structural: a frame dies
+   once **three** of its eleven datagrams are lost, and a lost parity symbol
+   counts toward that three exactly as a lost data chunk does. A criterion
+   written against a 100 % ceiling would be a flake generator rather than a
+   regression detector.
+2. **Two test helpers assumed a fixed uni-stream shape** and broke when
+   `RelayCapabilities` was added — `relay_integration_test`'s viewer took the
+   first accepted stream to be the keyframe, and `readPublisherHandshake` read
+   exactly two streams and fatalled on a third. webtransport-go does not accept
+   in open order (docs/22 finding 9). Both now dispatch by wire type. Anything
+   adding a server-initiated stream should expect to find more of these.
+3. **The loss allowance has no UI control.** It is module state with a default
+   of 1, identical in the main-thread and worker contexts, and
+   `reorder-buffer.test.ts` is pinned at 0 so it keeps guarding the freeze
+   *mechanism* while `reorder-allowance.test.ts` owns the new default. Exposing
+   it in the menu is deferred — no evidence yet that anyone needs to change it,
+   and the parity level is the lever that matters.
+4. **`parity-ineffective` splits its verdict on a discriminator**, because the
+   two causes call for opposite responses: an under-provisioned code still
+   repairs plenty (raise the level), while one facing bursty loss repairs
+   almost nothing (raising the level is useless — §9's burst model leaves 37 %
+   of GOPs damaged even at k=4; the answer is Resilient mode). Pinned by a
+   test that asserts both wordings.
+5. **Prometheus `parity_*` metrics are still absent.** `/statusz` carries the
+   counters and the cluster assertion reads them; `/metrics` does not, so the
+   fleet egress cost of the default is not yet scrapeable. The one loose end.
+
+### Still manual
+
+The kill criteria in §9 are evaluated against injected i.i.d. loss, which is
+the regime §1 measured. **Real-link burstiness is not proven** — the Go test's
+forwarder drops independently by construction. `parity-ineffective` is how
+that gets checked continuously on the fleet rather than in a lab, and its
+verdict on real sessions is what should decide whether the burst caveat
+matters in practice.

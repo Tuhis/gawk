@@ -139,6 +139,10 @@ var broadcasterSeries = []string{
 var viewerCounters = []string{
 	"framesAssembled", "framesDroppedIncomplete", "framesDroppedLate",
 	"reorderGapResyncs", "reorderKeyframeWaitDrops", "framesDiscardedAwaitingKey",
+	// R29 (docs/34 §7.3): what parity bought this viewer, and what the
+	// allowance absorbed.
+	"parityChunksReceived", "framesRecoveredByParity", "parityRecoveryFailures",
+	"framesSkippedWithinAllowance",
 	"keyframeStreamsReceived", "configsApplied", "decodedFrames",
 	"videoBytesReceived", "carrierStreams", "carrierStreamsAborted",
 	"audioPacketsReceived", "audioPacketsDecoded",
