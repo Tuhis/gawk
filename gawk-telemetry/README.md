@@ -70,6 +70,26 @@ not do.
 No build step, no external asset fetch: it works on a port-forward from a
 laptop with no network.
 
+### Finding one stream
+
+Rows are labelled with the **obfuscated** broadcast key, because that is the
+only identity telemetry is ever told: the six-character code is a join
+credential, and the client is structurally incapable of reporting one (the
+session token's HMAC binds the obfuscated key, so a batch carrying anything else
+is rejected before a byte is written).
+
+So the lookup runs one-way and server-side. Set `-stats-key` to the fleet stats
+key and a **Find** box appears: type the code you already hold, the service
+computes the digest the relay would have published for it, and the page
+highlights that row. `POST /v1/resolve`, never a query string — a join
+credential must not land in browser history, a `Referer`, or a proxy log. The
+code is never stored and never logged.
+
+**It is off by default and that is deliberate.** A service holding the stats key
+can enumerate join codes for the broadcasts it has stored — 31⁶ HMACs is minutes
+of work — so turning it on is an explicit act, the same posture `query_sql`
+takes. Leave it unset and the endpoint answers 501 and the box does not render.
+
 ## MCP
 
 The read listener serves MCP at `/mcp` (streamable HTTP). Point Claude Code at
@@ -120,6 +140,81 @@ cross-session or cross-broadcast identity, no fingerprinting, and never any
 media. The client never reports the raw joinable broadcast ID — only the
 obfuscated key the relay handed it, which the session token's HMAC binds.
 
+## Developing the dashboard against real data
+
+**Do not iterate on the UI through commit → PR → release → deploy.** The page is
+plain HTML/CSS/JS served by Go `embed` with no build step, so the loop is: edit
+`internal/dashboard/assets/`, restart, refresh.
+
+The useful trick is that a *local* binary can scrape the *production* relay, so
+you develop against real broadcasts without deploying anything:
+
+```sh
+# 1. one relay pod's ops port, forwarded (any pod; each answers for its own)
+kubectl -n production port-forward \
+  pod/$(kubectl -n production get pod -l app.kubernetes.io/name=gawk-server \
+        -o jsonpath='{.items[0].metadata.name}') 12112:2112 &
+
+# 2. a local service pointed at it. -relay-addrs bypasses the headless-Service
+#    lookup, which only resolves in-cluster.
+go run ./cmd/gawk-telemetry \
+  -telemetry-key $(printf '0%.0s' {1..64}) \
+  -data-dir /tmp/gawk-tm-dev \
+  -ingest-addr 127.0.0.1:18080 \
+  -read-addr   127.0.0.1:18081 \
+  -relay-addrs 127.0.0.1:12112 \
+  -scrape-interval 2s
+
+open http://127.0.0.1:18081        # no basic auth: none is configured
+```
+
+What you get and what you don't:
+
+| | |
+|---|---|
+| relay-side data (broadcasts, viewers, counters) | **real**, from production |
+| client-side data (fps, stalls, verdicts) | **absent** — browsers report to the deployed ingest, not to yours |
+| the telemetry key | irrelevant here; nothing verifies a token because nothing posts one |
+
+The relay side alone is enough for most layout work — cards, grouping, severity
+sorting, lifecycle. For client-side rows, either point one browser at your local
+ingest (`config.telemetryUrl` in the app's `config.js`) or replay a stored
+session into `-data-dir`.
+
+A synthetic snapshot is often faster than either. The page holds no framework:
+stub `fetch` in the devtools console, call `poll()` — both it and `render()` are
+globals — and drive any shape you like:
+
+```js
+const real = window.fetch;
+window.fetch = async (u, o) => String(u).endsWith('live')
+  ? new Response(JSON.stringify({ atMs: Date.now(), live: [/* … */], ended: [] }))
+  : real(u, o);
+await poll();
+```
+
+**One trap worth knowing:** the page's `setInterval` is throttled to ~1/min by
+Chrome in a **background tab**, so a dashboard you left in another tab stops
+updating and a poll-driven test appears to hang. Drive `poll()` directly rather
+than waiting on the timer.
+
+To work on the find-a-stream box you also need a stats key — any 32 bytes will
+do locally, as long as you compute the digests with the same one:
+
+```sh
+go run ./cmd/gawk-telemetry ... -stats-key $(printf 'ab%.0s' {1..32})
+curl -sX POST -H 'Content-Type: application/json' \
+     -d '{"code":"ABC234"}' http://127.0.0.1:18081/v1/resolve
+# {"broadcastKey":"69a445b44f18"}   <- give a card this key to test highlighting
+```
+
+Against the real cluster, use the fleet's actual key, which is what the relay
+obfuscates `/statusz` with:
+
+```sh
+kubectl -n production get secret gawk-fleet -o jsonpath='{.data.statsKey}' | base64 -d
+```
+
 ## Build & test
 
 ```sh
@@ -151,6 +246,7 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback (flag > env > default).
 | `-dashboard-base` | `GAWK_TELEMETRY_DASHBOARD_BASE` | (empty) |
 | `-mcp` | `GAWK_TELEMETRY_MCP` | `true` |
 | `-query-sql` | `GAWK_TELEMETRY_QUERY_SQL` | `false` |
+| `-stats-key` | `GAWK_TELEMETRY_STATS_KEY` | (empty = the find-a-stream lookup is off) |
 | `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no auth) |
 | `-ingest-rate` / `-ingest-burst` | `GAWK_TELEMETRY_INGEST_RATE` / `_BURST` | `300` / `1200` (global) |
 | `-ingest-session-rate` / `-ingest-session-burst` | `GAWK_TELEMETRY_INGEST_SESSION_RATE` / `_SESSION_BURST` | `1` / `10` (per session) |

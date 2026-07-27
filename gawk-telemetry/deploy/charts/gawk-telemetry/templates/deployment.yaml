@@ -69,6 +69,20 @@ spec:
               {{- else }}
               value: {{ .Values.telemetryKey | quote }}
               {{- end }}
+            # OPTIONAL (see values.yaml): enables the dashboard's find-a-stream
+            # -by-code lookup. Absent, that lookup answers 501 and nothing else
+            # changes. Never the same value as GAWK_TELEMETRY_KEY.
+            {{- if or .Values.statsKeyRef .Values.statsKey }}
+            - name: GAWK_TELEMETRY_STATS_KEY
+              {{- if .Values.statsKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.statsKeyRef.name | quote }}
+                  key: {{ .Values.statsKeyRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.statsKey | quote }}
+              {{- end }}
+            {{- end }}
             - name: GAWK_TELEMETRY_RETENTION_DAYS
               value: {{ .Values.config.retentionDays | quote }}
             - name: GAWK_TELEMETRY_SCRAPE_INTERVAL

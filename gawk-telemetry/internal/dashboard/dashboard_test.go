@@ -122,9 +122,23 @@ func TestColourChannelsAreSeparate(t *testing.T) {
 	if !strings.Contains(css, ".sev-warn") || !strings.Contains(css, ".sev-bad") {
 		t.Error("no severity hue classes")
 	}
-	// ok/unknown spend no hue.
+	// ok never wears a PROBLEM hue...
 	if strings.Contains(css, ".sev-ok { color: var(--warn)") || strings.Contains(css, ".sev-ok { color: var(--bad)") {
-		t.Error("ok spends severity hue")
+		t.Error("ok spends a problem hue")
+	}
+	// ...but it is not the same colour as unknown either. "We checked and it is
+	// healthy" and "nothing has ever reported" are different claims, and the
+	// page's cardinal rule is that the second must never read as the first.
+	// They shared one grey until 2026-07-27.
+	if !strings.Contains(css, ".sev-ok { color: var(--ok); }") {
+		t.Error("ok does not carry its own hue")
+	}
+	if !strings.Contains(css, ".sev-unknown { color: var(--dim); }") {
+		t.Error("unknown should stay neutral grey — it is the absence of an answer")
+	}
+	// Both themes define it, or one of them renders ok as an unstyled default.
+	if strings.Count(css, "--ok:") < 2 {
+		t.Error("--ok is not defined for both the dark and light themes")
 	}
 	// Lifecycle rides contrast (opacity), NOT hue suppression.
 	if !strings.Contains(css, ".ended") || !strings.Contains(css, "opacity") {
@@ -152,6 +166,70 @@ func TestPagePollsRatherThanStreams(t *testing.T) {
 	// rather than blanking the page.
 	if !strings.Contains(js, "feed unavailable") {
 		t.Error("a failed poll does not surface as a stale feed")
+	}
+}
+
+// The page rebuilds every card on each 2 s poll, which was snapping an expanded
+// card shut under whoever was reading it — a session table takes longer than
+// two seconds to read, so the detail view was effectively unreachable.
+//
+// This is a SOURCE-level guard, and deliberately a shallow one: this module has
+// no JS runtime in its harness, so nothing here executes the page. It exists to
+// fail loudly if the mechanism is deleted or the naming drifts. The behaviour
+// itself was verified in a real browser against the served asset (expand
+// survives repeated polls; a collapsed `bad` card stays collapsed; the override
+// dissolves once the default agrees, so a recovered broadcast follows severity
+// again; the map is pruned when a broadcast ages out).
+func TestExpandedCardsSurviveARefresh(t *testing.T) {
+	b, _ := fs.ReadFile(Assets(), "app.js")
+	js := string(b)
+
+	// The state is carried across the rebuild...
+	if !strings.Contains(js, "captureOpenState") {
+		t.Error("nothing reads the open/collapsed state off the outgoing DOM before the rebuild")
+	}
+	if !strings.Contains(js, "openOverrides") {
+		t.Error("no store for the operator's expand/collapse choices")
+	}
+	// ...as a DISAGREEMENT with the severity default, not as raw open-state.
+	// Storing the latter would pin a card open long after its fault cleared,
+	// defeating the severity-driven default the whole page is built around.
+	if !strings.Contains(js, "data-default") && !strings.Contains(js, "dataset.default") {
+		t.Error("the default is not recorded on the card, so an override cannot be told from an untouched card")
+	}
+	// And it is bounded: one entry per broadcast that is still on the page.
+	if !strings.Contains(js, "openOverrides.delete") {
+		t.Error("the override map is never pruned")
+	}
+}
+
+// The find-a-stream box hands the server a join credential, so the shape of the
+// request is a security property, not a style choice: a code in a query string
+// lands in browser history, the Referer header and every proxy log in between.
+//
+// Source-level guard, like the one above; the behaviour (resolve, highlight,
+// survive a rebuild, hide itself when the server answers 501) was verified in a
+// real browser against the served asset.
+func TestFindByCodeNeverPutsTheCodeInAURL(t *testing.T) {
+	b, _ := fs.ReadFile(Assets(), "app.js")
+	js := string(b)
+
+	if !strings.Contains(js, "v1/resolve") {
+		t.Fatal("the page does not call the resolve endpoint")
+	}
+	if !strings.Contains(js, "method: 'POST'") {
+		t.Error("resolve is not called with POST; the code would travel in the URL")
+	}
+	// The give-away shapes of a code pasted into a URL.
+	for _, bad := range []string{"v1/resolve?", "resolve?code", "encodeURIComponent(code)"} {
+		if strings.Contains(js, bad) {
+			t.Errorf("found %q: the broadcast code must never enter a query string", bad)
+		}
+	}
+	// And the resolved value is the digest the page already shows everywhere,
+	// never the code itself, held in page state.
+	if strings.Contains(js, "foundCode") {
+		t.Error("the raw code is being held in page state; keep the digest instead")
 	}
 }
 

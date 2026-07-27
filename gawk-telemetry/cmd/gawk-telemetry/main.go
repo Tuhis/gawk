@@ -69,6 +69,7 @@ func run() error {
 	projection := live.New(nil)
 	api, err := readapi.New(readapi.Options{
 		Store: st, Live: projection, DashboardBase: cfg.dashboardBase,
+		StatsKey: cfg.statsKey,
 	})
 	if err != nil {
 		return err
@@ -112,6 +113,9 @@ func run() error {
 		"relay_targets", cfg.relayTargetDescription(),
 		"mcp_enabled", cfg.mcpEnabled,
 		"query_sql_enabled", cfg.enableSQL,
+		// Whether the code -> broadcast-key lookup is available. The key itself
+		// is never logged; only that one was supplied.
+		"resolve_enabled", len(cfg.statsKey) > 0,
 		// Non-empty means an operator split the origins; the same-origin
 		// default has no cross-origin surface, and the unload beacon only
 		// works in that default.
@@ -369,17 +373,23 @@ type config struct {
 	relayPort      int
 	relayStatic    []string
 	dashboardBase  string
-	mcpEnabled     bool
-	enableSQL      bool
-	basicAuthUser  string
-	basicAuthPass  string
-	rateLimit      float64
-	rateBurst      float64
-	sessionRate    float64
-	sessionBurst   float64
-	corsOrigins    []string
-	logFormat      string
-	logLevel       string
+	// statsKey is OPTIONAL and unrelated to `key`: it is the relay's stats key,
+	// and its only use is resolving an operator-supplied broadcast code to the
+	// obfuscated key the dashboard shows (readapi/resolve.go). Unset by
+	// default, because holding it lets this process enumerate join codes for
+	// the broadcasts it stores.
+	statsKey      []byte
+	mcpEnabled    bool
+	enableSQL     bool
+	basicAuthUser string
+	basicAuthPass string
+	rateLimit     float64
+	rateBurst     float64
+	sessionRate   float64
+	sessionBurst  float64
+	corsOrigins   []string
+	logFormat     string
+	logLevel      string
 }
 
 func (c config) resolver() relayscrape.Resolver {
@@ -432,6 +442,9 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		"the relay's ops port")
 	relayStatic := fs.String("relay-addrs", env("GAWK_TELEMETRY_RELAY_ADDRS"),
 		"comma-separated relay ops addresses; overrides the headless Service (single-pod, dev)")
+	statsKeyHex := fs.String("stats-key", env("GAWK_TELEMETRY_STATS_KEY"),
+		"OPTIONAL fleet stats key as 64 hex chars, the SAME value the relay's -stats-key carries; "+
+			"enables the dashboard's find-a-stream-by-code lookup. Empty disables it")
 	fs.StringVar(&c.dashboardBase, "dashboard-base", env("GAWK_TELEMETRY_DASHBOARD_BASE"),
 		"base URL used in the deep links a verdict carries")
 	fs.BoolVar(&c.mcpEnabled, "mcp", orBool(env("GAWK_TELEMETRY_MCP"), true),
@@ -468,6 +481,18 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 			wire.TelemetryKeySize*2)
 	}
 	c.key = key
+
+	// Optional, so empty is a valid answer — but a MALFORMED one is not: a
+	// silently-ignored bad key would leave the lookup answering with digests
+	// that match nothing and no way to tell that from a wrong code.
+	if sk := strings.TrimSpace(*statsKeyHex); sk != "" {
+		statsKey, err := hex.DecodeString(sk)
+		if err != nil || len(statsKey) != wire.TelemetryKeySize {
+			return config{}, fmt.Errorf("-stats-key must be %d hex chars (the same key the relay obfuscates /statusz with)",
+				wire.TelemetryKeySize*2)
+		}
+		c.statsKey = statsKey
+	}
 
 	if c.scrapeInterval, err = time.ParseDuration(*scrape); err != nil || c.scrapeInterval <= 0 {
 		return config{}, fmt.Errorf("invalid -scrape-interval %q", *scrape)
