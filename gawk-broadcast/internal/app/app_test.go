@@ -549,3 +549,64 @@ func TestResumeTokenIsPersistedOnReceipt(t *testing.T) {
 		return err == nil && saved.LastResumeToken == token
 	}, "resume token persisted to the config file")
 }
+
+// A transport-only interruption keeps the broadcast live. Presenting it as
+// ended — which is what the window did before auto-resume, because the engine
+// fired OnEnded on any relay loss — sends the user to hunt for a Start button
+// while the engine is already reclaiming the code they still hold.
+func TestResumingKeepsTheBroadcastLive(t *testing.T) {
+	fs := &fakeSession{}
+	a, _ := testApp(t, fs, notify.Discard{})
+	a.Start(context.Background(), "K7M2QP")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+
+	fs.cb.OnEncoderChosen("vah264enc")
+	live, liveStatus := a.State()
+
+	fs.cb.OnResuming(2, errors.New("connection refused"))
+	state, status := a.State()
+	if state != live {
+		t.Errorf("state = %v during a resume, want it to stay %v", state, live)
+	}
+	if !a.Resuming() {
+		t.Error("Resuming() = false during a resume: the heartbeat would still read green")
+	}
+	if !strings.Contains(status, "Reconnecting") {
+		t.Errorf("status = %q during a resume, want it to say so", status)
+	}
+
+	fs.cb.OnResumed()
+	if a.Resuming() {
+		t.Error("Resuming() stayed true after the reclaim succeeded")
+	}
+	if _, got := a.State(); got != liveStatus {
+		t.Errorf("status = %q after resuming, want the encoder line %q back", got, liveStatus)
+	}
+}
+
+// Giving up must be loud. The engine reports the failure through OnError
+// before OnEnded, and that ordering is what makes the ending notification
+// critical — KDE's portal swallows normal-urgency notifications while a screen
+// cast is running, which is exactly when this fires.
+func TestUnresumableLossEndsCritically(t *testing.T) {
+	fs := &fakeSession{}
+	n := &recordingNotifier{}
+	a, _ := testApp(t, fs, n)
+	a.Start(context.Background(), "K7M2QP")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+
+	fs.cb.OnError(errors.New("lost the connection to the relay and could not resume"))
+	fs.cb.OnEnded()
+
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateIdle }, "idle")
+	if a.Resuming() {
+		t.Error("Resuming() stayed true after the session ended")
+	}
+	sent := n.all()
+	if len(sent) == 0 {
+		t.Fatal("an unresumable loss notified nothing at all")
+	}
+	if last := sent[len(sent)-1]; last.urgency != notify.UrgencyCritical {
+		t.Errorf("ending notification urgency = %d, want critical (%d)", last.urgency, notify.UrgencyCritical)
+	}
+}

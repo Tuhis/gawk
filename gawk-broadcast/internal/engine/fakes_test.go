@@ -36,6 +36,10 @@ type fakeSession struct {
 	streams   []*fakeSendStream
 	openErr   error
 	openCalls int
+	// closeErr models webtransport-go's Session.closeErr: once the relay has
+	// closed the session, OpenUniStream hands the close error back instead of
+	// opening anything. That is how the engine reads a close code.
+	closeErr error
 	// nextStreamStalls makes the next opened stream block in Write, modelling
 	// a saturated uplink.
 	nextStreamStalls bool
@@ -96,6 +100,9 @@ func (f *fakeSession) OpenUniStream() (SendStream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.openCalls++
+	if f.closeErr != nil {
+		return nil, f.closeErr
+	}
 	if f.openErr != nil {
 		return nil, f.openErr
 	}
@@ -129,6 +136,15 @@ func (f *fakeSession) CloseWithError(code webtransport.SessionErrorCode, msg str
 }
 
 func (f *fakeSession) Context() context.Context { return f.ctx }
+
+// closedByRelay models the relay closing this session with a WebTransport
+// close code, the way webtransport-go surfaces it to a client.
+func (f *fakeSession) closedByRelay(code uint32) {
+	f.mu.Lock()
+	f.closeErr = &webtransport.SessionError{ErrorCode: webtransport.SessionErrorCode(code)}
+	f.mu.Unlock()
+	f.cancel()
+}
 
 func (f *fakeSession) isClosed() bool {
 	f.mu.Lock()

@@ -160,7 +160,11 @@ func run() error {
 
 	ended := make(chan struct{})
 	var endOnce = make(chan struct{}, 1)
-	sess := engine.New(
+	// Declared before the callbacks so the resume messages can name the code
+	// the engine is reclaiming (a ShortVarDecl is not in scope inside its own
+	// initializer).
+	var sess *engine.Session
+	sess = engine.New(
 		engine.Config{
 			RelayURL:      relay,
 			BroadcastID:   *id,
@@ -191,6 +195,23 @@ func run() error {
 			OnError: func(err error) {
 				reporter.Event("error", err.Error())
 				fmt.Fprintln(os.Stderr, "\n"+userMessage(err))
+			},
+			OnResuming: func(attempt int, lastErr error) {
+				// Capture and the encoder are still running; only the
+				// transport dropped. Say so, or a stats line that stops
+				// moving reads as a dead app.
+				if lastErr != nil {
+					reporter.Event("resuming", lastErr.Error())
+					fmt.Fprintf(os.Stderr, "Lost the relay; reclaiming %s (attempt %d): %v\n",
+						sess.BroadcastID(), attempt, userMessage(lastErr))
+					return
+				}
+				reporter.Event("resuming", "")
+				fmt.Fprintf(os.Stderr, "Lost the relay; reclaiming %s…\n", sess.BroadcastID())
+			},
+			OnResumed: func() {
+				reporter.Event("resumed", "")
+				fmt.Fprintf(os.Stderr, "Resumed %s.\n", sess.BroadcastID())
 			},
 			OnEnded: func() {
 				// A clean end lets the service finalize this session without

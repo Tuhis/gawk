@@ -1378,3 +1378,123 @@ at all. Verify it actually merged before re-proposing it.
   MPEG-TS framing (structural AU boundaries, in-band parameter sets, PTS for
   free); the original design risked building both framing layers.
 - **WebRTC/MoQ** — unchanged from CLAUDE.md.
+
+## Auto-resume (added 2026-07-27, after a production incident)
+
+R14 shipped without transport auto-resume, and Decision 18's deferral of the
+viewer count is the closest this document came to naming the gap. The browser
+broadcaster has reclaimed its broadcast on a dropped transport since R17 W2
+(docs/22) — resume tokens, the grace window and "newest publisher wins" all
+exist to serve exactly that — and the native engine simply never used any of
+it. A manual **Resume** button was treated as sufficient.
+
+### The incident
+
+Broadcast `DE6G6P`, 2026-07-27, three-pod production fleet:
+
+| Time (UTC) | Event |
+|---|---|
+| 17:25:35 | `publisher session started` on the origin pod |
+| **18:43:19** | `publisher session ended`, reason `context canceled` — 78 minutes in |
+| 18:44:19 | grace expired; the broadcast was garbage-collected **with three viewers still attached**, all closed with 4000 |
+| after | the broadcaster's IP never publishes again on any pod |
+
+Three separate defects lined up, and each one hid the next:
+
+1. **The engine never tore down on a relay loss.** `finish()` fired `OnEnded`
+   and returned; it did not call `teardown()`. The session context stayed
+   alive, so the GStreamer child kept encoding, the portal ScreenCast session
+   kept the desktop's screen-sharing indicator lit, and the pump kept feeding
+   frames into a dead transport — indefinitely. From the machine, the
+   broadcast looked like it was still running, because in every respect except
+   the one that mattered it *was*.
+2. **The GUI could not stop what it no longer held.** `App.ended()` sets
+   `a.sess = nil`, so `App.Stop()` and `Quit()` became no-ops against the
+   orphaned session. Only killing the process ended the cast.
+3. **The one notification that would have said so was swallowed.** The
+   relay-loss path fired no `OnError`, so `lastErr` was empty and `ended()`
+   notified at **normal** urgency — and KDE's portal inhibits normal-urgency
+   notifications *while screen casting*, which (because of 1) was still
+   happening. Decision 17 exists for precisely this trap and this path walked
+   into it.
+
+Nothing reclaimed the ID inside the grace window, so the relay did the only
+thing it could.
+
+### Decision 21: the native engine auto-resumes, transport-only
+
+Mirrors the browser: capture, the encoder, the frameId space, the derived
+`DecoderConfig` and the learned chunk budget all survive; only the QUIC
+session is rebuilt. The expensive and user-visible parts of a broadcast — the
+share picker, the encoder cascade, the GPU context — have nothing to do with
+which connection the bytes leave on.
+
+- **`finish()` is now teardown + `OnEnded`.** One event, one teardown
+  (CODE-REVIEW.md). Every path that ends a session — Stop, an unrecoverable
+  relay loss, capture death — releases the child, the portal session and the
+  publisher slot.
+- **`OnEnded` no longer fires on a recoverable loss.** New `OnResuming(attempt,
+  lastErr)` / `OnResumed()` callbacks carry the interruption, and both shells
+  render it: the GUI turns its heartbeat amber and says "Reconnecting to the
+  relay…" while staying `StateLive`, and the CLI prints the reclaim.
+- **Backoff**: 250 ms, doubling to a 5 s cap, over a 5-minute window. Not
+  zero: webtransport-go gives a client no way to read the close code from a
+  cancelled session context, so a planned drain and an abrupt death are
+  indistinguishable at that moment and we must not hot-loop against a relay
+  that is genuinely gone. R17 budgets a rollout blip at ≤1 s end to end, and
+  250 ms fits inside it.
+- **Terminal answers stop the retry immediately**: HTTP 404 (the grace
+  expired — this is the self-limiting one, and it is why the 5-minute window
+  costs nothing against a fleet configured with a shorter grace), 401, 403,
+  409. Everything else, including a bare transport failure, is retried.
+- **Close codes 4000 and 4004 are never resumed.** `CloseCodePublisherSuperseded`
+  is the load-bearing one and it is a *relay invariant*, not a preference:
+  "newest publisher wins" only converges because the deposed client stays
+  down. Two engines that both auto-resumed would depose each other forever.
+  The code is read back through `RelaySession.OpenUniStream()`, which a closed
+  webtransport-go session answers with its stored close error — the one place
+  the discarded cause survives.
+- **A reclaim is never a mint.** If the transport died before the announce
+  arrived there is no code to reclaim, and the engine gives up rather than
+  starting a second broadcast — R1's bug (docs/06), in the one place the ID is
+  genuinely unknown.
+- **The relay clock estimate is discarded on every resume.** TimeSync measures
+  against the relay's *process* monotonic clock, so a reclaim landing on a
+  different pod — the normal case behind a load balancer — is measuring a
+  different origin. Carrying the old offset over would put every viewer's
+  absolute capture→render latency out by the difference between two pods'
+  uptimes, with nothing in the numbers to say so. The ClockMapping publisher
+  is re-armed with it, since the relay dropped the cached mapping when the new
+  publisher session claimed the hub.
+- **No forced keyframe.** The engine has no such control over the GStreamer
+  child, and the 500 ms GOP refills the relay's invalidated keyframe cache
+  within half a second. A viewer sees at most one GOP of "awaiting keyframe".
+- **`Stats.Resumes` / `Stats.Resuming`** are new, and reach the R28 telemetry
+  rollup through the existing broadcaster series. A broadcast that quietly
+  resumes every few minutes is a working broadcast on a failing path, and
+  nothing else in the stats says so.
+
+### Acceptance criteria
+
+| # | Criterion | Verified by |
+|---|---|---|
+| 1 | A mid-session transport loss reclaims the same code with its token, with no user action | `TestRelayLossResumesWithoutUserAction`, `TestResumeReclaimsTheSameBroadcastCodeWithItsToken` |
+| 2 | Capture is never stopped by a recoverable loss | same, asserting `wasStopped() == false` |
+| 3 | Transient dial failures are retried; terminal statuses are not | `TestResumeRetriesATransientDialFailure`, `TestResumeStopsCaptureWhenTheBroadcastIsGone` |
+| 4 | A superseded or ended broadcast is never reclaimed (no flapping) | `TestSupersededPublisherDoesNotResume`, `TestReclaimSupersedesAgainstRealRelay` (real relay) |
+| 5 | A rollout drain (4002) *is* resumed | `TestDrainingRelayIsResumed` |
+| 6 | Any ending stops capture and releases the publisher slot | `TestCaptureEndTearsDownTheRelaySession`, `TestResumeStopsCaptureWhenTheBroadcastIsGone` |
+| 7 | Giving up notifies at critical urgency (KDE inhibits normal while casting) | `TestUnresumableLossEndsCritically` |
+| 8 | The window shows a reconnect rather than "Live" or "Ready" | `TestResumingKeepsTheBroadcastLive` |
+| 9 | `Stop()` during a reclaim returns promptly | `TestStopDuringResumeReturnsPromptly` |
+| 10 | On-hardware: pull the broadcaster's network cable mid-broadcast for ~10 s; viewers resume without rejoining | **manual, pending** |
+
+### Still open
+
+The incident's *trigger* — why the QUIC session died at all after 78 minutes —
+is not established, and the relay's logs could not say (see the `context
+canceled` gotcha in the README, now fixed). The leading hypothesis is recorded
+in BUGS.md: a source-address change re-hashing the flow onto a different pod,
+which answers with a stateless reset. Auto-resume makes that survivable rather
+than fatal, which is the right layer to fix it at first, but it is not a
+diagnosis.

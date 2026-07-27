@@ -78,6 +78,14 @@ type App struct {
 	status  string
 	lastErr string
 	stats   engine.Stats
+	// resuming is true while the engine is reclaiming the broadcast after a
+	// transport drop. The state stays StateLive — capture, the encoder and the
+	// broadcast code are all still ours — but the window must not present a
+	// steady green "Live" while nothing is reaching viewers.
+	resuming bool
+	// liveStatus is the status line to return to once a resume succeeds (the
+	// encoder line, or plain "Live" before one is chosen).
+	liveStatus string
 	// canMint records whether a failed Resume may fall back to minting. It is
 	// set only for connect-phase failures (Decision 10).
 	canMint bool
@@ -211,6 +219,8 @@ func (a *App) Start(ctx context.Context, id string) {
 	}
 	a.state = StateStarting
 	a.status = "Connecting to the relay…"
+	a.liveStatus = ""
+	a.resuming = false
 	a.lastErr = ""
 	a.canMint = false
 	a.firstViewerSeen = false
@@ -272,7 +282,13 @@ func (a *App) run(ctx context.Context, id string) {
 			OnEncoderChosen: func(enc string) {
 				// The API name first: "VA-API" answers "which driver stack am
 				// I on?" where the element name answers only "which element".
-				a.setStatus(fmt.Sprintf("Live — %s hardware encode (%s)", gst.EncoderAPI(enc), enc))
+				a.setLiveStatus(fmt.Sprintf("Live — %s hardware encode (%s)", gst.EncoderAPI(enc), enc))
+			},
+			OnResuming: func(attempt int, lastErr error) {
+				a.setResuming(attempt, lastErr)
+			},
+			OnResumed: func() {
+				a.setResumed()
 			},
 			OnStats: func(s engine.Stats) {
 				a.mu.Lock()
@@ -330,6 +346,9 @@ func (a *App) run(ctx context.Context, id string) {
 	if a.status == "Connecting to the relay…" {
 		a.status = "Live"
 	}
+	if a.liveStatus == "" {
+		a.liveStatus = a.status
+	}
 	a.mu.Unlock()
 	a.invalidate()
 	// Normal urgency: nice to have, and fine if the desktop swallows it while
@@ -380,6 +399,7 @@ func (a *App) ended() {
 	a.state = StateIdle
 	a.sess = nil
 	a.status = "Ready"
+	a.resuming = false
 	hadErr := a.lastErr != ""
 	a.mu.Unlock()
 	a.invalidate()
@@ -439,6 +459,60 @@ func (a *App) setStatus(s string) {
 	a.status = s
 	a.mu.Unlock()
 	a.invalidate()
+}
+
+// setLiveStatus records the healthy status line and shows it, unless a resume
+// is in flight — a late OnEncoderChosen must not overwrite "Reconnecting…".
+func (a *App) setLiveStatus(s string) {
+	a.mu.Lock()
+	a.liveStatus = s
+	if !a.resuming {
+		a.status = s
+	}
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// setResuming reflects a transport-only interruption. Deliberately no
+// notification: a rollout blip reconnects in well under a second, and nagging
+// through every one of those would train the user to ignore the notifications
+// that do matter. The give-up path rings critically through fail()/ended().
+func (a *App) setResuming(attempt int, lastErr error) {
+	a.mu.Lock()
+	a.resuming = true
+	if attempt <= 1 {
+		a.status = "Reconnecting to the relay…"
+	} else {
+		a.status = fmt.Sprintf("Reconnecting to the relay… (attempt %d)", attempt)
+	}
+	a.mu.Unlock()
+	a.invalidate()
+	if lastErr != nil {
+		a.telemetry.Event("resuming", lastErr.Error())
+	} else {
+		a.telemetry.Event("resuming", "")
+	}
+}
+
+func (a *App) setResumed() {
+	a.mu.Lock()
+	a.resuming = false
+	a.status = a.liveStatus
+	if a.status == "" {
+		a.status = "Live"
+	}
+	a.mu.Unlock()
+	a.invalidate()
+	a.telemetry.Event("resumed", "")
+}
+
+// Resuming reports whether the broadcast is mid-reclaim. The window colours
+// its heartbeat with it: green means frames are reaching the relay, and during
+// a resume they are not.
+func (a *App) Resuming() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.resuming
 }
 
 func (a *App) liveBody() string {
