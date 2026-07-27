@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.1.0...gawk-telemetry-v1.1.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **r28:** repair the live view's broadcaster half, and let an operator read it ([#161](https://github.com/Tuhis/gawk/issues/161)) ([b1f9441](https://github.com/Tuhis/gawk/commit/b1f9441f180e16f5b9ab6b9b1b20bcb0bcbc1a01))
+
 ## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.0.0...gawk-telemetry-v1.1.0) (2026-07-27)
 
 
