@@ -224,6 +224,9 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 			TLSConfig:       http3.ConfigureTLSConfig(&tls.Config{GetCertificate: getCert}),
 			Handler:         mux,
 			EnableDatagrams: true,
+			// Keep the QUIC connection's context reachable from every
+			// handler, so a session that ends can say why (endreason.go).
+			ConnContext: withConnContext,
 			QUICConfig: &quic.Config{
 				EnableDatagrams: true,
 				MaxIdleTimeout:  cfg.MaxIdleTimeout,
@@ -764,7 +767,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
-			log.Info("publisher session ended", "reason", err)
+			log.Info("publisher session ended", "reason", sessionEndReason(r.Context(), err))
 			return
 		}
 		// TimeSync is a transport-level concern (the reply needs this session
@@ -1039,7 +1042,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
-			log.Info("subscriber session ended", "reason", err, "dropped", sub.Dropped())
+			log.Info("subscriber session ended", "reason", sessionEndReason(r.Context(), err), "dropped", sub.Dropped())
 			return
 		}
 		// Subscribers send nothing but TimeSync pings; answer those (R5 Q2)
@@ -1132,7 +1135,7 @@ func (s *Server) handleInternalSubscribe(w http.ResponseWriter, r *http.Request)
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
-			log.Info("edge session ended", "reason", err, "dropped", sub.Dropped())
+			log.Info("edge session ended", "reason", sessionEndReason(r.Context(), err), "dropped", sub.Dropped())
 			return
 		}
 		// The edge's TimeSync pings (per-hop ClockMapping rewrite) are
@@ -1219,7 +1222,7 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
 			if !quiet {
-				log.Info("session ended", "reason", err)
+				log.Info("session ended", "reason", sessionEndReason(r.Context(), err))
 			}
 			return
 		}
