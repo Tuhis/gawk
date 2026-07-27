@@ -125,6 +125,42 @@ func TestReporterInertWhenFleetDisabled(t *testing.T) {
 	}
 }
 
+// The endpoint is a setting, and settings are edited: a reporter that fixed it
+// at construction would need an app restart to honour the field the user just
+// typed into. Each session's batches go to the endpoint configured when they
+// were produced — a repointed reporter must not deliver the previous session's
+// data to the new collector, whose key cannot verify that token anyway.
+func TestSetURLRepointsAndDisables(t *testing.T) {
+	first, second := newCapture(t), newCapture(t)
+
+	r := New(Options{URL: first.srv.URL, Version: "1.2.3"})
+	r.Begin(hello(true))
+	r.Report(map[string]any{"encoderFps": 60})
+	r.Finish()
+
+	r.SetURL(second.srv.URL)
+	r.Begin(hello(true))
+	r.Report(map[string]any{"encoderFps": 30})
+	r.Finish()
+
+	// Off means the next session produces nothing at all.
+	r.SetURL("")
+	if r.Enabled() {
+		t.Error("Enabled() true after SetURL(\"\")")
+	}
+	r.Begin(hello(true))
+	r.Report(map[string]any{"encoderFps": 15})
+	r.Finish()
+	r.Close()
+
+	if got := first.count(); got != 1 {
+		t.Errorf("first endpoint received %d batches, want 1", got)
+	}
+	if got := second.count(); got != 1 {
+		t.Errorf("second endpoint received %d batches, want exactly its own session's 1", got)
+	}
+}
+
 // truncateStr() bounds Event Kind/Detail (gawk-telemetry/internal/ingest has
 // the same fix under the name clip() — the two Go modules share no util
 // package, so the fix is duplicated rather than shared). A byte slice can
@@ -384,8 +420,8 @@ func TestPostRetriesOn429ButNotOnOther4xx(t *testing.T) {
 				w.WriteHeader(tc.status)
 			}))
 			t.Cleanup(srv.Close)
-			r := &Reporter{opts: Options{URL: srv.URL, Client: srv.Client()}}
-			done, retry := r.post([]byte(`{}`))
+			r := &Reporter{opts: Options{Client: srv.Client()}}
+			done, retry := r.post(outbound{url: srv.URL, body: []byte(`{}`)})
 			if done {
 				t.Errorf("status %d reported as delivered", tc.status)
 			}

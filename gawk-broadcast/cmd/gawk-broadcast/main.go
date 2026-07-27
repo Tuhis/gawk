@@ -47,7 +47,7 @@ func run() error {
 	fs := flag.NewFlagSet("gawk-broadcast", flag.ContinueOnError)
 	var (
 		configPath = fs.String("config", cfgPath, "path to the config file")
-		relayURL   = fs.String("url", "", "relay URL, e.g. https://gawk-relay.example:4433 (env GAWK_URL)")
+		relayURL   = fs.String("url", "", "relay URL, e.g. https://gawk-relay.example:4433 (default "+config.DefaultRelayURL+", env GAWK_URL)")
 		appURL     = fs.String("app-url", "", "frontend URL for join links, e.g. https://gawk.example (env GAWK_APP_URL)")
 		id         = fs.String("id", "", "reclaim this broadcast code instead of minting a new one")
 		secret     = fs.String("secret", "", "publish secret, if the relay requires one (env GAWK_SECRET)")
@@ -59,11 +59,12 @@ func run() error {
 		encoder    = fs.String("encoder", "", "force an encoder ("+strings.Join(gst.CandidateNames(), ", ")+"); default probes them in order")
 		verbose    = fs.Bool("v", false, "verbose logging (the GStreamer child's stderr included)")
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
-		telemetry  = fs.String("telemetry-url", "", "R28 telemetry ingest endpoint, e.g. https://gawk.example/api/telemetry/v1/ingest (env GAWK_TELEMETRY_URL); empty disables reporting")
+		telemetry  = fs.String("telemetry-url", "", "R28 telemetry ingest endpoint (env GAWK_TELEMETRY_URL); default "+config.DefaultTelemetryURL+" on the default relay, "+config.Off+" disables reporting")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "gawk-broadcast — publish your screen to a gawk relay, with hardware encode.\n\n")
-		fmt.Fprintf(os.Stderr, "Usage:\n  gawk-broadcast -url https://relay.example:4433\n\n")
+		fmt.Fprintf(os.Stderr, "Usage:\n  gawk-broadcast                          # the default relay, %s\n", config.DefaultRelayURL)
+		fmt.Fprintf(os.Stderr, "  gawk-broadcast -url https://relay.example:4433\n\n")
 		fmt.Fprintf(os.Stderr, "Settings are read from %s and overridden by these flags.\n\n", cfgPath)
 		fs.PrintDefaults()
 	}
@@ -85,7 +86,11 @@ func run() error {
 	applyString(&cfg.PublishSecret, *secret, os.Getenv("GAWK_SECRET"))
 	applyString(&cfg.Origin, *origin, os.Getenv("GAWK_ORIGIN"))
 	applyString(&cfg.Encoder, *encoder, os.Getenv("GAWK_ENCODER"))
-	if cfg.RelayURL == "" {
+	// Blank is not an error any more: it means the default fleet. Only an
+	// emptied-out default could land here, and refusing is still better than
+	// dialling "".
+	relay := cfg.Relay()
+	if relay == "" {
 		fs.Usage()
 		return errors.New("no relay URL: pass -url or set GAWK_URL")
 	}
@@ -139,17 +144,25 @@ func run() error {
 		resumeToken = cfg.LastResumeToken
 	}
 
-	// R28 (docs/33 TM2): the telemetry reporter. Inert unless an ingest URL is
-	// configured AND the relay's hello enables collection — either missing
-	// means not a single request leaves this process.
-	reporter := telemetryPkg.New(telemetryPkg.Options{URL: cfg.TelemetryURL, Log: log})
+	// R28 (docs/33 TM2): the telemetry reporter. On by default against the
+	// default fleet, and still inert unless the relay's hello enables
+	// collection — a relay with no telemetry key sends no hello, and then not a
+	// single request leaves this process.
+	//
+	// Said out loud, once, because a default that sends data should not be a
+	// thing you discover by reading the source.
+	ingest := cfg.Telemetry()
+	if ingest != "" {
+		fmt.Fprintf(os.Stderr, "Diagnostics are reported to %s (-telemetry-url %s to stop).\n", ingest, config.Off)
+	}
+	reporter := telemetryPkg.New(telemetryPkg.Options{URL: ingest, Log: log})
 	defer reporter.Close()
 
 	ended := make(chan struct{})
 	var endOnce = make(chan struct{}, 1)
 	sess := engine.New(
 		engine.Config{
-			RelayURL:      cfg.RelayURL,
+			RelayURL:      relay,
 			BroadcastID:   *id,
 			PublishSecret: cfg.PublishSecret,
 			ResumeToken:   resumeToken,

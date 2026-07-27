@@ -506,6 +506,14 @@ frozen `#/debug/broadcast` page next to the production UI.
     credential. The GUI writes it; CLI flags override it. A pre-shared secret
     in a local file is consistent with how it already travels (a query param,
     per R2 — the WebTransport JS API can't set headers).
+    *(Amended 2026-07-27: the relay URL and the R28 telemetry URL now have
+    **defaults** — `config.DefaultRelayURL` / `DefaultTelemetryURL`, the
+    reference fleet — so a first run needs no configuration at all, which is
+    the run that matters for a binary handed to a friend. Blank means "follow
+    the default" and is **resolved at use, never at save**, so a moved fleet
+    address is not pinned by whatever each user's file captured; `off` is the
+    telemetry opt-out, because blank is taken. Reasoning and the
+    default-relay-pairing rule: docs/33 §4.15.)*
 20. **Stats parity where it's honest, `n/a` where it isn't.** The engine
     reports what it can see: chosen encoder, encoder fps, sent fps,
     datagrams, keyframe streams sent/failed/superseded, frames dropped at

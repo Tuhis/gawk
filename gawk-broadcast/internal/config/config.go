@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // FileMode is the config file's permission. A pre-shared secret in a local
@@ -19,10 +20,66 @@ import (
 // other users on the machine.
 const FileMode fs.FileMode = 0o600
 
+const (
+	// DefaultRelayURL is the reference deployment's relay. An unconfigured
+	// binary points here rather than refusing to start: this is the fleet the
+	// people who get handed this binary actually broadcast to, and "download it
+	// and press Start" is the experience worth having. Any other relay is one
+	// -url (or one settings field) away.
+	DefaultRelayURL = "https://api.gawk.ioio.fi:4433"
+
+	// DefaultTelemetryURL is that same fleet's R28 ingest endpoint. It is on the
+	// *frontend* origin, not the relay's — telemetry is a same-origin path on
+	// the app's Ingress while the relay is a UDP LoadBalancer, which is why this
+	// is a second constant and not derived from DefaultRelayURL.
+	DefaultTelemetryURL = "https://gawk.ioio.fi/api/telemetry/v1/ingest"
+
+	// Off disables telemetry from a place that can only hold a string — a flag,
+	// an env var, a settings field. Empty cannot mean "off" here because empty
+	// means "use the default", so the opt-out needs a word of its own; the relay
+	// already spells the same idea the same way (-metrics-addr off, R9).
+	Off = "off"
+)
+
+// ResolveRelayURL turns a stored/flag/env relay URL into the one to dial.
+// Blank means "whatever the default fleet is", so the default can move with a
+// release instead of being frozen into every user's config file the first time
+// they press Save.
+func ResolveRelayURL(raw string) string {
+	if s := strings.TrimSpace(raw); s != "" {
+		return s
+	}
+	return DefaultRelayURL
+}
+
+// ResolveTelemetryURL turns a stored/flag/env telemetry URL into the ingest
+// endpoint to POST to, or "" for no reporting at all.
+//
+// Blank means on-by-default, but only against the default fleet. The token in
+// an R28 hello is an HMAC minted with *that relay's* telemetry key (docs/33
+// D2), so a batch from a self-hosted relay would be rejected by the reference
+// collector anyway — and pointing someone's private deployment at a third
+// party's collector by default is the wrong default even when nothing lands.
+// So the pairing is the rule: default relay ⇒ default collector; any other
+// relay ⇒ nothing, unless a telemetry URL is given explicitly.
+func ResolveTelemetryURL(relayRaw, telemetryRaw string) string {
+	switch s := strings.TrimSpace(telemetryRaw); {
+	case strings.EqualFold(s, Off):
+		return ""
+	case s != "":
+		return s
+	case ResolveRelayURL(relayRaw) == DefaultRelayURL:
+		return DefaultTelemetryURL
+	default:
+		return ""
+	}
+}
+
 // Config is the persisted settings. Everything is optional; the zero value is
 // a usable first run.
 type Config struct {
-	// RelayURL is the relay's https:// origin.
+	// RelayURL is the relay's https:// origin. Blank uses DefaultRelayURL —
+	// read it through Relay(), never directly.
 	RelayURL string `json:"relayUrl,omitempty"`
 	// AppURL is the *frontend* origin, used to build "join:" links and Copy
 	// link. It is deliberately separate: it is not derivable from the relay
@@ -32,14 +89,15 @@ type Config struct {
 	// PublishSecret is R2's pre-shared publish secret.
 	PublishSecret string `json:"publishSecret,omitempty"`
 	// TelemetryURL is the R28 ingest endpoint (docs/33 D1), e.g.
-	// https://gawk.example/api/telemetry/v1/ingest. Empty disables reporting
-	// entirely — this binary makes no telemetry request at all.
+	// https://gawk.example/api/telemetry/v1/ingest. Blank reports to the default
+	// fleet's collector when the relay is also the default one; the literal
+	// Off disables reporting entirely, and this binary then makes no telemetry
+	// request at all. Read it through Telemetry(), never directly.
 	//
 	// It is NOT derivable from RelayURL: telemetry is served from the frontend
 	// origin, which is a different host by construction (the relay is a UDP
 	// LoadBalancer, the app an Ingress) — the same reason AppURL exists as its
-	// own field. Left empty by default so a native broadcaster never reports
-	// anywhere its operator did not point it.
+	// own field.
 	TelemetryURL string `json:"telemetryUrl,omitempty"`
 	// Origin overrides the Origin header sent on the CONNECT dial. Empty uses
 	// engine.DefaultOrigin. Set it to reuse an already-whitelisted origin (e.g.
@@ -137,6 +195,13 @@ func (c *Config) Save() error {
 	}
 	return os.Rename(tmpName, c.path)
 }
+
+// Relay is the relay URL to dial, defaults applied.
+func (c *Config) Relay() string { return ResolveRelayURL(c.RelayURL) }
+
+// Telemetry is the ingest endpoint to POST to, defaults applied; "" means this
+// process reports nowhere.
+func (c *Config) Telemetry() string { return ResolveTelemetryURL(c.RelayURL, c.TelemetryURL) }
 
 // Path returns where this config lives.
 func (c *Config) Path() string { return c.path }

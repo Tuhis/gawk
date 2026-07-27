@@ -125,10 +125,11 @@ func New(opts Options) *App {
 			return engine.New(cfg, cb, opts)
 		}
 	}
-	// Inert unless BOTH an ingest URL is configured and the relay's hello
-	// enables collection: either missing means this process makes no telemetry
-	// request at all.
-	a.telemetry = telemetry.New(telemetry.Options{URL: opts.Config.TelemetryURL, Log: a.log})
+	// On by default against the default fleet (Config.Telemetry applies that
+	// rule), and still inert unless the relay's hello enables collection: a
+	// relay with no telemetry key sends none, and then this process makes no
+	// telemetry request at all.
+	a.telemetry = telemetry.New(telemetry.Options{URL: opts.Config.Telemetry(), Log: a.log})
 	return a
 }
 
@@ -235,11 +236,18 @@ func (a *App) run(ctx context.Context, id string) {
 	if id != "" && id == a.cfg.LastBroadcastID {
 		resumeToken = a.cfg.LastResumeToken
 	}
+	relayURL := a.cfg.Relay()
+	ingestURL := a.cfg.Telemetry()
 	a.mu.Unlock()
+
+	// Settings are read per broadcast, not once at launch, so editing the
+	// telemetry field and pressing Start means what it says. Repointing between
+	// sessions is exactly the window SetURL documents.
+	a.telemetry.SetURL(ingestURL)
 
 	sess := a.newSess(
 		engine.Config{
-			RelayURL:      a.cfg.RelayURL,
+			RelayURL:      relayURL,
 			BroadcastID:   id,
 			PublishSecret: a.cfg.PublishSecret,
 			ResumeToken:   resumeToken,

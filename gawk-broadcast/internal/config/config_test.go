@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -116,7 +117,83 @@ func TestCorruptConfigDegradesToDefaults(t *testing.T) {
 		t.Fatal("Load of a corrupt config returned no config; the app would not start")
 	}
 	if c.RelayURL != "" {
-		t.Errorf("RelayURL = %q, want the default", c.RelayURL)
+		t.Errorf("RelayURL = %q, want it blank so Relay() falls back to the default", c.RelayURL)
+	}
+}
+
+// A first run must reach the reference fleet without being told where it is —
+// "download it and press Start" is the whole point of the default.
+func TestZeroConfigPointsAtTheDefaultFleet(t *testing.T) {
+	var c Config
+	if got := c.Relay(); got != DefaultRelayURL {
+		t.Errorf("Relay() on a zero config = %q, want %q", got, DefaultRelayURL)
+	}
+	if got := c.Telemetry(); got != DefaultTelemetryURL {
+		t.Errorf("Telemetry() on a zero config = %q, want %q", got, DefaultTelemetryURL)
+	}
+}
+
+func TestResolveRelayURL(t *testing.T) {
+	for _, tc := range []struct{ name, raw, want string }{
+		{"blank uses the default", "", DefaultRelayURL},
+		{"whitespace is blank", "   ", DefaultRelayURL},
+		{"an explicit URL wins", "https://relay.example:4433", "https://relay.example:4433"},
+		{"surrounding space is trimmed", "  https://relay.example  ", "https://relay.example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveRelayURL(tc.raw); got != tc.want {
+				t.Errorf("ResolveRelayURL(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveTelemetryURL(t *testing.T) {
+	for _, tc := range []struct{ name, relay, telemetry, want string }{
+		{"default relay reports by default", "", "", DefaultTelemetryURL},
+		{"the default relay spelled out still reports", DefaultRelayURL, "", DefaultTelemetryURL},
+		// The pairing rule: a private relay's tokens are minted with a
+		// different key, so the reference collector would reject the batch —
+		// and pointing someone's own deployment at it by default is the wrong
+		// default even when nothing lands.
+		{"another relay reports nowhere by default", "https://relay.example:4433", "", ""},
+		{"an explicit endpoint wins on any relay", "https://relay.example:4433", "https://t.example/ingest", "https://t.example/ingest"},
+		{"off disables on the default relay", "", Off, ""},
+		{"off is case-insensitive", "", "OFF", ""},
+		{"off wins over an explicit relay too", "https://relay.example:4433", "off", ""},
+		{"whitespace is blank, not an endpoint", "", "  ", DefaultTelemetryURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveTelemetryURL(tc.relay, tc.telemetry); got != tc.want {
+				t.Errorf("ResolveTelemetryURL(%q, %q) = %q, want %q", tc.relay, tc.telemetry, got, tc.want)
+			}
+		})
+	}
+}
+
+// Resolution happens at use, never at save: a config file that records the
+// default would pin the user to today's fleet address forever, and blanking a
+// field is how you get back to "follow the default".
+func TestSaveDoesNotBakeInTheDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broadcast.json")
+	c := &Config{}
+	c.SetPath(path)
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), DefaultRelayURL) || strings.Contains(string(b), DefaultTelemetryURL) {
+		t.Errorf("Save wrote a default into the config file:\n%s", b)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RelayURL != "" || got.TelemetryURL != "" {
+		t.Errorf("round trip = {relay %q, telemetry %q}, want both still blank", got.RelayURL, got.TelemetryURL)
 	}
 }
 

@@ -148,12 +148,21 @@ get a 6-character code and a join link to share.
 **You pick what to share every time you Start.** We deliberately don't persist
 the choice, so the desktop's share dialog appears on each run.
 
-You'll need the relay URL (and the publish secret, if it's set) from whoever
-sent you this. Either put them in the GUI's fields, or use the CLI:
+**It already knows where to broadcast.** Out of the box both the GUI and the
+CLI point at the default relay, `https://api.gawk.ioio.fi:4433`, so there is
+nothing to configure for the common case. To use a different relay (and a
+publish secret, if that one needs it), fill in the GUI's fields or use the CLI:
 
 ```sh
 GAWK_SECRET=… ./gawk-broadcast -url https://relay.example:4433 -app-url https://gawk.example
 ```
+
+**It also reports diagnostics by default** — fps, drop counters, RTT and the
+like, no screen content and nothing that identifies you or your machine — to
+the default fleet's collector, and only while you're using that fleet. Type
+`off` into the GUI's **Telemetry URL** field, or run the CLI with
+`-telemetry-url off`, and the app sends nothing at all. The README's
+"Diagnostics reporting" section has the details.
 
 If the relay restricts origins (`-allowed-origins`) and rejects the connection,
 either whitelist `gawk-broadcast://native` on the relay or run the broadcaster
