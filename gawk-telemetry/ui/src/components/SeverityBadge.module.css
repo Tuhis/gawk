@@ -1,0 +1,46 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  /*
+    Fixed width so a row's first column never changes size as its state moves
+    between ok/warn/bad/unknown — the words differ in length and would otherwise
+    shove the whole row sideways on every transition.
+  */
+  min-width: 6.5ch;
+}
+
+.word {
+  text-transform: uppercase;
+}
+
+/* ok is GREEN and unknown is grey, deliberately not the same colour. "Checked,
+   and it is healthy" and "nothing has ever reported" are different claims, and
+   painting the second as the first is the one thing an ops page must not do. */
+.ok {
+  color: var(--ok);
+}
+.warn {
+  color: var(--warn);
+}
+.bad {
+  color: var(--bad);
+}
+.unknown {
+  color: var(--text-dimmer);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

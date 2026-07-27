@@ -1,0 +1,20 @@
+.wrap {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.note {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  margin-bottom: var(--sp-2);
+  /* Reserved: the text swaps between three phrasings as the buffer fills, and
+     the charts below must not step up and down while it does. */
+  min-height: 16px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--sp-3);
+}

@@ -1,0 +1,94 @@
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  /* Reserved: the header holds a find box and a feed banner that come and go,
+     and the content below must never shift when they do. */
+  min-height: 56px;
+}
+
+.title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+.updated {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  /* "connecting…" and "updated 19:12:55" differ in width; fix the slot. */
+  min-width: 17ch;
+}
+
+.feed {
+  font-size: var(--fs-sm);
+  color: var(--text-dimmer);
+  min-width: 18ch;
+}
+
+.feedBad {
+  color: var(--bad);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.main {
+  padding: var(--sp-4);
+  max-width: 1600px;
+  width: 100%;
+}
+
+.groupTitle {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: var(--sp-6) 0 var(--sp-2);
+}
+
+.groupTitle:first-child {
+  margin-top: 0;
+}
+
+.groupNote {
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+  margin: calc(-1 * var(--sp-1)) 0 var(--sp-3);
+}
+
+.empty {
+  color: var(--text-dimmer);
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) 0;
+  margin: 0;
+}
+
+/*
+  Lifecycle -> contrast, never hue suppression. An ended `bad` keeps its red so
+  you can see last night went badly, but recession stops it out-shouting a live
+  `warn` sitting above it. That is exactly what makes it safe to show at all.
+*/
+.endedGroup {
+  opacity: 0.62;
+}
+
+.endedGroup:hover {
+  opacity: 0.85;
+}

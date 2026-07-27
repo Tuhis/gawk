@@ -1,0 +1,4 @@
+# Vite build output, embedded into the binary at build time. The README is
+# committed so `//go:embed dist` always has something to match.
+internal/dashboard/dist/*
+!internal/dashboard/dist/README.md
