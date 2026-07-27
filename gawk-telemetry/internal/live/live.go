@@ -257,6 +257,29 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 		}
 		b.sessions[a.SessionID] = s
 	}
+	// Identity is the CLIENT's to state — the relay cannot know what browser is
+	// on the far end — but the relay routinely creates the row first: it is
+	// scraped every 5 s against a 10 s client flush, so setting these only on
+	// creation left the column blank for almost every viewer. Backfilled on
+	// every batch, and only from a value that says something, so a later batch
+	// can never blank what an earlier one established.
+	if browser != "" {
+		s.view.Browser = browser
+	}
+	if os != "" {
+		s.view.OS = os
+	}
+	if appVersion != "" {
+		s.view.AppVersion = appVersion
+	}
+	if a.StartedAtMs != 0 {
+		s.view.StartedAtMs = a.StartedAtMs
+	}
+	// The token binds the role, so the client's claim is the authoritative one:
+	// a row the relay guessed at from which list it appeared in defers to it.
+	if a.Role != "" {
+		s.view.Role = a.Role
+	}
 	s.lastClient = now
 	b.lastSeen = now
 	defer p.sweepLocked(now)
@@ -352,6 +375,31 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 				pv.prev, pv.prevAt, pv.have = pv.cur, pv.at, true
 			}
 			pv.role, pv.cur, pv.at = o.Role, *o.Broadcast, now
+
+			// The publisher's session is named on the broadcast record
+			// (`publisherSessionId`), not in subscriberDetails — it is the same
+			// join as a subscriber's, arriving by a different door. Attaching it
+			// here is what lets a broadcaster row read `observed` rather than
+			// `unknown`, and what puts a relay-visible publisher that never
+			// reported on the page at all instead of dropping it on the floor.
+			// Empty for a relay predating R28 or one running with telemetry off,
+			// which is a real state and not one to invent a session for.
+			if o.SessionID == "" {
+				continue
+			}
+			s, ok := b.sessions[o.SessionID]
+			if !ok {
+				s = &sessionState{
+					view: SessionView{
+						SessionID: o.SessionID, BroadcastKey: o.BroadcastKey, Role: "broadcaster",
+					},
+					clientFacts: map[string]float64{},
+					relayFacts:  map[string]float64{},
+					textFacts:   map[string]string{},
+				}
+				b.sessions[o.SessionID] = s
+			}
+			s.lastRelay = now
 		case "subscriber":
 			if o.Subscriber == nil || o.SessionID == "" {
 				continue

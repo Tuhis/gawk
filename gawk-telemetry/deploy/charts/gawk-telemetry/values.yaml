@@ -29,6 +29,22 @@ replicaCount: 1
 telemetryKey: ""
 telemetryKeyRef: {}
 
+# OPTIONAL, and NOT the same key as telemetryKey. This is the relay's stats key
+# (the server chart's config.statsKey), and its only use is the dashboard's
+# "find a stream by its code" box: an operator types the six-character code they
+# already hold, the service computes the digest the relay would have published
+# for it, and the page highlights that row.
+#
+# The mapping is one-way and stays server-side — no code is ever stored, logged
+# or accepted from a client, and the key never reaches a browser. What it does
+# cost: a service holding this key can enumerate join codes for the broadcasts
+# it has stored (31^6 HMACs is minutes of work). That is why it is unset by
+# default; turning it on is a deliberate act, like querySql.
+#
+# Leave both empty and the lookup returns 501 and the box does not render.
+statsKey: ""
+statsKeyRef: {}
+
 persistence:
   enabled: true
   # 14 days of raw sessions is ~75 MB at ten viewers × 2 h/day (docs/33 §4.3);

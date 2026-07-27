@@ -14,6 +14,30 @@ const POLL_MS = 2000;
 // and the CSS failing to load entirely.
 const GLYPH = { ok: '○', warn: '△', bad: '●', unknown: '?' };
 
+// The page rebuilds every card from scratch on each poll, so an expanded card
+// has to survive the rebuild or it is unreadable: a human reading a session
+// table is slower than 2 s, and the card was snapping shut under them.
+//
+// What is carried is NOT "is this card open". A card opens by DEFAULT when
+// something is wrong — that is the dashboard's whole premise, and remembering
+// raw open-state would defeat it by pinning a card open long after it went
+// quiet. What is carried is the operator's DISAGREEMENT with the default: each
+// card records the default it was handed in `data-default`, and anything
+// differing from that on the next rebuild is a deliberate act and wins.
+//
+// The override dissolves once the default catches up with it, so a card kept
+// open through a `bad` spell goes back to following severity after the operator
+// has also seen it recover. Keyed by broadcastKey so a card stays open when the
+// broadcast ends underneath it and the row moves to the recessed group.
+const openOverrides = new Map();
+
+function captureOpenState(root) {
+  for (const card of root.querySelectorAll('details.bcast[data-key]')) {
+    if (card.open === (card.dataset.default === '1')) openOverrides.delete(card.dataset.key);
+    else openOverrides.set(card.dataset.key, card.open);
+  }
+}
+
 function sev(severity) {
   const s = severity || 'unknown';
   const el = document.createElement('span');
@@ -146,7 +170,12 @@ function broadcastCard(b, ended) {
   const worst = b.worstViewer && rank(b.worstViewer) > rank(b.severity) ? b.worstViewer : b.severity;
   const card = document.createElement('details');
   card.className = 'bcast' + (worst === 'bad' ? ' has-bad' : worst === 'warn' ? ' has-warn' : '');
-  card.open = worst === 'bad' || worst === 'warn';
+  // Severity decides the default; the operator's recorded disagreement, if any,
+  // overrides it. See openOverrides above for why it is stored that way round.
+  const byDefault = worst === 'bad' || worst === 'warn';
+  card.dataset.key = b.broadcastKey;
+  card.dataset.default = byDefault ? '1' : '0';
+  card.open = openOverrides.has(b.broadcastKey) ? openOverrides.get(b.broadcastKey) : byDefault;
 
   const sum = document.createElement('summary');
   sum.appendChild(sev(worst));
@@ -193,7 +222,20 @@ function rank(s) {
 
 function render(snap) {
   const root = document.getElementById('root');
+  // Read the operator's expand/collapse choices off the outgoing DOM before it
+  // is discarded — the rebuild is what was destroying them.
+  captureOpenState(root);
   root.textContent = '';
+
+  // Bound the override map to what is still on the page. A broadcast that has
+  // aged out of both groups can never be re-rendered, so its choice is dead
+  // weight; keeping it would leak an entry per broadcast for the process's life.
+  const alive = new Set();
+  for (const b of snap.live || []) alive.add(b.broadcastKey);
+  for (const b of snap.ended || []) alive.add(b.broadcastKey);
+  for (const key of openOverrides.keys()) {
+    if (!alive.has(key)) openOverrides.delete(key);
+  }
 
   // Live first, ALWAYS as its own group. The grouping IS the precedence: a
   // live `warn` outranks an ended `bad`, because only the live one can still
@@ -213,6 +255,84 @@ function render(snap) {
     for (const b of snap.ended) wrap.appendChild(broadcastCard(b, true));
     root.appendChild(wrap);
   }
+
+  // The rebuild drops the found-marker with everything else, so re-apply it —
+  // the same reason the open/collapsed state has to be carried across.
+  markFound(root);
+}
+
+// --- Find a stream by its code -------------------------------------------
+//
+// The page can only ever show the OBFUSCATED broadcast key: the raw code is a
+// join credential and telemetry is never told one. So the lookup runs on the
+// server, one way — POST the code, get back the digest the relay would have
+// published for it, highlight that row.
+//
+// POST, not GET: a join credential in a query string lands in browser history,
+// the Referer header and any proxy log. It is also never kept — `foundKey` is a
+// digest, which is what the page already displays everywhere else.
+let foundKey = null;
+
+function markFound(root) {
+  for (const card of root.querySelectorAll('details.bcast')) {
+    card.classList.toggle('found', foundKey !== null && card.dataset.key === foundKey);
+  }
+}
+
+async function findByCode(ev) {
+  ev.preventDefault();
+  const msg = document.getElementById('find-msg');
+  const code = document.getElementById('code').value.trim();
+  if (!code) {
+    foundKey = null;
+    msg.textContent = '';
+    markFound(document.getElementById('root'));
+    return;
+  }
+  try {
+    const res = await fetch('v1/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    if (res.status === 501) {
+      msg.textContent = 'lookup not configured';
+      return;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    foundKey = (await res.json()).broadcastKey;
+    const root = document.getElementById('root');
+    markFound(root);
+    const hit = root.querySelector('details.bcast.found');
+    // A code that resolves to nothing on the page is the COMMON case, not an
+    // error: the broadcast may have ended and aged out, or never existed. Say
+    // which, rather than leaving the operator staring at an unchanged page.
+    if (hit) {
+      hit.open = true;
+      hit.scrollIntoView({ block: 'nearest' });
+      msg.textContent = '';
+    } else {
+      msg.textContent = 'no live or recent stream with that code';
+    }
+  } catch (e) {
+    msg.textContent = 'lookup failed: ' + e.message;
+  }
+}
+
+// The box only appears where the server can actually answer, so it never offers
+// an action that cannot work.
+async function initFind() {
+  const form = document.getElementById('find');
+  form.addEventListener('submit', findByCode);
+  try {
+    const probe = await fetch('v1/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: '' }),
+    });
+    // 400 means it tried to parse the (empty) code — the lookup is live.
+    if (probe.status !== 501) form.hidden = false;
+  } catch { /* leave it hidden */ }
 }
 
 async function poll() {
@@ -232,5 +352,6 @@ async function poll() {
   }
 }
 
+initFind();
 poll();
 setInterval(poll, POLL_MS);

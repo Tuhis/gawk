@@ -53,6 +53,9 @@ type API struct {
 	now       func() time.Time
 	dashboard string
 	rs        []rules.Rule
+	// statsKey keys the code -> broadcast-key lookup (see resolve.go). Empty
+	// disables it: without the fleet key the digest cannot be computed at all.
+	statsKey []byte
 }
 
 // Options configure the API.
@@ -64,6 +67,11 @@ type Options struct {
 	// machine can hand a human something to LOOK at rather than a wall of
 	// numbers.
 	DashboardBase string
+	// StatsKey is the fleet stats key, the SAME value the relay obfuscates
+	// /statusz broadcast ids with. Optional and empty by default — it is only
+	// needed to let an operator find a stream by the code they already hold,
+	// and holding it widens what a compromise of this pod yields (resolve.go).
+	StatsKey []byte
 }
 
 // New builds the read API.
@@ -77,6 +85,7 @@ func New(opts Options) (*API, error) {
 	return &API{
 		store: opts.Store, live: opts.Live, now: opts.Now,
 		dashboard: opts.DashboardBase, rs: rules.Playbook(),
+		statsKey: opts.StatsKey,
 	}, nil
 }
 
@@ -965,6 +974,9 @@ func (a *API) Handler() http.Handler {
 		out, err := a.FleetSummary(sinceOf(r, a.now()), r.URL.Query().Get("groupBy"))
 		writeJSON(w, out, err)
 	})
+	// POST, and only POST: the code is a join credential and must not travel in
+	// a query string. An accidental GET therefore 405s rather than resolving.
+	mux.HandleFunc("POST /v1/resolve", a.handleResolve)
 	mux.HandleFunc("GET /live", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, a.LiveSnapshot(), nil)
 	})

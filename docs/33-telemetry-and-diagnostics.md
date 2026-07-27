@@ -1131,6 +1131,74 @@ Chrome as `"unknown"` (it reports `HeadlessChrome/`, never `Chrome/`), and four
 as unknowns on every sample. Both fixed; a structural test now pins that every
 field of that interface is typed.
 
+### First-deployment findings (2026-07-27)
+
+R28 reached a real cluster for the first time. The pipe worked end to end on the
+first live broadcast — the relay minted `0x0D`, a browser reported, and the
+headline join held (`publisherSessionId` and `subscriberDetails[].sessionId`
+both equalled their stored sessions). Four defects surfaced that no test had
+reached, all test-first fixed:
+
+1. **The live projection dropped the publisher's relay half.** `ObserveRelay`'s
+   `broadcast` branch received `o.SessionID` (the scraper sets it from
+   `publisherSessionId`) and discarded it: only the `subscriber` branch ever
+   attached a session or set `lastRelay`. So a broadcaster read `relayState
+   unknown` / `relayAgeMs -1` on a page whose own relay data named it, and — the
+   worse half — **a relay-visible publisher that never reported was not rendered
+   at all**, which is precisely the "absence of evidence must still appear" rule
+   the subscriber branch was written to honour. Every test helper had built
+   broadcast observations with no session id, which is why it shipped green.
+
+   Not a consequence, though it looked like one: the three broadcaster rules
+   read client signals *by design* (the capture→encode→send funnel is not
+   visible to a relay), so their capped confidence is D7 working, not damage.
+
+2. **Client identity never backfilled.** `Browser`/`OS`/`AppVersion`/
+   `StartedAtMs` were set only in `ObserveClient`'s create branch. The relay is
+   scraped every 5 s against a 10 s client flush, so for a viewer the row almost
+   always existed already and the client column stayed blank for the whole
+   session. Backfilled on every batch now, from non-empty values only so a later
+   batch cannot blank an earlier one. Note the coupling: fix 1 made publisher
+   rows relay-creatable too, so shipping it alone would have blanked the
+   broadcaster column as well.
+
+3. **The dashboard collapsed every expanded card on each 2 s poll.** `render()`
+   rebuilds every card and recomputed `open` from severity alone, so reading a
+   session table was impossible. What is carried across the rebuild is
+   deliberately *not* open-state but the operator's **disagreement with the
+   severity default** — remembering raw open-state would pin a card open long
+   after its fault cleared and defeat the auto-open the page exists for.
+
+4. **A stream could not be found by its code.** Added `POST /v1/resolve`
+   (§4.12).
+
+### 4.12 Finding a stream by its code
+
+The zero-PII envelope (D8) means the dashboard can only ever label a row with
+the obfuscated key, and an operator holding the six-character code off their own
+screen had no way to find that row. The mapping is now available, and the shape
+is the whole point:
+
+- **One direction, server-side.** `-stats-key` (optional, unset by default) lets
+  the service compute `hex(HMAC-SHA256(statsKey, code)[:6])` — the same
+  construction as `Registry.ObfuscateID` — and the page highlights the matching
+  card. The key never reaches a browser: `hub_test.go` pins that the digest is
+  not offline-computable, and shipping the key to the client would destroy that.
+- **`POST`, never a query string.** A join credential in a URL lands in browser
+  history, `Referer` and every proxy log; a GET shape is not routable at all.
+  The code is never stored and never logged.
+- **Nothing about D8 relaxes.** The code is operator input, not client-reported;
+  `/statusz` is untouched, so R2's hardening decision stands.
+- **Off by default, and the cost is stated rather than buried:** a service
+  holding the stats key can enumerate join codes for the broadcasts it stores
+  (31⁶ HMACs is minutes). Enabling it is a deliberate act, the posture
+  `query_sql` already takes.
+
+The construction is a mirror of code this module cannot import (`ObfuscateID`
+lives in gawk-server's `internal/hub`), so it is pinned by a **golden vector**
+the way every other mirror in this repo is — verified three ways against the
+real implementation and against `openssl`.
+
 ## 4.10 Dip episodes (D16)
 
 The detector, its facts and its two rules. Named constants throughout, shared

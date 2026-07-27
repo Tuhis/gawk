@@ -70,6 +70,21 @@ func relayRound(subs ...relayscrape.Subscriber) relayscrape.Round {
 	return round(relayObs(subs...))
 }
 
+// publisherObs is a scrape pass carrying the PUBLISHER's session id, which is
+// what the relay actually sends (`publisherSessionId`) and what relayObs below
+// deliberately omits. Kept separate so the omission stays visible: every
+// pre-existing test builds a broadcast observation with no session id at all.
+func publisherObs(sessionID string) []relayscrape.Observation {
+	bc := relayscrape.Broadcast{
+		PublisherActive: true, Role: "origin", FramesRelayed: 10000,
+		PublisherSessionID: sessionID,
+	}
+	return []relayscrape.Observation{{
+		Kind: "broadcast", Pod: "pod-a", Role: "origin",
+		BroadcastKey: "1a2b3c4d5e6f", SessionID: sessionID, Broadcast: &bc,
+	}}
+}
+
 func relayObs(subs ...relayscrape.Subscriber) []relayscrape.Observation {
 	bc := relayscrape.Broadcast{
 		PublisherActive: true, Role: "origin", Subscribers: len(subs),
@@ -139,6 +154,135 @@ func TestAbsenceOfEvidenceIsNeverGreen(t *testing.T) {
 	}
 	if stale.Severity == rules.SeverityOK {
 		t.Error("a viewer whose telemetry stopped rendered as ok")
+	}
+}
+
+// The relay names the publisher's session in `publisherSessionId`, exactly as
+// it names each subscriber's in `subscriberDetails[].sessionId`. Both are the
+// join D2 exists to make, so a broadcaster the relay is actively reporting must
+// read `observed` — not `unknown`, which is what an absent relay half means.
+//
+// It matters beyond a label: D7 caps a verdict resting only on client testimony,
+// so a broadcaster whose relay half never attaches is permanently confidence-
+// capped, and every relay-side broadcaster signal (ingress loss, keyframe
+// drops) is barred from anchoring a live verdict. Seen in production
+// 2026-07-27: the relay published publisherSessionId throughout while the
+// dashboard held relayState `unknown` / relayAgeMs -1.
+//
+// The helpers deliberately left `SessionID` off the broadcast observation until
+// now, which is why the whole suite stayed green through this.
+func TestABroadcasterTheRelayReportsIsObservedNotUnknown(t *testing.T) {
+	p, c := newProj()
+	const id = "dddddddddddddddddddddddd"
+
+	p.ObserveClient(batch(id, "broadcaster", map[string]any{
+		"captureFps": 60.0, "encoderFps": 60.0, "sentFps": 60.0,
+	}), "Chrome 152", "Windows", "0.33.2")
+	p.ObserveRelay(round(publisherObs(id)))
+
+	v := findSession(p.Snapshot(), id)
+	if v == nil {
+		t.Fatal("the broadcaster session is missing from the view")
+	}
+	if v.RelayState != "observed" {
+		t.Errorf("relayState = %q, want observed — the relay is publishing this session's id", v.RelayState)
+	}
+	if v.RelayAgeMs < 0 {
+		t.Errorf("relayAgeMs = %d, want >= 0; a negative age means never seen", v.RelayAgeMs)
+	}
+
+	// And it ages like any other half: stop reporting it and it goes stale,
+	// never silently back to unknown.
+	c.add(RelayStaleAfter + time.Second)
+	p.ObserveClient(batch(id, "broadcaster", map[string]any{
+		"captureFps": 60.0, "encoderFps": 60.0, "sentFps": 60.0,
+	}), "Chrome 152", "Windows", "0.33.2")
+	if v := findSession(p.Snapshot(), id); v.RelayState != "stale" {
+		t.Errorf("relayState = %q after the relay stopped reporting it, want stale", v.RelayState)
+	}
+}
+
+// A publisher the relay names but which never sent telemetry must still appear,
+// for the same reason its subscriber counterpart does: that is a real state
+// (an old client, a blocked ingest) and dropping it on the floor hides a
+// broadcast that is demonstrably live.
+func TestARelayOnlyPublisherStillAppears(t *testing.T) {
+	p, _ := newProj()
+	const id = "eeeeeeeeeeeeeeeeeeeeeeee"
+
+	p.ObserveRelay(round(publisherObs(id)))
+
+	v := findSession(p.Snapshot(), id)
+	if v == nil {
+		t.Fatal("a relay-visible publisher that never reported is missing from the view entirely")
+	}
+	if v.Role != "broadcaster" {
+		t.Errorf("role = %q, want broadcaster", v.Role)
+	}
+	if v.ClientState != "unknown" {
+		t.Errorf("clientState = %q, want unknown", v.ClientState)
+	}
+	if v.Severity == rules.SeverityOK {
+		t.Error("a publisher that never reported rendered as ok")
+	}
+}
+
+// Who a session IS comes from the client — the relay has no idea what browser
+// is on the other end. But the relay usually gets there FIRST: it is scraped
+// every 5 s while a client flushes every 10 s, so for most viewers the session
+// already exists by the time its first batch lands. Identity therefore has to
+// be backfilled onto an existing row, not only set when the row is created.
+//
+// Seen in production 2026-07-27: every viewer's client column was blank while
+// the broadcaster's was populated — the broadcaster only looked fine because
+// nothing on the relay path created its session, which stopped being true the
+// moment publisher sessions started being attached.
+func TestClientIdentityBackfillsOntoARelayCreatedSession(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+		role string
+		obs  []relayscrape.Observation
+	}{
+		{"viewer", "aaaa1111aaaa1111aaaa1111", "viewer",
+			relayObs(relayscrape.Subscriber{SessionID: "aaaa1111aaaa1111aaaa1111"})},
+		{"broadcaster", "bbbb2222bbbb2222bbbb2222", "broadcaster",
+			publisherObs("bbbb2222bbbb2222bbbb2222")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := newProj()
+
+			// The relay sees it first and creates the row.
+			p.ObserveRelay(round(tc.obs))
+			// Then the client's first batch arrives.
+			stats := healthyViewer()
+			if tc.role == "broadcaster" {
+				stats = map[string]any{"captureFps": 60.0, "encoderFps": 60.0, "sentFps": 60.0}
+			}
+			b := batch(tc.id, tc.role, stats)
+			b.StartedAtMs = 1785171265157
+			p.ObserveClient(b, "Firefox 141", "Linux", "0.35.0")
+
+			v := findSession(p.Snapshot(), tc.id)
+			if v == nil {
+				t.Fatal("session missing from the view")
+			}
+			if v.Browser != "Firefox 141" {
+				t.Errorf("browser = %q, want %q", v.Browser, "Firefox 141")
+			}
+			if v.OS != "Linux" {
+				t.Errorf("os = %q, want %q", v.OS, "Linux")
+			}
+			if v.AppVersion != "0.35.0" {
+				t.Errorf("appVersion = %q, want %q", v.AppVersion, "0.35.0")
+			}
+			if v.StartedAtMs != 1785171265157 {
+				t.Errorf("startedAtMs = %d, want it backfilled from the batch", v.StartedAtMs)
+			}
+			if v.Role != tc.role {
+				t.Errorf("role = %q, want %q", v.Role, tc.role)
+			}
+		})
 	}
 }
 
