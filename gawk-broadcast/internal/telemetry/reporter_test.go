@@ -1,8 +1,10 @@
 package telemetry
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,6 +83,82 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool, what string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// capturedLogs collects one reporter's log output for assertions.
+type capturedLogs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *capturedLogs) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *capturedLogs) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+func newLogged(t *testing.T, opts Options) (*Reporter, *capturedLogs) {
+	t.Helper()
+	logs := &capturedLogs{}
+	opts.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return New(opts), logs
+}
+
+// Every way of not reporting has to say so, out loud, at the moment it is
+// decided.
+//
+// On 2026-07-27 a native broadcast ran for 25 minutes and reported nothing. The
+// relay had minted its token and sent the hello; the client simply never
+// started a session. Finding even that much took reading relay pod logs against
+// stored telemetry, because the reporter's silence was indistinguishable from a
+// crash, a fleet with no key, or a dropped batch — three very different bugs
+// with one symptom. A reporter that is inert must be inert *loudly*: the
+// difference between "no ingest URL" and "the fleet has telemetry off" is the
+// difference between a settings mistake and a deployment one.
+func TestReporterSaysWhyItIsNotReporting(t *testing.T) {
+	t.Run("no ingest URL", func(t *testing.T) {
+		r, logs := newLogged(t, Options{})
+		r.Begin(hello(true))
+		r.Close()
+		if !strings.Contains(logs.String(), "no ingest URL") {
+			t.Errorf("a hello with no ingest URL logged nothing about it; got:\n%s", logs.String())
+		}
+	})
+
+	t.Run("fleet telemetry off", func(t *testing.T) {
+		c := newCapture(t)
+		r, logs := newLogged(t, Options{URL: c.srv.URL})
+		r.Begin(hello(false))
+		r.Close()
+		if !strings.Contains(logs.String(), "fleet") {
+			t.Errorf("a disabled-fleet hello logged nothing about it; got:\n%s", logs.String())
+		}
+	})
+}
+
+// A session that IS reporting says which session it is. The id is derived from
+// the token's nonce exactly as the relay derives it, so the line names the same
+// row /statusz and the dashboard do — which is what turns "the broadcaster is
+// not in the list" into a one-line answer instead of an investigation.
+func TestReporterLogsItsSessionID(t *testing.T) {
+	c := newCapture(t)
+	r, logs := newLogged(t, Options{URL: c.srv.URL})
+	h := hello(true)
+	want, err := wire.TelemetrySessionID(h.Token)
+	if err != nil {
+		t.Fatalf("TelemetrySessionID: %v", err)
+	}
+	r.Begin(h)
+	r.Close()
+	if !strings.Contains(logs.String(), want) {
+		t.Errorf("session start did not log the session id %q; got:\n%s", want, logs.String())
+	}
 }
 
 // Off means off: no URL, no hello, or a disabled fleet all produce zero

@@ -215,12 +215,19 @@ func (r *Reporter) SetURL(u string) {
 // batch and starts a fresh one — two transport sessions must never merge into
 // one row.
 func (r *Reporter) Begin(h wire.TelemetryHello) {
+	// Both ways of declining to report are logged, and that is not decoration.
+	// A reporter that goes quiet looks exactly like a client that crashed, a
+	// relay with no key, or a batch the network ate — and telling those apart
+	// after the fact meant reading relay pod logs against stored sessions
+	// (2026-07-27). Each of these lines is that investigation, pre-answered.
 	if !r.Enabled() {
+		r.log.Warn("telemetry hello received but no ingest URL is configured; this session will not report")
 		return
 	}
 	if !h.Enabled {
 		// A fleet with telemetry off. Drop anything buffered and go inert
 		// rather than queueing into a void.
+		r.log.Info("relay reports fleet telemetry is off; this session will not report")
 		r.stopLoop()
 		r.mu.Lock()
 		r.token, r.samples, r.events = "", nil, nil
@@ -248,6 +255,16 @@ func (r *Reporter) Begin(h wire.TelemetryHello) {
 	r.mu.Unlock()
 
 	r.startLoop()
+
+	// The session id, derived from the token's nonce exactly as the relay
+	// derives it — so this line names the same row /statusz and the dashboard
+	// show, and "my broadcast is not in the list" stops being an investigation.
+	// The token itself is a bearer credential and is never logged.
+	sessionID, err := wire.TelemetrySessionID(h.Token)
+	if err != nil {
+		sessionID = "?"
+	}
+	r.log.Info("telemetry session started", "session_id", sessionID, "report_interval", interval)
 }
 
 // Report records one stats observation, decimated to the relay-requested

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,11 +69,48 @@ func ResolveTelemetryURL(relayRaw, telemetryRaw string) string {
 		return ""
 	case s != "":
 		return s
-	case ResolveRelayURL(relayRaw) == DefaultRelayURL:
+	case isDefaultRelay(relayRaw):
 		return DefaultTelemetryURL
 	default:
 		return ""
 	}
+}
+
+// isDefaultRelay reports whether raw names the reference fleet's relay.
+//
+// The comparison is on the parsed address, not on the string. "Is this the
+// default fleet?" is a question about which relay this is, and a trailing
+// slash or a capitalized scheme does not change the answer — but a raw string
+// compare says it does, and then silently reports nowhere. Silence is the
+// whole problem: the only symptom is a session that never appears in the
+// telemetry service, which looks identical to a client that crashed, a relay
+// with no key, and a network that ate the batch.
+func isDefaultRelay(raw string) bool {
+	return normalizeRelayURL(ResolveRelayURL(raw)) == normalizeRelayURL(DefaultRelayURL)
+}
+
+// normalizeRelayURL reduces a relay URL to a comparable form: scheme and host
+// lowercased, a bare trailing slash dropped. Only for comparison — what gets
+// dialed is always what the user typed, via ResolveRelayURL.
+//
+// A value that does not parse is returned trimmed but otherwise untouched, so
+// a malformed relay URL can only ever fail to match. Erring toward "not the
+// default" keeps the pairing rule's guarantee intact: a private deployment is
+// never pointed at the reference collector by accident.
+func normalizeRelayURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return trimmed
+	}
+	out := strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimSuffix(u.Path, "/")
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	if u.Fragment != "" {
+		out += "#" + u.Fragment
+	}
+	return out
 }
 
 // Config is the persisted settings. Everything is optional; the zero value is

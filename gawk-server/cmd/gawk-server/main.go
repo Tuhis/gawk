@@ -74,6 +74,7 @@ func run() error {
 		"dvr_max_bytes", cfg.DVRMaxBytes,
 		"dvr_max_catchup", cfg.DVRMaxCatchup,
 		"dvr_audio", cfg.DVRAudio,
+		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
@@ -176,17 +177,18 @@ func run() error {
 // silently inert in production while wired-by-hand tests stay green.
 func registryOptions(cfg config.Config) hub.Options {
 	return hub.Options{
-		MaxSubscribers:       cfg.MaxSubscribers,
-		BroadcastGrace:       cfg.BroadcastGrace,
-		MaxBroadcasts:        cfg.MaxBroadcasts,
-		MaxTotalSubscribers:  cfg.MaxTotalSubscribers,
-		MaxBandwidthBytes:    cfg.MaxBandwidthBytes,
-		MaxKeyframeBytes:     cfg.MaxKeyframeBytes,
-		KeyframeWriteTimeout: cfg.KeyframeWriteTimeout,
-		DVR:                  hub.DVROptions{Window: cfg.DVRWindow, MaxBytes: cfg.DVRMaxBytes},
-		DVRMaxCatchup:        cfg.DVRMaxCatchup,
-		DVRAudio:             cfg.DVRAudio,
-		StatsKey:             cfg.StatsKey,
+		MaxSubscribers:                cfg.MaxSubscribers,
+		BroadcastGrace:                cfg.BroadcastGrace,
+		MaxBroadcasts:                 cfg.MaxBroadcasts,
+		MaxTotalSubscribers:           cfg.MaxTotalSubscribers,
+		MaxBandwidthBytes:             cfg.MaxBandwidthBytes,
+		MaxKeyframeBytes:              cfg.MaxKeyframeBytes,
+		KeyframeWriteTimeout:          cfg.KeyframeWriteTimeout,
+		DVR:                           hub.DVROptions{Window: cfg.DVRWindow, MaxBytes: cfg.DVRMaxBytes},
+		DVRMaxCatchup:                 cfg.DVRMaxCatchup,
+		DVRAudio:                      cfg.DVRAudio,
+		LiveEdgeAudioOnReliableStream: cfg.LiveEdgeAudioOnReliableStream,
+		StatsKey:                      cfg.StatsKey,
 	}
 }
 

@@ -313,6 +313,58 @@ func TestServerStreamDispatchIsByTypeNotArrivalOrder(t *testing.T) {
 	}
 }
 
+// R28's TelemetryHello (0x0D) is the third and last server message the relay
+// sends a publisher, and it is the only one whose loss is *silent*: the
+// broadcast streams perfectly and simply never reports. It had no dispatch test
+// at all, which is part of why a 25-minute session that reported nothing
+// (2026-07-27) took relay pod logs to even localize. Ordered here as the relay
+// actually writes them, hello last.
+func TestTelemetryHelloIsDispatchedBehindTheOtherServerMessages(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	announce, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenMsg, err := wire.AppendResumeToken(nil, bytes.Repeat([]byte{0xab}, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	helloMsg, err := wire.AppendTelemetryHello(nil, wire.TelemetryHello{
+		Enabled:          true,
+		ReportIntervalMs: 2000,
+		Token:            bytes.Repeat([]byte{0x11}, wire.TelemetrySessionTokenSize),
+		BroadcastKey:     bytes.Repeat([]byte{0x22}, wire.TelemetryBroadcastKeySize),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.incoming <- announceStream(announce)
+	sess.incoming <- announceStream(tokenMsg)
+	sess.incoming <- announceStream(helloMsg)
+
+	got := make(chan wire.TelemetryHello, 1)
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{OnTelemetryHello: func(h wire.TelemetryHello) { got <- h }},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	select {
+	case h := <-got:
+		if !h.Enabled {
+			t.Error("hello dispatched with Enabled=false; the fleet flag was not carried")
+		}
+		if h.ReportIntervalMs != 2000 {
+			t.Errorf("ReportIntervalMs = %d, want 2000", h.ReportIntervalMs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the telemetry hello was never dispatched: this session would stream fine and report nothing")
+	}
+}
+
 // The captured token is surfaced (hex, the relay's query-param encoding) so
 // the app can persist it beside the broadcast ID — an R17 relay refuses every
 // /publish/{id} claim without it.
