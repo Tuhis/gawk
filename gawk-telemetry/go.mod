@@ -8,4 +8,4 @@ go 1.26.0
 // tests immediately — the same rule gawk-broadcast follows (R14 Decision 11).
 replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 
-require github.com/Tuhis/gawk/gawk-server v0.0.0-00010101000000-000000000000
+require github.com/Tuhis/gawk/gawk-server 2efa23359d47
