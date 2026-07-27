@@ -46,7 +46,7 @@ feature set exists).
 | R25 | [Native broadcaster audio](#r25--native-broadcaster-audio) | 🔧 designed 2026-07-23; **NA1 spike done 2026-07-27** on Debian 13/KDE — Decisions 2/3/4/5 confirmed on hardware, both risks closed, NA2–NA5 unblocked; NA2–NA8 not started ([docs/28](docs/28-native-broadcaster-audio.md)) |
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
-| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
+| R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
 
 ---
 
@@ -1936,13 +1936,29 @@ not started.
 
 ## R28 — Advanced diagnostics & telemetry
 
-**Status (2026-07-26)**: **TM1–TM8 implemented**, automated gates green in all
-four modules. **TM9 (Grafana) dropped** by owner scope decision — R9 M8 stays
-open. **Manual verification (docs/33 §6) is pending**; deviations are recorded
-in [docs/33 §4.9](docs/33-telemetry-and-diagnostics.md). Everything is
+**Status (2026-07-27)**: **TM1–TM8 + TM10 implemented**, automated gates green
+in all four modules. **TM9 (Grafana) dropped** by owner scope decision — R9 M8
+stays open. **Manual verification (docs/33 §6) is pending**; deviations are
+recorded in [docs/33 §4.9](docs/33-telemetry-and-diagnostics.md). Everything is
 **default off**: without a fleet telemetry key the relay sends no hello and
 every client collects nothing, and both the relay and telemetry charts render
 byte-identically to pre-R28 (asserted in CI).
+
+**TM10 — dip episodes (2026-07-27, [docs/33 D16 + §4.10]
+(docs/33-telemetry-and-diagnostics.md))**: an audit asked whether R28 as
+shipped could answer *"why is this stream stuttering, and why does my viewer
+framerate drop to 2 every now and then?"* — and it could not. The data was all
+there, but every consumer collapsed a session to a **median** or a **single
+last sample**, so a stream collapsing to 2 fps every twenty seconds diagnosed
+as `healthy` (a test now pins that it no longer does). Six mechanisms hid it,
+each defensible alone: funnel rules read medians; the rollup computed `p05`/
+`min` that no rule read; 2 fps *is* the 500 ms GOP cadence and so sits under
+the 1000 ms stall threshold by construction; `keyframe-gap-churn`'s ratio
+diluted from ~1.0 inside a dip to ~0.02 across a session; the live projection
+folded only the last sample of each batch and hysteresis then suppressed what
+survived; and the client decimated 3 of every 4 ticks with no aggregation. The
+fix adds **episodes** beside the percentiles rather than changing them — the
+funnel ratios are untouched, and a test asserts dips cannot make them fire.
 
 **Goal**: every broadcast and every viewer session records what actually
 happened, automatically, into a store that answers three questions without a

@@ -572,10 +572,19 @@ func TestReadPathEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 	for _, n := range factClientFields {
 		stats[n] = 30.0
 	}
+	// A window with a real dip in it, so the D16 facts are producible at all —
+	// a single sample has no baseline to dip from. The maximal sample stays
+	// last, because that is the one the per-signal "last observed value" facts
+	// are read from.
+	samples := make([]rollup.Sample, 0, 13)
+	for i, s := range stutteringViewerStats(12) {
+		samples = append(samples, rollup.Sample{TMs: float64(i) * 2000, Stats: s})
+	}
+	samples = append(samples, rollup.Sample{TMs: 24000, Stats: stats})
 	in := rollup.Input{
 		SessionID: "aa11aa11aa11aa11aa11aa11", BroadcastKey: bkey, Role: "viewer",
 		StartedAtMs: 1000, EndedAtMs: 61000,
-		Samples: []rollup.Sample{{TMs: 0, Stats: stats}},
+		Samples: samples,
 	}
 	row := rollup.Compute(in)
 	row.Config = map[string]string{
@@ -684,5 +693,153 @@ func TestDuplicateRollupRowsCollapseToTheLatest(t *testing.T) {
 	}
 	if len(bs) != 1 || bs[0].Sessions != 1 {
 		t.Errorf("broadcast summary counted %d sessions, want 1", bs[0].Sessions)
+	}
+}
+
+// --- D16: dip episodes ------------------------------------------------------
+
+// stutteringViewerStats is the question R28 exists to answer, as data: a viewer
+// holding a healthy 30 fps that periodically collapses to the 500 ms GOP
+// cadence — 2 fps — because delta loss is eating whole GOPs and only keyframes
+// survive. Every dip is 3 samples (~6 s) out of every 30 (~60 s).
+//
+// The numbers are chosen so that EVERY session-level statistic looks fine:
+// the median is 30, and at 2 fps frames arrive every ~500 ms, which never
+// crosses the 1000 ms stall threshold. That is not incidental — 2 fps IS the
+// GOP cadence, so this failure mode sits under the freeze detector by
+// construction (D16).
+func stutteringViewerStats(n int) []map[string]any {
+	out := make([]map[string]any, 0, n)
+	resyncs, keyframes := 0.0, 0.0
+	for i := range n {
+		dipping := i%30 >= 10 && i%30 < 13
+		fps := 30.0
+		// Two keyframes per 2 s sample at a 500 ms GOP, always.
+		keyframes += 4
+		if dipping {
+			fps = 2.0
+			// The signature: one gap resync per keyframe — every GOP broken.
+			resyncs += 4
+		}
+		out = append(out, map[string]any{
+			"receivedFps": fps, "decoderFps": fps, "renderedFps": fps,
+			// Well under the stall threshold even at 2 fps.
+			"timeSinceLastFrameMs": 500.0, "capToRenderMs": 90.0,
+			"decoderQueueDepth": 1.0, "keyframeStreamsReceived": keyframes,
+			"reorderGapResyncs": resyncs, "deliveryMode": "datagrams",
+			"playoutOffsetMs": 0.0, "isHardwareAccelerated": true,
+		})
+	}
+	return out
+}
+
+// The headline TM10 criterion. A stream that stutters visibly must not
+// diagnose as healthy.
+func TestDiagnoseSeesIntermittentFpsCollapse(t *testing.T) {
+	f := newFixture(t)
+	sid := "0d0d0d0d0d0d0d0d0d0d0d0d"
+	f.seed(t, sid, "viewer", stutteringViewerStats(120), []ingest.Event{{TMs: 1000, Kind: "watching"}})
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if rep.Healthy {
+		t.Fatalf("a stream collapsing to 2 fps every ~20 s diagnosed as HEALTHY — "+
+			"passed=%v unavailable=%v", rep.Passed, rep.Unavailable)
+	}
+	if !hasFinding(rep, "intermittent-fps-dips") {
+		t.Errorf("no intermittent-fps-dips finding; got %s", findingIDs(rep))
+	}
+	// Saying *that* it dipped is half the answer; saying WHY is the half that
+	// makes it actionable.
+	if !hasFinding(rep, "keyframe-only-delivery") {
+		t.Errorf("no keyframe-only-delivery finding; got %s", findingIDs(rep))
+	}
+}
+
+// The guard against the fix: the funnel ratios must be untouched by the
+// presence of dips. An earlier version of the read path compared one side's
+// median against the other's p05 and falsely fired `decoder-choking` on a
+// clean stream; D16 exists BESIDE that machinery, never inside it.
+func TestDipsDoNotDisturbTheFunnelRatios(t *testing.T) {
+	f := newFixture(t)
+	sid := "0e0e0e0e0e0e0e0e0e0e0e0e"
+	f.seed(t, sid, "viewer", stutteringViewerStats(120), nil)
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	// receivedFps and decoderFps dip together — the decoder is keeping up
+	// perfectly with what arrives, so this must NOT read as a decoder problem.
+	if hasFinding(rep, "decoder-choking") {
+		t.Error("dips made the funnel ratio fire decoder-choking — the medians were contaminated")
+	}
+}
+
+// A genuinely steady session must stay healthy: a detector that accuses
+// everything is worth nothing.
+func TestSteadySessionHasNoEpisodes(t *testing.T) {
+	f := newFixture(t)
+	sid := "0f0f0f0f0f0f0f0f0f0f0f0f"
+	f.seed(t, sid, "viewer", healthyViewerStats(120), nil)
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if hasFinding(rep, "intermittent-fps-dips") {
+		t.Error("a steady 60 fps session was accused of dipping")
+	}
+}
+
+func hasFinding(rep *rules.Report, id string) bool {
+	for _, f := range rep.Findings {
+		if f.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func findingIDs(rep *rules.Report) string {
+	ids := make([]string, 0, len(rep.Findings))
+	for _, f := range rep.Findings {
+		ids = append(ids, f.ID)
+	}
+	return fmt.Sprint(ids)
+}
+
+// Decimation drops transients silently, which for a stuttering stream means the
+// timeline agrees with the median that nothing is wrong — and is just as wrong.
+// Envelope-preserving downsampling is what makes the default view usable for
+// the question it is most often opened for (D16).
+func TestDefaultTimelineNeverDownsamplesADipAway(t *testing.T) {
+	f := newFixture(t)
+	sid := "1c1c1c1c1c1c1c1c1c1c1c1c"
+
+	// One short dip in a long session — the case decimation loses. At the
+	// default 40 points a 900-sample session buckets ~23 samples apiece, so a
+	// single dipping sample survives only by luck.
+	stats := healthyViewerStats(900)
+	stats[500]["receivedFps"] = 2.0
+	f.seed(t, sid, "viewer", stats, nil)
+
+	tl, err := f.api.GetSession(sid, nil, 0)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !tl.Downsampled {
+		t.Fatal("900 samples were not downsampled; the test is not exercising the path")
+	}
+	var lowest float64 = 1e9
+	for _, pt := range tl.Points {
+		if v, ok := pt["receivedFps"]; ok && v < lowest {
+			lowest = v
+		}
+	}
+	if lowest != 2 {
+		t.Errorf("lowest receivedFps in the default timeline = %v, want 2 — the dip was decimated away", lowest)
 	}
 }

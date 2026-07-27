@@ -28,6 +28,29 @@ func batch(sessionID, role string, stats map[string]any) ingest.Accepted {
 	}
 }
 
+// dippingSamples is a viewer holding 30 fps that collapses to the 500 ms GOP
+// cadence for three samples in the middle — the D16 signature, and deliberately
+// NOT in the last sample, so a fold that only reads the batch's tail sees a
+// perfectly healthy stream.
+func dippingSamples() []ingest.Sample {
+	out := make([]ingest.Sample, 0, 12)
+	resyncs, keyframes := 0.0, 0.0
+	for i := range 12 {
+		fps := 30.0
+		keyframes += 4
+		if i >= 4 && i < 7 {
+			fps = 2.0
+			resyncs += 4
+		}
+		out = append(out, ingest.Sample{TMs: float64(i) * 2000, Stats: map[string]any{
+			"receivedFps": fps, "decoderFps": fps, "timeSinceLastFrameMs": 500.0,
+			"deliveryMode":            "datagrams",
+			"keyframeStreamsReceived": keyframes, "reorderGapResyncs": resyncs,
+		}})
+	}
+	return out
+}
+
 func healthyViewer() map[string]any {
 	return map[string]any{
 		"receivedFps": 60.0, "decoderFps": 60.0, "timeSinceLastFrameMs": 16.0,
@@ -763,7 +786,16 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 			full.Dropped += 3
 			full.CarrierQueueOverflow++
 		}
-		p.ObserveClient(batch("e0e0e0e0e0e0e0e0e0e0e0e0", "viewer", stats), "Chrome 152", "Windows", "0.33.2")
+		b := batch("e0e0e0e0e0e0e0e0e0e0e0e0", "viewer", stats)
+		// The D16 facts need a window with a baseline to dip FROM, which a
+		// single all-ones sample cannot provide. This is the maximal-fixture
+		// half of the two-sided contract: a fact the inventory claims must be
+		// producible from *some* real input, and a dip is that input.
+		//
+		// The maximal sample stays LAST, because it is the one the
+		// instantaneous gauges are read from.
+		b.Samples = append(dippingSamples(), ingest.Sample{TMs: 24000, Stats: stats})
+		p.ObserveClient(b, "Chrome 152", "Windows", "0.33.2")
 		p.ObserveRelay(relayRound(full))
 	}
 
@@ -794,6 +826,103 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 	for n := range want {
 		if !emitted[n] {
 			t.Errorf("rules.ProducibleFacts claims live emits %q, but a maximal round produced no such fact", n)
+		}
+	}
+}
+
+// --- D16: dip episodes over the rolling window ------------------------------
+
+// The live projection used to fold ONLY the last sample of each batch, which
+// at a 2 s report interval and a 10 s flush discarded four of every five
+// samples. An intermittent collapse could therefore happen in full view of a
+// dashboard watching the stream and never register.
+func TestLiveFoldsEverySampleNotOnlyTheLast(t *testing.T) {
+	c := &clock{t: time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)}
+	p := New(c.now)
+
+	b := batch("d1d1d1d1d1d1d1d1d1d1d1d1", "viewer", healthyViewer())
+	// The dip is in the middle; the batch's LAST sample is healthy.
+	b.Samples = dippingSamples()
+	p.ObserveClient(b, "Chrome 152", "Windows", "0.33.2")
+
+	snap := p.Snapshot()
+	var view *SessionView
+	for i := range snap.Live {
+		for j := range snap.Live[i].Sessions {
+			if snap.Live[i].Sessions[j].Role == "viewer" {
+				view = &snap.Live[i].Sessions[j]
+			}
+		}
+	}
+	if view == nil {
+		t.Fatal("no viewer session in the snapshot")
+	}
+	if got := view.Metrics["fpsDipEpisodes"]; got != 1 {
+		t.Errorf("fpsDipEpisodes = %v, want 1 — the dip was in the batch but not in its last sample", got)
+	}
+	if got := view.Metrics["fpsDipWorstFps"]; got != 2 {
+		t.Errorf("fpsDipWorstFps = %v, want 2", got)
+	}
+	var found bool
+	for _, f := range view.Findings {
+		if f.ID == "intermittent-fps-dips" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no intermittent-fps-dips finding on a stuttering viewer; verdict=%q", view.Verdict)
+	}
+}
+
+// An episode is DURABLE within its window, which is the property that lets it
+// survive EscalateSamples. An instantaneous fact could never hold for two
+// consecutive evaluations, which is why hysteresis suppressed exactly the
+// problems it should have surfaced.
+func TestDipSeverityEscalatesThroughHysteresis(t *testing.T) {
+	c := &clock{t: time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)}
+	p := New(c.now)
+
+	b := batch("d2d2d2d2d2d2d2d2d2d2d2d2", "viewer", healthyViewer())
+	b.Samples = dippingSamples()
+	p.ObserveClient(b, "Chrome 152", "Windows", "0.33.2")
+
+	// Two evaluations, as EscalateSamples requires. The dip stays in the
+	// window across both without any new bad sample arriving.
+	var sev rules.Severity
+	for range 2 {
+		c.add(time.Second)
+		snap := p.Snapshot()
+		for _, bc := range snap.Live {
+			for _, s := range bc.Sessions {
+				if s.Role == "viewer" {
+					sev = s.Severity
+				}
+			}
+		}
+	}
+	if sev == rules.SeverityOK {
+		t.Errorf("severity stayed %q — the episode did not survive hysteresis", sev)
+	}
+}
+
+// The window is bounded: this is the one place the live projection keeps
+// history, and a thousand-viewer fleet must not grow with session length.
+func TestDipWindowIsBounded(t *testing.T) {
+	c := &clock{t: time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)}
+	p := New(c.now)
+
+	for range 20 {
+		b := batch("d3d3d3d3d3d3d3d3d3d3d3d3", "viewer", healthyViewer())
+		b.Samples = dippingSamples()
+		p.ObserveClient(b, "Chrome 152", "Windows", "0.33.2")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, bc := range p.bcasts {
+		for _, s := range bc.sessions {
+			if n := len(s.dipWindow); n > DipWindowSamples {
+				t.Errorf("dip window holds %d samples, cap is %d", n, DipWindowSamples)
+			}
 		}
 	}
 }

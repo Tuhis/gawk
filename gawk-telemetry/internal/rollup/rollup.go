@@ -86,8 +86,18 @@ type Row struct {
 	// Counters are end-of-session totals of cumulative fields (the last value
 	// observed), which is what "how many stalls did this session have" means.
 	Counters map[string]float64 `json:"counters,omitempty"`
+	// Episodes are the dips a percentile describes but no verdict could see
+	// (D16), keyed by series name so the row grows additively. Deliberately
+	// separate from Series: a median answers "did this stage keep up for most
+	// of the session", an episode answers "did it fall apart, how often, and
+	// what did the counters do while it did" — two questions, two mechanisms,
+	// and no ratio ever mixes them.
+	Episodes map[string]*Episodes `json:"episodes,omitempty"`
 	// Stalls is derived rather than reported: the client has no "stall count"
 	// field, but timeSinceLastFrameMs crossing a threshold is one.
+	//
+	// A dip is NOT a stall and must never be folded in here: at 2 fps frames
+	// arrive every ~500 ms, which is media flowing badly, not media absent.
 	Stalls         int      `json:"stalls"`
 	LongestStallMs float64  `json:"longestStallMs"`
 	TotalStallMs   float64  `json:"totalStallMs"`
@@ -257,6 +267,14 @@ func Compute(in Input) Row {
 	}
 
 	r.Stalls, r.TotalStallMs, r.LongestStallMs = stalls(in.Samples)
+
+	// Episodes (D16). Absent rather than zeroed when the window cannot support
+	// the judgement — the same rule the Stat pointers follow.
+	if field, counters := PrimarySeries(in.Role); field != "" {
+		if ep := DetectEpisodes(in.Samples, field, counters); ep != nil {
+			r.Episodes = map[string]*Episodes{field: ep}
+		}
+	}
 
 	seenCode := map[string]bool{}
 	for _, e := range in.Events {

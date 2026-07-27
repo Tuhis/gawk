@@ -450,3 +450,86 @@ describe('TelemetryCollector — retry semantics', () => {
     expect(h.sent.length).toBe(MAX_SEND_ATTEMPTS);
   });
 });
+
+describe('TelemetryCollector — interval minima (docs/33 D16)', () => {
+  it('carries the worst tick across a decimation gap', () => {
+    const h = harness({ reportIntervalMs: 2000 });
+    h.begin();
+    // Four 500 ms ticks per emitted sample. The collapse happens on a tick
+    // that decimation discards — which is exactly how an intermittent stutter
+    // used to become invisible before it ever left the browser.
+    h.collector.sample({ receivedFps: 30 });
+    h.advance(500);
+    h.collector.sample({ receivedFps: 2 });
+    h.advance(500);
+    h.collector.sample({ receivedFps: 30 });
+    h.advance(500);
+    h.collector.sample({ receivedFps: 30 });
+    h.advance(500);
+    h.collector.sample({ receivedFps: 30 });
+    h.collector.flush(false);
+
+    const samples = h.batches()[0].samples;
+    // The second emitted sample covers the interval containing the collapse.
+    const withMin = samples.find(
+      (s) => (s.stats as Record<string, unknown>).intervalMin !== undefined,
+    );
+    expect(withMin).toBeDefined();
+    expect((withMin!.stats as Record<string, Record<string, number>>).intervalMin.receivedFps).toBe(
+      2,
+    );
+    // And the sample's own reading is untouched: minima inform the detector,
+    // they never replace the value a median is computed from.
+    expect((withMin!.stats as Record<string, number>).receivedFps).toBe(30);
+  });
+
+  it('omits intervalMin when nothing between samples was worse', () => {
+    const h = harness({ reportIntervalMs: 2000 });
+    h.begin();
+    for (let i = 0; i < 8; i++) {
+      h.collector.sample({ receivedFps: 30 });
+      h.advance(500);
+    }
+    h.collector.flush(false);
+    for (const s of h.batches()[0].samples) {
+      expect((s.stats as Record<string, unknown>).intervalMin).toBeUndefined();
+    }
+  });
+
+  it('resets the running minimum after each emitted sample', () => {
+    const h = harness({ reportIntervalMs: 2000 });
+    h.begin();
+    h.collector.sample({ receivedFps: 30 });
+    h.advance(500);
+    h.collector.sample({ receivedFps: 2 }); // discarded tick, dip recorded
+    h.advance(1500);
+    h.collector.sample({ receivedFps: 30 }); // emitted, carries the dip
+    h.advance(2000);
+    h.collector.sample({ receivedFps: 30 }); // emitted, must be clean again
+    h.collector.flush(false);
+
+    const samples = h.batches()[0].samples;
+    const last = samples[samples.length - 1].stats as Record<string, unknown>;
+    expect(last.intervalMin).toBeUndefined();
+  });
+
+  it('ignores non-finite and non-numeric readings', () => {
+    const h = harness({ reportIntervalMs: 2000 });
+    h.begin();
+    h.collector.sample({ receivedFps: 30 });
+    h.advance(500);
+    h.collector.sample({ receivedFps: Number.NaN });
+    h.advance(500);
+    h.collector.sample({ receivedFps: '2' as unknown as number });
+    h.advance(1000);
+    h.collector.sample({ receivedFps: 30 });
+    h.collector.flush(false);
+
+    for (const s of h.batches()[0].samples) {
+      const min = (s.stats as Record<string, Record<string, number> | undefined>).intervalMin;
+      if (min !== undefined) {
+        expect(Number.isFinite(min.receivedFps)).toBe(true);
+      }
+    }
+  });
+});
