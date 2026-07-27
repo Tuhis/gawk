@@ -89,6 +89,9 @@ type RegistryCollector struct {
 	carrierRecords   desc
 	dvrResyncs       desc
 	carrierDropped   desc
+	parityDatagrams  desc
+	paritySuppressed desc
+	egressParity     desc
 }
 
 // NewRegistryCollector builds the collector over a hub registry.
@@ -165,6 +168,12 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"R21 DVR subscribers resynced after their cursor fell off the ring's tail — the mode's only frame loss. Rising means stalls are outliving -dvr-window."),
 		carrierDropped: newDesc("carrier_records_dropped_total",
 			"Carrier records dropped: dead carrier after a stall/cancel, or stream-open failure (R19). Bandwidth-cap drops count as datagram bandwidth drops instead."),
+		parityDatagrams: newDesc("parity_datagrams_total",
+			"R29 forward-parity symbols forwarded to subscribers. The relay computes none of these — it forwards a per-subscriber prefix of what the producer emitted."),
+		paritySuppressed: newDesc("parity_suppressed_total",
+			"R29 parity symbols NOT forwarded because the subscriber's level was lower (or it is a carrier-mode subscriber, which recovers loss via QUIC retransmission). Rising against parity_datagrams_total is the per-subscriber filter working, not a fault."),
+		egressParity: newDesc("egress_parity_bytes_total",
+			"Bytes of R29 parity actually written to subscribers. A SLICE of egress_bytes_total{kind=\"delta\"}, not a sibling: parity rides the datagram path, so adding the two double-counts. This is what makes the fleet cost of -parity-default measurable rather than modelled."),
 	}
 }
 
@@ -195,6 +204,7 @@ func (c *RegistryCollector) counterDescs() []desc {
 		c.edgeIngressLostC, c.ingressBytes,
 		c.egressBytes, c.bwDroppedBytes, c.kfIn, c.kfSent, c.kfDropped, c.kfOversize,
 		c.carrierStreams, c.carrierRecords, c.carrierDropped, c.dvrResyncs,
+		c.parityDatagrams, c.paritySuppressed, c.egressParity,
 	}
 }
 
@@ -278,6 +288,9 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.carrierStreams.broadcast, s.CarrierStreams, id)
 		counter(c.carrierRecords.broadcast, s.CarrierRecords, id)
 		counter(c.carrierDropped.broadcast, s.CarrierRecordsDropped, id)
+		counter(c.parityDatagrams.broadcast, s.ParityDatagramsForwarded, id)
+		counter(c.paritySuppressed.broadcast, s.ParitySuppressed, id)
+		counter(c.egressParity.broadcast, s.EgressParityBytes, id)
 		counter(c.dvrResyncs.broadcast, s.DVRResyncs, id)
 		// The ring's live cost, against which -dvr-max-bytes is set. A gauge,
 		// not a counter: what matters is what it holds now.
@@ -314,6 +327,9 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.carrierStreams.relay, t.CarrierStreams)
 	counter(c.carrierRecords.relay, t.CarrierRecords)
 	counter(c.carrierDropped.relay, t.CarrierRecordsDropped)
+	counter(c.parityDatagrams.relay, t.ParityDatagramsForwarded)
+	counter(c.paritySuppressed.relay, t.ParitySuppressed)
+	counter(c.egressParity.relay, t.EgressParityBytes)
 }
 
 // ServerMetrics are the transport-layer connection counters (R9 M4). All

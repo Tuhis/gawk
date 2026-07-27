@@ -526,9 +526,22 @@ freeze-on-gap itself — the mechanism §1 diagnosed, reproduced on demand.
    almost nothing (raising the level is useless — §9's burst model leaves 37 %
    of GOPs damaged even at k=4; the answer is Resilient mode). Pinned by a
    test that asserts both wordings.
-5. **Prometheus `parity_*` metrics are still absent.** `/statusz` carries the
-   counters and the cluster assertion reads them; `/metrics` does not, so the
-   fleet egress cost of the default is not yet scrapeable. The one loose end.
+5. **Parity bytes are a SLICE of `egress_bytes_total{kind="delta"}`, not a
+   `kind` of their own.** Parity rides the datagram path, so its bytes are
+   already inside that total — a fourth `kind` would look like a partition and
+   double-count on sum. `gawk_*_egress_parity_bytes_total` is its own series
+   with the relationship stated in its HELP text and pinned by a test, the
+   docs/24 finding-11 shape (one bucket carved from one total, remainder by
+   subtraction).
+
+### Metrics
+
+`gawk_broadcast_*` and `gawk_relay_*` gain `parity_datagrams_total`,
+`parity_suppressed_total` and `egress_parity_bytes_total`. Forwarded against
+suppressed is the per-subscriber filter visible in a scrape; the byte series is
+what makes the fleet cost of `-parity-default` measurable rather than
+modelled — the question the chart value exists to let an operator answer.
+Three docs/13 playbook rows go with them.
 
 ### Still manual
 

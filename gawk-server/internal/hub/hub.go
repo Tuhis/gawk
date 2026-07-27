@@ -438,6 +438,11 @@ type Stats struct {
 	// /statusz byte-identical to pre-R29.
 	ParityDatagramsForwarded uint64 `json:"parityDatagramsForwarded,omitempty"`
 	ParitySuppressed         uint64 `json:"paritySuppressed,omitempty"`
+	// EgressParityBytes is parity's share of EgressDatagramBytes above — a
+	// SLICE of that total, not a sibling. Parity rides the datagram path, so
+	// summing the two would double-count; the non-parity remainder is
+	// EgressDatagramBytes - EgressParityBytes (the docs/24 finding-11 shape).
+	EgressParityBytes uint64 `json:"egressParityBytes,omitempty"`
 
 	// R19 reliable delivery (docs/24 Decision 10).
 	ReliableSubscribers   int    `json:"reliableSubscribers"`   // live local subscribers in reliable mode
@@ -501,9 +506,12 @@ type TotalStats struct {
 	CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow"`
 	EgressCarrierBytes    uint64 `json:"egressCarrierBytes"`
 	// R29 (docs/34 §7.2): fleet-wide parity forwarding, so the cost of the
-	// default level is measurable. Omitted when zero.
+	// default level is measurable. Omitted when zero. EgressParityBytes is a
+	// SLICE of EgressDatagramBytes, never a sibling — see the per-broadcast
+	// field's comment.
 	ParityDatagramsForwarded uint64 `json:"parityDatagramsForwarded,omitempty"`
 	ParitySuppressed         uint64 `json:"paritySuppressed,omitempty"`
+	EgressParityBytes        uint64 `json:"egressParityBytes,omitempty"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -658,6 +666,7 @@ type broadcastHub struct {
 	// subscriber's k was lower. Together they make the fleet cost of the
 	// default level measurable rather than modelled (docs/34 §7.2).
 	parityDatagramsForwarded uint64
+	egressParityBytes        uint64
 	paritySuppressed         uint64
 	egressCarrierBytes       uint64
 }
@@ -1452,6 +1461,7 @@ func (r *Registry) Stats() RegistryStats {
 		kfDrops := b.keyframeDrops
 		sendErrors := b.sendErrors
 		egressDgram := b.egressDatagramBytes
+		egressParity := b.egressParityBytes
 		egressKf := b.egressKeyframeBytes
 		carStreams := b.carrierStreams
 		carRecords := b.carrierRecords
@@ -1480,6 +1490,7 @@ func (r *Registry) Stats() RegistryStats {
 			kfDrops.add(subDrops)
 			sendErrors += s.sendErrors.Load()
 			egressDgram += s.egressDatagramBytes.Load()
+			egressParity += s.egressParityBytes.Load()
 			egressKf += s.egressKeyframeBytes.Load()
 			carStreams += s.carrierStreams.Load()
 			carRecords += s.carrierRecords.Load()
@@ -1522,6 +1533,7 @@ func (r *Registry) Stats() RegistryStats {
 		totals.CarrierQueueOverflow += carOverflow
 		totals.EgressCarrierBytes += egressCar
 		totals.ParityDatagramsForwarded += b.parityDatagramsForwarded
+		totals.EgressParityBytes += egressParity
 		totals.ParitySuppressed += b.paritySuppressed
 
 		var graceRemaining int
@@ -1582,6 +1594,7 @@ func (r *Registry) Stats() RegistryStats {
 			SendErrors:                sendErrors,
 			IngressDatagramBytes:      b.ingressDatagramBytes,
 			EgressDatagramBytes:       egressDgram,
+			EgressParityBytes:         egressParity,
 			EgressKeyframeBytes:       egressKf,
 			IngressFramesLost:         b.ingressFramesLost,
 			IngressChunksLost:         b.ingressChunksLost,
@@ -2235,6 +2248,9 @@ type Subscriber struct {
 	dropped             atomic.Uint64
 	sendErrors          atomic.Uint64
 	egressDatagramBytes atomic.Uint64
+	// R29: parity's share of egressDatagramBytes above — a slice of that
+	// total, never a sibling of it (docs/34 §7.2).
+	egressParityBytes   atomic.Uint64
 	egressKeyframeBytes atomic.Uint64
 
 	// Keyframe stream fan-out (R8). kfMu guards kfCurrent + kfLastSeq; at most
@@ -2474,6 +2490,19 @@ func (s *Subscriber) drain() {
 			continue
 		}
 		s.egressDatagramBytes.Add(uint64(len(dgram)))
+		// R29 (docs/34 §7.2): parity's share of those bytes, counted where
+		// they actually left rather than at enqueue — a datagram dropped by
+		// the bandwidth cap or a failed send above cost the fleet nothing.
+		//
+		// Deliberately a SLICE of egressDatagramBytes, not a sibling: parity
+		// rides the datagram path, so its bytes are already in that total.
+		// The docs/24 finding-11 shape — one bucket carved out of one total,
+		// with the remainder derivable by subtraction. Exposing it as another
+		// egress_bytes_total{kind=...} would look like a partition and
+		// double-count on sum.
+		if isParityDatagram(dgram) {
+			s.egressParityBytes.Add(uint64(len(dgram)))
+		}
 	}
 }
 
@@ -3073,6 +3102,7 @@ func (s *Subscriber) Close() {
 		b.keyframeDrops.add(s.keyframeDrops())
 		b.sendErrors += s.sendErrors.Load()
 		b.egressDatagramBytes += s.egressDatagramBytes.Load()
+		b.egressParityBytes += s.egressParityBytes.Load()
 		b.egressKeyframeBytes += s.egressKeyframeBytes.Load()
 		b.carrierStreams += s.carrierStreams.Load()
 		b.carrierRecords += s.carrierRecords.Load()
