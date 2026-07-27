@@ -157,17 +157,42 @@ func DetectEpisodes(samples []Sample, field string, counters []string) *Episodes
 	ep := &Episodes{Baseline: baseline, WorstValue: math.Inf(1)}
 	var windowMs float64
 	// runStart is the index of the first sample of the episode in progress.
+	// runWorst is tracked PER RUN rather than globally, so a run the guard
+	// below discards cannot leave its low-water mark behind on the result.
 	runStart := -1
-	var runMs float64
+	var runMs, runWorst float64
 
 	closeRun := func(end int) {
 		if runStart < 0 {
+			return
+		}
+		// An episode is a FALL from a baseline, and a run that begins at the
+		// first sample is not one — nothing was observed to fall. That is the
+		// shape of every stream STARTING: the viewer reports zeros before the
+		// first frame decodes (the e2e harness settles for exactly these
+		// "pre-decode zeros"), then ramps to its rate.
+		//
+		// Without this a warmup would be reported as a collapse on every
+		// healthy session's first seconds — the false-positive class the
+		// telemetry E2E exists to catch, and the one this detector is most
+		// likely to produce, because a starting stream looks locally identical
+		// to a collapsing one. The difference is only visible in what came
+		// before, and at index 0 nothing did.
+		//
+		// A stream that is genuinely bad from its first sample is not lost: it
+		// drags the baseline down with it, where MinBaselineFps and the
+		// steady-state rules take over.
+		if runStart == 0 {
+			runStart, runMs = -1, 0
 			return
 		}
 		ep.Count++
 		ep.TotalMs += runMs
 		if runMs > ep.LongestMs {
 			ep.LongestMs = runMs
+		}
+		if runWorst < ep.WorstValue {
+			ep.WorstValue = runWorst
 		}
 		// The counters' advance across the episode, measured from the last
 		// sample BEFORE it so the dip's onset is included. A counter that went
@@ -210,11 +235,11 @@ func DetectEpisodes(samples []Sample, field string, counters []string) *Episodes
 		}
 		if v <= threshold {
 			if runStart < 0 {
-				runStart = i
+				runStart, runWorst = i, math.Inf(1)
 			}
 			runMs += interval
-			if v < ep.WorstValue {
-				ep.WorstValue = v
+			if v < runWorst {
+				runWorst = v
 			}
 			continue
 		}

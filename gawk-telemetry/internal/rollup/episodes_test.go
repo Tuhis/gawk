@@ -315,3 +315,37 @@ func TestViewerResolutionStillComesFromDecodedFrames(t *testing.T) {
 		t.Errorf("resolution = %q, want 1280x720", got)
 	}
 }
+
+// A stream STARTING is not a stream collapsing. The viewer reports zeros
+// before the first frame decodes (the e2e harness settles for exactly these
+// "pre-decode zeros"), and a detector that reads the ramp as a fall would
+// accuse every healthy session of dipping in its first seconds — the
+// false-positive class the telemetry E2E exists to catch.
+//
+// An episode is a FALL from a baseline. If the first sample is already low,
+// no fall was observed; the stream was simply not up yet.
+func TestWarmupRampIsNotADip(t *testing.T) {
+	// Pre-decode zeros, then a ramp, then a clean 30 fps for the rest.
+	vals := append([]float64{0, 0, 6, 18}, steady(20, 30)...)
+	ep := DetectEpisodes(samplesAt(vals, nil), "receivedFps", nil)
+	if ep == nil {
+		t.Fatal("no result")
+	}
+	if ep.Count != 0 {
+		t.Errorf("Count = %d — a startup ramp was reported as a collapse (worst=%v)", ep.Count, ep.WorstValue)
+	}
+}
+
+// The other end of the same argument: a real collapse still has to be caught
+// when it happens after the stream is up, including one that never recovers.
+func TestCollapseAfterWarmupIsStillADip(t *testing.T) {
+	vals := append([]float64{0, 0}, steady(20, 30)...)
+	vals[15], vals[16], vals[17] = 2, 2, 2
+	ep := DetectEpisodes(samplesAt(vals, nil), "receivedFps", nil)
+	if ep == nil || ep.Count != 1 {
+		t.Fatalf("a real collapse after warmup was missed: %+v", ep)
+	}
+	if ep.WorstValue != 2 {
+		t.Errorf("WorstValue = %v, want 2", ep.WorstValue)
+	}
+}

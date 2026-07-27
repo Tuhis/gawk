@@ -1210,6 +1210,34 @@ and the worst fps seen, `—` when the window has no baseline yet. Rendered in
 the same monochrome-plus-severity-hue discipline as the rest (§4.8.4); the
 column is text, never colour-only.
 
+**An episode must be a fall, so a run starting at the first sample is not one.**
+Found by CI, not by review: the first TM10 push turned the telemetry E2E red,
+because that step asserts `diagnose()` calls a clean loopback session *healthy*
+and its harness explicitly settles for **pre-decode zeros** — a viewer reports
+0 fps until the first frame decodes, then ramps. The detector read that ramp as
+a collapse and every healthy session acquired a finding in its first seconds.
+
+The rule that fixes it is the definition doing its job: an episode is a *fall
+from* a baseline, and at index 0 nothing was observed to fall from. A starting
+stream and a collapsing one look locally identical — the difference lives
+entirely in what came before, and at the first sample there is no before. A
+stream that is genuinely bad from its first sample is not lost: it drags the
+baseline down with it, where `MinBaselineFps` and the D17 steady-state rule
+take over.
+
+Two details this pass also pinned, because both were live bugs the first
+version had:
+
+- **`WorstValue` is tracked per run, not globally.** Folded in only when a run
+  is accepted, or a discarded warmup leaves its low-water mark behind on the
+  result — which it did, reporting `worstFps: 0` for a session whose real dip
+  was 2.
+- The e2e assertion's shape is now **also a unit test**
+  (`TestWarmupZerosDoNotMakeACleanSessionUnhealthy`), so this class fails in
+  milliseconds rather than after a four-process browser run. It sits beside the
+  pre-existing `TestWarmupRampDoesNotFakeAFunnelGap` — the same lesson, learned
+  twice, which is itself the argument for pinning it.
+
 ---
 
 ## 4.11 The configured target (D17)

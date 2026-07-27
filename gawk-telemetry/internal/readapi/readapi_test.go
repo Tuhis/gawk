@@ -951,3 +951,31 @@ func TestMeetingTheTargetIsNotAShortfall(t *testing.T) {
 		t.Error("a stream meeting its target was reported as falling short of it")
 	}
 }
+
+// The telemetry E2E (docs/25) asserts diagnose() calls a clean loopback
+// session HEALTHY, and its harness settles for "pre-decode zeros" — the
+// viewer reports 0 fps until the first frame decodes. A detector reading that
+// ramp as a collapse turns every healthy session's first seconds into a
+// finding, which is exactly the false-positive class that step exists to
+// catch. This pins the shape here, where it is cheap.
+func TestWarmupZerosDoNotMakeACleanSessionUnhealthy(t *testing.T) {
+	f := newFixture(t)
+	sid := "5a5a5a5a5a5a5a5a5a5a5a5a"
+
+	stats := healthyViewerStats(40)
+	// The first three samples land before anything has decoded.
+	for i := range 3 {
+		stats[i]["receivedFps"] = 0.0
+		stats[i]["decoderFps"] = 0.0
+		stats[i]["renderedFps"] = 0.0
+	}
+	f.seed(t, sid, "viewer", stats, []ingest.Event{{TMs: 500, Kind: "watching"}})
+
+	rep, err := f.api.Diagnose(sid)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if !rep.Healthy {
+		t.Fatalf("a clean session was called unhealthy over its warmup: %+v", rep.Findings)
+	}
+}
