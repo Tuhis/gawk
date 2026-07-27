@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.6.0...gawk-broadcast-v1.7.0) (2026-07-27)
+
+
+### Features
+
+* **r25:** give the native Linux broadcaster system audio (docs/28 NA2–NA7) ([#169](https://github.com/Tuhis/gawk/issues/169)) ([b4e0d19](https://github.com/Tuhis/gawk/commit/b4e0d198ef91f9f34833b1664d8a7658850c17d6))
+* **r28:** default the native broadcaster to the ioio fleet, telemetry included ([#168](https://github.com/Tuhis/gawk/issues/168)) ([aa17ad9](https://github.com/Tuhis/gawk/commit/aa17ad9a7b6aa4be1764cdbd3890a1d5ebc24255))
+
+
+### Bug Fixes
+
+* **r14:** stop the GUI free-running at 20-30% CPU while idle ([#167](https://github.com/Tuhis/gawk/issues/167)) ([575218e](https://github.com/Tuhis/gawk/commit/575218e8c20c5dde18a770248a2b7efef6754abf))
+
 ## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.5.0...gawk-broadcast-v1.6.0) (2026-07-26)
 
 
