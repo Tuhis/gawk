@@ -151,9 +151,10 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
-      # `go test` type-checks the GUI package but never links it. Building the
-      # shells is what proves the Gio window actually compiles and links —
-      # this job is the only place that happens automatically.
+      # `go test` links the GUI package only as a test binary (its idle-redraw
+      # guard, docs/19 finding 12). Building the shells is what proves the real
+      # Gio window compiles and links — this job is the only place that
+      # happens automatically.
       #
       # The binaries are also uploaded as an artifact: R14's claims (hardware
       # encode, the portal, game fps) are unverifiable in CI by construction —

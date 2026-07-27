@@ -95,7 +95,7 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Ten open entries (plus a
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Nine open entries (plus a
   lint-hygiene note) as of 2026-07-27: two Safari viewer stalls (keyframe
   delivery stops; a dead-session freeze that now recovers but whose WebKit
   root cause is still unknown), a misleading "Streamer offline" join-reject
@@ -116,14 +116,12 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   from a second capture, which also shipped the viewer `checkMediaStall`
   watchdog and cut `DefaultDVRProgressTimeout` 30 s → 6 s so the freeze recovers
   in ~6 s instead of 31), and
-  the MSE presentation buffering 20+ s of 7 MP media on a phone; plus the
-  **native broadcaster GUI burning 20–30 % CPU while idle** (2026-07-27,
-  root-caused: a pre-filled `component.TextField` asks gio-x for an immediate
-  redraw every frame, so the window free-runs from launch — and stops when the
-  broadcast starts, because Decision 9's `gtx.Disabled()` settings panel
-  swallows the invalidate); plus a recorded
+  the MSE presentation buffering 20+ s of 7 MP media on a phone; plus a recorded
   set of `gawk-broadcast/internal/mpegts`
-  lint advisories that are not runtime defects. (The iPhone
+  lint advisories that are not runtime defects. (The native broadcaster GUI's
+  20–30 % idle CPU burn was filed and fixed 2026-07-27 — gio-x's
+  `component.TextField` invalidated every frame a field held text; see docs/19
+  finding 12.) (The iPhone
   native-fullscreen black video was resolved 2026-07-25 by R22's MSE path —
   docs/27.) (The Chrome 152 `getStats()` entry was root-caused 2026-07-14
   as an upstream API removal, not a gawk bug — no browser ships
@@ -1244,7 +1242,15 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    re-chunk on `DatagramTooLargeError`. GUI: Gio (native Wayland; Wails
    rejected — WebKitGTK DMA-BUF crashes on Wayland+NVIDIA); the window
    **is** the app (closing it ends the broadcast), no preview, no source
-   picker; **notifications via `godbus` with critical urgency for
+   picker; the GUI hand-draws **every** widget including its text fields —
+   `gioui.org/x` is not a dependency any more, because
+   `component.TextField` executed an `op.InvalidateCmd` on every frame a
+   field held text and burned 20–30 % CPU **while idle** from launch
+   (docs/19 finding 12, 2026-07-27; the pre-filled settings are what armed
+   it, and Decision 9's disabled panel is why it vanished during a
+   broadcast). `cmd/gawk-broadcast-gui/main_test.go` holds the line: an idle
+   window must schedule **no** already-due wakeups, asserted over the whole
+   window rather than one widget; **notifications via `godbus` with critical urgency for
    failures** — KDE's portal **inhibits normal notifications while screen
    casting**, so only critical-urgency ones reach a fullscreen broadcaster;
    **no viewer count / "first viewer joined"** was an R14 non-goal (nothing

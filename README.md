@@ -738,6 +738,18 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   portal works on X11 GNOME sessions too. Gate on the portal call
   succeeding, never on the session type.
   ([docs/19](docs/19-linux-native-broadcaster.md))
+- **A Gio widget that animates on a state it never leaves free-runs the
+  window.** `gioui.org/x`'s `component.TextField` executed an
+  `op.InvalidateCmd` on *every* frame a field held text, so the native
+  broadcaster's GUI redrew at the compositor's rate from launch and burned
+  20–30 % CPU sitting idle. It hid twice over: the fields are pre-filled from
+  the saved config (a fresh config doesn't reproduce it) and the settings panel
+  is laid out disabled while live, where a zero `input.Source` swallows the
+  invalidate — so it vanished exactly when someone was watching for it. The GUI
+  now draws its own text fields and the dependency is gone. Guard the property,
+  not the symptom: assert an idle window schedules no already-due wakeups
+  (`cmd/gawk-broadcast-gui/main_test.go`), never a CPU threshold.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
 - **`pipewiregrab` is NOT in mainline FFmpeg** — it's an unmerged patchset
   carried downstream by Jami; mainline ffmpeg has no PipeWire input at all.
   This is why capture is a GStreamer subprocess. Don't re-propose it
