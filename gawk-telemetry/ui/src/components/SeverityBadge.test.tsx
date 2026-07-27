@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { SeverityBadge } from './SeverityBadge.tsx';
 import { GLYPH } from '../lib/severity.ts';
+
+// See TimelineChart.test.tsx: no vitest globals here, so cleanup is explicit.
+afterEach(cleanup);
 
 // Severity is carried by THREE channels and never by hue alone: the page has to
 // survive a colour-blind reader, a greyscale screenshot pasted into a chat, and

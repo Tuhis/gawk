@@ -914,7 +914,9 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 		CarrierRecords: 100, CarrierRecordsDropped: 3, CarrierQueueOverflow: 1,
 		DVR: true, DVRBufferMs: 2000, DVRLagMs: 900, DVRGopSeq: 12, DVRResyncs: 1,
 	}
-	stats := map[string]any{"isHardwareAccelerated": true}
+	// Bools are listed by hand: liveNumericFields cannot carry them, and the
+	// emitter reads each one explicitly.
+	stats := map[string]any{"isHardwareAccelerated": true, "documentHidden": true}
 	for _, f := range liveNumericFields {
 		stats[f] = 1.0
 	}

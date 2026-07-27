@@ -9,6 +9,7 @@ import { IconButton } from '../../ui/IconButton';
 import { CloseIcon, CopyIcon, EyeIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
 import { BroadcasterStatsOverlay } from './BroadcasterStatsOverlay';
 import { BroadcastStartError, type BroadcastSessionLike, type BroadcastStats } from '../../transport/broadcaster';
+import { readVisibility } from '../../lib/visibility';
 import { createBroadcastSession } from './workerBroadcastSession';
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
@@ -155,9 +156,14 @@ export function BroadcasterScreen() {
       onEncoderConfigured: (info: EncoderConfigured) => setEncoderInfo(info),
       onCapturePathChosen: () => {},
       onStats: (s: BroadcastStats) => {
-        diagRef.current.push(s);
-        telemetry.sample(s);
-        setStats(s);
+        // Tab visibility is merged on the main thread because `document` does
+        // not exist in the broadcast worker. A backgrounded broadcaster is not
+        // the same failure as a stalled one — capture itself is throttled when
+        // the tab is hidden — and only the document can tell them apart.
+        const next: BroadcastStats = { ...s, ...readVisibility() };
+        diagRef.current.push(next);
+        telemetry.sample(next);
+        setStats(next);
       },
       onBroadcastId: (id: string) => {
         setBroadcastId(id);

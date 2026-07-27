@@ -379,6 +379,9 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 				f.SetClient(name, v)
 			}
 		}
+		if hidden, ok := schema.Bool(last, "documentHidden"); ok {
+			f.SetClient("documentHidden", boolF(hidden))
+		}
 		if hw, ok := schema.Bool(last, "isHardwareAccelerated"); ok {
 			f.SetClient("isHardwareAccelerated", boolF(hw))
 		}
@@ -933,6 +936,9 @@ var factClientFields = []string{
 	"audioPacketsReceived",
 	// D17: what the broadcast was asked to be, so a shortfall is computable.
 	"targetFps", "targetBitrateBps",
+	// Tab visibility: renderedFps beside it means nothing without it, because
+	// a hidden tab stops firing rAF while decode carries on.
+	"documentHiddenMs",
 }
 
 // --- HTTP -----------------------------------------------------------------

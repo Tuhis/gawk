@@ -599,7 +599,9 @@ func TestReadPathEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 // assertion above can only be as honest as the row it runs against.
 func (f *fixture) maximalViewerFacts(t *testing.T) *rules.Facts {
 	t.Helper()
-	stats := map[string]any{"isHardwareAccelerated": true,
+	// Bools are listed by hand: factClientFields cannot carry them, and the
+	// emitter reads each one explicitly.
+	stats := map[string]any{"isHardwareAccelerated": true, "documentHidden": true,
 		"audioBuffer": map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0}}
 	for _, n := range factClientFields {
 		stats[n] = 30.0

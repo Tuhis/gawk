@@ -341,6 +341,11 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 		if hw, ok := schema.Bool(stats, "isHardwareAccelerated"); ok {
 			s.clientFacts["isHardwareAccelerated"] = boolToF(hw)
 		}
+		// Booleans reach the rule engine as 0/1, the same way
+		// isHardwareAccelerated does — Facts is a float surface.
+		if hidden, ok := schema.Bool(stats, "documentHidden"); ok {
+			s.clientFacts["documentHidden"] = boolToF(hidden)
+		}
 		for _, f := range liveTextFields {
 			if v, ok := schema.String(stats, f); ok {
 				s.textFacts[f] = v
@@ -993,6 +998,10 @@ var liveNumericFields = []string{
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.
 	"targetFps", "targetBitrateBps",
+	// Tab visibility: how long this client has been backgrounded in total. A
+	// hidden tab stops firing rAF, so renderedFps beside it means nothing
+	// without it.
+	"documentHiddenMs",
 }
 
 var liveTextFields = []string{

@@ -142,6 +142,28 @@ var viewerCounters = []string{
 	"keyframeStreamsReceived", "configsApplied", "decodedFrames",
 	"videoBytesReceived", "carrierStreams", "carrierStreamsAborted",
 	"audioPacketsReceived", "audioPacketsDecoded",
+	// Cumulative time this tab spent in the background. A counter, so a delta
+	// between any two samples gives the hidden share of that interval.
+	"documentHiddenMs",
+}
+
+// presentationSeries are the viewer measurements taken at the SCREEN rather
+// than in the pipeline, and they are the only ones a hidden tab invalidates:
+// the browser stops firing rAF, so they fall to zero while decode carries on
+// perfectly. Folding that into the permanent row (D4) would record a median
+// describing tab state rather than rendering, on the one artifact that is never
+// pruned.
+//
+// Deliberately a SHORT list, and viewer-only. Everything the worker measures —
+// received, decoded, arrival jitter, latency — kept running while the tab was
+// hidden, and filtering those would be the same error in the other direction.
+//
+// A BROADCASTER has no equivalent: a hidden broadcaster tab is throttled, so
+// its rates really do collapse and every viewer really does see it. That is a
+// fault to explain, never one to filter away, and a test pins the difference.
+var presentationSeries = map[string]bool{
+	"renderedFps":        true,
+	"renderCadenceP95Ms": true,
 }
 
 var broadcasterCounters = []string{
@@ -150,6 +172,11 @@ var broadcasterCounters = []string{
 	"autoStepDowns", "autoStepUps", "audioPacketsSent",
 	"EncodedFrames", "Keyframes", "SentFrames", "DatagramsSent", "BytesSent",
 	"KeyframeStreamsSent", "KeyframeStreamsFailed", "FramesDroppedAtSend",
+	// Recorded for a broadcaster too, but for the opposite purpose: here it
+	// EXPLAINS a real collapse rather than excusing one. A hidden broadcaster
+	// tab is throttled by the browser, so it genuinely sends fewer frames and
+	// every viewer sees it — see presentationSeries below.
+	"documentHiddenMs",
 }
 
 // Config fields describe what a session WAS, as opposed to how it went.
@@ -232,7 +259,16 @@ func Compute(in Input) Row {
 
 	r.Series = map[string]*Stat{}
 	for _, name := range seriesNames {
-		values := collect(in.Samples, name)
+		var values []float64
+		if in.Role != "broadcaster" && presentationSeries[name] {
+			values = collectVisible(in.Samples, name)
+		} else {
+			values = collect(in.Samples, name)
+		}
+		// summarize returns nil for an empty slice, so a session spent entirely
+		// in the background simply has no presentation series — absent, rather
+		// than a confident zero. "Not measured" and "measured, and it was zero"
+		// are different claims and only the second is evidence.
 		if st := summarize(values); st != nil {
 			r.Series[name] = st
 		}
@@ -337,6 +373,23 @@ func Compute(in Input) Row {
 func collect(samples []Sample, field string) []float64 {
 	out := make([]float64, 0, len(samples))
 	for _, s := range samples {
+		if v, ok := schema.Number(s.Stats, field); ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// collectVisible is collect, skipping samples taken while the document was
+// hidden. A sample with no visibility field at all is KEPT: every client
+// predating this signal reports nothing, and dropping their data would silently
+// empty the series for the entire installed base.
+func collectVisible(samples []Sample, field string) []float64 {
+	out := make([]float64, 0, len(samples))
+	for _, s := range samples {
+		if hidden, ok := schema.Bool(s.Stats, "documentHidden"); ok && hidden {
+			continue
+		}
 		if v, ok := schema.Number(s.Stats, field); ok {
 			out = append(out, v)
 		}
