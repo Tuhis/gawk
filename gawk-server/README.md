@@ -11,9 +11,16 @@ configurable (`-max-subscribers`, default 15 per broadcast;
 
 Design, wire format and task breakdown: [`../docs/implementation-tasks.md`](../docs/implementation-tasks.md).
 
-Routes: `CONNECT /publish` (single publisher; 409 while taken; a new
-publisher session invalidates the priming caches), `CONNECT /subscribe`
-(429 when full; primed with cached decoder config + last keyframe on join),
+Routes: `CONNECT /publish` (mint a new broadcast ID), `CONNECT /publish/{id}`
+(reclaim an existing ID — a token-bearing reclaim supersedes an active
+publisher session, R17 "newest publisher wins"), `CONNECT /subscribe/{id}`
+(subscribe to a broadcast ID; 429 when full; primed with cached decoder
+config + last keyframe on join; `?delivery=reliable` opts into R19 resilient
+carrier-stream delivery, and adding `&buffer=<ms>` upgrades that to the R21
+DVR ring — "Deep buffer" delivery — as long as `<ms>` is at least
+`MinDVRBufferMs` and clamped to `-dvr-window`), `CONNECT
+/internal/subscribe/{id}` (R17 edge pull — a cluster-mode pod dialing
+another pod's origin hub directly; PSK-gated, never exposed publicly),
 `CONNECT /echo` (connectivity diagnostic), `GET /healthz`,
 `GET /statusz` (JSON stats: subscribers, frames/datagrams relayed, drops,
 cached keyframe, per-subscriber detail).
@@ -78,6 +85,10 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-max-bandwidth` | `GAWK_MAX_BANDWIDTH` | `0` (unlimited) |
 | `-max-keyframe-bytes` | `GAWK_MAX_KEYFRAME_BYTES` | `8388608` (8 MiB) |
 | `-keyframe-write-timeout` | `GAWK_KEYFRAME_WRITE_TIMEOUT` | `1s` |
+| `-dvr-window` | `GAWK_DVR_WINDOW` | `3s` (R21 DVR ring depth per broadcast) |
+| `-dvr-max-bytes` | `GAWK_DVR_MAX_BYTES` | `25165824` (24 MiB) |
+| `-dvr-max-catchup` | `GAWK_DVR_MAX_CATCHUP` | `4` (per-subscriber catch-up multiplier cap) |
+| `-dvr-audio` | `GAWK_DVR_AUDIO` | `true` (include audio in the DVR ring) |
 | `-metrics-addr` | `GAWK_METRICS_ADDR` | `:2112` (`off` disables) |
 | `-allowed-origins` | `GAWK_ALLOWED_ORIGINS` | (empty = allow all) |
 | `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
@@ -160,6 +171,10 @@ helm upgrade --install gawk-server oci://ghcr.io/tuhis/charts/gawk-server \
   --version <X.Y.Z> -n gawk -f my-values.yaml
 ```
 
-The Deployment is fixed at one replica (`Recreate`): the hub is an
-in-memory single-publisher pub/sub, so overlapping pods would split the
-publisher and the subscribers.
+`replicas` defaults to `1`; the chart refuses `replicas > 1` unless
+`config.clusterMode: true` (R17, [docs/22](../docs/22-relay-scale-out.md)) —
+without it the hub is an in-memory single-pod pub/sub and overlapping pods
+would split the publisher from its subscribers. The Deployment strategy is
+`RollingUpdate` (`maxSurge: 1`, `maxUnavailable: 0`): pods drain one at a
+time (close code 4002, reconnect at 0 ms) with a Ready replacement already up
+before the old one exits, even at `replicas: 1`.

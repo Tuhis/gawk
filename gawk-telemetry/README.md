@@ -152,7 +152,11 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback (flag > env > default).
 | `-mcp` | `GAWK_TELEMETRY_MCP` | `true` |
 | `-query-sql` | `GAWK_TELEMETRY_QUERY_SQL` | `false` |
 | `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no auth) |
-| `-ingest-rate` / `-ingest-burst` | `GAWK_TELEMETRY_INGEST_RATE` / `_BURST` | `5` / `20` |
+| `-ingest-rate` / `-ingest-burst` | `GAWK_TELEMETRY_INGEST_RATE` / `_BURST` | `300` / `1200` (global) |
+| `-ingest-session-rate` / `-ingest-session-burst` | `GAWK_TELEMETRY_INGEST_SESSION_RATE` / `_SESSION_BURST` | `1` / `10` (per session) |
+| `-cors-origin` | `GAWK_TELEMETRY_CORS_ORIGIN` | (empty) |
+| `-log-level` | `GAWK_TELEMETRY_LOG_LEVEL` | `info` |
+| `-log-format` | `GAWK_TELEMETRY_LOG_FORMAT` | `json` |
 
 The service **refuses to start without a key**: with none it could only reject
 everything or accept anything, and neither is a mode worth having.

@@ -187,9 +187,9 @@ Useful facts when something looks wrong:
   screen casting*, so failure notifications are sent at critical urgency to get
   through. If you're in a fullscreen game and something breaks, that's the
   signal you should see.
-- **There's no viewer count.** Nothing in the protocol tells a broadcaster who's
-  watching — not a missing feature, and the browser broadcaster doesn't know
-  either.
+- **Viewer count**: the relay pushes a live "N watching" number once a
+  second; the GUI's stats card shows it and rings a critical-urgency
+  notification the first time a viewer joins (once per broadcast).
 - **Closing the window ends the broadcast.** There's no tray icon and no
   background mode.
 - **No preview** — you're looking at your own screen already.

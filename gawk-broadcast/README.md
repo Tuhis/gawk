@@ -106,6 +106,10 @@ gawk-broadcast -url https://relay.example:4433 [flags]
                                             typical motion averages ~75% of it)
   -encoder     force one of vulkanh264enc, nvh264enc, vah264enc
   -insecure    skip TLS verification (development certificates only)
+  -config      path to the config file          (default ~/.config/gawk/broadcast.json)
+  -stats       how often to print a stats line, 0 disables (default 5s)
+  -telemetry-url  R28 telemetry ingest endpoint; empty disables reporting
+                                            (env GAWK_TELEMETRY_URL)
   -v           verbose, including the GStreamer child's stderr
 ```
 
@@ -291,8 +295,11 @@ encoders drain frames without that signal ever firing.
 - **Notifications must be critical urgency to matter.** KDE's portal inhibits
   normal notifications *while screen casting*, so the act of broadcasting
   suppresses them. Failures use critical urgency; going live doesn't.
-- **No viewer count.** Nothing on the wire tells a publisher about subscribers.
-  The browser broadcaster doesn't know either.
+- **Viewer count (R18)**: the relay pushes the live "N watching" count
+  (`TypeViewerCount` 0x0B) once a second; the GUI shows it on the stats card
+  and rings a critical-urgency notification on the first 0→1 viewer
+  transition, once per broadcast. Nothing arrives until the first push, so
+  the count reads unavailable rather than `0` before then.
 - **Building the GUI needs the Gio headers above**; `go test ./internal/...`
   does not.
 
@@ -307,6 +314,10 @@ internal/fixture   the committed H.264 MPEG-TS test stream, embedded (fixture.TS
 internal/pubsim    fixture demux + looping live-timestamped MediaSource
 internal/config    ~/.config/gawk/broadcast.json (0600)
 internal/notify    D-Bus notifications with urgency
+internal/telemetry R28 telemetry reporter (env GAWK_TELEMETRY_URL); off
+                        unless a target URL is set
+internal/wirecheck golden wire-vector mirror, kept byte-identical to
+                        gawk-server/wire and gawk-app/src/transport/wire.ts
 internal/app       the GUI's logic, without the GUI
 cmd/gawk-broadcast      CLI shell — headless, harness, debug
 cmd/gawk-broadcast-gui  GUI shell — Gio window + notifications

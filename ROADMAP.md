@@ -1432,7 +1432,8 @@ in the stream.
   the last DVR subscriber.
 
 Chunks **DV1–DV6** (every single-letter prefix A–Z is taken). Designed
-2026-07-23, not started.
+2026-07-23; DV1–DV5 implemented the same day, automated gates green; DV6
+on-hardware verification pending.
 
 ---
 
@@ -1489,8 +1490,18 @@ Chunks **MF1–MF5** (two-letter prefix — A–Z taken). Designed 2026-07-23,
 spike-confirmed on iPhone the same day; **MF1–MF4 implemented 2026-07-25**
 (+ MF5's observability/docs half; the R16 tee is deleted and the muxer's
 output is CI-proven to play in Chrome `MediaSource` via
-`e2e/run.mjs --muxer-check`); MF5's on-device verification pass is pending —
-see docs/27 "Implementation status & deviations".
+`e2e/run.mjs --muxer-check`). **Four on-device passes on 2026-07-26**
+confirmed real video **and** audio in native fullscreen: passes 1–3 fixed a
+missing LIVE badge/`duration=Infinity`, WebKit pausing on underrun instead of
+recovering, and iOS 18.7 refusing Opus-in-MP4 through `ManagedMediaSource`
+(fixed with a worker-side AAC-LC transcode tier), plus revised the root cause
+of buffered holes (a video sample-duration bug, not MMS parking); pass 4 found
+and fixed a regression where `pump()` deadlocked priming appends on MMS
+`streaming`, blanking the tier for a whole session. Still open: the ~100 ms
+live-edge cushion that structurally cannot grow, no stall watchdog on the
+presentation element, unmeasured steady-state MMS parking, and 20+ s of media
+buffered on the phone (tracked in BUGS.md) — a further on-device pass is
+pending; see docs/27 "Implementation status & deviations".
 
 ---
 
@@ -2128,7 +2139,10 @@ during a live stream. **TM9 is the droppable one** — trends can wait, a
 stuttering broadcast cannot.
 
 **Status**: designed 2026-07-26 —
-[docs/33](docs/33-telemetry-and-diagnostics.md); not started. The design doc
+[docs/33](docs/33-telemetry-and-diagnostics.md); TM1–TM8 implemented the
+same day, automated gates green in all four modules; TM9 (Grafana) dropped
+by owner scope decision (R9 M8 stays open); manual verification pending.
+The design doc
 refines two things sketched above: **DuckDB is a query option, not a runtime
 dependency** (all first-class endpoints are plain Go over rollups + session
 files, which keeps the service cgo-free — docs/33 D11), and **the relay is
