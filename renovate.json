@@ -19,6 +19,12 @@
       "matchManagers": ["gomod"],
       "matchPackageNames": ["github.com/prometheus/**"],
       "groupName": "prometheus packages"
+    },
+    {
+      "description": "gawk-server is always locally replaced (`replace github.com/Tuhis/gawk/gawk-server => ../gawk-server`) in gawk-broadcast and gawk-telemetry, so the require line's version is a placeholder that Go never actually fetches. Renovate's digest updater doesn't know that and rewrites it to a bare commit hash missing the required v0.0.0-<timestamp>- pseudo-version prefix, which fails go.mod parsing in CI (PR #155).",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/Tuhis/gawk/gawk-server"],
+      "enabled": false
     }
   ]
 }
