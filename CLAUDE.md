@@ -95,8 +95,8 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Nine open entries (plus a
-  lint-hygiene note) as of 2026-07-26: two Safari viewer stalls (keyframe
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Ten open entries (plus a
+  lint-hygiene note) as of 2026-07-27: two Safari viewer stalls (keyframe
   delivery stops; a dead-session freeze that now recovers but whose WebKit
   root cause is still unknown), a misleading "Streamer offline" join-reject
   card, a broadcaster stuck on LIVE after a silent worker death (the viewer
@@ -116,7 +116,12 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   from a second capture, which also shipped the viewer `checkMediaStall`
   watchdog and cut `DefaultDVRProgressTimeout` 30 s → 6 s so the freeze recovers
   in ~6 s instead of 31), and
-  the MSE presentation buffering 20+ s of 7 MP media on a phone; plus a recorded
+  the MSE presentation buffering 20+ s of 7 MP media on a phone; plus the
+  **native broadcaster GUI burning 20–30 % CPU while idle** (2026-07-27,
+  root-caused: a pre-filled `component.TextField` asks gio-x for an immediate
+  redraw every frame, so the window free-runs from launch — and stops when the
+  broadcast starts, because Decision 9's `gtx.Disabled()` settings panel
+  swallows the invalidate); plus a recorded
   set of `gawk-broadcast/internal/mpegts`
   lint advisories that are not runtime defects. (The iPhone
   native-fullscreen black video was resolved 2026-07-25 by R22's MSE path —
