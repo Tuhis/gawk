@@ -257,6 +257,63 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				return f
 			},
 		},
+		{
+			id: "intermittent-fps-dips",
+			fires: func() *Facts {
+				f := viewerFacts()
+				f.SetClient("fpsDipEpisodes", 4)
+				f.SetClient("fpsDipShare", 0.2)
+				f.SetClient("fpsDipWorstFps", 2)
+				f.SetClient("fpsDipLongestMs", 6000)
+				return f
+			},
+			// A measured zero is the healthy case, and it must read as a
+			// PASSED check rather than a missing signal (D16).
+			quiet: func() *Facts {
+				f := viewerFacts()
+				f.SetClient("fpsDipEpisodes", 0)
+				f.SetClient("fpsDipShare", 0)
+				return f
+			},
+		},
+		{
+			id: "keyframe-only-delivery",
+			fires: func() *Facts {
+				f := viewerFacts()
+				// One gap resync per keyframe inside the dips: every GOP
+				// broken, only keyframes surviving.
+				f.SetClient("fpsDipResyncs", 24)
+				f.SetClient("fpsDipKeyframes", 24)
+				return f
+			},
+			// Dips with no resync activity are a different problem — a source
+			// stutter, or the decoder — and this rule must not claim them.
+			quiet: func() *Facts {
+				f := viewerFacts()
+				f.SetClient("fpsDipResyncs", 0)
+				f.SetClient("fpsDipKeyframes", 24)
+				return f
+			},
+		},
+		{
+			id: "delivered-below-target",
+			fires: func() *Facts {
+				f := castFacts()
+				// 60 asked for, 30 delivered, all session long — a flat
+				// baseline the dip rules cannot see and a perfect funnel.
+				f.SetClient("targetFps", 60)
+				f.SetClient("sentFps", 30)
+				f.SetClient("captureFps", 30)
+				return f
+			},
+			quiet: func() *Facts {
+				f := castFacts()
+				f.SetClient("targetFps", 30)
+				f.SetClient("sentFps", 30)
+				f.SetClient("captureFps", 30)
+				return f
+			},
+		},
 	}
 
 	covered := map[string]bool{}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rules"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
 )
@@ -72,6 +73,16 @@ const (
 	// walk of the fleet, no I/O) but ObserveClient runs per batch, and on a
 	// thousand-viewer fleet that is a hundred calls a second.
 	sweepEvery = 5 * time.Second
+	// DipWindowSamples is the rolling window the dip detector runs over
+	// (docs/33 D16) — 60 samples is ~2 minutes at the default 2 s report
+	// interval. Bounded per session because this is the ONE place the live
+	// projection keeps history, and a thousand-viewer fleet must not grow with
+	// session length.
+	//
+	// The window is what makes an episode survive hysteresis: an instantaneous
+	// fact cannot hold for EscalateSamples consecutive evaluations, which is
+	// precisely why intermittent collapses never lit the dashboard up before.
+	DipWindowSamples = 60
 )
 
 // SessionView is one row in the broadcast detail table — a broadcaster or a
@@ -141,6 +152,12 @@ type sessionState struct {
 	// can only ratchet upward.
 	prevSub     relayscrape.Subscriber
 	havePrevSub bool
+	// dipWindow is the rolling sample history the D16 detector runs over,
+	// capped at DipWindowSamples. Every sample of every batch lands here — the
+	// gauges above still come from the last one, but a dip that happened in
+	// the middle of a batch is exactly what the last-sample-only fold used to
+	// throw away.
+	dipWindow []rollup.Sample
 	// Hysteresis state.
 	pendingSeverity rules.Severity
 	pendingCount    int
@@ -243,6 +260,44 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 	s.lastClient = now
 	b.lastSeen = now
 	defer p.sweepLocked(now)
+
+	// EVERY sample feeds the rolling dip window (D16). Folding only the last
+	// one — as this did — discarded four of every five samples at a 2 s report
+	// interval and a 10 s flush, which is how an intermittent collapse stayed
+	// invisible to a dashboard watching it happen.
+	dipField, dipCounters := rollup.PrimarySeries(a.Role)
+	for _, smp := range a.Samples {
+		// Trimmed to the handful of fields the detector reads: this is the one
+		// place a sample is HELD rather than streamed past, and a window of
+		// full stats maps times every viewer on the fleet is a lot of retained
+		// telemetry to answer a question about six numbers.
+		s.dipWindow = append(s.dipWindow,
+			rollup.TrimSample(rollup.Sample{TMs: smp.TMs, Stats: smp.Stats}, dipField, dipCounters))
+	}
+	if n := len(s.dipWindow); n > DipWindowSamples {
+		// Keep the newest. Copy rather than reslice: a reslice keeps the whole
+		// backing array alive for the life of the session, which on a long
+		// stream is exactly the leak the cap exists to prevent.
+		s.dipWindow = append([]rollup.Sample(nil), s.dipWindow[n-DipWindowSamples:]...)
+	}
+	// Detect once per batch, into the same fact map every other client signal
+	// lives in. Doing it at render time instead would re-run the whole window
+	// for every session on every dashboard poll, to produce a number that can
+	// only change when a batch arrives.
+	//
+	// A window that has become unjudgeable — a stream that genuinely settled
+	// below the baseline floor — CLEARS the facts rather than leaving the last
+	// judgement standing. A stale verdict is worse than an absent one: the
+	// rule would keep firing on a session nothing can currently say anything
+	// about.
+	dips := rollup.DetectEpisodes(s.dipWindow, dipField, dipCounters).Facts()
+	for _, k := range rollup.EpisodeFactNames {
+		if v, ok := dips[k]; ok {
+			s.clientFacts[k] = v
+		} else {
+			delete(s.clientFacts, k)
+		}
+	}
 
 	// The LAST sample in the batch is "now" for this session.
 	if n := len(a.Samples); n > 0 {
@@ -724,6 +779,9 @@ func (p *Projection) renderBroadcastLocked(b *broadcastState, now time.Time) Bro
 
 func (p *Projection) renderSession(s *sessionState, now time.Time) SessionView {
 	v := s.view
+	// The dip readings are already in clientFacts (folded at batch time), so
+	// they ride into Metrics with everything else — the dashboard shows what
+	// the verdict was computed from, not only its conclusion.
 	v.Metrics = copyF(s.clientFacts)
 	v.Config = copyS(s.textFacts)
 
@@ -885,6 +943,8 @@ var liveNumericFields = []string{
 	"audioPacketsReceived",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
+	// D17: the target, so the live row can show a shortfall too.
+	"targetFps", "targetBitrateBps",
 }
 
 var liveTextFields = []string{

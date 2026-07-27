@@ -65,6 +65,12 @@ function fullStats(): BroadcastStats {
     audioBitrateBps: 128_000,
     audioEncodeLagMs: 21.5,
     audioAnchorReanchors: 0,
+    targetWidth: 1920,
+    targetHeight: 1080,
+    targetFps: 60,
+    targetBitrateBps: 8_000_000,
+    codec: 'avc1.640028',
+    acceleration: 'prefer-hardware',
   };
 }
 

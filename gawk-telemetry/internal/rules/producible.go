@@ -62,6 +62,17 @@ var ProducibleFacts = map[string]string{
 	"client.audioGapsConcealed":      both,
 	"client.isHardwareAccelerated":   both,
 
+	// --- client, dip episodes (D16) ------------------------------------------
+	// Derived by the same detector over two windows: the session for readapi,
+	// a rolling window for live. Both producers emit all six, or the rules
+	// would fire on one surface and read `unavailable` on the other.
+	"client.fpsDipEpisodes":  both,
+	"client.fpsDipShare":     both,
+	"client.fpsDipWorstFps":  both,
+	"client.fpsDipLongestMs": both,
+	"client.fpsDipResyncs":   both,
+	"client.fpsDipKeyframes": both,
+
 	// --- client, broadcaster -------------------------------------------------
 	"client.captureFps":        both,
 	"client.encoderFps":        both,
@@ -69,6 +80,12 @@ var ProducibleFacts = map[string]string{
 	"client.encoderQueueDepth": both,
 	"client.EncoderFps":        live,
 	"client.SentFps":           live,
+
+	// --- client, the configured target (D17) ---------------------------------
+	// What the broadcast was ASKED to be. Every other client fact is an
+	// outcome; these are what make the difference computable at all.
+	"client.targetFps":        both,
+	"client.targetBitrateBps": both,
 
 	// --- text ----------------------------------------------------------------
 	"text.deliveryMode":    both,

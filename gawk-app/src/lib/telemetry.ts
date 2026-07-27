@@ -42,6 +42,26 @@ export type TelemetryRole = 'viewer' | 'broadcaster';
 // comfortably under the 64 KB keepalive/sendBeacon body cap (docs/33 §4.3).
 export const FLUSH_INTERVAL_MS = 10_000;
 
+// The nested object carrying the worst reading seen between two emitted
+// samples (docs/33 D16), and the rates it covers.
+//
+// Deliberately tiny. Its only consumer is the dip detector, which judges one
+// primary rate per role; the rest are here because they cost a few bytes each
+// and answer "did the whole funnel dip, or just one stage of it?" without a
+// second round trip. Everything else keeps its decimated last-tick reading.
+export const INTERVAL_MIN_FIELD = 'intervalMin';
+
+export const INTERVAL_MIN_FIELDS = [
+  // Viewer.
+  'receivedFps',
+  'decoderFps',
+  'renderedFps',
+  // Broadcaster.
+  'captureFps',
+  'encoderFps',
+  'sentFps',
+] as const;
+
 // Hard per-session byte budget, counted on the uncompressed JSON we produce.
 // 4 MB is about a five-hour session at the default cadence. On exhaustion the
 // collector drops to events-only rather than stopping: the events are what
@@ -150,6 +170,9 @@ export class TelemetryCollector<T> {
   private bytesUsed = 0;
   private truncated = false;
   private lastSampleAt = -Infinity;
+  // The running minimum of INTERVAL_MIN_FIELDS since the last emitted sample
+  // (D16). Null between emissions with nothing yet seen.
+  private intervalMin: Record<string, number> | null = null;
   private timer: unknown = null;
   private stopped = false;
   // Set once a batch has been abandoned: further failures are not worth
@@ -212,19 +235,64 @@ export class TelemetryCollector<T> {
   // Record one stats object. Decimated to the relay-requested cadence: the
   // overlay keeps its 500 ms tick, and telemetry does not need every one of
   // them. Cheap enough to call from the stats handler.
+  //
+  // Decimation alone was lossy in a way that mattered (docs/33 D16): the three
+  // discarded ticks between two emitted samples could contain a complete
+  // collapse, and nothing downstream could ever know. So the minimum of a few
+  // experiential rates is carried across the gap and attached to the emitted
+  // sample as `intervalMin`.
+  //
+  // Deliberately NOT done by emitting the worst tick as the sample: that would
+  // bias every median downward and break the funnel ratios, which are the one
+  // thing D16 must leave untouched.
   sample(stats: T): void {
     if (!this.active || this.truncated) return;
     const t = perfNow();
+    this.trackMinima(stats);
     if (t - this.lastSampleAt < this.reportIntervalMs) return;
     this.lastSampleAt = t;
     const value = this.opts.redact ? this.opts.redact(stats) : stats;
-    this.samples.push({ tMs: Math.round(t - this.startedAtPerf), stats: value });
+    const withMin = this.attachMinima(value);
+    this.intervalMin = null;
+    this.samples.push({ tMs: Math.round(t - this.startedAtPerf), stats: withMin });
     // Bound the in-memory batch. Shedding the OLDEST keeps the window near
     // live, which matters because a wedged sender is exactly when the recent
     // samples are the interesting ones.
     if (this.samples.length > MAX_PENDING_SAMPLES) {
       this.samples.splice(0, this.samples.length - MAX_PENDING_SAMPLES);
     }
+  }
+
+  // Fold this tick's rates into the running interval minimum. Runs on EVERY
+  // tick, including the ones decimation is about to discard — that is the
+  // whole point.
+  private trackMinima(stats: T): void {
+    const src = stats as unknown as Record<string, unknown>;
+    for (const field of INTERVAL_MIN_FIELDS) {
+      const v = src[field];
+      if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+      if (this.intervalMin === null) this.intervalMin = {};
+      const seen = this.intervalMin[field];
+      if (seen === undefined || v < seen) this.intervalMin[field] = v;
+    }
+  }
+
+  // Attach the interval minimum, but only where it is actually lower than the
+  // emitted sample's own reading. An `intervalMin` that merely repeats the
+  // sample is bytes on the wire saying nothing.
+  private attachMinima(value: T): T {
+    if (this.intervalMin === null) return value;
+    const src = value as unknown as Record<string, unknown>;
+    const lower: Record<string, number> = {};
+    let any = false;
+    for (const [field, low] of Object.entries(this.intervalMin)) {
+      const cur = src[field];
+      if (typeof cur === 'number' && Number.isFinite(cur) && low >= cur) continue;
+      lower[field] = low;
+      any = true;
+    }
+    if (!any) return value;
+    return { ...value, [INTERVAL_MIN_FIELD]: lower };
   }
 
   // Record something a sample grid cannot represent: a reconnect, a close

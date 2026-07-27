@@ -428,6 +428,84 @@ computes it from already-validated inputs, a value that could not be computed
 is **absent**, never a wrongly-typed guess. Raw samples are disposable in 14
 days; put the rigor where the permanence is.
 
+### D16 — Episodes are the unit of experiential truth; medians describe the steady state
+
+Added 2026-07-27, after an audit asked whether R28 as shipped could answer the
+question it was built for: *"why is this stream stuttering, and why does my
+viewer framerate drop to 2 every now and then?"* It could not. The data was all
+present and one rule already encoded that exact signature, yet every consumer
+of that data collapsed the session to a **median** or to a **single last
+sample**, so an intermittent collapse came back `healthy`.
+
+Six mechanisms hid it, and they are worth naming because each looked correct in
+isolation:
+
+1. **Funnel rules read session medians.** 30 fps with periodic 5-second dips has
+   a median of 30, so every funnel rule passes. This was deliberate: an earlier
+   version compared one side's median against the other's p05 and falsely fired
+   `decoder-choking` on a clean e2e stream. The fix for that false positive
+   installed a false negative here.
+2. **The rollup computes `p05` and `min` for every fps series and no rule reads
+   them.** `playoutOffsetMs`'s P95 was the only tail statistic any rule
+   consumed.
+3. **2 fps evades every freeze detector.** The stall threshold is 1000 ms; at
+   2 fps frames arrive every ~500 ms, so `timeSinceLastFrameMs` never crosses
+   it. `stalls: 0` for a visibly stuttering stream. This is not a coincidence —
+   2 fps *is* the 500 ms GOP cadence, so the keyframe-only failure mode sits
+   precisely under the freeze threshold by construction.
+4. **`keyframe-gap-churn` is diluted by the session window.** It needs
+   `resyncs ≥ keyframes × 0.5`; inside a dip that ratio is ~1.0, but across a
+   30-minute session with occasional dips it is ~0.02. The rule was right, the
+   window was wrong.
+5. **The live projection folded only the last sample of each batch** — four of
+   every five samples never reached the live rules — and `EscalateSamples = 2`
+   then suppressed what survived, because an instantaneous fact cannot hold for
+   two consecutive evaluations.
+6. **The client decimated before sending**, keeping one stats tick per
+   `reportIntervalMs` and discarding the three between with no aggregation.
+
+The decision: **stop trying to make one statistic answer two questions.** A
+median answers *"did this stage keep up for most of the session?"* — which is
+what the funnel ratios ask, and it must keep answering exactly that, because
+finding 2's false positive is a real failure mode. Dips are a **separate,
+orthogonal** measurement answering *"did this session ever fall apart, how
+often, for how long, and what did the counters do while it did?"*
+
+So episodes are added *beside* the percentiles rather than replacing anything:
+
+- **Nothing about the funnel ratios changes.** No ratio ever mixes statistics.
+- **An episode is a contiguous run of samples** where the primary rate sits
+  below a fraction of that session's own baseline. Self-relative, so a
+  deliberate 5 fps stream is not permanently accused, and a 60 fps stream
+  dropping to 20 is caught even though 20 fps would be fine elsewhere.
+- **Counter deltas are captured across the episode.** This is what turns "your
+  fps dipped" into "your fps dipped *because* every GOP was broken and only
+  keyframes survived" — playbook row 9 evaluated inside the dip window, where
+  its ratio is meaningful, instead of across a session that dilutes it.
+- **The same detector runs on both windows** (D6's one-engine rule): the
+  rollup's window is the session, the live projection's is a rolling ~2-minute
+  window. An episode fact is *durable within its window*, which is what makes
+  it survive the hysteresis that instantaneous facts could never clear.
+
+Two supporting changes follow, and neither is optional if the first is to work:
+
+- **The client keeps the interval's minimum** rather than only its last tick.
+  It rides as a nested `intervalMin` object (the `audioBuffer` precedent), so a
+  dip shorter than one report interval is still visible. Deliberately **not**
+  by emitting the worst tick as *the* sample: that would bias every median
+  downward and re-break the funnel ratios finding 1 protects.
+- **`get_session`'s downsampling becomes envelope-preserving.** Decimation —
+  every Nth sample — is exactly the wrong reduction for troubleshooting: it
+  drops transients silently, and a 4-second dip in a 30-minute session had
+  roughly an 8 % chance of surviving into the default view. Each bucket now
+  yields its **worst** sample, so a dip can never be downsampled away, and the
+  response says so.
+
+**Why not simply lower the stall threshold?** Because 2 fps is not a freeze and
+must not be reported as one. A viewer receiving 2 fps is receiving media
+continuously; a stall is the absence of it. Collapsing the two would make
+`stalls` mean two different things and would still miss a dip to 8 fps.
+
 ---
 
 ## 4. Mechanism
@@ -562,6 +640,9 @@ One line per session in `rollups/date=….ndjson`:
 - **Funnel** (median/p05 or p95 as appropriate): viewer `receivedFps`,
   `decoderFps`, `renderedFps`; broadcaster `captureFps`, `encoderFps`,
   `sentFps`.
+- **Episodes** (D16, §4.10): per primary series, the count / total / longest /
+  worst / share of the dips a median hides, plus the delivery-counter deltas
+  measured *inside* them. Additive and keyed by series name.
 - **Health**: stall count, total and longest stall ms, `reorderGapResyncs`,
   `framesDroppedIncomplete`, `framesDroppedLate`, keyframe waits,
   `configsApplied`, reconnect count + close codes seen.
@@ -584,7 +665,7 @@ same handlers, so they cannot drift:
 |---|---|---|
 | `list_broadcasts(since, limit)` | broadcast summaries with session counts + worst verdict | 50 rows |
 | `list_sessions(broadcast?, since, role?, verdict?, limit)` | rollup rows, projected | 50 rows |
-| `get_session(sessionId, fields?, window?)` | downsampled timeline + events | ~40 points, curated fields |
+| `get_session(sessionId, fields?, window?)` | **envelope-preserving** downsampled timeline + events (D16 — each bucket yields its worst sample, so a dip is never decimated away) | ~40 points, curated fields |
 | `diagnose(sessionId \| broadcastKey, window?)` | ranked verdicts + evidence + unavailable signals | verdicts only |
 | `compare(sessionIds[] \| session vs fleet)` | field-by-field deltas vs the fleet median for the same class | 1 table |
 | `fleet_summary(since, groupBy?)` | the "overall average": percentiles by delivery mode / browser / rung | 1 table |
@@ -1050,6 +1131,187 @@ Chrome as `"unknown"` (it reports `HeadlessChrome/`, never `Chrome/`), and four
 as unknowns on every sample. Both fixed; a structural test now pins that every
 field of that interface is typed.
 
+## 4.10 Dip episodes (D16)
+
+The detector, its facts and its two rules. Named constants throughout, shared
+by both windows — a threshold that drifted between the stored verdict and the
+live dashboard would put two disagreeing truths about one stream in front of an
+operator (the same reason §4.8.3 gives for one rule engine).
+
+**Primary series.** Viewer sessions are judged on `receivedFps`, broadcaster
+sessions on `sentFps`. One series per role: the dip is a claim about what that
+side *delivered*, and adding more series would multiply verdicts without adding
+information — the counter deltas below are what localize the cause.
+
+**Baseline.** The median of the primary series over the window. Self-relative
+by design: an absolute floor would accuse a deliberate 5 fps stream forever and
+would miss a 60 fps stream collapsing to 20.
+
+**Detection.** A sample is *in a dip* when its value is at or below
+`baseline × DipRatio` (0.5). Contiguous in-dip samples form one episode. Two
+guards keep the detector honest:
+
+- **`MinBaselineFps` (5).** Below this the session has no meaningful steady
+  state to dip from, and every wobble would be an episode.
+- **`MinEpisodeSamples` (1) with duration measured from real sample
+  timestamps.** A single sample is a real episode — at a 2 s report interval it
+  is up to 2 s of bad experience — but its duration is reported from `tMs`
+  deltas, never assumed.
+
+Where a sample carries `intervalMin`, the detector reads the interval's minimum
+instead of its last tick, so a sub-interval dip is not invisible. Baseline and
+every funnel ratio keep reading the primary field, untouched.
+
+**Counter deltas.** Across each episode the detector records how far the
+delivery counters advanced: `reorderGapResyncs`, `keyframeStreamsReceived`,
+`framesDroppedIncomplete`, `framesDroppedLate`, `framesDiscardedAwaitingKey`.
+Summed across episodes, these are what separate the causes — loss eating GOPs,
+reassembly failing, or frames arriving too late to use.
+
+**Rollup row** gains one additive field, `episodes`, keyed by series name so it
+grows without a schema migration (D4):
+
+```
+episodes: { receivedFps: { count, totalMs, longestMs, worstValue,
+                           baseline, share, deltas: {…} } }
+```
+
+**Facts** (both producers, per §4.8.3's two-sided contract):
+`client.fpsDipEpisodes`, `client.fpsDipShare`, `client.fpsDipWorstFps`,
+`client.fpsDipLongestMs`, `client.fpsDipResyncs`, `client.fpsDipKeyframes`.
+
+**Two rules**, and the split matters — the first says *that* it happened, the
+second says *why*:
+
+| Rule | Fires when | Verdict |
+|---|---|---|
+| `intermittent-fps-dips` | ≥1 episode in the window; `bad` at ≥ `DipShareBad` (0.1) of the window or ≥ `DipCountBad` (4) episodes, else `warn` | "Intermittent frame-rate collapse — episodes a median hides" |
+| `keyframe-only-delivery` | during dips, `resyncs ≥ keyframes × 0.5` with ≥2 keyframes seen | "Delta loss is eating whole GOPs — only keyframes are surviving, so the viewer sees the keyframe cadence as its framerate" |
+
+`keyframe-only-delivery` is deliberately **not** a replacement for
+`keyframe-gap-churn`: that rule still answers the session-wide question
+correctly, and a stream broken *continuously* should fire it. The new rule is
+the same physics measured inside the window where it is legible. Both may fire;
+ranking puts the more severe first, and their evidence differs.
+
+Relay corroboration lifts confidence where present (`subscriberDropped`,
+`keyframesDropped`) — a dip the relay also saw is anchored testimony, a dip
+only the client reports stays capped at the D7 client-only ceiling.
+
+**Live window.** `ObserveClient` folds **every** sample of a batch into a
+per-session ring (`DipWindowSamples`, 60 ≈ 2 min at a 2 s interval), not just
+the last. The last sample still supplies the instantaneous gauges; the ring
+supplies the episode facts. Because an episode stays in the ring for its whole
+duration, it survives `EscalateSamples` — which is exactly the property an
+instantaneous fact lacked.
+
+**Dashboard.** Viewer rows gain a **Dips** column: episode count in the window
+and the worst fps seen, `—` when the window has no baseline yet. Rendered in
+the same monochrome-plus-severity-hue discipline as the rest (§4.8.4); the
+column is text, never colour-only.
+
+**An episode must be a fall, so a run starting at the first sample is not one.**
+Found by CI, not by review: the first TM10 push turned the telemetry E2E red,
+because that step asserts `diagnose()` calls a clean loopback session *healthy*
+and its harness explicitly settles for **pre-decode zeros** — a viewer reports
+0 fps until the first frame decodes, then ramps. The detector read that ramp as
+a collapse and every healthy session acquired a finding in its first seconds.
+
+The rule that fixes it is the definition doing its job: an episode is a *fall
+from* a baseline, and at index 0 nothing was observed to fall from. A starting
+stream and a collapsing one look locally identical — the difference lives
+entirely in what came before, and at the first sample there is no before. A
+stream that is genuinely bad from its first sample is not lost: it drags the
+baseline down with it, where `MinBaselineFps` and the D17 steady-state rule
+take over.
+
+Two details this pass also pinned, because both were live bugs the first
+version had:
+
+- **`WorstValue` is tracked per run, not globally.** Folded in only when a run
+  is accepted, or a discarded warmup leaves its low-water mark behind on the
+  result — which it did, reporting `worstFps: 0` for a session whose real dip
+  was 2.
+- The e2e assertion's shape is now **also a unit test**
+  (`TestWarmupZerosDoNotMakeACleanSessionUnhealthy`), so this class fails in
+  milliseconds rather than after a four-process browser run. It sits beside the
+  pre-existing `TestWarmupRampDoesNotFakeAFunnelGap` — the same lesson, learned
+  twice, which is itself the argument for pinning it.
+
+---
+
+## 4.11 The configured target (D17)
+
+D16 made an *intermittent* collapse visible. This makes a **steady-state** one
+visible, and the two are exact complements — neither subsumes the other.
+
+The dip detector is self-relative: it asks whether a stream fell below **its
+own** baseline. It therefore cannot, by construction, see a stream whose
+baseline was wrong all along. A broadcaster that asked for 60 fps and delivered
+30 for the entire session has a flat baseline, **zero episodes**, and a perfect
+funnel (capture 30 → encode 30 → sent 30). Every rule in the playbook passes
+it, and correctly so: nothing *degraded*. It simply never was what it was asked
+to be.
+
+Nothing could see that because **the target was never recorded**. Two separate
+gaps:
+
+- **`BroadcastStats` carried no video configuration at all** — no dimensions,
+  no target framerate, no video bitrate (only `audioBitrateBps`). The R13
+  settings store holds all of it and it never reached telemetry. Worse, the
+  three fields that *were* reported — `autoRung`, `autoCeiling`, `autoFps` —
+  are `null` in explicit mode by design, so **the more deliberately a
+  broadcaster configured the stream, the less was recorded about it**.
+- **The native engine reported its rung and the rollup dropped it.** `Width`,
+  `Height`, `Fps` and `BitrateBps` were typed and landed in raw NDJSON, but
+  appeared in neither `broadcasterConfig` nor `broadcasterSeries` — so they
+  were pruned at 14 days having never reached a row, a rule or a verdict.
+
+And `Config["resolution"]` was derived from `frameWidth`/`frameHeight`, which
+only a **viewer** reports, so broadcaster rows carried no resolution and
+`fleet_summary(groupBy: "resolution")` grouped every broadcaster under
+`unknown`.
+
+**Recorded from what the encoder committed to, never from what asked for it.**
+The values come from `EncoderConfigured` at the one point the encoder is
+configured — the same "trust the real thing, not the metadata" rule the capture
+path follows, because a rung can be refused, clamped or renegotiated, and
+telemetry that reported the *request* would describe a stream that never ran.
+It re-runs on every encoder recreate, so an R4 auto step or an R13 live
+settings change moves the target with it.
+
+New client fields: `targetWidth`, `targetHeight`, `targetFps`,
+`targetBitrateBps`, `codec`, `acceleration`. The rollup persists them as
+`config.resolution` / `targetFps` / `targetBitrateKbps` (native spellings
+mapped, so one query covers both producers), and `resolution` now resolves
+per role — target dims for a broadcaster, decoded dims for a viewer.
+
+**One rule, `delivered-below-target`** (facts `client.targetFps`,
+`client.targetBitrateBps`), firing under `targetShortfallRatio` (0.75).
+
+The honesty problem is what shapes it. gawk's capture is **damage-driven**, so
+a motionless screen legitimately produces far fewer frames than the target —
+docs/09 records this as a real-hardware finding, and R4's auto ladder
+deliberately does *not* step for it. A rule that read any shortfall as a fault
+would accuse every quiet stream on the fleet. So `captureFps` is the
+discriminator and rides in the evidence either way:
+
+| Capture | Verdict |
+|---|---|
+| below target too | "Capture is not producing the configured target rate — source-limited, which a static or low-motion screen does legitimately" |
+| at target | "Delivered rate is below the configured target, and capture is keeping up — the shortfall is in the pipeline, not the source" |
+
+Severity is **`warn`, never `bad`**: a shortfall against a target is a
+discrepancy worth surfacing, not a broken stream — the rules that describe an
+actually-broken one are already in the playbook. Relay `framesRelayedPerSec`
+lifts confidence where present (D7).
+
+The dashboard's broadcaster row shows the target beside the rate
+(`30 / 30 →60`), because a rate means nothing without the number it is supposed
+to be.
+
+---
+
 ## 5. Chunks and acceptance criteria
 
 | Chunk | Scope | Acceptance criteria |
@@ -1063,6 +1325,10 @@ field of that interface is typed.
 | **TM7** | **MCP server**: the tools of §4.6 over the TM6 handlers, auth, docs | Each tool round-trips against a seeded store; the same query through HTTP and MCP returns the same data (one implementation, asserted); default bounds hold; `query_sql` is absent unless explicitly enabled; a documented end-to-end transcript: "diagnose yesterday's broadcast" from cold |
 | **TM8** | **Live dashboard** (§4.8): in-memory live projection + `/live` endpoint, the three views, the shared-engine health model with hysteresis, embedded assets, separate non-public listener | **The headline criterion — an operator opening the fleet view during a staged-bad broadcast identifies the faulty stream, and which side is at fault, without clicking anything.** Plus: severity ordering puts the worst broadcast first (property test over generated fleets); a viewer whose client telemetry stops renders **stale**, and one that never reported renders **unknown** — neither ever `ok` (both asserted); the broadcaster and its viewers appear in one table with the broadcaster pinned first; live severity for a given window equals `diagnose()`'s verdict for the same window (one engine, asserted — they may not disagree); hysteresis holds (a single-sample blip does not escalate; a cleared fault persists through the dwell); relay-side and client-side freshness are labelled separately; served with no build step and **no external asset fetch** (asserted by loading with the network blocked); renders empty / live / degraded / relay-coverage-missing states; severity is never colour-only (glyph + label present in the DOM for each state); **the ended group renders below the live group and never interleaves — a live `warn` outranks an ended `bad`** — reads its verdict from the rollup index rather than recomputing, is recessed rather than hue-suppressed (an ended `bad` still shows red), and labels its claim in the past tense; the fleet view with zero live broadcasts shows recent history rather than an empty page; the read listener is absent from the public Ingress in `helm template` |
 | **TM9** | *(droppable)* **Grafana dashboard** — closing R9 M8 | Dashboard JSON imports cleanly against a scraping Prometheus and every panel returns data during a test broadcast (M8's original criterion, unchanged); if the rollup-datasource question (§8) resolves negative, Prometheus-only panels ship and the finding is written back here |
+
+| **TM10** | **Dip episodes** (D16, §4.10): client `intervalMin`, rollup episode detection + counter deltas, `intermittent-fps-dips` + `keyframe-only-delivery` rules, live rolling window folding every sample, envelope-preserving `get_session` downsampling, dashboard Dips column | **The headline criterion — a synthetic session at a healthy steady rate with periodic collapses to the keyframe cadence produces a non-healthy verdict naming the dips, where the same session before this chunk produced `healthy`** (asserted as a pair, so the test proves the gap was real). Plus: session medians and every funnel ratio are **unchanged** by the presence of dips (asserted against the pre-change values — finding 1's false positive must not return); a genuinely steady session produces zero episodes and stays `healthy`; a deliberately slow stream below `MinBaselineFps` produces no episodes at any rate; episode duration comes from real sample timestamps, and a single-sample episode is counted with its real interval; counter deltas are attributed to the episode that contains them; `keyframe-only-delivery` fires on a keyframe-cadence dip and does **not** fire on a dip with no resync activity; the live projection folds every sample of a batch (asserted by a batch whose dip is not in its last sample) and an episode survives `EscalateSamples` where an instantaneous fact did not; `get_session`'s default downsampling never drops a dip (a synthetic session with one short dip shows it at default `points`, asserted against decimation); both producers emit the new facts, so `rules.ProducibleFacts` stays two-sided; the 32 KB default-response ceiling still holds |
+
+| **TM11** | **The configured target** (D17, §4.11): `BroadcastStats` target fields from `EncoderConfigured`, rollup config for both producer spellings, role-correct `resolution`, `delivered-below-target` rule, dashboard target column | **The headline criterion — a broadcaster session that asked for 60 fps and delivered a flawless 30 for its whole duration produces a non-healthy verdict naming the shortfall**, where no dip rule fires on it (asserted together: the two mechanisms are complements and neither may claim the other's case). Plus: a session meeting its target at any rate is not accused; a source-limited shortfall (capture below target too) is worded as source-limited, is **never `bad`**, and carries `captureFps` in its evidence so the claim is checkable; the target is recorded from `EncoderConfigured` and not from the settings store (so a refused or clamped rung reports what actually ran); `config.resolution` resolves from target dims for a broadcaster and decoded dims for a viewer, with the native `Width`/`Height`/`Fps`/`BitrateBps` spellings mapped to the same keys; both producers emit the new facts so `rules.ProducibleFacts` stays two-sided; the 32 KB ceiling still holds |
 
 Chunk prefix **TM** (two letters; A–Z claimed). Dependency spine:
 TM1 → TM2/TM3 → TM4 → TM5 → TM6 → TM7/TM8 → TM9. Two chunks carry the

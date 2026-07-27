@@ -34,6 +34,20 @@ const (
 	// A playout offset pinned within this of its clamp is not adapting.
 	playoutClampSlackMs = 50
 	resilientClampMs    = 2000
+	// D16: where an intermittent collapse stops being "degraded" and becomes
+	// "broken from a viewer's point of view". Mirrors of the rollup's
+	// DipShareBad/DipCountBad — kept as rule-side constants for the same reason
+	// every other threshold here is: the live dashboard evaluates these SAME
+	// rules over a rolling window, and a threshold that drifted between the two
+	// would put two disagreeing truths about one stream in front of an operator.
+	dipShareBad = 0.1
+	dipCountBad = 4
+	// D17: how far under its configured target a broadcast may sit before the
+	// gap is worth naming. Same shape as funnelGapRatio and deliberately the
+	// same value — "a quarter down on what was asked for" is the same size of
+	// discrepancy whether the comparison is between two funnel stages or
+	// between intent and outcome.
+	targetShortfallRatio = 0.75
 )
 
 // Playbook returns the full rule set.
@@ -54,6 +68,166 @@ func Playbook() []Rule {
 		viewerCountGap(),
 		dvrRingOutlived(),
 		audioOverflowLatch(),
+		intermittentFpsDips(),
+		keyframeOnlyDelivery(),
+		deliveredBelowTarget(),
+	}
+}
+
+// The steady-state miss (docs/33 D17), and the exact complement of the dip
+// rules above. Those are SELF-RELATIVE: they catch a stream falling below its
+// own baseline. They structurally cannot catch a stream whose baseline was
+// wrong all along — a broadcaster that asked for 60 fps and delivered 30 for
+// the whole session has a flat baseline, zero episodes, and a perfect funnel
+// (capture 30 → encode 30 → sent 30). Every other rule passes it.
+//
+// What makes this answerable at all is that the target is now recorded. What
+// makes it HONEST is the capture comparison below: gawk's capture is
+// damage-driven, so a motionless screen legitimately produces far fewer frames
+// than the target, and a rule that read a shortfall as a fault would accuse
+// every quiet stream on the fleet.
+func deliveredBelowTarget() Rule {
+	return Rule{
+		ID:       "delivered-below-target",
+		Scope:    "broadcaster",
+		Requires: []string{"client.targetFps", "client.sentFps"},
+		Verdict:  "Delivered rate is below what this broadcast was configured for",
+		Action: "Compare against captureFps in the evidence: capture below target too means the " +
+			"SOURCE is not producing frames (a static screen does this legitimately, and R4's auto " +
+			"ladder deliberately does not step for it — docs/09). Capture at target with sent below " +
+			"it is a pipeline problem, and encoder-overload / send-path-gap localize it.",
+		Eval: func(f *Facts) *Finding {
+			target, _ := f.Client("targetFps")
+			sent, _ := f.Client("sentFps")
+			if target <= 0 || sent >= target*targetShortfallRatio {
+				return nil
+			}
+			ev := []Evidence{
+				{Signal: "targetFps", Value: target, Unit: "fps", From: FromClient, Comparison: "configured target"},
+				{Signal: "sentFps", Value: sent, Unit: "fps", From: FromClient, Comparison: "below target"},
+			}
+			verdict := "Delivered rate is below the configured target, and capture is keeping up — " +
+				"the shortfall is in the pipeline, not the source"
+			conf := 0.6
+			if capture, ok := f.Client("captureFps"); ok {
+				ev = append(ev, Evidence{Signal: "captureFps", Value: capture, Unit: "fps", From: FromClient})
+				if capture < target*targetShortfallRatio {
+					// Source-limited. Worth SAYING — a broadcaster who picked
+					// 60 should know they are getting 30 — but it is not a
+					// fault, and must not read as one.
+					verdict = "Capture is not producing the configured target rate — source-limited, " +
+						"which a static or low-motion screen does legitimately"
+					conf = 0.5
+				}
+			}
+			// The relay's own relayed rate turns this from the client's account
+			// of itself into a corroborated one (D7).
+			if relayed, ok := f.Relay("framesRelayedPerSec"); ok {
+				ev = append(ev, Evidence{Signal: "framesRelayedPerSec", Value: relayed, From: FromRelay})
+				conf += 0.2
+			}
+			// Never `bad`: a shortfall against a target is a discrepancy worth
+			// surfacing, not a broken stream. The rules that describe an
+			// actually-broken one are already in the playbook above.
+			return &Finding{Severity: SeverityWarn, Verdict: verdict, Confidence: conf, Evidence: ev}
+		},
+	}
+}
+
+// Beyond the playbook: the dips a median hides (docs/33 D16). These two exist
+// because the audit that produced D16 found a stream collapsing to 2 fps every
+// twenty seconds diagnosing as `healthy` — every funnel rule read the session
+// median (30 fps, fine), `stall-attribution` never fired (2 fps is a 500 ms
+// gap, under the 1000 ms threshold) and `keyframe-gap-churn`'s ratio was
+// diluted from ~1.0 inside the dips to ~0.02 across the session.
+//
+// The split between them is the point: the first says THAT it happened, the
+// second says WHY. A verdict that only says "your framerate dipped" tells an
+// operator what they already knew.
+
+// Dips: the collapse itself.
+func intermittentFpsDips() Rule {
+	return Rule{
+		ID:       "intermittent-fps-dips",
+		Scope:    "viewer",
+		Requires: []string{"client.fpsDipEpisodes"},
+		Verdict:  "Intermittent frame-rate collapse — episodes a median hides",
+		Action: "Look at keyframe-only-delivery beside this: if that fired, the cause is delta loss " +
+			"eating GOPs. If it did not, compare the dips against the broadcaster's sentFps — a " +
+			"source-side stutter reaches every viewer.",
+		Eval: func(f *Facts) *Finding {
+			count, _ := f.Client("fpsDipEpisodes")
+			if count == 0 {
+				return nil
+			}
+			share, _ := f.Client("fpsDipShare")
+			// Degraded is one thing; a tenth of the window spent collapsed, or
+			// four separate collapses, is broken from a viewer's seat.
+			sev := SeverityWarn
+			if share >= dipShareBad || count >= dipCountBad {
+				sev = SeverityBad
+			}
+			ev := []Evidence{
+				{Signal: "fpsDipEpisodes", Value: count, From: FromClient, Comparison: "distinct collapses in the window"},
+			}
+			if worst, ok := f.Client("fpsDipWorstFps"); ok {
+				ev = append(ev, Evidence{Signal: "fpsDipWorstFps", Value: worst, Unit: "fps", From: FromClient})
+			}
+			if share > 0 {
+				ev = append(ev, Evidence{Signal: "fpsDipShare", Value: share, Unit: "ratio", From: FromClient,
+					Comparison: "of the window spent below half the baseline"})
+			}
+			if longest, ok := f.Client("fpsDipLongestMs"); ok {
+				ev = append(ev, Evidence{Signal: "fpsDipLongestMs", Value: longest, Unit: "ms", From: FromClient})
+			}
+			conf := 0.6
+			// A dip the relay ALSO saw is anchored testimony rather than a
+			// client's account of itself (D7) — and it localizes the leg.
+			if dropped, ok := f.Relay("subscriberDropped"); ok && dropped > 0 {
+				ev = append(ev, Evidence{Signal: "subscriberDropped", Value: dropped, From: FromRelay,
+					Comparison: "the relay dropped for this subscriber too"})
+				conf = 0.85
+			}
+			return &Finding{Severity: sev, Confidence: conf, Evidence: ev}
+		},
+	}
+}
+
+// Dips: the cause, for the commonest one. Playbook row 9's physics, measured
+// inside the dip window instead of across a session that dilutes it.
+//
+// This does NOT replace keyframe-gap-churn: a stream broken CONTINUOUSLY should
+// still fire that one, and both firing together is a coherent statement, not a
+// duplicate.
+func keyframeOnlyDelivery() Rule {
+	return Rule{
+		ID:       "keyframe-only-delivery",
+		Scope:    "viewer",
+		Requires: []string{"client.fpsDipResyncs", "client.fpsDipKeyframes"},
+		Verdict: "Delta loss is eating whole GOPs — only keyframes are surviving, so the viewer sees " +
+			"the keyframe cadence as its framerate",
+		Action: "This is leg B for this viewer at the datagram level. R19 resilient mode (reliable " +
+			"carriers) is the designed answer; a lower rung or bitrate reduces the exposure.",
+		Eval: func(f *Facts) *Finding {
+			resyncs, _ := f.Client("fpsDipResyncs")
+			keyframes, _ := f.Client("fpsDipKeyframes")
+			// Two keyframes is the least that can establish a ratio at all;
+			// below it a single unlucky GOP would read as a pattern.
+			if keyframes < 2 || resyncs < keyframes*0.5 {
+				return nil
+			}
+			ev := []Evidence{
+				{Signal: "fpsDipResyncs", Value: resyncs, From: FromClient,
+					Comparison: "gap resyncs during the dips, vs keyframes received"},
+				{Signal: "fpsDipKeyframes", Value: keyframes, From: FromClient},
+			}
+			conf := 0.6
+			if dropped, ok := f.Relay("keyframesDropped"); ok {
+				ev = append(ev, Evidence{Signal: "subscriber.keyframesDropped", Value: dropped, From: FromRelay})
+				conf = 0.8
+			}
+			return &Finding{Severity: SeverityBad, Confidence: conf, Evidence: ev}
+		},
 	}
 }
 

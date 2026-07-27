@@ -63,10 +63,25 @@ function freshness(state, ageMs) {
   return ago(ageMs);
 }
 
+// The dip reading (docs/33 D16): how many times this session's rate collapsed
+// inside the live window, and how far. This is the column that makes an
+// intermittent stutter visible on a page whose other numbers are, by
+// construction, whatever the stream happened to be doing at the last sample.
+//
+// A window with no baseline yet reads '—', never '0': "we cannot judge" and
+// "we judged and it was clean" are different claims, and only the second is
+// evidence.
+function dips(m) {
+  if (m.fpsDipEpisodes === undefined) return '—';
+  if (!m.fpsDipEpisodes) return '0';
+  const worst = m.fpsDipWorstFps === undefined ? '' : ' ↓' + num(m.fpsDipWorstFps);
+  return m.fpsDipEpisodes + '×' + worst;
+}
+
 function sessionTable(sessions) {
   const table = document.createElement('table');
   const head = document.createElement('tr');
-  for (const h of ['', 'role', 'session', 'client', 'fps in/dec', 'stall', 'latency', 'delivery', 'relay', 'verdict']) {
+  for (const h of ['', 'role', 'session', 'client', 'fps in/dec', 'dips', 'stall', 'latency', 'delivery', 'relay', 'verdict']) {
     head.appendChild(text('th', null, h));
   }
   table.appendChild(head);
@@ -83,11 +98,22 @@ function sessionTable(sessions) {
 
     const m = s.metrics || {};
     if (s.role === 'broadcaster') {
-      tr.appendChild(text('td', 'num', num(m.captureFps ?? m.CaptureFps) + ' / ' + num(m.encoderFps ?? m.EncoderFps)));
+      // Capture / encode, with the configured target beside them (D17) — the
+      // number a rate has to be read against to mean anything.
+      const target = m.targetFps === undefined ? '' : ' →' + num(m.targetFps);
+      tr.appendChild(
+        text(
+          'td',
+          'num',
+          num(m.captureFps ?? m.CaptureFps) + ' / ' + num(m.encoderFps ?? m.EncoderFps) + target,
+        ),
+      );
+      tr.appendChild(text('td', 'num', dips(m)));
       tr.appendChild(text('td', 'num', num(m.encoderQueueDepth)));
       tr.appendChild(text('td', 'num', '—'));
     } else {
       tr.appendChild(text('td', 'num', num(m.receivedFps) + ' / ' + num(m.decoderFps)));
+      tr.appendChild(text('td', 'num', dips(m)));
       tr.appendChild(text('td', 'num', m.timeSinceLastFrameMs === undefined ? '—' : num(m.timeSinceLastFrameMs) + 'ms'));
       tr.appendChild(text('td', 'num', m.capToRenderMs === undefined ? '—' : num(m.capToRenderMs) + 'ms'));
     }

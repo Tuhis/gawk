@@ -112,6 +112,12 @@ var ViewerFields = map[string]Kind{
 	"presentationMux":     KindObject,
 	"presentationSurface": KindObject,
 	"featureGates":        KindAny,
+
+	// D16: the worst reading the client saw between two emitted samples. Typed
+	// so a wrongly-typed member cannot reach the dip detector — which decides
+	// whether a stream is reported as stuttering, so a string "2" arriving
+	// there would be a verdict built on a parse accident.
+	"intervalMin": KindObject,
 }
 
 // BroadcasterFields types what a browser broadcaster reports.
@@ -194,6 +200,21 @@ var BroadcasterFields = map[string]Kind{
 	"TimeSyncRttMs":             KindNumber,
 	"TimeSyncOffsetUs":          KindNumber,
 	"ViewerCount":               KindNumber,
+
+	// D16, same reasoning as the viewer table: the broadcaster's dip detector
+	// judges sentFps, and its input must be typed.
+	"intervalMin": KindObject,
+
+	// D17: what the broadcast was ASKED to be. Every other field here is an
+	// outcome; without these no consumer can compute the difference, and
+	// "30 fps" reads identically whether 30 or 60 was requested. Typed
+	// because a shortfall verdict is computed from them.
+	"targetWidth":      KindNumber,
+	"targetHeight":     KindNumber,
+	"targetFps":        KindNumber,
+	"targetBitrateBps": KindNumber,
+	"codec":            KindString,
+	"acceleration":     KindString,
 }
 
 // FieldsForRole returns the table for a role. An unrecognized role yields nil,

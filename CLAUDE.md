@@ -517,7 +517,8 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   Chunks **LI1–LI4**; LI3's hardware leg + LI4 sequenced after R15's
   pending re-verification, `avSkewMs` finding 12 being open),
   `docs/33-telemetry-and-diagnostics.md` for R28 (advanced diagnostics &
-  telemetry: **designed + TM1–TM8 implemented 2026-07-26, automated gates
+  telemetry: **designed + TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) +
+  TM11 (configured target) 2026-07-27, automated gates
   green in all four modules; TM9 (Grafana) dropped by owner scope decision so
   R9 M8 stays open; manual verification pending — deviations in the doc's
   §4.9 "Implementation status"**; pulls the trigger R9's
@@ -1808,7 +1809,8 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   or any other metadata source** — Chrome's `getSettings()` has been observed
   to disagree with the frames MSTP actually delivers. Configure encoders and
   compute layout from the frames themselves. See `docs/01-loopback-test.md`.
-27. Advanced diagnostics & telemetry — **TM1–TM8 implemented 2026-07-26;
+27. Advanced diagnostics & telemetry — **TM1–TM8 implemented 2026-07-26,
+   TM10 (dip episodes) + TM11 (configured target) 2026-07-27;
    automated gates green in all four modules; TM9 (Grafana) dropped by owner
    scope decision (R9 M8 stays open); manual verification pending** (R28,
    `docs/33-telemetry-and-diagnostics.md`; deviations in its §4.9). A new
@@ -1865,6 +1867,80 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `"Chrome 152"`/`"Windows"`), no cross-session identity, never media; R23's
    terms gained a practice paragraph naming what is and is not collected, and
    `termsVersion` bumped to 2026-07-26.
+   **TM10 — dip episodes (2026-07-27, docs/33 D16 + §4.10)**: an audit asked
+   whether the shipped item could answer *"why is this stream stuttering, why
+   does my viewer framerate drop to 2 every now and then?"* It could not — a
+   stream collapsing to 2 fps every twenty seconds diagnosed as **`healthy`**,
+   and a paired test now pins that it no longer does. The data was all present;
+   every *consumer* collapsed it. Six mechanisms, each defensible alone and
+   worth not re-deriving: funnel rules read session **medians** (deliberately —
+   an earlier median-vs-p05 mix falsely fired `decoder-choking` on a clean e2e
+   stream, so the fix for that false positive installed this false negative);
+   the rollup computed `p05`/`min` for every fps series that **no rule read**
+   (`playoutOffsetMs`'s P95 was the only tail statistic consumed anywhere);
+   **2 fps evades every freeze detector by construction** — it *is* the 500 ms
+   GOP cadence, so `timeSinceLastFrameMs` never crosses the 1000 ms stall
+   threshold and `stalls` reads 0 on a visibly stuttering stream;
+   `keyframe-gap-churn`'s ratio diluted from ~1.0 inside a dip to ~0.02 across
+   a session; the live projection folded **only the last sample of each batch**
+   (4 of 5 discarded at a 2 s interval / 10 s flush) and `EscalateSamples`
+   then suppressed what survived, because an instantaneous fact cannot hold for
+   two consecutive evaluations; and the client decimated 3 of every 4 stats
+   ticks with no aggregation. The fix adds **episodes beside the percentiles,
+   never inside them**: a median answers "did this stage keep up for most of
+   the session" and keeps answering exactly that (a test asserts dips cannot
+   make a funnel ratio fire), while a contiguous run below `DipRatio` × the
+   window's own baseline answers "did it fall apart, how often, and what did
+   the counters do while it did". Self-relative baseline (an absolute floor
+   would accuse a deliberate 5 fps stream forever), `MinBaselineFps` guard,
+   durations from real `tMs` deltas, and **counter deltas captured inside each
+   episode** — which is what turns "your fps dipped" into
+   `keyframe-only-delivery`, playbook row 9's physics measured in the window
+   where its ratio is legible. **One detector, two windows** (the session for
+   the rollup, a bounded `DipWindowSamples` ring for the live dashboard), so a
+   stored verdict and a live row can never disagree about what a dip is; the
+   ring is also what makes an episode *durable* enough to survive hysteresis.
+   Two supporting changes: the client carries the interval's minimum as a
+   nested **`intervalMin`** object (never by emitting the worst tick *as* the
+   sample — that would bias every median and re-break the ratios), and
+   `get_session` downsampling became **envelope-preserving** (worst per bucket)
+   because decimation drops exactly the transients the timeline is opened for.
+   A dip is **not** folded into `stalls`: 2 fps is media flowing badly, a stall
+   is media absent, and collapsing the two would make `stalls` mean two things.
+   **TM11 — the configured target (2026-07-27, docs/33 D17 + §4.11)**: the
+   exact complement of TM10, and neither subsumes the other. The dip detector
+   is **self-relative**, so it structurally cannot see a stream whose baseline
+   was wrong all along — a broadcaster that asked for 60 fps and delivered a
+   flawless 30 for the whole session has a flat baseline, **zero episodes** and
+   a perfect funnel (capture 30 → encode 30 → sent 30), and every rule
+   correctly passes it. Nothing *degraded*; it simply never was what it was
+   asked to be. That was invisible because **the target was never recorded**:
+   `BroadcastStats` carried no dims, no target fps and no video bitrate (only
+   `audioBitrateBps`), and the three fields it *did* carry — `autoRung`,
+   `autoCeiling`, `autoFps` — are `null` in explicit mode **by design**, so the
+   more deliberately a broadcaster configured the stream the less was recorded;
+   meanwhile the native engine reported `Width`/`Height`/`Fps`/`BitrateBps` and
+   the rollup listed them in neither `broadcasterConfig` nor
+   `broadcasterSeries`, so they were pruned at 14 days having never reached a
+   row. `Config["resolution"]` also read `frameWidth`/`frameHeight`, which only
+   a **viewer** reports, so broadcaster rows had no resolution and
+   `fleet_summary(groupBy:"resolution")` grouped them all under `unknown`.
+   Now: target dims/fps/bitrate/codec/acceleration are recorded **from
+   `EncoderConfigured`** — what the encoder *committed to*, never the settings
+   that asked (a rung can be refused, clamped or renegotiated, and re-running
+   on every encoder recreate means an R4 auto step moves the target with it) —
+   the rollup maps both producers' spellings onto one set of config keys, and
+   `resolution` resolves per role. One rule, **`delivered-below-target`**
+   (`targetShortfallRatio` 0.75). Its shape is set by an honesty problem worth
+   not re-deriving: gawk's capture is **damage-driven**, so a motionless screen
+   legitimately produces far fewer frames than the target (docs/09's
+   real-hardware finding, and why R4's ladder deliberately does not step for
+   it) — a rule reading any shortfall as a fault would accuse every quiet
+   stream on the fleet. So `captureFps` is the discriminator and rides in the
+   evidence either way: capture below target too ⇒ "source-limited", capture at
+   target ⇒ "the shortfall is in the pipeline". Severity is **`warn`, never
+   `bad`** — a discrepancy against intent is not a broken stream, and the rules
+   for an actually-broken one already exist.
 
 ## Explicitly set aside (don't suggest reintroducing without discussion)
 - WebRTC + self-hosted SFU (OvenMediaEngine, LiveKit, mediasoup) — more mature,

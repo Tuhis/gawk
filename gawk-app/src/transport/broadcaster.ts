@@ -146,6 +146,27 @@ export interface BroadcastStats {
   // Times the audio media clock drifted far enough to be re-pinned. Each one
   // steps the audio timeline against video.
   audioAnchorReanchors: number;
+  // R28 D17 (docs/33 §4.11): what this broadcast was ASKED to be, as opposed
+  // to what it turned out to be. Everything else on this object is an
+  // outcome; without the target, no consumer can compute the difference —
+  // "30 fps" reads identically whether 30 or 60 was requested, and a session
+  // that delivered half its intended rate has a perfect funnel and no dips.
+  //
+  // Deliberately NOT read back from the settings store or
+  // `getSettings()`: these are the values the encoder actually committed to
+  // (`EncoderConfigured`), which is the same "trust the real thing, not the
+  // metadata" rule the capture path follows. Null until the encoder
+  // configures — an unconfigured broadcast has no target, and a zero would
+  // claim one.
+  targetWidth: number | null;
+  targetHeight: number | null;
+  targetFps: number | null;
+  targetBitrateBps: number | null;
+  // The codec string the encoder settled on, and whether it got hardware.
+  // Both are negotiated outcomes of a *request*, which is why they live here
+  // beside the targets rather than in the funnel.
+  codec: string | null;
+  acceleration: string | null;
 }
 
 const EMPTY_BROADCAST_STATS: BroadcastStats = {
@@ -188,6 +209,12 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   audioBitrateBps: null,
   audioEncodeLagMs: null,
   audioAnchorReanchors: 0,
+  targetWidth: null,
+  targetHeight: null,
+  targetFps: null,
+  targetBitrateBps: null,
+  codec: null,
+  acceleration: null,
 };
 
 export interface BroadcastCallbacks {
@@ -1018,6 +1045,18 @@ export class BroadcastPipeline {
         this.encoder = enc;
         this.encoderDims = { width, height };
         this.encoderIniting = false;
+        // The one place the target is actually decided (D17). Recorded from
+        // what the encoder COMMITTED to, not from the settings that asked for
+        // it — a rung can be refused, clamped or renegotiated, and telemetry
+        // that reported the request would describe a stream that never ran.
+        // Re-runs on every encoder recreate, so an R4 auto step or an R13
+        // live settings change moves the target with it.
+        this.stats.targetWidth = chosen.width;
+        this.stats.targetHeight = chosen.height;
+        this.stats.targetFps = chosen.framerate;
+        this.stats.targetBitrateBps = chosen.bitrate;
+        this.stats.codec = chosen.codec;
+        this.stats.acceleration = chosen.acceleration;
         this.cb.onEncoderConfigured(chosen);
         const accepted = enc.encode(firstFrame);
         if (!accepted) this.stats.droppedFrames++;

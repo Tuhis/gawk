@@ -265,14 +265,31 @@ func (a *API) GetSession(sessionID string, fields []string, points int) (*Timeli
 		SessionID: sessionID, Role: in.Role, Fields: fields,
 		TotalSample: len(in.Samples),
 	}
+	// Downsampling is ENVELOPE-PRESERVING, not decimation (D16).
+	//
+	// Taking every Nth sample is the wrong reduction for troubleshooting: it
+	// drops transients silently, and transients are the whole question. A
+	// 4-second dip in a 30-minute session had roughly an 8 % chance of
+	// surviving into the default view — so the timeline agreed with the
+	// median that nothing was wrong, for the same reason and just as wrongly.
+	//
+	// Each bucket instead yields the sample with the LOWEST value of the
+	// role's primary rate, so a dip can never be downsampled away. The sample
+	// is a real one, never a synthetic per-field aggregate: an interpolated
+	// point is a reading nothing ever observed, which is a bad thing to hand
+	// someone who is trying to understand what happened.
+	primary, _ := rollup.PrimarySeries(in.Role)
 	step := 1
 	if len(in.Samples) > points {
 		step = (len(in.Samples) + points - 1) / points
 		tl.Downsampled = true
-		tl.Note = fmt.Sprintf("every %dth of %d samples; name fields and a window for more", step, len(in.Samples))
+		tl.Note = fmt.Sprintf(
+			"worst of every %d of %d samples by %s, so dips survive; name fields and a window for more",
+			step, len(in.Samples), primary)
 	}
 	for i := 0; i < len(in.Samples); i += step {
-		s := in.Samples[i]
+		end := min(i+step, len(in.Samples))
+		s := in.Samples[worstIn(in.Samples[i:end], primary)+i]
 		pt := map[string]float64{"tMs": s.TMs}
 		for _, f := range fields {
 			if f == "tMs" {
@@ -399,6 +416,11 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	if row.LongestStallMs > 0 {
 		f.SetClient("timeSinceLastFrameMs", row.LongestStallMs)
 	}
+	// Dip episodes (D16). These are the ONLY facts here derived from the tail
+	// rather than the middle, and they are deliberately not part of any ratio:
+	// the funnel medians above stay exactly what they were, and these answer a
+	// different question beside them.
+	setEpisodeFacts(f, row.Episodes, row.Role)
 
 	// Relay side, joined by sessionId (TM4).
 	coverage := "none"
@@ -499,6 +521,39 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		f.Caveats = append(f.Caveats, d)
 	}
 	return f
+}
+
+// worstIn returns the index (within the bucket) of the sample with the lowest
+// reading of `field`. Falls back to the bucket's first sample when nothing in
+// it reported the field — which keeps a timeline of an unrelated field working
+// exactly as decimation did, rather than collapsing to nothing.
+func worstIn(bucket []rollup.Sample, field string) int {
+	best, found := 0, false
+	var lowest float64
+	for i, s := range bucket {
+		v, ok := schema.Number(s.Stats, field)
+		if !ok {
+			continue
+		}
+		if !found || v < lowest {
+			best, lowest, found = i, v, true
+		}
+	}
+	return best
+}
+
+// setEpisodeFacts publishes the dip facts for a row's primary series (D16).
+// Keyed off the role's own series so a broadcaster row is judged on what it
+// sent and a viewer row on what it received.
+func setEpisodeFacts(f *rules.Facts, episodes map[string]*rollup.Episodes, role string) {
+	field, _ := rollup.PrimarySeries(role)
+	ep := episodes[field]
+	if ep == nil {
+		return
+	}
+	for name, v := range ep.Facts() {
+		f.SetClient(name, v)
+	}
 }
 
 type relayObservation struct {
@@ -867,6 +922,8 @@ var factClientFields = []string{
 	"reorderGapResyncs", "keyframeStreamsReceived", "playoutOffsetMs",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"audioPacketsReceived",
+	// D17: what the broadcast was asked to be, so a shortfall is computable.
+	"targetFps", "targetBitrateBps",
 }
 
 // --- HTTP -----------------------------------------------------------------
