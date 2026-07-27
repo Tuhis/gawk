@@ -145,6 +145,34 @@ describe('ViewerPipeline', () => {
     await pipeline.stop();
   });
 
+  it('appends ?parity= only when the viewer opted DOWN from the fleet default (R29)', async () => {
+    // docs/34 §5.2: the fleet decides the level and the viewer can only opt
+    // down, so the DEFAULT must send no parameter at all — that is what lets
+    // the relay's default apply and keeps a pre-R29 relay's URL unchanged.
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    const { cbs } = makeCallbacks();
+    const p1 = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+    await p1.start();
+    expect(connectWebTransport).toHaveBeenCalledWith(
+      'https://relay.test:4433/subscribe/K7XQ2M',
+      {},
+    );
+    await p1.stop();
+
+    for (const level of [0, 1] as const) {
+      connectWebTransport.mockClear();
+      const opts = { parityLevel: level };
+      const p2 = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
+      await p2.start();
+      expect(connectWebTransport).toHaveBeenCalledWith(
+        `https://relay.test:4433/subscribe/K7XQ2M?parity=${level}`,
+        opts,
+      );
+      await p2.stop();
+    }
+  });
+
   it('appends ?delivery=reliable when resilient delivery is requested (R19)', async () => {
     // The session/URL seam of docs/24 Decision 6: the toggle reaches the
     // relay as a subscribe-time query param, nothing else changes.

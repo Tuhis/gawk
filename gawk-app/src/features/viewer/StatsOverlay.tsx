@@ -120,6 +120,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Awaiting keyframe', String(stats?.framesDiscardedAwaitingKey ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],
         ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],
+        ['Loss-allowance skips', String(stats?.framesSkippedWithinAllowance ?? '—')],
         ['Reorder buffered', String(stats?.reorderBuffered ?? '—')],
         ['Last frame', stats?.timeSinceLastFrameMs == null ? '—' : `${fmtInt(stats.timeSinceLastFrameMs)} ms ago`],
         // Any inbound byte, media or not. Climbing past ~5 s with no media

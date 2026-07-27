@@ -171,6 +171,11 @@ export interface ViewerStats extends ReassemblerStats {
   // R8 keyframe-stream + reorder observability.
   keyframeStreamsReceived: number;
   reorderGapResyncs: number;
+  // R29 FP6 (docs/34 §6): frames skipped within the GOP's loss budget rather
+  // than forfeiting the rest of the GOP. Its ratio against reorderGapResyncs
+  // is the allowance's whole story — skips are GOPs saved, resyncs are GOPs
+  // lost.
+  framesSkippedWithinAllowance: number;
   reorderKeyframeWaitDrops: number;
   reorderBuffered: number;
   // R9 funnel + stall indicators (docs/13 D5): received → decoded → rendered.
@@ -634,6 +639,12 @@ export class ViewerPipeline {
       // prevent. A relay that does not know the parameter ignores it and
       // serves R19 carriers, which is the degradation we want.
       if (getDeepBuffer()) url.searchParams.set('buffer', String(DVR_BUFFER_MS));
+    }
+    // R29 (docs/34 §5.2): only an explicit opt-DOWN travels. Omitting the
+    // parameter is what lets the fleet default apply, and it keeps the URL
+    // byte-identical against a relay that predates R29.
+    if (this.connectOpts.parityLevel != null) {
+      url.searchParams.set('parity', String(this.connectOpts.parityLevel));
     }
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
@@ -1142,6 +1153,7 @@ export class ViewerPipeline {
       frameHeight: this.lastFrameHeight,
       keyframeStreamsReceived: this.keyframeStreamsReceived,
       reorderGapResyncs: reorder?.gapResyncs ?? 0,
+      framesSkippedWithinAllowance: reorder?.framesSkippedWithinAllowance ?? 0,
       reorderKeyframeWaitDrops: reorder?.keyframeWaitDrops ?? 0,
       reorderBuffered: reorder?.buffered ?? 0,
       receivedFps,

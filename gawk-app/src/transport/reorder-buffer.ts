@@ -38,6 +38,7 @@ import { DECODE_LEAD_MS, getPlayoutMode, getPlayoutOffsetMs, getPlayoutProfile }
 import {
   RESILIENT_DELTA_GAP_GRACE_MS,
   RESILIENT_KEYFRAME_WAIT_MS,
+  getLossAllowanceFrames,
   RESILIENT_MAX_BUFFERED_FRAMES,
   getResilientMode,
 } from './resilient';
@@ -133,6 +134,12 @@ export interface ReorderStats {
   deltasDropped: number;
   // Times a missing delta was declared a gap and we froze to await a keyframe.
   gapResyncs: number;
+  // R29 FP6 (docs/34 §6): unrecovered frames skipped within the GOP's budget
+  // instead of forfeiting the rest of the GOP. Deliberately NOT folded into
+  // gapResyncs — docs/13's playbook reads that as "delta loss is eating GOPs",
+  // and a skip is the opposite outcome: the GOP survived. One counter meaning
+  // two things would retire a working signal.
+  framesSkippedWithinAllowance: number;
   // Frames dropped while waiting for a keyframe (undecodable, aged out).
   keyframeWaitDrops: number;
   // Held (buffered, not yet released) frames right now.
@@ -192,11 +199,17 @@ export class ReorderBuffer {
   // declared delta gap, or on an explicit resync request (decoder backpressure).
   private waitingForKeyframe = true;
 
+  // R29 FP6: unrecovered frames skipped in the CURRENT GOP. Reset at every
+  // released keyframe, which is what makes the budget per-GOP rather than
+  // per-session.
+  private gopSkips = 0;
+
   private stats: ReorderStats = {
     released: 0,
     keyframesReleased: 0,
     deltasDropped: 0,
     gapResyncs: 0,
+    framesSkippedWithinAllowance: 0,
     keyframeWaitDrops: 0,
     buffered: 0,
   };
@@ -367,8 +380,23 @@ export class ReorderBuffer {
         continue;
       }
       // No keyframe yet: wait briefly for a straggler delta; past the grace,
-      // declare a gap and freeze until the next (reliable) keyframe arrives.
+      // either spend one of the GOP's loss allowance (R29 FP6) and carry on,
+      // or declare a gap and freeze until the next (reliable) keyframe.
       if (this.shouldDeclareGap()) {
+        // The allowance is live-edge only: resilient/DVR deltas ride reliable
+        // carriers, so a hole there means something else went wrong and
+        // freezing is still the correct response.
+        const allowance = getResilientMode() ? 0 : getLossAllowanceFrames();
+        if (this.gopSkips < allowance) {
+          this.gopSkips++;
+          this.stats.framesSkippedWithinAllowance++;
+          // Step over the hole and keep decoding. Frames after it reference
+          // data that never arrived, so they carry artifacts until the next
+          // keyframe — the trade docs/34 §6 makes explicit, and the reason
+          // the budget is bounded and operator-set rather than unlimited.
+          this.decodePosition = next;
+          continue;
+        }
         this.stats.gapResyncs++;
         this.waitingForKeyframe = true;
         continue;
@@ -469,7 +497,13 @@ export class ReorderBuffer {
     this.buffer.delete(entry.frameId);
     this.decodePosition = entry.frameId;
     this.stats.released++;
-    if (entry.keyframe) this.stats.keyframesReleased++;
+    if (entry.keyframe) {
+      this.stats.keyframesReleased++;
+      // R29 FP6: a keyframe is a clean reference, so the GOP's loss budget
+      // starts over. This is what makes the allowance per-GOP — a per-session
+      // budget would be spent in the first minute and never help again.
+      this.gopSkips = 0;
+    }
     this.onFrame({
       frameId: entry.frameId,
       keyframe: entry.keyframe,

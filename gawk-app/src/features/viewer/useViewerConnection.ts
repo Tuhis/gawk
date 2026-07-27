@@ -153,6 +153,11 @@ export function useViewerConnection(
   // ?delivery=reliable; the wider reorder/playout profile is applied to the
   // pipeline's context before the session starts.
   deliveryMode = 'live' as ViewerDeliveryMode,
+  // R29 (docs/34 §5.2): an opt-DOWN from the fleet parity default. Undefined
+  // means "take what the fleet serves". Like deliveryMode it is negotiated at
+  // subscribe time, so a change re-runs the session effect as a deliberate
+  // reconnect.
+  parityLevel?: 0 | 1,
 ): ViewerConnectionState {
   // The relay address is a settings value exactly like the delivery mode above:
   // read through a SUBSCRIPTION, not getState(), so changing it re-runs the
@@ -578,12 +583,18 @@ export function useViewerConnection(
     controllerRef.current?.start({
       serverUrl,
       broadcastId,
-      connectOpts: { certHashHex, ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}) },
+      connectOpts: {
+        certHashHex,
+        ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
+        // Only on live edge: the carrier modes are served no parity, so
+        // sending the param there would ask for something that cannot happen.
+        ...(deliveryMode === 'live' && parityLevel != null ? { parityLevel } : {}),
+      },
     });
     return () => {
       controllerRef.current?.stop();
     };
-  }, [useWorker, broadcastId, deliveryMode, serverUrl, certHashHex, resetState]);
+  }, [useWorker, broadcastId, deliveryMode, parityLevel, serverUrl, certHashHex, resetState]);
 
   // R5 Q3 + R12 T2: the playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -615,7 +626,11 @@ export function useViewerConnection(
     const session = new ViewerSession(
       serverUrl,
       broadcastId,
-      { certHashHex, ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}) },
+      {
+        certHashHex,
+        ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
+        ...(deliveryMode === 'live' && parityLevel != null ? { parityLevel } : {}),
+      },
       {
         onDecodedFrame: ({ frame }) => {
           const canvas = canvasRef.current;
@@ -692,6 +707,7 @@ export function useViewerConnection(
     useWorker,
     broadcastId,
     deliveryMode,
+    parityLevel,
     serverUrl,
     certHashHex,
     applyEvent,
