@@ -1,7 +1,12 @@
 node_modules/
 e2e/bin/
-e2e/out/
-e2e/out-browser-broadcast/
+# Every e2e run directory. The harness takes its output dir from
+# GAWK_E2E_OUT_DIR, and CI already uses four different values (out,
+# out-muxer-check, out-telemetry, out-browser-broadcast) — listing them one by
+# one left two of them untracked-but-not-ignored, so running those steps
+# locally the way CI does leaves debris behind. A glob covers the ones that
+# exist and the next one somebody adds.
+e2e/out*/
 .claude/worktrees
 
 .DS_Store
