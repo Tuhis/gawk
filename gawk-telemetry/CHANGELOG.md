@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.2.0...gawk-telemetry-v1.2.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **r28:** stop a broadcast appearing in Live and Recently ended at once ([#171](https://github.com/Tuhis/gawk/issues/171)) ([6a0ae02](https://github.com/Tuhis/gawk/commit/6a0ae028e04bf25a39e066a701ac4c93b29ac5a1))
+
 ## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.1.1...gawk-telemetry-v1.2.0) (2026-07-27)
 
 
