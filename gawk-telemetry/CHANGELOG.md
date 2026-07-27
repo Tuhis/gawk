@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.0.0...gawk-telemetry-v1.1.0) (2026-07-27)
+
+
+### Features
+
+* **r28:** detect the dips a median hides (docs/33 D16, TM10) ([#158](https://github.com/Tuhis/gawk/issues/158)) ([19df933](https://github.com/Tuhis/gawk/commit/19df93323bd94a4df2da765e52c21125725395f8))
+
+
+### Bug Fixes
+
+* **r28:** give the fact-inventory guard its teeth back, and let acceleration narrow a shortfall (docs/33 D17) ([#160](https://github.com/Tuhis/gawk/issues/160)) ([787003a](https://github.com/Tuhis/gawk/commit/787003a86259e51f53dbd91b27da3de4943cacd8))
+
 ## 1.0.0 (2026-07-26)
 
 
