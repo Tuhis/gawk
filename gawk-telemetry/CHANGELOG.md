@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.2.1...gawk-telemetry-v1.2.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* give reliable viewers' audio its own carrier, and make the native broadcaster visible to telemetry ([#173](https://github.com/Tuhis/gawk/issues/173)) ([0758d66](https://github.com/Tuhis/gawk/commit/0758d668948a12e287428f4037dc32e9ba822595))
+
 ## [1.2.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.2.0...gawk-telemetry-v1.2.1) (2026-07-27)
 
 
