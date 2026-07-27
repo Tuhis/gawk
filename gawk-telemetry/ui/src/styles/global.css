@@ -1,0 +1,145 @@
+/*
+  gawk-telemetry dashboard — design tokens.
+
+  Deliberately NOT R6's design system: different origin, different build, no
+  shared tokens, and coupling an ops page to the product's component library
+  buys nothing. It borrows R6's restraint for a functional reason — in an
+  otherwise quiet table, one amber row is unmissable.
+
+  Colour carries exactly two orthogonal channels:
+    * Severity  -> hue.      Green/amber/red. `unknown` gets NO hue, so
+                             "checked, healthy" and "nothing ever reported"
+                             can never be confused.
+    * Lifecycle -> contrast. Live at full contrast, ended recessed. An ended
+                             `bad` keeps its red but cannot out-shout a live
+                             `warn` above it.
+  Neither is ever encoded by colour alone: every state carries a glyph and a
+  word too.
+*/
+
+:root {
+  color-scheme: dark light;
+
+  --bg: #0b0c0e;
+  --bg-raised: #131519;
+  --panel: #16181d;
+  --panel-hover: #1b1e24;
+  --line: #262a32;
+  --line-strong: #333846;
+
+  --text: #e9eaee;
+  --text-dim: #9aa0ab;
+  --text-dimmer: #6b7280;
+
+  --ok: #3fb950;
+  --warn: #e3a83c;
+  --bad: #e5534b;
+  --accent: #58a6ff;
+
+  --ok-bg: rgba(63, 185, 80, 0.12);
+  --warn-bg: rgba(227, 168, 60, 0.12);
+  --bad-bg: rgba(229, 83, 75, 0.12);
+
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-6: 1.5rem;
+
+  --dur: 120ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f8fa;
+    --bg-raised: #fff;
+    --panel: #fff;
+    --panel-hover: #f2f4f7;
+    --line: #e3e6ec;
+    --line-strong: #cdd2dc;
+
+    --text: #14161a;
+    --text-dim: #5a616e;
+    --text-dimmer: #878e9b;
+
+    --ok: #1a7f37;
+    --warn: #9a6600;
+    --bad: #b02a16;
+    --accent: #0b62d6;
+
+    --ok-bg: rgba(26, 127, 55, 0.1);
+    --warn-bg: rgba(154, 102, 0, 0.1);
+    --bad-bg: rgba(176, 42, 22, 0.1);
+
+    --shadow: 0 1px 2px rgba(16, 20, 30, 0.06), 0 4px 12px rgba(16, 20, 30, 0.06);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+  EVERY number on this page is tabular. A proportional digit changes width as
+  values tick, which drags the row it sits in — the single biggest source of a
+  dashboard that cannot be read while it updates.
+*/
+.tnum,
+table,
+input {
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Respect a user who does not want motion; nothing here needs it. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

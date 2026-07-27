@@ -140,80 +140,89 @@ cross-session or cross-broadcast identity, no fingerprinting, and never any
 media. The client never reports the raw joinable broadcast ID — only the
 obfuscated key the relay handed it, which the session token's HMAC binds.
 
-## Developing the dashboard against real data
+## Developing the dashboard
 
-**Do not iterate on the UI through commit → PR → release → deploy.** The page is
-plain HTML/CSS/JS served by Go `embed` with no build step, so the loop is: edit
-`internal/dashboard/assets/`, restart, refresh.
+The dashboard is a **React SPA** (`ui/` — Vite + TypeScript + React + Zustand,
+the same toolchain as `gawk-app`) whose build output is embedded into this
+binary. §4.8.4 originally specified hand-written HTML with no build step; the
+amendment and its reasoning are in docs/33. The constraint that mattered is
+unchanged and still asserted by a test: **nothing is fetched from another
+origin**, so the page works on a port-forward from a laptop with no network.
 
-The useful trick is that a *local* binary can scrape the *production* relay, so
-you develop against real broadcasts without deploying anything:
+**Do not iterate on the UI through commit → PR → release → deploy.** Point the
+dev server at a *real* backend and you get hot reload against live broadcasts:
 
 ```sh
-# 1. one relay pod's ops port, forwarded (any pod; each answers for its own)
+# 1. forward the deployed read listener
+kubectl -n production port-forward svc/gawk-telemetry-read 8081:8081 &
+
+# 2. dev server, proxying /live, /v1 and /mcp to it. The proxy injects the
+#    basic-auth header so the browser never prompts and no credential is typed
+#    into a page that is being hot-reloaded.
+cd ui
+npm ci
+GAWK_TM_AUTH="admin:$(kubectl -n production get secret gawk-fleet \
+  -o jsonpath='{.data.telemetryReadPassword}' | base64 -d)" npm run dev
+```
+
+Vite binds IPv6 first, so use **`http://localhost:5174`** — `127.0.0.1` will be
+refused.
+
+Prefer a self-contained backend? Run one locally and point it at a forwarded
+relay's ops port; you get real relay-side rows, but no client-side ones (real
+browsers report to the deployed ingest, not to yours):
+
+```sh
 kubectl -n production port-forward \
   pod/$(kubectl -n production get pod -l app.kubernetes.io/name=gawk-server \
         -o jsonpath='{.items[0].metadata.name}') 12112:2112 &
 
-# 2. a local service pointed at it. -relay-addrs bypasses the headless-Service
-#    lookup, which only resolves in-cluster.
 go run ./cmd/gawk-telemetry \
   -telemetry-key $(printf '0%.0s' {1..64}) \
+  -stats-key     $(printf 'ab%.0s' {1..32}) \
   -data-dir /tmp/gawk-tm-dev \
-  -ingest-addr 127.0.0.1:18080 \
-  -read-addr   127.0.0.1:18081 \
-  -relay-addrs 127.0.0.1:12112 \
-  -scrape-interval 2s
-
-open http://127.0.0.1:18081        # no basic auth: none is configured
+  -ingest-addr 127.0.0.1:18080 -read-addr 127.0.0.1:18081 \
+  -relay-addrs 127.0.0.1:12112 -scrape-interval 2s
 ```
 
-What you get and what you don't:
-
-| | |
-|---|---|
-| relay-side data (broadcasts, viewers, counters) | **real**, from production |
-| client-side data (fps, stalls, verdicts) | **absent** — browsers report to the deployed ingest, not to yours |
-| the telemetry key | irrelevant here; nothing verifies a token because nothing posts one |
-
-The relay side alone is enough for most layout work — cards, grouping, severity
-sorting, lifecycle. For client-side rows, either point one browser at your local
-ingest (`config.telemetryUrl` in the app's `config.js`) or replay a stored
-session into `-data-dir`.
-
-A synthetic snapshot is often faster than either. The page holds no framework:
-stub `fetch` in the devtools console, call `poll()` — both it and `render()` are
-globals — and drive any shape you like:
-
-```js
-const real = window.fetch;
-window.fetch = async (u, o) => String(u).endsWith('live')
-  ? new Response(JSON.stringify({ atMs: Date.now(), live: [/* … */], ended: [] }))
-  : real(u, o);
-await poll();
-```
-
-**One trap worth knowing:** the page's `setInterval` is throttled to ~1/min by
-Chrome in a **background tab**, so a dashboard you left in another tab stops
-updating and a poll-driven test appears to hang. Drive `poll()` directly rather
-than waiting on the timer.
-
-To work on the find-a-stream box you also need a stats key — any 32 bytes will
-do locally, as long as you compute the digests with the same one:
+`-relay-addrs` bypasses the headless-Service lookup, which only resolves
+in-cluster. With `-stats-key` set the find-a-stream box appears; any 32 bytes
+work locally as long as you compute digests with the same one:
 
 ```sh
-go run ./cmd/gawk-telemetry ... -stats-key $(printf 'ab%.0s' {1..32})
 curl -sX POST -H 'Content-Type: application/json' \
      -d '{"code":"ABC234"}' http://127.0.0.1:18081/v1/resolve
 # {"broadcastKey":"69a445b44f18"}   <- give a card this key to test highlighting
 ```
 
-Against the real cluster, use the fleet's actual key, which is what the relay
-obfuscates `/statusz` with:
+### Building the bundle
 
 ```sh
-kubectl -n production get secret gawk-fleet -o jsonpath='{.data.statsKey}' | base64 -d
+cd ui && npm ci && npm run build     # -> ../internal/dashboard/dist
 ```
+
+**`go build` never depends on npm.** `dist/` carries one committed file so
+`//go:embed dist` always compiles; a binary built without the bundle serves a
+short "UI not built" page and its API and MCP endpoints are unaffected. CI
+builds and tests the UI in its own job, and the release image builds it in its
+own Docker stage — so nothing generated is committed.
+
+Asset filenames are **stable, not content-hashed**: the page is served
+`no-store` (an ops page showing yesterday's bundle after a redeploy is a page
+that lies about what it is measuring), which removes the only thing hashing
+would buy, and stable names mean a rebuild overwrites in place.
+
+### Two traps worth knowing
+
+- **Chrome throttles a background tab's timers to ~1/min.** A dashboard left in
+  another tab stops updating, and a poll-driven test appears to hang. It is also
+  why a backgrounded *viewer* reports `renderedFps: 0` while decoding fine — the
+  timeline makes that visible rather than mysterious.
+- **The layout must not move while values tick.** The table is
+  `table-layout: fixed` with a percentage colgroup, every number is
+  `tabular-nums` at a fixed decimal count, and every optional element has a
+  reserved slot. A `ch`-based colgroup summed past the container once and pushed
+  the last column off-screen; percentages are what guarantee it fits.
 
 ## Build & test
 

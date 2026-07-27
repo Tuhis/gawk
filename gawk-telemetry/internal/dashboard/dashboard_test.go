@@ -21,7 +21,7 @@ func serve(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func get(t *testing.T, srv *httptest.Server, path string) (int, string) {
+func get(t *testing.T, srv *httptest.Server, path string) (int, string, http.Header) {
 	t.Helper()
 	resp, err := http.Get(srv.URL + path)
 	if err != nil {
@@ -29,13 +29,29 @@ func get(t *testing.T, srv *httptest.Server, path string) (int, string) {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(b)
+	return resp.StatusCode, string(b), resp.Header
+}
+
+// built reports whether the Vite bundle is present. `go build` deliberately
+// does not depend on npm, so a fresh clone compiles and serves a "not built"
+// page — and the asset-level tests below have nothing to assert against.
+func built() bool {
+	_, err := fs.Stat(Assets(), "index.html")
+	return err == nil
+}
+
+func requireBuilt(t *testing.T) {
+	t.Helper()
+	if !built() {
+		t.Skip("dashboard bundle not built (cd ui && npm ci && npm run build)")
+	}
 }
 
 func TestServesTheEmbeddedPage(t *testing.T) {
+	requireBuilt(t)
 	srv := serve(t)
-	for _, path := range []string{"/", "/index.html", "/app.js"} {
-		status, body := get(t, srv, path)
+	for _, path := range []string{"/", "/index.html", "/assets/app.js", "/assets/app.css"} {
+		status, body, _ := get(t, srv, path)
 		if status != http.StatusOK {
 			t.Errorf("%s status = %d, want 200", path, status)
 		}
@@ -45,36 +61,80 @@ func TestServesTheEmbeddedPage(t *testing.T) {
 	}
 }
 
-// TM8's hard constraint: NO external asset fetch. The dashboard must work on a
-// port-forward from a laptop with no network, so nothing may reference a CDN,
-// a font service or any other origin. Asserted by scanning what is actually
-// shipped rather than by trusting the author.
+// A deep link that is not a real asset must land on the document so the client
+// can route it, rather than on a 404.
+func TestUnknownPathsServeTheDocument(t *testing.T) {
+	requireBuilt(t)
+	srv := serve(t)
+	_, index, _ := get(t, srv, "/")
+	for _, path := range []string{"/session/abc", "/b/1a2b3c", "/anything"} {
+		status, body, _ := get(t, srv, path)
+		if status != http.StatusOK || body != index {
+			t.Errorf("%s status = %d, served the document = %v; want the SPA fallback",
+				path, status, body == index)
+		}
+	}
+}
+
+// An ops page showing yesterday's bundle after a redeploy is a page that lies
+// about what it is measuring. This is also why the build emits STABLE asset
+// names: content hashing exists to make far-future caching safe, and there is
+// no caching here to make safe.
+func TestAssetsAreNotCached(t *testing.T) {
+	srv := serve(t)
+	for _, path := range []string{"/", "/index.html"} {
+		_, _, h := get(t, srv, path)
+		if cc := h.Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+			t.Errorf("%s Cache-Control = %q, want no-store", path, cc)
+		}
+	}
+}
+
+// TM8's hard constraint, and the one §4.8.4 decision the SPA does NOT relax:
+// no external asset fetch. The page must work on a port-forward from a laptop
+// with no network.
+//
+// Asserted where it actually matters — the document, which is the only place a
+// browser can be told to go and get something before any of our code runs. A
+// bundled React does contain absolute URLs (XML namespace identifiers, and a
+// react.dev link inside an error message), and none of those is a fetch, so a
+// blanket regex over the bundle would fail on things that are not the hazard.
 func TestNoExternalAssetReferences(t *testing.T) {
-	external := regexp.MustCompile(`(?i)(https?:)?//[a-z0-9.-]+\.[a-z]{2,}`)
-	err := fs.WalkDir(Assets(), ".", func(path string, d fs.DirEntry, err error) error {
+	requireBuilt(t)
+	b, err := fs.ReadFile(Assets(), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(b)
+
+	// Every src/href in the document must be relative.
+	refs := regexp.MustCompile(`(?i)(?:src|href)\s*=\s*"([^"]+)"`).FindAllStringSubmatch(html, -1)
+	if len(refs) == 0 {
+		t.Fatal("the document references no assets at all; the bundle is not wired in")
+	}
+	for _, m := range refs {
+		if strings.HasPrefix(m[1], "http://") || strings.HasPrefix(m[1], "https://") ||
+			strings.HasPrefix(m[1], "//") {
+			t.Errorf("document references an absolute URL %q", m[1])
+		}
+	}
+
+	// And nothing anywhere in the shipped output may reach a package registry
+	// or font service, which is what a stray CDN import would look like.
+	err = fs.WalkDir(Assets(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		b, err := fs.ReadFile(Assets(), path)
+		body, err := fs.ReadFile(Assets(), p)
 		if err != nil {
 			return err
 		}
-		for _, line := range strings.Split(string(b), "\n") {
-			// Comments may legitimately mention a URL-ish thing; what matters
-			// is that nothing FETCHES one.
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
-				strings.HasPrefix(trimmed, "<!--") {
-				continue
-			}
-			if m := external.FindString(line); m != "" {
-				t.Errorf("%s references an external origin %q:\n  %s", path, m, trimmed)
-			}
-		}
-		// Nothing may be loaded from a package registry either.
-		for _, forbidden := range []string{"cdn.", "unpkg", "jsdelivr", "googleapis", "@import url("} {
-			if strings.Contains(string(b), forbidden) {
-				t.Errorf("%s references %q", path, forbidden)
+		for _, forbidden := range []string{
+			"cdn.jsdelivr", "unpkg.com", "cdnjs.", "fonts.googleapis", "fonts.gstatic",
+			"esm.sh", "@import url(http",
+		} {
+			if strings.Contains(string(body), forbidden) {
+				t.Errorf("%s references %q", p, forbidden)
 			}
 		}
 		return nil
@@ -84,165 +144,28 @@ func TestNoExternalAssetReferences(t *testing.T) {
 	}
 }
 
-// Severity must never be encoded by colour alone: a glyph AND a text label
-// have to be in the DOM for every state, so the page survives a colour-blind
-// reader, a greyscale screenshot pasted into a chat, and the CSS failing to
-// load.
-func TestSeverityIsNeverColourOnly(t *testing.T) {
-	b, err := fs.ReadFile(Assets(), "app.js")
-	if err != nil {
-		t.Fatal(err)
+// The Go build must never depend on npm having been run. A fresh clone
+// compiles, serves, and says plainly what is missing — rather than failing to
+// build, or serving a blank page that reads as a bug.
+func TestServesAnHonestPageWhenTheBundleIsMissing(t *testing.T) {
+	if built() {
+		t.Skip("bundle is present; this covers the fresh-clone path")
 	}
-	js := string(b)
-	// A glyph per state...
-	for _, state := range []string{"ok", "warn", "bad", "unknown"} {
-		if !strings.Contains(js, state+":") {
-			t.Errorf("no glyph mapping for severity %q", state)
-		}
-	}
-	// ...and the state WORD rendered alongside it.
-	if !strings.Contains(js, "GLYPH[s] + ' ' + s") {
-		t.Error("severity is not rendered as glyph + word; colour would be carrying it alone")
-	}
-	// Lifecycle is labelled in words too, and in the past tense once ended.
-	if !strings.Contains(js, "'ended '") || !strings.Contains(js, "'LIVE'") {
-		t.Error("lifecycle is not labelled in words")
-	}
-}
-
-// Colour carries exactly two channels: severity → hue, lifecycle → contrast.
-// An ended `bad` must keep its red (you can see last night went badly) while
-// recession stops it out-shouting a live `warn` above it.
-func TestColourChannelsAreSeparate(t *testing.T) {
-	b, err := fs.ReadFile(Assets(), "index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	css := string(b)
-	if !strings.Contains(css, ".sev-warn") || !strings.Contains(css, ".sev-bad") {
-		t.Error("no severity hue classes")
-	}
-	// ok never wears a PROBLEM hue...
-	if strings.Contains(css, ".sev-ok { color: var(--warn)") || strings.Contains(css, ".sev-ok { color: var(--bad)") {
-		t.Error("ok spends a problem hue")
-	}
-	// ...but it is not the same colour as unknown either. "We checked and it is
-	// healthy" and "nothing has ever reported" are different claims, and the
-	// page's cardinal rule is that the second must never read as the first.
-	// They shared one grey until 2026-07-27.
-	if !strings.Contains(css, ".sev-ok { color: var(--ok); }") {
-		t.Error("ok does not carry its own hue")
-	}
-	if !strings.Contains(css, ".sev-unknown { color: var(--dim); }") {
-		t.Error("unknown should stay neutral grey — it is the absence of an answer")
-	}
-	// Both themes define it, or one of them renders ok as an unstyled default.
-	if strings.Count(css, "--ok:") < 2 {
-		t.Error("--ok is not defined for both the dark and light themes")
-	}
-	// Lifecycle rides contrast (opacity), NOT hue suppression.
-	if !strings.Contains(css, ".ended") || !strings.Contains(css, "opacity") {
-		t.Error("ended rows are not recessed by contrast")
-	}
-	if strings.Contains(css, ".ended .sev-bad { color:") {
-		t.Error("an ended row's severity hue is overridden; it must keep its red")
-	}
-}
-
-// The page polls one endpoint rather than holding a connection: no connection
-// state to lose, survives any proxy, debuggable with curl.
-func TestPagePollsRatherThanStreams(t *testing.T) {
-	b, _ := fs.ReadFile(Assets(), "app.js")
-	js := string(b)
-	if !strings.Contains(js, "setInterval(poll") {
-		t.Error("the page does not poll")
-	}
-	for _, streaming := range []string{"EventSource", "new WebSocket"} {
-		if strings.Contains(js, streaming) {
-			t.Errorf("the page uses %s; polling was chosen deliberately", streaming)
-		}
-	}
-	// A failed poll must keep the last good state and SAY the feed is stale,
-	// rather than blanking the page.
-	if !strings.Contains(js, "feed unavailable") {
-		t.Error("a failed poll does not surface as a stale feed")
-	}
-}
-
-// The page rebuilds every card on each 2 s poll, which was snapping an expanded
-// card shut under whoever was reading it — a session table takes longer than
-// two seconds to read, so the detail view was effectively unreachable.
-//
-// This is a SOURCE-level guard, and deliberately a shallow one: this module has
-// no JS runtime in its harness, so nothing here executes the page. It exists to
-// fail loudly if the mechanism is deleted or the naming drifts. The behaviour
-// itself was verified in a real browser against the served asset (expand
-// survives repeated polls; a collapsed `bad` card stays collapsed; the override
-// dissolves once the default agrees, so a recovered broadcast follows severity
-// again; the map is pruned when a broadcast ages out).
-func TestExpandedCardsSurviveARefresh(t *testing.T) {
-	b, _ := fs.ReadFile(Assets(), "app.js")
-	js := string(b)
-
-	// The state is carried across the rebuild...
-	if !strings.Contains(js, "captureOpenState") {
-		t.Error("nothing reads the open/collapsed state off the outgoing DOM before the rebuild")
-	}
-	if !strings.Contains(js, "openOverrides") {
-		t.Error("no store for the operator's expand/collapse choices")
-	}
-	// ...as a DISAGREEMENT with the severity default, not as raw open-state.
-	// Storing the latter would pin a card open long after its fault cleared,
-	// defeating the severity-driven default the whole page is built around.
-	if !strings.Contains(js, "data-default") && !strings.Contains(js, "dataset.default") {
-		t.Error("the default is not recorded on the card, so an override cannot be told from an untouched card")
-	}
-	// And it is bounded: one entry per broadcast that is still on the page.
-	if !strings.Contains(js, "openOverrides.delete") {
-		t.Error("the override map is never pruned")
-	}
-}
-
-// The find-a-stream box hands the server a join credential, so the shape of the
-// request is a security property, not a style choice: a code in a query string
-// lands in browser history, the Referer header and every proxy log in between.
-//
-// Source-level guard, like the one above; the behaviour (resolve, highlight,
-// survive a rebuild, hide itself when the server answers 501) was verified in a
-// real browser against the served asset.
-func TestFindByCodeNeverPutsTheCodeInAURL(t *testing.T) {
-	b, _ := fs.ReadFile(Assets(), "app.js")
-	js := string(b)
-
-	if !strings.Contains(js, "v1/resolve") {
-		t.Fatal("the page does not call the resolve endpoint")
-	}
-	if !strings.Contains(js, "method: 'POST'") {
-		t.Error("resolve is not called with POST; the code would travel in the URL")
-	}
-	// The give-away shapes of a code pasted into a URL.
-	for _, bad := range []string{"v1/resolve?", "resolve?code", "encodeURIComponent(code)"} {
-		if strings.Contains(js, bad) {
-			t.Errorf("found %q: the broadcast code must never enter a query string", bad)
-		}
-	}
-	// And the resolved value is the digest the page already shows everywhere,
-	// never the code itself, held in page state.
-	if strings.Contains(js, "foundCode") {
-		t.Error("the raw code is being held in page state; keep the digest instead")
-	}
-}
-
-// The dashboard is never cached: an ops page showing yesterday's bundle after
-// a redeploy is a page that lies about what it is measuring.
-func TestAssetsAreNotCached(t *testing.T) {
 	srv := serve(t)
-	resp, err := http.Get(srv.URL + "/index.html")
-	if err != nil {
-		t.Fatal(err)
+	status, body, _ := get(t, srv, "/")
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
 	}
-	defer resp.Body.Close()
-	if resp.Header.Get("Cache-Control") != "no-store" {
-		t.Errorf("Cache-Control = %q, want no-store", resp.Header.Get("Cache-Control"))
+	if !strings.Contains(body, "not built") {
+		t.Error("the page does not say the UI is unbuilt")
+	}
+}
+
+// The committed placeholder is what makes the above true. If it is ever
+// removed, `//go:embed dist` stops compiling on a clone that has not run npm —
+// a failure that would look like a broken checkout rather than a missing step.
+func TestThePlaceholderIsCommitted(t *testing.T) {
+	if _, err := fs.Stat(Assets(), "README.md"); err != nil {
+		t.Error("dist/README.md is gone; //go:embed dist will not compile without a build")
 	}
 }

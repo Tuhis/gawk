@@ -1,0 +1,56 @@
+.form {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.input {
+  width: 6.5rem;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 0.25rem 0.5rem;
+}
+
+.input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+.button,
+.clear {
+  font-size: var(--fs-sm);
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.button:hover,
+.clear:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.clear {
+  border-color: transparent;
+  color: var(--text-dimmer);
+}
+
+/* Reserved width: messages appear and disappear, and the header must not
+   resize under them. */
+.message {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  min-width: 12ch;
+}

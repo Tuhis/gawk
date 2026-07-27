@@ -5,10 +5,12 @@
 // ordering, the live/ended grouping and the four-state health model all follow
 // from that one sentence.
 //
-// Assets are embedded (Go `embed`) with **no build step and no external asset
-// fetch** — the page must work on a port-forward from a laptop with no
-// network. That is asserted by a test that loads it with nothing else
-// reachable.
+// The page is a React SPA built by `ui/` and embedded here (Go `embed`). §4.8.4
+// originally specified hand-written HTML with no build step; the amendment and
+// its reasoning are recorded in docs/33. What did NOT change is the constraint
+// that actually mattered: **no external asset fetch**. Every byte the page needs
+// is served by this binary, so it still works on a port-forward from a laptop
+// with no network — asserted by a test over the built output, not assumed.
 //
 // It is the NON-droppable half of the item (D14): a live operational view is
 // the thing an owner reaches for at 21:00 when a friend says "it's
@@ -18,68 +20,105 @@ package dashboard
 
 import (
 	"embed"
+	"io"
 	"io/fs"
 	"net/http"
+	"path"
 	"strings"
 )
 
-//go:embed assets
-var assets embed.FS
+// The directory carries one committed file (README.md) so this compiles on a
+// fresh clone: `//go:embed` fails outright against a directory with no matching
+// files, which would make `go build ./...` depend on someone having run npm.
+//
+//go:embed dist
+var dist embed.FS
+
+const notBuilt = `<!doctype html><meta charset="utf-8"><title>gawk telemetry</title>
+<body style="font:14px system-ui;padding:2rem;max-width:44rem">
+<h1>Dashboard UI not built</h1>
+<p>This binary was compiled without the dashboard bundle. The Go build does not
+depend on npm, so that is a normal state for a fresh clone — but it means there
+is no page to serve.</p>
+<pre>cd gawk-telemetry/ui &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+<p>The read API and MCP endpoints on this listener are unaffected.</p>
+`
 
 // Handler serves the dashboard's static assets. The `/live` endpoint it polls
 // is served by the read API on the same listener — both are on the NON-PUBLIC
 // listener (D14): only ingest is routed publicly, because the read side
 // aggregates every broadcast on the fleet.
 func Handler() (http.Handler, error) {
-	sub, err := fs.Sub(assets, "assets")
+	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
 		return nil, err
 	}
-	// Routed explicitly rather than through http.FileServer: the FileServer
-	// canonicalizes "/index.html" back to "./", which against a handler that
-	// rewrites "/" to "/index.html" is an infinite redirect. There are two
-	// files; naming them is clearer than fighting the canonicalizer.
+	_, statErr := fs.Stat(sub, "index.html")
+	built := statErr == nil
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// No caching: an ops page showing yesterday's bundle after a redeploy
-		// is a page that lies about what it is measuring.
+		// is a page that lies about what it is measuring. That also removes the
+		// only thing content-hashed filenames would have bought, which is why
+		// the build emits stable names instead.
 		w.Header().Set("Cache-Control", "no-store")
 
-		name := strings.TrimPrefix(r.URL.Path, "/")
-		// The page is deep-linkable by HASH route (matching the main app's
-		// convention), so any unrecognized path serves the same document and
-		// the client routes on the fragment — which the server never sees.
-		if name == "" || name == "index.html" || !known(name) {
-			serveFile(w, sub, "index.html", "text/html; charset=utf-8")
+		if !built {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, notBuilt)
 			return
 		}
-		serveFile(w, sub, name, contentType(name))
+
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name == "" || name == "." {
+			name = "index.html"
+		}
+		if b, err := fs.ReadFile(sub, name); err == nil {
+			w.Header().Set("Content-Type", contentType(name))
+			_, _ = w.Write(b)
+			return
+		}
+		// SPA fallback: a path that is not a real asset serves the document, so
+		// a deep link resolves client-side. The routes are hash-based (matching
+		// the main app's convention) and the server never sees a fragment, but
+		// the fallback costs nothing and lands a stray URL somewhere useful
+		// instead of on a 404.
+		b, err := fs.ReadFile(sub, "index.html")
+		if err != nil {
+			http.Error(w, "dashboard asset missing", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(b)
 	}), nil
 }
 
-func known(name string) bool {
-	return name == "index.html" || name == "app.js"
-}
-
 func contentType(name string) string {
-	if strings.HasSuffix(name, ".js") {
+	switch {
+	case strings.HasSuffix(name, ".html"):
+		return "text/html; charset=utf-8"
+	case strings.HasSuffix(name, ".js"):
 		return "text/javascript; charset=utf-8"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(name, ".json"):
+		return "application/json"
+	case strings.HasSuffix(name, ".woff2"):
+		return "font/woff2"
+	default:
+		return "application/octet-stream"
 	}
-	return "text/html; charset=utf-8"
 }
 
-func serveFile(w http.ResponseWriter, sub fs.FS, name, ctype string) {
-	b, err := fs.ReadFile(sub, name)
-	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", ctype)
-	_, _ = w.Write(b)
-}
-
-// Assets exposes the embedded files, so a test can assert the page references
-// nothing it does not ship.
+// Assets exposes the embedded files, so a test can assert what actually ships
+// rather than trusting the author — most importantly that nothing in it reaches
+// for another origin at runtime.
 func Assets() fs.FS {
-	sub, _ := fs.Sub(assets, "assets")
+	sub, err := fs.Sub(dist, "dist")
+	if err != nil {
+		return dist
+	}
 	return sub
 }

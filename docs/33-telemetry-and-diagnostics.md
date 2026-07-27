@@ -807,9 +807,55 @@ at them.
 
 #### 4.8.4 Presentation
 
-Plain HTML + a small vanilla JS file, embedded in the binary (Go `embed`),
-**no build step and no external asset fetch** — the dashboard must work on a
-port-forward from a laptop with no network.
+**Amended 2026-07-27 (owner decision): the page is a React SPA (`ui/`), built
+by Vite and embedded in the binary.** The original decision is preserved below
+because the reasoning still governs — what changed is one half of it.
+
+The locked text said *"no build step and no external asset fetch — the
+dashboard must work on a port-forward from a laptop with no network."* Those
+are two claims with very different weight, and only the first was traded:
+
+- **"No external asset fetch" is load-bearing and unchanged.** A built bundle
+  embedded in the binary satisfies it identically — every byte still comes from
+  this process. It is asserted against the built output, not assumed: the
+  document may reference only relative paths, and nothing shipped may name a
+  package registry or font service.
+- **"No build step" was the convenience half**, and it stopped paying. §4.8.1
+  designs three deep-linkable views with per-row sparklines; one was built, and
+  the remaining two are where hand-rolled DOM gets expensive. The evidence was
+  already on the record: both UI defects found on first deployment — cards
+  collapsing on every poll, and the find-marker vanishing — were the same
+  defect, `root.textContent = ''` followed by a full rebuild, and each was fixed
+  by hand-writing state preservation that a reconciling renderer provides for
+  free. A third view would have meant hand-rolling a router too.
+
+What the SPA is **not** allowed to change: the health model, the severity and
+lifecycle channels, the never-green rule for absent evidence, and the polling
+cadence. All of it carries over, and the tests moved with it — the two Go
+source-level guards written when this module had no JS runtime are now real
+component tests.
+
+Rejected alternative — **a separate frontend service** (own image, chart and
+nginx, mirroring `gawk-app`). It buys independent deployability, which for an
+ops page shipping in lockstep with its own backend is close to worthless, and
+it costs three things that are not: basic auth currently wraps the dashboard,
+`/v1/*` and `/mcp` in one place and would have to move to the Ingress; the page
+would need CORS or Ingress-level routing to reach its own API; and
+`kubectl port-forward svc/gawk-telemetry-read 8081:8081` would stop being
+sufficient — which is the workflow this section exists to protect. Revisit if
+the UI ever needs to deploy on its own cadence.
+
+Operational consequences, recorded so they are not rediscovered: `go build`
+never depends on npm (a committed placeholder keeps `//go:embed dist`
+compilable, and a bundle-less binary serves an honest "UI not built" page);
+assets use stable filenames rather than content hashes, because the page is
+served `no-store` and hashing would buy nothing; and CI builds the UI in its own
+job while the release image builds it in its own Docker stage, so nothing
+generated is committed.
+
+*Superseded original:* Plain HTML + a small vanilla JS file, embedded in the
+binary (Go `embed`), **no build step and no external asset fetch** — the
+dashboard must work on a port-forward from a laptop with no network.
 
 It is deliberately **not** part of R6's design system: different origin,
 different build, no shared tokens, and coupling an ops page to the product's

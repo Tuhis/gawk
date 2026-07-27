@@ -266,6 +266,40 @@ jobs:
         env:
           CGO_ENABLED: "1"
 
+  # The dashboard SPA (gawk-telemetry/ui). Its own job, mirroring the `app` job:
+  # a TypeScript build is not a Go build, and coupling them would make a lint
+  # failure look like a relay failure.
+  #
+  # Nothing is handed to the `telemetry` job: the Go build deliberately does not
+  # depend on npm, and a clone without a bundle compiles and serves a "UI not
+  # built" page rather than failing. The release image builds the bundle in its
+  # own stage (deploy/Dockerfile), so CI proves the UI is sound and the image
+  # build is what ships it.
+  telemetry-ui:
+    runs-on: ioio-k8s
+    defaults:
+      run:
+        working-directory: gawk-telemetry/ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gawk-telemetry/ui/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      # `npm run build` is the only real typecheck: the root tsconfig is
+      # solution-style, so a bare `tsc --noEmit` passes vacuously, and vitest
+      # strips types rather than checking them.
+      - run: npm run build
+      # The one §4.8.4 constraint the SPA does not relax: nothing may be fetched
+      # from another origin at runtime. Asserted against what actually ships.
+      - name: the built page fetches nothing off-origin
+        working-directory: gawk-telemetry
+        run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
+
   tidy:
     runs-on: ioio-k8s
     steps:
