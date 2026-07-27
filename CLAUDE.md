@@ -95,13 +95,14 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
 ## Directory structure
 - `README.md` — project overview, quickstart, and the consolidated gotcha
   list (keep it in sync when a new gotcha lands in `docs/`)
-- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Ten open entries (plus a
+- `BUGS.md` — known, confirmed, not-yet-fixed bugs. Nine open entries (plus a
   lint-hygiene note) as of 2026-07-26: two Safari viewer stalls (keyframe
   delivery stops; a dead-session freeze that now recovers but whose WebKit
   root cause is still unknown), a misleading "Streamer offline" join-reject
-  card, a broadcaster stuck on LIVE after a silent worker death, the
-  viewer `avSkewMs` metric over-reporting on long/stressed sessions (the audio
-  itself is fine), and three **iPhone-native-fullscreen-only** entries from the
+  card, a broadcaster stuck on LIVE after a silent worker death (the viewer
+  `avSkewMs` metric's over-reporting on long/stressed sessions, finding 12
+  below, was root-caused and fixed 2026-07-26 — no longer a BUGS.md entry),
+  and three **iPhone-native-fullscreen-only** entries from the
   first R22 on-device pass (docs/27 findings 3–5, diagnosed by code reading:
   the ~100 ms MSE cushion that structurally cannot grow, no stall watchdog on
   the presentation element, and MMS parking manufacturing buffered holes while
@@ -230,9 +231,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   pacing since 2026-07-20 — docs/20 field finding 4); N1–N6 chunks; designed 2026-07-15, refreshed
   2026-07-19 post-R16–R20; **N1–N6 implemented 2026-07-19, automated gates
   green in all three modules; graduated from experimental 2026-07-23 after
-  the owner confirmed reliable playback on real hardware — twelve field
-  findings, eleven fixed, finding 12 open; the formal docs/20 verification
-  pass still needs a full re-run** — deviations
+  the owner confirmed reliable playback on real hardware — thirteen field
+  findings, all thirteen fixed (finding 13 moved the skew measurement to the
+  listener 2026-07-26 and root-caused finding 12 with it);
+  the formal docs/20 verification pass still needs a full re-run** — deviations
   in the doc's "Implementation status"),
   `docs/21-ios-video-fullscreen.md` for R16 (iOS native fullscreen:
   iPhone has **no Element Fullscreen API** — today's viewer fullscreen
@@ -515,7 +517,8 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   reads worse than plain live-edge side-by-side, or added latency > 1.5×
   median gap ⇒ remove/confine — documented rejection is valid completion).
   Chunks **LI1–LI4**; LI3's hardware leg + LI4 sequenced after R15's
-  pending re-verification, `avSkewMs` finding 12 being open),
+  pending re-verification (its formal docs/20 pass, not `avSkewMs`
+  finding 12, which is fixed)),
   `docs/33-telemetry-and-diagnostics.md` for R28 (advanced diagnostics &
   telemetry: **designed + TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) +
   TM11 (configured target) 2026-07-27, automated gates
@@ -525,9 +528,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   Non-goals set — "client→server metrics push… revisit if remote
   troubleshooting of friends' sessions becomes routine". It became routine:
   R15's twelve field findings, R19/R21/R22's cycles all ran on hand-shuttled
-  Copy-diagnostics blobs, and the ones still open need *history*
-  (`avSkewMs` finding 12 manifests on **long** sessions, which is why nobody
-  has the data). **Adds no measurement layer** — `ViewerStats` (~80 fields),
+  Copy-diagnostics blobs, and open findings elsewhere need *history* that a
+  single diagnostics snapshot can't give (the pattern `avSkewMs` finding 12
+  needed before it was root-caused 2026-07-26 is why nobody had the data
+  earlier). **Adds no measurement layer** — `ViewerStats` (~80 fields),
   `BroadcastStats`, `engine.Stats`, `RegistryStats`/`subscriberDetails` and
   `lib/diagnostics.ts` already exist; R28 is a pipe, a store and a query
   surface. Owner-locked: an **optional `gawk-telemetry` service, files-first**
@@ -1250,13 +1254,18 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    container/chart/CI-deploy component — binaries you run on your own PC.
 20. System audio — **designed 2026-07-15 (N1–N6); refreshed 2026-07-19
    against R16–R20; N1–N6 implemented 2026-07-19, automated gates green;
-   twelve hardware field findings — findings 1–8 detailed below, plus 9
+   thirteen hardware field findings — findings 1–8 detailed below, plus 9
    (`avSkewMs` measured buffering depth + estimator lag, not lip-sync —
    fixed by measuring at presentation and snapping the mapping on a
    re-anchor), 10 (a stale flush left Deep-buffer audio ~2.8 s behind), 11
-   (toggling paced playback left audio behind), and the still-open 12
-   (`avSkewMs` still over-reports on long/stressed sessions — a metric
-   artifact; audio itself is fine); eleven fixed 2026-07-19→07-24, and the
+   (toggling paced playback left audio behind), 12
+   (`avSkewMs` over-reports on long/stressed sessions — a metric
+   artifact; audio itself is fine), and 13 (audio settled ~`outputLatency`
+   behind the picture while `avSkewMs` read zero — the skew was measured at
+   the worklet's write position instead of the speaker, and the broadcaster
+   anchored audio timestamps at encoder output; measuring at the listener
+   2026-07-26 fixed both 13 and 12, see docs/20 field findings 12 + 13);
+   all thirteen fixed 2026-07-19→07-26, and the
    owner reports audio playing reliably on real hardware as of 2026-07-23 —
    which is what graduated it from experimental (below), though the formal
    docs/20 verification pass reached only step 3 of 9 (2026-07-24) and still

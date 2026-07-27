@@ -4,18 +4,20 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 2026-07-15; **design refreshed 2026-07-19** against everything landed since —
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
-**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-24 produced
-twelve field findings — eleven fixed, one (finding 12) open — including the
+**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-26 produced
+thirteen field findings — all fixed — including the
 Decision 10 inversion to **video-master** A/V sync, the Decision 12 reversal
 taking audio back off the R19 reliable carrier, a live-edge audio
 buffer-depth floor, honest jitter-buffer depth accounting with worklet-stall
 recovery (finding 7 — the crackle-then-silence fix), and the two re-anchor
 fixes — leaving Deep buffer (finding 10) and toggling paced playback
-(finding 11), both reproduced against the homelab; **finding 12** — `avSkewMs`
-still over-reports on long/stressed sessions — is a metric bug (audio is
-actually near-correct), left open pending a clean drift run; the manual
-verification pass reached step 3 of 9 (2026-07-24) then stopped on test-machine
-performance trouble** — see [Status](#status)). Adds the broadcaster's
+(finding 11), both reproduced against the homelab; **finding 13** (2026-07-26)
+moved the skew measurement to the listener and root-caused **finding 12**'s
+long-session `avSkewMs` over-report with it — a metric bug throughout, audio
+was actually near-correct — so a long-session capture confirming finding 12,
+and the manual verification pass that reached step 3 of 9 (2026-07-24) then
+stopped on test-machine performance trouble, both still need a re-run** —
+see [Status](#status)). Adds the broadcaster's
 **system audio** to the
 stream as an **experimental, default-off** feature: WebCodecs `AudioEncoder`
 (Opus) on the broadcaster, one Opus packet per WebTransport datagram through

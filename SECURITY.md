@@ -1,9 +1,10 @@
 # Security Policy
 
 `gawk` is a self-hosted, low-latency game-streaming stack (a Go relay, a web
-app, and a native Linux broadcaster). It is maintained by a single person as a
-side project, on a best-effort basis. This document explains how to report a
-vulnerability and what you can reasonably expect in return.
+app, a native Linux broadcaster, and an optional per-session diagnostics
+service). It is maintained by a single person as a side project, on a
+best-effort basis. This document explains how to report a vulnerability and
+what you can reasonably expect in return.
 
 ## Threat model (read this first)
 
@@ -42,6 +43,9 @@ promised, for example:
   untrusted network input.
 - Exposure of the ops/metrics endpoint or `-publish-secret` to parties who
   should not have them (e.g. via the public LoadBalancer).
+- Exposure of `gawk-telemetry`'s dashboard, read API, or MCP surface — these
+  are designed to run on a listener that is never routed publicly, separate
+  from the public ingest path.
 - Supply-chain issues in the build/release path (CI, Helm charts, GHCR images).
 
 **Out of scope** — expected behavior given the threat model, not vulnerabilities:
@@ -63,7 +67,7 @@ maintainer make the call.
 ## Supported versions
 
 This is a solo project, so security fixes land on the **latest release of each
-component only**. The three components version independently
+component only**. The four components version independently
 ([SemVer](https://semver.org/); see `.release-please-manifest.json`):
 
 | Component         | Supported            |
@@ -71,6 +75,7 @@ component only**. The three components version independently
 | `gawk-server`     | Latest release only  |
 | `gawk-app`        | Latest release only  |
 | `gawk-broadcast`  | Latest release only  |
+| `gawk-telemetry`  | Latest release only  |
 
 Older tags do not receive backports. If you run a pinned version, plan to
 upgrade to pick up a fix. If a fix ever needs to reach an older line, that will
@@ -89,7 +94,7 @@ it is not yet available, please wait for it rather than disclosing publicly.)
 
 To help triage quickly, please include what you can:
 
-- The affected component and version (relay / app / broadcaster).
+- The affected component and version (relay / app / broadcaster / telemetry).
 - A description of the issue and its impact under the threat model above.
 - Reproduction steps or a proof of concept (a minimal repro, config, or the
   relevant wire bytes are ideal).

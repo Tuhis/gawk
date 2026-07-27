@@ -33,7 +33,7 @@ feature set exists).
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | ✅ T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify done 2026-07-19; T5 (motion-estimated interpolation) + T6 (findings) not started/droppable ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | ✅ V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC done 2026-07-19** (hardware encode/portal/GUI — not CI-reachable); V8 (direct Vulkan Video) still gated on V2's on-hardware result, not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
-| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, graduated (toggle removed) 2026-07-23; **N1–N6 implemented; hardware playback produced twelve field findings — eleven fixed (incl. video-master A/V sync, audio off the R19 carrier, live-edge buffer-depth floor, and the two re-anchor fixes for leaving Deep buffer / toggling paced playback, merged as #123 + #125), finding 12 (`avSkewMs` over-reports on long/stressed sessions — a metric bug, audio is actually fine) OPEN. Manual verification reached step 3 of 9 (2026-07-24) then stopped on test-machine performance trouble; needs a full re-run** ([docs/20](docs/20-system-audio.md)) |
+| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, graduated (toggle removed) 2026-07-23; **N1–N6 implemented; hardware playback produced twelve field findings — all twelve fixed (incl. video-master A/V sync, audio off the R19 carrier, live-edge buffer-depth floor, and the two re-anchor fixes for leaving Deep buffer / toggling paced playback, merged as #123 + #125; finding 12 — `avSkewMs` over-reports on long/stressed sessions, a metric bug, audio is actually fine — root-caused and fixed 2026-07-26). Manual verification reached step 3 of 9 (2026-07-24) then stopped on test-machine performance trouble; needs a full re-run** ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | ⚠️ U1–U3 implemented 2026-07-16; **U4 verdict 2026-07-19: native `webkitEnterFullscreen` still shows a black video on iPhone across three on-device passes → native tier not viable, pseudo-fullscreen (CSS) is the shipping path** (docs/21 U4 pre-registered verdict; BUGS.md) ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | ✅ W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + **green in the `e2e-cluster` CI job (2026-07-18)**; remaining homelab drills (rollout/crash/rebind blips, conntrack empiricism) + 200-viewer scale proof closed as owner-accepted 2026-07-19 (CI non-goals — kind lacks the physics) ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; cluster viewer-count check (origin `viewersGlobal` == Σ per-pod real viewers, edges excluded) **automated in the `e2e-cluster` CI job 2026-07-19**; single-pod browser/native + re-home + storm manual verify still pending ([docs/23](docs/23-live-viewer-count.md)) |
@@ -1432,7 +1432,8 @@ in the stream.
   the last DVR subscriber.
 
 Chunks **DV1–DV6** (every single-letter prefix A–Z is taken). Designed
-2026-07-23, not started.
+2026-07-23; DV1–DV5 implemented the same day, automated gates green; DV6
+on-hardware verification pending.
 
 ---
 
@@ -1489,8 +1490,18 @@ Chunks **MF1–MF5** (two-letter prefix — A–Z taken). Designed 2026-07-23,
 spike-confirmed on iPhone the same day; **MF1–MF4 implemented 2026-07-25**
 (+ MF5's observability/docs half; the R16 tee is deleted and the muxer's
 output is CI-proven to play in Chrome `MediaSource` via
-`e2e/run.mjs --muxer-check`); MF5's on-device verification pass is pending —
-see docs/27 "Implementation status & deviations".
+`e2e/run.mjs --muxer-check`). **Four on-device passes on 2026-07-26**
+confirmed real video **and** audio in native fullscreen: passes 1–3 fixed a
+missing LIVE badge/`duration=Infinity`, WebKit pausing on underrun instead of
+recovering, and iOS 18.7 refusing Opus-in-MP4 through `ManagedMediaSource`
+(fixed with a worker-side AAC-LC transcode tier), plus revised the root cause
+of buffered holes (a video sample-duration bug, not MMS parking); pass 4 found
+and fixed a regression where `pump()` deadlocked priming appends on MMS
+`streaming`, blanking the tier for a whole session. Still open: the ~100 ms
+live-edge cushion that structurally cannot grow, no stall watchdog on the
+presentation element, unmeasured steady-state MMS parking, and 20+ s of media
+buffered on the phone (tracked in BUGS.md) — a further on-device pass is
+pending; see docs/27 "Implementation status & deviations".
 
 ---
 
@@ -1924,8 +1935,8 @@ timestamp-scheduled — the rejected variant is recorded in its Decision 1):
 Chunks **LI1–LI4** (two-letter prefix; A–Z claimed): LI1 hold-offset policy +
 pipeline targets (pure, test-first), LI2 gating + observability, LI3 fixed
 A/V audio delay, LI4 verification + keep/kill verdict. LI3's hardware leg
-and LI4 should follow R15's pending hardware re-verification (`avSkewMs`
-finding 12 still open — measure short healthy sessions).
+and LI4 should follow R15's pending hardware re-verification — its formal
+docs/20 pass, not `avSkewMs` finding 12, which is fixed.
 
 **Status**: designed 2026-07-25; revised in owner review through 2026-07-26
 (timestamp-scheduled mechanism; variable-fps slew/dwell policy; A/V sync
@@ -1975,9 +1986,10 @@ remote troubleshooting of friends' sessions becomes routine**"
 ([docs/13](docs/13-observability.md) Non-goals). It became routine. Every
 field-finding cycle in R15 (twelve findings), R19, R21 and R22 ran on
 hand-shuttled diagnostics blobs, and the ones that took longest — audio
-finding 8's overflow/concealment latch, finding 12's still-open `avSkewMs`
-over-report — are exactly the ones needing *history* and *comparison across
-sessions*, which a single pasted 10-second window structurally cannot give.
+finding 8's overflow/concealment latch, finding 12's `avSkewMs` over-report
+(root-caused and fixed 2026-07-26) — are exactly the ones needing *history*
+and *comparison across sessions*, which a single pasted 10-second window
+structurally cannot give.
 
 **Why it's cheap-ish**: the measurement work is already done. `ViewerStats`
 (~80 fields), `BroadcastStats`, the native engine's `Stats`, the relay's
@@ -2128,7 +2140,11 @@ during a live stream. **TM9 is the droppable one** — trends can wait, a
 stuttering broadcast cannot.
 
 **Status**: designed 2026-07-26 —
-[docs/33](docs/33-telemetry-and-diagnostics.md); not started. The design doc
+[docs/33](docs/33-telemetry-and-diagnostics.md); TM1–TM8 implemented the
+same day, TM10 (dip episodes) + TM11 (configured target) on 2026-07-27,
+automated gates green in all four modules; TM9 (Grafana) dropped
+by owner scope decision (R9 M8 stays open); manual verification pending.
+The design doc
 refines two things sketched above: **DuckDB is a query option, not a runtime
 dependency** (all first-class endpoints are plain Go over rollups + session
 files, which keeps the service cgo-free — docs/33 D11), and **the relay is

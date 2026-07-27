@@ -393,8 +393,9 @@ constant-fps ideal:
 Ordering: LI1 → (LI2 ∥ LI3) → LI4. LI3's hardware leg and LI4 need real
 audio hardware and should follow R15's pending re-verification for the same
 reason R25's sequencing note gives — `avSkewMs` is the instrument, and
-finding 12 (over-reporting on long/stressed sessions) is still open; measure
-on short, healthy sessions. No e2e-harness step in v1: the R20 tier-1 job
+finding 12 (over-reporting on long/stressed sessions) was root-caused and
+fixed 2026-07-26, though the long-session capture confirming it is still
+pending. No e2e-harness step in v1: the R20 tier-1 job
 runs the adaptive default and already proves the interpolation machinery end
 to end; a third seeded viewer pass would spend constrained CI minutes
 (docs/25) on what LI1's unit tests and LI4's manual pass cover — revisit only
