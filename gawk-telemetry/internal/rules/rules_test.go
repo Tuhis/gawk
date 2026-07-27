@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -547,4 +548,73 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// D17: the acceleration discriminator. A pipeline shortfall while the encoder
+// is in SOFTWARE has an obvious first suspect, and saying so is the difference
+// between a verdict and a shrug.
+func TestSoftwareEncodeNarrowsAShortfallVerdict(t *testing.T) {
+	base := func(accel string) *Facts {
+		f := castFacts()
+		f.SetClient("targetFps", 60)
+		f.SetClient("sentFps", 30)
+		f.SetClient("captureFps", 60) // capture keeps up: the gap is downstream
+		if accel != "" {
+			f.SetText("acceleration", accel)
+		}
+		return f
+	}
+
+	soft := findingByID(Evaluate(base("software"), Playbook()), "delivered-below-target")
+	if soft == nil {
+		t.Fatal("delivered-below-target did not fire")
+	}
+	if !strings.Contains(soft.Verdict, "SOFTWARE") {
+		t.Errorf("software encode not named in the verdict: %q", soft.Verdict)
+	}
+	var sawText bool
+	for _, e := range soft.Evidence {
+		if e.Signal == "acceleration" && e.Text == "software" {
+			sawText = true
+		}
+	}
+	if !sawText {
+		t.Error("acceleration missing from the evidence as text — the claim is not checkable")
+	}
+
+	// Hardware: still a shortfall, but the encoder is not the suspect.
+	hard := findingByID(Evaluate(base("hardware"), Playbook()), "delivered-below-target")
+	if hard == nil {
+		t.Fatal("delivered-below-target did not fire on the hardware case")
+	}
+	if strings.Contains(hard.Verdict, "SOFTWARE") {
+		t.Errorf("hardware encode was described as software: %q", hard.Verdict)
+	}
+
+	// Absent (the native engine reports no acceleration string) — the rule must
+	// still fire, or it would be dead for every native broadcaster.
+	if findingByID(Evaluate(base(""), Playbook()), "delivered-below-target") == nil {
+		t.Error("the rule died when acceleration was absent")
+	}
+}
+
+// And it must NOT point at the encoder when the source is the limit: there the
+// encoder is keeping up with everything it is given.
+func TestSourceLimitedShortfallDoesNotBlameTheEncoder(t *testing.T) {
+	f := castFacts()
+	f.SetClient("targetFps", 60)
+	f.SetClient("sentFps", 4)
+	f.SetClient("captureFps", 4) // a static screen
+	f.SetText("acceleration", "software")
+
+	fd := findingByID(Evaluate(f, Playbook()), "delivered-below-target")
+	if fd == nil {
+		t.Fatal("delivered-below-target did not fire")
+	}
+	if strings.Contains(fd.Verdict, "SOFTWARE") {
+		t.Errorf("a source-limited stream was blamed on the encoder: %q", fd.Verdict)
+	}
+	if !strings.Contains(fd.Verdict, "source-limited") {
+		t.Errorf("verdict does not name the source as the limit: %q", fd.Verdict)
+	}
 }

@@ -1310,6 +1310,45 @@ The dashboard's broadcaster row shows the target beside the rate
 (`30 / 30 →60`), because a rate means nothing without the number it is supposed
 to be.
 
+**Acceleration is the discriminator on the pipeline branch.** The encoder's
+committed acceleration (`hardware` / `software` / `unknown`, from
+`classifyAcceleration` — the browser's *resolved* `isConfigSupported` echo where
+it gives one, the request where it does not) narrows a shortfall the capture
+comparison has already placed downstream: *"delivered below target while
+encoding in SOFTWARE — the encoder is the first thing to suspect"*. Read
+**opportunistically, never in `Requires`** — the native engine (R14) reports its
+encoder by name and no acceleration string, and requiring it would make the
+whole rule dead for every native broadcaster. It is deliberately silent on a
+**source-limited** shortfall: there the encoder is keeping up with everything it
+is given, so naming it would point at the wrong stage.
+
+Note what `hardware` does and does not claim. WebCodecs exposes no post-hoc
+readback, so it means *the browser committed to hardware at configure time*, not
+that hardware silicon was verifiably used — the same advisory caveat R13 records
+for its probe matrix.
+
+**The inventory gained a `readapi`-only tag, and the contract test gained its
+teeth back.** `factsFor` copies every rollup `Config` key into the fact set, so
+the D17 keys became text facts — and eleven config facts turned out to be
+emitted while unlisted in `rules.ProducibleFacts`, `text.resolution` among them
+since before R28's D16 work. The two-sided guard did not catch it because its
+fixture **substituted a hand-written `row.Config`** for the computed one, and
+mixed viewer and broadcaster keys into a single viewer row — so it asserted
+against a shape production never builds, and claimed coverage of broadcaster
+keys a viewer row cannot produce. It now derives `Config` from samples and
+unions a maximal viewer session with a maximal broadcaster one. Nine of the
+eleven are stored-session-only (the rollup *derives* `resolution` and the target
+trio; the rest are config the live row does not carry), which is the case
+`producible.go` had anticipated in a comment and never had: hence the third
+tag. `acceleration` and `codec` are `both` — an operator wants "is this
+broadcaster in software right now?" live, not only post-mortem.
+
+`Evidence` gained a `Text` field for the same reason. Config is half of what
+explains a stream and its values are words; before this the only way to cite one
+was to encode it into a numeric's `Comparison`, which made the evidence
+unparseable by anything but a human. Additive and `omitempty`, so stored
+verdicts from older releases still load (D4).
+
 ---
 
 ## 5. Chunks and acceptance criteria

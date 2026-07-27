@@ -568,11 +568,51 @@ func TestSustainedDecoderStarvationStillFires(t *testing.T) {
 // on every session forever while looking like a working rule.
 func TestReadPathEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 	f := newFixture(t)
+	// BOTH roles, unioned. The inventory spans viewer and broadcaster config,
+	// and a single-role fixture can only ever cover half of it — the previous
+	// version papered over that by hand-writing a row.Config that mixed keys
+	// from both, which is how it claimed coverage it did not have while hiding
+	// six emitted-but-unlisted facts.
+	emitted := map[string]bool{}
+	for _, n := range f.maximalViewerFacts(t).Names() {
+		emitted[n] = true
+	}
+	for _, n := range f.maximalBroadcasterFacts(t).Names() {
+		emitted[n] = true
+	}
+
+	want := rules.ProducedBy("readapi")
+	for n := range emitted {
+		if !want[n] {
+			t.Errorf("the read path emits %q, which rules.ProducibleFacts does not list", n)
+		}
+	}
+	for n := range want {
+		if !emitted[n] {
+			t.Errorf("rules.ProducibleFacts claims the read path emits %q, but a maximal session produced no such fact", n)
+		}
+	}
+}
+
+// maximalViewerFacts builds the richest viewer session the read path can see,
+// deriving row.Config from the SAMPLES rather than substituting one — the
+// assertion above can only be as honest as the row it runs against.
+func (f *fixture) maximalViewerFacts(t *testing.T) *rules.Facts {
+	t.Helper()
 	stats := map[string]any{"isHardwareAccelerated": true,
 		"audioBuffer": map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0}}
 	for _, n := range factClientFields {
 		stats[n] = 30.0
 	}
+	for k, v := range map[string]string{
+		"deliveryMode": "datagrams", "playoutMode": "adaptive", "renderer": "webgl",
+		"pipelineContext": "worker", "transport": "worker", "audioState": "playing",
+		"interpolation": "on", "presentation": "paced-webgl", "avMaster": "video",
+	} {
+		stats[k] = v
+	}
+	stats["frameWidth"], stats["frameHeight"] = 1920.0, 1080.0
+
 	// A window with a real dip in it, so the D16 facts are producible at all —
 	// a single sample has no baseline to dip from. The maximal sample stays
 	// last, because that is the one the per-signal "last observed value" facts
@@ -588,11 +628,6 @@ func TestReadPathEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 		Samples: samples,
 	}
 	row := rollup.Compute(in)
-	row.Config = map[string]string{
-		"deliveryMode": "datagrams", "playoutMode": "adaptive", "renderer": "webgl",
-		"pipelineContext": "worker", "transport": "worker", "audioState": "playing",
-		"autoRung": "1080p", "Encoder": "nvh264enc", "Codec": "avc1.42E02A",
-	}
 	row.LongestStallMs = 900
 	if row.Series == nil {
 		row.Series = map[string]*rollup.Stat{}
@@ -601,51 +636,34 @@ func TestReadPathEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 		"avSkewMs", "lastKeyframeAgeMs", "viewerCount", "EncoderFps", "SentFps"} {
 		row.Series[n] = &rollup.Stat{Median: 5, P95: 9}
 	}
+	return f.api.factsFor(row, in, maximalRelayLines(t, in.SessionID))
+}
 
-	line := func(v any) []byte {
-		b, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
+// maximalBroadcasterFacts is the other half: every config key a broadcaster row
+// carries, across BOTH producers' spellings (browser and native engine).
+func (f *fixture) maximalBroadcasterFacts(t *testing.T) *rules.Facts {
+	t.Helper()
+	stats := map[string]any{
+		"captureFps": 30.0, "encoderFps": 30.0, "sentFps": 30.0, "encoderQueueDepth": 1.0,
+		"targetWidth": 1920.0, "targetHeight": 1080.0, "targetFps": 60.0,
+		"targetBitrateBps": 8_000_000.0,
+		"autoRung":         "1080p", "autoCeiling": "1080p", "pipelineContext": "worker",
+		"audioState": "active", "audioCodec": "opus",
+		"codec": "avc1.640028", "acceleration": "hardware",
+		// The native engine's capitalized spellings, so one row covers both.
+		"Encoder": "nvh264enc", "Codec": "avc1.42E02A", "CapturePath": "portal",
 	}
-	relayLines := [][]byte{
-		line(map[string]any{"kind": "subscriber", "atMs": 2000, "pod": "pod-a", "role": "origin",
-			"broadcastKey": bkey, "sessionId": in.SessionID,
-			"subscriber": map[string]any{"dropped": 3, "queueDepth": 2, "keyframesDropped": 1,
-				"carrierQueueOverflow": 1, "carrierRecordsDropped": 2, "dvrResyncs": 1, "dvrLagMs": 800}}),
-		line(map[string]any{"kind": "broadcast", "atMs": 2000, "pod": "pod-a", "role": "origin",
-			"broadcastKey": bkey,
-			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 100,
-				"ingressFramesLost": 2, "subscribers": 3, "viewersGlobal": 3,
-				"datagramsDropped": 4, "bandwidthDroppedDatagrams": 1, "keyframeStreamsIn": 5}}),
-		line(map[string]any{"kind": "broadcast", "atMs": 12000, "pod": "pod-a", "role": "origin",
-			"broadcastKey": bkey,
-			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 400,
-				"ingressFramesLost": 3, "subscribers": 3, "viewersGlobal": 3,
-				"datagramsDropped": 6, "bandwidthDroppedDatagrams": 2, "keyframeStreamsIn": 9,
-				"subscriberDetails": []map[string]any{
-					{"sessionId": in.SessionID, "dropped": 3},
-					{"sessionId": "bb22bb22bb22bb22bb22bb22", "dropped": 1},
-					{"key": "edge", "internal": true, "dropped": 0},
-				}}}),
+	samples := []rollup.Sample{
+		{TMs: 0, Stats: stats},
+		{TMs: 2000, Stats: stats},
 	}
-
-	emitted := map[string]bool{}
-	for _, n := range f.api.factsFor(row, in, relayLines).Names() {
-		emitted[n] = true
+	in := rollup.Input{
+		SessionID: "bb22bb22bb22bb22bb22bb22", BroadcastKey: bkey, Role: "broadcaster",
+		StartedAtMs: 1000, EndedAtMs: 61000,
+		Samples: samples,
 	}
-	want := rules.ProducedBy("readapi")
-	for n := range emitted {
-		if !want[n] {
-			t.Errorf("the read path emits %q, which rules.ProducibleFacts does not list", n)
-		}
-	}
-	for n := range want {
-		if !emitted[n] {
-			t.Errorf("rules.ProducibleFacts claims the read path emits %q, but a maximal session produced no such fact", n)
-		}
-	}
+	row := rollup.Compute(in)
+	return f.api.factsFor(row, in, maximalRelayLines(t, in.SessionID))
 }
 
 // Ingest is at-least-once and the rollup store is append-only, so one session
@@ -977,5 +995,41 @@ func TestWarmupZerosDoNotMakeACleanSessionUnhealthy(t *testing.T) {
 	}
 	if !rep.Healthy {
 		t.Fatalf("a clean session was called unhealthy over its warmup: %+v", rep.Findings)
+	}
+}
+
+// maximalRelayLines is the relay side of a maximal session: one subscriber
+// record and two broadcast observations (two, so framesRelayedPerSec has a
+// window to be computed over — the signal review finding 5 found nothing
+// produced).
+func maximalRelayLines(t *testing.T, sessionID string) [][]byte {
+	t.Helper()
+	line := func(v any) []byte {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	return [][]byte{
+		line(map[string]any{"kind": "subscriber", "atMs": 2000, "pod": "pod-a", "role": "origin",
+			"broadcastKey": bkey, "sessionId": sessionID,
+			"subscriber": map[string]any{"dropped": 3, "queueDepth": 2, "keyframesDropped": 1,
+				"carrierQueueOverflow": 1, "carrierRecordsDropped": 2, "dvrResyncs": 1, "dvrLagMs": 800}}),
+		line(map[string]any{"kind": "broadcast", "atMs": 2000, "pod": "pod-a", "role": "origin",
+			"broadcastKey": bkey,
+			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 100,
+				"ingressFramesLost": 2, "subscribers": 3, "viewersGlobal": 3,
+				"datagramsDropped": 4, "bandwidthDroppedDatagrams": 1, "keyframeStreamsIn": 5}}),
+		line(map[string]any{"kind": "broadcast", "atMs": 12000, "pod": "pod-a", "role": "origin",
+			"broadcastKey": bkey,
+			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 400,
+				"ingressFramesLost": 3, "subscribers": 3, "viewersGlobal": 3,
+				"datagramsDropped": 6, "bandwidthDroppedDatagrams": 2, "keyframeStreamsIn": 9,
+				"subscriberDetails": []map[string]any{
+					{"sessionId": sessionID, "dropped": 3},
+					{"sessionId": "cc33cc33cc33cc33cc33cc33", "dropped": 1},
+					{"key": "edge", "internal": true, "dropped": 0},
+				}}}),
 	}
 }

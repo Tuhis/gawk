@@ -109,15 +109,37 @@ func deliveredBelowTarget() Rule {
 			verdict := "Delivered rate is below the configured target, and capture is keeping up — " +
 				"the shortfall is in the pipeline, not the source"
 			conf := 0.6
+			sourceLimited := false
 			if capture, ok := f.Client("captureFps"); ok {
 				ev = append(ev, Evidence{Signal: "captureFps", Value: capture, Unit: "fps", From: FromClient})
 				if capture < target*targetShortfallRatio {
 					// Source-limited. Worth SAYING — a broadcaster who picked
 					// 60 should know they are getting 30 — but it is not a
 					// fault, and must not read as one.
+					sourceLimited = true
 					verdict = "Capture is not producing the configured target rate — source-limited, " +
 						"which a static or low-motion screen does legitimately"
 					conf = 0.5
+				}
+			}
+			// The encoder's committed acceleration, read opportunistically and
+			// deliberately NOT in Requires: the native engine (R14) reports its
+			// encoder by name and no acceleration string, and a required signal
+			// would make this whole rule dead for every native broadcaster.
+			//
+			// It only narrows a PIPELINE shortfall. On a source-limited one the
+			// encoder is keeping up with everything it is given, so naming it
+			// would point at the wrong stage — which is the failure mode this
+			// rule's whole shape exists to avoid.
+			if accel, ok := f.Text("acceleration"); ok && !sourceLimited {
+				ev = append(ev, Evidence{
+					Signal: "acceleration", Text: accel, From: FromClient,
+					Comparison: "the acceleration the encoder committed to at configure time",
+				})
+				if accel == "software" {
+					verdict = "Delivered rate is below the configured target while encoding in " +
+						"SOFTWARE — the encoder is the first thing to suspect"
+					conf = 0.75
 				}
 			}
 			// The relay's own relayed rate turns this from the client's account
