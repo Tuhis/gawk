@@ -1,6 +1,9 @@
 # R29 — Forward parity for live-edge delivery
 
-**Status**: designed 2026-07-27, not started (FP1–FP8).
+**Status**: designed 2026-07-27; **FP1–FP4 implemented + FP5's recovery half
+implemented 2026-07-28**, automated gates green in all four modules. **FP5's
+viewer-facing controls, FP6, FP7 and FP8 are not started** — see
+§11 "Implementation status".
 
 Broadcaster-side forward error correction for the datagram delta path, so a
 live-edge viewer on a lossy link keeps its frames instead of losing whole
@@ -461,3 +464,50 @@ Evaluate at FP8. A documented rejection is a valid completion.
   emitting parity when no subscriber wants it, via R18's relay→publisher push
   channel). Cheap and proven machinery, worth doing, but it is an
   optimization on top of a working feature — not v1.
+
+---
+
+## 11. Implementation status (2026-07-28)
+
+### Landed
+
+| Chunk | State |
+|---|---|
+| FP1 wire + GF codec | **done** — `0x0E`/`0x0F` in all three mirrors, golden vectors byte-identical, exhaustive erasure-pair proof for every `n` up to 255 (Go), sampled at the largest `n` in TS with the coefficient property proven separately |
+| FP2 browser producer | **done** — `packetizeFrameWithParity`, capability-gated emission, `BroadcastStats.parityLevel/parityChunksSent/parityBytesSent` |
+| FP3 native producer | **done** — `sender.chunkWithParity` + `applyCapabilities`, engine dispatch, `engine.Stats` fields, **cross-producer byte-identity test** |
+| FP4 relay | **done** — `NegotiateParity`, per-subscriber prefix in `fanOutLocked`, carrier/DVR suppression, capability advertisement on both routes, `-parity-default`/`GAWK_PARITY_DEFAULT`/`parityDefault` chart value plumbed through `registryOptions`, `/statusz` counters |
+| FP5 recovery half | **done** — eager reconstruction in `Reassembler`, `ViewerStats` fields, overlay rows |
+
+The **default path works end to end**: with `parityDefault: 2` the relay
+advertises, both producers emit P and Q, a datagram subscriber negotiates 2 by
+omission, and the reassembler recovers. A fleet at `parityDefault: 0`
+advertises nothing and is byte-identical to pre-R29.
+
+Two findings worth keeping:
+
+1. **Adding a server→client stream broke a test that assumed accept order.**
+   `relay_integration_test` took the first accepted uni stream to be the
+   keyframe; webtransport-go does not accept in open order (docs/22 finding 9),
+   so the 5-byte capabilities message was parsed as a stream-frame header. The
+   production viewer already dispatched by type. Anything adding a
+   server-initiated stream should expect to find more of these.
+2. **The canonical-JSON-key test earned its keep** — it caught the three new
+   `engine.Stats` fields immediately, which is the guard docs/33 §4.15 added
+   after a capitalized key made the native broadcaster invisible to telemetry.
+
+### Not started
+
+| Chunk | What is missing | Consequence today |
+|---|---|---|
+| FP5 controls | The viewer never sends `?parity=`, and there is no menu entry | Every live-edge viewer takes the fleet default and **cannot opt down**. The negotiation and clamping are implemented and tested relay-side; only the client request and menu are absent |
+| FP5 requested-vs-active | `parityRequested`/`parityActive` are not reported by the client | The overlay shows what arrived, not what was asked for, so a refusal is not yet legible |
+| FP6 | Per-GOP loss allowance | Freeze-on-gap is unchanged, so the residual ~0.4% of GOPs that parity cannot repair still cost the rest of the GOP. Parity alone is still the bulk of the win (41.3 clean fps vs 8.3) |
+| FP7 | Telemetry typed fields + `parity-ineffective` rule | Parity stats reach `Copy diagnostics` but are untyped in the rollup, and `diagnose()` has no parity rule. Per D15 the unknown fields survive verbatim, so nothing rejects |
+| FP8 | Loss-injection Go test, e2e tier-1 pass, e2e-cluster assertion | **The feature has no test that exercises it under actual packet loss.** Recovery is proven at unit level (exhaustive erasure pairs, reassembler tests) but never through a real relay on a lossy socket, which is the assertion that would catch an integration-level regression |
+| — | Prometheus `parity_*` metrics | `/statusz` has the counters; `/metrics` does not, so the fleet egress cost is not yet scrapeable |
+
+FP8 is the most important of these: docs/24 finding 10 is the precedent —
+R19's carrier path shipped with every test running against fakes or a
+zero-loss loopback, and a regression degrading it would have shipped green.
+R29 is in exactly that state now.
