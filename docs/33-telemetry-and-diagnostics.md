@@ -1410,6 +1410,40 @@ Unchanged: everything downstream. Zero wire, relay, service, viewer and
 telemetry key sends no hello and a client that gets none collects nothing), and
 the byte-identical-when-off chart renders all stand.
 
+### 4.16 A key appears in exactly one group (2026-07-27)
+
+Reported from the deployed dashboard: broadcasts visible in **Live and in
+Recently ended at the same time**. Two bugs, one root — nothing ever reconciled
+the recessed group against a broadcast key that came back.
+
+A broadcast key names the **code**, not one session of it. Codes come back, by
+design and often: a broadcaster resuming past the relay's grace, R14's
+auto-resume (docs/19 Decision 21), R17's reclaim across a rollout — each
+re-creates the hub under the same ID, and one fleet `statsKey` makes that the
+same obfuscated key. `endBroadcastLocked` filed a tombstone and deleted the
+state; the next observation of that key re-created it live, and the tombstone
+then sat beside the live card for the whole `EndedRetention` window (6 h). The
+result is the one thing §4.8.1's grouping decision forbids: **two cards making
+contradictory claims about one broadcast**, the recessed one saying "nothing
+here can still be acted on" about a stream that is live right now. The same
+gap's other half filed a *second* tombstone when that run ended, so one key
+could hold two final verdicts — and, since the page keys its list by the
+broadcast key, two React children with the same key.
+
+The invariant now holds in the projection, not in the renderer: `broadcast()`
+drops a key's tombstone when it re-creates that key live, and
+`appendEndedLocked` replaces a key's previous tombstone rather than prepending
+beside it. **Newest verdict wins** — the run that just ended is the one an
+operator is looking for, and the previous run's history is in its permanent
+rollup, which is where history belongs. Bounded by construction: `p.ended`
+carries at most one entry per key.
+
+Not a false end, and worth stating so it is not re-diagnosed as one: two
+consecutive *complete* rounds that omit the broadcast really are the relay's own
+statement that the hub is gone (§4.8.2). The projection was right that the
+broadcast ended; it was wrong that the tombstone still described a key that had
+since come back.
+
 ## 4.10 Dip episodes (D16)
 
 The detector, its facts and its two rules. Named constants throughout, shared

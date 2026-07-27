@@ -542,10 +542,30 @@ func (p *Projection) endBroadcastLocked(b *broadcastState, now time.Time) {
 
 func (p *Projection) appendEndedLocked(v BroadcastView, at time.Time) {
 	v.Lifecycle = "ended"
+	// One key, one tombstone. A broadcast key names the CODE, not one session
+	// of it, so the same key ends repeatedly — and two ended cards under one
+	// key are two claims to be that broadcast's final verdict (and, since the
+	// page keys its list by the broadcast key, two React children with the same
+	// key). The newest run's verdict is the true one; the older one's history
+	// lives in its permanent rollup, which is where history belongs.
+	p.dropEndedLocked(v.BroadcastKey)
 	p.ended = append([]endedEntry{{view: v, at: at}}, p.ended...)
 	if len(p.ended) > MaxRecentEnded {
 		p.ended = p.ended[:MaxRecentEnded]
 	}
+}
+
+// dropEndedLocked forgets a key's stored tombstone. Called both when a newer
+// one replaces it and when the key comes back to life, which is the invariant
+// the two groups rest on: a broadcast appears in exactly one of them.
+func (p *Projection) dropEndedLocked(key string) {
+	keep := p.ended[:0]
+	for _, e := range p.ended {
+		if e.view.BroadcastKey != key {
+			keep = append(keep, e)
+		}
+	}
+	p.ended = keep
 }
 
 // aggregateLocked derives one broadcast's fact set from every pod carrying it.
@@ -710,6 +730,13 @@ func (p *Projection) broadcast(key string, now time.Time) *broadcastState {
 			sessions: map[string]*sessionState{},
 		}
 		p.bcasts[key] = b
+		// A key that is streaming again cannot also be a recently-ended one.
+		// Codes come back — a broadcaster resuming past the relay's grace, a
+		// native broadcaster reclaiming its ID across a rollout, an auto-resume
+		// slower than EndedAfterMissedRounds — and the stale tombstone used to
+		// sit beside the live card for the whole retention window, telling an
+		// operator that a stream they can act on right now is over.
+		p.dropEndedLocked(key)
 	}
 	return b
 }
