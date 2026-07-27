@@ -269,6 +269,43 @@ describe('StatsOverlay', () => {
     expect(screen.queryByText('Feature Gates')).toBeNull();
   });
 
+  // R28 (docs/33 §4.13): the row a viewer reads aloud to an operator. The
+  // value is the dashboard's own 8-character prefix; the full 24 stay in the
+  // tooltip, where `diagnose()` can be handed all of it.
+  it('renders the telemetry session id, short on screen and whole in the tooltip', () => {
+    render(
+      <StatsOverlay
+        stats={fullStats()}
+        codec="vp8"
+        bitrateBps={null}
+        telemetrySessionId="000102030405060708090a0b"
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    const value = screen.getByText('Session id').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('00010203…');
+    expect(value.getAttribute('title')).toBe('000102030405060708090a0b');
+  });
+
+  it('says so when there is no telemetry session to name', () => {
+    render(
+      <StatsOverlay
+        stats={fullStats()}
+        codec="vp8"
+        bitrateBps={null}
+        telemetrySessionId={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    const value = screen.getByText('Session id').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('—');
+    expect(value.getAttribute('title')).toBe('no session — this relay is not collecting telemetry');
+  });
+
   it('wires the copy-diagnostics button and the copied flash', () => {
     const onCopy = vi.fn();
     const { rerender } = render(

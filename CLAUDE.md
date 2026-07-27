@@ -1876,6 +1876,24 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `"Chrome 152"`/`"Windows"`), no cross-session identity, never media; R23's
    terms gained a practice paragraph naming what is and is not collected, and
    `termsVersion` bumped to 2026-07-26.
+   **The viewer names its own session (2026-07-27, docs/33 §4.13)**: the mirror
+   image of §4.12's find-a-broadcast-by-its-code. D8 makes every viewer on the
+   dashboard anonymous by construction, so an operator on a call with a
+   stuttering friend could not tell which of four rows was them. The viewer
+   stats overlay now opens with a **Telemetry → Session id** row: the
+   **sessionId, never the token** — 24 bytes of one field, but the id *names* a
+   session while the tag *authorizes writing* to one (§4.2), which is the whole
+   reason one is displayable and the other is not; **8 characters on screen**
+   (byte-for-byte the dashboard's own `sessionId.slice(0, 8)`, and about what a
+   person can read down a phone line) with the full 24 in the tooltip and in
+   Copy diagnostics, where `diagnose()` needs all of them. Read back from the
+   `TelemetryCollector`, never derived from the hello, so the overlay can only
+   ever show an id the dashboard has a row for — a telemetry-off fleet still
+   sends a well-formed token in a hello that starts no session, and that reads
+   `—`. Kept after the session ends (a viewer reads it out *because* the stream
+   just broke) and replaced on reconnect (new token, new row). Viewer-only:
+   the broadcaster overlay belongs to the operator, who already knows which
+   broadcast is theirs.
    **TM10 — dip episodes (2026-07-27, docs/33 D16 + §4.10)**: an audit asked
    whether the shipped item could answer *"why is this stream stuttering, why
    does my viewer framerate drop to 2 every now and then?"* It could not — a

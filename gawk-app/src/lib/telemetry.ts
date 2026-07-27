@@ -29,7 +29,7 @@
 // diagnostics serializes for pasting into a chat.
 
 import { log } from './logger';
-import type { TelemetryHelloMessage } from '../transport/wire';
+import { telemetrySessionId, type TelemetryHelloMessage } from '../transport/wire';
 
 // The release that produced these samples. D15: this IS the schema version.
 declare const __GAWK_APP_VERSION__: string;
@@ -159,6 +159,8 @@ export class TelemetryCollector<T> {
   // default state and the correct behaviour against a relay that never sends
   // one.
   private token: string | null = null;
+  // hex(nonce) from the token — see the `sessionId` getter.
+  private session: string | null = null;
   private broadcastKey = '';
   private reportIntervalMs = 2000;
   private startedAtMs = 0;
@@ -196,6 +198,20 @@ export class TelemetryCollector<T> {
     return this.token !== null && !this.stopped;
   }
 
+  // The sessionId this collector is reporting under, or null when it is not
+  // reporting at all — which is the point of routing a display through here
+  // rather than deriving it from the hello: an id shown to a user must be one
+  // the dashboard will actually have a row for. A disabled fleet's hello still
+  // carries a well-formed token, and naming a session that was never collected
+  // would send an operator hunting for a row that cannot exist.
+  //
+  // Unlike the token, this is not a credential (docs/33 §4.2): it names a
+  // session, it does not authorize writing to one. That is what makes it safe
+  // to put on the stats overlay and into a Copy-diagnostics blob.
+  get sessionId(): string | null {
+    return this.session;
+  }
+
   // True once the session hit its byte budget and dropped to events-only.
   // Exposed so a caller (and a test) can tell a degraded session from a short
   // one without parsing a batch.
@@ -218,6 +234,16 @@ export class TelemetryCollector<T> {
     if (this.token !== null) this.flush(true);
 
     this.token = hello.token;
+    // Derived once, defensively: the token has already been strict-parsed off
+    // the wire, so a throw here would only ever be a programming error — and
+    // D9 says telemetry must never be the thing that breaks a stream, least of
+    // all over a display detail. A session with an unnameable id still
+    // collects; it just cannot be pointed at.
+    try {
+      this.session = telemetrySessionId(hello.token);
+    } catch {
+      this.session = null;
+    }
     this.broadcastKey = hello.broadcastKey;
     this.reportIntervalMs = Math.max(hello.reportIntervalMs, 250);
     this.startedAtMs = this.opts.now();
@@ -369,6 +395,7 @@ export class TelemetryCollector<T> {
     this.flush(true);
     this.disarm();
     this.token = null;
+    this.session = null;
   }
 
   // Tear the collector down for good (component unmount). Distinct from
@@ -415,6 +442,7 @@ export class TelemetryCollector<T> {
   private discard(): void {
     this.disarm();
     this.token = null;
+    this.session = null;
     this.samples = [];
     this.events = [];
   }

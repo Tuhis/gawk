@@ -21,18 +21,47 @@ interface Props {
   // devices only — details must be visible rows there, since the Feature
   // Gates tooltips need hover and iPhones have none. Absent ⇒ no section.
   presentationSurface?: PresentationSurfaceStats;
+  // R28 (docs/33 §4.13): this session's telemetry id, or null when the fleet
+  // collects nothing. The row it feeds is how a viewer on the phone tells an
+  // operator which dashboard row is them.
+  telemetrySessionId?: string | null;
   onClose: () => void;
   onCopy: () => void;
   copied: boolean;
 }
 
+// How much of the 24-hex sessionId the row shows. Eight characters is what the
+// telemetry dashboard's session column prints
+// (gawk-telemetry/internal/dashboard/assets/app.js: `sessionId.slice(0, 8)`),
+// so the two match by construction — and it is about as much as anyone can
+// read down a voice call, which is the whole use case. The full id rides the
+// tooltip and Copy diagnostics, where `diagnose()` needs all 24.
+const SESSION_ID_DISPLAY_CHARS = 8;
+
 // The viewer stats overlay (docs/10 J4, extended by R9 M7) — "is it the
 // stream or my machine". Sections follow the docs/13 funnel: video (decode),
 // delivery (frames arriving/dropping), network (this leg's health).
-export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentationSurface, onClose, onCopy, copied }: Props) {
+export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentationSurface, telemetrySessionId, onClose, onCopy, copied }: Props) {
   const conn = stats?.connection ?? null;
   const surface = presentationSurface ?? null;
   const sections: StatsSection[] = [
+    // R28: the identity of everything below it — first, because the one person
+    // who needs it is reading it aloud to someone else and should not have to
+    // scroll a phone-sized panel to find it. Rendered even with no session, so
+    // "this viewer is not reporting" is an answer the overlay gives rather than
+    // a section whose absence has to be noticed.
+    {
+      title: 'Telemetry',
+      rows: [
+        [
+          'Session id',
+          telemetrySessionId == null
+            ? '—'
+            : `${telemetrySessionId.slice(0, SESSION_ID_DISPLAY_CHARS)}…`,
+          telemetrySessionId ?? 'no session — this relay is not collecting telemetry',
+        ],
+      ],
+    },
     {
       title: 'Video',
       rows: [

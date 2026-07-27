@@ -23,6 +23,13 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
       frameCount: number;
     }) => void;
     onAudioReset?: () => void;
+    // R28: wire 0x0D, the session identity the overlay names.
+    onTelemetryHello?: (hello: {
+      enabled: boolean;
+      reportIntervalMs: number;
+      token: string;
+      broadcastKey: string;
+    }) => void;
   }
   // failStartWith: makes the next sessions' start() reject — the
   // never-connected path (fatal by ViewerSession policy, no callbacks fire).
@@ -607,6 +614,66 @@ function stubWebAudio() {
     revokeObjectURL: vi.fn(),
   });
 }
+
+// R28 (docs/33 §4.13): the operator's end of a phone call — "open stats and
+// read me the session id" has to work end to end, from wire 0x0D to a row on
+// screen. The token below is the shared golden one; its middle 12 bytes are
+// the sessionId both the relay and the ingest name this session by.
+describe('ViewerScreen telemetry session id (R28)', () => {
+  const HELLO = {
+    enabled: true,
+    reportIntervalMs: 2000,
+    token: '00012345000102030405060708090a0ba1a2a3a4a5a6a7a8',
+    broadcastKey: '1a2b3c4d5e6f',
+  };
+  const SESSION_ID = '000102030405060708090a0b';
+
+  const openStats = () => {
+    fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
+    fireEvent.click(screen.getByText('Stats'));
+  };
+
+  it('shows the id the relay handed this session', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    openStats();
+    // Nothing has arrived yet: the overlay says so rather than guessing.
+    expect((screen.getByText('Session id').nextSibling as HTMLElement).textContent).toBe('—');
+
+    act(() => sessions[0].cbs.onTelemetryHello!(HELLO));
+    const value = screen.getByText('Session id').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('00010203…');
+    expect(value.getAttribute('title')).toBe(SESSION_ID);
+  });
+
+  it('names no session when the fleet collects nothing', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    act(() => sessions[0].cbs.onTelemetryHello!({ ...HELLO, enabled: false }));
+    openStats();
+    expect((screen.getByText('Session id').nextSibling as HTMLElement).textContent).toBe('—');
+  });
+
+  it('carries the whole id in Copy diagnostics, and never the token', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onTelemetryHello!(HELLO));
+    act(() => sessions[0].cbs.onStats({ interpolation: null }));
+
+    openStats();
+    fireEvent.click(screen.getByText('Copy diagnostics'));
+    const body = (writeText.mock.calls[0] as unknown as [string])[0];
+    expect(JSON.parse(body).telemetrySessionId).toBe(SESSION_ID);
+    // The blob gets pasted into chats; the bearer half of the token must not
+    // ride along (lib/telemetry.ts, docs/33 §4.2).
+    expect(body).not.toContain(HELLO.token);
+    expect(body).not.toContain('a1a2a3a4a5a6a7a8');
+  });
+});
 
 describe('ViewerScreen audio UI (R15)', () => {
   beforeEach(() => {
