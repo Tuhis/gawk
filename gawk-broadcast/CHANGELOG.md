@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.7.1...gawk-broadcast-v1.8.0) (2026-07-28)
+
+
+### Features
+
+* **r29:** forward parity for live-edge delivery ([#175](https://github.com/Tuhis/gawk/issues/175)) ([9bca5d9](https://github.com/Tuhis/gawk/commit/9bca5d9a7a080e4fa9c51733fbc16231b4f84555))
+
 ## [1.7.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.7.0...gawk-broadcast-v1.7.1) (2026-07-27)
 
 
