@@ -62,6 +62,7 @@ function fullStats(): ViewerStats {
     carrierStreams: null,
     carrierRecords: null,
     carrierStreamsAborted: null,
+    datagramBuffer: null,
     connection: {
       rttMs: 24.5,
       rttVarMs: 3.1,

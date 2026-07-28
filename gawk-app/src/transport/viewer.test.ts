@@ -37,6 +37,7 @@ vi.mock('../media/decoder', () => ({
 }));
 
 import { timeOriginMs } from './time-sync';
+import { INCOMING_DATAGRAM_BUFFER } from './datagram-buffer';
 import { getAvSkewMs, notePlayhead, resetAvSync } from './av-sync';
 import { SESSION_STALL_MS, ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { RenderSink } from './render-sink';
@@ -597,6 +598,115 @@ describe('ViewerPipeline', () => {
       expect(stats.at(-1)!.carrierStreams).toBe(2);
       expect(stats.at(-1)!.carrierRecords).toBe(40);
 
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // R29 finding 2 (docs/34), the fix itself: LocalViewerTransport is the
+  // object that owns the session in EVERY placement — main thread, viewer
+  // worker, and the nested transport worker — so raising the buffer there is
+  // what makes the knob reach the path the loss was measured on. A fake whose
+  // datagrams expose the legacy attribute stands in for Firefox 154.
+  it('raises the incoming datagram buffer on the session it connects (R29)', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const wt = makeFakeWT(600_000, {}) as unknown as { datagrams: { incomingHighWaterMark: number } };
+      wt.datagrams = { incomingHighWaterMark: 1 };
+      connectWebTransport.mockResolvedValue(wt);
+      readDatagrams.mockReturnValue(new Promise(() => {}));
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(wt.datagrams.incomingHighWaterMark).toBe(INCOMING_DATAGRAM_BUFFER);
+      expect(stats.at(-1)!.datagramBuffer).toEqual({
+        property: 'incomingHighWaterMark',
+        requested: INCOMING_DATAGRAM_BUFFER,
+        effective: INCOMING_DATAGRAM_BUFFER,
+        applied: true,
+      });
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // R29 finding 2 (docs/34): the receive-buffer verdict is transport-owned —
+  // only the realm holding the WebTransport can set or read it — so the
+  // pipeline must forward it verbatim rather than deriving anything. Null
+  // where a transport doesn't report one, because "unknown" and "at the
+  // browser default" are different states and only one of them is a problem.
+  it('forwards the transport datagram-buffer verdict into ViewerStats (R29)', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const datagramBuffer = {
+        property: 'incomingMaxBufferedDatagrams' as const,
+        requested: 256,
+        effective: 256,
+        applied: true,
+      };
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async () => {},
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        sampleDatagramBuffer: () => datagramBuffer,
+        close: () => {},
+      };
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(stats.at(-1)!.datagramBuffer).toEqual(datagramBuffer);
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports null datagramBuffer where the transport reports none (R29)', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    try {
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async () => {},
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        {},
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(stats.at(-1)!.datagramBuffer).toBeNull();
       await pipeline.stop();
     } finally {
       vi.useRealTimers();

@@ -4,7 +4,7 @@
 // policy, enforced as this string-literal union so they can't drift per call
 // site. Future gates (paced playout, interpolation, worker placement, audio)
 // are natural later entries.
-export type FeatureGateName = 'NativeVideoFullscreen';
+export type FeatureGateName = 'NativeVideoFullscreen' | 'DatagramReceiveBuffer';
 
 export interface FeatureGate {
   name: FeatureGateName;
