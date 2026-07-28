@@ -534,6 +534,53 @@ freeze-on-gap itself — the mechanism §1 diagnosed, reproduced on demand.
    docs/24 finding-11 shape (one bucket carved from one total, remainder by
    subtraction).
 
+### Finding 1 — the cascade clamped the edge leg (2026-07-28)
+
+`e2e-cluster` failed on the release PR (#178) with the assertion §5's own
+reasoning predicted:
+
+```
+FAIL: R29 parity — pod …-d9tj4 serves 7 subscriber(s) but forwarded no parity;
+      the cascade lost the symbols
+```
+
+§5 argues broadcaster-side generation because "the cascade works unchanged —
+parity chunks are just more datagrams the relay forwards blindly". FP4 then
+made the fan-out stop forwarding blindly, and nothing exempted the one
+subscriber that is not a viewer. An edge session subscribes through
+`SubscribeInternal`, which leaves `parityK` at its zero value, so
+`idx < s.parityK` was false for every symbol: **the origin suppressed 100 % of
+parity on the origin→edge leg**, and every viewer not served by the origin pod
+silently lost the feature. Single-pod deployments were unaffected, which is why
+every other gate was green.
+
+The rule the fix states explicitly: an edge is **exempt** from the prefix and
+receives every symbol the producer emitted, because filtering belongs at the
+pod that *serves* the viewer — the same place R19 converts to carriers
+(docs/24), and for the same reason. §5's third argument against relay-side
+generation ("an origin does not know an edge's subscribers' `k`") is exactly
+why the origin must not be the one deciding.
+
+One condition in `fanOutLocked`. Forwarding to an edge counts as forwarded —
+those bytes are on a wire.
+
+**The real gap was where it was caught.** `e2e-cluster` runs only on
+release-please PRs (docs/25 Decision 4), so the defect sat on `main` from merge
+until release. The cluster assertion is not the regression detector for this;
+it is the last line. Three tests now cover it where they run on every PR:
+`TestParityReachesEdgeSessionsWhole` (the origin's obligation),
+`TestParitySurvivesTheCascade` (two hubs, one process, both prefixes served
+downstream), and `TestParitySurvivesEdgePull` — the in-process twin of the
+cluster assertion over the real transport, which reproduces the exact CI
+symptom when the exemption is removed. Anything that adds a per-subscriber
+delivery decision to the fan-out should add its edge-leg case beside them.
+
+A second, smaller lesson: the new transport test could not read the viewer's
+keyframe with `readNextKeyframeStream`, because with parity on, a subscriber
+now also receives a `RelayCapabilities` stream and webtransport-go does not
+accept in open order — deviation 2 above, again, from the other side. It waits
+on the accounting instead of on a stream shape.
+
 ### Metrics
 
 `gawk_broadcast_*` and `gawk_relay_*` gain `parity_datagrams_total`,
