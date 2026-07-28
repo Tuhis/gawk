@@ -2308,12 +2308,46 @@ whole argument for paying its cost.
 - [`docs/34`](docs/34-live-edge-forward-parity.md) findings 2–5 — the full
   chain, including two conclusions that were withdrawn on measurement and why.
 - `e2e/datagram-loss-profile.mjs` — reconstructs each frame's arrival set from
-  `chunkIndex`/`chunkCount`/`parityIndex`, so loss is measurable with no source
-  anchor. Produced the threshold and the head-of-burst profile.
+  `chunkIndex`/`chunkCount`/`parityIndex`, so loss is measurable **from the
+  viewer alone, with no source anchor**. Produced the threshold and the
+  head-of-burst profile. That property is not incidental — see the constraint
+  below.
 - `e2e/datagram-connection-scaling.mjs` — the per-connection vs shared test.
 - Both need an origin the fleet's `-allowed-origins` accepts, and Playwright's
   Firefox: `serverCertificateHashes` refuses a `-dev-cert` relay (Mozilla bug
   1873263), so a local relay is not a substitute.
+
+**Constraint the design must not spend: viewer-side self-measurability.**
+
+Every number in this entry was obtained from a viewer, with nothing but the
+bytes it received. That is possible because a `VideoChunk` header carries
+`chunkIndex` **and `chunkCount`** — so a receiver knows how many datagrams a
+frame was split into, and therefore what it is missing — and a parity header
+carries `parityIndex` against a known `min(2, n)`. Expected and received are
+both derivable on the spot. No relay counter, no broadcaster telemetry, no
+clock alignment between two vantage points.
+
+This is what made the investigation tractable at all. Findings 2 and 3 were
+argued from counters measured at two ends and **both reached wrong
+conclusions**; finding 4 settled it in one 100-second run because the frame
+carries its own expectation. It is also what will decide whether R30 worked:
+the acceptance test is this instrument reporting ~0 % where it now reports
+3.8–12.6 %.
+
+So the chunk→connection mapping must keep a viewer able to answer *"which
+datagrams should have arrived, and on which connection?"* from the wire:
+
+- **`chunkCount` must stay frame-global**, not per-connection. A receiver that
+  only learns its own connection's share can no longer see what the frame as a
+  whole was owed.
+- **The mapping must be derivable by the receiver**, not merely known to the
+  sender — otherwise per-*connection* loss attribution dies exactly when it
+  becomes the thing worth measuring. A deterministic rule (e.g. `chunk i →
+  connection i mod N`) with `N` discoverable satisfies this; an opaque or
+  sender-chosen assignment does not.
+- **Both instruments must still run after R30.** If they need updating for the
+  new mapping, that update is part of the item, not a follow-up — a change that
+  breaks its own measurement cannot be shown to have worked.
 
 **Design questions the doc has to answer** (not decided here):
 
