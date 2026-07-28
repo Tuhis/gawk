@@ -239,6 +239,90 @@ func TestParityDoesNotCountAsFrame(t *testing.T) {
 	}
 }
 
+// An EDGE session is not a viewer, and the per-subscriber prefix must not be
+// applied to it: it is the downstream pod's plumbing, and the origin cannot
+// know that pod's viewers' k. Clamping here would strip symbols the edge can
+// never get back — which is precisely how the cascade lost them (docs/34 §5.1,
+// the R19 "convert at the serving pod" rule).
+func TestParityReachesEdgeSessionsWhole(t *testing.T) {
+	r := NewRegistry(discardLog, Options{ParityDefault: 2})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	edge := &fakeSender{}
+	s, err := r.SubscribeInternal(id, edge)
+	if err != nil {
+		t.Fatalf("SubscribeInternal: %v", err)
+	}
+	p.HandleDatagram(chunkDgram(t, false, 7, 0, 1, "aa"))
+	p.HandleDatagram(parityDgram(t, 7, 0))
+	p.HandleDatagram(parityDgram(t, 7, 1))
+	s.Close()
+
+	if got := countType(edge, wire.TypeParityChunk); got != 2 {
+		t.Fatalf("edge session received %d parity chunks, want 2 (every symbol the producer emitted)", got)
+	}
+	// Bytes that went out on the wire are forwarded, not suppressed — an
+	// origin whose only subscriber is an edge must not read as "forwarded
+	// none", which is what the cluster assertion checks.
+	bst := r.Stats().Broadcasts[r.ObfuscateID(id)]
+	if bst.ParityDatagramsForwarded != 2 || bst.ParitySuppressed != 0 {
+		t.Fatalf("ParityDatagramsForwarded/Suppressed = %d/%d, want 2/0",
+			bst.ParityDatagramsForwarded, bst.ParitySuppressed)
+	}
+}
+
+// The cascade end to end, in one process: whatever the origin hands its edge
+// session must be enough for the SECOND hop to serve its own viewers their own
+// prefixes. This is the assertion the two-pod e2e makes, at unit speed.
+func TestParitySurvivesTheCascade(t *testing.T) {
+	origin := NewRegistry(discardLog, Options{ParityDefault: 2})
+	id, pub, err := origin.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	upstream := &fakeSender{}
+	edgeSess, err := origin.SubscribeInternal(id, upstream)
+	if err != nil {
+		t.Fatalf("SubscribeInternal: %v", err)
+	}
+
+	// The edge pod: its own registry, whose publisher is fed by what the
+	// origin sent downstream (transport/edge.go's read loop, in miniature).
+	edge := NewRegistry(discardLog, Options{ParityDefault: 2})
+	edgeID, edgePub, err := edge.EdgePublish(id)
+	if err != nil {
+		t.Fatalf("edge EdgePublish: %v", err)
+	}
+	f2, f1 := &fakeSender{}, &fakeSender{}
+	v2, err := edge.SubscribeParity(edgeID, f2, 2)
+	if err != nil {
+		t.Fatalf("edge SubscribeParity(2): %v", err)
+	}
+	v1, err := edge.SubscribeParity(edgeID, f1, 1)
+	if err != nil {
+		t.Fatalf("edge SubscribeParity(1): %v", err)
+	}
+
+	pub.HandleDatagram(chunkDgram(t, false, 7, 0, 1, "aa"))
+	pub.HandleDatagram(parityDgram(t, 7, 0))
+	pub.HandleDatagram(parityDgram(t, 7, 1))
+	edgeSess.Close()
+	for _, d := range upstream.received() {
+		edgePub.HandleDatagram(d)
+	}
+	v2.Close()
+	v1.Close()
+
+	if got := countType(f2, wire.TypeParityChunk); got != 2 {
+		t.Errorf("edge-pod k=2 viewer received %d parity chunks, want 2", got)
+	}
+	if got := countType(f1, wire.TypeParityChunk); got != 1 {
+		t.Errorf("edge-pod k=1 viewer received %d parity chunks, want 1", got)
+	}
+}
+
 // With the fleet default at 0 the feature is entirely inert: no capability is
 // advertised, so producers emit nothing, and any parity that somehow arrives
 // is suppressed for every subscriber.

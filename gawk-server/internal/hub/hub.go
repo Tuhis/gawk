@@ -2163,7 +2163,13 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	// and never varies CPU with subscriber count (docs/34 §5.1).
 	if idx := parityIndexIfParity(dgram); idx >= 0 {
 		for s := range b.subs {
-			if idx < s.parityK {
+			// An EDGE session is exempt: it is not a viewer but the downstream
+			// pod's plumbing, and the prefix belongs at the pod that SERVES the
+			// viewer — the same rule R19 follows for reliable conversion
+			// (docs/24). The origin cannot know an edge's subscribers' k, so
+			// clamping the internal leg strips symbols that hop can never get
+			// back, and every viewer behind the cascade silently loses parity.
+			if s.internal || idx < s.parityK {
 				s.enqueueLocked(dgram)
 				b.parityDatagramsForwarded++
 			} else {
@@ -2230,6 +2236,10 @@ type Subscriber struct {
 	// retransmission, so parity is waste) and whenever the fleet is off.
 	// parityRequested is what the viewer ASKED for, kept only so /statusz can
 	// show a refusal rather than silently serving less.
+	//
+	// Both are meaningless on an INTERNAL subscriber and deliberately left at
+	// 0: an edge is not a viewer, so fanOutLocked exempts it from the prefix
+	// entirely and forwards every symbol for the downstream pod to filter.
 	parityK         int
 	parityRequested int
 

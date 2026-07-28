@@ -156,12 +156,15 @@ parity_pods=0
 parity_total=0
 for p in "${PODS[@]}"; do
   st=$(statusz "$p") || continue
-  subs=$(jq '[.broadcasts[].subscribers] | add // 0' <<<"$st")
+  # Count the subscribers parity is actually FOR: a reliable/deep-buffer
+  # viewer is served none by design (QUIC already recovers its loss), so a pod
+  # holding only those must not be accused of losing symbols.
+  subs=$(jq '[.broadcasts[].subscriberDetails[]? | select((.internal // false) | not) | select((.parityK // 0) > 0)] | length' <<<"$st")
   fwd=$(jq '[.broadcasts[].parityDatagramsForwarded] | add // 0' <<<"$st")
   parity_total=$((parity_total + fwd))
   if [ "$subs" -gt 0 ]; then
     if [ "$fwd" -le 0 ]; then
-      echo "FAIL: R29 parity — pod $p serves $subs subscriber(s) but forwarded no parity; the cascade lost the symbols" >&2
+      echo "FAIL: R29 parity — pod $p serves $subs parity-negotiated viewer(s) but forwarded no parity; the cascade lost the symbols" >&2
       exit 1
     fi
     parity_pods=$((parity_pods + 1))
