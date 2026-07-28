@@ -2249,6 +2249,120 @@ never a larger `k`.
 
 ---
 
+## R30 — Connection interleaving for live-edge delivery
+
+**Status**: not started. Design doc to be written separately; this entry exists
+to carry the evidence and the reasoning so the design starts from measurements
+rather than from scratch.
+
+**Goal**: eliminate the burst-length datagram loss measured in R29 finding 4
+**without adding latency and without lowering quality**, by splitting each delta
+frame's datagrams across several WebTransport connections so that no single
+connection ever sees a burst long enough to overflow.
+
+**Why this and not the two obvious alternatives.** The loss is not a lossy
+network in the usual sense — it is a threshold. Measured on the affected
+viewer's own machine against the live fleet
+([`docs/34`](docs/34-live-edge-forward-parity.md) finding 4, 2487 frames):
+
+| chunks in the frame | 1–8 | 9 | 11 | 14 | 18 |
+|---|---|---|---|---|---|
+| chunk loss | **0.00 %** | 0.9 % | 3.8 % | 6.8 % | 8.5 % |
+
+986 frames of eight chunks or fewer lost **not one datagram**. Past eight, loss
+climbs with burst length. It lands on the *head* of each burst (index 2 worst at
+8.7 %, zero from index 10 on), which is why parity — written last — loses
+**0.00 %** while chunks lose 3.76 %, and why the last chunk of a frame is
+effectively never lost. It is a buffer roughly eight packets deep evicting
+oldest-first, **below anything JavaScript can reach**: leg A is clean, the relay
+drops nothing, the receiver's drain rate is irrelevant (stalling it 10 ms every
+25 datagrams moved loss 3.13 % → 3.14 %), and the WebTransport receive-buffer
+attribute is inert on Firefox (finding 3).
+
+So the lever is burst length, and there are exactly three ways to shorten it:
+
+1. **Make frames smaller** — lower rung or bitrate. Works; costs picture
+   quality.
+2. **Pace the burst** — spread a frame's datagrams across its interval. Works;
+   costs up to a frame interval of latency on the last chunk.
+3. **Split the burst across transports** — each connection sees `n/N` chunks,
+   sent simultaneously. Costs neither.
+
+**Owner decision (2026-07-29): 1 and 2 are rejected. Minimal latency, maximal
+quality.** Both trade away exactly what the product exists to deliver, so the
+harder option is the right one.
+
+**What makes 3 physically available** is finding 5: the bottleneck is
+**per-connection**, not shared. Four simultaneous connections to the same
+broadcast — 4× the aggregate traffic through the same host and path — cost about
+10 % more per-connection loss (3.55 % → 3.90 %), nowhere near proportional. Each
+connection has its own headroom. Split an 18-chunk frame three ways and every
+connection carries six, under the measured threshold on all of them.
+
+**Interleaving is the zero-latency form of pacing** — same mechanism (shorten
+the burst any one connection sees), without spreading it in time. That is the
+whole argument for paying its cost.
+
+**Evidence and instruments** (all merged, re-runnable against a live broadcast):
+
+- [`docs/34`](docs/34-live-edge-forward-parity.md) findings 2–5 — the full
+  chain, including two conclusions that were withdrawn on measurement and why.
+- `e2e/datagram-loss-profile.mjs` — reconstructs each frame's arrival set from
+  `chunkIndex`/`chunkCount`/`parityIndex`, so loss is measurable with no source
+  anchor. Produced the threshold and the head-of-burst profile.
+- `e2e/datagram-connection-scaling.mjs` — the per-connection vs shared test.
+- Both need an origin the fleet's `-allowed-origins` accepts, and Playwright's
+  Firefox: `serverCertificateHashes` refuses a `-dev-cert` relay (Mozilla bug
+  1873263), so a local relay is not a substitute.
+
+**Design questions the doc has to answer** (not decided here):
+
+- **How many connections, and fixed or adaptive?** The threshold is ~8 on this
+  path and frames run to ~23 chunks, so N=3 covers observed sizes — but loss
+  magnitude varied 3.8 % → 12.6 % on the *same* machine between sessions, so the
+  design should key on burst length rather than on a loss rate, and consider
+  adapting N to measured frame size.
+- **Which connection carries what.** Keyframe streams (R8), parity (R29), audio
+  (R15), and the control traffic that is not media at all — ClockMapping,
+  ViewerCount, DeliveryAck, TelemetryHello — need homes. Parity's current
+  immunity comes from being written last; on a split it should not land at the
+  head of any connection's burst.
+- **Primary-session semantics.** Session identity (R28's 0x0D token), R18 viewer
+  count, R21 DVR cursor, R19 delivery negotiation and R17 resume are all
+  per-session concepts today. One connection has to be primary, and the failure
+  of a secondary must degrade rather than tear down.
+- **How chunks map to connections** — round-robin vs contiguous blocks. With
+  head-drop the position *within each connection's* burst is what matters, so
+  the mapping is a real design variable, not a formality.
+- **Relay cost against R17.** N× per-subscriber state (queue, drain goroutine,
+  DVR cursor, carrier and keyframe streams), N× handshakes and keepalives,
+  against a ~1000-viewer hot-broadcast target. This is the item's main expense.
+- **Join cost and the R2 rate limiter.** N handshakes per viewer at join, into a
+  per-IP limiter of 3/s burst 10, with rollout reconnect herds (R17 W6).
+- **N independent congestion controllers on one path** — fairness and aggregate
+  aggressiveness at scale; the N=4 test says they coexist on one link, which is
+  not the same as saying 1000 viewers × N do.
+- **Live-edge only**, like parity: Resilient and Deep-buffer ride reliable
+  carriers where QUIC retransmits, so there is nothing to win there.
+
+**Named risks**:
+
+- **The core claim is a composition, not a direct measurement.** "Below eight
+  chunks a connection loses nothing" plus "connections do not compete for that
+  headroom" implies interleaving works — but nothing has yet split a real send
+  side and measured it. The first chunk of the design must be exactly that
+  experiment, and it must be able to fail.
+- **The threshold is one path's property.** It held on the affected viewer, and
+  that is the path that matters, but a fixed N tuned to it may not generalize.
+- **Connection count is the scaling axis R17 spent an entire milestone on.**
+  Multiplying it is the kind of change that is cheap at one viewer and expensive
+  at a thousand.
+
+**Non-goals**: capping frame size, pacing (both rejected above), and any change
+to Resilient/Deep-buffer delivery.
+
+---
+
 ## Explicitly out of scope (unchanged from CLAUDE.md)
 
 Restated here so the roadmap doesn't quietly reopen settled decisions:
