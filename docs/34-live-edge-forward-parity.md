@@ -823,6 +823,66 @@ they should be considered:
   point the existing code starts working with no change and the gate goes green
   on its own. That is not a plan, but it is why the write stays.
 
+### Finding 4 — it is a burst-length threshold on the path (2026-07-29)
+
+Findings 2 and 3 both reasoned about *where* datagrams die from counters
+measured at two ends. `e2e/datagram-loss-profile.mjs` measures it from the wire
+instead: chunk headers carry `chunkIndex` + `chunkCount` and parity headers
+carry `parityIndex`, so a viewer reconstructs each frame's entire arrival set
+and needs no source anchor at all. 100 s on a live broadcast, 2487 frames:
+
+| chunks in the frame | 1–8 | 9 | 10 | 11 | 12 | 13 | 14 | 16 | 18 |
+|---|---|---|---|---|---|---|---|---|---|
+| chunk loss | **0.00 %** | 0.9 % | 2.1 % | 3.8 % | 4.8 % | 6.0 % | 6.8 % | 8.3 % | 8.5 % |
+
+**986 frames of eight chunks or fewer lost not one datagram.** Past eight, loss
+climbs monotonically with burst length. Overall 3.76 % of chunks, and — the
+production asymmetry, finally reproduced — **0.00 % of parity** (4913/4913).
+
+Where the loss lands says what kind of buffer it is:
+
+| chunk index | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | ≥10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loss | 4.6 % | 6.8 % | 8.7 % | 7.6 % | 5.0 % | 2.3 % | 1.7 % | 0.5 % | 0.6 % | 0.2 % | **0 %** |
+
+The head of each burst dies and the tail survives — which is why parity, written
+last by `broadcaster.ts`, is never lost, and why the last chunk of a frame loses
+0.04 % against 4.2 % for the others. **Not size**: indices 10–22 are full 1024 B
+datagrams and lossless, so the "parity is 7 bytes smaller" hypothesis is dead.
+
+That places the drop on the relay→viewer path, in a buffer roughly eight packets
+deep that evicts oldest-first, **below anything JavaScript can reach**:
+
+- Leg A is clean — `ingressChunksLost` and `ingressFramesLost` both 0/s at the
+  origin while this was measured, and the relay's `datagramsDropped` is 0.
+- The receiver's drain rate is irrelevant: stalling the reader 10 ms every 25
+  datagrams changed loss by 0.01 points (3.13 % → 3.14 %) in a paired run.
+- The receive-buffer attribute is irrelevant (finding 3).
+
+All three follow from the drop being under the QUIC layer rather than in the
+page — which is also why the JS-visible queue depth of 1 never mattered.
+
+**Corrections this forces.** Finding 3 claimed the mechanism was "reproduced on
+demand" by stalling the reader; that comparison was across separate runs with
+different stall settings and a drifting source rate, and within a proper pair
+the effect is zero. It is withdrawn. The head-drop *conclusion* survives, but on
+this measurement rather than that one.
+
+**What it means for the product**, and this is the useful part: **loss is a
+function of encoded frame size.** A frame that fits in eight datagrams is
+delivered perfectly on a link that loses 8.5 % of an eighteen-datagram frame. So
+the playbook's existing "lower the rung or the bitrate" advice is not a shrug —
+it is the direct remedy, because it moves frames under the threshold. Parity is
+doing exactly its job at the small end and is structurally outmatched at the
+large end, where a burst can lose four or more chunks at once.
+
+The other remedy is to stop emitting the burst: pace a frame's datagrams over
+its interval so no more than a handful are ever in flight back-to-back. That is
+now supported by a mechanism and a quantitative target rather than a hunch —
+but it is still **unimplemented and unmeasured**, it changes the send path for
+every viewer, and the threshold above is a property of one path measured from
+one machine. Sizing it wants the same treatment this finding got.
+
 ### Metrics
 
 `gawk_broadcast_*` and `gawk_relay_*` gain `parity_datagrams_total`,

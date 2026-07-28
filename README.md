@@ -284,10 +284,24 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   A/A noise floor, with the repeats disagreeing on direction: the attribute
   stores and reads back while dropping continues unchanged, so a readback proves
   storage, never effect. The same runs confirm the mechanism — stalling the
-  reader collapses chunks while the parity rate holds. Until Firefox ships the
-  real attribute the answer for those viewers is Resilient or Deep-buffer mode,
-  which never touch the datagram queue.
+  reader changes loss by 0.01 points. The drop is not in the page at all — see
+  the next entry.
   ([docs/34](docs/34-live-edge-forward-parity.md))
+- **Datagram loss is a function of ENCODED FRAME SIZE, not of the network being
+  "bad"** — measured with `e2e/datagram-loss-profile.mjs`, which reconstructs
+  each frame's arrival set from `chunkIndex`/`chunkCount` in the headers and so
+  needs no source anchor. On a real link: frames of **≤ 8 chunks lost 0.00 %**
+  (986 frames, not one datagram), while loss climbs monotonically past that —
+  3.8 % at 11 chunks, 8.5 % at 18. The loss lands on the HEAD of each frame's
+  burst (index 2 worst at 8.7 %, **zero from index 10 on**), which is why
+  parity — written last — loses 0.00 %, and why the last chunk of a frame is
+  effectively never lost. It is a path buffer ~8 packets deep evicting
+  oldest-first, **below anything JavaScript can reach**: leg A is clean, the
+  relay drops nothing, and neither the reader's speed nor the WebTransport
+  buffer attribute moves it. Practical consequence: "lower the rung or the
+  bitrate" is the direct remedy, because it moves frames under the threshold —
+  and a big frame can lose four chunks at once, which is what outmatches k=2
+  parity. ([docs/34](docs/34-live-edge-forward-parity.md))
 - **Firefox's `VideoEncoder` emits a malformed AVCC record** (bad reserved
   bits + a duplicated NALU-type byte); the viewer repairs it in
   `normalizeAvccExtradata` before configuring the decoder.
