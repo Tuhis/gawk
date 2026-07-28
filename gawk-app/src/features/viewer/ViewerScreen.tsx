@@ -467,6 +467,24 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
                 ? 'armed'
                 : 'arming',
     },
+    // R29 finding 2 (docs/34): whether this browser gave us a receive queue
+    // deep enough to hold a frame's burst. Three states have to stay apart,
+    // because the failure is silent — a browser that accepts the assignment
+    // and ignores it is indistinguishable from success at the call site — and
+    // an unreported buffer reads *unknown*, never green (the docs/33 TM8 rule
+    // that an absence of evidence is not health).
+    {
+      name: 'DatagramReceiveBuffer',
+      active: stats?.datagramBuffer?.applied === true,
+      detail:
+        stats?.datagramBuffer == null
+          ? 'unknown'
+          : stats.datagramBuffer.property == null
+            ? 'unsupported → browser default'
+            : stats.datagramBuffer.applied
+              ? `${stats.datagramBuffer.effective} datagrams (${stats.datagramBuffer.property})`
+              : `requested ${stats.datagramBuffer.requested}, browser kept ${stats.datagramBuffer.effective}`,
+    },
   ];
   // The element's buffered window — span, and how far the playhead trails the
   // buffered live edge (the fullscreen half of the live-edge delta).

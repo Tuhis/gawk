@@ -15,6 +15,7 @@ import {
   type ConnectOptions,
   type KeyframeStreamFrame,
 } from './connection';
+import { applyIncomingDatagramBuffer, type DatagramBufferStats } from './datagram-buffer';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import type { TelemetryHelloMessage } from './wire';
 import { TimeSyncClient, type TimeSyncStats } from './time-sync';
@@ -62,6 +63,12 @@ export interface ViewerTransport {
   // row tells `reliable` from `requested but datagrams served`. Optional so
   // test fakes without a carrier path keep compiling; null before connect.
   sampleCarrierStats?(): CarrierCounters | null;
+  // R29 finding 2 (docs/34): what this session's incoming datagram queue was
+  // raised to, and whether the browser honoured it. Lives on the transport
+  // because only the realm holding the WebTransport can set or read the
+  // attribute — on the worker path the main thread has no handle on it at all.
+  // Null before connect, and on transports that never touch a real session.
+  sampleDatagramBuffer?(): DatagramBufferStats | null;
   close(): void;
 }
 
@@ -78,6 +85,7 @@ export class LocalViewerTransport implements ViewerTransport {
   private timeSync: TimeSyncClient | null = null;
   private timeSyncWriter: WritableStreamDefaultWriter<BufferSource> | null = null;
   private carrier = newCarrierCounters();
+  private datagramBuffer: DatagramBufferStats | null = null;
   private abort = new AbortController();
   private closing = false; // close() called — suppress onClosed
   private closedReported = false;
@@ -91,6 +99,18 @@ export class LocalViewerTransport implements ViewerTransport {
     const wt = await connectWebTransport(this.url, this.opts);
     this.wt = wt;
     this.sampler = new ConnectionStatsSampler(wt);
+
+    // R29 finding 2 (docs/34): raise the browser's incoming datagram queue
+    // before a single read happens, because it is the queue — not the reader —
+    // that decides whether a frame's burst survives. This is deliberately here
+    // rather than in the shared connectWebTransport: a broadcaster's incoming
+    // queue carries only control traffic, and this class is the one object
+    // that exists in every viewer placement (main thread, viewer worker, and
+    // the nested transport worker), so setting it here reaches all three with
+    // no message plumbing.
+    this.datagramBuffer = applyIncomingDatagramBuffer(
+      (wt as { datagrams?: unknown }).datagrams,
+    );
 
     // Relay clock sync (R5 Q2): ping over this session's datagrams; replies
     // are intercepted below, before the video path ever sees them. Feature-
@@ -215,6 +235,10 @@ export class LocalViewerTransport implements ViewerTransport {
 
   sampleCarrierStats(): CarrierCounters | null {
     return { ...this.carrier };
+  }
+
+  sampleDatagramBuffer(): DatagramBufferStats | null {
+    return this.datagramBuffer;
   }
 
   close(): void {

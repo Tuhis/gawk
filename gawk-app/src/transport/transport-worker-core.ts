@@ -7,6 +7,7 @@
 // render work. DOM-free and unit-testable with a fake host + fake transport.
 
 import type { CarrierCounters, ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
 import type { TimeSyncStats } from './time-sync';
 import type { DecoderConfigMessage, TelemetryHelloMessage } from './wire';
@@ -50,6 +51,11 @@ export type TransportWorkerEvent =
       stats: TransportConnectionStats | null;
       timeSync: TimeSyncStats | null;
       carrier: CarrierCounters | null;
+      // R29 finding 2 (docs/34): the receive-buffer verdict. It can only be
+      // read where the WebTransport lives, which on this path is here — so
+      // without this field the main thread's gate could never report the
+      // placement the loss was actually measured on.
+      datagramBuffer: DatagramBufferStats | null;
     };
 
 export interface TransportWorkerHost {
@@ -106,6 +112,7 @@ export class TransportWorkerCore {
             stats: transport.sampleConnectionStats(),
             timeSync: transport.sampleTimeSync(),
             carrier: transport.sampleCarrierStats?.() ?? null,
+            datagramBuffer: transport.sampleDatagramBuffer?.() ?? null,
           });
         }, CONN_STATS_INTERVAL_MS) as unknown as number;
       })

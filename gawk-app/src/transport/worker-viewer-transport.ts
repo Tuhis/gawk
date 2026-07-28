@@ -5,6 +5,7 @@
 // pipeline that owns it.
 
 import type { CarrierCounters, ConnectOptions } from './connection';
+import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
 import type { TimeSyncStats } from './time-sync';
 import type { TransportWorkerCommand, TransportWorkerEvent } from './transport-worker-core';
@@ -35,6 +36,7 @@ export class WorkerViewerTransport implements ViewerTransport {
   private latestStats: TransportConnectionStats | null = null;
   private latestTimeSync: TimeSyncStats | null = null;
   private latestCarrier: CarrierCounters | null = null;
+  private latestDatagramBuffer: DatagramBufferStats | null = null;
   private closing = false;
 
   constructor(createWorker: () => TransportWorkerLike, url: string, opts: ConnectOptions) {
@@ -97,6 +99,7 @@ export class WorkerViewerTransport implements ViewerTransport {
             this.latestStats = ev.stats;
             this.latestTimeSync = ev.timeSync;
             this.latestCarrier = ev.carrier;
+            this.latestDatagramBuffer = ev.datagramBuffer;
             break;
         }
       };
@@ -124,6 +127,10 @@ export class WorkerViewerTransport implements ViewerTransport {
 
   sampleCarrierStats(): CarrierCounters | null {
     return this.latestCarrier;
+  }
+
+  sampleDatagramBuffer(): DatagramBufferStats | null {
+    return this.latestDatagramBuffer;
   }
 
   close(): void {

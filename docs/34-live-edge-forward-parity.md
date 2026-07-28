@@ -581,6 +581,117 @@ now also receives a `RelayCapabilities` stream and webtransport-go does not
 accept in open order — deviation 2 above, again, from the other side. It waits
 on the accounting instead of on a stream shape.
 
+### Finding 2 — the loss was in the viewer's receive queue (2026-07-28)
+
+"Still manual" below says real-link burstiness is unproven and that
+`parity-ineffective` is how it gets checked on the fleet rather than in a lab.
+It fired, on viewer session `9b0788763a8f5021eaee4ca8` (Firefox 154 / macOS,
+app 0.37.0, broadcast `cf6bfb64241d`, live-edge datagrams, `parityK` 2 served).
+The check worked. **Its verdict was wrong, and the reason is worth keeping.**
+
+Reconciled across three vantage points over one matched 1750 s window —
+broadcaster telemetry, `/statusz` on the serving origin pod, viewer telemetry:
+
+| | sent | lost before the viewer's reassembler |
+|---|---|---|
+| video delta chunks | 240.34/s | **10.48 %** |
+| parity symbols | 50.20/s | **0.05 %** |
+| audio | 50.00/s | 0.00 % (reliable carrier — not evidence) |
+| keyframes | 1.92/s | 0.00 % (reliable streams) |
+
+Of 27.89 delta frames/s: 47.5 % intact, 24.2 % repaired by parity, 28.2 %
+dropped. Leg A clean (`ingressFramesLost` 0/s). Relay per-subscriber `dropped`
+0, `sendErrors` 0, `queueDepth` 0. **The relay sent every byte**, exactly as in
+§1.
+
+**The 10.48 % / 0.05 % split is the whole finding.** Both are ~1200 B
+datagrams, interleaved in one per-subscriber FIFO, drained by one goroutine
+onto one QUIC connection. No network can lose 10 % of one and 0 % of the other.
+Nor is it size: a parity symbol is padded to the *longest* chunk in its frame,
+so parity datagrams are among the largest on the wire, while delta chunks
+average ~926 B. If the path were dropping big packets, parity would die first.
+
+What separates them is **order**. `broadcaster.ts` sends each frame as
+`[...datagrams, ...parity]` — one back-to-back burst, parity last — and the
+relay's FIFO preserves it. The [WebTransport receive
+algorithm](https://w3c.github.io/webtransport/) drops from the **head** of the
+incoming queue on overflow. A queue shallower than a burst therefore evicts the
+*earliest* chunks of each frame and never the parity, before the read loop is
+scheduled at all. The loss also scales with burst size while parity's does not:
+
+| chunks/frame | chunk loss | parity loss |
+|---|---|---|
+| 7.84 | 8.84 % | 0.13 % |
+| 9.25 | 11.62 % | 0.07 % |
+
+r(chunk loss, burst size) = **+0.45**; r(parity loss, load) = +0.06. The loss is
+stationary (per-2 s damage rate p05–p95 36–69 %, never zero, uncorrelated with
+jitter or render load), so it is not episodic stalls. Safari viewers on the
+same broadcast at the same time lost parity roughly *in proportion* — ordinary
+loss, a different profile — so the signature is receiver-specific.
+
+**Why parity could not cover it.** Per-frame damage incidence (63 % of
+multi-chunk frames) matches i.i.d. at ~10 % beautifully; the *conditional
+severity* does not. i.i.d. predicts 9.5 % of damaged frames beyond k=2;
+measured **53.8 %**. Head-eviction takes a *run*, so a hit frame typically
+loses three or more chunks — the one shape §4.1's MDS code cannot repair at any
+k worth paying for. This is §1's burst caveat arriving, but not from the
+network: **gawk was manufacturing the burst and the browser was truncating it.**
+
+**The fix is the queue, not the code.** `transport/datagram-buffer.ts` raises
+`incomingMaxBufferedDatagrams` (spec name; Firefox ships only the older
+`incomingHighWaterMark`, Chromium is removing it, so both are tried, spec name
+first) to `INCOMING_DATAGRAM_BUFFER` = 256 — ~20 frames of burst headroom,
+~300 KB. It only ever *raises*: the default is implementation-defined and
+clamping a deeper one down would cause the loss this exists to stop. It is
+applied in `LocalViewerTransport.connect()`, deliberately not in the shared
+`connectWebTransport`: a broadcaster's incoming queue carries only control
+traffic, and that class is the one object present in **every** viewer placement
+— main thread, viewer worker, and the nested transport worker — so one call
+site reaches all three. The attribute can only be touched in the realm holding
+the `WebTransport`, which is why it cannot live on the main thread.
+
+**A deep queue is not added latency.** The reader keeps up on average; it is
+the burst that overflows. What changes is that a datagram now arrives *late*
+rather than *never*, and a late one the reorder buffer can account for
+(`framesDroppedLate`) where a vanished one is invisible.
+
+**Reporting it is half the change.** A UA may accept the assignment and ignore
+it, which reads as success at the call site — precisely how a fleet-wide no-op
+would ship unnoticed. So the verdict travels: `DatagramBufferStats` →
+`ViewerTransport.sampleDatagramBuffer()` → the `connStats` worker hop →
+`ViewerStats.datagramBuffer` → a new **`DatagramReceiveBuffer`** feature gate
+holding four states apart — applied, set-and-ignored, unsupported, and
+**unknown, which is never green** (the docs/33 TM8 rule).
+
+**Two accounting traps this exposed**, both of which made the session harder to
+read than it needed to be:
+
+1. `parityRecoveryFailures` was **0 for the entire session** while 6022 frames
+   dropped. It counts only GF-arithmetic failures; `tryRecover`'s
+   `missing > parityHeld` case returns early with no counter at all. A zero
+   there cannot be read as "parity is fine" — it cannot distinguish "repaired"
+   from "never attempted".
+2. `framesDroppedIncomplete` is an **eviction** counter (`evictIfFull`,
+   `MAX_ASSEMBLIES` 8), not a per-frame verdict. It over-reported by 2.6 % here
+   — parity-created assemblies that can never complete evict too.
+
+**And one structural hole, left as-is.** 20.0 % of this broadcast's deltas are
+single-chunk (source ratio 1.80 symbols/delta; `computeParity` returns
+`min(k, n)`). Such a frame's one parity symbol is a byte-for-byte duplicate of
+its only chunk, yet `tryRecover` bails on `received === 0` because a parity
+header carries no timestamp (§4.2's recorded consequence). Parity is on the
+wire and structurally unusable for ~7 % of the drops. Fixing it means either
+inferring the timestamp from neighbours or widening the header past the 1200 B
+cap §4.2 sized it against — neither belongs in a queue-depth fix.
+
+**Not changed here, deliberately**: `parity-ineffective`'s discriminator
+(deviation 4) split this session as "under-provisioned → raise the fleet level",
+because 46 % recovery is "plenty". Raising `k` would have bought nearly nothing.
+The discriminator that actually separates the two worlds is the parity-loss vs
+chunk-loss *asymmetry*, which telemetry can only now compute because
+`datagramBuffer` rides `ViewerStats` — a follow-up, not a widening of this fix.
+
 ### Metrics
 
 `gawk_broadcast_*` and `gawk_relay_*` gain `parity_datagrams_total`,
@@ -598,3 +709,17 @@ forwarder drops independently by construction. `parity-ineffective` is how
 that gets checked continuously on the fleet rather than in a lab, and its
 verdict on real sessions is what should decide whether the burst caveat
 matters in practice.
+
+Finding 2 is the first such verdict, and it says the burst that mattered was
+**self-inflicted at the receiver**, not the network's. That leaves the original
+question open: no real link has yet been shown to be bursty on its own. The
+measurement to re-run once the buffer fix is deployed is the same one — chunk
+loss against parity loss on a live Firefox session. If they converge, the
+receive queue was the whole of it; if chunk loss stays above parity loss, there
+is a second mechanism and §9's burst model earns its keep.
+
+The buffer fix's own on-hardware confirmation is likewise pending: the unit
+tests pin the knob and its reporting, but only a real Firefox can say whether
+it honours the attribute. The `DatagramReceiveBuffer` gate exists to answer
+exactly that, from a Copy-diagnostics blob or the R28 dashboard, without
+another three-vantage reconciliation.

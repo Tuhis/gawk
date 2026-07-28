@@ -617,10 +617,20 @@ func TestSubscriberReceivesAudio(t *testing.T) {
 		}
 	}
 
-	// Audio's own sequence space, monotonic and gapless on a loopback link.
+	// Audio's own sequence space, monotonic and gapless on a loopback link —
+	// anchored on the FIRST seq observed, never on 0.
+	//
+	// Audio frames are unreliable datagrams with no per-frame join prime (the
+	// hub caches the audio *config*, not the packets), so anything the
+	// publisher emitted before this subscriber attached was never fanned out
+	// to it. Demanding seqs[0] == 0 asserts that the viewer won a startup race
+	// the relay never promised; it lost that race on a loaded CI runner
+	// (2026-07-28, seqs 1..5) and turned an unrelated PR red. Contiguity of
+	// what the viewer *does* receive is the real claim, and it still fails on
+	// a genuine drop.
 	for i, seq := range seqs {
-		if seq != uint32(i) {
-			t.Errorf("audio seq[%d] = %d, want %d", i, seq, i)
+		if want := seqs[0] + uint32(i); seq != want {
+			t.Errorf("audio seq[%d] = %d, want %d (gap in a loopback stream)", i, seq, want)
 		}
 	}
 

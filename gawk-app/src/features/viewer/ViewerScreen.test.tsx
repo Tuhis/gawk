@@ -544,6 +544,10 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
     expect(blob.samples).toHaveLength(1);
     expect(blob.samples[0].stats.featureGates).toEqual([
       { name: 'NativeVideoFullscreen', active: false, detail: 'main-thread pipeline → pseudo' },
+      // R29 finding 2: this sample carries no datagramBuffer, and the gate says
+      // so rather than guessing — the distinction Copy diagnostics has to
+      // preserve for a remote read to mean anything.
+      { name: 'DatagramReceiveBuffer', active: false, detail: 'unknown' },
     ]);
     expect(blob.samples[0].stats.presentationSurface).toEqual({
       tier: null,
@@ -583,6 +587,60 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       elementHeight: null,
       elementFrames: null,
     });
+  });
+
+  // R29 finding 2 (docs/34): the gate has to distinguish three states, because
+  // the failure it exists for is a SILENT one — a browser that accepts the
+  // assignment and ignores it looks identical to success from the call site,
+  // and that is exactly how a fleet-wide no-op would ship unnoticed.
+  it('DatagramReceiveBuffer gate reports applied, ignored and unsupported apart', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+
+    // Nothing reported yet: not green. An absence of evidence is never "ok".
+    openStats();
+    let value = screen.getByText('DatagramReceiveBuffer').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✗');
+    expect(value.getAttribute('title')).toBe('unknown');
+
+    act(() =>
+      sessions[0].cbs.onStats({
+        datagramBuffer: {
+          property: 'incomingHighWaterMark',
+          requested: 256,
+          effective: 256,
+          applied: true,
+        },
+      }),
+    );
+    value = screen.getByText('DatagramReceiveBuffer').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✓');
+    expect(value.getAttribute('title')).toBe('256 datagrams (incomingHighWaterMark)');
+
+    // Set and ignored — the case the whole gate exists to make visible.
+    act(() =>
+      sessions[0].cbs.onStats({
+        datagramBuffer: {
+          property: 'incomingMaxBufferedDatagrams',
+          requested: 256,
+          effective: 4,
+          applied: false,
+        },
+      }),
+    );
+    value = screen.getByText('DatagramReceiveBuffer').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✗');
+    expect(value.getAttribute('title')).toBe('requested 256, browser kept 4');
+
+    // No attribute at all: the browser buffers whatever it buffers.
+    act(() =>
+      sessions[0].cbs.onStats({
+        datagramBuffer: { property: null, requested: 256, effective: null, applied: false },
+      }),
+    );
+    value = screen.getByText('DatagramReceiveBuffer').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✗');
+    expect(value.getAttribute('title')).toBe('unsupported → browser default');
   });
 });
 

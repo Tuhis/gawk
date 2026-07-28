@@ -263,6 +263,21 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   the packetizer reads `wt.datagrams.maxDatagramSize` at runtime rather than
   assume the ~1200-byte ceiling; a datagram over the negotiated limit is
   silently dropped. ([docs/11](docs/11-cross-browser-compatibility.md))
+- **The browser's incoming datagram queue drops the OLDEST datagram, and it is
+  shallow by default** — so a frame's back-to-back burst (its ~9-11 chunks,
+  then its two parity symbols) loses its *head*, not its tail, before the read
+  loop is ever scheduled. No reader can win that race, and it is invisible:
+  nothing counts it on either side. A live Firefox 154 session lost **10.5 % of
+  delta chunks and 0.05 % of parity** on one FIFO over one connection — which
+  no network can do, and which is exactly the correlated multi-chunk loss a
+  per-frame k=2 code cannot repair. `LocalViewerTransport` now raises
+  `incomingMaxBufferedDatagrams` (Firefox ships only the older
+  `incomingHighWaterMark`; Chromium is removing it, so both are tried) to 256
+  and reports the result in the **`DatagramReceiveBuffer`** feature gate,
+  because a browser that accepts the assignment and ignores it looks identical
+  to success. Set it in the realm that owns the `WebTransport` — on the worker
+  path the main thread has no handle on it.
+  ([docs/34](docs/34-live-edge-forward-parity.md))
 - **Firefox's `VideoEncoder` emits a malformed AVCC record** (bad reserved
   bits + a duplicated NALU-type byte); the viewer repairs it in
   `normalizeAvccExtradata` before configuring the decoder.

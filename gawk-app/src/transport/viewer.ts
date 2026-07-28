@@ -11,6 +11,7 @@ import {
   type DecodedAudioChunk,
 } from './audio-decode';
 import type { ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
 import {
   LocalViewerTransport,
@@ -275,6 +276,13 @@ export interface ViewerStats extends ReassemblerStats {
   // Carriers ending in a reset — the relay shedding a stalled/superseded GOP
   // tail; each costs at most one resync at the next keyframe.
   carrierStreamsAborted: number | null;
+  // R29 finding 2 (docs/34): how deep this browser's incoming datagram queue
+  // is, and whether it took the depth we asked for. Forwarded verbatim from
+  // the transport — nothing is derived here, because a shallow queue evicting
+  // the head of each frame's burst is the difference between parity repairing
+  // a loss and parity being structurally unable to. Null where the transport
+  // does not report one (fakes, and anything not holding a real session).
+  datagramBuffer: DatagramBufferStats | null;
   // R15 (docs/20): the audio lane, as observed by this pipeline. audioPresent
   // flips true on the first AudioConfig/packet and is what gates every piece
   // of viewer audio UI — a video-only stream renders exactly today's viewer.
@@ -1194,6 +1202,7 @@ export class ViewerPipeline {
       carrierStreams: carrier?.streamsOpened ?? null,
       carrierRecords: carrier?.recordsReceived ?? null,
       carrierStreamsAborted: carrier?.streamsAborted ?? null,
+      datagramBuffer: this.transport?.sampleDatagramBuffer?.() ?? null,
       audioState: this.audioState,
       audioPacketsReceived: reasm?.audioPacketsReceived ?? 0,
       audioPacketsDecoded: audioStats?.packetsDecoded ?? 0,
