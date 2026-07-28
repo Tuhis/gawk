@@ -40,6 +40,12 @@ export type DatagramBufferProperty = (typeof PROPERTIES)[number];
 // documented meaning is the readable stream's queuing high-water mark — a
 // backpressure signal, not a drop threshold. Writing it succeeds and reads
 // back, so a readback proves storage and nothing more.
+//
+// Measured, not assumed (docs/34 finding 3): a paired A/B against a live
+// broadcast — two subscribers, same seconds, hwm 1 vs 8192, reader stalled to
+// stress the queue — moves delivery by less than its own A/A noise floor, with
+// the repeats disagreeing on direction. `e2e/firefox-datagram-buffer.mjs`
+// re-runs it when Firefox ships the real attribute.
 const DROP_THRESHOLD_PROPERTY: DatagramBufferProperty = 'incomingMaxBufferedDatagrams';
 
 export interface DatagramBufferStats {
