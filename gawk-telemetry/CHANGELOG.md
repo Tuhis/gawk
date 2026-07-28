@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.3.0...gawk-telemetry-v1.3.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **r29:** stop the datagram-buffer gate claiming a fix Firefox cannot take ([#182](https://github.com/Tuhis/gawk/issues/182)) ([96fc4bc](https://github.com/Tuhis/gawk/commit/96fc4bce9f29fa6ac4ae2efee1e7108008e62135))
+
 ## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.2.2...gawk-telemetry-v1.3.0) (2026-07-28)
 
 
