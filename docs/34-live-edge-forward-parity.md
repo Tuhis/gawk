@@ -722,27 +722,59 @@ maxDatagramSize                1024
 Two facts, and the second is the one finding 2 got wrong:
 
 1. **Firefox's default queue is one datagram.** Against a frame burst of ~11.
-   That is the mechanism finding 2 inferred, confirmed at the source, and it is
-   as bad as the loss pattern implied.
+   That is the mechanism finding 2 inferred, confirmed at the source.
 2. **Firefox does not expose the attribute that governs dropping.** The spec
    ties the drop threshold to `[[IncomingMaxBufferedDatagrams]]`, reachable
    only through the spec-named attribute. `incomingHighWaterMark` is the
-   pre-rename attribute, and its documented meaning is the readable stream's
-   queuing high-water mark — a backpressure signal. **The write succeeds and
-   reads back**, which is exactly why the gate went green: finding 2 defined
-   `applied` as "readback ≥ requested", and a readback proves storage, not
-   effect. The gate was built to catch a browser that ignores the setter and
-   was blind to the case where the browser stores it faithfully and drops
-   datagrams anyway.
+   pre-rename attribute, documented as the readable stream's queuing
+   high-water mark. **The write succeeds and reads back**, which is why the
+   gate went green: finding 2 defined `applied` as "readback ≥ requested", and
+   a readback proves storage, not effect.
 
-So the correction is to stop claiming what cannot be claimed.
-`DatagramBufferStats` gains `defaultDepth` (what the browser chose before we
-wrote — the single most diagnostic number here) and `governsDrops` (true only
-for the spec-named attribute). The `DatagramReceiveBuffer` gate is green only
-when both hold; on Firefox it now reads *"set 256 on incomingHighWaterMark
-(was 1), which does not govern drops"* — visibly not a fix. The write is kept:
-it is correct and free on a browser that has the real attribute, and harmless
-where it does not.
+### The knob is inert — measured, not reasoned
+
+Point 2 was originally argued from the spec, and that argument was too quick:
+"not the drop threshold" does not imply "cannot affect drops", since a deeper
+*stream* queue would still drain whatever upstream buffer is shedding. So it
+was measured instead, with `e2e/firefox-datagram-buffer.mjs`.
+
+Two subscribers to one live broadcast, in one browser, over the same seconds,
+differing only in the high-water mark — identical traffic, so any difference in
+what they receive is the knob. The reader is deliberately stalled (a depth-1
+queue cannot survive a slow consumer; a depth-8192 one should), and an A/A round
+sizes the noise first:
+
+| round | A | B | B vs A chunk rate |
+|---|---|---|---|
+| A/A control | hwm 1 | hwm 1 | **+0.2 %** (noise floor) |
+| A/B | hwm 1 | hwm 8192 | +0.6 % |
+| A/B repeat | hwm 1 | hwm 8192 | **−0.3 %** |
+
+The two A/B repeats **disagree on direction**, which is what noise looks like
+however large it prints. `8192` was chosen to be absurdly deep on purpose:
+depth is not the limitation.
+
+The same runs confirm the *mechanism* independently. Stalling the reader
+collapses `chunksPerParity` from ~4.8 to ~2.5 while the parity rate barely
+moves (47.7 → 48.1/s) — **chunks die, parity survives**, the exact production
+signature, reproduced on demand. So head-of-queue eviction is real and is
+exactly what the production sessions were suffering; the attribute simply is
+not connected to it.
+
+Getting that measurement required two things worth recording. The relay
+enforces `-allowed-origins`, so the probe has to run **in the app's origin** — a
+localhost page is rejected before a session exists. And a local `-dev-cert`
+relay is not a way around it: Firefox's `serverCertificateHashes` is an
+additional check rather than a replacement (Mozilla bug 1873263), so it refuses
+the dev cert outright. Playwright's Firefox navigating to the real origin is
+what made it possible. Caveat: the A/B ran on Playwright's Firefox 153 while
+the affected viewers are 154; the attribute's shape, default and clamp are
+identical on 154.0b2, so the conclusion carries.
+
+So `governsDrops` is kept, now on evidence rather than spec-lawyering, and the
+write is kept too: correct and free on a browser that has the real attribute,
+harmless where it does not, and it starts working by itself the day Firefox
+ships `incomingMaxBufferedDatagrams`.
 
 **Three observability defects this exposed**, each of which cost real time:
 
@@ -781,12 +813,12 @@ they should be considered:
   is R19's buffer, which is the trade live-edge exists to refuse — but a
   0.5–2 s buffer beats 74 % of GOPs breaking.
 - **Pace the send burst** so a frame's datagrams do not arrive back-to-back.
-  This is the real fix and the only one that helps every receiver, but it
-  changes the send path for every viewer and its benefit could not be measured
-  here: Firefox's `serverCertificateHashes` refuses the `-dev-cert` relay
-  (Mozilla bug 1873263 — the hashes are an *additional* check, not a
-  replacement), so there is no local Firefox e2e to prove it against. Sizing
-  the spacing and proving it needs a harness first.
+  With the knob measured inert this is now the only lever that helps every
+  receiver, and the stalled-reader result above says the target is right: what
+  kills chunks is a burst arriving faster than the page drains it. It still
+  changes the send path for every viewer, so it wants its own measurement
+  rather than an assumption — `firefox-datagram-buffer.mjs` is the harness to
+  extend, since it already reproduces the failure on demand.
 - **Wait for `incomingMaxBufferedDatagrams` to ship in Firefox**, at which
   point the existing code starts working with no change and the gate goes green
   on its own. That is not a plan, but it is why the write stays.

@@ -275,15 +275,18 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   `incomingHighWaterMark`; Chromium is removing it, so both are tried) to 256
   and reports the result in the **`DatagramReceiveBuffer`** feature gate.
   Set it in the realm that owns the `WebTransport` — on the worker path the
-  main thread has no handle on it. **The write is not the fix on Firefox**:
-  measured on 154.0b2, `incomingMaxBufferedDatagrams` is ABSENT and only the
-  legacy `incomingHighWaterMark` exists, defaulting to **1 datagram** — and the
-  legacy name is the readable stream's queuing high-water mark, not the drop
-  threshold the spec ties to `[[IncomingMaxBufferedDatagrams]]`. It stores and
-  reads back while dropping continues unchanged, so a readback proves storage,
-  never effect; the gate reports `governsDrops` for exactly this reason. Until
-  Firefox ships the real attribute, the answer for those viewers is Resilient
-  or Deep-buffer mode, which never touch the datagram queue.
+  main thread has no handle on it. **The write is not the fix on Firefox, and
+  this is measured, not inferred**: `incomingMaxBufferedDatagrams` is ABSENT
+  there and only the legacy `incomingHighWaterMark` exists, defaulting to
+  **1 datagram**. A paired A/B against a live broadcast
+  (`e2e/firefox-datagram-buffer.mjs` — two subscribers, same seconds, hwm 1 vs
+  8192, reader stalled to stress the queue) moves delivery by less than its own
+  A/A noise floor, with the repeats disagreeing on direction: the attribute
+  stores and reads back while dropping continues unchanged, so a readback proves
+  storage, never effect. The same runs confirm the mechanism — stalling the
+  reader collapses chunks while the parity rate holds. Until Firefox ships the
+  real attribute the answer for those viewers is Resilient or Deep-buffer mode,
+  which never touch the datagram queue.
   ([docs/34](docs/34-live-edge-forward-parity.md))
 - **Firefox's `VideoEncoder` emits a malformed AVCC record** (bad reserved
   bits + a duplicated NALU-type byte); the viewer repairs it in
