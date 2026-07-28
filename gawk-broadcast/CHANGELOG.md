@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.8.0...gawk-broadcast-v1.8.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **r29:** give the viewer a datagram receive queue deep enough for a frame ([#180](https://github.com/Tuhis/gawk/issues/180)) ([d735df7](https://github.com/Tuhis/gawk/commit/d735df701a75bfcab2a9884d495aedc3723ff62b))
+
 ## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.7.1...gawk-broadcast-v1.8.0) (2026-07-28)
 
 
