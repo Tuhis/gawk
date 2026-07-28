@@ -934,6 +934,9 @@ var factClientFields = []string{
 	"reorderGapResyncs", "keyframeStreamsReceived", "playoutOffsetMs",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"audioPacketsReceived",
+	// R29 (docs/34 §7.3): so a stored session's verdict can say whether
+	// parity was helping, not merely that loss happened.
+	"parityChunksReceived", "framesRecoveredByParity", "framesDroppedIncomplete",
 	// D17: what the broadcast was asked to be, so a shortfall is computable.
 	"targetFps", "targetBitrateBps",
 	// Tab visibility: renderedFps beside it means nothing without it, because

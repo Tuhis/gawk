@@ -3,7 +3,7 @@
 // bounded waits and NO fixed playout offset. A controlled clock drives the
 // time-based decisions deterministically.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   ReorderBuffer,
@@ -23,6 +23,7 @@ import {
   RESILIENT_DELTA_GAP_GRACE_MS,
   RESILIENT_KEYFRAME_WAIT_MS,
   RESILIENT_MAX_BUFFERED_FRAMES,
+  setLossAllowanceFrames,
   setViewerDeliveryModeFlag,
 } from './resilient';
 
@@ -44,6 +45,15 @@ const delta = (frameId: number) => ({
   timestampUs: BigInt(frameId),
   data: new Uint8Array([frameId & 0xff]),
 });
+
+// R29 FP6 (docs/34 §6): this file pins the freeze-on-gap MECHANISM, which the
+// loss allowance did not change — it only moved when the mechanism triggers.
+// Pinning the allowance at 0 here keeps every assertion below meaning exactly
+// what it meant pre-R29, and leaves the new default (1) owned by
+// reorder-allowance.test.ts, where it is asserted directly rather than
+// incidentally.
+beforeEach(() => setLossAllowanceFrames(0));
+afterEach(() => setLossAllowanceFrames(1));
 
 describe('ReorderBuffer', () => {
   it('holds deltas that arrive before their keyframe, then releases key-then-contiguous', () => {

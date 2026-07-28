@@ -37,6 +37,11 @@ export interface ConnectOptions {
   // time (`?delivery=reliable`). Viewer-only; ignored by the connect itself —
   // ViewerPipeline appends the query param when building the subscribe URL.
   deliveryMode?: 'reliable';
+  // R29 (docs/34 §5.2): opt DOWN from the fleet parity default. Absent means
+  // "take whatever the fleet serves", which is the default and the only way to
+  // get the maximum — a viewer cannot conjure symbols the producer never
+  // emitted, so there is deliberately no way to ask for MORE.
+  parityLevel?: 0 | 1;
 }
 
 export async function connectWebTransport(url: string, opts: ConnectOptions = {}): Promise<WebTransport> {

@@ -54,9 +54,20 @@ var ViewerFields = map[string]Kind{
 	"frameHeight":                KindNumber,
 	"keyframeStreamsReceived":    KindNumber,
 	"reorderGapResyncs":          KindNumber,
-	"reorderKeyframeWaitDrops":   KindNumber,
-	"reorderBuffered":            KindNumber,
-	"videoBytesReceived":         KindNumber,
+	// R29 forward parity (docs/34 §7.3). Typed like every other known field:
+	// a string "12" must not enter a counter series, and an unknown field
+	// still survives verbatim (D15 — version skew is permanent, not
+	// transient).
+	"parityChunksReceived":         KindNumber,
+	"framesRecoveredByParity":      KindNumber,
+	"parityRecoveryFailures":       KindNumber,
+	"framesSkippedWithinAllowance": KindNumber,
+	"parityLevel":                  KindNumber,
+	"parityChunksSent":             KindNumber,
+	"parityBytesSent":              KindNumber,
+	"reorderKeyframeWaitDrops":     KindNumber,
+	"reorderBuffered":              KindNumber,
+	"videoBytesReceived":           KindNumber,
 
 	// Placement (R10) — the "did the fast path actually engage?" answers.
 	"renderer":        KindString,

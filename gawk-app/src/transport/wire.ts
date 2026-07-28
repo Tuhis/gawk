@@ -89,6 +89,19 @@ export const TYPE_DELIVERY_ACK = 0x0c;
 // predating R28 sends nothing, which the client treats exactly like
 // enabled: false.
 export const TYPE_TELEMETRY_HELLO = 0x0d;
+// ParityChunk (R29, docs/34): broadcaster→relay→viewers, one RAID-6 P/Q parity
+// symbol over a delta frame's data chunks, so a live-edge viewer repairs chunk
+// loss without R19's carrier latency. Deltas only — keyframes ride reliable uni
+// streams already. The relay computes nothing: it forwards a per-subscriber
+// PREFIX of the symbols the producer emitted. Encoding lives in parity.ts.
+export const TYPE_PARITY_CHUNK = 0x0e;
+// RelayCapabilities (R29, docs/34 §4.4): relay→client, once per session on both
+// routes, naming the optional features this fleet supports and at what level.
+// Its own message rather than extra BroadcastAnnounce fields because the
+// parsers are strict and the WebTransport API exposes no response headers — so
+// a producer that never sees it emits no parity, keeping a new broadcaster
+// against an old relay byte-identical to pre-R29.
+export const TYPE_RELAY_CAPABILITIES = 0x0f;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed

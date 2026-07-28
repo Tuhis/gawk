@@ -402,20 +402,38 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 	// 1. The keyframe arrives on a reliable uni stream, and is self-sufficient.
 	kfDone := make(chan error, 1)
 	go func() {
-		str, err := viewer.AcceptUniStream(ctx)
-		if err != nil {
-			kfDone <- fmt.Errorf("no keyframe stream: %w", err)
-			return
-		}
-		msg, err := io.ReadAll(io.LimitReader(str, wire.MaxKeyframeBytes))
-		if err != nil {
-			kfDone <- fmt.Errorf("keyframe read: %w", err)
-			return
-		}
-		hdr, err := wire.ParseStreamFrameHeader(msg)
-		if err != nil {
-			kfDone <- fmt.Errorf("keyframe header: %w", err)
-			return
+		// Dispatch by wire type, never by accept order: webtransport-go does
+		// not accept in open order (docs/22 finding 9), and the relay sends a
+		// viewer other server-initiated streams besides the keyframe —
+		// RelayCapabilities (R29), TelemetryHello (R28). Taking the first
+		// stream to be the keyframe is the bug this loop exists to avoid, and
+		// it is what the production viewer's readServerStreams already does.
+		var msg []byte
+		var hdr wire.StreamFrameHeader
+		for {
+			str, err := viewer.AcceptUniStream(ctx)
+			if err != nil {
+				kfDone <- fmt.Errorf("no keyframe stream: %w", err)
+				return
+			}
+			b, err := io.ReadAll(io.LimitReader(str, wire.MaxKeyframeBytes))
+			if err != nil {
+				kfDone <- fmt.Errorf("keyframe read: %w", err)
+				return
+			}
+			if len(b) < 2 {
+				continue
+			}
+			if b[1] != wire.TypeStreamFrame {
+				continue
+			}
+			h, err := wire.ParseStreamFrameHeader(b)
+			if err != nil {
+				kfDone <- fmt.Errorf("keyframe header: %w", err)
+				return
+			}
+			msg, hdr = b, h
+			break
 		}
 		if !hdr.Keyframe {
 			kfDone <- fmt.Errorf("stream frame is not marked keyframe")

@@ -63,6 +63,13 @@ var ProducibleFacts = map[string]string{
 	"client.arrivalJitterMs":         live,
 	"client.reorderGapResyncs":       both,
 	"client.keyframeStreamsReceived": both,
+	// R29 forward parity (docs/34 §7.3). Both surfaces: the live dashboard
+	// needs them to explain a lossy viewer in the moment, and the stored
+	// rollup needs them so a past session's verdict can say whether parity
+	// was helping.
+	"client.parityChunksReceived":    both,
+	"client.framesRecoveredByParity": both,
+	"client.framesDroppedIncomplete": both,
 	"client.avSkewMs":                live,
 	"client.viewerCount":             live,
 	"client.audioPacketsReceived":    both,

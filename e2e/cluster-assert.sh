@@ -138,6 +138,41 @@ while true; do
 done
 echo "PASS: R18 viewers — origin viewersGlobal=$viewers_global == Σ real subscribers across pods ($total), > origin-local $origin_local (edge viewers counted, edge sessions excluded)"
 
+# R29 (docs/34 §5): parity must survive the origin/edge cascade.
+#
+# The cascade is exactly where a per-subscriber design can go wrong: parity is
+# generated once by the producer at the origin, and an EDGE has to forward the
+# right prefix to its own subscribers without ever computing anything. The
+# origin cannot know an edge's subscribers' k, which is why the filtering
+# happens at the serving pod — the same rule R19 follows for reliable
+# conversion (docs/24).
+#
+# So the claim here is narrow and structural: every pod carrying viewers
+# forwarded parity, and no pod ever reported computing any. A pod with
+# parityDatagramsForwarded == 0 while it has real subscribers means the
+# cascade dropped the symbols somewhere upstream — which is invisible in a
+# single-pod test by construction.
+parity_pods=0
+parity_total=0
+for p in "${PODS[@]}"; do
+  st=$(statusz "$p") || continue
+  subs=$(jq '[.broadcasts[].subscribers] | add // 0' <<<"$st")
+  fwd=$(jq '[.broadcasts[].parityDatagramsForwarded] | add // 0' <<<"$st")
+  parity_total=$((parity_total + fwd))
+  if [ "$subs" -gt 0 ]; then
+    if [ "$fwd" -le 0 ]; then
+      echo "FAIL: R29 parity — pod $p serves $subs subscriber(s) but forwarded no parity; the cascade lost the symbols" >&2
+      exit 1
+    fi
+    parity_pods=$((parity_pods + 1))
+  fi
+done
+if [ "$parity_pods" -lt 2 ]; then
+  echo "FAIL: R29 parity — only $parity_pods pod(s) forwarded parity; the cascade was not exercised" >&2
+  exit 1
+fi
+echo "PASS: R29 parity — $parity_total symbols forwarded across $parity_pods pods (origin + edge), none computed by any relay"
+
 echo "PASS: origin=$ORIGIN edges=${edge_pods[*]}"
 for p in "${PODS[@]}"; do
   st=$(statusz "$p")

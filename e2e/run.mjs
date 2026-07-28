@@ -50,6 +50,7 @@
 // arrive, decode, and render, and that drops stay bounded.
 
 import { spawn } from 'node:child_process';
+import dgram from 'node:dgram';
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +128,17 @@ const RESILIENT_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
 // video-only broadcast is still running beside this one. Same tier-1-only
 // budget rule as the resilient pass.
 const AUDIO_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
+// R29 (docs/34 FP8): the parity pass, and the only tier-1 step that puts the
+// browser behind a link that actually loses packets. Everything else here runs
+// over a zero-loss loopback, which is exactly the blind spot docs/24 finding 10
+// found in R19 — a feature whose entire purpose is loss recovery, with no test
+// that loses anything.
+const PARITY_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
+// 5 %, above the ~3 % measured in docs/34 §1: high enough that a 20 s pass
+// reliably produces recoveries on a fixture whose deltas are small (few chunks
+// per frame means fewer chances to lose one), low enough to stay far from the
+// congestion collapse that would turn recovery into a timeout.
+const PARITY_LOSS_PERCENT = 5;
 // Fewer retries than the main pass: it runs after a viewer scenario that
 // already proved flow on this broadcast, so a failure here is far more likely
 // to be the carrier path than runner weather.
@@ -409,21 +421,144 @@ function launchBrowser(extraArgs = []) {
   });
 }
 
+// R29 FP8: a userspace UDP forwarder that drops a percentage of the packets
+// travelling relay → browser. The Go mirror of this lives in
+// gawk-server/internal/transport/resilient_loss_test.go; this is the same
+// model in Node so the BROWSER path gets exercised under loss too, not only
+// the Go client.
+//
+// One-way on purpose. The client → relay direction is never touched: QUIC
+// acknowledgements have to get through for retransmission and congestion
+// control to behave, and a lossy downlink with a clean uplink is the shape of
+// the mobile links this feature targets (a viewer's uplink carries almost
+// nothing).
+//
+// tc/netem is not an option — CI runners are unprivileged containers with no
+// NET_ADMIN — and this is a few dozen lines in-process.
+function startLossyLink(relayPort, lossPercent) {
+  const front = dgram.createSocket('udp4');
+  const peers = new Map(); // "ip:port" of the client → its upstream socket
+  let seed = 0x2545f491;
+  const rnd = () => {
+    // xorshift: deterministic per run and not Math.random(), so a failure is
+    // reproducible from the logs rather than a coin flip nobody can re-throw.
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 0xffffffff;
+  };
+
+  front.on('message', (msg, rinfo) => {
+    const key = `${rinfo.address}:${rinfo.port}`;
+    let up = peers.get(key);
+    if (!up) {
+      up = dgram.createSocket('udp4');
+      // The lossy direction. Dropping here rather than on the uplink is what
+      // makes every absence at the viewer attributable to this link.
+      up.on('message', (reply) => {
+        if (rnd() * 100 < lossPercent) return;
+        front.send(reply, rinfo.port, rinfo.address);
+      });
+      peers.set(key, up);
+    }
+    up.send(msg, relayPort, '127.0.0.1');
+  });
+
+  return new Promise((resolveLink) => {
+    front.bind(0, '127.0.0.1', () => {
+      resolveLink({
+        port: front.address().port,
+        close: () => {
+          for (const up of peers.values()) up.close();
+          peers.clear();
+          front.close();
+        },
+      });
+    });
+  });
+}
+
+// R29 FP8: what parity actually bought this viewer, from its own diagnostics.
+//
+// Flow-shaped like every other assertion here (Decision 6): counters that must
+// move, never a recovery RATE — the loss is stochastic and a rate threshold on
+// a 2-core runner is a flake generator. The claim under test is "parity was
+// served, and it repaired frames that would otherwise have been dropped",
+// which is a counter question.
+function assertParityFlow(d1, d2, { expectParity }) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  if (!expectParity) {
+    // The opt-down control. Its value is that it proves the relay's
+    // per-subscriber filter under a real browser session — the same claim the
+    // Go test makes with a synthetic client.
+    check(
+      (s2.parityChunksReceived ?? 0) === 0,
+      `parityChunksReceived = ${s2.parityChunksReceived}, want 0 for a ?parity=0 viewer`,
+    );
+    check(
+      (s2.framesRecoveredByParity ?? 0) === 0,
+      `framesRecoveredByParity = ${s2.framesRecoveredByParity}, want 0 without parity`,
+    );
+    if (problems.length > 0) {
+      fail(`parity opt-down assertions failed:\n  - ${problems.join('\n  - ')}`);
+    }
+    log(
+      `parity control: incomplete drops ${s1.framesDroppedIncomplete} → ${s2.framesDroppedIncomplete} ` +
+        `over the capture window, with no parity served`,
+    );
+    return;
+  }
+
+  check(s2.parityChunksReceived > 0, `parityChunksReceived = ${s2.parityChunksReceived}, want > 0`);
+  // Between the captures the producer must still be emitting: a stream that
+  // delivered symbols once and stopped would satisfy the counter above.
+  check(
+    s2.parityChunksReceived - s1.parityChunksReceived > 0,
+    `no parity chunks between the captures (${s1.parityChunksReceived} → ${s2.parityChunksReceived})`,
+  );
+  // The headline: on a link dropping PARITY_LOSS_PERCENT of the relay's
+  // packets, at least one frame came back that would otherwise have been
+  // dropped incomplete. This is the assertion the whole item exists for, and
+  // it is the one that would have caught a silently-degraded parity path.
+  check(
+    s2.framesRecoveredByParity > 0,
+    `framesRecoveredByParity = ${s2.framesRecoveredByParity}, want > 0 under ${PARITY_LOSS_PERCENT}% injected loss`,
+  );
+
+  if (problems.length > 0) {
+    fail(`parity assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `parity: ${s2.parityChunksReceived} symbols received, ${s2.framesRecoveredByParity} frames recovered, ` +
+      `${s2.parityRecoveryFailures ?? 0} beyond repair, ${s2.framesSkippedWithinAllowance ?? 0} skipped within allowance`,
+  );
+}
+
 // A context with the persisted transport settings seeded (the keys
 // useTransportStore owns), the clipboard stubbed (the ViewerScreen.test.tsx
 // precedent), and the publish-secret prompt disabled (loopback hosts count as
 // dev environments, where the prompt defaults on) — all before any app code
 // runs. `resilient` seeds R19's persisted toggle, which is the only way in:
 // the mode is negotiated at connect, so it has to be set before the app runs.
-async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null }) {
+async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null, parity = null }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
-    ({ serverUrl, hash, deliveryMode, tmUrl }) => {
+    ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel }) => {
       localStorage.setItem('gawk.serverUrl', serverUrl);
       if (hash) localStorage.setItem('gawk.certHashHex', hash);
       // R19/R21: the persisted delivery choice is the only way in — the mode
       // is negotiated at connect, so it has to be set before the app runs.
       if (deliveryMode) localStorage.setItem('gawk:viewer-delivery', deliveryMode);
+      // R29 (docs/34 §5.2): the persisted opt-DOWN, seeded the same way and
+      // for the same reason — parity is negotiated at connect. Absent means
+      // the fleet default, which is what the protected pass wants.
+      if (parityLevel != null) localStorage.setItem('gawk:parity-level', String(parityLevel));
       // The shipped public/config.js assigns nothing, so this seed survives.
       // R23: pin the terms version and pre-accept it so the broadcaster's
       // one-time acknowledgment modal never gates "Start a stream" — the same
@@ -447,7 +582,7 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
         }),
       });
     },
-    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl },
+    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl, parityLevel: parity },
   );
   return context;
 }
@@ -632,11 +767,11 @@ function assertCarrierFlow(d1, d2) {
 
 async function browserScenario({
   relayUrl, certHash, id, attempt, expectedCodec, delivery = null, telemetryUrl = null,
-  dwellMs = 0, duringDwell = null, expectAudio = false,
+  dwellMs = 0, duringDwell = null, expectAudio = false, parity = null, expectParity = null,
 }) {
   const browser = await launchBrowser();
   try {
-    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl });
+    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl, parity });
     const page = await context.newPage();
     wirePageLogs(page, `console-${attempt}`);
 
@@ -718,6 +853,7 @@ async function browserScenario({
     if (delivery === 'resilient') assertCarrierFlow(diag1, diag2);
     if (delivery === 'deep') assertDvrFlow(diag1, diag2);
     if (expectAudio) assertAudioFlow(diag1, diag2);
+    if (expectParity != null) assertParityFlow(diag1, diag2, { expectParity });
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
@@ -1510,6 +1646,33 @@ async function main() {
       // never run. A mode with no pass is a mode nobody tests.
       log('running the deep-buffer viewer pass (R21 DVR ring)');
       await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep' });
+    }
+
+    // R29 (docs/34 FP8): the parity pass, behind a link that actually loses
+    // packets — the only tier-1 step that does. Two browser sessions on the
+    // SAME lossy link so the opt-down control shares conditions with the
+    // protected viewer rather than being a separate experiment.
+    //
+    // This is the browser half of the claim the Go loss test makes with a
+    // synthetic client: there, recovery is computed by calling the shared wire
+    // codec; here it is the shipped reassembler doing it inside a real worker.
+    if (PARITY_VIEWER_PASS) {
+      log(`running the parity viewer pass behind a ${PARITY_LOSS_PERCENT}% lossy link (R29)`);
+      const link = await startLossyLink(RELAY_PORT, PARITY_LOSS_PERCENT);
+      try {
+        const lossyUrl = `https://127.0.0.1:${link.port}`;
+        await runViewer('parity', MAX_RESILIENT_RETRIES, { relayUrl: lossyUrl, expectParity: true });
+        // The control: same link, same loss, parity declined. Proves the
+        // relay's per-subscriber filter against a real browser, and gives the
+        // "what would this have cost" number in the log beside it.
+        await runViewer('parity-off', MAX_RESILIENT_RETRIES, {
+          relayUrl: lossyUrl,
+          parity: 0,
+          expectParity: false,
+        });
+      } finally {
+        link.close();
+      }
     }
 
     // R25 (docs/28 NA7): the audio lane, on its own broadcast.

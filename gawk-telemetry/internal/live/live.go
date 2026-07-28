@@ -1021,6 +1021,9 @@ var liveNumericFields = []string{
 	"capToRenderMs", "liveEdgeDriftMs", "playoutOffsetMs", "arrivalJitterMs",
 	"reorderGapResyncs", "keyframeStreamsReceived", "avSkewMs", "viewerCount",
 	"audioPacketsReceived",
+	// R29 (docs/34 §7.3): parity's own numbers, so a live row can explain a
+	// lossy viewer in the moment rather than only after the rollup.
+	"parityChunksReceived", "framesRecoveredByParity", "framesDroppedIncomplete",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.

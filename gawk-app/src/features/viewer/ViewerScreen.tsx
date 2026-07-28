@@ -73,6 +73,24 @@ const RESILIENT_MODE_KEY = 'gawk:resilient-mode';
 // The legacy key migrates: an R19 viewer that had resilient mode on keeps
 // exactly the latency it had, and opts into the deep buffer separately.
 const DELIVERY_MODE_KEY = 'gawk:viewer-delivery';
+// R29 (docs/34 §5.2): an opt-DOWN from the fleet parity default, persisted.
+// Absent/'auto' means "take what the fleet serves", which is the default and
+// the only way to get the maximum — a viewer cannot ask for MORE parity than
+// the producer emitted.
+const PARITY_LEVEL_KEY = 'gawk:parity-level';
+
+type ParityChoice = 'auto' | 1 | 0;
+
+function loadParityChoice(): ParityChoice {
+  try {
+    const v = localStorage.getItem(PARITY_LEVEL_KEY);
+    if (v === '0') return 0;
+    if (v === '1') return 1;
+  } catch {
+    // private mode etc. — fall through to the fleet default
+  }
+  return 'auto';
+}
 
 function loadInterpolation(): boolean {
   try {
@@ -235,6 +253,21 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   }, []);
   const resilientMode = deliveryMode !== 'live';
 
+  // R29: like delivery, this is negotiated at subscribe time, so changing it
+  // is a deliberate reconnect rather than an in-session morph.
+  const [parityChoice, setParityChoice] = useState(loadParityChoice);
+  const chooseParity = useCallback((next: ParityChoice) => {
+    setParityChoice(() => {
+      try {
+        if (next === 'auto') localStorage.removeItem(PARITY_LEVEL_KEY);
+        else localStorage.setItem(PARITY_LEVEL_KEY, String(next));
+      } catch {
+        // private mode etc. — the choice still holds for this session
+      }
+      return next;
+    });
+  }, []);
+
   // R16 (docs/21 Decision 1): the device gate — absence of the Element
   // Fullscreen API (effectively an iPhone signature). On non-gated devices no
   // R16 code path activates: no tee flag, no video element, tier-1 fullscreen
@@ -251,7 +284,15 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     telemetrySessionId,
     presentation,
     audio,
-  } = useViewerConnection(broadcastId, canvasRef, playoutMode, interpolation, gated, deliveryMode);
+  } = useViewerConnection(
+    broadcastId,
+    canvasRef,
+    playoutMode,
+    interpolation,
+    gated,
+    deliveryMode,
+    parityChoice === 'auto' ? undefined : parityChoice,
+  );
 
   const [showStats, setShowStats] = useState(false);
   const [menu, setMenu] = useState<{
@@ -605,6 +646,36 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         ' — rides out dropouts, seconds behind',
       onSelect: () => chooseDeliveryMode('deep'),
     },
+    // R29 (docs/34 §5.2): loss protection, offered ONLY on live edge. The
+    // carrier modes already recover loss through QUIC retransmission, so the
+    // relay serves them no parity and an entry there would promise something
+    // that cannot happen.
+    //
+    // The entries opt DOWN only. There is no "more" to offer: the fleet level
+    // is the ceiling, because a viewer cannot conjure symbols the producer
+    // never emitted.
+    ...(deliveryMode === 'live'
+      ? ([
+          {
+            label:
+              (parityChoice === 'auto' ? 'Loss protection: full ✓' : 'Loss protection: full') +
+              ' — repairs lost packets, ~22% more data',
+            onSelect: () => chooseParity('auto'),
+          },
+          {
+            label:
+              (parityChoice === 1 ? 'Loss protection: light ✓' : 'Loss protection: light') +
+              ' — ~11% more data',
+            onSelect: () => chooseParity(1),
+          },
+          {
+            label:
+              (parityChoice === 0 ? 'Loss protection: off ✓' : 'Loss protection: off') +
+              ' — least data, freezes on loss',
+            onSelect: () => chooseParity(0),
+          },
+        ] as MenuItem[])
+      : []),
     // R12 T4: only offered where the pipeline can actually interpolate
     // (stats.interpolation is null on the main-thread path, non-WebGL2 sinks,
     // and outside adaptive mode).

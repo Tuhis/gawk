@@ -71,6 +71,9 @@ function fullStats(): BroadcastStats {
     targetBitrateBps: 8_000_000,
     codec: 'avc1.640028',
     acceleration: 'prefer-hardware',
+    parityLevel: 2,
+    parityChunksSent: 60,
+    parityBytesSent: 48000,
   };
 }
 
