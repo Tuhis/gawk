@@ -114,8 +114,15 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         // producer is not emitting, which is the case worth noticing.
         ['Parity chunks', String(stats?.parityChunksReceived ?? '—')],
         ['Parity recovered', String(stats?.framesRecoveredByParity ?? '—')],
+        // R29 finding 3 (docs/34): "too weak" used to read parityRecoveryFailures,
+        // which counts only GF-solve failures and is therefore ~always 0 — the
+        // row was dark through a whole session that repaired nothing. The
+        // honest number is the shortfall counted where frames are given up on.
+        ...(stats?.parityInsufficient
+          ? ([['Parity too weak', String(stats.parityInsufficient)]] as StatsRow[])
+          : []),
         ...(stats?.parityRecoveryFailures
-          ? ([['Parity too weak', String(stats.parityRecoveryFailures)]] as StatsRow[])
+          ? ([['Parity solve failed', String(stats.parityRecoveryFailures)]] as StatsRow[])
           : []),
         ['Awaiting keyframe', String(stats?.framesDiscardedAwaitingKey ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],

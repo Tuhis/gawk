@@ -133,8 +133,10 @@ describe('WorkerViewerTransport', () => {
     const datagramBuffer = {
       property: 'incomingHighWaterMark' as const,
       requested: 256,
+      defaultDepth: 1,
       effective: 256,
       applied: true,
+      governsDrops: false,
     };
     worker.emit({ type: 'connStats', stats, timeSync, carrier, datagramBuffer });
     expect(transport.sampleConnectionStats()).toBe(stats);

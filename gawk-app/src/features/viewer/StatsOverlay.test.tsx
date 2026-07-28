@@ -22,6 +22,7 @@ function fullStats(): ViewerStats {
     parityChunksReceived: 120,
     framesRecoveredByParity: 14,
     parityRecoveryFailures: 1,
+    parityInsufficient: 3,
     framesSkippedWithinAllowance: 3,
     decodedFrames: 495,
     decoderQueueDepth: 1,

@@ -66,3 +66,64 @@ func ruleByID(t *testing.T, id string) Rule {
 	t.Fatalf("rule %q not found", id)
 	return Rule{}
 }
+
+// R29 finding 3 (docs/34): a third cause the first two branches could not see,
+// and the reason the shipped verdict on session 9b078876 was wrong.
+//
+// A shallow BROWSER receive queue drops from the head of each frame's burst,
+// so the parity symbols — always written last — survive intact while the data
+// chunks ahead of them die in runs. Parity then repairs a plausible-looking
+// share, the rule reads "under-provisioned" and recommends raising the fleet
+// level, which buys almost nothing: the erasures are clustered by the
+// receiver, not spread by the network.
+//
+// The discriminator is a fact, not an inference: the browser's own queue depth.
+func TestParityIneffectiveNamesAShallowReceiveQueue(t *testing.T) {
+	rule := ruleByID(t, "parity-ineffective")
+
+	shallow := viewerFacts()
+	shallow.SetClient("parityChunksReceived", 400)
+	shallow.SetClient("framesRecoveredByParity", 40)
+	shallow.SetClient("framesDroppedIncomplete", 30)
+	// Firefox 154, measured: one datagram, against a frame burst of ~11.
+	shallow.SetClient("datagramBufferDefault", 1)
+	shallow.SetClient("datagramBufferGovernsDrops", 0)
+	got := rule.Eval(shallow)
+	if got == nil {
+		t.Fatal("shallow-queue case did not fire")
+	}
+	if !strings.Contains(got.Verdict, "receive queue") {
+		t.Errorf("verdict = %q, want it to name the receive queue", got.Verdict)
+	}
+	// It must outrank the under-provisioned reading: the recovery ratio here
+	// is identical to the under-provisioned case above, and following that
+	// advice would waste fleet uplink on a client-side defect.
+	if strings.Contains(got.Verdict, "under-provisioned") {
+		t.Errorf("verdict fell back to under-provisioned: %q", got.Verdict)
+	}
+	// The evidence has to carry the depth, or an operator cannot check it.
+	var sawDepth bool
+	for _, e := range got.Evidence {
+		if e.Signal == "datagramBufferDefault" {
+			sawDepth = true
+		}
+	}
+	if !sawDepth {
+		t.Errorf("evidence does not carry datagramBufferDefault: %+v", got.Evidence)
+	}
+
+	// A browser whose queue is deep enough must NOT be blamed for it.
+	deep := viewerFacts()
+	deep.SetClient("parityChunksReceived", 400)
+	deep.SetClient("framesRecoveredByParity", 40)
+	deep.SetClient("framesDroppedIncomplete", 30)
+	deep.SetClient("datagramBufferDefault", 256)
+	deep.SetClient("datagramBufferGovernsDrops", 1)
+	got = rule.Eval(deep)
+	if got == nil {
+		t.Fatal("deep-queue case did not fire at all")
+	}
+	if strings.Contains(got.Verdict, "receive queue") {
+		t.Errorf("blamed a deep receive queue: %q", got.Verdict)
+	}
+}

@@ -79,6 +79,12 @@ export interface ReassemblerStats {
   parityChunksReceived: number;
   framesRecoveredByParity: number;
   parityRecoveryFailures: number;
+  // R29 finding 3 (docs/34): frames given up on that HELD parity which could
+  // not cover their erasures. parityRecoveryFailures cannot see these — the
+  // solve is never attempted — so it read 0 across a live session that
+  // repaired nothing, making "parity worked" and "parity was never tried"
+  // the same number. Counted at eviction, once per frame actually lost.
+  parityInsufficient: number;
 }
 
 interface Assembly {
@@ -117,6 +123,7 @@ export class Reassembler {
     parityChunksReceived: 0,
     framesRecoveredByParity: 0,
     parityRecoveryFailures: 0,
+    parityInsufficient: 0,
   };
 
   constructor(callbacks: ReassemblerCallbacks) {
@@ -437,6 +444,19 @@ export class Reassembler {
     if (this.assemblies.size < MAX_ASSEMBLIES) return;
     const oldest = this.assemblies.keys().next();
     if (!oldest.done) {
+      // R29 finding 3: eviction is where a frame is actually given up on, so
+      // it is the only place the parity shortfall can be attributed to one
+      // frame exactly once. Two shapes count, because both mean "parity was
+      // present and could not save it": more erasures than symbols held, and
+      // the n<=k case where every data chunk died so there is no timestamp to
+      // decode the reconstruction with (docs/34 §4.2).
+      const assembly = this.assemblies.get(oldest.value);
+      if (assembly && assembly.parityHeld > 0) {
+        const missing = assembly.chunkCount - assembly.received;
+        if (missing > assembly.parityHeld || assembly.received === 0) {
+          this.stats.parityInsufficient++;
+        }
+      }
       this.assemblies.delete(oldest.value);
       this.stats.framesDroppedIncomplete++;
     }

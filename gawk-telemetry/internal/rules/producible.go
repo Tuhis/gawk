@@ -70,12 +70,21 @@ var ProducibleFacts = map[string]string{
 	"client.parityChunksReceived":    both,
 	"client.framesRecoveredByParity": both,
 	"client.framesDroppedIncomplete": both,
-	"client.avSkewMs":                live,
-	"client.viewerCount":             live,
-	"client.audioPacketsReceived":    both,
-	"client.audioOverflowDrops":      both,
-	"client.audioGapsConcealed":      both,
-	"client.isHardwareAccelerated":   both,
+	// R29 finding 3 (docs/34). parityInsufficient is the shortfall the old
+	// parityRecoveryFailures could not see; the two datagramBuffer facts are
+	// what let parity-ineffective blame a shallow BROWSER receive queue rather
+	// than send an operator to raise the fleet parity level against a
+	// client-side defect.
+	"client.parityInsufficient":         both,
+	"client.datagramBufferDefault":      both,
+	"client.datagramBufferDepth":        both,
+	"client.datagramBufferGovernsDrops": both,
+	"client.avSkewMs":                   live,
+	"client.viewerCount":                live,
+	"client.audioPacketsReceived":       both,
+	"client.audioOverflowDrops":         both,
+	"client.audioGapsConcealed":         both,
+	"client.isHardwareAccelerated":      both,
 
 	// --- client, dip episodes (D16) ------------------------------------------
 	// Derived by the same detector over two windows: the session for readapi,

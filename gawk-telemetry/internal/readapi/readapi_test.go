@@ -602,7 +602,10 @@ func (f *fixture) maximalViewerFacts(t *testing.T) *rules.Facts {
 	// Bools are listed by hand: factClientFields cannot carry them, and the
 	// emitter reads each one explicitly.
 	stats := map[string]any{"isHardwareAccelerated": true, "documentHidden": true,
-		"audioBuffer": map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0}}
+		"audioBuffer": map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0},
+		// R29 finding 3: the receive-buffer verdict is nested, like audioBuffer.
+		"datagramBuffer": map[string]any{
+			"defaultDepth": 1.0, "effective": 256.0, "governsDrops": false, "property": "incomingHighWaterMark"}}
 	for _, n := range factClientFields {
 		stats[n] = 30.0
 	}

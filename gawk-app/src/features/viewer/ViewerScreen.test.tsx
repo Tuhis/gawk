@@ -606,16 +606,39 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
     act(() =>
       sessions[0].cbs.onStats({
         datagramBuffer: {
-          property: 'incomingHighWaterMark',
+          property: 'incomingMaxBufferedDatagrams',
           requested: 256,
+          defaultDepth: 8,
           effective: 256,
           applied: true,
+          governsDrops: true,
         },
       }),
     );
     value = screen.getByText('DatagramReceiveBuffer').nextSibling as HTMLElement;
     expect(value.textContent).toBe('✓');
-    expect(value.getAttribute('title')).toBe('256 datagrams (incomingHighWaterMark)');
+    expect(value.getAttribute('title')).toBe('256 datagrams (was 8)');
+
+    // R29 finding 3: the write landed on the LEGACY attribute, which is not
+    // the drop threshold. This must NOT read green — it is exactly the state
+    // that shipped a confident gate over a fix that changed nothing.
+    act(() =>
+      sessions[0].cbs.onStats({
+        datagramBuffer: {
+          property: 'incomingHighWaterMark',
+          requested: 256,
+          defaultDepth: 1,
+          effective: 256,
+          applied: true,
+          governsDrops: false,
+        },
+      }),
+    );
+    value = screen.getByText('DatagramReceiveBuffer').nextSibling as HTMLElement;
+    expect(value.textContent).toBe('✗');
+    expect(value.getAttribute('title')).toBe(
+      'set 256 on incomingHighWaterMark (was 1), which does not govern drops',
+    );
 
     // Set and ignored — the case the whole gate exists to make visible.
     act(() =>
@@ -623,8 +646,10 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
         datagramBuffer: {
           property: 'incomingMaxBufferedDatagrams',
           requested: 256,
+          defaultDepth: 4,
           effective: 4,
           applied: false,
+          governsDrops: true,
         },
       }),
     );
@@ -635,7 +660,14 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
     // No attribute at all: the browser buffers whatever it buffers.
     act(() =>
       sessions[0].cbs.onStats({
-        datagramBuffer: { property: null, requested: 256, effective: null, applied: false },
+        datagramBuffer: {
+          property: null,
+          requested: 256,
+          defaultDepth: null,
+          effective: null,
+          applied: false,
+          governsDrops: false,
+        },
       }),
     );
     value = screen.getByText('DatagramReceiveBuffer').nextSibling as HTMLElement;

@@ -692,6 +692,105 @@ The discriminator that actually separates the two worlds is the parity-loss vs
 chunk-loss *asymmetry*, which telemetry can only now compute because
 `datagramBuffer` rides `ViewerStats` — a follow-up, not a widening of this fix.
 
+### Finding 3 — the knob finding 2 reached for is not the drop threshold (2026-07-28)
+
+Finding 2's fix shipped as 0.37.1 and **changed nothing measurable.** Viewer
+session `1fbaae9a` (Firefox 154 / macOS, app 0.37.1, live-edge datagrams,
+`parityK` 2, served by the origin pod) measured against the relay's own
+`/statusz` counters over a 99 s window:
+
+| | relay sent | viewer received | loss |
+|---|---|---|---|
+| video delta chunks | 254.59/s | 222.44/s | **12.63 %** |
+| parity symbols | 48.82/s | 48.99/s | **0.00 %** |
+
+Relay `dropped` 0, `sendErrors` 0, `queueDepth` 0. The identical signature, at
+the identical magnitude. 58.6 % of frames damaged, 43.4 % of those repaired,
+1.73 gap resyncs/s against 1.92 keyframes/s.
+
+**Why the fix could not have worked.** Probed on Firefox 154.0b2 directly
+(a `WebTransport` object exposes `datagrams` synchronously, so this needs no
+server or connection):
+
+```
+incomingMaxBufferedDatagrams   absent
+incomingHighWaterMark          present, default 1, settable (reads back 256)
+incomingMaxAge                 present, default Infinity
+maxDatagramSize                1024
+```
+
+Two facts, and the second is the one finding 2 got wrong:
+
+1. **Firefox's default queue is one datagram.** Against a frame burst of ~11.
+   That is the mechanism finding 2 inferred, confirmed at the source, and it is
+   as bad as the loss pattern implied.
+2. **Firefox does not expose the attribute that governs dropping.** The spec
+   ties the drop threshold to `[[IncomingMaxBufferedDatagrams]]`, reachable
+   only through the spec-named attribute. `incomingHighWaterMark` is the
+   pre-rename attribute, and its documented meaning is the readable stream's
+   queuing high-water mark — a backpressure signal. **The write succeeds and
+   reads back**, which is exactly why the gate went green: finding 2 defined
+   `applied` as "readback ≥ requested", and a readback proves storage, not
+   effect. The gate was built to catch a browser that ignores the setter and
+   was blind to the case where the browser stores it faithfully and drops
+   datagrams anyway.
+
+So the correction is to stop claiming what cannot be claimed.
+`DatagramBufferStats` gains `defaultDepth` (what the browser chose before we
+wrote — the single most diagnostic number here) and `governsDrops` (true only
+for the spec-named attribute). The `DatagramReceiveBuffer` gate is green only
+when both hold; on Firefox it now reads *"set 256 on incomingHighWaterMark
+(was 1), which does not govern drops"* — visibly not a fix. The write is kept:
+it is correct and free on a browser that has the real attribute, and harmless
+where it does not.
+
+**Three observability defects this exposed**, each of which cost real time:
+
+1. **The verdict was invisible to the fleet.** `datagramBuffer` is a nested
+   object and `schema.Number` is a flat lookup, so it reached neither
+   `get_session`, nor `diagnose()`, nor the dashboard — the three surfaces that
+   exist to answer "did the fix take on this viewer?". Diagnosing this session
+   needed a `/statusz` port-forward and a hand-written reconciliation, which is
+   precisely what R28 was built to retire. Now flattened into
+   `datagramBufferDefault` / `datagramBufferDepth` /
+   `datagramBufferGovernsDrops` on both producers, the shape `audioBuffer`
+   already used.
+2. **`parityRecoveryFailures` cannot see the shortfall.** It counts only
+   GF-solve failures; `tryRecover` returns early and uncounted whenever the
+   erasures simply exceed the symbols held. It read **0** across a session that
+   repaired nothing. New `parityInsufficient`, counted at eviction — where a
+   frame is actually given up on — covering both the "more erasures than
+   symbols" case and the `received === 0` case (finding 2's single-chunk hole).
+   The overlay's "Parity too weak" row was reading the blind counter and has
+   been dark this whole time; it now reads the honest one.
+3. **`parity-ineffective` blamed the wrong thing.** Its two branches split on
+   the recovery ratio, and a shallow receive queue produces the
+   under-provisioned signature exactly — so it recommended raising the fleet
+   parity level, which would have spent uplink on every viewer to work around a
+   defect in one client. A third branch now fires first, gated on the browser's
+   own reported depth (`< minSafeDatagramQueue` = 16, one frame's burst), and
+   points at Resilient/Deep-buffer mode — which carry video on reliable streams
+   and never touch the datagram queue.
+
+**What this does not do is fix the artifacts.** The only lever this browser
+exposes is not connected to the behaviour. The remaining options, in the order
+they should be considered:
+
+- **Route Firefox viewers to Resilient or Deep-buffer mode.** Available today,
+  no deploy, one menu click; it bypasses the datagram queue entirely. The cost
+  is R19's buffer, which is the trade live-edge exists to refuse — but a
+  0.5–2 s buffer beats 74 % of GOPs breaking.
+- **Pace the send burst** so a frame's datagrams do not arrive back-to-back.
+  This is the real fix and the only one that helps every receiver, but it
+  changes the send path for every viewer and its benefit could not be measured
+  here: Firefox's `serverCertificateHashes` refuses the `-dev-cert` relay
+  (Mozilla bug 1873263 — the hashes are an *additional* check, not a
+  replacement), so there is no local Firefox e2e to prove it against. Sizing
+  the spacing and proving it needs a harness first.
+- **Wait for `incomingMaxBufferedDatagrams` to ship in Firefox**, at which
+  point the existing code starts working with no change and the gate goes green
+  on its own. That is not a plan, but it is why the write stays.
+
 ### Metrics
 
 `gawk_broadcast_*` and `gawk_relay_*` gain `parity_datagrams_total`,

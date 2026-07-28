@@ -164,3 +164,55 @@ describe('Reassembler parity recovery', () => {
     expect(r.getStats().parityChunksReceived).toBe(2);
   });
 });
+
+// R29 finding 3 (docs/34): `parityRecoveryFailures` counts only GF-arithmetic
+// failures, and `tryRecover` returns early — uncounted — whenever the erasures
+// simply exceed the symbols held. It therefore read 0 across a live session
+// that repaired nothing, which is the least useful thing a diagnostic can do:
+// "the code worked" and "the code was never even attempted" produced the same
+// number. `parityInsufficient` is the missing one, counted where the frame is
+// actually given up on.
+describe('Reassembler parity shortfall accounting', () => {
+  // A COMPLETED frame leaves the map at once, so filling it needs assemblies
+  // that stay pending: eight parity-free frames each missing a chunk. Creating
+  // the eighth of them evicts the oldest entry, which is the frame under test.
+  // They carry no parity, so they cannot contribute to parityInsufficient
+  // themselves — the count under assertion stays attributable.
+  function evictAfter(r: Reassembler) {
+    for (let id = 100; id < 108; id++) feed(r, id, patternBytes(3000, id), 0, [0]);
+  }
+
+  it('counts a frame given up on with parity present but too few symbols', () => {
+    const { r } = collector();
+    feed(r, 1, patternBytes(9000, 7), 2, [0, 1, 2]); // 3 erasures against k=2
+    expect(r.getStats().framesRecoveredByParity).toBe(0);
+    evictAfter(r);
+    const s = r.getStats();
+    expect(s.framesDroppedIncomplete).toBeGreaterThanOrEqual(1);
+    expect(s.parityInsufficient).toBe(1);
+    // Still zero: the GF solve was never reached, which is exactly the
+    // distinction the old counter could not draw.
+    expect(s.parityRecoveryFailures).toBe(0);
+  });
+
+  it('does not count a frame that parity repaired', () => {
+    const { r } = collector();
+    feed(r, 1, patternBytes(9000, 8), 2, [1]);
+    evictAfter(r);
+    expect(r.getStats().framesRecoveredByParity).toBe(1);
+    expect(r.getStats().parityInsufficient).toBe(0);
+  });
+
+  // The n=1 hole (docs/34 finding 2): the single parity symbol duplicates the
+  // only chunk, but `received === 0` means there is no timestamp to decode
+  // with, so it is unusable. It is a shortfall of a different kind and must
+  // not be silent either.
+  it('counts a single-chunk delta whose only chunk was lost', () => {
+    const { r } = collector();
+    const n = feed(r, 1, patternBytes(200, 9), 2, [0]);
+    expect(n).toBe(1);
+    evictAfter(r);
+    expect(r.getStats().framesDroppedIncomplete).toBeGreaterThanOrEqual(1);
+    expect(r.getStats().parityInsufficient).toBe(1);
+  });
+});

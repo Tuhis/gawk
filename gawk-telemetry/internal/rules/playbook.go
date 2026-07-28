@@ -48,6 +48,11 @@ const (
 	// discrepancy whether the comparison is between two funnel stages or
 	// between intent and outcome.
 	targetShortfallRatio = 0.75
+	// docs/34 finding 3: a delta frame is packetized into ~9-10 datagrams plus
+	// two parity symbols, so a browser receive queue shallower than this cannot
+	// hold one frame's burst and sheds its head every time. Firefox 154
+	// defaults to 1, measured.
+	minSafeDatagramQueue = 16
 )
 
 // Playbook returns the full rule set.
@@ -594,6 +599,38 @@ func parityIneffective() Rule {
 					Comparison: "frames parity actually repaired"},
 				{Signal: "framesDroppedIncomplete", Value: incomplete, From: FromClient,
 					Comparison: "frames lost despite parity"},
+			}
+			// R29 finding 3 (docs/34): a THIRD cause, checked first because it
+			// mimics the under-provisioned signature exactly and calls for the
+			// opposite response. A shallow browser receive queue drops from
+			// the HEAD of each frame's burst, so the parity symbols — written
+			// last — survive while the data chunks ahead of them die in runs.
+			// Recovery then looks respectable and "raise the fleet level"
+			// spends uplink on every viewer to fix a defect in one client.
+			//
+			// Gated on the browser's OWN reported depth, so this is a fact
+			// rather than an inference from the ratio it shares with the
+			// under-provisioned case.
+			depth, haveDepth := f.Client("datagramBufferDefault")
+			governs, _ := f.Client("datagramBufferGovernsDrops")
+			if haveDepth && depth < minSafeDatagramQueue {
+				ev = append(ev,
+					Evidence{Signal: "datagramBufferDefault", Value: depth, From: FromClient,
+						Comparison: "datagrams the browser buffers, against a frame burst of ~10"},
+					Evidence{Signal: "datagramBufferGovernsDrops", Value: governs, From: FromClient,
+						Comparison: "whether this browser exposes the attribute that moves the drop threshold"})
+				return &Finding{
+					ID:         "parity-ineffective",
+					Severity:   SeverityWarn,
+					Confidence: 0.7,
+					Verdict: "This browser's datagram receive queue is shallower than one frame — " +
+						"it is dropping the head of each burst, which parity cannot repair",
+					Evidence: ev,
+					Action: "Not a parity level problem: the symbols arrive intact (they are sent last) " +
+						"while the chunks ahead of them die in runs, so raising the fleet level buys " +
+						"almost nothing. Route this viewer to Resilient or Deep-buffer mode — those " +
+						"carry video on reliable streams and never touch the datagram queue.",
+				}
 			}
 			// The verdict splits on the discriminator, so the operator reads
 			// the cause rather than deriving it.

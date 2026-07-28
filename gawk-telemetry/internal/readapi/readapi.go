@@ -385,6 +385,23 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		if hw, ok := schema.Bool(last, "isHardwareAccelerated"); ok {
 			f.SetClient("isHardwareAccelerated", boolF(hw))
 		}
+		// R29 finding 3 (docs/34): the receive-buffer verdict is a nested
+		// object, and schema.Number is a flat lookup — so the field shipped
+		// invisible to every fleet surface (get_session, diagnose, the
+		// dashboard), which is precisely where "did the fix take on this
+		// viewer?" has to be answerable. Flattened here, the same shape
+		// audioBuffer uses.
+		if db := schema.Nested(last, "datagramBuffer"); db != nil {
+			if v, ok := schema.Number(db, "defaultDepth"); ok {
+				f.SetClient("datagramBufferDefault", v)
+			}
+			if v, ok := schema.Number(db, "effective"); ok {
+				f.SetClient("datagramBufferDepth", v)
+			}
+			if v, ok := schema.Bool(db, "governsDrops"); ok {
+				f.SetClient("datagramBufferGovernsDrops", boolF(v))
+			}
+		}
 		if ab := schema.Nested(last, "audioBuffer"); ab != nil {
 			if v, ok := schema.Number(ab, "overflowDrops"); ok {
 				f.SetClient("audioOverflowDrops", v)
@@ -937,6 +954,10 @@ var factClientFields = []string{
 	// R29 (docs/34 §7.3): so a stored session's verdict can say whether
 	// parity was helping, not merely that loss happened.
 	"parityChunksReceived", "framesRecoveredByParity", "framesDroppedIncomplete",
+	// R29 finding 3: frames lost holding parity too small for their erasures —
+	// the number that separates "the code worked" from "the code was never
+	// even attempted", which parityRecoveryFailures could not.
+	"parityInsufficient",
 	// D17: what the broadcast was asked to be, so a shortfall is computable.
 	"targetFps", "targetBitrateBps",
 	// Tab visibility: renderedFps beside it means nothing without it, because
