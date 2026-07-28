@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.37.1...gawk-app-v0.37.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* **r29:** stop the datagram-buffer gate claiming a fix Firefox cannot take ([#182](https://github.com/Tuhis/gawk/issues/182)) ([96fc4bc](https://github.com/Tuhis/gawk/commit/96fc4bce9f29fa6ac4ae2efee1e7108008e62135))
+
 ## [0.37.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.37.0...gawk-app-v0.37.1) (2026-07-28)
 
 
