@@ -299,9 +299,14 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   oldest-first, **below anything JavaScript can reach**: leg A is clean, the
   relay drops nothing, and neither the reader's speed nor the WebTransport
   buffer attribute moves it. Practical consequence: "lower the rung or the
-  bitrate" is the direct remedy, because it moves frames under the threshold —
-  and a big frame can lose four chunks at once, which is what outmatches k=2
-  parity. ([docs/34](docs/34-live-edge-forward-parity.md))
+  bitrate" would move frames under the threshold — but capping quality and
+  pacing (which costs latency) are both **rejected**; the answer is R30's
+  connection interleaving, the zero-latency way to shorten a burst. The
+  bottleneck is **per-connection**: 4x the aggregate traffic cost ~10% more
+  per-connection loss, so splitting a frame across transports puts every one of
+  them under the threshold. Instruments:
+  `e2e/datagram-loss-profile.mjs` and `e2e/datagram-connection-scaling.mjs`.
+  ([docs/34](docs/34-live-edge-forward-parity.md), [ROADMAP](ROADMAP.md))
 - **Firefox's `VideoEncoder` emits a malformed AVCC record** (bad reserved
   bits + a duplicated NALU-type byte); the viewer repairs it in
   `normalizeAvccExtradata` before configuring the decoder.

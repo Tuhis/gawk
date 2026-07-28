@@ -868,20 +868,63 @@ different stall settings and a drifting source rate, and within a proper pair
 the effect is zero. It is withdrawn. The head-drop *conclusion* survives, but on
 this measurement rather than that one.
 
-**What it means for the product**, and this is the useful part: **loss is a
-function of encoded frame size.** A frame that fits in eight datagrams is
-delivered perfectly on a link that loses 8.5 % of an eighteen-datagram frame. So
-the playbook's existing "lower the rung or the bitrate" advice is not a shrug —
-it is the direct remedy, because it moves frames under the threshold. Parity is
-doing exactly its job at the small end and is structurally outmatched at the
-large end, where a burst can lose four or more chunks at once.
+**Measured on the affected viewer's own machine** (owner-confirmed
+2026-07-29), not a proxy — the same host whose Firefox sessions produced
+findings 2 and 3. Loss magnitude varies with conditions on that path (3.8 % here
+against 12.6 % in session `1fbaae9a`) while the *shape* — a threshold, head-of-
+burst, parity spared — is stable, so a design must key on burst length rather
+than on any particular loss rate.
 
-The other remedy is to stop emitting the burst: pace a frame's datagrams over
-its interval so no more than a handful are ever in flight back-to-back. That is
-now supported by a mechanism and a quantitative target rather than a hunch —
-but it is still **unimplemented and unmeasured**, it changes the send path for
-every viewer, and the threshold above is a property of one path measured from
-one machine. Sizing it wants the same treatment this finding got.
+**What it means: loss is a function of burst length, i.e. of encoded frame
+size.** A frame that fits in eight datagrams is delivered perfectly on a link
+that loses 8.5 % of an eighteen-datagram frame. Parity is doing exactly its job
+at the small end and is structurally outmatched at the large end, where one
+burst takes four or more chunks at once — more erasures than any `k` worth
+paying for.
+
+Two obvious remedies follow, and **both are rejected by owner decision
+(2026-07-29)** because each pays with the thing the product exists to protect:
+
+- **Capping frame size** (lower rung or bitrate) moves frames under the
+  threshold — at the cost of picture quality.
+- **Pacing** a frame's datagrams across its interval shortens the burst in time
+  — at the cost of up to a frame interval of added latency on the last chunk.
+
+The decision is *minimal latency, maximal quality*, so neither is the path. What
+remains is to shorten the burst **without** spreading it in time or shrinking
+it: split it across several transports. Finding 5 establishes that this is
+physically available, and R30 owns it.
+
+### Finding 5 — the bottleneck is per-connection (2026-07-29)
+
+If the ~8-packet buffer belongs to a *connection*, splitting a frame's burst
+across several transports puts every connection under the threshold without
+changing aggregate traffic, without delaying anything and without touching
+quality. If it is shared — a host queue, a NIC, a router on the path — the same
+packets cross the same queue in the same microburst and nothing is gained.
+
+`e2e/datagram-connection-scaling.mjs` decides it. N subscribers to the *same*
+broadcast at once, each carrying a full copy, so aggregate traffic is N× while
+per-connection burst shape is unchanged:
+
+| connections | per-connection loss | frames > 8 chunks | aggregate |
+|---|---|---|---|
+| 1 | 3.55 % | 4.20 % | 232 chunks/s |
+| 2 | 3.18 % | 3.85 % | 459 chunks/s |
+| 4 | 3.90 % | 4.71 % | 897 chunks/s |
+
+**Roughly 4× the traffic through the same host and the same path cost about
+10 % more loss.** A shared bottleneck could not do that; each connection is
+getting its own headroom. Note the > 8-chunk column moves with the total, which
+is the same threshold effect seen from another angle rather than an independent
+signal.
+
+**Caveat, stated because it is the one that matters**: this is a *composition*
+of two measurements — "a connection loses nothing below eight chunks" (finding
+4) and "connections do not compete for that headroom" (here) — not a direct
+test of interleaving. The send side cannot be split without a relay change, so
+proving it end to end is R30's first chunk, not something this instrument can
+do. Everything else about R30 rests on that composition holding.
 
 ### Metrics
 
