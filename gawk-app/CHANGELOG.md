@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.36.0...gawk-app-v0.37.0) (2026-07-28)
+
+
+### Features
+
+* **r29:** forward parity for live-edge delivery ([#175](https://github.com/Tuhis/gawk/issues/175)) ([9bca5d9](https://github.com/Tuhis/gawk/commit/9bca5d9a7a080e4fa9c51733fbc16231b4f84555))
+
 ## [0.36.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.35.0...gawk-app-v0.36.0) (2026-07-27)
 
 
