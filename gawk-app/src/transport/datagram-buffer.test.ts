@@ -34,10 +34,37 @@ describe('applyIncomingDatagramBuffer', () => {
     expect(stats).toEqual<DatagramBufferStats>({
       property: 'incomingMaxBufferedDatagrams',
       requested: 256,
+      defaultDepth: 8,
       effective: 256,
       applied: true,
+      governsDrops: true,
     });
     expect((dg as { incomingMaxBufferedDatagrams: number }).incomingMaxBufferedDatagrams).toBe(256);
+  });
+
+  // R29 finding 3 (docs/34), measured on Firefox 154.0b2: it exposes ONLY the
+  // legacy attribute, and its default is 1 — one datagram, against a frame
+  // burst of ~11. The default is the single most diagnostic number here, so it
+  // is recorded before anything is written.
+  it('records the depth the browser chose before we touched it', () => {
+    const stats = applyIncomingDatagramBuffer(datagramsWith({ incomingHighWaterMark: 1 }), 256);
+    expect(stats.defaultDepth).toBe(1);
+    expect(stats.effective).toBe(256);
+  });
+
+  // The load-bearing correction. The spec ties the DROP threshold to
+  // [[IncomingMaxBufferedDatagrams]], reachable only through the spec-named
+  // attribute. `incomingHighWaterMark` is the pre-rename attribute whose
+  // documented meaning is the readable stream's queuing high-water mark — a
+  // backpressure signal. Writing it succeeds and reads back, which is why the
+  // first version of this gate reported a confident green while production
+  // loss did not move at all.
+  it('does not claim to govern drops through the legacy attribute alone', () => {
+    const legacy = applyIncomingDatagramBuffer(datagramsWith({ incomingHighWaterMark: 1 }), 256);
+    expect(legacy.applied).toBe(true); // the write landed …
+    expect(legacy.governsDrops).toBe(false); // … but it is not the drop threshold
+    const spec = applyIncomingDatagramBuffer(datagramsWith({ incomingMaxBufferedDatagrams: 1 }), 256);
+    expect(spec.governsDrops).toBe(true);
   });
 
   // Firefox 154 — the browser the finding was measured on — ships only the
@@ -65,8 +92,10 @@ describe('applyIncomingDatagramBuffer', () => {
     expect(stats).toEqual<DatagramBufferStats>({
       property: null,
       requested: 256,
+      defaultDepth: null,
       effective: null,
       applied: false,
+      governsDrops: false,
     });
   });
 

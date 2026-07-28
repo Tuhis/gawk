@@ -475,15 +475,23 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     // that an absence of evidence is not health).
     {
       name: 'DatagramReceiveBuffer',
-      active: stats?.datagramBuffer?.applied === true,
-      detail:
-        stats?.datagramBuffer == null
+      // Green ONLY when the write landed on the attribute the spec makes the
+      // drop threshold. R29 finding 3: writing the legacy attribute succeeds
+      // and reads back on Firefox while dropping continues unchanged, so
+      // `applied` alone would keep saying "fixed" about a fix that isn't.
+      active: stats?.datagramBuffer?.applied === true && stats.datagramBuffer.governsDrops,
+      detail: ((b) =>
+        b == null
           ? 'unknown'
-          : stats.datagramBuffer.property == null
+          : b.property == null
             ? 'unsupported → browser default'
-            : stats.datagramBuffer.applied
-              ? `${stats.datagramBuffer.effective} datagrams (${stats.datagramBuffer.property})`
-              : `requested ${stats.datagramBuffer.requested}, browser kept ${stats.datagramBuffer.effective}`,
+            : !b.applied
+              ? `requested ${b.requested}, browser kept ${b.effective}`
+              : b.governsDrops
+                ? `${b.effective} datagrams (was ${b.defaultDepth})`
+                : `set ${b.effective} on ${b.property} (was ${b.defaultDepth}), which does not govern drops`)(
+        stats?.datagramBuffer,
+      ),
     },
   ];
   // The element's buffered window — span, and how far the playhead trails the

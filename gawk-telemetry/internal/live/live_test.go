@@ -999,6 +999,9 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 		stats[f] = "x"
 	}
 	stats["audioBuffer"] = map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0}
+	// R29 finding 3: the receive-buffer verdict is nested, like audioBuffer.
+	stats["datagramBuffer"] = map[string]any{
+		"defaultDepth": 1.0, "effective": 256.0, "governsDrops": false, "property": "incomingHighWaterMark"}
 
 	// Two rounds, so every counter has a window and every delta fact exists.
 	for i := range 2 {

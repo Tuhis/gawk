@@ -628,8 +628,12 @@ describe('ViewerPipeline', () => {
       expect(stats.at(-1)!.datagramBuffer).toEqual({
         property: 'incomingHighWaterMark',
         requested: INCOMING_DATAGRAM_BUFFER,
+        defaultDepth: 1,
         effective: INCOMING_DATAGRAM_BUFFER,
         applied: true,
+        // Firefox's shape: the write lands, but on the attribute that is NOT
+        // the drop threshold — so the pipeline must not report it as governing.
+        governsDrops: false,
       });
       await pipeline.stop();
     } finally {
@@ -650,8 +654,10 @@ describe('ViewerPipeline', () => {
       const datagramBuffer = {
         property: 'incomingMaxBufferedDatagrams' as const,
         requested: 256,
+        defaultDepth: 8,
         effective: 256,
         applied: true,
+        governsDrops: true,
       };
       const fakeTransport: ViewerTransport = {
         kind: 'in-process',

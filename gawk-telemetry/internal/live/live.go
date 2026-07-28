@@ -330,6 +330,20 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 				s.clientFacts[f] = v
 			}
 		}
+		// R29 finding 3 (docs/34): the receive-buffer verdict, flattened for the
+		// same reason audioBuffer is — schema.Number is a flat lookup, so a
+		// nested object is invisible to every rule and to the dashboard.
+		if db := schema.Nested(stats, "datagramBuffer"); db != nil {
+			if v, ok := schema.Number(db, "defaultDepth"); ok {
+				s.clientFacts["datagramBufferDefault"] = v
+			}
+			if v, ok := schema.Number(db, "effective"); ok {
+				s.clientFacts["datagramBufferDepth"] = v
+			}
+			if v, ok := schema.Bool(db, "governsDrops"); ok {
+				s.clientFacts["datagramBufferGovernsDrops"] = boolToF(v)
+			}
+		}
 		if ab := schema.Nested(stats, "audioBuffer"); ab != nil {
 			if v, ok := schema.Number(ab, "overflowDrops"); ok {
 				s.clientFacts["audioOverflowDrops"] = v
@@ -1024,6 +1038,8 @@ var liveNumericFields = []string{
 	// R29 (docs/34 §7.3): parity's own numbers, so a live row can explain a
 	// lossy viewer in the moment rather than only after the rollup.
 	"parityChunksReceived", "framesRecoveredByParity", "framesDroppedIncomplete",
+	// R29 finding 3: the shortfall parityRecoveryFailures could not see.
+	"parityInsufficient",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.

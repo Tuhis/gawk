@@ -273,10 +273,17 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   per-frame k=2 code cannot repair. `LocalViewerTransport` now raises
   `incomingMaxBufferedDatagrams` (Firefox ships only the older
   `incomingHighWaterMark`; Chromium is removing it, so both are tried) to 256
-  and reports the result in the **`DatagramReceiveBuffer`** feature gate,
-  because a browser that accepts the assignment and ignores it looks identical
-  to success. Set it in the realm that owns the `WebTransport` — on the worker
-  path the main thread has no handle on it.
+  and reports the result in the **`DatagramReceiveBuffer`** feature gate.
+  Set it in the realm that owns the `WebTransport` — on the worker path the
+  main thread has no handle on it. **The write is not the fix on Firefox**:
+  measured on 154.0b2, `incomingMaxBufferedDatagrams` is ABSENT and only the
+  legacy `incomingHighWaterMark` exists, defaulting to **1 datagram** — and the
+  legacy name is the readable stream's queuing high-water mark, not the drop
+  threshold the spec ties to `[[IncomingMaxBufferedDatagrams]]`. It stores and
+  reads back while dropping continues unchanged, so a readback proves storage,
+  never effect; the gate reports `governsDrops` for exactly this reason. Until
+  Firefox ships the real attribute, the answer for those viewers is Resilient
+  or Deep-buffer mode, which never touch the datagram queue.
   ([docs/34](docs/34-live-edge-forward-parity.md))
 - **Firefox's `VideoEncoder` emits a malformed AVCC record** (bad reserved
   bits + a duplicated NALU-type byte); the viewer repairs it in

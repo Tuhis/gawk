@@ -34,17 +34,34 @@ const PROPERTIES = ['incomingMaxBufferedDatagrams', 'incomingHighWaterMark'] as 
 
 export type DatagramBufferProperty = (typeof PROPERTIES)[number];
 
+// Only the spec-named attribute is tied to [[IncomingMaxBufferedDatagrams]],
+// the value the receive algorithm compares the queue against before dropping
+// from its head. `incomingHighWaterMark` is the pre-rename attribute, and its
+// documented meaning is the readable stream's queuing high-water mark — a
+// backpressure signal, not a drop threshold. Writing it succeeds and reads
+// back, so a readback proves storage and nothing more.
+const DROP_THRESHOLD_PROPERTY: DatagramBufferProperty = 'incomingMaxBufferedDatagrams';
+
 export interface DatagramBufferStats {
   // Which attribute this browser exposes; null where it exposes neither and
   // the queue depth is whatever the implementation chose.
   property: DatagramBufferProperty | null;
   requested: number;
+  // The depth the browser chose before we wrote anything. The single most
+  // diagnostic number here: Firefox 154 reports 1 — one datagram, against a
+  // delta frame's burst of ~11 (docs/34 finding 3).
+  defaultDepth: number | null;
   // What the attribute reads back as afterwards. Null when absent or
   // non-numeric — never assumed equal to `requested`, because a user agent may
   // accept the assignment and ignore it, and that silence is the failure mode
   // this whole module exists to make visible.
   effective: number | null;
+  // The write landed. NOT "the queue got deeper" — see governsDrops.
   applied: boolean;
+  // Whether the attribute we wrote is the one the spec makes the drop
+  // threshold. False on a browser that only exposes the legacy name, where a
+  // green `applied` says nothing about whether datagrams stop being dropped.
+  governsDrops: boolean;
 }
 
 function numberAt(bag: Record<string, unknown>, key: string): number | null {
@@ -59,7 +76,14 @@ export function applyIncomingDatagramBuffer(
   datagrams: unknown,
   requested: number = INCOMING_DATAGRAM_BUFFER,
 ): DatagramBufferStats {
-  const stats: DatagramBufferStats = { property: null, requested, effective: null, applied: false };
+  const stats: DatagramBufferStats = {
+    property: null,
+    requested,
+    defaultDepth: null,
+    effective: null,
+    applied: false,
+    governsDrops: false,
+  };
   if (datagrams == null || typeof datagrams !== 'object') return stats;
   const bag = datagrams as Record<string, unknown>;
   for (const property of PROPERTIES) {
@@ -67,7 +91,9 @@ export function applyIncomingDatagramBuffer(
     // WebTransportDatagramDuplexStream keeps its accessors.
     if (!(property in bag)) continue;
     stats.property = property;
+    stats.governsDrops = property === DROP_THRESHOLD_PROPERTY;
     const before = numberAt(bag, property);
+    stats.defaultDepth = before;
     // Only ever raise. The default is implementation-defined and may already
     // be deeper than we ask for; clamping it down would be this change causing
     // the very loss it exists to stop.
