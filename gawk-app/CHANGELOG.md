@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.37.0...gawk-app-v0.37.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **r29:** give the viewer a datagram receive queue deep enough for a frame ([#180](https://github.com/Tuhis/gawk/issues/180)) ([d735df7](https://github.com/Tuhis/gawk/commit/d735df701a75bfcab2a9884d495aedc3723ff62b))
+
 ## [0.37.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.36.0...gawk-app-v0.37.0) (2026-07-28)
 
 
