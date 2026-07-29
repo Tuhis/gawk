@@ -7,3 +7,8 @@ publish.workspace = true
 
 [dependencies]
 gawk-wire = { path = "../wire" }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "test-util"] }

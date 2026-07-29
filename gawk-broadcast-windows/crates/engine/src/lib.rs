@@ -1,17 +1,29 @@
 //! Session lifecycle, send policy, resume supervisor, timesync, stats and
 //! telemetry batching — the port of `gawk-broadcast/internal/engine`'s
-//! semantics (docs/38 D5). WB0 scaffold: only the production defaults are
-//! pinned so far; the session machinery lands in WB2.
+//! semantics (docs/38 D5): same idea, same names, third language. Anything
+//! the relay or viewer can observe behaves identically to the Go engine.
 //!
 //! This crate deliberately has no GUI and no COM/WinRT dependencies: media
-//! enters through source traits, the network through a `RelaySession` seam —
-//! which is what keeps a future CLI or pubsim-style shell possible without
-//! redesign (docs/38 OD12).
+//! enters through the types in [`media`], the network through the
+//! [`relay::RelaySession`] seam — "the send policy is defined by what
+//! happens when sends fail", and only a seam lets tests script failures.
+//! That is also what keeps a future CLI or pubsim-style shell possible
+//! without redesign (docs/38 OD12).
+
+pub mod clock;
+pub mod dispatch;
+pub mod gate;
+pub mod media;
+pub mod relay;
+pub mod resume;
+pub mod sender;
+pub mod stats;
+pub mod timesync;
 
 /// Shipped defaults, all pointing at the production gawk deployment
-/// (docs/38 D13). "Blank means the default, resolved at use, never at save" —
-/// the config file never stores a resolved default, so a release that moves
-/// the fleet address moves every user with it.
+/// (docs/38 D13). "Blank means the default, resolved at use, never at save"
+/// — the config file never stores a resolved default, so a release that
+/// moves the fleet address moves every user with it.
 pub mod defaults {
     /// The production relay origin (WebTransport publish endpoint).
     pub const RELAY_URL: &str = "https://api.gawk.ioio.fi:4433";
