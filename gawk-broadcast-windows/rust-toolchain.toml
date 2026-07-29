@@ -1,0 +1,5 @@
+# Pinned so CI (windows-latest) and every dev machine build with the same
+# compiler; rustup auto-installs this on the first cargo invocation.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

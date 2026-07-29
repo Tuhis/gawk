@@ -1,0 +1,6 @@
+[package]
+name = "gawk-capture"
+description = "Windows.Graphics.Capture frame source + picker enumeration (WB3, docs/38 D6)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

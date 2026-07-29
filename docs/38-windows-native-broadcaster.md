@@ -1,7 +1,8 @@
 # R34 — Native Windows broadcaster (`gawk-broadcast-windows`)
 
 **Status**: designed 2026-07-30 (owner decisions taken the same day, listed in
-§2), not started. Chunks WB0–WB8.
+§2). WB0 (scaffold, CI, release wiring) and WB1 (the wire mirror) implemented
+2026-07-30; WB2–WB8 not started.
 
 A Windows counterpart to the Linux native broadcaster (R14, `gawk-broadcast`),
 with two capture modes selectable at start — **share one application** (its

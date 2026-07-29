@@ -1,0 +1,6 @@
+[package]
+name = "gawk-encode"
+description = "Media Foundation hardware H.264 encoder cascade (WB4, docs/38 D9)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

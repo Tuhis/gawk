@@ -1,0 +1,23 @@
+# R34 native Windows broadcaster (docs/38). A Cargo workspace, deliberately a
+# separate top-level component with its own toolchain, CI job and release unit
+# (docs/38 D1) — not a sibling of the Go gawk-broadcast module.
+[workspace]
+resolver = "2"
+members = [
+    "crates/wire",
+    "crates/engine",
+    "crates/capture",
+    "crates/encode",
+    "crates/audio",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.0.0" # x-release-please-version
+edition = "2024"
+publish = false
+
+# Single-EXE goal (docs/38 D17): trim what we can for free already.
+[profile.release]
+lto = "thin"
+strip = true

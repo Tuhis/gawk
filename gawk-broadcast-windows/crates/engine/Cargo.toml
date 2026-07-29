@@ -1,0 +1,9 @@
+[package]
+name = "gawk-engine"
+description = "Session lifecycle, send policy, resume supervisor (WB2, docs/38 D5)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+gawk-wire = { path = "../wire" }
