@@ -65,9 +65,9 @@ vi.mock('../../transport/viewer-session', () => ({
   RECONNECT_MAX_ATTEMPTS: 10,
 }));
 
-// docs/17 Decision 10: the retired 'fixed' playout entry is gated on
-// isDevEnvironment(), which vitest makes unconditionally true
-// (import.meta.env.DEV) — so a real viewer's behaviour is only assertable
+// isDevEnvironment() is unconditionally true under vitest
+// (import.meta.env.DEV), so a real viewer's behaviour — the relay-override
+// entry's absence, and the production menu's row ceiling — is only assertable
 // through a seam. Everything else in config.ts stays real: playout.ts reads
 // getDvrBufferMs() from this same module.
 const devEnv = vi.hoisted(() => ({ value: true }));
@@ -102,9 +102,7 @@ const interpolationBox = () =>
 /** A labelled <select> in the Advanced section. */
 const advancedSelect = (name: RegExp) => screen.getByRole('combobox', { name });
 import {
-  PLAYOUT_OFFSET_MS,
   getPlayoutMode,
-  getPlayoutOffsetMs,
   getStoredPlayoutMode,
   setPlayoutMode,
   setViewerDeliveryMode,
@@ -192,11 +190,10 @@ describe('ViewerScreen states', () => {
 // R5 Q3 + R12 T2, revised by docs/17 Decision 10 (2026-07-23): the production
 // viewer has ONE playout toggle — "Paced playback" (the R12 adaptive
 // paced-presentation mode) — persisted as one mode and applied to the
-// (main-thread, in these tests) pipeline context. The retired fixed 150 ms
-// mode keeps its "Smooth playback (fixed 150 ms)" entry in dev builds only,
-// as the measurement-free control for pacing diagnosis. Since the default
-// flip (user decision 2026-07-15), a fresh browser defaults to adaptive +
-// interpolation; the menu is the disable path.
+// (main-thread, in these tests) pipeline context. R31 removed the retired
+// fixed 150 ms mode outright, so pacing is now purely a property of the chosen
+// preset. Since the default flip (user decision 2026-07-15), a fresh browser
+// defaults to adaptive + interpolation.
 describe('ViewerScreen playout modes', () => {
   function cleanupPlayout() {
     setPlayoutMode('off');
@@ -250,11 +247,12 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // docs/17 Decision 10: the production surface offers pacing as one binary. A
-  // real viewer never sees the fixed entry, so it can never reach 'fixed'.
-  it('offers no fixed-playout entry outside a dev build', async () => {
+  // docs/17 Decision 10 retired the fixed 150 ms mode from the production
+  // menu; R31 removed it outright (owner decision 2026-07-29), so there is no
+  // build in which a pacing row exists in the menu at all. Pacing is a
+  // property of the preset and nothing else.
+  it('offers no fixed-playout entry in any build', async () => {
     cleanupPlayout();
-    devEnv.value = false;
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
@@ -273,72 +271,12 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // The mode survives as a dev-only diagnostic — a measurement-free offset,
-  // which is what separates a pacing bug from a jitter-estimator bug. It stays
-  // in the "⋮" menu rather than the settings panel precisely because it is a
-  // diagnostic and not a preset.
-  it('toggles fixed smoothing via the context menu in a dev build', async () => {
+  // A viewer carrying 'fixed' — from before docs/17 Decision 10 retired it, or
+  // from a dev build that could still select it until R31 — lands on adaptive,
+  // the mode fixed was a worse approximation of. Unconditional now: there is no
+  // build left that can honour the stored value.
+  it('migrates a stored fixed mode to adaptive in every build', async () => {
     cleanupPlayout();
-    render(<ViewerScreen broadcastId="AB2CD3" />);
-    await waitFor(() => expect(sessions).toHaveLength(1));
-    expect(getPlayoutMode()).toBe('adaptive'); // the default
-
-    openMenu();
-    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms)'));
-    expect(getPlayoutMode()).toBe('fixed');
-    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
-    expect(localStorage.getItem('gawk:playout-mode')).toBe('fixed');
-
-    // Toggle back off: live-edge, persisted so the default flip won't undo it.
-    openMenu();
-    expect(
-      screen
-        .getByRole('menuitemradio', { name: 'Smooth playback (fixed 150 ms)' })
-        .getAttribute('aria-checked'),
-    ).toBe('true');
-    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms)'));
-    expect(getPlayoutMode()).toBe('off');
-    expect(getPlayoutOffsetMs()).toBe(0);
-    expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
-    cleanupPlayout();
-  });
-
-  it('the two smoothing modes exclude each other in a dev build', async () => {
-    cleanupPlayout();
-    render(<ViewerScreen broadcastId="AB2CD3" />);
-    await waitFor(() => expect(sessions).toHaveLength(1));
-
-    // The default is the adaptive preset; the dev diagnostic replaces it.
-    openPresets();
-    expect(checkedPreset()).toBe('Balanced');
-    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
-    openMenu();
-    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms)'));
-    expect(getPlayoutMode()).toBe('fixed');
-
-    // 'fixed' matches no preset, so the pill reads Custom (UX2.4) and no
-    // preset row is checked.
-    expect(screen.getByLabelText('Playback quality: Custom')).toBeTruthy();
-    openPresets();
-    expect(checkedPreset()).toBe('Custom');
-
-    // Re-picking the adaptive preset flips back and clears the diagnostic.
-    pickPreset('Balanced');
-    expect(getPlayoutMode()).toBe('adaptive');
-
-    // And the other live-edge preset returns to live-edge pacing.
-    openPresets();
-    pickPreset('Lowest latency');
-    expect(getPlayoutMode()).toBe('off');
-    cleanupPlayout();
-  });
-
-  // docs/17 Decision 10: a viewer carrying 'fixed' from before the retirement
-  // lands on adaptive — the mode fixed was a worse approximation of — rather
-  // than on a mode with no control in their menu.
-  it('migrates a stored fixed mode to adaptive outside a dev build', async () => {
-    cleanupPlayout();
-    devEnv.value = false;
     localStorage.setItem('gawk:playout-mode', 'fixed');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
@@ -346,12 +284,13 @@ describe('ViewerScreen playout modes', () => {
     expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
     cleanup();
 
-    // ...and is honoured where the menu can still reach it.
+    // Same in a dev build — the value has nowhere left to be honoured.
     cleanupPlayout();
+    devEnv.value = true;
     localStorage.setItem('gawk:playout-mode', 'fixed');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(2));
-    expect(getPlayoutMode()).toBe('fixed');
+    expect(getPlayoutMode()).toBe('adaptive');
     cleanupPlayout();
   });
 
@@ -432,7 +371,7 @@ describe('ViewerScreen playout modes', () => {
   // Review finding LIFECYCLE-2 (docs/reviews/resilient-mode-review.md): the
   // entry was gated on the *stored* mode, but resilient mode overrides the
   // *effective* one to adaptive — so a resilient viewer whose stored playout
-  // is 'off'/'fixed' had interpolation running with no way to turn it off.
+  // is 'off' had interpolation running with no way to turn it off.
   it('offers interpolation under resilient mode even when the stored mode is not adaptive', async () => {
     cleanupPlayout();
     localStorage.removeItem('gawk:resilient-mode');
@@ -469,7 +408,7 @@ describe('ViewerScreen playout modes', () => {
   // vanishes teaches nothing.
   it('disables interpolation with a reason when the effective mode is not adaptive', async () => {
     cleanupPlayout();
-    localStorage.setItem('gawk:playout-mode', 'fixed');
+    localStorage.setItem('gawk:playout-mode', 'off');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
@@ -524,9 +463,8 @@ describe('ViewerScreen menu button (touch reachability)', () => {
   // stops the next milestone quietly appending its knob here — which is
   // exactly how it reached seventeen rows, eleven of them tuning (docs/37 §1).
   it('carries no tuning rows and stays short', async () => {
-    // A production build: the two dev-only diagnostics (fixed playout, relay
-    // override) are what a real viewer never sees, and the ceiling that
-    // matters is theirs.
+    // A production build: the dev-only relay override is what a real viewer
+    // never sees, and the ceiling that matters is theirs.
     devEnv.value = false;
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));

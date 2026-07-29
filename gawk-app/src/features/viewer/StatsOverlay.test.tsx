@@ -143,9 +143,11 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('3');
 
     cleanup();
+    // R31 removed the 'fixed' mode, so live-edge is what anything that is not
+    // adaptive reads as.
     render(
       <StatsOverlay
-        stats={{ ...fullStats(), playoutMode: 'fixed', playoutOffsetMs: 150 }}
+        stats={{ ...fullStats(), playoutMode: 'off', playoutOffsetMs: 0 }}
         codec="vp8"
         bitrateBps={null}
         onClose={() => {}}
@@ -153,7 +155,7 @@ describe('StatsOverlay', () => {
         copied={false}
       />,
     );
-    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('fixed (+150 ms)');
+    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
 
     cleanup();
     // R12 T2: adaptive mode shows the live offset and the pacing placement.

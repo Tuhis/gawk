@@ -727,6 +727,15 @@ docs/24 finding 8). Stored `'fixed'` and the legacy `gawk:smoothed-playout
 === '1'` both migrate to `'adaptive'`. Viewer-UI only; zero
 server/wire/pipeline changes.
 
+**Superseded 2026-07-29 by R31 (owner decision, docs/36 deviation 7)**: the
+`'fixed'` mode is **removed outright** — `PlayoutMode` is `'off' |
+'adaptive'`, a stored `'fixed'` migrates to `'adaptive'` in every build, and
+the dev-gated menu entry is gone. The dominance argument above is why that
+was safe; what did not survive is the "keep it as a diagnostic" half, because
+R31 made the viewer menu actions-only and this was its one pacing row, kept
+for a control nobody had reached for since. Pacing is now a property of the
+chosen preset, not a control.
+
 ---
 
 ## R14 — Native Linux broadcaster

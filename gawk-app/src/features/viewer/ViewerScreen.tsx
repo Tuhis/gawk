@@ -149,9 +149,12 @@ function loadDeliveryMode(): ViewerDeliveryMode {
 function loadPlayoutMode(): PlayoutMode {
   try {
     const v = localStorage.getItem(PLAYOUT_MODE_KEY);
-    // A stored 'fixed' only survives where the menu can still reach it; a real
-    // viewer carrying one from before docs/17 Decision 10 lands on adaptive.
-    if (v === 'fixed') return isDevEnvironment() ? 'fixed' : 'adaptive';
+    // R31 removed 'fixed' outright, so a viewer carrying one — from before
+    // docs/17 Decision 10 retired it, or from a dev build that could still
+    // select it — lands on adaptive: the mode fixed was a worse approximation
+    // of, and the one its stored value was already migrating to everywhere a
+    // real viewer could see it.
+    if (v === 'fixed') return 'adaptive';
     if (v === 'adaptive' || v === 'off') return v;
     const legacy = localStorage.getItem(LEGACY_SMOOTHED_KEY);
     if (legacy === '1') return 'adaptive';
@@ -209,13 +212,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // R5 Q3 + R12 T2: playout smoothing (trades latency for steadier pacing).
-  // 'adaptive' (the R12 paced-presentation mode) is the default since
-  // 2026-07-15 and, since docs/17 Decision 10, the only one a real viewer can
-  // select; 'fixed' is the original 150 ms mode, kept as a dev-only
-  // diagnostic. Toggling the checked mode returns to live-edge ('off'); in a
-  // dev build the two remain mutually exclusive.
+  // Two modes since R31 removed the retired 'fixed' one: 'adaptive' (the R12
+  // paced-presentation mode, the default since 2026-07-15) and 'off'
+  // (live-edge). Which one is in force is a property of the chosen preset —
+  // Lowest latency is 'off', every other preset is 'adaptive'.
   const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
-  const showFixedPlayout = isDevEnvironment();
 
   // Developer-only relay override, the viewer counterpart of the broadcaster's
   // "Development settings" panel. Both write the same `transportStore`, so a dev
@@ -250,20 +251,6 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       return next;
     });
   }, []);
-  const togglePlayoutMode = useCallback(
-    (mode: 'fixed' | 'adaptive') => {
-      setPlayoutModeState((current) => {
-        const next = current === mode ? 'off' : mode;
-        try {
-          localStorage.setItem(PLAYOUT_MODE_KEY, next);
-        } catch {
-          // private mode etc. — the toggle still works for this session
-        }
-        return next;
-      });
-    },
-    [],
-  );
 
   // The connection (worker-offloaded when supported, main-thread otherwise)
   // owns decode + render and reports back only view state — no VideoFrame ever
@@ -780,19 +767,6 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       : []),
     { label: 'Playback settings…', onSelect: () => setShowSettings(true) },
     { label: 'Copy link', onSelect: copyLink },
-    // docs/17 Decision 10: the retired fixed 150 ms mode, reachable in dev
-    // builds only as the measurement-free control for pacing diagnosis — it is
-    // a diagnostic, not a preset, so it stays here rather than entering the
-    // panel. Selecting it always resolves the pill to Custom.
-    ...(showFixedPlayout
-      ? [
-          {
-            label: 'Smooth playback (fixed 150 ms)',
-            checked: playoutMode === 'fixed',
-            onSelect: () => togglePlayoutMode('fixed'),
-          },
-        ]
-      : []),
     // Dev builds only, same gate as the broadcaster's panel — a real viewer
     // never sees it and cannot be talked into repointing its relay.
     ...(showDevSettings ? [{ label: 'Relay server (dev)…', onSelect: openDevSettings }] : []),

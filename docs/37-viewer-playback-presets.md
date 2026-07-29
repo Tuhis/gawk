@@ -143,9 +143,9 @@ Advanced, stay at their defaults, and are exactly what "Custom" tracks.**
 3. **Custom is a state you land in, not an option you choose.** It appears in
    the popover — checked, and inert on select — exactly when the effective
    tuple (delivery, pacing, parity, striping, interpolation) matches no
-   preset. On a clean install it never renders. `playoutMode: 'fixed'` (the
-   dev-only R12 diagnostic, `isDevEnvironment()`-gated) always resolves to
-   Custom, which is correct: it is a measurement control, not a preset.
+   preset. On a clean install it never renders. (A stored `playoutMode:
+   'fixed'` used to resolve here too; R31 removed that mode outright — see
+   deviation 7 — so it now migrates to `'adaptive'` on load instead.)
 
 4. **Not-applicable is a *disabled row with its reason on the row*, never a
    tooltip and never a removal.** Touch has no hover, and R19's own PRODUCT-2
@@ -195,7 +195,7 @@ export type PresetId = 'lowest' | 'balanced' | 'smoother' | 'stable';
 
 export interface PlaybackConfig {
   delivery: ViewerDeliveryMode;   // 'live' | 'resilient' | 'deep'
-  playout: PlayoutMode;           // 'off' | 'fixed' | 'adaptive'
+  playout: PlayoutMode;           // 'off' | 'adaptive'
   parity: ParityChoice;           // 'auto' | 1 | 0
   striping: StripeMode;           // 'auto' | 'on' | 'off'
   interpolation: boolean;
@@ -411,7 +411,7 @@ off-screen-menu bug and is worth shipping on its own if R32 stalls.
 | UX2.1 | `resolvePreset` returns `'balanced'` for today's default state, and each preset's own tuple round-trips through `presetConfig` → `resolvePreset` | `playbackPresets.test.ts`, all four |
 | UX2.2 | Any single advanced field off its default ⇒ `resolvePreset` returns `null` | test: three one-field mutations of `balanced` |
 | UX2.3 | A legacy off-preset combination (`resilient` + playout `off`) resolves to `null`, not to a nearest preset | test |
-| UX2.4 | `playout: 'fixed'` always resolves to `null` | test |
+| UX2.4 | A stored `playout: 'fixed'` migrates to `'adaptive'` on load, in every build (the mode is gone — deviation 7) | `ViewerScreen.test.tsx` |
 | UX2.5 | `advancedChanges` counts exactly the deviating advanced fields and **never** counts delivery or playout | test across the 8 advanced combinations |
 | UX2.6 | `notApplicable('parity'\|'striping', d)` returns a non-empty reason for `'resilient'`/`'deep'` and `null` for `'live'` | test, all six pairs |
 | UX2.7 | `notApplicable('interpolation', …)` is driven by the **effective** playout mode, so a resilient viewer with stored `'off'` gets `null` (LIFECYCLE-2 must not regress) | test mirroring `docs/24` finding 16's case |
@@ -585,10 +585,22 @@ Files: `ui/ContextMenu.tsx` + `.module.css` (UX1),
    pins the production ceiling explicitly by forcing `isDevEnvironment()`
    false, since that is the number that matters.
 
-7. **The dev-only fixed-playout diagnostic stayed in the "⋮" menu.** It is a
-   measurement control, not a preset, and putting it in the panel would have
-   implied it belonged to the same axis. It always resolves the pill to Custom
-   (UX2.4), which is correct and asserted.
+7. **The `'fixed'` playout mode was removed outright** (owner decision,
+   2026-07-29), superseding docs/17 Decision 10's "retire it from the menu but
+   keep the mode". As first implemented, R31 left its dev-only "Smooth playback
+   (fixed 150 ms)" entry in the "⋮" menu on the reasoning that a diagnostic is
+   not a preset — but that put a *pacing* row in a menu R31's own headline rule
+   makes actions-only, enforced by a test that only ran with
+   `isDevEnvironment()` false. So the rule held for real viewers and quietly
+   not for dev builds, and the row rendered indented among flat action rows
+   because it carried the radio check gutter. The mode's stated value was as a
+   measurement-free control separating a pacing bug from a bug in the jitter
+   estimator driving it (PLAYOUT-1, docs/24 finding 8) — real, but not reached
+   for since, and not worth an exception to the one rule that keeps this menu
+   from growing back. `PlayoutMode` is now `'off' | 'adaptive'`; a stored
+   `'fixed'` migrates to `'adaptive'` in every build; `PLAYOUT_OFFSET_MS`
+   stays as adaptive's warmup seed. UX4.4 now asserts no pacing row in *any*
+   build.
 
 8. **The test cleanup helpers now clear all five preference keys.** They
    previously cleared three, and one test compensated by removing

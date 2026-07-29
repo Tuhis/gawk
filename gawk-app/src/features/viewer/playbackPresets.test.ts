@@ -50,14 +50,6 @@ describe('playbackPresets — resolution', () => {
     expect(resolvePreset({ ...DEFAULT_CONFIG, delivery: 'resilient', playout: 'off' })).toBeNull();
   });
 
-  // UX2.4
-  it('always returns null for the dev-only fixed pacing diagnostic', () => {
-    expect(resolvePreset({ ...DEFAULT_CONFIG, playout: 'fixed' })).toBeNull();
-    expect(
-      resolvePreset({ ...DEFAULT_CONFIG, delivery: 'resilient', playout: 'fixed' }),
-    ).toBeNull();
-  });
-
   it('labels an unresolved configuration Custom', () => {
     expect(presetLabel(null)).toBe('Custom');
   });
@@ -97,7 +89,7 @@ describe('playbackPresets — advancedChanges', () => {
   it('never counts delivery or playout', () => {
     expect(advancedChanges({ ...DEFAULT_CONFIG, delivery: 'deep' })).toBe(0);
     expect(advancedChanges({ ...DEFAULT_CONFIG, playout: 'off' })).toBe(0);
-    expect(advancedChanges({ ...DEFAULT_CONFIG, delivery: 'resilient', playout: 'fixed' })).toBe(0);
+    expect(advancedChanges({ ...DEFAULT_CONFIG, delivery: 'resilient', playout: 'off' })).toBe(0);
   });
 });
 
@@ -142,7 +134,7 @@ describe('playbackPresets — notApplicable', () => {
     expect(effectivePlayout({ ...DEFAULT_CONFIG, delivery: 'resilient', playout: 'off' })).toBe(
       'adaptive',
     );
-    expect(effectivePlayout({ ...DEFAULT_CONFIG, delivery: 'deep', playout: 'fixed' })).toBe(
+    expect(effectivePlayout({ ...DEFAULT_CONFIG, delivery: 'deep', playout: 'off' })).toBe(
       'adaptive',
     );
     expect(effectivePlayout({ ...DEFAULT_CONFIG, delivery: 'live', playout: 'off' })).toBe('off');

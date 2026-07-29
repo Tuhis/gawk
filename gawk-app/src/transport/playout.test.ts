@@ -1,7 +1,9 @@
-// R12 T2 (docs/17 Decision 5): playout is a three-mode setting — 'off'
-// (live-edge, the default), 'fixed' (R5 Q3's constant 150 ms, preserved
-// as-is), 'adaptive' (paced presentation; T3 replaces the seed offset with
-// the jitter-tracked controller). Module state per JS context, read live.
+// R12 T2 (docs/17 Decision 5), as reduced by R31: playout is a two-mode
+// setting — 'off' (live-edge, the default) and 'adaptive' (paced presentation;
+// T3 replaces the seed offset with the jitter-tracked controller). The third
+// mode, 'fixed' (R5 Q3's constant 150 ms), was retired from the menu by
+// docs/17 Decision 10 and removed outright by R31 (docs/36). Module state per
+// JS context, read live.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { LIVE_EDGE_WINDOW_MS, QUANTILE_RANGE_MS } from './live-edge';
@@ -35,12 +37,6 @@ describe('playout modes (R12 T2)', () => {
   it('defaults to off — live-edge, zero offset', () => {
     expect(getPlayoutMode()).toBe('off');
     expect(getPlayoutOffsetMs()).toBe(0);
-  });
-
-  it('fixed mode keeps the R5 Q3 constant offset', () => {
-    setPlayoutMode('fixed');
-    expect(getPlayoutMode()).toBe('fixed');
-    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
   });
 
   it('adaptive mode starts at the seed offset (T3 makes it dynamic)', () => {
@@ -166,15 +162,13 @@ describe('adaptive mode wiring (R12 T3)', () => {
     // Warm past the window with steady high jitter, once per second.
     for (let t = 0; t <= 30_000; t += 1000) updatePlayoutController(250, t);
     expect(getPlayoutOffsetMs()).toBe(250 + HEADROOM_MS);
-    // Leaving adaptive mode returns the static offsets immediately.
-    setPlayoutMode('fixed');
-    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+    // Leaving adaptive mode drops the offset immediately.
     setPlayoutMode('off');
     expect(getPlayoutOffsetMs()).toBe(0);
   });
 
   it('updatePlayoutController is a no-op outside adaptive mode', () => {
-    setPlayoutMode('fixed');
+    setPlayoutMode('off');
     for (let t = 0; t <= 30_000; t += 1000) updatePlayoutController(250, t);
     setPlayoutMode('adaptive'); // entering adaptive re-seeds
     expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
@@ -237,15 +231,19 @@ describe('resilient playout profile (R19)', () => {
     expect(getPlayoutOffsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.seedMs);
   });
 
+  // The stored mode is 'off' here precisely because that is the case docs/24
+  // finding 16 (review finding LIFECYCLE-2) turns on: a resilient viewer whose
+  // stored pacing is live-edge is *effectively* adaptive, and must return to
+  // live-edge — not to adaptive — the moment resilient mode ends.
   it('the stored playout mode survives a resilient on/off round-trip', () => {
-    setPlayoutMode('fixed');
+    setPlayoutMode('off');
     setViewerDeliveryMode('resilient');
-    expect(getStoredPlayoutMode()).toBe('fixed');
+    expect(getStoredPlayoutMode()).toBe('off');
     expect(getPlayoutMode()).toBe('adaptive');
     setViewerDeliveryMode('live');
-    expect(getStoredPlayoutMode()).toBe('fixed');
-    expect(getPlayoutMode()).toBe('fixed');
-    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
+    expect(getStoredPlayoutMode()).toBe('off');
+    expect(getPlayoutMode()).toBe('off');
+    expect(getPlayoutOffsetMs()).toBe(0);
   });
 
   it('leaving resilient mode re-seeds the controller onto the default profile', () => {

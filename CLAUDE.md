@@ -1267,21 +1267,26 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    Delivery overlay rows. (b) **Paced presentation** (T2):
    `PacedPresentationSink` subsumes the R10 `CoalescingRenderSink` (no
    target ⇒ identical coalescing; with targets it holds ≤3 decoded frames
-   and presents each in its vsync slot); playout is now a three-mode
-   setting — `'off' | 'fixed' (the R5 150 ms mode) | 'adaptive'` —
-   persisted as `gawk:playout-mode`; **since 2026-07-23 (docs/17 Decision
-   10, user decision) viewer pacing is ONE binary right-click toggle,
-   "Paced playback"**: adaptive dominates fixed at every point on the
+   and presents each in its vsync slot); playout is persisted as
+   `gawk:playout-mode` and is **a two-mode setting since R31 (2026-07-29):
+   `'off' | 'adaptive'`**. It was three — the middle one being `'fixed'`, R5
+   Q3's constant 150 ms — until docs/17 Decision 10 (2026-07-23) retired it
+   from the production menu and **R31 removed it outright** (docs/36 deviation
+   7). Adaptive dominates fixed at every point on the
    trade curve (clamp floor 50 ms is *below* fixed's constant on a clean
    link, ceiling above it on a dirty one, warmup seeds at the same 150 ms,
    and only adaptive sets a `displayTargetMs` — so fixed paid the
-   buffering latency while presenting unpaced). `'fixed'` survives as a
-   mode, offered by `ViewerScreen` only under `isDevEnvironment()`
-   ("Smooth playback (fixed 150 ms)"), because a measurement-free offset
-   is the control that separates a pacing bug from a bug in the jitter
-   estimator driving it (PLAYOUT-1, docs/24 finding 8); stored `'fixed'`
-   and the legacy boolean's `'1'` both migrate to `'adaptive'`, legacy
-   `'0'` still to `'off'`. In adaptive mode the reorder buffer releases at
+   buffering latency while presenting unpaced), which is why removing it was
+   safe. It had survived as a dev-gated diagnostic — a measurement-free offset
+   separates a pacing bug from a bug in the jitter estimator driving it
+   (PLAYOUT-1, docs/24 finding 8) — but that was the single pacing row in a
+   menu R31 made actions-only, for a control nobody had reached for since.
+   Stored `'fixed'` and the legacy boolean's `'1'` both migrate to
+   `'adaptive'` (now in **every** build), legacy
+   `'0'` still to `'off'`; `PLAYOUT_OFFSET_MS` remains adaptive's warmup seed.
+   Since R31 pacing is not a control at all — it is a property of the chosen
+   preset (Lowest latency ⇒ `'off'`, every other preset ⇒ `'adaptive'`).
+   In adaptive mode the reorder buffer releases at
    `target − DECODE_LEAD_MS` (35 ms) so the decoder frame pool stays
    bounded. (c) **Adaptive offset** (T3): `PlayoutController` —
    clamp(p95−min + 34 ms headroom, [50, 350]), seed 150 until ~5 s of
