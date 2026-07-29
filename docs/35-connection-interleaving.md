@@ -1,8 +1,15 @@
 # R30 — Connection interleaving (striped delivery) for live-edge
 
-**Status**: designed 2026-07-29; not started. Chunks **ST1–ST7** ("stripe" —
-every single-letter prefix A–Z is claimed, and `IL` was rejected as visually
-colliding with R27's `LI`).
+**Status**: designed 2026-07-29; **ST2–ST6 implemented the same day** (owner
+instruction moved implementation ahead of ST1's on-hardware experiment — see
+§12 "Implementation status"), automated gates green in all four modules incl.
+a race-clean Go burst-threshold proof (control 8.3 % chunk loss / 13 of 60
+eighteen-chunk frames complete through a modeled 8-deep head-drop buffer;
+striped ×3 completes 60/60 at 0.0 % with zero mismapped). **ST1's paired
+runs on the affected machine and ST7's acceptance + loadgen sweep are
+owner-pending** — until they pass, the feature is deployed-but-unproven on
+the real path. Chunks **ST1–ST7** ("stripe" — every single-letter prefix A–Z
+is claimed, and `IL` was rejected as visually colliding with R27's `LI`).
 
 The mechanism's working name in this doc is **striping**: each delta frame's
 datagrams are split round-robin across several WebTransport connections so
@@ -573,13 +580,13 @@ coverage-boundary honesty.
 
 | Chunk | Work | Acceptance criteria | Status |
 |-------|------|---------------------|--------|
-| **ST1** | **The composition experiment** — minimal vertical slice, branch-quality allowed: relay-side leg params + ordinal filter + `0x10` (hardcoded paths acceptable), the loss-profile instrument's striped mode (§8), deployed to the homelab fleet by the owner; paired striped/unstriped runs from the affected machine | Striped run: chunk loss on >8-chunk frames ≤ 0.1 % with `mismapped == 0` at N = 3; unstriped control in the same hour still reproduces the threshold (≥ 1 % on >8-chunk frames); **a recorded go/no-go verdict in this doc** — if no-go, §10 criterion 1 applies and ST2–ST6 do not start | not started |
-| **ST2** | **Wire, two + wirecheck mirrors**: `0x10 TypeStripeState` (5 B) encode/parse, `CapStripedDelivery` bit, `MaxStripeLegs` constant, in `gawk-server/wire`, `wire.ts`, and `gawk-broadcast` `wirecheck` (shared-package vectors; the native broadcaster itself is untouched) | Golden vectors byte-identical across mirrors; strict-parse rejection for truncated/oversize/bad-flags `0x10`; capabilities with both bits set parse in old-message shape (5 B unchanged — a skew test pins that the R29 parser accepts the new flags word); malformed input never panics | not started |
-| **ST3** | **Relay**: leg subscribe (param validation → 400, caps counting, all §5.1 exclusions), ordinal filter + parity-composition in `fanOutLocked`, `0x10` handling + suppression TTL, viewer-count exclusion, `/statusz` + Prometheus, `-striped-delivery` plumbing (config → main → hub Options → chart values → deployment env → README flags table, incl. the two rows found missing there — §12), capability-send condition | Test-first: a 3-leg subscriber set receives exactly the ordinal partition (property test over n ∈ [1, 30], parityK ∈ {0,1,2}); legs never receive keyframes/audio/config/prime/ack/hello; suppression stops `0x01`/`0x0E` on the primary within one datagram and **expires after TTL without refresh** (fake clock); `0x10` from reliable/DVR/internal/leg sessions is inert; caps: leg counts against both limits, 429 on exhaustion, viewer count excludes legs (the R18 cluster assertion extended); **`-striped-delivery=false` ⇒ `/statusz`, metrics and wire byte-identical to pre-R30** (diff-asserted, R28 pattern); `TestRegistryOptionsCarryAllLimits` grows the field; no measurable `Registry.mu` regression (benchmark vs baseline) | not started |
-| **ST4** | **Viewer transport**: `0x0F` dispatch branch (+ the §12 wart fix), `StripedViewerTransport` behind the `ViewerTransportFactory` seam (`viewer-transport.ts:75`) wrapping primary + legs for both the nested-transport-worker and in-process paths (legs skip TimeSync clients); `0x10` sender + 1 Hz refresh; make-before-break transitions; leg-death fallback | Test-first against fake transports: merged datagram flow reaches the pipeline regardless of source leg; engage/grow produces duplicates and **zero holes** (transition test asserting every ordinal covered at every step); leg death ⇒ unstripe `0x10` sent before any leg teardown, session reconnect budget untouched; `0x0F` no longer counts malformed (regression test on today's behavior); unstriped path byte-identical (existing transport suites green unmodified) | not started |
-| **ST5** | **Controller + UI**: sizing tracker (quantile-tracker reuse), auto-detect, `gawk:stripe-mode` tri-state + menu radio group (live-only, "⋮"-reachable), live apply without reconnect; `ViewerStats` fields + overlay Striping group | Detector fires on a synthetic finding-4 profile (large lossy, small clean) and **not** on uniform loss, not on a clean link, not below the sample floor; sticky once engaged; `on` engages without loss; `off` disengages live; grow at `p99 > N×6` after dwell, capped at 4; stats expose mode/capable/active/needed/detector; jsdom menu tests follow the delivery-group suite | not started |
-| **ST6** | **Observability + CI**: telemetry typed fields, `burst-threshold-loss` rule + `parity-ineffective` action-text pointer, dashboard surfacing, docs/13 playbook row; burst-buffer forwarder mode + tier-1 striped pass with unstriped control (§8) | Rule fires with distinct action text for `stripeActive == 0` vs `> 0` synthetic sessions, silent on healthy ones; pre-R30 sessions diagnose without `schemaAnomalies`; 32 KB ceiling still met; e2e: control pass shows large-frame loss through the burst forwarder, striped pass shows `stripeActive ≥ 2`, `mismapped == 0`, `framesDroppedIncomplete ≈ 0`; both instruments run (§8) | not started |
-| **ST7** | **Verification**: acceptance on the affected machine (§2), scale sanity with `gawk-loadgen` (striped-fraction sweep vs R17 baselines), kill criteria evaluated with recorded verdicts; ROADMAP/README/BUGS sync | The §2 acceptance number, paired; loadgen: relay CPU/lock metrics at 200 viewers × N=3 within the pre-registered envelope (set from R17's scale-proof numbers before the run); §10 verdicts recorded; docs updated | not started |
+| **ST1** | **The composition experiment** — minimal vertical slice, branch-quality allowed: relay-side leg params + ordinal filter + `0x10` (hardcoded paths acceptable), the loss-profile instrument's striped mode (§8), deployed to the homelab fleet by the owner; paired striped/unstriped runs from the affected machine | Striped run: chunk loss on >8-chunk frames ≤ 0.1 % with `mismapped == 0` at N = 3; unstriped control in the same hour still reproduces the threshold (≥ 1 % on >8-chunk frames); **a recorded go/no-go verdict in this doc** — if no-go, §10 criterion 1 applies and ST2–ST6 do not start | **owner-pending** (the striped instrument mode is merged; the paired on-hardware runs are the open half) |
+| **ST2** | **Wire, two + wirecheck mirrors**: `0x10 TypeStripeState` (5 B) encode/parse, `CapStripedDelivery` bit, `MaxStripeLegs` constant, in `gawk-server/wire`, `wire.ts`, and `gawk-broadcast` `wirecheck` (shared-package vectors; the native broadcaster itself is untouched) | Golden vectors byte-identical across mirrors; strict-parse rejection for truncated/oversize/bad-flags `0x10`; capabilities with both bits set parse in old-message shape (5 B unchanged — a skew test pins that the R29 parser accepts the new flags word); malformed input never panics | **implemented 2026-07-29** |
+| **ST3** | **Relay**: leg subscribe (param validation → 400, caps counting, all §5.1 exclusions), ordinal filter + parity-composition in `fanOutLocked`, `0x10` handling + suppression TTL, viewer-count exclusion, `/statusz` + Prometheus, `-striped-delivery` plumbing (config → main → hub Options → chart values → deployment env → README flags table, incl. the two rows found missing there — §12), capability-send condition | Test-first: a 3-leg subscriber set receives exactly the ordinal partition (property test over n ∈ [1, 30], parityK ∈ {0,1,2}); legs never receive keyframes/audio/config/prime/ack/hello; suppression stops `0x01`/`0x0E` on the primary within one datagram and **expires after TTL without refresh** (fake clock); `0x10` from reliable/DVR/internal/leg sessions is inert; caps: leg counts against both limits, 429 on exhaustion, viewer count excludes legs (the R18 cluster assertion extended); **`-striped-delivery=false` ⇒ `/statusz`, metrics and wire byte-identical to pre-R30** (diff-asserted, R28 pattern); `TestRegistryOptionsCarryAllLimits` grows the field; no measurable `Registry.mu` regression (benchmark vs baseline) | **implemented 2026-07-29** |
+| **ST4** | **Viewer transport**: `0x0F` dispatch branch (+ the §12 wart fix), `StripedViewerTransport` behind the `ViewerTransportFactory` seam (`viewer-transport.ts:75`) wrapping primary + legs for both the nested-transport-worker and in-process paths (legs skip TimeSync clients); `0x10` sender + 1 Hz refresh; make-before-break transitions; leg-death fallback | Test-first against fake transports: merged datagram flow reaches the pipeline regardless of source leg; engage/grow produces duplicates and **zero holes** (transition test asserting every ordinal covered at every step); leg death ⇒ unstripe `0x10` sent before any leg teardown, session reconnect budget untouched; `0x0F` no longer counts malformed (regression test on today's behavior); unstriped path byte-identical (existing transport suites green unmodified) | **implemented 2026-07-29** |
+| **ST5** | **Controller + UI**: sizing tracker (quantile-tracker reuse), auto-detect, `gawk:stripe-mode` tri-state + menu radio group (live-only, "⋮"-reachable), live apply without reconnect; `ViewerStats` fields + overlay Striping group | Detector fires on a synthetic finding-4 profile (large lossy, small clean) and **not** on uniform loss, not on a clean link, not below the sample floor; sticky once engaged; `on` engages without loss; `off` disengages live; grow at `p99 > N×6` after dwell, capped at 4; stats expose mode/capable/active/needed/detector; jsdom menu tests follow the delivery-group suite | **implemented 2026-07-29** |
+| **ST6** | **Observability + CI**: telemetry typed fields, `burst-threshold-loss` rule + `parity-ineffective` action-text pointer, dashboard surfacing, docs/13 playbook row; burst-buffer forwarder mode + tier-1 striped pass with unstriped control (§8) | Rule fires with distinct action text for `stripeActive == 0` vs `> 0` synthetic sessions, silent on healthy ones; pre-R30 sessions diagnose without `schemaAnomalies`; 32 KB ceiling still met; e2e: control pass shows large-frame loss through the burst forwarder, striped pass shows `stripeActive ≥ 2`, `mismapped == 0`, `framesDroppedIncomplete ≈ 0`; both instruments run (§8) | **implemented 2026-07-29** |
+| **ST7** | **Verification**: acceptance on the affected machine (§2), scale sanity with `gawk-loadgen` (striped-fraction sweep vs R17 baselines), kill criteria evaluated with recorded verdicts; ROADMAP/README/BUGS sync | The §2 acceptance number, paired; loadgen: relay CPU/lock metrics at 200 viewers × N=3 within the pre-registered envelope (set from R17's scale-proof numbers before the run); §10 verdicts recorded; docs updated | **owner-pending** (CI halves done via the Go burst proof; acceptance runs + loadgen sweep + §10 verdicts open) |
 
 Ordering: **ST1 → ST2 → (ST3 ∥ ST4) → ST5 → ST6 → ST7.** ST1 is the gate —
 its instrument work (loss-profile striped mode) is deliberately inside it so
@@ -643,7 +650,51 @@ A documented rejection is a valid completion.
 
 ---
 
-## 12. Pre-implementation findings
+## 12. Implementation status & findings
+
+### Implementation status (2026-07-29)
+
+**ST2–ST6 implemented; automated gates green in all four modules** (relay
+gofmt/vet/`go test -race` full suite incl. the new burst proof; gawk-app
+tsc-via-build/oxlint/1081+ vitest; gawk-broadcast wirecheck; gawk-telemetry
+vet/gofmt/full suite; helm lint + default/override renders). Sequencing
+deviation, owner-instructed: the doc ordered ST1 (the on-hardware go/no-go)
+first; the owner directed implementation to proceed, so the go/no-go verdict
+is still open and **gates calling the feature done, not gates having built
+it**. What ST1/ST7 still owe: paired striped/unstriped `GAWK_FF_STRIPE` runs
+on the affected machine against the fleet (§2's acceptance number), the
+loadgen striped-fraction sweep against R17 baselines, and the §10 verdicts.
+
+Deviations from the design, recorded rather than silently applied:
+
+1. **The tier-1 browser striped pass was replaced by a Go burst-threshold
+   test** (`internal/transport/stripe_loss_test.go`). §8 planned a
+   `run.mjs` pass, but the e2e fixture's delta frames are ~2–4 chunks —
+   under one share — so the controller correctly holds (`stripeNeeded < 2`,
+   §5.4) and a browser pass would assert the designed no-op, not the
+   mechanism. The Go test controls frame sizes (18 chunks) and models the
+   measured buffer (8-deep, evict-oldest, per 5-tuple — legs get their own
+   queues for free) in front of the real relay over real WebTransport:
+   control 8.3 % chunk loss / 13 of 60 frames complete, striped ×3 60/60 at
+   0.0 %, zero mismapped, race-clean ×2. The docs/24 finding-10 control lane
+   is asserted (the test fails if the forwarder does not bite). The browser
+   side's own machinery — 0x0F gate, transition ordering, controller,
+   menu — is unit/jsdom-covered; the full browser engage path is exactly
+   what ST1 measures on the real buffer.
+2. **Parity level for sizing is approximated, not negotiated**: the client
+   cannot see the fleet's per-frame emission level, so any parity in the
+   session sizes as the full k = 2 (`viewer.ts` publishStats) —
+   conservative by at most one leg at a share boundary.
+3. **The relay's per-frame ordinal classification is lazy**
+   (`fanOutLocked`): computed only when a leg or an armed suppression is
+   present, so a non-striped fleet pays two field reads per subscriber and
+   nothing else (benchmarked: 1.09 µs → 1.37 µs per datagram at 12 subs
+   only when 3 legs are actually attached).
+4. **`stripeSuppressedDatagrams` counts primary-withheld deltas only**; a
+   leg's non-matching share is routing, deliberately uncounted (§5.2's
+   "delivered on a sibling leg").
+
+### Pre-implementation findings
 
 ### Finding 1 — the relay already sends `0x0F` to viewers, and the viewer counts it malformed (2026-07-29)
 
