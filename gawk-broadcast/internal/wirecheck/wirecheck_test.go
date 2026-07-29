@@ -48,6 +48,15 @@ const (
 	// both of these are coupling on messages this module actually uses.
 	goldenParityChunkHex       = "010e01020304010009000021c0deadbeef"
 	goldenRelayCapabilitiesHex = "010f000102"
+	// R30 striped delivery (docs/35). This module neither sends nor receives
+	// StripeState — it is viewer↔relay — but the capabilities flags word is
+	// the one field this producer parses that R30 extends, so the both-bits
+	// vector pins that the R29-era strict 5-byte parse survives the new bit
+	// (the "new bits, never new bytes" rule, docs/35 §5.3). The StripeState
+	// vectors keep the shared wire package honest across all three mirrors.
+	goldenStripeStateStripedHex   = "0110010300"
+	goldenStripeStateUnstripedHex = "0110000000"
+	goldenCapabilitiesBothBitsHex = "010f000302"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -370,6 +379,46 @@ func TestGoldenRelayCapabilities(t *testing.T) {
 	}
 	if back.ParityLevel != 2 || back.Flags&wire.CapParityChunks == 0 {
 		t.Errorf("round trip = %+v, want parity level 2 with CapParityChunks set", back)
+	}
+}
+
+func TestGoldenStripeState(t *testing.T) {
+	striped, err := wire.AppendStripeState(nil, wire.StripeState{Striped: true, StripeN: 3})
+	if err != nil {
+		t.Fatalf("AppendStripeState(striped): %v", err)
+	}
+	if want := mustHex(t, goldenStripeStateStripedHex); !bytes.Equal(striped, want) {
+		t.Errorf("StripeState(striped) bytes drifted from the golden vector\n got %x\nwant %x", striped, want)
+	}
+	unstriped, err := wire.AppendStripeState(nil, wire.StripeState{})
+	if err != nil {
+		t.Fatalf("AppendStripeState(unstriped): %v", err)
+	}
+	if want := mustHex(t, goldenStripeStateUnstripedHex); !bytes.Equal(unstriped, want) {
+		t.Errorf("StripeState(unstriped) bytes drifted from the golden vector\n got %x\nwant %x", unstriped, want)
+	}
+}
+
+// TestCapabilitiesSurviveStripedBit is this producer's stake in R30: the one
+// message it parses gains a flag bit and must stay 5 bytes, or the R29-era
+// strict parse in every deployed native broadcaster breaks mid-skew.
+func TestCapabilitiesSurviveStripedBit(t *testing.T) {
+	got, err := wire.AppendRelayCapabilities(nil, wire.RelayCapabilities{
+		Flags:       wire.CapParityChunks | wire.CapStripedDelivery,
+		ParityLevel: 2,
+	})
+	if err != nil {
+		t.Fatalf("AppendRelayCapabilities: %v", err)
+	}
+	if want := mustHex(t, goldenCapabilitiesBothBitsHex); !bytes.Equal(got, want) {
+		t.Errorf("RelayCapabilities(both bits) drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	back, err := wire.ParseRelayCapabilities(got)
+	if err != nil {
+		t.Fatalf("ParseRelayCapabilities with CapStripedDelivery set: %v", err)
+	}
+	if back.Flags&wire.CapParityChunks == 0 {
+		t.Errorf("CapParityChunks lost when CapStripedDelivery is set: %+v", back)
 	}
 }
 

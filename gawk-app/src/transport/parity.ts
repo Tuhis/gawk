@@ -49,6 +49,15 @@ export const RELAY_CAPABILITIES_SIZE = 5;
 /** The relay understands ParityChunk and filters it per subscriber. */
 export const CAP_PARITY_CHUNKS = 1 << 0;
 
+/**
+ * The relay accepts ?stripe=N&leg=j subscribe sessions and StripeState
+ * datagrams (R30, docs/35). A viewer that never sees this bit never dials a
+ * leg, so a new viewer against an old relay stays byte-identical to pre-R30.
+ * Capability growth is new bits in this word, never new bytes — the message
+ * is parsed strictly by size on both producer mirrors.
+ */
+export const CAP_STRIPED_DELIVERY = 1 << 1;
+
 // --- GF(2^8), primitive polynomial 0x11D, generator 2 ----------------------
 
 const GF_EXP = new Uint8Array(512);

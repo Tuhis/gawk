@@ -23,6 +23,12 @@ import {
   telemetrySessionId,
   TELEMETRY_HELLO_SIZE,
   TELEMETRY_SESSION_ID_LEN,
+  TYPE_STRIPE_STATE,
+  STRIPE_STATE_SIZE,
+  MAX_STRIPE_LEGS,
+  encodeStripeState,
+  parseStripeState,
+  stripeOrdinal,
   TYPE_VIEWER_COUNT,
   TIME_SYNC_SIZE,
   CLOCK_MAPPING_SIZE,
@@ -804,5 +810,67 @@ describe('TelemetryHello (R28)', () => {
     );
     expect(() => telemetrySessionId(GOLDEN_TOKEN.slice(2))).toThrow(WireError);
     expect(() => telemetrySessionId('z'.repeat(48))).toThrow(WireError);
+  });
+});
+
+// R30 (docs/35 §5.3): the stripe suppression signal. Golden vectors are
+// byte-identical to gawk-server/wire's and gawk-broadcast's wirecheck.
+describe('StripeState (R30)', () => {
+  const GOLDEN_STRIPED_HEX = '0110010300';
+  const GOLDEN_UNSTRIPED_HEX = '0110000000';
+
+  it('exposes the mirrored constants', () => {
+    expect(TYPE_STRIPE_STATE).toBe(0x10);
+    expect(STRIPE_STATE_SIZE).toBe(5);
+    expect(MAX_STRIPE_LEGS).toBe(4);
+  });
+
+  it('matches the Go golden vectors', () => {
+    expect(toHex(encodeStripeState({ striped: true, stripeN: 3 }))).toBe(GOLDEN_STRIPED_HEX);
+    expect(toHex(encodeStripeState({ striped: false, stripeN: 0 }))).toBe(GOLDEN_UNSTRIPED_HEX);
+  });
+
+  it('round-trips every legal shape', () => {
+    for (let n = 1; n <= MAX_STRIPE_LEGS; n++) {
+      expect(parseStripeState(encodeStripeState({ striped: true, stripeN: n }))).toEqual({
+        striped: true,
+        stripeN: n,
+      });
+    }
+    expect(parseStripeState(encodeStripeState({ striped: false, stripeN: 0 }))).toEqual({
+      striped: false,
+      stripeN: 0,
+    });
+  });
+
+  it('rejects malformed messages strictly', () => {
+    const good = encodeStripeState({ striped: true, stripeN: 2 });
+    expect(() => parseStripeState(good.subarray(0, STRIPE_STATE_SIZE - 1))).toThrow(WireError);
+    expect(() => parseStripeState(fromHex('011001030000'))).toThrow(WireError); // long
+    expect(() => parseStripeState(fromHex('0210010300'))).toThrow(WireError); // version
+    expect(() => parseStripeState(fromHex('0101010300'))).toThrow(WireError); // type
+    expect(() => parseStripeState(fromHex('0110030300'))).toThrow(WireError); // unknown flag bit
+    expect(() => parseStripeState(fromHex('0110010000'))).toThrow(WireError); // striped, zero n
+    expect(() => parseStripeState(fromHex('0110010500'))).toThrow(WireError); // striped, n > max
+    expect(() => parseStripeState(fromHex('0110000100'))).toThrow(WireError); // unstriped, nonzero n
+  });
+
+  it('refuses bad shapes at encode too', () => {
+    expect(() => encodeStripeState({ striped: true, stripeN: 0 })).toThrow(WireError);
+    expect(() => encodeStripeState({ striped: true, stripeN: MAX_STRIPE_LEGS + 1 })).toThrow(WireError);
+    expect(() => encodeStripeState({ striped: false, stripeN: 1 })).toThrow(WireError);
+  });
+
+  it('assigns stripe ordinals with parity at the tail', () => {
+    // Data chunks keep their index; parity follows the data, preserving the
+    // measured tail-of-burst position per leg (docs/34 finding 4).
+    expect(stripeOrdinal(7, 20, null)).toBe(7);
+    expect(stripeOrdinal(0, 20, 0)).toBe(20);
+    expect(stripeOrdinal(0, 20, 1)).toBe(21);
+    // A 20-chunk k=2 frame at N=3: parity lands on legs 2 and 0, and on each
+    // leg its ordinal is the highest that leg carries.
+    const legOf = (d: number) => d % 3;
+    expect(legOf(stripeOrdinal(0, 20, 0))).toBe(2);
+    expect(legOf(stripeOrdinal(0, 20, 1))).toBe(0);
   });
 });

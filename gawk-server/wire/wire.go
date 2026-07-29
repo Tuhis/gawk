@@ -180,6 +180,16 @@ const (
 	// no parity, which is what makes a new broadcaster against an old relay
 	// byte-identical to pre-R29. Clients parse it and never send it.
 	TypeRelayCapabilities = 0x0F
+
+	// TypeStripeState identifies a StripeState datagram (R30, docs/35 §5.3):
+	// client→relay, the ONE message a striping viewer sends on its primary
+	// subscribe session to suppress (or restore) delta datagrams there while
+	// stripe legs carry them. Level state re-sent at 1 Hz while striped; the
+	// relay expires a stale suppression (StripeStateTTL) so a lost message
+	// converges to duplicates, never holes. Accepted only on an external
+	// datagram-delivery subscribe session that is not itself a leg —
+	// anywhere else it is silently discarded like any unknown datagram.
+	TypeStripeState = 0x10
 )
 
 // DeliveryMode names what a subscriber is actually being served, as carried
