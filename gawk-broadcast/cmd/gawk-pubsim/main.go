@@ -52,13 +52,30 @@ func run() error {
 	// audio pass is a *second* run with this flag seeded, following the
 	// docs/25 finding 16 precedent.
 	audio := flag.Bool("audio", false, "also publish the committed Opus fixture (R25 audio lane)")
+	// R30 (docs/35 §12): the default clip's ~2–4-chunk deltas sit under one
+	// stripe share, so a striped viewer against it correctly engages nothing.
+	// The large clip's deltas are all past the ~8-chunk burst threshold,
+	// which is what the striped e2e pass needs — and only that pass: every
+	// other tier-1 step keeps the small clip so its cost and flake profile
+	// stay untouched.
+	fixtureName := flag.String("fixture", "default",
+		"committed clip to publish: default (320x240) or large (720p noise, >8-chunk deltas — the R30 striping fixture)")
 	flag.Parse()
 
 	if *secret == "" {
 		*secret = os.Getenv("GAWK_SECRET")
 	}
 
-	aus, err := pubsim.Demux(fixture.TS)
+	ts := fixture.TS
+	switch *fixtureName {
+	case "default":
+	case "large":
+		ts = fixture.TSLarge
+	default:
+		return fmt.Errorf("unknown -fixture %q (want default or large)", *fixtureName)
+	}
+
+	aus, err := pubsim.Demux(ts)
 	if err != nil {
 		return err
 	}

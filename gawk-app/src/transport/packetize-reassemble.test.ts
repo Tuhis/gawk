@@ -121,12 +121,36 @@ describe('ordering policy', () => {
     }
   }
 
-  it('drops a late-completing delta frame', () => {
+  it('rejects a wholly-late delta frame chunk-by-chunk, without assembling it', () => {
+    // Policy shift with R30 (docs/35 §12 finding 2): a frame whose FIRST
+    // chunk already sits behind the emit watermark never builds an assembly
+    // — under striping, such chunks are routinely a recovery-raced leg's
+    // share, and assembling them manufactured phantom incompletes. It is
+    // still dropped, just counted as stale chunks at the door.
     const { r, frames } = collector();
     pushFrame(r, 2, false);
-    pushFrame(r, 1, false); // completes after a newer frame was emitted
+    pushFrame(r, 1, false); // arrives entirely after a newer frame was emitted
+    expect(frames.map((f) => f.frameId)).toEqual([2]);
+    expect(r.getStats().staleChunks).toBe(1);
+    expect(r.getStats().framesDroppedLate).toBe(0);
+    expect(r.getStats().framesDroppedIncomplete).toBe(0);
+  });
+
+  it('still counts a PARTIALLY-assembled frame that completes late as dropped-late', () => {
+    // The narrowed meaning of framesDroppedLate: the assembly began before
+    // the watermark passed it, so its chunks keep filling and the completed
+    // frame is dropped at emit — exactly the pre-R30 path.
+    const { r, frames } = collector();
+    const late = packetizeFrame(
+      { frameId: 1, keyframe: false, timestampUs: 1n },
+      patternBytes(2000, 1), // 2 chunks
+    );
+    r.push(late[0]); // assembly for frame 1 exists...
+    pushFrame(r, 2, false); // ...when frame 2 emits past it
+    r.push(late[1]); // the tail still fills and completes — late
     expect(frames.map((f) => f.frameId)).toEqual([2]);
     expect(r.getStats().framesDroppedLate).toBe(1);
+    expect(r.getStats().staleChunks).toBe(0);
   });
 
   it('always emits keyframes, allowing broadcaster-restart recovery', () => {

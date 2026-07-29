@@ -587,6 +587,19 @@ jobs:
           ID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' e2e/out/pubsim.out | cut -d= -f2)
           if [ -z "$ID" ]; then cat e2e/out/pubsim.err; exit 1; fi
           echo "BROADCAST_ID=$ID" >> "$GITHUB_ENV"
+          # R30 (docs/35 §5.7): a SECOND broadcast on the large-frame fixture,
+          # for the striped browser pass below — the default clip's deltas sit
+          # under one stripe share, so a striped viewer against it would
+          # correctly engage nothing and the cross-pod claim would go untested.
+          ./e2e/bin/gawk-pubsim -url https://127.0.0.1:4433 -insecure -fixture large \
+            -duration 600s > e2e/out/pubsim-large.out 2> e2e/out/pubsim-large.err &
+          for i in $(seq 100); do
+            grep -q GAWK_PUBSIM_ID e2e/out/pubsim-large.out && break
+            sleep 0.2
+          done
+          LARGE_ID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' e2e/out/pubsim-large.out | cut -d= -f2)
+          if [ -z "$LARGE_ID" ]; then cat e2e/out/pubsim-large.err; exit 1; fi
+          echo "LARGE_BROADCAST_ID=$LARGE_ID" >> "$GITHUB_ENV"
           # ~12 sessions so kube-proxy's per-5-tuple UDP conntrack spreads
           # subscribers across both pods (P[all-on-one] ≈ 2⁻¹²). The duration
           # must outlive the npm build + browser run that follow — sessions
@@ -621,6 +634,16 @@ jobs:
           GAWK_E2E_URL: https://127.0.0.1:4433
           GAWK_E2E_CERT_HASH: ${{ env.CERT_HASH }}
           GAWK_E2E_ID: ${{ env.BROADCAST_ID }}
+      - name: Run the striped browser E2E against the cluster (R30 cross-pod legs)
+        run: node run.mjs --external
+        working-directory: e2e
+        env:
+          GAWK_E2E_URL: https://127.0.0.1:4433
+          GAWK_E2E_CERT_HASH: ${{ env.CERT_HASH }}
+          GAWK_E2E_ID: ${{ env.LARGE_BROADCAST_ID }}
+          # Quoted: bare `on` is YAML boolean true, which would reach the
+          # harness as "true" and silently disable expectStripe.
+          GAWK_E2E_STRIPE: "on"
       - name: Assert the origin/edge split from per-pod ops endpoints
         run: |
           # One retry with a fresh spread if conntrack ever lands every

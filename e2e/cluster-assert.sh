@@ -176,6 +176,33 @@ if [ "$parity_pods" -lt 2 ]; then
 fi
 echo "PASS: R29 parity — $parity_total symbols forwarded across $parity_pods pods (origin + edge), none computed by any relay"
 
+# R30 (docs/35 §5.7): striping must survive the cluster. The workflow ran a
+# striped browser viewer against the LARGE-frame broadcast through the same
+# NodePort spread, so its primary and legs landed on whichever pods conntrack
+# chose — cross-pod legs need no coordination because each leg's (member, N)
+# filter is static, and this is the first place that claim meets real
+# kube-proxy hashing. The session is closed by the time this script runs, so
+# the assertion reads the DURABLE counters: an engagement flips
+# stripeTransitions (folded into the hub when the subscriber closes) and a
+# suppressed primary withholds deltas into stripeSuppressedDatagrams. Both at
+# zero across every pod means the striped pass never actually engaged
+# in-cluster — a vacuous browser pass this check exists to catch.
+stripe_transitions=0
+stripe_suppressed=0
+for p in "${PODS[@]}"; do
+  st=$(statusz "$p") || continue
+  tr=$(jq '[.broadcasts[].stripeTransitions // 0] | add // 0' <<<"$st")
+  sup=$(jq '[.broadcasts[].stripeSuppressedDatagrams // 0] | add // 0' <<<"$st")
+  stripe_transitions=$((stripe_transitions + tr))
+  stripe_suppressed=$((stripe_suppressed + sup))
+  echo "  $p stripe: transitions=$tr suppressedDatagrams=$sup legsNow=$(jq '[.broadcasts[].stripeLegs // 0] | add // 0' <<<"$st")"
+done
+if [ "$stripe_transitions" -lt 1 ] || [ "$stripe_suppressed" -lt 1 ]; then
+  echo "FAIL: R30 striping — transitions=$stripe_transitions suppressedDatagrams=$stripe_suppressed across pods; the striped browser pass never engaged in-cluster" >&2
+  exit 1
+fi
+echo "PASS: R30 striping — $stripe_transitions engagement transition(s), $stripe_suppressed primary-suppressed datagrams across the fleet"
+
 echo "PASS: origin=$ORIGIN edges=${edge_pods[*]}"
 for p in "${PODS[@]}"; do
   st=$(statusz "$p")

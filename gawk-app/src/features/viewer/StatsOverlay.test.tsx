@@ -23,6 +23,7 @@ function fullStats(): ViewerStats {
     framesRecoveredByParity: 14,
     parityRecoveryFailures: 1,
     parityInsufficient: 3,
+    staleChunks: 0,
     stripeMode: 'auto',
     stripeCapable: true,
     stripeActive: 0,
