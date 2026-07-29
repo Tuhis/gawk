@@ -958,6 +958,10 @@ var factClientFields = []string{
 	// the number that separates "the code worked" from "the code was never
 	// even attempted", which parityRecoveryFailures could not.
 	"parityInsufficient",
+	// R30 (docs/35 §7): the burst-threshold-loss rule's inputs, from the
+	// stored session.
+	"stripeLargeLossPct", "stripeSmallLossPct", "stripeLargeChunks",
+	"stripeActive", "stripeNeeded",
 	// D17: what the broadcast was asked to be, so a shortfall is computable.
 	"targetFps", "targetBitrateBps",
 	// Tab visibility: renderedFps beside it means nothing without it, because

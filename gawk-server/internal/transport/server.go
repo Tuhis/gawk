@@ -792,16 +792,24 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // parity and the viewer requests none — so a failure degrades resilience
 // without breaking anything.
 //
-// Nothing is sent at all when the fleet level is 0, which is what makes
-// `parity.defaultLevel: 0` byte-identical to a relay predating the feature.
+// Nothing is sent at all when there is no capability to advertise — parity
+// level 0 AND striping disabled — which is what keeps that configuration
+// byte-identical to a relay predating both features (docs/34 §4.4, docs/35
+// §5.3). Capability GROWTH is new bits in the flags word, never new bytes:
+// the message is parsed strictly by size on both producer mirrors.
 func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Logger) {
-	if s.cfg.ParityDefault <= 0 {
+	caps := wire.RelayCapabilities{}
+	if s.cfg.ParityDefault > 0 {
+		caps.Flags |= wire.CapParityChunks
+		caps.ParityLevel = uint8(s.cfg.ParityDefault)
+	}
+	if s.cfg.StripedDelivery {
+		caps.Flags |= wire.CapStripedDelivery
+	}
+	if caps.Flags == 0 {
 		return
 	}
-	msg, err := wire.AppendRelayCapabilities(nil, wire.RelayCapabilities{
-		Flags:       wire.CapParityChunks,
-		ParityLevel: uint8(s.cfg.ParityDefault),
-	})
+	msg, err := wire.AppendRelayCapabilities(nil, caps)
 	if err != nil {
 		log.Warn("relay capabilities encode failed", "err", err)
 		return
@@ -941,6 +949,23 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R30 (docs/35 §5.3): ?stripe=N&leg=j marks this dial as one stripe leg
+	// of a striping viewer. Validated pre-upgrade and STRICTLY — unlike every
+	// other subscribe parameter, a mis-striped leg cannot degrade to anything
+	// useful (serving it a wrong share would manufacture holes), so rejection
+	// is the graceful outcome: the viewer stays unstriped. Reliable/DVR
+	// combinations are rejected here too (striping is live-edge only, §3).
+	stripeLeg, isStripeLeg, stripeErr := hub.NegotiateStripe(
+		r.URL.Query().Get("stripe"), r.URL.Query().Get("leg"),
+		s.cfg.StripedDelivery, r.URL.Query().Get("delivery") == "reliable" || r.URL.Query().Get("buffer") != "")
+	if stripeErr != nil {
+		s.log.Warn("stripe leg rejected pre-upgrade",
+			"id", id, "remote", r.RemoteAddr, "err", stripeErr)
+		s.metrics.Connection("subscribe", metrics.OutcomeError)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	err := s.registry.CheckSubscribe(id)
 	if errors.Is(err, hub.ErrNotFound) && s.edges != nil {
 		// Cluster mode (R17 W4): we don't host this broadcast, but its
@@ -1000,10 +1025,15 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		r.URL.Query().Get("parity"), s.cfg.ParityDefault, mode != wire.DeliveryDatagrams)
 	adapter := &webtransportSessionAdapter{sess}
 	var sub *hub.Subscriber
-	switch mode {
-	case wire.DeliveryDVR:
+	switch {
+	case isStripeLeg:
+		// A leg is a plain datagram subscriber with a per-leg share filter;
+		// its parity prefix matches the primary's negotiation so the R29
+		// share composes unchanged (docs/35 §5.2).
+		sub, err = s.registry.SubscribeStripeLeg(id, adapter, stripeLeg, parityServed)
+	case mode == wire.DeliveryDVR:
 		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs)
-	case wire.DeliveryReliable:
+	case mode == wire.DeliveryReliable:
 		sub, err = s.registry.SubscribeReliable(id, adapter)
 	default:
 		sub, err = s.registry.SubscribeParity(id, adapter, parityServed)
@@ -1038,6 +1068,25 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	if mode == wire.DeliveryDVR {
 		log = log.With("delivery", "dvr", "buffer_ms", bufferMs)
+	}
+	if isStripeLeg {
+		// A leg is not a viewer (docs/35 §5.1): no delivery ack, no
+		// capabilities, no telemetry hello — the viewer's primary session
+		// carries all three. Upgrade success IS the leg's acceptance signal;
+		// its share starts flowing with the next delta frame.
+		log = log.With("stripe_leg", stripeLeg.Member, "stripe_n", stripeLeg.N)
+		log.Info("stripe leg session started")
+		legLimiter := newTimeSyncLimiter()
+		for {
+			dgram, err := sess.ReceiveDatagram(r.Context())
+			if err != nil {
+				log.Info("stripe leg session ended", "reason", sessionEndReason(r.Context(), err), "dropped", sub.Dropped())
+				return
+			}
+			// Legs send nothing the relay acts on; TimeSync is answered for
+			// symmetry with every other route, everything else is discarded.
+			maybeAnswerTimeSync(sess, dgram, legLimiter)
+		}
 	}
 	// R21 (docs/26 Decision 7a): tell the viewer what it was ACTUALLY served.
 	// A DVR-replayed GOP is byte-identical to a live one, so without this the
@@ -1089,8 +1138,17 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			log.Info("subscriber session ended", "reason", sessionEndReason(r.Context(), err), "dropped", sub.Dropped())
 			return
 		}
-		// Subscribers send nothing but TimeSync pings; answer those (R5 Q2)
-		// and keep discarding anything else, as before.
+		// Subscribers send TimeSync pings (R5 Q2) and — R30 — StripeState.
+		// Everything else keeps being discarded, as before.
+		if s.cfg.StripedDelivery && len(dgram) == wire.StripeStateSize && dgram[1] == wire.TypeStripeState {
+			if st, err := wire.ParseStripeState(dgram); err == nil {
+				// ApplyStripeState is inert on reliable/DVR/leg sessions; on
+				// this route sub is always external. Level state: the 1 Hz
+				// refresh re-arms the TTL, a flip is counted once.
+				sub.ApplyStripeState(st)
+			}
+			continue
+		}
 		maybeAnswerTimeSync(sess, dgram, tsLimiter)
 	}
 }

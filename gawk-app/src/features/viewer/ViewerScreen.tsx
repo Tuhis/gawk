@@ -1,4 +1,5 @@
 import type { ViewerDeliveryMode } from '../../transport/resilient';
+import type { StripeMode } from '../../transport/stripe';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './viewer.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
@@ -78,8 +79,23 @@ const DELIVERY_MODE_KEY = 'gawk:viewer-delivery';
 // the only way to get the maximum — a viewer cannot ask for MORE parity than
 // the producer emitted.
 const PARITY_LEVEL_KEY = 'gawk:parity-level';
+// R30 (docs/35 §5.5): connection striping. 'auto' (default) engages when the
+// client detects the burst-threshold loss signature on itself; 'on' forces
+// it as soon as frames are sized; 'off' forbids it. A live flip, never a
+// reconnect — engagement is in-band.
+const STRIPE_MODE_KEY = 'gawk:stripe-mode';
 
 type ParityChoice = 'auto' | 1 | 0;
+
+function loadStripeMode(): StripeMode {
+  try {
+    const v = localStorage.getItem(STRIPE_MODE_KEY);
+    if (v === 'on' || v === 'off') return v;
+  } catch {
+    // private mode etc. — fall through to auto
+  }
+  return 'auto';
+}
 
 function loadParityChoice(): ParityChoice {
   try {
@@ -268,6 +284,21 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     });
   }, []);
 
+  // R30: connection striping — a live flip (never a reconnect), so the value
+  // deliberately does NOT reach the session effect's deps.
+  const [stripeMode, setStripeModeState] = useState(loadStripeMode);
+  const chooseStripeMode = useCallback((next: StripeMode) => {
+    setStripeModeState(() => {
+      try {
+        if (next === 'auto') localStorage.removeItem(STRIPE_MODE_KEY);
+        else localStorage.setItem(STRIPE_MODE_KEY, next);
+      } catch {
+        // private mode etc. — the choice still holds for this session
+      }
+      return next;
+    });
+  }, []);
+
   // R16 (docs/21 Decision 1): the device gate — absence of the Element
   // Fullscreen API (effectively an iPhone signature). On non-gated devices no
   // R16 code path activates: no tee flag, no video element, tier-1 fullscreen
@@ -292,6 +323,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     gated,
     deliveryMode,
     parityChoice === 'auto' ? undefined : parityChoice,
+    stripeMode,
   );
 
   const [showStats, setShowStats] = useState(false);
@@ -699,6 +731,32 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
               (parityChoice === 0 ? 'Loss protection: off ✓' : 'Loss protection: off') +
               ' — least data, freezes on loss',
             onSelect: () => chooseParity(0),
+          },
+        ] as MenuItem[])
+      : []),
+    // R30 (docs/35 §5.5): connection striping, live-edge only like parity —
+    // reliable/deep delivery rides retransmitting carriers, so there is
+    // nothing to split there. A radio group over one axis (the delivery-mode
+    // precedent above), applied LIVE: engagement is in-band, so unlike
+    // delivery/parity a change never reconnects.
+    ...(deliveryMode === 'live'
+      ? ([
+          {
+            label:
+              (stripeMode === 'auto' ? 'Striping: auto ✓' : 'Striping: auto') +
+              ' — splits bursts when loss is detected',
+            onSelect: () => chooseStripeMode('auto'),
+          },
+          {
+            label:
+              (stripeMode === 'on' ? 'Striping: on ✓' : 'Striping: on') +
+              ' — extra connections, loss or not',
+            onSelect: () => chooseStripeMode('on'),
+          },
+          {
+            label:
+              (stripeMode === 'off' ? 'Striping: off ✓' : 'Striping: off') + ' — one connection',
+            onSelect: () => chooseStripeMode('off'),
           },
         ] as MenuItem[])
       : []),

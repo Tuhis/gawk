@@ -224,6 +224,15 @@ config:
   # advertised, so producers emit nothing and the wire is byte-identical to a
   # relay predating R29.
   parityDefault: "2"
+  # R30 striped delivery (docs/35): accept stripe-leg subscribe sessions so a
+  # viewer whose path shows the per-connection burst-threshold loss (Firefox's
+  # ~8-packet datagram buffer) can split each frame's datagrams across up to 4
+  # extra connections. On by default: the relay pays nothing until a viewer
+  # actually engages (auto-detected loss, or a manual toggle), and each engaged
+  # viewer then holds up to 5 sessions — which count against maxSubscribers,
+  # so size that cap accordingly on fleets expecting striping. Off: leg dials
+  # get 400, the capability is not advertised, byte-identical to pre-R30.
+  stripedDelivery: "true"
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers

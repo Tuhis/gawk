@@ -30,6 +30,8 @@ import {
 } from './av-sync';
 import { LiveEdgeTracker } from './live-edge';
 import { getDeepBuffer } from './resilient';
+import { StripeController, getStripeMode, type StripeMode } from './stripe';
+import { CAP_STRIPED_DELIVERY } from './parity';
 import {
   DVR_BUFFER_MS,
   setDvrGranted,
@@ -283,6 +285,22 @@ export interface ViewerStats extends ReassemblerStats {
   // a loss and parity being structurally unable to. Null where the transport
   // does not report one (fakes, and anything not holding a real session).
   datagramBuffer: DatagramBufferStats | null;
+  // R30 striped delivery (docs/35 §7) — requested vs active, the R19/R29
+  // rule. stripeActive is the leg count actually carrying deltas (0 =
+  // unstriped); stripeNeeded is the controller's current ceil(p99/6), so
+  // active < needed is the caps-pressure / dial-failure signature. The
+  // detector fields are the auto gate's own inputs: large-frame chunk loss
+  // against small-frame cleanliness is the finding-4 shape, and exposing
+  // both is what makes "why didn't it engage" answerable from a blob.
+  stripeMode: StripeMode;
+  stripeCapable: boolean;
+  stripeActive: number;
+  stripeNeeded: number;
+  stripeLargeLossPct: number | null;
+  stripeSmallLossPct: number | null;
+  stripeLargeChunks: number;
+  stripeLegDials: number;
+  stripeLegDeaths: number;
   // R15 (docs/20): the audio lane, as observed by this pipeline. audioPresent
   // flips true on the first AudioConfig/packet and is what gates every piece
   // of viewer audio UI — a video-only stream renders exactly today's viewer.
@@ -499,6 +517,15 @@ export class ViewerPipeline {
   private lastCapToRenderMs: number | null = null;
   // R18: the relay's latest "N watching" push (last one wins).
   private viewerCount: number | null = null;
+  // R30 (docs/35 §5.4–§5.5): the stripe controller and its transport truth.
+  // The controller decides a target at the stats cadence; the transport owns
+  // every transition. Striping applies to datagram delivery only — reliable/
+  // DVR ride retransmitting carriers — so the capability is gated on the
+  // requested mode at the one place both are known (onRelayCapabilities).
+  private stripe = new StripeController();
+  private stripeCapable = false;
+  private stripeActive = 0;
+  private lastStripeRequested = 0;
   // R15 (docs/20): the audio lane. Built lazily on the first audio message —
   // a video-only stream never constructs it, so nothing about this pipeline
   // changes for broadcasts without audio.
@@ -597,6 +624,9 @@ export class ViewerPipeline {
         const lane = this.ensureAudioLane();
         lane?.configure(config);
       },
+      // R30 (docs/35 §5.5): per-frame arrival truth for the stripe detector —
+      // the in-client port of the loss-profile instrument's arithmetic.
+      onFrameAccounting: (expected, arrived) => this.stripe.observeFrame(expected, arrived),
       onAudioFrame: (packet) => {
         // The media-stall watchdog's reference medium: audio is continuous
         // where video is damage-driven (see MEDIA_STALL_MS).
@@ -680,6 +710,19 @@ export class ViewerPipeline {
         // context for both (it may be inside two nested workers), and keeping
         // the token off ViewerStats keeps it out of Copy diagnostics.
         onTelemetryHello: (hello) => this.cb.onTelemetryHello?.(hello),
+        // R30 (docs/35 §5.3): the striping gate. An old relay never sends the
+        // bit, so a new viewer against it never dials a leg — and a reliable/
+        // DVR viewer never stripes regardless (nothing to win there, §3).
+        onRelayCapabilities: (caps) => {
+          this.stripeCapable = (caps.flags & CAP_STRIPED_DELIVERY) !== 0;
+          this.stripe.noteCapable(
+            this.stripeCapable && this.connectOpts.deliveryMode !== 'reliable',
+          );
+        },
+        onStripeChange: (active) => {
+          this.stripeActive = active;
+          this.stripe.noteActive(active);
+        },
         onClosed: (info) => this.handleClosed(info),
       });
     } catch (e) {
@@ -1138,6 +1181,18 @@ export class ViewerPipeline {
             ? 'reliable'
             : 'reliable-requested'
           : 'datagrams';
+    // R30 (docs/35 §5.4): the stripe decision runs at this cadence. Sizing
+    // includes the parity symbols riding the same legs; the exact fleet level
+    // is not client-visible per frame, so any parity in the session sizes as
+    // the full k=2 — conservative by at most one leg at a share boundary.
+    this.stripe.noteParityActive((reasm?.parityChunksReceived ?? 0) > 0 ? 2 : 0);
+    const stripeTarget = this.stripe.decide();
+    if (stripeTarget !== this.lastStripeRequested && this.transport?.setStripe) {
+      this.lastStripeRequested = stripeTarget;
+      this.transport.setStripe(stripeTarget);
+    }
+    const stripeDetector = this.stripe.snapshot();
+    const stripeTransport = this.transport?.sampleStripe?.() ?? null;
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -1227,6 +1282,18 @@ export class ViewerPipeline {
             : 'free'
           : null,
       videoScheduleBaseEpochMs: this.videoScheduleBaseEpochMs(),
+      // R30 (docs/35 §7): requested vs active, plus the detector's own
+      // inputs so a non-engaging detector is arguable from a diagnostics
+      // blob rather than a mystery.
+      stripeMode: getStripeMode(),
+      stripeCapable: this.stripeCapable,
+      stripeActive: this.stripeActive,
+      stripeNeeded: stripeDetector.neededNow,
+      stripeLargeLossPct: stripeDetector.largeLossPct,
+      stripeSmallLossPct: stripeDetector.smallLossPct,
+      stripeLargeChunks: stripeDetector.largeChunks,
+      stripeLegDials: stripeTransport?.legDials ?? 0,
+      stripeLegDeaths: stripeTransport?.legDeaths ?? 0,
     });
   }
 

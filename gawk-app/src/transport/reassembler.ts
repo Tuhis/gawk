@@ -57,6 +57,14 @@ export interface ReassemblerCallbacks {
   // re-sends it at 1 Hz by design).
   onAudioFrame?: (packet: AudioPacket) => void;
   onAudioConfig?: (config: AudioConfigMessage) => void;
+  // R30 (docs/35 §5.5): one finalized frame's arrival accounting — how many
+  // chunks the frame-global header promised and how many ACTUALLY arrived
+  // (parity-recovered chunks are repairs, not deliveries). Fired at every
+  // finalization: completion (including late-dropped ones — the network
+  // delivered them) and eviction. This is the in-client port of the
+  // datagram-loss-profile instrument's per-frame arithmetic, and the stripe
+  // detector's only input.
+  onFrameAccounting?: (expectedChunks: number, arrivedChunks: number) => void;
 }
 
 export interface ReassemblerStats {
@@ -93,6 +101,10 @@ interface Assembly {
   chunkCount: number;
   payloads: (Uint8Array | null)[];
   received: number;
+  // Real chunk arrivals only. `received` doubles as the completeness cursor
+  // and is bumped to chunkCount by a parity recovery; this one never is —
+  // the stripe detector needs delivery truth, not repair truth (R30).
+  arrived: number;
   bytes: number;
   // R29: parity symbols held for this frame, indexed by parityIndex, and the
   // total frame length their headers carry (the only thing that says how long
@@ -278,6 +290,7 @@ export class Reassembler {
         chunkCount: header.chunkCount,
         payloads: new Array<Uint8Array | null>(header.chunkCount).fill(null),
         received: 0,
+        arrived: 0,
         bytes: 0,
         parity: null,
         parityHeld: 0,
@@ -296,6 +309,7 @@ export class Reassembler {
     }
     assembly.payloads[header.chunkIndex] = payload;
     assembly.received++;
+    assembly.arrived++;
     assembly.bytes += payload.length;
 
     if (assembly.received === assembly.chunkCount) {
@@ -353,6 +367,7 @@ export class Reassembler {
         chunkCount: header.chunkCount,
         payloads: new Array<Uint8Array | null>(header.chunkCount).fill(null),
         received: 0,
+        arrived: 0,
         bytes: 0,
         parity: null,
         parityHeld: 0,
@@ -411,6 +426,7 @@ export class Reassembler {
   }
 
   private completeFrame(frameId: number, assembly: Assembly): void {
+    this.cb.onFrameAccounting?.(assembly.chunkCount, assembly.arrived);
     // Late delta frames are useless (their reference frame was already
     // superseded); keyframes are self-contained and always emitted. "Late"
     // is serial (wrap-aware): a frameId just past the uint32 rollover is
@@ -457,6 +473,7 @@ export class Reassembler {
           this.stats.parityInsufficient++;
         }
       }
+      if (assembly) this.cb.onFrameAccounting?.(assembly.chunkCount, assembly.arrived);
       this.assemblies.delete(oldest.value);
       this.stats.framesDroppedIncomplete++;
     }

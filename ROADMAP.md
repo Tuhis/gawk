@@ -48,7 +48,7 @@ feature set exists).
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
 | R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) + TM11 (configured target) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
 | R29 | [Forward parity for live-edge delivery](#r29--forward-parity-for-live-edge-delivery) | ✅ designed 2026-07-27, **FP1–FP8 implemented 2026-07-28**; gates green in all four modules incl. a Go loss-injection test (17.5x frame-loss cut at 3% loss, zero corruption) and a browser e2e pass behind a 5% lossy link (30/30 fps protected vs 25.9/17.9 control). incl. Prometheus `parity_*` metrics + docs/13 playbook rows ([docs/34](docs/34-live-edge-forward-parity.md) §11) |
-| R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔧 designed 2026-07-29 (ST1–ST7), not started; striped delivery — primary + up to 4 immutable stripe legs, chunk `d mod N`, burst target 6, adaptive grow-only N from measured chunkCount, auto-detect + manual toggle; ST1 is the go/no-go split experiment ([docs/35](docs/35-connection-interleaving.md)) |
+| R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔶 designed + **ST2–ST6 implemented 2026-07-29** (owner instruction moved implementation ahead of ST1); gates green in all four modules incl. a race-clean Go burst-threshold proof (control 8.3 % loss, 13/60 eighteen-chunk frames complete; striped ×3: 60/60 at 0.0 %, zero mismapped); **ST1 paired on-hardware runs + ST7 acceptance/loadgen owner-pending** ([docs/35](docs/35-connection-interleaving.md) §12) |
 
 ---
 
@@ -2253,7 +2253,10 @@ never a larger `k`.
 ## R30 — Connection interleaving for live-edge delivery
 
 **Status**: designed 2026-07-29
-([docs/35](docs/35-connection-interleaving.md), chunks ST1–ST7); not started.
+([docs/35](docs/35-connection-interleaving.md), chunks ST1–ST7); **ST2–ST6
+implemented the same day** (owner instruction moved implementation ahead of
+ST1's on-hardware experiment; deviations + the CI burst-threshold proof in
+docs/35 §12), **ST1/ST7 on-hardware halves owner-pending**.
 This entry carried the evidence the design started from; docs/35 preserves it
 (§1) and settles the design questions below — owner decisions 2026-07-29:
 adaptive grow-only N sized from the measured per-frame datagram count (never

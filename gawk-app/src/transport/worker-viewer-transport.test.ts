@@ -242,3 +242,46 @@ describe('WorkerViewerTransport + TransportWorkerCore end-to-end', () => {
     );
   });
 });
+
+// R30 ST4 (docs/35 §5.6): the stripe plumbing across the worker boundary.
+describe('WorkerViewerTransport striping (R30)', () => {
+  it('forwards setStripe as a stripe command', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerViewerTransport(() => worker, 'https://r/subscribe/x', {});
+    const p = transport.connect(makeCallbacks());
+    worker.emit({ type: 'connected' });
+    await p;
+    transport.setStripe(3);
+    expect(worker.sent).toContainEqual({ type: 'stripe', n: 3 });
+    transport.close();
+  });
+
+  it('relays capabilities, stripe changes and the stripe stats sample', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerViewerTransport(() => worker, 'https://r/subscribe/x', {});
+    const caps: unknown[] = [];
+    const changes: number[] = [];
+    const cb = {
+      ...makeCallbacks(),
+      onRelayCapabilities: (c: unknown) => caps.push(c),
+      onStripeChange: (n: number) => changes.push(n),
+    };
+    const p = transport.connect(cb);
+    worker.emit({ type: 'connected' });
+    await p;
+    worker.emit({ type: 'relayCapabilities', caps: { flags: 3, parityLevel: 2 } });
+    worker.emit({ type: 'stripeChange', active: 2 });
+    worker.emit({
+      type: 'connStats',
+      stats: null,
+      timeSync: null,
+      carrier: null,
+      datagramBuffer: null,
+      stripe: { active: 2, target: 2, legDials: 2, legDialFailures: 0, legDeaths: 0 },
+    });
+    expect(caps).toEqual([{ flags: 3, parityLevel: 2 }]);
+    expect(changes).toEqual([2]);
+    expect(transport.sampleStripe()).toMatchObject({ active: 2, target: 2 });
+    transport.close();
+  });
+});

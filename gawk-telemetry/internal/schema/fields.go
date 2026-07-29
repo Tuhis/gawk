@@ -69,6 +69,21 @@ var ViewerFields = map[string]Kind{
 	"reorderBuffered":              KindNumber,
 	"videoBytesReceived":           KindNumber,
 
+	// R30 striped delivery (docs/35 §7). Requested vs active plus the auto
+	// detector's own inputs — large-frame chunk loss against small-frame
+	// cleanliness is the burst-threshold shape (docs/34 finding 4), and
+	// carrying both is what lets diagnose() argue WHY striping did or did
+	// not engage from a stored session.
+	"stripeMode":         KindString,
+	"stripeCapable":      KindBool,
+	"stripeActive":       KindNumber,
+	"stripeNeeded":       KindNumber,
+	"stripeLargeLossPct": KindNumber,
+	"stripeSmallLossPct": KindNumber,
+	"stripeLargeChunks":  KindNumber,
+	"stripeLegDials":     KindNumber,
+	"stripeLegDeaths":    KindNumber,
+
 	// Placement (R10) — the "did the fast path actually engage?" answers.
 	"renderer":        KindString,
 	"pipelineContext": KindString,

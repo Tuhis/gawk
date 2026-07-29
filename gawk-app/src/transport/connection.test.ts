@@ -21,6 +21,12 @@ import {
   encodeVideoChunk,
   type TelemetryHelloMessage,
 } from './wire';
+import {
+  CAP_PARITY_CHUNKS,
+  CAP_STRIPED_DELIVERY,
+  encodeRelayCapabilities,
+  type RelayCapabilities,
+} from './parity';
 
 function stubWebTransport(maxDatagramSize: number): void {
   vi.stubGlobal(
@@ -404,5 +410,55 @@ describe('readServerStreams — telemetry hello (R28)', () => {
     const counters = newCarrierCounters();
     await readServerStreams(wt, { onKeyframe: () => {}, onCarrierRecord: () => {} }, counters);
     expect(counters.malformed).toBe(0);
+  });
+});
+
+// R30 ST4, docs/35 §12 finding 1: the relay has sent RelayCapabilities on the
+// subscribe route since R29 (whenever parity is enabled — the fleet default),
+// but the viewer had no 0x0F branch: every production viewer session counted
+// one malformed stream and logged a warning. The capability is also R30's
+// version-skew gate, so this is both the wart fix and the striping enabler.
+describe('readServerStreams — relay capabilities (R29/R30)', () => {
+  it('dispatches capabilities to their own callback instead of counting malformed', async () => {
+    const caps = encodeRelayCapabilities({
+      flags: CAP_PARITY_CHUNKS | CAP_STRIPED_DELIVERY,
+      parityLevel: 2,
+    });
+    const wt = wtWithStreams([[caps]]);
+    const seen: RelayCapabilities[] = [];
+    const counters = newCarrierCounters();
+    await readServerStreams(
+      wt,
+      {
+        onKeyframe: () => {},
+        onCarrierRecord: () => {},
+        onRelayCapabilities: (c) => seen.push(c),
+      },
+      counters,
+    );
+    expect(seen).toEqual([{ flags: CAP_PARITY_CHUNKS | CAP_STRIPED_DELIVERY, parityLevel: 2 }]);
+    expect(counters.malformed).toBe(0);
+  });
+
+  it('tolerates capabilities with no callback wired (pre-R30 caller shape)', async () => {
+    const caps = encodeRelayCapabilities({ flags: CAP_PARITY_CHUNKS, parityLevel: 2 });
+    const wt = wtWithStreams([[caps]]);
+    const counters = newCarrierCounters();
+    await readServerStreams(wt, { onKeyframe: () => {}, onCarrierRecord: () => {} }, counters);
+    expect(counters.malformed).toBe(0);
+  });
+
+  it('still counts a truncated capabilities stream as malformed', async () => {
+    const caps = encodeRelayCapabilities({ flags: CAP_PARITY_CHUNKS, parityLevel: 2 });
+    const wt = wtWithStreams([[caps.subarray(0, 4)]]);
+    const seen: RelayCapabilities[] = [];
+    const counters = newCarrierCounters();
+    await readServerStreams(
+      wt,
+      { onKeyframe: () => {}, onCarrierRecord: () => {}, onRelayCapabilities: (c) => seen.push(c) },
+      counters,
+    );
+    expect(seen).toHaveLength(0);
+    expect(counters.malformed).toBe(1);
   });
 });

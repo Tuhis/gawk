@@ -21,6 +21,17 @@
 //
 //   GAWK_FF_PAGE=http://localhost:5173/ GAWK_FF_RELAY=https://relay:4433 \
 //   GAWK_FF_ID=ABC123 SECS=100 node datagram-loss-profile.mjs
+//
+// R30 (docs/35 §8): GAWK_FF_STRIPE=N additionally dials this subscription as
+// a STRIPED viewer — a primary plus N legs (?stripe=N&leg=j), with the 0x10
+// StripeState suppression sent on the primary — and attributes every arrival
+// to the connection that produced it. Expectations stay frame-global
+// (chunkCount is never rewritten); each leg's share is derived as
+// {d : d mod N == j}, so per-connection loss AND the `mismapped` protocol
+// assertion both come from the wire alone. GAWK_FF_STRIPE unset or 0 is
+// byte-identical to the original instrument. This striped mode IS R30's
+// acceptance instrument (docs/35 §2): striped ~0 % on >8-chunk frames while
+// an unstriped control still reproduces the threshold.
 
 import { firefox } from 'playwright-core';
 
@@ -28,33 +39,65 @@ const PAGE = process.env.GAWK_FF_PAGE || 'http://localhost:5173/';
 const RELAY = process.env.GAWK_FF_RELAY || 'https://api.gawk.ioio.fi:4433';
 const ID = process.env.GAWK_FF_ID || 'G8FHDN';
 const SECS = Number(process.env.SECS || 90);
+const STRIPE = Number(process.env.GAWK_FF_STRIPE || 0);
 
-async function runInPage({ relay, secs }) {
-  const wt = new WebTransport(relay, { requireUnreliable: true, congestionControl: 'low-latency' });
-  const dg = wt.datagrams;
-  await wt.ready;
-  const frames = new Map(); // frameId -> { count, idx:Set, par:Set, sizes:Map }
-  const reader = dg.readable.getReader();
-  const t0 = performance.now();
-  while (performance.now() - t0 < secs * 1000) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (!value || value.length < 13) continue;
-    const dv = new DataView(value.buffer, value.byteOffset, value.byteLength);
-    const type = value[1];
-    if (type === 1) {
-      const id = dv.getUint32(4);
-      let f = frames.get(id);
-      if (!f) { f = { count: dv.getUint16(10), idx: new Set(), par: new Set(), sizes: new Map() }; frames.set(id, f); }
-      f.idx.add(dv.getUint16(8));
-      f.sizes.set(dv.getUint16(8), value.byteLength);
-    } else if (type === 14) {
-      const id = dv.getUint32(2);
-      let f = frames.get(id);
-      if (!f) { f = { count: dv.getUint16(7), idx: new Set(), par: new Set(), sizes: new Map() }; frames.set(id, f); }
-      f.par.add(value[6]);
-    }
+async function runInPage({ relay, secs, stripe }) {
+  const frames = new Map(); // frameId -> { count, idx:Set, par:Set, sizes:Map, at:Map(ordinal->conn) }
+  // conn 0 is the primary; 1..stripe are legs (leg j dials ?stripe=N&leg=j-1).
+  const conns = [];
+  const connOf = (i) => {
+    const url = i === 0 ? relay : `${relay}?stripe=${stripe}&leg=${i - 1}`;
+    return new WebTransport(url, { requireUnreliable: true, congestionControl: 'low-latency' });
+  };
+  const total = stripe > 0 ? stripe + 1 : 1;
+  for (let i = 0; i < total; i++) conns.push(connOf(i));
+  await Promise.all(conns.map((c) => c.ready));
+  let refresh = null;
+  if (stripe > 0) {
+    // The 0x10 suppression: level state, re-sent at 1 Hz like the client.
+    const writer = conns[0].datagrams.writable.getWriter();
+    const st = new Uint8Array([0x01, 0x10, 0x01, stripe, 0x00]);
+    const send = () => void writer.write(st).catch(() => {});
+    send();
+    refresh = setInterval(send, 1000);
   }
+  const mismapped = [];
+  const perConnGot = new Array(total).fill(0);
+  const t0 = performance.now();
+  const readConn = async (connIdx) => {
+    const reader = conns[connIdx].datagrams.readable.getReader();
+    while (performance.now() - t0 < secs * 1000) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value || value.length < 13) continue;
+      const dv = new DataView(value.buffer, value.byteOffset, value.byteLength);
+      const type = value[1];
+      let id, ordinal, count;
+      if (type === 1) {
+        id = dv.getUint32(4);
+        count = dv.getUint16(10);
+        ordinal = dv.getUint16(8);
+      } else if (type === 14) {
+        id = dv.getUint32(2);
+        count = dv.getUint16(7);
+        ordinal = count + value[6];
+      } else continue;
+      let f = frames.get(id);
+      if (!f) { f = { count, idx: new Set(), par: new Set(), sizes: new Map(), at: new Map() }; frames.set(id, f); }
+      if (type === 1) { f.idx.add(ordinal); f.sizes.set(ordinal, value.byteLength); }
+      else f.par.add(value[6]);
+      f.at.set(ordinal, connIdx);
+      perConnGot[connIdx]++;
+      if (stripe > 0 && connIdx > 0 && ordinal % stripe !== connIdx - 1) {
+        // A delta datagram on a leg whose share does not cover it: a protocol
+        // violation, not loss — the mapping must be receiver-derivable.
+        if (mismapped.length < 20) mismapped.push({ conn: connIdx, id, ordinal });
+      }
+    }
+    try { reader.releaseLock(); } catch { /* fine */ }
+  };
+  await Promise.all(conns.map((_, i) => readConn(i)));
+  if (refresh) clearInterval(refresh);
   const el = (performance.now() - t0) / 1000;
   // Trim the window edges: those frames are legitimately partial.
   const ids = [...frames.keys()].sort((a, b) => a - b).slice(2, -2);
@@ -101,6 +144,26 @@ async function runInPage({ relay, secs }) {
     if (sent < 50) continue;
     perIndex.push({ i, sent, lost: lostAt.get(i) || 0, lossPct: +(((lostAt.get(i) || 0) / sent) * 100).toFixed(2) });
   }
+  // Striped attribution (R30): each leg's expectation is derived from the
+  // frame-global count — |{d : d mod N == leg}| — never told by the sender.
+  let perConn = null;
+  let primaryDeltas = 0;
+  if (stripe > 0) {
+    perConn = Array.from({ length: stripe }, (_, j) => ({ leg: j, exp: 0, got: 0 }));
+    for (const id of ids) {
+      const f = frames.get(id);
+      if (!f.count) continue;
+      const pexp = Math.min(2, f.count);
+      for (let d = 0; d < f.count + pexp; d++) {
+        perConn[d % stripe].exp++;
+      }
+      for (const [ordinal, conn] of f.at) {
+        if (conn === 0) primaryDeltas++;
+        else if (ordinal % stripe === conn - 1) perConn[conn - 1].got++;
+      }
+    }
+    for (const c of perConn) c.lossPct = c.exp > 0 ? +(((c.exp - c.got) / c.exp) * 100).toFixed(2) : 0;
+  }
   const out = {
     elapsed: +el.toFixed(1),
     frames: ids.length,
@@ -112,16 +175,21 @@ async function runInPage({ relay, secs }) {
     perIndex,
     perSize,
     topSizes: [...sizeSeen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6),
+    stripe, perConn, mismapped, primaryDeltas,
   };
-  try { wt.close(); } catch { /* already gone */ }
+  for (const c of conns) { try { c.close(); } catch { /* already gone */ } }
   return out;
 }
 
 const browser = await firefox.launch({ headless: true });
 const page = await browser.newPage();
 await page.goto(PAGE, { waitUntil: 'domcontentloaded' });
-console.log(`firefox ${browser.version()} — ${SECS}s on ${ID}`);
-const r = await page.evaluate(runInPage, { relay: `${RELAY.replace(/\/$/, '')}/subscribe/${ID}`, secs: SECS });
+console.log(`firefox ${browser.version()} — ${SECS}s on ${ID}${STRIPE > 0 ? ` (striped ×${STRIPE})` : ''}`);
+const r = await page.evaluate(runInPage, {
+  relay: `${RELAY.replace(/\/$/, '')}/subscribe/${ID}`,
+  secs: SECS,
+  stripe: STRIPE,
+});
 await browser.close();
 
 console.log(`\nframes=${r.frames}  elapsed=${r.elapsed}s`);
@@ -133,3 +201,13 @@ for (const p of r.perIndex) console.log(`  idx ${String(p.i).padStart(2)}  sent 
 console.log('\nloss by frame size (microburst test — expect loss to RISE with burst size):');
 for (const p of r.perSize) console.log(`  ${String(p.n).padStart(2)} chunks/frame  frames ${String(p.frames).padStart(4)}  ${p.lossPct}%`);
 console.log('\nmost common datagram sizes (received):', JSON.stringify(r.topSizes));
+if (r.stripe > 0) {
+  console.log(`\nSTRIPED ×${r.stripe} — per-leg loss against the derived share (d mod N):`);
+  for (const c of r.perConn) console.log(`  leg ${c.leg}  got ${c.got}/${c.exp}  loss ${c.lossPct}%`);
+  console.log(`primary delta datagrams while suppressed: ${r.primaryDeltas} (in-flight overlap only — should be ~0)`);
+  if (r.mismapped.length > 0) {
+    console.log(`MISMAPPED (protocol violation — a leg received an ordinal outside its share):`, JSON.stringify(r.mismapped));
+  } else {
+    console.log('mismapped: 0 — the receiver-derived mapping held for every arrival');
+  }
+}

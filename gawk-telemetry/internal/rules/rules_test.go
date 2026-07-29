@@ -188,6 +188,28 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 			},
 		},
 		{
+			id: "burst-threshold-loss",
+			fires: func() *Facts {
+				// The finding-4 shape: large frames lossy, small frames clean,
+				// plenty of evidence, no stripe engaged.
+				f := viewerFacts()
+				f.SetClient("stripeLargeLossPct", 3.8)
+				f.SetClient("stripeSmallLossPct", 0.0)
+				f.SetClient("stripeLargeChunks", 5000)
+				f.SetClient("stripeActive", 0)
+				return f
+			},
+			quiet: func() *Facts {
+				// Same traffic, clean link.
+				f := viewerFacts()
+				f.SetClient("stripeLargeLossPct", 0.0)
+				f.SetClient("stripeSmallLossPct", 0.0)
+				f.SetClient("stripeLargeChunks", 5000)
+				f.SetClient("stripeActive", 0)
+				return f
+			},
+		},
+		{
 			id: "config-or-limits",
 			fires: func() *Facts {
 				f := bcastFacts()

@@ -95,6 +95,9 @@ Every flag has a `GAWK_*` environment fallback (flag > env > default):
 | `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |
 | `-broadcast-grace` | `GAWK_BROADCAST_GRACE` | `5m` |
 | `-quiet-probe-logs` | `GAWK_QUIET_PROBE_LOGS` | `false` |
+| `-live-edge-audio-on-reliable-stream` | `GAWK_LIVE_EDGE_AUDIO_ON_RELIABLE_STREAM` | `false` (measure before flipping — see chart values) |
+| `-parity-default` | `GAWK_PARITY_DEFAULT` | `2` (forward-parity symbols per delta frame; `0` disables fleet-wide — R29) |
+| `-striped-delivery` | `GAWK_STRIPED_DELIVERY` | `true` (accept stripe-leg sessions + StripeState; off is byte-identical to pre-R30 — R30) |
 | `-stateless-reset-key` | `GAWK_STATELESS_RESET_KEY` | (empty = disabled; 64 hex chars, shared fleet-wide) |
 | `-resume-token-key` | `GAWK_RESUME_TOKEN_KEY` | (empty; wins over the publish-secret derivation when set — recommended for fleets, R17) |
 | `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars — R17) |

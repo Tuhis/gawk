@@ -10,6 +10,7 @@ import type { TransportConnectionStats } from './net-stats';
 import type { TimeSyncStats } from './time-sync';
 import type { TransportWorkerCommand, TransportWorkerEvent } from './transport-worker-core';
 import type {
+  StripeTransportStats,
   ViewerTransport,
   ViewerTransportCallbacks,
   ViewerTransportKind,
@@ -37,6 +38,7 @@ export class WorkerViewerTransport implements ViewerTransport {
   private latestTimeSync: TimeSyncStats | null = null;
   private latestCarrier: CarrierCounters | null = null;
   private latestDatagramBuffer: DatagramBufferStats | null = null;
+  private latestStripe: StripeTransportStats | null = null;
   private closing = false;
 
   constructor(createWorker: () => TransportWorkerLike, url: string, opts: ConnectOptions) {
@@ -95,11 +97,18 @@ export class WorkerViewerTransport implements ViewerTransport {
           case 'telemetryHello':
             if (!this.closing) cb.onTelemetryHello?.(ev.hello);
             break;
+          case 'relayCapabilities':
+            if (!this.closing) cb.onRelayCapabilities?.(ev.caps);
+            break;
+          case 'stripeChange':
+            if (!this.closing) cb.onStripeChange?.(ev.active);
+            break;
           case 'connStats':
             this.latestStats = ev.stats;
             this.latestTimeSync = ev.timeSync;
             this.latestCarrier = ev.carrier;
             this.latestDatagramBuffer = ev.datagramBuffer;
+            this.latestStripe = ev.stripe ?? null;
             break;
         }
       };
@@ -131,6 +140,14 @@ export class WorkerViewerTransport implements ViewerTransport {
 
   sampleDatagramBuffer(): DatagramBufferStats | null {
     return this.latestDatagramBuffer;
+  }
+
+  setStripe(n: number): void {
+    if (!this.closing) this.worker?.postMessage({ type: 'stripe', n });
+  }
+
+  sampleStripe(): StripeTransportStats | null {
+    return this.latestStripe;
   }
 
   close(): void {

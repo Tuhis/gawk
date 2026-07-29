@@ -61,6 +61,15 @@ const (
 	// sends no parity, so a new broadcaster against an old relay stays
 	// byte-identical to pre-R29 (docs/34 §4.4).
 	CapParityChunks uint16 = 1 << 0
+
+	// CapStripedDelivery means the relay accepts ?stripe=N&leg=j subscribe
+	// sessions and StripeState datagrams (R30, docs/35). A viewer that does
+	// not see this bit never dials a leg and never sends StripeState, so a
+	// new viewer against an old relay stays byte-identical to pre-R30. The
+	// message stays 5 bytes: capability GROWTH is new bits in this flags
+	// word, never new bytes — the R29 broadcaster parses this message
+	// strictly by size, and extending it would break that parser mid-skew.
+	CapStripedDelivery uint16 = 1 << 1
 )
 
 var (

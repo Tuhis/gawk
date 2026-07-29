@@ -76,6 +76,7 @@ func run() error {
 		"dvr_audio", cfg.DVRAudio,
 		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
 		"parity_default", cfg.ParityDefault,
+		"striped_delivery", cfg.StripedDelivery,
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
@@ -193,7 +194,11 @@ func registryOptions(cfg config.Config) hub.Options {
 		// post-implementation review's finding, and docs/34's FP4 acceptance
 		// criterion asserts this production path specifically.
 		ParityDefault: cfg.ParityDefault,
-		StatsKey:      cfg.StatsKey,
+		// R30: same rule (docs/35 ST3). The transport reads cfg directly for
+		// the dial gate and capability bit; this mirror keeps the hub's
+		// options honest and the carry-all-limits test complete.
+		StripedDelivery: cfg.StripedDelivery,
+		StatsKey:        cfg.StatsKey,
 	}
 }
 

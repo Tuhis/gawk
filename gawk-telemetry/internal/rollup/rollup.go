@@ -126,6 +126,11 @@ var viewerSeries = []string{
 	"capToRenderMs", "liveEdgeDriftMs", "timeSyncRttMs",
 	"playoutOffsetMs", "arrivalJitterMs", "renderCadenceP95Ms", "decodeJitterMs",
 	"decoderQueueDepth", "avSkewMs",
+	// R30 (docs/35 §7): the stripe state over the session — active vs needed
+	// diverging is the caps-pressure signature, and the detector percentages
+	// are what the burst-threshold-loss rule reads.
+	"stripeActive", "stripeNeeded", "stripeLargeLossPct", "stripeSmallLossPct",
+	"stripeLargeChunks",
 }
 
 var broadcasterSeries = []string{
@@ -143,6 +148,8 @@ var viewerCounters = []string{
 	// allowance absorbed.
 	"parityChunksReceived", "framesRecoveredByParity", "parityRecoveryFailures",
 	"framesSkippedWithinAllowance",
+	// R30 (docs/35 §7): stripe transition costs.
+	"stripeLegDials", "stripeLegDeaths",
 	"keyframeStreamsReceived", "configsApplied", "decodedFrames",
 	"videoBytesReceived", "carrierStreams", "carrierStreamsAborted",
 	"audioPacketsReceived", "audioPacketsDecoded",

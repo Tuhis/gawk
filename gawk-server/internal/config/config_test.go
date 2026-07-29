@@ -41,7 +41,10 @@ func TestDefaults(t *testing.T) {
 		DVRAudio:             true,
 		// R29 (docs/34 §5.2): quality-first default, chart-overridable.
 		ParityDefault: 2,
-		MetricsAddr:   ":2112",
+		// R30 (docs/35 §6): on by default — zero relay cost until a viewer
+		// engages, and off is the byte-identical escape hatch.
+		StripedDelivery: true,
+		MetricsAddr:     ":2112",
 		// R28: telemetry is off by default (no key), but the cadence it would
 		// ask for still has a default so enabling it is one value, not two.
 		TelemetryReportInterval: 2 * time.Second,

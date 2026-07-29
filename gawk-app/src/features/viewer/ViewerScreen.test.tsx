@@ -470,6 +470,35 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     tap(screen.getByLabelText('More options'));
     expect(screen.getByText(/^Resilient mode ✓/)).toBeTruthy();
   });
+
+  // R30 (docs/35 §5.5): the striping radio group. Live-edge only, persisted,
+  // and — unlike delivery/parity — applied LIVE: no session teardown.
+  it('picks a stripe mode from the menu without reconnecting, live-edge only', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    tap(screen.getByLabelText('More options'));
+    expect(screen.getByText(/^Striping: auto ✓/)).toBeTruthy();
+    fireEvent.click(screen.getByText(/^Striping: on/));
+    expect(localStorage.getItem('gawk:stripe-mode')).toBe('on');
+    // A live flip: the session is untouched.
+    expect(sessions).toHaveLength(1);
+
+    tap(screen.getByLabelText('More options'));
+    expect(screen.getByText(/^Striping: on ✓/)).toBeTruthy();
+    fireEvent.click(screen.getByText(/^Striping: auto/));
+    expect(localStorage.getItem('gawk:stripe-mode')).toBeNull();
+    expect(sessions).toHaveLength(1);
+
+    // Off live-edge delivery the group disappears — there is nothing to
+    // split on a retransmitting carrier (docs/35 §3).
+    tap(screen.getByLabelText('More options'));
+    fireEvent.click(screen.getByText(/^Resilient mode —/));
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    tap(screen.getByLabelText('More options'));
+    expect(screen.queryByText(/^Striping:/)).toBeNull();
+  });
 });
 
 // R16 gate + R22 MSE surface (docs/21 Decision 1, docs/27): the device gate,

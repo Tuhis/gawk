@@ -249,6 +249,8 @@ spec:
               value: {{ .Values.config.liveEdgeAudioOnReliableStream | quote }}
             - name: GAWK_PARITY_DEFAULT
               value: {{ .Values.config.parityDefault | quote }}
+            - name: GAWK_STRIPED_DELIVERY
+              value: {{ .Values.config.stripedDelivery | quote }}
             - name: GAWK_MAX_IDLE_TIMEOUT
               value: {{ .Values.config.maxIdleTimeout | quote }}
             - name: GAWK_KEEPALIVE_PERIOD
