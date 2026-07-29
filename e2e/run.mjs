@@ -1705,7 +1705,14 @@ async function main() {
     await runViewer(
       '',
       MAX_VIEWER_RETRIES,
-      STRIPE_SEED ? { stripe: STRIPE_SEED, expectStripe: STRIPE_SEED === 'on' } : {},
+      // The striped external run points GAWK_E2E_ID at a LARGE-fixture
+      // broadcast, so the codec pin moves with it (720p = baseline level
+      // 3.1) — the same override the tier-1 striped pass carries, missed
+      // here on the first cluster dispatch (the tier-2 failure was exactly
+      // this line's pin reading the small clip's 42C00D).
+      STRIPE_SEED
+        ? { stripe: STRIPE_SEED, expectStripe: STRIPE_SEED === 'on', expectedCodec: 'avc1.42C01F' }
+        : {},
     );
 
     // R19 resilient mode, on the same live broadcast (PRODUCT-1): the only
