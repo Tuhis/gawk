@@ -16,6 +16,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/annotations"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rules"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
@@ -110,6 +111,61 @@ func TestLiveSessionShowsEverySampleFromDisk(t *testing.T) {
 	}
 	if tl.StartedAtMs == 0 {
 		t.Error("no startedAtMs: absolute time (UD5) is not recoverable from tMs alone")
+	}
+}
+
+// TH2's criterion "a live session updates as batches land" needs the page to
+// KNOW a session is live, and `endedAtMs` cannot tell it: ParseTimeline falls
+// back to the last `receivedAtMs` when nothing else supplies an end, so every
+// session — open or finished — comes back with one. A detail page testing for
+// its absence would never refresh.
+//
+// The projection is the only thing that knows, so it is what is asked.
+func TestALiveSessionIsMarkedLive(t *testing.T) {
+	f := newFixture(t)
+	projection := live.New(func() time.Time { return f.now })
+	api, err := New(Options{
+		Store: f.store, Live: projection, Now: func() time.Time { return f.now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	open := "0100000000000000000000aa"
+	ended := "0100000000000000000000bb"
+	f.seed(t, ended, "viewer", healthyViewerStats(10), nil)
+
+	// An open session: batches landed, no `final`, and the projection has been
+	// told — exactly what the writer's Observe hook does in production.
+	batch := ingest.Accepted{
+		SessionID: open, BroadcastKey: bkey, Role: "viewer", Seq: 0,
+		App:         ingest.AppInfo{Version: "0.33.2", Surface: "viewer"},
+		StartedAtMs: f.now.UnixMilli(), ReceivedAt: f.now,
+		Samples: samplesOf(healthyViewerStats(10)),
+	}
+	if err := f.writer.Accept(batch); err != nil {
+		t.Fatal(err)
+	}
+	projection.ObserveClient(batch, "Chrome 152", "Windows", "0.33.2")
+
+	liveTL, err := api.GetSessionDetail(open, SessionQuery{Detail: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveTL.EndedAtMs == 0 {
+		t.Fatal("fixture assumption broken: an open session came back with no endedAtMs, " +
+			"which would have made this bug invisible")
+	}
+	if !liveTL.Live {
+		t.Error("an open session is not marked live; the detail page would never refresh it")
+	}
+
+	endedTL, err := api.GetSessionDetail(ended, SessionQuery{Detail: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endedTL.Live {
+		t.Error("a finished session is marked live; the page would poll it forever")
 	}
 }
 
@@ -921,6 +977,35 @@ func TestLiveStreamSendsASnapshotAndThenGoesQuiet(t *testing.T) {
 	}
 	if !strings.Contains(first, "event: snapshot") {
 		t.Errorf("first frame is not a snapshot: %q", first)
+	}
+}
+
+// UD22's entire justification, as a test.
+//
+// The transport alone would not have earned an endpoint: what earns it is that
+// an IDLE fleet costs a heartbeat instead of a full payload — findings and
+// metrics for every session, every 2 s, times every open view. That saving
+// depends on recognising an unchanged projection, and `Snapshot.AtMs` is a
+// fresh clock reading on every call, so hashing the response verbatim would
+// make every snapshot look new and quietly buy nothing at all.
+func TestStreamHashIgnoresTheSnapshotClock(t *testing.T) {
+	base := live.Snapshot{AtMs: 1_000_000, Live: []live.BroadcastView{{
+		BroadcastKey: bkey, Lifecycle: "live", Severity: rules.SeverityOK, Viewers: 2,
+	}}}
+	later := base
+	later.AtMs = base.AtMs + 2000
+
+	if streamFingerprint(base) != streamFingerprint(later) {
+		t.Error("two snapshots differing only in atMs hash differently; an idle fleet would " +
+			"be re-sent every 2 s and UD22 would have bought nothing")
+	}
+
+	changed := base
+	changed.Live = []live.BroadcastView{{
+		BroadcastKey: bkey, Lifecycle: "live", Severity: rules.SeverityBad, Viewers: 2,
+	}}
+	if streamFingerprint(base) == streamFingerprint(changed) {
+		t.Error("a severity change did not change the fingerprint; the stream would sit on it")
 	}
 }
 

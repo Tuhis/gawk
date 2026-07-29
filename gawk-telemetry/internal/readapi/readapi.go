@@ -314,6 +314,15 @@ type Timeline struct {
 	// bound allows, so a chart can say it is not showing everything rather
 	// than quietly drawing a shorter session.
 	Truncated bool `json:"truncated,omitempty"`
+	// Live is whether the projection still holds this session open.
+	//
+	// It cannot be inferred from EndedAtMs, and the difference matters: when a
+	// session supplies no end of its own, `ParseTimeline` falls back to the last
+	// `receivedAtMs`, so EVERY session — open or finished — comes back with one.
+	// A detail page testing for its absence would never refresh a live session,
+	// which is precisely TH2's "updates as batches land". The projection is the
+	// only thing that actually knows, so it is what is asked.
+	Live bool `json:"live,omitempty"`
 }
 
 // curatedViewer / curatedBroadcaster are the default field sets. The full
@@ -433,6 +442,7 @@ func (a *API) GetSessionDetail(sessionID string, q SessionQuery) (*Timeline, err
 		tl.EndedAtMs = in.EndedAtMs
 		tl.ClockOffsetMs = clockOffset(lines, in.StartedAtMs)
 		tl.Available = observedFields(in.Samples)
+		tl.Live = a.liveSessionIDs()[sessionID]
 		// Full resolution that hit its bound is announced. The alternative — a
 		// chart quietly drawing a downsampled line while its caller believes it
 		// asked for every sample — is exactly UD9's failure in a new place.

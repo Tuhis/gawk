@@ -836,7 +836,23 @@ that table would otherwise get wrong.
    file per broadcast would pass every existing test. The counter makes it
    visible, and `TestLivePathReadsNoSessionFile` checks both directions.
 
-7. **`rules.Rule` grew `Why` and `Thresholds`, and `EvaluateTrace` was added.**
+7. **Two bugs a running binary caught that the tests did not.** Both are worth
+   recording because both were invisible to a passing suite:
+
+   - **The SSE stream re-sent an identical projection every 2 s.** `Snapshot.AtMs`
+     is a fresh clock reading on every call, so hashing the marshalled response
+     verbatim made every tick look like a change — and change-only delivery is
+     the *entire* justification for the endpoint over the poll it replaces. The
+     fix hashes the snapshot with the clock zeroed; `streamFingerprint` and its
+     test exist for that one reason. Verified against a running binary: eight
+     seconds of an idle fleet is now one frame, not four.
+   - **A live session page could never refresh.** `ParseTimeline` falls back to
+     the last `receivedAtMs` when a session supplies no end of its own, so
+     `endedAtMs` is set for *every* session, open or finished, and the UI's
+     "is it live?" test was permanently false. `Timeline.Live` now comes from
+     the projection, which is the only thing that actually knows.
+
+8. **`rules.Rule` grew `Why` and `Thresholds`, and `EvaluateTrace` was added.**
    UD20's catalogue needs the thresholds a predicate actually compares against,
    so they are the package constants themselves rather than re-typed literals.
    `Evaluate` and `EvaluateTrace` share one ranking function and a test asserts

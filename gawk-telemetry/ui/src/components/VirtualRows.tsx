@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import styles from './VirtualRows.module.css';
@@ -47,12 +47,15 @@ export function VirtualRows<T>({
   });
 
   const items = virtual.getVirtualItems();
-  const last = items[items.length - 1];
-  if (onEndReached && last && last.index >= rows.length - 5 && rows.length > 0) {
-    // Deferred out of render: calling a parent's setState synchronously during
-    // render is how a paging trigger becomes an infinite loop.
-    queueMicrotask(onEndReached);
-  }
+  const lastIndex = items.length ? items[items.length - 1].index : -1;
+  // The paging trigger fires from an EFFECT, not from the render body. Calling
+  // a parent's setState during render is how a "load more when you near the
+  // end" hook becomes a render loop; an effect runs after commit and only when
+  // the visible window actually moved.
+  useEffect(() => {
+    if (!onEndReached || rows.length === 0) return;
+    if (lastIndex >= rows.length - 5) onEndReached();
+  }, [onEndReached, lastIndex, rows.length]);
 
   return (
     <div

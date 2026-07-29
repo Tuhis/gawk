@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
 )
 
 // StreamInterval is how often the stream re-evaluates the projection. Matched
@@ -38,6 +40,25 @@ const StreamInterval = 2 * time.Second
 // browsers drop an idle stream; a comment frame is not an event and does not
 // reach the page's handler, so an idle fleet stays quiet AND stays connected.
 const StreamHeartbeat = 20 * time.Second
+
+// streamFingerprint hashes what a snapshot SAYS, ignoring when it said it.
+//
+// `Snapshot.AtMs` is a fresh clock reading on every call, so hashing the
+// marshalled response verbatim would make every tick look like a change — and
+// the change-only rule, which is the whole reason this endpoint exists rather
+// than the poll it replaces, would silently buy nothing. Zeroing the clock
+// before hashing is the difference between "only changes are sent" being a
+// property and being a comment.
+func streamFingerprint(snap live.Snapshot) [sha256.Size]byte {
+	snap.AtMs = 0
+	b, err := json.Marshal(snap)
+	if err != nil {
+		// Unhashable is treated as "changed": re-sending is wasteful, and
+		// sitting on a projection nobody can hash would be wrong.
+		return [sha256.Size]byte{}
+	}
+	return sha256.Sum256(b)
+}
 
 func (a *API) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
@@ -69,11 +90,12 @@ func (a *API) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 	var lastHash [sha256.Size]byte
 	lastSent := time.Now()
 	send := func(force bool) bool {
-		b, err := json.Marshal(a.LiveSnapshot())
+		snap := a.LiveSnapshot()
+		b, err := json.Marshal(snap)
 		if err != nil {
 			return true
 		}
-		sum := sha256.Sum256(b)
+		sum := streamFingerprint(snap)
 		if !force && sum == lastHash {
 			if time.Since(lastSent) < StreamHeartbeat {
 				return true

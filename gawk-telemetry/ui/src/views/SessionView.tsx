@@ -6,7 +6,7 @@ import {
   fetchDips,
   fetchSession,
 } from '../api/client.ts';
-import type { Comparison, DipReport, Report, Timeline } from '../api/types.ts';
+import type { Comparison, DipReport, FieldDoc, Report, Timeline } from '../api/types.ts';
 import { TimeChart, type Band, type Marker, type Series } from '../charts/TimeChart.tsx';
 import { AnnotationPanel } from '../components/Annotations.tsx';
 import { useAnnotations } from '../lib/useAnnotations.ts';
@@ -92,7 +92,11 @@ export function SessionView({ sessionId }: Props) {
   }, [sessionId, load]);
 
   // A live session keeps updating. Paused freezes it, like everything else.
-  const live = timeline && !timeline.endedAtMs;
+  //
+  // The server SAYS whether it is live; `endedAtMs` cannot answer it, because
+  // a session that supplies no end of its own gets the last receive time as
+  // one — so every session, open or finished, comes back with an end.
+  const live = timeline?.live ?? false;
   useEffect(() => {
     if (!live || paused) return;
     const id = setInterval(() => load(), REFRESH_MS);
@@ -310,17 +314,14 @@ interface ChartSpec {
  * role, so a field added to the Go tables could never appear here. The
  * catalogue says what a field IS; this arranges whatever it is given.
  */
-function buildCharts(
-  tl: Timeline,
-  fields: Array<{ name: string; unit?: string; semantic: string }>,
-): { charts: ChartSpec[]; hiddenBands: Band[] } {
+function buildCharts(tl: Timeline, fields: FieldDoc[]): { charts: ChartSpec[]; hiddenBands: Band[] } {
   const start = tl.startedAtMs ?? 0;
   const at = (p: Record<string, number>) => start + (p.tMs ?? 0);
   const byUnit = new Map<string, Series[]>();
 
   for (const name of tl.fields) {
     if (name === 'tMs') continue;
-    const doc = fieldDoc(fields as never, name);
+    const doc = fieldDoc(fields, name);
     const unit = doc?.unit ?? '';
     // A gap is a BREAK: a point where the field was absent contributes `null`,
     // which ECharts draws as a discontinuity rather than a glide to the next

@@ -163,6 +163,13 @@ export interface Timeline {
   toMs?: number;
   available?: string[];
   truncated?: boolean;
+  /**
+   * Whether the projection still holds this session open.
+   *
+   * Not inferable from `endedAtMs`: a session that supplies no end of its own
+   * gets the last receive time as one, so EVERY session comes back with an end.
+   */
+  live?: boolean;
 }
 
 export interface Delta {
