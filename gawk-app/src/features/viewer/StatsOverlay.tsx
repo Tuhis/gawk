@@ -156,6 +156,11 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Awaiting keyframe', String(stats?.framesDiscardedAwaitingKey ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],
         ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],
+        // R30 finding 4: patience for a straggling delta, tracking measured
+        // arrival jitter. Resyncs climbing while this sits at its floor is
+        // real loss; resyncs climbing while it is pinned at the ceiling means
+        // the link's reordering has outrun what live-edge can absorb.
+        ['Gap grace', stats?.deltaGapGraceMs == null ? '—' : `${fmtInt(stats.deltaGapGraceMs)} ms`],
         ['Loss-allowance skips', String(stats?.framesSkippedWithinAllowance ?? '—')],
         ['Reorder buffered', String(stats?.reorderBuffered ?? '—')],
         ['Last frame', stats?.timeSinceLastFrameMs == null ? '—' : `${fmtInt(stats.timeSinceLastFrameMs)} ms ago`],
