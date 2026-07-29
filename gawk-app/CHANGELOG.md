@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.38.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.38.1...gawk-app-v0.38.2) (2026-07-29)
+
+
+### Bug Fixes
+
+* **r30:** auto striping could not engage on the streams that need it, and is now on by default ([#199](https://github.com/Tuhis/gawk/issues/199)) ([c45f1bc](https://github.com/Tuhis/gawk/commit/c45f1bc11a54d0acd4064a799ecc4d0d08306491))
+
 ## [0.38.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.38.0...gawk-app-v0.38.1) (2026-07-29)
 
 
