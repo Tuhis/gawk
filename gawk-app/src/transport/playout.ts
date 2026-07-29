@@ -194,8 +194,21 @@ export function getPlayoutProfile(): PlayoutProfile {
   return getDeepBuffer() && dvrAck !== 'denied' ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
 }
 
+// The subset of a profile this controller actually reads: a clamp plus an
+// asymmetric slew. The tracker-geometry fields (`quantileRangeMs`,
+// `jitterWindowMs`) belong to whoever OWNS the estimator, not to a consumer of
+// its output — so a second consumer with no tracker of its own (the adaptive
+// delta-gap grace in reorder-buffer.ts, which reads the same
+// `arrivalJitterMs()` the offset does) can supply an envelope without
+// inventing values for two fields it would never use. `PlayoutProfile`
+// satisfies this structurally, so every existing call site is unchanged.
+export type SlewEnvelope = Pick<
+  PlayoutProfile,
+  'seedMs' | 'minMs' | 'maxMs' | 'slewUpMsPerS' | 'slewDownMsPerS' | 'stepUpAboveMs'
+>;
+
 export class PlayoutController {
-  private profile: () => PlayoutProfile;
+  private profile: () => SlewEnvelope;
   private current: number;
   private firstJitterAt: number | null = null;
   private lastUpdateAt: number | null = null;
@@ -203,7 +216,7 @@ export class PlayoutController {
 
   // The profile is a live getter so the module singleton follows the
   // resilient flag; tests may pass a fixed profile.
-  constructor(profile: PlayoutProfile | (() => PlayoutProfile) = DEFAULT_PLAYOUT_PROFILE) {
+  constructor(profile: SlewEnvelope | (() => SlewEnvelope) = DEFAULT_PLAYOUT_PROFILE) {
     this.profile = typeof profile === 'function' ? profile : () => profile;
     this.current = this.profile().seedMs;
   }

@@ -45,7 +45,14 @@ import { Reassembler, type ReassemblerStats } from './reassembler';
 import { timeOriginMs } from './time-sync';
 import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates';
 import type { AudioTapEvent, Fmp4MuxerStats } from './fmp4-muxer';
-import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
+import {
+  ReorderBuffer,
+  deltaGapGraceMs,
+  resetGraceController,
+  updateGraceController,
+  type ReleasedFrame,
+  type ReorderStats,
+} from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
 import {
   TYPE_AUDIO_CONFIG,
@@ -179,6 +186,12 @@ export interface ViewerStats extends ReassemblerStats {
   // is the allowance's whole story — skips are GOPs saved, resyncs are GOPs
   // lost.
   framesSkippedWithinAllowance: number;
+  // R30 finding 4: the live delta-gap grace, which now tracks measured arrival
+  // jitter instead of sitting at a per-connection constant. Reported because
+  // it is the only way to tell a resync that was a real loss from one the
+  // grace was simply too tight to absorb — and because it moves, which
+  // `DELTA_GAP_GRACE_MS` in a doc no longer tells you.
+  deltaGapGraceMs: number;
   reorderKeyframeWaitDrops: number;
   reorderBuffered: number;
   // R9 funnel + stall indicators (docs/13 D5): received → decoded → rendered.
@@ -1051,6 +1064,9 @@ export class ViewerPipeline {
     // and so is any adaptive offset learned against it.
     this.renderSink?.flush?.();
     resetPlayoutController();
+    // The grace reads the same estimator, so it re-seeds on the same signal:
+    // jitter measured against the dead timeline says nothing about the new one.
+    resetGraceController();
   }
 
   private handleDecoded(decoded: DecodedFrame): void {
@@ -1154,6 +1170,10 @@ export class ViewerPipeline {
     // R12 T3: the adaptive offset controller reads the same jitter estimate
     // the overlay shows (no-op outside adaptive mode).
     updatePlayoutController(arrivalJitterMs, now);
+    // R30 finding 4: and so does the adaptive delta-gap grace — the same
+    // number, a different consumer. Driven here rather than per-advance
+    // because arrivalJitterMs() takes a windowed quantile.
+    updateGraceController(arrivalJitterMs, now);
     const lats = this.decodeLatencies;
     this.decodeLatencies = [];
     let decodeJitterMs: number | null = null;
@@ -1218,6 +1238,7 @@ export class ViewerPipeline {
       frameHeight: this.lastFrameHeight,
       keyframeStreamsReceived: this.keyframeStreamsReceived,
       reorderGapResyncs: reorder?.gapResyncs ?? 0,
+      deltaGapGraceMs: deltaGapGraceMs(),
       framesSkippedWithinAllowance: reorder?.framesSkippedWithinAllowance ?? 0,
       reorderKeyframeWaitDrops: reorder?.keyframeWaitDrops ?? 0,
       reorderBuffered: reorder?.buffered ?? 0,

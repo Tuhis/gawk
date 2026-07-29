@@ -45,6 +45,7 @@ function fullStats(): ViewerStats {
     frameHeight: 1080,
     keyframeStreamsReceived: 12,
     reorderGapResyncs: 1,
+    deltaGapGraceMs: 154,
     reorderKeyframeWaitDrops: 0,
     reorderBuffered: 2,
     receivedFps: 30.2,
@@ -125,6 +126,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Video bitrate (recv)').nextSibling?.textContent).toBe('4.2 Mbps');
     expect(screen.getByText('Keyframe age').nextSibling?.textContent).toBe('210 ms');
     expect(screen.getByText('Live-edge drift').nextSibling?.textContent).toBe('42 ms');
+    expect(screen.getByText('Gap grace').nextSibling?.textContent).toBe('154 ms');
     expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('384 ms');
     expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('8.4 ms');
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');

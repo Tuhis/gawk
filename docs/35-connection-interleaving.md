@@ -812,6 +812,107 @@ pod **per broadcast key** (the shared statsKey makes keys comparable across
 pods), scopes the edge/R18 checks to the loadgen broadcast, and reads the
 stripe engagement proof from pod TOTALS, where the expiry fold now keeps it.
 
+### Finding 4 — the reorder buffer's delta-gap grace was sized per connection, and striping made it a per-fleet-of-connections number (2026-07-29)
+
+Found in production telemetry, not in CI: a live Firefox 154 viewer
+(`b285262c…`) on a striped broadcast logged **924 gap resyncs in ~16 minutes,
+about one per second**, while losing almost nothing. The relay's own counters
+put ingress loss at 0 and this subscriber's striped chunk loss at 0.06 %;
+`framesDroppedIncomplete` was 142 of ~26,800 frames (0.5 %), and
+`parityRecoveryFailures` was 0. Yet the funnel read `receivedFps 30 →
+decoderFps 12 → renderedFps 6`. The reassembler was completing essentially
+every frame the broadcaster sent and the reorder buffer was throwing most of
+them away.
+
+`decoderQueueDepth` was 0 in 322 of 353 samples (max 7 against a limit of 10),
+which rules out the obvious reading: the decoder was **starved**, not choking,
+so the resyncs caused the low decode rate rather than the reverse.
+
+The mechanism is `DELTA_GAP_GRACE_MS`. At 60 ms it is a per-**connection**
+constant — "a couple of frame intervals", correct while a frame's datagrams
+arrived back-to-back on one QUIC connection, where a chunk still outstanding
+past the grace really was lost. Striping spreads each frame across N legs
+whose mutual skew becomes per-frame completion jitter, and this session's
+measured arrival jitter (p95 − min, the number the playout offset already
+reads) was **101 ms median, 268 ms p95** — above the grace in 77 % of samples.
+The dose-response steps exactly at the threshold:
+
+| arrival jitter | resyncs/s | received → decoded → rendered fps |
+|---|---|---|
+| < 40 ms | 0.20 | 31.9 → 31.3 → 29.6 |
+| 40–60 ms | 0.28 | 33.6 → 32.9 → 28.3 |
+| 60–90 ms | **1.02** | 30.2 → 27.3 → 23.6 |
+| 90–150 ms | 1.04 | 28.6 → 24.1 → 21.0 |
+| > 150 ms | 1.61 | 27.3 → 15.5 → 11.9 |
+
+and the session confirms it against itself: in its last two minutes jitter
+fell to 16–26 ms and the resync rate collapsed to 0.11/s. Finding 2 caught the
+*accounting* consequence of leg skew and fixed it; this is the *policy*
+consequence, which no test caught because it degrades quality rather than
+failing.
+
+The same session is also why "just turn striping off" is not the answer, and
+the counter-experiment is recorded here so it is not re-run: with
+`stripeActive: 0` the viewer's large-frame chunk loss went to a steady
+**5.0–5.2 %** against ~0 % on small frames — R30's exact burst shape — with
+`parityInsufficient` 86 against `framesDroppedIncomplete` 87, i.e. every lost
+frame held parity that could not cover its erasure burst. Six sessions of
+17–49 s each, all reconnecting, against 27 unbroken minutes striped. Striping
+is doing its job; the grace had simply not been told.
+
+Fixed test-first (`reorder-grace.test.ts`; red showed the grace pinned at 60
+and a 100 ms straggler forcing a resync): **the live-edge grace now tracks the
+arrival jitter the buffer already measures**, clamped to
+`[DELTA_GAP_GRACE_MS, MAX_DELTA_GAP_GRACE_MS]` = `[60, 250]`.
+
+What makes jitter the right input — and a larger constant the wrong fix — is
+that it separates the two failure modes with no extra signal. A **late** frame
+arrives, so it inflates p95 and buys itself patience; a **lost** frame never
+arrives, contributes nothing to the estimate, and leaves the grace at its
+floor to freeze fast. A bigger constant would buy the striped path patience by
+making a genuinely lossy path slower to resync; this does not. Both halves are
+asserted.
+
+Details worth not re-deriving:
+
+- The ceiling is **`RESILIENT_DELTA_GAP_GRACE_MS`'s 250 ms**, not a fresh
+  guess — already shipped and measured, far under `KEYFRAME_WAIT_MS` (so a
+  widened grace can never age deltas out before their keyframe, docs/14's
+  keyframe-only 2 fps failure from the other direction) and ~8 frames against
+  the 64-frame `MAX_BUFFERED_FRAMES`. The 3748 ms jitter outlier this session
+  logged is exactly why an unclamped version would be dangerous.
+- Seed and floor are both the shipped 60 ms, so an unwarmed viewer — and any
+  link whose jitter fits inside the old constant — is **byte-identical**.
+- The controller is `PlayoutController`, reused rather than reimplemented. Its
+  declared dependency narrowed from `PlayoutProfile` to a new `SlewEnvelope`
+  (`Pick` of the six fields it actually reads), because the two
+  tracker-geometry fields belong to whoever *owns* the estimator, not to a
+  second consumer of its output. `PlayoutProfile` satisfies it structurally,
+  so no existing call site changed.
+- **Up steps, down slews.** Unlike the playout offset, grace is *patience, not
+  delay*: raising it changes nothing about when an on-time frame is presented,
+  so a step up is invisible where a stepped offset would be a skip — while
+  under-patience costs a visible freeze now. Rises over 50 ms are taken at
+  once (`RESILIENT_PLAYOUT_PROFILE`'s reasoning, with none of its cost); small
+  wobble still slews, and **down is never stepped** and stays dwell-gated, or
+  patience collapses on the first clean second and the freeze cycle restarts.
+- **Resilient/DVR keeps its constant.** Those deltas ride reliable carriers, so
+  a hole there means something other than skew.
+- Driven from the pipeline's stats tick beside `updatePlayoutController`, not
+  per advance — `arrivalJitterMs()` takes a windowed quantile — and reset on
+  the broadcaster-restart signal for the same reason the offset is: jitter
+  measured against a dead timeline says nothing about the new one.
+- New `ViewerStats.deltaGapGraceMs` + overlay **Gap grace** row, because the
+  number now moves: resyncs climbing while it sits at its floor is real loss,
+  resyncs climbing while it is pinned at the ceiling means the link's
+  reordering has outrun what live-edge can absorb. Telemetry picks it up
+  through D15's tolerant payload with no service change.
+
+Not addressed here, and deliberately: this cuts the freezes but leaves the
+catch-up burst behind each one, because live-edge presents on decode. Paced
+playback is what turns that burst into even output — the same session rendered
+32 fps paced against 20 fps unpaced. The two are complementary.
+
 ---
 
 ## 13. Manual runbook — the owner-run remainder (ST1 + ST7)
