@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.38.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.37.2...gawk-app-v0.38.0) (2026-07-29)
+
+
+### Features
+
+* **r30:** large-frame e2e fixture + striped browser passes; fix recovery-raced phantom frames ([#194](https://github.com/Tuhis/gawk/issues/194)) ([d135f74](https://github.com/Tuhis/gawk/commit/d135f7438e49cfe2881c727cc566ba73eb9ebecd))
+* **r30:** striped delivery — ST2–ST6 (wire, relay legs, viewer transport, controller, observability) ([#191](https://github.com/Tuhis/gawk/issues/191)) ([bf8db99](https://github.com/Tuhis/gawk/commit/bf8db99d901e8b4e47c69c8283b9f1bbfface44e))
+
 ## [0.37.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.37.1...gawk-app-v0.37.2) (2026-07-28)
 
 

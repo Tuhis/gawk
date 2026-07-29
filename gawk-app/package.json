@@ -2,7 +2,7 @@
   "name": "gawk-app",
   "private": true,
   "license": "UNLICENSED",
-  "version": "0.37.2",
+  "version": "0.38.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
