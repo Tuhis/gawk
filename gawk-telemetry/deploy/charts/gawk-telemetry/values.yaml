@@ -59,7 +59,13 @@ config:
   # How long RAW sessions are kept. Rollups are never pruned regardless — that
   # split is the whole point of the design (D4): raw is disposable, the
   # per-session summary is permanent.
-  retentionDays: 14
+  #
+  # 30 days, raised from 14 by owner decision (R31 UD15). The trade-off it buys:
+  # a release cycle fits inside the raw window, so "compare this session to one
+  # from before the R30 change" stays answerable at FULL resolution instead of
+  # degrading to rollup-only. ~160 MB at current volume — size the PVC below
+  # accordingly if your fleet is busier than the homelab's.
+  retentionDays: 30
   # How often each relay pod's /statusz is polled. Sessions shorter than this
   # have no relay-side view at all, and their rollups honestly say
   # relayCoverage "none" rather than pretending (D5).
@@ -79,10 +85,18 @@ config:
   # The MCP endpoint on the read listener. On by default: it is the item's
   # primary read surface.
   mcp: true
-  # The DuckDB passthrough tool. OFF by default (D11): DuckDB is a query
-  # option, not a runtime dependency, and arbitrary SQL on an ops surface
-  # should be a deliberate act.
-  querySql: false
+  # The ad-hoc SQL surface — the console at #/sql and the MCP `query_sql` tool.
+  #
+  # ON by default (R31 UD18), reversing D11's posture. Two things this does NOT
+  # mean, both worth knowing before you turn it off:
+  #
+  #   * It is not a public surface. Like everything else on the read listener it
+  #     is never routed publicly (D14), and it is read-only — the engine refuses
+  #     anything that is not a SELECT and friends.
+  #   * It is not what decides whether a query can be ANSWERED. That is the
+  #     build: the shipped image is compiled `-tags duckdb`, while a binary
+  #     built from a fresh clone has no engine and says so (docs/36 §8 Q1).
+  querySql: true
   # Ingest rate limiting, in two tiers. No client IP is ever consulted or
   # stored (D8): every browser reaches this through the frontend Ingress, so a
   # per-IP bucket would be fleet-wide anyway — just wearing a misleading name.

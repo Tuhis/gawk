@@ -132,8 +132,43 @@ func TrimSample(s Sample, field string, counters []string) Sample {
 // that "half of it" is noise. Absent is the honest answer there; a zeroed
 // Episodes would claim a measurement that did not happen.
 func DetectEpisodes(samples []Sample, field string, counters []string) *Episodes {
+	ep, _ := DetectEpisodeSpans(samples, field, counters)
+	return ep
+}
+
+// Span is ONE dip, with its own window and its own counter deltas.
+//
+// The permanent row carries the aggregate (Episodes) because that is what a
+// verdict is computed from and what must survive the raw prune. A span is the
+// other half — "click this dip and see what moved inside IT" (docs/36 TH9/UD21)
+// — and it is deliberately NOT stored: it is only answerable while the samples
+// exist, and writing a derived per-episode array onto a permanent artifact
+// would grow the one file that is never pruned to say something the raw window
+// already says better.
+type Span struct {
+	// StartMs/EndMs are client-relative tMs, the same clock the samples use.
+	// The caller adds the session's start to place them absolutely (UD5).
+	StartMs    float64 `json:"startMs"`
+	EndMs      float64 `json:"endMs"`
+	DurationMs float64 `json:"durationMs"`
+	WorstValue float64 `json:"worstValue"`
+	Baseline   float64 `json:"baseline"`
+	// Deltas are how far each counter advanced across THIS episode, measured
+	// from the last sample before it so the onset is included.
+	Deltas map[string]float64 `json:"deltas,omitempty"`
+	// Before/After are the counters' raw readings at those two instants. The
+	// delta alone is "keyframe drops went up by 7"; these are what let the UI
+	// say "0 → 7", which is the difference between a number and a story.
+	Before map[string]float64 `json:"before,omitempty"`
+	After  map[string]float64 `json:"after,omitempty"`
+}
+
+// DetectEpisodeSpans is DetectEpisodes plus the per-episode detail. One
+// detection, two projections — so a dip the verdict counted and a dip the UI
+// explains can never be different dips.
+func DetectEpisodeSpans(samples []Sample, field string, counters []string) (*Episodes, []Span) {
 	if len(samples) < 2 {
-		return nil
+		return nil, nil
 	}
 	// schema.Number rejects non-finite values outright, so anything collected
 	// here is a real reading — no NaN can reach the baseline or a comparison.
@@ -144,17 +179,18 @@ func DetectEpisodes(samples []Sample, field string, counters []string) *Episodes
 		}
 	}
 	if len(values) < 2 {
-		return nil
+		return nil, nil
 	}
 	sorted := append([]float64(nil), values...)
 	sort.Float64s(sorted)
 	baseline := quantile(sorted, 0.50)
 	if baseline < MinBaselineFps {
-		return nil
+		return nil, nil
 	}
 	threshold := baseline * DipRatio
 
 	ep := &Episodes{Baseline: baseline, WorstValue: math.Inf(1)}
+	var spans []Span
 	var windowMs float64
 	// runStart is the index of the first sample of the episode in progress.
 	// runWorst is tracked PER RUN rather than globally, so a run the guard
@@ -201,6 +237,10 @@ func DetectEpisodes(samples []Sample, field string, counters []string) *Episodes
 		if base < 0 {
 			base = 0
 		}
+		span := Span{
+			StartMs: samples[runStart].TMs, EndMs: samples[end].TMs,
+			DurationMs: runMs, WorstValue: runWorst, Baseline: baseline,
+		}
 		for _, c := range counters {
 			from, okFrom := schema.Number(samples[base].Stats, c)
 			to, okTo := schema.Number(samples[end].Stats, c)
@@ -211,7 +251,13 @@ func DetectEpisodes(samples []Sample, field string, counters []string) *Episodes
 				ep.Deltas = map[string]float64{}
 			}
 			ep.Deltas[c] += to - from
+			if span.Deltas == nil {
+				span.Deltas, span.Before, span.After = map[string]float64{}, map[string]float64{}, map[string]float64{}
+			}
+			span.Deltas[c] = to - from
+			span.Before[c], span.After[c] = from, to
 		}
+		spans = append(spans, span)
 		runStart, runMs = -1, 0
 	}
 
@@ -256,7 +302,7 @@ func DetectEpisodes(samples []Sample, field string, counters []string) *Episodes
 	// A zero-count result is returned, not discarded: "we looked and the stream
 	// was steady" is evidence, and "we could not look" is not. Only the guards
 	// above return nil, and they are the cases where no judgement was possible.
-	return ep
+	return ep, spans
 }
 
 // Facts renders an Episodes into the fact names the rules read.

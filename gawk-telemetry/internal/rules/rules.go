@@ -267,6 +267,199 @@ type Rule struct {
 	Action string
 	// Eval returns the finding, or nil if the rule did not fire.
 	Eval func(f *Facts) *Finding
+
+	// --- UD20: read-only transparency (docs/36 TH6) -----------------------
+	//
+	// A rule's thresholds and reasoning were previously legible only by reading
+	// this package. The catalogue makes them a surface — read-only, because a
+	// stored verdict was computed under the thresholds of ITS day, and an
+	// editable threshold would make history and live disagree unless every
+	// verdict recorded the config it ran under.
+
+	// Why is one paragraph on what this rule is looking for and why that
+	// signature means what it claims. Written for the operator reading the
+	// catalogue at 21:00, not for a reviewer of this file.
+	Why string
+	// Thresholds are the constants the predicate actually compares against.
+	// They MUST be the package constants themselves, never re-typed literals:
+	// a second copy is exactly the drift D15 names, and here it would put a
+	// number on screen that no verdict was ever computed with.
+	Thresholds []Threshold
+}
+
+// Threshold is one named constant a rule compares against.
+type Threshold struct {
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit,omitempty"`
+	Note  string  `json:"note,omitempty"`
+}
+
+// RuleDoc is one catalogue entry — a Rule without its closure, so it can be
+// serialized.
+type RuleDoc struct {
+	ID       string   `json:"id"`
+	Scope    string   `json:"scope"`
+	Verdict  string   `json:"verdict"`
+	Action   string   `json:"action,omitempty"`
+	Why      string   `json:"why,omitempty"`
+	Requires []string `json:"requires"`
+	// Provenance is which sides this rule's inputs come from, derived from
+	// Requires rather than declared — so it cannot disagree with what the rule
+	// actually reads. A rule with no relay input has its confidence capped
+	// (D7), and the catalogue says so before anyone has to wonder.
+	Provenance []string    `json:"provenance"`
+	Thresholds []Threshold `json:"thresholds,omitempty"`
+	// ClientOnly repeats D7's cap explicitly: this rule can never claim more
+	// than clientOnlyConfidenceCap, because no relay number can corroborate it.
+	ClientOnly bool `json:"clientOnly"`
+	// MaxConfidence is that cap as a number.
+	MaxConfidence float64 `json:"maxConfidence"`
+}
+
+// Catalogue renders the playbook as documentation (UD20).
+func Catalogue(rs []Rule) []RuleDoc {
+	out := make([]RuleDoc, 0, len(rs))
+	for _, r := range rs {
+		doc := RuleDoc{
+			ID: r.ID, Scope: r.Scope, Verdict: r.Verdict, Action: r.Action,
+			Why: r.Why, Requires: r.Requires, Thresholds: r.Thresholds,
+			MaxConfidence: 1,
+		}
+		if doc.Requires == nil {
+			doc.Requires = []string{}
+		}
+		sides := map[string]bool{}
+		for _, sig := range r.Requires {
+			if side, _, ok := splitSignal(sig); ok {
+				sides[side] = true
+			}
+		}
+		for _, side := range []string{"relay", "client", "fleet", "text"} {
+			if sides[side] {
+				doc.Provenance = append(doc.Provenance, side)
+			}
+		}
+		if doc.Provenance == nil {
+			doc.Provenance = []string{}
+		}
+		// A rule that requires no relay signal cannot produce relay-anchored
+		// evidence, so capConfidence will always cap it. Stating that here is
+		// what turns "why is this only 0.6?" from a mystery into a rule.
+		if !sides["relay"] {
+			doc.ClientOnly = true
+			doc.MaxConfidence = clientOnlyConfidenceCap
+		}
+		out = append(out, doc)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// Trace is what one rule did on one subject (UD20's per-session trace).
+type Trace struct {
+	ID    string `json:"id"`
+	Scope string `json:"scope"`
+	// Outcome is fired | passed | unavailable | out-of-scope.
+	Outcome string `json:"outcome"`
+	// Read is every REQUIRED signal's value as the rule saw it. This is what
+	// makes a non-firing rule explicable in terms of numbers rather than in
+	// terms of trust — TH6's criterion, and the mitigation for the standing
+	// risk that one engine is now wrong in more places at once.
+	Read     map[string]float64 `json:"read,omitempty"`
+	ReadText map[string]string  `json:"readText,omitempty"`
+	Missing  []string           `json:"missing,omitempty"`
+	// Severity is set when the rule fired.
+	Severity Severity `json:"severity,omitempty"`
+}
+
+// EvaluateTrace is Evaluate plus a per-rule account of what happened.
+//
+// It runs the SAME loop rather than a parallel one: a trace produced by a
+// second implementation would eventually explain a verdict the engine did not
+// reach, which is worse than no trace at all.
+func EvaluateTrace(f *Facts, rs []Rule) (Report, []Trace) {
+	traces := make([]Trace, 0, len(rs))
+	rep := Report{Subject: f.Subject, Scope: f.Scope, Caveats: f.Caveats}
+	for _, r := range rs {
+		t := Trace{ID: r.ID, Scope: r.Scope}
+		if !scopeMatches(r.Scope, f) {
+			t.Outcome = "out-of-scope"
+			traces = append(traces, t)
+			continue
+		}
+		t.Read, t.ReadText = f.readAll(r.Requires)
+		var missing []string
+		for _, sig := range r.Requires {
+			if !f.has(sig) {
+				missing = append(missing, sig)
+			}
+		}
+		if len(missing) > 0 {
+			rep.Unavailable = append(rep.Unavailable, Missing{ID: r.ID, Signals: missing})
+			t.Outcome, t.Missing = "unavailable", missing
+			traces = append(traces, t)
+			continue
+		}
+		finding := r.Eval(f)
+		if finding == nil {
+			rep.Passed = append(rep.Passed, r.ID)
+			t.Outcome = "passed"
+			traces = append(traces, t)
+			continue
+		}
+		finding.ID = r.ID
+		if finding.Verdict == "" {
+			finding.Verdict = r.Verdict
+		}
+		if finding.Action == "" {
+			finding.Action = r.Action
+		}
+		finding.Confidence = capConfidence(finding.Confidence, finding.Evidence)
+		rep.Findings = append(rep.Findings, *finding)
+		t.Outcome, t.Severity = "fired", finding.Severity
+		traces = append(traces, t)
+	}
+	rankReport(&rep)
+	sort.Slice(traces, func(i, j int) bool { return traces[i].ID < traces[j].ID })
+	return rep, traces
+}
+
+// readAll snapshots the values behind a rule's required signals.
+func (f *Facts) readAll(requires []string) (map[string]float64, map[string]string) {
+	var nums map[string]float64
+	var texts map[string]string
+	for _, sig := range requires {
+		side, name, ok := splitSignal(sig)
+		if !ok {
+			continue
+		}
+		if side == "text" {
+			if v, present := f.text[name]; present {
+				if texts == nil {
+					texts = map[string]string{}
+				}
+				texts[sig] = v
+			}
+			continue
+		}
+		var m map[string]float64
+		switch side {
+		case "relay":
+			m = f.relay
+		case "client":
+			m = f.client
+		case "fleet":
+			m = f.fleet
+		}
+		if v, present := m[name]; present {
+			if nums == nil {
+				nums = map[string]float64{}
+			}
+			nums[sig] = v
+		}
+	}
+	return nums, texts
 }
 
 // Evaluate runs the rule set over one subject and ranks the result.
@@ -302,6 +495,17 @@ func Evaluate(f *Facts, rs []Rule) Report {
 		rep.Findings = append(rep.Findings, *finding)
 	}
 
+	rankReport(&rep)
+	return rep
+}
+
+// rankReport is the ordering and the positive verdict, shared by Evaluate and
+// EvaluateTrace.
+//
+// Extracted rather than duplicated because the two must produce IDENTICAL
+// reports: a trace that explained a verdict the engine did not reach would be
+// worse than no trace, and a test pins the two together.
+func rankReport(rep *Report) {
 	// Worst first, then by confidence: an operator reads top-down and must hit
 	// the thing most worth acting on.
 	sort.SliceStable(rep.Findings, func(i, j int) bool {
@@ -319,7 +523,6 @@ func Evaluate(f *Facts, rs []Rule) Report {
 	// analysis that never ran — which `Unavailable` right beside it makes
 	// explicit.
 	rep.Healthy = len(rep.Findings) == 0
-	return rep
 }
 
 // capConfidence enforces D7: a finding resting ONLY on client-reported

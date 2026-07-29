@@ -5,8 +5,17 @@
 #
 #   docker build -f gawk-telemetry/deploy/Dockerfile -t gawk-telemetry:dev .
 #
-# Nothing cgo is involved: DuckDB is a query OPTION, not a runtime dependency
-# (D11), which is exactly what keeps this a static distroless image.
+# **This image is cgo, and deliberately so** (R31 UD18, docs/36 §8 Q1). The
+# owner's decision was a SQL console on by default; every usable Go DuckDB
+# driver is cgo, so the deployed image pays for it — `-tags duckdb`,
+# CGO_ENABLED=1, and `distroless/base` instead of `distroless/static` because
+# the binary now needs a libc.
+#
+# What did NOT change is the property that decision threatened: `go build ./...`
+# on a fresh clone is still cgo-free and still needs no C toolchain. The engine
+# lives behind the build tag, and a binary without it says plainly that this
+# deployment has no engine rather than rendering a broken editor. So the cost is
+# paid once, here, by the thing that is actually deployed.
 
 # The dashboard is a React SPA (ui/) whose build output is embedded into the Go
 # binary. It is built FIRST and in its own stage so the Go build never depends
@@ -35,10 +44,14 @@ COPY --from=ui /internal/dashboard/dist/ ./gawk-telemetry/internal/dashboard/dis
 WORKDIR /src/gawk-telemetry
 RUN go mod download
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+# -tags duckdb selects internal/sqlengine's real engine (the untagged build gets
+# the stub). CGO_ENABLED=1 follows from the driver, not from a preference.
+RUN CGO_ENABLED=1 go build -tags duckdb -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/gawk-telemetry ./cmd/gawk-telemetry
 
-FROM gcr.io/distroless/static-debian12:nonroot
+# `base`, not `static`: a cgo binary needs a libc. Still distroless, still
+# nonroot, still no shell.
+FROM gcr.io/distroless/base-debian12:nonroot
 COPY --from=build /out/gawk-telemetry /gawk-telemetry
 # 8080 is the PUBLIC ingest listener; 8081 is the read listener (dashboard,
 # read API, MCP) and must never be routed publicly — D14.

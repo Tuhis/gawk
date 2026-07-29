@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -87,6 +88,12 @@ type Store struct {
 	nowFn    func() time.Time
 	closed   bool
 	onOrphan func(SessionRef, [][]byte)
+
+	// sessionReads counts ReadSession calls. Atomic rather than under `mu`
+	// because it is observed from tests while the store is otherwise busy, and
+	// a counter that needed the write lock to be read would change the timing
+	// of the thing it measures.
+	sessionReads atomic.Uint64
 }
 
 // claim reserves a path for an exclusive operation (the orphan sweep's
@@ -529,12 +536,23 @@ func (s *Store) Prune(before time.Time) (int, error) {
 	return removed, nil
 }
 
+// SessionReads counts how many times a session file has been opened for
+// reading.
+//
+// It exists for one assertion R31 has to be able to make (docs/36 TH2): **the
+// live fleet page never reads a session file.** `internal/live`'s whole stance
+// — disk is for history — is a per-poll cost claim over every session on the
+// fleet, and the moment a UI change makes /live open one file per broadcast
+// nothing in the system would notice. A counter makes it noticeable.
+func (s *Store) SessionReads() uint64 { return s.sessionReads.Load() }
+
 // ReadSession returns a session's stored lines, transparently handling the
 // plain (live) and gzipped (finalized) forms.
 func (s *Store) ReadSession(r SessionRef) ([][]byte, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
+	s.sessionReads.Add(1)
 	// Flush anything buffered for this session so a read during a live session
 	// sees what has been appended.
 	s.mu.Lock()
@@ -682,6 +700,38 @@ func (s *Store) ReadRelay(date string) ([][]byte, error) {
 	}
 	return out, nil
 }
+
+// RollupDates lists the date partitions that HAVE a rollup file, sorted
+// oldest-first. Rollups are permanent, so this is the true left edge of what
+// the service can answer at all — which is a different fact from the raw
+// retention boundary, and a history view that conflates the two says "nothing
+// happened" where it means "I was not running yet" (UD10).
+func (s *Store) RollupDates() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.root, rollupsDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".ndjson") {
+			continue
+		}
+		date := strings.TrimSuffix(e.Name(), ".ndjson")
+		if datePartRe.MatchString("date=" + date) {
+			out = append(out, date)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// SessionDates lists the date partitions that still hold RAW session files,
+// sorted oldest-first. The complement of RollupDates: what the prune loop has
+// not yet taken.
+func (s *Store) SessionDates() ([]string, error) { return s.dates(sessionsDir) }
 
 // dates lists the date partitions under one top-level directory, sorted.
 func (s *Store) dates(dir string) ([]string, error) {
