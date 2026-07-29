@@ -498,3 +498,70 @@ func benchmarkFanOut(b *testing.B, striped bool) {
 		p.HandleDatagram(dgram)
 	}
 }
+
+// docs/35 §12 finding 3: counters must survive their owner's deletion
+// (CODE-REVIEW), and the hub-expiry fold predated both R29 and R30 — a
+// lingered-out edge hub took its parity AND stripe counters with it, which
+// is exactly how the first e2e-cluster dispatch showed zero stripe
+// engagement on a fleet where the striped pass had demonstrably run (the
+// striped viewer's serving hub was a viewerless edge that lingered out
+// before cluster-assert read /statusz). A fleet total that DROPS on hub
+// expiry is also a Prometheus counter going backwards.
+func TestExpiryKeepsStripeAndParityTotals(t *testing.T) {
+	r := NewRegistry(discardLog, Options{ParityDefault: 2, StripedDelivery: true, BroadcastGrace: time.Minute})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	primary, err := r.SubscribeParity(id, &fakeSender{}, 2)
+	if err != nil {
+		t.Fatalf("SubscribeParity: %v", err)
+	}
+	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0}, 0)
+	if err != nil {
+		t.Fatalf("SubscribeStripeLeg: %v", err)
+	}
+	// Stripe activity first: engage, fan a delta + parity (both withheld
+	// from the striped primary; the parity is also k-suppressed for the k=0
+	// leg), release. Then parity activity the primary actually RECEIVES, so
+	// forwarded and egress-byte counters are non-zero too. Closing the
+	// subscribers flushes their drains and folds their egress into the hub
+	// while it is still alive — the lingered-edge shape.
+	primary.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 2})
+	p.HandleDatagram(chunkDgram(t, false, 7, 0, 2, "aa"))
+	p.HandleDatagram(parityDgramN(t, 7, 0, 2))
+	primary.ApplyStripeState(wire.StripeState{})
+	p.HandleDatagram(chunkDgram(t, false, 8, 0, 2, "bb"))
+	p.HandleDatagram(parityDgramN(t, 8, 0, 2))
+	primary.Close()
+	leg.Close()
+
+	before := r.Stats().Totals
+	if before.StripeTransitions == 0 || before.StripeSuppressedDatagrams == 0 ||
+		before.ParityDatagramsForwarded == 0 || before.ParitySuppressed == 0 ||
+		before.EgressParityBytes == 0 {
+		t.Fatalf("test setup produced no counters: %+v", before)
+	}
+
+	// The publisher goes away and the hub is force-expired (EndBroadcast is
+	// the janitor's path — same effect as the edge linger-out).
+	p.Close()
+	r.EndBroadcast(id)
+
+	after := r.Stats().Totals
+	if after.StripeTransitions < before.StripeTransitions {
+		t.Errorf("StripeTransitions dropped across expiry: %d -> %d", before.StripeTransitions, after.StripeTransitions)
+	}
+	if after.StripeSuppressedDatagrams < before.StripeSuppressedDatagrams {
+		t.Errorf("StripeSuppressedDatagrams dropped across expiry: %d -> %d", before.StripeSuppressedDatagrams, after.StripeSuppressedDatagrams)
+	}
+	if after.ParityDatagramsForwarded < before.ParityDatagramsForwarded {
+		t.Errorf("ParityDatagramsForwarded dropped across expiry: %d -> %d", before.ParityDatagramsForwarded, after.ParityDatagramsForwarded)
+	}
+	if after.ParitySuppressed < before.ParitySuppressed {
+		t.Errorf("ParitySuppressed dropped across expiry: %d -> %d", before.ParitySuppressed, after.ParitySuppressed)
+	}
+	if after.EgressParityBytes < before.EgressParityBytes {
+		t.Errorf("EgressParityBytes dropped across expiry: %d -> %d", before.EgressParityBytes, after.EgressParityBytes)
+	}
+}
