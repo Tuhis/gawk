@@ -12,6 +12,89 @@ stored, and in most cases already served.
 
 ---
 
+## 0. Orientation — start here
+
+### 0.1 Reading order
+
+1. [`docs/33`](33-telemetry-and-diagnostics.md) **§4.6** (read API) and **§4.8**
+   (the dashboard) — what exists and *why it is shaped that way*. §8 names the
+   standing risks this item inherits.
+2. [`CODE-REVIEW.md`](../CODE-REVIEW.md) — **bug fixes are test-first, always.**
+   Two of this item's chunks (TH1's dead permalink, TH2's deleted history
+   layer) are fixes, not features, and the failing test comes first.
+3. [`gawk-telemetry/README.md`](../gawk-telemetry/README.md) — the dev loop.
+   **Do not iterate on the UI through commit → PR → release → deploy**; the
+   README's recipe points a Vite dev server at a *real* deployed backend
+   through a port-forward, with the basic-auth header injected by the proxy.
+   Vite binds IPv6 first, so use `http://localhost:5174` — `127.0.0.1` is
+   refused.
+4. This document.
+
+### 0.2 A numbering trap
+
+**This document has its own D1–D22, and docs/33 has its own D1–D17. They
+collide.** Every reference to an R28 decision here is written
+**`R28 D<n>`**; a bare `D<n>` always means *this* document. When in doubt,
+check which list the sentence is arguing from — e.g. `R28 D10` is the 32 KB
+context ceiling, while this document's D10 is "absence is never green".
+
+### 0.3 The UI as it stands, and its fate
+
+`gawk-telemetry/ui/src/` — ~1 270 lines of TypeScript excluding tests. What
+each file is and what R31 does to it:
+
+| File | Today | Under R31 |
+|---|---|---|
+| `App.tsx` | The whole page: header, live group, ended group | Becomes the Live *section* behind TH1's router |
+| `api/client.ts` | `fetchLive`, `resolveCode`, `probeResolve`. **All paths relative** — deliberate, so it works on `/`, on a port-forward and under an Ingress sub-path | Grows the historical endpoints; keep the relative-path rule |
+| `api/types.ts` | Hand-written mirror of the Go types. Its header states the rule that matters: **absent and zero are different claims** | Extends; the rule is load-bearing for every new chart |
+| `components/TimelineChart.tsx` | 228 lines of hand-rolled SVG | **Replaced** by the ECharts wrapper (D11) — but its two behaviours must survive: gaps drawn as breaks (D9) and a fixed viewBox so nothing reflows as values tick |
+| `components/SessionTimeline.tsx` | Two hard-coded chart pairs, per role | Superseded by TH2 + TH5 |
+| `components/SessionTable.tsx` | The dense row table | The model for TH3's list; gains virtualization (D12) |
+| `components/BroadcastCard.tsx` | Live card, renders `finding.verdict` only | Gains TH6's evidence drill-down |
+| `components/FindStream.tsx` | Code → obfuscated key | Extends to scope TH3 |
+| `components/SeverityBadge.tsx`, `lib/severity.ts`, `lib/format.ts` | Severity model + formatters | Keep; `format.ts` gains absolute-time helpers (D5) |
+| `lib/history.ts` | Client-side timeline accumulation | **Deleted** — see §1.1 |
+| `state/liveStore.ts` | The 2 s poll loop | Becomes SSE-fed with the poll as fallback (D22) |
+| `state/uiStore.ts` | Card / timeline expansion state | Largely subsumed by URL state (TH1) |
+
+### 0.4 Gates, and two traps in them
+
+```sh
+cd gawk-telemetry/ui && npm ci && npm run lint && npm test && npm run build
+cd gawk-telemetry   && go build ./... && go vet ./... && go test -race ./...
+```
+
+- **`npm run build` is the only real typecheck.** The root tsconfig is
+  solution-style, so a bare `tsc --noEmit` passes *vacuously*, and vitest
+  strips types rather than checking them. A change that only ran `npm test` has
+  not been typechecked.
+- **The no-external-fetch tests skip unless the bundle is built.**
+  `TestNoExternalAssetReferences` / `TestServesTheEmbeddedPage` live in
+  `internal/dashboard/` but assert against `dist/`, which the Go job never
+  builds — so in CI they run in the **`telemetry-ui`** job, after `npm run
+  build`, and *skip by design* in the `telemetry` job. Running
+  `go test ./internal/dashboard/` locally without building the UI first will
+  show green while proving nothing. **This is the test that guards D11's
+  bundling decision**, so it is the one to run deliberately after adding
+  ECharts.
+- `go build` never depends on npm: `dist/` carries one committed `README.md` so
+  `//go:embed dist` always compiles, and a binary built without the bundle
+  serves a short "UI not built" page with its API and MCP unaffected. Asset
+  filenames are **stable, not content-hashed**, because the page is served
+  `no-store`.
+
+### 0.5 Chunk dependencies
+
+TH1 blocks everything (it is the router and the URL state every other view
+stores itself in). Otherwise: TH9 needs TH4's timeline and TH6's verdict
+surface; TH5's field catalogue improves TH2 and TH4 but does not block them;
+TH11's criteria bind each surface **as it ships**, rather than landing at the
+end. TH2 reads the same stored timeline TH5 plots, so build the fetch layer
+once.
+
+---
+
 ## 1. Why now
 
 R28 built a store and a query surface, and then wired a **live-only** page to
@@ -47,7 +130,7 @@ Three gaps are not missing features but **active defects**:
    inverted from what a post-incident review needs.
 3. **The dashboard asserts where the API argues.** `BroadcastCard` renders
    `finding.verdict` as a bare sentence. `Evidence`, `Confidence`, `Action`,
-   `Report.Passed` and `Report.Unavailable` — D6/D7's entire provenance
+   `Report.Passed` and `Report.Unavailable` — **R28 D6/D7**'s entire provenance
    apparatus, the thing that makes a verdict inspectable rather than believed —
    never reach a screen.
 
@@ -106,7 +189,7 @@ system's failure modes make isolation the expensive step.
 ### 3.1 Design stances
 
 **D1 — The 32 KB ceiling is a machine-surface rule, not a UI budget.**
-D10 exists to stop 80 fields × 200 samples from incinerating a model's
+**R28 D10** exists to stop 80 fields × 200 samples from incinerating a model's
 context. A 2 000-point chart is an illegitimate MCP *default* and an ordinary
 browser request. **Every existing default stays byte-identical**; the UI opts
 in explicitly (`fields`, `points`, and the new `from`/`to`), and new
@@ -119,7 +202,7 @@ needs changing, the change is wrong.
 the raw window still existed and by now that window may be pruned. Historical
 views inherit this, and must display *when* a verdict was computed and against
 what `relayCoverage`: a `bad` resting on client testimony alone is a different
-claim from one a relay counter corroborated, and D7 says so in the data
+claim from one a relay counter corroborated, and **R28 D7** says so in the data
 already.
 
 **D3 — The UI is a reader of measurements.** R28 §7 stands: no new
@@ -152,8 +235,8 @@ loaded from a network.
 Plotting a cumulative counter as a line is near-useless; what an operator
 wants is its rate. The service types every known field
 (`schema.ViewerFields`) but exposes no kind, unit or semantics. The UI must
-not fork that list — D15 exists precisely because a second copy of a field
-list drifts. Hence a server-owned **field catalogue endpoint** (TH5).
+not fork that list — **R28 D15** exists precisely because a second copy of a
+field list drifts. Hence a server-owned **field catalogue endpoint** (TH5).
 
 **D9 — Gaps stay breaks; envelopes stay envelopes.** `TimelineChart` already
 draws each contiguous run as its own subpath, because a metric that stopped
@@ -182,8 +265,9 @@ Two implementation constraints follow. **Import from `echarts/core` with
 explicit component registration**, not the barrel — tree-shaking is ours to
 control and the whole-package import is several times the size. And **wrap it
 in a small local React hook**, not `echarts-for-react`: one dependency instead
-of two, and lifecycle/dispose behaviour we own. D7's no-external-fetch test is
-what proves the bundle is genuinely self-contained.
+of two, and lifecycle/dispose behaviour we own. D7's no-external-fetch test
+(`internal/dashboard/dashboard_test.go`) is what proves the bundle is genuinely
+self-contained.
 
 **D12 — Scale target: ~50 broadcasts / ~200 viewers.** Lists are virtualized
 (TanStack Virtual — headless, tiny), aggregation stays server-side where it
@@ -426,8 +510,8 @@ request with D9's disclosure when it is not.
 
 Findings render as arguments. Per finding: severity, verdict, **each evidence
 row with value, unit, comparison and a provenance chip** (`relay` / `client` /
-`derived`), confidence with its cap explained where D7 capped it, and the
-playbook `action`. Per report: `Passed` rules (so healthy is distinguishable
+`derived`), confidence with its cap explained where **R28 D7** capped it, and
+the playbook `action`. Per report: `Passed` rules (so healthy is distinguishable
 from never-analysed), `Unavailable` with the signal each rule was missing, and
 every caveat.
 
