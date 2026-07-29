@@ -970,6 +970,54 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   split + browser viewer asserted); Z4 burn-in → required flip pending (plus
   a re-run on the new self-hosted `ioio-k8s` runners, migrated 2026-07-19
   after those GitHub-hosted green runs, and the Z5 step's first CI run)).
+  `docs/37-viewer-playback-presets.md` for R32 (viewer playback presets &
+  settings UX: **designed + UX1–UX6 implemented 2026-07-29, gates green,
+  live-verified in Chrome against the fleet; iPhone on-device pass pending** —
+  deviations in §13; `gawk-app` viewer only, **zero server/wire/relay/
+  broadcaster/pipeline change and no new persisted key**). Every milestone from
+  R12 on appended its viewer control to one flat right-click menu and nobody
+  removed anything, so the worst case was **17 rows, 11 of them tuning knobs
+  that already ship with the right default** — the first thing anyone opening
+  the menu to mute a stream had to read past. Three concrete defects came with
+  it: the menu had `max-width` but no `max-height`/`overflow` (≈740 px of rows
+  ran off a phone's landscape viewport with `Leave` unreachable — clamping
+  `top` keeps the *head* on screen and says nothing about the tail); parity and
+  striping were **filtered out** of the array under Resilient/Deep, so the menu
+  changed *length* with the delivery mode; and interpolation was gated on
+  `stats?.interpolation != null`, so it materialised a row a second into every
+  session. **The load-bearing insight (§3, and the reason the presets are
+  honest rather than decorative): the four controls are not four independent
+  choices, and two are not on the same axis.** Delivery + pacing buy smoothness
+  with **latency**; parity + striping buy robustness with **data and
+  connections at zero latency cost** — so an early sketch folding them into a
+  "Lowest latency" preset is recorded **rejected**. Presets therefore govern
+  delivery + pacing only (**Lowest latency → Balanced → Smoother → Most
+  stable**, one axis, monotonic in delay), promoted to a control-bar **pill**
+  whose label IS the state, opening the *same* `ContextMenu` the "⋮" button
+  uses; parity/striping/interpolation move to a **settings panel** reusing the
+  broadcaster's scrim + slide-in `GlassPanel` idiom, behind a collapsed
+  **Advanced** disclosure with a `· N changed` marker. Decisions worth not
+  re-deriving: **the preset is derived from the five existing keys, never
+  stored** (no migration, and no second source of truth that can drift from the
+  values it names — a legacy R19-era config just reads Custom); **a preset is a
+  complete configuration, so picking one resets the advanced knobs** (sticky
+  orthogonal values would make the pill read "Balanced" over a forced-off
+  striping — the cost is accepted and made visible first by `· N changed`);
+  **Custom is a state you land in, never an option offered on a clean install**;
+  **not-applicable rows gray *with their reason on the row*, never vanish**
+  (touch has no hover); **the panel renders inside the viewer root, never
+  portalled to `body`**, because in CSS pseudo-fullscreen — the shipping iPhone
+  tier since docs/21 U4 — that root *is* the fullscreen element; and
+  **reconnects are disclosed only where they happen** (delivery and parity are
+  in `useViewerConnection`'s session-effect deps and re-dial; pacing, striping
+  and interpolation cross into the live pipeline and never do — the annotation
+  is computed against the *current* delivery, deviation 1). `ContextMenu` grew
+  `checked`/`disabled`/`reason`/`note`, disabled-skipping arrow nav, and a
+  height clamp that feeds the placement math; **the check mark is CSS drawn
+  from `aria-checked` and the second line is `aria-describedby`**, so no `'✓'`
+  ever enters an accessible name again. R19 Decision 11's auto-detect
+  suggest-banner stays deferred and is now the natural follow-up — with presets
+  in place it has one thing to suggest instead of four knobs to set.
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task

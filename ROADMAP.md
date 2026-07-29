@@ -50,6 +50,7 @@ feature set exists).
 | R29 | [Forward parity for live-edge delivery](#r29--forward-parity-for-live-edge-delivery) | ✅ designed 2026-07-27, **FP1–FP8 implemented 2026-07-28**; gates green in all four modules incl. a Go loss-injection test (17.5x frame-loss cut at 3% loss, zero corruption) and a browser e2e pass behind a 5% lossy link (30/30 fps protected vs 25.9/17.9 control). incl. Prometheus `parity_*` metrics + docs/13 playbook rows ([docs/34](docs/34-live-edge-forward-parity.md) §11) |
 | R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔶 designed + **ST2–ST6 implemented 2026-07-29** (owner instruction moved implementation ahead of ST1); gates green in all four modules incl. a race-clean Go burst-threshold proof (control 8.3 % loss, 13/60 eighteen-chunk frames complete; striped ×3: 60/60 at 0.0 %, zero mismapped); **ST1 paired on-hardware runs + ST7 acceptance/loadgen owner-pending** ([docs/35](docs/35-connection-interleaving.md) §12) |
 | R31 | [Telemetry UI v2: a purpose-built diagnosis SPA](#r31--telemetry-ui-v2-a-purpose-built-diagnosis-spa) | 🔧 requirements drafted 2026-07-29, owner decisions taken the same day (UD11–UD22), **not started** (TH1–TH11); read-surface only — zero wire/relay/viewer/broadcaster change ([docs/36](docs/36-telemetry-ui-history.md)) |
+| R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1133 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
 
 ---
 
@@ -2507,6 +2508,110 @@ worth shipping on their own.
 replacement · no alerting/paging infrastructure · no rule tuning · no control
 actions · no public exposure of the read surface and no external asset fetch ·
 no PII or new identity · no auth/RBAC model.
+## R32 — Viewer playback presets & settings UX
+
+**Goal**: a first-time viewer can see what playback mode they are in and
+change it to a better one for their connection **in two taps**, without
+meeting a single knob they should not touch — while everything reachable
+today stays reachable, and the owner can still talk a friend through setting
+Striping over the phone.
+
+**Why now**: every milestone from R12 onward added its viewer control to one
+flat right-click menu, and nothing was ever removed. The worst realistic case
+today — live-edge delivery, a stream with audio, interpolation available,
+non-dev build — is **17 rows, of which 11 are tuning knobs that already ship
+with the correct default for the average viewer** (live edge, adaptive pacing,
+fleet-max parity, auto striping, interpolation on). Someone who opens the menu
+to mute the stream is shown eleven decisions in order to find the one they
+wanted. Three concrete defects come with it:
+
+- **The menu can run off-screen with no way to scroll.** `.menu` sets
+  `max-width` but no `max-height` and no `overflow`, and the placement clamp
+  floors `top` at `PAD` — so at the touch row height, 17 rows (~740 px) put
+  *Copy link*, *Terms of use* and *Leave* below an iPhone landscape viewport,
+  unreachable. This is a bug, and it is fixed first (UX1), independently of
+  the rest.
+- **Irrelevant options vanish rather than gray.** Parity and striping are
+  filtered out of the array entirely under Resilient/Deep, so the menu changes
+  *length* with the delivery mode and a viewer who saw "Loss protection" once
+  cannot find it again — and is told nothing about why.
+- **Frame interpolation appears mid-session**, because it is gated on
+  `stats?.interpolation != null` and stats arrive a second or two after
+  connect. The menu grows a row while the user is looking at it.
+
+Underneath all three: `MenuItem` is `{ label, onSelect }` — no `disabled`, no
+groups, no radio semantics. Checkmarks are string suffixes (`'Paced playback
+✓'`), so `aria-checked` does not exist and a screen reader hears a *changing
+accessible name* where the state changed.
+
+**The load-bearing insight** (and the reason the presets are honest rather
+than decorative): the four controls are not four independent choices, and two
+of them are not on the same axis at all. Delivery mode and paced playback buy
+smoothness with **latency**; loss protection and striping buy robustness with
+**bandwidth and connection count, at zero latency cost**. An earlier sketch
+mapped parity and striping into the presets ("Lowest latency" = parity off +
+striping off); that is recorded as **rejected** in docs/37 §3, because turning
+them off does not lower latency by a millisecond. So presets govern delivery +
+pacing; parity, striping and interpolation are Advanced, stay at their
+defaults, and are exactly what "Custom" tracks.
+
+**Shape** (owner decisions, 2026-07-29):
+
+- **Presets promoted to the control bar** — a text pill showing the current
+  mode (`Balanced ▾`) that opens a four-row popover. One axis, monotonic in
+  latency: **Lowest latency** (live, unpaced) → **Balanced** (today's default)
+  → **Smoother** (resilient) → **Most stable** (deep buffer).
+- **"Custom" only once the user has gone off-preset** — never offered on a
+  clean install; it is a state you land in, shown checked and inert, not an
+  option you pick.
+- **A real settings panel**, reusing the broadcaster's existing scrim +
+  slide-in `GlassPanel` pattern, with Advanced collapsed behind a disclosure
+  carrying a `· N changed` marker.
+- **Not-applicable options gray with their reason on the row**, never removed
+  — touch has no hover, and a gray row with no explanation is worse than an
+  absent one.
+- **The right-click / "⋮" menu becomes actions-only** (≤ 8 rows).
+
+**Decisions worth not re-deriving** (full set in docs/37 §5):
+
+- **No new persisted key — the preset is derived, never stored.** The five
+  existing keys stay exactly as they are and the preset is a *view* over them:
+  no migration, no drift between a stored preset and the values it claims to
+  describe, and a legacy R19-era configuration keeps working and simply reads
+  Custom. A stored preset would be a second source of truth for state that
+  already has one.
+- **A preset is a complete configuration; picking one resets the advanced
+  knobs to defaults.** The alternative — sticky, orthogonal advanced values —
+  makes the pill label lie ("Balanced" while striping is forced off). The cost
+  is accepted and bounded.
+- **Reconnects are disclosed because they are visible**: delivery and parity
+  are in `useViewerConnection`'s session-effect deps and re-dial; pacing,
+  striping and interpolation are separate live-crossing effects and never do.
+  Only the former carry `· reconnects`, or the annotation means nothing.
+- **The panel renders inside the viewer root, never portalled to `body`** — in
+  CSS pseudo-fullscreen (the iPhone shipping tier, docs/21 U4) the fullscreen
+  element *is* that root, so anything portalled out is invisible.
+
+**Named risks**: picking a preset discards advanced choices (bounded, and the
+`· N changed` marker makes the deviation visible first); phone support gains
+one step for the advanced knobs (accepted — dev-gating them was rejected
+because the owner's remote-troubleshooting flow is load-bearing here); one
+more control in a bar designed for restraint; and churn in a 1019-line test
+file that matches on exact `'✓'`-suffixed labels, where the rule is that every
+*behavioural* assertion survives and only the selector changes.
+
+**Pre-registered fallback**: if the on-device pass finds the panel worse than
+what it replaced, R32 keeps UX1 + UX2 and falls back to a **two-tier menu**
+(`Playback ▸` / `Advanced ▸` drill-downs), which still fixes the overflow bug
+and the vanishing rows.
+
+**Non-goals**: any mechanism change (zero server/wire/relay/broadcaster/
+pipeline); re-litigating R12's adaptive+interpolation default or R30 finding
+6's striping default; R19 Decision 11's auto-detect suggest-banner, which
+stays deferred — R32 is its prerequisite, since once presets exist the banner
+has one thing to suggest instead of four knobs to set; the frozen `#/debug/*`
+surfaces; the broadcaster surface; and the stats overlay, which stays the
+ground truth and the Copy-diagnostics path.
 
 ---
 
