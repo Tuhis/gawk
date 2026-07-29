@@ -48,6 +48,7 @@ feature set exists).
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
 | R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) + TM11 (configured target) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
 | R29 | [Forward parity for live-edge delivery](#r29--forward-parity-for-live-edge-delivery) | ✅ designed 2026-07-27, **FP1–FP8 implemented 2026-07-28**; gates green in all four modules incl. a Go loss-injection test (17.5x frame-loss cut at 3% loss, zero corruption) and a browser e2e pass behind a 5% lossy link (30/30 fps protected vs 25.9/17.9 control). incl. Prometheus `parity_*` metrics + docs/13 playbook rows ([docs/34](docs/34-live-edge-forward-parity.md) §11) |
+| R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔧 designed 2026-07-29 (ST1–ST7), not started; striped delivery — primary + up to 4 immutable stripe legs, chunk `d mod N`, burst target 6, adaptive grow-only N from measured chunkCount, auto-detect + manual toggle; ST1 is the go/no-go split experiment ([docs/35](docs/35-connection-interleaving.md)) |
 
 ---
 
@@ -2251,9 +2252,16 @@ never a larger `k`.
 
 ## R30 — Connection interleaving for live-edge delivery
 
-**Status**: not started. Design doc to be written separately; this entry exists
-to carry the evidence and the reasoning so the design starts from measurements
-rather than from scratch.
+**Status**: designed 2026-07-29
+([docs/35](docs/35-connection-interleaving.md), chunks ST1–ST7); not started.
+This entry carried the evidence the design started from; docs/35 preserves it
+(§1) and settles the design questions below — owner decisions 2026-07-29:
+adaptive grow-only N sized from the measured per-frame datagram count (never
+a bandwidth estimate), per-connection burst target **6** (headroom under the
+measured ~8), engagement via auto-detect of the finding-4 loss signature plus
+a manual tri-state toggle (default `auto`; no default-on fleet-wide). ST1 —
+the end-to-end split experiment on the affected machine — gates everything
+else and can fail (pre-registered kill criteria, docs/35 §10).
 
 **Goal**: eliminate the burst-length datagram loss measured in R29 finding 4
 **without adding latency and without lowering quality**, by splitting each delta
@@ -2349,7 +2357,9 @@ datagrams should have arrived, and on which connection?"* from the wire:
   new mapping, that update is part of the item, not a follow-up — a change that
   breaks its own measurement cannot be shown to have worked.
 
-**Design questions the doc has to answer** (not decided here):
+**Design questions the doc has to answer** (all decided in
+[docs/35](docs/35-connection-interleaving.md) §4–§5, kept here as the record
+of what was open when the entry was written):
 
 - **How many connections, and fixed or adaptive?** The threshold is ~8 on this
   path and frames run to ~23 chunks, so N=3 covers observed sizes — but loss
