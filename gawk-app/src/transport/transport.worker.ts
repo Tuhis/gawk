@@ -29,6 +29,9 @@ ctx.onmessage = (e: MessageEvent) => {
     case 'connect':
       core.connect(cmd.url, cmd.connectOpts);
       break;
+    case 'stripe':
+      core.setStripe(cmd.n);
+      break;
     case 'close':
       core.close();
       // Give the graceful wt.close() a beat to flush its close frame, then

@@ -10,6 +10,7 @@ import {
   MAX_KEYFRAME_BYTES,
   STREAM_FRAME_HEADER_SIZE,
   TELEMETRY_HELLO_SIZE,
+  TYPE_RELAY_CAPABILITIES,
   TYPE_RELIABLE_CARRIER,
   TYPE_STREAM_FRAME,
   TYPE_TELEMETRY_HELLO,
@@ -21,6 +22,11 @@ import {
   type DecoderConfigMessage,
   type TelemetryHelloMessage,
 } from './wire';
+import {
+  RELAY_CAPABILITIES_SIZE,
+  parseRelayCapabilities,
+  type RelayCapabilities,
+} from './parity';
 
 export interface ConnectOptions {
   // hex(SHA-256(cert DER)) as logged by gawk-server at startup
@@ -147,6 +153,12 @@ export interface ServerStreamCallbacks {
   // telemetry off, sends none, and the correct client behaviour is then to
   // collect nothing rather than to wait for a message that will not come.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
+  // R29/R30 (docs/35 §5.3 + §12 finding 1): the relay's capabilities. The
+  // relay has sent this on the subscribe route since R29, but the viewer had
+  // no branch for it and counted every one as malformed. It is now also
+  // R30's version-skew gate: striping engages only after CAP_STRIPED_DELIVERY
+  // is seen, so an old relay (which never sends it) is never dialed for legs.
+  onRelayCapabilities?: (caps: RelayCapabilities) => void;
   // R19: one verbatim datagram record off a reliable carrier stream. The
   // transport feeds it into the same handler as a received datagram — the
   // whole point of the carrier design (docs/24 Decision 2).
@@ -243,7 +255,8 @@ async function readOneServerStream(
       head0 !== WIRE_VERSION ||
       (head1 !== TYPE_STREAM_FRAME &&
         head1 !== TYPE_RELIABLE_CARRIER &&
-        head1 !== TYPE_TELEMETRY_HELLO)
+        head1 !== TYPE_TELEMETRY_HELLO &&
+        head1 !== TYPE_RELAY_CAPABILITIES)
     ) {
       // Unknown stream kind or version: cancel without wedging the accept
       // loop. Counted as malformed so it is visible in stats.
@@ -267,6 +280,23 @@ async function readOneServerStream(
       } catch (e) {
         carrier.malformed++;
         log.warn('telemetry hello unreadable; this session will not report:', e);
+      }
+      return;
+    }
+
+    if (head1 === TYPE_RELAY_CAPABILITIES) {
+      // Fixed 5 bytes; read to EOF and parse strictly. Best-effort like the
+      // hello: an unreadable capabilities message costs striping (and the
+      // parity-level display) for this session, never the media path.
+      for (;;) {
+        if (total > RELAY_CAPABILITIES_SIZE) break;
+        if (!(await readMore())) break;
+      }
+      try {
+        cb.onRelayCapabilities?.(parseRelayCapabilities(concatChunks(chunks, total)));
+      } catch (e) {
+        carrier.malformed++;
+        log.warn('relay capabilities unreadable; striping stays unavailable:', e);
       }
       return;
     }
