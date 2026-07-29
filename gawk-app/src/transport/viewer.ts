@@ -312,6 +312,19 @@ export interface ViewerStats extends ReassemblerStats {
   stripeLargeLossPct: number | null;
   stripeSmallLossPct: number | null;
   stripeLargeChunks: number;
+  // Finding 5: the small-frame half of that evidence, and the size the two
+  // halves were split at. Both were missing, and their absence is what made a
+  // non-engaging detector unarguable from a blob — "the small bucket is empty"
+  // and "the small bucket is clean" read identically without them, and the
+  // empty case is the one that made auto striping unreachable on high-bitrate
+  // streams. splitAtChunks above STRIPE_LARGE_FRAME_CHUNKS means the fixed
+  // line could not fill the bucket and the stream's own median was used.
+  stripeSmallChunks: number;
+  stripeSplitAtChunks: number;
+  // Finding 6: striping is always on in live-edge mode, so the question is no
+  // longer "will it engage" but "is it earning its connection cost". This is
+  // the burst signature as an observation, not a gate.
+  stripeShapeDetected: boolean;
   stripeLegDials: number;
   stripeLegDeaths: number;
   // R15 (docs/20): the audio lane, as observed by this pipeline. audioPresent
@@ -1314,6 +1327,9 @@ export class ViewerPipeline {
       stripeLargeLossPct: stripeDetector.largeLossPct,
       stripeSmallLossPct: stripeDetector.smallLossPct,
       stripeLargeChunks: stripeDetector.largeChunks,
+      stripeSmallChunks: stripeDetector.smallChunks,
+      stripeSplitAtChunks: stripeDetector.splitAtChunks,
+      stripeShapeDetected: stripeDetector.shapeDetected,
       stripeLegDials: stripeTransport?.legDials ?? 0,
       stripeLegDeaths: stripeTransport?.legDeaths ?? 0,
     });

@@ -913,6 +913,129 @@ catch-up burst behind each one, because live-edge presents on decode. Paced
 playback is what turns that burst into even output — the same session rendered
 32 fps paced against 20 fps unpaced. The two are complementary.
 
+### Finding 5 — the large/small split was absolute, so auto striping could not engage on the streams that need it most (2026-07-29)
+
+Reported from the field: a Firefox 154 viewer (`1adfa810…`) whose overlay read
+`Striping: auto — off (needed 1)` and stayed off until forced on, on a
+broadcast where forcing it on demonstrably helped.
+
+The overlay reading misleads, and that is the first thing to know.
+`needed 1` was a *consequence*, not the cause: `framesCompleted` froze at 129
+from t=9s while `staleChunks` climbed to 3,777 — the stream was wedged — and
+`neededNow()` returns 1 whenever the 10 s sizing window holds fewer than
+`STRIPE_MIN_SIZED_FRAMES` frames. Before the wedge the sizer had read
+**`needed 4` for a full 15 seconds** and the detector still refused.
+
+The real cause is that `detectorFires()`'s shape test needs **both** buckets
+populated, and one of them structurally cannot fill. `STRIPE_LARGE_FRAME_CHUNKS
+= 8` is an **absolute** line, taken from one measured path (docs/34 finding 4).
+This broadcast ran ~17–18 chunks per frame, so at t=5s the viewer had received
+1,878 video chunks and `stripeLargeChunks` read 1,875 — **99.8 % of all chunks
+in the large bucket**. `smallExpected` was ~3 chunks then and ~120 at t=9s,
+never reaching `STRIPE_MIN_SMALL_CHUNKS` (200), so gate 2 returned false
+forever while large-frame loss sat at 7–9 %.
+
+So auto striping was **unreachable on exactly the streams whose bursts overflow
+the receive queue** — the case R30 exists for. The small-frame loss figures
+that did appear (14.89 %, 10.29 %, 16.67 %) are a couple of chunks out of a
+handful: noise on a sample far too small to mean anything, which is what gate 2
+correctly refuses to act on.
+
+Fixed test-first (`stripe-adaptive-split.test.ts`; red showed `decide()`
+returning 0 on an all-large stream with burst-shaped loss, `smallChunks` 0, and
+a forced 'on' returning 0):
+
+- **The split point is chosen at decision time, not accumulation time.** The
+  detector now keeps per-frame `{expected, arrived}` samples instead of four
+  running sums — a sum has already thrown away the distribution the split needs
+  to read. When the fixed line cannot fill the small bucket, the split falls
+  back to the **stream's own median frame size**, so both halves fill and the
+  shape is testable on the frames that actually exist.
+- **The shape test gains its general form.** Small-frames-clean
+  (`STRIPE_SMALL_LOSS_CEILING`) is the original, strongest version and still
+  passes on its own, unchanged. But where the split had to adapt, "clean" is
+  not on offer — a median-sized frame on a burst-limited path loses too — so
+  the test becomes what cleanliness was always a proxy for: **loss that rises
+  with burst size**, `large ≥ STRIPE_SHAPE_LOSS_RATIO × small` with the ratio
+  at 2. Uniform loss leaves the halves proportionally equal and fails both
+  forms; the guard is mutation-verified (dropping the ratio to 1 fails the
+  proportional-loss test).
+- **A constant frame size stays correctly unprovable.** A median split puts
+  every frame on one side, the large bucket empties, and the evidence floor
+  refuses — no size variation, no shape to measure. The pre-existing
+  "does NOT fire without small-frame evidence" test pins that and stays green
+  unmodified, which is the check that this fix did not simply loosen the gate.
+
+Two supporting changes:
+
+- **`stripeSmallChunks` and `stripeSplitAtChunks` now reach `ViewerStats`.**
+  `StripeDetectorStats` had `smallChunks` all along and `ViewerStats` carried
+  only `stripeLargeChunks`, so "the small bucket is empty" and "the small
+  bucket is clean" read identically from a diagnostics blob — and the empty
+  case is the whole bug. Diagnosing this required inferring `smallExpected` by
+  subtracting large chunks from total video datagrams. The overlay's
+  **Stripe detector** row now shows both sample sizes and the split
+  (`large 7.8% of 2967 · small 0.0% of 121 · split >8`), which is what the
+  field comment promised and did not deliver.
+- **Unsized is no longer conflated with "one leg is enough".** `decide()`
+  checked `needed < 2` *before* the mode check, and `neededNow()` returns 1 for
+  both "measured one leg" and "no evidence" — so on a wedged stream a forced
+  `on` was a **silent no-op**, precisely when it is being used as a rescue.
+  `sizedNeed()` now returns 0 for no-evidence, kept distinct from a measured 1.
+  Finding 6 lands in the same change and subsumes the engagement half of this
+  (nothing is gated on sizing evidence any more); the distinction still governs
+  *growth*, where "no evidence" must not be read as a need.
+
+### Finding 6 — striping is on by default in live-edge mode (owner decision, 2026-07-29)
+
+Finding 5 made the burst signature *evaluable* on high-bitrate streams. This
+decision retires it as a **gate**: on this fleet the per-connection burst
+threshold is the common case rather than the exception — every Firefox viewer
+measured so far hits it — so spending 30 s of evidence to rediscover it once
+per session buys nothing and costs exactly the freezes striping exists to
+prevent.
+
+**A live-edge viewer now starts striped at `STRIPE_START_LEGS` (4), grows from
+there, and never returns below it. Only mode `off` releases a stripe.**
+
+- "Live-edge only" needed no new code: `viewer.ts` already withholds the
+  capability for reliable/DVR delivery (`noteCapable(capable && deliveryMode
+  !== 'reliable')`), so those viewers keep exactly today's never-dial
+  behaviour. A test pins it through that capability path.
+- The **leg-death backoff stays** — it is the one thing that can put an engaged
+  viewer back to zero, and it now re-engages itself when the backoff expires
+  rather than waiting for evidence. A flapping path must still not burn dials
+  at the stats cadence.
+- Growth keeps its dwell, and an unsized window never grows.
+- The burst signature survives as an **observation**: `snapshot().shapeDetected`
+  → `ViewerStats.stripeShapeDetected` → the overlay's Stripe detector row. With
+  striping always on, "will it engage" stops being the question and "is it
+  earning its connection cost" becomes it — which is what R30's kill criteria
+  are written against anyway. The gating logic is kept intact rather than
+  deleted, so it could be restored without re-deriving any of it.
+- `STRIPE_START_LEGS` equals `MAX_STRIPE_LEGS` today, which would leave the
+  grow path structurally untestable, so `StripeController` takes the start
+  width as a constructor parameter. Production always passes the default; tests
+  use a lower floor to keep sizing, dwell and cap coverage alive. It is also
+  how a narrower default could be adopted without a rewrite.
+
+**Capacity consequence — read this before inviting an audience.** A striped
+viewer holds **1 primary + 4 legs = 5 relay sessions**, and
+`externalSubsLocked()` counts stripe legs: it excludes only `internal` edge
+sessions, and R18's viewer count is the separate one that excludes legs.
+Against the reference fleet's deployed `GAWK_MAX_SUBSCRIBERS=20` /
+`GAWK_MAX_TOTAL_SUBSCRIBERS=100`, effective capacity falls from 20 viewers per
+broadcast to **4**, and from 100 fleet-wide to **20**. `GAWK_CONN_RATE_LIMIT=3`
+(burst 10, loopback bypassed) now sees 5 dials per join, so two viewers
+arriving in the same second sit at the burst edge.
+
+Raising the two subscriber caps ~5× is the intended follow-up, and it is a
+values change rather than code. Exempting legs from the cap was considered and
+**rejected**: nothing ties a leg dial to a primary session, so an exemption
+would remove the bound on how many connections one client can open —
+the cap is a DoS guard, and `SubscribeInternal`'s exemption is safe only
+because an edge dial must present the internal PSK.
+
 ---
 
 ## 13. Manual runbook — the owner-run remainder (ST1 + ST7)
