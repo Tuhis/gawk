@@ -1,8 +1,9 @@
 # R31 — Telemetry UI v2: a purpose-built diagnosis SPA
 
 **Status**: requirements drafted 2026-07-29, owner decisions taken the same day
-(§3.2), not started. Chunks **TH1–TH11** (two-letter prefix; `A`–`Z`, `CG`,
-`DV`, `FP`, `LI`, `MF`, `NA`, `QL`, `ST`, `TM` are claimed).
+(§3.2), not started. Chunks **TH1–TH11**; decisions **UD1–UD22** (§0.2). Both
+prefixes were free: `A`–`Z`, `AR`, `AV`, `CG`, `DV`, `FP`, `LI`, `MF`, `MP`,
+`NA`, `NV`, `QL`, `ST`, `TC`, `TM` and `VP` are claimed elsewhere.
 
 **Scope**: the `gawk-telemetry` read surface — `gawk-telemetry/ui/` plus the
 read API that feeds it, plus one chart-default change and one new small write
@@ -30,13 +31,17 @@ stored, and in most cases already served.
    refused.
 4. This document.
 
-### 0.2 A numbering trap
+### 0.2 Decision numbering
 
-**This document has its own D1–D22, and docs/33 has its own D1–D17. They
-collide.** Every reference to an R28 decision here is written
-**`R28 D<n>`**; a bare `D<n>` always means *this* document. When in doubt,
-check which list the sentence is arguing from — e.g. `R28 D10` is the 32 KB
-context ceiling, while this document's D10 is "absence is never green".
+**This document's decisions are `UD1`–`UD22`** ("UI decision"). A bare
+`D<n>` always means **docs/33's** — R28 numbered its own decisions D1–D17, and
+a shared `D` would have collided across the two documents in the same
+sentence.
+
+So: `D10` is R28's 32 KB context ceiling; `UD10` is this document's "absence is
+never green". `UD` is otherwise unclaimed across the repo's two-letter
+prefixes, and is deliberately not `TD` — a `TD`/`TH` pair is easy to misread in
+a dense list, and `TH` is this item's chunk prefix.
 
 ### 0.3 The UI as it stands, and its fate
 
@@ -48,14 +53,14 @@ each file is and what R31 does to it:
 | `App.tsx` | The whole page: header, live group, ended group | Becomes the Live *section* behind TH1's router |
 | `api/client.ts` | `fetchLive`, `resolveCode`, `probeResolve`. **All paths relative** — deliberate, so it works on `/`, on a port-forward and under an Ingress sub-path | Grows the historical endpoints; keep the relative-path rule |
 | `api/types.ts` | Hand-written mirror of the Go types. Its header states the rule that matters: **absent and zero are different claims** | Extends; the rule is load-bearing for every new chart |
-| `components/TimelineChart.tsx` | 228 lines of hand-rolled SVG | **Replaced** by the ECharts wrapper (D11) — but its two behaviours must survive: gaps drawn as breaks (D9) and a fixed viewBox so nothing reflows as values tick |
+| `components/TimelineChart.tsx` | 228 lines of hand-rolled SVG | **Replaced** by the ECharts wrapper (UD11) — but its two behaviours must survive: gaps drawn as breaks (UD9) and a fixed viewBox so nothing reflows as values tick |
 | `components/SessionTimeline.tsx` | Two hard-coded chart pairs, per role | Superseded by TH2 + TH5 |
-| `components/SessionTable.tsx` | The dense row table | The model for TH3's list; gains virtualization (D12) |
+| `components/SessionTable.tsx` | The dense row table | The model for TH3's list; gains virtualization (UD12) |
 | `components/BroadcastCard.tsx` | Live card, renders `finding.verdict` only | Gains TH6's evidence drill-down |
 | `components/FindStream.tsx` | Code → obfuscated key | Extends to scope TH3 |
-| `components/SeverityBadge.tsx`, `lib/severity.ts`, `lib/format.ts` | Severity model + formatters | Keep; `format.ts` gains absolute-time helpers (D5) |
+| `components/SeverityBadge.tsx`, `lib/severity.ts`, `lib/format.ts` | Severity model + formatters | Keep; `format.ts` gains absolute-time helpers (UD5) |
 | `lib/history.ts` | Client-side timeline accumulation | **Deleted** — see §1.1 |
-| `state/liveStore.ts` | The 2 s poll loop | Becomes SSE-fed with the poll as fallback (D22) |
+| `state/liveStore.ts` | The 2 s poll loop | Becomes SSE-fed with the poll as fallback (UD22) |
 | `state/uiStore.ts` | Card / timeline expansion state | Largely subsumed by URL state (TH1) |
 
 ### 0.4 Gates, and two traps in them
@@ -75,7 +80,7 @@ cd gawk-telemetry   && go build ./... && go vet ./... && go test -race ./...
   builds — so in CI they run in the **`telemetry-ui`** job, after `npm run
   build`, and *skip by design* in the `telemetry` job. Running
   `go test ./internal/dashboard/` locally without building the UI first will
-  show green while proving nothing. **This is the test that guards D11's
+  show green while proving nothing. **This is the test that guards UD11's
   bundling decision**, so it is the one to run deliberately after adding
   ECharts.
 - `go build` never depends on npm: `dist/` carries one committed `README.md` so
@@ -130,7 +135,7 @@ Three gaps are not missing features but **active defects**:
    inverted from what a post-incident review needs.
 3. **The dashboard asserts where the API argues.** `BroadcastCard` renders
    `finding.verdict` as a bare sentence. `Evidence`, `Confidence`, `Action`,
-   `Report.Passed` and `Report.Unavailable` — **R28 D6/D7**'s entire provenance
+   `Report.Passed` and `Report.Unavailable` — **D6/D7**'s entire provenance
    apparatus, the thing that makes a verdict inspectable rather than believed —
    never reach a screen.
 
@@ -177,7 +182,7 @@ system's failure modes make isolation the expensive step.
 | Q6 | *Plot `parityInsufficient` / `avSkewMs` / `stripeLargeLossPct`.* | ~13 fields are plottable; ~80 exist. |
 | Q7 | *Why do you say it's bad? What is that resting on?* | Verdict sentence only; evidence and provenance dropped. |
 | Q8 | *Is this bad, or is this normal here?* | `compare`/`fleet_summary` exist, unused by the UI. |
-| Q9 | *Did the fix work? Is the fleet better on 1.4.0 than 1.3.x?* | DuckDB by hand — and no engine is actually wired (§3.2 D18). |
+| Q9 | *Did the fix work? Is the fleet better on 1.4.0 than 1.3.x?* | DuckDB by hand — and no engine is actually wired (§3.2 UD18). |
 | Q10 | *Send me the link / put it in the doc / note what I found.* | No URL state, no export, no annotations. |
 | Q11 | *Stop moving while I read you.* | 2 s poll, no pause, no freeze. |
 | Q12 | *What am I **not** seeing?* | Retention boundary, relay coverage gaps and downsampling are invisible. |
@@ -188,8 +193,8 @@ system's failure modes make isolation the expensive step.
 
 ### 3.1 Design stances
 
-**D1 — The 32 KB ceiling is a machine-surface rule, not a UI budget.**
-**R28 D10** exists to stop 80 fields × 200 samples from incinerating a model's
+**UD1 — The 32 KB ceiling is a machine-surface rule, not a UI budget.**
+**D10** exists to stop 80 fields × 200 samples from incinerating a model's
 context. A 2 000-point chart is an illegitimate MCP *default* and an ordinary
 browser request. **Every existing default stays byte-identical**; the UI opts
 in explicitly (`fields`, `points`, and the new `from`/`to`), and new
@@ -197,55 +202,55 @@ UI-shaped endpoints declare their own bounds. The existing test asserting the
 ceiling against a synthetic 4-hour session must keep passing untouched — if it
 needs changing, the change is wrong.
 
-**D2 — Render the stored verdict; never recompute from a rollup.**
+**UD2 — Render the stored verdict; never recompute from a rollup.**
 `severityOfRow` already reads the stored verdict, because it was computed when
 the raw window still existed and by now that window may be pruned. Historical
 views inherit this, and must display *when* a verdict was computed and against
 what `relayCoverage`: a `bad` resting on client testimony alone is a different
-claim from one a relay counter corroborated, and **R28 D7** says so in the data
+claim from one a relay counter corroborated, and **D7** says so in the data
 already.
 
-**D3 — The UI is a reader of measurements.** R28 §7 stands: no new
-measurement, no new client-side collection. (Annotations, D16, are operator
+**UD3 — The UI is a reader of measurements.** R28 §7 stands: no new
+measurement, no new client-side collection. (Annotations, UD16, are operator
 prose — not a measurement.)
 
-**D4 — Filtering, sorting, bucketing and pagination are server-side.**
+**UD4 — Filtering, sorting, bucketing and pagination are server-side.**
 Shipping 14 days of rollups to a browser to filter them there is the same
 category error as returning 80 fields to a model.
 
-**D5 — Absolute time is the primary axis for anything historical.**
+**UD5 — Absolute time is the primary axis for anything historical.**
 Today the vocabulary is `ago()`/`dur()` with one `clockTime` in the header —
 right for the live page, where "now" is the anchor; wrong everywhere else.
 Correlating with relay logs, Prometheus, a release timestamp or a friend's "it
 broke around nine" needs a wall clock. Relative time becomes the annotation.
 The timezone is displayed, never assumed.
 
-**D6 — Deep links are a correctness fix, not a feature.** `#/session/<id>`
+**UD6 — Deep links are a correctness fix, not a feature.** `#/session/<id>`
 must resolve, because it is already stored in permanent artifacts. TH1 ships
 before anything that emits more of them.
 
-**D7 — Exposure posture unchanged.** The read listener is never routed
-publicly (R28 D14); no new public surface; **no external asset fetch**, so the
+**UD7 — Exposure posture unchanged.** The read listener is never routed
+publicly (D14); no new public surface; **no external asset fetch**, so the
 page keeps working on a port-forward from a laptop with no network — asserted
 by an existing test over the built output, which must keep passing. A chart
 library may be *bundled*; none may be *fetched*, and no web font may be
 loaded from a network.
 
-**D8 — Counters and gauges are different things and the UI must know which.**
+**UD8 — Counters and gauges are different things and the UI must know which.**
 Plotting a cumulative counter as a line is near-useless; what an operator
 wants is its rate. The service types every known field
 (`schema.ViewerFields`) but exposes no kind, unit or semantics. The UI must
-not fork that list — **R28 D15** exists precisely because a second copy of a
+not fork that list — **D15** exists precisely because a second copy of a
 field list drifts. Hence a server-owned **field catalogue endpoint** (TH5).
 
-**D9 — Gaps stay breaks; envelopes stay envelopes.** `TimelineChart` already
+**UD9 — Gaps stay breaks; envelopes stay envelopes.** `TimelineChart` already
 draws each contiguous run as its own subpath, because a metric that stopped
 being reported did not glide to its next value. Every new chart inherits that.
 Likewise `get_session`'s downsampling is envelope-preserving (worst-of-bucket,
 a real sample, never interpolated) — so the UI must **say** it is showing
 worst-of-N, or a reader takes the line for raw.
 
-**D10 — Absence is never green, and now never blank either.** The live model's
+**UD10 — Absence is never green, and now never blank either.** The live model's
 rule extends to history: a session whose raw window was pruned reads *"raw
 expired — rollup only"*, not an empty chart. A broadcast with no relay
 coverage says so on the axis. The failure this prevents is concluding "nothing
@@ -253,7 +258,7 @@ was wrong" from "nothing was kept".
 
 ### 3.2 Decisions taken with the owner (2026-07-29)
 
-**D11 — Charting is Apache ECharts, bundled.** Chosen over visx, uPlot and
+**UD11 — Charting is Apache ECharts, bundled.** Chosen over visx, uPlot and
 Recharts/Nivo. The load-bearing reason is not looks: **`echarts.connect()`
 synchronises crosshair and zoom across separate chart instances**, which *is*
 TH4's multi-lane broadcast timeline and TH7's fleet timeline — built in rather
@@ -265,22 +270,22 @@ Two implementation constraints follow. **Import from `echarts/core` with
 explicit component registration**, not the barrel — tree-shaking is ours to
 control and the whole-package import is several times the size. And **wrap it
 in a small local React hook**, not `echarts-for-react`: one dependency instead
-of two, and lifecycle/dispose behaviour we own. D7's no-external-fetch test
+of two, and lifecycle/dispose behaviour we own. UD7's no-external-fetch test
 (`internal/dashboard/dashboard_test.go`) is what proves the bundle is genuinely
 self-contained.
 
-**D12 — Scale target: ~50 broadcasts / ~200 viewers.** Lists are virtualized
+**UD12 — Scale target: ~50 broadcasts / ~200 viewers.** Lists are virtualized
 (TanStack Virtual — headless, tiny), aggregation stays server-side where it
 already is, and a 1 000-viewer broadcast is an acknowledged follow-up rather
 than a v2 requirement. This is deliberately above the homelab's reality and
 below R17's ceiling.
 
-**D13 — The live fleet page stays the landing view.** TM8's surface is what
+**UD13 — The live fleet page stays the landing view.** TM8's surface is what
 you open when someone says "it's stuttering", and it does that job. History,
 Explore, Fleet and Rules become peer sections behind a nav, reachable in one
 click. Nothing about the existing scan surface moves.
 
-**D14 — Dense ops console, dark by default.** ~12px type, a sparkline on every
+**UD14 — Dense ops console, dark by default.** ~12px type, a sparkline on every
 row, several lanes visible without scrolling — the idiom that fits the job of
 scanning for the anomaly. Deliberately *not* gawk-app's R6 monochrome tokens:
 those were designed for a cinematic viewer, and a data console is a different
@@ -289,14 +294,14 @@ README's existing no-layout-shift rules (`table-layout: fixed`, percentage
 colgroup, `tabular-nums`, reserved slots) become harder, not softer, at this
 density and bind every new surface.
 
-**D15 — Raw retention becomes configurable with a default of 30 days.**
+**UD15 — Raw retention becomes configurable with a default of 30 days.**
 `-retention-days` already exists; this is a chart default change plus the
 trade-off documented in the chart README. Thirty days covers a full release
 cycle, so "compare this session to one from before the R30 change" stays
 answerable at full resolution instead of rollup-only. ~160 MB at current
 volume. Rollups stay permanent regardless.
 
-**D16 — Annotations are the one write path.** A note pinned to a session or to
+**UD16 — Annotations are the one write path.** A note pinned to a session or to
 a moment on a timeline ("switched to WiFi here", "this is the R30
 regression"). Stored beside rollups, **permanent** — an annotation outliving
 the samples it describes is the normal case and the point — never mixed into
@@ -306,14 +311,14 @@ project records field findings into `docs/*.md`. Free-text authored by the
 operator, on the operator's own PVC: R28's zero-PII rule governs *collected*
 data and is untouched.
 
-**D17 — Mobile is read-only triage.** The live list, severity, verdicts and a
+**UD17 — Mobile is read-only triage.** The live list, severity, verdicts and a
 single-metric chart work on a phone. The multi-lane timeline, the metric
 explorer and the SQL console are desktop-only **and say so** rather than
 degrading into something unreadable. Covers "someone messages me while I'm on
 the couch" without paying for dense synchronised time series on a 390px
 viewport.
 
-**D18 — A SQL console, on by default — which requires actually building the
+**UD18 — A SQL console, on by default — which requires actually building the
 engine.** The owner's decision, recorded with the constraint attached because
 it is not a flag flip:
 
@@ -326,7 +331,7 @@ it is not a flag flip:
 
 So "on by default" costs: a cgo dependency, a base image that is no longer
 `static`, a larger image, and the end of the module's cgo-free property.
-It also reverses R28 D11's posture that arbitrary SQL should be a deliberate
+It also reverses D11's posture that arbitrary SQL should be a deliberate
 act. **Recommended resolution, pending the owner's call (§8 Q1)**: build the
 console and wire the engine, keep the *flag* as the gate but flip its default
 to **on**, and ship the cgo variant as the deployed image while `go build` on
@@ -336,14 +341,14 @@ without making a laptop `go build` depend on a C toolchain. The console's
 results feed the chart components, so an ad-hoc query is plottable rather than
 a table of numbers.
 
-**D19 — In-tab watch, and nothing more.** Star a live broadcast: it pins to
+**UD19 — In-tab watch, and nothing more.** Star a live broadcast: it pins to
 the top and visibly changes when its severity escalates. No browser
 notifications (Chrome throttles a background tab to ~1/min, so an alert could
 arrive a minute late — worse than useless for a stuttering stream), no sound,
 no server-side state, no rules. R28's non-goal was alerting *infrastructure*;
 a page noticing something while you look at it is not that.
 
-**D20 — Full read-only rule transparency.** A rule catalogue (every playbook
+**UD20 — Full read-only rule transparency.** A rule catalogue (every playbook
 rule, its thresholds, required signals, provenance) plus a per-session trace:
 for each rule, what it read, what it compared against, and why it did or did
 not fire. **No tuning from the UI** — stored verdicts were computed under the
@@ -352,7 +357,7 @@ disagree unless every verdict recorded the config it ran under. This directly
 mitigates the standing risk docs/33 §8 names: one engine wrong in two places
 at once.
 
-**D21 — Dip episodes are explained, including across sessions.** Click a dip
+**UD21 — Dip episodes are explained, including across sessions.** Click a dip
 and see every metric that moved materially inside its window, ranked by
 magnitude, relay and client side together — TM10 already captures counter
 deltas per episode, so this is mostly a projection of existing data. Plus:
@@ -362,8 +367,8 @@ visible. The correlation **must state its own confidence** — with one
 reporting viewer there is no correlation to draw, and saying "only one viewer
 reported" is the honest output, not a coincidence.
 
-**D22 — Live data moves to SSE, with polling as the fallback** *(my call, not
-the owner's — flagged for objection)*. At D12's scale the `/live` payload
+**UD22 — Live data moves to SSE, with polling as the fallback** *(my call, not
+the owner's — flagged for objection)*. At UD12's scale the `/live` payload
 carries findings and metrics for every session every 2 s, and TH8's watch plus
 several open views multiply it. An `EventSource` on the read listener pushes
 changes and degrades to the current 2 s poll when the stream drops. It works
@@ -397,7 +402,7 @@ Routes: `#/` (live fleet) · `#/broadcast/<key>` · `#/session/<id>` ·
 | Copying the address bar and reopening reproduces range, filters and selections exactly | manual |
 | Back/forward move between views without a full reload and without losing poll state | manual |
 | An unknown or malformed id renders "no such session", never a blank page or an endless spinner | test |
-| A pruned session id renders the rollup-only view (D10), not an error | test |
+| A pruned session id renders the rollup-only view (UD10), not an error | test |
 
 #### TH2 — Session detail
 
@@ -430,7 +435,7 @@ its class.
 #### TH3 — History browser
 
 `#/history`: broadcasts and sessions over a chosen range, server-side filtered,
-sorted and paginated (D4), virtualized (D12). Filters: range, role, severity,
+sorted and paginated (UD4), virtualized (UD12). Filters: range, role, severity,
 broadcast key, browser/OS, delivery mode, `appVersion`, has-findings,
 distrusted. Sorts: severity, start, duration, stalls. Columns are the existing
 `SessionSummary` projection — built for exactly this and unused.
@@ -444,7 +449,7 @@ scope the history browser, not merely to highlight a live row.
 | Filters and range are in the URL and survive a reload (TH1) | test |
 | Filtering and sorting happen server-side; the browser never holds the unfiltered set | test on request shape |
 | 2 000 rows scroll at 60 fps and hold bounded memory | measured |
-| The raw-retention boundary is drawn: rows past it are marked rollup-only (D10) | test |
+| The raw-retention boundary is drawn: rows past it are marked rollup-only (UD10) | test |
 | A range with no data reads differently from a range the service cannot answer | test |
 
 ### Wave 2 — correlation and depth
@@ -454,7 +459,7 @@ scope the history browser, not merely to highlight a live row.
 **The isolating surface; the answer to Q3/Q4.** One broadcast, one absolute
 time axis, one lane per participant: broadcaster on top, each viewer below,
 plus a relay lane. Lanes are ECharts instances joined by `echarts.connect()`,
-so one crosshair and one zoom govern all of them (D11).
+so one crosshair and one zoom govern all of them (UD11).
 
 Each lane carries its session's span (join → leave), severity as a band over
 time, its primary rate, and its events as markers. The relay lane carries the
@@ -482,7 +487,7 @@ is what makes placing a skewed client on a shared axis legitimate.
 
 `#/explore`: any recorded field, over time, for one or more sessions.
 
-Requires the **field catalogue** (D8) — `GET /v1/fields` — returning per field:
+Requires the **field catalogue** (UD8) — `GET /v1/fields` — returning per field:
 name, applicable role(s), kind (`gauge` | `counter` | `bool` | `text`), unit,
 one-line description, and whether it is in the curated set. Server-owned,
 derived from `schema.ViewerFields`/`BroadcasterFields`; the UI never carries a
@@ -491,18 +496,18 @@ second list.
 Behaviour follows from the catalogue: a **counter is offered as a rate** by
 default with the cumulative form one click away; a **bool renders as a band**,
 not a line between 0 and 1; units drive axis labels and formatting; unknown
-fields (D15 keeps them verbatim) appear in a labelled "unknown type" group
+fields (UD15 keeps them verbatim) appear in a labelled "unknown type" group
 rather than vanishing. Plus multiple series with independent axes where units
 differ, **the same metric across several sessions on one axis** (the A/B move
 — the viewer that is fine beside the one that is not), and full resolution on
-request with D9's disclosure when it is not.
+request with UD9's disclosure when it is not.
 
 | Acceptance criterion | Verified by |
 |---|---|
 | Every field in `schema.ViewerFields`/`BroadcasterFields` is selectable and plottable | test over the catalogue |
 | Adding a field to the Go tables makes it appear in the picker with no UI change | test |
 | A counter defaults to a rate; the cumulative form is available and labelled | test |
-| A downsampled chart says "worst of every N samples" (D9) | test |
+| A downsampled chart says "worst of every N samples" (UD9) | test |
 | The same metric for 2+ sessions renders on one aligned axis | test |
 | A field with no data in range renders as absent, never as zero | test |
 
@@ -510,12 +515,12 @@ request with D9's disclosure when it is not.
 
 Findings render as arguments. Per finding: severity, verdict, **each evidence
 row with value, unit, comparison and a provenance chip** (`relay` / `client` /
-`derived`), confidence with its cap explained where **R28 D7** capped it, and
+`derived`), confidence with its cap explained where **D7** capped it, and
 the playbook `action`. Per report: `Passed` rules (so healthy is distinguishable
 from never-analysed), `Unavailable` with the signal each rule was missing, and
 every caveat.
 
-Plus D20's transparency: `#/rules` lists every rule with thresholds, required
+Plus UD20's transparency: `#/rules` lists every rule with thresholds, required
 signals and provenance; a per-session trace shows what each rule read and why
 it did or did not fire. Read-only. Evidence signals link into TH5 with that
 field plotted over the session's range — the shortest path from *why do you
@@ -549,7 +554,7 @@ and a **cohort A/B**: two version or date ranges side by side, with a plain
 statement of how thin the baseline is (`FleetSummary` already refuses to
 over-claim below 5 sessions; that honesty carries over). Rollups are
 permanent, so a range may far exceed the raw window — the view says when it is
-answering from rollups alone (D10).
+answering from rollups alone (UD10).
 
 | Acceptance criterion | Verified by |
 |---|---|
@@ -561,7 +566,7 @@ answering from rollups alone (D10).
 
 #### TH8 — Annotations
 
-D16's write path. Pin a note to a session, a broadcast, or a timestamp on any
+UD16's write path. Pin a note to a session, a broadcast, or a timestamp on any
 timeline. Annotations render as markers on every chart covering their moment,
 appear in exports, and are permanent.
 
@@ -575,7 +580,7 @@ appear in exports, and are permanent.
 
 #### TH9 — Dip explainer and cross-session correlation
 
-D21. Click a dip episode and get: every metric that moved materially inside
+UD21. Click a dip episode and get: every metric that moved materially inside
 its window, ranked by magnitude, relay and client together (largely a
 projection of TM10's per-episode counter deltas) — turning *"your fps dipped"*
 into *"and keyframe drops went 0→7 while ingress loss went 0→1.2%"*. Plus a
@@ -591,7 +596,7 @@ window, with its own confidence stated.
 
 #### TH10 — SQL console
 
-D18, with its cost. `#/sql`: a query editor over the NDJSON partitions,
+UD18, with its cost. `#/sql`: a query editor over the NDJSON partitions,
 results as a table **and** feedable to the chart components so an ad-hoc query
 is plottable. Gated on the flag; default on, per the owner's decision, subject
 to §8 Q1's resolution.
@@ -610,19 +615,19 @@ waiting. Their criteria bind each surface as it ships.
 
 - **Pause** (D-none, Q11). One key freezes every poll and every chart; the
   frozen instant is stated. Nothing moves while it is read.
-- **Watch** (D19). Star a live broadcast; it pins and visibly changes on
+- **Watch** (UD19). Star a live broadcast; it pins and visibly changes on
   escalation. No notifications, no sound, no server state.
 - **Command palette.** ⌘K to jump to a session id, a broadcast key, a code, a
   metric, or a view — the keyboard path through everything TH1 made
   addressable.
-- **Absolute time everywhere historical**, with the timezone shown (D5).
+- **Absolute time everywhere historical**, with the timezone shown (UD5).
 - **Export**: session bundle as JSON; a chart's data as CSV; a finding as
   markdown (TH6), annotations included (TH8).
-- **No layout shift while values tick**, at D14's density.
+- **No layout shift while values tick**, at UD14's density.
 - **Bounded memory** in a tab left open for a day.
 - **Background-throttle honesty.** A resumed tab marks the gap it did not
   observe; it never backfills or draws through it.
-- **Mobile triage** (D17): live list, severity, verdicts and one chart work on
+- **Mobile triage** (UD17): live list, severity, verdicts and one chart work on
   a phone; dense views say they are desktop-only.
 - **Budgets**: first paint < 1 s on a port-forward; 50 broadcasts × 200
   viewers stays interactive; 5 lanes × 2 000 points < 250 ms.
@@ -644,11 +649,11 @@ waiting. Their criteria bind each surface as it ships.
 ## 5. Server-side work this requires
 
 UI requirements that ignore the API they need are wishes. All additive; every
-existing default unchanged (D1).
+existing default unchanged (UD1).
 
 | Need | Chunk | Note |
 |---|---|---|
-| `GET /v1/fields` — catalogue with kind/unit/role/description | TH5 | D8; prevents a forked field list |
+| `GET /v1/fields` — catalogue with kind/unit/role/description | TH5 | UD8; prevents a forked field list |
 | `from`/`to` window + full-resolution opt-in on `GET /v1/sessions/{id}` | TH2 | So a live detail page fetches incrementally instead of re-reading the file per tick |
 | `GET /v1/broadcasts/{key}` — sessions with spans, merged events, relay series | TH4 | Only per-session detail exists today |
 | `GET /v1/broadcasts/{key}/diagnose` — broadcast-scope verdicts over stored data | TH4/TH6 | `Report.Scope` already documents `"broadcast"`; only the live path computes one |
@@ -656,11 +661,11 @@ existing default unchanged (D1).
 | Cursor pagination + server-side sort on the list endpoints | TH3 | Today: `limit` and a clamp |
 | `groupBy=appVersion` + a bucketed trend endpoint | TH7 | `groupKey` has browser/os/resolution/deliveryMode |
 | Fleet timeline projection (severity bands per broadcast over a range) | TH7 | New |
-| `GET /v1/rules` — catalogue; per-session trace on diagnose | TH6 | D20, read-only |
-| Annotations store + CRUD (permanent, beside rollups) | TH8 | D16, the only write path |
-| DuckDB engine wired to `mcp.Options.SQL` + an HTTP query endpoint | TH10 | D18 — see §8 Q1 before building |
-| SSE `/live/stream` with the existing poll as fallback | all live views | D22 |
-| `-retention-days` chart default 14 → 30 | — | D15; chart + README only |
+| `GET /v1/rules` — catalogue; per-session trace on diagnose | TH6 | UD20, read-only |
+| Annotations store + CRUD (permanent, beside rollups) | TH8 | UD16, the only write path |
+| DuckDB engine wired to `mcp.Options.SQL` + an HTTP query endpoint | TH10 | UD18 — see §8 Q1 before building |
+| SSE `/live/stream` with the existing poll as fallback | all live views | UD22 |
+| `-retention-days` chart default 14 → 30 | — | UD15; chart + README only |
 
 Costs worth stating rather than discovering: `GetSession` parses every line of
 a session file per call (a 4-hour session at 2 s ≈ 7 200 lines) — fine for a
@@ -673,17 +678,17 @@ date from the listing that already knows it.
 
 ## 6. Non-goals
 
-- **No new measurement, no new client-side collection** (D3, R28 §7).
+- **No new measurement, no new client-side collection** (UD3, R28 §7).
 - **Not a Prometheus replacement.** Fleet health and alert-shaped questions
   stay Prometheus's; this is per-session forensics beside it.
-- **No alerting, paging or notification infrastructure.** D19's in-tab watch
+- **No alerting, paging or notification infrastructure.** UD19's in-tab watch
   is the whole of it: no rules, no server state, no browser notifications.
-- **No rule tuning from the UI** (D20) — transparency without mutation.
+- **No rule tuning from the UI** (UD20) — transparency without mutation.
 - **No control actions.** Nothing here kicks a viewer, restarts a pod or
   changes a stream. Annotations are the only write, and they describe rather
   than act.
 - **No public exposure of the read surface**, and no external asset fetch
-  (D7).
+  (UD7).
 - **No PII, no new identity.** The obfuscated key stays the only broadcast
   identity the UI handles; `/v1/resolve` stays POST-only, off by default,
   never logged.
@@ -699,14 +704,14 @@ date from the listing that already knows it.
 - **Scope.** Eleven chunks is a lot. Mitigation: the wave structure, and the
   fact that TH1+TH2 alone close Q2 and the dead-link defect and are worth
   shipping on their own.
-- **D18's cgo dependency** is the one decision that changes the module's build
+- **UD18's cgo dependency** is the one decision that changes the module's build
   properties — zero third-party deps and `CGO_ENABLED=0` into
   `distroless/static` today. §8 Q1 must resolve before TH10 starts.
 - **ECharts' imperative lifecycle inside React** is the classic source of
   leaked instances and stale closures on hot reload. Mitigated by owning the
-  wrapper hook (D11) rather than inheriting one, and by a test that mounts and
+  wrapper hook (UD11) rather than inheriting one, and by a test that mounts and
   unmounts every chart surface.
-- **Density versus honesty.** D14's console packs more onto a screen; the
+- **Density versus honesty.** UD14's console packs more onto a screen; the
   no-layout-shift and absence-is-never-blank rules get harder to hold, not
   easier, and they are exactly what a dense grid tempts you to break.
 - **A second surface for the same rules.** R28 §8 already names the cost of
@@ -723,21 +728,21 @@ date from the listing that already knows it.
   and windowed; the criterion asserting `/live` still opens no session file is
   what keeps the boundary from eroding.
 - **Trend queries over permanent rollups** grow with fleet age, not with the
-  raw window. Server-side bucketing (D4) is the bound.
+  raw window. Server-side bucketing (UD4) is the bound.
 
 ---
 
 ## 8. Open questions
 
-1. **D18's build cost.** Does the deployed image take a cgo DuckDB dependency
+1. **UD18's build cost.** Does the deployed image take a cgo DuckDB dependency
    and leave `distroless/static`, with `go build` on a fresh clone staying
    cgo-free and reporting the tool unavailable (this document's
    recommendation) — or does the console stay behind a default-**off** flag as
-   R28 D11 had it? The owner has chosen default-on; this asks only how to pay
+   D11 had it? The owner has chosen default-on; this asks only how to pay
    for it.
-2. **D22 (SSE) is my call, not the owner's.** Flagged for objection: it adds
+2. **UD22 (SSE) is my call, not the owner's.** Flagged for objection: it adds
    an endpoint and reconnect logic in exchange for not re-sending the fleet
-   projection every 2 s at D12's scale.
+   projection every 2 s at UD12's scale.
 3. **How much of TH4's relay lane earns its keep at replicas 1?** Re-home
    markers matter at replicas ≥ 2; at replicas 1 the lane is ingress loss and
    drop counters, which is still useful but much smaller.

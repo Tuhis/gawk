@@ -622,7 +622,7 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   on reload, "history starts when the page is opened") — best during the
   incident, worthless after it; (3) cards render `finding.verdict` as a bare
   sentence, so `Evidence`/`Confidence`/`Action`/`Passed`/`Unavailable` —
-  D6/D7's whole provenance apparatus — never reach a screen. **The finding that
+  R28's D6/D7 whole provenance apparatus — never reach a screen. **The finding that
   shaped the design**: `store.ReadSession` flushes the open writer so "a read
   during a live session sees what has been appended", so the full-resolution
   timeline of a **live** session is already on disk and already served — the
@@ -652,10 +652,12 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   the cross-session half must state its own confidence, since two viewers
   dipping together is evidence about a shared leg, not proof of one). Grafana
   **deferred again**, so R9 M8 stays open and TH7 is the home for trends.
-  Chunks **TH1–TH11** in three waves — TH1 routing/permalinks, TH2 session
+  Chunks **TH1–TH11** in three waves (docs/36's own decisions are numbered
+  **UD1–UD22** — "UI decision" — so a bare `D<n>` in that doc always means
+  R28's, which numbered its own D1–D17) — TH1 routing/permalinks, TH2 session
   detail, TH3 history browser · TH4 multi-lane broadcast timeline, TH5 metric
   explorer + a server-owned field catalogue (the UI must never fork
-  `schema.ViewerFields` — D15 exists because a second copy drifts), TH6
+  `schema.ViewerFields` — R28's D15 exists because a second copy drifts), TH6
   verdicts/evidence/rule catalogue · TH7 fleet timeline + trends, TH8
   annotations, TH9 dip explainer, TH10 SQL console, TH11 ergonomics.
   **Named risk worth not re-deriving: the SQL console is not a flag flip** —
