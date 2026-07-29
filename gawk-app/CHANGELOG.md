@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.38.2...gawk-app-v0.39.0) (2026-07-29)
+
+
+### Features
+
+* **app:** viewer playback presets and settings panel (R32) ([#202](https://github.com/Tuhis/gawk/issues/202)) ([77f44dc](https://github.com/Tuhis/gawk/commit/77f44dcc717ee12c8dc2b215eeb28e83691872ff))
+
 ## [0.38.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.38.1...gawk-app-v0.38.2) (2026-07-29)
 
 
