@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.4.0...gawk-telemetry-v1.5.0) (2026-07-29)
+
+
+### Features
+
+* **telemetry:** R31 — telemetry UI v2, a purpose-built diagnosis SPA ([#205](https://github.com/Tuhis/gawk/issues/205)) ([0fad139](https://github.com/Tuhis/gawk/commit/0fad1397b13c27242282ef2cfcdf03ccecc10542))
+
 ## [1.4.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.3.1...gawk-telemetry-v1.4.0) (2026-07-29)
 
 

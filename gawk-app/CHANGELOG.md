@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.39.0...gawk-app-v0.39.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **app:** tap-to-unmute overlay and volume/mute controls miss Safari 'interrupted' audio state ([a8c27b5](https://github.com/Tuhis/gawk/commit/a8c27b535bb361bdda318fd855573e53f8475b42))
+
 ## [0.39.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.38.2...gawk-app-v0.39.0) (2026-07-29)
 
 
