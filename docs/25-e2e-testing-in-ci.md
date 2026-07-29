@@ -505,6 +505,36 @@ never built and Xvfb (b) never needed.
     Test-the-test: seeding the toggle off makes all four assertions fire
     (`deliveryMode = datagrams`, `carrierStreams = 0`, no rotation, no
     records) through the retry, and the run exits 1.
+17. **Striped viewer pass + the large-frame fixture (2026-07-29, R30
+    docs/35 §12)** — the default fixture's ~2–4-chunk deltas sit under one
+    stripe share, so the R30 controller correctly engages nothing against
+    it and a striped pass would have asserted the designed no-op. A second
+    committed clip (`fixture.TSLarge`: 720p temporal noise, deltas
+    p10=12/median=15/max=20 chunks, property pinned by
+    `TestLargeFixtureDeltasExceedBurstThreshold`) published via
+    `gawk-pubsim -fixture large` gives tier-1 a **third** publisher and a
+    striped viewer pass: `gawk:stripe-mode` seeded `'on'` (a zero-loss
+    loopback never fires the auto detector), `assertStripeFlow` checking
+    capability, `stripeNeeded ≥ 2`, `stripeActive ≥ 2`, zero leg deaths,
+    frames completing through the stripe and bounded incompletes. The base
+    pass doubles as the reverse control (`auto` on small frames stays
+    unstriped — its unchanged assertions prove the hold). Tier 2 re-runs
+    the external browser pass striped (`GAWK_E2E_STRIPE`, quoted — bare
+    `on` is YAML boolean true) against a large-fixture broadcast through
+    the kind NodePort, meeting real kube-proxy 5-tuple hashing, and
+    `cluster-assert.sh` asserts the durable engagement counters
+    (`stripeTransitions` + `stripeSuppressedDatagrams` summed across pods)
+    because the browser session is closed by the time the script runs.
+    Burst-buffer PHYSICS stay in Go
+    (`gawk-server/internal/transport/stripe_loss_test.go`) for the same
+    determinism reason as finding 16's loss ownership.
+    Test-the-test came free: the first local run failed red through the
+    retry on `assertFlow`'s codec pin — the 720p clip's SPS is
+    `avc1.42C01F` (baseline level 3.1) where the small clip is level 1.3 —
+    proving the shared flow assertions run inside the striped pass; the
+    pass now pins the large clip's codec exactly, like the default pin, so
+    a regenerated clip that shifts profile/level fails loudly rather than
+    decoding as a surprise.
 
 ## Verification plan (the meta-question: how we know the E2E itself works)
 

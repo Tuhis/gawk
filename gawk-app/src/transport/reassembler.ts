@@ -87,6 +87,14 @@ export interface ReassemblerStats {
   parityChunksReceived: number;
   framesRecoveredByParity: number;
   parityRecoveryFailures: number;
+  // R30 (docs/35 §12 finding 2): data chunks arriving for a frame at or
+  // behind the emit watermark, dropped WITHOUT creating an assembly. Rare
+  // pre-R30 (one connection delivers a frame nearly atomically); routine
+  // under striping, where eager parity recovery races the slowest leg and
+  // the raced share then arrives behind the watermark. Before this guard,
+  // each such share built a phantom assembly that died as
+  // framesDroppedIncomplete — ~130/window on a clean loopback.
+  staleChunks: number;
   // R29 finding 3 (docs/34): frames given up on that HELD parity which could
   // not cover their erasures. parityRecoveryFailures cannot see these — the
   // solve is never attempted — so it read 0 across a live session that
@@ -115,12 +123,25 @@ interface Assembly {
   frameBytes: number;
 }
 
+// How far (in emitted frames) a RECOVERED frame's arrival accounting is
+// deferred, waiting for the chunks the recovery raced. Half a GOP at the
+// 500 ms cadence — far beyond any leg skew, far short of the detector's
+// 30 s window caring.
+const RECOVERED_ACCOUNTING_WINDOW = 16;
+
 export class Reassembler {
   private cb: ReassemblerCallbacks;
   private assemblies = new Map<number, Assembly>(); // insertion order = arrival order
   private lastConfigBytes: Uint8Array | null = null;
   private lastAudioConfigBytes: Uint8Array | null = null;
   private lastEmittedFrameId: number | null = null;
+  // R30 (docs/35 §12 finding 2): accounting for parity-RECOVERED frames,
+  // held open so stragglers the recovery raced can be credited as the
+  // deliveries they are. Reporting arrived < expected at recovery time
+  // called a raced stripe leg a lossy link — which is exactly the false
+  // signal the burst-threshold-loss rule would then fire on. Keyed by
+  // frameId; rolled by watermark distance at each emit.
+  private recoveredLedger = new Map<number, { expected: number; arrived: number }>();
 
   private stats: ReassemblerStats = {
     datagramsReceived: 0,
@@ -136,6 +157,7 @@ export class Reassembler {
     framesRecoveredByParity: 0,
     parityRecoveryFailures: 0,
     parityInsufficient: 0,
+    staleChunks: 0,
   };
 
   constructor(callbacks: ReassemblerCallbacks) {
@@ -283,6 +305,23 @@ export class Reassembler {
 
     let assembly = this.assemblies.get(header.frameId);
     if (!assembly) {
+      // R30 (docs/35 §12 finding 2): a chunk for an already-emitted frame
+      // must not build a phantom assembly — the delta-chunk mirror of the
+      // guard pushParity has had since R29. Keyframes bypass (a datagram
+      // keyframe resets the watermark by design); frames with a LIVE
+      // assembly behind the watermark still fill and late-drop as before.
+      if (
+        !header.keyframe &&
+        this.lastEmittedFrameId !== null &&
+        !frameIdAhead(header.frameId, this.lastEmittedFrameId)
+      ) {
+        this.stats.staleChunks++;
+        // If the frame completed by recovery, this straggler is the
+        // delivery the solve raced — credit it before accounting reports.
+        const held = this.recoveredLedger.get(header.frameId);
+        if (held && held.arrived < held.expected) held.arrived++;
+        return;
+      }
       this.evictIfFull();
       assembly = {
         keyframe: header.keyframe,
@@ -314,7 +353,7 @@ export class Reassembler {
 
     if (assembly.received === assembly.chunkCount) {
       this.assemblies.delete(header.frameId);
-      this.completeFrame(header.frameId, assembly);
+      this.completeFrame(header.frameId, assembly, false);
       return;
     }
     this.tryRecover(header.frameId, assembly);
@@ -422,11 +461,21 @@ export class Reassembler {
     assembly.bytes = bytes;
     this.assemblies.delete(frameId);
     this.stats.framesRecoveredByParity++;
-    this.completeFrame(frameId, assembly);
+    this.completeFrame(frameId, assembly, true);
   }
 
-  private completeFrame(frameId: number, assembly: Assembly): void {
-    this.cb.onFrameAccounting?.(assembly.chunkCount, assembly.arrived);
+  private completeFrame(frameId: number, assembly: Assembly, recovered: boolean): void {
+    if (recovered) {
+      // Deferred (docs/35 §12 finding 2): the chunks this recovery raced may
+      // still be in flight on a slower stripe leg; report only once the
+      // watermark has moved far enough that a straggler is genuine loss.
+      this.recoveredLedger.set(frameId, {
+        expected: assembly.chunkCount,
+        arrived: assembly.arrived,
+      });
+    } else {
+      this.cb.onFrameAccounting?.(assembly.chunkCount, assembly.arrived);
+    }
     // Late delta frames are useless (their reference frame was already
     // superseded); keyframes are self-contained and always emitted. "Late"
     // is serial (wrap-aware): a frameId just past the uint32 rollover is
@@ -448,12 +497,35 @@ export class Reassembler {
     }
     this.lastEmittedFrameId = frameId;
     this.stats.framesCompleted++;
+    this.rollRecoveredLedger(frameId);
     this.cb.onFrame({
       frameId,
       keyframe: assembly.keyframe,
       timestampUs: assembly.timestampUs,
       data,
     });
+  }
+
+  // Reports (and drops) deferred recovered-frame accounting once the emit
+  // watermark is RECOVERED_ACCOUNTING_WINDOW frames past it — stragglers
+  // after that are genuine loss, not leg skew. Serial arithmetic throughout;
+  // a broadcaster restart's backwards jump strands at most a window of old
+  // entries, which the size cap below retires with their then-current tally.
+  private rollRecoveredLedger(watermark: number): void {
+    for (const [id, held] of this.recoveredLedger) {
+      const distance = (watermark - id) >>> 0;
+      if (frameIdAhead(watermark, id) && distance >= RECOVERED_ACCOUNTING_WINDOW) {
+        this.recoveredLedger.delete(id);
+        this.cb.onFrameAccounting?.(held.expected, held.arrived);
+      }
+    }
+    while (this.recoveredLedger.size > 4 * RECOVERED_ACCOUNTING_WINDOW) {
+      const oldest = this.recoveredLedger.keys().next();
+      if (oldest.done) break;
+      const held = this.recoveredLedger.get(oldest.value)!;
+      this.recoveredLedger.delete(oldest.value);
+      this.cb.onFrameAccounting?.(held.expected, held.arrived);
+    }
   }
 
   private evictIfFull(): void {

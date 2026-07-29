@@ -668,20 +668,38 @@ loadgen striped-fraction sweep against R17 baselines, and the §10 verdicts.
 
 Deviations from the design, recorded rather than silently applied:
 
-1. **The tier-1 browser striped pass was replaced by a Go burst-threshold
-   test** (`internal/transport/stripe_loss_test.go`). §8 planned a
-   `run.mjs` pass, but the e2e fixture's delta frames are ~2–4 chunks —
-   under one share — so the controller correctly holds (`stripeNeeded < 2`,
-   §5.4) and a browser pass would assert the designed no-op, not the
-   mechanism. The Go test controls frame sizes (18 chunks) and models the
-   measured buffer (8-deep, evict-oldest, per 5-tuple — legs get their own
-   queues for free) in front of the real relay over real WebTransport:
-   control 8.3 % chunk loss / 13 of 60 frames complete, striped ×3 60/60 at
-   0.0 %, zero mismapped, race-clean ×2. The docs/24 finding-10 control lane
-   is asserted (the test fails if the forwarder does not bite). The browser
-   side's own machinery — 0x0F gate, transition ordering, controller,
-   menu — is unit/jsdom-covered; the full browser engage path is exactly
-   what ST1 measures on the real buffer.
+1. **The burst-threshold physics live in a Go test, and the browser engage
+   path got its own pass via a second fixture** (revised 2026-07-29, second
+   pass). §8 planned one `run.mjs` striped pass; the first implementation
+   dropped it because the e2e fixture's delta frames are ~2–4 chunks — under
+   one share — so the controller correctly holds (`stripeNeeded < 2`, §5.4)
+   and the pass would have asserted the designed no-op. Two changes closed
+   the gap from both sides:
+   - **Physics**: `internal/transport/stripe_loss_test.go` controls frame
+     sizes (18 chunks) and models the measured buffer (8-deep, evict-oldest,
+     per 5-tuple — legs get their own queues for free) in front of the real
+     relay over real WebTransport: control 8.3 % chunk loss / 13 of 60
+     frames complete, striped ×3 60/60 at 0.0 %, zero mismapped, race-clean.
+     The docs/24 finding-10 control lane is asserted (the test fails if the
+     forwarder does not bite).
+   - **Browser engage path**: `fixture.TSLarge` (720p temporal noise,
+     deltas p10=12 / median=15 / max=20 chunks —
+     `TestLargeFixtureDeltasExceedBurstThreshold` pins the property so a
+     regenerated clip cannot silently drop under the threshold, published by
+     `gawk-pubsim -fixture large`) gives tier-1 a striped pass on its own
+     third broadcast: `gawk:stripe-mode` seeded `'on'`, asserting
+     `stripeCapable`, `stripeNeeded ≥ 2`, `stripeActive ≥ 2`, zero leg
+     deaths, frames completing THROUGH the stripe, and bounded incompletes
+     on the clean loopback. The base pass doubles as the control in the
+     other direction: `auto` against small frames stays unstriped. Tier-2
+     additionally runs the external browser pass striped against a
+     large-fixture broadcast through the kind NodePort — the §5.7 cross-pod
+     claim's first meeting with real kube-proxy hashing — and
+     `cluster-assert.sh` asserts the durable engagement counters
+     (`stripeTransitions`, `stripeSuppressedDatagrams`) across pods.
+   What remains manual is unchanged in kind: the real Firefox buffer on the
+   affected path is ST1's (docs/35 §13) — every CI leg above runs Chrome
+   against a modeled or zero-loss link.
 2. **Parity level for sizing is approximated, not negotiated**: the client
    cannot see the fleet's per-frame emission level, so any parity in the
    session sizes as the full k = 2 (`viewer.ts` publishStats) —
@@ -718,6 +736,53 @@ user-visible misbehaves.
 Recorded second (smaller): the `gawk-server/README.md` flags table is
 missing `-parity-default` and `-live-edge-audio-on-reliable-stream`; ST3's
 plumbing criterion folds the two rows in with the new flag's.
+
+### Finding 2 — eager parity recovery races the slowest leg, and the raced chunks became phantom frames (2026-07-29)
+
+Found by the striped e2e pass's first local run — the docs/24 finding-10
+lesson working as designed: the pass failed red on a ZERO-loss loopback with
+`framesDroppedIncomplete` rising ~130 per capture window against a 30 fps
+stream, and the diagnostics said why — `framesRecoveredByParity: 171` of 224
+completions, on a link that lost nothing.
+
+The mechanism is a composition of two R29-era behaviours that were each fine
+alone. Recovery is **eager by design** (docs/34: waiting adds latency to
+exactly the frames it saves), so it fires the moment erasures ≤ symbols held
+— treating IN-FLIGHT chunks as erasures. On one connection that distinction
+is academic: a frame's datagrams arrive back-to-back, so "outstanding at
+parity time" means lost. Striping breaks the assumption: each frame's tail
+chunks sit on different legs with a few ms of mutual skew, so recovery
+routinely wins the race, completes the frame, and deletes the assembly —
+whereupon the slow leg's share arrives to nothing. `pushChunk` (unlike
+`pushParity`, guarded since R29) happily built a NEW assembly for the
+already-emitted frame, which could never complete and died as
+`framesDroppedIncomplete` at the next eviction. One phantom per recovery,
+~every frame while striped.
+
+Fixed test-first, viewer-only, two halves in `reassembler.ts`:
+
+- **The guard**: a non-keyframe chunk whose frame sits at or behind the emit
+  watermark, with no live assembly, is dropped at the door and counted in a
+  new `staleChunks` stat — the delta mirror of `pushParity`'s R29 guard.
+  Keyframes bypass (the datagram-keyframe restart path resets the watermark
+  by design), and a frame whose assembly BEGAN before the watermark passed
+  it still fills and late-drops exactly as before — `framesDroppedLate`'s
+  meaning narrows to that path, pinned by an updated ordering-policy test.
+- **Deferred accounting**: a RECOVERED frame's `onFrameAccounting` report is
+  held in a small ledger (`RECOVERED_ACCOUNTING_WINDOW` = 16 emitted frames)
+  and stale chunks credit it, so a raced leg's share counts as the delivery
+  it is. Without this, every recovery reported its raced chunks as *lost*,
+  the striped detector read ~12 % large-frame loss on a clean link, and the
+  telemetry `burst-threshold-loss` rule's "active and still losing" branch
+  would have fired on every healthy striped session — a false verdict
+  manufactured by the instrumentation itself. Reporting stays truthful for
+  genuine loss: a straggler that never arrives is reported missing when the
+  watermark rolls past.
+
+`framesRecoveredByParity` deliberately keeps counting these solves — it
+honestly reports work done — so on striped sessions it reads as "recoveries
+(incl. skew races)", not pure loss repair; the accounting fields are the
+loss-truth surface.
 
 ---
 

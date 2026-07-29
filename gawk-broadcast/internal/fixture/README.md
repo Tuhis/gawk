@@ -43,6 +43,30 @@ themselves stay a V2 trial check and a manual verification on the gaming PC.
 Using x264 here is **not** a software-encode rung sneaking back in (Decision 4's
 refusal is about what the app *runs*, not what generates test data).
 
+## `sample-large.ts` — the R30 large-frame fixture (docs/35 §12)
+
+Same container and encoder invariants as `sample.ts` (the table above holds
+verbatim), but 1280x720 **temporal noise** at ~5 Mbps CBR — high-entropy on
+purpose, because synthetic test patterns compress under the ~8-chunk burst
+threshold (docs/34 finding 4) and a striped viewer then correctly engages
+nothing. Delta frames measure p10=12 / median=15 / max=20 chunks;
+`TestLargeFixtureDeltasExceedBurstThreshold` pins the property so a
+regenerated clip cannot silently drop under the threshold. Published by
+`gawk-pubsim -fixture large`; used ONLY by the striped e2e pass — every other
+tier-1 step keeps `sample.ts` so its cost and flake profile stay untouched.
+
+Regenerated with:
+
+```sh
+ffmpeg -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=2" \
+  -vf "noise=alls=40:allf=t+u" \
+  -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline \
+  -b:v 5M -minrate 5M -maxrate 5M -bufsize 500k \
+  -bf 0 -g 15 -keyint_min 15 -sc_threshold 0 \
+  -x264-params "repeat-headers=1:annexb=1" \
+  -f mpegts sample-large.ts
+```
+
 ## `sample-audio.opus` — the Opus fixture (R25, docs/28 Decision 12)
 
 `sample-audio.opus` is 101 Opus packets — 48 kHz stereo, 20 ms each (~2 s),

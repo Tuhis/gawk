@@ -74,6 +74,11 @@ var ViewerFields = map[string]Kind{
 	// cleanliness is the burst-threshold shape (docs/34 finding 4), and
 	// carrying both is what lets diagnose() argue WHY striping did or did
 	// not engage from a stored session.
+	// docs/35 §12 finding 2: chunks rejected behind the emit watermark —
+	// routine leg-skew stragglers while striped, phantom-frame evidence
+	// anywhere else.
+	"staleChunks": KindNumber,
+
 	"stripeMode":         KindString,
 	"stripeCapable":      KindBool,
 	"stripeActive":       KindNumber,
