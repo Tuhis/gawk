@@ -748,8 +748,9 @@ date from the listing that already knows it.
      `ErrNoEngine` and still describes what *would* be queryable — "there is no
      engine here" and "there is nothing to query" are different facts.
    - The image is `CGO_ENABLED=1 go build -tags duckdb` onto
-     `gcr.io/distroless/base-debian12:nonroot` (base, not static: a cgo binary
-     needs a libc). Still distroless, still nonroot, still no shell.
+     `gcr.io/distroless/cc-debian13:nonroot`, built by `golang:1.26-trixie`.
+     Still distroless, still nonroot, still no shell. **Both halves of that
+     pairing were wrong on the first attempt and cost a deploy** — see §9.3.
    - `-query-sql` keeps its role as the gate and flips to default **on**;
      `mcp.Options.SQL` finally has a producer, having accepted one since R28
      with nothing ever supplying it.
@@ -868,7 +869,34 @@ inside TH11's "first paint < 1 s on a port-forward" for a page served from the
 same binary with no network round trip, and the no-external-fetch test confirms
 the bundle is genuinely self-contained (UD7).
 
-### 9.3 Still owner-pending
+### 9.3 The image built green three times and could not start
+
+Recorded because it is the sharpest lesson in this item, and because the
+mistake was mine twice over: **`docker build` succeeding is not evidence that
+the image RUNS.** Both failures below are dynamic-linker failures — the
+compiler is happy, the layers are valid, and nothing shows up until the
+container's first start.
+
+1. **`distroless/base` has no libstdc++.** DuckDB is a C++ library, so the cgo
+   binary links libstdc++/libgcc as well as glibc, and `base` carries only the
+   latter. Symptom in the cluster:
+   `error while loading shared libraries: libstdc++.so.6`. Fix: `cc`, which is
+   the distroless variant that exists for exactly this.
+2. **The builder's glibc was newer than the runtime's.** `golang:1.26` is
+   currently Debian trixie (glibc 2.41); `-debian12` is bookworm (glibc 2.36).
+   A cgo binary links against the BUILDER's glibc, so the two floating tags
+   silently produced an unrunnable pair. Symptom:
+   `libm.so.6: version 'GLIBC_2.38' not found`. Fix: pin both sides to the same
+   Debian release (`golang:1.26-trixie` + `cc-debian13`) so the constraint is
+   named rather than left to two independent defaults.
+
+The durable half of the fix is in CI: the `docker` job now **starts every image
+it builds and requires it to answer a request**, and for the telemetry image
+additionally asserts `/v1/meta` reports `"sql":true` and that a trivial query
+returns — which is the difference between "the binary started" and "the engine
+this whole decision was about actually loaded".
+
+### 9.4 Still owner-pending
 
 - **An on-hardware pass** against the homelab fleet: the multi-lane timeline
   with a real broadcaster and ≥ 3 viewers, the SSE feed through the internal

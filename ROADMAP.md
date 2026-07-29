@@ -2513,9 +2513,12 @@ worth shipping on their own.
 - **The SQL console was not a flag flip** — and the owner chose to pay for it
   (docs/36 §8 Q1). `internal/sqlengine` splits on a `duckdb` build tag: a fresh
   clone stays cgo-free and the console says plainly that this build has no
-  engine, while the deployed image is `-tags duckdb` on `distroless/base`. The
-  module gained its first third-party dependency and its first `go.sum`, and
-  `mcp.Options.SQL` finally has a producer after accepting one since R28.
+  engine, while the deployed image is `-tags duckdb` on `distroless/cc-debian13`
+  (`cc` for the C++ runtime DuckDB needs, and pinned to the builder's Debian
+  release — both were wrong on the first attempt and cost a deploy, docs/36
+  §9.3). The module gained its first third-party dependency and its first
+  `go.sum`, and `mcp.Options.SQL` finally has a producer after accepting one
+  since R28.
 - **SSE was the author's call and the owner kept it** (docs/36 UD22). The
   stream sends only changes — the projection is hashed and an identical one is
   skipped — so an idle fleet costs a heartbeat; the client falls back to the
