@@ -1,7 +1,15 @@
-// R30 ST5 (docs/35 §5.4–§5.5): the stripe controller. The detector must fire
-// on the finding-4 signature and ONLY on it; sizing must key on burst length,
-// never on a loss rate; engagement is sticky, growth dwelled, fallback backed
-// off.
+// R30 ST5 (docs/35 §5.4–§5.5), as revised by finding 6.
+//
+// Engagement is no longer detector-gated: a live-edge viewer starts striped at
+// STRIPE_START_LEGS and only ever grows, and ONLY mode 'off' releases a
+// stripe. The finding-4 burst signature survives as an OBSERVATION
+// (`snapshot().shapeDetected`) — the answer to "is striping earning its
+// connection cost here", which is what the kill criteria are written against —
+// and this file pins both halves separately: the signature's logic, and the
+// engagement policy that no longer consults it.
+//
+// Sizing must still key on burst length, never on a loss rate; growth stays
+// dwelled; a leg-death fallback still backs off before re-dialling.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -9,6 +17,7 @@ import {
   STRIPE_DETECT_WINDOW_MS,
   STRIPE_GROW_DWELL_MS,
   STRIPE_REENGAGE_BACKOFF_MS,
+  STRIPE_START_LEGS,
   StripeController,
   getStripeMode,
   setStripeMode,
@@ -24,9 +33,16 @@ function controller(): StripeController {
   return c;
 }
 
+// STRIPE_START_LEGS equals MAX_STRIPE_LEGS today, so the grow path is only
+// reachable from a lower floor. Production always uses the default.
+function growable(startLegs = 2): StripeController {
+  const c = new StripeController(now, startLegs);
+  c.noteCapable(true);
+  return c;
+}
+
 // Feed `seconds` of a synthetic stream: 30 fps, alternating large (18-chunk)
-// and small (4-chunk) frames, with the given per-chunk loss applied to large
-// and small frames respectively (loss expressed as lost chunks per frame).
+// and small (4-chunk) frames, with the given per-frame lost-chunk counts.
 function feed(
   c: StripeController,
   seconds: number,
@@ -61,102 +77,103 @@ describe('stripe mode module state', () => {
   });
 });
 
-describe('StripeController — auto detector (finding-4 signature)', () => {
-  it('fires on threshold-shaped loss: large frames lossy, small frames clean', () => {
+describe('burst signature (observation, not a gate)', () => {
+  it('reports the shape when large frames are lossy and small frames are clean', () => {
     const c = controller();
     // ~5.5% large-frame chunk loss (1 of 18), zero small-frame loss.
     feed(c, 10, { largeLostPerFrame: 1 });
-    expect(c.decide()).toBeGreaterThanOrEqual(3); // 18+2 parity? no parity noted: ceil(18/6)=3
-    expect(c.snapshot().engaged).toBe(true);
+    expect(c.snapshot().shapeDetected).toBe(true);
   });
 
-  it('does NOT fire on uniform loss (small frames lossy too — striping cannot help)', () => {
+  it('does not report it on uniform loss — striping cannot help that', () => {
     const c = controller();
-    // ~5.5% loss on large frames AND ~25% on small — uniform-loss shape.
     feed(c, 10, { largeLostPerFrame: 1, smallLostPerFrame: 1 });
-    expect(c.decide()).toBe(0);
-    expect(c.snapshot().engaged).toBe(false);
+    expect(c.snapshot().shapeDetected).toBe(false);
   });
 
-  it('does NOT fire on a clean link', () => {
+  it('does not report it on a clean link', () => {
     const c = controller();
     feed(c, 10);
-    expect(c.decide()).toBe(0);
+    expect(c.snapshot().shapeDetected).toBe(false);
   });
 
-  it('does NOT fire below the evidence floor', () => {
+  it('does not report it below the evidence floor', () => {
     const c = controller();
-    // One second of traffic: lossy shape, but nowhere near 500 large chunks…
-    // actually 15 frames × 18 = 270 < 500.
-    feed(c, 1, { largeLostPerFrame: 2 });
-    expect(c.decide()).toBe(0);
+    feed(c, 1, { largeLostPerFrame: 2 }); // 15 × 18 = 270 large chunks < 500
+    expect(c.snapshot().shapeDetected).toBe(false);
   });
 
-  it('does NOT fire without small-frame evidence (shape unprovable)', () => {
+  it('does not report it when every frame is the same size — no shape to measure', () => {
     const c = controller();
     for (let s = 0; s < 10; s++) {
-      for (let f = 0; f < 30; f++) c.observeFrame(18, 17); // large only
+      for (let f = 0; f < 30; f++) c.observeFrame(18, 17);
       nowMs += 1000;
     }
-    expect(c.decide()).toBe(0);
+    expect(c.snapshot().shapeDetected).toBe(false);
   });
 
   it('forgets loss outside the detector window', () => {
     const c = controller();
     feed(c, 10, { largeLostPerFrame: 1 });
-    expect(c.decide()).toBeGreaterThanOrEqual(2);
-    // Fresh controller state via fallback, then a long clean stretch.
-    c.noteActive(2);
-    c.noteActive(0); // fallback clears engagement
-    nowMs += STRIPE_REENGAGE_BACKOFF_MS + STRIPE_DETECT_WINDOW_MS + 1000;
-    feed(c, 31); // clean, and long enough to evict every lossy bucket
-    expect(c.decide()).toBe(0);
+    expect(c.snapshot().shapeDetected).toBe(true);
+    nowMs += STRIPE_DETECT_WINDOW_MS + 1000;
+    feed(c, 31); // clean, long enough to evict every lossy bucket
+    expect(c.snapshot().shapeDetected).toBe(false);
   });
 });
 
-describe('StripeController — manual on', () => {
-  it('engages from size alone once enough frames are seen', () => {
-    setStripeMode('on');
+describe('engagement policy (finding 6)', () => {
+  it('starts striped at the floor with no evidence at all', () => {
     const c = controller();
-    feed(c, 3);
-    expect(c.decide()).toBe(3); // ceil(18/6)
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
+    expect(c.snapshot().engaged).toBe(true);
   });
 
-  it('holds while frames fit one share (nothing to split)', () => {
-    setStripeMode('on');
+  it('starts striped on a perfectly clean link — the shape does not gate it', () => {
     const c = controller();
-    feed(c, 3, { largeChunks: 9 }); // p99 = 9 → ceil(9/6) = 2… so use 6-chunk frames
-    const small = new StripeController(now);
-    small.noteCapable(true);
-    for (let s = 0; s < 3; s++) {
-      for (let f = 0; f < 30; f++) small.observeFrame(5, 5);
-      nowMs += 1000;
-    }
-    expect(small.decide()).toBe(0);
+    feed(c, 10);
+    expect(c.snapshot().shapeDetected).toBe(false);
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
   });
 
-  it('never engages without the capability bit', () => {
-    setStripeMode('on');
+  it('never engages without the relay capability bit (covers reliable/DVR too)', () => {
+    // viewer.ts withholds the capability for reliable/DVR delivery, so this is
+    // the same code path as "not in live-edge mode".
     const c = new StripeController(now);
     c.noteCapable(false);
-    feed(c, 5);
+    feed(c, 5, { largeLostPerFrame: 1 });
     expect(c.decide()).toBe(0);
+    expect(c.snapshot().engaged).toBe(false);
   });
 
   it('never engages in off mode, and a live off releases an engaged stripe', () => {
-    setStripeMode('on');
     const c = controller();
-    feed(c, 3);
-    expect(c.decide()).toBe(3);
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
     setStripeMode('off');
     expect(c.decide()).toBe(0);
+    expect(c.snapshot().engaged).toBe(false);
+  });
+
+  it('re-engages after an off→auto flip: only the user can keep it off', () => {
+    const c = controller();
+    setStripeMode('off');
+    expect(c.decide()).toBe(0);
+    setStripeMode('auto');
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
+  });
+
+  it('never drops below the floor, however clean the link becomes', () => {
+    const c = controller();
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
+    feed(c, 30, { largeChunks: 3 }); // tiny frames: sized need is 1
+    expect(c.snapshot().neededNow).toBe(1);
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
   });
 });
 
-describe('StripeController — sizing and growth', () => {
+describe('sizing and growth above the floor', () => {
   it('sizes from the p99 burst plus the active parity level', () => {
-    setStripeMode('on');
-    const c = controller();
+    const c = growable(1);
     c.noteParityActive(2);
     // 16-chunk frames + 2 parity = 18 → ceil(18/6) = 3.
     feed(c, 3, { largeChunks: 16 });
@@ -164,11 +181,9 @@ describe('StripeController — sizing and growth', () => {
   });
 
   it('grows only after the dwell, and never shrinks in-session', () => {
-    setStripeMode('on');
-    const c = controller();
-    feed(c, 3, { largeChunks: 12 }); // ceil(12/6) = 2
+    const c = growable(2);
+    feed(c, 3, { largeChunks: 12 }); // ceil(12/6) = 2 — at the floor
     expect(c.decide()).toBe(2);
-    c.noteActive(2);
     // Frames grow to 20 chunks → needed 4; the first decides stay at 2…
     feed(c, 2, { largeChunks: 20 });
     expect(c.decide()).toBe(2);
@@ -176,30 +191,39 @@ describe('StripeController — sizing and growth', () => {
     nowMs += STRIPE_GROW_DWELL_MS;
     feed(c, 1, { largeChunks: 20 });
     expect(c.decide()).toBe(4);
-    // Frames shrink again: the width stays (grow-only; reconnect resets).
+    // Frames shrink again: the width stays (grow-only).
     feed(c, 11, { largeChunks: 6 });
     expect(c.decide()).toBe(4);
   });
 
+  it('takes a larger measured need immediately at first engagement', () => {
+    const c = growable(2);
+    feed(c, 3, { largeChunks: 20 }); // ceil(20/6) = 4 > floor 2
+    expect(c.decide()).toBe(4);
+  });
+
   it('caps at MAX_STRIPE_LEGS however large the frames', () => {
-    setStripeMode('on');
-    const c = controller();
+    const c = growable(1);
     feed(c, 3, { largeChunks: 60 });
     expect(c.decide()).toBe(MAX_STRIPE_LEGS);
   });
+
+  it('does not grow on an unsized window — missing evidence is not a measurement', () => {
+    const c = growable(2);
+    expect(c.decide()).toBe(2);
+    nowMs += STRIPE_GROW_DWELL_MS + 1000; // time passes, no frames observed
+    expect(c.decide()).toBe(2);
+  });
 });
 
-describe('StripeController — fallback backoff', () => {
-  it('backs off after a leg-death fallback, then re-engages', () => {
-    setStripeMode('on');
+describe('leg-death fallback', () => {
+  it('backs off after a fallback, then re-engages at the floor on its own', () => {
     const c = controller();
-    feed(c, 3);
-    expect(c.decide()).toBe(3);
-    c.noteActive(3);
-    c.noteActive(0); // leg death: transport fell back
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
+    c.noteActive(STRIPE_START_LEGS);
+    c.noteActive(0); // leg death: the transport fell back
     expect(c.decide()).toBe(0); // inside the backoff
     nowMs += STRIPE_REENGAGE_BACKOFF_MS + 1;
-    feed(c, 1);
-    expect(c.decide()).toBe(3); // re-engaged after the backoff
+    expect(c.decide()).toBe(STRIPE_START_LEGS);
   });
 });

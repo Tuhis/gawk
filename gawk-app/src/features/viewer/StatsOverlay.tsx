@@ -142,9 +142,14 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               ],
               [
                 'Stripe detector',
+                // Both sample sizes, not just the large one: an empty small
+                // bucket is why the detector cannot fire on a high-bitrate
+                // stream, and it is indistinguishable from a clean one without
+                // the count (finding 5). "split >N" above 8 means the fixed
+                // line held no frames and the stream's own median was used.
                 stats.stripeLargeLossPct == null
                   ? '—'
-                  : `large ${stats.stripeLargeLossPct.toFixed(1)}% / small ${stats.stripeSmallLossPct == null ? '—' : stats.stripeSmallLossPct.toFixed(1) + '%'} of ${fmtInt(stats.stripeLargeChunks)} chunks`,
+                  : `${stats.stripeShapeDetected ? 'burst shape' : 'no burst shape'} · large ${stats.stripeLargeLossPct.toFixed(1)}% of ${fmtInt(stats.stripeLargeChunks)} · small ${stats.stripeSmallLossPct == null ? '—' : stats.stripeSmallLossPct.toFixed(1) + '%'} of ${fmtInt(stats.stripeSmallChunks)} · split >${stats.stripeSplitAtChunks}`,
               ],
               ...(stats.stripeLegDials > 0
                 ? ([
