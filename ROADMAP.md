@@ -49,6 +49,7 @@ feature set exists).
 | R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) + TM11 (configured target) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
 | R29 | [Forward parity for live-edge delivery](#r29--forward-parity-for-live-edge-delivery) | ✅ designed 2026-07-27, **FP1–FP8 implemented 2026-07-28**; gates green in all four modules incl. a Go loss-injection test (17.5x frame-loss cut at 3% loss, zero corruption) and a browser e2e pass behind a 5% lossy link (30/30 fps protected vs 25.9/17.9 control). incl. Prometheus `parity_*` metrics + docs/13 playbook rows ([docs/34](docs/34-live-edge-forward-parity.md) §11) |
 | R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔶 designed + **ST2–ST6 implemented 2026-07-29** (owner instruction moved implementation ahead of ST1); gates green in all four modules incl. a race-clean Go burst-threshold proof (control 8.3 % loss, 13/60 eighteen-chunk frames complete; striped ×3: 60/60 at 0.0 %, zero mismapped); **ST1 paired on-hardware runs + ST7 acceptance/loadgen owner-pending** ([docs/35](docs/35-connection-interleaving.md) §12) |
+| R31 | [Telemetry UI v2: a purpose-built diagnosis SPA](#r31--telemetry-ui-v2-a-purpose-built-diagnosis-spa) | 🔧 requirements drafted 2026-07-29, owner decisions taken the same day (D11–D22), **not started** (TH1–TH11); read-surface only — zero wire/relay/viewer/broadcaster change ([docs/36](docs/36-telemetry-ui-history.md)) |
 
 ---
 
@@ -2407,6 +2408,105 @@ of what was open when the entry was written):
 
 **Non-goals**: capping frame size, pacing (both rejected above), and any change
 to Resilient/Deep-buffer delivery.
+
+---
+
+## R31 — Telemetry UI v2: a purpose-built diagnosis SPA
+
+**Status**: requirements drafted 2026-07-29, owner decisions taken the same day,
+not started. Chunks **TH1–TH11**, in three waves.
+Design: [docs/36](docs/36-telemetry-ui-history.md).
+
+R28 built a store and a query surface, and then wired a **live-only** page to
+it. The dashboard consumes **two of the eight** read endpoints — `/live` and
+`/v1/resolve`. Everything historical the service already stores *and already
+serves* (`/v1/sessions`, `/v1/sessions/{id}` with its full timeline and every
+event, `/diagnose`, `/compare`, `/v1/fleet`, `/v1/broadcasts`) is reachable
+only by `curl` or by an operator with Claude Code pointed at MCP. The page is
+excellent for the ten seconds after someone says "it's stuttering" and silent
+ten minutes later.
+
+Three of the gaps are **defects, not missing features**:
+
+1. **`diagnose()` emits dead links.** It sets
+   `DashboardURL = base + "#/session/<id>"`; the SPA has no router. Those URLs
+   are serialized into every rollup row's `verdict` blob — and **rollups are
+   permanent**, so the defect is being written into the one artifact that is
+   never pruned. Fixing it is correctness, not scope.
+2. **The timeline is a tab-local memory.** `lib/history.ts` accumulates from
+   the polls the page already makes: 10 minutes, gone on reload, *"history
+   starts when the page is opened."* Best during the incident, worthless after
+   it — inverted from what a post-mortem needs.
+3. **The dashboard asserts where the API argues.** Cards render
+   `finding.verdict` as a bare sentence; `Evidence`, `Confidence`, `Action`,
+   `Passed` and `Unavailable` — D6/D7's whole provenance apparatus — never
+   reach a screen.
+
+**The finding that shaped the design**: `store.ReadSession` flushes the open
+writer so *"a read during a live session sees what has been appended"* — so
+the full-resolution timeline of a **live** session is already on disk and
+already served. The client-side accumulation was never necessary; it is a
+layer to delete, not extend. `internal/live`'s *"the live page never reads a
+session file"* stance still holds — it governs the **fleet scan** (every
+session, every 2 s), not one file on one human's click.
+
+### Owner decisions (2026-07-29)
+
+| | Decision |
+|---|---|
+| Charting | **Apache ECharts, bundled.** Chosen for `echarts.connect()` — synchronised crosshair + zoom across separate instances *is* the multi-lane timeline, built in rather than built by us. Canvas; `markArea`/`markLine` give shading, episodes and event markers natively. `echarts/core` with explicit registration + a local React hook (not `echarts-for-react`) |
+| Scale | **~50 broadcasts / ~200 viewers**, lists virtualized. Above homelab reality, below R17's ceiling |
+| Landing | **Live fleet stays home**; History / Explore / Fleet / Rules become peer sections |
+| Visual | **Dense ops console, dark.** Deliberately *not* R6's monochrome tokens — those were designed for a cinematic viewer |
+| Retention | **Configurable, default 14 → 30 days.** Covers a release cycle, so cross-release comparison stays full-resolution. Rollups stay permanent |
+| Writes | **Annotations only** — notes pinned to a session or a timestamp, stored beside rollups, permanent, exported into markdown |
+| Mobile | **Read-only triage**; dense views are desktop-only and say so |
+| SQL | **Console on by default** — see the named risk below |
+| Watch | **In-tab only**: star a broadcast, it pins and changes on escalation. No notifications (background tabs throttle to ~1/min), no server state |
+| Rules | **Full read-only transparency** — catalogue + per-session trace. No tuning: stored verdicts ran under the thresholds of their day |
+| Dips | **Explained, including across sessions** — TM10 already captures per-episode counter deltas; the cross-session half must state its own confidence |
+
+Grafana is **deferred again** (owner, 2026-07-29), so R9 M8 stays open and TH7
+is now the home for trends.
+
+### Chunks
+
+**Wave 1 — foundations + history**: TH1 routing/permalinks/URL state (the
+correctness fix, unblocks the rest) · TH2 session detail from disk · TH3
+history browser.
+**Wave 2 — correlation + depth**: TH4 multi-lane broadcast timeline · TH5
+metric explorer + a server-owned field catalogue · TH6 verdicts, evidence and
+the rule catalogue.
+**Wave 3 — fleet + intelligence**: TH7 fleet timeline & trends · TH8
+annotations · TH9 dip explainer + cross-session correlation · TH10 SQL console
+· TH11 ergonomics (binding each surface as it ships, not landing at the end).
+
+TH1+TH2 alone close "it was bad at 21:04" and the dead-link defect, and are
+worth shipping on their own.
+
+### Named risks
+
+- **The SQL console is not a flag flip.** `internal/mcp` accepts `EnableSQL`
+  but `main.go` never wires a `SQL` func, so the tool is a stub today.
+  `gawk-telemetry/go.mod` has **zero third-party dependencies** and the image
+  builds `CGO_ENABLED=0` into `distroless/static` — and every usable Go DuckDB
+  driver is cgo. Default-on costs a cgo dependency and a different base image.
+  **Open question, owner's call** (docs/36 §8 Q1).
+- **SSE for live delivery is the author's call, not the owner's**, and is
+  flagged for objection (docs/36 D22): at this scale, re-sending the fleet
+  projection with findings every 2 s is the pressure it relieves.
+- **One rule engine, now visible in more places.** docs/33 §8 already names the
+  cost of the dashboard sharing `diagnose()`'s engine; TH6/TH9 raise it — and
+  are also the mitigation, since evidence and a trace on screen are what let a
+  human catch a rule that is confidently wrong.
+- **Cross-session correlation can manufacture a causal story.** Two viewers
+  dipping together is evidence about a shared leg, not proof of one; the
+  acceptance criteria require co-occurrence wording and a stated confidence.
+
+**Non-goals**: no new measurement (R28 §7 stands) · not a Prometheus
+replacement · no alerting/paging infrastructure · no rule tuning · no control
+actions · no public exposure of the read surface and no external asset fetch ·
+no PII or new identity · no auth/RBAC model.
 
 ---
 

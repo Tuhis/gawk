@@ -604,6 +604,68 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   path is public; the dashboard + read API sit on a separate non-public
   listener (R9 D1's posture). TM9 (Grafana) is the droppable one — trends
   can wait, a stuttering broadcast cannot),
+  `docs/36-telemetry-ui-history.md` for R31 (telemetry UI v2 — a purpose-built
+  diagnosis SPA: **requirements drafted + owner decisions taken 2026-07-29,
+  not started**; read-surface only — zero wire/relay/viewer/broadcaster change,
+  and per R28 §7 **no new measurement**. R28 built a store and a query surface
+  and then wired a **live-only** page to it: the dashboard consumes **two of
+  the eight** read endpoints (`/live`, `/v1/resolve`), so everything historical
+  the service already stores *and already serves* — `/v1/sessions`,
+  `/v1/sessions/{id}` with its full timeline and **every event**, `/diagnose`,
+  `/compare`, `/v1/fleet`, `/v1/broadcasts` — is reachable only by `curl` or
+  MCP. Three gaps are **defects, not missing features**: (1) `diagnose()` sets
+  `DashboardURL = base + "#/session/<id>"` and **the SPA has no router**, so
+  every such link lands on the fleet page — and those URLs are serialized into
+  every rollup row's `verdict` blob, i.e. the defect is being written into the
+  one artifact that is never pruned; (2) `lib/history.ts` accumulates the
+  timeline **client-side** from the polls the page already makes (10 min, gone
+  on reload, "history starts when the page is opened") — best during the
+  incident, worthless after it; (3) cards render `finding.verdict` as a bare
+  sentence, so `Evidence`/`Confidence`/`Action`/`Passed`/`Unavailable` —
+  D6/D7's whole provenance apparatus — never reach a screen. **The finding that
+  shaped the design**: `store.ReadSession` flushes the open writer so "a read
+  during a live session sees what has been appended", so the full-resolution
+  timeline of a **live** session is already on disk and already served — the
+  client-side accumulation was never necessary and is a layer to **delete**,
+  not extend. `internal/live`'s "the live page never reads a session file"
+  stance still holds: it governs the **fleet scan** (every session, every 2 s),
+  not one file on one human's click. Owner decisions 2026-07-29: **Apache
+  ECharts bundled** — chosen for `echarts.connect()`, whose synchronised
+  crosshair + zoom across separate instances *is* the multi-lane timeline
+  (canvas; `markArea`/`markLine` give shading, dip episodes and event markers
+  natively; `echarts/core` with explicit registration + a **local** React hook,
+  not `echarts-for-react`); scale target **~50 broadcasts / ~200 viewers** with
+  virtualized lists; **the live fleet page stays home** (History/Explore/Fleet/
+  Rules as peer sections); **dense ops console, dark** — deliberately *not*
+  R6's monochrome tokens, which were designed for a cinematic viewer; raw
+  retention **configurable, default 14 → 30 days** (rollups stay permanent);
+  **annotations are the one write path** (pinned to a session or a timestamp,
+  stored beside rollups, permanent, exported into markdown); **mobile is
+  read-only triage** and dense views say they are desktop-only; **a SQL console
+  on by default**; **in-tab watch only** — no browser notifications, because
+  Chrome throttles a background tab to ~1/min and a late alert about a
+  stuttering stream is worse than none; **full read-only rule transparency**
+  (catalogue + per-session trace, no tuning — stored verdicts ran under the
+  thresholds of their day, so editable ones would make history and live
+  disagree); and **dip episodes explained, including across sessions** (TM10
+  already captures per-episode counter deltas, so most of it is a projection;
+  the cross-session half must state its own confidence, since two viewers
+  dipping together is evidence about a shared leg, not proof of one). Grafana
+  **deferred again**, so R9 M8 stays open and TH7 is the home for trends.
+  Chunks **TH1–TH11** in three waves — TH1 routing/permalinks, TH2 session
+  detail, TH3 history browser · TH4 multi-lane broadcast timeline, TH5 metric
+  explorer + a server-owned field catalogue (the UI must never fork
+  `schema.ViewerFields` — D15 exists because a second copy drifts), TH6
+  verdicts/evidence/rule catalogue · TH7 fleet timeline + trends, TH8
+  annotations, TH9 dip explainer, TH10 SQL console, TH11 ergonomics.
+  **Named risk worth not re-deriving: the SQL console is not a flag flip** —
+  `internal/mcp` accepts `EnableSQL` but `main.go` never wires a `SQL` func, so
+  the tool is a stub; `gawk-telemetry/go.mod` has **zero third-party
+  dependencies** and the image builds `CGO_ENABLED=0` into
+  `distroless/static`, while every usable Go DuckDB driver is cgo. Default-on
+  therefore costs a cgo dependency and a different base image — open, owner's
+  call. SSE for live delivery is likewise the author's call, not the owner's,
+  and flagged for objection),
   `docs/31-quick-start-links.md` for R26 (quick-start broadcast links:
   **designed 2026-07-25, not started**; frontend-only — zero server / wire /
   broadcaster-protocol change, and the cheapest item on the roadmap. A hash
