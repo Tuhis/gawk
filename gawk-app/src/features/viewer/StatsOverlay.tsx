@@ -124,6 +124,35 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ...(stats?.parityRecoveryFailures
           ? ([['Parity solve failed', String(stats.parityRecoveryFailures)]] as StatsRow[])
           : []),
+        // R30 (docs/35 §7): striping, on datagram delivery only. "Striping"
+        // is requested-vs-active in one line; active < needed is the caps-
+        // pressure / dial-failure signature, and the detector row is the
+        // auto gate's own inputs — large-frame loss against small-frame
+        // cleanliness is the burst-threshold shape (docs/34 finding 4), so a
+        // non-engaging detector is arguable straight from this overlay.
+        ...(stats != null && stats.deliveryMode === 'datagrams'
+          ? ([
+              [
+                'Striping',
+                !stats.stripeCapable
+                  ? `${stats.stripeMode} — relay does not support it`
+                  : stats.stripeActive > 0
+                    ? `${stats.stripeMode} — ${stats.stripeActive} legs (needed ${stats.stripeNeeded})`
+                    : `${stats.stripeMode} — off (needed ${stats.stripeNeeded})`,
+              ],
+              [
+                'Stripe detector',
+                stats.stripeLargeLossPct == null
+                  ? '—'
+                  : `large ${stats.stripeLargeLossPct.toFixed(1)}% / small ${stats.stripeSmallLossPct == null ? '—' : stats.stripeSmallLossPct.toFixed(1) + '%'} of ${fmtInt(stats.stripeLargeChunks)} chunks`,
+              ],
+              ...(stats.stripeLegDials > 0
+                ? ([
+                    ['Stripe legs', `${stats.stripeLegDials} dials, ${stats.stripeLegDeaths} deaths`],
+                  ] as StatsRow[])
+                : []),
+            ] as StatsRow[])
+          : []),
         ['Awaiting keyframe', String(stats?.framesDiscardedAwaitingKey ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],
         ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],

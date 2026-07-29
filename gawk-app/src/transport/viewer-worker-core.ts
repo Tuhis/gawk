@@ -9,6 +9,7 @@
 // no OffscreenCanvas, no DOM.
 
 import type { ViewerDeliveryMode } from './resilient';
+import type { StripeMode } from './stripe';
 import type { ConnectOptions } from './connection';
 import type { DecodedAudioChunk } from './audio-decode';
 import type { AudioMuxCodec, AudioTapEvent, Fmp4Track } from './fmp4-muxer';
@@ -42,6 +43,10 @@ export type ViewerWorkerCommand =
   // negotiation itself rides connectOpts.deliveryMode into the subscribe
   // URL); a mode change is a deliberate reconnect, not a live flip.
   | { type: 'resilient'; mode: ViewerDeliveryMode }
+  // R30 (docs/35 §5.5): the stripe mode for this worker's context. Unlike
+  // 'resilient' this IS a live flip — engagement is in-band (leg dials + the
+  // 0x10 level protocol), so no reconnect is needed in either direction.
+  | { type: 'stripeMode'; mode: StripeMode }
   // R22 (docs/27 Decision 5): start muxing — create the Fmp4Muxer at the
   // worker-shell level (it survives pipeline attempts/reconnects) and begin
   // posting segments. Idempotent; a no-op when init carried no mux flag.

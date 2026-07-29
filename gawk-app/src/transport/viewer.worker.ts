@@ -11,6 +11,7 @@ import type { DecodedAudioChunk } from './audio-decode';
 import { Fmp4Muxer, type AudioMuxCodec, type Fmp4Segment } from './fmp4-muxer';
 import { setInterpolationEnabled } from './interpolation';
 import { getPlayoutMode, setPlayoutMode, setViewerDeliveryMode } from './playout';
+import { setStripeMode } from './stripe';
 import { createRenderSink, type RenderSink } from './render-sink';
 import type { ReleasedFrame } from './reorder-buffer';
 import {
@@ -221,6 +222,12 @@ ctx.onmessage = (e: MessageEvent) => {
       // mode out of adaptive — present any held frame now, like 'playout'.
       setViewerDeliveryMode(cmd.mode);
       if (getPlayoutMode() !== 'adaptive') sink?.flush?.(true);
+      break;
+    case 'stripeMode':
+      // R30: module state in this worker's context, read live by the stripe
+      // controller at every decide() (same pattern as playout/resilient —
+      // but a live flip, never a reconnect: engagement is in-band).
+      setStripeMode(cmd.mode);
       break;
   }
 };

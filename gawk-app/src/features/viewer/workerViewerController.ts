@@ -8,6 +8,7 @@
 // dispose() on teardown.
 
 import type { ViewerDeliveryMode } from '../../transport/resilient';
+import type { StripeMode } from '../../transport/stripe';
 import type { ConnectOptions } from '../../transport/connection';
 import type { AudioMuxCodec } from '../../transport/fmp4-muxer';
 import type { PlayoutMode } from '../../transport/playout';
@@ -156,6 +157,14 @@ export class WorkerViewerController {
   setViewerDeliveryMode(mode: ViewerDeliveryMode): void {
     if (this.disposed) return;
     this.post({ type: 'resilient', mode });
+  }
+
+  // R30 (docs/35 §5.5): the stripe mode — a LIVE flip, never a reconnect:
+  // engagement is in-band (leg dials + the 0x10 level protocol), so the
+  // worker's controller applies the change at its next decide().
+  setStripeMode(mode: StripeMode): void {
+    if (this.disposed) return;
+    this.post({ type: 'stripeMode', mode });
   }
 
   // R22: start the worker muxer (gated devices, at `watching`). Sent at most

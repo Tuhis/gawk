@@ -13,6 +13,7 @@ import {
 } from '../../transport/viewer-session';
 import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
+import { setStripeMode as setLocalStripeMode, type StripeMode } from '../../transport/stripe';
 import {
   setPlayoutMode as setLocalPlayoutMode,
   setViewerDeliveryMode as setLocalViewerDeliveryMode,
@@ -158,6 +159,10 @@ export function useViewerConnection(
   // subscribe time, so a change re-runs the session effect as a deliberate
   // reconnect.
   parityLevel?: 0 | 1,
+  // R30 (docs/35 §5.5): the stripe mode. Deliberately NOT in the session
+  // effect's deps — engagement is in-band (leg dials + the 0x10 level
+  // protocol), so this is a live flip like interpolation, never a reconnect.
+  stripeMode: StripeMode = 'auto',
 ): ViewerConnectionState {
   // The relay address is a settings value exactly like the delivery mode above:
   // read through a SUBSCRIPTION, not getState(), so changing it re-runs the
@@ -605,6 +610,12 @@ export function useViewerConnection(
     if (useWorker) controllerRef.current?.setPlayoutMode(playoutMode);
     else setLocalPlayoutMode(playoutMode);
   }, [useWorker, playoutMode]);
+
+  // R30: the stripe mode, same live-crossing pattern (docs/35 §5.5).
+  useEffect(() => {
+    if (useWorker) controllerRef.current?.setStripeMode(stripeMode);
+    else setLocalStripeMode(stripeMode);
+  }, [useWorker, stripeMode]);
 
   // R12 T4: interpolation, same live-crossing pattern.
   useEffect(() => {
