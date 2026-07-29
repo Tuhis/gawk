@@ -51,6 +51,8 @@ feature set exists).
 | R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔶 designed + **ST2–ST6 implemented 2026-07-29** (owner instruction moved implementation ahead of ST1); gates green in all four modules incl. a race-clean Go burst-threshold proof (control 8.3 % loss, 13/60 eighteen-chunk frames complete; striped ×3: 60/60 at 0.0 %, zero mismapped); **ST1 paired on-hardware runs + ST7 acceptance/loadgen owner-pending** ([docs/35](docs/35-connection-interleaving.md) §12) |
 | R31 | [Telemetry UI v2: a purpose-built diagnosis SPA](#r31--telemetry-ui-v2-a-purpose-built-diagnosis-spa) | 🔧 requirements drafted 2026-07-29, owner decisions taken the same day (UD11–UD22), **not started** (TH1–TH11); read-surface only — zero wire/relay/viewer/broadcaster change ([docs/36](docs/36-telemetry-ui-history.md)) |
 | R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
+| R33 | [WHIP ingest for OBS support](#r33--whip-ingest-for-obs-support) | 💡 proposed 2026-07-29, not started — no design doc yet |
+| R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 💡 proposed 2026-07-29, not started — no design doc yet |
 
 ---
 
@@ -2632,6 +2634,242 @@ stays deferred — R32 is its prerequisite, since once presets exist the banner
 has one thing to suggest instead of four knobs to set; the frozen `#/debug/*`
 surfaces; the broadcaster surface; and the stats overlay, which stays the
 ground truth and the Copy-diagnostics path.
+
+---
+
+## R33 — WHIP ingest for OBS support
+
+**Goal**: let a broadcaster run OBS Studio (or any other WHIP-capable
+encoder — vMix, FFmpeg's `-f whip`, GStreamer's `whipsink`) as an
+alternative to the `gawk-app` browser broadcaster or the `gawk-broadcast`
+native Linux app, by giving the relay a **WHIP** (WebRTC-HTTP Ingestion
+Protocol, `draft-ietf-wish-whip`) ingest endpoint. OBS has shipped a native
+WHIP output (Settings → Stream → "WHIP", just a URL + Bearer Token) since
+OBS 30, so this is a config change for the broadcaster, not a plugin.
+
+**Why this is wanted**: OBS gives scene composition, multiple sources,
+overlays, and per-source audio mixing that `getDisplayMedia` screen-share
+can't — broadcasters who already run OBS for other platforms shouldn't
+have to give that up to use gawk. This is purely a new **ingest** path:
+every viewer-facing piece of the pipeline (WebTransport delivery, the wire
+format, DVR/resilient mode, forward parity, striping, telemetry) is
+unchanged, because the hub's ingest surface
+(`hub.Publisher.HandleDatagram` / `IngestKeyframeStream` in
+`gawk-server/internal/hub/hub.go`) already treats "how frames arrived" as
+opaque — R14 proved a non-browser publisher works with zero wire/viewer
+changes, and WHIP is a second instance of the same pattern.
+
+**Scope sketch**:
+
+- **New HTTP endpoint on the relay**, e.g. `POST /whip/{id}` — accepts the
+  SDP offer per the WHIP spec, returns an SDP answer plus a `Location`
+  header for the session resource; `DELETE` on that resource ends the
+  broadcast (the WHIP-native equivalent of today's session teardown).
+  Trickle ICE via `PATCH` is optional day-one scope.
+- **A Go WebRTC stack** (almost certainly `pion/webrtc`, the de facto Go
+  ICE/DTLS/SRTP implementation) terminates the PeerConnection and hands
+  the relay incoming RTP: H.264 (depacketized per RFC 6184) for video,
+  Opus (RFC 7587) for audio to match the existing Opus pipeline
+  (R25/`gawk-broadcast`).
+- **An adapter, not a hub change**: depacketize RTP into Annex-B access
+  units, detect keyframes the way the native broadcaster's engine already
+  does (IDR NAL type), and **re-chunk into gawk's own `VideoChunk`
+  datagrams and reliable keyframe streams** — respecting the ~1200-byte
+  safe payload limit — then feed them through the *existing*
+  `Publisher.HandleDatagram` / `IngestKeyframeStream` entry points. The
+  hub, wire format, and every downstream milestone stay untouched.
+- **Auth**: WHIP's `Authorization: Bearer <token>` header maps naturally
+  onto the R2 pre-shared broadcast secret and the R17 "newest publisher
+  wins" resume-token model — the broadcast is still started/minted via the
+  existing web UI/API, and the resulting URL + token get pasted into OBS's
+  stream settings, rather than OBS minting broadcasts itself.
+- **New third-party dependency** for `gawk-server` — the relay currently
+  only depends on `quic-go`/`webtransport-go`; this would be its first
+  non-QUIC transport stack.
+
+**Key design questions**:
+
+- **ICE reachability for the relay fleet.** R17 scaled the *viewer*
+  fan-out horizontally behind one UDP load balancer for WebTransport/QUIC;
+  WHIP's media path is a separate DTLS-SRTP/ICE session per broadcaster
+  that needs its own reachable host/srflx candidates (or a TURN relay) per
+  relay pod. The saving grace is scale — this is bounded by concurrent
+  *broadcasts* (R2's default ~5), not by hundreds of viewers — but it's
+  still a distinct network-exposure surface from today's single UDP
+  `LoadBalancer` Service and needs its own design-doc treatment (ICE-lite
+  with pod-routable host candidates vs. a shared TURN/relay component).
+- **Codec negotiation**: OBS's WHIP output can offer H.264, VP8, VP9, or
+  AV1 depending on the encoder chosen — the relay's SDP answer needs to
+  restrict to what the viewer's negotiated codec list (`avc1.42E02A` → … →
+  `vp8`, per CLAUDE.md) actually supports, most simply by refusing to
+  answer with anything outside that list.
+- **Keyframe interval mismatch**: OBS's configurable keyframe interval
+  (commonly 2s, vs. gawk's 500ms GOP) means late-joining viewers wait
+  longer for a cached keyframe to prime them — either document a
+  recommended OBS setting or accept the longer worst case.
+- **Where this lives**: inside `gawk-server` (it must feed the hub
+  directly), not a new module/binary like `gawk-broadcast` — this is
+  server-side protocol support, not a client we ship.
+- Whether reconnect/supersede semantics need a WHIP-specific mapping —
+  WHIP has no `wire.go` close codes; this likely maps onto HTTP status
+  codes on the `POST`/`DELETE`, per the WHIP spec's own conflict
+  semantics.
+
+**Non-goals**: WHEP (the read-side counterpart, for a WebRTC-based viewer
+path) — out of scope; viewers stay on WebTransport/WebCodecs. Running OBS
+*as a subprocess of* `gawk-broadcast` — already surveyed and rejected in
+`docs/19` (too heavyweight for the native broadcaster's
+minimal-dependency goal); this is the opposite shape, a remote OBS
+instance pushing *into* the relay over the network, not a local process
+wrapped by our engine. Any change to the existing WebTransport
+ingest/viewer path — WHIP is strictly additive.
+
+**Status**: proposed 2026-07-29, not started — no design doc yet.
+
+---
+
+## R34 — Native Windows broadcaster
+
+**Goal**: a Windows counterpart to `gawk-broadcast` (R14) with two capture
+modes selectable at start — **share one application** (its window plus that
+app's own audio, independent of anything else on the desktop) or **share the
+whole desktop** — and, like R14, **hardware video encode only**: if no
+hardware encoder probes clean, the app refuses to start and points the user
+at the browser broadcaster rather than falling back to software.
+
+**Why this is different from R14's motivation**: R14 exists because the
+browser structurally *cannot* hardware-encode on Linux. That is **not** true
+on Windows — WebCodecs hardware encode already ships there (CLAUDE.md
+architecture note), and R14's own doc says so plainly: "Does not: help
+Windows/macOS broadcasters (**already fine**)" (docs/19), and R25 lists
+"Windows/macOS native broadcasters" as a non-goal for the same reason
+(docs/28). So this item is **not** re-litigating that — the driver here is
+**capture fidelity, not encode capability**: `getDisplayMedia` is
+whole-screen-preferred by design (CLAUDE.md, for exclusive-fullscreen game
+compatibility) and exposes no per-application audio at all — Chrome's
+"share a tab/window" capture does not give you that window's audio in
+isolation, only whole-system loopback. Windows itself has had a per-process
+audio-loopback API since 10 2004+ that no browser surfaces. A native app is
+the only way to give a broadcaster "just this game, video and audio, nothing
+else on my desktop" without alt-tabbing out of a fullscreen game to the
+browser's picker.
+
+**Why now**: same underlying goal as R14 (native capture fidelity beyond
+what the browser exposes), but **not a sibling in implementation** — see
+below.
+
+**Not a Go module addition — a separate codebase, almost certainly C++ or
+Rust.** R14's Linux design leans on Go for two reasons that don't carry
+over: the XDG portal handshake is comfortably reachable over D-Bus from
+pure Go, and `gawk-broadcast` could directly `import` the relay's own
+`gawk-server/wire` package plus reuse `quic-go`/`webtransport-go` — the
+exact library the relay itself runs. Neither holds on Windows:
+
+- **Capture/encode is COM/WinRT-shaped** (`Windows.Graphics.Capture`,
+  WASAPI process-loopback activation, Media Foundation). Go's COM/WinRT
+  story is thin to nonexistent; C++ (with C++/WinRT) or Rust (via the
+  Microsoft-maintained `windows-rs` crate, which fully projects WinRT and
+  Win32/COM) are the realistic choices, not Go-plus-cgo.
+- **The wire protocol becomes a third independent reimplementation**
+  (alongside the TS frontend and the Go relay/native-Linux code), not an
+  import — same discipline CLAUDE.md already requires between the Go and
+  TS mirrors ("golden vectors kept byte-identical across all mirrors"),
+  now extended to a third language. This is a real, permanent cost: every
+  future wire type or close code needs a matching hand-written patch here
+  too, with no compiler-enforced link back to `wire.go` the way R14's
+  Linux build gets for free.
+- **A QUIC/WebTransport client is probably the single biggest feasibility
+  question** — bigger than the encode APIs, because it's the one piece
+  every language ecosystem does *not* reliably have. Rust has real options
+  (QUIC via `quinn`, with WebTransport layered on top); C++ has nothing
+  comparable outside a browser engine's own QUIC stack. If the choice comes
+  down to C++ vs. Rust, this is the argument that should decide it, not the
+  Windows-API ergonomics (both languages bind those fine).
+- One upside the language switch buys back: R14's GStreamer-subprocess +
+  MPEG-TS-pipe design exists specifically because Go's cgo/GStreamer story
+  is painful. Rust's `gstreamer-rs` bindings are first-class and
+  officially maintained by the GStreamer project — a Rust implementation
+  could link GStreamer in-process (`appsink` straight into the
+  WebTransport client) instead of managing a child process and a pipe
+  framing format, if the design doc decides the subprocess's crash
+  isolation (R14 Decision) isn't worth keeping here too.
+
+Given this, expect a **new top-level component** (its own directory, e.g.
+`gawk-broadcast-windows/`, not a subpackage of the `gawk-broadcast` Go
+module), its own build tooling (CMake/MSVC or Cargo), its own CI job, and
+its own release/versioning story — mirroring *why* R14 made `gawk-broadcast`
+a separate Go module (isolate an unrelated toolchain from the relay's CI
+and release cadence), just with a starker toolchain split this time.
+
+**Scope sketch** (language-agnostic pieces — apply regardless of the C++
+vs. Rust call):
+
+- **Capture, mode 1 (single app)**: `Windows.Graphics.Capture` (WGC)
+  scoped to one window's `HWND` — hardware-composited, and (since Windows
+  10 2004+) works even when that window is minimized or occluded, which
+  `getDisplayMedia`'s picker cannot do at all.
+- **Capture, mode 2 (whole desktop)**: WGC scoped to a monitor, or DXGI
+  Desktop Duplication — the Windows analogue of R14's portal monitor
+  capture.
+- **Audio, mode 1**: WASAPI **process-loopback** capture
+  (`AUDIOCLIENT_ACTIVATION_PARAMS` / `PROCESS_LOOPBACK`, Windows 10 2004+)
+  scoped to the captured app's process (tree), so only that app's audio is
+  mixed in — the specific Windows-only capability that makes "share this
+  app and only its audio" possible at all.
+- **Audio, mode 2**: ordinary system-wide WASAPI endpoint loopback, the
+  same shape as today's whole-desktop system audio (R15/R25).
+- **Encode is Windows-native hardware, cascade-probed**: Media Foundation
+  (`IMFTransform` H.264/HEVC encoders, vendor-agnostic) and/or vendor SDKs
+  (NVENC, Quick Sync, AMF), each accepted only after a real trial encode —
+  same discipline as R14's Vulkan/VAAPI cascade, just a different API
+  surface. No software rung, ever — refusal is the correct behavior when
+  nothing probes clean, identical to R14's stance and the CLAUDE.md
+  reason the browser covers the software case instead.
+- **No ladder**: a single fixed rung (1080p60, 500 ms GOP) as in R14,
+  unless probing shows a need to cap lower on weaker hardware encoders.
+- **GUI and notifications are a fresh choice, not a port**: Gio's Windows
+  backend is Go, so it doesn't carry over into a C++/Rust codebase either
+  way — pick a native stack (WinUI 3 / Win32 directly in C++, or a Rust
+  GUI crate) and Windows toast notifications, independent of what R14's
+  GUI looks like.
+- **Packaging**: a native installer (MSI or a self-contained EXE) bundling
+  whatever media/runtime dependencies the chosen capture/encode stack
+  needs — a different distribution shape from R14's "every dependency is
+  a stock distro package" promise, and not inherited from it.
+
+**Key design questions**:
+
+- **C++ vs. Rust**, decided primarily by QUIC/WebTransport client
+  availability (see above) rather than by Windows-API ergonomics alone.
+- **Whether to depend on GStreamer at all**, or go directly against Media
+  Foundation/WASAPI/D3D11 COM APIs with no intermediary — a real option in
+  either language now, unlike R14's Go-forced subprocess boundary.
+- **Whether process-loopback audio actually follows a captured game** when
+  the game spawns helper/launcher/anti-cheat processes outside its own
+  process tree — an on-hardware verification question, not a spec-reading
+  one.
+- Whether "share one app" always implies "that app has a visible window" or
+  needs a no-window/minimized-only variant — UX decision for the design doc.
+- How much of the wire-protocol reimplementation can be generated or
+  golden-vector-tested against the Go/TS mirrors from day one, so drift is
+  caught in CI rather than discovered on a broadcaster's machine.
+
+**Non-goals**: any change to the relay, wire *format*, or viewer — the
+protocol itself doesn't change, only who else speaks it; zero
+server/viewer changes. A software-encode fallback — explicitly rejected;
+refuse and point at the browser broadcaster, which already works fine on
+Windows. A macOS native broadcaster — not requested, and WebCodecs already
+gets hardware encode there too, so the capture-fidelity motivation above
+would need its own macOS-specific research (e.g. ScreenCaptureKit's
+per-app capture and audio story) before it earns a separate item. Tray
+icon / global hotkeys — R14 deferred these for Linux-specific reasons
+(D-Bus StatusNotifierItem, GTK dependency risk) that don't obviously apply
+on Windows, but revisiting them is out of scope here too; don't let this
+item smuggle them back in. Sharing a GUI, build, or release pipeline with
+the Linux `gawk-broadcast` — the toolchains no longer overlap enough to
+make that worth forcing.
+
+**Status**: proposed 2026-07-29, not started — no design doc yet.
 
 ---
 
