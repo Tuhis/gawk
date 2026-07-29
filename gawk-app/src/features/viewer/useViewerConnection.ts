@@ -313,18 +313,30 @@ export function useViewerConnection(
     sinkRef.current?.setMuted(mutedRef.current || suppressedRef.current);
   }, []);
 
+  // A mute toggle or a volume-slider drag is itself a user gesture — the same
+  // kind the tap-to-unmute overlay spends on sink.resume(). Without this,
+  // those controls only ever move the GainNode: a suspended/interrupted
+  // AudioContext processes no audio regardless of gain, so "unmuting" via the
+  // volume control silently did nothing while the context stayed blocked.
+  const clearGestureBlock = useCallback(() => {
+    const sink = sinkRef.current;
+    if (!sink?.needsGesture) return;
+    void sink.resume().then(() => setAudioNeedsGesture(sink.needsGesture));
+  }, []);
+
   const setMuted = useCallback(
     (next: boolean) => {
       setMutedState(next);
       mutedRef.current = next;
       applySinkMute();
+      clearGestureBlock();
       try {
         localStorage.setItem(MUTED_KEY, next ? '1' : '0');
       } catch {
         // private mode etc. — the toggle still works for this session
       }
     },
-    [applySinkMute],
+    [applySinkMute, clearGestureBlock],
   );
 
   const setAudioSuppressed = useCallback(
@@ -335,16 +347,20 @@ export function useViewerConnection(
     [applySinkMute],
   );
 
-  const setVolume = useCallback((next: number) => {
-    const v = Math.max(0, Math.min(1, next));
-    setVolumeState(v);
-    sinkRef.current?.setVolume(v);
-    try {
-      localStorage.setItem(VOLUME_KEY, String(v));
-    } catch {
-      // private mode etc.
-    }
-  }, []);
+  const setVolume = useCallback(
+    (next: number) => {
+      const v = Math.max(0, Math.min(1, next));
+      setVolumeState(v);
+      sinkRef.current?.setVolume(v);
+      clearGestureBlock();
+      try {
+        localStorage.setItem(VOLUME_KEY, String(v));
+      } catch {
+        // private mode etc.
+      }
+    },
+    [clearGestureBlock],
+  );
 
   const resumeAudio = useCallback(() => {
     const sink = sinkRef.current;
