@@ -1,8 +1,8 @@
 import type { BroadcastView } from '../api/types.ts';
-import type { HistoryMap } from '../lib/history.ts';
 import { ago, dur, EMPTY, num, shortId } from '../lib/format.ts';
 import { effectiveSeverity } from '../lib/severity.ts';
-import { opensByDefault, useUiStore } from '../state/uiStore.ts';
+import { href } from '../router/router.ts';
+import { hasEscalated, opensByDefault, useUiStore } from '../state/uiStore.ts';
 import { SeverityBadge } from './SeverityBadge.tsx';
 import { SessionTable } from './SessionTable.tsx';
 import styles from './BroadcastCard.module.css';
@@ -10,7 +10,6 @@ import styles from './BroadcastCard.module.css';
 interface Props {
   broadcast: BroadcastView;
   ended: boolean;
-  history: HistoryMap;
   found: boolean;
 }
 
@@ -24,7 +23,7 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function BroadcastCard({ broadcast: b, ended, history, found }: Props) {
+export function BroadcastCard({ broadcast: b, ended, found }: Props) {
   const worst = effectiveSeverity(b.severity, b.worstViewer);
   const byDefault = opensByDefault(worst);
   const isCardOpen = useUiStore((s) => s.isCardOpen);
@@ -32,6 +31,17 @@ export function BroadcastCard({ broadcast: b, ended, history, found }: Props) {
   // Subscribe to the override map so a change re-renders this card.
   useUiStore((s) => s.cardOverrides[b.broadcastKey]);
   const open = isCardOpen(b.broadcastKey, byDefault);
+
+  // UD19's watch, and the whole of it: a starred broadcast pins to the top and
+  // VISIBLY changes when its severity escalates. No notification — Chrome
+  // throttles a background tab to ~1/min, so an alert could arrive a minute
+  // late, which for a stuttering stream is worse than useless.
+  const watched = useUiStore((s) => !!s.watched[b.broadcastKey]);
+  const toggleWatch = useUiStore((s) => s.toggleWatch);
+  const baseline = useUiStore((s) => s.watchSeverity[b.broadcastKey]);
+  const observeSeverity = useUiStore((s) => s.observeSeverity);
+  if (watched && baseline === undefined) observeSeverity(b.broadcastKey, worst);
+  const escalated = watched && hasEscalated(baseline, worst);
 
   const m = b.metrics ?? {};
 
@@ -41,6 +51,7 @@ export function BroadcastCard({ broadcast: b, ended, history, found }: Props) {
         styles.card,
         worst === 'bad' ? styles.bad : worst === 'warn' ? styles.warn : '',
         found ? styles.found : '',
+        escalated ? styles.escalated : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -56,7 +67,23 @@ export function BroadcastCard({ broadcast: b, ended, history, found }: Props) {
           {open ? '▾' : '▸'}
         </button>
         <SeverityBadge severity={worst} />
-        <span className={styles.key}>{shortId(b.broadcastKey)}</span>
+        <button
+          type="button"
+          className={`${styles.star} ${watched ? styles.starOn : ''}`}
+          aria-pressed={watched}
+          title={watched ? 'Stop watching this broadcast' : 'Watch: pin it and show me if it gets worse'}
+          onClick={() => toggleWatch(b.broadcastKey)}
+        >
+          {watched ? '★' : '☆'}
+        </button>
+        <a className={styles.key} href={href('broadcast', b.broadcastKey)} title="Every participant on one axis">
+          {shortId(b.broadcastKey)}
+        </a>
+        {escalated && (
+          <span className={styles.escalation}>
+            escalated to {worst} since you starred it
+          </span>
+        )}
         {/*
           Lifecycle is a SEPARATE dimension from severity, and it is spelled in
           words. An ended row's claim is past tense: "is stuttering" and
@@ -97,7 +124,7 @@ export function BroadcastCard({ broadcast: b, ended, history, found }: Props) {
 
       {open &&
         (b.sessions && b.sessions.length > 0 ? (
-          <SessionTable sessions={b.sessions} history={history} />
+          <SessionTable sessions={b.sessions} />
         ) : (
           // A live broadcast with no session rows is a real and interesting
           // state — the relay sees it, nothing has reported. Saying so beats an

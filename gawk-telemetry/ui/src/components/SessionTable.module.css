@@ -154,3 +154,13 @@
   border-color: var(--line-strong);
   color: var(--text);
 }
+
+/*
+  The detail link replaced the inline-graph toggle. Styled as the button was,
+  because it occupies the same slot and a column that changed width would drag
+  the whole table with it.
+*/
+.chartBtn {
+  text-decoration: none;
+  display: inline-block;
+}

@@ -1,0 +1,110 @@
+.nav {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.navItem {
+  display: block;
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.navItem:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.navActive {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+/*
+  UD10's banner. Amber-toned because it is always a limit on the answer above
+  it, never a fault — and never dismissible, because a coverage limit does not
+  stop applying when it is inconvenient.
+*/
+.coverage {
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-left: 2px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-size: var(--fs-xs);
+  color: var(--text);
+}
+
+.pauseWrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.pause {
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  padding: 2px 8px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A frozen page must LOOK frozen. An operator who thinks a paused page is live
+   is reading yesterday's numbers as today's. */
+.paused {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+}
+
+.mode {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  min-width: 5ch;
+}
+
+.gap {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  /* Reserved slot: the strip does not resize when the message appears. */
+  min-height: 1em;
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gapOn {
+  color: var(--warn);
+}
+
+.tz {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  white-space: nowrap;
+}
+
+.tzBad {
+  color: var(--warn);
+  white-space: normal;
+}
+
+.desktopOnly {
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}

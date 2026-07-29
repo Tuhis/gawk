@@ -1,0 +1,75 @@
+/*
+  TM8's surface, unchanged in substance (UD13). It moved out of App.tsx when
+  TH1's router arrived and the shell became a shell.
+*/
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 0 var(--sp-3);
+}
+
+.updated {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  /* "connecting…" and "updated 19:12:55" differ in width; fix the slot. */
+  min-width: 17ch;
+}
+
+.feed {
+  font-size: var(--fs-sm);
+  color: var(--text-dimmer);
+  min-width: 18ch;
+}
+
+.feedBad {
+  color: var(--bad);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.main {
+  width: 100%;
+}
+
+.groupTitle {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: var(--sp-6) 0 var(--sp-2);
+}
+
+.groupTitle:first-child {
+  margin-top: 0;
+}
+
+.groupNote {
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+  margin: calc(-1 * var(--sp-1)) 0 var(--sp-3);
+}
+
+.empty {
+  color: var(--text-dimmer);
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) 0;
+  margin: 0;
+}
+
+/*
+  Lifecycle -> contrast, never hue suppression. An ended `bad` keeps its red so
+  you can see last night went badly, but recession stops it out-shouting a live
+  `warn` sitting above it. That is exactly what makes it safe to show at all.
+*/
+.endedGroup {
+  opacity: 0.62;
+}
+
+.endedGroup:hover {
+  opacity: 0.85;
+}

@@ -1,18 +1,25 @@
-import { Fragment } from 'react';
-
 import type { SessionView } from '../api/types.ts';
-import type { HistoryMap } from '../lib/history.ts';
 import { ago, bitrate, EMPTY, fps, ms, shortId } from '../lib/format.ts';
 import { freshnessTone } from '../lib/severity.ts';
-import { useUiStore } from '../state/uiStore.ts';
+import { href } from '../router/router.ts';
 import { SeverityBadge } from './SeverityBadge.tsx';
-import { SessionTimeline } from './SessionTimeline.tsx';
 import styles from './SessionTable.module.css';
 
 interface Props {
   sessions: SessionView[];
-  history: HistoryMap;
 }
+
+// R31 changes one thing about this table, and it is the interesting one.
+//
+// The last column used to expand an inline graph fed by `lib/history.ts` —
+// client-side accumulation whose own caveat was "history starts when the page
+// is opened": ten minutes, gone on reload, at its best DURING an incident and
+// worthless after it. That layer is deleted (docs/36 §1.1), because the
+// full-resolution timeline of a live session was already on disk and already
+// served the whole time.
+//
+// So the column is now a LINK to the session's own page, which shows every
+// sample since the session started — in a tab opened one second ago.
 
 function dipCell(m: Record<string, number> | undefined): string {
   if (!m || m.fpsDipEpisodes === undefined) return EMPTY;
@@ -32,10 +39,7 @@ function Freshness({ state, ageMs }: { state: string; ageMs: number }) {
   );
 }
 
-export function SessionTable({ sessions, history }: Props) {
-  const openTimelines = useUiStore((s) => s.openTimelines);
-  const toggleTimeline = useUiStore((s) => s.toggleTimeline);
-
+export function SessionTable({ sessions }: Props) {
   return (
     <table className={styles.table}>
       <colgroup>
@@ -63,7 +67,7 @@ export function SessionTable({ sessions, history }: Props) {
           <th>delivery</th>
           <th>seen c / r</th>
           <th>verdict</th>
-          <th aria-label="timeline" />
+          <th aria-label="detail" />
         </tr>
       </thead>
       <tbody>
@@ -71,10 +75,8 @@ export function SessionTable({ sessions, history }: Props) {
           const m = s.metrics ?? {};
           const cfg = s.config ?? {};
           const isBroadcaster = s.role === 'broadcaster';
-          const open = !!openTimelines[s.sessionId];
           return (
-            <Fragment key={s.sessionId}>
-              <tr className={open ? styles.rowOpen : undefined}>
+            <tr key={s.sessionId}>
                 <td>
                   <SeverityBadge severity={s.severity} />
                 </td>
@@ -104,25 +106,15 @@ export function SessionTable({ sessions, history }: Props) {
                   {s.verdict || EMPTY}
                 </td>
                 <td>
-                  <button
-                    type="button"
+                  <a
                     className={styles.chartBtn}
-                    aria-expanded={open}
-                    onClick={() => toggleTimeline(s.sessionId)}
-                    title={open ? 'Hide timeline' : 'Show the last 10 minutes'}
+                    href={href('session', s.sessionId)}
+                    title="Everything known about this session, from disk — from its first sample"
                   >
-                    {open ? '▾' : '▸'} graph
-                  </button>
+                    detail →
+                  </a>
                 </td>
               </tr>
-              {open && (
-                <tr className={styles.timelineRow}>
-                  <td colSpan={11}>
-                    <SessionTimeline session={s} history={history[s.sessionId]} />
-                  </td>
-                </tr>
-              )}
-            </Fragment>
           );
         })}
       </tbody>
