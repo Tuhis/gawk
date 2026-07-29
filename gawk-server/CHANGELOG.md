@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.23.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.22.0...gawk-server-v0.23.0) (2026-07-29)
+
+
+### Features
+
+* **r30:** striped delivery — ST2–ST6 (wire, relay legs, viewer transport, controller, observability) ([#191](https://github.com/Tuhis/gawk/issues/191)) ([bf8db99](https://github.com/Tuhis/gawk/commit/bf8db99d901e8b4e47c69c8283b9f1bbfface44e))
+
+
+### Bug Fixes
+
+* **r30:** expiry fold loses parity/stripe totals; cluster-assert multi-broadcast ([#196](https://github.com/Tuhis/gawk/issues/196)) ([9f7b9c2](https://github.com/Tuhis/gawk/commit/9f7b9c2b589e36d8ae610baacc558972c9230903))
+
 ## [0.22.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.21.1...gawk-server-v0.22.0) (2026-07-28)
 
 
