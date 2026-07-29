@@ -1,0 +1,73 @@
+/*
+  The lanes stack with NO gap between their plot areas, so a vertical alignment
+  reads as one. Every pixel of separation between lanes is a pixel of doubt
+  about whether two dips happened at the same instant, which is the one
+  question this view exists to answer.
+*/
+.lanes {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.lane {
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+}
+
+.lane:last-child {
+  border-bottom: 0;
+}
+
+.laneHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  min-width: 0;
+}
+
+.laneKind {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.laneId {
+  font-family: var(--mono);
+}
+
+.laneMeta,
+.laneSpan,
+.cadence {
+  color: var(--text-dimmer);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.laneSpan {
+  font-variant-numeric: tabular-nums;
+}
+
+.laneVerdict {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+/*
+  UD10 in a lane: a participant whose raw window is gone keeps its span, its
+  severity and its verdict, and shows a sentence instead of an empty chart.
+*/
+.laneNote {
+  margin: 0;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+}

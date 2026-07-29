@@ -244,9 +244,14 @@ jobs:
   # tidy` resolves the module graph without compiling cgo, so this stays
   # header-free and fast.
   # R28 (docs/33): the optional telemetry service. Its own job for the same
-  # reason gawk-broadcast has one — it is a separate module — but unlike that
-  # one it needs no extra headers: DuckDB is a query OPTION, never a runtime
-  # dependency (D11), so this stays a plain cgo-free Go build.
+  # reason gawk-broadcast has one — it is a separate module.
+  #
+  # This job builds it the way a FRESH CLONE does: no build tag, no cgo query
+  # engine (R31 §8 Q1). That configuration is the one a contributor gets, and
+  # the property worth protecting is that it still compiles and still runs its
+  # whole test suite without a C toolchain. The DEPLOYED configuration —
+  # `-tags duckdb`, which the image uses — is covered by the extra step at the
+  # end, because a build tag nobody exercises is a build tag that rots.
   telemetry:
     runs-on: ioio-k8s
     defaults:
@@ -257,13 +262,23 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-telemetry/go.mod
-          # go.mod, not go.sum: this module's ONLY dependency is the locally
-          # `replace`d gawk-server, so it legitimately has no checksum file.
-          cache-dependency-path: gawk-telemetry/go.mod
+          # R31 (UD18/§8 Q1) gave this module its first third-party dependency
+          # and therefore its first go.sum: the DuckDB driver, imported only
+          # behind the `duckdb` build tag. The untagged build below still links
+          # none of it.
+          cache-dependency-path: gawk-telemetry/go.sum
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+      # UD18's console is on by default, and what decides whether it can ANSWER
+      # is this tag. Building and testing it here is what stops the shipped
+      # configuration from being the untested one — the sqlengine tests under
+      # the tag drive a real DuckDB over real partitions.
+      - name: the deployed configuration (-tags duckdb)
+        run: go test -tags duckdb ./internal/sqlengine/...
         env:
           CGO_ENABLED: "1"
 
@@ -305,7 +320,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-telemetry/go.mod
-          cache-dependency-path: gawk-telemetry/go.mod
+          cache-dependency-path: gawk-telemetry/go.sum
       - name: the built page fetches nothing off-origin
         working-directory: gawk-telemetry
         run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
@@ -320,6 +335,7 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+            gawk-telemetry/go.sum
       - name: go mod tidy leaves every module unchanged
         run: |
           for mod in gawk-server gawk-broadcast gawk-telemetry; do
@@ -386,6 +402,7 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+            gawk-telemetry/go.sum
       # See the server job — the relay↔pubsim↔browser leg is QUIC over
       # loopback.
       - name: Ensure UDP buffer limits for quic-go
@@ -499,6 +516,7 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+            gawk-telemetry/go.sum
       # See the server job. net.core sysctls are host-global (not namespaced),
       # so this also covers the relay pods inside the kind node.
       - name: Ensure UDP buffer limits for quic-go

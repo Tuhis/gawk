@@ -1,0 +1,219 @@
+/*
+  Shared furniture for the historical views (UD14: dense ops console, dark).
+  Deliberately NOT gawk-app's R6 monochrome tokens — those were designed for a
+  cinematic viewer, and a data console is a different problem. Hue stays
+  reserved for severity; density carries everything else.
+*/
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.subtitle {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-family: var(--mono);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.controls {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+}
+
+.select,
+.text {
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  padding: 2px 4px;
+  max-width: 14rem;
+}
+
+.button {
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.button:hover {
+  color: var(--text);
+}
+
+.buttonOn {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.panelTitle {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dimmer);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+}
+
+.kv {
+  display: flex;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+
+.k {
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+  min-width: 9rem;
+  flex-shrink: 0;
+}
+
+.v {
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+}
+
+.error {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--bad);
+  border-radius: var(--r-md);
+  background: var(--bad-bg);
+  font-size: var(--fs-sm);
+}
+
+.loading {
+  color: var(--text-dimmer);
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) 0;
+  margin: 0;
+}
+
+/*
+  UD10's banner for a row whose raw window is gone. It says what it CAN still
+  answer — the permanent rollup — rather than rendering an empty chart, which
+  would read as "nothing was wrong" when it means "nothing was kept".
+*/
+.rollupOnly {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.distrust {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-size: var(--fs-sm);
+}
+
+.table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--line);
+  padding: 2px 6px 4px 0;
+}
+
+.table td {
+  padding: 2px 6px 2px 0;
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.right {
+  text-align: right;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.chartRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.chartTitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}

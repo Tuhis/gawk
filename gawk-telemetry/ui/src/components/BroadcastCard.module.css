@@ -134,3 +134,37 @@
   color: var(--text-dimmer);
   font-size: var(--fs-sm);
 }
+
+/*
+  UD19's watch. A star, and a row that visibly changes when the thing you
+  starred gets worse. That is the entire alerting story — no notification, no
+  sound, no server state.
+*/
+.star {
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--text-dimmer);
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+
+.star:hover {
+  color: var(--text);
+}
+
+.starOn {
+  color: var(--accent);
+}
+
+.escalated {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.escalation {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  white-space: nowrap;
+}

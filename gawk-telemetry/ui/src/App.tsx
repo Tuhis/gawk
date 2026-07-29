@@ -1,103 +1,111 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useRef } from 'react';
 
-import { BroadcastCard } from './components/BroadcastCard.tsx';
-import { FindStream } from './components/FindStream.tsx';
-import { clockTime } from './lib/format.ts';
-import { POLL_MS, useLiveStore } from './state/liveStore.ts';
-import { useUiStore } from './state/uiStore.ts';
+import { ClockNote, Nav, PauseBar } from './components/Chrome.tsx';
+import { CommandPalette } from './components/CommandPalette.tsx';
+import { href, useRoute } from './router/router.ts';
+import { useLiveStore } from './state/liveStore.ts';
+import { useMetaStore } from './state/metaStore.ts';
+import { BroadcastView } from './views/BroadcastView.tsx';
+import { ExploreView } from './views/ExploreView.tsx';
+import { FleetView } from './views/FleetView.tsx';
+import { HistoryView } from './views/HistoryView.tsx';
+import { LiveView } from './views/LiveView.tsx';
+import { RulesView } from './views/RulesView.tsx';
+import { SessionView } from './views/SessionView.tsx';
+import { SqlView } from './views/SqlView.tsx';
 import styles from './App.module.css';
 
-/**
- * How long after the last successful poll the feed is called stale. Three
- * missed polls: one failure is a blip, three is a fact worth showing.
- */
-const STALE_AFTER_MS = POLL_MS * 3;
+// The shell. Everything that used to be here is now `views/LiveView.tsx`; what
+// remains is what every view shares.
+//
+// The router (TH1) is what made this a shell rather than a page, and it is a
+// CORRECTNESS fix: `#/session/<id>` has been written into every rollup row's
+// stored verdict since R28, rollups are permanent, and the SPA had no router —
+// so the defect was being written into the one artifact that is never pruned.
 
 export function App() {
-  const snapshot = useLiveStore((s) => s.snapshot);
-  const history = useLiveStore((s) => s.history);
-  const error = useLiveStore((s) => s.error);
-  const lastOkAt = useLiveStore((s) => s.lastOkAt);
-  const poll = useLiveStore((s) => s.poll);
-  const foundKey = useUiStore((s) => s.foundKey);
-  const prune = useUiStore((s) => s.prune);
+  const route = useRoute();
+  const start = useLiveStore((s) => s.start);
+  const noteGap = useLiveStore((s) => s.noteGap);
+  const loadMeta = useMetaStore((s) => s.load);
+  const hiddenSince = useRef<number | null>(null);
 
   useEffect(() => {
-    void poll();
-    const id = setInterval(() => void poll(), POLL_MS);
-    return () => clearInterval(id);
-  }, [poll]);
+    void loadMeta();
+  }, [loadMeta]);
 
-  const live = useMemo(() => snapshot?.live ?? [], [snapshot]);
-  const ended = useMemo(() => snapshot?.ended ?? [], [snapshot]);
+  useEffect(() => start(), [start]);
 
+  // TH11's background-throttle honesty. A backgrounded tab is throttled to
+  // roughly one timer per minute, so the page genuinely did not observe that
+  // window — and it MARKS the gap rather than backfilling or drawing through
+  // it. Backfilling would be the worst of both: data the page never had,
+  // rendered as though it watched.
   useEffect(() => {
-    prune(new Set([...live, ...ended].map((b) => b.broadcastKey)));
-  }, [live, ended, prune]);
-
-  // Staleness is computed from the last SUCCESS, not from the error flag: a
-  // feed that has been failing for one poll is not yet worth shouting about,
-  // and the last good data stays on screen either way.
-  const staleMs = lastOkAt === null ? null : Date.now() - lastOkAt;
-  const stale = staleMs !== null && staleMs > STALE_AFTER_MS;
+    const onVisibility = () => {
+      if (document.hidden) {
+        hiddenSince.current = Date.now();
+        return;
+      }
+      const since = hiddenSince.current;
+      hiddenSince.current = null;
+      if (since && Date.now() - since > 30_000) noteGap(Date.now() - since);
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [noteGap]);
 
   return (
     <div className={styles.app}>
       <header className={styles.header}>
-        <h1 className={styles.title}>gawk telemetry</h1>
-        <span className={styles.updated}>
-          {snapshot ? `updated ${clockTime(snapshot.atMs)}` : 'connecting…'}
-        </span>
-        {/* The banner occupies its slot whether or not it has anything to say,
-            so the page below never jumps when the feed hiccups. */}
-        <span className={`${styles.feed} ${stale || error ? styles.feedBad : ''}`}>
-          {error ? `feed unavailable: ${error}` : stale ? 'feed stale' : ''}
-        </span>
+        <a className={styles.title} href={href('live')}>
+          gawk telemetry
+        </a>
+        <Nav />
         <span className={styles.spacer} />
-        <FindStream />
+        <PauseBar />
+        <ClockNote />
       </header>
 
       <main className={styles.main}>
-        {/*
-          Live first, ALWAYS as its own group. The grouping IS the precedence:
-          a live `warn` outranks an ended `bad`, because only the live one can
-          still be acted on. The two are never interleaved.
-        */}
-        <h2 className={styles.groupTitle}>Live</h2>
-        {live.length === 0 ? (
-          <p className={styles.empty}>Nothing is streaming right now.</p>
-        ) : (
-          live.map((b) => (
-            <BroadcastCard
-              key={b.broadcastKey}
-              broadcast={b}
-              ended={false}
-              history={history}
-              found={foundKey === b.broadcastKey}
-            />
-          ))
-        )}
-
-        {ended.length > 0 && (
-          <>
-            <h2 className={styles.groupTitle}>Recently ended</h2>
-            <p className={styles.groupNote}>
-              Stored verdicts from finished broadcasts. Nothing here can still be acted on.
-            </p>
-            <div className={styles.endedGroup}>
-              {ended.map((b) => (
-                <BroadcastCard
-                  key={b.broadcastKey}
-                  broadcast={b}
-                  ended
-                  history={history}
-                  found={foundKey === b.broadcastKey}
-                />
-              ))}
-            </div>
-          </>
-        )}
+        <Route route={route} />
       </main>
+
+      <CommandPalette />
     </div>
   );
+}
+
+function Route({ route }: { route: ReturnType<typeof useRoute> }) {
+  switch (route.view) {
+    case 'live':
+      return <LiveView />;
+    case 'session':
+      // The id is passed through even when malformed: the view renders "no such
+      // session", which is TH1's criterion. A router that silently fell back to
+      // the fleet page would be the original defect wearing a new hat.
+      return <SessionView sessionId={route.id ?? ''} />;
+    case 'broadcast':
+      return <BroadcastView broadcastKey={route.id ?? ''} />;
+    case 'history':
+      return <HistoryView />;
+    case 'explore':
+      return <ExploreView />;
+    case 'fleet':
+      return <FleetView />;
+    case 'rules':
+      return <RulesView />;
+    case 'sql':
+      return <SqlView />;
+    default:
+      return (
+        <div className={styles.notFound}>
+          <h1>No such view</h1>
+          <p>
+            <code>{route.raw || '/'}</code> does not name anything here.{' '}
+            <a href={href('live')}>Live fleet</a> · <a href={href('history')}>History</a>
+          </p>
+        </div>
+      );
+  }
 }

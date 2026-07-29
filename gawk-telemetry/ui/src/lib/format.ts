@@ -74,3 +74,120 @@ export function clockTime(atMs: number): string {
 export function shortId(id: string, len = 8): string {
   return id.slice(0, len);
 }
+
+// --- R31: absolute time is the primary axis for anything historical (UD5) ---
+//
+// The vocabulary above — `ago()`, `dur()` — is right for the live page, where
+// "now" is the anchor. It is wrong everywhere else: correlating with a relay
+// log, with Prometheus, with a release timestamp or with a friend's "it broke
+// around nine" needs a wall clock. So relative time becomes the ANNOTATION and
+// absolute time becomes the axis.
+//
+// **The timezone is displayed, never assumed.** A dashboard that renders
+// 21:04 without saying whose 21:04 is a dashboard that will eventually cost
+// someone an hour.
+
+/** The viewer's IANA zone, e.g. "Europe/Helsinki". */
+export function timeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+  } catch {
+    return 'local';
+  }
+}
+
+/** The zone's short name at a given instant, e.g. "EEST". */
+export function timeZoneLabel(atMs: number = Date.now()): string {
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(
+      new Date(atMs),
+    );
+    return parts.find((p) => p.type === 'timeZoneName')?.value ?? timeZone();
+  } catch {
+    return timeZone();
+  }
+}
+
+/** Date + time to the second. The form an operator pastes into a log search. */
+export function absoluteTime(atMs: number | undefined | null): string {
+  if (atMs === undefined || atMs === null || !Number.isFinite(atMs) || atMs <= 0) return EMPTY;
+  const d = new Date(atMs);
+  return `${d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+}
+
+/** Time only, for a row in a table whose date is already stated. */
+export function timeOfDay(atMs: number | undefined | null): string {
+  if (atMs === undefined || atMs === null || !Number.isFinite(atMs) || atMs <= 0) return EMPTY;
+  return new Date(atMs).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+/**
+ * A chart axis label. Coarser than `absoluteTime` because an axis has to stay
+ * readable at any zoom: the date appears only when the tick IS midnight, so a
+ * multi-day range still says which day without repeating it on every tick.
+ */
+export function axisTime(value: number): string {
+  const d = new Date(value);
+  if (d.getHours() === 0 && d.getMinutes() === 0) {
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  if (d.getSeconds() === 0) {
+    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+/** A tooltip's timestamp: absolute, to the second, with the zone named. */
+export function tooltipTime(atMs: number): string {
+  return `${absoluteTime(atMs)} ${timeZoneLabel(atMs)}`;
+}
+
+/** An absolute range, collapsing the date when both ends share one. */
+export function rangeLabel(fromMs: number, toMs: number): string {
+  if (!fromMs || !toMs) return EMPTY;
+  const a = new Date(fromMs);
+  const b = new Date(toMs);
+  if (a.toDateString() === b.toDateString()) {
+    return `${absoluteTime(fromMs)} → ${timeOfDay(toMs)}`;
+  }
+  return `${absoluteTime(fromMs)} → ${absoluteTime(toMs)}`;
+}
+
+/**
+ * A value with its unit, or the em dash. Used for evidence rows and dip movers.
+ *
+ * Unlike `num()` this does NOT pad to a fixed decimal count, and the difference
+ * is deliberate: those are static values in prose, not a ticking column, so the
+ * fixed-width rule buys nothing and "412.0 drops" reads as a measurement
+ * precision nobody claimed. A whole number stays whole; a fraction gets enough
+ * digits to be worth showing.
+ */
+export function withUnit(v: number | undefined, unit?: string, digits = 2): string {
+  if (v === undefined || !Number.isFinite(v)) return EMPTY;
+  const n = Number.isInteger(v)
+    ? String(v)
+    : Math.abs(v) >= 100
+      ? v.toFixed(0)
+      : Math.abs(v) >= 10
+        ? v.toFixed(1)
+        : v.toFixed(digits);
+  return unit ? `${n} ${unit}` : n;
+}
+
+/** Confidence as a percentage, because 0.6 reads as a score and 60 % as a claim. */
+export function confidence(c: number | undefined): string {
+  if (c === undefined || !Number.isFinite(c)) return EMPTY;
+  return `${Math.round(c * 100)}%`;
+}

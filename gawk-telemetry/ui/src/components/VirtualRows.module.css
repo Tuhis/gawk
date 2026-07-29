@@ -1,0 +1,25 @@
+/*
+  UD12's virtualization. The scroller owns the height and the rows are absolutely
+  positioned inside a spacer of the full list height — so 2 000 rows scroll at
+  60 fps and hold bounded memory, which is TH3's measured criterion.
+*/
+.scroller {
+  overflow: auto;
+  position: relative;
+  contain: strict;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+
+.spacer {
+  position: relative;
+  width: 100%;
+}
+
+.row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}

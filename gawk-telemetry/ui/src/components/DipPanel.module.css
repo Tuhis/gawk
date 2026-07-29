@@ -1,0 +1,102 @@
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.title {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dimmer);
+}
+
+.episode {
+  border-top: 1px solid var(--line);
+  padding: var(--sp-2) 0;
+}
+
+.epHead {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+}
+
+.when {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.dim {
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+}
+
+.movers {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+  margin-top: var(--sp-1);
+}
+
+.movers th,
+.movers td {
+  text-align: left;
+  font-weight: 400;
+  padding: 1px 6px 1px 0;
+  vertical-align: top;
+}
+
+.signal {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.value {
+  font-variant-numeric: tabular-nums;
+}
+
+.chip {
+  display: inline-block;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+/* Relay provenance is the anchor (D7) and reads as one, whatever its magnitude. */
+.relay {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.client {
+  border-style: dashed;
+}
+
+/*
+  The co-occurrence sentence. Bordered rather than styled as a finding, because
+  it is explicitly NOT a verdict: it reports that things happened together and
+  states how much that is worth.
+*/
+.correlation {
+  margin: var(--sp-2) 0 0;
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--line-strong);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.none {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+}

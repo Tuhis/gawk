@@ -1,0 +1,38 @@
+/*
+  Fixed geometry. The container's height comes from a custom property set by
+  the component, so a chart with no data occupies exactly the space a populated
+  one does — TH11's no-layout-shift rule, which gets HARDER at UD14's density,
+  not easier.
+*/
+.wrap {
+  margin: 0;
+  position: relative;
+}
+
+.canvas {
+  width: 100%;
+  height: var(--chart-h, 160px);
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+  pointer-events: none;
+}
+
+/*
+  UD9's disclosure line: "worst of every N samples". A reader who does not know
+  they are looking at an envelope will take the line for raw, which is exactly
+  how a downsampled chart lies without containing a single wrong number.
+*/
+.note {
+  margin: 2px 0 0;
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+  line-height: 1.3;
+}

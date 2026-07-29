@@ -1,7 +1,12 @@
 # R31 — Telemetry UI v2: a purpose-built diagnosis SPA
 
 **Status**: requirements drafted 2026-07-29, owner decisions taken the same day
-(§3.2), not started. Chunks **TH1–TH11**; decisions **UD1–UD22** (§0.2). Both
+(§3.2), **TH1–TH11 implemented 2026-07-30**; gates green in both jobs
+(`gawk-telemetry`: gofmt / vet / `go test -race`, plus `-tags duckdb`;
+`gawk-telemetry/ui`: oxlint / 49 tests / build, plus the no-external-fetch test
+over the built bundle). Both §8 open questions are resolved — see §8.
+**On-hardware pass against the homelab fleet is owner-pending** (§9).
+Chunks **TH1–TH11**; decisions **UD1–UD22** (§0.2). Both
 prefixes were free: `A`–`Z`, `AR`, `AV`, `CG`, `DV`, `FP`, `LI`, `MF`, `MP`,
 `NA`, `NV`, `QL`, `ST`, `TC`, `TM` and `VP` are claimed elsewhere.
 
@@ -734,18 +739,146 @@ date from the listing that already knows it.
 
 ## 8. Open questions
 
-1. **UD18's build cost.** Does the deployed image take a cgo DuckDB dependency
-   and leave `distroless/static`, with `go build` on a fresh clone staying
-   cgo-free and reporting the tool unavailable (this document's
-   recommendation) — or does the console stay behind a default-**off** flag as
-   D11 had it? The owner has chosen default-on; this asks only how to pay
-   for it.
-2. **UD22 (SSE) is my call, not the owner's.** Flagged for objection: it adds
-   an endpoint and reconnect logic in exchange for not re-sending the fleet
-   projection every 2 s at UD12's scale.
-3. **How much of TH4's relay lane earns its keep at replicas 1?** Re-home
-   markers matter at replicas ≥ 2; at replicas 1 the lane is ingress loss and
-   drop counters, which is still useful but much smaller.
+1. **UD18's build cost. — RESOLVED 2026-07-29 (owner): the build tag.**
+   The deployed image takes the cgo DuckDB dependency and leaves
+   `distroless/static`; `go build ./...` on a fresh clone stays cgo-free and
+   the console reports itself unavailable. As built:
+
+   - `internal/sqlengine` splits on `//go:build duckdb`. `nodriver.go` returns
+     `ErrNoEngine` and still describes what *would* be queryable — "there is no
+     engine here" and "there is nothing to query" are different facts.
+   - The image is `CGO_ENABLED=1 go build -tags duckdb` onto
+     `gcr.io/distroless/base-debian12:nonroot` (base, not static: a cgo binary
+     needs a libc). Still distroless, still nonroot, still no shell.
+   - `-query-sql` keeps its role as the gate and flips to default **on**;
+     `mcp.Options.SQL` finally has a producer, having accepted one since R28
+     with nothing ever supplying it.
+   - The module gains its first third-party dependency and therefore its first
+     `go.sum`. CI builds the untagged configuration (what a contributor gets)
+     **and** runs `go test -tags duckdb ./internal/sqlengine/...` (what ships),
+     because a build tag nobody exercises is a build tag that rots.
+   - Safety is an allowlist, not read-only mode: the engine must read the
+     partitions, so external access stays on and a first-verb allowlist plus a
+     one-statement rule is what refuses `COPY … TO`. Tested in **both** builds,
+     since a security-relevant rule that only exists in the configuration
+     nobody runs locally is a rule nobody checks.
+
+2. **UD22 (SSE) — RESOLVED 2026-07-29 (owner): keep it, with the poll as
+   fallback.** As built, `GET /live/stream` hashes the marshalled projection
+   and sends only changes, so an idle fleet costs a heartbeat rather than a
+   payload — that saving, not the transport, is what earned the endpoint. The
+   client tries the stream, falls back to the 2 s poll on error or when
+   `EventSource` is absent, never runs both, and *says which one is feeding the
+   page*. `X-Accel-Buffering: no` is set because the internal Ingress is nginx
+   and buffering would turn a live stream into a batched one.
+
+3. **How much of TH4's relay lane earns its keep at replicas 1?** Still open.
+   Re-home markers matter at replicas ≥ 2; at replicas 1 the lane is ingress
+   loss and drop counters. Built as one lane either way, and it states
+   "no relay observation of this broadcast" rather than rendering empty.
+
 4. **Does TH7's fleet timeline want a Prometheus overlay later** — relay
    CPU/memory/pod restarts on the same axis? Out of scope now, but the axis is
    the natural place for it, and knowing that shapes the component's seam.
+
+---
+
+## 9. What was built, and where it deviates
+
+Implemented 2026-07-30, in two commits (read surface, then SPA). The chunk
+table in §4 is the specification; this section records only what a reader of
+that table would otherwise get wrong.
+
+### 9.1 Deviations from §4/§5
+
+1. **TH3's history browser is a SECOND surface, not a widened first one.**
+   §5 lists "cursor pagination + server-side sort on the list endpoints", which
+   read as extending `/v1/sessions`. It could not be: that endpoint's default
+   response is what D10's 32 KB ceiling is asserted against, and adding
+   `appVersion`, `endedAtMs`, `deliveryMode`, `findings` and `rollupOnly` to
+   fifty rows moves it. So `/v1/history/{sessions,broadcasts}` is a parallel,
+   UI-shaped surface with its own bounds, and `/v1/sessions` is untouched.
+   `TestR31DefaultsAreByteIdentical` asserts UD1 as bytes rather than as
+   intent.
+
+2. **TH2's envelope is opt-in via `detail=1`.** Same reason. `SessionQuery`'s
+   zero value reproduces `GetSession` exactly, and the test compares the
+   marshalled output of both.
+
+3. **TH9's per-episode detail is computed, not stored.** §4 says "TM10 already
+   captures per-episode counter deltas"; in fact `rollup.Episodes` carries the
+   AGGREGATE — count, total, longest, and deltas summed across episodes.
+   Per-episode spans are now produced by `DetectEpisodeSpans`, which is the
+   same detection the verdict uses, so a dip on screen and a dip in a verdict
+   can never be different dips. They are deliberately **not** written to the
+   rollup row: they are only answerable while the samples exist, and growing
+   the one permanent artifact to restate what the raw window says better is the
+   wrong trade.
+
+4. **TH7's fleet stripes are not a chart.** Each row is one span div plus its
+   degraded sub-spans, positioned by percentage of the shared range. That makes
+   the vertical alignment exact — every row runs the same arithmetic — and
+   costs two elements per row instead of 300 ECharts instances.
+
+5. **The field catalogue needed a semantic layer the schema tables did not
+   have.** `ViewerFields`/`BroadcasterFields` say what TYPE a field is, which is
+   all ingest needs; a chart needs counter-vs-gauge. `schema/catalogue.go` adds
+   it, and a test pins it against `rollup.CounterFields`/`SeriesFields` so the
+   two opinions cannot drift (D15's own complaint). That test immediately
+   caught the legacy capitalized spellings — `EncodedFrames` and friends were
+   catalogued as gauges while `encodedFrames` was a counter — which is fixed by
+   inheriting the lowerCamelCase twin's semantics rather than by a second
+   table.
+
+6. **`store.SessionReads()` was added for one assertion.** TH2's criterion
+   "the fleet page's per-poll cost is unchanged — no session file is read by
+   `/live`" is not otherwise observable: a UI change that made `/live` open a
+   file per broadcast would pass every existing test. The counter makes it
+   visible, and `TestLivePathReadsNoSessionFile` checks both directions.
+
+7. **Two bugs a running binary caught that the tests did not.** Both are worth
+   recording because both were invisible to a passing suite:
+
+   - **The SSE stream re-sent an identical projection every 2 s.** `Snapshot.AtMs`
+     is a fresh clock reading on every call, so hashing the marshalled response
+     verbatim made every tick look like a change — and change-only delivery is
+     the *entire* justification for the endpoint over the poll it replaces. The
+     fix hashes the snapshot with the clock zeroed; `streamFingerprint` and its
+     test exist for that one reason. Verified against a running binary: eight
+     seconds of an idle fleet is now one frame, not four.
+   - **A live session page could never refresh.** `ParseTimeline` falls back to
+     the last `receivedAtMs` when a session supplies no end of its own, so
+     `endedAtMs` is set for *every* session, open or finished, and the UI's
+     "is it live?" test was permanently false. `Timeline.Live` now comes from
+     the projection, which is the only thing that actually knows.
+
+8. **`rules.Rule` grew `Why` and `Thresholds`, and `EvaluateTrace` was added.**
+   UD20's catalogue needs the thresholds a predicate actually compares against,
+   so they are the package constants themselves rather than re-typed literals.
+   `Evaluate` and `EvaluateTrace` share one ranking function and a test asserts
+   they produce identical reports — a trace that explained a verdict the engine
+   did not reach would be worse than no trace.
+
+### 9.2 Bundle size
+
+`app.js` is 873 kB raw / 286 kB gzip with ECharts bundled. Registration is
+explicit and minimal — `LineChart`, Grid, Tooltip, Legend, DataZoom, MarkArea,
+MarkLine, CanvasRenderer, and nothing kept "in case". That is comfortably
+inside TH11's "first paint < 1 s on a port-forward" for a page served from the
+same binary with no network round trip, and the no-external-fetch test confirms
+the bundle is genuinely self-contained (UD7).
+
+### 9.3 Still owner-pending
+
+- **An on-hardware pass** against the homelab fleet: the multi-lane timeline
+  with a real broadcaster and ≥ 3 viewers, the SSE feed through the internal
+  Ingress, and the SQL console on the deployed (cgo) image. Everything here was
+  verified against fixtures and unit tests.
+- **The measured budgets** in TH11 (5 lanes × 2 000 points < 250 ms; 2 000 rows
+  at 60 fps; 50 broadcasts × 200 viewers interactive). The bounds that make
+  them achievable are enforced in code — `LanePoints`, `MaxLanes`,
+  `MaxTimelineRows`, fixed-height virtualization — but the numbers themselves
+  want a real fleet, not a fixture.
+- **A phone pass** for UD17's read-only triage. The dense views declare
+  themselves desktop-only at ≤ 720 px; that the triage set is legible on a real
+  390 px viewport is unverified.

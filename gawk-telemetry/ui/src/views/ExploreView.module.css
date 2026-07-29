@@ -1,0 +1,73 @@
+.layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: var(--sp-3);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.picker {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--sp-2);
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.fieldList {
+  list-style: none;
+  margin: 0 0 var(--sp-2);
+  padding: 0;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px;
+  align-items: baseline;
+  padding: 1px 2px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.field:hover {
+  background: var(--panel-hover);
+}
+
+.fieldName {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fieldKind {
+  font-size: 9px;
+  color: var(--text-dimmer);
+  white-space: nowrap;
+}
+
+.plot {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--sp-2);
+  min-width: 0;
+}
+
+.chip {
+  display: inline-block;
+  margin-right: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
