@@ -784,6 +784,34 @@ honestly reports work done — so on striped sessions it reads as "recoveries
 (incl. skew races)", not pure loss repair; the accounting fields are the
 loss-truth surface.
 
+### Finding 3 — the hub-expiry fold predated R29/R30, so a lingered-out edge took its parity and stripe counters with it (2026-07-29)
+
+Found by the first `e2e-cluster` dispatch. The striped browser step passed,
+yet `cluster-assert.sh` read **zero** stripe engagement across the fleet —
+because the striped viewer's serving hub was a viewerless EDGE that lingered
+out (R17's 15 s linger) minutes before the script ran, and `expireBroadcast`'s
+counter fold, written pre-R29, folded neither the parity counters
+(`parityDatagramsForwarded`, `paritySuppressed`, `egressParityBytes`) nor
+R30's (`stripeSuppressedDatagrams`, `stripeTransitions`) into the registry
+totals. That is a CODE-REVIEW "counters survive their owner's deletion"
+violation, and operationally a Prometheus counter that goes **backwards**
+whenever a hub expires — R29's fleet-cost series (`parity_*_total`) had been
+quietly under-reporting on any fleet where edges linger out.
+
+Fixed test-first (`TestExpiryKeepsStripeAndParityTotals` — red showed all
+five counters dropping to zero across an expiry): five `r.total*` fields, the
+expiry fold, the Stats() totals accumulation, and the two counters the
+hub-gone subscriber-close branch was also missing (`egressParityBytes`,
+`stripeTransitions`).
+
+The same dispatch exposed the companion harness assumption:
+`cluster-assert.sh` asserted "exactly one origin POD", which the second
+(large-fixture) publisher broke by hashing to the other pod — each pod is now
+legitimately an origin for one broadcast. The script now asserts one origin
+pod **per broadcast key** (the shared statsKey makes keys comparable across
+pods), scopes the edge/R18 checks to the loadgen broadcast, and reads the
+stripe engagement proof from pod TOTALS, where the expiry fold now keeps it.
+
 ---
 
 ## 13. Manual runbook — the owner-run remainder (ST1 + ST7)

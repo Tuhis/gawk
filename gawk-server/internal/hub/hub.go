@@ -582,6 +582,14 @@ type Registry struct {
 	totalCarrierRecordsDropped     uint64
 	totalCarrierQueueOverflow      uint64
 	totalEgressCarrierBytes        uint64
+	// docs/35 §12 finding 3: the expiry fold predated R29 and R30, so a
+	// lingered-out edge hub took its parity and stripe counters with it —
+	// a fleet total (and Prometheus counter) that went BACKWARDS.
+	totalParityDatagramsForwarded  uint64
+	totalParitySuppressed          uint64
+	totalEgressParityBytes         uint64
+	totalStripeSuppressedDatagrams uint64
+	totalStripeTransitions         uint64
 
 	limiter *bandwidthLimiter
 
@@ -1732,6 +1740,11 @@ func (r *Registry) Stats() RegistryStats {
 	totals.CarrierRecordsDropped += r.totalCarrierRecordsDropped
 	totals.CarrierQueueOverflow += r.totalCarrierQueueOverflow
 	totals.EgressCarrierBytes += r.totalEgressCarrierBytes
+	totals.ParityDatagramsForwarded += r.totalParityDatagramsForwarded
+	totals.ParitySuppressed += r.totalParitySuppressed
+	totals.EgressParityBytes += r.totalEgressParityBytes
+	totals.StripeSuppressedDatagrams += r.totalStripeSuppressedDatagrams
+	totals.StripeTransitions += r.totalStripeTransitions
 	totals.KeyframeStreamsDropped = totals.KeyframeDrops.Total()
 
 	return RegistryStats{
@@ -1819,6 +1832,11 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool 
 	r.totalCarrierRecordsDropped += b.carrierRecordsDropped
 	r.totalCarrierQueueOverflow += b.carrierQueueOverflow
 	r.totalEgressCarrierBytes += b.egressCarrierBytes
+	r.totalParityDatagramsForwarded += b.parityDatagramsForwarded
+	r.totalParitySuppressed += b.paritySuppressed
+	r.totalEgressParityBytes += b.egressParityBytes
+	r.totalStripeSuppressedDatagrams += b.stripeSuppressedDatagrams
+	r.totalStripeTransitions += b.stripeTransitions
 	if b.edge {
 		r.totalEdgeIngressFramesLost += b.ingressFramesLost
 		r.totalEdgeIngressChunksLost += b.ingressChunksLost
@@ -3305,12 +3323,14 @@ func (s *Subscriber) Close() {
 		r.totalKeyframeDrops.add(s.keyframeDrops())
 		r.totalSendErrors += s.sendErrors.Load()
 		r.totalEgressDatagramBytes += s.egressDatagramBytes.Load()
+		r.totalEgressParityBytes += s.egressParityBytes.Load()
 		r.totalEgressKeyframeBytes += s.egressKeyframeBytes.Load()
 		r.totalCarrierStreams += s.carrierStreams.Load()
 		r.totalCarrierRecords += s.carrierRecords.Load()
 		r.totalCarrierRecordsDropped += s.carrierRecordsDropped.Load()
 		r.totalCarrierQueueOverflow += s.carrierQueueOverflow.Load()
 		r.totalEgressCarrierBytes += s.egressCarrierBytes.Load()
+		r.totalStripeTransitions += s.stripeTransitions.Load()
 	}
 }
 
