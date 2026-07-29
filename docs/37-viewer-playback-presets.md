@@ -1,7 +1,7 @@
 # R32 — Viewer playback presets & settings UX
 
 **Status**: designed + **UX1–UX6 implemented 2026-07-29**; automated gates
-green (`gawk-app` 1133 tests / oxlint / `tsc -b` build) and verified live in
+green (`gawk-app` 1129 tests / oxlint / `tsc -b` build) and verified live in
 Chrome against the production fleet on broadcast `5UP4XW`. Deviations in §13.
 **Scope**: `gawk-app` viewer surface only — **zero server, wire, relay,
 broadcaster and media-pipeline changes**. No new persisted key, no new stat,
@@ -144,7 +144,7 @@ Advanced, stay at their defaults, and are exactly what "Custom" tracks.**
    the popover — checked, and inert on select — exactly when the effective
    tuple (delivery, pacing, parity, striping, interpolation) matches no
    preset. On a clean install it never renders. (A stored `playoutMode:
-   'fixed'` used to resolve here too; R31 removed that mode outright — see
+   'fixed'` used to resolve here too; R32 removed that mode outright — see
    deviation 7 — so it now migrates to `'adaptive'` on load instead.)
 
 4. **Not-applicable is a *disabled row with its reason on the row*, never a
@@ -521,7 +521,7 @@ device pass able to fail.
 
 ## 13. Implementation status & deviations (2026-07-29)
 
-UX1–UX6 implemented. Gates: `npm test` (1133 passed / 75 files), `npx oxlint`
+UX1–UX6 implemented. Gates: `npm test` (1129 passed / 75 files), `npx oxlint`
 (clean), `npm run build` (`tsc -b` — the only real frontend typecheck, per
 CODE-REVIEW). Live-verified in Chrome against the production fleet
 (`https://api.gawk.ioio.fi:4433`) on broadcast `5UP4XW`, driving the real
@@ -587,9 +587,9 @@ Files: `ui/ContextMenu.tsx` + `.module.css` (UX1),
 
 7. **The `'fixed'` playout mode was removed outright** (owner decision,
    2026-07-29), superseding docs/17 Decision 10's "retire it from the menu but
-   keep the mode". As first implemented, R31 left its dev-only "Smooth playback
+   keep the mode". As first implemented, R32 left its dev-only "Smooth playback
    (fixed 150 ms)" entry in the "⋮" menu on the reasoning that a diagnostic is
-   not a preset — but that put a *pacing* row in a menu R31's own headline rule
+   not a preset — but that put a *pacing* row in a menu R32's own headline rule
    makes actions-only, enforced by a test that only ran with
    `isDevEnvironment()` false. So the rule held for real viewers and quietly
    not for dev builds, and the row rendered indented among flat action rows

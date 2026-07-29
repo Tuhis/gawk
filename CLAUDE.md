@@ -1268,10 +1268,10 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    `PacedPresentationSink` subsumes the R10 `CoalescingRenderSink` (no
    target ⇒ identical coalescing; with targets it holds ≤3 decoded frames
    and presents each in its vsync slot); playout is persisted as
-   `gawk:playout-mode` and is **a two-mode setting since R31 (2026-07-29):
+   `gawk:playout-mode` and is **a two-mode setting since R32 (2026-07-29):
    `'off' | 'adaptive'`**. It was three — the middle one being `'fixed'`, R5
    Q3's constant 150 ms — until docs/17 Decision 10 (2026-07-23) retired it
-   from the production menu and **R31 removed it outright** (docs/36 deviation
+   from the production menu and **R32 removed it outright** (docs/37 deviation
    7). Adaptive dominates fixed at every point on the
    trade curve (clamp floor 50 ms is *below* fixed's constant on a clean
    link, ceiling above it on a dirty one, warmup seeds at the same 150 ms,
@@ -1280,11 +1280,11 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    safe. It had survived as a dev-gated diagnostic — a measurement-free offset
    separates a pacing bug from a bug in the jitter estimator driving it
    (PLAYOUT-1, docs/24 finding 8) — but that was the single pacing row in a
-   menu R31 made actions-only, for a control nobody had reached for since.
+   menu R32 made actions-only, for a control nobody had reached for since.
    Stored `'fixed'` and the legacy boolean's `'1'` both migrate to
    `'adaptive'` (now in **every** build), legacy
    `'0'` still to `'off'`; `PLAYOUT_OFFSET_MS` remains adaptive's warmup seed.
-   Since R31 pacing is not a control at all — it is a property of the chosen
+   Since R32 pacing is not a control at all — it is a property of the chosen
    preset (Lowest latency ⇒ `'off'`, every other preset ⇒ `'adaptive'`).
    In adaptive mode the reorder buffer releases at
    `target − DECODE_LEAD_MS` (35 ms) so the decoder frame pool stays

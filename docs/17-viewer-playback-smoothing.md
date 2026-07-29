@@ -259,12 +259,12 @@ final sub-frame alignment (Decision 4 below).
 
 10. **`'fixed'` retired from the production menu — pacing is one binary
     (2026-07-23, user decision).**
-    **⚠ Superseded 2026-07-29 by R31 (docs/36, deviation 7): the mode is
+    **⚠ Superseded 2026-07-29 by R32 (docs/37, deviation 7): the mode is
     removed outright.** `PlayoutMode` is now `'off' | 'adaptive'`, a stored
     `'fixed'` migrates to `'adaptive'` in *every* build, and the dev-only menu
     entry is gone. The reasoning below for why adaptive dominates fixed still
     holds and is why the removal was safe; what did not survive is the "keep it
-    as a dev-gated diagnostic" half, because R31 made the viewer menu
+    as a dev-gated diagnostic" half, because R32 made the viewer menu
     actions-only and a pacing row was the one exception to that rule — kept for
     a control nobody had reached for since. The rest of this decision is left
     as the record of what was true between 2026-07-23 and 2026-07-29.

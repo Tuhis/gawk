@@ -190,7 +190,7 @@ describe('ViewerScreen states', () => {
 // R5 Q3 + R12 T2, revised by docs/17 Decision 10 (2026-07-23): the production
 // viewer has ONE playout toggle — "Paced playback" (the R12 adaptive
 // paced-presentation mode) — persisted as one mode and applied to the
-// (main-thread, in these tests) pipeline context. R31 removed the retired
+// (main-thread, in these tests) pipeline context. R32 removed the retired
 // fixed 150 ms mode outright, so pacing is now purely a property of the chosen
 // preset. Since the default flip (user decision 2026-07-15), a fresh browser
 // defaults to adaptive + interpolation.
@@ -248,7 +248,7 @@ describe('ViewerScreen playout modes', () => {
   });
 
   // docs/17 Decision 10 retired the fixed 150 ms mode from the production
-  // menu; R31 removed it outright (owner decision 2026-07-29), so there is no
+  // menu; R32 removed it outright (owner decision 2026-07-29), so there is no
   // build in which a pacing row exists in the menu at all. Pacing is a
   // property of the preset and nothing else.
   it('offers no fixed-playout entry in any build', async () => {
@@ -272,7 +272,7 @@ describe('ViewerScreen playout modes', () => {
   });
 
   // A viewer carrying 'fixed' — from before docs/17 Decision 10 retired it, or
-  // from a dev build that could still select it until R31 — lands on adaptive,
+  // from a dev build that could still select it until R32 — lands on adaptive,
   // the mode fixed was a worse approximation of. Unconditional now: there is no
   // build left that can honour the stored value.
   it('migrates a stored fixed mode to adaptive in every build', async () => {

@@ -50,7 +50,7 @@ feature set exists).
 | R29 | [Forward parity for live-edge delivery](#r29--forward-parity-for-live-edge-delivery) | ✅ designed 2026-07-27, **FP1–FP8 implemented 2026-07-28**; gates green in all four modules incl. a Go loss-injection test (17.5x frame-loss cut at 3% loss, zero corruption) and a browser e2e pass behind a 5% lossy link (30/30 fps protected vs 25.9/17.9 control). incl. Prometheus `parity_*` metrics + docs/13 playbook rows ([docs/34](docs/34-live-edge-forward-parity.md) §11) |
 | R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔶 designed + **ST2–ST6 implemented 2026-07-29** (owner instruction moved implementation ahead of ST1); gates green in all four modules incl. a race-clean Go burst-threshold proof (control 8.3 % loss, 13/60 eighteen-chunk frames complete; striped ×3: 60/60 at 0.0 %, zero mismapped); **ST1 paired on-hardware runs + ST7 acceptance/loadgen owner-pending** ([docs/35](docs/35-connection-interleaving.md) §12) |
 | R31 | [Telemetry UI v2: a purpose-built diagnosis SPA](#r31--telemetry-ui-v2-a-purpose-built-diagnosis-spa) | 🔧 requirements drafted 2026-07-29, owner decisions taken the same day (UD11–UD22), **not started** (TH1–TH11); read-surface only — zero wire/relay/viewer/broadcaster change ([docs/36](docs/36-telemetry-ui-history.md)) |
-| R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1133 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
+| R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
 
 ---
 
@@ -727,12 +727,12 @@ docs/24 finding 8). Stored `'fixed'` and the legacy `gawk:smoothed-playout
 === '1'` both migrate to `'adaptive'`. Viewer-UI only; zero
 server/wire/pipeline changes.
 
-**Superseded 2026-07-29 by R31 (owner decision, docs/36 deviation 7)**: the
+**Superseded 2026-07-29 by R32 (owner decision, docs/37 deviation 7)**: the
 `'fixed'` mode is **removed outright** — `PlayoutMode` is `'off' |
 'adaptive'`, a stored `'fixed'` migrates to `'adaptive'` in every build, and
 the dev-gated menu entry is gone. The dominance argument above is why that
 was safe; what did not survive is the "keep it as a diagnostic" half, because
-R31 made the viewer menu actions-only and this was its one pacing row, kept
+R32 made the viewer menu actions-only and this was its one pacing row, kept
 for a control nobody had reached for since. Pacing is now a property of the
 chosen preset, not a control.
 

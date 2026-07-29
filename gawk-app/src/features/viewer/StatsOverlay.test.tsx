@@ -143,7 +143,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('3');
 
     cleanup();
-    // R31 removed the 'fixed' mode, so live-edge is what anything that is not
+    // R32 removed the 'fixed' mode, so live-edge is what anything that is not
     // adaptive reads as.
     render(
       <StatsOverlay

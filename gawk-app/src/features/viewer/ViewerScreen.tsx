@@ -149,7 +149,7 @@ function loadDeliveryMode(): ViewerDeliveryMode {
 function loadPlayoutMode(): PlayoutMode {
   try {
     const v = localStorage.getItem(PLAYOUT_MODE_KEY);
-    // R31 removed 'fixed' outright, so a viewer carrying one — from before
+    // R32 removed 'fixed' outright, so a viewer carrying one — from before
     // docs/17 Decision 10 retired it, or from a dev build that could still
     // select it — lands on adaptive: the mode fixed was a worse approximation
     // of, and the one its stored value was already migrating to everywhere a
@@ -212,7 +212,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // R5 Q3 + R12 T2: playout smoothing (trades latency for steadier pacing).
-  // Two modes since R31 removed the retired 'fixed' one: 'adaptive' (the R12
+  // Two modes since R32 removed the retired 'fixed' one: 'adaptive' (the R12
   // paced-presentation mode, the default since 2026-07-15) and 'off'
   // (live-edge). Which one is in force is a property of the chosen preset —
   // Lowest latency is 'off', every other preset is 'adaptive'.

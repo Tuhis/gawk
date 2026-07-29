@@ -10,14 +10,14 @@
 //
 // A third mode, 'fixed' (R5 Q3's constant 150 ms decoder-release pacing), was
 // retired from the production menu by docs/17 Decision 10 (2026-07-23) and
-// **removed outright by R31** (docs/36, owner decision 2026-07-29). Adaptive
+// **removed outright by R32** (docs/37, owner decision 2026-07-29). Adaptive
 // dominated it at every point on the trade curve — clamp floor below the
 // constant on a clean link, ceiling above it on a dirty one, same 150 ms
 // warmup seed, and only adaptive sets a displayTargetMs, so 'fixed' bought the
 // buffering latency without the presentation pacing. It had survived as a
 // dev-only diagnostic (a measurement-free offset separates a pacing bug from a
 // bug in the jitter estimator driving it — PLAYOUT-1, docs/24 finding 8), but
-// that put a tuning row in a menu R31 made actions-only, for a control nobody
+// that put a tuning row in a menu R32 made actions-only, for a control nobody
 // had reached for since. A stored 'fixed' migrates to 'adaptive'.
 //
 // R19 (docs/24 Decision 7): while Resilient mode is on, the *effective* mode
@@ -45,7 +45,7 @@ export type PlayoutMode = 'off' | 'adaptive';
 // One value, a named tunable like KEYFRAME_WAIT_MS: ~9 frames at 60 fps,
 // comfortably inside the reorder buffer's MAX_BUFFERED_FRAMES. Adaptive
 // mode's seed until the T3 controller has enough window to take over. (It
-// was also the retired 'fixed' mode's constant — removed in R31, see above.)
+// was also the retired 'fixed' mode's constant — removed in R32, see above.)
 export const PLAYOUT_OFFSET_MS = 150;
 
 // R12 T2 (docs/17 Decision 4): in adaptive mode, frames release from the

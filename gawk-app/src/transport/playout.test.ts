@@ -1,8 +1,8 @@
-// R12 T2 (docs/17 Decision 5), as reduced by R31: playout is a two-mode
+// R12 T2 (docs/17 Decision 5), as reduced by R32: playout is a two-mode
 // setting — 'off' (live-edge, the default) and 'adaptive' (paced presentation;
 // T3 replaces the seed offset with the jitter-tracked controller). The third
 // mode, 'fixed' (R5 Q3's constant 150 ms), was retired from the menu by
-// docs/17 Decision 10 and removed outright by R31 (docs/36). Module state per
+// docs/17 Decision 10 and removed outright by R32 (docs/37). Module state per
 // JS context, read live.
 
 import { afterEach, describe, expect, it } from 'vitest';
