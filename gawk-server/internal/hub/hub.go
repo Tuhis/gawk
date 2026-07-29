@@ -254,6 +254,12 @@ type Options struct {
 	// producers emit nothing and the wire is byte-identical to pre-R29.
 	ParityDefault int
 
+	// StripedDelivery enables R30 stripe legs (docs/35). The transport owns
+	// the dial gate and the capability bit and reads its own config for
+	// them; this mirror keeps registryOptions complete (the R2 rule, guarded
+	// by the carry-all-limits test).
+	StripedDelivery bool
+
 	// DVRMaxCatchup caps how much faster than live a recovering DVR subscriber
 	// may send, as a multiple of the broadcast's own bitrate (docs/26
 	// Decision 6). Negative disables the ceiling.
@@ -361,8 +367,17 @@ type SubscriberStats struct {
 	// R29 (docs/34 §7.1): served vs. asked for. They differ when the fleet
 	// emits less than the viewer wanted, or when delivery mode suppressed it —
 	// which a single number could not distinguish from a deliberate opt-down.
-	ParityK               int    `json:"parityK,omitempty"`
-	ParityRequested       int    `json:"parityRequested,omitempty"`
+	ParityK         int `json:"parityK,omitempty"`
+	ParityRequested int `json:"parityRequested,omitempty"`
+	// R30 striped delivery (docs/35 §5.8). StripeLeg marks a leg session,
+	// with its (member, n) filter; Striped marks a primary whose delta flow
+	// is currently suppressed because its legs carry it, with the width the
+	// viewer last reported. Together they are the operator-visible join of
+	// one viewer's sessions — the sessions share nothing else on purpose.
+	StripeLeg             bool   `json:"stripeLeg,omitempty"`
+	StripeN               int    `json:"stripeN,omitempty"`
+	StripeMember          int    `json:"stripeMember,omitempty"`
+	Striped               bool   `json:"striped,omitempty"`
 	CarrierStreams        uint64 `json:"carrierStreams,omitempty"`
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
@@ -444,6 +459,16 @@ type Stats struct {
 	// EgressDatagramBytes - EgressParityBytes (the docs/24 finding-11 shape).
 	EgressParityBytes uint64 `json:"egressParityBytes,omitempty"`
 
+	// R30 striped delivery (docs/35 §7). StripeLegs counts live leg sessions
+	// (they also count in Subscribers — they are real external sessions);
+	// StripedPrimaries counts viewers whose primary is currently suppressed.
+	// Omitted when zero, so a fleet with no striping keeps /statusz
+	// byte-identical to pre-R30.
+	StripeLegs                int    `json:"stripeLegs,omitempty"`
+	StripedPrimaries          int    `json:"stripedPrimaries,omitempty"`
+	StripeSuppressedDatagrams uint64 `json:"stripeSuppressedDatagrams,omitempty"`
+	StripeTransitions         uint64 `json:"stripeTransitions,omitempty"`
+
 	// R19 reliable delivery (docs/24 Decision 10).
 	ReliableSubscribers   int    `json:"reliableSubscribers"`   // live local subscribers in reliable mode
 	CarrierStreams        uint64 `json:"carrierStreams"`        // carrier streams opened
@@ -512,6 +537,11 @@ type TotalStats struct {
 	ParityDatagramsForwarded uint64 `json:"parityDatagramsForwarded,omitempty"`
 	ParitySuppressed         uint64 `json:"paritySuppressed,omitempty"`
 	EgressParityBytes        uint64 `json:"egressParityBytes,omitempty"`
+	// R30 (docs/35 §7): fleet-wide stripe accounting. Omitted when zero.
+	StripeLegs                int    `json:"stripeLegs,omitempty"`
+	StripedPrimaries          int    `json:"stripedPrimaries,omitempty"`
+	StripeSuppressedDatagrams uint64 `json:"stripeSuppressedDatagrams,omitempty"`
+	StripeTransitions         uint64 `json:"stripeTransitions,omitempty"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -669,6 +699,11 @@ type broadcastHub struct {
 	egressParityBytes        uint64
 	paritySuppressed         uint64
 	egressCarrierBytes       uint64
+	// R30: delta datagrams withheld from striped primaries because stripe
+	// legs carry them (docs/35 §7). A leg's non-matching share is routing,
+	// not suppression, and is deliberately not counted anywhere.
+	stripeSuppressedDatagrams uint64
+	stripeTransitions         uint64
 }
 
 type bandwidthLimiter struct {
@@ -945,8 +980,10 @@ func (r *Registry) CloseInternalSubscribers(id string, code uint32, reason strin
 	}
 }
 
-// ExternalSubscribers reports the local (non-internal) viewer count for a
-// broadcast — the edge linger signal (R17 W4).
+// ExternalSubscribers reports the local (non-internal) session count for a
+// broadcast — the edge linger signal (R17 W4). Stripe legs COUNT here on
+// purpose: an edge serving only another pod's legs is still serving media
+// and must not linger out (docs/35 §5.8).
 func (r *Registry) ExternalSubscribers(id string) int {
 	normID, err := broadcastid.Normalize(id)
 	if err != nil {
@@ -959,6 +996,31 @@ func (r *Registry) ExternalSubscribers(id string) int {
 		return 0
 	}
 	return b.externalSubsLocked()
+}
+
+// ViewerSubscribers reports the local WATCHING-HUMAN count for a broadcast —
+// the number an edge reports upstream for the R18 viewer count. Distinct
+// from ExternalSubscribers on purpose (R30, docs/35 §5.8): a stripe leg is
+// one viewer's extra connection, so it keeps an edge alive (linger) but must
+// never inflate the audience number.
+func (r *Registry) ViewerSubscribers(id string) int {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, exists := r.hubs[normID]
+	if !exists {
+		return 0
+	}
+	n := 0
+	for s := range b.subs {
+		if !s.internal && !s.stripeLeg {
+			n++
+		}
+	}
+	return n
 }
 
 // newHubLocked creates and registers an empty hub. Caller holds r.mu.
@@ -1131,7 +1193,9 @@ func (b *broadcastHub) globalViewersLocked() uint32 {
 	for s := range b.subs {
 		if s.internal {
 			g += s.downstreamViewers.Load()
-		} else {
+		} else if !s.stripeLeg {
+			// R30: a stripe leg is one viewer's extra connection, not an
+			// extra viewer — one watching human is one count (docs/35 §5.8).
 			g++
 		}
 	}
@@ -1288,6 +1352,11 @@ type subscribeOpts struct {
 	// the transport layer, so the hub never re-derives policy.
 	parityK         int
 	parityRequested int
+	// R30: this session is stripe leg stripeMember of width stripeN
+	// (docs/35 §5.1). Validated by NegotiateStripe at the transport layer.
+	stripeLeg    bool
+	stripeN      uint8
+	stripeMember uint8
 }
 
 // SubscribeParity subscribes a datagram-delivery viewer served parityK
@@ -1335,6 +1404,9 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 
 		parityK:         so.parityK,
 		parityRequested: so.parityRequested,
+		stripeLeg:       so.stripeLeg,
+		stripeN:         so.stripeN,
+		stripeMember:    so.stripeMember,
 		queue:           make(chan []byte, r.opts.QueueDepth),
 		done:            make(chan struct{}),
 		statsKey:        newSubscriberStatsKey(),
@@ -1343,7 +1415,9 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 	// only when the operator has opted in. An edge session is excluded on
 	// purpose — it re-ingests what it receives through the publisher dispatch,
 	// and the second hop makes its own delivery choice for its own viewers.
-	if reliable || (r.opts.LiveEdgeAudioOnReliableStream && !internal) {
+	// A stripe leg is excluded too: audio rides the viewer's primary
+	// (docs/35 §5.1), and the fan-out never hands a leg an audio datagram.
+	if reliable || (r.opts.LiveEdgeAudioOnReliableStream && !internal && !so.stripeLeg) {
 		s.audioQueue = make(chan []byte, AudioSidebandQueueDepth)
 		s.audioDone = make(chan struct{})
 	}
@@ -1377,23 +1451,31 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		go s.drainAudioSideband()
 	}
 
-	// Prime the joiner with the cached clock mapping (R5 Q2) so absolute
-	// latency works without waiting for the broadcaster's next re-send. A
-	// plain enqueue: it rides the normal datagram queue.
-	if b.cachedClockMapping != nil {
-		s.enqueueLocked(b.cachedClockMapping)
-	}
+	// A stripe leg gets no join primes at all (docs/35 §5.1): the clock
+	// mapping, viewer count, audio config and cached keyframe all belong to
+	// the viewer's PRIMARY session, which was primed when it subscribed —
+	// duplicating them onto a leg would only feed the dedup counters.
+	if !so.stripeLeg {
+		// Prime the joiner with the cached clock mapping (R5 Q2) so absolute
+		// latency works without waiting for the broadcaster's next re-send. A
+		// plain enqueue: it rides the normal datagram queue.
+		if b.cachedClockMapping != nil {
+			s.enqueueLocked(b.cachedClockMapping)
+		}
 
-	// Prime the cached viewer count the same way (R18 Decision 3): the badge
-	// shows immediately on join instead of waiting for the next pump tick.
-	if b.cachedViewerCount != nil {
-		s.enqueueLocked(b.cachedViewerCount)
-	}
+		// Prime the cached viewer count the same way (R18 Decision 3): the
+		// badge shows immediately on join instead of waiting for the next
+		// pump tick.
+		if b.cachedViewerCount != nil {
+			s.enqueueLocked(b.cachedViewerCount)
+		}
 
-	// Prime the cached audio config (R15, docs/20 Decision 4): audio decode
-	// starts without waiting for the broadcaster's next 1 Hz re-send.
-	if b.cachedAudioConfig != nil {
-		s.enqueueLocked(b.cachedAudioConfig)
+		// Prime the cached audio config (R15, docs/20 Decision 4): audio
+		// decode starts without waiting for the broadcaster's next 1 Hz
+		// re-send.
+		if b.cachedAudioConfig != nil {
+			s.enqueueLocked(b.cachedAudioConfig)
+		}
 	}
 
 	// Snapshot the cached keyframe under the lock; prime over a stream outside
@@ -1405,8 +1487,9 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 
 	// Same reason: a DVR subscriber is primed by the ring instead — it is
 	// seeded from this same cached keyframe when allocated, and the cursor
-	// starts there, so priming again would duplicate the first GOP.
-	if primeMsg != nil && s.dvr == nil {
+	// starts there, so priming again would duplicate the first GOP. A stripe
+	// leg is never primed: keyframes ride the primary's streams.
+	if primeMsg != nil && s.dvr == nil && !s.stripeLeg {
 		s.sendKeyframe(primeMsg, primeSeq)
 	}
 
@@ -1473,6 +1556,9 @@ func (r *Registry) Stats() RegistryStats {
 		var dvrResyncs uint64
 		details := make([]SubscriberStats, 0, len(b.subs))
 		edgeSessions := 0
+		stripeLegs, stripedPrimaries := 0, 0
+		stripeTransitions := b.stripeTransitions // closed subscribers' fold
+		statsNow := time.Now().UnixNano()
 		for s := range b.subs {
 			if s.internal {
 				edgeSessions++
@@ -1484,6 +1570,13 @@ func (r *Registry) Stats() RegistryStats {
 				dvrSubs++
 				dvrResyncs += s.dvrResyncs.Load()
 			}
+			striped := s.stripeSuppressed(statsNow)
+			if s.stripeLeg {
+				stripeLegs++
+			} else if striped {
+				stripedPrimaries++
+			}
+			stripeTransitions += s.stripeTransitions.Load()
 			subDrops := s.keyframeDrops()
 			dropped += s.dropped.Load()
 			kfSent += s.keyframesSent.Load()
@@ -1518,6 +1611,10 @@ func (r *Registry) Stats() RegistryStats {
 				DVRResyncs:            s.dvrResyncs.Load(),
 				ParityK:               s.parityK,
 				ParityRequested:       s.parityRequested,
+				StripeLeg:             s.stripeLeg,
+				StripeN:               stripeStatN(s, striped),
+				StripeMember:          int(s.stripeMember),
+				Striped:               striped,
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -1535,6 +1632,10 @@ func (r *Registry) Stats() RegistryStats {
 		totals.ParityDatagramsForwarded += b.parityDatagramsForwarded
 		totals.EgressParityBytes += egressParity
 		totals.ParitySuppressed += b.paritySuppressed
+		totals.StripeLegs += stripeLegs
+		totals.StripedPrimaries += stripedPrimaries
+		totals.StripeSuppressedDatagrams += b.stripeSuppressedDatagrams
+		totals.StripeTransitions += stripeTransitions
 
 		var graceRemaining int
 		if !b.publisherActive && !b.graceStart.IsZero() {
@@ -1569,6 +1670,10 @@ func (r *Registry) Stats() RegistryStats {
 			CarrierQueueOverflow:      carOverflow,
 			ParityDatagramsForwarded:  b.parityDatagramsForwarded,
 			ParitySuppressed:          b.paritySuppressed,
+			StripeLegs:                stripeLegs,
+			StripedPrimaries:          stripedPrimaries,
+			StripeSuppressedDatagrams: b.stripeSuppressedDatagrams,
+			StripeTransitions:         stripeTransitions,
 			DVRSubscribers:            dvrSubs,
 			DVRRingBytes:              ringBytes,
 			DVRRingGops:               ringGops,
@@ -2039,6 +2144,11 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 		if s.dvr != nil {
 			continue
 		}
+		// R30: a stripe leg carries delta datagrams only — its viewer's
+		// keyframes ride the primary session's streams (docs/35 §5.1).
+		if s.stripeLeg {
+			continue
+		}
 		subs = append(subs, s)
 	}
 	r.mu.Unlock()
@@ -2157,6 +2267,25 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	if b.dvrAudio != nil && isAudioDatagram(dgram) {
 		b.dvrAudio.Append(dgram, time.Now())
 	}
+	// R30 stripe routing (docs/35 §5.2) is computed lazily: the ordinal parse
+	// and clock read happen only when a stripe-involved subscriber (a leg, or
+	// a primary with a suppression armed) is actually present, so a fleet
+	// with no striping pays two atomic-ish field reads per subscriber and
+	// nothing else.
+	var (
+		stripeOrd        uint32
+		stripeIsDelta    bool
+		stripeClassified bool
+		stripeNow        int64
+	)
+	classify := func() {
+		if stripeClassified {
+			return
+		}
+		stripeOrd, stripeIsDelta = deltaOrdinal(dgram)
+		stripeNow = time.Now().UnixNano()
+		stripeClassified = true
+	}
 	// R29: parity is served as a per-subscriber PREFIX. The symbols are the
 	// producer's bytes, shared across the fan-out exactly like data chunks —
 	// the relay computes nothing, so this costs one comparison per subscriber
@@ -2170,6 +2299,19 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 			// clamping the internal leg strips symbols that hop can never get
 			// back, and every viewer behind the cascade silently loses parity.
 			if s.internal || idx < s.parityK {
+				// R30: a leg forwards only its share of the prefix; a striped
+				// primary forwards none of it (the legs carry it). A leg's
+				// non-matching symbol is ROUTING (delivered on a sibling leg),
+				// so only the primary's withheld symbols are counted.
+				if s.stripeLeg || s.stripeUntil.Load() != 0 {
+					classify()
+					if stripeIsDelta && !s.wantsDeltaLocked(stripeOrd, stripeNow) {
+						if !s.stripeLeg {
+							b.stripeSuppressedDatagrams++
+						}
+						continue
+					}
+				}
 				s.enqueueLocked(dgram)
 				b.parityDatagramsForwarded++
 			} else {
@@ -2179,6 +2321,22 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 		return
 	}
 	for s := range b.subs {
+		// R30: a leg receives only its share of delta datagrams and no
+		// control or audio traffic at all — its viewer's primary carries
+		// those. A striped primary skips deltas (its legs carry them) but
+		// keeps everything else, keyframe streams included.
+		if s.stripeLeg || s.stripeUntil.Load() != 0 {
+			classify()
+			if s.stripeLeg && !stripeIsDelta {
+				continue
+			}
+			if stripeIsDelta && !s.wantsDeltaLocked(stripeOrd, stripeNow) {
+				if !s.stripeLeg {
+					b.stripeSuppressedDatagrams++
+				}
+				continue
+			}
+		}
 		s.enqueueLocked(dgram)
 	}
 }
@@ -2242,6 +2400,27 @@ type Subscriber struct {
 	// entirely and forwards every symbol for the downstream pod to filter.
 	parityK         int
 	parityRequested int
+
+	// R30 striped delivery (docs/35 §5.1). stripeLeg marks this session as
+	// one leg of a viewer's stripe: it receives only the delta datagrams
+	// whose ordinal matches stripeMember mod stripeN — never keyframe
+	// streams, audio, control datagrams or join primes (the primary has
+	// those). Fixed at subscribe time, like reliable. A leg counts against
+	// the subscriber caps (real state, and the bound against a counterfeit
+	// leg flood) but never in the R18 viewer count.
+	stripeLeg    bool
+	stripeN      uint8
+	stripeMember uint8
+	// stripeUntil is the primary-suppression deadline (UnixNano; 0 = not
+	// suppressed): while armed, delta datagrams are withheld from this
+	// session because stripe legs carry them. Written by ApplyStripeState
+	// off the registry lock (the 0x10 read-loop path), read by the fan-out
+	// under it — hence atomic. The deadline IS the TTL fail-open: no
+	// refresh within StripeStateTTL and deltas resume by comparison alone.
+	// stripeNInfo mirrors the viewer's reported width for /statusz only.
+	stripeUntil       atomic.Int64
+	stripeNInfo       atomic.Uint32
+	stripeTransitions atomic.Uint64
 
 	// downstreamViewers is the local viewer count this INTERNAL (edge)
 	// subscriber last reported up (R18, docs/23 Decision 5b); always 0 for
@@ -3107,6 +3286,7 @@ func (s *Subscriber) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.hubs[b.id] == b {
+		b.stripeTransitions += s.stripeTransitions.Load()
 		b.datagramsDropped += s.dropped.Load()
 		b.keyframeStreamsSent += s.keyframesSent.Load()
 		b.keyframeDrops.add(s.keyframeDrops())

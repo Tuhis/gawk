@@ -538,11 +538,15 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool)
 			case <-ping.C:
 				_ = up.SendDatagram(wire.AppendTimeSync(nil, relayNowUs(), 0))
 			case <-lingerTick.C:
+				// Two different counts on purpose (R30, docs/35 §5.8): the
+				// linger signal counts every external session — an edge
+				// serving only stripe legs is still serving media — while the
+				// R18 report counts watching humans, which excludes legs.
 				n := es.m.registry.ExternalSubscribers(es.id)
 				// Report our local count upstream, change-driven with the
 				// pump's keepalive — a lost report datagram heals on re-send.
-				// n is bounded by the subscriber caps, far below uint32.
-				count := uint32(n)
+				// The count is bounded by the subscriber caps, far below uint32.
+				count := uint32(es.m.registry.ViewerSubscribers(es.id))
 				if !reported || count != lastReport || time.Since(lastReportAt) >= hub.ViewerCountKeepalive {
 					if up.SendDatagram(wire.AppendViewerCount(nil, count)) == nil {
 						reported = true

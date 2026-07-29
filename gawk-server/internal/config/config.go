@@ -168,6 +168,16 @@ type Config struct {
 	// to a relay predating R29.
 	ParityDefault int
 
+	// StripedDelivery enables R30 stripe legs (docs/35): ?stripe=N&leg=j
+	// subscribe sessions and the StripeState suppression signal. On by
+	// default — the relay cost is zero until a viewer actually engages
+	// (only viewers whose path measures the burst threshold do, plus manual
+	// opt-ins). Off: the capability bit is never advertised (so a
+	// well-behaved viewer never dials a leg), leg dials get 400, StripeState
+	// is ignored, and the relay is byte-identical to pre-R30. The stripe
+	// width cap and burst target are constants, not knobs (docs/35 §11).
+	StripedDelivery bool
+
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
 	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
@@ -253,6 +263,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"deliver live-edge viewers' audio on its own reliable stream instead of datagrams; video stays unreliable")
 	parityDefault := fs.String("parity-default", env("GAWK_PARITY_DEFAULT", "2"),
 		"forward-parity symbols producers emit per delta frame, and the per-subscriber ceiling (R29); 0 disables fleet-wide")
+	stripedDelivery := fs.Bool("striped-delivery", envBool("GAWK_STRIPED_DELIVERY", true),
+		"accept R30 stripe-leg subscribe sessions (?stripe=N&leg=j) and StripeState suppression; off is byte-identical to pre-R30")
 	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
@@ -423,6 +435,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		DVRAudio:                      *dvrAudio,
 		LiveEdgeAudioOnReliableStream: *liveEdgeAudioOnReliableStream,
 		ParityDefault:                 parityDef,
+		StripedDelivery:               *stripedDelivery,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,
