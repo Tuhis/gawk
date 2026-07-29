@@ -1040,6 +1040,9 @@ var liveNumericFields = []string{
 	"parityChunksReceived", "framesRecoveredByParity", "framesDroppedIncomplete",
 	// R29 finding 3: the shortfall parityRecoveryFailures could not see.
 	"parityInsufficient",
+	// R30 (docs/35 §7): the burst-threshold-loss rule's inputs, live.
+	"stripeLargeLossPct", "stripeSmallLossPct", "stripeLargeChunks",
+	"stripeActive", "stripeNeeded",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.

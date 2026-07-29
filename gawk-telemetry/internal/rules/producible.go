@@ -79,12 +79,20 @@ var ProducibleFacts = map[string]string{
 	"client.datagramBufferDefault":      both,
 	"client.datagramBufferDepth":        both,
 	"client.datagramBufferGovernsDrops": both,
-	"client.avSkewMs":                   live,
-	"client.viewerCount":                live,
-	"client.audioPacketsReceived":       both,
-	"client.audioOverflowDrops":         both,
-	"client.audioGapsConcealed":         both,
-	"client.isHardwareAccelerated":      both,
+	// R30 striped delivery (docs/35 §7). Both surfaces for the same reason
+	// as parity: the live dashboard explains a lossy viewer now, the rollup
+	// lets a stored verdict argue why striping did or did not engage.
+	"client.stripeLargeLossPct":    both,
+	"client.stripeSmallLossPct":    both,
+	"client.stripeLargeChunks":     both,
+	"client.stripeActive":          both,
+	"client.stripeNeeded":          both,
+	"client.avSkewMs":              live,
+	"client.viewerCount":           live,
+	"client.audioPacketsReceived":  both,
+	"client.audioOverflowDrops":    both,
+	"client.audioGapsConcealed":    both,
+	"client.isHardwareAccelerated": both,
 
 	// --- client, dip episodes (D16) ------------------------------------------
 	// Derived by the same detector over two windows: the session for readapi,

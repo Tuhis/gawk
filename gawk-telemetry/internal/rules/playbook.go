@@ -68,6 +68,7 @@ func Playbook() []Rule {
 		stallAttribution(),
 		keyframeGapChurn(),
 		parityIneffective(),
+		burstThresholdLoss(),
 		configOrLimits(),
 		resilientUndersupply(),
 		carrierQueueOverflow(),
@@ -577,7 +578,9 @@ func parityIneffective() Rule {
 		Action: "Compare framesRecoveredByParity against parityChunksReceived in the evidence: a " +
 			"code that is merely under-provisioned still recovers plenty, and raising the fleet " +
 			"parity level helps. One recovering almost nothing is facing BURSTY loss, which no " +
-			"per-frame code covers at any level — route that viewer to Resilient mode instead.",
+			"per-frame code covers at any level — route that viewer to Resilient mode instead. " +
+			"If burst-threshold-loss fired for the same session, read that first: R30 striping is " +
+			"the designed answer to the per-connection threshold shape.",
 		Eval: func(f *Facts) *Finding {
 			symbols, _ := f.Client("parityChunksReceived")
 			incomplete, _ := f.Client("framesDroppedIncomplete")
@@ -643,6 +646,75 @@ func parityIneffective() Rule {
 				})
 			}
 			return &Finding{Severity: SeverityWarn, Verdict: verdict, Confidence: 0.6, Evidence: ev}
+		},
+	}
+}
+
+// R30 (docs/35 §7): the finding-4 signature — chunks of LARGE frames dying
+// while small frames stay clean. That shape is a per-connection burst
+// buffer overflowing (docs/34 finding 4: a threshold at ~8 packets,
+// head-of-burst, parity spared), not a lossy network: uniform loss takes
+// small frames too and never matches. The two action branches depend on
+// whether striping is already active, because they call for opposite
+// responses — an idle stripe should engage (check the capability, the
+// subscriber caps, the viewer's mode), while an ACTIVE stripe that still
+// shows the signature means the per-connection composition does not hold on
+// that path and the answer is Resilient mode, never more legs (docs/35 §10
+// kill criterion 1's field echo).
+func burstThresholdLoss() Rule {
+	return Rule{
+		ID:       "burst-threshold-loss",
+		Scope:    "viewer",
+		Requires: []string{"client.stripeLargeLossPct", "client.stripeLargeChunks"},
+		Verdict:  "Large frames are losing chunks while small frames arrive clean — the burst-threshold shape",
+		Action: "This is a per-connection receive-buffer overflow, not a lossy network. If striping is " +
+			"not active, find out why (relay capability, subscriber caps, the viewer's Striping menu " +
+			"setting); if it IS active and the loss persists, the split is not buying headroom on this " +
+			"path — route the viewer to Resilient mode.",
+		Eval: func(f *Facts) *Finding {
+			largePct, haveLarge := f.Client("stripeLargeLossPct")
+			largeChunks, _ := f.Client("stripeLargeChunks")
+			if !haveLarge || largeChunks < 500 || largePct < 1.0 {
+				return nil
+			}
+			smallPct, haveSmall := f.Client("stripeSmallLossPct")
+			if !haveSmall || smallPct > 0.1 {
+				// Shape unproven (no small-frame evidence) or uniform loss —
+				// either way this rule has nothing true to say; the parity
+				// and delivery rules own those cases.
+				return nil
+			}
+			active, _ := f.Client("stripeActive")
+			ev := []Evidence{
+				{Signal: "stripeLargeLossPct", Value: largePct, From: FromClient,
+					Comparison: "chunk loss on frames past the ~8-datagram threshold"},
+				{Signal: "stripeSmallLossPct", Value: smallPct, From: FromClient,
+					Comparison: "loss on frames under it — clean is the threshold signature"},
+				{Signal: "stripeLargeChunks", Value: largeChunks, From: FromClient},
+				{Signal: "stripeActive", Value: active, From: FromClient,
+					Comparison: "stripe legs carrying deltas while this was measured"},
+			}
+			if active > 0 {
+				return &Finding{
+					Severity:   SeverityWarn,
+					Confidence: 0.6,
+					Verdict: "Striping is active and the burst-threshold loss persists — the " +
+						"per-connection split is not buying headroom on this path",
+					Evidence: ev,
+					Action: "More legs will not help (docs/35 §10 criterion 1): route this viewer to " +
+						"Resilient mode, whose reliable carriers retransmit regardless of burst shape.",
+				}
+			}
+			return &Finding{
+				Severity:   SeverityWarn,
+				Confidence: 0.6,
+				Verdict: "The path shows per-connection burst-threshold loss and striping is not " +
+					"engaged",
+				Evidence: ev,
+				Action: "Striping should be engaging here. Check, in order: the relay advertises " +
+					"CAP_STRIPED_DELIVERY (striped-delivery flag on), the subscriber caps have room " +
+					"for legs, and the viewer's Striping menu setting is not 'off'.",
+			}
 		},
 	}
 }
