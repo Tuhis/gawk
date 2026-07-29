@@ -332,10 +332,20 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
-          cache-dependency-path: |
-            gawk-server/go.sum
-            gawk-broadcast/go.sum
-            gawk-telemetry/go.sum
+          # No module cache here, deliberately. `go mod tidy` resolves the graph
+          # for every platform and build tag, so it downloads all five
+          # duckdb-go-bindings/<platform> modules — ~660MB in GOMODCACHE (537MB
+          # extracted + 126MB of zips) that gawk-telemetry's untagged build
+          # never links. setup-go keys its cache on the go.sum list alone, so
+          # this job shared a key with `e2e` and `e2e-cluster`, and being the
+          # first to finish it was the job that SAVED it. `e2e` then restored
+          # 747MB into the runner's RAM-backed _work and died with ENOSPC
+          # mid-build (run 30496979172); `e2e-cluster` survived only on its
+          # larger work tmpfs. Caching the fattest working set in the repo and
+          # serving it to leaner jobs is the bug. This job is almost entirely
+          # cache-restore time anyway (2m20s of 2m45s, at ~6 MB/s), so it loses
+          # nothing by fetching what it needs directly from the proxy.
+          cache: false
       - name: go mod tidy leaves every module unchanged
         run: |
           for mod in gawk-server gawk-broadcast gawk-telemetry; do
