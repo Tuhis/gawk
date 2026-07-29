@@ -49,7 +49,7 @@ getDisplayMedia
 | `docs/` | Per-milestone design notes and gotchas (`01`–`33`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `wire/` is public so the native broadcaster can import it. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `gawk-broadcast/` | Go native Linux broadcaster (R14): Gio GUI + CLI over a shared engine, hardware encode via portal + GStreamer. Own module, own release; no image or chart — a binary you run on your own PC. Also home of `gawk-pubsim` (R20): the engine replaying the committed H.264 fixture as a deterministic synthetic publisher for CI and drills. See its [README](gawk-broadcast/README.md) |
-| `gawk-telemetry/` | Go per-session diagnostics service (R28), **optional and off by default**: ingests client + relay telemetry, keeps 14 days of hive-partitioned NDJSON plus permanent per-session rollups, and answers with `diagnose()` (docs/13's playbook as code), a live operator dashboard and an MCP surface. Own module, own image + chart. See its [README](gawk-telemetry/README.md) |
+| `gawk-telemetry/` | Go per-session diagnostics service (R28), **optional and off by default**: ingests client + relay telemetry, keeps 30 days of hive-partitioned NDJSON plus permanent per-session rollups, and answers with `diagnose()` (docs/13's playbook as code), a live operator dashboard and an MCP surface. Own module, own image + chart. See its [README](gawk-telemetry/README.md) |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
 | `e2e/` | R20 browser E2E harness: headless-Chrome viewer against a real relay fed by `gawk-pubsim`, plus the kind cluster config + per-pod assertions for the cluster tier. See [`e2e/README.md`](e2e/README.md) and [docs/25](docs/25-e2e-testing-in-ci.md) |
 | `.github/workflows/` | CI (test/lint/build on PR + main; R20 browser E2E on PRs, cluster E2E on release PRs) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
@@ -171,6 +171,19 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   (localhost forwarding is TCP-only; via the NAT IP Chrome idle-times-out
   even though CLI clients work). ([docs/02](docs/02-webtransport-hello.md))
 - **`go test -race` needs `CGO_ENABLED=1`** — this environment defaults to 0.
+- **`gawk-telemetry` builds cgo-free by default and its SQL engine does not
+  exist in that build.** `internal/sqlengine` sits behind `//go:build duckdb`;
+  `go build ./...` on a fresh clone links no DuckDB and the console reports
+  itself unavailable, while the shipped image is `CGO_ENABLED=1 -tags duckdb`
+  on `distroless/base`. So `-query-sql` being on (its default) is *not* the
+  same claim as "queries work here", and CI builds both configurations.
+  ([docs/36](docs/36-telemetry-ui-history.md) §8 Q1)
+- **`go test ./gawk-telemetry/internal/dashboard/` is green and proves nothing
+  without `npm run build` first.** Its no-external-fetch tests assert against
+  `dist/`, which the Go job never builds, so they *skip by design*. That is the
+  test guarding the bundled-chart decision — run it deliberately after touching
+  `gawk-telemetry/ui/src/charts/`.
+  ([docs/36](docs/36-telemetry-ui-history.md) §0.4)
 - **`npx tsc --noEmit` in `gawk-app` passes vacuously** — the root
   `tsconfig.json` is solution-style (references only), so it checks nothing.
   `npm run build` (`tsc -b`) is the real typecheck; vitest strips types and

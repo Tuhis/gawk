@@ -8,7 +8,10 @@ go 1.26.0
 // tests immediately — the same rule gawk-broadcast follows (R14 Decision 11).
 replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 
-require github.com/Tuhis/gawk/gawk-server v0.0.0-00010101000000-000000000000
+require (
+	github.com/Tuhis/gawk/gawk-server v0.0.0-00010101000000-000000000000
+	github.com/marcboeker/go-duckdb/v2 v2.4.3
+)
 
 require (
 	github.com/apache/arrow-go/v18 v18.4.1 // indirect
@@ -26,7 +29,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/marcboeker/go-duckdb/arrowmapping v0.0.21 // indirect
 	github.com/marcboeker/go-duckdb/mapping v0.0.21 // indirect
-	github.com/marcboeker/go-duckdb/v2 v2.4.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
