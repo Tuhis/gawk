@@ -182,7 +182,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         // R5 Q3 + R12 T2: the playout mode, from the pipeline's own context
         // (ground truth — a toggle that failed to cross the worker shows
         // here). Adaptive shows the live offset (T3 makes it dynamic).
-        ['Playout', stats == null ? '—' : stats.playoutMode === 'adaptive' ? `adaptive (+${fmtInt(stats.playoutOffsetMs)} ms)` : stats.playoutMode === 'fixed' ? `fixed (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
+        ['Playout', stats == null ? '—' : stats.playoutMode === 'adaptive' ? `adaptive (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
         // R12 T1: the jitter trio (docs/17 Decision 1). Render cadence σ is
         // what T2's paced presentation must move; arrival jitter sizes T3's
         // adaptive offset; decode jitter sizes the decode lead.

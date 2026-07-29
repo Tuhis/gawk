@@ -65,9 +65,9 @@ vi.mock('../../transport/viewer-session', () => ({
   RECONNECT_MAX_ATTEMPTS: 10,
 }));
 
-// docs/17 Decision 10: the retired 'fixed' playout entry is gated on
-// isDevEnvironment(), which vitest makes unconditionally true
-// (import.meta.env.DEV) — so a real viewer's behaviour is only assertable
+// isDevEnvironment() is unconditionally true under vitest
+// (import.meta.env.DEV), so a real viewer's behaviour — the relay-override
+// entry's absence, and the production menu's row ceiling — is only assertable
 // through a seam. Everything else in config.ts stays real: playout.ts reads
 // getDvrBufferMs() from this same module.
 const devEnv = vi.hoisted(() => ({ value: true }));
@@ -78,10 +78,31 @@ vi.mock('../../config', async (importActual) => ({
 
 import { ViewerScreen } from './ViewerScreen';
 import { useTransportStore } from '../../state/transportStore';
+
+// ── R32 shared surface helpers ───────────────────────────────────────────────
+// The tuning controls moved from one flat menu to a pill + a settings panel,
+// so every test that used to click a menu row now walks one of these two
+// paths. Selectors changed; the behaviour each test asserts did not.
+
+/** The two-tap path an average viewer takes to the playback presets. */
+const openPresetMenu = () => fireEvent.click(screen.getByLabelText(/^Playback quality:/));
+
+/** Open the settings panel (via the preset popover's "More settings…"). */
+const openSettings = () => {
+  openPresetMenu();
+  fireEvent.click(screen.getByText('More settings…'));
+};
+
+/** Expand the panel's Advanced disclosure — collapsed by default (UX3.2). */
+const openAdvanced = () => fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+
+const interpolationBox = () =>
+  screen.getByRole('checkbox', { name: /Frame interpolation/ });
+
+/** A labelled <select> in the Advanced section. */
+const advancedSelect = (name: RegExp) => screen.getByRole('combobox', { name });
 import {
-  PLAYOUT_OFFSET_MS,
   getPlayoutMode,
-  getPlayoutOffsetMs,
   getStoredPlayoutMode,
   setPlayoutMode,
   setViewerDeliveryMode,
@@ -169,123 +190,107 @@ describe('ViewerScreen states', () => {
 // R5 Q3 + R12 T2, revised by docs/17 Decision 10 (2026-07-23): the production
 // viewer has ONE playout toggle — "Paced playback" (the R12 adaptive
 // paced-presentation mode) — persisted as one mode and applied to the
-// (main-thread, in these tests) pipeline context. The retired fixed 150 ms
-// mode keeps its "Smooth playback (fixed 150 ms)" entry in dev builds only,
-// as the measurement-free control for pacing diagnosis. Since the default
-// flip (user decision 2026-07-15), a fresh browser defaults to adaptive +
-// interpolation; the menu is the disable path.
+// (main-thread, in these tests) pipeline context. R32 removed the retired
+// fixed 150 ms mode outright, so pacing is now purely a property of the chosen
+// preset. Since the default flip (user decision 2026-07-15), a fresh browser
+// defaults to adaptive + interpolation.
 describe('ViewerScreen playout modes', () => {
   function cleanupPlayout() {
     setPlayoutMode('off');
     devEnv.value = true;
+    // All five R32 keys, not just the playout ones: the preset is derived from
+    // every one of them (docs/37 decision 1), so a delivery value left behind
+    // by an earlier test now changes what this one renders. The leakage
+    // predates R32 — the R19 migration test used to clear `viewer-delivery` by
+    // hand — but a derived pill makes it bite everywhere instead of once.
     localStorage.removeItem('gawk:playout-mode');
     localStorage.removeItem('gawk:smoothed-playout');
     localStorage.removeItem('gawk:interpolation');
+    localStorage.removeItem('gawk:viewer-delivery');
+    localStorage.removeItem('gawk:resilient-mode');
+    localStorage.removeItem('gawk:parity-level');
+    localStorage.removeItem('gawk:stripe-mode');
+    setViewerDeliveryMode('live');
   }
 
   const openMenu = () =>
     fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
+
+  // R32 UX4: pacing is now a property of the preset, reached from the
+  // control-bar pill. `openPresets` is the two-tap path an average viewer
+  // takes; `checkedPreset` reads the state off ARIA rather than off a '✓'
+  // glued into the label (UX1.2).
+  const openPresets = () => fireEvent.click(screen.getByLabelText(/^Playback quality:/));
+  const pickPreset = (label: string) =>
+    fireEvent.click(screen.getByRole('menuitemradio', { name: label }));
+  // The label alone, not the whole row: the sub-label rides an
+  // aria-describedby span inside the same button.
+  const checkedPreset = () => {
+    const row = screen
+      .getAllByRole('menuitemradio')
+      .find((el) => el.getAttribute('aria-checked') === 'true');
+    if (!row) return null;
+    const labelId = row.getAttribute('aria-labelledby');
+    return labelId ? (document.getElementById(labelId)?.textContent ?? null) : row.textContent;
+  };
 
   it('defaults to adaptive paced playback when nothing is stored', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutMode()).toBe('adaptive');
-    openMenu();
-    expect(screen.getByText('Paced playback ✓')).toBeTruthy();
+    // The default state IS a preset — "Balanced" is defined to be today's
+    // shipping configuration, so R32 changes no behaviour on a fresh install.
+    expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
+    openPresets();
+    expect(checkedPreset()).toBe('Balanced');
     cleanupPlayout();
   });
 
-  // docs/17 Decision 10: the production menu offers pacing as one binary. A
-  // real viewer never sees the fixed entry, so it can never reach 'fixed'.
-  it('offers no fixed-playout entry outside a dev build', async () => {
+  // docs/17 Decision 10 retired the fixed 150 ms mode from the production
+  // menu; R32 removed it outright (owner decision 2026-07-29), so there is no
+  // build in which a pacing row exists in the menu at all. Pacing is a
+  // property of the preset and nothing else.
+  it('offers no fixed-playout entry in any build', async () => {
     cleanupPlayout();
-    devEnv.value = false;
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
     openMenu();
     expect(screen.queryByText(/Smooth playback/)).toBeNull();
-    expect(screen.getByText('Paced playback ✓')).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
 
-    // The one remaining toggle is a plain binary: adaptive ⇄ live-edge.
-    fireEvent.click(screen.getByText('Paced playback ✓'));
+    // The pacing binary is now the step between the two live-edge presets.
+    openPresets();
+    pickPreset('Lowest latency');
     expect(getPlayoutMode()).toBe('off');
     expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
-    openMenu();
-    fireEvent.click(screen.getByText('Paced playback'));
+    openPresets();
+    pickPreset('Balanced');
     expect(getPlayoutMode()).toBe('adaptive');
     cleanupPlayout();
   });
 
-  // The mode survives as a dev-only diagnostic — a measurement-free offset,
-  // which is what separates a pacing bug from a jitter-estimator bug.
-  it('toggles fixed smoothing via the context menu in a dev build', async () => {
+  // A viewer carrying 'fixed' — from before docs/17 Decision 10 retired it, or
+  // from a dev build that could still select it until R32 — lands on adaptive,
+  // the mode fixed was a worse approximation of. Unconditional now: there is no
+  // build left that can honour the stored value.
+  it('migrates a stored fixed mode to adaptive in every build', async () => {
     cleanupPlayout();
-    render(<ViewerScreen broadcastId="AB2CD3" />);
-    await waitFor(() => expect(sessions).toHaveLength(1));
-    expect(getPlayoutMode()).toBe('adaptive'); // the default
-
-    openMenu();
-    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms)'));
-    expect(getPlayoutMode()).toBe('fixed');
-    expect(getPlayoutOffsetMs()).toBe(PLAYOUT_OFFSET_MS);
-    expect(localStorage.getItem('gawk:playout-mode')).toBe('fixed');
-
-    // Toggle back off: live-edge, persisted so the default flip won't undo it.
-    openMenu();
-    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms) ✓'));
-    expect(getPlayoutMode()).toBe('off');
-    expect(getPlayoutOffsetMs()).toBe(0);
-    expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
-    cleanupPlayout();
-  });
-
-  it('the two smoothing modes exclude each other in a dev build', async () => {
-    cleanupPlayout();
-    render(<ViewerScreen broadcastId="AB2CD3" />);
-    await waitFor(() => expect(sessions).toHaveLength(1));
-
-    // Checking the other mode unchecks the default adaptive one.
-    openMenu();
-    expect(screen.queryByText('Paced playback ✓')).toBeTruthy();
-    fireEvent.click(screen.getByText('Smooth playback (fixed 150 ms)'));
-    expect(getPlayoutMode()).toBe('fixed');
-    openMenu();
-    expect(screen.queryByText('Paced playback ✓')).toBeNull();
-    expect(screen.queryByText('Smooth playback (fixed 150 ms) ✓')).toBeTruthy();
-
-    // Re-checking adaptive flips back.
-    fireEvent.click(screen.getByText('Paced playback'));
-    expect(getPlayoutMode()).toBe('adaptive');
-
-    // And unchecking the checked one returns to live-edge.
-    openMenu();
-    fireEvent.click(screen.getByText('Paced playback ✓'));
-    expect(getPlayoutMode()).toBe('off');
-    cleanupPlayout();
-  });
-
-  // docs/17 Decision 10: a viewer carrying 'fixed' from before the retirement
-  // lands on adaptive — the mode fixed was a worse approximation of — rather
-  // than on a mode with no control in their menu.
-  it('migrates a stored fixed mode to adaptive outside a dev build', async () => {
-    cleanupPlayout();
-    devEnv.value = false;
     localStorage.setItem('gawk:playout-mode', 'fixed');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutMode()).toBe('adaptive');
-    openMenu();
-    expect(screen.getByText('Paced playback ✓')).toBeTruthy();
+    expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
     cleanup();
 
-    // ...and is honoured where the menu can still reach it.
+    // Same in a dev build — the value has nowhere left to be honoured.
     cleanupPlayout();
+    devEnv.value = true;
     localStorage.setItem('gawk:playout-mode', 'fixed');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(2));
-    expect(getPlayoutMode()).toBe('fixed');
+    expect(getPlayoutMode()).toBe('adaptive');
     cleanupPlayout();
   });
 
@@ -319,30 +324,54 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // R12 T4 + default flip: interpolation defaults ON, shown (checked) when
-  // the pipeline reports it available, and the menu is the disable path.
-  it('interpolation defaults on and toggles off through the menu', async () => {
+  // R12 T4 + default flip: interpolation defaults ON and the surface is the
+  // disable path. R32 UX5.3 changes *when* it renders: it is present from the
+  // first paint, disabled with a reason, rather than materialising a row a
+  // second into the session when the first stats sample lands.
+  it('interpolation defaults on and toggles off through the settings panel', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
-    openMenu();
-    expect(screen.queryByText(/Frame interpolation/)).toBeNull(); // no stats yet
+    openSettings();
+    openAdvanced();
+    const before = interpolationBox();
+    // Present from first paint — but honest about not knowing yet, which is
+    // not the same claim as "this browser can't".
+    expect(before.getAttribute('disabled')).not.toBeNull();
+    expect(screen.getByText('Available once the stream is running.')).toBeTruthy();
 
     act(() => sessions[0].cbs.onStats({ interpolation: 'on' }));
-    expect(screen.getByText('Frame interpolation (experimental) ✓')).toBeTruthy();
+    const live = interpolationBox();
+    expect(live.getAttribute('disabled')).toBeNull();
+    expect((live as HTMLInputElement).checked).toBe(true);
 
-    fireEvent.click(screen.getByText('Frame interpolation (experimental) ✓'));
+    fireEvent.click(live);
     expect(localStorage.getItem('gawk:interpolation')).toBe('0');
-    openMenu();
-    expect(screen.getByText('Frame interpolation (experimental)')).toBeTruthy();
+    expect((interpolationBox() as HTMLInputElement).checked).toBe(false);
+    cleanupPlayout();
+  });
+
+  // The other end of the three states: the pipeline has reported and the
+  // answer is no. Distinct copy, because "not yet" and "never" are different
+  // facts about the viewer's browser.
+  it('says interpolation is unavailable once the pipeline has reported it is', async () => {
+    cleanupPlayout();
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onStats({ interpolation: null }));
+
+    openSettings();
+    openAdvanced();
+    expect(interpolationBox().getAttribute('disabled')).not.toBeNull();
+    expect(screen.getByText(/this viewer pipeline can’t interpolate/)).toBeTruthy();
     cleanupPlayout();
   });
 
   // Review finding LIFECYCLE-2 (docs/reviews/resilient-mode-review.md): the
   // entry was gated on the *stored* mode, but resilient mode overrides the
   // *effective* one to adaptive — so a resilient viewer whose stored playout
-  // is 'off'/'fixed' had interpolation running with no way to turn it off.
+  // is 'off' had interpolation running with no way to turn it off.
   it('offers interpolation under resilient mode even when the stored mode is not adaptive', async () => {
     cleanupPlayout();
     localStorage.removeItem('gawk:resilient-mode');
@@ -357,11 +386,14 @@ describe('ViewerScreen playout modes', () => {
     expect(getPlayoutMode()).toBe('adaptive');
 
     act(() => sessions[0].cbs.onStats({ interpolation: 'on' }));
-    openMenu();
-    expect(screen.getByText('Frame interpolation (experimental) ✓')).toBeTruthy();
+    openSettings();
+    openAdvanced();
+    const box = interpolationBox();
+    expect(box.getAttribute('disabled')).toBeNull();
+    expect((box as HTMLInputElement).checked).toBe(true);
 
     // …and it actually turns it off, leaving the stored playout mode alone.
-    fireEvent.click(screen.getByText('Frame interpolation (experimental) ✓'));
+    fireEvent.click(box);
     expect(localStorage.getItem('gawk:interpolation')).toBe('0');
     expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
 
@@ -370,18 +402,21 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // The other half of "effective mode": with resilient mode off and the
-  // stored mode not adaptive, nothing is interpolating, so the entry stays
-  // absent (a stale stats sample must not resurrect it).
-  it('hides interpolation when neither the stored nor the effective mode is adaptive', async () => {
+  // The other half of "effective mode": with a carrier delivery mode off and
+  // the stored mode not adaptive, nothing is interpolating. R32 UX5.1 keeps
+  // the control *present* and says why, instead of removing it — a row that
+  // vanishes teaches nothing.
+  it('disables interpolation with a reason when the effective mode is not adaptive', async () => {
     cleanupPlayout();
-    localStorage.setItem('gawk:playout-mode', 'fixed');
+    localStorage.setItem('gawk:playout-mode', 'off');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
     act(() => sessions[0].cbs.onStats({ interpolation: 'on' }));
-    openMenu();
-    expect(screen.queryByText(/Frame interpolation/)).toBeNull();
+    openSettings();
+    openAdvanced();
+    expect(interpolationBox().getAttribute('disabled')).not.toBeNull();
+    expect(screen.getByText(/Needs paced playback/)).toBeTruthy();
     cleanupPlayout();
   });
 });
@@ -393,9 +428,14 @@ describe('ViewerScreen playout modes', () => {
 // overflow button that opens the same menu.
 describe('ViewerScreen menu button (touch reachability)', () => {
   function clearPrefs() {
+    // Every key the preset derives from — see cleanupPlayout above.
     localStorage.removeItem('gawk:resilient-mode');
     localStorage.removeItem('gawk:playout-mode');
     localStorage.removeItem('gawk:interpolation');
+    localStorage.removeItem('gawk:viewer-delivery');
+    localStorage.removeItem('gawk:parity-level');
+    localStorage.removeItem('gawk:stripe-mode');
+    setViewerDeliveryMode('live');
   }
   beforeEach(clearPrefs);
   afterEach(clearPrefs);
@@ -415,8 +455,40 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     tap(screen.getByLabelText('More options'));
 
     expect(screen.getByRole('menu')).toBeTruthy();
-    expect(screen.getByText(/^Resilient mode —/)).toBeTruthy();
     expect(screen.getByText('Copy link')).toBeTruthy();
+    expect(screen.getByText('Playback settings…')).toBeTruthy();
+  });
+
+  // R32 UX4.4/UX4.5: the menu is actions-only. This is the assertion that
+  // stops the next milestone quietly appending its knob here — which is
+  // exactly how it reached seventeen rows, eleven of them tuning (docs/37 §1).
+  it('carries no tuning rows and stays short', async () => {
+    // A production build: the dev-only relay override is what a real viewer
+    // never sees, and the ceiling that matters is theirs.
+    devEnv.value = false;
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    tap(screen.getByLabelText('More options'));
+
+    const rows = screen.getByRole('menu').querySelectorAll('button');
+    for (const pattern of [
+      /Live edge/,
+      /Resilient mode/,
+      /Deep buffer/,
+      /Loss protection/,
+      /Striping/,
+      /Paced playback/,
+      /Frame interpolation/,
+      /Smooth playback/,
+    ]) {
+      expect(screen.queryByText(pattern)).toBeNull();
+    }
+    // Stats, Fullscreen, Playback settings…, Copy link, Terms of use, Leave —
+    // plus Mute on a stream that carries audio. Seven, against the seventeen
+    // this menu had grown to (docs/37 §1).
+    expect(rows.length).toBeLessThanOrEqual(7);
+    devEnv.value = true;
   });
 
   it('tapping the button again dismisses the menu', async () => {
@@ -431,32 +503,51 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  // The point of the fix: a phone viewer on a lossy link can actually reach
-  // the mode, and reaching it negotiates reliable delivery.
-  it('picks a delivery mode from the button and reconnects with reliable delivery', async () => {
+  // The point of the fix, carried over to R32's pill: a phone viewer on a
+  // lossy link can reach the mode in two taps, and reaching it negotiates
+  // reliable delivery.
+  it('picks a delivery mode from the preset pill and reconnects with reliable delivery', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     act(() => sessions[0].cbs.onConnected());
     expect(sessions[0].opts).not.toMatchObject({ deliveryMode: 'reliable' });
 
-    tap(screen.getByLabelText('More options'));
-    fireEvent.click(screen.getByText(/^Resilient mode —/));
+    tap(screen.getByLabelText(/^Playback quality:/));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Smoother' }));
 
     await waitFor(() => expect(sessions).toHaveLength(2));
     expect(sessions[1].opts).toMatchObject({ deliveryMode: 'reliable' });
     expect(localStorage.getItem('gawk:viewer-delivery')).toBe('resilient');
 
-    // R21 (docs/26 Decision 15): one axis, three points — the menu is a radio
-    // group, so the active one is ticked and the others are reachable.
-    tap(screen.getByLabelText('More options'));
-    expect(screen.getByText(/^Resilient mode ✓/)).toBeTruthy();
-    expect(screen.getByText(/^Live edge —/)).toBeTruthy();
-    fireEvent.click(screen.getByText(/^Deep buffer —/));
+    // R21 (docs/26 Decision 15): one axis, now four points — a radio group, so
+    // the active one is checked and the others are reachable.
+    tap(screen.getByLabelText(/^Playback quality:/));
+    expect(
+      screen.getByRole('menuitemradio', { name: 'Smoother' }).getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(screen.getByRole('menuitemradio', { name: 'Balanced' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Most stable' }));
     await waitFor(() => expect(sessions).toHaveLength(3));
     // Deep buffer is still reliable delivery; what differs is the buffer the
     // viewer asks the relay to back.
     expect(sessions[2].opts).toMatchObject({ deliveryMode: 'reliable' });
     expect(localStorage.getItem('gawk:viewer-delivery')).toBe('deep');
+  });
+
+  // R32 UX5.5: the pacing-only step must not re-dial. Delivery and parity are
+  // in useViewerConnection's session-effect deps; pacing is not, and the
+  // "· switching reconnects" annotation would be a lie if this changed.
+  it('does not reconnect when a preset changes only pacing', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    tap(screen.getByLabelText(/^Playback quality:/));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Lowest latency' }));
+
+    expect(localStorage.getItem('gawk:playout-mode')).toBe('off');
+    expect(localStorage.getItem('gawk:viewer-delivery')).toBe('live');
+    expect(sessions).toHaveLength(1);
   });
 
   it('migrates an R19 resilient viewer to resilient, never to deep', async () => {
@@ -467,37 +558,105 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     act(() => sessions[0].cbs.onConnected());
-    tap(screen.getByLabelText('More options'));
-    expect(screen.getByText(/^Resilient mode ✓/)).toBeTruthy();
+    tap(screen.getByLabelText(/^Playback quality:/));
+    expect(
+      screen.getByRole('menuitemradio', { name: 'Smoother' }).getAttribute('aria-checked'),
+    ).toBe('true');
   });
 
-  // R30 (docs/35 §5.5): the striping radio group. Live-edge only, persisted,
-  // and — unlike delivery/parity — applied LIVE: no session teardown.
-  it('picks a stripe mode from the menu without reconnecting, live-edge only', async () => {
+  // R30 (docs/35 §5.5): striping. Live-edge only, persisted, and — unlike
+  // delivery/parity — applied LIVE: no session teardown. R32 moves it into the
+  // panel's Advanced section and, per UX5.1, keeps it *present and disabled*
+  // off live-edge instead of removing it.
+  it('picks a stripe mode from the panel without reconnecting, live-edge only', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     act(() => sessions[0].cbs.onConnected());
 
-    tap(screen.getByLabelText('More options'));
-    expect(screen.getByText(/^Striping: auto ✓/)).toBeTruthy();
-    fireEvent.click(screen.getByText(/^Striping: on/));
+    openSettings();
+    openAdvanced();
+    const striping = advancedSelect(/Striping/) as HTMLSelectElement;
+    expect(striping.value).toBe('auto');
+    expect(striping.disabled).toBe(false);
+
+    fireEvent.change(striping, { target: { value: 'on' } });
     expect(localStorage.getItem('gawk:stripe-mode')).toBe('on');
     // A live flip: the session is untouched.
     expect(sessions).toHaveLength(1);
 
-    tap(screen.getByLabelText('More options'));
-    expect(screen.getByText(/^Striping: on ✓/)).toBeTruthy();
-    fireEvent.click(screen.getByText(/^Striping: auto/));
+    expect((advancedSelect(/Striping/) as HTMLSelectElement).value).toBe('on');
+    fireEvent.change(advancedSelect(/Striping/), { target: { value: 'auto' } });
     expect(localStorage.getItem('gawk:stripe-mode')).toBeNull();
     expect(sessions).toHaveLength(1);
+  });
 
-    // Off live-edge delivery the group disappears — there is nothing to
-    // split on a retransmitting carrier (docs/35 §3).
-    tap(screen.getByLabelText('More options'));
-    fireEvent.click(screen.getByText(/^Resilient mode —/));
+  // R32 UX5.1: off live-edge, parity and striping stay on screen, disabled,
+  // each carrying its own reason. Before R32 they were filtered out of the
+  // array, so the menu changed length with the delivery mode and a viewer who
+  // had seen "Loss protection" once could not find it again (docs/37 §1.2).
+  it('grays parity and striping with reasons under a carrier delivery mode', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    tap(screen.getByLabelText(/^Playback quality:/));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Smoother' }));
     await waitFor(() => expect(sessions).toHaveLength(2));
-    tap(screen.getByLabelText('More options'));
-    expect(screen.queryByText(/^Striping:/)).toBeNull();
+
+    openSettings();
+    openAdvanced();
+    expect((advancedSelect(/Loss protection/) as HTMLSelectElement).disabled).toBe(true);
+    expect((advancedSelect(/Striping/) as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByText(/already recovers lost packets/)).toBeTruthy();
+    expect(screen.getByText(/already handles bursts/)).toBeTruthy();
+  });
+
+  // R32 UX3.1 + UX4.1/UX4.2 + UX3.3: the Custom rule the owner asked for —
+  // Custom appears only once something advanced is off its default, applying a
+  // preset is a complete configuration, and Reset advanced undoes the
+  // deviation without touching the preset.
+  it('shows Custom only after an advanced change, and resets back', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    // A clean install is never Custom.
+    expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
+
+    openSettings();
+    openAdvanced();
+    fireEvent.change(advancedSelect(/Striping/), { target: { value: 'off' } });
+    expect(screen.getByLabelText('Playback quality: Custom')).toBeTruthy();
+    expect(screen.getByText('· 1 changed')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset advanced' }));
+    expect(localStorage.getItem('gawk:stripe-mode')).toBeNull();
+    expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
+  });
+
+  // Decision 2, and the risk it carries: a preset is a *complete*
+  // configuration, so picking one puts the advanced knobs back. The pill would
+  // otherwise read "Balanced" over a forced-off striping setting.
+  it('picking a preset resets the advanced knobs to their defaults', async () => {
+    localStorage.setItem('gawk:stripe-mode', 'off');
+    localStorage.setItem('gawk:parity-level', '0');
+    localStorage.setItem('gawk:interpolation', '0');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    expect(screen.getByLabelText('Playback quality: Custom')).toBeTruthy();
+
+    tap(screen.getByLabelText(/^Playback quality:/));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Balanced' }));
+
+    expect(localStorage.getItem('gawk:stripe-mode')).toBeNull();
+    expect(localStorage.getItem('gawk:parity-level')).toBeNull();
+    expect(localStorage.getItem('gawk:interpolation')).toBe('1');
+    expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
+
+    localStorage.removeItem('gawk:stripe-mode');
+    localStorage.removeItem('gawk:parity-level');
+    localStorage.removeItem('gawk:interpolation');
   });
 });
 

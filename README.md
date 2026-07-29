@@ -412,6 +412,20 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   placement math. Measure the layout box (`offsetWidth`/`offsetHeight`) from
   a neutral corner, hidden until placed.
   ([docs/24](docs/24-viewer-network-resilience.md))
+- **A menu with no `max-height` grows off the bottom of the screen, and
+  clamping its *position* does not save it.** Every milestone from R12 on
+  added its viewer control to one flat context menu until the worst case was
+  17 rows (~740 px at the touch row height) — past a phone's landscape
+  viewport, with `Copy link`, `Terms of use` and `Leave` simply unreachable.
+  The placement math looked correct and was: it floors `top` at the 8 px pad,
+  which keeps the *head* on screen and says nothing about the tail. A menu
+  needs a height bound and `overflow-y` as well as a position, and the bound
+  has to feed the placement math — an unclamped `offsetHeight` sends a
+  bottom-right anchor far off the top instead. Also: **a '✓' glued into a
+  label string is not a state**, it is a changing accessible name; use
+  `aria-checked` with the mark drawn from it in CSS, and keep the row's
+  cost/reason line as `aria-describedby` so the name stays the label alone.
+  ([docs/37](docs/37-viewer-playback-presets.md))
 - **A silently-dead publisher session holds its slot for up to the QUIC idle
   timeout (~30 s), and rejecting the broadcaster's own reclaim in that window
   killed live broadcasts.** The reclaim got 409 from its own zombie session,

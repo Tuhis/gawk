@@ -336,3 +336,278 @@
   gap: 0.5rem;
   justify-content: flex-end;
 }
+
+/* ── R32 UX3: the viewer settings panel ────────────────────────────────────
+   Deliberately the same shape as the broadcaster's settings sheet
+   (broadcaster.module.css "Settings sheet"): scrim + right-side panel +
+   uppercase group titles, so the product has one settings idiom. Rendered
+   inside the viewer root so it survives CSS pseudo-fullscreen (docs/37
+   decision 5), and *over* the video rather than replacing it — a viewer
+   changes playback mode in order to judge playback. */
+.settingsScrim {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.settings {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 31;
+  width: min(92vw, 380px);
+  border-radius: 0;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  text-align: left;
+  animation: settingsIn var(--dur) var(--ease);
+}
+
+@keyframes settingsIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.settingsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.settingsGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.settingsGroupTitle {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+/* One preset: the radio, its name, and the outcome it buys. The sub-label is
+   not decoration — the choice IS the cost, so it is always visible. */
+.presetRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.5rem;
+  margin: -0.5rem;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.presetRow:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.presetRow input {
+  margin-top: 0.2rem;
+  accent-color: var(--text);
+  flex: none;
+}
+
+.presetText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.presetLabel {
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.presetSub {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.reconnectNote {
+  color: var(--warning);
+}
+
+.customNote {
+  margin: 0.25rem 0 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* The Advanced disclosure header — collapsed by default, because the whole
+   point of R32 is that an average viewer never opens it. */
+.disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.35rem 0;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.disclosureMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* The one thing that explains a "Custom" pill at a glance. */
+.changedBadge {
+  color: var(--warning);
+}
+
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding-top: 0.25rem;
+}
+
+.advancedRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  cursor: pointer;
+}
+
+.advancedHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+/* Checkbox rows keep control and label together; select rows push them apart
+   (see .advancedHead). */
+.advancedCheck {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.advancedCheck input[type='checkbox'] {
+  accent-color: var(--text);
+  flex: none;
+}
+
+.advancedLabel {
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.advancedSub {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.advancedSelect {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0.35rem 0.5rem;
+  min-width: 6.5rem;
+}
+
+/* Present but not applicable — dimmed, never removed, and the row's sub-line
+   carries the reason (docs/37 decision 4: touch has no hover, so a grayed row
+   with no explanation is worse than an absent one). */
+.rowDisabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.rowDisabled .advancedLabel {
+  color: var(--muted);
+}
+
+.advancedActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settingsFoot {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-soft);
+  font-size: var(--fs-sm);
+}
+
+.settingsFoot a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.settingsFoot a:hover {
+  color: var(--text);
+}
+
+/* ── R32 UX4: the control-bar preset pill ──────────────────────────────────
+   The one tuning control an average viewer meets, and the only text control in
+   the actions cluster — its label IS the state readout, which is the whole
+   reason it is text and not an icon. Auto-hides with the bar like everything
+   else, so the cinematic restraint (R6 J4) survives. */
+.presetPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.presetPill:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.presetPillCaret {
+  color: var(--muted);
+}
+
+/* Touch targets: the panel is the way into every viewer setting on a phone,
+   and a mis-tap on a preset costs a reconnect. */
+@media (pointer: coarse) {
+  .presetRow {
+    padding: 0.7rem 0.5rem;
+  }
+
+  .presetPill {
+    padding: 0.45rem 0.75rem;
+  }
+
+  .advancedSelect {
+    padding: 0.5rem;
+  }
+}

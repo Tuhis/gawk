@@ -18,6 +18,18 @@ import {
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
 import { isDevEnvironment } from '../../config';
 import { StatsOverlay } from './StatsOverlay';
+import { ViewerSettingsPanel } from './ViewerSettingsPanel';
+import {
+  PRESETS,
+  RECONNECT_NOTE,
+  ADVANCED_DEFAULTS,
+  presetConfig,
+  presetLabel,
+  resolvePreset,
+  type ParityChoice,
+  type PlaybackConfig,
+  type PresetId,
+} from './playbackPresets';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import type { FeatureGate, PresentationSurfaceStats } from '../../lib/featureGates';
@@ -85,7 +97,12 @@ const PARITY_LEVEL_KEY = 'gawk:parity-level';
 // reconnect — engagement is in-band.
 const STRIPE_MODE_KEY = 'gawk:stripe-mode';
 
-type ParityChoice = 'auto' | 1 | 0;
+// R32 (docs/37 decision 1): the five keys above stay exactly as they are and
+// the *preset* is derived from them — never stored. No migration for existing
+// viewers, no second source of truth that can drift from the values it claims
+// to describe, and a legacy R19-era configuration keeps working and simply
+// reads "Custom". `ParityChoice` now lives in playbackPresets.ts beside the
+// model that consumes it.
 
 function loadStripeMode(): StripeMode {
   try {
@@ -132,9 +149,12 @@ function loadDeliveryMode(): ViewerDeliveryMode {
 function loadPlayoutMode(): PlayoutMode {
   try {
     const v = localStorage.getItem(PLAYOUT_MODE_KEY);
-    // A stored 'fixed' only survives where the menu can still reach it; a real
-    // viewer carrying one from before docs/17 Decision 10 lands on adaptive.
-    if (v === 'fixed') return isDevEnvironment() ? 'fixed' : 'adaptive';
+    // R32 removed 'fixed' outright, so a viewer carrying one — from before
+    // docs/17 Decision 10 retired it, or from a dev build that could still
+    // select it — lands on adaptive: the mode fixed was a worse approximation
+    // of, and the one its stored value was already migrating to everywhere a
+    // real viewer could see it.
+    if (v === 'fixed') return 'adaptive';
     if (v === 'adaptive' || v === 'off') return v;
     const legacy = localStorage.getItem(LEGACY_SMOOTHED_KEY);
     if (legacy === '1') return 'adaptive';
@@ -192,13 +212,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // R5 Q3 + R12 T2: playout smoothing (trades latency for steadier pacing).
-  // 'adaptive' (the R12 paced-presentation mode) is the default since
-  // 2026-07-15 and, since docs/17 Decision 10, the only one a real viewer can
-  // select; 'fixed' is the original 150 ms mode, kept as a dev-only
-  // diagnostic. Toggling the checked mode returns to live-edge ('off'); in a
-  // dev build the two remain mutually exclusive.
+  // Two modes since R32 removed the retired 'fixed' one: 'adaptive' (the R12
+  // paced-presentation mode, the default since 2026-07-15) and 'off'
+  // (live-edge). Which one is in force is a property of the chosen preset —
+  // Lowest latency is 'off', every other preset is 'adaptive'.
   const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
-  const showFixedPlayout = isDevEnvironment();
 
   // Developer-only relay override, the viewer counterpart of the broadcaster's
   // "Development settings" panel. Both write the same `transportStore`, so a dev
@@ -223,13 +241,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     setStoredCertHash(devDraft.hash.trim());
     setDevDraft(null);
   }, [devDraft, setStoredServerUrl, setStoredCertHash]);
-  const togglePlayoutMode = useCallback((mode: 'fixed' | 'adaptive') => {
-    setPlayoutModeState((current) => {
-      const next = current === mode ? 'off' : mode;
+  const setPlayoutMode = useCallback((next: PlayoutMode) => {
+    setPlayoutModeState(() => {
       try {
         localStorage.setItem(PLAYOUT_MODE_KEY, next);
       } catch {
-        // private mode etc. — the toggle still works for this session
+        // private mode etc. — the choice still holds for this session
       }
       return next;
     });
@@ -241,13 +258,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // R12 T4: experimental frame interpolation — only offered when the
   // pipeline reports it available (WebGL2 worker sink + adaptive mode).
   const [interpolation, setInterpolation] = useState(loadInterpolation);
-  const toggleInterpolation = useCallback(() => {
-    setInterpolation((on) => {
-      const next = !on;
+  const chooseInterpolation = useCallback((next: boolean) => {
+    setInterpolation(() => {
       try {
         localStorage.setItem(INTERPOLATION_KEY, next ? '1' : '0');
       } catch {
-        // private mode etc. — the toggle still works for this session
+        // private mode etc. — the choice still holds for this session
       }
       return next;
     });
@@ -267,7 +283,6 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       return next;
     });
   }, []);
-  const resilientMode = deliveryMode !== 'live';
 
   // R29: like delivery, this is negotiated at subscribe time, so changing it
   // is a deliberate reconnect rather than an in-session morph.
@@ -298,6 +313,46 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       return next;
     });
   }, []);
+
+  // R32 UX2 (docs/37 §6.1): the five stored values as one configuration, and
+  // the preset it resolves to — `null` meaning Custom, which is a state you
+  // land in rather than an option anyone picks.
+  const playbackConfig: PlaybackConfig = {
+    delivery: deliveryMode,
+    playout: playoutMode,
+    parity: parityChoice,
+    striping: stripeMode,
+    interpolation,
+  };
+  const currentPreset = resolvePreset(playbackConfig);
+
+  // Decision 2: a preset is a *complete* configuration, so applying one also
+  // returns the advanced knobs to their defaults. The alternative — sticky,
+  // orthogonal advanced values — makes the pill label lie ("Balanced" while
+  // striping is forced off). The cost (a deliberate advanced choice is lost on
+  // a preset switch) is accepted, bounded, and made visible beforehand by the
+  // panel's "· N changed" marker.
+  const applyPreset = useCallback(
+    (id: PresetId) => {
+      const next = presetConfig(id);
+      chooseDeliveryMode(next.delivery);
+      setPlayoutMode(next.playout);
+      chooseParity(next.parity);
+      chooseStripeMode(next.striping);
+      chooseInterpolation(next.interpolation);
+    },
+    [chooseDeliveryMode, setPlayoutMode, chooseParity, chooseStripeMode, chooseInterpolation],
+  );
+
+  // Advanced only — deliberately leaves delivery and pacing alone, so a viewer
+  // can undo an experiment without losing the preset they chose.
+  const resetAdvanced = useCallback(() => {
+    chooseParity(ADVANCED_DEFAULTS.parity);
+    chooseStripeMode(ADVANCED_DEFAULTS.striping);
+    chooseInterpolation(ADVANCED_DEFAULTS.interpolation);
+  }, [chooseParity, chooseStripeMode, chooseInterpolation]);
+
+  const [showSettings, setShowSettings] = useState(false);
 
   // R16 (docs/21 Decision 1): the device gate — absence of the Element
   // Fullscreen API (effectively an iPhone signature). On non-gated devices no
@@ -334,6 +389,10 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   } | null>(null);
   const [copied, setCopied] = useState(false);
   const [statsCopied, setStatsCopied] = useState(false);
+  // R32 UX4: the preset popover, anchored to the control-bar pill. Its own
+  // state (not the "⋮" menu's) so the two can never be open at once.
+  const [presetMenu, setPresetMenu] = useState<{ x: number; y: number } | null>(null);
+  const presetButtonRef = useRef<HTMLButtonElement | null>(null);
 
   // Review finding PRODUCT-2: the menu holds the settings that matter most on
   // a phone (above all R19's Resilient mode), and a right-click is the one
@@ -652,142 +711,65 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // the idle countdown. See lib/useWakeLock.ts.
   useWakeLock(status === 'watching' || status === 'reconnecting');
 
-  const controlsVisible = useAutoHide(CONTROL_IDLE_MS, status === 'watching' && !menu);
-  const showControls = controlsVisible || status !== 'watching' || showStats || !!menu;
+  const anyOverlayOpen = !!menu || !!presetMenu || showSettings;
+  const controlsVisible = useAutoHide(CONTROL_IDLE_MS, status === 'watching' && !anyOverlayOpen);
+  const showControls = controlsVisible || status !== 'watching' || showStats || anyOverlayOpen;
 
+  // R32 UX4: the preset popover — the *same* ContextMenu the "⋮" button opens,
+  // so there is one menu implementation to build, test and describe, and the
+  // pill inherits the anchorRef dismissal rule (docs/24 finding 9) for free.
+  const presetItems: MenuItem[] = [
+    ...PRESETS.map((preset) => ({
+      label: preset.label,
+      checked: currentPreset === preset.id,
+      // Only a delivery change re-dials: delivery and parity are in
+      // useViewerConnection's session-effect deps, pacing/striping/
+      // interpolation cross into the live pipeline instead. So the step
+      // between Lowest latency and Balanced is silent, and the carrier
+      // presets are not (docs/37 decision 7).
+      note:
+        preset.delivery !== deliveryMode ? `${preset.sub} ${RECONNECT_NOTE}` : preset.sub,
+      onSelect: () => applyPreset(preset.id),
+    })),
+    // Custom is never offered on a clean install: it renders only while it is
+    // what you already are, checked and inert (docs/37 decision 3).
+    ...(currentPreset === null
+      ? [
+          {
+            label: presetLabel(null),
+            checked: true,
+            disabled: true,
+            reason: 'Your advanced settings don’t match a preset.',
+            onSelect: () => {},
+          },
+        ]
+      : []),
+    { label: 'More settings…', onSelect: () => setShowSettings(true) },
+  ];
+
+  // R32 UX4 (docs/37 §6.4): actions only. Every tuning control moved to the
+  // preset pill and the settings panel — eleven of the seventeen rows this
+  // menu had grown to were knobs that already ship with the right default for
+  // the average viewer, and they were the first thing anyone opening the menu
+  // to mute a stream had to read past.
   const menuItems: MenuItem[] = [
     { label: showStats ? 'Hide stats' : 'Stats', onSelect: () => setShowStats((s) => !s) },
     { label: isFullscreen ? 'Exit fullscreen' : 'Fullscreen', onSelect: () => toggleFullscreen() },
-    // R12 T2: a visibly costed opt-in — the overlay's Playout/latency rows
-    // show the added delay while it is on.
-    // R19 (docs/24 Decision 7): while Resilient mode is on it governs pacing
-    // (adaptive, wider profile) — this entry is annotated but keeps its
-    // stored value and regains effect the moment Resilient mode turns off.
-    {
-      label:
-        (playoutMode === 'adaptive' ? 'Paced playback ✓' : 'Paced playback') +
-        (resilientMode ? ' — governed by Resilient mode' : ''),
-      onSelect: () => togglePlayoutMode('adaptive'),
-    },
-    // docs/17 Decision 10: the retired fixed 150 ms mode, kept reachable in dev
-    // builds only as the measurement-free control for pacing diagnosis. The
-    // label carries its constant because that is the whole point of it.
-    ...(showFixedPlayout
-      ? [
-          {
-            label:
-              (playoutMode === 'fixed'
-                ? 'Smooth playback (fixed 150 ms) ✓'
-                : 'Smooth playback (fixed 150 ms)') +
-              (resilientMode ? ' — governed by Resilient mode' : ''),
-            onSelect: () => togglePlayoutMode('fixed'),
-          },
-        ]
-      : []),
-    // R19 + R21 (docs/26 Decision 15): one axis, three points, rendered as a
-    // radio group rather than as independent toggles — picking one always
-    // clears the others, and "resilient + deep" is not a state that exists.
-    // Each label states its cost, because the whole choice IS the cost.
-    {
-      label: (deliveryMode === 'live' ? 'Live edge ✓' : 'Live edge') + ' — lowest latency',
-      onSelect: () => chooseDeliveryMode('live'),
-    },
-    {
-      label:
-        (deliveryMode === 'resilient' ? 'Resilient mode ✓' : 'Resilient mode') +
-        ' — mobile networks, ~0.5 s behind',
-      onSelect: () => chooseDeliveryMode('resilient'),
-    },
-    {
-      label:
-        (deliveryMode === 'deep' ? 'Deep buffer ✓' : 'Deep buffer') +
-        ' — rides out dropouts, seconds behind',
-      onSelect: () => chooseDeliveryMode('deep'),
-    },
-    // R29 (docs/34 §5.2): loss protection, offered ONLY on live edge. The
-    // carrier modes already recover loss through QUIC retransmission, so the
-    // relay serves them no parity and an entry there would promise something
-    // that cannot happen.
-    //
-    // The entries opt DOWN only. There is no "more" to offer: the fleet level
-    // is the ceiling, because a viewer cannot conjure symbols the producer
-    // never emitted.
-    ...(deliveryMode === 'live'
-      ? ([
-          {
-            label:
-              (parityChoice === 'auto' ? 'Loss protection: full ✓' : 'Loss protection: full') +
-              ' — repairs lost packets, ~22% more data',
-            onSelect: () => chooseParity('auto'),
-          },
-          {
-            label:
-              (parityChoice === 1 ? 'Loss protection: light ✓' : 'Loss protection: light') +
-              ' — ~11% more data',
-            onSelect: () => chooseParity(1),
-          },
-          {
-            label:
-              (parityChoice === 0 ? 'Loss protection: off ✓' : 'Loss protection: off') +
-              ' — least data, freezes on loss',
-            onSelect: () => chooseParity(0),
-          },
-        ] as MenuItem[])
-      : []),
-    // R30 (docs/35 §5.5): connection striping, live-edge only like parity —
-    // reliable/deep delivery rides retransmitting carriers, so there is
-    // nothing to split there. A radio group over one axis (the delivery-mode
-    // precedent above), applied LIVE: engagement is in-band, so unlike
-    // delivery/parity a change never reconnects.
-    ...(deliveryMode === 'live'
-      ? ([
-          {
-            label:
-              (stripeMode === 'auto' ? 'Striping: auto ✓' : 'Striping: auto') +
-              ' — splits bursts when loss is detected',
-            onSelect: () => chooseStripeMode('auto'),
-          },
-          {
-            label:
-              (stripeMode === 'on' ? 'Striping: on ✓' : 'Striping: on') +
-              ' — extra connections, loss or not',
-            onSelect: () => chooseStripeMode('on'),
-          },
-          {
-            label:
-              (stripeMode === 'off' ? 'Striping: off ✓' : 'Striping: off') + ' — one connection',
-            onSelect: () => chooseStripeMode('off'),
-          },
-        ] as MenuItem[])
-      : []),
-    // R12 T4: only offered where the pipeline can actually interpolate
-    // (stats.interpolation is null on the main-thread path, non-WebGL2 sinks,
-    // and outside adaptive mode).
-    // Review finding LIFECYCLE-2: the gate is the *effective* mode, not the
-    // stored one — R19 resilient mode implies adaptive pacing (playout.ts's
-    // getPlayoutMode), so a resilient viewer whose stored mode is 'off' or
-    // 'fixed' has interpolation running and needs the control to reach it.
-    ...((resilientMode || playoutMode === 'adaptive') && stats?.interpolation != null
-      ? [
-          {
-            label: interpolation
-              ? 'Frame interpolation (experimental) ✓'
-              : 'Frame interpolation (experimental)',
-            onSelect: toggleInterpolation,
-          },
-        ]
-      : []),
     // R15 (docs/20 Decision 9): audio entries appear only when the stream
     // actually carries audio — a video-only broadcast's menu is unchanged.
     ...(audio.present
-      ? [{ label: audio.muted ? 'Unmute ✓' : 'Mute', onSelect: () => audio.setMuted(!audio.muted) }]
+      ? [
+          {
+            label: audio.muted ? 'Unmute' : 'Mute',
+            onSelect: () => audio.setMuted(!audio.muted),
+          },
+        ]
       : []),
+    { label: 'Playback settings…', onSelect: () => setShowSettings(true) },
     { label: 'Copy link', onSelect: copyLink },
     // Dev builds only, same gate as the broadcaster's panel — a real viewer
     // never sees it and cannot be talked into repointing its relay.
-    ...(showDevSettings
-      ? [{ label: 'Relay server (dev)…', onSelect: openDevSettings }]
-      : []),
+    ...(showDevSettings ? [{ label: 'Relay server (dev)…', onSelect: openDevSettings }] : []),
     // R23 (docs/29): terms reachable from the viewer without adding chrome.
     // Opens in a new tab so reading the terms never tears down the live
     // stream (a hash change would unmount the viewer).
@@ -802,6 +784,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     },
     { label: 'Leave', onSelect: leave },
   ];
+
 
   return (
     <div
@@ -972,6 +955,39 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           )}
         </div>
         <div className={styles.actions}>
+          {/* R32 UX4: the preset pill — the one tuning control an average
+              viewer meets. Text, not an icon, because its label IS the state
+              readout. The accessible name carries the "Playback quality"
+              prefix the visible label drops for width. */}
+          <button
+            ref={presetButtonRef}
+            type="button"
+            className={styles.presetPill}
+            aria-haspopup="menu"
+            aria-expanded={presetMenu != null}
+            aria-label={`Playback quality: ${presetLabel(currentPreset)}`}
+            onClick={(e) => {
+              if (presetMenu) {
+                setPresetMenu(null);
+                return;
+              }
+              // Same geometry as the "⋮" button: grow up-left from the pill's
+              // top-right, or the bottom-bar viewport clamp puts the menu back
+              // over the control that opened it.
+              const r = e.currentTarget.getBoundingClientRect();
+              // Close the other menu explicitly. A pointer already does this
+              // via ContextMenu's outside-pointerdown listener, but a keyboard
+              // activation fires click with no pointerdown at all — so without
+              // this, Enter on the pill leaves both menus on screen.
+              setMenu(null);
+              setPresetMenu({ x: r.right, y: r.top - 6 });
+            }}
+          >
+            {presetLabel(currentPreset)}
+            <span className={styles.presetPillCaret} aria-hidden="true">
+              ▾
+            </span>
+          </button>
           {/* R15 (docs/20 Decision 9): mute + volume, rendered only when the
               stream actually carries audio. A video-only stream shows exactly
               today's control bar. */}
@@ -1015,6 +1031,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
               // back up over it) — and then a second tap would hit a menu item
               // instead of dismissing.
               const r = e.currentTarget.getBoundingClientRect();
+              setPresetMenu(null); // see the preset pill's handler
               setMenu({ x: r.right, y: r.top - 6, anchor: 'bottom-right' });
             }}
           >
@@ -1043,6 +1060,34 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           anchor={menu.anchor}
           anchorRef={menuButtonRef}
           onClose={() => setMenu(null)}
+        />
+      )}
+
+      {presetMenu && (
+        <ContextMenu
+          items={presetItems}
+          x={presetMenu.x}
+          y={presetMenu.y}
+          anchor="bottom-right"
+          anchorRef={presetButtonRef}
+          onClose={() => setPresetMenu(null)}
+        />
+      )}
+
+      {/* R32 UX3: rendered here, inside the viewer root — in CSS
+          pseudo-fullscreen the root IS the fullscreen element, so a panel
+          portalled to document.body would be invisible exactly on the iPhone
+          that needs it most (docs/37 decision 5). */}
+      {showSettings && (
+        <ViewerSettingsPanel
+          config={playbackConfig}
+          interpolationAvailable={stats == null ? null : stats.interpolation != null}
+          onPreset={applyPreset}
+          onParity={chooseParity}
+          onStriping={chooseStripeMode}
+          onInterpolation={chooseInterpolation}
+          onResetAdvanced={resetAdvanced}
+          onClose={() => setShowSettings(false)}
         />
       )}
     </div>

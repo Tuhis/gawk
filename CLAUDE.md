@@ -970,6 +970,54 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
   split + browser viewer asserted); Z4 burn-in → required flip pending (plus
   a re-run on the new self-hosted `ioio-k8s` runners, migrated 2026-07-19
   after those GitHub-hosted green runs, and the Z5 step's first CI run)).
+  `docs/37-viewer-playback-presets.md` for R32 (viewer playback presets &
+  settings UX: **designed + UX1–UX6 implemented 2026-07-29, gates green,
+  live-verified in Chrome against the fleet; iPhone on-device pass pending** —
+  deviations in §13; `gawk-app` viewer only, **zero server/wire/relay/
+  broadcaster/pipeline change and no new persisted key**). Every milestone from
+  R12 on appended its viewer control to one flat right-click menu and nobody
+  removed anything, so the worst case was **17 rows, 11 of them tuning knobs
+  that already ship with the right default** — the first thing anyone opening
+  the menu to mute a stream had to read past. Three concrete defects came with
+  it: the menu had `max-width` but no `max-height`/`overflow` (≈740 px of rows
+  ran off a phone's landscape viewport with `Leave` unreachable — clamping
+  `top` keeps the *head* on screen and says nothing about the tail); parity and
+  striping were **filtered out** of the array under Resilient/Deep, so the menu
+  changed *length* with the delivery mode; and interpolation was gated on
+  `stats?.interpolation != null`, so it materialised a row a second into every
+  session. **The load-bearing insight (§3, and the reason the presets are
+  honest rather than decorative): the four controls are not four independent
+  choices, and two are not on the same axis.** Delivery + pacing buy smoothness
+  with **latency**; parity + striping buy robustness with **data and
+  connections at zero latency cost** — so an early sketch folding them into a
+  "Lowest latency" preset is recorded **rejected**. Presets therefore govern
+  delivery + pacing only (**Lowest latency → Balanced → Smoother → Most
+  stable**, one axis, monotonic in delay), promoted to a control-bar **pill**
+  whose label IS the state, opening the *same* `ContextMenu` the "⋮" button
+  uses; parity/striping/interpolation move to a **settings panel** reusing the
+  broadcaster's scrim + slide-in `GlassPanel` idiom, behind a collapsed
+  **Advanced** disclosure with a `· N changed` marker. Decisions worth not
+  re-deriving: **the preset is derived from the five existing keys, never
+  stored** (no migration, and no second source of truth that can drift from the
+  values it names — a legacy R19-era config just reads Custom); **a preset is a
+  complete configuration, so picking one resets the advanced knobs** (sticky
+  orthogonal values would make the pill read "Balanced" over a forced-off
+  striping — the cost is accepted and made visible first by `· N changed`);
+  **Custom is a state you land in, never an option offered on a clean install**;
+  **not-applicable rows gray *with their reason on the row*, never vanish**
+  (touch has no hover); **the panel renders inside the viewer root, never
+  portalled to `body`**, because in CSS pseudo-fullscreen — the shipping iPhone
+  tier since docs/21 U4 — that root *is* the fullscreen element; and
+  **reconnects are disclosed only where they happen** (delivery and parity are
+  in `useViewerConnection`'s session-effect deps and re-dial; pacing, striping
+  and interpolation cross into the live pipeline and never do — the annotation
+  is computed against the *current* delivery, deviation 1). `ContextMenu` grew
+  `checked`/`disabled`/`reason`/`note`, disabled-skipping arrow nav, and a
+  height clamp that feeds the placement math; **the check mark is CSS drawn
+  from `aria-checked` and the second line is `aria-describedby`**, so no `'✓'`
+  ever enters an accessible name again. R19 Decision 11's auto-detect
+  suggest-banner stays deferred and is now the natural follow-up — with presets
+  in place it has one thing to suggest instead of four knobs to set.
 - Each component has `deploy/` (Dockerfile + Helm charts); `.github/workflows/`
   holds CI + release automation.
 - `docs/implementation-tasks.md` — **the server design + chunked task
@@ -1219,21 +1267,26 @@ rewarding technical deep-dive — but it is not a licence to cut product corners
    Delivery overlay rows. (b) **Paced presentation** (T2):
    `PacedPresentationSink` subsumes the R10 `CoalescingRenderSink` (no
    target ⇒ identical coalescing; with targets it holds ≤3 decoded frames
-   and presents each in its vsync slot); playout is now a three-mode
-   setting — `'off' | 'fixed' (the R5 150 ms mode) | 'adaptive'` —
-   persisted as `gawk:playout-mode`; **since 2026-07-23 (docs/17 Decision
-   10, user decision) viewer pacing is ONE binary right-click toggle,
-   "Paced playback"**: adaptive dominates fixed at every point on the
+   and presents each in its vsync slot); playout is persisted as
+   `gawk:playout-mode` and is **a two-mode setting since R32 (2026-07-29):
+   `'off' | 'adaptive'`**. It was three — the middle one being `'fixed'`, R5
+   Q3's constant 150 ms — until docs/17 Decision 10 (2026-07-23) retired it
+   from the production menu and **R32 removed it outright** (docs/37 deviation
+   7). Adaptive dominates fixed at every point on the
    trade curve (clamp floor 50 ms is *below* fixed's constant on a clean
    link, ceiling above it on a dirty one, warmup seeds at the same 150 ms,
    and only adaptive sets a `displayTargetMs` — so fixed paid the
-   buffering latency while presenting unpaced). `'fixed'` survives as a
-   mode, offered by `ViewerScreen` only under `isDevEnvironment()`
-   ("Smooth playback (fixed 150 ms)"), because a measurement-free offset
-   is the control that separates a pacing bug from a bug in the jitter
-   estimator driving it (PLAYOUT-1, docs/24 finding 8); stored `'fixed'`
-   and the legacy boolean's `'1'` both migrate to `'adaptive'`, legacy
-   `'0'` still to `'off'`. In adaptive mode the reorder buffer releases at
+   buffering latency while presenting unpaced), which is why removing it was
+   safe. It had survived as a dev-gated diagnostic — a measurement-free offset
+   separates a pacing bug from a bug in the jitter estimator driving it
+   (PLAYOUT-1, docs/24 finding 8) — but that was the single pacing row in a
+   menu R32 made actions-only, for a control nobody had reached for since.
+   Stored `'fixed'` and the legacy boolean's `'1'` both migrate to
+   `'adaptive'` (now in **every** build), legacy
+   `'0'` still to `'off'`; `PLAYOUT_OFFSET_MS` remains adaptive's warmup seed.
+   Since R32 pacing is not a control at all — it is a property of the chosen
+   preset (Lowest latency ⇒ `'off'`, every other preset ⇒ `'adaptive'`).
+   In adaptive mode the reorder buffer releases at
    `target − DECODE_LEAD_MS` (35 ms) so the decoder frame pool stays
    bounded. (c) **Adaptive offset** (T3): `PlayoutController` —
    clamp(p95−min + 34 ms headroom, [50, 350]), seed 150 until ~5 s of
