@@ -52,7 +52,7 @@ feature set exists).
 | R31 | [Telemetry UI v2: a purpose-built diagnosis SPA](#r31--telemetry-ui-v2-a-purpose-built-diagnosis-spa) | 🚧 designed + **TH1–TH11 implemented 2026-07-30**; gates green (Go race + `-tags duckdb`, oxlint / 49 UI tests / build, and the no-external-fetch test over the built bundle); both §8 open questions resolved by the owner — build-tagged cgo DuckDB, SSE kept with the poll as fallback; **on-hardware pass owner-pending** ([docs/36](docs/36-telemetry-ui-history.md) §9); read-surface only — zero wire/relay/viewer/broadcaster change |
 | R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
 | R33 | [WHIP ingest for OBS support](#r33--whip-ingest-for-obs-support) | 💡 proposed 2026-07-29, not started — no design doc yet |
-| R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 💡 proposed 2026-07-29, not started — no design doc yet |
+| R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD12 taken), not started (WB0–WB8) ([docs/38](docs/38-windows-native-broadcaster.md)) |
 
 ---
 
@@ -2871,7 +2871,11 @@ item smuggle them back in. Sharing a GUI, build, or release pipeline with
 the Linux `gawk-broadcast` — the toolchains no longer overlap enough to
 make that worth forcing.
 
-**Status**: proposed 2026-07-29, not started — no design doc yet.
+**Status**: proposed 2026-07-29; **designed 2026-07-30** —
+[docs/38](docs/38-windows-native-broadcaster.md) (Rust, `wtransport`,
+Windows.Graphics.Capture + WASAPI process loopback, Media Foundation
+hardware MFTs only, Slint GUI, portable single EXE; owner decisions
+OD1–OD12). Not started (chunks WB0–WB8).
 
 ---
 
