@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.38.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.38.0...gawk-app-v0.38.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **r30:** delta-gap grace was sized per connection; striping made it a fleet-of-connections number ([#197](https://github.com/Tuhis/gawk/issues/197)) ([8ec3894](https://github.com/Tuhis/gawk/commit/8ec38940f5c587226c12aabc1b19071bc767ca98))
+
 ## [0.38.0](https://github.com/Tuhis/gawk/compare/gawk-app-v0.37.2...gawk-app-v0.38.0) (2026-07-29)
 
 
