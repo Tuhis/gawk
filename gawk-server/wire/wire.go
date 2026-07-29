@@ -9,6 +9,14 @@
 // It may still import internal/broadcastid — the rule restricts importers by
 // path prefix, and gawk-server/wire qualifies.
 //
+// This file is the allocation map and source of truth. Three hand-written
+// mirrors restate its golden vectors byte-identically and must be updated
+// with every wire change: the TS frontend (gawk-app/src/transport/wire.ts),
+// the Go broadcaster's checks (gawk-broadcast/internal/wirecheck), and the
+// Rust Windows broadcaster (gawk-broadcast-windows/crates/wire, R34 —
+// docs/38 D4; note its CI job is path-filtered, so the mirror's gates only
+// run once its own commit lands).
+//
 // Every datagram starts with a common 2-byte prefix: byte 0 is the protocol
 // version (Version) and byte 1 is the message type (TypeVideoChunk or
 // TypeDecoderConfig). All multi-byte integers are big-endian, which maps
