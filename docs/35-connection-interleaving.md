@@ -8,7 +8,8 @@ eighteen-chunk frames complete through a modeled 8-deep head-drop buffer;
 striped ×3 completes 60/60 at 0.0 % with zero mismapped). **ST1's paired
 runs on the affected machine and ST7's acceptance + loadgen sweep are
 owner-pending** — until they pass, the feature is deployed-but-unproven on
-the real path. Chunks **ST1–ST7** ("stripe" — every single-letter prefix A–Z
+the real path; **§13 is the step-by-step runbook for that remainder**.
+Chunks **ST1–ST7** ("stripe" — every single-letter prefix A–Z
 is claimed, and `IL` was rejected as visually colliding with R27's `LI`).
 
 The mechanism's working name in this doc is **striping**: each delta frame's
@@ -717,3 +718,101 @@ user-visible misbehaves.
 Recorded second (smaller): the `gawk-server/README.md` flags table is
 missing `-parity-default` and `-live-edge-audio-on-reliable-stream`; ST3's
 plumbing criterion folds the two rows in with the new flag's.
+
+---
+
+## 13. Manual runbook — the owner-run remainder (ST1 + ST7)
+
+Everything below is what CI structurally cannot do: it needs the live fleet,
+the affected machine's real Firefox buffer, or a scale rig. In order — each
+step gates the next.
+
+### 13.0 Deploy the striping build to the fleet
+
+R30 rides the normal release flow. Approve + merge the next release-please PR
+(they sit at `action_required` until approved — CI does not start on its
+own), let the cluster auto-deploy, then confirm:
+
+- the relay's startup log line shows `striped_delivery=true` (the chart
+  default is on; nothing to configure), and
+- the **frontend** release is current too — ST1's striped instrument mode
+  needs relay-side leg support, and the viewer half (0x0F parsing, the
+  controller, the menu) ships with gawk-app.
+
+### 13.1 UI browser verify (ST5's manual half, ~5 min)
+
+Desktop Chrome against the fleet, on a small/quiet broadcast:
+
+- The "⋮"/right-click menu shows the three `Striping:` entries in **live**
+  delivery only (absent under Resilient / Deep buffer).
+- The overlay (`Ctrl+Alt+Shift+D`) Delivery section shows the `Striping` and
+  `Stripe detector` rows; expect `auto — off (needed 1)` on small frames.
+- Flipping `Striping: on` on that small broadcast opens **no** legs
+  (`needed < 2` is the designed hold, §5.4) and never reconnects — the
+  Watching state must not blink. Flip back to `auto`.
+
+### 13.2 ST1 — the paired go/no-go on the affected machine
+
+Prerequisites, all on the affected viewer's machine:
+
+- repo checkout; `(cd e2e && npm ci)` and Playwright's Firefox
+  (`cd e2e && npx playwright install firefox`);
+- a dev server at an origin the fleet's `-allowed-origins` accepts
+  (`cd gawk-app && npm ci && npm run dev` → `http://localhost:5173/`
+  qualifies on the reference fleet; a local `-dev-cert` relay is NOT a
+  substitute — Firefox refuses the dev cert, Mozilla bug 1873263);
+- a live broadcast with **large frames** (a real 1080p gaming session).
+  Confirm largeness in the control run's `loss by frame size` table: if no
+  frames exceed 8 chunks, the run is **inconclusive, not a pass** — a quiet
+  desktop compresses under the threshold.
+
+Paired runs — same broadcast, same hour, control first:
+
+```sh
+cd e2e
+GAWK_FF_PAGE=http://localhost:5173/ GAWK_FF_RELAY=https://api.gawk.ioio.fi:4433 \
+  GAWK_FF_ID=<code> SECS=100 node datagram-loss-profile.mjs              # control
+GAWK_FF_PAGE=http://localhost:5173/ GAWK_FF_RELAY=https://api.gawk.ioio.fi:4433 \
+  GAWK_FF_ID=<code> SECS=100 GAWK_FF_STRIPE=3 node datagram-loss-profile.mjs  # striped
+```
+
+Read, in this order:
+
+1. **Control reproduces the threshold**: ≥ ~1 % chunk loss on >8-chunk
+   frames, the head-of-burst slope in `loss by chunk index`, parity ~0 %.
+   Without this the pair proves nothing (the docs/24 finding-10 rule).
+2. **Striped meets §2**: ~0 % (≤ 0.1 %) chunk loss on >8-chunk frames,
+   per-leg losses all ~0, `mismapped: 0`, `primary delta datagrams ≈ 0`.
+3. Repeat the pair once — loss magnitude historically varied 3.8 → 12.6 %
+   between sessions on this machine, so one clean pair is a data point, two
+   are a verdict.
+
+Record the go/no-go in §12. **No-go ⇒ §10 criterion 1**: route the affected
+path to Resilient, keep the detector + `burst-threshold-loss` rule as
+diagnostics, and record what the split DID change — that number seeds the
+next design. Do not respond with pacing or frame caps (owner-rejected, §4).
+
+### 13.3 Real-viewer confirmation of the auto path
+
+The affected viewer watches normally (mode `auto`, the default) during a real
+session:
+
+- overlay: `Stripe detector` fires, then `Striping` reads `auto — N legs`;
+- relay `/statusz`: the leg rows (`stripeLeg`, member/n) plus `striped: true`
+  on the primary — the operator-visible join of one viewer's sessions;
+- telemetry: `burst-threshold-loss` must NOT fire once legs are active (its
+  idle branch firing *before* engagement is correct behaviour, not a bug).
+
+### 13.4 ST7 — scale sanity and the recorded verdicts
+
+- **Loadgen sweep — currently blocked on a small tool gap**: `gawk-loadgen`
+  cannot yet dial stripe legs (it needs a `-stripe N` flag that adds
+  `?stripe=N&leg=j` dials per viewer and sends the 0x10 on the primary).
+  Build that first, then sweep 200 viewers at 0 / 10 / 50 / 100 % striped
+  fraction × N=3 against an envelope set from the R17 scale-proof numbers
+  BEFORE the run (docs/22), watching relay CPU, `gawk_broadcast_stripe_legs`
+  and the fan-out benchmarks.
+- Evaluate all four §10 kill criteria with recorded verdicts (a documented
+  rejection is a valid completion).
+- Close out: update §12 and the ST1/ST7 chunk rows, the ROADMAP entry, and —
+  only if the measurements say so — BUGS.md.
