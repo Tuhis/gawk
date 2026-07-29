@@ -33,7 +33,7 @@ feature set exists).
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | ✅ T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify done 2026-07-19; T5 (motion-estimated interpolation) + T6 (findings) not started/droppable ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | ✅ V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC done 2026-07-19** (hardware encode/portal/GUI — not CI-reachable); V8 (direct Vulkan Video) still gated on V2's on-hardware result, not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
-| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, graduated (toggle removed) 2026-07-23; **N1–N6 implemented; hardware playback produced twelve field findings — all twelve fixed (incl. video-master A/V sync, audio off the R19 carrier, live-edge buffer-depth floor, and the two re-anchor fixes for leaving Deep buffer / toggling paced playback, merged as #123 + #125; finding 12 — `avSkewMs` over-reports on long/stressed sessions, a metric bug, audio is actually fine — root-caused and fixed 2026-07-26). Manual verification reached step 3 of 9 (2026-07-24) then stopped on test-machine performance trouble; needs a full re-run** ([docs/20](docs/20-system-audio.md)) |
+| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, graduated (toggle removed) 2026-07-23; **N1–N6 implemented; hardware playback produced fourteen field findings — all fourteen fixed (incl. video-master A/V sync, a live-edge buffer-depth floor, and the two re-anchor fixes for leaving Deep buffer / toggling paced playback, merged as #123 + #125; finding 12 — `avSkewMs` over-reports on long/stressed sessions, a metric bug, audio is actually fine — root-caused and fixed 2026-07-26; finding 14 (2026-07-27) **partly reverses finding 5**: audio now rides its own long-lived reliable stream on every reliable subscriber (R19 + R21), and only the *video* carrier remains off-limits — live-edge keeps the same treatment behind default-off `-live-edge-audio-on-reliable-stream`). Manual verification reached step 3 of 9 (2026-07-24) then stopped on test-machine performance trouble; needs a full re-run** ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | ⚠️ U1–U3 implemented 2026-07-16; **U4 verdict 2026-07-19: native `webkitEnterFullscreen` still shows a black video on iPhone across three on-device passes → native tier not viable, pseudo-fullscreen (CSS) is the shipping path** (docs/21 U4 pre-registered verdict; BUGS.md) ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | ✅ W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + **green in the `e2e-cluster` CI job (2026-07-18)**; remaining homelab drills (rollout/crash/rebind blips, conntrack empiricism) + 200-viewer scale proof closed as owner-accepted 2026-07-19 (CI non-goals — kind lacks the physics) ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; cluster viewer-count check (origin `viewersGlobal` == Σ per-pod real viewers, edges excluded) **automated in the `e2e-cluster` CI job 2026-07-19**; single-pod browser/native + re-home + storm manual verify still pending ([docs/23](docs/23-live-viewer-count.md)) |
@@ -956,12 +956,23 @@ because the display target and the release gate ran off different clocks; the
 jitter buffer's target was an overflow ceiling with no floor, so the sink
 played at ~0 ms depth; and — owner decision — **Decision 10 inverted to
 video-master**, audio aligned at start to the video schedule with a
-sub-audible rate trim for drift. Five more followed through 2026-07-23
-(audio taken back off the R19 reliable carrier, a live-edge buffer-depth
-floor, honest depth accounting with worklet-stall recovery, the
-overflow-drop-vs-concealment fight plus the context's real sample rate, and
-`avSkewMs` measuring buffering rather than lip-sync) — all fixed, and the
-owner reports audio playing reliably as of 2026-07-23, which graduated it
+sub-audible rate trim for drift. **Ten more followed through 2026-07-27, for
+fourteen in total — all fixed** (findings 5–9 by 2026-07-23: audio taken off
+the R19 *video* carrier, a live-edge buffer-depth floor, honest depth
+accounting with worklet-stall recovery, the overflow-drop-vs-concealment
+fight plus the context's real sample rate, and `avSkewMs` measuring buffering
+rather than lip-sync; then 10 and 11, the two re-anchor fixes for leaving Deep
+buffer / toggling paced playback; 12, `avSkewMs` over-reporting on
+long/stressed sessions — a metric bug, audio itself fine — root-caused and
+fixed 2026-07-26; 13, audio settling ~`outputLatency` behind the picture while
+the skew read zero, fixed by measuring at the listener, which root-caused 12
+with it; and **14 (2026-07-27), which partly reverses finding 5** — audio now
+rides its own long-lived reliable stream on every reliable subscriber (R19 and
+R21, one shared implementation), so only the *video* carrier remains
+off-limits, with live-edge behind default-off
+`-live-edge-audio-on-reliable-stream` because a live-edge viewer holds only
+finding 6's ~90–150 ms depth and a retransmit past that becomes a stall).
+The owner reported audio playing reliably as of 2026-07-23, which graduated it
 out of experimental. Automated gates green in all three modules; the formal
 docs/20 verification-plan pass has not been re-run. Deviations recorded in
 docs/20 "Implementation status".
