@@ -584,7 +584,7 @@ func internalSubscribePath(broadcastID string, generation int64) string {
 // Dialer, which owns the QUIC transport) to edgeUpstream.
 type webtransportUpstream struct {
 	sess   *webtransport.Session
-	dialer *webtransport.Dialer
+	dialer *webtransport.Transport
 }
 
 func (u *webtransportUpstream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
@@ -608,7 +608,7 @@ func (u *webtransportUpstream) Close() error {
 // no InsecureSkipVerify), tight in-cluster QUIC timers, PSK appended here.
 func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Logger) edgeDialer {
 	return func(ctx context.Context, addr, path string) (edgeUpstream, error) {
-		d := &webtransport.Dialer{
+		d := &webtransport.Transport{
 			TLSClientConfig: &tls.Config{ServerName: serverName, RootCAs: rootCAs},
 			QUICConfig: &quic.Config{
 				EnableDatagrams:                  true,

@@ -387,7 +387,7 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 	}
 
 	// Join as a late viewer, exactly as the browser does.
-	d := &webtransport.Dialer{
+	d := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{http3.NextProtoH3}},
 		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}
@@ -544,7 +544,7 @@ func TestSubscriberReceivesAudio(t *testing.T) {
 		t.Fatal("no broadcast code")
 	}
 
-	d := &webtransport.Dialer{
+	d := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{http3.NextProtoH3}},
 		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}
