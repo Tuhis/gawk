@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/annotations"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/dashboard"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
@@ -41,6 +42,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sessions"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/sqlengine"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/store"
 )
 
@@ -67,9 +69,40 @@ func run() error {
 	defer st.Close()
 
 	projection := live.New(nil)
+
+	// TH8's annotation store. A sibling of rollups/, never under sessions/ or
+	// relay/, so the prune loop cannot reach it — an annotation outliving the
+	// samples it describes is the normal case and the whole point (UD16).
+	notes, err := annotations.New(annotations.Options{Root: cfg.dataDir})
+	if err != nil {
+		return fmt.Errorf("annotations: %w", err)
+	}
+
+	// TH10's engine (§8 Q1's resolution). A build without `-tags duckdb` gets
+	// nil here and the console says so plainly — which is a different message
+	// from a query error, and the UI renders it as one.
+	var engine readapi.SQLEngine
+	if cfg.enableSQL {
+		e, err := sqlengine.Open(sqlengine.Options{Root: cfg.dataDir})
+		switch {
+		case errors.Is(err, sqlengine.ErrNoEngine):
+			log.Info("query-sql is enabled but this build has no engine compiled in; " +
+				"rebuild with -tags duckdb (the deployed image does)")
+		case err != nil:
+			log.Warn("query engine failed to open; the console will report itself unavailable", "err", err)
+		default:
+			engine = e
+			defer e.Close()
+		}
+	}
+
 	api, err := readapi.New(readapi.Options{
 		Store: st, Live: projection, DashboardBase: cfg.dashboardBase,
-		StatsKey: cfg.statsKey,
+		StatsKey:       cfg.statsKey,
+		RetentionDays:  cfg.retentionDays,
+		ScrapeInterval: cfg.scrapeInterval,
+		Annotations:    notes,
+		SQL:            engine,
 	})
 	if err != nil {
 		return err
@@ -154,8 +187,18 @@ func run() error {
 	readMux.Handle("/", dash)
 	readMux.Handle("/v1/", api.Handler())
 	readMux.Handle("GET /live", api.Handler())
+	// UD22's SSE endpoint. A separate pattern because "/live" is an exact match
+	// in Go's mux and would not carry the sub-path.
+	readMux.Handle("GET /live/", api.Handler())
 	if cfg.mcpEnabled {
-		mcpSrv, err := mcp.New(mcp.Options{API: api, EnableSQL: cfg.enableSQL})
+		mcpSrv, err := mcp.New(mcp.Options{
+			API: api, EnableSQL: cfg.enableSQL,
+			// TH10: the engine reaches MCP by the same path it reaches the
+			// console. `internal/mcp` has accepted a SQL func since R28 and
+			// nothing ever supplied one, so the tool answered "enabled but no
+			// engine is wired in this deployment" — true, and a stub.
+			SQL: sqlTool(engine),
+		})
 		if err != nil {
 			return err
 		}
@@ -191,6 +234,16 @@ func run() error {
 	// process's orphan sweep.
 	writer.FinalizeAll()
 	return nil
+}
+
+// sqlTool adapts the query engine to the MCP tool's signature, or returns nil
+// where there is no engine — which is what makes the tool's own "no engine is
+// wired in this deployment" message true rather than a stub's excuse.
+func sqlTool(engine readapi.SQLEngine) func(string) (any, error) {
+	if engine == nil {
+		return nil
+	}
+	return func(q string) (any, error) { return engine.Query(q) }
 }
 
 func serve(s *http.Server, name string, log *slog.Logger) error {
@@ -430,7 +483,11 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		"data directory (a PVC in a cluster)")
 	keyHex := fs.String("telemetry-key", env("GAWK_TELEMETRY_KEY"),
 		"session-token HMAC key, 64 hex chars — the SAME key the relay mints with")
-	fs.IntVar(&c.retentionDays, "retention-days", orInt(env("GAWK_TELEMETRY_RETENTION_DAYS"), 14),
+	// 30 days, raised from 14 by owner decision (docs/36 UD15). A release cycle
+	// fits inside it, so "compare this session to one from before the R30
+	// change" stays answerable at FULL resolution instead of rollup-only.
+	// ~160 MB at current volume. Rollups stay permanent regardless.
+	fs.IntVar(&c.retentionDays, "retention-days", orInt(env("GAWK_TELEMETRY_RETENTION_DAYS"), 30),
 		"how long raw sessions are kept; rollups are permanent regardless")
 	scrape := fs.String("scrape-interval", or(env("GAWK_TELEMETRY_SCRAPE_INTERVAL"), "5s"),
 		"how often each relay pod's /statusz is polled")
@@ -449,8 +506,13 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		"base URL used in the deep links a verdict carries")
 	fs.BoolVar(&c.mcpEnabled, "mcp", orBool(env("GAWK_TELEMETRY_MCP"), true),
 		"serve the MCP endpoint on the read listener")
-	fs.BoolVar(&c.enableSQL, "query-sql", orBool(env("GAWK_TELEMETRY_QUERY_SQL"), false),
-		"expose the optional DuckDB passthrough tool (default off)")
+	// Default ON by owner decision (docs/36 UD18), which reverses D11's
+	// "arbitrary SQL should be a deliberate act". The flag survives as the gate;
+	// only its default moved. What actually answers a query is the build: a
+	// binary without `-tags duckdb` has no engine, and the console and the MCP
+	// tool both say so rather than pretending (§8 Q1).
+	fs.BoolVar(&c.enableSQL, "query-sql", orBool(env("GAWK_TELEMETRY_QUERY_SQL"), true),
+		"expose the ad-hoc SQL surface (default on; needs a build with -tags duckdb to answer)")
 	fs.StringVar(&c.basicAuthUser, "read-user", env("GAWK_TELEMETRY_READ_USER"),
 		"optional basic-auth user for the read listener (empty = no auth, cluster-internal)")
 	fs.StringVar(&c.basicAuthPass, "read-password", env("GAWK_TELEMETRY_READ_PASSWORD"),

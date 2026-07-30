@@ -83,7 +83,7 @@ that both ends know (D2).
 | Axis | Decision |
 |------|----------|
 | Architecture | A new **optional `gawk-telemetry` service**, **files-first**: gzipped NDJSON session artifacts on a PVC, queried by plain Go (DuckDB for ad-hoc — D11). Chart-gated, default off; a deployment that does not enable it behaves exactly as today |
-| Retention | **14 days full fidelity**, then pruned by partition-directory delete — plus a **permanent per-session rollup** row |
+| Retention | **14 days full fidelity**, then pruned by partition-directory delete — plus a **permanent per-session rollup** row. *(Default raised to 30 days by R31 UD15, so a release cycle fits inside the raw window; the mechanism is unchanged.)* |
 | Read surfaces | **All four**: an **MCP server with `diagnose()`** (primary, machine-facing), a **plain HTTP JSON API**, a **minimal built-in web dashboard**, and the **Grafana dashboard deferred since R9 M8** |
 | Collection | **Always on for every viewer and broadcaster, zero PII** — no IP addresses stored, coarse browser/OS class instead of the UA string, no cross-broadcast identity, no fingerprinting. R23's terms text updated to say so plainly |
 
@@ -157,6 +157,13 @@ the other would leak part of a bearer credential into a public-ish JSON
 endpoint for no benefit.
 
 ### D3 — Storage: hive-partitioned NDJSON, 14 days raw + permanent rollups
+
+> **Amended by R31 (docs/36 UD15, 2026-07-30):** `-retention-days` now defaults
+> to **30**, not 14. Nothing about the mechanism changed — retention is still a
+> directory delete and rollups are still permanent — but a raw window shorter
+> than a release cycle made "compare this session to one from before the R30
+> change" rollup-only, which is the one comparison the permanent rows exist to
+> support at full resolution.
 
 ```
 /data/
@@ -305,6 +312,16 @@ read API enforces it structurally:
   test that asserts it against a synthetic 4-hour session.
 
 ### D11 — DuckDB is a query option, not a runtime dependency
+
+> **Amended by R31 (docs/36 UD18 + §8 Q1, 2026-07-30):** the owner chose a SQL
+> console **on by default**, which reverses this decision's posture that
+> arbitrary SQL should be a deliberate act. The arithmetic below still holds —
+> DuckDB is not needed to ANSWER anything a first-class endpoint answers — so
+> the resolution keeps it optional at the level that matters: `internal/sqlengine`
+> sits behind a `duckdb` build tag, `go build ./...` on a fresh clone is still
+> cgo-free and links none of it, and only the deployed image pays. What did
+> change is that `mcp.Options.SQL` finally has a producer; it had accepted one
+> since R28 with nothing ever supplying it, so the tool was a stub.
 
 *Refines the ROADMAP sketch, which said "DuckDB rollups".* The arithmetic
 does not support making it a dependency: 14 days of rollups is a few thousand

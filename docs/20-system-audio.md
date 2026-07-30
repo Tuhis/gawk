@@ -4,10 +4,12 @@ Design doc for [ROADMAP R15](../ROADMAP.md#r15--system-audio) (designed
 2026-07-15; **design refreshed 2026-07-19** against everything landed since —
 R16 U4 verdict, R17 scale-out, R18 viewer count, R19 resilient mode, R20 CI,
 and the R12 defaults flip — see [Design refresh](#design-refresh-2026-07-19);
-**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-26 produced
-thirteen field findings — all fixed — including the
+**N1–N6 implemented 2026-07-19; hardware playback 2026-07-20/07-27 produced
+fourteen field findings — all fixed — including the
 Decision 10 inversion to **video-master** A/V sync, the Decision 12 reversal
-taking audio back off the R19 reliable carrier, a live-edge audio
+taking audio back off the R19 reliable carrier (itself partly re-reversed by
+finding 14, which gives audio its own reliable stream and confines the
+prohibition to the *video* carrier), a live-edge audio
 buffer-depth floor, honest jitter-buffer depth accounting with worklet-stall
 recovery (finding 7 — the crackle-then-silence fix), and the two re-anchor
 fixes — leaving Deep buffer (finding 10) and toggling paced playback
@@ -487,7 +489,7 @@ green in all three modules (`gofmt`/`go vet`/`go test -race`, `npm test` +
 (owner-verified 2026-07-23) — which graduated it from experimental — but the
 formal browser verification plan below still needs a full re-run (the
 2026-07-24 attempt reached only step 3 of 9 before a test-machine performance
-problem stopped it). Getting there took **twelve field findings, eleven
+problem stopped it). Getting there took **fourteen field findings, all
 fixed**: **1** (the audio toggle failed the whole broadcast, before a single
 Opus packet was encoded); once audio did play, **2** (video froze — two clocks
 driving one pipeline) and **3** (the jitter buffer never buffered); **4**
@@ -496,9 +498,15 @@ driving one pipeline) and **3** (the jitter buffer never buffered); **4**
 undelivered audio → crackle-then-silence); **8** (overflow drops and gap
 concealment fought each other on Safari); **9** (`avSkewMs` measured buffering
 depth + estimator lag, not lip-sync); **10** (leaving Deep buffer stranded
-audio ~2.8 s behind) and **11** (toggling paced playback left audio behind).
-**Finding 12** (`avSkewMs` still over-reports on long/stressed sessions — a
-metric artifact; audio itself is fine) is **open, deferred**. Deviations and
+audio ~2.8 s behind) and **11** (toggling paced playback left audio behind);
+**12** (`avSkewMs` over-reported on long/stressed sessions — a metric
+artifact, audio itself fine; **resolved 2026-07-26**) and **13** (audio
+settled ~`outputLatency` behind the picture while the skew read zero — fixed
+by measuring at the listener, which root-caused 12 with it); and **14**
+(2026-07-27, which partly reverses finding 5 — audio rides its own long-lived
+reliable stream on every reliable subscriber, so only the *video* carrier
+stays off-limits; live-edge behind default-off
+`-live-edge-audio-on-reliable-stream`). Deviations and
 decisions taken during implementation:
 
 1. **Decoded audio crosses as planar PCM, not a transferred `AudioData`**

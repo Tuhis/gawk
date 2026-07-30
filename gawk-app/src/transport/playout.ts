@@ -4,20 +4,21 @@
 // is visible (the stats overlay shows the mode and the latency rows rise by
 // the offset).
 //
-//   'off'      — live-edge: release + present immediately (the default).
-//   'fixed'    — R5 Q3's constant 150 ms decoder-release pacing, preserved
-//                exactly as it shipped. **Retired from the production menu**
-//                by docs/17 Decision 10 (2026-07-23): adaptive's clamp floor
-//                sits below this constant on a clean link and above it on a
-//                dirty one, its warmup seeds at this same 150 ms, and only
-//                adaptive sets a displayTargetMs — so 'fixed' bought the
-//                buffering latency without the presentation pacing. It stays
-//                a mode because a measurement-free offset is the control that
-//                separates a pacing bug from a bug in the jitter estimator
-//                driving it (PLAYOUT-1, docs/24 finding 8); ViewerScreen
-//                offers it in dev builds only.
+//   'off'      — live-edge: release + present immediately.
 //   'adaptive' — R12: sub-frame paced presentation with a jitter-tracked
 //                offset (T3; until then the seed constant) and a decode lead.
+//
+// A third mode, 'fixed' (R5 Q3's constant 150 ms decoder-release pacing), was
+// retired from the production menu by docs/17 Decision 10 (2026-07-23) and
+// **removed outright by R32** (docs/37, owner decision 2026-07-29). Adaptive
+// dominated it at every point on the trade curve — clamp floor below the
+// constant on a clean link, ceiling above it on a dirty one, same 150 ms
+// warmup seed, and only adaptive sets a displayTargetMs, so 'fixed' bought the
+// buffering latency without the presentation pacing. It had survived as a
+// dev-only diagnostic (a measurement-free offset separates a pacing bug from a
+// bug in the jitter estimator driving it — PLAYOUT-1, docs/24 finding 8), but
+// that put a tuning row in a menu R32 made actions-only, for a control nobody
+// had reached for since. A stored 'fixed' migrates to 'adaptive'.
 //
 // R19 (docs/24 Decision 7): while Resilient mode is on, the *effective* mode
 // is 'adaptive' with a wider controller profile ([150, 2000] ms, seed 500) —
@@ -39,11 +40,12 @@ import {
   type ViewerDeliveryMode,
 } from './resilient';
 
-export type PlayoutMode = 'off' | 'fixed' | 'adaptive';
+export type PlayoutMode = 'off' | 'adaptive';
 
 // One value, a named tunable like KEYFRAME_WAIT_MS: ~9 frames at 60 fps,
-// comfortably inside the reorder buffer's MAX_BUFFERED_FRAMES. Fixed mode's
-// constant, and adaptive mode's seed until the T3 controller takes over.
+// comfortably inside the reorder buffer's MAX_BUFFERED_FRAMES. Adaptive
+// mode's seed until the T3 controller has enough window to take over. (It
+// was also the retired 'fixed' mode's constant — removed in R32, see above.)
 export const PLAYOUT_OFFSET_MS = 150;
 
 // R12 T2 (docs/17 Decision 4): in adaptive mode, frames release from the
@@ -194,8 +196,21 @@ export function getPlayoutProfile(): PlayoutProfile {
   return getDeepBuffer() && dvrAck !== 'denied' ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
 }
 
+// The subset of a profile this controller actually reads: a clamp plus an
+// asymmetric slew. The tracker-geometry fields (`quantileRangeMs`,
+// `jitterWindowMs`) belong to whoever OWNS the estimator, not to a consumer of
+// its output — so a second consumer with no tracker of its own (the adaptive
+// delta-gap grace in reorder-buffer.ts, which reads the same
+// `arrivalJitterMs()` the offset does) can supply an envelope without
+// inventing values for two fields it would never use. `PlayoutProfile`
+// satisfies this structurally, so every existing call site is unchanged.
+export type SlewEnvelope = Pick<
+  PlayoutProfile,
+  'seedMs' | 'minMs' | 'maxMs' | 'slewUpMsPerS' | 'slewDownMsPerS' | 'stepUpAboveMs'
+>;
+
 export class PlayoutController {
-  private profile: () => PlayoutProfile;
+  private profile: () => SlewEnvelope;
   private current: number;
   private firstJitterAt: number | null = null;
   private lastUpdateAt: number | null = null;
@@ -203,7 +218,7 @@ export class PlayoutController {
 
   // The profile is a live getter so the module singleton follows the
   // resilient flag; tests may pass a fixed profile.
-  constructor(profile: PlayoutProfile | (() => PlayoutProfile) = DEFAULT_PLAYOUT_PROFILE) {
+  constructor(profile: SlewEnvelope | (() => SlewEnvelope) = DEFAULT_PLAYOUT_PROFILE) {
     this.profile = typeof profile === 'function' ? profile : () => profile;
     this.current = this.profile().seedMs;
   }
@@ -279,9 +294,7 @@ export function getPlayoutMode(): PlayoutMode {
 }
 
 export function getPlayoutOffsetMs(): number {
-  const m = getPlayoutMode();
-  if (m === 'off') return 0;
-  if (m === 'fixed') return PLAYOUT_OFFSET_MS;
+  if (getPlayoutMode() === 'off') return 0;
   return controller.offsetMs();
 }
 

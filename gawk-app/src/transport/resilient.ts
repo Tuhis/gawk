@@ -63,3 +63,27 @@ export function getViewerDeliveryMode(): ViewerDeliveryMode {
 export function setViewerDeliveryModeFlag(next: ViewerDeliveryMode): void {
   mode = next;
 }
+
+// R29 FP6 (docs/34 §6): how many UNRECOVERED delta frames one GOP may skip
+// before the viewer freezes to the next keyframe.
+//
+// Parity reduces how often a frame is unrecoverable; this bounds what one
+// costs. A budget rather than a consecutive-run tolerance, because a budget is
+// what the viewer can actually count, degrades predictably as loss rises, and
+// caps artifact exposure per GOP at a number the operator chose.
+//
+// 0 reproduces pre-R29 freeze-on-gap byte for byte, which is what makes the
+// behaviour revertible at runtime.
+//
+// Module state, like the playout mode: the pipeline reads it live per advance,
+// and the worker receives it through the same command channel.
+const DEFAULT_LOSS_ALLOWANCE_FRAMES = 1;
+let lossAllowanceFrames = DEFAULT_LOSS_ALLOWANCE_FRAMES;
+
+export function getLossAllowanceFrames(): number {
+  return lossAllowanceFrames;
+}
+
+export function setLossAllowanceFrames(next: number): void {
+  lossAllowanceFrames = Number.isFinite(next) && next > 0 ? Math.floor(next) : 0;
+}

@@ -244,9 +244,14 @@ jobs:
   # tidy` resolves the module graph without compiling cgo, so this stays
   # header-free and fast.
   # R28 (docs/33): the optional telemetry service. Its own job for the same
-  # reason gawk-broadcast has one — it is a separate module — but unlike that
-  # one it needs no extra headers: DuckDB is a query OPTION, never a runtime
-  # dependency (D11), so this stays a plain cgo-free Go build.
+  # reason gawk-broadcast has one — it is a separate module.
+  #
+  # This job builds it the way a FRESH CLONE does: no build tag, no cgo query
+  # engine (R31 §8 Q1). That configuration is the one a contributor gets, and
+  # the property worth protecting is that it still compiles and still runs its
+  # whole test suite without a C toolchain. The DEPLOYED configuration —
+  # `-tags duckdb`, which the image uses — is covered by the extra step at the
+  # end, because a build tag nobody exercises is a build tag that rots.
   telemetry:
     runs-on: ioio-k8s
     defaults:
@@ -257,13 +262,23 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-telemetry/go.mod
-          # go.mod, not go.sum: this module's ONLY dependency is the locally
-          # `replace`d gawk-server, so it legitimately has no checksum file.
-          cache-dependency-path: gawk-telemetry/go.mod
+          # R31 (UD18/§8 Q1) gave this module its first third-party dependency
+          # and therefore its first go.sum: the DuckDB driver, imported only
+          # behind the `duckdb` build tag. The untagged build below still links
+          # none of it.
+          cache-dependency-path: gawk-telemetry/go.sum
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+      # UD18's console is on by default, and what decides whether it can ANSWER
+      # is this tag. Building and testing it here is what stops the shipped
+      # configuration from being the untested one — the sqlengine tests under
+      # the tag drive a real DuckDB over real partitions.
+      - name: the deployed configuration (-tags duckdb)
+        run: go test -tags duckdb ./internal/sqlengine/...
         env:
           CGO_ENABLED: "1"
 
@@ -283,7 +298,7 @@ jobs:
         working-directory: gawk-telemetry/ui
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -305,7 +320,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-telemetry/go.mod
-          cache-dependency-path: gawk-telemetry/go.mod
+          cache-dependency-path: gawk-telemetry/go.sum
       - name: the built page fetches nothing off-origin
         working-directory: gawk-telemetry
         run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
@@ -317,9 +332,20 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
-          cache-dependency-path: |
-            gawk-server/go.sum
-            gawk-broadcast/go.sum
+          # No module cache here, deliberately. `go mod tidy` resolves the graph
+          # for every platform and build tag, so it downloads all five
+          # duckdb-go-bindings/<platform> modules — ~660MB in GOMODCACHE (537MB
+          # extracted + 126MB of zips) that gawk-telemetry's untagged build
+          # never links. setup-go keys its cache on the go.sum list alone, so
+          # this job shared a key with `e2e` and `e2e-cluster`, and being the
+          # first to finish it was the job that SAVED it. `e2e` then restored
+          # 747MB into the runner's RAM-backed _work and died with ENOSPC
+          # mid-build (run 30496979172); `e2e-cluster` survived only on its
+          # larger work tmpfs. Caching the fattest working set in the repo and
+          # serving it to leaner jobs is the bug. This job is almost entirely
+          # cache-restore time anyway (2m20s of 2m45s, at ~6 MB/s), so it loses
+          # nothing by fetching what it needs directly from the proxy.
+          cache: false
       - name: go mod tidy leaves every module unchanged
         run: |
           for mod in gawk-server gawk-broadcast gawk-telemetry; do
@@ -386,6 +412,7 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+            gawk-telemetry/go.sum
       # See the server job — the relay↔pubsim↔browser leg is QUIC over
       # loopback.
       - name: Ensure UDP buffer limits for quic-go
@@ -499,6 +526,7 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+            gawk-telemetry/go.sum
       # See the server job. net.core sysctls are host-global (not namespaced),
       # so this also covers the relay pods inside the kind node.
       - name: Ensure UDP buffer limits for quic-go
@@ -587,6 +615,19 @@ jobs:
           ID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' e2e/out/pubsim.out | cut -d= -f2)
           if [ -z "$ID" ]; then cat e2e/out/pubsim.err; exit 1; fi
           echo "BROADCAST_ID=$ID" >> "$GITHUB_ENV"
+          # R30 (docs/35 §5.7): a SECOND broadcast on the large-frame fixture,
+          # for the striped browser pass below — the default clip's deltas sit
+          # under one stripe share, so a striped viewer against it would
+          # correctly engage nothing and the cross-pod claim would go untested.
+          ./e2e/bin/gawk-pubsim -url https://127.0.0.1:4433 -insecure -fixture large \
+            -duration 600s > e2e/out/pubsim-large.out 2> e2e/out/pubsim-large.err &
+          for i in $(seq 100); do
+            grep -q GAWK_PUBSIM_ID e2e/out/pubsim-large.out && break
+            sleep 0.2
+          done
+          LARGE_ID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' e2e/out/pubsim-large.out | cut -d= -f2)
+          if [ -z "$LARGE_ID" ]; then cat e2e/out/pubsim-large.err; exit 1; fi
+          echo "LARGE_BROADCAST_ID=$LARGE_ID" >> "$GITHUB_ENV"
           # ~12 sessions so kube-proxy's per-5-tuple UDP conntrack spreads
           # subscribers across both pods (P[all-on-one] ≈ 2⁻¹²). The duration
           # must outlive the npm build + browser run that follow — sessions
@@ -621,6 +662,16 @@ jobs:
           GAWK_E2E_URL: https://127.0.0.1:4433
           GAWK_E2E_CERT_HASH: ${{ env.CERT_HASH }}
           GAWK_E2E_ID: ${{ env.BROADCAST_ID }}
+      - name: Run the striped browser E2E against the cluster (R30 cross-pod legs)
+        run: node run.mjs --external
+        working-directory: e2e
+        env:
+          GAWK_E2E_URL: https://127.0.0.1:4433
+          GAWK_E2E_CERT_HASH: ${{ env.CERT_HASH }}
+          GAWK_E2E_ID: ${{ env.LARGE_BROADCAST_ID }}
+          # Quoted: bare `on` is YAML boolean true, which would reach the
+          # harness as "true" and silently disable expectStripe.
+          GAWK_E2E_STRIPE: "on"
       - name: Assert the origin/edge split from per-pod ops endpoints
         run: |
           # One retry with a fresh spread if conntrack ever lands every
@@ -655,13 +706,32 @@ jobs:
         include:
           - context: gawk-server
             dockerfile: gawk-server/deploy/Dockerfile
+            tag: gawk-server:ci
+            # The relay refuses to start without a certificate, so a bare run
+            # is not a health check — `-dev-cert` gives it a self-signed one
+            # and /healthz on the ops port is the answer.
+            run_args: -dev-cert -addr :4433 -metrics-addr :2112
+            probe_port: 2112
+            probe_path: /healthz
           - context: gawk-app
             dockerfile: gawk-app/deploy/Dockerfile
+            tag: gawk-app:ci
+            probe_port: 8080
+            probe_path: /
           # R28: the build context is the REPO ROOT, not the module dir —
           # gawk-telemetry consumes gawk-server/wire through a local `replace`
           # (docs/33 D12), so the relay module's tree must be present.
           - context: .
             dockerfile: gawk-telemetry/deploy/Dockerfile
+            tag: gawk-telemetry:ci
+            run_args: >-
+              -telemetry-key 0000000000000000000000000000000000000000000000000000000000000000
+              -data-dir /tmp/d -log-level warn
+            probe_port: 8080
+            probe_path: /healthz
+            # R31: this is the ONLY cgo image, and the one whose failure mode
+            # this whole step exists for (see below).
+            read_port: 8081
     steps:
       - uses: actions/checkout@v7
       # Host networking on both levels: the ioio-k8s pod network MTU is 1480
@@ -678,6 +748,76 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: false
+          # `load` so the next step can actually RUN what was just built.
+          load: true
+          tags: ${{ matrix.tag }}
           # Distinct scope per image or the two builds evict each other.
           cache-from: type=gha,scope=${{ matrix.context }}
           cache-to: type=gha,mode=max,scope=${{ matrix.context }}
+
+      # **Building an image is not evidence that it runs.**
+      #
+      # R31 shipped a telemetry image that built green in CI three times and
+      # then died on its first start in the cluster — twice over, for two
+      # independent reasons neither of which a build can see: a `distroless/base`
+      # runtime with no libstdc++ for the cgo DuckDB binary, and a builder whose
+      # glibc was newer than the runtime's. Both are dynamic-linker failures, so
+      # the compiler is perfectly happy and the layers are perfectly valid.
+      #
+      # So every image now has to start and answer one request.
+      - name: the image starts and serves
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-smoke --network host \
+            ${{ matrix.tag }} ${{ matrix.run_args }}
+          # Poll rather than sleep: a fixed wait is either flaky or slow, and
+          # the failures this guards are immediate anyway.
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null \
+                 "http://127.0.0.1:${{ matrix.probe_port }}${{ matrix.probe_path }}"; then
+              ok=1; break
+            fi
+            # A container that has already exited will never answer, and its
+            # logs are the whole diagnosis — fail loudly instead of waiting out
+            # the timeout.
+            if [ "$(docker inspect -f '{{.State.Status}}' ci-smoke)" != "running" ]; then
+              echo "::error::the container exited before serving a request"
+              docker logs ci-smoke 2>&1 | tail -30
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "${ok:-0}" != "1" ]; then
+            echo "::error::${{ matrix.tag }} never answered ${{ matrix.probe_path }}"
+            docker logs ci-smoke 2>&1 | tail -30
+            exit 1
+          fi
+          echo "${{ matrix.tag }} started and served ${{ matrix.probe_path }}"
+
+      # The cgo half, and the reason the base image matters: a binary can start
+      # and still have an engine that fails to open. `sql: true` is only
+      # reported when the DuckDB driver actually initialised, and the query
+      # proves it can answer — which is what the default-on console promises.
+      - name: the DuckDB engine loaded and answers
+        if: matrix.read_port
+        run: |
+          set -euo pipefail
+          meta=$(curl -fsS "http://127.0.0.1:${{ matrix.read_port }}/v1/meta")
+          echo "$meta"
+          if ! grep -q '"sql":true' <<<"$meta"; then
+            echo "::error::the image reports no SQL engine — it was built without -tags duckdb, or the driver failed to open"
+            docker logs ci-smoke 2>&1 | tail -30
+            exit 1
+          fi
+          out=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+                  -d '{"sql":"SELECT 42 AS answer"}' \
+                  "http://127.0.0.1:${{ matrix.read_port }}/v1/query")
+          echo "$out"
+          grep -q '"rows":\[\[42\]\]' <<<"$out" || {
+            echo "::error::the engine is present but did not answer a trivial query"
+            exit 1
+          }
+
+      - name: clean up the smoke container
+        if: always()
+        run: docker rm -f ci-smoke >/dev/null 2>&1 || true

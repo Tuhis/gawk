@@ -48,6 +48,11 @@ const (
 	// discrepancy whether the comparison is between two funnel stages or
 	// between intent and outcome.
 	targetShortfallRatio = 0.75
+	// docs/34 finding 3: a delta frame is packetized into ~9-10 datagrams plus
+	// two parity symbols, so a browser receive queue shallower than this cannot
+	// hold one frame's burst and sheds its head every time. Firefox 154
+	// defaults to 1, measured.
+	minSafeDatagramQueue = 16
 )
 
 // Playbook returns the full rule set.
@@ -62,6 +67,8 @@ func Playbook() []Rule {
 		decoderChoking(),
 		stallAttribution(),
 		keyframeGapChurn(),
+		parityIneffective(),
+		burstThresholdLoss(),
 		configOrLimits(),
 		resilientUndersupply(),
 		carrierQueueOverflow(),
@@ -96,6 +103,16 @@ func deliveredBelowTarget() Rule {
 			"SOURCE is not producing frames (a static screen does this legitimately, and R4's auto " +
 			"ladder deliberately does not step for it — docs/09). Capture at target with sent below " +
 			"it is a pipeline problem, and encoder-overload / send-path-gap localize it.",
+		Why: "The steady-state miss. Every other rule is self-relative and therefore blind to a " +
+			"stream whose baseline was wrong from the first frame: a broadcaster that asked for " +
+			"60 fps and delivered 30 throughout has a flat baseline, no dip episodes and a " +
+			"perfect funnel. This compares OUTCOME against INTENT, which is only possible because " +
+			"D17 records the target. Capture is read beside it because gawk's capture is " +
+			"damage-driven — a motionless screen legitimately produces far fewer frames than the " +
+			"target, and reading that as a fault would accuse every quiet stream.",
+		Thresholds: []Threshold{
+			{Name: "targetShortfallRatio", Value: targetShortfallRatio, Unit: "ratio", Note: "sent below this share of the configured target"},
+		},
 		Eval: func(f *Facts) *Finding {
 			target, _ := f.Client("targetFps")
 			sent, _ := f.Client("sentFps")
@@ -177,6 +194,15 @@ func intermittentFpsDips() Rule {
 		Action: "Look at keyframe-only-delivery beside this: if that fired, the cause is delta loss " +
 			"eating GOPs. If it did not, compare the dips against the broadcaster's sentFps — a " +
 			"source-side stutter reaches every viewer.",
+		Why: "The collapse a median hides. A session holding 30 fps that drops to the 500 ms GOP " +
+			"cadence for six seconds a minute has a median of 30, and every funnel rule reading " +
+			"that median passes. The dip detector measures episodes instead — distinct collapses " +
+			"below half the session's own baseline — so 'it stutters every now and then' becomes " +
+			"a number. Says THAT it happened; keyframe-only-delivery says why.",
+		Thresholds: []Threshold{
+			{Name: "dipShareBad", Value: dipShareBad, Unit: "ratio", Note: "share of the window spent collapsed that makes it bad rather than degraded"},
+			{Name: "dipCountBad", Value: dipCountBad, Unit: "episodes", Note: "separate collapses that make it bad"},
+		},
 		Eval: func(f *Facts) *Finding {
 			count, _ := f.Client("fpsDipEpisodes")
 			if count == 0 {
@@ -230,6 +256,15 @@ func keyframeOnlyDelivery() Rule {
 			"the keyframe cadence as its framerate",
 		Action: "This is leg B for this viewer at the datagram level. R19 resilient mode (reliable " +
 			"carriers) is the designed answer; a lower rung or bitrate reduces the exposure.",
+		Why: "Playbook row 9's physics, measured INSIDE the dip window rather than across a " +
+			"session that dilutes it. One gap resync per keyframe received means every GOP is " +
+			"being broken by delta loss, so the viewer sees the keyframe cadence as their " +
+			"framerate. Two keyframes is the least that can establish the ratio at all — below " +
+			"that one unlucky GOP would read as a pattern.",
+		Thresholds: []Threshold{
+			{Name: "keyframeFloor", Value: 2, Unit: "keyframes", Note: "the fewest keyframes that can establish the ratio"},
+			{Name: "resyncRatio", Value: 0.5, Unit: "ratio", Note: "resyncs per keyframe above which every GOP is being broken"},
+		},
 		Eval: func(f *Facts) *Finding {
 			resyncs, _ := f.Client("fpsDipResyncs")
 			keyframes, _ := f.Client("fpsDipKeyframes")
@@ -263,6 +298,14 @@ func legBSingleViewer() Rule {
 		},
 		Verdict: "Leg B for this viewer — their downlink or machine",
 		Action:  "Nothing to fix relay-side; check that viewer's network or device.",
+		Why: "One viewer stutters and the others do not. The discriminator is the CONTRAST: this " +
+			"subscriber's drops far above its peers' while the relay's own ingress is clean. " +
+			"Either half alone means something else entirely — clean ingress with uniform drops " +
+			"is relay egress, and dirty ingress is leg A whatever the subscribers look like.",
+		Thresholds: []Threshold{
+			{Name: "outlierDropRatio", Value: outlierDropRatio, Unit: "x peer median", Note: "how far above its peers a subscriber must drop to be an outlier"},
+			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "ingress loss above which this is not a single-viewer problem"},
+		},
 		Eval: func(f *Facts) *Finding {
 			dropped, _ := f.Relay("subscriberDropped")
 			peer, _ := f.Relay("peerMedianDropped")
@@ -300,6 +343,13 @@ func bandwidthCap() Rule {
 		Requires: []string{"relay.bandwidthDroppedDatagrams", "relay.ingressLossRatio"},
 		Verdict:  "Configured bandwidth cap — the relay is shedding by policy, not by failure",
 		Action:   "Raise -max-bandwidth or lower the ladder rung.",
+		Why: "The relay shedding BY POLICY rather than by failure. Bandwidth-attributed egress " +
+			"drops with clean ingress is a configured cap doing exactly what it was told to; " +
+			"reading it as a fault sends an operator hunting a network problem that does not " +
+			"exist.",
+		Thresholds: []Threshold{
+			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "ingress loss above which this is leg A instead"},
+		},
 		Eval: func(f *Facts) *Finding {
 			dropped, _ := f.Relay("bandwidthDroppedDatagrams")
 			ingress, _ := f.Relay("ingressLossRatio")
@@ -325,6 +375,14 @@ func relayEgressSaturation() Rule {
 		Requires: []string{"relay.subscribersDropping", "relay.subscribers", "relay.ingressLossRatio"},
 		Verdict:  "Relay egress / homelab uplink — every subscriber is dropping uniformly",
 		Action:   "Check node network metrics and the uplink; this is not one viewer's problem.",
+		Why: "ALL subscribers dropping uniformly with clean ingress — a shared bottleneck at the " +
+			"relay or on its uplink. 'All of them', not 'several', is the whole point of the row: " +
+			"a set of unlucky viewers is a different problem with a different fix, and the " +
+			"threshold that separates them is the word 'every'.",
+		Thresholds: []Threshold{
+			{Name: "minSubscribers", Value: 2, Unit: "subscribers", Note: "below this there is no 'all of them' to observe"},
+			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "ingress loss above which this is leg A instead"},
+		},
 		Eval: func(f *Facts) *Finding {
 			dropping, _ := f.Relay("subscribersDropping")
 			total, _ := f.Relay("subscribers")
@@ -353,6 +411,13 @@ func legABroadcasterUplink() Rule {
 		Requires: []string{"relay.ingressLossRatio"},
 		Verdict:  "Leg A — the broadcaster's uplink is losing frames before the relay sees them",
 		Action:   "Drop a ladder rung or the bitrate on the broadcaster.",
+		Why: "The relay is losing frames BEFORE it ever sees a complete one — the broadcaster's " +
+			"uplink, not anything downstream. R9 M3's ingress loss is already windowed and " +
+			"smoothed, so a small nonzero value here is real rather than noise.",
+		Thresholds: []Threshold{
+			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "above this, ingress loss is real rather than noise"},
+			{Name: "ingressLossBad", Value: ingressLossBad, Unit: "ratio", Note: "above this it is broken rather than degraded"},
+		},
 		Eval: func(f *Facts) *Finding {
 			loss, _ := f.Relay("ingressLossRatio")
 			if loss < ingressLossWarn {
@@ -381,6 +446,13 @@ func encoderOverload() Rule {
 		Verdict:  "Encoder overload — frames arrive faster than they encode",
 		Action: "R4's auto ladder territory. On hardware encode paths watch the funnel gap: " +
 			"encodeQueueSize under-fires there (docs/09 finding).",
+		Why: "Frames arrive from capture faster than the encoder can consume them. The funnel gap " +
+			"is the signal, not the queue depth: docs/09 found encodeQueueSize under-fires on " +
+			"hardware encode paths, so a rule requiring it would be silent exactly where hardware " +
+			"encode is the happy path.",
+		Thresholds: []Threshold{
+			{Name: "funnelGapRatio", Value: funnelGapRatio, Unit: "ratio", Note: "encoded below this share of captured is a bottleneck rather than variance"},
+		},
 		Eval: func(f *Facts) *Finding {
 			capture, _ := f.Client("captureFps")
 			encode, _ := f.Client("encoderFps")
@@ -409,6 +481,13 @@ func sendPathGap() Rule {
 		Requires: []string{"client.encoderFps", "client.sentFps"},
 		Verdict:  "Send path — frames encode but do not leave the machine",
 		Action:   "Compare against the relay's framesRelayed rate to split this from leg A.",
+		Why: "Frames encode but do not leave the machine. Splitting this from leg A needs the " +
+			"relay's own relayed rate — the client alone cannot tell 'I did not send' from 'the " +
+			"network ate it', which is why the relay number lifts the confidence when it is " +
+			"there.",
+		Thresholds: []Threshold{
+			{Name: "funnelGapRatio", Value: funnelGapRatio, Unit: "ratio", Note: "sent below this share of encoded is a bottleneck rather than variance"},
+		},
 		Eval: func(f *Facts) *Finding {
 			encode, _ := f.Client("encoderFps")
 			sent, _ := f.Client("sentFps")
@@ -439,6 +518,13 @@ func decoderChoking() Rule {
 		Requires: []string{"client.receivedFps", "client.decoderFps"},
 		Verdict:  "Decoder choking — likely a software-decode fallback",
 		Action:   "Lower the rung or the framerate; check isHardwareAccelerated.",
+		Why: "Frames arrive and do not get decoded — typically a software-decode fallback. Both " +
+			"sides of the ratio are medians, deliberately: an earlier version compared a median " +
+			"against a p05 and fired on a clean 30 fps loopback stream, which is how a " +
+			"confidently wrong verdict gets manufactured.",
+		Thresholds: []Threshold{
+			{Name: "funnelGapRatio", Value: funnelGapRatio, Unit: "ratio", Note: "decoded below this share of received is a bottleneck rather than variance"},
+		},
 		Eval: func(f *Facts) *Finding {
 			received, _ := f.Client("receivedFps")
 			decoded, _ := f.Client("decoderFps")
@@ -472,6 +558,14 @@ func stallAttribution() Rule {
 		Requires: []string{"client.timeSinceLastFrameMs"},
 		Verdict:  "Playback stalled",
 		Action:   "Check publisherActive: upstream stopped vs. this viewer's leg going dark.",
+		Why: "Media stopped. Attribution is the whole value: 'the broadcaster stepped away' and " +
+			"'this viewer's leg went dark' are indistinguishable from the client alone, and the " +
+			"relay's publisher state is what separates them. A live inbound keepalive while " +
+			"frames are dead is a third thing again — the stream wedge, not an outage.",
+		Thresholds: []Threshold{
+			{Name: "stallWarnMs", Value: stallWarnMs, Unit: "ms", Note: "two GOPs at the 500 ms cadence — a freeze a viewer feels"},
+			{Name: "stallBadMs", Value: stallBadMs, Unit: "ms", Note: "above this it is broken rather than degraded"},
+		},
 		Eval: func(f *Facts) *Finding {
 			gap, _ := f.Client("timeSinceLastFrameMs")
 			if gap < stallWarnMs {
@@ -522,6 +616,13 @@ func keyframeGapChurn() Rule {
 		Verdict:  "Delta loss on leg B is eating GOPs",
 		Action: "Keyframe cadence + reliable streams bound recovery; if lastKeyframeAgeMs is far " +
 			"above the 500 ms GOP, something is wrong at the relay instead.",
+		Why: "Delta loss on leg B eating whole GOPs, measured across the session rather than " +
+			"inside a dip. One resync per keyframe is the signature; fewer is ordinary loss. Five " +
+			"keyframes is the floor for the ratio to mean anything.",
+		Thresholds: []Threshold{
+			{Name: "keyframeFloor", Value: 5, Unit: "keyframes", Note: "the fewest keyframes that make the ratio meaningful"},
+			{Name: "resyncRatio", Value: 0.5, Unit: "ratio", Note: "resyncs per keyframe above which every GOP is being broken"},
+		},
 		Eval: func(f *Facts) *Finding {
 			resyncs, _ := f.Client("reorderGapResyncs")
 			keyframes, _ := f.Client("keyframeStreamsReceived")
@@ -544,6 +645,197 @@ func keyframeGapChurn() Rule {
 	}
 }
 
+// R29 (docs/34 §7.3): parity is being served and the viewer is STILL losing
+// frames.
+//
+// The whole value of this rule is in its action text, because the two causes
+// call for opposite responses:
+//
+//   - loss above what k covers → raise the fleet parity level;
+//   - BURSTY loss → raising k is useless. A burst inside one frame consumes
+//     several of its chunks at once, which is precisely the failure mode a
+//     per-frame code cannot cover at any k (docs/34 §9 kill criterion 1 puts
+//     the burst model at 37 % of GOPs still damaged even at k=4). The answer
+//     there is Resilient mode, whose QUIC retransmission does not care how
+//     the loss is distributed.
+//
+// The discriminator is how much parity RECOVERED relative to how much
+// arrived. An under-provisioned code still repairs plenty and simply cannot
+// keep up; a per-frame code facing bursts repairs almost nothing, because the
+// erasures cluster into the frames whose symbols they also took out.
+func parityIneffective() Rule {
+	return Rule{
+		ID:       "parity-ineffective",
+		Scope:    "viewer",
+		Requires: []string{"client.parityChunksReceived", "client.framesDroppedIncomplete"},
+		Verdict:  "Forward parity is being served and frames are still being lost",
+		Action: "Compare framesRecoveredByParity against parityChunksReceived in the evidence: a " +
+			"code that is merely under-provisioned still recovers plenty, and raising the fleet " +
+			"parity level helps. One recovering almost nothing is facing BURSTY loss, which no " +
+			"per-frame code covers at any level — route that viewer to Resilient mode instead. " +
+			"If burst-threshold-loss fired for the same session, read that first: R30 striping is " +
+			"the designed answer to the per-connection threshold shape.",
+		Why: "R29's forward parity is being served and frames are STILL being lost. The " +
+			"discriminator is how much parity recovered relative to how much arrived: an " +
+			"under-provisioned code still repairs plenty and simply cannot keep up, so raising " +
+			"the fleet level helps; a per-frame code facing BURSTY loss repairs almost nothing, " +
+			"because the erasures cluster into the very frames whose symbols they also took out — " +
+			"and no k fixes that.",
+		Thresholds: []Threshold{
+			{Name: "symbolFloor", Value: 50, Unit: "chunks", Note: "parity has to actually be in play"},
+			{Name: "incompleteFloor", Value: 10, Unit: "frames", Note: "enough loss for the ratio to mean anything"},
+			{Name: "recoveryRatio", Value: 0.25, Unit: "ratio", Note: "losses below this share of recoveries are the structural residue every k has"},
+			{Name: "minSafeDatagramQueue", Value: minSafeDatagramQueue, Unit: "datagrams", Note: "a receive queue shallower than one frame's burst sheds its head every time (docs/34 finding 3)"},
+		},
+		Eval: func(f *Facts) *Finding {
+			symbols, _ := f.Client("parityChunksReceived")
+			incomplete, _ := f.Client("framesDroppedIncomplete")
+			// Parity has to actually be in play, and there has to be enough
+			// traffic for the ratio below to mean anything.
+			if symbols < 50 || incomplete < 10 {
+				return nil
+			}
+			recovered, _ := f.Client("framesRecoveredByParity")
+			// Still losing a material share of what parity was asked to
+			// protect. Below this the code is working and the residue is the
+			// structural one every k has (docs/34 §11).
+			if incomplete < recovered*0.25 {
+				return nil
+			}
+			ev := []Evidence{
+				{Signal: "parityChunksReceived", Value: symbols, From: FromClient},
+				{Signal: "framesRecoveredByParity", Value: recovered, From: FromClient,
+					Comparison: "frames parity actually repaired"},
+				{Signal: "framesDroppedIncomplete", Value: incomplete, From: FromClient,
+					Comparison: "frames lost despite parity"},
+			}
+			// R29 finding 3 (docs/34): a THIRD cause, checked first because it
+			// mimics the under-provisioned signature exactly and calls for the
+			// opposite response. A shallow browser receive queue drops from
+			// the HEAD of each frame's burst, so the parity symbols — written
+			// last — survive while the data chunks ahead of them die in runs.
+			// Recovery then looks respectable and "raise the fleet level"
+			// spends uplink on every viewer to fix a defect in one client.
+			//
+			// Gated on the browser's OWN reported depth, so this is a fact
+			// rather than an inference from the ratio it shares with the
+			// under-provisioned case.
+			depth, haveDepth := f.Client("datagramBufferDefault")
+			governs, _ := f.Client("datagramBufferGovernsDrops")
+			if haveDepth && depth < minSafeDatagramQueue {
+				ev = append(ev,
+					Evidence{Signal: "datagramBufferDefault", Value: depth, From: FromClient,
+						Comparison: "datagrams the browser buffers, against a frame burst of ~10"},
+					Evidence{Signal: "datagramBufferGovernsDrops", Value: governs, From: FromClient,
+						Comparison: "whether this browser exposes the attribute that moves the drop threshold"})
+				return &Finding{
+					ID:         "parity-ineffective",
+					Severity:   SeverityWarn,
+					Confidence: 0.7,
+					Verdict: "This browser's datagram receive queue is shallower than one frame — " +
+						"it is dropping the head of each burst, which parity cannot repair",
+					Evidence: ev,
+					Action: "Not a parity level problem: the symbols arrive intact (they are sent last) " +
+						"while the chunks ahead of them die in runs, so raising the fleet level buys " +
+						"almost nothing. Route this viewer to Resilient or Deep-buffer mode — those " +
+						"carry video on reliable streams and never touch the datagram queue.",
+				}
+			}
+			// The verdict splits on the discriminator, so the operator reads
+			// the cause rather than deriving it.
+			verdict := "Forward parity is under-provisioned — loss exceeds what this level repairs"
+			if recovered < incomplete*0.5 {
+				verdict = "Forward parity is recovering almost nothing — the loss is bursty, and no per-frame code covers that"
+				ev = append(ev, Evidence{
+					Signal: "framesRecoveredByParity", Value: recovered, From: FromDerived,
+					Comparison: "far below the frames lost — the signature of clustered rather than independent loss",
+				})
+			}
+			return &Finding{Severity: SeverityWarn, Verdict: verdict, Confidence: 0.6, Evidence: ev}
+		},
+	}
+}
+
+// R30 (docs/35 §7): the finding-4 signature — chunks of LARGE frames dying
+// while small frames stay clean. That shape is a per-connection burst
+// buffer overflowing (docs/34 finding 4: a threshold at ~8 packets,
+// head-of-burst, parity spared), not a lossy network: uniform loss takes
+// small frames too and never matches. The two action branches depend on
+// whether striping is already active, because they call for opposite
+// responses — an idle stripe should engage (check the capability, the
+// subscriber caps, the viewer's mode), while an ACTIVE stripe that still
+// shows the signature means the per-connection composition does not hold on
+// that path and the answer is Resilient mode, never more legs (docs/35 §10
+// kill criterion 1's field echo).
+func burstThresholdLoss() Rule {
+	return Rule{
+		ID:       "burst-threshold-loss",
+		Scope:    "viewer",
+		Requires: []string{"client.stripeLargeLossPct", "client.stripeLargeChunks"},
+		Verdict:  "Large frames are losing chunks while small frames arrive clean — the burst-threshold shape",
+		Action: "This is a per-connection receive-buffer overflow, not a lossy network. If striping is " +
+			"not active, find out why (relay capability, subscriber caps, the viewer's Striping menu " +
+			"setting); if it IS active and the loss persists, the split is not buying headroom on this " +
+			"path — route the viewer to Resilient mode.",
+		Why: "R30's shape: large frames losing chunks while small frames arrive clean. That is a " +
+			"per-connection receive-buffer overflow, not a lossy network — a lossy network does " +
+			"not distinguish frames by size. An INACTIVE stripe with this signature means " +
+			"striping should be engaging and is not; an ACTIVE stripe that still shows it means " +
+			"the split is not buying headroom on that path and the answer is Resilient mode, " +
+			"never more legs.",
+		Thresholds: []Threshold{
+			{Name: "largeChunkFloor", Value: 500, Unit: "chunks", Note: "enough large-frame traffic for the percentages to mean anything"},
+			{Name: "largeLossPct", Value: 1.0, Unit: "%", Note: "large-frame chunk loss above which the shape is real"},
+			{Name: "smallLossPct", Value: 0.1, Unit: "%", Note: "small-frame loss must be below this, or the loss is uniform and this rule has nothing true to say"},
+		},
+		Eval: func(f *Facts) *Finding {
+			largePct, haveLarge := f.Client("stripeLargeLossPct")
+			largeChunks, _ := f.Client("stripeLargeChunks")
+			if !haveLarge || largeChunks < 500 || largePct < 1.0 {
+				return nil
+			}
+			smallPct, haveSmall := f.Client("stripeSmallLossPct")
+			if !haveSmall || smallPct > 0.1 {
+				// Shape unproven (no small-frame evidence) or uniform loss —
+				// either way this rule has nothing true to say; the parity
+				// and delivery rules own those cases.
+				return nil
+			}
+			active, _ := f.Client("stripeActive")
+			ev := []Evidence{
+				{Signal: "stripeLargeLossPct", Value: largePct, From: FromClient,
+					Comparison: "chunk loss on frames past the ~8-datagram threshold"},
+				{Signal: "stripeSmallLossPct", Value: smallPct, From: FromClient,
+					Comparison: "loss on frames under it — clean is the threshold signature"},
+				{Signal: "stripeLargeChunks", Value: largeChunks, From: FromClient},
+				{Signal: "stripeActive", Value: active, From: FromClient,
+					Comparison: "stripe legs carrying deltas while this was measured"},
+			}
+			if active > 0 {
+				return &Finding{
+					Severity:   SeverityWarn,
+					Confidence: 0.6,
+					Verdict: "Striping is active and the burst-threshold loss persists — the " +
+						"per-connection split is not buying headroom on this path",
+					Evidence: ev,
+					Action: "More legs will not help (docs/35 §10 criterion 1): route this viewer to " +
+						"Resilient mode, whose reliable carriers retransmit regardless of burst shape.",
+				}
+			}
+			return &Finding{
+				Severity:   SeverityWarn,
+				Confidence: 0.6,
+				Verdict: "The path shows per-connection burst-threshold loss and striping is not " +
+					"engaged",
+				Evidence: ev,
+				Action: "Striping should be engaging here. Check, in order: the relay advertises " +
+					"CAP_STRIPED_DELIVERY (striped-delivery flag on), the subscriber caps have room " +
+					"for legs, and the viewer's Striping menu setting is not 'off'.",
+			}
+		},
+	}
+}
+
 // Row 10: nothing plays for anyone → config/limits, not media.
 func configOrLimits() Rule {
 	return Rule{
@@ -552,6 +844,9 @@ func configOrLimits() Rule {
 		Requires: []string{"relay.publisherActive", "relay.framesRelayedPerSec"},
 		Verdict:  "Config or limits, not media — a publisher is attached but nothing is being relayed",
 		Action:   "Check connection outcomes: 401 (secret), 404 (bad ID), 429 (limits), origin_rejected (CORS).",
+		Why: "A publisher is attached and nothing is being relayed. Nothing plays for anyone, and " +
+			"no media signal explains it — which is what makes it a configuration or limits " +
+			"problem rather than a delivery one.",
 		Eval: func(f *Facts) *Finding {
 			active, _ := f.Relay("publisherActive")
 			rate, _ := f.Relay("framesRelayedPerSec")
@@ -578,6 +873,14 @@ func resilientUndersupply() Rule {
 		Verdict:  "Sustained undersupply, not loss — the link cannot carry the stream bitrate",
 		Action: "Reliable delivery cannot create bandwidth (docs/24). Lower the rung or bitrate. " +
 			"If the mode reads 'reliable requested / datagrams served', the relay predates R19 X2.",
+		Why: "An R19 resilient viewer stuttering anyway. The signature is the playout buffer " +
+			"PINNED at its clamp while cadence stays bad: the mode has spent everything it has. " +
+			"Reliable delivery cannot create bandwidth (docs/24), so this is a bitrate problem " +
+			"wearing a delivery problem's clothes.",
+		Thresholds: []Threshold{
+			{Name: "resilientClampMs", Value: resilientClampMs, Unit: "ms", Note: "the resilient mode's playout clamp"},
+			{Name: "playoutClampSlackMs", Value: playoutClampSlackMs, Unit: "ms", Note: "how close to the clamp counts as pinned"},
+		},
 		Eval: func(f *Facts) *Finding {
 			mode, _ := f.Text("deliveryMode")
 			if mode != "reliable" && mode != "dvr" {
@@ -611,6 +914,11 @@ func carrierQueueOverflow() Rule {
 		Verdict:  "The carrier drain cannot keep up for this viewer — deltas are dropped BEFORE reaching the reliable stream",
 		Action: "Distinct from carrierRecordsDropped (the carrier itself stalled) and from plain " +
 			"queue_full (a normal slow viewer). The viewer sees holes in a stream it trusts as in-order.",
+		Why: "docs/24 finding 11: the carrier drain cannot keep up, so deltas are dropped BEFORE " +
+			"they reach the reliable stream. Distinct from carrierRecordsDropped (the carrier " +
+			"itself stalled) and from plain queue_full (an ordinary slow viewer) — this viewer " +
+			"sees holes in a stream it is entitled to trust as in-order, which is the worst of " +
+			"the three.",
 		Eval: func(f *Facts) *Finding {
 			overflow, _ := f.Relay("carrierQueueOverflow")
 			if overflow == 0 {
@@ -634,6 +942,9 @@ func viewerCountGap() Rule {
 		Requires: []string{"relay.viewersGlobal", "relay.subscribersFleetTotal"},
 		Verdict:  "Edge report / aggregation gap — the origin's global count is below the fleet's actual subscribers",
 		Action:   "Check the origin's edgeSessions against the edges' subscribers, and edge logs for re-attach churn.",
+		Why: "R18's count, disagreeing with itself across the fleet: the origin's global figure is " +
+			"below what the edges actually hold. An aggregation or edge-report gap, and at " +
+			"replicas 1 it cannot fire at all.",
 		Eval: func(f *Facts) *Finding {
 			global, _ := f.Relay("viewersGlobal")
 			fleet, _ := f.Relay("subscribersFleetTotal")
@@ -660,6 +971,9 @@ func dvrRingOutlived() Rule {
 		Verdict:  "Stalls are outliving the ring — the cursor fell off the tail",
 		Action: "Raise -dvr-window, or accept it: covering a stall S with buffer B needs B/(B-S)x " +
 			"burst bandwidth, so the buffer must strictly EXCEED the stall.",
+		Why: "An R21 DVR viewer freezing despite ring-backed delivery: the cursor fell off the " +
+			"tail. The playbook's own caveat is encoded here — LAG alone is the feature working " +
+			"exactly as designed, and resyncs are the mode's only real frame loss.",
 		Eval: func(f *Facts) *Finding {
 			resyncs, _ := f.Relay("dvrResyncs")
 			if resyncs == 0 {
@@ -690,6 +1004,14 @@ func audioOverflowLatch() Rule {
 		Verdict:  "Audio overflow latch — the buffer is shedding real audio and replacing it with silence",
 		Action: "docs/20 finding 8: overflow drops that cannot lower the depth, concealed by silence " +
 			"that re-adds it. Check gapsConcealed against overflowDrops and the context sample rate.",
+		Why: "docs/20 finding 8, institutionalized. Overflow drops that cannot lower the buffer " +
+			"depth, concealed by silence that re-adds it — the buffer sheds real audio and " +
+			"replaces it with nothing. It took a human noticing two counters together; the ratio " +
+			"of concealment to overflow is what made it legible, so both ride the evidence.",
+		Thresholds: []Threshold{
+			{Name: "audioOverflowLatchRatio", Value: audioOverflowLatchRatio, Unit: "ratio", Note: "overflow drops as a share of arrivals that indicates the latch"},
+			{Name: "packetFloor", Value: 50, Unit: "packets", Note: "below this there is not enough audio to judge"},
+		},
 		Eval: func(f *Facts) *Finding {
 			drops, _ := f.Client("audioOverflowDrops")
 			received, _ := f.Client("audioPacketsReceived")

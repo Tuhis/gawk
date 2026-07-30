@@ -19,6 +19,24 @@ function fullStats(): ViewerStats {
     framesCompleted: 500,
     framesDroppedIncomplete: 2,
     framesDroppedLate: 3,
+    parityChunksReceived: 120,
+    framesRecoveredByParity: 14,
+    parityRecoveryFailures: 1,
+    parityInsufficient: 3,
+    staleChunks: 0,
+    stripeMode: 'auto',
+    stripeCapable: true,
+    stripeActive: 0,
+    stripeNeeded: 1,
+    stripeLargeLossPct: null,
+    stripeSmallLossPct: null,
+    stripeLargeChunks: 0,
+    stripeSmallChunks: 0,
+    stripeSplitAtChunks: 8,
+    stripeShapeDetected: false,
+    stripeLegDials: 0,
+    stripeLegDeaths: 0,
+    framesSkippedWithinAllowance: 3,
     decodedFrames: 495,
     decoderQueueDepth: 1,
     decoderFps: 29.7,
@@ -30,6 +48,7 @@ function fullStats(): ViewerStats {
     frameHeight: 1080,
     keyframeStreamsReceived: 12,
     reorderGapResyncs: 1,
+    deltaGapGraceMs: 154,
     reorderKeyframeWaitDrops: 0,
     reorderBuffered: 2,
     receivedFps: 30.2,
@@ -58,6 +77,7 @@ function fullStats(): ViewerStats {
     carrierStreams: null,
     carrierRecords: null,
     carrierStreamsAborted: null,
+    datagramBuffer: null,
     connection: {
       rttMs: 24.5,
       rttVarMs: 3.1,
@@ -109,6 +129,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Video bitrate (recv)').nextSibling?.textContent).toBe('4.2 Mbps');
     expect(screen.getByText('Keyframe age').nextSibling?.textContent).toBe('210 ms');
     expect(screen.getByText('Live-edge drift').nextSibling?.textContent).toBe('42 ms');
+    expect(screen.getByText('Gap grace').nextSibling?.textContent).toBe('154 ms');
     expect(screen.getByText('Latency (capture→render)').nextSibling?.textContent).toBe('384 ms');
     expect(screen.getByText('RTT (time-sync)').nextSibling?.textContent).toBe('8.4 ms');
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
@@ -122,9 +143,11 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('3');
 
     cleanup();
+    // R32 removed the 'fixed' mode, so live-edge is what anything that is not
+    // adaptive reads as.
     render(
       <StatsOverlay
-        stats={{ ...fullStats(), playoutMode: 'fixed', playoutOffsetMs: 150 }}
+        stats={{ ...fullStats(), playoutMode: 'off', playoutOffsetMs: 0 }}
         codec="vp8"
         bitrateBps={null}
         onClose={() => {}}
@@ -132,7 +155,7 @@ describe('StatsOverlay', () => {
         copied={false}
       />,
     );
-    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('fixed (+150 ms)');
+    expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
 
     cleanup();
     // R12 T2: adaptive mode shows the live offset and the pacing placement.

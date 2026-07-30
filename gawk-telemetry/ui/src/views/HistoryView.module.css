@@ -1,0 +1,84 @@
+/*
+  A virtualized list, so the row is a grid rather than a table row — a <tr>
+  cannot be absolutely positioned. The column widths live in one place and are
+  applied to both the header and the rows, which is what keeps them aligned
+  without a table's layout algorithm.
+*/
+.headRow,
+.row {
+  display: grid;
+  grid-template-columns:
+    24px 15ch 7ch 8ch 14ch minmax(10ch, 1fr) 6ch minmax(12ch, 2fr);
+  gap: var(--sp-2);
+  align-items: center;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  height: 26px;
+}
+
+.headRow {
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--line);
+  height: 22px;
+}
+
+.row {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:hover {
+  background: var(--panel-hover);
+}
+
+.cSev,
+.cWhen,
+.cDur,
+.cRole,
+.cId,
+.cClient,
+.cNum,
+.cVerdict {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cNum,
+.cDur {
+  text-align: right;
+}
+
+.cVerdict,
+.cClient {
+  color: var(--text-dim);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+/*
+  The retention boundary, as one character on the row. It has to be visible
+  BEFORE the click, or an operator opens a session expecting charts and finds
+  a rollup — which reads as a bug rather than as a retention policy.
+*/
+.tag {
+  display: inline-block;
+  margin-left: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  padding: 0 2px;
+  font-size: 9px;
+  color: var(--text-dimmer);
+}
+
+.tagLive {
+  margin-left: 4px;
+  color: var(--ok);
+}

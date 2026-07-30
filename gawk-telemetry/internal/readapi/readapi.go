@@ -30,6 +30,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rules"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sessions"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/sqlengine"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/store"
 )
 
@@ -56,6 +57,19 @@ type API struct {
 	// statsKey keys the code -> broadcast-key lookup (see resolve.go). Empty
 	// disables it: without the fleet key the digest cannot be computed at all.
 	statsKey []byte
+	// retentionDays is the RAW window, mirrored here purely so a read answer can
+	// state its own boundary (UD10). The prune loop owns the actual deletion.
+	retentionDays int
+	// scrapeInterval is the relay's own cadence. TH4 draws each lane at the
+	// resolution its source can support, and a lane cannot state its cadence
+	// without being told it.
+	scrapeInterval time.Duration
+	// annotations is TH8's write path. Nil where no store is wired, which makes
+	// the endpoints report themselves unavailable rather than 500.
+	annotations AnnotationStore
+	// sql is TH10's engine. Nil in a build without one (§8 Q1's resolution), and
+	// the console says so plainly rather than rendering a broken editor.
+	sql SQLEngine
 }
 
 // Options configure the API.
@@ -72,6 +86,18 @@ type Options struct {
 	// needed to let an operator find a stream by the code they already hold,
 	// and holding it widens what a compromise of this pod yields (resolve.go).
 	StatsKey []byte
+	// RetentionDays is the configured RAW window. Optional: zero means "do not
+	// claim a boundary", which reads as an unknown rather than as "nothing was
+	// pruned" (UD10).
+	RetentionDays int
+	// ScrapeInterval is the relay scrape cadence, so TH4's relay lane can state
+	// the resolution it is entitled to be read at.
+	ScrapeInterval time.Duration
+	// Annotations is TH8's store. Optional; without one the write path reports
+	// itself unavailable.
+	Annotations AnnotationStore
+	// SQL is TH10's engine. Optional; without one the console says so (§8 Q1).
+	SQL SQLEngine
 }
 
 // New builds the read API.
@@ -85,8 +111,22 @@ func New(opts Options) (*API, error) {
 	return &API{
 		store: opts.Store, live: opts.Live, now: opts.Now,
 		dashboard: opts.DashboardBase, rs: rules.Playbook(),
-		statsKey: opts.StatsKey,
+		statsKey:      opts.StatsKey,
+		retentionDays: opts.RetentionDays,
+		// Defaulted rather than required: an API built without it (every
+		// existing test) should still be able to LABEL the relay lane, and the
+		// scraper's own default is the honest guess.
+		scrapeInterval: orDuration(opts.ScrapeInterval, 5*time.Second),
+		annotations:    opts.Annotations,
+		sql:            opts.SQL,
 	}, nil
+}
+
+func orDuration(d, def time.Duration) time.Duration {
+	if d <= 0 {
+		return def
+	}
+	return d
 }
 
 // --- list_broadcasts ------------------------------------------------------
@@ -235,6 +275,54 @@ type Timeline struct {
 	TotalSample int                  `json:"totalSamples"`
 	Config      map[string]string    `json:"config,omitempty"`
 	Note        string               `json:"note,omitempty"`
+
+	// --- R31 (docs/36 TH2), all opt-in ------------------------------------
+	//
+	// Every field below is `omitempty` AND is only ever populated when the
+	// caller asked for detail. That is UD1 as a mechanism rather than an
+	// intention: `get_session`'s default response — the one the 32 KB ceiling
+	// is asserted against, and the one a model pays for — is byte-identical to
+	// what it was before R31 existed.
+
+	// BroadcastKey and StartedAtMs turn a bare timeline into something
+	// placeable. `tMs` on every point is RELATIVE to session start (the client
+	// measures it with performance.now()), so absolute time — UD5's primary
+	// axis for anything historical — is startedAtMs + tMs and cannot be
+	// recovered without this.
+	BroadcastKey string `json:"broadcastKey,omitempty"`
+	StartedAtMs  int64  `json:"startedAtMs,omitempty"`
+	EndedAtMs    int64  `json:"endedAtMs,omitempty"`
+	// ClockOffsetMs is the median of (service receive clock − client clock)
+	// across this session's stored lines. A client with a skewed clock is
+	// perfectly normal, and TH4 puts several of them on ONE axis — so the
+	// offset is measured and published rather than assumed to be zero. Applying
+	// it is the caller's call; publishing it is what makes the choice informed.
+	ClockOffsetMs float64 `json:"clockOffsetMs,omitempty"`
+	// Step is the downsampling bucket size actually used. 1 means full
+	// resolution.
+	Step int `json:"step,omitempty"`
+	// FromMs/ToMs echo the requested window, in ABSOLUTE ms. Absent means the
+	// whole session.
+	FromMs int64 `json:"fromMs,omitempty"`
+	ToMs   int64 `json:"toMs,omitempty"`
+	// Available is every field name this session actually reported, including
+	// ones no build of this service has a type for. D15 keeps unknown fields
+	// verbatim on disk; this is what lets the explorer offer them instead of
+	// silently pretending a session only carries what the catalogue knows.
+	Available []string `json:"available,omitempty"`
+	// Truncated is set when the window held more samples than the response
+	// bound allows, so a chart can say it is not showing everything rather
+	// than quietly drawing a shorter session.
+	Truncated bool `json:"truncated,omitempty"`
+	// Live is whether the projection still holds this session open.
+	//
+	// It cannot be inferred from EndedAtMs, and the difference matters: when a
+	// session supplies no end of its own, `ParseTimeline` falls back to the last
+	// `receivedAtMs`, so EVERY session — open or finished — comes back with one.
+	// A detail page testing for its absence would never refresh a live session,
+	// which is precisely TH2's "updates as batches land". The projection is the
+	// only thing that actually knows, so it is what is asked.
+	Live bool `json:"live,omitempty"`
 }
 
 // curatedViewer / curatedBroadcaster are the default field sets. The full
@@ -249,7 +337,17 @@ var curatedBroadcaster = []string{
 }
 
 // GetSession returns a bounded timeline. `fields` and `window` opt into more.
+//
+// Kept at exactly its old signature and behaviour: it is what the MCP surface
+// calls, and UD1's rule is that the machine-facing default does not move
+// because a browser wanted more. Everything R31 added lives on SessionQuery.
 func (a *API) GetSession(sessionID string, fields []string, points int) (*Timeline, error) {
+	return a.GetSessionDetail(sessionID, SessionQuery{Fields: fields, Points: points})
+}
+
+// GetSessionDetail is get_session with TH2's window, full-resolution opt-in and
+// placement envelope. A zero SessionQuery reproduces GetSession byte for byte.
+func (a *API) GetSessionDetail(sessionID string, q SessionQuery) (*Timeline, error) {
 	ref, err := a.store.FindSession(sessionID)
 	if err != nil {
 		return nil, err
@@ -260,6 +358,7 @@ func (a *API) GetSession(sessionID string, fields []string, points int) (*Timeli
 	}
 	in := sessions.ParseTimeline(sessions.Live{Ref: ref}, lines)
 
+	fields, points := q.Fields, q.Points
 	if len(fields) == 0 {
 		fields = curatedViewer
 		if in.Role == "broadcaster" {
@@ -269,11 +368,23 @@ func (a *API) GetSession(sessionID string, fields []string, points int) (*Timeli
 	if points <= 0 {
 		points = DefaultTimelinePoints
 	}
-
-	tl := &Timeline{
-		SessionID: sessionID, Role: in.Role, Fields: fields,
-		TotalSample: len(in.Samples),
+	if q.Full {
+		// Full resolution still declares a bound (UD1): a 4-hour session at the
+		// 2 s cadence is ~7 200 samples, and an unbounded projection is how a
+		// browser request becomes a memory incident on a service that is also
+		// carrying ingest.
+		points = MaxTimelinePoints
 	}
+
+	tl := &Timeline{SessionID: sessionID, Role: in.Role, Fields: fields}
+	// The window is expressed in ABSOLUTE ms because that is the only vocabulary
+	// shared with a relay log, a release timestamp, or another session (UD5).
+	// Samples carry client-relative tMs, so the conversion happens here, once.
+	if q.FromMs > 0 || q.ToMs > 0 {
+		in.Samples = windowSamples(in.Samples, in.StartedAtMs, q.FromMs, q.ToMs)
+		tl.FromMs, tl.ToMs = q.FromMs, q.ToMs
+	}
+	tl.TotalSample = len(in.Samples)
 	// Downsampling is ENVELOPE-PRESERVING, not decimation (D16).
 	//
 	// Taking every Nth sample is the wrong reduction for troubleshooting: it
@@ -316,9 +427,122 @@ func (a *API) GetSession(sessionID string, fields []string, points int) (*Timeli
 			continue
 		}
 		rec.Stats = nil
+		if tl.FromMs > 0 || tl.ToMs > 0 {
+			at := in.StartedAtMs + int64(rec.TMs)
+			if (tl.FromMs > 0 && at < tl.FromMs) || (tl.ToMs > 0 && at > tl.ToMs) {
+				continue
+			}
+		}
 		tl.Events = append(tl.Events, rec)
 	}
+	if q.Detail {
+		tl.Step = step
+		tl.BroadcastKey = in.BroadcastKey
+		tl.StartedAtMs = in.StartedAtMs
+		tl.EndedAtMs = in.EndedAtMs
+		tl.ClockOffsetMs = clockOffset(lines, in.StartedAtMs)
+		tl.Available = observedFields(in.Samples)
+		tl.Live = a.liveSessionIDs()[sessionID]
+		// Full resolution that hit its bound is announced. The alternative — a
+		// chart quietly drawing a downsampled line while its caller believes it
+		// asked for every sample — is exactly UD9's failure in a new place.
+		tl.Truncated = q.Full && step > 1
+		if tl.Truncated {
+			tl.Note = fmt.Sprintf(
+				"full resolution was capped at %d points: showing worst of every %d of %d samples by %s; narrow the window for raw",
+				MaxTimelinePoints, step, tl.TotalSample, primary)
+		}
+	}
 	return tl, nil
+}
+
+// SessionQuery is TH2's opt-in surface over get_session. Its zero value is the
+// old behaviour exactly, which is what makes UD1 checkable rather than
+// asserted.
+type SessionQuery struct {
+	// Fields and Points are get_session's existing knobs.
+	Fields []string
+	Points int
+	// FromMs/ToMs bound the window in ABSOLUTE ms. Zero means unbounded on that
+	// side. This is what lets a live detail page fetch what has arrived since
+	// its last tick instead of re-parsing the whole file every 2 s — GetSession
+	// parses every line of a session file per call, which is fine for a click
+	// and unacceptable on a poll.
+	FromMs, ToMs int64
+	// Full asks for every sample in the window rather than DefaultTimelinePoints
+	// buckets, still bounded by MaxTimelinePoints.
+	Full bool
+	// Detail adds the placement envelope: broadcast key, session span, clock
+	// offset, step and the observed field list. Off for MCP, on for the UI.
+	Detail bool
+}
+
+// MaxTimelinePoints bounds a full-resolution request. A 4-hour session at the
+// 2 s report cadence is ~7 200 samples; this leaves room for a much longer one
+// and still refuses to project an unbounded array into memory on a service
+// that is simultaneously carrying ingest (UD1: a UI-shaped endpoint declares
+// its own bounds rather than borrowing the machine surface's).
+const MaxTimelinePoints = 20000
+
+// windowSamples clips a session's samples to an absolute-time window. Samples
+// carry client-relative tMs, so the session's own start is the origin.
+func windowSamples(samples []rollup.Sample, startedAtMs, fromMs, toMs int64) []rollup.Sample {
+	out := samples[:0:0]
+	for _, s := range samples {
+		at := startedAtMs + int64(s.TMs)
+		if fromMs > 0 && at < fromMs {
+			continue
+		}
+		if toMs > 0 && at > toMs {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// clockOffset is the median of (service receive clock − client clock) over a
+// session's stored lines.
+//
+// The median rather than the mean, and over every line rather than the first:
+// a single retried batch lands with a receive time minutes after its samples
+// were taken, and one such outlier would drag a mean far enough to misplace a
+// whole lane on TH4's shared axis. Zero when nothing can be compared, which is
+// the honest answer and also the one that changes nothing.
+func clockOffset(lines [][]byte, startedAtMs int64) float64 {
+	if startedAtMs <= 0 {
+		return 0
+	}
+	var deltas []float64
+	for _, ln := range lines {
+		var rec sessions.Record
+		if err := json.Unmarshal(ln, &rec); err != nil || rec.ReceivedAtMs <= 0 || rec.Kind != "sample" {
+			continue
+		}
+		deltas = append(deltas, float64(rec.ReceivedAtMs)-(float64(startedAtMs)+rec.TMs))
+	}
+	return median(deltas)
+}
+
+// observedFields lists every field name a session's samples actually carried,
+// including ones this build has no type for.
+//
+// D15 keeps unknown fields verbatim on disk precisely so a client running ahead
+// of the service does not lose telemetry; without this the explorer would be
+// the place that loses it instead, by offering only what the catalogue knows.
+func observedFields(samples []rollup.Sample) []string {
+	seen := map[string]bool{}
+	for _, s := range samples {
+		for k := range s.Stats {
+			seen[k] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // --- diagnose -------------------------------------------------------------
@@ -384,6 +608,23 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		}
 		if hw, ok := schema.Bool(last, "isHardwareAccelerated"); ok {
 			f.SetClient("isHardwareAccelerated", boolF(hw))
+		}
+		// R29 finding 3 (docs/34): the receive-buffer verdict is a nested
+		// object, and schema.Number is a flat lookup — so the field shipped
+		// invisible to every fleet surface (get_session, diagnose, the
+		// dashboard), which is precisely where "did the fix take on this
+		// viewer?" has to be answerable. Flattened here, the same shape
+		// audioBuffer uses.
+		if db := schema.Nested(last, "datagramBuffer"); db != nil {
+			if v, ok := schema.Number(db, "defaultDepth"); ok {
+				f.SetClient("datagramBufferDefault", v)
+			}
+			if v, ok := schema.Number(db, "effective"); ok {
+				f.SetClient("datagramBufferDepth", v)
+			}
+			if v, ok := schema.Bool(db, "governsDrops"); ok {
+				f.SetClient("datagramBufferGovernsDrops", boolF(v))
+			}
 		}
 		if ab := schema.Nested(last, "audioBuffer"); ab != nil {
 			if v, ok := schema.Number(ab, "overflowDrops"); ok {
@@ -934,6 +1175,17 @@ var factClientFields = []string{
 	"reorderGapResyncs", "keyframeStreamsReceived", "playoutOffsetMs",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"audioPacketsReceived",
+	// R29 (docs/34 §7.3): so a stored session's verdict can say whether
+	// parity was helping, not merely that loss happened.
+	"parityChunksReceived", "framesRecoveredByParity", "framesDroppedIncomplete",
+	// R29 finding 3: frames lost holding parity too small for their erasures —
+	// the number that separates "the code worked" from "the code was never
+	// even attempted", which parityRecoveryFailures could not.
+	"parityInsufficient",
+	// R30 (docs/35 §7): the burst-threshold-loss rule's inputs, from the
+	// stored session.
+	"stripeLargeLossPct", "stripeSmallLossPct", "stripeLargeChunks",
+	"stripeActive", "stripeNeeded",
 	// D17: what the broadcast was asked to be, so a shortfall is computable.
 	"targetFps", "targetBitrateBps",
 	// Tab visibility: renderedFps beside it means nothing without it, because
@@ -965,10 +1217,22 @@ func (a *API) Handler() http.Handler {
 		if f := r.URL.Query().Get("fields"); f != "" {
 			fields = splitCSV(f)
 		}
-		out, err := a.GetSession(r.PathValue("id"), fields, intOf(r, "points"))
+		out, err := a.GetSessionDetail(r.PathValue("id"), SessionQuery{
+			Fields: fields, Points: intOf(r, "points"),
+			FromMs: int64Of(r, "from"), ToMs: int64Of(r, "to"),
+			Full: boolOf(r, "full"), Detail: boolOf(r, "detail"),
+		})
 		writeJSON(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/sessions/{id}/diagnose", func(w http.ResponseWriter, r *http.Request) {
+		// `trace=1` is opt-in for the same reason every other R31 addition is:
+		// without it the response is byte-identical to what MCP has always
+		// received (UD1).
+		if boolOf(r, "trace") {
+			out, err := a.DiagnoseTrace(r.PathValue("id"))
+			writeJSON(w, out, err)
+			return
+		}
 		out, err := a.Diagnose(r.PathValue("id"))
 		writeJSON(w, out, err)
 	})
@@ -986,7 +1250,195 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /live", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, a.LiveSnapshot(), nil)
 	})
+	a.mountR31(mux)
 	return mux
+}
+
+// mountR31 adds the UI-shaped surface (docs/36 §5).
+//
+// Kept in its own function, and on its own paths, so the boundary UD1 draws is
+// visible in the code rather than only in a comment: everything above is the
+// machine surface whose defaults are asserted against a 32 KB ceiling;
+// everything here declares its own bounds for a browser.
+func (a *API) mountR31(mux *http.ServeMux) {
+	// TH5 — the field catalogue. Server-owned so the UI never forks the list.
+	mux.HandleFunc("GET /v1/fields", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, schema.Catalogue(), nil)
+	})
+	// TH6 — the rule catalogue. Read-only by decision (UD20): a stored verdict
+	// ran under the thresholds of its day, so an editable threshold would make
+	// history and live disagree.
+	mux.HandleFunc("GET /v1/rules", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, rules.Catalogue(a.rs), nil)
+	})
+	// TH9 — the dip explainer.
+	mux.HandleFunc("GET /v1/sessions/{id}/dips", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.ExplainDips(r.PathValue("id"), sinceOf(r, a.now()))
+		writeJSON(w, out, err)
+	})
+	// TH3 — the history browser.
+	mux.HandleFunc("GET /v1/history/sessions", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.SearchSessions(historyQueryOf(r, a.now()))
+		writeJSON(w, out, err)
+	})
+	mux.HandleFunc("GET /v1/history/broadcasts", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.SearchBroadcasts(historyQueryOf(r, a.now()))
+		writeJSON(w, out, err)
+	})
+	// TH4 — the broadcast timeline and its broadcast-scope verdict.
+	mux.HandleFunc("GET /v1/broadcasts/{key}", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.GetBroadcast(r.PathValue("key"), BroadcastQuery{
+			FromMs: int64Of(r, "from"), ToMs: int64Of(r, "to"), Since: sinceOf(r, a.now()),
+		})
+		writeJSON(w, out, err)
+	})
+	mux.HandleFunc("GET /v1/broadcasts/{key}/diagnose", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.DiagnoseBroadcast(r.PathValue("key"), sinceOf(r, a.now()))
+		writeJSON(w, out, err)
+	})
+	// TH7 — the fleet timeline, trends and cohorts.
+	mux.HandleFunc("GET /v1/fleet/timeline", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.FleetTimelineOf(historyQueryOf(r, a.now()))
+		writeJSON(w, out, err)
+	})
+	mux.HandleFunc("GET /v1/trends", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.Trends(TrendQuery{
+			From: sinceOf(r, a.now()), To: untilOf(r),
+			Metric: r.URL.Query().Get("metric"), Stat: r.URL.Query().Get("stat"),
+			GroupBy: r.URL.Query().Get("groupBy"), Role: r.URL.Query().Get("role"),
+			BucketMs: int64Of(r, "bucket"),
+		})
+		writeJSON(w, out, err)
+	})
+	mux.HandleFunc("GET /v1/cohorts", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		out, err := a.Cohorts(CohortQuery{
+			Metric: q.Get("metric"), Stat: q.Get("stat"), Role: q.Get("role"),
+			GroupBy: q.Get("groupBy"), AValue: q.Get("a"), BValue: q.Get("b"),
+			AFrom: msTime(int64Of(r, "aFrom")), ATo: msTime(int64Of(r, "aTo")),
+			BFrom: msTime(int64Of(r, "bFrom")), BTo: msTime(int64Of(r, "bTo")),
+		})
+		writeJSON(w, out, err)
+	})
+	// TH8 — annotations, the one write path.
+	mux.HandleFunc("GET /v1/annotations", a.handleAnnotationList)
+	mux.HandleFunc("POST /v1/annotations", a.handleAnnotationCreate)
+	mux.HandleFunc("DELETE /v1/annotations/{id}", a.handleAnnotationDelete)
+	// TH10 — the SQL console.
+	mux.HandleFunc("GET /v1/query", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, a.QueryStatus(), nil)
+	})
+	mux.HandleFunc("POST /v1/query", a.handleQuery)
+	// What this deployment can do, so the UI stops guessing.
+	mux.HandleFunc("GET /v1/meta", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, a.Meta(), nil)
+	})
+	// UD22 — SSE, with the poll as fallback.
+	mux.HandleFunc("GET /live/stream", a.handleLiveStream)
+}
+
+// Meta describes this deployment's capabilities and boundaries.
+//
+// The UI asks once, at boot. Without it every optional surface would have to be
+// discovered by requesting it and reading the failure, which is how an ops page
+// ends up showing a broken affordance for a feature nobody enabled.
+type Meta struct {
+	RetentionDays int `json:"retentionDays"`
+	// RawFromMs is the raw-retention boundary as an instant, so the UI does not
+	// have to redo the midnight arithmetic and get it subtly different.
+	RawFromMs      int64  `json:"rawFromMs"`
+	RollupsFromMs  int64  `json:"rollupsFromMs,omitempty"`
+	ScrapeMs       int64  `json:"scrapeIntervalMs"`
+	Annotations    bool   `json:"annotations"`
+	SQL            bool   `json:"sql"`
+	SQLReason      string `json:"sqlReason,omitempty"`
+	Resolve        bool   `json:"resolve"`
+	StreamInterval int64  `json:"streamIntervalMs"`
+	// ServerNowMs lets the page state the timezone AND detect a browser clock
+	// that disagrees with the service's — which would otherwise silently shift
+	// every absolute timestamp on screen (UD5).
+	ServerNowMs int64 `json:"serverNowMs"`
+}
+
+// Meta reports what this deployment offers.
+func (a *API) Meta() Meta {
+	cov, _ := a.coverage(HistoryQuery{})
+	m := Meta{
+		RetentionDays:  a.retentionDays,
+		RawFromMs:      cov.RawFromMs,
+		RollupsFromMs:  cov.RollupsFromMs,
+		ScrapeMs:       a.scrapeInterval.Milliseconds(),
+		Annotations:    a.annotations != nil,
+		SQL:            a.sql != nil,
+		Resolve:        len(a.statsKey) > 0,
+		StreamInterval: StreamInterval.Milliseconds(),
+		ServerNowMs:    a.now().UnixMilli(),
+	}
+	if a.sql == nil {
+		m.SQLReason = sqlengine.ErrNoEngine.Error()
+	}
+	return m
+}
+
+// DiagnoseTrace is diagnose() plus UD20's per-rule account.
+type DiagnoseTrace struct {
+	Report rules.Report  `json:"report"`
+	Trace  []rules.Trace `json:"trace"`
+}
+
+// DiagnoseTrace runs the playbook and reports what every rule read.
+func (a *API) DiagnoseTrace(sessionID string) (*DiagnoseTrace, error) {
+	ref, err := a.store.FindSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	lines, err := a.store.ReadSession(ref)
+	if err != nil {
+		return nil, err
+	}
+	in := sessions.ParseTimeline(sessions.Live{Ref: ref}, lines)
+	row := rollup.Compute(in)
+	relayObs, _ := a.store.ReadRelay(ref.Date)
+
+	f := a.factsFor(row, in, relayObs)
+	rep, trace := rules.EvaluateTrace(f, a.rs)
+	rep.Subject = sessionID
+	if a.dashboard != "" {
+		rep.DashboardURL = a.dashboard + "#/session/" + sessionID
+	}
+	return &DiagnoseTrace{Report: rep, Trace: trace}, nil
+}
+
+// historyQueryOf parses TH3's filter set off a query string.
+func historyQueryOf(r *http.Request, now time.Time) HistoryQuery {
+	q := r.URL.Query()
+	return HistoryQuery{
+		From: sinceOf(r, now), To: untilOf(r),
+		BroadcastKey: q.Get("broadcast"), Role: q.Get("role"), Verdict: q.Get("verdict"),
+		Browser: q.Get("browser"), OS: q.Get("os"), AppVersion: q.Get("appVersion"),
+		DeliveryMode: q.Get("deliveryMode"),
+		HasFindings:  triBoolOf(r, "hasFindings"), Distrusted: triBoolOf(r, "distrusted"),
+		Sort: q.Get("sort"), Asc: boolOf(r, "asc"),
+		Cursor: q.Get("cursor"), Limit: intOf(r, "limit"),
+	}
+}
+
+// untilOf is sinceOf's other end. Zero means "up to now", which every caller
+// treats as unbounded rather than as an empty range.
+func untilOf(r *http.Request) time.Time {
+	if v := r.URL.Query().Get("until"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t
+		}
+	}
+	return msTime(int64Of(r, "to"))
+}
+
+func msTime(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
 }
 
 func writeJSON(w http.ResponseWriter, v any, err error) {
@@ -1021,6 +1473,34 @@ func sinceOf(r *http.Request, now time.Time) time.Time {
 func intOf(r *http.Request, key string) int {
 	n, _ := strconv.Atoi(r.URL.Query().Get(key))
 	return n
+}
+
+// int64Of reads an absolute-millisecond query parameter. Zero means "not
+// given", which every caller treats as unbounded on that side — the same
+// distinction between absent and zero the whole surface rests on.
+func int64Of(r *http.Request, key string) int64 {
+	n, _ := strconv.ParseInt(r.URL.Query().Get(key), 10, 64)
+	return n
+}
+
+func boolOf(r *http.Request, key string) bool {
+	switch r.URL.Query().Get(key) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// triBoolOf is a filter that can be absent. "Do not filter on findings" and
+// "only rows WITHOUT findings" are different queries, and a plain bool cannot
+// express the second (UD10's habit, applied to a query string).
+func triBoolOf(r *http.Request, key string) *bool {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return nil
+	}
+	b := v == "1" || v == "true" || v == "yes"
+	return &b
 }
 
 func splitCSV(s string) []string {

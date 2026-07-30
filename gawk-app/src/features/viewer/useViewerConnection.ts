@@ -13,6 +13,7 @@ import {
 } from '../../transport/viewer-session';
 import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
+import { setStripeMode as setLocalStripeMode, type StripeMode } from '../../transport/stripe';
 import {
   setPlayoutMode as setLocalPlayoutMode,
   setViewerDeliveryMode as setLocalViewerDeliveryMode,
@@ -153,6 +154,15 @@ export function useViewerConnection(
   // ?delivery=reliable; the wider reorder/playout profile is applied to the
   // pipeline's context before the session starts.
   deliveryMode = 'live' as ViewerDeliveryMode,
+  // R29 (docs/34 §5.2): an opt-DOWN from the fleet parity default. Undefined
+  // means "take what the fleet serves". Like deliveryMode it is negotiated at
+  // subscribe time, so a change re-runs the session effect as a deliberate
+  // reconnect.
+  parityLevel?: 0 | 1,
+  // R30 (docs/35 §5.5): the stripe mode. Deliberately NOT in the session
+  // effect's deps — engagement is in-band (leg dials + the 0x10 level
+  // protocol), so this is a live flip like interpolation, never a reconnect.
+  stripeMode: StripeMode = 'auto',
 ): ViewerConnectionState {
   // The relay address is a settings value exactly like the delivery mode above:
   // read through a SUBSCRIPTION, not getState(), so changing it re-runs the
@@ -303,18 +313,30 @@ export function useViewerConnection(
     sinkRef.current?.setMuted(mutedRef.current || suppressedRef.current);
   }, []);
 
+  // A mute toggle or a volume-slider drag is itself a user gesture — the same
+  // kind the tap-to-unmute overlay spends on sink.resume(). Without this,
+  // those controls only ever move the GainNode: a suspended/interrupted
+  // AudioContext processes no audio regardless of gain, so "unmuting" via the
+  // volume control silently did nothing while the context stayed blocked.
+  const clearGestureBlock = useCallback(() => {
+    const sink = sinkRef.current;
+    if (!sink?.needsGesture) return;
+    void sink.resume().then(() => setAudioNeedsGesture(sink.needsGesture));
+  }, []);
+
   const setMuted = useCallback(
     (next: boolean) => {
       setMutedState(next);
       mutedRef.current = next;
       applySinkMute();
+      clearGestureBlock();
       try {
         localStorage.setItem(MUTED_KEY, next ? '1' : '0');
       } catch {
         // private mode etc. — the toggle still works for this session
       }
     },
-    [applySinkMute],
+    [applySinkMute, clearGestureBlock],
   );
 
   const setAudioSuppressed = useCallback(
@@ -325,16 +347,20 @@ export function useViewerConnection(
     [applySinkMute],
   );
 
-  const setVolume = useCallback((next: number) => {
-    const v = Math.max(0, Math.min(1, next));
-    setVolumeState(v);
-    sinkRef.current?.setVolume(v);
-    try {
-      localStorage.setItem(VOLUME_KEY, String(v));
-    } catch {
-      // private mode etc.
-    }
-  }, []);
+  const setVolume = useCallback(
+    (next: number) => {
+      const v = Math.max(0, Math.min(1, next));
+      setVolumeState(v);
+      sinkRef.current?.setVolume(v);
+      clearGestureBlock();
+      try {
+        localStorage.setItem(VOLUME_KEY, String(v));
+      } catch {
+        // private mode etc.
+      }
+    },
+    [clearGestureBlock],
+  );
 
   const resumeAudio = useCallback(() => {
     const sink = sinkRef.current;
@@ -578,12 +604,18 @@ export function useViewerConnection(
     controllerRef.current?.start({
       serverUrl,
       broadcastId,
-      connectOpts: { certHashHex, ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}) },
+      connectOpts: {
+        certHashHex,
+        ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
+        // Only on live edge: the carrier modes are served no parity, so
+        // sending the param there would ask for something that cannot happen.
+        ...(deliveryMode === 'live' && parityLevel != null ? { parityLevel } : {}),
+      },
     });
     return () => {
       controllerRef.current?.stop();
     };
-  }, [useWorker, broadcastId, deliveryMode, serverUrl, certHashHex, resetState]);
+  }, [useWorker, broadcastId, deliveryMode, parityLevel, serverUrl, certHashHex, resetState]);
 
   // R5 Q3 + R12 T2: the playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -594,6 +626,12 @@ export function useViewerConnection(
     if (useWorker) controllerRef.current?.setPlayoutMode(playoutMode);
     else setLocalPlayoutMode(playoutMode);
   }, [useWorker, playoutMode]);
+
+  // R30: the stripe mode, same live-crossing pattern (docs/35 §5.5).
+  useEffect(() => {
+    if (useWorker) controllerRef.current?.setStripeMode(stripeMode);
+    else setLocalStripeMode(stripeMode);
+  }, [useWorker, stripeMode]);
 
   // R12 T4: interpolation, same live-crossing pattern.
   useEffect(() => {
@@ -615,7 +653,11 @@ export function useViewerConnection(
     const session = new ViewerSession(
       serverUrl,
       broadcastId,
-      { certHashHex, ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}) },
+      {
+        certHashHex,
+        ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
+        ...(deliveryMode === 'live' && parityLevel != null ? { parityLevel } : {}),
+      },
       {
         onDecodedFrame: ({ frame }) => {
           const canvas = canvasRef.current;
@@ -692,6 +734,7 @@ export function useViewerConnection(
     useWorker,
     broadcastId,
     deliveryMode,
+    parityLevel,
     serverUrl,
     certHashHex,
     applyEvent,

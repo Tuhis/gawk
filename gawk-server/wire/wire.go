@@ -152,6 +152,44 @@ const (
 	// TelemetryHello arriving where a client is the sender is dropped,
 	// matching TypeViewerCount's rule.
 	TypeTelemetryHello = 0x0D
+
+	// TypeParityChunk identifies a ParityChunk datagram (R29, docs/34):
+	// broadcaster→relay→viewers, carrying one RAID-6 P/Q parity symbol over
+	// a delta frame's data chunks so a live-edge viewer can repair chunk
+	// loss without the latency of R19's reliable carriers.
+	//
+	// Deltas only. Keyframes already ride reliable uni streams (R8), so they
+	// are not exposed to datagram loss and carry no parity.
+	//
+	// The relay computes nothing: it forwards a per-subscriber PREFIX of the
+	// symbols the producer emitted (parityIndex < subscriber's k), which is
+	// what keeps it a byte forwarder and what makes the origin/edge cascade
+	// work unchanged (docs/34 §5).
+	TypeParityChunk = 0x0E
+
+	// TypeRelayCapabilities identifies a RelayCapabilities message (R29,
+	// docs/34 §4.4): relay→client, sent once per session at session start on
+	// both routes, telling a producer which optional features this fleet
+	// supports and at what level.
+	//
+	// It exists as its own message rather than as extra fields on
+	// BroadcastAnnounce because the parsers are strict (appending bytes to an
+	// existing message breaks old readers) and because the browser
+	// WebTransport API exposes no HTTP response headers, so a capability
+	// cannot ride the connect response. A producer that never sees it emits
+	// no parity, which is what makes a new broadcaster against an old relay
+	// byte-identical to pre-R29. Clients parse it and never send it.
+	TypeRelayCapabilities = 0x0F
+
+	// TypeStripeState identifies a StripeState datagram (R30, docs/35 §5.3):
+	// client→relay, the ONE message a striping viewer sends on its primary
+	// subscribe session to suppress (or restore) delta datagrams there while
+	// stripe legs carry them. Level state re-sent at 1 Hz while striped; the
+	// relay expires a stale suppression (StripeStateTTL) so a lost message
+	// converges to duplicates, never holes. Accepted only on an external
+	// datagram-delivery subscribe session that is not itself a leg —
+	// anywhere else it is silently discarded like any unknown datagram.
+	TypeStripeState = 0x10
 )
 
 // DeliveryMode names what a subscriber is actually being served, as carried

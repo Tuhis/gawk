@@ -41,10 +41,47 @@
   border-radius: var(--r-sm);
   padding: 0.5rem 0.7rem;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
 }
 
 .item.active {
   background: rgba(255, 255, 255, 0.08);
+}
+
+/* R32 UX1.2: the selection mark is drawn from the ARIA state, so no '✓' ever
+   enters the item's text content — the accessible name stays the label alone.
+   The gutter is reserved on every radio item (hidden, not absent) so checking
+   one does not shift the labels beside it. */
+.item[role='menuitemradio'] .itemLabel::before {
+  content: '✓';
+  display: inline-block;
+  width: 1.1em;
+  visibility: hidden;
+}
+
+.item[role='menuitemradio'][aria-checked='true'] .itemLabel::before {
+  visibility: visible;
+}
+
+/* R32 UX1.3/UX1.4: present but not applicable. Dimmed, not removed, and its
+   reason is the line below. */
+.item[aria-disabled='true'] {
+  cursor: default;
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+/* The second line — a disabled item's reason, or an enabled item's cost
+   ("· switching reconnects"). Quiet by construction: it must never compete
+   with the label it explains. */
+.itemNote {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  /* Wrap rather than widen: the menu is already width-clamped on phones. */
+  max-width: 22rem;
+  white-space: normal;
 }
 
 /* Touch pointers get roomier hit targets: on a phone this menu is now the way

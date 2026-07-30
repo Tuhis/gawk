@@ -75,6 +75,8 @@ func run() error {
 		"dvr_max_catchup", cfg.DVRMaxCatchup,
 		"dvr_audio", cfg.DVRAudio,
 		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
+		"parity_default", cfg.ParityDefault,
+		"striped_delivery", cfg.StripedDelivery,
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
@@ -188,7 +190,15 @@ func registryOptions(cfg config.Config) hub.Options {
 		DVRMaxCatchup:                 cfg.DVRMaxCatchup,
 		DVRAudio:                      cfg.DVRAudio,
 		LiveEdgeAudioOnReliableStream: cfg.LiveEdgeAudioOnReliableStream,
-		StatsKey:                      cfg.StatsKey,
+		// R29: plumbed here, not only into the test helper — the R2
+		// post-implementation review's finding, and docs/34's FP4 acceptance
+		// criterion asserts this production path specifically.
+		ParityDefault: cfg.ParityDefault,
+		// R30: same rule (docs/35 ST3). The transport reads cfg directly for
+		// the dial gate and capability bit; this mirror keeps the hub's
+		// options honest and the carry-all-limits test complete.
+		StripedDelivery: cfg.StripedDelivery,
+		StatsKey:        cfg.StatsKey,
 	}
 }
 

@@ -107,9 +107,66 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Completed', String(stats?.framesCompleted ?? '—')],
         ['Dropped (incomplete)', String(stats?.framesDroppedIncomplete ?? '—')],
         ['Dropped (late)', String(stats?.framesDroppedLate ?? '—')],
+        // R29 (docs/34 §7.1): parity's own line. "Recovered" is the headline —
+        // frames that would have been dropped incomplete and instead decoded.
+        // Zero recovered while chunks arrive means the link is clean, which is
+        // the good case; chunks at zero while the fleet is on means the
+        // producer is not emitting, which is the case worth noticing.
+        ['Parity chunks', String(stats?.parityChunksReceived ?? '—')],
+        ['Parity recovered', String(stats?.framesRecoveredByParity ?? '—')],
+        // R29 finding 3 (docs/34): "too weak" used to read parityRecoveryFailures,
+        // which counts only GF-solve failures and is therefore ~always 0 — the
+        // row was dark through a whole session that repaired nothing. The
+        // honest number is the shortfall counted where frames are given up on.
+        ...(stats?.parityInsufficient
+          ? ([['Parity too weak', String(stats.parityInsufficient)]] as StatsRow[])
+          : []),
+        ...(stats?.parityRecoveryFailures
+          ? ([['Parity solve failed', String(stats.parityRecoveryFailures)]] as StatsRow[])
+          : []),
+        // R30 (docs/35 §7): striping, on datagram delivery only. "Striping"
+        // is requested-vs-active in one line; active < needed is the caps-
+        // pressure / dial-failure signature, and the detector row is the
+        // auto gate's own inputs — large-frame loss against small-frame
+        // cleanliness is the burst-threshold shape (docs/34 finding 4), so a
+        // non-engaging detector is arguable straight from this overlay.
+        ...(stats != null && stats.deliveryMode === 'datagrams'
+          ? ([
+              [
+                'Striping',
+                !stats.stripeCapable
+                  ? `${stats.stripeMode} — relay does not support it`
+                  : stats.stripeActive > 0
+                    ? `${stats.stripeMode} — ${stats.stripeActive} legs (needed ${stats.stripeNeeded})`
+                    : `${stats.stripeMode} — off (needed ${stats.stripeNeeded})`,
+              ],
+              [
+                'Stripe detector',
+                // Both sample sizes, not just the large one: an empty small
+                // bucket is why the detector cannot fire on a high-bitrate
+                // stream, and it is indistinguishable from a clean one without
+                // the count (finding 5). "split >N" above 8 means the fixed
+                // line held no frames and the stream's own median was used.
+                stats.stripeLargeLossPct == null
+                  ? '—'
+                  : `${stats.stripeShapeDetected ? 'burst shape' : 'no burst shape'} · large ${stats.stripeLargeLossPct.toFixed(1)}% of ${fmtInt(stats.stripeLargeChunks)} · small ${stats.stripeSmallLossPct == null ? '—' : stats.stripeSmallLossPct.toFixed(1) + '%'} of ${fmtInt(stats.stripeSmallChunks)} · split >${stats.stripeSplitAtChunks}`,
+              ],
+              ...(stats.stripeLegDials > 0
+                ? ([
+                    ['Stripe legs', `${stats.stripeLegDials} dials, ${stats.stripeLegDeaths} deaths`],
+                  ] as StatsRow[])
+                : []),
+            ] as StatsRow[])
+          : []),
         ['Awaiting keyframe', String(stats?.framesDiscardedAwaitingKey ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],
         ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],
+        // R30 finding 4: patience for a straggling delta, tracking measured
+        // arrival jitter. Resyncs climbing while this sits at its floor is
+        // real loss; resyncs climbing while it is pinned at the ceiling means
+        // the link's reordering has outrun what live-edge can absorb.
+        ['Gap grace', stats?.deltaGapGraceMs == null ? '—' : `${fmtInt(stats.deltaGapGraceMs)} ms`],
+        ['Loss-allowance skips', String(stats?.framesSkippedWithinAllowance ?? '—')],
         ['Reorder buffered', String(stats?.reorderBuffered ?? '—')],
         ['Last frame', stats?.timeSinceLastFrameMs == null ? '—' : `${fmtInt(stats.timeSinceLastFrameMs)} ms ago`],
         // Any inbound byte, media or not. Climbing past ~5 s with no media
@@ -125,7 +182,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         // R5 Q3 + R12 T2: the playout mode, from the pipeline's own context
         // (ground truth — a toggle that failed to cross the worker shows
         // here). Adaptive shows the live offset (T3 makes it dynamic).
-        ['Playout', stats == null ? '—' : stats.playoutMode === 'adaptive' ? `adaptive (+${fmtInt(stats.playoutOffsetMs)} ms)` : stats.playoutMode === 'fixed' ? `fixed (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
+        ['Playout', stats == null ? '—' : stats.playoutMode === 'adaptive' ? `adaptive (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
         // R12 T1: the jitter trio (docs/17 Decision 1). Render cadence σ is
         // what T2's paced presentation must move; arrival jitter sizes T3's
         // adaptive offset; decode jitter sizes the decode lead.

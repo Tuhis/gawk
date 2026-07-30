@@ -63,12 +63,36 @@ var ProducibleFacts = map[string]string{
 	"client.arrivalJitterMs":         live,
 	"client.reorderGapResyncs":       both,
 	"client.keyframeStreamsReceived": both,
-	"client.avSkewMs":                live,
-	"client.viewerCount":             live,
-	"client.audioPacketsReceived":    both,
-	"client.audioOverflowDrops":      both,
-	"client.audioGapsConcealed":      both,
-	"client.isHardwareAccelerated":   both,
+	// R29 forward parity (docs/34 §7.3). Both surfaces: the live dashboard
+	// needs them to explain a lossy viewer in the moment, and the stored
+	// rollup needs them so a past session's verdict can say whether parity
+	// was helping.
+	"client.parityChunksReceived":    both,
+	"client.framesRecoveredByParity": both,
+	"client.framesDroppedIncomplete": both,
+	// R29 finding 3 (docs/34). parityInsufficient is the shortfall the old
+	// parityRecoveryFailures could not see; the two datagramBuffer facts are
+	// what let parity-ineffective blame a shallow BROWSER receive queue rather
+	// than send an operator to raise the fleet parity level against a
+	// client-side defect.
+	"client.parityInsufficient":         both,
+	"client.datagramBufferDefault":      both,
+	"client.datagramBufferDepth":        both,
+	"client.datagramBufferGovernsDrops": both,
+	// R30 striped delivery (docs/35 §7). Both surfaces for the same reason
+	// as parity: the live dashboard explains a lossy viewer now, the rollup
+	// lets a stored verdict argue why striping did or did not engage.
+	"client.stripeLargeLossPct":    both,
+	"client.stripeSmallLossPct":    both,
+	"client.stripeLargeChunks":     both,
+	"client.stripeActive":          both,
+	"client.stripeNeeded":          both,
+	"client.avSkewMs":              live,
+	"client.viewerCount":           live,
+	"client.audioPacketsReceived":  both,
+	"client.audioOverflowDrops":    both,
+	"client.audioGapsConcealed":    both,
+	"client.isHardwareAccelerated": both,
 
 	// --- client, dip episodes (D16) ------------------------------------------
 	// Derived by the same detector over two windows: the session for readapi,

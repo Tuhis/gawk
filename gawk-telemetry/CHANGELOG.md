@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.5.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.5.0...gawk-telemetry-v1.5.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **telemetry:** the image built green and could not start ([#206](https://github.com/Tuhis/gawk/issues/206)) ([f2ef1a5](https://github.com/Tuhis/gawk/commit/f2ef1a5dc7230195d978480d3ff73152e2bf4d8f))
+
+## [1.5.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.4.0...gawk-telemetry-v1.5.0) (2026-07-29)
+
+
+### Features
+
+* **telemetry:** R31 — telemetry UI v2, a purpose-built diagnosis SPA ([#205](https://github.com/Tuhis/gawk/issues/205)) ([0fad139](https://github.com/Tuhis/gawk/commit/0fad1397b13c27242282ef2cfcdf03ccecc10542))
+
+## [1.4.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.3.1...gawk-telemetry-v1.4.0) (2026-07-29)
+
+
+### Features
+
+* **r30:** large-frame e2e fixture + striped browser passes; fix recovery-raced phantom frames ([#194](https://github.com/Tuhis/gawk/issues/194)) ([d135f74](https://github.com/Tuhis/gawk/commit/d135f7438e49cfe2881c727cc566ba73eb9ebecd))
+* **r30:** striped delivery — ST2–ST6 (wire, relay legs, viewer transport, controller, observability) ([#191](https://github.com/Tuhis/gawk/issues/191)) ([bf8db99](https://github.com/Tuhis/gawk/commit/bf8db99d901e8b4e47c69c8283b9f1bbfface44e))
+
+## [1.3.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.3.0...gawk-telemetry-v1.3.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **r29:** stop the datagram-buffer gate claiming a fix Firefox cannot take ([#182](https://github.com/Tuhis/gawk/issues/182)) ([96fc4bc](https://github.com/Tuhis/gawk/commit/96fc4bce9f29fa6ac4ae2efee1e7108008e62135))
+
+## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.2.2...gawk-telemetry-v1.3.0) (2026-07-28)
+
+
+### Features
+
+* **r29:** forward parity for live-edge delivery ([#175](https://github.com/Tuhis/gawk/issues/175)) ([9bca5d9](https://github.com/Tuhis/gawk/commit/9bca5d9a7a080e4fa9c51733fbc16231b4f84555))
+
 ## [1.2.2](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.2.1...gawk-telemetry-v1.2.2) (2026-07-27)
 
 

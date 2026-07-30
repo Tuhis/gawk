@@ -57,18 +57,77 @@ curl localhost:8081/v1/sessions     # the read API
 
 ## The dashboard
 
-One page listing every live broadcast with its broadcaster **and** each viewer,
-with anything obviously wrong highlighted before you click anything. Severity —
-not recency — sorts the live group; recently ended broadcasts sit in a separate
-recessed group below, carrying their stored verdicts in the past tense.
+The landing view lists every live broadcast with its broadcaster **and** each
+viewer, with anything obviously wrong highlighted before you click anything.
+Severity — not recency — sorts the live group; recently ended broadcasts sit in
+a separate recessed group below, carrying their stored verdicts in the past
+tense.
 
 Four states: **ok · warn · bad · unknown**. A viewer whose telemetry stopped
 reads *stale*; one that never reported reads *unknown*. Neither is ever `ok` —
 painting an absence of evidence as green is the one thing an ops dashboard must
 not do.
 
-No build step, no external asset fetch: it works on a port-forward from a
-laptop with no network.
+No external asset fetch: it works on a port-forward from a laptop with no
+network, and a test asserts that against the built bundle.
+
+### The sections (R31)
+
+The live page answers *"is anything wrong right now?"* and nothing else. R31
+added the rest as peer sections behind the nav — every one of them addressable,
+so a link is a whole answer:
+
+| Route | Answers |
+|---|---|
+| `#/` | the live fleet (unchanged) |
+| `#/session/<id>` | everything known about one session, **from disk**, full resolution, from its first sample — for a live session too |
+| `#/broadcast/<key>` | every participant on one absolute axis, one crosshair, one zoom: *did they all dip, or just that one viewer?* |
+| `#/history` | sessions and broadcasts over a range, filtered/sorted/paged server-side |
+| `#/explore` | any recorded field, for one or more sessions, on one axis |
+| `#/fleet` | broadcasts as stripes on a shared axis, plus bucketed trends and a cohort A/B |
+| `#/rules` | every playbook rule with its thresholds, and a per-session trace of what each one read |
+| `#/sql` | ad-hoc queries over the partitions (see *The SQL console* below) |
+
+**`#/session/<id>` is a correctness fix, not a feature.** `diagnose()` has
+written that URL into every rollup row's stored verdict since R28, rollups are
+permanent, and the SPA had no router — so every one of those links landed on the
+fleet page, and the defect was being written into the one artifact that is never
+pruned.
+
+Two habits the whole surface keeps:
+
+- **Absolute time is the axis for anything historical**, with the timezone
+  shown. Relative time (`3m ago`) is the annotation. The header also names the
+  gap if your browser's clock disagrees with the service's.
+- **Absence is never green and never blank.** A range before the oldest stored
+  partition says so rather than rendering as empty; a session whose raw window
+  was pruned shows its permanent rollup and says why the charts are empty.
+
+### The SQL console
+
+`#/sql`, and the MCP `query_sql` tool, run read-only DuckDB over the NDJSON
+partitions. **Whether they can answer depends on how the binary was built**, and
+they say which:
+
+- The shipped image is compiled `-tags duckdb` with cgo. That is what the
+  default-on flag actually delivers.
+- `go build ./...` on a fresh clone is cgo-free and links no DuckDB at all. The
+  console then explains that this build has no engine — which is a different
+  message from a query error, and renders as one.
+
+The engine refuses anything that is not a read (`SELECT`, `WITH`, `DESCRIBE`,
+`SUMMARIZE`, `SHOW`, `EXPLAIN`, `FROM`, `PIVOT`) and refuses more than one
+statement per query. External file access has to stay on for it to read the
+partitions at all, so that allowlist — not a read-only connection — is what
+stops a `COPY … TO` over the data directory.
+
+### Notes
+
+An operator note pinned to a session, a broadcast, or a moment on a timeline is
+the one thing this service lets you write. Notes live beside the rollups, are
+**permanent**, and are never mixed into a session file — a raw partition stays
+exactly what a client sent. An annotation outliving the samples it describes is
+the normal case and the point.
 
 ### Finding one stream
 
@@ -238,24 +297,55 @@ for failing to report it.
 - **Chrome throttles a background tab's timers to ~1/min.** A dashboard left in
   another tab stops updating, and a poll-driven test appears to hang. It is also
   why a backgrounded *viewer* reports `renderedFps: 0` while decoding fine — the
-  timeline makes that visible rather than mysterious.
+  timeline makes that visible rather than mysterious. The page marks the gap it
+  did not observe on return, and never backfills or draws through it; it is also
+  why R31's watch is in-tab only, since a notification could arrive a minute
+  late (UD19).
 - **The layout must not move while values tick.** The table is
   `table-layout: fixed` with a percentage colgroup, every number is
   `tabular-nums` at a fixed decimal count, and every optional element has a
   reserved slot. A `ch`-based colgroup summed past the container once and pushed
-  the last column off-screen; percentages are what guarantee it fits.
+  the last column off-screen; percentages are what guarantee it fits. R31's
+  virtualized lists follow the same rule with a fixed row height and a shared
+  grid template, since a `<tr>` cannot be absolutely positioned.
+- **`npm run build` is the only real typecheck.** The root tsconfig is
+  solution-style, so a bare `tsc --noEmit` passes *vacuously*, and vitest strips
+  types rather than checking them.
+- **The no-external-fetch tests SKIP unless the bundle is built.**
+  `TestNoExternalAssetReferences` / `TestServesTheEmbeddedPage` live in
+  `internal/dashboard/` but assert against `dist/`, which the Go job never
+  builds — so running `go test ./internal/dashboard/` locally without
+  `npm run build` first shows green while proving nothing. It is the test that
+  guards the bundled-ECharts decision, so run it deliberately after touching
+  anything under `ui/src/charts/`.
 
 ## Build & test
 
 ```sh
-go build ./...
+go build ./...          # cgo-free, no query engine — what a fresh clone gets
 go vet ./...
 go test -race ./...
+
+# The DEPLOYED configuration. Needs a C toolchain; the image uses exactly this.
+go test -tags duckdb ./internal/sqlengine/...
 
 # The image builds from the REPO ROOT: this module consumes gawk-server/wire
 # through a local `replace`.
 docker build -f gawk-telemetry/deploy/Dockerfile -t gawk-telemetry:dev ..
 ```
+
+**The build tag is the whole of the cgo story.** `internal/sqlengine` has two
+implementations behind `//go:build duckdb`; everything else in the module is
+cgo-free and stays that way. The image is `CGO_ENABLED=1 -tags duckdb` onto
+`distroless/cc-debian13`, built by `golang:1.26-trixie`, and CI builds both
+configurations — because a build tag nobody exercises is a build tag that rots.
+
+**The base image and the builder are pinned together, and both matter.** `cc`
+rather than `base` because DuckDB is C++ and the binary links libstdc++; the
+same Debian release on both sides because a cgo binary links against the
+BUILDER's glibc, which must not be newer than the runtime's. Neither is visible
+at build time — both are dynamic-linker failures — so CI starts every image it
+builds and makes it answer a request. If you bump one side, bump the other.
 
 ## Flags
 
@@ -267,7 +357,7 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback (flag > env > default).
 | `-ingest-addr` | `GAWK_TELEMETRY_INGEST_ADDR` | `:8080` (public) |
 | `-read-addr` | `GAWK_TELEMETRY_READ_ADDR` | `:8081` (never public) |
 | `-data-dir` | `GAWK_TELEMETRY_DATA_DIR` | `/data` |
-| `-retention-days` | `GAWK_TELEMETRY_RETENTION_DAYS` | `14` (raw only; rollups are permanent) |
+| `-retention-days` | `GAWK_TELEMETRY_RETENTION_DAYS` | `30` (raw only; rollups are permanent) |
 | `-scrape-interval` | `GAWK_TELEMETRY_SCRAPE_INTERVAL` | `5s` |
 | `-session-idle` | `GAWK_TELEMETRY_SESSION_IDLE` | `2m` |
 | `-relay-headless-service` | `GAWK_TELEMETRY_RELAY_HEADLESS` | (empty = client-only telemetry) |
@@ -275,7 +365,7 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback (flag > env > default).
 | `-relay-addrs` | `GAWK_TELEMETRY_RELAY_ADDRS` | (empty; overrides the headless Service) |
 | `-dashboard-base` | `GAWK_TELEMETRY_DASHBOARD_BASE` | (empty) |
 | `-mcp` | `GAWK_TELEMETRY_MCP` | `true` |
-| `-query-sql` | `GAWK_TELEMETRY_QUERY_SQL` | `false` |
+| `-query-sql` | `GAWK_TELEMETRY_QUERY_SQL` | `true` (needs a `-tags duckdb` build to answer) |
 | `-stats-key` | `GAWK_TELEMETRY_STATS_KEY` | (empty = the find-a-stream lookup is off) |
 | `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no auth) |
 | `-ingest-rate` / `-ingest-burst` | `GAWK_TELEMETRY_INGEST_RATE` / `_BURST` | `300` / `1200` (global) |

@@ -1,0 +1,153 @@
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.rule {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.ruleOpen {
+  border-color: var(--line-strong);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.disclosure {
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+  width: 1rem;
+}
+
+.id {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+
+.scope {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+}
+
+/* D7's cap, stated on the rule rather than discovered on a finding. */
+.cap {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  font-style: italic;
+}
+
+.verdict {
+  margin: 2px 0 0 1.5rem;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.body {
+  margin: var(--sp-2) 0 var(--sp-1) 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.why {
+  margin: 0;
+  font-size: var(--fs-sm);
+  max-width: 90ch;
+}
+
+.cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+}
+
+@media (max-width: 720px) {
+  .cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.h4 {
+  margin: 0 0 2px;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dimmer);
+}
+
+.sigList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sig {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.read {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.absent {
+  color: var(--warn);
+}
+
+.action,
+.traceText {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  max-width: 90ch;
+}
+
+.none {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+}
+
+.chip,
+.chipFired {
+  font-size: var(--fs-xs);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.chipFired {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.unavailable {
+  border-style: dashed;
+  color: var(--text-dimmer);
+}
+
+.passed {
+  border-color: var(--ok);
+  color: var(--ok);
+}

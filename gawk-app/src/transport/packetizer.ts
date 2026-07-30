@@ -12,6 +12,7 @@ import {
   encodeVideoChunk,
   WireError,
 } from './wire';
+import { MAX_PARITY_DATA_CHUNKS, computeParity, encodeParityChunk } from './parity';
 
 export interface FrameInfo {
   frameId: number; // uint32, monotonic per broadcast session
@@ -47,6 +48,41 @@ export function packetizeFrame(
     );
   }
   return datagrams;
+}
+
+// Splits data into datagrams and, when parityLevel > 0, computes up to that
+// many RAID-6 P/Q parity symbols over the chunk PAYLOADS (R29, docs/34).
+//
+// Parity covers payloads rather than whole datagrams because payloads are
+// what the viewer reassembles — covering headers would still round-trip on a
+// clean link and fail only under the loss the feature exists for.
+//
+// Deltas only. Callers must not ask for parity on a keyframe: keyframes ride
+// reliable uni streams (R8) and are not exposed to datagram loss.
+//
+// A frame needing more than MAX_PARITY_DATA_CHUNKS chunks degrades to plain
+// datagrams rather than throwing — past that bound the Q coefficients wrap
+// and the code stops being MDS, and a ~300 KB delta is not worth failing a
+// broadcast over.
+export function packetizeFrameWithParity(
+  info: FrameInfo,
+  data: Uint8Array,
+  parityLevel: number,
+  pathMaxDatagramSize = MAX_DATAGRAM_SIZE,
+): { datagrams: Uint8Array<ArrayBuffer>[]; parity: Uint8Array<ArrayBuffer>[] } {
+  const datagrams = packetizeFrame(info, data, pathMaxDatagramSize);
+  if (parityLevel <= 0 || datagrams.length > MAX_PARITY_DATA_CHUNKS) {
+    return { datagrams, parity: [] };
+  }
+  const payloads = datagrams.map((d) => d.subarray(VIDEO_CHUNK_HEADER_SIZE));
+  const symbols = computeParity(payloads, parityLevel);
+  const parity = symbols.map((payload, i) =>
+    encodeParityChunk(
+      { frameId: info.frameId, parityIndex: i, chunkCount: datagrams.length, frameBytes: data.length },
+      payload,
+    ),
+  );
+  return { datagrams, parity };
 }
 
 // Builds the DecoderConfig datagram for a WebCodecs decoder config. The

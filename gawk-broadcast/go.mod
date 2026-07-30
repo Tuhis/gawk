@@ -18,7 +18,7 @@ require (
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	golang.org/x/image v0.26.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )

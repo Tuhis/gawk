@@ -445,3 +445,148 @@ deltaDone:
 		t.Errorf("stale-gen internal-subscribe status = %d, want 409", rsp.StatusCode)
 	}
 }
+
+// R29 (docs/34 §5.1) across the cascade, over the real transport: parity must
+// reach a viewer served by an EDGE pod, and the edge must be the one applying
+// the per-subscriber prefix.
+//
+// This is the in-process twin of e2e/cluster-assert.sh's parity check, and it
+// lives here because that job runs only on release PRs: the origin's fan-out
+// treated its edge session as a k=0 viewer and suppressed every symbol, so a
+// clustered fleet lost parity for every viewer not on the origin pod — green
+// on every PR, caught only at release time.
+func TestParitySurvivesEdgePull(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs := fake.NewClientset()
+
+	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateDevCert: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	clientTLS := &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}}
+
+	withParity := func(c *config.Config) { c.ParityDefault = 2 }
+	podA := startClusteredPod(t, ctx, cs, "pod-a", cert, pool, 0, withParity)
+	podB := startClusteredPod(t, ctx, cs, "pod-b", cert, pool, 0, withParity)
+
+	pub := dial(t, ctx, fmt.Sprintf("https://%s/publish", podA.addr()), clientTLS)
+	id, _ := readPublisherHandshake(t, ctx, pub)
+
+	kf := buildStreamKeyframe(t, 0, "avc1.42E02A", 512)
+	sendKeyframeStream(t, pub, kf)
+	waitFor(t, 5*time.Second, func() bool {
+		return podA.registry.Stats().Broadcasts[podA.registry.ObfuscateID(id)].CachedKeyframeBytes == len(kf)
+	}, "keyframe cached on origin")
+
+	// The viewer is on B, so every symbol it sees crossed the origin→edge hop.
+	// Waited for by the accounting rather than by reading a stream: with parity
+	// on, the subscriber's uni streams are capabilities AND keyframe, in no
+	// guaranteed order (docs/34 deviation 2, docs/22 finding 9).
+	viewer := dialSubscriber(t, ctx, podB.port, id, clientTLS)
+	waitFor(t, 10*time.Second, func() bool {
+		stA := podA.registry.Stats().Broadcasts[podA.registry.ObfuscateID(id)]
+		stB := podB.registry.Stats().Broadcasts[podB.registry.ObfuscateID(id)]
+		return stA.EdgeSessions == 1 && stB.Role == "edge" && stB.Subscribers == 1
+	}, "edge pull attached with the viewer behind it")
+
+	// One delta and both of its symbols, exactly as a producer emits them.
+	// Two chunks, because P and Q are only distinct symbols for n >= 2.
+	deltaChunks := encodeFrame(t, 1, false, 2)
+	payloads := make([][]byte, len(deltaChunks))
+	frameBytes := 0
+	for i, c := range deltaChunks {
+		payloads[i] = c[wire.VideoChunkHeaderSize:]
+		frameBytes += len(payloads[i])
+	}
+	symbols, err := wire.ComputeParity(payloads, 2)
+	if err != nil {
+		t.Fatalf("ComputeParity: %v", err)
+	}
+	if len(symbols) != 2 {
+		t.Fatalf("ComputeParity returned %d symbols, want 2", len(symbols))
+	}
+	parity := make([][]byte, len(symbols))
+	for i, sym := range symbols {
+		d, err := wire.AppendParityChunk(nil, wire.ParityChunkHeader{
+			FrameID:     1,
+			ParityIndex: uint8(i),
+			ChunkCount:  uint16(len(deltaChunks)),
+			FrameBytes:  uint32(frameBytes),
+		}, sym)
+		if err != nil {
+			t.Fatalf("AppendParityChunk: %v", err)
+		}
+		parity[i] = d
+	}
+
+	seen := make(chan []byte, 32)
+	go func() {
+		for {
+			d, err := viewer.ReceiveDatagram(ctx)
+			if err != nil {
+				return
+			}
+			if len(d) >= 2 && d[1] == wire.TypeParityChunk {
+				select {
+				case seen <- d:
+				default:
+				}
+			}
+		}
+	}()
+
+	// Datagrams are lossy even on loopback queues (docs/22) — resend until
+	// both symbols have been observed.
+	got := map[uint8][]byte{}
+	deadline := time.Now().Add(15 * time.Second)
+	for len(got) < 2 {
+		for _, c := range deltaChunks {
+			if err := pub.SendDatagram(c); err != nil {
+				t.Fatalf("SendDatagram(delta): %v", err)
+			}
+		}
+		for _, d := range parity {
+			if err := pub.SendDatagram(d); err != nil {
+				t.Fatalf("SendDatagram(parity): %v", err)
+			}
+		}
+		select {
+		case d := <-seen:
+			h, _, err := wire.ParseParityChunk(d)
+			if err != nil {
+				t.Fatalf("ParseParityChunk: %v", err)
+			}
+			if !bytes.Equal(d, parity[h.ParityIndex]) {
+				t.Fatalf("parity symbol %d not byte-identical across the edge hop", h.ParityIndex)
+			}
+			got[h.ParityIndex] = d
+		case <-time.After(200 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("edge viewer received parity indices %v, want both 0 and 1", keysOf(got))
+		}
+	}
+
+	// Both pods must report forwarding — the shape e2e/cluster-assert.sh
+	// asserts per pod. The origin's count includes the edge leg, which is the
+	// hop that was silently dropping them.
+	stA := podA.registry.Stats().Broadcasts[podA.registry.ObfuscateID(id)]
+	stB := podB.registry.Stats().Broadcasts[podB.registry.ObfuscateID(id)]
+	if stA.ParityDatagramsForwarded == 0 {
+		t.Errorf("origin forwarded no parity (suppressed %d) — the edge leg was clamped", stA.ParitySuppressed)
+	}
+	if stB.ParityDatagramsForwarded == 0 {
+		t.Errorf("edge forwarded no parity to its own viewer (suppressed %d)", stB.ParitySuppressed)
+	}
+}
+
+func keysOf(m map[uint8][]byte) []uint8 {
+	out := make([]uint8, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

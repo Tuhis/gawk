@@ -11,6 +11,7 @@ import {
   type DecodedAudioChunk,
 } from './audio-decode';
 import type { ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
 import {
   LocalViewerTransport,
@@ -29,6 +30,8 @@ import {
 } from './av-sync';
 import { LiveEdgeTracker } from './live-edge';
 import { getDeepBuffer } from './resilient';
+import { StripeController, getStripeMode, type StripeMode } from './stripe';
+import { CAP_STRIPED_DELIVERY } from './parity';
 import {
   DVR_BUFFER_MS,
   setDvrGranted,
@@ -42,7 +45,14 @@ import { Reassembler, type ReassemblerStats } from './reassembler';
 import { timeOriginMs } from './time-sync';
 import type { FeatureGate, PresentationSurfaceStats } from '../lib/featureGates';
 import type { AudioTapEvent, Fmp4MuxerStats } from './fmp4-muxer';
-import { ReorderBuffer, type ReleasedFrame, type ReorderStats } from './reorder-buffer';
+import {
+  ReorderBuffer,
+  deltaGapGraceMs,
+  resetGraceController,
+  updateGraceController,
+  type ReleasedFrame,
+  type ReorderStats,
+} from './reorder-buffer';
 import type { RenderSink, RenderSinkKind } from './render-sink';
 import {
   TYPE_AUDIO_CONFIG,
@@ -171,6 +181,17 @@ export interface ViewerStats extends ReassemblerStats {
   // R8 keyframe-stream + reorder observability.
   keyframeStreamsReceived: number;
   reorderGapResyncs: number;
+  // R29 FP6 (docs/34 §6): frames skipped within the GOP's loss budget rather
+  // than forfeiting the rest of the GOP. Its ratio against reorderGapResyncs
+  // is the allowance's whole story — skips are GOPs saved, resyncs are GOPs
+  // lost.
+  framesSkippedWithinAllowance: number;
+  // R30 finding 4: the live delta-gap grace, which now tracks measured arrival
+  // jitter instead of sitting at a per-connection constant. Reported because
+  // it is the only way to tell a resync that was a real loss from one the
+  // grace was simply too tight to absorb — and because it moves, which
+  // `DELTA_GAP_GRACE_MS` in a doc no longer tells you.
+  deltaGapGraceMs: number;
   reorderKeyframeWaitDrops: number;
   reorderBuffered: number;
   // R9 funnel + stall indicators (docs/13 D5): received → decoded → rendered.
@@ -270,6 +291,42 @@ export interface ViewerStats extends ReassemblerStats {
   // Carriers ending in a reset — the relay shedding a stalled/superseded GOP
   // tail; each costs at most one resync at the next keyframe.
   carrierStreamsAborted: number | null;
+  // R29 finding 2 (docs/34): how deep this browser's incoming datagram queue
+  // is, and whether it took the depth we asked for. Forwarded verbatim from
+  // the transport — nothing is derived here, because a shallow queue evicting
+  // the head of each frame's burst is the difference between parity repairing
+  // a loss and parity being structurally unable to. Null where the transport
+  // does not report one (fakes, and anything not holding a real session).
+  datagramBuffer: DatagramBufferStats | null;
+  // R30 striped delivery (docs/35 §7) — requested vs active, the R19/R29
+  // rule. stripeActive is the leg count actually carrying deltas (0 =
+  // unstriped); stripeNeeded is the controller's current ceil(p99/6), so
+  // active < needed is the caps-pressure / dial-failure signature. The
+  // detector fields are the auto gate's own inputs: large-frame chunk loss
+  // against small-frame cleanliness is the finding-4 shape, and exposing
+  // both is what makes "why didn't it engage" answerable from a blob.
+  stripeMode: StripeMode;
+  stripeCapable: boolean;
+  stripeActive: number;
+  stripeNeeded: number;
+  stripeLargeLossPct: number | null;
+  stripeSmallLossPct: number | null;
+  stripeLargeChunks: number;
+  // Finding 5: the small-frame half of that evidence, and the size the two
+  // halves were split at. Both were missing, and their absence is what made a
+  // non-engaging detector unarguable from a blob — "the small bucket is empty"
+  // and "the small bucket is clean" read identically without them, and the
+  // empty case is the one that made auto striping unreachable on high-bitrate
+  // streams. splitAtChunks above STRIPE_LARGE_FRAME_CHUNKS means the fixed
+  // line could not fill the bucket and the stream's own median was used.
+  stripeSmallChunks: number;
+  stripeSplitAtChunks: number;
+  // Finding 6: striping is always on in live-edge mode, so the question is no
+  // longer "will it engage" but "is it earning its connection cost". This is
+  // the burst signature as an observation, not a gate.
+  stripeShapeDetected: boolean;
+  stripeLegDials: number;
+  stripeLegDeaths: number;
   // R15 (docs/20): the audio lane, as observed by this pipeline. audioPresent
   // flips true on the first AudioConfig/packet and is what gates every piece
   // of viewer audio UI — a video-only stream renders exactly today's viewer.
@@ -486,6 +543,15 @@ export class ViewerPipeline {
   private lastCapToRenderMs: number | null = null;
   // R18: the relay's latest "N watching" push (last one wins).
   private viewerCount: number | null = null;
+  // R30 (docs/35 §5.4–§5.5): the stripe controller and its transport truth.
+  // The controller decides a target at the stats cadence; the transport owns
+  // every transition. Striping applies to datagram delivery only — reliable/
+  // DVR ride retransmitting carriers — so the capability is gated on the
+  // requested mode at the one place both are known (onRelayCapabilities).
+  private stripe = new StripeController();
+  private stripeCapable = false;
+  private stripeActive = 0;
+  private lastStripeRequested = 0;
   // R15 (docs/20): the audio lane. Built lazily on the first audio message —
   // a video-only stream never constructs it, so nothing about this pipeline
   // changes for broadcasts without audio.
@@ -584,6 +650,9 @@ export class ViewerPipeline {
         const lane = this.ensureAudioLane();
         lane?.configure(config);
       },
+      // R30 (docs/35 §5.5): per-frame arrival truth for the stripe detector —
+      // the in-client port of the loss-profile instrument's arithmetic.
+      onFrameAccounting: (expected, arrived) => this.stripe.observeFrame(expected, arrived),
       onAudioFrame: (packet) => {
         // The media-stall watchdog's reference medium: audio is continuous
         // where video is damage-driven (see MEDIA_STALL_MS).
@@ -635,6 +704,12 @@ export class ViewerPipeline {
       // serves R19 carriers, which is the degradation we want.
       if (getDeepBuffer()) url.searchParams.set('buffer', String(DVR_BUFFER_MS));
     }
+    // R29 (docs/34 §5.2): only an explicit opt-DOWN travels. Omitting the
+    // parameter is what lets the fleet default apply, and it keeps the URL
+    // byte-identical against a relay that predates R29.
+    if (this.connectOpts.parityLevel != null) {
+      url.searchParams.set('parity', String(this.connectOpts.parityLevel));
+    }
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
     try {
@@ -661,6 +736,19 @@ export class ViewerPipeline {
         // context for both (it may be inside two nested workers), and keeping
         // the token off ViewerStats keeps it out of Copy diagnostics.
         onTelemetryHello: (hello) => this.cb.onTelemetryHello?.(hello),
+        // R30 (docs/35 §5.3): the striping gate. An old relay never sends the
+        // bit, so a new viewer against it never dials a leg — and a reliable/
+        // DVR viewer never stripes regardless (nothing to win there, §3).
+        onRelayCapabilities: (caps) => {
+          this.stripeCapable = (caps.flags & CAP_STRIPED_DELIVERY) !== 0;
+          this.stripe.noteCapable(
+            this.stripeCapable && this.connectOpts.deliveryMode !== 'reliable',
+          );
+        },
+        onStripeChange: (active) => {
+          this.stripeActive = active;
+          this.stripe.noteActive(active);
+        },
         onClosed: (info) => this.handleClosed(info),
       });
     } catch (e) {
@@ -989,6 +1077,9 @@ export class ViewerPipeline {
     // and so is any adaptive offset learned against it.
     this.renderSink?.flush?.();
     resetPlayoutController();
+    // The grace reads the same estimator, so it re-seeds on the same signal:
+    // jitter measured against the dead timeline says nothing about the new one.
+    resetGraceController();
   }
 
   private handleDecoded(decoded: DecodedFrame): void {
@@ -1092,6 +1183,10 @@ export class ViewerPipeline {
     // R12 T3: the adaptive offset controller reads the same jitter estimate
     // the overlay shows (no-op outside adaptive mode).
     updatePlayoutController(arrivalJitterMs, now);
+    // R30 finding 4: and so does the adaptive delta-gap grace — the same
+    // number, a different consumer. Driven here rather than per-advance
+    // because arrivalJitterMs() takes a windowed quantile.
+    updateGraceController(arrivalJitterMs, now);
     const lats = this.decodeLatencies;
     this.decodeLatencies = [];
     let decodeJitterMs: number | null = null;
@@ -1119,6 +1214,18 @@ export class ViewerPipeline {
             ? 'reliable'
             : 'reliable-requested'
           : 'datagrams';
+    // R30 (docs/35 §5.4): the stripe decision runs at this cadence. Sizing
+    // includes the parity symbols riding the same legs; the exact fleet level
+    // is not client-visible per frame, so any parity in the session sizes as
+    // the full k=2 — conservative by at most one leg at a share boundary.
+    this.stripe.noteParityActive((reasm?.parityChunksReceived ?? 0) > 0 ? 2 : 0);
+    const stripeTarget = this.stripe.decide();
+    if (stripeTarget !== this.lastStripeRequested && this.transport?.setStripe) {
+      this.lastStripeRequested = stripeTarget;
+      this.transport.setStripe(stripeTarget);
+    }
+    const stripeDetector = this.stripe.snapshot();
+    const stripeTransport = this.transport?.sampleStripe?.() ?? null;
     this.cb.onStats({
       datagramsReceived: reasm?.datagramsReceived ?? 0,
       badDatagrams: reasm?.badDatagrams ?? 0,
@@ -1127,6 +1234,12 @@ export class ViewerPipeline {
       framesCompleted: reasm?.framesCompleted ?? 0,
       framesDroppedIncomplete: reasm?.framesDroppedIncomplete ?? 0,
       framesDroppedLate: reasm?.framesDroppedLate ?? 0,
+      // R29 (docs/34 §7.1): what parity actually bought this viewer.
+      parityChunksReceived: reasm?.parityChunksReceived ?? 0,
+      framesRecoveredByParity: reasm?.framesRecoveredByParity ?? 0,
+      parityRecoveryFailures: reasm?.parityRecoveryFailures ?? 0,
+      parityInsufficient: reasm?.parityInsufficient ?? 0,
+      staleChunks: reasm?.staleChunks ?? 0,
       decodedFrames: this.decodedFrames,
       decoderQueueDepth: (this.decoder?.queueSize ?? 0) + this.pendingDecodes,
       decoderFps,
@@ -1138,6 +1251,8 @@ export class ViewerPipeline {
       frameHeight: this.lastFrameHeight,
       keyframeStreamsReceived: this.keyframeStreamsReceived,
       reorderGapResyncs: reorder?.gapResyncs ?? 0,
+      deltaGapGraceMs: deltaGapGraceMs(),
+      framesSkippedWithinAllowance: reorder?.framesSkippedWithinAllowance ?? 0,
       reorderKeyframeWaitDrops: reorder?.keyframeWaitDrops ?? 0,
       reorderBuffered: reorder?.buffered ?? 0,
       receivedFps,
@@ -1178,6 +1293,7 @@ export class ViewerPipeline {
       carrierStreams: carrier?.streamsOpened ?? null,
       carrierRecords: carrier?.recordsReceived ?? null,
       carrierStreamsAborted: carrier?.streamsAborted ?? null,
+      datagramBuffer: this.transport?.sampleDatagramBuffer?.() ?? null,
       audioState: this.audioState,
       audioPacketsReceived: reasm?.audioPacketsReceived ?? 0,
       audioPacketsDecoded: audioStats?.packetsDecoded ?? 0,
@@ -1201,6 +1317,21 @@ export class ViewerPipeline {
             : 'free'
           : null,
       videoScheduleBaseEpochMs: this.videoScheduleBaseEpochMs(),
+      // R30 (docs/35 §7): requested vs active, plus the detector's own
+      // inputs so a non-engaging detector is arguable from a diagnostics
+      // blob rather than a mystery.
+      stripeMode: getStripeMode(),
+      stripeCapable: this.stripeCapable,
+      stripeActive: this.stripeActive,
+      stripeNeeded: stripeDetector.neededNow,
+      stripeLargeLossPct: stripeDetector.largeLossPct,
+      stripeSmallLossPct: stripeDetector.smallLossPct,
+      stripeLargeChunks: stripeDetector.largeChunks,
+      stripeSmallChunks: stripeDetector.smallChunks,
+      stripeSplitAtChunks: stripeDetector.splitAtChunks,
+      stripeShapeDetected: stripeDetector.shapeDetected,
+      stripeLegDials: stripeTransport?.legDials ?? 0,
+      stripeLegDeaths: stripeTransport?.legDeaths ?? 0,
     });
   }
 

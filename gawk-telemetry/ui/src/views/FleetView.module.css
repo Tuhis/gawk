@@ -1,0 +1,128 @@
+/*
+  The stripes. Not a chart: each row is a span with its degraded sub-spans
+  painted inside, positioned by percentage of the shared range. That makes the
+  vertical alignment exact — a stripe across unrelated broadcasts lines up
+  because every row uses the same arithmetic — and keeps 300 rows to two divs
+  each instead of 300 chart instances.
+*/
+.stripes {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.axis {
+  display: flex;
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  font-variant-numeric: tabular-nums;
+  padding-left: 14ch;
+  margin-bottom: 2px;
+}
+
+.stripeRow {
+  display: grid;
+  grid-template-columns: 14ch 1fr 12ch;
+  gap: var(--sp-2);
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+  height: 16px;
+}
+
+.stripeRow:hover .track {
+  outline: 1px solid var(--line-strong);
+}
+
+.stripeKey {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.track {
+  position: relative;
+  height: 12px;
+  background: rgba(38, 42, 50, 0.5);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(110, 118, 129, 0.35);
+}
+
+.band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.stripeMeta {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+  white-space: nowrap;
+}
+
+.liveDot {
+  color: var(--ok);
+  margin-left: 3px;
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  padding: 0 2px;
+  font-size: 9px;
+  color: var(--text-dimmer);
+}
+
+/* The cohort A/B. Sample size sits beside every number, never behind a hover. */
+.cohort {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: var(--sp-3);
+  align-items: center;
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.arm {
+  display: flex;
+  flex-direction: column;
+}
+
+.armLabel {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.armValue {
+  font-size: var(--fs-lg);
+}
+
+.armN {
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+}
+
+.armDelta {
+  font-size: var(--fs-md);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.cohortNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--warn);
+}

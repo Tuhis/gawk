@@ -49,6 +49,9 @@ func TestStatsJSONKeysAreTheCanonicalSpelling(t *testing.T) {
 		"resumes", "resuming",
 		"audioPacketsSent", "audioBytesSent", "audioConfigsSent",
 		"audioPacketsDropped",
+		// R29 forward parity (docs/34): the level the relay advertised, and
+		// what this producer actually emitted at it.
+		"parityLevel", "parityChunksSent", "parityBytesSent",
 	}
 	gotKeys := slices.Sorted(maps.Keys(got))
 	slices.Sort(want)

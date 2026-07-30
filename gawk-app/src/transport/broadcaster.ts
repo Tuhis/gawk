@@ -47,7 +47,12 @@ import {
   type ConnectOptions,
 } from './connection';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
-import { packetizeDecoderConfig, packetizeFrame, packetizeStreamKeyframe } from './packetizer';
+import {
+  packetizeDecoderConfig,
+  packetizeFrameWithParity,
+  packetizeStreamKeyframe,
+} from './packetizer';
+import { CAP_PARITY_CHUNKS, parseRelayCapabilities } from './parity';
 import { RECONNECT_MAX_ATTEMPTS, reconnectDelayMs, type ReconnectInfo } from './reconnect';
 import { CLOCK_MAPPING_INTERVAL_MS, TimeSyncClient } from './time-sync';
 import {
@@ -60,6 +65,7 @@ import {
   peekType,
   TYPE_BROADCAST_ANNOUNCE,
   TYPE_RESUME_TOKEN,
+  TYPE_RELAY_CAPABILITIES,
   TYPE_TELEMETRY_HELLO,
   TYPE_VIEWER_COUNT,
   VIEWER_COUNT_SIZE,
@@ -137,6 +143,15 @@ export interface BroadcastStats {
   audioChannels: number | null;
   audioCodec: string | null;
   audioBitrateBps: number | null;
+  // R29 (docs/34): forward parity on the delta path. parityLevel is what this
+  // producer is EMITTING — the fleet level the relay advertised via
+  // RelayCapabilities, 0 when the relay predates R29 or is configured off.
+  // It is not a request: a producer cannot choose to protect a stream the
+  // fleet has not asked it to protect, because the relay is what filters the
+  // symbols per subscriber.
+  parityLevel: number;
+  parityChunksSent: number;
+  parityBytesSent: number;
   // docs/20 field finding 13: how long the encoder took to hand back the
   // packet for a captured frame. Audio timestamps are pinned at capture
   // arrival (the stage video is stamped at), so this delay is measured rather
@@ -223,6 +238,9 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   audioBitrateBps: null,
   audioEncodeLagMs: null,
   audioAnchorReanchors: 0,
+  parityLevel: 0,
+  parityChunksSent: 0,
+  parityBytesSent: 0,
   targetWidth: null,
   targetHeight: null,
   targetFps: null,
@@ -394,6 +412,10 @@ export class BroadcastPipeline {
   // frameID continuity IS the viewer's resume-vs-restart signal (docs/22
   // Decision 6).
   private resumeToken: string | null = null;
+  // R29: the fleet parity level, learned from RelayCapabilities. 0 until the
+  // relay says otherwise, so an old relay (which sends nothing) and a fleet
+  // configured off are the same code path — no parity is ever emitted.
+  private parityLevel = 0;
   private connGeneration = 0;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -604,6 +626,18 @@ export class BroadcastPipeline {
         case TYPE_TELEMETRY_HELLO: {
           const hello = parseTelemetryHello(data);
           if (!this.stopping) this.cb.onTelemetryHello?.(hello);
+          break;
+        }
+        // R29 (docs/34 §4.4): the fleet's parity level. A relay predating R29
+        // sends no such stream, so parityLevel stays 0 and this producer emits
+        // no parity chunks — which is what keeps a new broadcaster against an
+        // old relay byte-identical to pre-R29. A relay that HAS the feature
+        // but is configured off sends level 0 for the same effect, so the
+        // fleet can be turned down from one chart value.
+        case TYPE_RELAY_CAPABILITIES: {
+          const caps = parseRelayCapabilities(data);
+          this.parityLevel = caps.flags & CAP_PARITY_CHUNKS ? caps.parityLevel : 0;
+          this.stats.parityLevel = this.parityLevel;
           break;
         }
         default:
@@ -1135,13 +1169,17 @@ export class BroadcastPipeline {
     }
 
     // Delta → datagrams (fast, lossy; a loss costs one frame, not a GOP).
+    // R29: plus up to parityLevel parity symbols, which turn "a loss costs one
+    // frame" into "a loss costs nothing" for the common single-chunk case.
     let datagrams: Uint8Array<ArrayBuffer>[];
+    let parity: Uint8Array<ArrayBuffer>[];
     try {
-      datagrams = packetizeFrame(
+      ({ datagrams, parity } = packetizeFrameWithParity(
         { frameId, keyframe: false, timestampUs },
         data,
+        this.parityLevel,
         this.wt?.datagrams.maxDatagramSize,
-      );
+      ));
     } catch (e) {
       this.fail(e instanceof Error ? e : new Error(String(e)));
       return;
@@ -1149,11 +1187,19 @@ export class BroadcastPipeline {
 
     let bytes = 0;
     for (const d of datagrams) bytes += d.length;
+    let parityBytes = 0;
+    for (const d of parity) parityBytes += d.length;
+    // Parity rides the same send as the data chunks and after them: it is
+    // useless before the loss it repairs is known, and sending it first would
+    // put it ahead of the frame in the queue for no benefit.
+    const all = parity.length > 0 ? [...datagrams, ...parity] : datagrams;
     this.sender
-      .send(datagrams)
+      .send(all)
       .then(() => {
         this.stats.datagramsSent += datagrams.length;
         this.stats.bytesSent += bytes;
+        this.stats.parityChunksSent += parity.length;
+        this.stats.parityBytesSent += parityBytes;
         // Funnel stage 4 (R9): the whole frame actually left, without error.
         this.sentSinceStats++;
       })

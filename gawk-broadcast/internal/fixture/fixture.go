@@ -16,3 +16,15 @@ import _ "embed"
 //
 //go:embed sample.ts
 var TS []byte
+
+// TSLarge is the R30 large-frame fixture (docs/35 §12): same container and
+// encoder invariants as TS, but 1280x720 temporal noise at ~5 Mbps, so every
+// DELTA frame exceeds the ~8-chunk burst threshold (docs/34 finding 4) and a
+// striped viewer actually engages. The default fixture's ~2–4-chunk deltas
+// sit under one stripe share, which is exactly why the striped e2e pass
+// needs this one — and why TestLargeFixtureDeltasExceedBurstThreshold pins
+// the property: a regenerated clip that compresses under the threshold would
+// silently turn that pass into the designed no-op.
+//
+//go:embed sample-large.ts
+var TSLarge []byte

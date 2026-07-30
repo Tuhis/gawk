@@ -20,7 +20,8 @@
 // - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
 //   the relay re-emits the config before every keyframe by design.
 
-import { frameIdAhead, parseAudioConfig, parseAudioFrame, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type AudioConfigMessage, type DecoderConfigMessage } from './wire';
+import { MAX_PARITY_SYMBOLS, parseParityChunk, recoverChunks } from './parity';
+import { frameIdAhead, parseAudioConfig, parseAudioFrame, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_PARITY_CHUNK, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type AudioConfigMessage, type DecoderConfigMessage } from './wire';
 
 const MAX_ASSEMBLIES = 8;
 
@@ -56,6 +57,14 @@ export interface ReassemblerCallbacks {
   // re-sends it at 1 Hz by design).
   onAudioFrame?: (packet: AudioPacket) => void;
   onAudioConfig?: (config: AudioConfigMessage) => void;
+  // R30 (docs/35 §5.5): one finalized frame's arrival accounting — how many
+  // chunks the frame-global header promised and how many ACTUALLY arrived
+  // (parity-recovered chunks are repairs, not deliveries). Fired at every
+  // finalization: completion (including late-dropped ones — the network
+  // delivered them) and eviction. This is the in-client port of the
+  // datagram-loss-profile instrument's per-frame arithmetic, and the stripe
+  // detector's only input.
+  onFrameAccounting?: (expectedChunks: number, arrivedChunks: number) => void;
 }
 
 export interface ReassemblerStats {
@@ -70,6 +79,28 @@ export interface ReassemblerStats {
   // story (it conceals them) — this is purely "what arrived".
   audioPacketsReceived: number;
   audioBytesReceived: number;
+  // R29 forward parity (docs/34 §7.1). parityChunksReceived is arrival;
+  // framesRecoveredByParity is the headline "is it working" signal — a frame
+  // that would have been dropped incomplete and instead decoded.
+  // parityRecoveryFailures counts frames where parity was present but there
+  // were more erasures than symbols: routine on a bad link, not a fault.
+  parityChunksReceived: number;
+  framesRecoveredByParity: number;
+  parityRecoveryFailures: number;
+  // R30 (docs/35 §12 finding 2): data chunks arriving for a frame at or
+  // behind the emit watermark, dropped WITHOUT creating an assembly. Rare
+  // pre-R30 (one connection delivers a frame nearly atomically); routine
+  // under striping, where eager parity recovery races the slowest leg and
+  // the raced share then arrives behind the watermark. Before this guard,
+  // each such share built a phantom assembly that died as
+  // framesDroppedIncomplete — ~130/window on a clean loopback.
+  staleChunks: number;
+  // R29 finding 3 (docs/34): frames given up on that HELD parity which could
+  // not cover their erasures. parityRecoveryFailures cannot see these — the
+  // solve is never attempted — so it read 0 across a live session that
+  // repaired nothing, making "parity worked" and "parity was never tried"
+  // the same number. Counted at eviction, once per frame actually lost.
+  parityInsufficient: number;
 }
 
 interface Assembly {
@@ -78,8 +109,25 @@ interface Assembly {
   chunkCount: number;
   payloads: (Uint8Array | null)[];
   received: number;
+  // Real chunk arrivals only. `received` doubles as the completeness cursor
+  // and is bumped to chunkCount by a parity recovery; this one never is —
+  // the stripe detector needs delivery truth, not repair truth (R30).
+  arrived: number;
   bytes: number;
+  // R29: parity symbols held for this frame, indexed by parityIndex, and the
+  // total frame length their headers carry (the only thing that says how long
+  // the short final chunk is). Both stay null/0 until a parity chunk arrives,
+  // so a frame on a fleet with parity off allocates nothing extra.
+  parity: (Uint8Array | null)[] | null;
+  parityHeld: number;
+  frameBytes: number;
 }
+
+// How far (in emitted frames) a RECOVERED frame's arrival accounting is
+// deferred, waiting for the chunks the recovery raced. Half a GOP at the
+// 500 ms cadence — far beyond any leg skew, far short of the detector's
+// 30 s window caring.
+const RECOVERED_ACCOUNTING_WINDOW = 16;
 
 export class Reassembler {
   private cb: ReassemblerCallbacks;
@@ -87,6 +135,13 @@ export class Reassembler {
   private lastConfigBytes: Uint8Array | null = null;
   private lastAudioConfigBytes: Uint8Array | null = null;
   private lastEmittedFrameId: number | null = null;
+  // R30 (docs/35 §12 finding 2): accounting for parity-RECOVERED frames,
+  // held open so stragglers the recovery raced can be credited as the
+  // deliveries they are. Reporting arrived < expected at recovery time
+  // called a raced stripe leg a lossy link — which is exactly the false
+  // signal the burst-threshold-loss rule would then fire on. Keyed by
+  // frameId; rolled by watermark distance at each emit.
+  private recoveredLedger = new Map<number, { expected: number; arrived: number }>();
 
   private stats: ReassemblerStats = {
     datagramsReceived: 0,
@@ -98,6 +153,11 @@ export class Reassembler {
     framesDroppedLate: 0,
     audioPacketsReceived: 0,
     audioBytesReceived: 0,
+    parityChunksReceived: 0,
+    framesRecoveredByParity: 0,
+    parityRecoveryFailures: 0,
+    parityInsufficient: 0,
+    staleChunks: 0,
   };
 
   constructor(callbacks: ReassemblerCallbacks) {
@@ -144,6 +204,9 @@ export class Reassembler {
         break;
       case TYPE_VIDEO_CHUNK:
         this.pushChunk(dgram);
+        break;
+      case TYPE_PARITY_CHUNK:
+        this.pushParity(dgram);
         break;
       case TYPE_CLOCK_MAPPING:
         this.pushClockMapping(dgram);
@@ -242,6 +305,23 @@ export class Reassembler {
 
     let assembly = this.assemblies.get(header.frameId);
     if (!assembly) {
+      // R30 (docs/35 §12 finding 2): a chunk for an already-emitted frame
+      // must not build a phantom assembly — the delta-chunk mirror of the
+      // guard pushParity has had since R29. Keyframes bypass (a datagram
+      // keyframe resets the watermark by design); frames with a LIVE
+      // assembly behind the watermark still fill and late-drop as before.
+      if (
+        !header.keyframe &&
+        this.lastEmittedFrameId !== null &&
+        !frameIdAhead(header.frameId, this.lastEmittedFrameId)
+      ) {
+        this.stats.staleChunks++;
+        // If the frame completed by recovery, this straggler is the
+        // delivery the solve raced — credit it before accounting reports.
+        const held = this.recoveredLedger.get(header.frameId);
+        if (held && held.arrived < held.expected) held.arrived++;
+        return;
+      }
       this.evictIfFull();
       assembly = {
         keyframe: header.keyframe,
@@ -249,7 +329,11 @@ export class Reassembler {
         chunkCount: header.chunkCount,
         payloads: new Array<Uint8Array | null>(header.chunkCount).fill(null),
         received: 0,
+        arrived: 0,
         bytes: 0,
+        parity: null,
+        parityHeld: 0,
+        frameBytes: 0,
       };
       this.assemblies.set(header.frameId, assembly);
     }
@@ -264,15 +348,134 @@ export class Reassembler {
     }
     assembly.payloads[header.chunkIndex] = payload;
     assembly.received++;
+    assembly.arrived++;
     assembly.bytes += payload.length;
 
     if (assembly.received === assembly.chunkCount) {
       this.assemblies.delete(header.frameId);
-      this.completeFrame(header.frameId, assembly);
+      this.completeFrame(header.frameId, assembly, false);
+      return;
     }
+    this.tryRecover(header.frameId, assembly);
   }
 
-  private completeFrame(frameId: number, assembly: Assembly): void {
+  // R29 (docs/34): a parity symbol for some frame. Held against the assembly
+  // until either the frame completes on its own (parity discarded) or enough
+  // chunks are in to solve for the missing ones.
+  //
+  // Parity for an unknown frame creates the assembly: on a lossy link the
+  // producer's parity can outrun the chunk that would have created it, and
+  // dropping it would waste exactly the symbol the frame needs.
+  private pushParity(dgram: Uint8Array): void {
+    let header, payload: Uint8Array;
+    try {
+      ({ header, payload } = parseParityChunk(dgram));
+    } catch {
+      this.stats.badDatagrams++;
+      return;
+    }
+    this.stats.parityChunksReceived++;
+
+    let assembly = this.assemblies.get(header.frameId);
+    // Parity for a frame already emitted is redundant, and on a CLEAN link
+    // that is the normal case — the producer sends parity after the data
+    // chunks, so every frame completes before its symbols land. Creating an
+    // assembly here would leave one that can never complete, which later
+    // evicts as framesDroppedIncomplete: phantom drops on a lossless link,
+    // inflating the counter R29's whole diagnosis rests on.
+    //
+    // Serial comparison (wrap-aware), the same rule pushDelta uses. Keyed on
+    // the emitted watermark rather than on "have I seen this frame", because
+    // parity legitimately outruns its own data chunks under reorder.
+    if (
+      !assembly &&
+      this.lastEmittedFrameId !== null &&
+      !frameIdAhead(header.frameId, this.lastEmittedFrameId)
+    ) {
+      return;
+    }
+    if (!assembly) {
+      this.evictIfFull();
+      assembly = {
+        // Parity is delta-only by construction (keyframes ride reliable
+        // streams), so a parity-created assembly is never a keyframe. The
+        // timestamp is filled in by the first real chunk — a parity header
+        // deliberately does not carry one (docs/34 §4.2).
+        keyframe: false,
+        timestampUs: 0n,
+        chunkCount: header.chunkCount,
+        payloads: new Array<Uint8Array | null>(header.chunkCount).fill(null),
+        received: 0,
+        arrived: 0,
+        bytes: 0,
+        parity: null,
+        parityHeld: 0,
+        frameBytes: 0,
+      };
+      this.assemblies.set(header.frameId, assembly);
+    }
+    if (header.chunkCount !== assembly.chunkCount) {
+      this.stats.badDatagrams++;
+      return;
+    }
+    if (!assembly.parity) assembly.parity = new Array<Uint8Array | null>(MAX_PARITY_SYMBOLS).fill(null);
+    if (header.parityIndex >= assembly.parity.length) {
+      this.stats.badDatagrams++;
+      return;
+    }
+    if (assembly.parity[header.parityIndex] !== null) {
+      this.stats.duplicateChunks++;
+      return;
+    }
+    assembly.parity[header.parityIndex] = payload;
+    assembly.parityHeld++;
+    assembly.frameBytes = header.frameBytes;
+    this.tryRecover(header.frameId, assembly);
+  }
+
+  // Attempts recovery as soon as the erasures are within the symbols held.
+  // Eager by design: waiting would add latency to exactly the frames this
+  // feature exists to save.
+  private tryRecover(frameId: number, assembly: Assembly): void {
+    if (!assembly.parity || assembly.parityHeld === 0) return;
+    const missing = assembly.chunkCount - assembly.received;
+    if (missing <= 0 || missing > assembly.parityHeld) return;
+    // A frame whose only arrivals are parity has no timestamp yet; without it
+    // the decoder cannot be fed, so wait for a real chunk.
+    if (assembly.received === 0) return;
+    try {
+      recoverChunks(assembly.payloads, assembly.parity, assembly.frameBytes);
+    } catch {
+      // Routine on a bad link (more erasures than symbols, or a header that
+      // cannot describe the block) — never fatal, and the frame stays held so
+      // a straggler chunk can still complete it.
+      this.stats.parityRecoveryFailures++;
+      return;
+    }
+    let bytes = 0;
+    for (const p of assembly.payloads) {
+      if (!p) return; // recovery did not fill everything; leave it held
+      bytes += p.length;
+    }
+    assembly.received = assembly.chunkCount;
+    assembly.bytes = bytes;
+    this.assemblies.delete(frameId);
+    this.stats.framesRecoveredByParity++;
+    this.completeFrame(frameId, assembly, true);
+  }
+
+  private completeFrame(frameId: number, assembly: Assembly, recovered: boolean): void {
+    if (recovered) {
+      // Deferred (docs/35 §12 finding 2): the chunks this recovery raced may
+      // still be in flight on a slower stripe leg; report only once the
+      // watermark has moved far enough that a straggler is genuine loss.
+      this.recoveredLedger.set(frameId, {
+        expected: assembly.chunkCount,
+        arrived: assembly.arrived,
+      });
+    } else {
+      this.cb.onFrameAccounting?.(assembly.chunkCount, assembly.arrived);
+    }
     // Late delta frames are useless (their reference frame was already
     // superseded); keyframes are self-contained and always emitted. "Late"
     // is serial (wrap-aware): a frameId just past the uint32 rollover is
@@ -294,6 +497,7 @@ export class Reassembler {
     }
     this.lastEmittedFrameId = frameId;
     this.stats.framesCompleted++;
+    this.rollRecoveredLedger(frameId);
     this.cb.onFrame({
       frameId,
       keyframe: assembly.keyframe,
@@ -302,10 +506,46 @@ export class Reassembler {
     });
   }
 
+  // Reports (and drops) deferred recovered-frame accounting once the emit
+  // watermark is RECOVERED_ACCOUNTING_WINDOW frames past it — stragglers
+  // after that are genuine loss, not leg skew. Serial arithmetic throughout;
+  // a broadcaster restart's backwards jump strands at most a window of old
+  // entries, which the size cap below retires with their then-current tally.
+  private rollRecoveredLedger(watermark: number): void {
+    for (const [id, held] of this.recoveredLedger) {
+      const distance = (watermark - id) >>> 0;
+      if (frameIdAhead(watermark, id) && distance >= RECOVERED_ACCOUNTING_WINDOW) {
+        this.recoveredLedger.delete(id);
+        this.cb.onFrameAccounting?.(held.expected, held.arrived);
+      }
+    }
+    while (this.recoveredLedger.size > 4 * RECOVERED_ACCOUNTING_WINDOW) {
+      const oldest = this.recoveredLedger.keys().next();
+      if (oldest.done) break;
+      const held = this.recoveredLedger.get(oldest.value)!;
+      this.recoveredLedger.delete(oldest.value);
+      this.cb.onFrameAccounting?.(held.expected, held.arrived);
+    }
+  }
+
   private evictIfFull(): void {
     if (this.assemblies.size < MAX_ASSEMBLIES) return;
     const oldest = this.assemblies.keys().next();
     if (!oldest.done) {
+      // R29 finding 3: eviction is where a frame is actually given up on, so
+      // it is the only place the parity shortfall can be attributed to one
+      // frame exactly once. Two shapes count, because both mean "parity was
+      // present and could not save it": more erasures than symbols held, and
+      // the n<=k case where every data chunk died so there is no timestamp to
+      // decode the reconstruction with (docs/34 §4.2).
+      const assembly = this.assemblies.get(oldest.value);
+      if (assembly && assembly.parityHeld > 0) {
+        const missing = assembly.chunkCount - assembly.received;
+        if (missing > assembly.parityHeld || assembly.received === 0) {
+          this.stats.parityInsufficient++;
+        }
+      }
+      if (assembly) this.cb.onFrameAccounting?.(assembly.chunkCount, assembly.arrived);
       this.assemblies.delete(oldest.value);
       this.stats.framesDroppedIncomplete++;
     }

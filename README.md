@@ -49,7 +49,7 @@ getDisplayMedia
 | `docs/` | Per-milestone design notes and gotchas (`01`–`33`), plus [`implementation-tasks.md`](docs/implementation-tasks.md) — the server design + task breakdown and current progress |
 | `gawk-server/` | Go relay: WebTransport endpoint, pub/sub hub, dev-cert tooling. `wire/` is public so the native broadcaster can import it. `deploy/`: Dockerfile + Helm chart. See its [README](gawk-server/README.md) |
 | `gawk-broadcast/` | Go native Linux broadcaster (R14): Gio GUI + CLI over a shared engine, hardware encode via portal + GStreamer. Own module, own release; no image or chart — a binary you run on your own PC. Also home of `gawk-pubsim` (R20): the engine replaying the committed H.264 fixture as a deterministic synthetic publisher for CI and drills. See its [README](gawk-broadcast/README.md) |
-| `gawk-telemetry/` | Go per-session diagnostics service (R28), **optional and off by default**: ingests client + relay telemetry, keeps 14 days of hive-partitioned NDJSON plus permanent per-session rollups, and answers with `diagnose()` (docs/13's playbook as code), a live operator dashboard and an MCP surface. Own module, own image + chart. See its [README](gawk-telemetry/README.md) |
+| `gawk-telemetry/` | Go per-session diagnostics service (R28), **optional and off by default**: ingests client + relay telemetry, keeps 30 days of hive-partitioned NDJSON plus permanent per-session rollups, and answers with `diagnose()` (docs/13's playbook as code), a live operator dashboard and an MCP surface. Own module, own image + chart. See its [README](gawk-telemetry/README.md) |
 | `BUGS.md` | Known, confirmed, not-yet-fixed bugs (how found, impact, where a fix starts) |
 | `e2e/` | R20 browser E2E harness: headless-Chrome viewer against a real relay fed by `gawk-pubsim`, plus the kind cluster config + per-pod assertions for the cluster tier. See [`e2e/README.md`](e2e/README.md) and [docs/25](docs/25-e2e-testing-in-ci.md) |
 | `.github/workflows/` | CI (test/lint/build on PR + main; R20 browser E2E on PRs, cluster E2E on release PRs) and release automation (release-please → GHCR images + OCI Helm charts, versions from conventional commits) |
@@ -143,7 +143,7 @@ Milestones (detail in [`docs/implementation-tasks.md`](docs/implementation-tasks
 17. ✅ Viewer playback smoothing (R12): jitter measurement at the actual paint (presentation-cadence error, arrival p95−min, decode σ), an opt-in **"Paced playback"** mode (`PacedPresentationSink` holding ≤3 decoded frames to vsync-aligned targets, subsuming the R10 coalescing sink) with a jitter-tracked adaptive playout offset (clamp p95−min+34 ms to [50, 350]), and an experimental opportunistic frame-interpolation scaffold (WebGL2 blend, own default-off toggle). Viewer-only — zero server/wire changes — `docs/17` (T1–T4 implemented 2026-07-15; automated gates green, manual browser verify done 2026-07-19; the R20 `e2e` job also runs the adaptive+interpolated pipeline green on every PR; T5 motion-estimated interpolation + T6 findings not started)
 18. 🚧 Advanced broadcaster settings (R13): `isConfigSupported` probe matrix, HW-aware auto ceiling + probe-driven 'auto' framerate default (60 when hardware probes it, else 30), acceleration tri-state, bitrate/codec overrides, probe-annotated pickers, and capture aligned to the sticky selection via live `applyConstraints` — **no settings change ever restarts the stream**. Supersedes R7; UI/pipeline only — zero server/wire changes — `docs/18` (L1–L5 implemented 2026-07-15; automated gates green, manual browser verify pending)
 19. ✅ Native Linux broadcaster (R14): a Gio GUI app + CLI over a shared Go engine in the new top-level [`gawk-broadcast/`](gawk-broadcast/) module (importing the relay's now-public `gawk-server/wire` — reused, never mirrored), publishing with **hardware encode** from Linux, which the browser structurally cannot do there. Go-owned XDG ScreenCast portal handshake (the share picker appears on every start — the choice is never persisted) feeding a GStreamer subprocess; hardware-only cascade `vulkanh264enc` → `nvh264enc` → `vah264enc` → **refusal pointing at the browser** (no software rung), each accepted only by real trial encode; MPEG-TS over the pipe for structural AU boundaries; raw Annex-B with empty extradata (the only thing exercising the viewer's Annex-B branch). Zero server/wire/viewer changes — `docs/19` (V0–V7 implemented 2026-07-15; automated gates green including end-to-end tests against the real relay binary; **manual verification on the Linux gaming PC done 2026-07-19** — hardware encode, the latency-bias gate, portal + notifications on KDE/GNOME; not CI-reachable. V8 direct Vulkan Video encode is gated on V2's on-hardware Stage-1 result and not started)
-20. 🔧 System audio (R15): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), wire types 0x07/0x08 + a hub audio-config cache, viewer decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock — **video-master** (docs/20 field finding 4): audio is held at start to meet the video presentation schedule, and residual clock drift is absorbed by a sub-audible playback-rate trim, because after playback begins no amount of buffering can change when a sample is heard. **Always on since 2026-07-23** — the experimental toggle is removed, the broadcaster requests system audio on every start, and a browser that can't start a source broadcasts video-only (the refusal is remembered for the page session, so the next start just works); viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, refreshed + **N1–N6 implemented 2026-07-19**; **thirteen** hardware field findings, all fixed as of 2026-07-26 — finding 13 pinned the two constant offsets that made audio settle behind the picture (the skew metric measured at the worklet's write position instead of the speaker, so the drift trim walked audio `outputLatency` late; and the broadcaster anchored audio timestamps at *encoder output*, writing the encode delay into every label), and finding 12's long-session `avSkewMs` over-report was root-caused with it — a starving playhead's accumulating debt, reported by the same number as lip sync and now told apart by the new **Playhead advance** row. A long-session capture to confirm finding 12 and the formal verification pass both still need a re-run)
+20. 🔧 System audio (R15): Opus via WebCodecs over datagrams — one ~320 B Opus packet per datagram (48 kHz stereo, 128 kbps, 20 ms; no chunking/keyframes), wire types 0x07/0x08 + a hub audio-config cache, viewer decode feeding a main-thread `AudioWorklet` ring buffer, and good-enough A/V sync off the shared capture clock — **video-master** (docs/20 field finding 4): audio is held at start to meet the video presentation schedule, and residual clock drift is absorbed by a sub-audible playback-rate trim, because after playback begins no amount of buffering can change when a sample is heard. **Always on since 2026-07-23** — the experimental toggle is removed, the broadcaster requests system audio on every start, and a browser that can't start a source broadcasts video-only (the refusal is remembered for the page session, so the next start just works); viewer audio controls appear only when audio is received — `docs/20` (designed 2026-07-15, refreshed + **N1–N6 implemented 2026-07-19**; **fourteen** hardware field findings, all fixed as of 2026-07-27 — finding 14 partly reverses finding 5, giving audio its own long-lived reliable stream on every reliable subscriber (R19 + R21) so that only the *video* carrier stays off-limits, with live-edge behind default-off `-live-edge-audio-on-reliable-stream`; finding 13 pinned the two constant offsets that made audio settle behind the picture (the skew metric measured at the worklet's write position instead of the speaker, so the drift trim walked audio `outputLatency` late; and the broadcaster anchored audio timestamps at *encoder output*, writing the encode delay into every label), and finding 12's long-session `avSkewMs` over-report was root-caused with it — a starving playhead's accumulating debt, reported by the same number as lip sync and now told apart by the new **Playhead advance** row. A long-session capture to confirm finding 12 and the formal verification pass both still need a re-run)
 21. ⚠️ iOS native fullscreen (R16): the viewer's fullscreen button is a silent no-op on iPhone (no Element Fullscreen API there — every iOS browser is WebKit; the only native fullscreen is `webkitEnterFullscreen()` on a `<video>`, and the viewer paints a canvas). Attempted fix (**rejected after on-device testing — see status**): a `TeeRenderSink` decorator wraps each **presented** canvas frame (R12 pacing/interpolation preserved) into a worker-side `VideoTrackGenerator` feeding a hidden pre-armed `<video>`; tiered `useFullscreen` (element → video → CSS pseudo-fullscreen) so the button always does something; plus a new stats-overlay **Feature Gates** section (UpperCamelCase names, first gate `NativeVideoFullscreen`). Gated on the *absence* of `Element.requestFullscreen` — non-iPhone devices unchanged (overlay section aside). Viewer-only — zero server/wire changes — `docs/21` (U1–U3 implemented 2026-07-16; **U4 verdict 2026-07-19: native fullscreen still shows a black video on iPhone across three on-device passes → the native tier is rejected**; **superseded by R22 (docs/27), which deleted the tee and re-fed the same hidden `<video>` from an fMP4 muxer + `ManagedMediaSource` — the source type the native player actually presents**)
 22. ✅ Relay scale-out & high availability (R17): the relay becomes N homogeneous pods behind the existing UDP LoadBalancer via a **self-federating origin/edge cascade** over the existing WebTransport protocol — the publisher's pod claims a per-broadcast k8s Lease as origin, other pods edge-pull on demand and re-fan-out (depth ≤ 2), so one hot broadcast's audience spans pods. Version rollouts stop breaking streams: drains send a new 4002 close code (clients reconnect with zero delay), a shared QUIC stateless-reset key makes abrupt deaths detectable in ~1 RTT, and the broadcaster auto-resumes with in-band resume tokens (wire 0x09) so relay restarts keep the broadcast ID and viewer URLs — worst rollout artifact ≤ 1 s freeze, vs today’s orphaned streams — `docs/22` (W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + green in the R20 `e2e-cluster` CI job 2026-07-18; remaining homelab drills + 200-viewer scale proof owner-accepted 2026-07-19 as CI non-goals)
 23. ✅ Live "N watching" count (R18): a relay→publisher push channel plus relay→viewer fan-out reusing the R5 ClockMapping cache/prime template; new wire type 0x0B `TypeViewerCount`. In cluster mode only real viewers count — each edge reports its local count up its `/internal/subscribe` session and the origin aggregates and fans the global total down verbatim (edges excluded). The native GUI rings a "first viewer joined" notification on the 0→1 transition — `docs/23` (Y1–Y6 implemented 2026-07-18; automated gates green; the 2-pod cluster count is asserted in the `e2e-cluster` CI job; single-pod manual verify pending)
@@ -171,6 +171,26 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   (localhost forwarding is TCP-only; via the NAT IP Chrome idle-times-out
   even though CLI clients work). ([docs/02](docs/02-webtransport-hello.md))
 - **`go test -race` needs `CGO_ENABLED=1`** — this environment defaults to 0.
+- **`gawk-telemetry` builds cgo-free by default and its SQL engine does not
+  exist in that build.** `internal/sqlengine` sits behind `//go:build duckdb`;
+  `go build ./...` on a fresh clone links no DuckDB and the console reports
+  itself unavailable, while the shipped image is `CGO_ENABLED=1 -tags duckdb`
+  on `distroless/cc-debian13`. So `-query-sql` being on (its default) is *not*
+  the same claim as "queries work here", and CI builds both configurations.
+  ([docs/36](docs/36-telemetry-ui-history.md) §8 Q1)
+- **A cgo image that BUILDS is not an image that runs**, and nothing catches
+  the difference at build time. The telemetry image shipped twice-broken —
+  `distroless/base` has no libstdc++ for a C++ dependency, and a builder whose
+  glibc is newer than the runtime's produces an unrunnable binary — both
+  surfacing only as dynamic-linker errors on first start. The builder and base
+  are now pinned to the same Debian release, and CI starts every image it
+  builds. ([docs/36](docs/36-telemetry-ui-history.md) §9.3)
+- **`go test ./gawk-telemetry/internal/dashboard/` is green and proves nothing
+  without `npm run build` first.** Its no-external-fetch tests assert against
+  `dist/`, which the Go job never builds, so they *skip by design*. That is the
+  test guarding the bundled-chart decision — run it deliberately after touching
+  `gawk-telemetry/ui/src/charts/`.
+  ([docs/36](docs/36-telemetry-ui-history.md) §0.4)
 - **`npx tsc --noEmit` in `gawk-app` passes vacuously** — the root
   `tsconfig.json` is solution-style (references only), so it checks nothing.
   `npm run build` (`tsc -b`) is the real typecheck; vitest strips types and
@@ -263,6 +283,50 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   the packetizer reads `wt.datagrams.maxDatagramSize` at runtime rather than
   assume the ~1200-byte ceiling; a datagram over the negotiated limit is
   silently dropped. ([docs/11](docs/11-cross-browser-compatibility.md))
+- **The browser's incoming datagram queue drops the OLDEST datagram, and it is
+  shallow by default** — so a frame's back-to-back burst (its ~9-11 chunks,
+  then its two parity symbols) loses its *head*, not its tail, before the read
+  loop is ever scheduled. No reader can win that race, and it is invisible:
+  nothing counts it on either side. A live Firefox 154 session lost **10.5 % of
+  delta chunks and 0.05 % of parity** on one FIFO over one connection — which
+  no network can do, and which is exactly the correlated multi-chunk loss a
+  per-frame k=2 code cannot repair. `LocalViewerTransport` now raises
+  `incomingMaxBufferedDatagrams` (Firefox ships only the older
+  `incomingHighWaterMark`; Chromium is removing it, so both are tried) to 256
+  and reports the result in the **`DatagramReceiveBuffer`** feature gate.
+  Set it in the realm that owns the `WebTransport` — on the worker path the
+  main thread has no handle on it. **The write is not the fix on Firefox, and
+  this is measured, not inferred**: `incomingMaxBufferedDatagrams` is ABSENT
+  there and only the legacy `incomingHighWaterMark` exists, defaulting to
+  **1 datagram**. A paired A/B against a live broadcast
+  (`e2e/firefox-datagram-buffer.mjs` — two subscribers, same seconds, hwm 1 vs
+  8192, reader stalled to stress the queue) moves delivery by less than its own
+  A/A noise floor, with the repeats disagreeing on direction: the attribute
+  stores and reads back while dropping continues unchanged, so a readback proves
+  storage, never effect. The same runs confirm the mechanism — stalling the
+  reader changes loss by 0.01 points. The drop is not in the page at all — see
+  the next entry.
+  ([docs/34](docs/34-live-edge-forward-parity.md))
+- **Datagram loss is a function of ENCODED FRAME SIZE, not of the network being
+  "bad"** — measured with `e2e/datagram-loss-profile.mjs`, which reconstructs
+  each frame's arrival set from `chunkIndex`/`chunkCount` in the headers and so
+  needs no source anchor. On a real link: frames of **≤ 8 chunks lost 0.00 %**
+  (986 frames, not one datagram), while loss climbs monotonically past that —
+  3.8 % at 11 chunks, 8.5 % at 18. The loss lands on the HEAD of each frame's
+  burst (index 2 worst at 8.7 %, **zero from index 10 on**), which is why
+  parity — written last — loses 0.00 %, and why the last chunk of a frame is
+  effectively never lost. It is a path buffer ~8 packets deep evicting
+  oldest-first, **below anything JavaScript can reach**: leg A is clean, the
+  relay drops nothing, and neither the reader's speed nor the WebTransport
+  buffer attribute moves it. Practical consequence: "lower the rung or the
+  bitrate" would move frames under the threshold — but capping quality and
+  pacing (which costs latency) are both **rejected**; the answer is R30's
+  connection interleaving, the zero-latency way to shorten a burst. The
+  bottleneck is **per-connection**: 4x the aggregate traffic cost ~10% more
+  per-connection loss, so splitting a frame across transports puts every one of
+  them under the threshold. Instruments:
+  `e2e/datagram-loss-profile.mjs` and `e2e/datagram-connection-scaling.mjs`.
+  ([docs/34](docs/34-live-edge-forward-parity.md), [ROADMAP](ROADMAP.md))
 - **Firefox's `VideoEncoder` emits a malformed AVCC record** (bad reserved
   bits + a duplicated NALU-type byte); the viewer repairs it in
   `normalizeAvccExtradata` before configuring the decoder.
@@ -368,6 +432,20 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   placement math. Measure the layout box (`offsetWidth`/`offsetHeight`) from
   a neutral corner, hidden until placed.
   ([docs/24](docs/24-viewer-network-resilience.md))
+- **A menu with no `max-height` grows off the bottom of the screen, and
+  clamping its *position* does not save it.** Every milestone from R12 on
+  added its viewer control to one flat context menu until the worst case was
+  17 rows (~740 px at the touch row height) — past a phone's landscape
+  viewport, with `Copy link`, `Terms of use` and `Leave` simply unreachable.
+  The placement math looked correct and was: it floors `top` at the 8 px pad,
+  which keeps the *head* on screen and says nothing about the tail. A menu
+  needs a height bound and `overflow-y` as well as a position, and the bound
+  has to feed the placement math — an unclamped `offsetHeight` sends a
+  bottom-right anchor far off the top instead. Also: **a '✓' glued into a
+  label string is not a state**, it is a changing accessible name; use
+  `aria-checked` with the mark drawn from it in CSS, and keep the row's
+  cost/reason line as `aria-describedby` so the name stays the label alone.
+  ([docs/37](docs/37-viewer-playback-presets.md))
 - **A silently-dead publisher session holds its slot for up to the QUIC idle
   timeout (~30 s), and rejecting the broadcaster's own reclaim in that window
   killed live broadcasts.** The reclaim got 409 from its own zombie session,

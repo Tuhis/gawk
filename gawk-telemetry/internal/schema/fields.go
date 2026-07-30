@@ -54,9 +54,40 @@ var ViewerFields = map[string]Kind{
 	"frameHeight":                KindNumber,
 	"keyframeStreamsReceived":    KindNumber,
 	"reorderGapResyncs":          KindNumber,
-	"reorderKeyframeWaitDrops":   KindNumber,
-	"reorderBuffered":            KindNumber,
-	"videoBytesReceived":         KindNumber,
+	// R29 forward parity (docs/34 §7.3). Typed like every other known field:
+	// a string "12" must not enter a counter series, and an unknown field
+	// still survives verbatim (D15 — version skew is permanent, not
+	// transient).
+	"parityChunksReceived":         KindNumber,
+	"framesRecoveredByParity":      KindNumber,
+	"parityRecoveryFailures":       KindNumber,
+	"framesSkippedWithinAllowance": KindNumber,
+	"parityLevel":                  KindNumber,
+	"parityChunksSent":             KindNumber,
+	"parityBytesSent":              KindNumber,
+	"reorderKeyframeWaitDrops":     KindNumber,
+	"reorderBuffered":              KindNumber,
+	"videoBytesReceived":           KindNumber,
+
+	// R30 striped delivery (docs/35 §7). Requested vs active plus the auto
+	// detector's own inputs — large-frame chunk loss against small-frame
+	// cleanliness is the burst-threshold shape (docs/34 finding 4), and
+	// carrying both is what lets diagnose() argue WHY striping did or did
+	// not engage from a stored session.
+	// docs/35 §12 finding 2: chunks rejected behind the emit watermark —
+	// routine leg-skew stragglers while striped, phantom-frame evidence
+	// anywhere else.
+	"staleChunks": KindNumber,
+
+	"stripeMode":         KindString,
+	"stripeCapable":      KindBool,
+	"stripeActive":       KindNumber,
+	"stripeNeeded":       KindNumber,
+	"stripeLargeLossPct": KindNumber,
+	"stripeSmallLossPct": KindNumber,
+	"stripeLargeChunks":  KindNumber,
+	"stripeLegDials":     KindNumber,
+	"stripeLegDeaths":    KindNumber,
 
 	// Placement (R10) — the "did the fast path actually engage?" answers.
 	"renderer":        KindString,

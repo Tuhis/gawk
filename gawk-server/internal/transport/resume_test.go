@@ -100,7 +100,13 @@ func TestResumeTokenKeyModes(t *testing.T) {
 // dispatching by wire type so stream arrival order doesn't matter.
 func readPublisherHandshake(t *testing.T, ctx context.Context, sess *webtransport.Session) (id, tokenHex string) {
 	t.Helper()
-	for range 2 {
+	// Loop until BOTH are in hand rather than reading a fixed number of
+	// streams: the relay sends a publisher other session-start messages too
+	// (R29 RelayCapabilities, R28 TelemetryHello), and webtransport-go does
+	// not accept in open order (docs/22 finding 9). A fixed count silently
+	// becomes wrong the next time a message is added — which is exactly how
+	// this helper broke when R29 landed.
+	for id == "" || tokenHex == "" {
 		acceptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		stream, err := sess.AcceptUniStream(acceptCtx)
 		cancel()
@@ -128,7 +134,9 @@ func readPublisherHandshake(t *testing.T, ctx context.Context, sess *webtranspor
 			}
 			tokenHex = hex.EncodeToString(token)
 		default:
-			t.Fatalf("unexpected uni-stream message type 0x%02x", typ)
+			// Any other server-initiated message is legitimate and not this
+			// helper's business. Skipping it keeps the handshake assertion
+			// about the handshake.
 		}
 	}
 	if id == "" || tokenHex == "" {

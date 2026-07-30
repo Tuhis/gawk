@@ -89,6 +89,26 @@ export const TYPE_DELIVERY_ACK = 0x0c;
 // predating R28 sends nothing, which the client treats exactly like
 // enabled: false.
 export const TYPE_TELEMETRY_HELLO = 0x0d;
+// ParityChunk (R29, docs/34): broadcaster→relay→viewers, one RAID-6 P/Q parity
+// symbol over a delta frame's data chunks, so a live-edge viewer repairs chunk
+// loss without R19's carrier latency. Deltas only — keyframes ride reliable uni
+// streams already. The relay computes nothing: it forwards a per-subscriber
+// PREFIX of the symbols the producer emitted. Encoding lives in parity.ts.
+export const TYPE_PARITY_CHUNK = 0x0e;
+// RelayCapabilities (R29, docs/34 §4.4): relay→client, once per session on both
+// routes, naming the optional features this fleet supports and at what level.
+// Its own message rather than extra BroadcastAnnounce fields because the
+// parsers are strict and the WebTransport API exposes no response headers — so
+// a producer that never sees it emits no parity, keeping a new broadcaster
+// against an old relay byte-identical to pre-R29.
+export const TYPE_RELAY_CAPABILITIES = 0x0f;
+// StripeState (R30, docs/35 §5.3): client→relay, the one message a striping
+// viewer sends on its primary subscribe session to suppress (or restore)
+// delta datagrams there while stripe legs carry them. Level state, re-sent at
+// 1 Hz while striped; the relay expires stale suppression so a lost message
+// converges to duplicates, never holes. Encoding lives beside the other
+// fixed-size messages below.
+export const TYPE_STRIPE_STATE = 0x10;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -621,6 +641,75 @@ function hexToBytes(hex: string, want: number, what: string): Uint8Array {
   const out = new Uint8Array(want);
   for (let i = 0; i < want; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
+}
+
+// --- StripeState (R30, docs/35 §5.3) ---------------------------------------
+// Mirrors gawk-server/wire/stripe.go byte for byte.
+
+export const STRIPE_STATE_SIZE = 5;
+// Evidence-bound cap on stripe width (docs/34 finding 5 measured coexistence
+// at 4 connections; 4 legs × target 6 covers every observed delta frame).
+// A constant, not a knob — mirrors wire.MaxStripeLegs.
+export const MAX_STRIPE_LEGS = 4;
+
+const STRIPE_FLAG_STRIPED = 0x01;
+
+export interface StripeState {
+  // Delta datagrams should be suppressed on the session this rides.
+  striped: boolean;
+  // Current stripe width, informational (relay /statusz + metrics only).
+  // In [1, MAX_STRIPE_LEGS] when striped, 0 otherwise.
+  stripeN: number;
+}
+
+function validateStripeState(s: StripeState): void {
+  if (s.striped) {
+    if (s.stripeN < 1 || s.stripeN > MAX_STRIPE_LEGS) {
+      throw new WireError(`bad stripeN ${s.stripeN}, want [1, ${MAX_STRIPE_LEGS}] while striped`);
+    }
+    return;
+  }
+  if (s.stripeN !== 0) {
+    throw new WireError(`bad stripeN ${s.stripeN}, want 0 while not striped`);
+  }
+}
+
+export function encodeStripeState(s: StripeState): Uint8Array<ArrayBuffer> {
+  validateStripeState(s);
+  const out = new Uint8Array(STRIPE_STATE_SIZE);
+  out[0] = WIRE_VERSION;
+  out[1] = TYPE_STRIPE_STATE;
+  out[2] = s.striped ? STRIPE_FLAG_STRIPED : 0;
+  out[3] = s.stripeN;
+  out[4] = 0;
+  return out;
+}
+
+// Strict, matching the Go parser: unknown flag bits reject — a future
+// revision of this message gates on a new RelayCapabilities bit, never on
+// old relays guessing.
+export function parseStripeState(b: Uint8Array): StripeState {
+  if (b.length !== STRIPE_STATE_SIZE) {
+    throw new WireError(`stripe state must be exactly ${STRIPE_STATE_SIZE} bytes, got ${b.length}`);
+  }
+  if (b[0] !== WIRE_VERSION) throw new WireError(`bad wire version 0x${b[0].toString(16)}`);
+  if (b[1] !== TYPE_STRIPE_STATE) {
+    throw new WireError(`bad type 0x${b[1].toString(16)}, want stripe state 0x10`);
+  }
+  if ((b[2] & ~STRIPE_FLAG_STRIPED) !== 0) {
+    throw new WireError(`unknown stripe flags 0x${b[2].toString(16)}`);
+  }
+  const s: StripeState = { striped: (b[2] & STRIPE_FLAG_STRIPED) !== 0, stripeN: b[3] };
+  validateStripeState(s);
+  return s;
+}
+
+// The stripe ordinal of a delta datagram: data chunk i has ordinal i, parity
+// symbol r over an n-chunk frame has ordinal n+r — so parity keeps its
+// measured tail-of-burst position on every leg. Leg j of stripe N carries
+// the datagrams with stripeOrdinal(...) % N === j (docs/35 §5.2).
+export function stripeOrdinal(chunkIndex: number, chunkCount: number, parityIndex: number | null): number {
+  return parityIndex != null ? chunkCount + parityIndex : chunkIndex;
 }
 
 // AudioFrame + AudioConfig (R15, docs/20). Mirrors gawk-server/wire; the

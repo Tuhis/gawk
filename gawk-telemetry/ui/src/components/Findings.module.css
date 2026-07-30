@@ -1,0 +1,211 @@
+/*
+  TH6's surface. Density is UD14's, but the evidence table is the one place
+  that gets breathing room: it is the thing a human reads slowly, and cramming
+  it would defeat the reason it exists.
+*/
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.finding {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.verdict {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/*
+  D7's cap, on screen. A client-only verdict must READ as weaker than a
+  relay-corroborated one, not merely carry a smaller number.
+*/
+.confidence {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.capped {
+  color: var(--text-dimmer);
+  font-style: italic;
+}
+
+.copy,
+.toggle {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.copy:hover,
+.toggle:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.ruleId {
+  margin: 2px 0 var(--sp-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.ruleLink {
+  color: var(--text-dimmer);
+}
+
+.evidence {
+  width: 100%;
+  /* Fixed layout + a percentage colgroup: the README's no-layout-shift rule,
+     which gets harder at this density rather than easier. */
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.evidence td,
+.evidence th {
+  padding: 2px 6px 2px 0;
+  text-align: left;
+  vertical-align: top;
+  font-weight: 400;
+}
+
+.signal {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.value {
+  font-variant-numeric: tabular-nums;
+}
+
+.comparison {
+  color: var(--text-dimmer);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+/*
+  The provenance chip. Relay is the anchor and reads as such; client is
+  testimony; derived is neither. Never colour alone — each chip carries its
+  word.
+*/
+.chip {
+  display: inline-block;
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  font-size: var(--fs-xs);
+  border: 1px solid var(--line-strong);
+  color: var(--text-dim);
+}
+
+.relay {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.client {
+  border-style: dashed;
+}
+
+.derived {
+  color: var(--text-dimmer);
+}
+
+.action {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  border-left: 2px solid var(--line-strong);
+  padding-left: var(--sp-2);
+}
+
+.caveats {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) calc(var(--sp-3) + 1rem);
+  border: 1px solid var(--warn);
+  border-radius: var(--r-md);
+  background: var(--warn-bg);
+  font-size: var(--fs-sm);
+}
+
+.healthy {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  font-size: var(--fs-sm);
+}
+
+.reportFoot {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.checks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--panel);
+}
+
+@media (max-width: 640px) {
+  .checks {
+    grid-template-columns: 1fr;
+  }
+}
+
+.checksTitle {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dimmer);
+}
+
+.checkList {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: var(--fs-xs);
+  font-family: var(--mono);
+}
+
+.missing {
+  color: var(--text-dimmer);
+  font-family: var(--sans);
+}
+
+.none {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dimmer);
+}

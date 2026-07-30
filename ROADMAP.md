@@ -33,7 +33,7 @@ feature set exists).
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | ✅ T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify done 2026-07-19; T5 (motion-estimated interpolation) + T6 (findings) not started/droppable ([docs/17](docs/17-viewer-playback-smoothing.md)) |
 | R13 | [Advanced broadcaster settings](#r13--advanced-broadcaster-settings) | 🚧 implemented 2026-07-15 (L1–L5); automated gates green, manual browser verify pending ([docs/18](docs/18-advanced-broadcaster-settings.md)) |
 | R14 | [Native Linux broadcaster](#r14--native-linux-broadcaster) | ✅ V0–V7 implemented 2026-07-15, automated gates green; **manual verify on the gaming PC done 2026-07-19** (hardware encode/portal/GUI — not CI-reachable); V8 (direct Vulkan Video) still gated on V2's on-hardware result, not started ([docs/19](docs/19-linux-native-broadcaster.md)) |
-| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, graduated (toggle removed) 2026-07-23; **N1–N6 implemented; hardware playback produced twelve field findings — all twelve fixed (incl. video-master A/V sync, audio off the R19 carrier, live-edge buffer-depth floor, and the two re-anchor fixes for leaving Deep buffer / toggling paced playback, merged as #123 + #125; finding 12 — `avSkewMs` over-reports on long/stressed sessions, a metric bug, audio is actually fine — root-caused and fixed 2026-07-26). Manual verification reached step 3 of 9 (2026-07-24) then stopped on test-machine performance trouble; needs a full re-run** ([docs/20](docs/20-system-audio.md)) |
+| R15 | [System audio](#r15--system-audio) | 🔧 designed 2026-07-15, graduated (toggle removed) 2026-07-23; **N1–N6 implemented; hardware playback produced fourteen field findings — all fourteen fixed (incl. video-master A/V sync, a live-edge buffer-depth floor, and the two re-anchor fixes for leaving Deep buffer / toggling paced playback, merged as #123 + #125; finding 12 — `avSkewMs` over-reports on long/stressed sessions, a metric bug, audio is actually fine — root-caused and fixed 2026-07-26; finding 14 (2026-07-27) **partly reverses finding 5**: audio now rides its own long-lived reliable stream on every reliable subscriber (R19 + R21), and only the *video* carrier remains off-limits — live-edge keeps the same treatment behind default-off `-live-edge-audio-on-reliable-stream`). Manual verification reached step 3 of 9 (2026-07-24) then stopped on test-machine performance trouble; needs a full re-run** ([docs/20](docs/20-system-audio.md)) |
 | R16 | [iOS native fullscreen](#r16--ios-native-fullscreen) | ⚠️ U1–U3 implemented 2026-07-16; **U4 verdict 2026-07-19: native `webkitEnterFullscreen` still shows a black video on iPhone across three on-device passes → native tier not viable, pseudo-fullscreen (CSS) is the shipping path** (docs/21 U4 pre-registered verdict; BUGS.md) ([docs/21 U4 findings](docs/21-ios-video-fullscreen.md)) |
 | R17 | [Relay scale-out & high availability](#r17--relay-scale-out--high-availability) | ✅ W1–W6 implemented 2026-07-16, automated gates green; kind two-pod smoke automated + **green in the `e2e-cluster` CI job (2026-07-18)**; remaining homelab drills (rollout/crash/rebind blips, conntrack empiricism) + 200-viewer scale proof closed as owner-accepted 2026-07-19 (CI non-goals — kind lacks the physics) ([docs/22](docs/22-relay-scale-out.md)) |
 | R18 | [Live viewer count](#r18--live-viewer-count) | ✅ Y1–Y6 implemented 2026-07-18, automated gates green; cluster viewer-count check (origin `viewersGlobal` == Σ per-pod real viewers, edges excluded) **automated in the `e2e-cluster` CI job 2026-07-19**; single-pod browser/native + re-home + storm manual verify still pending ([docs/23](docs/23-live-viewer-count.md)) |
@@ -47,6 +47,12 @@ feature set exists).
 | R26 | [Quick-start broadcast links](#r26--quick-start-broadcast-links) | 🔧 designed 2026-07-25, not started (QL1–QL6); frontend-only ([docs/31](docs/31-quick-start-links.md)) |
 | R27 | [Frame interpolation in live-edge mode](#r27--frame-interpolation-in-live-edge-mode) | 🔧 designed 2026-07-25, revised in owner review through 2026-07-26 (timestamp-scheduled blends; variable-fps slew/dwell policy; A/V sync = fixed ≈16.7 ms audio delay; Decision 4 default-on carry-over accepted), not started (LI1–LI4) ([docs/32](docs/32-live-edge-interpolation.md)) |
 | R28 | [Advanced diagnostics & telemetry](#r28--advanced-diagnostics--telemetry) | 🔧 designed + **TM1–TM8 implemented 2026-07-26, TM10 (dip episodes) + TM11 (configured target) 2026-07-27**, automated gates green in all four modules; TM9 (Grafana) dropped by owner scope decision, so R9 M8 stays open. Manual verification pending ([docs/33](docs/33-telemetry-and-diagnostics.md) §4.9) |
+| R29 | [Forward parity for live-edge delivery](#r29--forward-parity-for-live-edge-delivery) | ✅ designed 2026-07-27, **FP1–FP8 implemented 2026-07-28**; gates green in all four modules incl. a Go loss-injection test (17.5x frame-loss cut at 3% loss, zero corruption) and a browser e2e pass behind a 5% lossy link (30/30 fps protected vs 25.9/17.9 control). incl. Prometheus `parity_*` metrics + docs/13 playbook rows ([docs/34](docs/34-live-edge-forward-parity.md) §11) |
+| R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔶 designed + **ST2–ST6 implemented 2026-07-29** (owner instruction moved implementation ahead of ST1); gates green in all four modules incl. a race-clean Go burst-threshold proof (control 8.3 % loss, 13/60 eighteen-chunk frames complete; striped ×3: 60/60 at 0.0 %, zero mismapped); **ST1 paired on-hardware runs + ST7 acceptance/loadgen owner-pending** ([docs/35](docs/35-connection-interleaving.md) §12) |
+| R31 | [Telemetry UI v2: a purpose-built diagnosis SPA](#r31--telemetry-ui-v2-a-purpose-built-diagnosis-spa) | 🚧 designed + **TH1–TH11 implemented 2026-07-30**; gates green (Go race + `-tags duckdb`, oxlint / 49 UI tests / build, and the no-external-fetch test over the built bundle); both §8 open questions resolved by the owner — build-tagged cgo DuckDB, SSE kept with the poll as fallback; **on-hardware pass owner-pending** ([docs/36](docs/36-telemetry-ui-history.md) §9); read-surface only — zero wire/relay/viewer/broadcaster change |
+| R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
+| R33 | [WHIP ingest for OBS support](#r33--whip-ingest-for-obs-support) | 💡 proposed 2026-07-29, not started — no design doc yet |
+| R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD12 taken), not started (WB0–WB8) ([docs/38](docs/38-windows-native-broadcaster.md)) |
 
 ---
 
@@ -723,6 +729,15 @@ docs/24 finding 8). Stored `'fixed'` and the legacy `gawk:smoothed-playout
 === '1'` both migrate to `'adaptive'`. Viewer-UI only; zero
 server/wire/pipeline changes.
 
+**Superseded 2026-07-29 by R32 (owner decision, docs/37 deviation 7)**: the
+`'fixed'` mode is **removed outright** — `PlayoutMode` is `'off' |
+'adaptive'`, a stored `'fixed'` migrates to `'adaptive'` in every build, and
+the dev-gated menu entry is gone. The dominance argument above is why that
+was safe; what did not survive is the "keep it as a diagnostic" half, because
+R32 made the viewer menu actions-only and this was its one pacing row, kept
+for a control nobody had reached for since. Pacing is now a property of the
+chosen preset, not a control.
+
 ---
 
 ## R14 — Native Linux broadcaster
@@ -943,12 +958,23 @@ because the display target and the release gate ran off different clocks; the
 jitter buffer's target was an overflow ceiling with no floor, so the sink
 played at ~0 ms depth; and — owner decision — **Decision 10 inverted to
 video-master**, audio aligned at start to the video schedule with a
-sub-audible rate trim for drift. Five more followed through 2026-07-23
-(audio taken back off the R19 reliable carrier, a live-edge buffer-depth
-floor, honest depth accounting with worklet-stall recovery, the
-overflow-drop-vs-concealment fight plus the context's real sample rate, and
-`avSkewMs` measuring buffering rather than lip-sync) — all fixed, and the
-owner reports audio playing reliably as of 2026-07-23, which graduated it
+sub-audible rate trim for drift. **Ten more followed through 2026-07-27, for
+fourteen in total — all fixed** (findings 5–9 by 2026-07-23: audio taken off
+the R19 *video* carrier, a live-edge buffer-depth floor, honest depth
+accounting with worklet-stall recovery, the overflow-drop-vs-concealment
+fight plus the context's real sample rate, and `avSkewMs` measuring buffering
+rather than lip-sync; then 10 and 11, the two re-anchor fixes for leaving Deep
+buffer / toggling paced playback; 12, `avSkewMs` over-reporting on
+long/stressed sessions — a metric bug, audio itself fine — root-caused and
+fixed 2026-07-26; 13, audio settling ~`outputLatency` behind the picture while
+the skew read zero, fixed by measuring at the listener, which root-caused 12
+with it; and **14 (2026-07-27), which partly reverses finding 5** — audio now
+rides its own long-lived reliable stream on every reliable subscriber (R19 and
+R21, one shared implementation), so only the *video* carrier remains
+off-limits, with live-edge behind default-off
+`-live-edge-audio-on-reliable-stream` because a live-edge viewer holds only
+finding 6's ~90–150 ms depth and a retransmit past that becomes a stall).
+The owner reported audio playing reliably as of 2026-07-23, which graduated it
 out of experimental. Automated gates green in all three modules; the formal
 docs/20 verification-plan pass has not been re-run. Deviations recorded in
 docs/20 "Implementation status".
@@ -2164,6 +2190,695 @@ files, which keeps the service cgo-free — docs/33 D11), and **the relay is
 scraped rather than pushing** (no outbound HTTP client, no telemetry queue in
 the process that carries every broadcast's hot path — D5, with the
 sub-scrape-interval blindness recorded as an accepted cost).
+
+---
+
+## R29 — Forward parity for live-edge delivery
+
+**Goal**: a live-edge viewer on a lossy link decodes essentially every frame
+the broadcaster sent, at unchanged latency, without switching to Resilient
+mode and paying its 0.5–2 s buffer. Two parity chunks per delta frame
+(`k = 2`) generated by **both** producers, filtered **per subscriber** by the
+relay, paired with a configurable **per-GOP frame-loss allowance** (default 1).
+
+**Why**: this is the first item found by R28 telemetry rather than by hand,
+and the numbers are the argument. Viewer session `8591c54d` (Firefox/macOS,
+datagram delivery) measured **24.2% of frames arriving incomplete** and only
+**18.5% reaching the decoder**, with `reorderGapResyncs` at 1.94/s against
+1.99 keyframes/s — ~97% of GOPs broken. The relay's own view of that
+subscriber was `dropped: 0`, `sendErrors: 0`, `keyframesDropped: 0`, and leg A
+ingress loss 9 frames in 28,376. The relay sent every byte; the frames died in
+flight.
+
+The mechanism is an amplification chain: ~3% datagram loss × ~9 chunks/frame
+⇒ 24% frame loss × ~20 deltas/GOP ⇒ essentially every GOP holed, and then
+freeze-on-gap discards everything after the first hole until the next
+keyframe. **A 3% packet-loss link becomes an 81% video-loss experience** — the
+network destroys 24%, the viewer policy the remaining 57%. Freeze-over-
+corruption (item 11b) is not malfunctioning; it was chosen when gaps were
+rare, and at 24% frame loss its trade inverts.
+
+Projected at the measured loss rate, `k = 2` with allowance 1 takes GOP
+freezes from **99.6% → 0.26%** and decoded framerate from **8.3 → 42.7 fps**
+of 42.9 attempted, for +22% on the broadcaster's uplink.
+
+**Scope sketch** (full design in
+[`docs/34`](docs/34-live-edge-forward-parity.md)):
+
+- **RAID-6 style P/Q over GF(2⁸)** — MDS for `k ≤ 2` with 256-entry tables and
+  ~100 lines per mirror, versus several times that for general Reed-Solomon at
+  no extra recovery. `P` alone *is* the `k=1` code, and that **prefix
+  property** is what makes per-subscriber `k` free: one computation at the
+  maximum, each consumer taking a prefix. Hard guard at `n > 255`, where `g^i`
+  wraps and the code stops being MDS.
+- **Broadcaster-side generation, relay-side filtering.** The relay computes
+  nothing. Relay-side generation was evaluated and rejected: it does not
+  reassemble deltas today, `Registry.mu` is process-wide so GF work under
+  `fanOutLocked` would serialize every broadcast on the pod, and an origin
+  cannot know an edge's subscribers' `k`. Broadcaster-side keeps the relay a
+  byte forwarder and the cascade unchanged; the cost lands on the
+  well-provisioned leg (0.03% measured loss) and does not compete with the
+  encoder, since parity is arithmetic over already-encoded bytes.
+- **Per-subscriber is cheaper than a common setting**, not more expensive:
+  CPU is per-frame and shared (fan-out already hands every subscriber the same
+  slice), while egress is charged only to viewers who asked — ~86k vs ~8.6k
+  extra sends/s on a 1000-viewer broadcast with 10% lossy viewers.
+- **Live-edge only.** Resilient/Deep-buffer ride reliable carriers where QUIC
+  retransmits, so parity is redundant and the relay suppresses it.
+- **Per-GOP loss allowance** (default 1, `N=0` byte-identical to today):
+  parity reduces how often a frame is unrecoverable, the allowance bounds what
+  one costs. Neither substitutes for the other — the allowance alone barely
+  moves clean fps, because it converts freezes into artifacts without reducing
+  loss.
+- **Two wire allocations**: `0x0E TypeParityChunk` (13 B — deliberately not 20,
+  or a full-payload parity datagram would breach the 1200 cap) and
+  `0x0F TypeRelayCapabilities`, which gates emission so a new broadcaster
+  against an old relay stays byte-identical. Strict parsers forbid extending
+  an existing message, and JS cannot read HTTP response headers, so the
+  capability has to be its own in-band message.
+- **Requested vs. active** everywhere in stats (the R19 "reliable requested /
+  datagrams served" precedent), piped to R28 telemetry as typed rollup fields
+  with a new `parity-ineffective` `diagnose()` rule whose action text
+  distinguishes under-provisioned `k` from bursty loss — opposite responses.
+
+**Open decision**: the default parity level (§5.2). Recommendation is `k=1`
+by default with `k=2` in the viewer menu — the only option that helps by
+default without charging the whole fleet the maximum.
+
+**Named risk**: per-frame parity is exactly the scheme burst loss defeats. The
+measurement says this link is i.i.d. — an i.i.d. model predicts 8.3 decoded
+fps against a measured 7.96, while a burst model predicts 16.6 — but that is
+one session, and it is the assumption most worth re-checking. Pre-registered
+kill criteria in docs/34 §9; the response to bursty loss is Resilient mode,
+never a larger `k`.
+
+---
+
+## R30 — Connection interleaving for live-edge delivery
+
+**Status**: designed 2026-07-29
+([docs/35](docs/35-connection-interleaving.md), chunks ST1–ST7); **ST2–ST6
+implemented the same day** (owner instruction moved implementation ahead of
+ST1's on-hardware experiment; deviations + the CI burst-threshold proof in
+docs/35 §12), **ST1/ST7 on-hardware halves owner-pending**.
+This entry carried the evidence the design started from; docs/35 preserves it
+(§1) and settles the design questions below — owner decisions 2026-07-29:
+adaptive grow-only N sized from the measured per-frame datagram count (never
+a bandwidth estimate), per-connection burst target **6** (headroom under the
+measured ~8), engagement via auto-detect of the finding-4 loss signature plus
+a manual tri-state toggle (default `auto`; no default-on fleet-wide). ST1 —
+the end-to-end split experiment on the affected machine — gates everything
+else and can fail (pre-registered kill criteria, docs/35 §10).
+
+**Goal**: eliminate the burst-length datagram loss measured in R29 finding 4
+**without adding latency and without lowering quality**, by splitting each delta
+frame's datagrams across several WebTransport connections so that no single
+connection ever sees a burst long enough to overflow.
+
+**Why this and not the two obvious alternatives.** The loss is not a lossy
+network in the usual sense — it is a threshold. Measured on the affected
+viewer's own machine against the live fleet
+([`docs/34`](docs/34-live-edge-forward-parity.md) finding 4, 2487 frames):
+
+| chunks in the frame | 1–8 | 9 | 11 | 14 | 18 |
+|---|---|---|---|---|---|
+| chunk loss | **0.00 %** | 0.9 % | 3.8 % | 6.8 % | 8.5 % |
+
+986 frames of eight chunks or fewer lost **not one datagram**. Past eight, loss
+climbs with burst length. It lands on the *head* of each burst (index 2 worst at
+8.7 %, zero from index 10 on), which is why parity — written last — loses
+**0.00 %** while chunks lose 3.76 %, and why the last chunk of a frame is
+effectively never lost. It is a buffer roughly eight packets deep evicting
+oldest-first, **below anything JavaScript can reach**: leg A is clean, the relay
+drops nothing, the receiver's drain rate is irrelevant (stalling it 10 ms every
+25 datagrams moved loss 3.13 % → 3.14 %), and the WebTransport receive-buffer
+attribute is inert on Firefox (finding 3).
+
+So the lever is burst length, and there are exactly three ways to shorten it:
+
+1. **Make frames smaller** — lower rung or bitrate. Works; costs picture
+   quality.
+2. **Pace the burst** — spread a frame's datagrams across its interval. Works;
+   costs up to a frame interval of latency on the last chunk.
+3. **Split the burst across transports** — each connection sees `n/N` chunks,
+   sent simultaneously. Costs neither.
+
+**Owner decision (2026-07-29): 1 and 2 are rejected. Minimal latency, maximal
+quality.** Both trade away exactly what the product exists to deliver, so the
+harder option is the right one.
+
+**What makes 3 physically available** is finding 5: the bottleneck is
+**per-connection**, not shared. Four simultaneous connections to the same
+broadcast — 4× the aggregate traffic through the same host and path — cost about
+10 % more per-connection loss (3.55 % → 3.90 %), nowhere near proportional. Each
+connection has its own headroom. Split an 18-chunk frame three ways and every
+connection carries six, under the measured threshold on all of them.
+
+**Interleaving is the zero-latency form of pacing** — same mechanism (shorten
+the burst any one connection sees), without spreading it in time. That is the
+whole argument for paying its cost.
+
+**Evidence and instruments** (all merged, re-runnable against a live broadcast):
+
+- [`docs/34`](docs/34-live-edge-forward-parity.md) findings 2–5 — the full
+  chain, including two conclusions that were withdrawn on measurement and why.
+- `e2e/datagram-loss-profile.mjs` — reconstructs each frame's arrival set from
+  `chunkIndex`/`chunkCount`/`parityIndex`, so loss is measurable **from the
+  viewer alone, with no source anchor**. Produced the threshold and the
+  head-of-burst profile. That property is not incidental — see the constraint
+  below.
+- `e2e/datagram-connection-scaling.mjs` — the per-connection vs shared test.
+- Both need an origin the fleet's `-allowed-origins` accepts, and Playwright's
+  Firefox: `serverCertificateHashes` refuses a `-dev-cert` relay (Mozilla bug
+  1873263), so a local relay is not a substitute.
+
+**Constraint the design must not spend: viewer-side self-measurability.**
+
+Every number in this entry was obtained from a viewer, with nothing but the
+bytes it received. That is possible because a `VideoChunk` header carries
+`chunkIndex` **and `chunkCount`** — so a receiver knows how many datagrams a
+frame was split into, and therefore what it is missing — and a parity header
+carries `parityIndex` against a known `min(2, n)`. Expected and received are
+both derivable on the spot. No relay counter, no broadcaster telemetry, no
+clock alignment between two vantage points.
+
+This is what made the investigation tractable at all. Findings 2 and 3 were
+argued from counters measured at two ends and **both reached wrong
+conclusions**; finding 4 settled it in one 100-second run because the frame
+carries its own expectation. It is also what will decide whether R30 worked:
+the acceptance test is this instrument reporting ~0 % where it now reports
+3.8–12.6 %.
+
+So the chunk→connection mapping must keep a viewer able to answer *"which
+datagrams should have arrived, and on which connection?"* from the wire:
+
+- **`chunkCount` must stay frame-global**, not per-connection. A receiver that
+  only learns its own connection's share can no longer see what the frame as a
+  whole was owed.
+- **The mapping must be derivable by the receiver**, not merely known to the
+  sender — otherwise per-*connection* loss attribution dies exactly when it
+  becomes the thing worth measuring. A deterministic rule (e.g. `chunk i →
+  connection i mod N`) with `N` discoverable satisfies this; an opaque or
+  sender-chosen assignment does not.
+- **Both instruments must still run after R30.** If they need updating for the
+  new mapping, that update is part of the item, not a follow-up — a change that
+  breaks its own measurement cannot be shown to have worked.
+
+**Design questions the doc has to answer** (all decided in
+[docs/35](docs/35-connection-interleaving.md) §4–§5, kept here as the record
+of what was open when the entry was written):
+
+- **How many connections, and fixed or adaptive?** The threshold is ~8 on this
+  path and frames run to ~23 chunks, so N=3 covers observed sizes — but loss
+  magnitude varied 3.8 % → 12.6 % on the *same* machine between sessions, so the
+  design should key on burst length rather than on a loss rate, and consider
+  adapting N to measured frame size.
+- **Which connection carries what.** Keyframe streams (R8), parity (R29), audio
+  (R15), and the control traffic that is not media at all — ClockMapping,
+  ViewerCount, DeliveryAck, TelemetryHello — need homes. Parity's current
+  immunity comes from being written last; on a split it should not land at the
+  head of any connection's burst.
+- **Primary-session semantics.** Session identity (R28's 0x0D token), R18 viewer
+  count, R21 DVR cursor, R19 delivery negotiation and R17 resume are all
+  per-session concepts today. One connection has to be primary, and the failure
+  of a secondary must degrade rather than tear down.
+- **How chunks map to connections** — round-robin vs contiguous blocks. With
+  head-drop the position *within each connection's* burst is what matters, so
+  the mapping is a real design variable, not a formality.
+- **Relay cost against R17.** N× per-subscriber state (queue, drain goroutine,
+  DVR cursor, carrier and keyframe streams), N× handshakes and keepalives,
+  against a ~1000-viewer hot-broadcast target. This is the item's main expense.
+- **Join cost and the R2 rate limiter.** N handshakes per viewer at join, into a
+  per-IP limiter of 3/s burst 10, with rollout reconnect herds (R17 W6).
+- **N independent congestion controllers on one path** — fairness and aggregate
+  aggressiveness at scale; the N=4 test says they coexist on one link, which is
+  not the same as saying 1000 viewers × N do.
+- **Live-edge only**, like parity: Resilient and Deep-buffer ride reliable
+  carriers where QUIC retransmits, so there is nothing to win there.
+
+**Named risks**:
+
+- **The core claim is a composition, not a direct measurement.** "Below eight
+  chunks a connection loses nothing" plus "connections do not compete for that
+  headroom" implies interleaving works — but nothing has yet split a real send
+  side and measured it. The first chunk of the design must be exactly that
+  experiment, and it must be able to fail.
+- **The threshold is one path's property.** It held on the affected viewer, and
+  that is the path that matters, but a fixed N tuned to it may not generalize.
+- **Connection count is the scaling axis R17 spent an entire milestone on.**
+  Multiplying it is the kind of change that is cheap at one viewer and expensive
+  at a thousand.
+
+**Non-goals**: capping frame size, pacing (both rejected above), and any change
+to Resilient/Deep-buffer delivery.
+
+---
+
+## R31 — Telemetry UI v2: a purpose-built diagnosis SPA
+
+**Status**: **TH1–TH11 implemented 2026-07-30**; an on-hardware pass against the
+homelab fleet is owner-pending. Chunks **TH1–TH11**, in three waves.
+Design: [docs/36](docs/36-telemetry-ui-history.md); what shipped and where it
+deviates is [§9](docs/36-telemetry-ui-history.md#9-what-was-built-and-where-it-deviates).
+
+R28 built a store and a query surface, and then wired a **live-only** page to
+it. The dashboard consumes **two of the eight** read endpoints — `/live` and
+`/v1/resolve`. Everything historical the service already stores *and already
+serves* (`/v1/sessions`, `/v1/sessions/{id}` with its full timeline and every
+event, `/diagnose`, `/compare`, `/v1/fleet`, `/v1/broadcasts`) is reachable
+only by `curl` or by an operator with Claude Code pointed at MCP. The page is
+excellent for the ten seconds after someone says "it's stuttering" and silent
+ten minutes later.
+
+Three of the gaps are **defects, not missing features**:
+
+1. **`diagnose()` emits dead links.** It sets
+   `DashboardURL = base + "#/session/<id>"`; the SPA has no router. Those URLs
+   are serialized into every rollup row's `verdict` blob — and **rollups are
+   permanent**, so the defect is being written into the one artifact that is
+   never pruned. Fixing it is correctness, not scope.
+2. **The timeline is a tab-local memory.** `lib/history.ts` accumulates from
+   the polls the page already makes: 10 minutes, gone on reload, *"history
+   starts when the page is opened."* Best during the incident, worthless after
+   it — inverted from what a post-mortem needs.
+3. **The dashboard asserts where the API argues.** Cards render
+   `finding.verdict` as a bare sentence; `Evidence`, `Confidence`, `Action`,
+   `Passed` and `Unavailable` — D6/D7's whole provenance apparatus — never
+   reach a screen.
+
+**The finding that shaped the design**: `store.ReadSession` flushes the open
+writer so *"a read during a live session sees what has been appended"* — so
+the full-resolution timeline of a **live** session is already on disk and
+already served. The client-side accumulation was never necessary; it is a
+layer to delete, not extend. `internal/live`'s *"the live page never reads a
+session file"* stance still holds — it governs the **fleet scan** (every
+session, every 2 s), not one file on one human's click.
+
+### Owner decisions (2026-07-29)
+
+| | Decision |
+|---|---|
+| Charting | **Apache ECharts, bundled.** Chosen for `echarts.connect()` — synchronised crosshair + zoom across separate instances *is* the multi-lane timeline, built in rather than built by us. Canvas; `markArea`/`markLine` give shading, episodes and event markers natively. `echarts/core` with explicit registration + a local React hook (not `echarts-for-react`) |
+| Scale | **~50 broadcasts / ~200 viewers**, lists virtualized. Above homelab reality, below R17's ceiling |
+| Landing | **Live fleet stays home**; History / Explore / Fleet / Rules become peer sections |
+| Visual | **Dense ops console, dark.** Deliberately *not* R6's monochrome tokens — those were designed for a cinematic viewer |
+| Retention | **Configurable, default 14 → 30 days.** Covers a release cycle, so cross-release comparison stays full-resolution. Rollups stay permanent |
+| Writes | **Annotations only** — notes pinned to a session or a timestamp, stored beside rollups, permanent, exported into markdown |
+| Mobile | **Read-only triage**; dense views are desktop-only and say so |
+| SQL | **Console on by default** — see the named risk below |
+| Watch | **In-tab only**: star a broadcast, it pins and changes on escalation. No notifications (background tabs throttle to ~1/min), no server state |
+| Rules | **Full read-only transparency** — catalogue + per-session trace. No tuning: stored verdicts ran under the thresholds of their day |
+| Dips | **Explained, including across sessions** — TM10 already captures per-episode counter deltas; the cross-session half must state its own confidence |
+
+Grafana is **deferred again** (owner, 2026-07-29), so R9 M8 stays open and TH7
+is now the home for trends.
+
+### Chunks
+
+**Wave 1 — foundations + history**: TH1 routing/permalinks/URL state (the
+correctness fix, unblocks the rest) · TH2 session detail from disk · TH3
+history browser.
+**Wave 2 — correlation + depth**: TH4 multi-lane broadcast timeline · TH5
+metric explorer + a server-owned field catalogue · TH6 verdicts, evidence and
+the rule catalogue.
+**Wave 3 — fleet + intelligence**: TH7 fleet timeline & trends · TH8
+annotations · TH9 dip explainer + cross-session correlation · TH10 SQL console
+· TH11 ergonomics (binding each surface as it ships, not landing at the end).
+
+TH1+TH2 alone close "it was bad at 21:04" and the dead-link defect, and are
+worth shipping on their own.
+
+### Named risks, as resolved
+
+- **The SQL console was not a flag flip** — and the owner chose to pay for it
+  (docs/36 §8 Q1). `internal/sqlengine` splits on a `duckdb` build tag: a fresh
+  clone stays cgo-free and the console says plainly that this build has no
+  engine, while the deployed image is `-tags duckdb` on `distroless/cc-debian13`
+  (`cc` for the C++ runtime DuckDB needs, and pinned to the builder's Debian
+  release — both were wrong on the first attempt and cost a deploy, docs/36
+  §9.3). The module gained its first third-party dependency and its first
+  `go.sum`, and `mcp.Options.SQL` finally has a producer after accepting one
+  since R28.
+- **SSE was the author's call and the owner kept it** (docs/36 UD22). The
+  stream sends only changes — the projection is hashed and an identical one is
+  skipped — so an idle fleet costs a heartbeat; the client falls back to the
+  2 s poll and says which one is feeding the page.
+- **One rule engine, now visible in more places.** docs/33 §8 already names the
+  cost of the dashboard sharing `diagnose()`'s engine; TH6/TH9 raise it — and
+  are also the mitigation, since evidence and a trace on screen are what let a
+  human catch a rule that is confidently wrong.
+- **Cross-session correlation can manufacture a causal story.** Two viewers
+  dipping together is evidence about a shared leg, not proof of one; the
+  acceptance criteria require co-occurrence wording and a stated confidence.
+
+**Non-goals**: no new measurement (R28 §7 stands) · not a Prometheus
+replacement · no alerting/paging infrastructure · no rule tuning · no control
+actions · no public exposure of the read surface and no external asset fetch ·
+no PII or new identity · no auth/RBAC model.
+## R32 — Viewer playback presets & settings UX
+
+**Goal**: a first-time viewer can see what playback mode they are in and
+change it to a better one for their connection **in two taps**, without
+meeting a single knob they should not touch — while everything reachable
+today stays reachable, and the owner can still talk a friend through setting
+Striping over the phone.
+
+**Why now**: every milestone from R12 onward added its viewer control to one
+flat right-click menu, and nothing was ever removed. The worst realistic case
+today — live-edge delivery, a stream with audio, interpolation available,
+non-dev build — is **17 rows, of which 11 are tuning knobs that already ship
+with the correct default for the average viewer** (live edge, adaptive pacing,
+fleet-max parity, auto striping, interpolation on). Someone who opens the menu
+to mute the stream is shown eleven decisions in order to find the one they
+wanted. Three concrete defects come with it:
+
+- **The menu can run off-screen with no way to scroll.** `.menu` sets
+  `max-width` but no `max-height` and no `overflow`, and the placement clamp
+  floors `top` at `PAD` — so at the touch row height, 17 rows (~740 px) put
+  *Copy link*, *Terms of use* and *Leave* below an iPhone landscape viewport,
+  unreachable. This is a bug, and it is fixed first (UX1), independently of
+  the rest.
+- **Irrelevant options vanish rather than gray.** Parity and striping are
+  filtered out of the array entirely under Resilient/Deep, so the menu changes
+  *length* with the delivery mode and a viewer who saw "Loss protection" once
+  cannot find it again — and is told nothing about why.
+- **Frame interpolation appears mid-session**, because it is gated on
+  `stats?.interpolation != null` and stats arrive a second or two after
+  connect. The menu grows a row while the user is looking at it.
+
+Underneath all three: `MenuItem` is `{ label, onSelect }` — no `disabled`, no
+groups, no radio semantics. Checkmarks are string suffixes (`'Paced playback
+✓'`), so `aria-checked` does not exist and a screen reader hears a *changing
+accessible name* where the state changed.
+
+**The load-bearing insight** (and the reason the presets are honest rather
+than decorative): the four controls are not four independent choices, and two
+of them are not on the same axis at all. Delivery mode and paced playback buy
+smoothness with **latency**; loss protection and striping buy robustness with
+**bandwidth and connection count, at zero latency cost**. An earlier sketch
+mapped parity and striping into the presets ("Lowest latency" = parity off +
+striping off); that is recorded as **rejected** in docs/37 §3, because turning
+them off does not lower latency by a millisecond. So presets govern delivery +
+pacing; parity, striping and interpolation are Advanced, stay at their
+defaults, and are exactly what "Custom" tracks.
+
+**Shape** (owner decisions, 2026-07-29):
+
+- **Presets promoted to the control bar** — a text pill showing the current
+  mode (`Balanced ▾`) that opens a four-row popover. One axis, monotonic in
+  latency: **Lowest latency** (live, unpaced) → **Balanced** (today's default)
+  → **Smoother** (resilient) → **Most stable** (deep buffer).
+- **"Custom" only once the user has gone off-preset** — never offered on a
+  clean install; it is a state you land in, shown checked and inert, not an
+  option you pick.
+- **A real settings panel**, reusing the broadcaster's existing scrim +
+  slide-in `GlassPanel` pattern, with Advanced collapsed behind a disclosure
+  carrying a `· N changed` marker.
+- **Not-applicable options gray with their reason on the row**, never removed
+  — touch has no hover, and a gray row with no explanation is worse than an
+  absent one.
+- **The right-click / "⋮" menu becomes actions-only** (≤ 8 rows).
+
+**Decisions worth not re-deriving** (full set in docs/37 §5):
+
+- **No new persisted key — the preset is derived, never stored.** The five
+  existing keys stay exactly as they are and the preset is a *view* over them:
+  no migration, no drift between a stored preset and the values it claims to
+  describe, and a legacy R19-era configuration keeps working and simply reads
+  Custom. A stored preset would be a second source of truth for state that
+  already has one.
+- **A preset is a complete configuration; picking one resets the advanced
+  knobs to defaults.** The alternative — sticky, orthogonal advanced values —
+  makes the pill label lie ("Balanced" while striping is forced off). The cost
+  is accepted and bounded.
+- **Reconnects are disclosed because they are visible**: delivery and parity
+  are in `useViewerConnection`'s session-effect deps and re-dial; pacing,
+  striping and interpolation are separate live-crossing effects and never do.
+  Only the former carry `· reconnects`, or the annotation means nothing.
+- **The panel renders inside the viewer root, never portalled to `body`** — in
+  CSS pseudo-fullscreen (the iPhone shipping tier, docs/21 U4) the fullscreen
+  element *is* that root, so anything portalled out is invisible.
+
+**Named risks**: picking a preset discards advanced choices (bounded, and the
+`· N changed` marker makes the deviation visible first); phone support gains
+one step for the advanced knobs (accepted — dev-gating them was rejected
+because the owner's remote-troubleshooting flow is load-bearing here); one
+more control in a bar designed for restraint; and churn in a 1019-line test
+file that matches on exact `'✓'`-suffixed labels, where the rule is that every
+*behavioural* assertion survives and only the selector changes.
+
+**Pre-registered fallback**: if the on-device pass finds the panel worse than
+what it replaced, R32 keeps UX1 + UX2 and falls back to a **two-tier menu**
+(`Playback ▸` / `Advanced ▸` drill-downs), which still fixes the overflow bug
+and the vanishing rows.
+
+**Non-goals**: any mechanism change (zero server/wire/relay/broadcaster/
+pipeline); re-litigating R12's adaptive+interpolation default or R30 finding
+6's striping default; R19 Decision 11's auto-detect suggest-banner, which
+stays deferred — R32 is its prerequisite, since once presets exist the banner
+has one thing to suggest instead of four knobs to set; the frozen `#/debug/*`
+surfaces; the broadcaster surface; and the stats overlay, which stays the
+ground truth and the Copy-diagnostics path.
+
+---
+
+## R33 — WHIP ingest for OBS support
+
+**Goal**: let a broadcaster run OBS Studio (or any other WHIP-capable
+encoder — vMix, FFmpeg's `-f whip`, GStreamer's `whipsink`) as an
+alternative to the `gawk-app` browser broadcaster or the `gawk-broadcast`
+native Linux app, by giving the relay a **WHIP** (WebRTC-HTTP Ingestion
+Protocol, `draft-ietf-wish-whip`) ingest endpoint. OBS has shipped a native
+WHIP output (Settings → Stream → "WHIP", just a URL + Bearer Token) since
+OBS 30, so this is a config change for the broadcaster, not a plugin.
+
+**Why this is wanted**: OBS gives scene composition, multiple sources,
+overlays, and per-source audio mixing that `getDisplayMedia` screen-share
+can't — broadcasters who already run OBS for other platforms shouldn't
+have to give that up to use gawk. This is purely a new **ingest** path:
+every viewer-facing piece of the pipeline (WebTransport delivery, the wire
+format, DVR/resilient mode, forward parity, striping, telemetry) is
+unchanged, because the hub's ingest surface
+(`hub.Publisher.HandleDatagram` / `IngestKeyframeStream` in
+`gawk-server/internal/hub/hub.go`) already treats "how frames arrived" as
+opaque — R14 proved a non-browser publisher works with zero wire/viewer
+changes, and WHIP is a second instance of the same pattern.
+
+**Scope sketch**:
+
+- **New HTTP endpoint on the relay**, e.g. `POST /whip/{id}` — accepts the
+  SDP offer per the WHIP spec, returns an SDP answer plus a `Location`
+  header for the session resource; `DELETE` on that resource ends the
+  broadcast (the WHIP-native equivalent of today's session teardown).
+  Trickle ICE via `PATCH` is optional day-one scope.
+- **A Go WebRTC stack** (almost certainly `pion/webrtc`, the de facto Go
+  ICE/DTLS/SRTP implementation) terminates the PeerConnection and hands
+  the relay incoming RTP: H.264 (depacketized per RFC 6184) for video,
+  Opus (RFC 7587) for audio to match the existing Opus pipeline
+  (R25/`gawk-broadcast`).
+- **An adapter, not a hub change**: depacketize RTP into Annex-B access
+  units, detect keyframes the way the native broadcaster's engine already
+  does (IDR NAL type), and **re-chunk into gawk's own `VideoChunk`
+  datagrams and reliable keyframe streams** — respecting the ~1200-byte
+  safe payload limit — then feed them through the *existing*
+  `Publisher.HandleDatagram` / `IngestKeyframeStream` entry points. The
+  hub, wire format, and every downstream milestone stay untouched.
+- **Auth**: WHIP's `Authorization: Bearer <token>` header maps naturally
+  onto the R2 pre-shared broadcast secret and the R17 "newest publisher
+  wins" resume-token model — the broadcast is still started/minted via the
+  existing web UI/API, and the resulting URL + token get pasted into OBS's
+  stream settings, rather than OBS minting broadcasts itself.
+- **New third-party dependency** for `gawk-server` — the relay currently
+  only depends on `quic-go`/`webtransport-go`; this would be its first
+  non-QUIC transport stack.
+
+**Key design questions**:
+
+- **ICE reachability for the relay fleet.** R17 scaled the *viewer*
+  fan-out horizontally behind one UDP load balancer for WebTransport/QUIC;
+  WHIP's media path is a separate DTLS-SRTP/ICE session per broadcaster
+  that needs its own reachable host/srflx candidates (or a TURN relay) per
+  relay pod. The saving grace is scale — this is bounded by concurrent
+  *broadcasts* (R2's default ~5), not by hundreds of viewers — but it's
+  still a distinct network-exposure surface from today's single UDP
+  `LoadBalancer` Service and needs its own design-doc treatment (ICE-lite
+  with pod-routable host candidates vs. a shared TURN/relay component).
+- **Codec negotiation**: OBS's WHIP output can offer H.264, VP8, VP9, or
+  AV1 depending on the encoder chosen — the relay's SDP answer needs to
+  restrict to what the viewer's negotiated codec list (`avc1.42E02A` → … →
+  `vp8`, per CLAUDE.md) actually supports, most simply by refusing to
+  answer with anything outside that list.
+- **Keyframe interval mismatch**: OBS's configurable keyframe interval
+  (commonly 2s, vs. gawk's 500ms GOP) means late-joining viewers wait
+  longer for a cached keyframe to prime them — either document a
+  recommended OBS setting or accept the longer worst case.
+- **Where this lives**: inside `gawk-server` (it must feed the hub
+  directly), not a new module/binary like `gawk-broadcast` — this is
+  server-side protocol support, not a client we ship.
+- Whether reconnect/supersede semantics need a WHIP-specific mapping —
+  WHIP has no `wire.go` close codes; this likely maps onto HTTP status
+  codes on the `POST`/`DELETE`, per the WHIP spec's own conflict
+  semantics.
+
+**Non-goals**: WHEP (the read-side counterpart, for a WebRTC-based viewer
+path) — out of scope; viewers stay on WebTransport/WebCodecs. Running OBS
+*as a subprocess of* `gawk-broadcast` — already surveyed and rejected in
+`docs/19` (too heavyweight for the native broadcaster's
+minimal-dependency goal); this is the opposite shape, a remote OBS
+instance pushing *into* the relay over the network, not a local process
+wrapped by our engine. Any change to the existing WebTransport
+ingest/viewer path — WHIP is strictly additive.
+
+**Status**: proposed 2026-07-29, not started — no design doc yet.
+
+---
+
+## R34 — Native Windows broadcaster
+
+**Goal**: a Windows counterpart to `gawk-broadcast` (R14) with two capture
+modes selectable at start — **share one application** (its window plus that
+app's own audio, independent of anything else on the desktop) or **share the
+whole desktop** — and, like R14, **hardware video encode only**: if no
+hardware encoder probes clean, the app refuses to start and points the user
+at the browser broadcaster rather than falling back to software.
+
+**Why this is different from R14's motivation**: R14 exists because the
+browser structurally *cannot* hardware-encode on Linux. That is **not** true
+on Windows — WebCodecs hardware encode already ships there (CLAUDE.md
+architecture note), and R14's own doc says so plainly: "Does not: help
+Windows/macOS broadcasters (**already fine**)" (docs/19), and R25 lists
+"Windows/macOS native broadcasters" as a non-goal for the same reason
+(docs/28). So this item is **not** re-litigating that — the driver here is
+**capture fidelity, not encode capability**: `getDisplayMedia` is
+whole-screen-preferred by design (CLAUDE.md, for exclusive-fullscreen game
+compatibility) and exposes no per-application audio at all — Chrome's
+"share a tab/window" capture does not give you that window's audio in
+isolation, only whole-system loopback. Windows itself has had a per-process
+audio-loopback API since 10 2004+ that no browser surfaces. A native app is
+the only way to give a broadcaster "just this game, video and audio, nothing
+else on my desktop" without alt-tabbing out of a fullscreen game to the
+browser's picker.
+
+**Why now**: same underlying goal as R14 (native capture fidelity beyond
+what the browser exposes), but **not a sibling in implementation** — see
+below.
+
+**Not a Go module addition — a separate codebase, almost certainly C++ or
+Rust.** R14's Linux design leans on Go for two reasons that don't carry
+over: the XDG portal handshake is comfortably reachable over D-Bus from
+pure Go, and `gawk-broadcast` could directly `import` the relay's own
+`gawk-server/wire` package plus reuse `quic-go`/`webtransport-go` — the
+exact library the relay itself runs. Neither holds on Windows:
+
+- **Capture/encode is COM/WinRT-shaped** (`Windows.Graphics.Capture`,
+  WASAPI process-loopback activation, Media Foundation). Go's COM/WinRT
+  story is thin to nonexistent; C++ (with C++/WinRT) or Rust (via the
+  Microsoft-maintained `windows-rs` crate, which fully projects WinRT and
+  Win32/COM) are the realistic choices, not Go-plus-cgo.
+- **The wire protocol becomes a third independent reimplementation**
+  (alongside the TS frontend and the Go relay/native-Linux code), not an
+  import — same discipline CLAUDE.md already requires between the Go and
+  TS mirrors ("golden vectors kept byte-identical across all mirrors"),
+  now extended to a third language. This is a real, permanent cost: every
+  future wire type or close code needs a matching hand-written patch here
+  too, with no compiler-enforced link back to `wire.go` the way R14's
+  Linux build gets for free.
+- **A QUIC/WebTransport client is probably the single biggest feasibility
+  question** — bigger than the encode APIs, because it's the one piece
+  every language ecosystem does *not* reliably have. Rust has real options
+  (QUIC via `quinn`, with WebTransport layered on top); C++ has nothing
+  comparable outside a browser engine's own QUIC stack. If the choice comes
+  down to C++ vs. Rust, this is the argument that should decide it, not the
+  Windows-API ergonomics (both languages bind those fine).
+- One upside the language switch buys back: R14's GStreamer-subprocess +
+  MPEG-TS-pipe design exists specifically because Go's cgo/GStreamer story
+  is painful. Rust's `gstreamer-rs` bindings are first-class and
+  officially maintained by the GStreamer project — a Rust implementation
+  could link GStreamer in-process (`appsink` straight into the
+  WebTransport client) instead of managing a child process and a pipe
+  framing format, if the design doc decides the subprocess's crash
+  isolation (R14 Decision) isn't worth keeping here too.
+
+Given this, expect a **new top-level component** (its own directory, e.g.
+`gawk-broadcast-windows/`, not a subpackage of the `gawk-broadcast` Go
+module), its own build tooling (CMake/MSVC or Cargo), its own CI job, and
+its own release/versioning story — mirroring *why* R14 made `gawk-broadcast`
+a separate Go module (isolate an unrelated toolchain from the relay's CI
+and release cadence), just with a starker toolchain split this time.
+
+**Scope sketch** (language-agnostic pieces — apply regardless of the C++
+vs. Rust call):
+
+- **Capture, mode 1 (single app)**: `Windows.Graphics.Capture` (WGC)
+  scoped to one window's `HWND` — hardware-composited, and (since Windows
+  10 2004+) works even when that window is minimized or occluded, which
+  `getDisplayMedia`'s picker cannot do at all.
+- **Capture, mode 2 (whole desktop)**: WGC scoped to a monitor, or DXGI
+  Desktop Duplication — the Windows analogue of R14's portal monitor
+  capture.
+- **Audio, mode 1**: WASAPI **process-loopback** capture
+  (`AUDIOCLIENT_ACTIVATION_PARAMS` / `PROCESS_LOOPBACK`, Windows 10 2004+)
+  scoped to the captured app's process (tree), so only that app's audio is
+  mixed in — the specific Windows-only capability that makes "share this
+  app and only its audio" possible at all.
+- **Audio, mode 2**: ordinary system-wide WASAPI endpoint loopback, the
+  same shape as today's whole-desktop system audio (R15/R25).
+- **Encode is Windows-native hardware, cascade-probed**: Media Foundation
+  (`IMFTransform` H.264/HEVC encoders, vendor-agnostic) and/or vendor SDKs
+  (NVENC, Quick Sync, AMF), each accepted only after a real trial encode —
+  same discipline as R14's Vulkan/VAAPI cascade, just a different API
+  surface. No software rung, ever — refusal is the correct behavior when
+  nothing probes clean, identical to R14's stance and the CLAUDE.md
+  reason the browser covers the software case instead.
+- **No ladder**: a single fixed rung (1080p60, 500 ms GOP) as in R14,
+  unless probing shows a need to cap lower on weaker hardware encoders.
+- **GUI and notifications are a fresh choice, not a port**: Gio's Windows
+  backend is Go, so it doesn't carry over into a C++/Rust codebase either
+  way — pick a native stack (WinUI 3 / Win32 directly in C++, or a Rust
+  GUI crate) and Windows toast notifications, independent of what R14's
+  GUI looks like.
+- **Packaging**: a native installer (MSI or a self-contained EXE) bundling
+  whatever media/runtime dependencies the chosen capture/encode stack
+  needs — a different distribution shape from R14's "every dependency is
+  a stock distro package" promise, and not inherited from it.
+
+**Key design questions**:
+
+- **C++ vs. Rust**, decided primarily by QUIC/WebTransport client
+  availability (see above) rather than by Windows-API ergonomics alone.
+- **Whether to depend on GStreamer at all**, or go directly against Media
+  Foundation/WASAPI/D3D11 COM APIs with no intermediary — a real option in
+  either language now, unlike R14's Go-forced subprocess boundary.
+- **Whether process-loopback audio actually follows a captured game** when
+  the game spawns helper/launcher/anti-cheat processes outside its own
+  process tree — an on-hardware verification question, not a spec-reading
+  one.
+- Whether "share one app" always implies "that app has a visible window" or
+  needs a no-window/minimized-only variant — UX decision for the design doc.
+- How much of the wire-protocol reimplementation can be generated or
+  golden-vector-tested against the Go/TS mirrors from day one, so drift is
+  caught in CI rather than discovered on a broadcaster's machine.
+
+**Non-goals**: any change to the relay, wire *format*, or viewer — the
+protocol itself doesn't change, only who else speaks it; zero
+server/viewer changes. A software-encode fallback — explicitly rejected;
+refuse and point at the browser broadcaster, which already works fine on
+Windows. A macOS native broadcaster — not requested, and WebCodecs already
+gets hardware encode there too, so the capture-fidelity motivation above
+would need its own macOS-specific research (e.g. ScreenCaptureKit's
+per-app capture and audio story) before it earns a separate item. Tray
+icon / global hotkeys — R14 deferred these for Linux-specific reasons
+(D-Bus StatusNotifierItem, GTK dependency risk) that don't obviously apply
+on Windows, but revisiting them is out of scope here too; don't let this
+item smuggle them back in. Sharing a GUI, build, or release pipeline with
+the Linux `gawk-broadcast` — the toolchains no longer overlap enough to
+make that worth forcing.
+
+**Status**: proposed 2026-07-29; **designed 2026-07-30** —
+[docs/38](docs/38-windows-native-broadcaster.md) (Rust, `wtransport`,
+Windows.Graphics.Capture + WASAPI process loopback, Media Foundation
+hardware MFTs only, Slint GUI, portable single EXE; owner decisions
+OD1–OD12). Not started (chunks WB0–WB8).
 
 ---
 

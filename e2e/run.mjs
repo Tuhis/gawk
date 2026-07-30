@@ -50,6 +50,7 @@
 // arrive, decode, and render, and that drops stay bounded.
 
 import { spawn } from 'node:child_process';
+import dgram from 'node:dgram';
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +128,31 @@ const RESILIENT_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
 // video-only broadcast is still running beside this one. Same tier-1-only
 // budget rule as the resilient pass.
 const AUDIO_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
+// R29 (docs/34 FP8): the parity pass, and the only tier-1 step that puts the
+// browser behind a link that actually loses packets. Everything else here runs
+// over a zero-loss loopback, which is exactly the blind spot docs/24 finding 10
+// found in R19 — a feature whose entire purpose is loss recovery, with no test
+// that loses anything.
+const PARITY_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
+// 5 %, above the ~3 % measured in docs/34 §1: high enough that a 20 s pass
+// reliably produces recoveries on a fixture whose deltas are small (few chunks
+// per frame means fewer chances to lose one), low enough to stay far from the
+// congestion collapse that would turn recovery into a timeout.
+const PARITY_LOSS_PERCENT = 5;
+// R30 (docs/35 §12): the striped pass, on its own broadcast — the default
+// fixture's ~2–4-chunk deltas sit under one stripe share, so the controller
+// correctly engages nothing against it (the designed §5.4 hold). A second
+// publisher with `-fixture large` (deltas median 15 chunks) is what makes
+// engagement deterministic. Same tier-1-only budget rule as the passes above.
+const STRIPE_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
+// Tier 2 (docs/35 §5.7): in EXTERNAL mode the harness owns no publisher, so
+// striping is driven by env instead — the workflow points GAWK_E2E_ID at a
+// large-frame broadcast and sets GAWK_E2E_STRIPE=on, and the MAIN pass then
+// runs striped. That is the cross-pod claim's first meeting with real
+// kube-proxy hashing: the primary and each leg land on whichever pod
+// conntrack picks, and the per-leg static filter must compose with the edge
+// pull with no coordination at all.
+const STRIPE_SEED = process.env.GAWK_E2E_STRIPE || null;
 // Fewer retries than the main pass: it runs after a viewer scenario that
 // already proved flow on this broadcast, so a failure here is far more likely
 // to be the carrier path than runner weather.
@@ -409,21 +435,202 @@ function launchBrowser(extraArgs = []) {
   });
 }
 
+// R29 FP8: a userspace UDP forwarder that drops a percentage of the packets
+// travelling relay → browser. The Go mirror of this lives in
+// gawk-server/internal/transport/resilient_loss_test.go; this is the same
+// model in Node so the BROWSER path gets exercised under loss too, not only
+// the Go client.
+//
+// One-way on purpose. The client → relay direction is never touched: QUIC
+// acknowledgements have to get through for retransmission and congestion
+// control to behave, and a lossy downlink with a clean uplink is the shape of
+// the mobile links this feature targets (a viewer's uplink carries almost
+// nothing).
+//
+// tc/netem is not an option — CI runners are unprivileged containers with no
+// NET_ADMIN — and this is a few dozen lines in-process.
+function startLossyLink(relayPort, lossPercent) {
+  const front = dgram.createSocket('udp4');
+  const peers = new Map(); // "ip:port" of the client → its upstream socket
+  let seed = 0x2545f491;
+  const rnd = () => {
+    // xorshift: deterministic per run and not Math.random(), so a failure is
+    // reproducible from the logs rather than a coin flip nobody can re-throw.
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 0xffffffff;
+  };
+
+  front.on('message', (msg, rinfo) => {
+    const key = `${rinfo.address}:${rinfo.port}`;
+    let up = peers.get(key);
+    if (!up) {
+      up = dgram.createSocket('udp4');
+      // The lossy direction. Dropping here rather than on the uplink is what
+      // makes every absence at the viewer attributable to this link.
+      up.on('message', (reply) => {
+        if (rnd() * 100 < lossPercent) return;
+        front.send(reply, rinfo.port, rinfo.address);
+      });
+      peers.set(key, up);
+    }
+    up.send(msg, relayPort, '127.0.0.1');
+  });
+
+  return new Promise((resolveLink) => {
+    front.bind(0, '127.0.0.1', () => {
+      resolveLink({
+        port: front.address().port,
+        close: () => {
+          for (const up of peers.values()) up.close();
+          peers.clear();
+          front.close();
+        },
+      });
+    });
+  });
+}
+
+// R29 FP8: what parity actually bought this viewer, from its own diagnostics.
+//
+// Flow-shaped like every other assertion here (Decision 6): counters that must
+// move, never a recovery RATE — the loss is stochastic and a rate threshold on
+// a 2-core runner is a flake generator. The claim under test is "parity was
+// served, and it repaired frames that would otherwise have been dropped",
+// which is a counter question.
+function assertParityFlow(d1, d2, { expectParity }) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  if (!expectParity) {
+    // The opt-down control. Its value is that it proves the relay's
+    // per-subscriber filter under a real browser session — the same claim the
+    // Go test makes with a synthetic client.
+    check(
+      (s2.parityChunksReceived ?? 0) === 0,
+      `parityChunksReceived = ${s2.parityChunksReceived}, want 0 for a ?parity=0 viewer`,
+    );
+    check(
+      (s2.framesRecoveredByParity ?? 0) === 0,
+      `framesRecoveredByParity = ${s2.framesRecoveredByParity}, want 0 without parity`,
+    );
+    if (problems.length > 0) {
+      fail(`parity opt-down assertions failed:\n  - ${problems.join('\n  - ')}`);
+    }
+    log(
+      `parity control: incomplete drops ${s1.framesDroppedIncomplete} → ${s2.framesDroppedIncomplete} ` +
+        `over the capture window, with no parity served`,
+    );
+    return;
+  }
+
+  check(s2.parityChunksReceived > 0, `parityChunksReceived = ${s2.parityChunksReceived}, want > 0`);
+  // Between the captures the producer must still be emitting: a stream that
+  // delivered symbols once and stopped would satisfy the counter above.
+  check(
+    s2.parityChunksReceived - s1.parityChunksReceived > 0,
+    `no parity chunks between the captures (${s1.parityChunksReceived} → ${s2.parityChunksReceived})`,
+  );
+  // The headline: on a link dropping PARITY_LOSS_PERCENT of the relay's
+  // packets, at least one frame came back that would otherwise have been
+  // dropped incomplete. This is the assertion the whole item exists for, and
+  // it is the one that would have caught a silently-degraded parity path.
+  check(
+    s2.framesRecoveredByParity > 0,
+    `framesRecoveredByParity = ${s2.framesRecoveredByParity}, want > 0 under ${PARITY_LOSS_PERCENT}% injected loss`,
+  );
+
+  if (problems.length > 0) {
+    fail(`parity assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `parity: ${s2.parityChunksReceived} symbols received, ${s2.framesRecoveredByParity} frames recovered, ` +
+      `${s2.parityRecoveryFailures ?? 0} beyond repair, ${s2.framesSkippedWithinAllowance ?? 0} skipped within allowance`,
+  );
+}
+
+// R30 (docs/35 §12 deviation 1, revised): the striped viewer pass, against
+// the large-frame fixture whose deltas all exceed the burst threshold. This
+// is the browser half the Go burst test cannot cover: the capability arriving
+// on a real 0x0F stream, the controller sizing from the shipped reassembler's
+// accounting, setStripe crossing two worker hops, real leg dials against the
+// real relay, the 0x10 suppression, and the legs' shares merging back through
+// the production pipeline. Flow-shaped and counter-based like every assertion
+// here — the burst-buffer PHYSICS stay the Go test's job (frames here ride a
+// zero-loss loopback), and the real Firefox buffer stays ST1's (docs/35 §13).
+function assertStripeFlow(d1, d2) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  check(s2.stripeCapable === true, `stripeCapable = ${s2.stripeCapable}, want true (0x0F bit not seen)`);
+  check(s2.stripeMode === 'on', `stripeMode = ${s2.stripeMode}, want the seeded 'on'`);
+  // The large fixture's deltas are median 15 chunks + 2 parity → the
+  // controller must size to at least 2 legs (3 expected; ≥2 asserted so a
+  // re-encoded fixture at the margin degrades this to a looser pass rather
+  // than a flake).
+  check(s2.stripeNeeded >= 2, `stripeNeeded = ${s2.stripeNeeded}, want >= 2 on the large fixture`);
+  check(s2.stripeActive >= 2, `stripeActive = ${s2.stripeActive}, want >= 2 (legs engaged)`);
+  check((s2.stripeLegDeaths ?? 0) === 0, `stripeLegDeaths = ${s2.stripeLegDeaths}, want 0 on a loopback`);
+  // Frames must keep completing THROUGH the stripe — arriving on legs,
+  // merging in the reassembler — not merely before it engaged.
+  check(
+    s2.framesCompleted - s1.framesCompleted > 0,
+    `no frames completed between the captures (${s1.framesCompleted} → ${s2.framesCompleted}) while striped`,
+  );
+  // Loss-shaped counters on a clean loopback: engagement itself must not
+  // manufacture holes. A bounded few incompletes are runner weather (the
+  // UDP-buffer caps); a stream of them is the split dropping shares.
+  const incompletes = (s2.framesDroppedIncomplete ?? 0) - (s1.framesDroppedIncomplete ?? 0);
+  check(
+    incompletes <= 3,
+    `framesDroppedIncomplete rose by ${incompletes} between captures — striping is losing shares`,
+  );
+
+  if (problems.length > 0) {
+    fail(`stripe assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `stripe: ${s2.stripeActive} legs active (needed ${s2.stripeNeeded}), ` +
+      `${s2.stripeLegDials} dials, ${s2.stripeLegDeaths ?? 0} deaths, ` +
+      `${s2.framesCompleted - s1.framesCompleted} frames completed striped, ` +
+      `${s2.duplicateChunks ?? 0} dup chunks (transition overlap)`,
+  );
+}
+
 // A context with the persisted transport settings seeded (the keys
 // useTransportStore owns), the clipboard stubbed (the ViewerScreen.test.tsx
 // precedent), and the publish-secret prompt disabled (loopback hosts count as
 // dev environments, where the prompt defaults on) — all before any app code
 // runs. `resilient` seeds R19's persisted toggle, which is the only way in:
 // the mode is negotiated at connect, so it has to be set before the app runs.
-async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null }) {
+async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null, parity = null, stripe = null }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
-    ({ serverUrl, hash, deliveryMode, tmUrl }) => {
+    ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel, stripeMode }) => {
       localStorage.setItem('gawk.serverUrl', serverUrl);
       if (hash) localStorage.setItem('gawk.certHashHex', hash);
       // R19/R21: the persisted delivery choice is the only way in — the mode
       // is negotiated at connect, so it has to be set before the app runs.
       if (deliveryMode) localStorage.setItem('gawk:viewer-delivery', deliveryMode);
+      // R29 (docs/34 §5.2): the persisted opt-DOWN, seeded the same way and
+      // for the same reason — parity is negotiated at connect. Absent means
+      // the fleet default, which is what the protected pass wants.
+      if (parityLevel != null) localStorage.setItem('gawk:parity-level', String(parityLevel));
+      // R30 (docs/35 §5.5): 'on' skips the loss detector (a zero-loss
+      // loopback would never fire it) and engages from frame size alone,
+      // which is what makes the striped pass deterministic. Seeded rather
+      // than clicked for the same reason as delivery: it must be live
+      // before the first sizing window fills.
+      if (stripeMode) localStorage.setItem('gawk:stripe-mode', stripeMode);
       // The shipped public/config.js assigns nothing, so this seed survives.
       // R23: pin the terms version and pre-accept it so the broadcaster's
       // one-time acknowledgment modal never gates "Start a stream" — the same
@@ -447,7 +654,7 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
         }),
       });
     },
-    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl },
+    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl, parityLevel: parity, stripeMode: stripe },
   );
   return context;
 }
@@ -632,11 +839,12 @@ function assertCarrierFlow(d1, d2) {
 
 async function browserScenario({
   relayUrl, certHash, id, attempt, expectedCodec, delivery = null, telemetryUrl = null,
-  dwellMs = 0, duringDwell = null, expectAudio = false,
+  dwellMs = 0, duringDwell = null, expectAudio = false, parity = null, expectParity = null,
+  stripe = null, expectStripe = false,
 }) {
   const browser = await launchBrowser();
   try {
-    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl });
+    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl, parity, stripe });
     const page = await context.newPage();
     wirePageLogs(page, `console-${attempt}`);
 
@@ -718,6 +926,8 @@ async function browserScenario({
     if (delivery === 'resilient') assertCarrierFlow(diag1, diag2);
     if (delivery === 'deep') assertDvrFlow(diag1, diag2);
     if (expectAudio) assertAudioFlow(diag1, diag2);
+    if (expectParity != null) assertParityFlow(diag1, diag2, { expectParity });
+    if (expectStripe) assertStripeFlow(diag1, diag2);
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
@@ -1456,6 +1666,8 @@ async function main() {
   // Set once the R25 audio publisher is up: the relay-side assertion counts
   // active publishers exactly, and this pass deliberately runs a second one.
   let audioPublisherLive = false;
+  // Same bookkeeping for the R30 large-frame publisher (a third).
+  let stripePublisherLive = false;
 
   try {
     if (TELEMETRY_CHECK) {
@@ -1490,7 +1702,18 @@ async function main() {
       return;
     }
 
-    await runViewer('', MAX_VIEWER_RETRIES, {});
+    await runViewer(
+      '',
+      MAX_VIEWER_RETRIES,
+      // The striped external run points GAWK_E2E_ID at a LARGE-fixture
+      // broadcast, so the codec pin moves with it (720p = baseline level
+      // 3.1) — the same override the tier-1 striped pass carries, missed
+      // here on the first cluster dispatch (the tier-2 failure was exactly
+      // this line's pin reading the small clip's 42C00D).
+      STRIPE_SEED
+        ? { stripe: STRIPE_SEED, expectStripe: STRIPE_SEED === 'on', expectedCodec: 'avc1.42C01F' }
+        : {},
+    );
 
     // R19 resilient mode, on the same live broadcast (PRODUCT-1): the only
     // automated exercise of the browser's carrier reader and of the
@@ -1510,6 +1733,33 @@ async function main() {
       // never run. A mode with no pass is a mode nobody tests.
       log('running the deep-buffer viewer pass (R21 DVR ring)');
       await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep' });
+    }
+
+    // R29 (docs/34 FP8): the parity pass, behind a link that actually loses
+    // packets — the only tier-1 step that does. Two browser sessions on the
+    // SAME lossy link so the opt-down control shares conditions with the
+    // protected viewer rather than being a separate experiment.
+    //
+    // This is the browser half of the claim the Go loss test makes with a
+    // synthetic client: there, recovery is computed by calling the shared wire
+    // codec; here it is the shipped reassembler doing it inside a real worker.
+    if (PARITY_VIEWER_PASS) {
+      log(`running the parity viewer pass behind a ${PARITY_LOSS_PERCENT}% lossy link (R29)`);
+      const link = await startLossyLink(RELAY_PORT, PARITY_LOSS_PERCENT);
+      try {
+        const lossyUrl = `https://127.0.0.1:${link.port}`;
+        await runViewer('parity', MAX_RESILIENT_RETRIES, { relayUrl: lossyUrl, expectParity: true });
+        // The control: same link, same loss, parity declined. Proves the
+        // relay's per-subscriber filter against a real browser, and gives the
+        // "what would this have cost" number in the log beside it.
+        await runViewer('parity-off', MAX_RESILIENT_RETRIES, {
+          relayUrl: lossyUrl,
+          parity: 0,
+          expectParity: false,
+        });
+      } finally {
+        link.close();
+      }
     }
 
     // R25 (docs/28 NA7): the audio lane, on its own broadcast.
@@ -1533,7 +1783,38 @@ async function main() {
       await runViewer('audio', MAX_RESILIENT_RETRIES, { id: audioId, expectAudio: true });
     }
 
-    if (opsUrl) await assertRelaySide(opsUrl, audioPublisherLive ? 2 : 1);
+    // R30 (docs/35 §12): the striped pass, on its own large-frame broadcast.
+    // A third publisher for the same reason audio runs a second: the main
+    // broadcast's small deltas are what every other pass is calibrated
+    // against, and striping needs deltas past the burst threshold to engage
+    // at all. The base pass above doubles as this pass's control in the
+    // other direction — stripe-mode 'auto' against small frames must stay
+    // unstriped, which its unchanged assertions already prove.
+    if (STRIPE_VIEWER_PASS) {
+      log('running the striped viewer pass (R30, large-frame fixture)');
+      stripePublisherLive = true;
+      const stripePubsim = launch('pubsim-large', PUBSIM_BIN, [
+        '-url', relayUrl,
+        '-insecure',
+        '-fixture', 'large',
+        '-duration', '180s',
+      ]);
+      const largeId = await waitForLine(
+        stripePubsim, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'the large-frame broadcast code');
+      log(`pubsim publishing large frames as ${largeId}`);
+      await runViewer('striped', MAX_RESILIENT_RETRIES, {
+        id: largeId,
+        stripe: 'on',
+        expectStripe: true,
+        // The large fixture's own SPS: 720p lands baseline level 3.1 where
+        // the small clip is level 1.3. Pinned exactly, like the default —
+        // a regenerated clip that shifts profile/level should fail loudly
+        // here, not decode as a surprise.
+        expectedCodec: 'avc1.42C01F',
+      });
+    }
+
+    if (opsUrl) await assertRelaySide(opsUrl, 1 + (audioPublisherLive ? 1 : 0) + (stripePublisherLive ? 1 : 0));
   } finally {
     await publisherBrowser?.close();
   }

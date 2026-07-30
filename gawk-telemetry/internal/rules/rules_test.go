@@ -167,6 +167,49 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 			},
 		},
 		{
+			id: "parity-ineffective",
+			fires: func() *Facts {
+				// Parity is being served in volume and frames are still dying
+				// at a rate comparable to what it repairs.
+				f := viewerFacts()
+				f.SetClient("parityChunksReceived", 400)
+				f.SetClient("framesRecoveredByParity", 20)
+				f.SetClient("framesDroppedIncomplete", 30)
+				return f
+			},
+			quiet: func() *Facts {
+				// The healthy shape: parity is working, and the residue is the
+				// structural one every k has (docs/34 §11).
+				f := viewerFacts()
+				f.SetClient("parityChunksReceived", 400)
+				f.SetClient("framesRecoveredByParity", 200)
+				f.SetClient("framesDroppedIncomplete", 12)
+				return f
+			},
+		},
+		{
+			id: "burst-threshold-loss",
+			fires: func() *Facts {
+				// The finding-4 shape: large frames lossy, small frames clean,
+				// plenty of evidence, no stripe engaged.
+				f := viewerFacts()
+				f.SetClient("stripeLargeLossPct", 3.8)
+				f.SetClient("stripeSmallLossPct", 0.0)
+				f.SetClient("stripeLargeChunks", 5000)
+				f.SetClient("stripeActive", 0)
+				return f
+			},
+			quiet: func() *Facts {
+				// Same traffic, clean link.
+				f := viewerFacts()
+				f.SetClient("stripeLargeLossPct", 0.0)
+				f.SetClient("stripeSmallLossPct", 0.0)
+				f.SetClient("stripeLargeChunks", 5000)
+				f.SetClient("stripeActive", 0)
+				return f
+			},
+		},
+		{
 			id: "config-or-limits",
 			fires: func() *Facts {
 				f := bcastFacts()

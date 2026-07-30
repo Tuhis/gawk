@@ -126,6 +126,11 @@ var viewerSeries = []string{
 	"capToRenderMs", "liveEdgeDriftMs", "timeSyncRttMs",
 	"playoutOffsetMs", "arrivalJitterMs", "renderCadenceP95Ms", "decodeJitterMs",
 	"decoderQueueDepth", "avSkewMs",
+	// R30 (docs/35 §7): the stripe state over the session — active vs needed
+	// diverging is the caps-pressure signature, and the detector percentages
+	// are what the burst-threshold-loss rule reads.
+	"stripeActive", "stripeNeeded", "stripeLargeLossPct", "stripeSmallLossPct",
+	"stripeLargeChunks",
 }
 
 var broadcasterSeries = []string{
@@ -139,6 +144,12 @@ var broadcasterSeries = []string{
 var viewerCounters = []string{
 	"framesAssembled", "framesDroppedIncomplete", "framesDroppedLate",
 	"reorderGapResyncs", "reorderKeyframeWaitDrops", "framesDiscardedAwaitingKey",
+	// R29 (docs/34 §7.3): what parity bought this viewer, and what the
+	// allowance absorbed.
+	"parityChunksReceived", "framesRecoveredByParity", "parityRecoveryFailures",
+	"framesSkippedWithinAllowance",
+	// R30 (docs/35 §7): stripe transition costs.
+	"stripeLegDials", "stripeLegDeaths",
 	"keyframeStreamsReceived", "configsApplied", "decodedFrames",
 	"videoBytesReceived", "carrierStreams", "carrierStreamsAborted",
 	"audioPacketsReceived", "audioPacketsDecoded",
@@ -199,6 +210,39 @@ var broadcasterConfig = []string{
 	// D17. `codec` is shared by both producers; `acceleration` is the
 	// browser's.
 	"codec", "acceleration",
+}
+
+// CounterFields and SeriesFields expose what this package treats as cumulative
+// and what it summarizes as a gauge, per role.
+//
+// They exist so the field catalogue's semantic layer (schema/catalogue.go) can
+// be PINNED against them by a test rather than being a second, drifting opinion
+// about the same fields — which is D15's whole complaint about duplicated field
+// lists. The returned slices are copies: a caller must not be able to reach in
+// and change what the rollup summarizes.
+func CounterFields(role string) []string {
+	if role == "broadcaster" {
+		return append([]string(nil), broadcasterCounters...)
+	}
+	return append([]string(nil), viewerCounters...)
+}
+
+// SeriesFields returns the gauge series a rollup summarizes for a role.
+func SeriesFields(role string) []string {
+	if role == "broadcaster" {
+		return append([]string(nil), broadcasterSeries...)
+	}
+	return append([]string(nil), viewerSeries...)
+}
+
+// ConfigFields returns the fields that describe what a session WAS rather than
+// how it went. The history browser filters on these, so it needs the same list
+// the rollup projects.
+func ConfigFields(role string) []string {
+	if role == "broadcaster" {
+		return append([]string(nil), broadcasterConfig...)
+	}
+	return append([]string(nil), viewerConfig...)
 }
 
 // Input is one session's stored timeline, as the finalizer hands it over.

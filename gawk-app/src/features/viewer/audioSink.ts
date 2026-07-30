@@ -527,7 +527,7 @@ export class AudioSink {
     if (now - this.lastStallRecoverAtMs < STALL_RECOVERY_MS) return;
     this.lastStallRecoverAtMs = now;
     log.warn('Audio worklet stopped reporting; resuming context and re-anchoring.');
-    if (this.ctx?.state === 'suspended') void this.resume();
+    if (this.isGestureBlocked()) void this.resume();
     this.flush();
     // Measure the next stall from here rather than re-firing every packet until
     // a fresh report lands.
@@ -607,7 +607,19 @@ export class AudioSink {
 
   // True when the browser is holding playback for a gesture.
   get needsGesture(): boolean {
-    return this.ctx?.state === 'suspended';
+    return this.isGestureBlocked();
+  }
+
+  // WebKit extends AudioContextState with a non-standard 'interrupted' value
+  // (iOS: phone calls, Siri, Control Center, backgrounding) that lib.dom's
+  // AudioContextState type doesn't know about. It means the same thing as
+  // 'suspended' here — no audio is flowing and only resume() from a fresh
+  // gesture restarts it — so treating only 'suspended' as blocked let the
+  // tap-to-unmute affordance disappear (needsGesture went false) while the
+  // context was still silent.
+  private isGestureBlocked(): boolean {
+    const state = this.ctx?.state as AudioContextState | 'interrupted' | undefined;
+    return state === 'suspended' || state === 'interrupted';
   }
 
   updateTarget(jitterMs: number | null, nowMs: number): void {

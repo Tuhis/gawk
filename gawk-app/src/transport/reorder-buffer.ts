@@ -34,10 +34,20 @@ import {
   WindowedMinTracker,
   WindowedQuantileTracker,
 } from './live-edge';
-import { DECODE_LEAD_MS, getPlayoutMode, getPlayoutOffsetMs, getPlayoutProfile } from './playout';
+import {
+  DECODE_LEAD_MS,
+  OFFSET_SLEW_DOWN_MS_PER_S,
+  OFFSET_SLEW_UP_MS_PER_S,
+  PlayoutController,
+  getPlayoutMode,
+  getPlayoutOffsetMs,
+  getPlayoutProfile,
+  type SlewEnvelope,
+} from './playout';
 import {
   RESILIENT_DELTA_GAP_GRACE_MS,
   RESILIENT_KEYFRAME_WAIT_MS,
+  getLossAllowanceFrames,
   RESILIENT_MAX_BUFFERED_FRAMES,
   getResilientMode,
 } from './resilient';
@@ -56,6 +66,13 @@ import { frameIdAhead, nextFrameId, type DecoderConfigMessage } from './wire';
 // MAX_BUFFERED_FRAMES (~1.07 s at 60 fps), which remains the memory bound.
 export const KEYFRAME_WAIT_MS = 1000;
 export const DELTA_GAP_GRACE_MS = 60;
+// Ceiling for the adaptive grace below. 250 ms is not a fresh guess: it is
+// RESILIENT_DELTA_GAP_GRACE_MS, already shipped and measured as the patience a
+// deliberately-buffered viewer wants, and it stays far under KEYFRAME_WAIT_MS
+// (so a widened grace can never age deltas out before their keyframe — docs/14's
+// keyframe-only 2 fps failure) and under MAX_BUFFERED_FRAMES (~8 frames at
+// 30 fps against a 64-frame cap).
+export const MAX_DELTA_GAP_GRACE_MS = 250;
 // Hard cap on buffered frames; guards against a lingering stale frame (e.g. a
 // straggler above the decode position after a broadcaster restart) growing the
 // buffer without bound. Oldest-received entries are dropped past this.
@@ -81,8 +98,68 @@ function keyframeWaitMs(): number {
   // and resilient (~0.5 s) keep exactly the values they had.
   return Math.max(base, getPlayoutOffsetMs() + KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS);
 }
-function deltaGapGraceMs(): number {
-  return getResilientMode() ? RESILIENT_DELTA_GAP_GRACE_MS : DELTA_GAP_GRACE_MS;
+// R30 finding 4 (docs/35): the adaptive live-edge grace.
+//
+// DELTA_GAP_GRACE_MS was sized per CONNECTION — "a couple of frame intervals",
+// correct while a frame's datagrams arrived back-to-back on one QUIC
+// connection, where a chunk outstanding past the grace really was lost.
+// Striping spreads each frame over N legs whose mutual skew becomes per-frame
+// completion jitter, and a live Firefox 154 session measured that jitter at
+// 101 ms median / 268 ms p95 against a 60 ms grace: ~1 gap resync per second,
+// against 0.5 % of frames actually lost. Almost every freeze was a frame that
+// was merely LATE.
+//
+// The lever is the jitter the buffer already measures for the playout offset,
+// and what makes it the right signal is that it separates the two failure
+// modes with no extra input: a late frame ARRIVES, so it inflates p95 and buys
+// itself patience; a lost frame never arrives, contributes nothing, and leaves
+// the grace at its floor to freeze fast. A larger constant could not do that —
+// it would buy the striped path patience by making a genuinely lossy path
+// slower to resync.
+//
+// Seed and floor are both DELTA_GAP_GRACE_MS, so a viewer that has not yet
+// measured anything — and any link whose jitter fits inside the shipped
+// constant — behaves exactly as before.
+export const GRACE_ENVELOPE: SlewEnvelope = {
+  seedMs: DELTA_GAP_GRACE_MS,
+  minMs: DELTA_GAP_GRACE_MS,
+  maxMs: MAX_DELTA_GAP_GRACE_MS,
+  slewUpMsPerS: OFFSET_SLEW_UP_MS_PER_S,
+  slewDownMsPerS: OFFSET_SLEW_DOWN_MS_PER_S,
+  // Unlike the playout offset, grace is patience rather than delay: raising it
+  // changes nothing about when an on-time frame is presented, only how long a
+  // hole is tolerated before freezing. A step up is therefore invisible where
+  // a stepped offset would be a skip, and under-patience costs a visible
+  // freeze NOW — so a large rise is taken at once (the reasoning
+  // RESILIENT_PLAYOUT_PROFILE uses, with none of its cost). Small wobble still
+  // slews, which keeps freeze behaviour stable and reproducible, and DOWN is
+  // never stepped.
+  stepUpAboveMs: 50,
+};
+
+// Module state, like the playout mode and the R29 loss allowance: the buffer
+// reads it live per advance, and it is driven from the pipeline's stats tick
+// (viewer.ts) because taking a windowed quantile is far too expensive to do
+// per arrival.
+const graceController = new PlayoutController(GRACE_ENVELOPE);
+
+// Driven by the pipeline's stats tick with the same arrival-jitter estimate
+// that feeds the playout offset and the overlay.
+export function updateGraceController(jitterMs: number | null, nowMs: number): void {
+  graceController.update(jitterMs, nowMs);
+}
+
+// Broadcaster restart: frame timestamps move to a new timeline, so the
+// arrival-jitter window resets — and so must anything reading it.
+export function resetGraceController(): void {
+  graceController.reset();
+}
+
+export function deltaGapGraceMs(): number {
+  // Resilient/DVR delivery keeps its deliberate constant: those deltas ride
+  // reliable carriers, so a hole means something other than skew and the
+  // envelope was chosen for the buffer depth, not for the link.
+  return getResilientMode() ? RESILIENT_DELTA_GAP_GRACE_MS : graceController.offsetMs();
 }
 function maxBufferedFrames(): number {
   return getResilientMode() ? RESILIENT_MAX_BUFFERED_FRAMES : MAX_BUFFERED_FRAMES;
@@ -133,6 +210,12 @@ export interface ReorderStats {
   deltasDropped: number;
   // Times a missing delta was declared a gap and we froze to await a keyframe.
   gapResyncs: number;
+  // R29 FP6 (docs/34 §6): unrecovered frames skipped within the GOP's budget
+  // instead of forfeiting the rest of the GOP. Deliberately NOT folded into
+  // gapResyncs — docs/13's playbook reads that as "delta loss is eating GOPs",
+  // and a skip is the opposite outcome: the GOP survived. One counter meaning
+  // two things would retire a working signal.
+  framesSkippedWithinAllowance: number;
   // Frames dropped while waiting for a keyframe (undecodable, aged out).
   keyframeWaitDrops: number;
   // Held (buffered, not yet released) frames right now.
@@ -192,11 +275,17 @@ export class ReorderBuffer {
   // declared delta gap, or on an explicit resync request (decoder backpressure).
   private waitingForKeyframe = true;
 
+  // R29 FP6: unrecovered frames skipped in the CURRENT GOP. Reset at every
+  // released keyframe, which is what makes the budget per-GOP rather than
+  // per-session.
+  private gopSkips = 0;
+
   private stats: ReorderStats = {
     released: 0,
     keyframesReleased: 0,
     deltasDropped: 0,
     gapResyncs: 0,
+    framesSkippedWithinAllowance: 0,
     keyframeWaitDrops: 0,
     buffered: 0,
   };
@@ -367,8 +456,23 @@ export class ReorderBuffer {
         continue;
       }
       // No keyframe yet: wait briefly for a straggler delta; past the grace,
-      // declare a gap and freeze until the next (reliable) keyframe arrives.
+      // either spend one of the GOP's loss allowance (R29 FP6) and carry on,
+      // or declare a gap and freeze until the next (reliable) keyframe.
       if (this.shouldDeclareGap()) {
+        // The allowance is live-edge only: resilient/DVR deltas ride reliable
+        // carriers, so a hole there means something else went wrong and
+        // freezing is still the correct response.
+        const allowance = getResilientMode() ? 0 : getLossAllowanceFrames();
+        if (this.gopSkips < allowance) {
+          this.gopSkips++;
+          this.stats.framesSkippedWithinAllowance++;
+          // Step over the hole and keep decoding. Frames after it reference
+          // data that never arrived, so they carry artifacts until the next
+          // keyframe — the trade docs/34 §6 makes explicit, and the reason
+          // the budget is bounded and operator-set rather than unlimited.
+          this.decodePosition = next;
+          continue;
+        }
         this.stats.gapResyncs++;
         this.waitingForKeyframe = true;
         continue;
@@ -469,7 +573,13 @@ export class ReorderBuffer {
     this.buffer.delete(entry.frameId);
     this.decodePosition = entry.frameId;
     this.stats.released++;
-    if (entry.keyframe) this.stats.keyframesReleased++;
+    if (entry.keyframe) {
+      this.stats.keyframesReleased++;
+      // R29 FP6: a keyframe is a clean reference, so the GOP's loss budget
+      // starts over. This is what makes the allowance per-GOP — a per-session
+      // budget would be spent in the first minute and never help again.
+      this.gopSkips = 0;
+    }
     this.onFrame({
       frameId: entry.frameId,
       keyframe: entry.keyframe,

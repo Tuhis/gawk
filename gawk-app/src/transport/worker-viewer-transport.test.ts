@@ -120,18 +120,32 @@ describe('WorkerViewerTransport', () => {
     expect(transport.sampleConnectionStats()).toBeNull();
     expect(transport.sampleTimeSync()).toBeNull();
     expect(transport.sampleCarrierStats()).toBeNull();
+    expect(transport.sampleDatagramBuffer()).toBeNull();
     const stats = { rttMs: 12 } as never;
     // timeOriginMs is the transport worker's own clock anchor — it must cross
     // untouched so the pipeline can rebase onto the sample's clock domain.
     const timeSync = { offsetUs: 5_000n, rttMs: 3, timeOriginMs: 1_234.5 };
     const carrier = { streamsOpened: 2, recordsReceived: 40, streamsAborted: 0, malformed: 0 };
-    worker.emit({ type: 'connStats', stats, timeSync, carrier });
+    // R29 finding 2: the buffer is set in whichever realm owns the
+    // WebTransport — here the transport worker — so its verdict has to travel
+    // back out the same way the carrier tallies do, or the gate on the main
+    // thread can only ever report "unknown" on the path that actually matters.
+    const datagramBuffer = {
+      property: 'incomingHighWaterMark' as const,
+      requested: 256,
+      defaultDepth: 1,
+      effective: 256,
+      applied: true,
+      governsDrops: false,
+    };
+    worker.emit({ type: 'connStats', stats, timeSync, carrier, datagramBuffer });
     expect(transport.sampleConnectionStats()).toBe(stats);
     // R5 Q2: the clock-sync sample rides the same push (bigint survives the
     // structured-clone boundary in the real pair).
     expect(transport.sampleTimeSync()).toBe(timeSync);
     // R19: the carrier tallies ride the same push.
     expect(transport.sampleCarrierStats()).toBe(carrier);
+    expect(transport.sampleDatagramBuffer()).toBe(datagramBuffer);
   });
 
   it('close() requests a graceful close, suppresses further events, then reaps', async () => {
@@ -226,5 +240,48 @@ describe('WorkerViewerTransport + TransportWorkerCore end-to-end', () => {
     expect(cbs.onClosed).toHaveBeenCalledWith(
       expect.objectContaining({ closeCode: 4000, message: 'broadcast ended' }),
     );
+  });
+});
+
+// R30 ST4 (docs/35 §5.6): the stripe plumbing across the worker boundary.
+describe('WorkerViewerTransport striping (R30)', () => {
+  it('forwards setStripe as a stripe command', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerViewerTransport(() => worker, 'https://r/subscribe/x', {});
+    const p = transport.connect(makeCallbacks());
+    worker.emit({ type: 'connected' });
+    await p;
+    transport.setStripe(3);
+    expect(worker.sent).toContainEqual({ type: 'stripe', n: 3 });
+    transport.close();
+  });
+
+  it('relays capabilities, stripe changes and the stripe stats sample', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerViewerTransport(() => worker, 'https://r/subscribe/x', {});
+    const caps: unknown[] = [];
+    const changes: number[] = [];
+    const cb = {
+      ...makeCallbacks(),
+      onRelayCapabilities: (c: unknown) => caps.push(c),
+      onStripeChange: (n: number) => changes.push(n),
+    };
+    const p = transport.connect(cb);
+    worker.emit({ type: 'connected' });
+    await p;
+    worker.emit({ type: 'relayCapabilities', caps: { flags: 3, parityLevel: 2 } });
+    worker.emit({ type: 'stripeChange', active: 2 });
+    worker.emit({
+      type: 'connStats',
+      stats: null,
+      timeSync: null,
+      carrier: null,
+      datagramBuffer: null,
+      stripe: { active: 2, target: 2, legDials: 2, legDialFailures: 0, legDeaths: 0 },
+    });
+    expect(caps).toEqual([{ flags: 3, parityLevel: 2 }]);
+    expect(changes).toEqual([2]);
+    expect(transport.sampleStripe()).toMatchObject({ active: 2, target: 2 });
+    transport.close();
   });
 });

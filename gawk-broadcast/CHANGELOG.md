@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.9.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.8.1...gawk-broadcast-v1.9.0) (2026-07-29)
+
+
+### Features
+
+* **r30:** large-frame e2e fixture + striped browser passes; fix recovery-raced phantom frames ([#194](https://github.com/Tuhis/gawk/issues/194)) ([d135f74](https://github.com/Tuhis/gawk/commit/d135f7438e49cfe2881c727cc566ba73eb9ebecd))
+* **r30:** striped delivery — ST2–ST6 (wire, relay legs, viewer transport, controller, observability) ([#191](https://github.com/Tuhis/gawk/issues/191)) ([bf8db99](https://github.com/Tuhis/gawk/commit/bf8db99d901e8b4e47c69c8283b9f1bbfface44e))
+
+## [1.8.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.8.0...gawk-broadcast-v1.8.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **r29:** give the viewer a datagram receive queue deep enough for a frame ([#180](https://github.com/Tuhis/gawk/issues/180)) ([d735df7](https://github.com/Tuhis/gawk/commit/d735df701a75bfcab2a9884d495aedc3723ff62b))
+
+## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.7.1...gawk-broadcast-v1.8.0) (2026-07-28)
+
+
+### Features
+
+* **r29:** forward parity for live-edge delivery ([#175](https://github.com/Tuhis/gawk/issues/175)) ([9bca5d9](https://github.com/Tuhis/gawk/commit/9bca5d9a7a080e4fa9c51733fbc16231b4f84555))
+
 ## [1.7.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.7.0...gawk-broadcast-v1.7.1) (2026-07-27)
 
 

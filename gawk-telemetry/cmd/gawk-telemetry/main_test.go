@@ -47,15 +47,21 @@ func TestDefaults(t *testing.T) {
 	if c.ingestAddr == c.readAddr {
 		t.Error("ingest and read share a listener; the read side must be separately exposable")
 	}
-	if c.retentionDays != 14 {
-		t.Errorf("retentionDays = %d, want 14", c.retentionDays)
+	// 30 days, raised from 14 by owner decision (docs/36 UD15): a release cycle
+	// must fit inside the raw window, or "compare this to one from before the
+	// R30 change" degrades to rollup-only.
+	if c.retentionDays != 30 {
+		t.Errorf("retentionDays = %d, want 30", c.retentionDays)
 	}
 	if c.scrapeInterval != 5*time.Second {
 		t.Errorf("scrapeInterval = %v, want 5s", c.scrapeInterval)
 	}
-	// D11: the SQL passthrough is a deliberate act, never a default.
-	if c.enableSQL {
-		t.Error("query_sql enabled by default")
+	// UD18 reverses D11's posture: the console is ON by default. What decides
+	// whether it can ANSWER is the build (§8 Q1) — a binary without
+	// `-tags duckdb` has no engine and says so — so the flag being on does not
+	// by itself expose a query surface on a fresh clone.
+	if !c.enableSQL {
+		t.Error("query-sql off by default; UD18 made the console default-on")
 	}
 	// No auth by default — cluster-internal is R9 D1's posture.
 	if c.basicAuthUser != "" {

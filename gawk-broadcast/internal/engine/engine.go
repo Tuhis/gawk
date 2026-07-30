@@ -529,6 +529,18 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 		// why the reporter did or did not act on it.
 		s.log.Info("telemetry hello received", "fleet_enabled", hello.Enabled)
 		s.cb.telemetryHello(hello)
+	case wire.TypeRelayCapabilities:
+		// R29 (docs/34 §4.4): what this fleet supports, and at what parity
+		// level. The sender is the one that acts on it — a relay predating
+		// R29 sends nothing, so parity stays off and the producer is
+		// byte-identical to pre-R29.
+		caps, err := wire.ParseRelayCapabilities(buf)
+		if err != nil {
+			s.log.Warn("relay capabilities parse failed", "err", err)
+			return
+		}
+		s.sender.applyCapabilities(caps)
+		s.log.Debug("relay capabilities", "parity_level", caps.ParityLevel, "flags", caps.Flags)
 	default:
 		s.log.Debug("server message ignored: unknown type", "type", buf[1])
 	}

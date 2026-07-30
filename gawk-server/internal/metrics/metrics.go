@@ -63,6 +63,10 @@ type RegistryCollector struct {
 	subscribers         *prometheus.Desc
 	reliableSubscribers *prometheus.Desc
 	dvrSubscribers      *prometheus.Desc
+	stripeLegs          *prometheus.Desc
+	stripedPrimaries    *prometheus.Desc
+	stripeSuppressed    desc
+	stripeTransitions   desc
 	dvrRingBytes        *prometheus.Desc
 	edgeSessions        *prometheus.Desc
 	viewersGlobal       *prometheus.Desc
@@ -89,6 +93,9 @@ type RegistryCollector struct {
 	carrierRecords   desc
 	dvrResyncs       desc
 	carrierDropped   desc
+	parityDatagrams  desc
+	paritySuppressed desc
+	egressParity     desc
 }
 
 // NewRegistryCollector builds the collector over a hub registry.
@@ -112,6 +119,10 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"Local viewers in R19 reliable (resilient) delivery mode.", []string{"broadcast"}, nil),
 		dvrSubscribers: prometheus.NewDesc("gawk_broadcast_dvr_subscribers",
 			"Local viewers served from the R21 DVR ring at their own cursor.", []string{"broadcast"}, nil),
+		stripeLegs: prometheus.NewDesc("gawk_broadcast_stripe_legs",
+			"R30 stripe-leg sessions currently attached (docs/35). Legs also count in gawk_broadcast_subscribers — they are real external sessions — but never in viewers_global.", []string{"broadcast"}, nil),
+		stripedPrimaries: prometheus.NewDesc("gawk_broadcast_striped_primaries",
+			"Viewers whose primary session currently has delta datagrams suppressed because their stripe legs carry them (R30).", []string{"broadcast"}, nil),
 		dvrRingBytes: prometheus.NewDesc("gawk_broadcast_dvr_ring_bytes",
 			"Bytes this broadcast's DVR ring currently retains — the number to watch against -dvr-max-bytes.", []string{"broadcast"}, nil),
 		edgeSessions: prometheus.NewDesc("gawk_broadcast_edge_sessions",
@@ -165,6 +176,16 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"R21 DVR subscribers resynced after their cursor fell off the ring's tail — the mode's only frame loss. Rising means stalls are outliving -dvr-window."),
 		carrierDropped: newDesc("carrier_records_dropped_total",
 			"Carrier records dropped: dead carrier after a stall/cancel, or stream-open failure (R19). Bandwidth-cap drops count as datagram bandwidth drops instead."),
+		parityDatagrams: newDesc("parity_datagrams_total",
+			"R29 forward-parity symbols forwarded to subscribers. The relay computes none of these — it forwards a per-subscriber prefix of what the producer emitted."),
+		paritySuppressed: newDesc("parity_suppressed_total",
+			"R29 parity symbols NOT forwarded because the subscriber's level was lower (or it is a carrier-mode subscriber, which recovers loss via QUIC retransmission). Rising against parity_datagrams_total is the per-subscriber filter working, not a fault."),
+		egressParity: newDesc("egress_parity_bytes_total",
+			"Bytes of R29 parity actually written to subscribers. A SLICE of egress_bytes_total{kind=\"delta\"}, not a sibling: parity rides the datagram path, so adding the two double-counts. This is what makes the fleet cost of -parity-default measurable rather than modelled."),
+		stripeSuppressed: newDesc("stripe_suppressed_datagrams_total",
+			"R30 delta datagrams withheld from striped primaries because their legs carry them (docs/35 §7). A leg's non-matching share is routing, not suppression, and is not counted."),
+		stripeTransitions: newDesc("stripe_transitions_total",
+			"R30 stripe suppression level flips observed (engage or release; the 1 Hz refresh does not count). Churning against a flat stripe_legs gauge is the flapping signature."),
 	}
 }
 
@@ -178,6 +199,8 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.reliableSubscribers
 	ch <- c.dvrSubscribers
 	ch <- c.dvrRingBytes
+	ch <- c.stripeLegs
+	ch <- c.stripedPrimaries
 	ch <- c.edgeSessions
 	ch <- c.viewersGlobal
 	ch <- c.role
@@ -195,6 +218,8 @@ func (c *RegistryCollector) counterDescs() []desc {
 		c.edgeIngressLostC, c.ingressBytes,
 		c.egressBytes, c.bwDroppedBytes, c.kfIn, c.kfSent, c.kfDropped, c.kfOversize,
 		c.carrierStreams, c.carrierRecords, c.carrierDropped, c.dvrResyncs,
+		c.parityDatagrams, c.paritySuppressed, c.egressParity,
+		c.stripeSuppressed, c.stripeTransitions,
 	}
 }
 
@@ -278,6 +303,13 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.carrierStreams.broadcast, s.CarrierStreams, id)
 		counter(c.carrierRecords.broadcast, s.CarrierRecords, id)
 		counter(c.carrierDropped.broadcast, s.CarrierRecordsDropped, id)
+		counter(c.parityDatagrams.broadcast, s.ParityDatagramsForwarded, id)
+		counter(c.paritySuppressed.broadcast, s.ParitySuppressed, id)
+		counter(c.egressParity.broadcast, s.EgressParityBytes, id)
+		counter(c.stripeSuppressed.broadcast, s.StripeSuppressedDatagrams, id)
+		counter(c.stripeTransitions.broadcast, s.StripeTransitions, id)
+		gauge(c.stripeLegs, float64(s.StripeLegs), id)
+		gauge(c.stripedPrimaries, float64(s.StripedPrimaries), id)
 		counter(c.dvrResyncs.broadcast, s.DVRResyncs, id)
 		// The ring's live cost, against which -dvr-max-bytes is set. A gauge,
 		// not a counter: what matters is what it holds now.
@@ -314,6 +346,11 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.carrierStreams.relay, t.CarrierStreams)
 	counter(c.carrierRecords.relay, t.CarrierRecords)
 	counter(c.carrierDropped.relay, t.CarrierRecordsDropped)
+	counter(c.parityDatagrams.relay, t.ParityDatagramsForwarded)
+	counter(c.paritySuppressed.relay, t.ParitySuppressed)
+	counter(c.egressParity.relay, t.EgressParityBytes)
+	counter(c.stripeSuppressed.relay, t.StripeSuppressedDatagrams)
+	counter(c.stripeTransitions.relay, t.StripeTransitions)
 }
 
 // ServerMetrics are the transport-layer connection counters (R9 M4). All

@@ -7,11 +7,14 @@
 // render work. DOM-free and unit-testable with a fake host + fake transport.
 
 import type { CarrierCounters, ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
+import type { RelayCapabilities } from './parity';
 import type { TimeSyncStats } from './time-sync';
 import type { DecoderConfigMessage, TelemetryHelloMessage } from './wire';
 import {
   LocalViewerTransport,
+  type StripeTransportStats,
   type TransportClosedInfo,
   type ViewerTransportFactory,
 } from './viewer-transport';
@@ -19,6 +22,10 @@ import {
 // Decode worker → transport worker.
 export type TransportWorkerCommand =
   | { type: 'connect'; url: string; connectOpts: ConnectOptions }
+  // R30 (docs/35 §5.6): stripe target. The transport worker owns the legs —
+  // they must live beside the primary's session so their datagrams ride the
+  // same posting path with no extra hop.
+  | { type: 'stripe'; n: number }
   | { type: 'close' };
 
 // Transport worker → decode worker. datagram/keyframe buffers are transferred
@@ -41,6 +48,10 @@ export type TransportWorkerEvent =
   // bearer credential — keeping it out of ViewerStats is what keeps it out of
   // the Copy-diagnostics blob a user pastes into a chat.
   | { type: 'telemetryHello'; hello: TelemetryHelloMessage }
+  // R29/R30: the relay's capabilities — the stripe controller's gate.
+  | { type: 'relayCapabilities'; caps: RelayCapabilities }
+  // R30: the stripe width actually engaged (0 = unstriped).
+  | { type: 'stripeChange'; active: number }
   // Pushed at the stats cadence: connection health + the relay clock-sync
   // sample (R5 Q2 — measured in this worker, where the reply timing is jitter-
   // free; bigint crosses postMessage via structured clone) + the R19 carrier
@@ -50,6 +61,13 @@ export type TransportWorkerEvent =
       stats: TransportConnectionStats | null;
       timeSync: TimeSyncStats | null;
       carrier: CarrierCounters | null;
+      // R29 finding 2 (docs/34): the receive-buffer verdict. It can only be
+      // read where the WebTransport lives, which on this path is here — so
+      // without this field the main thread's gate could never report the
+      // placement the loss was actually measured on.
+      datagramBuffer: DatagramBufferStats | null;
+      // R30: the stripe tallies (docs/35 §7); null on pre-R30 cores.
+      stripe?: StripeTransportStats | null;
     };
 
 export interface TransportWorkerHost {
@@ -93,6 +111,8 @@ export class TransportWorkerCore {
             keyframeTransferables(kf),
           ),
         onTelemetryHello: (hello) => this.host.post({ type: 'telemetryHello', hello }),
+        onRelayCapabilities: (caps) => this.host.post({ type: 'relayCapabilities', caps }),
+        onStripeChange: (active) => this.host.post({ type: 'stripeChange', active }),
         onClosed: (info: TransportClosedInfo) => {
           this.stopStats();
           this.host.post({ type: 'closed', ...info });
@@ -106,6 +126,8 @@ export class TransportWorkerCore {
             stats: transport.sampleConnectionStats(),
             timeSync: transport.sampleTimeSync(),
             carrier: transport.sampleCarrierStats?.() ?? null,
+            datagramBuffer: transport.sampleDatagramBuffer?.() ?? null,
+            stripe: transport.sampleStripe?.() ?? null,
           });
         }, CONN_STATS_INTERVAL_MS) as unknown as number;
       })
@@ -115,6 +137,10 @@ export class TransportWorkerCore {
           message: e instanceof Error ? e.message : String(e),
         });
       });
+  }
+
+  setStripe(n: number): void {
+    this.transport?.setStripe?.(n);
   }
 
   close(): void {
