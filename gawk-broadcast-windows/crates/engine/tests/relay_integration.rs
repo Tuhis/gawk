@@ -70,6 +70,9 @@ fn http_get(addr: &str, path: &str) -> std::io::Result<String> {
     Ok(out)
 }
 
+// The restart machinery (fields beyond child/url/ops_port) only runs on
+// unix — the drain test is cfg(unix) — so Windows sees it as dead code.
+#[cfg_attr(not(unix), allow(dead_code))]
 struct Relay {
     child: Child,
     url: String,
@@ -163,7 +166,8 @@ impl Relay {
     }
 
     /// Restarts the SAME relay identity (same port, same flags) — a rolling
-    /// restart as the client sees it.
+    /// restart as the client sees it. Only the cfg(unix) drain test uses it.
+    #[cfg(unix)]
     fn restart(self) -> Relay {
         Relay::spawn(
             self.bin.clone(),
