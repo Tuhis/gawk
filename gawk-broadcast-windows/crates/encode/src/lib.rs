@@ -7,4 +7,8 @@
 //! `#[cfg(windows)]` — the crate compiles without them elsewhere so the
 //! workspace builds and its portable tests run anywhere.
 
+pub mod cascade;
 pub mod h264;
+
+#[cfg(windows)]
+pub mod mft;

@@ -13,6 +13,7 @@
 const NAL_TYPE_NON_IDR: u8 = 1;
 const NAL_TYPE_IDR: u8 = 5;
 const NAL_TYPE_SPS: u8 = 7;
+const NAL_TYPE_PPS: u8 = 8;
 
 /// Derives the WebCodecs codec string ("avc1.42E02A") from the first SPS in
 /// an Annex-B access unit.
@@ -37,6 +38,22 @@ pub fn parse_codec_string(au: &[u8]) -> Option<String> {
 /// datagrams.
 pub fn has_idr(au: &[u8]) -> bool {
     annex_b_nals(au).any(|nal| !nal.is_empty() && nal[0] & 0x1f == NAL_TYPE_IDR)
+}
+
+/// Whether the buffer carries both an SPS and a PPS NAL — the
+/// "self-describing IDR" test behind the header-prepend path (docs/38 D9's
+/// SPS/PPS-before-every-IDR invariant; vendor MFTs differ, V-6).
+pub fn has_sps_pps(buf: &[u8]) -> bool {
+    let mut sps = false;
+    let mut pps = false;
+    for nal in annex_b_nals(buf) {
+        match nal.first().map(|b| b & 0x1f) {
+            Some(NAL_TYPE_SPS) => sps = true,
+            Some(NAL_TYPE_PPS) => pps = true,
+            _ => {}
+        }
+    }
+    sps && pps
 }
 
 /// Whether an access unit contains any B slice.

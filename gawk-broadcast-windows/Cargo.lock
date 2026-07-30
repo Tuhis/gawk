@@ -272,6 +272,9 @@ dependencies = [
 [[package]]
 name = "gawk-encode"
 version = "0.0.0"
+dependencies = [
+ "windows",
+]
 
 [[package]]
 name = "gawk-engine"
