@@ -17,8 +17,10 @@ pub mod media;
 pub mod relay;
 pub mod resume;
 pub mod sender;
+pub mod session;
 pub mod stats;
 pub mod timesync;
+pub mod transport;
 
 /// Shipped defaults, all pointing at the production gawk deployment
 /// (docs/38 D13). "Blank means the default, resolved at use, never at save"

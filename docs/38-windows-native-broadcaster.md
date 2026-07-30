@@ -1,8 +1,10 @@
 # R34 — Native Windows broadcaster (`gawk-broadcast-windows`)
 
 **Status**: designed 2026-07-30 (owner decisions taken the same day, listed in
-§2). WB0 (scaffold, CI, release wiring) and WB1 (the wire mirror) implemented
-2026-07-30; WB2–WB8 not started.
+§2). WB0 (scaffold, CI, release wiring), WB1 (the wire mirror) and WB2
+(transport + engine core; wtransport gates measured — see §11 — and the
+real-relay integration suite green) implemented 2026-07-30; WB3–WB8 not
+started.
 
 A Windows counterpart to the Linux native broadcaster (R14, `gawk-broadcast`),
 with two capture modes selectable at start — **share one application** (its
@@ -73,6 +75,7 @@ Recorded here so the rest of the doc can build on them without hedging:
 | OD10 | Telemetry (R28) | **In scope day one**, mirroring the Linux reporter |
 | OD11 | CI | **GitHub-hosted `windows-latest`**, strictly path-filtered — Windows minutes are expensive; the job must not run unless the component actually changed |
 | OD12 | CLI / headless shell | **GUI only day one**; the engine crate stays shell-free so a CLI or pubsim-style publisher can be added without redesign |
+| OD13 | Rejected-CONNECT status (gate 2a failed on stock wtransport, §11 F-1) | **Vendor + patch wtransport in-repo** (`vendor/`, `[patch.crates-io]`) rather than a public fork or living without the status — decided 2026-07-30 when the gate was measured |
 
 ## 3. Non-goals
 
@@ -812,7 +815,47 @@ repetition on IDRs (WB4); **V-7** per-vendor invariant-table conformance
 Findings land in this doc's deviations section as they arrive, R14-style:
 design revised in place with the field evidence named.
 
-## 11. References
+## 11. Deviations and field findings
+
+Recorded as they land, R14-style. WB2's integration tests against the real
+`gawk-server` binary answered V-1 (2026-07-30) and found four interop
+defects in stock `wtransport` 0.7.1 — every one invisible to unit tests and
+each the exact class of thing D18's "test against the real relay" rule
+exists for. The library is now **vendored with five small patches**
+(`gawk-broadcast-windows/vendor/*/GAWK-PATCH.md`, every site marked
+`GAWK PATCH`), all upstreaming candidates:
+
+- **F-1 (gate 2a, pre-registered)**: the HTTP status of a rejected CONNECT
+  is parsed and discarded (`SessionRejected` carries no data, upstream
+  master included). Patched to carry it; the integration test pins
+  401/403/404 arriving from the relay's real handlers. The pre-registered
+  fallback library (`web-transport-quinn`) does not expose it either, so
+  the owner chose vendor+patch (OD13, decided 2026-07-30).
+- **F-2**: `Headers` is a HashMap, so QPACK-encoding emitted fields in
+  arbitrary order — but RFC 9114 §4.3.1 requires pseudo-headers first, and
+  quic-go enforces it with an H3_MESSAGE_ERROR stream reset. Consequence:
+  stock wtransport could not send ANY additional request header (the D19
+  Origin header included) to a quic-go server without a coin-flip protocol
+  violation. Patched: pseudo-headers encode first.
+- **F-3**: unknown H3 frame types violation-closed the connection; quic-go
+  sends GOAWAY on the control stream during shutdown. Patched to ignore
+  unknown frames per RFC 9114 §9.
+- **F-4 (gate 2b)**: session close codes were lost twice over. (a)
+  Capsules are a byte stream over the CONNECT stream's DATA frames and
+  webtransport-go splits one capsule across two frames; stock wtransport
+  parsed each DATA frame as exactly one whole capsule and silently skipped
+  the rest — so 4000/4002/4004 never surfaced. Patched: the reader
+  reassembles across frames. (b) Even a parsed capsule was then shadowed:
+  the driver locally closes the QUIC connection after recording it, and
+  `Connection::closed()` only consulted quinn (`LocallyClosed`). Patched:
+  `closed()` prefers the driver's session-level close. The supersede
+  integration test (4004 terminal, no resume-back) pins both.
+- **F-5 (harness)**: the drain-restart test is `cfg(unix)` — SIGTERM has
+  no analogue a console Go process handles on Windows, so the
+  drain-while-Ready path joins the on-hardware register for the Windows
+  side (§10); the Windows CI job still runs publish/reject/supersede.
+
+## 12. References
 
 - `docs/19-linux-native-broadcaster.md` — R14: decisions 1–21, deviations,
   the incident write-up, the tray/hotkey deferral research.

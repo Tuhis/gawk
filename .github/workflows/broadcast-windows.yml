@@ -60,21 +60,20 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      # V-9 spike (docs/38 WB0): does the Go relay's QUIC/WebTransport stack
-      # build and run on a Windows runner? Informational until WB2's
-      # integration tests make it load-bearing — continue-on-error keeps a
-      # platform flake from blocking scaffold PRs while still recording the
-      # answer in every run.
+      # WB2 integration: the engine against the REAL gawk-server binary —
+      # "a hand-written fake would only assert the engine against our belief
+      # about the relay, which is the belief most worth doubting in a second
+      # implementation of a protocol" (docs/38 D18). Serialized: each test
+      # runs its own relay. The drain-restart test is cfg(unix) and
+      # self-skips here; its Windows-side behavior stays on the on-hardware
+      # register. This step supersedes the WB0 V-9 spike — it IS the proof
+      # that quic-go serves WebTransport on a Windows runner loopback.
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: gawk-server/go.sum
-      - name: V-9 spike — gawk-server builds and its transport tests run on Windows
-        continue-on-error: true
-        working-directory: gawk-server
-        run: |
-          go build ./cmd/gawk-server
-          go test ./internal/transport/ -count=1 -timeout 10m
+      - name: Integration — publish, reject, resume, supersede vs the real relay
+        run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
 
       - name: Assemble artifact
         shell: pwsh

@@ -9,6 +9,7 @@ publish.workspace = true
 gawk-wire = { path = "../wire" }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 url = "2"
+wtransport = { version = "0.7.1", features = ["dangerous-configuration"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "test-util"] }

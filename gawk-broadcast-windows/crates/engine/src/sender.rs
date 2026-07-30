@@ -127,6 +127,12 @@ impl Sender {
         self.relay.lock().unwrap().clone()
     }
 
+    /// Fire-and-forget datagram on the CURRENT session — for TimeSync pings
+    /// and ClockMapping, whose failures must never take the pipeline down.
+    pub fn send_datagram_best_effort(&self, dgram: &[u8]) {
+        let _ = self.current_relay().send_datagram(dgram);
+    }
+
     /// Points the sender at a reclaimed session (resume).
     ///
     /// The frameId space, the DecoderConfig and the shrunken chunk budget
