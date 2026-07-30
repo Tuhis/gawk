@@ -337,9 +337,15 @@ docker build -f gawk-telemetry/deploy/Dockerfile -t gawk-telemetry:dev ..
 **The build tag is the whole of the cgo story.** `internal/sqlengine` has two
 implementations behind `//go:build duckdb`; everything else in the module is
 cgo-free and stays that way. The image is `CGO_ENABLED=1 -tags duckdb` onto
-`distroless/base` (base, not static — a cgo binary needs a libc), and CI builds
-both configurations, because a build tag nobody exercises is a build tag that
-rots.
+`distroless/cc-debian13`, built by `golang:1.26-trixie`, and CI builds both
+configurations — because a build tag nobody exercises is a build tag that rots.
+
+**The base image and the builder are pinned together, and both matter.** `cc`
+rather than `base` because DuckDB is C++ and the binary links libstdc++; the
+same Debian release on both sides because a cgo binary links against the
+BUILDER's glibc, which must not be newer than the runtime's. Neither is visible
+at build time — both are dynamic-linker failures — so CI starts every image it
+builds and makes it answer a request. If you bump one side, bump the other.
 
 ## Flags
 

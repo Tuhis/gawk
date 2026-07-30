@@ -706,13 +706,32 @@ jobs:
         include:
           - context: gawk-server
             dockerfile: gawk-server/deploy/Dockerfile
+            tag: gawk-server:ci
+            # The relay refuses to start without a certificate, so a bare run
+            # is not a health check — `-dev-cert` gives it a self-signed one
+            # and /healthz on the ops port is the answer.
+            run_args: -dev-cert -addr :4433 -metrics-addr :2112
+            probe_port: 2112
+            probe_path: /healthz
           - context: gawk-app
             dockerfile: gawk-app/deploy/Dockerfile
+            tag: gawk-app:ci
+            probe_port: 8080
+            probe_path: /
           # R28: the build context is the REPO ROOT, not the module dir —
           # gawk-telemetry consumes gawk-server/wire through a local `replace`
           # (docs/33 D12), so the relay module's tree must be present.
           - context: .
             dockerfile: gawk-telemetry/deploy/Dockerfile
+            tag: gawk-telemetry:ci
+            run_args: >-
+              -telemetry-key 0000000000000000000000000000000000000000000000000000000000000000
+              -data-dir /tmp/d -log-level warn
+            probe_port: 8080
+            probe_path: /healthz
+            # R31: this is the ONLY cgo image, and the one whose failure mode
+            # this whole step exists for (see below).
+            read_port: 8081
     steps:
       - uses: actions/checkout@v7
       # Host networking on both levels: the ioio-k8s pod network MTU is 1480
@@ -729,6 +748,76 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: false
+          # `load` so the next step can actually RUN what was just built.
+          load: true
+          tags: ${{ matrix.tag }}
           # Distinct scope per image or the two builds evict each other.
           cache-from: type=gha,scope=${{ matrix.context }}
           cache-to: type=gha,mode=max,scope=${{ matrix.context }}
+
+      # **Building an image is not evidence that it runs.**
+      #
+      # R31 shipped a telemetry image that built green in CI three times and
+      # then died on its first start in the cluster — twice over, for two
+      # independent reasons neither of which a build can see: a `distroless/base`
+      # runtime with no libstdc++ for the cgo DuckDB binary, and a builder whose
+      # glibc was newer than the runtime's. Both are dynamic-linker failures, so
+      # the compiler is perfectly happy and the layers are perfectly valid.
+      #
+      # So every image now has to start and answer one request.
+      - name: the image starts and serves
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-smoke --network host \
+            ${{ matrix.tag }} ${{ matrix.run_args }}
+          # Poll rather than sleep: a fixed wait is either flaky or slow, and
+          # the failures this guards are immediate anyway.
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null \
+                 "http://127.0.0.1:${{ matrix.probe_port }}${{ matrix.probe_path }}"; then
+              ok=1; break
+            fi
+            # A container that has already exited will never answer, and its
+            # logs are the whole diagnosis — fail loudly instead of waiting out
+            # the timeout.
+            if [ "$(docker inspect -f '{{.State.Status}}' ci-smoke)" != "running" ]; then
+              echo "::error::the container exited before serving a request"
+              docker logs ci-smoke 2>&1 | tail -30
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "${ok:-0}" != "1" ]; then
+            echo "::error::${{ matrix.tag }} never answered ${{ matrix.probe_path }}"
+            docker logs ci-smoke 2>&1 | tail -30
+            exit 1
+          fi
+          echo "${{ matrix.tag }} started and served ${{ matrix.probe_path }}"
+
+      # The cgo half, and the reason the base image matters: a binary can start
+      # and still have an engine that fails to open. `sql: true` is only
+      # reported when the DuckDB driver actually initialised, and the query
+      # proves it can answer — which is what the default-on console promises.
+      - name: the DuckDB engine loaded and answers
+        if: matrix.read_port
+        run: |
+          set -euo pipefail
+          meta=$(curl -fsS "http://127.0.0.1:${{ matrix.read_port }}/v1/meta")
+          echo "$meta"
+          if ! grep -q '"sql":true' <<<"$meta"; then
+            echo "::error::the image reports no SQL engine — it was built without -tags duckdb, or the driver failed to open"
+            docker logs ci-smoke 2>&1 | tail -30
+            exit 1
+          fi
+          out=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+                  -d '{"sql":"SELECT 42 AS answer"}' \
+                  "http://127.0.0.1:${{ matrix.read_port }}/v1/query")
+          echo "$out"
+          grep -q '"rows":\[\[42\]\]' <<<"$out" || {
+            echo "::error::the engine is present but did not answer a trivial query"
+            exit 1
+          }
+
+      - name: clean up the smoke container
+        if: always()
+        run: docker rm -f ci-smoke >/dev/null 2>&1 || true

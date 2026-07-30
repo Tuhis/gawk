@@ -175,9 +175,16 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   exist in that build.** `internal/sqlengine` sits behind `//go:build duckdb`;
   `go build ./...` on a fresh clone links no DuckDB and the console reports
   itself unavailable, while the shipped image is `CGO_ENABLED=1 -tags duckdb`
-  on `distroless/base`. So `-query-sql` being on (its default) is *not* the
-  same claim as "queries work here", and CI builds both configurations.
+  on `distroless/cc-debian13`. So `-query-sql` being on (its default) is *not*
+  the same claim as "queries work here", and CI builds both configurations.
   ([docs/36](docs/36-telemetry-ui-history.md) §8 Q1)
+- **A cgo image that BUILDS is not an image that runs**, and nothing catches
+  the difference at build time. The telemetry image shipped twice-broken —
+  `distroless/base` has no libstdc++ for a C++ dependency, and a builder whose
+  glibc is newer than the runtime's produces an unrunnable binary — both
+  surfacing only as dynamic-linker errors on first start. The builder and base
+  are now pinned to the same Debian release, and CI starts every image it
+  builds. ([docs/36](docs/36-telemetry-ui-history.md) §9.3)
 - **`go test ./gawk-telemetry/internal/dashboard/` is green and proves nothing
   without `npm run build` first.** Its no-external-fetch tests assert against
   `dist/`, which the Go job never builds, so they *skip by design*. That is the
