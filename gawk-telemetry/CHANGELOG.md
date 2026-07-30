@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.5.0...gawk-telemetry-v1.5.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **telemetry:** the image built green and could not start ([#206](https://github.com/Tuhis/gawk/issues/206)) ([f2ef1a5](https://github.com/Tuhis/gawk/commit/f2ef1a5dc7230195d978480d3ff73152e2bf4d8f))
+
 ## [1.5.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.4.0...gawk-telemetry-v1.5.0) (2026-07-29)
 
 
