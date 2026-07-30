@@ -165,11 +165,16 @@ impl Session {
     pub fn stats(&self) -> Stats {
         let mut st = self.sender.stats();
         let sh = self.shared.lock().unwrap();
-        st.viewer_count = sh.viewer_count;
+        if let Some(count) = sh.viewer_count {
+            st.viewer_count_available = true;
+            st.viewer_count = count;
+        }
         st.resumes = sh.resumes;
         st.resuming = sh.resuming;
         if let Some(s) = self.ts.sample() {
-            let _ = s; // RTT/offset reach the diagnostics surface with WB6.
+            st.time_sync_available = true;
+            st.time_sync_rtt_ms = s.rtt_ms;
+            st.time_sync_offset_us = s.offset_us;
         }
         st
     }

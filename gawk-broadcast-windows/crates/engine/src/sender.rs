@@ -62,6 +62,9 @@ struct State {
     audio_config_sent_at_ms: u64,
     audio_config_sent: bool,
     audio_checked: bool,
+    /// Latches the R25 Decision-10 refusal: a bitstream that disagrees with
+    /// the advertised config is not shipped.
+    audio_errored: bool,
 
     st: Stats,
     last_keyframe_us: u64,
@@ -108,6 +111,7 @@ impl Sender {
                 audio_config_sent_at_ms: 0,
                 audio_config_sent: false,
                 audio_checked: false,
+                audio_errored: false,
                 st: Stats::default(),
                 last_keyframe_us: 0,
                 kf_interval_ms: 0.0,
@@ -171,7 +175,7 @@ impl Sender {
         let mut dgram = Vec::new();
         if wire::append_decoder_config(&mut dgram, codec, b"").is_ok() {
             st.config_datagram = Some(dgram);
-            st.st.codec = Some(codec.to_owned());
+            st.st.codec = codec.to_owned();
         }
     }
 
@@ -461,11 +465,11 @@ impl Sender {
         if ok {
             s.audio_config_datagram = Some(dgram);
         }
-        s.st.audio_codec = Some(f.codec.clone());
+        s.st.audio_codec = f.codec.clone();
         s.st.audio_sample_rate = f.sample_rate;
         s.st.audio_channels = f.channels;
         s.st.audio_bitrate_bps = f.bitrate_bps;
-        s.st.audio_source = Some(f.source.clone());
+        s.st.audio_source = f.source.clone();
         s.audio_format = Some(f);
     }
 
@@ -485,10 +489,11 @@ impl Sender {
                 if let (Some(check), Some(format)) = (&self.audio_check, &s.audio_format)
                     && check(&p.data, format).is_err()
                 {
-                    s.st.audio_errored = true;
+                    s.audio_errored = true;
+                    s.st.audio_state = "error".into();
                 }
             }
-            if s.st.audio_errored {
+            if s.audio_errored {
                 return;
             }
             if p.data.is_empty() || p.data.len() > wire::MAX_AUDIO_PAYLOAD {
@@ -555,7 +560,8 @@ impl Sender {
     pub fn stats(&self) -> Stats {
         let s = self.state.lock().unwrap();
         let mut st = s.st.clone();
-        st.keyframe_interval_ms = s.kf_interval_ok.then_some(s.kf_interval_ms);
+        st.keyframe_interval_available = s.kf_interval_ok;
+        st.keyframe_interval_ms = s.kf_interval_ms;
         st
     }
 

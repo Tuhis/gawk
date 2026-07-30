@@ -513,7 +513,7 @@ async fn a_failed_bitstream_check_latches_audio_off_and_touches_no_video_counter
 
     assert!(relay.sent_of_type(wire::TYPE_AUDIO_FRAME).is_empty());
     let st = sender.stats();
-    assert!(st.audio_errored);
+    assert_eq!(st.audio_state, "error");
     assert_eq!(
         st.frames_dropped_at_send, 0,
         "audio never touches video counters"
@@ -527,11 +527,16 @@ async fn keyframe_cadence_is_measured_not_assumed() {
     let (_relay, _clock, sender) = setup();
     sender.send_video(keyframe(10, 1_000_000)).await;
     assert!(
-        sender.stats().keyframe_interval_ms.is_none(),
+        !sender.stats().keyframe_interval_available,
         "one keyframe is no interval"
     );
     sender.send_video(keyframe(10, 1_650_000)).await; // 650 ms gap
     sender.wait().await;
-    let ms = sender.stats().keyframe_interval_ms.unwrap();
-    assert!((ms - 650.0).abs() < 0.001, "first gap seeds the EMA: {ms}");
+    let st = sender.stats();
+    assert!(st.keyframe_interval_available);
+    assert!(
+        (st.keyframe_interval_ms - 650.0).abs() < 0.001,
+        "first gap seeds the EMA: {}",
+        st.keyframe_interval_ms
+    );
 }
