@@ -1,5 +1,10 @@
-//! WB0 scaffold — implementation lands in its own chunk (docs/38 §8).
+//! Media Foundation hardware H.264 encoder cascade (WB4, docs/38 D9).
 //!
-//! Windows-only code will be cfg-gated behind `#[cfg(windows)]` with the
-//! `windows` crate as a target-specific dependency; the crate compiles empty
-//! elsewhere so the workspace builds and its portable tests run on any host.
+//! Two halves: [`h264`] is the pure, portable bitstream-inspection layer
+//! (codec string from the SPS, IDR classification, the no-B-frames
+//! assertion) that runs and tests on any host; the MFT enumeration, trial
+//! probes and encoder session are Windows-only and will be cfg-gated behind
+//! `#[cfg(windows)]` — the crate compiles without them elsewhere so the
+//! workspace builds and its portable tests run anywhere.
+
+pub mod h264;
