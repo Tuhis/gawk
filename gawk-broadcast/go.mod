@@ -6,8 +6,8 @@ require (
 	gioui.org v0.10.1
 	github.com/Tuhis/gawk/gawk-server v0.0.0
 	github.com/godbus/dbus/v5 v5.2.2
-	github.com/quic-go/quic-go v0.60.0
-	github.com/quic-go/webtransport-go v0.11.1
+	github.com/quic-go/quic-go v0.61.0
+	github.com/quic-go/webtransport-go v0.12.0
 )
 
 require (

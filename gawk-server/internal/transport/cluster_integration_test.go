@@ -258,7 +258,7 @@ func TestEdgePullUnderAllowedOrigins(t *testing.T) {
 	}
 
 	// And a disallowed browser origin is still turned away at the door.
-	d := webtransport.Dialer{
+	d := webtransport.Transport{
 		TLSClientConfig: clientTLS,
 		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}

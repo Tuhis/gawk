@@ -143,7 +143,7 @@ func PublishURL(relayURL, broadcastID, secret, resumeToken string) (string, erro
 
 // dialRelay is the production DialFunc.
 func dialRelay(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
-	d := &webtransport.Dialer{
+	d := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{
 			// A native client trusts the homelab CA directly, so the
 			// browser's serverCertificateHashes 14-day certificate dance

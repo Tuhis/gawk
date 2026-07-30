@@ -138,7 +138,7 @@ func printSummary(t *totals, viewers int, elapsed time.Duration) {
 }
 
 func runViewer(ctx context.Context, subscribeURL string, insecure bool, t *totals) {
-	d := &webtransport.Dialer{
+	d := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,

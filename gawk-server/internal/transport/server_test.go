@@ -107,7 +107,7 @@ func dial(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) 
 // listed origin.
 func dialWithOrigin(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config, origin string) *webtransport.Session {
 	t.Helper()
-	d := webtransport.Dialer{
+	d := webtransport.Transport{
 		TLSClientConfig: clientTLS,
 		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}
@@ -134,7 +134,7 @@ func dialWithOrigin(t *testing.T, ctx context.Context, url string, clientTLS *tl
 
 func dialOnce(t *testing.T, ctx context.Context, url string, clientTLS *tls.Config) (*http.Response, *webtransport.Session, error) {
 	t.Helper()
-	d := webtransport.Dialer{
+	d := webtransport.Transport{
 		TLSClientConfig: clientTLS,
 		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}

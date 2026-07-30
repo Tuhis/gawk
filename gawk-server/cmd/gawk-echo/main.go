@@ -63,7 +63,7 @@ func run() error {
 		}
 	}
 
-	d := webtransport.Dialer{
+	d := webtransport.Transport{
 		TLSClientConfig: tlsConf,
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
