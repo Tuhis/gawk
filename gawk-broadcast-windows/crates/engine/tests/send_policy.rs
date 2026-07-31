@@ -9,7 +9,7 @@ use gawk_engine::relay::{
     BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, RelaySession, SendDatagramError,
     ServerStream,
 };
-use gawk_engine::sender::{KEYFRAME_SUPERSEDED_CODE, Sender};
+use gawk_engine::sender::{KEYFRAME_SUPERSEDED_CODE, KEYFRAME_WRITE_CANCEL_AGE_MS, Sender};
 use gawk_wire as wire;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -19,6 +19,9 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KfEvent {
+    /// A parked write began (the F-12 tests settle on this before acting
+    /// on the in-flight write).
+    Started,
     Written(Vec<u8>),
     Cancelled(u32),
     Aborted(u32),
@@ -49,13 +52,16 @@ impl KeyframeWriter for FakeWriter {
                     self.log.lock().unwrap().push(KfEvent::Written(msg));
                     KeyframeOutcome::Sent
                 }
-                KfMode::HoldUntilCancelled => match cancel.await {
-                    Ok(code) => {
-                        self.log.lock().unwrap().push(KfEvent::Cancelled(code));
-                        KeyframeOutcome::Cancelled
+                KfMode::HoldUntilCancelled => {
+                    self.log.lock().unwrap().push(KfEvent::Started);
+                    match cancel.await {
+                        Ok(code) => {
+                            self.log.lock().unwrap().push(KfEvent::Cancelled(code));
+                            KeyframeOutcome::Cancelled
+                        }
+                        Err(_) => KeyframeOutcome::Cancelled,
                     }
-                    Err(_) => KeyframeOutcome::Cancelled,
-                },
+                }
             }
         })
     }
@@ -293,36 +299,83 @@ async fn keyframes_embed_the_config_and_never_send_it_standalone() {
     assert_eq!(sender.stats().configs_sent, 1);
 }
 
+// F-12: a YOUNG in-flight write is allowed to finish — the newer keyframe
+// waits in the pending slot instead of cancelling it. Unconditional
+// newest-wins livelocked under bandwidth contention (every write died at
+// ~90 % done, the relay cache starved, joining viewers sat on black).
 #[tokio::test]
-async fn at_most_one_keyframe_stream_in_flight_newest_wins() {
+async fn a_young_in_flight_keyframe_write_is_not_cancelled_the_newest_waits() {
     let (relay, _clock, sender) = setup();
     relay.script_keyframes(vec![KfMode::HoldUntilCancelled, KfMode::Instant]);
 
     sender.send_video(keyframe(100, 1)).await; // parks
-    sender.send_video(keyframe(100, 2)).await; // supersedes it
-    sender.wait().await;
+    settle(|| relay.kf_events().contains(&KfEvent::Started)).await;
+    sender.send_video(keyframe(100, 2)).await; // young in-flight: waits
 
-    let events = relay.kf_events();
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
     assert!(
-        events.contains(&KfEvent::Cancelled(KEYFRAME_SUPERSEDED_CODE)),
-        "the older stream must be reset with the supersede code: {events:?}"
+        !relay
+            .kf_events()
+            .iter()
+            .any(|e| matches!(e, KfEvent::Cancelled(_))),
+        "a young in-flight write must not be cancelled: {:?}",
+        relay.kf_events()
+    );
+    assert_eq!(sender.stats().keyframe_streams_superseded, 0);
+
+    // Teardown cancels the in-flight write and discards the waiter.
+    sender.wait().await;
+    assert!(
+        relay
+            .kf_events()
+            .contains(&KfEvent::Cancelled(KEYFRAME_SUPERSEDED_CODE))
     );
     let st = sender.stats();
+    assert_eq!(st.keyframe_streams_superseded, 1, "the discarded waiter");
+    assert_eq!(st.keyframe_streams_failed, 1, "the cancelled write");
+    assert_eq!(st.keyframe_streams_sent, 0);
+}
+
+// The wedge protection survives F-12: past the cancel age, newest wins
+// exactly as before.
+#[tokio::test]
+async fn a_stalled_keyframe_write_is_superseded_newest_wins() {
+    let (relay, clock, sender) = setup();
+    relay.script_keyframes(vec![KfMode::HoldUntilCancelled, KfMode::Instant]);
+
+    sender.send_video(keyframe(100, 1)).await;
+    settle(|| relay.kf_events().contains(&KfEvent::Started)).await;
+    clock.advance_ms(KEYFRAME_WRITE_CANCEL_AGE_MS + 1);
+    sender.send_video(keyframe(100, 2)).await;
+
+    settle(|| {
+        relay
+            .kf_events()
+            .contains(&KfEvent::Cancelled(KEYFRAME_SUPERSEDED_CODE))
+    })
+    .await;
+    settle(|| sender.stats().keyframe_streams_sent == 1).await;
+    let st = sender.stats();
     assert_eq!(st.keyframe_streams_superseded, 1);
-    assert_eq!(st.keyframe_streams_sent, 1);
     // Mirroring the Go engine: the cancelled write also lands in the failed
     // counter (the supersede was counted separately).
     assert_eq!(st.keyframe_streams_failed, 1);
 }
 
 #[tokio::test]
-async fn a_closed_sender_aborts_new_keyframes_instead_of_writing() {
+async fn a_closed_sender_refuses_new_keyframes_without_opening_a_stream() {
     let (relay, _clock, sender) = setup();
     sender.wait().await; // teardown: closed to new writes
     sender.send_video(keyframe(100, 1)).await;
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
     assert_eq!(
         relay.kf_events(),
-        vec![KfEvent::Aborted(KEYFRAME_SUPERSEDED_CODE)]
+        vec![],
+        "no stream may be opened behind teardown"
     );
     assert_eq!(sender.stats().keyframe_streams_failed, 1);
 }
@@ -332,6 +385,7 @@ async fn wait_cancels_a_stalled_keyframe_write_instead_of_hanging() {
     let (relay, _clock, sender) = setup();
     relay.script_keyframes(vec![KfMode::HoldUntilCancelled]);
     sender.send_video(keyframe(100, 1)).await;
+    settle(|| relay.kf_events().contains(&KfEvent::Started)).await;
 
     // Teardown must not await an uplink-stalled write forever: once the
     // sender is closed to NEW writes, nothing can ever supersede the stalled
@@ -351,6 +405,7 @@ async fn set_relay_cancels_the_inflight_keyframe() {
     let (relay, _clock, sender) = setup();
     relay.script_keyframes(vec![KfMode::HoldUntilCancelled]);
     sender.send_video(keyframe(100, 1)).await;
+    settle(|| relay.kf_events().contains(&KfEvent::Started)).await;
 
     sender.set_relay(Arc::new(FakeRelay::default()));
     sender.wait().await;

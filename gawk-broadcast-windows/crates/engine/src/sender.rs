@@ -29,12 +29,31 @@ type Datagrams = Vec<Vec<u8>>;
 /// Application-defined; the relay treats any reset stream the same way.
 pub const KEYFRAME_SUPERSEDED_CODE: u32 = 1;
 
+/// How old an in-flight keyframe write must be before a newer keyframe
+/// cancels it outright. Younger writes are allowed to FINISH and the newest
+/// keyframe waits in the pending slot instead (docs/38 F-12): quinn packs
+/// datagrams into every packet ahead of stream data, so under bandwidth
+/// contention a keyframe stream write routinely outlives the 500 ms GOP —
+/// and unconditional newest-wins then cancels every write at ~90 % done,
+/// the relay's priming cache starves, and joining viewers sit on a black
+/// screen. Cancellation is kept only for writes this far past the GOP,
+/// which is the genuinely-wedged-stream class it was designed for.
+pub const KEYFRAME_WRITE_CANCEL_AGE_MS: u64 = 2_000;
+
 struct KfSlot {
     /// Cancels the in-flight keyframe write, if any.
     cancel: Option<oneshot::Sender<u32>>,
     /// Generation of the current in-flight write; a finishing writer only
-    /// clears the slot if it is still the current one.
+    /// clears the slot (and picks up the pending keyframe) if it is still
+    /// the current one.
     generation: u64,
+    /// Session-clock instant the in-flight write started; meaningful while
+    /// `cancel` is `Some`. Feeds the stall-cancel age check.
+    write_started_us: u64,
+    /// The newest keyframe waiting for the in-flight write to finish —
+    /// newest wins among waiters (a replaced waiter counts as superseded),
+    /// F-12's replacement for cancelling the write itself.
+    pending: Option<Vec<u8>>,
     /// Set by `wait()` to stop new writes being spawned behind it.
     closed: bool,
     handles: Vec<JoinHandle<()>>,
@@ -85,7 +104,9 @@ struct State {
 pub type AudioBitstreamCheck = Box<dyn Fn(&[u8], &AudioFormat) -> Result<(), String> + Send + Sync>;
 
 pub struct Sender {
-    relay: Mutex<Arc<dyn RelaySession>>,
+    // Arc'd (like `state` and `kf`) so the spawned keyframe writer task can
+    // reach the current session when it picks up a pending keyframe.
+    relay: Arc<Mutex<Arc<dyn RelaySession>>>,
     clock: Arc<dyn Clock>,
     // Arc'd so the spawned keyframe writer can report its outcome after the
     // caller has moved on.
@@ -105,7 +126,7 @@ impl Sender {
         audio_check: Option<AudioBitstreamCheck>,
     ) -> Self {
         Self {
-            relay: Mutex::new(relay),
+            relay: Arc::new(Mutex::new(relay)),
             clock,
             state: Arc::new(Mutex::new(State {
                 next_frame_id: 0,
@@ -130,6 +151,8 @@ impl Sender {
             kf: Arc::new(Mutex::new(KfSlot {
                 cancel: None,
                 generation: 0,
+                write_started_us: 0,
+                pending: None,
                 closed: false,
                 handles: Vec::new(),
             })),
@@ -162,13 +185,18 @@ impl Sender {
             let mut st = self.state.lock().unwrap();
             st.audio_config_sent = false;
         }
-        let cancel = {
+        let (cancel, had_pending) = {
             let mut kf = self.kf.lock().unwrap();
             kf.generation += 1;
-            kf.cancel.take()
+            (kf.cancel.take(), kf.pending.take().is_some())
         };
         if let Some(c) = cancel {
             let _ = c.send(KEYFRAME_SUPERSEDED_CODE);
+        }
+        if had_pending {
+            // The waiting keyframe belonged to the dead session's cadence;
+            // the resume re-prime (force-IDR) produces a fresher one.
+            self.state.lock().unwrap().st.keyframe_streams_superseded += 1;
         }
     }
 
@@ -235,9 +263,13 @@ impl Sender {
         }
     }
 
-    // Writes one StreamFrame on its own reliable uni stream. (The
-    // forced-IDR-on-resume improvement lives at the session/encoder seam —
-    // the sender has no frame to force, it only ships what arrives.)
+    // Routes one keyframe onto a reliable uni stream, under the F-12
+    // policy: an in-flight write younger than KEYFRAME_WRITE_CANCEL_AGE_MS
+    // is allowed to FINISH (this keyframe waits in the pending slot, newest
+    // wins among waiters); only a write older than that — the wedged-stream
+    // class — is cancelled outright. Unconditional newest-wins livelocked
+    // under bandwidth contention: every write died at ~90 % done and the
+    // relay's priming cache starved (the field's black-screen minute).
     async fn send_keyframe(&self, frame_id: u32, au: AccessUnit) {
         let (mut msg, has_config) = {
             let s = self.state.lock().unwrap();
@@ -265,67 +297,121 @@ impl Sender {
             self.state.lock().unwrap().st.configs_sent += 1;
         }
 
-        let relay = self.current_relay();
-        let stream = match relay.open_keyframe_stream().await {
-            Ok(s) => s,
-            Err(_) => {
-                self.count_keyframe_failed();
-                return;
-            }
-        };
-
-        // Supersede any keyframe still writing: newest wins, ≤1 in flight.
-        let (cancel_rx, my_generation) = {
+        {
             let mut kf = self.kf.lock().unwrap();
             if kf.closed {
-                // Teardown is waiting for in-flight writes before closing the
-                // session; spawning another would write to a session about to
-                // close.
                 drop(kf);
-                stream.abort(KEYFRAME_SUPERSEDED_CODE);
                 self.count_keyframe_failed();
                 return;
             }
-            if let Some(old) = kf.cancel.take() {
-                let _ = old.send(KEYFRAME_SUPERSEDED_CODE);
-                self.state.lock().unwrap().st.keyframe_streams_superseded += 1;
+            if kf.cancel.is_some() {
+                let age_ms = self.clock.now_us().saturating_sub(kf.write_started_us) / 1000;
+                if age_ms < KEYFRAME_WRITE_CANCEL_AGE_MS {
+                    // In flight and presumed progressing: wait, don't kill.
+                    if kf.pending.replace(msg).is_some() {
+                        self.state.lock().unwrap().st.keyframe_streams_superseded += 1;
+                    }
+                    return;
+                }
+                // Stalled past the deadline: the original newest-wins
+                // cancel. Any waiter is older than this keyframe — drop it.
+                if let Some(old) = kf.cancel.take() {
+                    let _ = old.send(KEYFRAME_SUPERSEDED_CODE);
+                    self.state.lock().unwrap().st.keyframe_streams_superseded += 1;
+                }
+                if kf.pending.take().is_some() {
+                    self.state.lock().unwrap().st.keyframe_streams_superseded += 1;
+                }
             }
-            let (tx, rx) = oneshot::channel();
-            kf.cancel = Some(tx);
-            kf.generation += 1;
-            (rx, kf.generation)
-        };
+        }
+        Self::spawn_keyframe_writer(
+            self.relay.clone(),
+            self.clock.clone(),
+            self.state.clone(),
+            self.kf.clone(),
+            msg,
+        );
+    }
 
-        // Write off the frame path: a stalled uplink must not block the next
-        // frame's arrival from the encoder.
-        let msg_len = msg.len() as u64;
-        let outcome_fut = stream.write(msg, cancel_rx);
-        let (state, kf_slot) = (self.state.clone(), self.kf.clone());
-        let handle = tokio::spawn(async move {
-            let outcome = outcome_fut.await;
-            {
-                let mut kf = kf_slot.lock().unwrap();
-                if kf.generation == my_generation {
-                    kf.cancel = None;
-                }
-            }
-            let mut s = state.lock().unwrap();
-            match outcome {
-                KeyframeOutcome::Sent => {
-                    s.st.keyframe_streams_sent += 1;
-                    s.st.keyframe_bytes_sent += msg_len;
-                    s.st.bytes_sent += msg_len;
-                    s.st.sent_frames += 1;
-                }
-                // A superseded stream lands here too; mirroring the Go code,
-                // any unfinished write counts as failed (the supersede was
-                // already counted separately at supersede time).
-                KeyframeOutcome::Cancelled | KeyframeOutcome::Failed(_) => {
-                    s.st.keyframe_streams_failed += 1;
+    /// One writer task: writes `first_msg`, then keeps draining the pending
+    /// slot until it is empty — off the frame path, so a slow uplink never
+    /// blocks the next frame's arrival from the encoder. Only the
+    /// current-generation writer picks up the pending keyframe, so a
+    /// stall-cancelled predecessor cannot race the replacement for it.
+    fn spawn_keyframe_writer(
+        relay: Arc<Mutex<Arc<dyn RelaySession>>>,
+        clock: Arc<dyn Clock>,
+        state: Arc<Mutex<State>>,
+        kf_slot: Arc<Mutex<KfSlot>>,
+        first_msg: Vec<u8>,
+    ) {
+        let handle = tokio::spawn({
+            let kf_slot = kf_slot.clone();
+            async move {
+                let mut next = Some(first_msg);
+                while let Some(msg) = next.take() {
+                    let session = relay.lock().unwrap().clone();
+                    let stream = match session.open_keyframe_stream().await {
+                        Ok(s) => s,
+                        Err(_) => {
+                            state.lock().unwrap().st.keyframe_streams_failed += 1;
+                            return;
+                        }
+                    };
+
+                    let (cancel_rx, my_generation) = {
+                        let mut kf = kf_slot.lock().unwrap();
+                        if kf.closed {
+                            drop(kf);
+                            stream.abort(KEYFRAME_SUPERSEDED_CODE);
+                            state.lock().unwrap().st.keyframe_streams_failed += 1;
+                            return;
+                        }
+                        // A concurrent registration only exists if our open
+                        // outlived a whole GOP; newest registration wins,
+                        // mirroring the old supersede-at-register.
+                        if let Some(old) = kf.cancel.take() {
+                            let _ = old.send(KEYFRAME_SUPERSEDED_CODE);
+                            state.lock().unwrap().st.keyframe_streams_superseded += 1;
+                        }
+                        let (tx, rx) = oneshot::channel();
+                        kf.cancel = Some(tx);
+                        kf.generation += 1;
+                        kf.write_started_us = clock.now_us();
+                        (rx, kf.generation)
+                    };
+
+                    let msg_len = msg.len() as u64;
+                    let outcome = stream.write(msg, cancel_rx).await;
+                    {
+                        let mut kf = kf_slot.lock().unwrap();
+                        if kf.generation == my_generation {
+                            kf.cancel = None;
+                            if !kf.closed {
+                                next = kf.pending.take();
+                            }
+                        }
+                    }
+                    let mut s = state.lock().unwrap();
+                    match outcome {
+                        KeyframeOutcome::Sent => {
+                            s.st.keyframe_streams_sent += 1;
+                            s.st.keyframe_bytes_sent += msg_len;
+                            s.st.bytes_sent += msg_len;
+                            s.st.sent_frames += 1;
+                        }
+                        // A superseded stream lands here too; mirroring the
+                        // Go code, any unfinished write counts as failed
+                        // (the supersede was already counted separately at
+                        // supersede time).
+                        KeyframeOutcome::Cancelled | KeyframeOutcome::Failed(_) => {
+                            s.st.keyframe_streams_failed += 1;
+                        }
+                    }
                 }
             }
         });
-        let mut kf = self.kf.lock().unwrap();
+        let mut kf = kf_slot.lock().unwrap();
         // Prune as we go: at the ~500 ms keyframe cadence an hours-long
         // session would otherwise hoard thousands of completed handles (and
         // stop() would await the whole backlog).
@@ -601,14 +687,21 @@ impl Sender {
     /// stalled on QUIC flow control, and awaiting it uncancelled would hang
     /// `stop()` for as long as the uplink stays saturated.
     pub async fn wait(&self) {
-        let (cancel, handles) = {
+        let (cancel, had_pending, handles) = {
             let mut kf = self.kf.lock().unwrap();
             kf.closed = true;
             kf.generation += 1;
-            (kf.cancel.take(), std::mem::take(&mut kf.handles))
+            (
+                kf.cancel.take(),
+                kf.pending.take().is_some(),
+                std::mem::take(&mut kf.handles),
+            )
         };
         if let Some(c) = cancel {
             let _ = c.send(KEYFRAME_SUPERSEDED_CODE);
+        }
+        if had_pending {
+            self.state.lock().unwrap().st.keyframe_streams_superseded += 1;
         }
         for h in handles {
             let _ = h.await;
@@ -666,6 +759,205 @@ mod tests {
         fn closed(&self) -> BoxFuture<'_, SessionClose> {
             Box::pin(std::future::pending())
         }
+    }
+
+    /// A relay whose keyframe writes park until the test releases (or the
+    /// sender cancels) them — the F-12 harness: write duration is the
+    /// test's to script, which is exactly the thing the real uplink varies.
+    #[derive(Clone, Default)]
+    struct GatedRelay {
+        writes: Arc<Mutex<Vec<GatedWrite>>>,
+    }
+
+    struct GatedWrite {
+        msg: Vec<u8>,
+        release: Option<oneshot::Sender<KeyframeOutcome>>,
+    }
+
+    struct GatedWriter {
+        writes: Arc<Mutex<Vec<GatedWrite>>>,
+    }
+
+    impl KeyframeWriter for GatedWriter {
+        fn write(
+            self: Box<Self>,
+            msg: Vec<u8>,
+            cancel: CancelSignal,
+        ) -> BoxFuture<'static, KeyframeOutcome> {
+            let (tx, rx) = oneshot::channel();
+            self.writes.lock().unwrap().push(GatedWrite {
+                msg,
+                release: Some(tx),
+            });
+            Box::pin(async move {
+                tokio::select! {
+                    r = rx => r.unwrap_or(KeyframeOutcome::Failed("test dropped".into())),
+                    _ = cancel => KeyframeOutcome::Cancelled,
+                }
+            })
+        }
+        fn abort(self: Box<Self>, _code: u32) {}
+    }
+
+    impl RelaySession for GatedRelay {
+        fn send_datagram(&self, _dgram: &[u8]) -> Result<(), SendDatagramError> {
+            Ok(())
+        }
+        fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+            let writes = self.writes.clone();
+            Box::pin(async move { Ok(Box::new(GatedWriter { writes }) as Box<dyn KeyframeWriter>) })
+        }
+        fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> BoxFuture<'_, SessionClose> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    impl GatedRelay {
+        fn write_count(&self) -> usize {
+            self.writes.lock().unwrap().len()
+        }
+        fn release(&self, i: usize, outcome: KeyframeOutcome) {
+            let tx = self.writes.lock().unwrap()[i].release.take().unwrap();
+            let _ = tx.send(outcome);
+        }
+        fn payload_ends_with(&self, i: usize, marker: &[u8]) -> bool {
+            self.writes.lock().unwrap()[i].msg.ends_with(marker)
+        }
+    }
+
+    fn kf(marker: u8) -> AccessUnit {
+        AccessUnit {
+            data: vec![marker; 40],
+            timestamp_us: u64::from(marker) * 500_000,
+            keyframe: true,
+        }
+    }
+
+    async fn settle() {
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    // F-12 core: an in-flight write younger than the cancel age FINISHES;
+    // the newer keyframe waits pending and starts when the write completes.
+    // Unconditional newest-wins livelocked under contention (no keyframe
+    // ever completed) — the field's black-screen minute.
+    #[tokio::test]
+    async fn a_young_in_flight_write_finishes_and_the_newest_waits_for_it() {
+        let relay = GatedRelay::default();
+        let clock = Arc::new(FakeClock::default());
+        let sender = Sender::new(Arc::new(relay.clone()), clock.clone());
+
+        sender.send_video(kf(1)).await;
+        settle().await;
+        assert_eq!(relay.write_count(), 1);
+
+        clock.advance_ms(500); // one GOP later — well under the cancel age
+        sender.send_video(kf(2)).await;
+        settle().await;
+        assert_eq!(relay.write_count(), 1, "young write must not be superseded");
+
+        relay.release(0, KeyframeOutcome::Sent);
+        settle().await;
+        assert_eq!(
+            relay.write_count(),
+            2,
+            "pending keyframe starts on completion"
+        );
+        assert!(relay.payload_ends_with(1, &[2u8; 40]));
+
+        relay.release(1, KeyframeOutcome::Sent);
+        settle().await;
+        let st = sender.stats();
+        assert_eq!(st.keyframe_streams_sent, 2);
+        assert_eq!(st.keyframe_streams_superseded, 0);
+        assert_eq!(st.keyframe_streams_failed, 0);
+    }
+
+    // The pending slot holds ONE keyframe, newest wins: a replaced waiter
+    // is superseded without ever opening a stream.
+    #[tokio::test]
+    async fn the_pending_slot_is_newest_wins() {
+        let relay = GatedRelay::default();
+        let clock = Arc::new(FakeClock::default());
+        let sender = Sender::new(Arc::new(relay.clone()), clock.clone());
+
+        sender.send_video(kf(1)).await;
+        settle().await;
+        clock.advance_ms(500);
+        sender.send_video(kf(2)).await; // waits pending
+        clock.advance_ms(500);
+        sender.send_video(kf(3)).await; // replaces 2 in the pending slot
+        settle().await;
+        assert_eq!(relay.write_count(), 1);
+
+        relay.release(0, KeyframeOutcome::Sent);
+        settle().await;
+        assert_eq!(relay.write_count(), 2);
+        assert!(
+            relay.payload_ends_with(1, &[3u8; 40]),
+            "the NEWEST waiter must be the one written"
+        );
+        relay.release(1, KeyframeOutcome::Sent);
+        settle().await;
+        let st = sender.stats();
+        assert_eq!(st.keyframe_streams_sent, 2);
+        assert_eq!(st.keyframe_streams_superseded, 1);
+    }
+
+    // The wedge protection stays: a write older than the cancel age is
+    // still cancelled outright and the fresh keyframe starts immediately.
+    #[tokio::test]
+    async fn a_stalled_write_is_still_cancelled_past_the_age_limit() {
+        let relay = GatedRelay::default();
+        let clock = Arc::new(FakeClock::default());
+        let sender = Sender::new(Arc::new(relay.clone()), clock.clone());
+
+        sender.send_video(kf(1)).await;
+        settle().await;
+        clock.advance_ms(KEYFRAME_WRITE_CANCEL_AGE_MS + 1);
+        sender.send_video(kf(2)).await;
+        settle().await;
+
+        assert_eq!(relay.write_count(), 2, "the stalled write was superseded");
+        assert!(relay.payload_ends_with(1, &[2u8; 40]));
+        relay.release(1, KeyframeOutcome::Sent);
+        settle().await;
+        let st = sender.stats();
+        assert_eq!(st.keyframe_streams_sent, 1);
+        assert_eq!(st.keyframe_streams_superseded, 1);
+        assert_eq!(st.keyframe_streams_failed, 1, "the cancelled write");
+    }
+
+    // Teardown discards the waiter and cancels the in-flight write; nothing
+    // is spawned behind wait().
+    #[tokio::test]
+    async fn wait_cancels_in_flight_and_discards_the_pending_keyframe() {
+        let relay = GatedRelay::default();
+        let clock = Arc::new(FakeClock::default());
+        let sender = Sender::new(Arc::new(relay.clone()), clock.clone());
+
+        sender.send_video(kf(1)).await;
+        settle().await;
+        sender.send_video(kf(2)).await; // pending
+        sender.wait().await;
+
+        assert_eq!(
+            relay.write_count(),
+            1,
+            "the waiter must not start at teardown"
+        );
+        let st = sender.stats();
+        assert_eq!(st.keyframe_streams_sent, 0);
+        assert_eq!(st.keyframe_streams_failed, 1, "in-flight write cancelled");
+        assert_eq!(st.keyframe_streams_superseded, 1, "pending discarded");
     }
 
     // A session broadcasts keyframes every ~500 ms for hours: completed

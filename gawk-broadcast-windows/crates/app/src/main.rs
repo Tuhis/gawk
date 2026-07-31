@@ -126,6 +126,9 @@ struct Shell {
     #[cfg(windows)]
     picked_monitors: Vec<gawk_capture::picker::MonitorCandidate>,
     stats_countdown: u8,
+    /// 1-per-minute keyframe/fps health line into debug.log (F-12: the
+    /// supersede livelock was invisible without send-side counters).
+    health_countdown: u8,
 }
 
 fn creds() -> Box<dyn config::Credentials> {
@@ -213,6 +216,7 @@ fn main() {
         #[cfg(windows)]
         picked_monitors: Vec::new(),
         stats_countdown: 0,
+        health_countdown: 0,
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -603,6 +607,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     );
     sh.state = UiState::Starting;
     sh.identity.on_start(!broadcast_id.is_empty());
+    sh.health_countdown = 0; // first health line right after going live
     sh.last_error.clear();
     sh.first_viewer_seen = false;
     ui.set_error_text("".into());
@@ -945,6 +950,7 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
 /// The 1 Hz working tick while broadcasting: stats rows, telemetry sample,
 /// thumbnail, minimized hint, audio line, pipeline failure surfacing.
 fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let log_health;
     {
         let mut sh = shell.borrow_mut();
         if sh.state == UiState::Idle {
@@ -955,6 +961,11 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             return;
         }
         sh.stats_countdown = 4; // 4 × 250 ms = 1 s
+        sh.health_countdown = sh.health_countdown.saturating_sub(1);
+        log_health = sh.health_countdown == 0;
+        if log_health {
+            sh.health_countdown = 60; // one line per minute while live
+        }
     }
 
     // A dead media pump ends the broadcast through the normal path.
@@ -981,6 +992,23 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     let st = merged_stats(&sh);
     sh.reporter.report(st.clone());
     sh.reporter.tick();
+    if log_health {
+        log::info!(
+            "health: capture {} fps, encode {:.1} fps, sent {:.1} fps, keyframe streams {} sent / {} superseded / {} failed, frames dropped at send {}, audio {}",
+            if st.capture_fps_available {
+                format!("{:.1}", st.capture_fps)
+            } else {
+                "n/a".into()
+            },
+            st.encoder_fps,
+            st.sent_fps,
+            st.keyframe_streams_sent,
+            st.keyframe_streams_superseded,
+            st.keyframe_streams_failed,
+            st.frames_dropped_at_send,
+            st.audio_state
+        );
+    }
 
     ui.set_stats_rows(ModelRc::new(VecModel::from(stat_rows(&st))));
 

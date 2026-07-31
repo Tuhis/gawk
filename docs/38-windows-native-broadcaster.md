@@ -923,6 +923,32 @@ exists for. The library is now **vendored with five small patches**
   outcomes logged; on Windows builds without `IsBorderRequired` (< 20348)
   the border stays and the log says so. The startup log also records the
   `UniversalApiContract` level as the OS fingerprint.
+- **F-12 (2026-07-31, field + telemetry)**: viewers of the first working
+  RTX 2070 broadcast saw a black screen for the first minute. Telemetry
+  told the whole story: capture and encode at a flat 60 fps, but
+  `keyframeStreamsSuperseded` racing at ~2/s while `keyframeStreamsSent`
+  crept at ~1 per 15–20 s — against the Linux broadcaster's 825 sent /
+  26 superseded over the same relay. Root cause is a scheduling interaction
+  D5's port didn't carry: quinn (wtransport) packs DATAGRAM frames into
+  every packet **ahead of** stream data (`populate_packet` writes datagrams
+  before STREAM frames), so with ~12–16 Mbps of delta datagrams offered
+  continuously the keyframe uni stream only gets leftover bandwidth and a
+  write routinely outlives the 500 ms GOP — at which point the D5
+  "newest wins, ≤1 in flight" rule cancelled it and started over. Under
+  contention that rule **livelocks**: every write dies at ~90 % done, the
+  relay's priming cache starves, and every joining viewer waits black
+  (worst at cold start, where slow-start cwnd stretches the first writes).
+  quic-go interleaves differently, which is why the Go engine never showed
+  it. Fix (Rust engine only; Go stays as is): an in-flight write younger
+  than `KEYFRAME_WRITE_CANCEL_AGE_MS` (2 s) now always FINISHES; the
+  newest keyframe waits in a single pending slot (newest wins among
+  waiters, a replaced waiter counts as superseded); writes older than the
+  age limit — the genuinely wedged class the cancel was designed for — are
+  still cancelled outright. Guarantees keyframe progress at the uplink's
+  actual stream throughput with staleness bounded by write time + one GOP.
+  The shell also logs a once-a-minute send-health line (keyframe
+  sent/superseded/failed, fps) so this counter pattern is visible in
+  debug.log without telemetry.
 
 ## 12. References
 

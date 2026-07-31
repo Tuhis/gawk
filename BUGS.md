@@ -4,37 +4,33 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
-## Windows broadcaster refuses "No hardware H.264 encoder" on an RTX 2070
+## Windows broadcaster: viewers black for the first minute (keyframe supersede livelock)
 
-- **Found**: 2026-07-31, field report from the first external tester:
-  desktop NVIDIA RTX 2070, browser broadcaster hardware-encodes fine, but
-  `gawk-broadcast.exe` refuses with the docs/38 D9 message — so NVENC
-  exists and works on that machine; either `MFTEnumEx` enumerated nothing
-  or the NVIDIA MFT was enumerated and failed the trial gate.
-- **Impact**: the native broadcaster is unusable on that machine; the user
-  loses per-app audio and background-window capture (the browser path still
-  works).
-- **Cause — confirmed** (2026-07-31, from the field machine's F-8
-  `debug.log`): the NVIDIA MFT rejects the hand-built NV12 input type with
-  `MF_E_INVALIDMEDIATYPE` (0xC00D36B4) at `SetInputType` — it only accepts
-  types matching its own enumerated input types (docs/38 F-9). The same
-  log showed `AVEncMPVDefaultBPictureCount = 0` refused with `E_INVALIDARG`
-  before type negotiation.
-- **Fix landed** (docs/38 F-9): the input type is now taken from the MFT's
-  own `GetInputAvailableType` NV12 entry post-`SetOutputType` and completed
-  with our geometry (hand-built fallback carries interlace + square PAR);
-  the best-effort knobs are re-applied after types are set. **Field-
-  confirmed working** (2026-07-31 second log: trial passed, NVENC accepted,
-  codec `avc1.4D402A`) — which unmasked the next defect in the sequence:
-- **Second failure, same machine** (2026-07-31): with the encoder accepted,
-  the app died silently at first audio bring-up — heap corruption from a
-  `PROPVARIANT` `Drop` freeing a stack-pointed `VT_BLOB` in the
-  process-loopback activation (docs/38 F-10; `windows` crate's
-  `PropVariantClear` drop impl). Fixed with `ManuallyDrop`; a panic hook,
-  `catch_unwind` around pipeline build, and bring-up seam logging now
-  guarantee the debug.log brackets any future silent death. **Field
-  confirmation pending** — remove this entry once the 2070 machine
-  actually broadcasts.
+- **Found**: 2026-07-31, first working field broadcast from the RTX 2070
+  machine (the F-8→F-10 sequence fixed; the broadcast itself ran fine
+  after the first minute). Viewers saw a black screen for roughly the
+  first minute after start.
+- **Cause — confirmed** from broadcaster telemetry: capture/encode flat at
+  60 fps, but `keyframeStreamsSuperseded` climbing ~2/s while
+  `keyframeStreamsSent` landed ~1 per 15–20 s. quinn packs datagrams into
+  every packet ahead of stream data, so the delta flood starves the
+  keyframe uni stream; a write then outlives the 500 ms GOP and D5's
+  unconditional "newest wins" cancelled it — a livelock, worst at cold
+  start. The Linux/quic-go broadcaster does not exhibit it (825 sent / 26
+  superseded in the comparison session). Full mechanism: docs/38 F-12.
+- **Fix landed** (docs/38 F-12): in-flight keyframe writes younger than
+  2 s always complete; the newest keyframe waits in a one-deep pending
+  slot; older writes are still cancelled (wedge protection). A per-minute
+  send-health line now lands in debug.log. **Field confirmation pending**
+  — remove this entry once a fresh 2070 broadcast primes viewers within
+  ~1–2 s of joining (watch `keyframe streams … sent/superseded` in the
+  health lines: sent should track ~2/s, supersedes near zero on an idle
+  uplink, and bounded under load).
+- Related open question, same machine: the broadcaster's telemetry session
+  only began reporting ~36 min into the broadcast (collector session
+  record `8faea12c…` starts 20:29:30Z for a ~19:54Z broadcast). Possibly a
+  restart mid-broadcast; if a fresh session shows the same late start,
+  investigate the Windows reporter's begin path (TelemetryHello handling).
 
 ## Safari viewer: keyframe delivery stops while datagrams keep flowing
 
