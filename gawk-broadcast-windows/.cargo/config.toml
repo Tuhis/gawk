@@ -1,0 +1,5 @@
+# Single portable EXE (docs/38 D17): static MSVC CRT so the binary runs on a
+# fresh Windows 10 2004 install with nothing installed. Applies to the whole
+# workspace (tests included) so CI exercises the bytes that ship.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

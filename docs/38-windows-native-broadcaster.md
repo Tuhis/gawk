@@ -3,8 +3,12 @@
 **Status**: designed 2026-07-30 (owner decisions taken the same day, listed in
 §2). WB0 (scaffold, CI, release wiring), WB1 (the wire mirror) and WB2
 (transport + engine core; wtransport gates measured — see §11 — and the
-real-relay integration suite green) implemented 2026-07-30; WB3–WB8 not
-started.
+real-relay integration suite green) implemented 2026-07-30. **WB3–WB8
+implemented 2026-07-31** (capture, encode cascade, audio, Slint GUI,
+telemetry reporter, packaging/docs): every CI-verifiable criterion is green
+on the Windows runner; the criteria marked *manual* in §8 — G1/G2/G6–G9 and
+the §10 V-register — remain open until the on-hardware pass on the gaming
+PC.
 
 A Windows counterpart to the Linux native broadcaster (R14, `gawk-broadcast`),
 with two capture modes selectable at start — **share one application** (its
@@ -854,6 +858,16 @@ exists for. The library is now **vendored with five small patches**
   no analogue a console Go process handles on Windows, so the
   drain-while-Ready path joins the on-hardware register for the Windows
   side (§10); the Windows CI job still runs publish/reject/supersede.
+- **F-6 (2026-07-31, WB3)**: the hosted `windows-latest` runner's WARP
+  cannot create a D3D11 device with `D3D11_CREATE_DEVICE_VIDEO_SUPPORT`
+  (`DXGI_ERROR_UNSUPPORTED` at creation). The WARP conversion tests
+  self-skip loudly in that case — F-5's posture — and execute on any real
+  Windows machine; the BGRA→NV12/scale/thumbnail pins therefore join the
+  first on-hardware run rather than CI.
+- **F-7 (2026-07-31, WB5)**: the vendored libopus (`opus` crate →
+  `audiopus_sys`) ships a CMakeLists older than CMake 4's compatibility
+  floor; every build needs `CMAKE_POLICY_VERSION_MINIMUM=3.5` in the
+  environment (set in the CI workflow, documented in the component README).
 
 ## 12. References
 

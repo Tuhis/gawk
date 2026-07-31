@@ -86,6 +86,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/gawk-broadcast.exe dist/
           Copy-Item README.md dist/
+          Copy-Item INSTALL.md dist/
           @(
             "gawk-broadcast-windows (R34, docs/38)"
             "commit:    ${{ github.sha }}"
