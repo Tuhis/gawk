@@ -148,8 +148,10 @@ pub struct EncoderSession {
 }
 
 // ICodecAPI on hardware MFTs is free-threaded; force-IDR is a single
-// property store write.
+// property store write, and `send` is a channel push — both fine from any
+// thread, concurrently.
 unsafe impl Send for EncoderSession {}
+unsafe impl Sync for EncoderSession {}
 
 // Hardware encoder MFTs are free-threaded COM objects and the pump thread
 // is the ONLY thread touching the transform after start; ICodecAPI's

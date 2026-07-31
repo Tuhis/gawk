@@ -10,5 +10,30 @@ name = "gawk-broadcast"
 path = "src/main.rs"
 
 [dependencies]
+gawk-audio = { path = "../audio" }
+gawk-capture = { path = "../capture" }
+gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
 gawk-wire = { path = "../wire" }
+arboard = "3"
+serde_json = "1"
+# Royalty-free desktop license (docs/38 D12; confirmed in the WB0 review —
+# attribution requirement handled in the INSTALL doc).
+slint = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Data_Xml_Dom",
+    "UI_Notifications",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Security_Cryptography",
+    "Win32_System_Com",
+    "Win32_System_Memory",
+    "Win32_UI_Shell",
+] }
+
+[build-dependencies]
+slint-build = "1"

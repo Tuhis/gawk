@@ -108,6 +108,11 @@ pub struct Converter {
     /// The NV12 output the encoder consumes, reused frame to frame.
     nv12: ID3D11Texture2D,
     nv12_view: ID3D11VideoProcessorOutputView,
+    /// Rotating outputs for the live path (`convert_rotating`): the async
+    /// MFT consumes samples after we return, so a single reused output
+    /// would be overwritten mid-encode. Three slots cover in-flight + next.
+    ring: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
+    ring_next: usize,
     out_width: u32,
     out_height: u32,
 }
@@ -191,6 +196,8 @@ impl Converter {
             in_height,
             nv12,
             nv12_view,
+            ring: Vec::new(),
+            ring_next: 0,
             out_width,
             out_height,
         })
@@ -208,6 +215,46 @@ impl Converter {
         let input_view = self.input_view(input)?;
         self.blt(&input_view, &self.nv12_view)?;
         Ok(self.nv12.clone())
+    }
+
+    /// The live-path convert: writes into a rotating output so the async
+    /// encoder can still be reading the previous frame's texture when the
+    /// next convert runs. Slots are created lazily.
+    pub fn convert_rotating(&mut self, input: &ID3D11Texture2D) -> Result<ID3D11Texture2D> {
+        const SLOTS: usize = 3;
+        if self.ring.len() < SLOTS {
+            let tex = new_texture(
+                &self.gpu.device,
+                self.out_width,
+                self.out_height,
+                DXGI_FORMAT_NV12,
+                D3D11_USAGE_DEFAULT,
+                (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                0,
+            )?;
+            let view = unsafe {
+                let mut view = None;
+                self.video.CreateVideoProcessorOutputView(
+                    &tex,
+                    &self.enumerator,
+                    &D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+                        ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+                        Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                            Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+                        },
+                    },
+                    Some(&mut view),
+                )?;
+                view.expect("output view create succeeded without a view")
+            };
+            self.ring.push((tex, view));
+        }
+        let i = self.ring_next % self.ring.len();
+        self.ring_next = self.ring_next.wrapping_add(1);
+        let input_view = self.input_view(input)?;
+        let (tex, view) = &self.ring[i];
+        self.blt(&input_view, view)?;
+        Ok(tex.clone())
     }
 
     /// A downscaled BGRA readback of `input` for the GUI thumbnail
