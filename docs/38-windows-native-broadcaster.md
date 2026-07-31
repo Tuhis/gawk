@@ -899,6 +899,30 @@ exists for. The library is now **vendored with five small patches**
   negotiation — the best-effort knobs (B-count, low latency) are now
   re-applied after types are set; the trial gate still verifies the actual
   bitstream either way.
+- **F-10 (2026-07-31, field, via F-8's log going silent)**: with F-9 fixed
+  the same machine died with *no* log line after "screen capture started"
+  territory — the process-loopback activation in `gawk-audio/wasapi.rs`
+  built a `VT_BLOB` `PROPVARIANT` whose `pBlobData` points at a stack
+  local, and the `windows` crate gives `PROPVARIANT` a `Drop` running
+  `PropVariantClear`, which `CoTaskMemFree`s the blob pointer → heap
+  corruption → process abort, no unwind, nothing logged. It never fired
+  before because F-9 blocked every start earlier in the sequence; the WB5
+  bring-up validated audio in system-loopback… also through this code
+  path — the crash window is the *drop*, timing-sensitive. Fixes: the
+  `PROPVARIANT` is now `ManuallyDrop` (the blob is borrowed, nothing to
+  free); a global panic hook logs every panic with thread + location; the
+  shell's phase-2 build runs under `catch_unwind` so a media-pipeline
+  panic becomes a visible start failure instead of a UI stuck in
+  "Starting…"; and the pipeline logs each bring-up seam (capture started,
+  audio state, pipeline ready) so the next silent death is bracketed.
+- **F-11 (2026-07-31, field)**: `SetIsBorderRequired(false)` alone does
+  not remove the yellow capture border — the
+  `GraphicsCaptureAccess::RequestAccessAsync(Borderless)` grant must come
+  first (auto-granted without a prompt for unpackaged desktop apps), and
+  the old `let _ =` swallowed the refusal. Both are attempted now, with
+  outcomes logged; on Windows builds without `IsBorderRequired` (< 20348)
+  the border stays and the log says so. The startup log also records the
+  `UniversalApiContract` level as the OS fingerprint.
 
 ## 12. References
 

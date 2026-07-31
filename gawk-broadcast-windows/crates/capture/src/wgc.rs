@@ -13,7 +13,8 @@ use crate::picker::{IconRgba, MonitorCandidate, WindowCandidate, WindowProps, al
 use windows::Foundation::Metadata::ApiInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
-    Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
+    Direct3D11CaptureFramePool, GraphicsCaptureAccess, GraphicsCaptureAccessKind,
+    GraphicsCaptureItem, GraphicsCaptureSession,
 };
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
@@ -388,7 +389,30 @@ impl Capture {
             "Windows.Graphics.Capture.GraphicsCaptureSession",
             "IsBorderRequired",
         ) {
-            let _ = session.SetIsBorderRequired(false);
+            // The borderless grant must come FIRST: without it,
+            // SetIsBorderRequired(false) is refused (F-11 — the earlier
+            // silent `let _ =` is why the border survived). Unpackaged
+            // desktop apps are granted without a prompt.
+            if ApiInformation::IsTypePresent(&HSTRING::from(
+                "Windows.Graphics.Capture.GraphicsCaptureAccess",
+            ))
+            .unwrap_or(false)
+            {
+                match GraphicsCaptureAccess::RequestAccessAsync(
+                    GraphicsCaptureAccessKind::Borderless,
+                )
+                .and_then(|op| await_operation(&op))
+                {
+                    Ok(status) => log::debug!("borderless capture access: {status:?}"),
+                    Err(e) => log::debug!("borderless capture access request failed: {e}"),
+                }
+            }
+            match session.SetIsBorderRequired(false) {
+                Ok(()) => log::debug!("capture border disabled"),
+                Err(e) => log::warn!("could not disable the capture border: {e}"),
+            }
+        } else {
+            log::debug!("IsBorderRequired not on this Windows build; the yellow border stays");
         }
         session.StartCapture()?;
 
@@ -407,9 +431,43 @@ impl Drop for Capture {
     }
 }
 
+/// A bounded blocking wait on a WinRT async op — windows-future 0.3 keeps
+/// its `Async::join` trait private, so this is that wait, with a deadline:
+/// a stuck access grant must not hang capture start (the border matters
+/// less than broadcasting).
+fn await_operation<T: windows::core::RuntimeType>(
+    op: &windows_future::IAsyncOperation<T>,
+) -> Result<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while op.Status()? == windows_future::AsyncStatus::Started {
+        if std::time::Instant::now() >= deadline {
+            return Err(windows::core::Error::new(
+                // E_PENDING; the named constant lives in an unrelated
+                // feature module (Urlmon), so spell the HRESULT.
+                windows::core::HRESULT(0x8000000Au32 as i32),
+                "async operation still pending at deadline",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    op.GetResults()
+}
+
 fn api_present(type_name: &str, property: &str) -> bool {
     ApiInformation::IsPropertyPresent(&HSTRING::from(type_name), &HSTRING::from(property))
         .unwrap_or(false)
+}
+
+/// The highest `Windows.Foundation.UniversalApiContract` version present —
+/// the debug log's OS fingerprint. Real build numbers need a manifest or
+/// kernel APIs this app avoids; the contract level dates the OS well enough
+/// to reason about API availability (e.g. border removal, process loopback).
+pub fn universal_contract_level() -> u16 {
+    let name = HSTRING::from("Windows.Foundation.UniversalApiContract");
+    (1..=40u16)
+        .take_while(|&v| ApiInformation::IsApiContractPresentByMajor(&name, v).unwrap_or(false))
+        .last()
+        .unwrap_or(0)
 }
 
 /// The pool size a target starts at (also the sanity check that the item is

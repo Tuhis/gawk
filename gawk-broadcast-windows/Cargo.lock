@@ -1763,7 +1763,9 @@ name = "gawk-capture"
 version = "1.0.0"
 dependencies = [
  "gawk-engine",
+ "log",
  "windows",
+ "windows-future",
 ]
 
 [[package]]

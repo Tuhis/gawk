@@ -141,7 +141,13 @@ fn open_process_loopback(pid: u32) -> std::result::Result<IAudioClient, String> 
         cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
         pBlobData: &params as *const _ as *mut u8,
     };
-    let prop = PROPVARIANT {
+    // ManuallyDrop is load-bearing (docs/38 F-10): the windows crate gives
+    // PROPVARIANT a Drop that runs PropVariantClear, and for VT_BLOB that
+    // CoTaskMemFrees pBlobData — which here points at `params` on the
+    // STACK. Letting this drop corrupts the heap and kills the process
+    // with no unwind and no log line. The blob is borrowed, not owned;
+    // nothing needs freeing.
+    let prop = std::mem::ManuallyDrop::new(PROPVARIANT {
         Anonymous: windows::Win32::System::Com::StructuredStorage::PROPVARIANT_0 {
             Anonymous: std::mem::ManuallyDrop::new(
                 windows::Win32::System::Com::StructuredStorage::PROPVARIANT_0_0 {
@@ -153,7 +159,7 @@ fn open_process_loopback(pid: u32) -> std::result::Result<IAudioClient, String> 
                 },
             ),
         },
-    };
+    });
 
     let (tx, rx) = mpsc::channel();
     let handler: IActivateAudioInterfaceCompletionHandler = ActivateHandler {
@@ -165,7 +171,7 @@ fn open_process_loopback(pid: u32) -> std::result::Result<IAudioClient, String> 
         windows::Win32::Media::Audio::ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&prop),
+            Some(&*prop),
             &handler,
         )
     }

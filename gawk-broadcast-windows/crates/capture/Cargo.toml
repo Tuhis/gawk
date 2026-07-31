@@ -7,15 +7,23 @@ publish.workspace = true
 
 [dependencies]
 gawk-engine = { path = "../engine" }
+# Narrates capture/session setup into the shell's debug.log (docs/38 F-8).
+log = "0.4"
 
 # Windows-only: the crate compiles empty elsewhere so the workspace builds
 # and the portable halves (picker filter, fps gate) test on any host.
 [target.'cfg(windows)'.dependencies]
+# The Async::join() blocking wait for WinRT IAsyncOperation (the F-11
+# borderless grant); the windows crate does not re-export the trait.
+windows-future = "0.3"
 windows = { version = "0.62", features = [
     "Foundation",
     "Foundation_Metadata",
     "Graphics_Capture",
     "Graphics_DirectX_Direct3D11",
+    # GraphicsCaptureAccess::RequestAccessAsync returns an
+    # AppCapabilityAccessStatus (the F-11 borderless grant).
+    "Security_Authorization_AppCapabilityAccess",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",

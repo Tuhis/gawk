@@ -23,10 +23,18 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix landed** (docs/38 F-9): the input type is now taken from the MFT's
   own `GetInputAvailableType` NV12 entry post-`SetOutputType` and completed
   with our geometry (hand-built fallback carries interlace + square PAR);
-  the best-effort knobs are re-applied after types are set. **Field
+  the best-effort knobs are re-applied after types are set. **Field-
+  confirmed working** (2026-07-31 second log: trial passed, NVENC accepted,
+  codec `avc1.4D402A`) — which unmasked the next defect in the sequence:
+- **Second failure, same machine** (2026-07-31): with the encoder accepted,
+  the app died silently at first audio bring-up — heap corruption from a
+  `PROPVARIANT` `Drop` freeing a stack-pointed `VT_BLOB` in the
+  process-loopback activation (docs/38 F-10; `windows` crate's
+  `PropVariantClear` drop impl). Fixed with `ManuallyDrop`; a panic hook,
+  `catch_unwind` around pipeline build, and bring-up seam logging now
+  guarantee the debug.log brackets any future silent death. **Field
   confirmation pending** — remove this entry once the 2070 machine
-  broadcasts (watch its next debug.log for the trial verdict; if the trial
-  gate now rejects on B slices, the B-count knob is the follow-up).
+  actually broadcasts.
 
 ## Safari viewer: keyframe delivery stops while datagrams keep flowing
 

@@ -337,6 +337,7 @@ impl Pipeline {
             })
             .map_err(|e| StartFailure::Capture(format!("screen capture start: {e}")))?
         };
+        log::info!("screen capture started");
 
         // Audio, strictly subordinate (D8): a probe failure or a live
         // failure leaves video running; off-wire it is byte-identical to a
@@ -349,6 +350,12 @@ impl Pipeline {
             AudioMode::Off => None,
             mode => start_audio(mode, &sender, &clock, &audio_shared, mapper),
         };
+        log::info!(
+            "pipeline ready: encoder {}, codec {}, audio {}",
+            accepted.id,
+            accepted.codec_string,
+            audio_shared.state.lock().unwrap()
+        );
 
         Ok(Self {
             info: PipelineInfo {

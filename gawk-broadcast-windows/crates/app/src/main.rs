@@ -147,11 +147,25 @@ fn main() {
     // The debug log lives next to broadcast.json; a windowed EXE has no
     // stderr, so this file is the only runtime record (docs/38 F-8).
     let log_path = debuglog::init(cfg_path.as_deref().and_then(|p| p.parent()));
+    // Panics must reach the log: with no console, an unhooked panic is a
+    // thread silently gone (the F-10 symptom class). The default hook still
+    // runs after ours so dev shells keep the stderr backtrace.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        log::error!("PANIC on thread {:?}: {info}", thread.name().unwrap_or("?"));
+        default_hook(info);
+    }));
     log::info!(
         "gawk-broadcast {} starting on {} {}",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
+    );
+    #[cfg(windows)]
+    log::info!(
+        "UniversalApiContract level: {}",
+        gawk_capture::wgc::universal_contract_level()
     );
 
     let clock = Arc::new(MonotonicClock::new());
@@ -670,21 +684,30 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         // offered a mint (R1's rule — the relay may already hold our ID).
         #[cfg(windows)]
         {
-            match pipeline::Pipeline::build(
-                build_params,
-                session.sender(),
-                clock,
-                rt_handle.clone(),
-            ) {
-                Ok(p) => {
+            // catch_unwind: a panic in the media bring-up must become a
+            // visible start failure, not a thread that dies leaving the UI
+            // in "Starting…" forever (the panic hook has already logged
+            // the payload and location).
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pipeline::Pipeline::build(build_params, session.sender(), clock, rt_handle.clone())
+            }));
+            match built {
+                Ok(Ok(p)) => {
                     let _ = msg_tx.send(ShellMsg::Started {
                         session,
                         pipeline: p,
                     });
                 }
-                Err(f) => {
+                Ok(Err(f)) => {
                     rt_handle.block_on(session.stop());
                     let _ = msg_tx.send(ShellMsg::StartFailed(f));
+                }
+                Err(_) => {
+                    rt_handle.block_on(session.stop());
+                    let _ = msg_tx.send(ShellMsg::StartFailed(StartFailure::Capture(
+                        "the media pipeline crashed while starting (a bug — the details are in the debug log)"
+                            .into(),
+                    )));
                 }
             }
         }
@@ -723,6 +746,9 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             // resurrect the dead session as "Live" — the run loop's single
             // Ended has been spent, so nothing would ever flip the UI back.
             if sh.state != UiState::Starting {
+                log::warn!(
+                    "pipeline came up after the session already ended; discarding it (state is no longer Starting)"
+                );
                 #[cfg(windows)]
                 pipeline.shutdown();
                 sh.rt.spawn(async move { session.stop().await });
