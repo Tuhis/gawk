@@ -117,7 +117,17 @@ gawk-broadcast [flags]
                  default https://gawk.ioio.fi/api/telemetry/v1/ingest on the
                  default relay; `off` sends nothing
   -v           verbose, including the GStreamer child's stderr
+  -version     print the build version and exit
 ```
+
+**Which build am I running?** `gawk-broadcast -version` prints
+`gawk-broadcast v1.9.0+g1a2b3c4`, and the GUI shows the same string in the
+window header. The `+g` part is the commit it was built from — there is no
+tagged release build for this component, so every binary is a CI artifact or a
+local build and the release number alone would not identify it. A `.dirty`
+suffix means the tree had uncommitted changes; a bare `1.9.0` means the build
+had no VCS information at all. See
+[docs/19 V9](../docs/19-linux-native-broadcaster.md#v9--the-build-version-in-the-window-added-2026-08-01).
 
 Settings live in `~/.config/gawk/broadcast.json` (mode 0600); flags and env
 override them. The GUI writes the same file. Prefer the env vars for the secret:

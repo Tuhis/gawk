@@ -26,6 +26,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
 	telemetryPkg "github.com/Tuhis/gawk/gawk-broadcast/internal/telemetry"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/version"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -62,6 +63,7 @@ func run() error {
 		verbose    = fs.Bool("v", false, "verbose logging (the GStreamer child's stderr included)")
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
 		telemetry  = fs.String("telemetry-url", "", "R28 telemetry ingest endpoint (env GAWK_TELEMETRY_URL); default "+config.DefaultTelemetryURL+" on the default relay, "+config.Off+" disables reporting")
+		showVer    = fs.Bool("version", false, "print the build version and exit")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "gawk-broadcast — publish your screen to a gawk relay, with hardware encode.\n\n")
@@ -72,6 +74,12 @@ func run() error {
 	}
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
+	}
+	// Before anything reads a config or dials anything: this is the flag you
+	// run when you already suspect you are testing the wrong binary.
+	if *showVer {
+		fmt.Println("gawk-broadcast v" + version.String())
+		return nil
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -135,6 +143,8 @@ func run() error {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	// Which build is talking, in every log someone pastes into a bug report.
+	log.Info("gawk-broadcast", "version", version.String())
 
 	// The config file is where the last-good encoder and last broadcast ID are
 	// remembered, so the engine writes back through these.
@@ -165,7 +175,10 @@ func run() error {
 	if ingest != "" {
 		fmt.Fprintf(os.Stderr, "Diagnostics are reported to %s (-telemetry-url %s to stop).\n", ingest, config.Off)
 	}
-	reporter := telemetryPkg.New(telemetryPkg.Options{URL: ingest, Log: log})
+	// version.Release, not version.String(): this field doubles as the
+	// telemetry schema version and gawk-telemetry groups sessions by it — see
+	// the same call in internal/app.
+	reporter := telemetryPkg.New(telemetryPkg.Options{URL: ingest, Version: version.Release, Log: log})
 	defer reporter.Close()
 
 	ended := make(chan struct{})

@@ -28,7 +28,13 @@
     "gawk-broadcast": {
       "release-type": "go",
       "component": "gawk-broadcast",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "internal/version/version.go"
+        }
+      ]
     },
     "gawk-broadcast-windows": {
       "release-type": "simple",
