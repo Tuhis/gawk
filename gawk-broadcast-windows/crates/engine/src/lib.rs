@@ -20,6 +20,7 @@ pub mod resume;
 pub mod sender;
 pub mod session;
 pub mod stats;
+pub mod telemetry;
 pub mod timesync;
 pub mod transport;
 
