@@ -111,14 +111,43 @@ impl Pipeline {
         clock: Arc<dyn Clock>,
         rt: tokio::runtime::Handle,
     ) -> Result<Self, StartFailure> {
-        let gpu = GpuDevice::hardware()
-            .map_err(|e| StartFailure::Capture(format!("no usable graphics device: {e}")))?;
+        log::info!(
+            "pipeline build: {}x{}@{} {} bps, target {:?}, last-good encoder {:?}, audio {:?}",
+            params.width,
+            params.height,
+            params.fps,
+            params.bitrate_bps,
+            params.target,
+            params.last_good_encoder,
+            params.audio_mode
+        );
+        let gpu = GpuDevice::hardware().map_err(|e| {
+            log::error!("D3D11 hardware device creation failed: {e}");
+            StartFailure::Capture(format!("no usable graphics device: {e}"))
+        })?;
+        log::info!("D3D11 device on adapter: {}", gpu.adapter_summary());
 
         // The cascade with real trials (enumeration is not acceptance).
-        let entries = mft::enumerate_hardware()
-            .map_err(|e| StartFailure::Capture(format!("encoder enumeration failed: {e}")))?;
+        let entries = mft::enumerate_hardware().map_err(|e| {
+            log::error!("hardware MFT enumeration failed: {e}");
+            StartFailure::Capture(format!("encoder enumeration failed: {e}"))
+        })?;
+        log::info!(
+            "hardware H.264 encoder MFTs enumerated: {} [{}]",
+            entries.len(),
+            entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         let candidates = mft::candidates(&entries);
         if candidates.is_empty() {
+            log::error!(
+                "refusing to start: MFTEnumEx(MFT_ENUM_FLAG_HARDWARE) returned no H.264 \
+                 encoder MFTs — driver missing/outdated, remote session, or Windows N \
+                 without the Media Feature Pack are the known causes"
+            );
             return Err(StartFailure::NoHardwareEncoder);
         }
         let enc_params = EncoderParams {
@@ -139,16 +168,18 @@ impl Pipeline {
             &mut runner as &mut dyn TrialRunner,
         )
         .map_err(|refusal| {
-            if refusal.tried.is_empty() {
-                StartFailure::NoHardwareEncoder
-            } else {
-                // Encoders exist but none survived the invariant gate:
-                // same refusal, with the trail on stderr for diagnosis.
-                for (id, why) in &refusal.tried {
-                    eprintln!("encoder candidate rejected: {id}: {why}");
-                }
-                StartFailure::NoHardwareEncoder
+            // Encoders may exist yet none survived the invariant gate: the
+            // user sees the same refusal either way, so the trail in the
+            // debug log is the ONLY record distinguishing "nothing
+            // enumerated" from "everything rejected, and why".
+            log::error!(
+                "refusing to start: no candidate survived the trial gate ({} tried)",
+                refusal.tried.len()
+            );
+            for (id, why) in &refusal.tried {
+                log::error!("encoder candidate rejected: {id}: {why}");
             }
+            StartFailure::NoHardwareEncoder
         })?;
         sender.set_codec(&accepted.codec_string);
 
@@ -427,7 +458,7 @@ fn start_audio(
 
     // The R25 probe: prove open+encode before going live.
     if let Err(e) = gawk_audio::wasapi::probe(mode) {
-        eprintln!("audio probe failed ({source}): {e}; broadcasting without audio");
+        log::warn!("audio probe failed ({source}): {e}; broadcasting without audio");
         *shared.state.lock().unwrap() = "unavailable".into();
         return None;
     }
@@ -435,7 +466,7 @@ fn start_audio(
     let mut opus = match OpusEncoder::new() {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("opus encoder: {e}; broadcasting without audio");
+            log::warn!("opus encoder: {e}; broadcasting without audio");
             *shared.state.lock().unwrap() = "unavailable".into();
             return None;
         }
@@ -478,7 +509,7 @@ fn start_audio(
                     // agree with the advertised config — disagreement logs
                     // loudly and marks audio errored, video runs on.
                     if let Err(e) = toc::verify_against_config(&data, &format) {
-                        eprintln!("audio config verification failed: {e}; dropping audio");
+                        log::warn!("audio config verification failed: {e}; dropping audio");
                         *shared_cb.state.lock().unwrap() = "error".into();
                         errored = true;
                         return;
@@ -491,7 +522,7 @@ fn start_audio(
             }
         }),
         Box::new(move |e| {
-            eprintln!("audio capture died: {e}; broadcast continues without audio");
+            log::warn!("audio capture died: {e}; broadcast continues without audio");
             *shared_err.state.lock().unwrap() = "error".into();
         }),
     );
@@ -501,7 +532,7 @@ fn start_audio(
             Some(c)
         }
         Err(e) => {
-            eprintln!("audio capture start failed: {e}; broadcasting without audio");
+            log::warn!("audio capture start failed: {e}; broadcasting without audio");
             *shared.state.lock().unwrap() = "unavailable".into();
             None
         }

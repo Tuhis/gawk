@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+# Portable: the cascade and the MFT session both narrate into the shell's
+# debug.log (docs/38 F-8) through the facade.
+[dependencies]
+log = "0.4"
+
 # Windows-only: the crate's portable half (bitstream inspection, cascade
 # policy) tests on any host; the MFT session is cfg-gated.
 [target.'cfg(windows)'.dependencies]

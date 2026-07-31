@@ -16,6 +16,7 @@ gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
 gawk-wire = { path = "../wire" }
 arboard = "3"
+log = { version = "0.4", features = ["std"] }
 serde_json = "1"
 # Royalty-free desktop license (docs/38 D12; confirmed in the WB0 review —
 # attribution requirement handled in the INSTALL doc).

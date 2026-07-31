@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-audio"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "gawk-engine",
  "opus",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast-app"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "arboard",
  "gawk-audio",
@@ -1749,6 +1749,7 @@ dependencies = [
  "gawk-encode",
  "gawk-engine",
  "gawk-wire",
+ "log",
  "serde",
  "serde_json",
  "slint",
@@ -1759,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-capture"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "gawk-engine",
  "windows",
@@ -1767,14 +1768,15 @@ dependencies = [
 
 [[package]]
 name = "gawk-encode"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
+ "log",
  "windows",
 ]
 
 [[package]]
 name = "gawk-engine"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "gawk-wire",
  "serde",
@@ -1787,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-wire"
-version = "0.0.0"
+version = "1.0.0"
 
 [[package]]
 name = "gbm"

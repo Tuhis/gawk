@@ -35,6 +35,13 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Variant::VARIANT;
 use windows::core::{GUID, Interface, Result};
 
+/// Names the Media Foundation step an error came from, so a trial
+/// rejection in the debug log reads "SetOutputType: 0x…" instead of a bare
+/// HRESULT — on a refused machine the trail is the only evidence there is.
+fn step<T>(name: &str, r: Result<T>) -> Result<T> {
+    r.map_err(|e| windows::core::Error::new(e.code(), format!("{name}: {e}")))
+}
+
 /// One-time Media Foundation startup; safe to call repeatedly.
 pub fn startup() -> Result<()> {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -192,47 +199,70 @@ impl EncoderSession {
         on_output: Box<dyn FnMut(EncodedAu) + Send>,
     ) -> Result<Self> {
         startup()?;
-        let transform: IMFTransform = unsafe { entry.activate.ActivateObject()? };
+        let transform: IMFTransform =
+            step("ActivateObject", unsafe { entry.activate.ActivateObject() })?;
 
         // Async MFTs must be explicitly unlocked; that this is required is
         // also the "it really is a hardware MFT" sanity check.
-        let attrs = unsafe { transform.GetAttributes()? };
-        unsafe { attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)? };
+        let attrs = step("GetAttributes", unsafe { transform.GetAttributes() })?;
+        step("MF_TRANSFORM_ASYNC_UNLOCK", unsafe {
+            attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
+        })?;
 
         // The shared D3D device: zero-copy input (D9).
         let mut reset_token = 0u32;
         let mut manager: Option<IMFDXGIDeviceManager> = None;
-        unsafe {
-            MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)?;
-        }
+        step("MFCreateDXGIDeviceManager", unsafe {
+            MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)
+        })?;
         let manager = manager.expect("MFCreateDXGIDeviceManager succeeded without a manager");
-        unsafe {
-            manager.ResetDevice(device, reset_token)?;
-            transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)?;
-        }
+        step("DXGIDeviceManager::ResetDevice", unsafe {
+            manager.ResetDevice(device, reset_token)
+        })?;
+        step("MFT_MESSAGE_SET_D3D_MANAGER", unsafe {
+            transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
+        })?;
 
         // The CodecAPI knobs — each row of the D9 table. Set BEFORE the
         // output type so rate control shapes negotiation.
-        let codec_api: ICodecAPI = transform.cast()?;
+        let codec_api: ICodecAPI = step("cast to ICodecAPI", transform.cast())?;
         unsafe {
-            codec_api.SetValue(
-                &CODECAPI_AVEncCommonRateControlMode,
-                &VARIANT::from(eAVEncCommonRateControlMode_PeakConstrainedVBR.0 as u32),
-            )?;
-            codec_api.SetValue(
-                &CODECAPI_AVEncCommonMaxBitRate,
-                &VARIANT::from(params.peak_bitrate_bps),
-            )?;
-            codec_api.SetValue(
-                &CODECAPI_AVEncCommonMeanBitRate,
-                &VARIANT::from(params.peak_bitrate_bps / 4 * 3),
-            )?;
-            codec_api.SetValue(&CODECAPI_AVEncMPVGOPSize, &VARIANT::from(params.gop_frames))?;
+            step("set AVEncCommonRateControlMode=PeakConstrainedVBR", {
+                codec_api.SetValue(
+                    &CODECAPI_AVEncCommonRateControlMode,
+                    &VARIANT::from(eAVEncCommonRateControlMode_PeakConstrainedVBR.0 as u32),
+                )
+            })?;
+            step("set AVEncCommonMaxBitRate", {
+                codec_api.SetValue(
+                    &CODECAPI_AVEncCommonMaxBitRate,
+                    &VARIANT::from(params.peak_bitrate_bps),
+                )
+            })?;
+            step("set AVEncCommonMeanBitRate", {
+                codec_api.SetValue(
+                    &CODECAPI_AVEncCommonMeanBitRate,
+                    &VARIANT::from(params.peak_bitrate_bps / 4 * 3),
+                )
+            })?;
+            step("set AVEncMPVGOPSize", {
+                codec_api.SetValue(&CODECAPI_AVEncMPVGOPSize, &VARIANT::from(params.gop_frames))
+            })?;
             // Best-effort: not every vendor exposes every knob; B-frames
-            // and latency are VERIFIED by the trial gate regardless.
-            let _ =
-                codec_api.SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &VARIANT::from(0u32));
-            let _ = codec_api.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
+            // and latency are VERIFIED by the trial gate regardless. Log
+            // the outcome — a vendor quietly refusing one of these is
+            // exactly what a trial rejection needs for context.
+            if let Err(e) =
+                codec_api.SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &VARIANT::from(0u32))
+            {
+                log::debug!(
+                    "{}: AVEncMPVDefaultBPictureCount=0 refused: {e}",
+                    entry.name
+                );
+            }
+            if let Err(e) = codec_api.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true)) {
+                log::debug!("{}: AVLowLatencyMode=TRUE refused: {e}", entry.name);
+            }
         }
 
         // Output type first (encoder MFT convention), then input.
@@ -249,7 +279,10 @@ impl EncoderSession {
             // ride each sample (the Linux caps-carry-framerate lesson).
             out_type.SetUINT64(&MF_MT_FRAME_RATE, (u64::from(params.fps) << 32) | 1)?;
             out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-            transform.SetOutputType(0, &out_type, 0)?;
+            step(
+                "SetOutputType (H264)",
+                transform.SetOutputType(0, &out_type, 0),
+            )?;
 
             let in_type = MFCreateMediaType()?;
             in_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
@@ -259,15 +292,33 @@ impl EncoderSession {
                 (u64::from(params.width) << 32) | u64::from(params.height),
             )?;
             in_type.SetUINT64(&MF_MT_FRAME_RATE, (u64::from(params.fps) << 32) | 1)?;
-            transform.SetInputType(0, &in_type, 0)?;
+            step(
+                "SetInputType (NV12)",
+                transform.SetInputType(0, &in_type, 0),
+            )?;
         }
 
         let sequence_header = read_sequence_header(&transform).unwrap_or_default();
+        log::debug!(
+            "{}: configured {}x{}@{} peak {} bps, gop {}; sequence header {} bytes",
+            entry.name,
+            params.width,
+            params.height,
+            params.fps,
+            params.peak_bitrate_bps,
+            params.gop_frames,
+            sequence_header.len()
+        );
 
-        let events: IMFMediaEventGenerator = transform.cast()?;
+        let events: IMFMediaEventGenerator =
+            step("cast to IMFMediaEventGenerator", transform.cast())?;
         unsafe {
-            transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
-            transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
+            step("NOTIFY_BEGIN_STREAMING", {
+                transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
+            })?;
+            step("NOTIFY_START_OF_STREAM", {
+                transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+            })?;
         }
 
         let (input_tx, input_rx) = mpsc::channel();
@@ -581,6 +632,14 @@ fn trial_encode(
             time_100ns: au.time_us as i64 * 10,
         });
     }
+    log::debug!(
+        "trial encode: {} frames in, {} AUs out, {} keyframes",
+        TRIAL_FRAMES,
+        aus.len(),
+        aus.iter()
+            .filter(|au| crate::h264::has_idr(&au.data))
+            .count()
+    );
     Ok(TrialRun {
         inputs_fed: TRIAL_FRAMES,
         aus,

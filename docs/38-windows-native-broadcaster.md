@@ -868,6 +868,21 @@ exists for. The library is now **vendored with five small patches**
   `audiopus_sys`) ships a CMakeLists older than CMake 4's compatibility
   floor; every build needs `CMAKE_POLICY_VERSION_MINIMUM=3.5` in the
   environment (set in the CI workflow, documented in the component README).
+- **F-8 (2026-07-31, field)**: the first external tester (desktop RTX 2070,
+  browser hardware-encode working) got the D9 refusal — and the app could
+  not say why: the cascade's per-candidate rejection trail went to
+  `eprintln!`, which `windows_subsystem = "windows"` discards, so
+  "MFTEnumEx enumerated nothing" and "NVENC was found but failed the trial
+  gate" were indistinguishable in the field. Fixed by making the runtime
+  record a file: every launch writes `%APPDATA%\gawk\debug.log` (rotated to
+  `.old`, lifecycle-only volume) via the `log` facade — adapter identity
+  (`D3D11CreateDevice(None, …)` takes the *default* adapter; on hybrid-GPU
+  machines the encoder vendor's MFT may not match it, so the log names the
+  adapter), MFT enumeration count + friendly names, per-candidate trial verdicts with
+  the failing MF step named (`step()` wraps each session-setup call), and
+  session lifecycle. Error cards append "Details were written to …". The
+  2070 root cause itself is **open pending that machine's debug.log** —
+  tracked in `BUGS.md`.
 
 ## 12. References
 

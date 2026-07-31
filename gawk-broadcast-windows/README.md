@@ -81,6 +81,17 @@ about an unknown publisher on first run ("More info" → "Run anyway") — the
 binary is unsigned on purpose; distribution is to known operators (docs/38
 D17).
 
+## Troubleshooting: `debug.log`
+
+The app is a windowed EXE — there is no console, so nothing useful ever
+appears on stderr. Instead every launch writes
+**`%APPDATA%\gawk\debug.log`** (next to `broadcast.json`; the previous
+launch is kept as `debug.log.old`). It records the adapter the D3D11 device
+landed on, the hardware encoder MFTs enumerated, each candidate's trial
+verdict with the failing Media Foundation step, and session lifecycle —
+enough to diagnose a "No hardware H.264 encoder was found" refusal from the
+file alone. Error cards point at it; attach it to any bug report.
+
 ## Defaults
 
 Blank settings mean "the default", resolved at use, never at save

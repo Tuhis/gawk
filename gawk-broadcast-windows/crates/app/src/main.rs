@@ -10,6 +10,7 @@
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod base64util;
+mod debuglog;
 mod diagnostics;
 #[cfg(windows)]
 mod dpapi;
@@ -101,6 +102,9 @@ impl IdentityLatch {
 struct Shell {
     cfg: Config,
     cfg_path: Option<std::path::PathBuf>,
+    /// Where the debug log landed (None when no config dir / init failed);
+    /// error cards point at it so refusals are diagnosable from the field.
+    log_path: Option<std::path::PathBuf>,
     state: UiState,
     session: Option<Arc<Session>>,
     #[cfg(windows)]
@@ -139,6 +143,17 @@ fn main() {
     #[cfg(windows)]
     toast::init();
 
+    let cfg_path = config::default_path();
+    // The debug log lives next to broadcast.json; a windowed EXE has no
+    // stderr, so this file is the only runtime record (docs/38 F-8).
+    let log_path = debuglog::init(cfg_path.as_deref().and_then(|p| p.parent()));
+    log::info!(
+        "gawk-broadcast {} starting on {} {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+
     let clock = Arc::new(MonotonicClock::new());
     let reporter = Arc::new(Reporter::new(env!("CARGO_PKG_VERSION"), clock.clone()));
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -147,12 +162,11 @@ fn main() {
         .build()
         .expect("tokio runtime");
 
-    let cfg_path = config::default_path();
     let cfg = match &cfg_path {
         Some(p) => {
             let (cfg, warn) = config::load(p, &*creds());
             if let Some(w) = warn {
-                eprintln!("{w}");
+                log::warn!("{w}");
             }
             cfg
         }
@@ -163,6 +177,7 @@ fn main() {
     let shell = Rc::new(RefCell::new(Shell {
         cfg,
         cfg_path,
+        log_path,
         state: UiState::Idle,
         session: None,
         #[cfg(windows)]
@@ -279,7 +294,7 @@ fn save_config(shell: &mut Shell) {
     if let Some(path) = shell.cfg_path.clone()
         && let Err(e) = config::save(&path, &shell.cfg, &*creds())
     {
-        eprintln!("could not save settings: {e}");
+        log::warn!("could not save settings: {e}");
     }
 }
 
@@ -424,7 +439,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                     state_label(sh.state),
                     &sh.last_error,
                     sh.capture_mode,
-                    rfc3339_now(),
+                    debuglog::now_rfc3339(),
                 );
                 copy_text(&dump);
                 ui.set_copied_note("Diagnostics copied".into());
@@ -566,6 +581,12 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         };
     }
 
+    log::info!(
+        "start requested: mode {}, resume {resume} (id {:?}), relay {}",
+        sh.capture_mode,
+        broadcast_id,
+        sh.cfg.resolve_relay_url()
+    );
     sh.state = UiState::Starting;
     sh.identity.on_start(!broadcast_id.is_empty());
     sh.last_error.clear();
@@ -624,6 +645,12 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         let (session, mut events) = match started {
             Ok(x) => x,
             Err(e) => {
+                log::error!(
+                    "relay connect failed: {} (phase {:?}, status {})",
+                    e.message,
+                    e.phase,
+                    e.status
+                );
                 let _ = msg_tx.send(ShellMsg::StartFailed(StartFailure::Relay(e)));
                 return;
             }
@@ -722,6 +749,7 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 ui.set_show_thumbnail(sh.capture_mode == "app");
             }
             sh.state = UiState::Live;
+            log::info!("live (broadcast id {:?})", sh.broadcast_id);
             let body = live_body(&sh.broadcast_id, ui.get_join_link().as_str());
             drop(sh);
             ui.set_live(true);
@@ -735,12 +763,16 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             sh.session = None;
             let app_url = sh.cfg.resolve_app_url();
             let text = message(&f, &app_url);
+            log::error!("start failed: {}", first_line(&text));
             sh.last_error = text.clone();
+            // The error card points at the debug log: the curated sentence
+            // says what happened, the log says why (docs/38 F-8).
+            let card = debuglog::with_pointer(&text, sh.log_path.as_deref());
             drop(sh);
             ui.set_busy(false);
             ui.set_live(false);
             ui.set_state_label("Not broadcasting".into());
-            ui.set_error_text(text.clone().into());
+            ui.set_error_text(card.into());
             ui.set_can_mint(can_mint(&f));
             notify("Broadcast failed to start", first_line(&text), true);
         }
@@ -751,6 +783,7 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
 fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEvent) {
     match ev {
         EngineEvent::Announce { broadcast_id } => {
+            log::info!("announce: broadcast id {broadcast_id}");
             let mut sh = shell.borrow_mut();
             sh.broadcast_id = broadcast_id.clone();
             sh.cfg.last_broadcast_id = broadcast_id.clone();
@@ -800,6 +833,7 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             });
         }
         EngineEvent::Resuming { attempt } => {
+            log::info!("resuming (attempt {attempt})");
             let sh = shell.borrow();
             sh.reporter.event("resuming", "");
             drop(sh);
@@ -814,6 +848,7 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             );
         }
         EngineEvent::Resumed => {
+            log::info!("resumed");
             let sh = shell.borrow();
             sh.reporter.event("resumed", "");
             #[cfg(windows)]
@@ -843,8 +878,11 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
         }
     }
     if let Some(e) = &error {
+        log::error!("broadcast ended with error: {e}");
         sh.last_error = e.clone();
         sh.reporter.event("error", e);
+    } else {
+        log::info!("broadcast ended");
     }
     sh.reporter.event("ended", "");
     sh.reporter.finish();
@@ -902,6 +940,7 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             .as_ref()
             .and_then(|p| p.take_failure());
         if let Some(f) = failure {
+            log::error!("media pump died: {f}");
             let sh = shell.borrow();
             if let Some(session) = sh.session.clone() {
                 sh.rt.spawn(async move { session.stop().await });
@@ -1160,28 +1199,6 @@ fn open_in_browser(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
-/// RFC 3339 UTC now, std-only (diagnostics timestamp).
-fn rfc3339_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let days = secs / 86_400;
-    let (h, m, s) = ((secs % 86_400) / 3600, (secs % 3600) / 60, secs % 60);
-    // Civil-from-days (Howard Hinnant's algorithm).
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if mo <= 2 { y + 1 } else { y };
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,16 +1213,6 @@ mod tests {
         assert_eq!(parse_bitrate_mbps("2,5"), 2_500_000);
         assert_eq!(parse_bitrate_mbps("0.5"), 1_000_000); // clamped up
         assert_eq!(parse_bitrate_mbps("400"), 100_000_000); // clamped down
-    }
-
-    #[test]
-    fn rfc3339_now_is_shaped_right() {
-        let s = rfc3339_now();
-        assert_eq!(s.len(), 20);
-        assert!(s.ends_with('Z'));
-        assert!(s.starts_with("20"));
-        assert_eq!(&s[4..5], "-");
-        assert_eq!(&s[10..11], "T");
     }
 
     // docs/22 finding 9: the token stream can beat the announce. On a mint

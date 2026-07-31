@@ -92,6 +92,27 @@ impl GpuDevice {
             winrt,
         })
     }
+
+    /// Which adapter the shared device actually landed on, for the debug
+    /// log: `D3D11CreateDevice(None, …)` takes the DEFAULT adapter, and on
+    /// hybrid-GPU machines that may not be the one whose vendor registered
+    /// a hardware encoder MFT — a fact invisible everywhere else.
+    pub fn adapter_summary(&self) -> String {
+        let describe = || -> Result<String> {
+            let dxgi: IDXGIDevice = self.device.cast()?;
+            let adapter = unsafe { dxgi.GetAdapter()? };
+            let desc = unsafe { adapter.GetDesc()? };
+            let name = String::from_utf16_lossy(&desc.Description);
+            Ok(format!(
+                "{} (vendor 0x{:04X}, device 0x{:04X}, {} MB dedicated)",
+                name.trim_end_matches('\0'),
+                desc.VendorId,
+                desc.DeviceId,
+                desc.DedicatedVideoMemory / (1024 * 1024)
+            ))
+        };
+        describe().unwrap_or_else(|e| format!("unknown adapter ({e})"))
+    }
 }
 
 /// One VideoProcessor pass: BGRA in at a fixed source size, NV12 (and

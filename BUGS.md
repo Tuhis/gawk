@@ -4,6 +4,32 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
+## Windows broadcaster refuses "No hardware H.264 encoder" on an RTX 2070
+
+- **Found**: 2026-07-31, field report from the first external tester:
+  desktop NVIDIA RTX 2070, browser broadcaster hardware-encodes fine, but
+  `gawk-broadcast.exe` refuses with the docs/38 D9 message — so NVENC
+  exists and works on that machine; either `MFTEnumEx` enumerated nothing
+  or the NVIDIA MFT was enumerated and failed the trial gate.
+- **Impact**: the native broadcaster is unusable on that machine; the user
+  loses per-app audio and background-window capture (the browser path still
+  works).
+- **Cause — unconfirmed.** The per-candidate rejection trail only went to
+  stderr, which the windowed EXE discards (docs/38 F-8), so the report
+  carried no evidence. Leading hypotheses, in order: a trial-gate invariant
+  the NVIDIA MFT genuinely violates (B-frames / latency / timestamp
+  rewrite — each names itself in the trail now); a session-setup step the
+  NVIDIA MFT rejects (CodecAPI knob, `SetOutputType`, D3D manager — now
+  step-named in the trail); empty enumeration (remote session, stripped
+  driver, Windows N).
+- **Confirmation procedure**: rerun on a build ≥ the F-8 change and read
+  `%APPDATA%\gawk\debug.log` — it now records adapter identity, the MFT
+  enumeration list, and every rejection with the failing step. The log
+  distinguishes all three hypothesis classes on sight.
+- **A fix would start** in `gawk-broadcast-windows/crates/encode/`
+  (`mft.rs` session setup or `cascade.rs` invariants), once the log says
+  which invariant or step fails on NVENC.
+
 ## Safari viewer: keyframe delivery stops while datagrams keep flowing
 
 - **Found**: 2026-07-21, from a Safari 26.5.2 viewer's Copy-diagnostics

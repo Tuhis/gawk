@@ -96,15 +96,33 @@ pub fn choose(
 
     let mut tried = Vec::new();
     for c in order {
+        log::info!(
+            "trial: {}{}",
+            c.id,
+            if Some(c.id.as_str()) == last_good {
+                " (last-good, re-verified first)"
+            } else {
+                ""
+            }
+        );
         match trial.run(c).and_then(|run| validate_trial(&run)) {
             Ok(v) => {
+                log::info!(
+                    "accepted: {} (codec {}, {} prepend-header bytes)",
+                    c.id,
+                    v.codec_string,
+                    v.prepend_headers.len()
+                );
                 return Ok(Accepted {
                     id: c.id.clone(),
                     codec_string: v.codec_string,
                     prepend_headers: v.prepend_headers,
                 });
             }
-            Err(why) => tried.push((c.id.clone(), why)),
+            Err(why) => {
+                log::warn!("rejected: {}: {why}", c.id);
+                tried.push((c.id.clone(), why));
+            }
         }
     }
     Err(NoHardwareEncoder { tried })
