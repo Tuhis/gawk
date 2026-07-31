@@ -6,6 +6,7 @@
 //! `#[cfg(windows)]`: the crate compiles empty elsewhere so the workspace
 //! builds and CI's portable tests run cross-platform.
 
+pub mod fit;
 pub mod gate;
 pub mod picker;
 

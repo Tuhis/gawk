@@ -107,4 +107,4 @@ Blank settings mean "the default", resolved at use, never at save
 | App URL (join links) | `https://gawk.ioio.fi` |
 | Telemetry ingest | `https://gawk.ioio.fi/api/telemetry/v1/ingest` (`off` = send nothing) |
 | Origin | `gawk-broadcast://windows` — the relay's `-allowed-origins` must include it |
-| Rung | 1080p60, 500 ms GOP, 16 Mbps peak VBR |
+| Rung | 1080p60, 500 ms GOP, 12 Mbps peak VBR — the resolution is a bounding box: the stream keeps the source's aspect ratio inside it (docs/38 D11) |

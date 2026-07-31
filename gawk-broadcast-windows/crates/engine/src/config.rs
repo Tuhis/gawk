@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(cfg.resolve_relay_url(), defaults::RELAY_URL);
         assert_eq!(cfg.resolve_app_url(), defaults::APP_URL);
         assert_eq!(cfg.resolve_origin(), defaults::ORIGIN);
-        assert_eq!(cfg.resolve_rung(), (1920, 1080, 60, 16_000_000));
+        assert_eq!(cfg.resolve_rung(), (1920, 1080, 60, 12_000_000));
 
         let cfg = Config {
             relay_url: "  https://other.example:4433 ".into(),

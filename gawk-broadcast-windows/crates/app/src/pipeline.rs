@@ -71,6 +71,10 @@ pub struct PipelineInfo {
     pub encoder: String,
     pub codec: String,
     pub capture_path: &'static str,
+    /// The ACTUAL encode dimensions — the configured rung box fitted to
+    /// the source aspect (D11 amendment), not the box itself.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Shared, GUI-readable audio state.
@@ -127,6 +131,33 @@ impl Pipeline {
         })?;
         log::info!("D3D11 device on adapter: {}", gpu.adapter_summary());
 
+        // The capture item comes FIRST now: its size decides the encode
+        // resolution. The configured rung is a bounding box, never a
+        // stretch target (docs/38 D11 amendment) — the encoder runs at the
+        // source's aspect fitted inside it, one side pinned to the box.
+        let item = wgc::create_item(params.target).map_err(|e| {
+            StartFailure::Capture(format!("could not open the capture target: {e}"))
+        })?;
+        let (enc_width, enc_height) = match wgc::item_size(&item) {
+            Ok(size) => gawk_capture::fit::fit_within(
+                size.Width.max(0) as u32,
+                size.Height.max(0) as u32,
+                params.width,
+                params.height,
+            ),
+            Err(e) => {
+                // No size, no aspect: encode at the configured box.
+                log::warn!("capture item size unavailable ({e}); encoding at the configured box");
+                (params.width, params.height)
+            }
+        };
+        log::info!(
+            "encode resolution {enc_width}x{enc_height} (source aspect fitted into the \
+             {}x{} box)",
+            params.width,
+            params.height
+        );
+
         // The cascade with real trials (enumeration is not acceptance).
         let entries = mft::enumerate_hardware().map_err(|e| {
             log::error!("hardware MFT enumeration failed: {e}");
@@ -151,8 +182,8 @@ impl Pipeline {
             return Err(StartFailure::NoHardwareEncoder);
         }
         let enc_params = EncoderParams {
-            width: params.width,
-            height: params.height,
+            width: enc_width,
+            height: enc_height,
             fps: params.fps,
             peak_bitrate_bps: params.bitrate_bps,
             gop_frames: (params.fps / 2).max(1),
@@ -242,9 +273,6 @@ impl Pipeline {
         let force_idr = Arc::new(AtomicBool::new(false));
         let thumb: Arc<Mutex<Option<Thumb>>> = Arc::new(Mutex::new(None));
         let capture_fps = Arc::new(Mutex::new(FpsMeter::default()));
-        let item = wgc::create_item(params.target).map_err(|e| {
-            StartFailure::Capture(format!("could not open the capture target: {e}"))
-        })?;
         let mode1 = matches!(params.target, CaptureTarget::Window { .. });
         let hwnd = match params.target {
             CaptureTarget::Window { hwnd, .. } => Some(hwnd),
@@ -262,7 +290,10 @@ impl Pipeline {
             let mut converter: Option<Converter> = None;
             let mut last_thumb_us = 0u64;
             let frame_us = 1_000_000 / u64::from(params.fps.max(1));
-            let (out_w, out_h) = (params.width, params.height);
+            // The fitted encode dims, not the configured box: a source that
+            // later changes aspect (window resize) letterboxes inside the
+            // converter rather than stretching.
+            let (out_w, out_h) = (enc_width, enc_height);
 
             wgc::Capture::start(&gpu.clone(), item, move |frame| {
                 // Panic hygiene (D3): a poisoned frame must not kill the
@@ -362,6 +393,8 @@ impl Pipeline {
                 encoder: accepted.id,
                 codec: accepted.codec_string,
                 capture_path: "zero-copy",
+                width: enc_width,
+                height: enc_height,
             },
             gpu,
             capture: Some(capture),

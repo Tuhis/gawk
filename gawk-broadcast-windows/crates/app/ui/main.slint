@@ -94,6 +94,7 @@ export component MainWindow inherits Window {
     in property <string> audio-hint-text: "";
     in property <string> watching-line: "";
     in property <string> minimized-hint: "";
+    in property <string> uplink-warning: "";
 
     // ----- code card -----
     in property <string> code: "";
@@ -127,7 +128,9 @@ export component MainWindow inherits Window {
     in-out property <string> set-telemetry: "";
     in-out property <int> set-resolution: 1;   // index into labels below
     in-out property <int> set-framerate: 1;
-    in property <[string]> resolution-labels: ["2560×1440", "1920×1080 (default)", "1280×720", "854×480"];
+    in property <[string]> resolution-labels: ["2560×1440", "1920×1080 (default)", "1280×720", "854×480", "Custom"];
+    in-out property <string> set-custom-width: "";
+    in-out property <string> set-custom-height: "";
     in property <[string]> framerate-labels: ["120 fps", "60 fps (default)", "30 fps", "5 fps"];
     in property <string> caption-broadcast: "";
     in property <string> caption-diag: "";
@@ -233,6 +236,12 @@ export component MainWindow inherits Window {
                         }
                         if root.minimized-hint != "": Text {
                             text: root.minimized-hint;
+                            color: Palette.resume;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        if root.uplink-warning != "": Text {
+                            text: root.uplink-warning;
                             color: Palette.resume;
                             font-size: 12px;
                             wrap: word-wrap;
@@ -502,7 +511,7 @@ export component MainWindow inherits Window {
                         }
                     }
                     Text {
-                        text: "Peak bitrate in Mbps (blank = 16)";
+                        text: "Peak bitrate in Mbps (blank = 12)";
                         color: Palette.muted;
                         font-size: 11px;
                     }
@@ -538,6 +547,40 @@ export component MainWindow inherits Window {
                             clicked => {
                                 if (!root.busy) {
                                     root.set-resolution = i;
+                                    root.settings-edited();
+                                }
+                            }
+                        }
+                    }
+                    if root.set-resolution == 4: VerticalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: "Custom size, up to 3840×2160 — a bounding box; the stream keeps the source's aspect ratio inside it";
+                            color: Palette.muted;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            LineEdit {
+                                text <=> root.set-custom-width;
+                                placeholder-text: "width";
+                                enabled: !root.busy;
+                                edited => {
+                                    root.settings-edited();
+                                }
+                            }
+                            Text {
+                                text: "×";
+                                color: Palette.muted;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            LineEdit {
+                                text <=> root.set-custom-height;
+                                placeholder-text: "height";
+                                enabled: !root.busy;
+                                edited => {
                                     root.settings-edited();
                                 }
                             }

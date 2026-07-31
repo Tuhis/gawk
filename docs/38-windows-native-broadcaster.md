@@ -390,18 +390,38 @@ Consequences, inherited from `docs/19` Decision 8 and
   This string is the only thing telling the viewer's decoder what is coming.
 - Keyframe classification = AU contains an IDR NAL (type 5), same as Linux.
 
-### D11 — The rung: fixed 1080p60 / 500 ms GOP / 16 Mbps peak VBR, with the Linux GUI's advanced overrides
+### D11 — The rung: fixed 1080p60 / 500 ms GOP / 12 Mbps peak VBR, with the Linux GUI's advanced overrides
 
 Defaults identical to `DefaultMediaConfig` on Linux: **1920×1080, 60 fps,
-16 Mbps peak (≈75 % typical), 500 ms GOP**. No ladder, no auto-fallback, no
+12 Mbps peak (≈75 % typical), 500 ms GOP**. (Amended 2026-07-31: the
+default peak was 16 Mbps, identical to Linux's `DefaultMediaConfig`;
+lowered to 12 after F-12 — 16 Mbps of datagrams left the first field
+uplink no headroom for the keyframe stream. The Linux default is
+deliberately untouched.) No ladder, no auto-fallback, no
 mid-session changes; settings apply to the next broadcast and the panel is
 disabled while live (R14 Decision 9 + the Linux GUI's exact behavior).
 
 Advanced overrides mirror the Linux GUI's surface, not R18's browser one:
-resolution 2560×1440 / 1920×1080 / 1280×720 / 854×480, framerate
-120 / 60 / 30 / 5, bitrate in Mbps (blank = 16, clamped [1, 100]). Scaling to
-a non-native rung happens GPU-side in the VideoProcessor pass that already
-exists for format conversion. GOP is not a setting anywhere in gawk.
+resolution 2560×1440 / 1920×1080 / 1280×720 / 854×480 **plus Custom**
+(amended 2026-07-31: free-typed width × height, clamped to [128, 3840] ×
+[128, 2160] — 4K is the ceiling — floored to even for NV12; a half-typed
+or unparseable pair falls back to the default rung rather than persisting
+a mangled one), framerate 120 / 60 / 30 / 5, bitrate in Mbps (blank = 12,
+clamped [1, 100]). Scaling to a non-native rung happens GPU-side in the
+VideoProcessor pass that already exists for format conversion. GOP is not
+a setting anywhere in gawk.
+
+**The configured resolution is a bounding box, never a stretch target**
+(amended 2026-07-31; previously the VideoProcessor scaled the source to
+the configured size exactly, distorting any source whose aspect differed).
+The encode resolution is the SOURCE aspect fitted inside the box — one
+side pins to the box, the other shrinks, both floored to even
+(`gawk-capture`'s portable `fit` module owns the geometry). The fit is
+taken from the capture item's size at start; the encoder's dimensions are
+then fixed for the session, so a mid-broadcast aspect change (window
+resize) letterboxes inside the converter — centered, studio-black bars —
+rather than stretching. The GUI's encode line and the diagnostics rung
+show the fitted dimensions, not the box.
 
 ### D12 — GUI: Slint, one window, the Linux app's information architecture plus the capture picker
 
@@ -419,8 +439,15 @@ shared with `gawk-app` so the two broadcasters read as one product.
 1. **Header** — state (Not broadcasting / Starting… / Live) + heartbeat dot
    (green live, amber while auto-resuming with "Reconnecting to the relay…
    (attempt N)"), encode line (`Media Foundation — NVIDIA H.264 Encoder MFT ·
-   zero-copy · 1080p60`), audio line with live level meter, "N watching"
-   (hidden until the relay's first 0x0B push).
+   zero-copy · 1920×1080@60`, the FITTED dimensions per D11), audio line
+   with live level meter, "N watching" (hidden until the relay's first 0x0B
+   push). Amended 2026-07-31: an **upload-bandwidth warning line** joins the
+   header hints — `gawk-engine`'s portable `uplink` monitor watches the 1 Hz
+   send-side counters (keyframe streams superseded/failed, frames dropped at
+   send, sent vs encode fps — the F-12 signals) with hysteresis (5
+   consecutive bad seconds to raise, 15 clean to clear), and the shell shows
+   "Your connection can't keep up…" naming the active bitrate; transitions
+   also land in debug.log.
 2. **Capture picker** (idle only) — two tabs: **Share an app** (alt-tab
    window list, icon + title, refresh) / **Share a screen** (monitors with
    name and resolution). Selection is remembered per mode for the session;
@@ -493,7 +520,7 @@ Shipped defaults (constants in the engine crate, mirroring
 | App URL | `https://gawk.ioio.fi` — **unlike Linux, this ships as a real default** (Linux leaves `-app-url` empty); join links must work out of the box (G8) |
 | Telemetry URL | `https://gawk.ioio.fi/api/telemetry/v1/ingest` (`off` = send nothing) |
 | Origin | `gawk-broadcast://windows` (D19) |
-| Rung | 1920×1080 @ 60, 16 Mbps peak, 500 ms GOP |
+| Rung | 1920×1080 @ 60, 12 Mbps peak, 500 ms GOP |
 | Audio | on (whole-system in mode 2, per-app in mode 1) |
 
 Both Linux config rules carry over exactly:

@@ -45,8 +45,10 @@ enum UiState {
 enum ShellMsg {
     Started {
         session: Arc<Session>,
+        // Boxed: the pipeline dwarfs the other variants (clippy
+        // large_enum_variant) and this message is sent once per broadcast.
         #[cfg(windows)]
-        pipeline: pipeline::Pipeline,
+        pipeline: Box<pipeline::Pipeline>,
     },
     StartFailed(StartFailure),
     Engine(EngineEvent),
@@ -129,6 +131,9 @@ struct Shell {
     /// 1-per-minute keyframe/fps health line into debug.log (F-12: the
     /// supersede livelock was invisible without send-side counters).
     health_countdown: u8,
+    /// The upload-bandwidth watchdog, fed 1 Hz; fresh per broadcast.
+    uplink: gawk_engine::uplink::UplinkMonitor,
+    uplink_warned: bool,
 }
 
 fn creds() -> Box<dyn config::Credentials> {
@@ -217,6 +222,8 @@ fn main() {
         picked_monitors: Vec::new(),
         stats_countdown: 0,
         health_countdown: 0,
+        uplink: gawk_engine::uplink::UplinkMonitor::new(),
+        uplink_warned: false,
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -260,10 +267,16 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
     });
     ui.set_set_resolution(match (cfg.width, cfg.height) {
         (2560, 1440) => 0,
+        (0, 0) | (1920, 1080) => 1,
         (1280, 720) => 2,
         (854, 480) => 3,
-        _ => 1,
+        // Any other stored size is a custom one; show it in the fields.
+        _ => 4,
     });
+    if ui.get_set_resolution() == 4 {
+        ui.set_set_custom_width(format!("{}", cfg.width).into());
+        ui.set_set_custom_height(format!("{}", cfg.height).into());
+    }
     ui.set_set_framerate(match cfg.fps {
         120 => 0,
         30 => 2,
@@ -285,6 +298,10 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config) {
         0 => (2560, 1440),
         2 => (1280, 720),
         3 => (854, 480),
+        4 => parse_custom_resolution(
+            ui.get_set_custom_width().as_str(),
+            ui.get_set_custom_height().as_str(),
+        ),
         _ => (0, 0), // the default rung stays a blank, not a number
     };
     cfg.fps = match ui.get_set_framerate() {
@@ -293,6 +310,36 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config) {
         3 => 5,
         _ => 0,
     };
+}
+
+/// The custom-resolution parser: both fields must parse to positive
+/// integers or the pair falls back to the default rung (0, 0) — a half-
+/// typed size must not persist as a mangled rung. Values clamp into
+/// [128, 3840] × [128, 2160] (4K is the ceiling) and floor to even (NV12
+/// needs even dimensions). The result is a bounding box: the encode
+/// resolution is the source aspect fitted inside it (docs/38 D11).
+/// The uplink warning line: names the active bitrate so the remedy (lower
+/// it) is one thought away.
+fn uplink_warning_text(bitrate_bps: u32) -> String {
+    format!(
+        "Your connection can't keep up with the stream — delivery to the relay is taking too \
+         long and viewers may see frozen or delayed video. Lower the peak bitrate in Settings \
+         (now {:.0} Mbps), or free up upload bandwidth.",
+        f64::from(bitrate_bps) / 1e6
+    )
+}
+
+fn parse_custom_resolution(w: &str, h: &str) -> (u32, u32) {
+    let dim = |s: &str, max: u32| -> Option<u32> {
+        match s.trim().parse::<u32>() {
+            Ok(v) if v > 0 => Some((v.clamp(128, max)) & !1),
+            _ => None,
+        }
+    };
+    match (dim(w, 3840), dim(h, 2160)) {
+        (Some(w), Some(h)) => (w, h),
+        _ => (0, 0),
+    }
 }
 
 /// Blank/unparseable/≤0 ⇒ 0 (= the default); otherwise clamped to
@@ -608,6 +655,9 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     sh.state = UiState::Starting;
     sh.identity.on_start(!broadcast_id.is_empty());
     sh.health_countdown = 0; // first health line right after going live
+    sh.uplink = gawk_engine::uplink::UplinkMonitor::new();
+    sh.uplink_warned = false;
+    ui.set_uplink_warning("".into());
     sh.last_error.clear();
     sh.first_viewer_seen = false;
     ui.set_error_text("".into());
@@ -700,7 +750,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
                 Ok(Ok(p)) => {
                     let _ = msg_tx.send(ShellMsg::Started {
                         session,
-                        pipeline: p,
+                        pipeline: Box::new(p),
                     });
                 }
                 Ok(Err(f)) => {
@@ -767,16 +817,20 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                     sh.cfg.last_good_encoder = pipeline.info.encoder.clone();
                     save_config(&mut sh);
                 }
-                let (_, h, fps, _) = sh.cfg.resolve_rung();
+                let (_, _, fps, _) = sh.cfg.resolve_rung();
                 ui.set_encode_line(
                     format!(
-                        "Media Foundation — {} · {} · {}p{}",
-                        pipeline.info.encoder, pipeline.info.capture_path, h, fps
+                        "Media Foundation — {} · {} · {}×{}@{}",
+                        pipeline.info.encoder,
+                        pipeline.info.capture_path,
+                        pipeline.info.width,
+                        pipeline.info.height,
+                        fps
                     )
                     .into(),
                 );
                 sh.encode_info = Some(pipeline.info.clone());
-                sh.pipeline = Some(pipeline);
+                sh.pipeline = Some(*pipeline);
                 ui.set_show_thumbnail(sh.capture_mode == "app");
             }
             sh.state = UiState::Live;
@@ -930,6 +984,7 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     ui.set_audio_hint(false);
     ui.set_show_thumbnail(false);
     ui.set_minimized_hint("".into());
+    ui.set_uplink_warning("".into());
     if let Some(e) = &error {
         ui.set_error_text(e.clone().into());
         ui.set_can_mint(false);
@@ -988,10 +1043,36 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         }
     }
 
+    let st = {
+        let sh = shell.borrow();
+        let st = merged_stats(&sh);
+        sh.reporter.report(st.clone());
+        sh.reporter.tick();
+        st
+    };
+
+    // The upload-bandwidth watchdog (1 Hz): transitions are logged and the
+    // warning line follows the hysteresis, not each individual sample.
+    {
+        let mut sh = shell.borrow_mut();
+        let warned = sh.uplink.observe(&st);
+        if warned != sh.uplink_warned {
+            sh.uplink_warned = warned;
+            if warned {
+                let (_, _, _, bps) = sh.cfg.resolve_rung();
+                let text = uplink_warning_text(bps);
+                log::warn!("uplink warning raised: {text}");
+                ui.set_uplink_warning(text.into());
+            } else {
+                log::info!("uplink warning cleared");
+                ui.set_uplink_warning("".into());
+            }
+        }
+    }
+
+    // The remainder needs the shell only for the Windows pipeline widgets.
+    #[cfg(windows)]
     let sh = shell.borrow();
-    let st = merged_stats(&sh);
-    sh.reporter.report(st.clone());
-    sh.reporter.tick();
     if log_health {
         log::info!(
             "health: capture {} fps, encode {:.1} fps, sent {:.1} fps, keyframe streams {} sent / {} superseded / {} failed, frames dropped at send {}, audio {}",
@@ -1053,6 +1134,10 @@ fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
         if let Some(info) = &sh.encode_info {
             st.encoder = info.encoder.clone();
             st.capture_path = info.capture_path.into();
+            // The rung reads as what is ACTUALLY encoded (the aspect-fitted
+            // dims), not the configured bounding box.
+            st.width = info.width;
+            st.height = info.height;
             if st.codec.is_empty() {
                 st.codec = info.codec.clone();
             }
@@ -1267,6 +1352,22 @@ mod tests {
         assert_eq!(parse_bitrate_mbps("2,5"), 2_500_000);
         assert_eq!(parse_bitrate_mbps("0.5"), 1_000_000); // clamped up
         assert_eq!(parse_bitrate_mbps("400"), 100_000_000); // clamped down
+    }
+
+    #[test]
+    fn custom_resolution_clamps_to_4k_and_falls_back_when_half_typed() {
+        assert_eq!(parse_custom_resolution("2560", "1080"), (2560, 1080));
+        // The 4K ceiling, per axis.
+        assert_eq!(parse_custom_resolution("7680", "4320"), (3840, 2160));
+        // Odd sizes floor to even (NV12), tiny sizes clamp up.
+        assert_eq!(parse_custom_resolution("1281", "721"), (1280, 720));
+        assert_eq!(parse_custom_resolution("16", "16"), (128, 128));
+        // Half-typed or junk: fall back to the default rung, never persist
+        // a mangled pair.
+        assert_eq!(parse_custom_resolution("1920", ""), (0, 0));
+        assert_eq!(parse_custom_resolution("", ""), (0, 0));
+        assert_eq!(parse_custom_resolution("abc", "720"), (0, 0));
+        assert_eq!(parse_custom_resolution("0", "720"), (0, 0));
     }
 
     // docs/22 finding 9: the token stream can beat the announce. On a mint

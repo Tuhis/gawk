@@ -4,20 +4,21 @@
 //! through system memory on the live path; the staging readbacks here exist
 //! for the WARP unit test and the thumbnail only.
 
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_FLAG, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
     D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-    D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM,
-    D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
-    D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
-    ID3D11Multithread, ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice,
-    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
-    ID3D11VideoProcessorOutputView,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_COLOR, D3D11_VIDEO_COLOR_YCbCrA,
+    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+    D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice,
+    ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D, ID3D11VideoContext,
+    ID3D11VideoContext1, ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
+    ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
@@ -137,6 +138,10 @@ pub struct Converter {
     ring_next: usize,
     out_width: u32,
     out_height: u32,
+    /// `Some` when the input aspect no longer matches the output surface:
+    /// the centered letterbox rect the NV12 blts draw into (never for the
+    /// thumbnail — its target is sized to the input's own aspect).
+    dest_rect: Option<RECT>,
 }
 
 // Guarded by the device's multithread protection (see GpuDevice::create).
@@ -217,6 +222,36 @@ impl Converter {
             view.expect("output view create succeeded without a view")
         };
 
+        // Aspect preservation on mid-broadcast resizes (docs/38 D11
+        // amendment): the encoder's dimensions are fixed for the session,
+        // so when this converter's INPUT aspect no longer matches the
+        // output surface, the image is centered at its own aspect and the
+        // bars are background — never stretched. Background black in
+        // studio-range YCbCr (the NV12 output's space).
+        let dest_rect = crate::fit::letterbox(in_width, in_height, out_width, out_height).map(
+            |(left, top, w, h)| RECT {
+                left: left as i32,
+                top: top as i32,
+                right: (left + w) as i32,
+                bottom: (top + h) as i32,
+            },
+        );
+        if dest_rect.is_some() {
+            let black = D3D11_VIDEO_COLOR {
+                Anonymous: windows::Win32::Graphics::Direct3D11::D3D11_VIDEO_COLOR_0 {
+                    YCbCr: D3D11_VIDEO_COLOR_YCbCrA {
+                        Y: 16.0 / 255.0,
+                        Cb: 0.5,
+                        Cr: 0.5,
+                        A: 1.0,
+                    },
+                },
+            };
+            unsafe {
+                vctx.VideoProcessorSetOutputBackgroundColor(&processor, true, &black);
+            }
+        }
+
         Ok(Self {
             gpu: gpu.clone(),
             video,
@@ -231,6 +266,7 @@ impl Converter {
             ring_next: 0,
             out_width,
             out_height,
+            dest_rect,
         })
     }
 
@@ -244,7 +280,7 @@ impl Converter {
     /// pipelining, which is exactly the ≤1-frame-latency posture).
     pub fn convert(&self, input: &ID3D11Texture2D) -> Result<ID3D11Texture2D> {
         let input_view = self.input_view(input)?;
-        self.blt(&input_view, &self.nv12_view)?;
+        self.blt(&input_view, &self.nv12_view, self.dest_rect)?;
         Ok(self.nv12.clone())
     }
 
@@ -283,7 +319,7 @@ impl Converter {
         self.ring_next = self.ring_next.wrapping_add(1);
         let input_view = self.input_view(input)?;
         let (tex, view) = &self.ring[i];
-        self.blt(&input_view, view)?;
+        self.blt(&input_view, view, self.dest_rect)?;
         Ok(tex.clone())
     }
 
@@ -324,7 +360,7 @@ impl Converter {
             view.expect("output view create succeeded without a view")
         };
         let input_view = self.input_view(input)?;
-        self.blt(&input_view, &out_view)?;
+        self.blt(&input_view, &out_view, None)?;
 
         let (row_pitch, bytes) = read_texture(&self.gpu, &target, w, h, 4)?;
         // Tightly pack, and swizzle BGRA → RGBA for the GUI's image type.
@@ -383,7 +419,21 @@ impl Converter {
         &self,
         input: &ID3D11VideoProcessorInputView,
         output: &ID3D11VideoProcessorOutputView,
+        dest: Option<RECT>,
     ) -> Result<()> {
+        // Per-call because the processor is shared by the NV12 and
+        // thumbnail passes: the letterbox rect applies only to the former.
+        unsafe {
+            match &dest {
+                Some(r) => {
+                    self.vctx
+                        .VideoProcessorSetStreamDestRect(&self.processor, 0, true, Some(r))
+                }
+                None => self
+                    .vctx
+                    .VideoProcessorSetStreamDestRect(&self.processor, 0, false, None),
+            }
+        }
         let mut stream = D3D11_VIDEO_PROCESSOR_STREAM {
             Enable: true.into(),
             pInputSurface: std::mem::ManuallyDrop::new(Some(input.clone())),

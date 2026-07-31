@@ -23,6 +23,7 @@ pub mod stats;
 pub mod telemetry;
 pub mod timesync;
 pub mod transport;
+pub mod uplink;
 
 /// Shipped defaults, all pointing at the production gawk deployment
 /// (docs/38 D13). "Blank means the default, resolved at use, never at save"
@@ -44,12 +45,14 @@ pub mod defaults {
     /// nothing; the production relay's allowlist must include this value.
     pub const ORIGIN: &str = "gawk-broadcast://windows";
 
-    /// The fixed rung (docs/38 D11): 1080p60, 500 ms GOP, 16 Mbps peak
+    /// The fixed rung (docs/38 D11): 1080p60, 500 ms GOP, 12 Mbps peak
     /// (peak-constrained VBR; typical motion averages ~75 % of it).
+    /// Lowered from 16 after the first field broadcast (F-12): 16 Mbps of
+    /// datagrams left home uplinks no headroom for the keyframe stream.
     pub const WIDTH: u32 = 1920;
     pub const HEIGHT: u32 = 1080;
     pub const FPS: u32 = 60;
-    pub const BITRATE_BPS: u32 = 16_000_000;
+    pub const BITRATE_BPS: u32 = 12_000_000;
     pub const GOP_MS: u32 = 500;
 }
 
