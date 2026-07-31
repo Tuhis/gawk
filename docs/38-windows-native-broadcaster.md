@@ -59,7 +59,7 @@ works.
 | G7 | A/V sync: viewer-reported median `|avSkewMs| ≤ 60 ms`, p95 `≤ 120 ms` over 60 s (R25's criteria, unchanged) | manual, viewer diagnostics |
 | G8 | Zero-config first run: launch → pick a window → Start reaches the production fleet with no settings touched | manual |
 | G9 | The broadcast survives a relay pod restart or rolling drain with an automatic resume (≤ a few seconds of frozen video, no viewer reconnect) | integration (kill/restart relay) + manual during a fleet rollout |
-| G10 | The Windows CI job runs **only** when `gawk-broadcast-windows/**` (or its workflow) changes | CI, observed on a docs-only PR |
+| G10 | The Windows CI job runs **only** when `gawk-broadcast-windows/**`, `gawk-server/wire/**` or its own workflow changes | CI, observed on a docs-only PR |
 
 ## 2. Owner decisions (taken 2026-07-30)
 
@@ -77,7 +77,7 @@ Recorded here so the rest of the doc can build on them without hedging:
 | OD8 | Microphone | **Out of scope** — captured audio only, like every other gawk broadcaster |
 | OD9 | Windows floor | **Windows 10 2004 (build 19041)+**, with runtime feature checks for newer-than-floor APIs |
 | OD10 | Telemetry (R28) | **In scope day one**, mirroring the Linux reporter |
-| OD11 | CI | **GitHub-hosted `windows-latest`**, strictly path-filtered — Windows minutes are expensive; the job must not run unless the component actually changed |
+| OD11 | CI | **Self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** — superseded the original `windows-latest` choice once it was measured that Linux loses no test or lint signal (revised 2026-07-31; see D18) |
 | OD12 | CLI / headless shell | **GUI only day one**; the engine crate stays shell-free so a CLI or pubsim-style publisher can be added without redesign |
 | OD13 | Rejected-CONNECT status (gate 2a failed on stock wtransport, §11 F-1) | **Vendor + patch wtransport in-repo** (`vendor/`, `[patch.crates-io]`) rather than a public fork or living without the status — decided 2026-07-30 when the gate was measured |
 
@@ -555,7 +555,75 @@ exe + `BUILD-INFO.txt` + a copy of the INSTALL doc, 30-day retention,
 cannot run this code meaningfully, so a build a human can run on real
 hardware **before merge** is how it gets tested at all.
 
-### D18 — CI: `windows-latest`, strictly path-filtered, integration-tested against the real relay binary
+### D18 — CI: self-hosted Linux, cross-compiled to msvc, integration-tested against the real relay binary
+
+**Revised 2026-07-31.** This decision originally read "`windows-latest`,
+strictly path-filtered", because Windows minutes are billed at 2x on a
+private repo and the job ran ~34 minutes. It was replaced after the cheaper
+option was actually measured rather than assumed. The original reasoning and
+its path-filter consequence are kept below the revision, because the *shape*
+of the job — lint, test, integrate against the real relay, upload an artifact
+— did not change; only where it runs did.
+
+What the measurement found:
+
+- **Linux loses no test signal.** `cargo test --workspace` is 139 passed / 0
+  failed / 4 ignored on Linux, identical to a Windows run. The only
+  Windows-exclusive tests are the three WARP conversion tests, and F-6 had
+  already established those self-skip on the hosted runner — so the paid
+  runner was contributing nothing unique. They stay on the §10 register,
+  where they already were in practice.
+- **Linux loses no lint signal.** `cargo xwin clippy --all-targets --target
+  x86_64-pc-windows-msvc` type-checks every `cfg(windows)` block. The job now
+  runs a *second*, host clippy pass as well, which lints the `cfg(unix)` code
+  no Windows runner ever saw.
+- **The artifact survives.** cargo-xwin links a real msvc-ABI PE32+ binary, so
+  R14's artifact-as-verification pattern is intact. Two honest deltas, both
+  recorded in `BUILD-INFO.txt`: the code generator is clang, not MSVC, and the
+  bundled libopus is compiled with an SSE4.1 floor (see below).
+- **Coverage went up, not down.** The path filter now includes
+  `gawk-server/wire/**`, closing the blind spot the original decision
+  accepted; and the relay integration suite gains the `cfg(unix)`
+  drain-restart test that self-skipped on Windows.
+
+Three toolchain gates had to be cleared, each found by failure and each fixed
+in the workflow (the comments there carry the detail): `llvm-lib` lives in the
+`llvm` package and `ring` dies without it; Debian ships no `clang-cl` binary;
+and **libopus does not compile under clang-cl** — its CMake adds
+`-mssse3/-msse4.1` only for GNU-like compilers because MSVC needs no such
+flag, so `silk/x86/*.c` fails on `_mm_shuffle_epi8` and friends. The flags
+cannot be injected via `CFLAGS_<target>` (cargo-xwin overwrites it) so the
+workflow shadows `/usr/bin/clang-cl` with a wrapper. The accepted cost: the
+whole libopus C build assumes SSE4.1, so opus's runtime SIMD dispatch becomes
+a floor rather than a choice. Penryn (2008) clears it.
+
+The caching question was answered by measurement too, and mostly in the
+negative: restore on these runners runs at ~6 MB/s and `_work` is RAM-backed,
+so a 5.5 GB target dir (~15 min, would not fit), a 727 MB registry (~2 min)
+and the 1.1 GB xwin SDK (~3 min, against 1m09s to fetch it from Microsoft)
+all lose. Only the 11 MB `cargo-xwin` binary is cached — seconds restored
+against ~63 s of compiling it.
+
+That 5.5 GB is a constraint on the **build**, not just on caching — a
+distinction the first CI run on real hardware made expensive to miss. `_work`
+is a 4 Gi RAM-backed emptyDir, and this job wants three trees in it: an msvc
+debug tree for the cross clippy, a host debug tree for the host clippy and
+the tests, and an msvc release tree for the artifact. Left alone they
+accumulate and the job dies with `No space left on device` partway through
+the second. The fix is to stop accumulating: `CARGO_PROFILE_DEV_DEBUG=0`
+(debug info dominates a debug tree and nothing in CI consumes it), plus a
+reclaim step after each debug tree has served its purpose, since the pod is
+fresh every run and there is no cache to spoil. Peak becomes one tree instead
+of three. Raising the tmpfs was rejected as the first move: it is RAM against
+an 11 Gi pod limit, and the job does not actually need the space
+simultaneously.
+
+The still-Windows-only residue, unchanged: everything on the §10 on-hardware
+register, plus anything about msvc-vs-clang codegen of the shipped EXE.
+
+---
+
+The original reasoning, retained because the job's shape still follows it:
 
 OD11's cost constraint is a design input, not a nicety:
 
@@ -692,8 +760,8 @@ trials. WB6 assembles the product.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| Workspace with the six crates builds green (`fmt`, `clippy -D warnings`, `cargo test`) on `windows-latest` | CI |
-| The workflow triggers only on `gawk-broadcast-windows/**` + its own file; a docs-only PR does not start it (G10) | CI, observed |
+| Workspace with the six crates builds green (`fmt`, `clippy -D warnings` for both the msvc target and the host, `cargo test`) on the self-hosted Linux runners (D18, revised) | CI |
+| The workflow triggers only on `gawk-broadcast-windows/**`, `gawk-server/wire/**` + its own file; a docs-only PR does not start it (G10) | CI, observed |
 | release-please: `gawk-broadcast-windows` component (rust type) added to the manifest config; combined-release-PR behavior intact; no publish job | review |
 | Artifact `gawk-broadcast-windows-x86_64-<sha>` uploads with `BUILD-INFO.txt`, `if-no-files-found: error` | CI |
 | Slint royalty-free desktop license confirmed compatible with the proprietary repo (attribution requirement handled); fallback decision recorded if not | review |
@@ -800,8 +868,10 @@ trials. WB6 assembles the product.
 - **A third protocol implementation drifting.** Mitigated the only way that
   has worked so far: restated golden vectors, integration against the real
   relay binary, and the CLAUDE.md wire-change checklist naming this mirror.
-- **Path-filtered CI blind spot** — accepted and documented in D18: wire
-  changes don't exercise this mirror until its own commit lands.
+- ~~**Path-filtered CI blind spot**~~ — **closed 2026-07-31** by D18's
+  revision: free runners let `gawk-server/wire/**` become a trigger, so a wire
+  change now exercises this mirror in the same PR. The restated golden vectors
+  remain the belt to that braces.
 
 ## 10. On-hardware verification register
 

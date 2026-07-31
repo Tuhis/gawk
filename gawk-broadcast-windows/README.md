@@ -9,14 +9,14 @@ anything here — every structural choice below is a numbered decision there.
 
 **Status: WB0–WB8 implemented; the on-hardware acceptance pass (G1/G2/G6–G9
 on the gaming PC, docs/38 §10's V-register) is what remains.** All portable
-logic is unit-tested cross-platform; the Windows halves compile and their
-CI-runnable tests execute on the `windows-latest` runner; everything a GPU,
-a WASAPI device or an interactive desktop must answer is recorded per
-docs/38 §10 and waits for real hardware.
+logic is unit-tested cross-platform; the Windows halves are type-checked and
+linted for `x86_64-pc-windows-msvc` in CI; everything a GPU, a WASAPI device
+or an interactive desktop must answer is recorded per docs/38 §10 and waits
+for real hardware.
 
 Not a Go module: a Rust Cargo workspace, deliberately its own top-level
-component with its own CI job (`broadcast-windows`, strictly path-filtered —
-Windows runner minutes are paid) and its own release-please component
+component with its own CI job (`broadcast-windows`, which builds this Windows
+binary on Linux — see docs/38 D18) and its own release-please component
 (docs/38 D1, D18). No container, no Helm chart, no deploy: this is a binary
 you run on your own gaming PC.
 
@@ -51,9 +51,13 @@ must compute identical P/Q.
 - **The WARP conversion tests self-skip on hosts whose WARP lacks D3D11
   video** (hosted runners do — docs/38 F-6). Run `cargo test -p
   gawk-capture` on a real Windows machine to actually execute them.
-- Cross-type-checking from a non-Windows host works with the
-  `x86_64-pc-windows-gnu` target + mingw-w64 (the msvc target can't
-  cross-compile `ring`'s C).
+- Cross-type-checking from a non-Windows host works two ways. The quick local
+  one is the `x86_64-pc-windows-gnu` target + mingw-w64. The one CI uses is
+  **`cargo xwin` against `x86_64-pc-windows-msvc`**, which links the real
+  shipped ABI; it needs `llvm` (for `llvm-lib`, or `ring` fails), a
+  `/usr/bin/clang-cl` shim carrying `-mssse3 -msse4.1` (or libopus fails), and
+  the MSVC SDK. All three are baked into the CI runner image — see docs/38
+  D18 before reproducing it by hand.
 
 ## Building
 

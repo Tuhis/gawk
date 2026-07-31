@@ -1,16 +1,50 @@
 # R34 native Windows broadcaster (docs/38 D18).
 #
-# STRICTLY path-filtered: GitHub-hosted Windows minutes are expensive, so this
-# job must not run unless the component (or this workflow) actually changed —
-# docs/38 G10 makes "a docs-only PR does not start the job" an acceptance
-# criterion. Accepted consequence, documented in docs/38 D18: a change to
-# gawk-server/wire does NOT exercise this mirror until a gawk-broadcast-windows/
-# commit follows; the restated golden vectors are what make that safe.
+# Runs on the SELF-HOSTED Linux runners, cross-compiling to
+# x86_64-pc-windows-msvc with cargo-xwin. The component is Windows-only; the
+# CI for it does not have to be, and the reasons it used to be no longer hold:
 #
-# Like the Linux broadcaster's job, the artifact IS part of the verification
-# story (R14's artifact-as-verification pattern): CI structurally cannot see a
-# GPU, a hardware encoder, or an interactive desktop, so a build a human can
-# run on real hardware must be available before merge, not after.
+#  * Tests: `cargo test --workspace` is 139 passed / 0 failed / 4 ignored on
+#    Linux — identical to a Windows run. The only Windows-exclusive tests are
+#    the three WARP ones in crates/capture/tests/warp.rs, and those already
+#    self-skipped on windows-latest (docs/38 F-6: the hosted runner's WARP has
+#    no D3D11 video), so the paid runner was contributing no unique test signal.
+#  * Lints: `clippy --target x86_64-pc-windows-msvc` type-checks every
+#    cfg(windows) block — the Media Foundation encoder, the WGC capture path,
+#    the WASAPI loopback — exactly as a Windows host would.
+#  * The artifact: cargo-xwin links a real msvc-ABI PE32+ binary, so R14's
+#    artifact-as-verification pattern survives intact. CI structurally cannot
+#    see a GPU, a hardware encoder or an interactive desktop, so a build a
+#    human can run on real hardware must be available before merge, not after.
+#
+# What moving OFF windows-latest buys, beyond the paid minutes (a private repo
+# bills Windows at 2x, and the job was ~34 min):
+#
+#  * The path filter no longer has to be miserly. gawk-server/wire is now a
+#    trigger, closing the blind spot D18 accepted: a wire change used to leave
+#    this mirror unexercised until a gawk-broadcast-windows/ commit followed.
+#  * The relay integration tests gain the cfg(unix) drain-restart case, which
+#    self-skipped on Windows.
+#
+# What it costs, and what therefore still belongs on the on-hardware register:
+# the three WARP conversion tests, and anything about the msvc-vs-mingw or
+# clang-cl-vs-cl code generation of the shipped binary. The EXE this job
+# uploads is msvc-ABI but clang-built — see BUILD-INFO.txt.
+#
+# The toolchain lives in the runner image, NOT here: ioio
+# runner-image/Dockerfile bakes clang/lld/llvm, cmake+ninja, the clang-cl
+# shim, Rust with the msvc target, cargo-xwin and the pre-splatted MSVC SDK,
+# and carries the rationale for each. This job therefore installs nothing and
+# caches nothing — deliberately. actions/cache would lose anyway: restore on
+# these runners runs at ~6 MB/s and _work is RAM-backed (a 747MB restore has
+# already caused a mid-build ENOSPC, ci.yml's tidy job documents it), so the
+# 5.5GB target dir, the 727MB registry and the 1.1GB MSVC SDK all cost more to
+# restore than to rebuild or refetch. Re-measure before adding one.
+#
+# Sequencing, the one real trap: a change to the runner image only reaches
+# this job after build-runner-image runs in ioio AND Flux rolls the scale set
+# over. The preflight step below is what turns that ordering mistake into a
+# two-second failure with instructions.
 name: broadcast-windows
 
 on:
@@ -18,82 +52,172 @@ on:
     branches: [main]
     paths:
       - "gawk-broadcast-windows/**"
+      - "gawk-server/wire/**"
       - ".github/workflows/broadcast-windows.yml"
   pull_request:
     paths:
       - "gawk-broadcast-windows/**"
+      - "gawk-server/wire/**"
       - ".github/workflows/broadcast-windows.yml"
 
 permissions:
   contents: read
 
-# Cancel superseded PR runs (more paid minutes saved); never cancel main.
+# Cancel superseded PR runs; never cancel main. The runners are free now, but
+# they are finite pods — a queue of stale runs still delays real ones.
 concurrency:
   group: broadcast-windows-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# The vendored libopus (gawk-audio → opus → audiopus_sys) carries a
-# CMakeLists older than CMake 4's floor; this is CMake's own escape hatch.
 env:
+  # The vendored libopus (gawk-audio → opus → audiopus_sys) carries a
+  # CMakeLists older than CMake 4's floor; this is CMake's own escape hatch.
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  # The runner's _work volume is a 4Gi RAM-backed emptyDir (ioio
+  # actions-runners/gawk.yaml), and this job builds three trees into it: an
+  # msvc debug tree for the cross clippy, a host debug tree for the host
+  # clippy + tests, and an msvc release tree for the artifact. Unconstrained
+  # that totals ~5.5GB and dies with `No space left on device` partway through
+  # the second one. Debug info is the bulk of a debug tree and nothing here
+  # consumes it — no debugger, no symbolised backtrace is asserted on — so
+  # turning it off is free. The two reclaim steps below do the rest.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   broadcast-windows:
-    runs-on: windows-latest
+    runs-on: ioio-k8s
     defaults:
       run:
         working-directory: gawk-broadcast-windows
     steps:
       - uses: actions/checkout@v7
 
-      # rust-toolchain.toml pins the compiler; any cargo call auto-installs
-      # it. A dedicated step keeps the download visible in its own timing.
-      - name: Install pinned Rust toolchain
-        run: rustup show
+      # Everything this job needs — clang/lld/llvm, cmake+ninja, the
+      # clang-cl shim, the pinned Rust toolchain with the msvc target,
+      # cargo-xwin and the pre-splatted MSVC SDK — is baked into the runner
+      # image (ioio runner-image/Dockerfile), which is where the rationale for
+      # each piece now lives. Nothing is installed or downloaded here.
+      #
+      # This step exists so that a missing or stale image fails in two seconds
+      # with a sentence naming the fix, instead of thirty minutes later inside
+      # a build script. It is also the coupling's only documentation at this
+      # end: bumping rust-toolchain.toml still works without touching the
+      # image (rustup fetches what it pins), it just costs the download.
+      - name: Preflight — the runner image carries the toolchain
+        run: |
+          set -euo pipefail
+          missing=0
+          for t in clang clang-cl lld-link llvm-lib cmake ninja make cc \
+                   pkg-config rustup cargo cargo-xwin; do
+            command -v "$t" >/dev/null 2>&1 || { echo "::error::$t not found"; missing=1; }
+          done
+          pkg-config --exists fontconfig || { echo "::error::fontconfig .pc not found"; missing=1; }
+          rustup target list --installed | grep -qx "$WINDOWS_TARGET" \
+            || { echo "::error::rust target $WINDOWS_TARGET not installed"; missing=1; }
+          if [ "$missing" != 0 ]; then
+            echo "::error::This job needs ghcr.io/tuhis/actions-runner with the Rust/Windows cross toolchain (ioio runner-image/Dockerfile). If that image was just changed, wait for the build-runner-image workflow and the Flux rollout."
+            exit 1
+          fi
+          echo "rustc     $(rustc --version)"
+          echo "cargo-xwin $(cargo xwin --version)"
+          echo "xwin SDK  ${XWIN_CACHE_DIR:-<unset, will download per run>}"
 
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Clippy
+      # Two clippy passes, because neither alone covers the tree. The msvc one
+      # is the port of what the Windows runner did: it is the pass that lints
+      # every cfg(windows) block. The host one covers what that pass cannot
+      # see — the cfg(unix) code, which no Windows runner ever linted.
+      - name: Clippy (Windows target)
+        run: cargo xwin clippy --all-targets --target "$WINDOWS_TARGET" -- -D warnings
+
+      # Nothing after this reads the msvc DEBUG tree — the release build below
+      # writes a separate profile directory — and the pod is fresh every run,
+      # so there is no cache to spoil. Dropping it here is what keeps the peak
+      # at one tree rather than three. `df` is logged so that if this ever
+      # fails again the headroom is in the log instead of being guessed at.
+      - name: Reclaim the msvc debug tree
+        run: |
+          du -sh "target/$WINDOWS_TARGET/debug" 2>/dev/null || true
+          rm -rf "target/$WINDOWS_TARGET/debug"
+          df -h /home/runner/_work | tail -1
+
+      - name: Clippy (host)
         run: cargo clippy --all-targets -- -D warnings
 
       # Wire golden vectors, chunking, strict-parse rejections, GF(256)
-      # parity, engine defaults — all headless, all real Windows execution.
+      # parity, engine defaults, the encoder cascade policy, the SPS parser —
+      # all headless and all portable, which is why they run here unchanged.
+      # The three cfg(windows) WARP tests compile away; they were already
+      # skipping on the hosted Windows runner (docs/38 F-6) and remain on the
+      # on-hardware register.
       - name: Test
-        run: cargo test
-
-      - name: Build (release)
-        run: cargo build --release
+        run: cargo test --workspace
 
       # WB2 integration: the engine against the REAL gawk-server binary —
       # "a hand-written fake would only assert the engine against our belief
       # about the relay, which is the belief most worth doubting in a second
       # implementation of a protocol" (docs/38 D18). Serialized: each test
-      # runs its own relay. The drain-restart test is cfg(unix) and
-      # self-skips here; its Windows-side behavior stays on the on-hardware
-      # register. This step supersedes the WB0 V-9 spike — it IS the proof
-      # that quic-go serves WebTransport on a Windows runner loopback.
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: gawk-server/go.mod
-          cache-dependency-path: gawk-server/go.sum
+      # runs its own relay. On Linux this now also runs the drain-restart
+      # test, which is cfg(unix) and self-skipped on the old Windows job.
+      # No setup-go step: the runner image bakes Go on PATH (its Dockerfile
+      # says so explicitly, and notes that setup-go resolves through the tool
+      # cache only and never sees that copy). setup-go would pull the 63MiB
+      # toolchain and unpack ~250MB into the RAM-backed _work volume, which
+      # dies with the ephemeral pod and is never reused even once. The baked
+      # Go satisfies gawk-server/go.mod's `go 1.26.0` directive; if a module
+      # ever asks for newer, GOTOOLCHAIN=auto fetches it per-job.
+      - name: Go toolchain
+        run: go version
+
+      # See the server job in ci.yml — these tests run QUIC over loopback too.
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
       - name: Integration — publish, reject, resume, supersede vs the real relay
         run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
 
-      - name: Assemble artifact
-        shell: pwsh
+      # Same reasoning as the msvc reclaim above: the host debug tree has done
+      # its work (clippy, tests, the relay integration run) and the release
+      # build shares nothing with it.
+      - name: Reclaim the host debug tree
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/gawk-broadcast.exe dist/
-          Copy-Item README.md dist/
-          Copy-Item INSTALL.md dist/
-          @(
-            "gawk-broadcast-windows (R34, docs/38)"
-            "commit:    ${{ github.sha }}"
-            "ref:       ${{ github.ref }}"
-            "built:     $(Get-Date -Format o)"
-            "toolchain: $(rustc --version)"
-          ) | Set-Content dist/BUILD-INFO.txt
+          du -sh target/debug 2>/dev/null || true
+          rm -rf target/debug
+          df -h /home/runner/_work | tail -1
+
+      - name: Build (release)
+        run: cargo xwin build --release --target "$WINDOWS_TARGET"
+
+      - name: Assemble artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${WINDOWS_TARGET}/release/gawk-broadcast.exe" dist/
+          cp README.md INSTALL.md dist/
+          {
+            echo "gawk-broadcast-windows (R34, docs/38)"
+            echo "commit:    ${{ github.sha }}"
+            echo "ref:       ${{ github.ref }}"
+            echo "built:     $(date -Iseconds)"
+            echo "toolchain: $(rustc --version)"
+            echo "target:    ${WINDOWS_TARGET}"
+            # Provenance a tester needs, because it is not what they would
+            # assume from a .exe: this binary is cross-compiled on Linux with
+            # clang-cl via cargo-xwin, not built by MSVC on Windows. It is the
+            # msvc ABI, but the code generator is clang, and the bundled
+            # libopus assumes an SSE4.1 floor (see the workflow's clang-cl
+            # wrapper step). Report anything that smells like a codegen
+            # difference against this line.
+            echo "built-by:  cross-compiled on Linux ($(cargo xwin --version), $(clang --version | head -1))"
+            echo "libopus:   compiled with an SSE4.1 floor (no runtime SIMD dispatch)"
+          } > dist/BUILD-INFO.txt
+          cat dist/BUILD-INFO.txt
 
       # R14's artifact-as-verification pattern: available before merge,
       # if-no-files-found is an error because a missing artifact means the
