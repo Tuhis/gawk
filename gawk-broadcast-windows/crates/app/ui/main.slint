@@ -1,0 +1,643 @@
+// The gawk-broadcast window (WB6, docs/38 D12): the Linux GUI's card
+// architecture plus the capture picker, Fluent-adjacent spacing, and the
+// gawk accent shared with gawk-app so the two broadcasters read as one
+// product. One window; window-is-the-app.
+
+import { Button, LineEdit, ScrollView, CheckBox } from "std-widgets.slint";
+
+export struct WindowRow {
+    hwnd: int,
+    pid: int,
+    title: string,
+    icon: image,
+    has-icon: bool,
+}
+
+export struct MonitorRow {
+    hmonitor: int,
+    label: string,
+}
+
+export struct StatRow {
+    label: string,
+    value: string,
+}
+
+global Palette {
+    out property <color> bg: #14161a;
+    out property <color> card: #1d2026;
+    out property <color> card-border: #2a2e36;
+    out property <color> text: #e8eaf0;
+    out property <color> muted: #9aa1ad;
+    out property <color> accent: #6b8afe;      // gawk-app --accent
+    out property <color> live: #37c26f;
+    out property <color> resume: #e8b339;      // heartbeat amber (Linux GUI)
+    out property <color> danger: #8b2c2c;
+}
+
+component Card inherits Rectangle {
+    in property <string> title;
+    background: Palette.card;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Palette.card-border;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        if root.title != "": Text {
+            text: root.title;
+            color: Palette.muted;
+            font-size: 11px;
+            letter-spacing: 1px;
+        }
+        @children
+    }
+}
+
+component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 30px;
+    border-radius: 6px;
+    background: active ? Palette.accent.with-alpha(0.18) : transparent;
+    Text {
+        text: root.label;
+        color: root.active ? Palette.accent : Palette.muted;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "gawk-broadcast";
+    background: Palette.bg;
+    preferred-width: 520px;
+    preferred-height: 760px;
+    min-width: 420px;
+
+    // ----- header state -----
+    in property <string> state-label: "Not broadcasting";
+    in property <bool> live: false;
+    in property <bool> busy: false;            // starting or live
+    in property <bool> resuming: false;
+    in property <string> status-line: "";      // "Reconnecting… (attempt N)"
+    in property <string> encode-line: "";
+    in property <string> audio-line: "";
+    in property <float> audio-level: 0.0;
+    in property <bool> audio-hint: false;
+    in property <string> audio-hint-text: "";
+    in property <string> watching-line: "";
+    in property <string> minimized-hint: "";
+
+    // ----- code card -----
+    in property <string> code: "";
+    in property <string> join-link: "";
+    in property <string> copied-note: "";
+
+    // ----- thumbnail -----
+    in property <image> thumbnail;
+    in property <bool> show-thumbnail: false;
+
+    // ----- error card -----
+    in property <string> error-text: "";
+    in property <bool> can-mint: false;
+
+    // ----- picker -----
+    in property <[WindowRow]> windows: [];
+    in property <[MonitorRow]> monitors: [];
+    in-out property <int> picker-tab: 0;
+    in-out property <int> selected-window: -1;
+    in-out property <int> selected-monitor: -1;
+
+    // ----- controls -----
+    in property <string> resume-code: "";
+
+    // ----- settings -----
+    in-out property <bool> show-settings: false;
+    in-out property <string> set-relay: "";
+    in-out property <string> set-app-url: "";
+    in-out property <string> set-secret: "";
+    in-out property <string> set-bitrate: "";
+    in-out property <string> set-telemetry: "";
+    in-out property <int> set-resolution: 1;   // index into labels below
+    in-out property <int> set-framerate: 1;
+    in property <[string]> resolution-labels: ["2560×1440", "1920×1080 (default)", "1280×720", "854×480"];
+    in property <[string]> framerate-labels: ["120 fps", "60 fps (default)", "30 fps", "5 fps"];
+    in property <string> caption-broadcast: "";
+    in property <string> caption-diag: "";
+    in property <string> terms-link: "";
+
+    // ----- stats -----
+    in-out property <bool> show-details: false;
+    in property <[StatRow]> stats-rows: [];
+
+    // ----- close confirm -----
+    in-out property <bool> confirm-close: false;
+
+    callback refresh-picker();
+    callback start-broadcast();
+    callback resume-broadcast();
+    callback stop-broadcast();
+    callback copy-link();
+    callback copy-code();
+    callback copy-diagnostics();
+    callback settings-edited();
+    callback switch-to-system-audio();
+    callback open-link(string);
+    callback quit-confirmed();
+
+    ScrollView {
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            // ================= header =================
+            Card {
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        width: 12px;
+                        height: 12px;
+                        y: 4px;
+                        border-radius: 6px;
+                        background: root.resuming ? Palette.resume
+                            : root.live ? Palette.live
+                            : Palette.muted.with-alpha(0.4);
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: root.state-label;
+                            color: Palette.text;
+                            font-size: 18px;
+                            font-weight: 600;
+                        }
+                        if root.status-line != "": Text {
+                            text: root.status-line;
+                            color: Palette.resume;
+                            font-size: 12px;
+                        }
+                        if root.encode-line != "": Text {
+                            text: root.encode-line;
+                            color: Palette.muted;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        if root.audio-line != "": HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: root.audio-line;
+                                color: Palette.muted;
+                                font-size: 12px;
+                            }
+                            Rectangle {
+                                width: 90px;
+                                height: 6px;
+                                y: 5px;
+                                border-radius: 3px;
+                                background: Palette.card-border;
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * min(1.0, root.audio-level);
+                                    height: parent.height;
+                                    border-radius: 3px;
+                                    background: Palette.live;
+                                }
+                            }
+                        }
+                        if root.audio-hint: HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: root.audio-hint-text;
+                                color: Palette.resume;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            Button {
+                                text: "Use whole-system audio";
+                                clicked => {
+                                    root.switch-to-system-audio();
+                                }
+                            }
+                        }
+                        if root.watching-line != "": Text {
+                            text: root.watching-line;
+                            color: Palette.text;
+                            font-size: 13px;
+                        }
+                        if root.minimized-hint != "": Text {
+                            text: root.minimized-hint;
+                            color: Palette.resume;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // ================= error =================
+            if root.error-text != "": Card {
+                Text {
+                    text: root.error-text;
+                    color: #e07a7a;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                if root.can-mint: Button {
+                    text: "Start a new broadcast instead";
+                    clicked => {
+                        root.start-broadcast();
+                    }
+                }
+            }
+
+            // ================= picker (idle only) =================
+            if !root.busy: Card {
+                title: "SHARE";
+                HorizontalLayout {
+                    spacing: 6px;
+                    TabButton {
+                        label: "Share an app";
+                        active: root.picker-tab == 0;
+                        clicked => {
+                            root.picker-tab = 0;
+                        }
+                    }
+                    TabButton {
+                        label: "Share a screen";
+                        active: root.picker-tab == 1;
+                        clicked => {
+                            root.picker-tab = 1;
+                        }
+                    }
+                    Rectangle { }
+                    Button {
+                        text: "Refresh";
+                        clicked => {
+                            root.refresh-picker();
+                        }
+                    }
+                }
+                if root.picker-tab == 0: VerticalLayout {
+                    spacing: 2px;
+                    for w[i] in root.windows: Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: root.selected-window == i
+                            ? Palette.accent.with-alpha(0.22) : transparent;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 8px;
+                            if w.has-icon: Image {
+                                source: w.icon;
+                                width: 18px;
+                                height: 18px;
+                                y: 8px;
+                            }
+                            Text {
+                                text: w.title;
+                                color: Palette.text;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.selected-window = i;
+                                root.selected-monitor = -1;
+                            }
+                        }
+                    }
+                    if root.windows.length == 0: Text {
+                        text: "No shareable windows found — Refresh after opening the app you want to share.";
+                        color: Palette.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.picker-tab == 1: VerticalLayout {
+                    spacing: 2px;
+                    for m[i] in root.monitors: Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: root.selected-monitor == i
+                            ? Palette.accent.with-alpha(0.22) : transparent;
+                        Text {
+                            x: 8px;
+                            text: m.label;
+                            color: Palette.text;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.selected-monitor = i;
+                                root.selected-window = -1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ================= controls =================
+            HorizontalLayout {
+                spacing: 8px;
+                if !root.busy: Button {
+                    text: "Start broadcast";
+                    primary: true;
+                    clicked => {
+                        root.start-broadcast();
+                    }
+                }
+                if !root.busy && root.resume-code != "": Button {
+                    text: "Resume " + root.resume-code;
+                    clicked => {
+                        root.resume-broadcast();
+                    }
+                }
+                if root.busy: Button {
+                    text: root.live ? "Stop broadcast" : "Starting…";
+                    clicked => {
+                        root.stop-broadcast();
+                    }
+                }
+            }
+
+            // ================= code card =================
+            if root.code != "": Card {
+                title: "JOIN CODE";
+                Text {
+                    text: root.code;
+                    color: Palette.text;
+                    font-size: 30px;
+                    font-family: "Consolas";
+                    letter-spacing: 4px;
+                }
+                if root.join-link != "": Text {
+                    text: root.join-link;
+                    color: Palette.muted;
+                    font-size: 12px;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Copy link";
+                        clicked => {
+                            root.copy-link();
+                        }
+                    }
+                    Button {
+                        text: "Copy code";
+                        clicked => {
+                            root.copy-code();
+                        }
+                    }
+                    if root.copied-note != "": Text {
+                        text: root.copied-note;
+                        color: Palette.live;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // ================= live thumbnail (mode 1) =================
+            if root.show-thumbnail: Card {
+                title: "WHAT VIEWERS SEE";
+                Image {
+                    source: root.thumbnail;
+                    width: 100%;
+                    image-fit: contain;
+                    max-height: 180px;
+                }
+            }
+
+            // ================= stats =================
+            Card {
+                HorizontalLayout {
+                    CheckBox {
+                        text: "Details";
+                        checked <=> root.show-details;
+                    }
+                }
+                if root.show-details: VerticalLayout {
+                    spacing: 4px;
+                    for row in root.stats-rows: HorizontalLayout {
+                        Text {
+                            text: row.label;
+                            color: Palette.muted;
+                            font-size: 12px;
+                            width: 45%;
+                        }
+                        Text {
+                            text: row.value;
+                            color: Palette.text;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                    Button {
+                        text: "Copy diagnostics";
+                        clicked => {
+                            root.copy-diagnostics();
+                        }
+                    }
+                }
+            }
+
+            // ================= settings =================
+            Card {
+                HorizontalLayout {
+                    CheckBox {
+                        text: "Settings";
+                        checked <=> root.show-settings;
+                    }
+                }
+                if root.show-settings: VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Relay URL (blank = the default relay)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.set-relay;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    Text {
+                        text: "App URL, for join links (blank = the default)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.set-app-url;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    Text {
+                        text: "Publish secret (if the relay needs one)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.set-secret;
+                        enabled: !root.busy;
+                        input-type: InputType.password;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    Text {
+                        text: "Peak bitrate in Mbps (blank = 16)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.set-bitrate;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    Text {
+                        text: "Telemetry URL (blank = default, \"off\" = send nothing)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.set-telemetry;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    Text {
+                        text: "Resolution";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        for label[i] in root.resolution-labels: TabButton {
+                            label: label;
+                            active: root.set-resolution == i;
+                            clicked => {
+                                if (!root.busy) {
+                                    root.set-resolution = i;
+                                    root.settings-edited();
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Framerate";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        for label[i] in root.framerate-labels: TabButton {
+                            label: label;
+                            active: root.set-framerate == i;
+                            clicked => {
+                                if (!root.busy) {
+                                    root.set-framerate = i;
+                                    root.settings-edited();
+                                }
+                            }
+                        }
+                    }
+                    if root.busy: Text {
+                        text: "Settings apply to the next broadcast.";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    Text {
+                        text: root.caption-broadcast;
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    Text {
+                        text: root.caption-diag;
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: "By broadcasting you accept the operator's";
+                            color: Palette.muted;
+                            font-size: 11px;
+                        }
+                        Text {
+                            text: "terms of use.";
+                            color: Palette.accent;
+                            font-size: 11px;
+                            TouchArea {
+                                clicked => {
+                                    root.open-link(root.terms-link);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ================= close-while-live confirm =================
+    if root.confirm-close: Rectangle {
+        background: #000000aa;
+        TouchArea { }
+        Rectangle {
+            width: 340px;
+            height: 130px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Palette.card;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Palette.card-border;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text {
+                    text: "You're live — stop the broadcast and quit?";
+                    color: Palette.text;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Keep broadcasting";
+                        clicked => {
+                            root.confirm-close = false;
+                        }
+                    }
+                    Button {
+                        text: "Stop and quit";
+                        primary: true;
+                        clicked => {
+                            root.quit-confirmed();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

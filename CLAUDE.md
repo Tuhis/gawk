@@ -103,6 +103,10 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
 - `gawk-broadcast` — native Linux broadcaster: a **separate** Go module (GUI +
   CLI over a shared `internal/engine`). Not a container/chart/deploy
   component — a binary you run on your own PC.
+- `gawk-broadcast-windows` — native Windows broadcaster (R34): a **Rust Cargo
+  workspace**, not a Go module. Its `crates/wire` is the **fourth wire
+  mirror** (vectors restated, never imported); its CI job is **strictly
+  path-filtered** (paid Windows minutes) — see `docs/38` before touching it.
 - `gawk-telemetry` — optional per-session diagnostics service; the **fourth**
   top-level Go module, **default off everywhere**. Two listeners, and the split
   **is** the security posture: ingest is public (same-origin path on the
@@ -171,8 +175,11 @@ Re-deriving them costs a cycle and has happened before.
 - **Chunk prefixes: every single letter A–Z is claimed.** New milestones use
   two-letter prefixes (e.g. `DV1`, `MF1`, `TM1`, `CG1`, `UX1`).
 - New wire types and close codes are allocated in `gawk-server/wire/wire.go`
-  and must be mirrored in the TS (`wire.ts`) and `gawk-broadcast` checks, with
-  golden vectors kept byte-identical across all mirrors.
+  and must be mirrored in the TS (`wire.ts`), `gawk-broadcast`
+  (`internal/wirecheck`) and `gawk-broadcast-windows` (`crates/wire`) checks,
+  with golden vectors kept byte-identical across all mirrors. Note the Windows
+  CI job is path-filtered, so the Rust mirror's gates only run once its own
+  commit lands — the wire change is not done until that commit exists.
 - Keep `README.md`'s gotcha list in sync when a new gotcha lands in `docs/`,
   and remove `BUGS.md` entries when they are fixed.
 

@@ -903,6 +903,27 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   channel) stayed sharp. `-race` catches it outright.
   ([docs/19](docs/19-linux-native-broadcaster.md))
 
+**Native Windows broadcaster (R34)**
+
+- **Stock `wtransport` 0.7.1 cannot interop with quic-go** — four defects,
+  every one invisible to unit tests: rejected-CONNECT status discarded,
+  HashMap headers randomly ordering pseudo-headers after fields (a
+  coin-flip H3_MESSAGE_ERROR), unknown H3 frames treated as violations
+  (GOAWAY killed shutdown), and close-code capsules split across DATA
+  frames silently skipped. Vendored + patched in-repo; every site marked
+  `GAWK PATCH`. ([docs/38](docs/38-windows-native-broadcaster.md) §11)
+- **The hosted Windows runner's WARP has no D3D11 video support** — device
+  creation with `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` fails
+  `DXGI_ERROR_UNSUPPORTED`, so GPU-conversion tests must self-skip there
+  and run on real hardware. ([docs/38](docs/38-windows-native-broadcaster.md) F-6)
+- **The system `GraphicsCapturePicker` is structurally unusable** for
+  per-app audio: it returns an item with no HWND and no PID, and process-
+  loopback capture needs the PID — hence the in-app picker.
+  ([docs/38](docs/38-windows-native-broadcaster.md) D6)
+- **Vendored libopus needs `CMAKE_POLICY_VERSION_MINIMUM=3.5`** under
+  CMake 4, or the build script dies before compiling a line.
+  ([docs/38](docs/38-windows-native-broadcaster.md) F-7)
+
 **Relay fleet (R17)**
 
 - **`reason: "context canceled"` in a session-ended log meant "we don't

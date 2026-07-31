@@ -1,0 +1,32 @@
+# R34 native Windows broadcaster (docs/38). A Cargo workspace, deliberately a
+# separate top-level component with its own toolchain, CI job and release unit
+# (docs/38 D1) — not a sibling of the Go gawk-broadcast module.
+[workspace]
+resolver = "2"
+# vendor/ holds the patched wtransport (see vendor/wtransport/GAWK-PATCH.md);
+# it is a [patch.crates-io] path dependency, not a workspace member.
+exclude = ["vendor"]
+members = [
+    "crates/wire",
+    "crates/engine",
+    "crates/capture",
+    "crates/encode",
+    "crates/audio",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.0.0" # x-release-please-version
+edition = "2024"
+publish = false
+
+# Single-EXE goal (docs/38 D17): trim what we can for free already.
+[profile.release]
+lto = "thin"
+strip = true
+
+# docs/38 D2 gate 2a: stock wtransport discards the HTTP status of a rejected
+# CONNECT; the vendored copy carries a one-variant patch exposing it.
+[patch.crates-io]
+wtransport = { path = "vendor/wtransport" }
+wtransport-proto = { path = "vendor/wtransport-proto" }

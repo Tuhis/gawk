@@ -30,6 +30,17 @@
       "component": "gawk-broadcast",
       "changelog-path": "CHANGELOG.md"
     },
+    "gawk-broadcast-windows": {
+      "release-type": "simple",
+      "component": "gawk-broadcast-windows",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "Cargo.toml"
+        }
+      ]
+    },
     "gawk-telemetry": {
       "release-type": "go",
       "component": "gawk-telemetry",

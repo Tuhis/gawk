@@ -1,0 +1,106 @@
+# R34 native Windows broadcaster (docs/38 D18).
+#
+# STRICTLY path-filtered: GitHub-hosted Windows minutes are expensive, so this
+# job must not run unless the component (or this workflow) actually changed —
+# docs/38 G10 makes "a docs-only PR does not start the job" an acceptance
+# criterion. Accepted consequence, documented in docs/38 D18: a change to
+# gawk-server/wire does NOT exercise this mirror until a gawk-broadcast-windows/
+# commit follows; the restated golden vectors are what make that safe.
+#
+# Like the Linux broadcaster's job, the artifact IS part of the verification
+# story (R14's artifact-as-verification pattern): CI structurally cannot see a
+# GPU, a hardware encoder, or an interactive desktop, so a build a human can
+# run on real hardware must be available before merge, not after.
+name: broadcast-windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gawk-broadcast-windows/**"
+      - ".github/workflows/broadcast-windows.yml"
+  pull_request:
+    paths:
+      - "gawk-broadcast-windows/**"
+      - ".github/workflows/broadcast-windows.yml"
+
+permissions:
+  contents: read
+
+# Cancel superseded PR runs (more paid minutes saved); never cancel main.
+concurrency:
+  group: broadcast-windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The vendored libopus (gawk-audio → opus → audiopus_sys) carries a
+# CMakeLists older than CMake 4's floor; this is CMake's own escape hatch.
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+jobs:
+  broadcast-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gawk-broadcast-windows
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the compiler; any cargo call auto-installs
+      # it. A dedicated step keeps the download visible in its own timing.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Wire golden vectors, chunking, strict-parse rejections, GF(256)
+      # parity, engine defaults — all headless, all real Windows execution.
+      - name: Test
+        run: cargo test
+
+      - name: Build (release)
+        run: cargo build --release
+
+      # WB2 integration: the engine against the REAL gawk-server binary —
+      # "a hand-written fake would only assert the engine against our belief
+      # about the relay, which is the belief most worth doubting in a second
+      # implementation of a protocol" (docs/38 D18). Serialized: each test
+      # runs its own relay. The drain-restart test is cfg(unix) and
+      # self-skips here; its Windows-side behavior stays on the on-hardware
+      # register. This step supersedes the WB0 V-9 spike — it IS the proof
+      # that quic-go serves WebTransport on a Windows runner loopback.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - name: Integration — publish, reject, resume, supersede vs the real relay
+        run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
+
+      - name: Assemble artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/gawk-broadcast.exe dist/
+          Copy-Item README.md dist/
+          Copy-Item INSTALL.md dist/
+          @(
+            "gawk-broadcast-windows (R34, docs/38)"
+            "commit:    ${{ github.sha }}"
+            "ref:       ${{ github.ref }}"
+            "built:     $(Get-Date -Format o)"
+            "toolchain: $(rustc --version)"
+          ) | Set-Content dist/BUILD-INFO.txt
+
+      # R14's artifact-as-verification pattern: available before merge,
+      # if-no-files-found is an error because a missing artifact means the
+      # verification path itself broke.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gawk-broadcast-windows-x86_64-${{ github.sha }}
+          path: gawk-broadcast-windows/dist/
+          retention-days: 30
+          if-no-files-found: error
