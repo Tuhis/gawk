@@ -883,6 +883,22 @@ exists for. The library is now **vendored with five small patches**
   session lifecycle. Error cards append "Details were written to …". The
   2070 root cause itself is **open pending that machine's debug.log** —
   tracked in `BUGS.md`.
+- **F-9 (2026-07-31, field, via F-8's log)**: the NVIDIA H.264 Encoder MFT
+  (RTX 2070) rejects a hand-built NV12 input type with
+  `MF_E_INVALIDMEDIATYPE` (0xC00D36B4) — major type + subtype + frame size
+  + frame rate is not enough; the MFT compares against its own enumerated
+  types, which carry attributes we cannot guess. AMD/Intel MFTs accepted
+  the same hand-built type on the WB4 bring-up machine, so this is
+  per-vendor V-7 territory, exactly what "enumeration is not acceptance"
+  predicts. Fix: after `SetOutputType`, take the MFT's OWN
+  `GetInputAvailableType` NV12 entry and complete it with our geometry;
+  the hand-built fallback (for MFTs that don't enumerate) now carries
+  `MF_MT_INTERLACE_MODE` and a square `MF_MT_PIXEL_ASPECT_RATIO` too. Same
+  log also showed the NVIDIA MFT refusing
+  `AVEncMPVDefaultBPictureCount = 0` with `E_INVALIDARG` *before* type
+  negotiation — the best-effort knobs (B-count, low latency) are now
+  re-applied after types are set; the trial gate still verifies the actual
+  bitstream either way.
 
 ## 12. References
 

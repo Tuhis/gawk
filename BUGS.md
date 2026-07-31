@@ -14,21 +14,19 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Impact**: the native broadcaster is unusable on that machine; the user
   loses per-app audio and background-window capture (the browser path still
   works).
-- **Cause — unconfirmed.** The per-candidate rejection trail only went to
-  stderr, which the windowed EXE discards (docs/38 F-8), so the report
-  carried no evidence. Leading hypotheses, in order: a trial-gate invariant
-  the NVIDIA MFT genuinely violates (B-frames / latency / timestamp
-  rewrite — each names itself in the trail now); a session-setup step the
-  NVIDIA MFT rejects (CodecAPI knob, `SetOutputType`, D3D manager — now
-  step-named in the trail); empty enumeration (remote session, stripped
-  driver, Windows N).
-- **Confirmation procedure**: rerun on a build ≥ the F-8 change and read
-  `%APPDATA%\gawk\debug.log` — it now records adapter identity, the MFT
-  enumeration list, and every rejection with the failing step. The log
-  distinguishes all three hypothesis classes on sight.
-- **A fix would start** in `gawk-broadcast-windows/crates/encode/`
-  (`mft.rs` session setup or `cascade.rs` invariants), once the log says
-  which invariant or step fails on NVENC.
+- **Cause — confirmed** (2026-07-31, from the field machine's F-8
+  `debug.log`): the NVIDIA MFT rejects the hand-built NV12 input type with
+  `MF_E_INVALIDMEDIATYPE` (0xC00D36B4) at `SetInputType` — it only accepts
+  types matching its own enumerated input types (docs/38 F-9). The same
+  log showed `AVEncMPVDefaultBPictureCount = 0` refused with `E_INVALIDARG`
+  before type negotiation.
+- **Fix landed** (docs/38 F-9): the input type is now taken from the MFT's
+  own `GetInputAvailableType` NV12 entry post-`SetOutputType` and completed
+  with our geometry (hand-built fallback carries interlace + square PAR);
+  the best-effort knobs are re-applied after types are set. **Field
+  confirmation pending** — remove this entry once the 2070 machine
+  broadcasts (watch its next debug.log for the trial verdict; if the trial
+  gate now rejects on B slices, the B-count knob is the follow-up).
 
 ## Safari viewer: keyframe delivery stops while datagrams keep flowing
 

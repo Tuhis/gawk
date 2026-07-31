@@ -18,15 +18,16 @@ use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
-    ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEvent, IMFMediaEventGenerator, IMFSample,
-    IMFTransform, METransformDrainComplete, METransformHaveOutput, METransformNeedInput,
-    MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NO_WAIT,
-    MF_EVENT_FLAG_NONE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE,
-    MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer,
-    MFCreateMediaType, MFCreateSample, MFMediaType_Video, MFSTARTUP_FULL, MFStartup,
-    MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
-    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEvent, IMFMediaEventGenerator,
+    IMFMediaType, IMFSample, IMFTransform, METransformDrainComplete, METransformHaveOutput,
+    METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_STREAM_CHANGE,
+    MF_EVENT_FLAG_NO_WAIT, MF_EVENT_FLAG_NONE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
+    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
+    MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateSample,
+    MFMediaType_Video, MFSTARTUP_FULL, MFStartup, MFT_CATEGORY_VIDEO_ENCODER,
+    MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_FRIENDLY_NAME_Attribute,
+    MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
     MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFTEnumEx,
     MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
@@ -284,9 +285,40 @@ impl EncoderSession {
                 transform.SetOutputType(0, &out_type, 0),
             )?;
 
-            let in_type = MFCreateMediaType()?;
-            in_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-            in_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+            // Input type: prefer the MFT's OWN enumerated NV12 type,
+            // completed with our geometry. A hand-built type is the F-9
+            // failure: the NVIDIA MFT rejects it with MF_E_INVALIDMEDIATYPE
+            // (0xC00D36B4) because it carries attributes we cannot guess;
+            // what the MFT offers post-SetOutputType is what it accepts.
+            let mut in_type: Option<IMFMediaType> = None;
+            for i in 0.. {
+                let Ok(t) = transform.GetInputAvailableType(0, i) else {
+                    break; // MF_E_NO_MORE_TYPES (or enumeration unsupported)
+                };
+                if t.GetGUID(&MF_MT_SUBTYPE) == Ok(MFVideoFormat_NV12) {
+                    log::debug!("{}: using enumerated NV12 input type #{i}", entry.name);
+                    in_type = Some(t);
+                    break;
+                }
+            }
+            let in_type = match in_type {
+                Some(t) => t,
+                None => {
+                    // Fallback for MFTs that don't enumerate: hand-built,
+                    // WITH the attributes encoder MFTs commonly require and
+                    // the F-9 type lacked (interlace mode, square PAR).
+                    log::debug!(
+                        "{}: no enumerated NV12 input type; hand-building",
+                        entry.name
+                    );
+                    let t = MFCreateMediaType()?;
+                    t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+                    t.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+                    t.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
+                    t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1)?;
+                    t
+                }
+            };
             in_type.SetUINT64(
                 &MF_MT_FRAME_SIZE,
                 (u64::from(params.width) << 32) | u64::from(params.height),
@@ -296,6 +328,25 @@ impl EncoderSession {
                 "SetInputType (NV12)",
                 transform.SetInputType(0, &in_type, 0),
             )?;
+
+            // Second pass at the best-effort knobs: the NVIDIA MFT refuses
+            // AVEncMPVDefaultBPictureCount with E_INVALIDARG BEFORE type
+            // negotiation (F-9); once types are set it may accept. The
+            // trial gate verifies the actual bitstream either way.
+            if let Err(e) =
+                codec_api.SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &VARIANT::from(0u32))
+            {
+                log::debug!(
+                    "{}: AVEncMPVDefaultBPictureCount=0 still refused post-negotiation: {e}",
+                    entry.name
+                );
+            }
+            if let Err(e) = codec_api.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true)) {
+                log::debug!(
+                    "{}: AVLowLatencyMode=TRUE still refused post-negotiation: {e}",
+                    entry.name
+                );
+            }
         }
 
         let sequence_header = read_sequence_header(&transform).unwrap_or_default();
