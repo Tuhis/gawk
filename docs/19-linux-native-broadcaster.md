@@ -692,6 +692,7 @@ Gio's header list (Decision 14). `godbus` is pure Go.
 | V6 — GUI: stats panel, copy diagnostics, notifications | ✅ implemented 2026-07-15 |
 | V7 — docs + escape hatches | ✅ implemented 2026-07-15 |
 | V8 — direct Vulkan Video encode (Stage 2) | 📋 not started — hard-gated on V2's on-hardware result |
+| [V9 — the build version, in the window](#v9--the-build-version-in-the-window-added-2026-08-01) | ✅ implemented 2026-08-01; on-hardware badge check pending |
 
 Automated gates are green for V0–V7, but read that narrowly: **an automated
 gate on this engine cannot see a GPU, a portal, or a desktop.** The criteria
@@ -1498,3 +1499,77 @@ in BUGS.md: a source-address change re-hashing the flow onto a different pod,
 which answers with a stateless reset. Auto-resume makes that survivable rather
 than fatal, which is the right layer to fix it at first, but it is not a
 diagnosis.
+
+## V9 — the build version, in the window (added 2026-08-01)
+
+This section is the authoritative home for the broadcaster version *format* and
+the reasoning behind it. The Windows broadcaster shows the same string by the
+same rules; [docs/38](38-windows-native-broadcaster.md) WB9 covers only what
+differs there (its own stamping mechanism, and why it has no `.dirty` marker).
+
+### The problem
+
+Neither native broadcaster had a version anywhere a user could see, and the
+Linux one had no version *at all*: `release-type: go` updates a changelog and a
+tag, not a source file, so nothing in the module knew what release it belonged
+to. Its telemetry reported the literal string `dev` for every broadcast ever
+recorded.
+
+That is expensive in exactly one situation, which is also the common one:
+someone is running a binary from a CI artifact on the gaming PC, reports a
+problem, and nobody — including them — can say which build it is.
+
+### Decision 22: the badge is `1.9.0+g<commit>`, and the bare release is what goes on the wire
+
+Two values, not one:
+
+- **`version.Release`** — the release-please-maintained constant. This is what
+  the telemetry reporter sends. gawk-telemetry groups sessions by `appVersion`
+  (`readapi/trends.go`), so a per-build suffix would shatter every group into
+  rows of one; `gawk-app` treats its `package.json` version the same way
+  (docs/33 D15). Wire-side, this is a *schema* version.
+- **`version.String()`** — `1.9.0+g1a2b3c4`, or `1.9.0+g1a2b3c4.dirty` for an uncommitted
+  tree, or a bare `1.9.0` where there is no VCS information at all. This is the
+  window badge, the `-version` flag, the startup log line, and the `appVersion`
+  key in the diagnostics dump.
+
+Why the commit is not optional: **neither broadcaster has a tag-triggered
+release build.** gawk-broadcast has no publish job by design (R14 Decision 2)
+and the Windows job uploads an artifact from every CI run. Every binary in
+existence is therefore a CI artifact off `main` or a PR, or a local build — so a
+bare `1.9.0` in the window would be a lie on every copy of it.
+
+`+` is SemVer build metadata, ignored for precedence, which reads honestly as
+"the 1.9.0 line, at this commit". A `1.9.0-dev.g…` pre-release suffix was
+rejected: it sorts *before* 1.9.0, and these builds come after it.
+
+The branch name was considered for the badge and left out. The CI artifact name
+and `BUILD-INFO.txt` already carry the ref, the sha is what makes a screenshot
+traceable, and a sanitised branch name is long enough to crowd the header.
+
+### Decision 23: the commit comes from `-buildvcs`, never from `git describe`
+
+`git describe` needs tags, and `actions/checkout` fetches at depth 1 with none.
+Changing that to make a badge work would be a poor trade. The Go toolchain's own
+VCS stamping costs no build plumbing, survives `-trimpath`, needs no tags, and
+is recomputed on every build — including the dirty flag, which is why the Linux
+side has one and the Windows side does not.
+
+One local-dev gotcha, measured rather than assumed: the go tool walks up for the
+nearest `.git`, so a git worktree created *inside* the main checkout (as
+`.claude/worktrees/*` are) is overtaken by the outer repo's real `.git`
+directory, and builds from it stamp the **main checkout's** commit and
+cleanliness. It is right in CI and right for a normal clone.
+
+### Acceptance criteria
+
+| # | Criterion | Verified by |
+|---|---|---|
+| 1 | The format is exactly `<release>`, `<release>+g<7-char sha>`, `<release>+g<sha>.dirty` | `TestComposeFormats` |
+| 2 | The build string always leads with the release | `TestStringStartsWithRelease` |
+| 3 | release-please actually updates the constant — a silent updater failure goes red | `TestReleaseMatchesManifest` (reads `.release-please-manifest.json`) |
+| 4 | The shipped Linux binary carries a `+g` suffix, not just the constant | CI step "The binary reports its build version" + the `version:` line in `BUILD-INFO.txt` |
+| 5 | The diagnostics dump names the build, before a broadcast has started | `TestDiagnosticsCarriesTheBuildVersion` |
+| 6 | Telemetry reports the bare release, not the build string | review of `internal/app` + `cmd/gawk-broadcast` reporter construction |
+| 7 | The GUI header renders the badge without a layout regression | `cmd/gawk-broadcast-gui` idle-frame test lays the header out; visual check on hardware |
+| 8 | On-hardware: the window's badge matches `gawk-broadcast -version` and the artifact's `BUILD-INFO.txt` | **manual, pending** |

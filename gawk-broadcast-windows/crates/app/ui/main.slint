@@ -82,6 +82,11 @@ export component MainWindow inherits Window {
     min-width: 420px;
 
     // ----- header state -----
+    // The build version ("v1.0.0+g1a2b3c4"). In the header rather than buried
+    // in Details because the question it answers — "is the EXE you are looking
+    // at the one I fixed?" — is asked about a screenshot, and a screenshot only
+    // ever shows the top of the window.
+    in property <string> app-version: "";
     in property <string> state-label: "Not broadcasting";
     in property <bool> live: false;
     in property <bool> busy: false;            // starting or live
@@ -246,6 +251,18 @@ export component MainWindow inherits Window {
                             font-size: 12px;
                             wrap: word-wrap;
                         }
+                    }
+                    // Last child, right-aligned within whatever width it is
+                    // given: that puts it against the card's inner right edge
+                    // no matter how the layout splits the slack, which a
+                    // left-aligned Text would not.
+                    if root.app-version != "": Text {
+                        text: root.app-version;
+                        color: Palette.muted;
+                        font-size: 11px;
+                        horizontal-alignment: right;
+                        vertical-alignment: top;
+                        horizontal-stretch: 1;
                     }
                 }
             }

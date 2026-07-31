@@ -181,6 +181,12 @@ jobs:
           {
             echo "gawk-broadcast — prebuilt test binaries"
             echo
+            # Asked of the binary, not composed here: the version string's
+            # format lives in internal/version and must not be mirrored in
+            # YAML. This is also the end-to-end proof that the release-please
+            # constant and the -buildvcs commit both reached the artifact —
+            # the badge in the GUI window is the same string.
+            echo "version: $(dist/gawk-broadcast -version)"
             echo "commit:  ${{ github.sha }}"
             echo "branch:  ${{ github.ref_name }}"
             echo "built:   $(date -u +%FT%TZ)"
@@ -204,6 +210,19 @@ jobs:
             echo "=== gawk-broadcast (CLI) links against ==="
             ldd dist/gawk-broadcast
           } | tee dist/BUILD-INFO.txt
+      # The R2 question — "does it actually reach production?" — asked of the
+      # version badge. The constant alone would pass a unit test while the
+      # shipped binary showed a bare release: -buildvcs is what adds the
+      # commit, and it goes silent (not red) if the checkout is not a usable
+      # git repo. That silence is what this catches.
+      - name: The binary reports its build version
+        run: |
+          v=$(dist/gawk-broadcast -version)
+          echo "$v"
+          case "$v" in
+            *"+g"*) ;;
+            *) echo "::error::'$v' carries no +g<commit> suffix — go build stamped no VCS info. Check that the checkout left a usable .git and that -buildvcs was not disabled."; exit 1 ;;
+          esac
       - name: Include install instructions with the binaries
         run: cp INSTALL.md dist/
       - uses: actions/upload-artifact@v7

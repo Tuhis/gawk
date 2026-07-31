@@ -19,6 +19,7 @@ mod messages;
 mod pipeline;
 #[cfg(windows)]
 mod toast;
+mod version;
 
 use gawk_engine::clock::MonotonicClock;
 use gawk_engine::config::{self, Config};
@@ -165,8 +166,8 @@ fn main() {
         default_hook(info);
     }));
     log::info!(
-        "gawk-broadcast {} starting on {} {}",
-        env!("CARGO_PKG_VERSION"),
+        "gawk-broadcast v{} starting on {} {}",
+        version::display(),
         std::env::consts::OS,
         std::env::consts::ARCH
     );
@@ -177,7 +178,11 @@ fn main() {
     );
 
     let clock = Arc::new(MonotonicClock::new());
-    let reporter = Arc::new(Reporter::new(env!("CARGO_PKG_VERSION"), clock.clone()));
+    // version::RELEASE, not version::display(): this field doubles as the
+    // telemetry schema version and gawk-telemetry groups sessions by it, so
+    // the per-build "+g<sha>" suffix belongs in the window and the diagnostics
+    // dump, not on the wire.
+    let reporter = Arc::new(Reporter::new(version::RELEASE, clock.clone()));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -227,6 +232,7 @@ fn main() {
     }));
 
     let ui = MainWindow::new().expect("create window");
+    ui.set_app_version(format!("v{}", version::display()).into());
     seed_settings(&ui, &shell.borrow().cfg);
     refresh_captions(&ui);
     ui.set_resume_code(shell.borrow().cfg.last_broadcast_id.clone().into());

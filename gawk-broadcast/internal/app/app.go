@@ -22,6 +22,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/telemetry"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/version"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -137,7 +138,17 @@ func New(opts Options) *App {
 	// rule), and still inert unless the relay's hello enables collection: a
 	// relay with no telemetry key sends none, and then this process makes no
 	// telemetry request at all.
-	a.telemetry = telemetry.New(telemetry.Options{URL: opts.Config.Telemetry(), Log: a.log})
+	//
+	// version.Release, not version.String(): the reporter's Version doubles as
+	// the telemetry schema version (docs/33 D15) and gawk-telemetry groups
+	// sessions by it, so the per-build "+g<sha>" suffix belongs in the window
+	// and the diagnostics dump, not on the wire. Before this it was the
+	// literal "dev" for every Linux broadcast ever reported.
+	a.telemetry = telemetry.New(telemetry.Options{
+		URL:     opts.Config.Telemetry(),
+		Version: version.Release,
+		Log:     a.log,
+	})
 	return a
 }
 
@@ -612,11 +623,16 @@ func firstLine(s string) string {
 // Diagnostics is the Copy diagnostics payload, shaped to be pasted next to a
 // viewer's (R9's remote-troubleshooting story, docs/13).
 type Diagnostics struct {
-	Kind      string    `json:"kind"`
-	Timestamp time.Time `json:"timestamp"`
-	Broadcast string    `json:"broadcastId,omitempty"`
-	State     string    `json:"state"`
-	Error     string    `json:"error,omitempty"`
+	Kind string `json:"kind"`
+	// AppVersion is the full build string ("1.9.0+g1a2b3c4"), not the bare
+	// release the telemetry wire carries: a pasted dump should say which
+	// *build* produced it, since every broadcaster binary in existence is a CI
+	// artifact or a local build rather than a tagged release.
+	AppVersion string    `json:"appVersion"`
+	Timestamp  time.Time `json:"timestamp"`
+	Broadcast  string    `json:"broadcastId,omitempty"`
+	State      string    `json:"state"`
+	Error      string    `json:"error,omitempty"`
 
 	Encoder     string `json:"encoder,omitempty"`
 	EncoderAPI  string `json:"encoderApi,omitempty"`
@@ -674,11 +690,12 @@ func (a *App) Diagnostics() string {
 	a.mu.Lock()
 	s := a.stats
 	d := Diagnostics{
-		Kind:      "gawk-broadcast",
-		Timestamp: time.Now().UTC(),
-		Broadcast: a.id,
-		State:     a.state.String(),
-		Error:     a.lastErr,
+		Kind:       "gawk-broadcast",
+		AppVersion: version.String(),
+		Timestamp:  time.Now().UTC(),
+		Broadcast:  a.id,
+		State:      a.state.String(),
+		Error:      a.lastErr,
 	}
 	a.mu.Unlock()
 

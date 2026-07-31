@@ -879,6 +879,55 @@ trials. WB6 assembles the product.
 | G1, G2, G6 (photographed reference), G7 (viewer avSkewMs), G9 (fleet rollout) all pass on the gaming PC against production | manual, on the gaming PC |
 | Relay `-allowed-origins` gains `gawk-broadcast://windows` in the production values | review + manual |
 
+### WB9 — The build version, in the window (added 2026-08-01)
+
+The header card carries `v<release>+g<commit>`, and the diagnostics dump carries
+the same string under `appVersion`. The format, and why the commit is part of
+it, are settled once in [docs/19 V9](19-linux-native-broadcaster.md#v9--the-build-version-in-the-window-added-2026-08-01)
+— both broadcasters show the same string by the same rules. Only what differs
+here is recorded below.
+
+**The stamping mechanism.** Go gets the commit free from `-buildvcs`; Cargo has
+no equivalent, so `crates/app/build.rs` is the whole of it: `GITHUB_SHA` when CI
+sets it, otherwise `git rev-parse HEAD`, emitted as `GAWK_BUILD_REV`. Never
+`git describe` — that needs tags and the checkout is fetch-depth 1. It may not
+fail the build: a source-tarball build has no `.git`, and the crate falls back
+to the bare release version.
+
+The rerun triggers are the fiddly part and are deliberate. `HEAD` alone is not
+enough — committing on a branch rewrites `refs/heads/<branch>` and leaves
+`HEAD`'s mtime untouched, so the badge would keep naming whichever commit you
+were on when you last edited the `.slint`. `git rev-parse --git-path` is what
+resolves both through a worktree's gitdir and out to the common dir where refs
+live, and paths are emitted only when they exist, because Cargo treats a missing
+`rerun-if-changed` path as changed and would re-run the Slint compile on every
+build.
+
+**No `.dirty` marker**, unlike the Linux side. A `git status` in `build.rs` is
+frozen at the last time Cargo decided to re-run the script, and a *stale* dirty
+flag is worse than none — it is the one thing you would trust when checking
+whether your edit reached the binary.
+
+**No `--version` flag**: the EXE is `windows_subsystem = "windows"` and has no
+console to print to. The window, the debug log's first line, and the diagnostics
+dump are the three places it appears.
+
+**No `version:` line in `BUILD-INFO.txt`**, unlike the Linux artifact, which
+gets one by running its own binary. This job cross-compiles and cannot run the
+EXE, and composing the string in YAML would make the workflow a second mirror of
+the format. `BUILD-INFO.txt` already carries `commit:`, which is the identifying
+half.
+
+| Acceptance criterion | Verified by |
+|---|---|
+| The format matches the Linux one: `<release>`, `<release>+g<7-char sha>` | `version::tests::compose_formats` |
+| The build string always leads with the release | `version::tests::display_starts_with_the_release` |
+| release-please actually updates the workspace version — a silent updater failure goes red | `version::tests::release_matches_the_manifest` (reads `.release-please-manifest.json`) |
+| The diagnostics dump names the build, before a broadcast has started | `diagnostics::tests::carries_the_build_version` |
+| Telemetry reports the bare release, not the build string | review of the `Reporter::new` call in `main.rs` |
+| The header renders the badge; `.slint` compiles and the property is typed | `cargo test -p gawk-broadcast-app` (the Slint compile is part of the build) |
+| On-hardware: the window's badge names the commit the artifact was built from | **manual, pending** — add to the §10 register |
+
 ## 9. Risks
 
 - **The wtransport gates (D2).** Highest structural risk; deliberately forced

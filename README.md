@@ -1004,6 +1004,12 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   ([docs/05](docs/05-resilience-deploy.md))
 - **release-please `extra-files` paths are package-relative** — a repo-
   relative path silently leaves Chart.yaml unbumped.
+- **A git worktree inside the main checkout defeats Go's `-buildvcs`** — the
+  go tool walks up for the nearest `.git`, and `.claude/worktrees/*` are
+  overtaken by the outer repo's real `.git` directory, so a broadcaster built
+  there stamps the *main checkout's* commit and cleanliness. The version badge
+  can therefore read clean while the worktree is filthy. Right in CI and in a
+  normal clone. ([docs/19](docs/19-linux-native-broadcaster.md) V9)
 - **Edge pods verify the internal origin dial against the system root
   pool** — the R17 edge dialer deliberately never sets
   `InsecureSkipVerify`, so on a cluster without cert-manager (the R20 kind

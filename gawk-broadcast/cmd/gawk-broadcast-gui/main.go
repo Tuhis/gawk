@@ -46,6 +46,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/version"
 )
 
 // The window's palette: the web app's monochrome-restrained design system
@@ -352,9 +353,26 @@ func (u *ui) header(gtx layout.Context) layout.Dimensions {
 	state, status := u.app.State()
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			t := material.H6(u.th, "gawk broadcast")
-			t.Color = colBright
-			return t.Layout(gtx)
+			// Title left, build version right. The version is here rather than
+			// buried in Details because the question it answers — "is the
+			// binary you are looking at the one I fixed?" — is asked about a
+			// screenshot, and a screenshot only ever shows the top of the
+			// window.
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Baseline}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					t := material.H6(u.th, "gawk broadcast")
+					t.Color = colBright
+					return t.Layout(gtx)
+				}),
+				// Claims the slack so the version sits against the right edge.
+				// Returning the allocated Min (not layout.Spacer{}, which
+				// reports its own fixed size) is what makes the next child land
+				// where the flex actually put it.
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return layout.Dimensions{Size: gtx.Constraints.Min}
+				}),
+				layout.Rigid(caption(u.th, "v"+version.String())),
+			)
 		}),
 		layout.Rigid(spacer(4)),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {

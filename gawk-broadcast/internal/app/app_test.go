@@ -16,6 +16,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/version"
 )
 
 // recordingNotifier captures what the user would actually have been shown.
@@ -315,6 +316,26 @@ func TestDiagnosticsMarksCaptureFpsUnavailable(t *testing.T) {
 	// Absent TimeSync is null, not 0: zero RTT is a claim, null is a gap.
 	if d["timeSyncRttMs"] != nil {
 		t.Errorf("timeSyncRttMs = %v, want null when no sample exists", d["timeSyncRttMs"])
+	}
+}
+
+// A dump pasted into a bug report has to say which build produced it, and it
+// has to say so before a broadcast has ever started — half the reports are
+// "it won't start". The full build string, not the bare release: every
+// broadcaster binary in existence is a CI artifact or a local build.
+func TestDiagnosticsCarriesTheBuildVersion(t *testing.T) {
+	a, _ := testApp(t, &fakeSession{}, notify.Discard{})
+
+	var d map[string]any
+	if err := json.Unmarshal([]byte(a.Diagnostics()), &d); err != nil {
+		t.Fatalf("diagnostics is not valid JSON: %v", err)
+	}
+	got, _ := d["appVersion"].(string)
+	if got != version.String() {
+		t.Errorf("appVersion = %q, want %q", got, version.String())
+	}
+	if !strings.HasPrefix(got, version.Release) {
+		t.Errorf("appVersion = %q, want it to lead with the release %q", got, version.Release)
 	}
 }
 

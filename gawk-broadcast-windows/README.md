@@ -80,6 +80,14 @@ mirroring the Linux broadcaster's story:
 gh run download --name gawk-broadcast-windows-x86_64-<commit sha>
 ```
 
+**Which build am I running?** The window header shows
+`v1.0.0+g1a2b3c4` — the release plus the commit it was built from. That
+matches the `<commit sha>` in the artifact name and `BUILD-INFO.txt`'s
+`commit:` line, so a screenshot is enough to identify a build. The same string
+is the first line of `debug.log` and the `appVersion` key in **Copy
+diagnostics**. There is no `--version` flag: a windowed EXE has no console to
+print to. See [docs/38 WB9](../docs/38-windows-native-broadcaster.md).
+
 The artifact carries `BUILD-INFO.txt` and this README. SmartScreen will warn
 about an unknown publisher on first run ("More info" → "Run anyway") — the
 binary is unsigned on purpose; distribution is to known operators (docs/38
