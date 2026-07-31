@@ -74,6 +74,15 @@ env:
   # CMakeLists older than CMake 4's floor; this is CMake's own escape hatch.
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   WINDOWS_TARGET: x86_64-pc-windows-msvc
+  # The runner's _work volume is a 4Gi RAM-backed emptyDir (ioio
+  # actions-runners/gawk.yaml), and this job builds three trees into it: an
+  # msvc debug tree for the cross clippy, a host debug tree for the host
+  # clippy + tests, and an msvc release tree for the artifact. Unconstrained
+  # that totals ~5.5GB and dies with `No space left on device` partway through
+  # the second one. Debug info is the bulk of a debug tree and nothing here
+  # consumes it — no debugger, no symbolised backtrace is asserted on — so
+  # turning it off is free. The two reclaim steps below do the rest.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   broadcast-windows:
@@ -124,6 +133,17 @@ jobs:
       - name: Clippy (Windows target)
         run: cargo xwin clippy --all-targets --target "$WINDOWS_TARGET" -- -D warnings
 
+      # Nothing after this reads the msvc DEBUG tree — the release build below
+      # writes a separate profile directory — and the pod is fresh every run,
+      # so there is no cache to spoil. Dropping it here is what keeps the peak
+      # at one tree rather than three. `df` is logged so that if this ever
+      # fails again the headroom is in the log instead of being guessed at.
+      - name: Reclaim the msvc debug tree
+        run: |
+          du -sh "target/$WINDOWS_TARGET/debug" 2>/dev/null || true
+          rm -rf "target/$WINDOWS_TARGET/debug"
+          df -h /home/runner/_work | tail -1
+
       - name: Clippy (host)
         run: cargo clippy --all-targets -- -D warnings
 
@@ -161,6 +181,15 @@ jobs:
           fi
       - name: Integration — publish, reject, resume, supersede vs the real relay
         run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
+
+      # Same reasoning as the msvc reclaim above: the host debug tree has done
+      # its work (clippy, tests, the relay integration run) and the release
+      # build shares nothing with it.
+      - name: Reclaim the host debug tree
+        run: |
+          du -sh target/debug 2>/dev/null || true
+          rm -rf target/debug
+          df -h /home/runner/_work | tail -1
 
       - name: Build (release)
         run: cargo xwin build --release --target "$WINDOWS_TARGET"

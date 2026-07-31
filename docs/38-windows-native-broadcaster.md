@@ -604,6 +604,20 @@ and the 1.1 GB xwin SDK (~3 min, against 1m09s to fetch it from Microsoft)
 all lose. Only the 11 MB `cargo-xwin` binary is cached — seconds restored
 against ~63 s of compiling it.
 
+That 5.5 GB is a constraint on the **build**, not just on caching — a
+distinction the first CI run on real hardware made expensive to miss. `_work`
+is a 4 Gi RAM-backed emptyDir, and this job wants three trees in it: an msvc
+debug tree for the cross clippy, a host debug tree for the host clippy and
+the tests, and an msvc release tree for the artifact. Left alone they
+accumulate and the job dies with `No space left on device` partway through
+the second. The fix is to stop accumulating: `CARGO_PROFILE_DEV_DEBUG=0`
+(debug info dominates a debug tree and nothing in CI consumes it), plus a
+reclaim step after each debug tree has served its purpose, since the pod is
+fresh every run and there is no cache to spoil. Peak becomes one tree instead
+of three. Raising the tmpfs was rejected as the first move: it is RAM against
+an 11 Gi pod limit, and the job does not actually need the space
+simultaneously.
+
 The still-Windows-only residue, unchanged: everything on the §10 on-hardware
 register, plus anything about msvc-vs-clang codegen of the shipped EXE.
 
