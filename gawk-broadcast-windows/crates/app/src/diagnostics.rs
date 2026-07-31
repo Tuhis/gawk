@@ -12,6 +12,11 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 struct Diagnostics<'a> {
     kind: &'static str,
+    /// The full build string ("1.0.0+g1a2b3c4"), not the bare release the
+    /// telemetry wire carries: a pasted dump should say which *build* produced
+    /// it, since every EXE in existence is a CI artifact or a local build
+    /// rather than a tagged release.
+    app_version: String,
     timestamp: String,
     #[serde(skip_serializing_if = "str::is_empty")]
     broadcast_id: &'a str,
@@ -88,6 +93,7 @@ pub fn render(
 ) -> String {
     let d = Diagnostics {
         kind: "gawk-broadcast-windows",
+        app_version: crate::version::display(),
         timestamp: timestamp_rfc3339,
         broadcast_id,
         state,
@@ -174,6 +180,27 @@ mod tests {
         // Unset audio reads as off, error key absent when empty.
         assert_eq!(v["audioState"], "off");
         assert!(v.get("error").is_none());
+    }
+
+    /// A dump pasted into a bug report has to say which build produced it.
+    #[test]
+    fn carries_the_build_version() {
+        let dump = render(
+            &Stats::default(),
+            "",
+            "Not broadcasting",
+            "",
+            "",
+            "2026-07-31T00:00:00Z".into(),
+        );
+        let v: serde_json::Value = serde_json::from_str(&dump).unwrap();
+        assert_eq!(v["appVersion"], crate::version::display());
+        assert!(
+            v["appVersion"]
+                .as_str()
+                .is_some_and(|s| s.starts_with(crate::version::RELEASE)),
+            "appVersion must lead with the release"
+        );
     }
 
     #[test]
