@@ -70,6 +70,13 @@ struct State {
     last_keyframe_us: u64,
     kf_interval_ms: f64,
     kf_interval_ok: bool,
+
+    /// The fps window: `stats()` derives encoder/sent fps from the counter
+    /// deltas since the previous call, exactly as the Go engine's `Stats()`
+    /// (engine.go) and the browser derive them. `None` until the first call.
+    last_rate_us: Option<u64>,
+    last_rate_encoded: u64,
+    last_rate_sent: u64,
 }
 
 /// Verifies the first audio packet's bitstream against the advertised config
@@ -116,6 +123,9 @@ impl Sender {
                 last_keyframe_us: 0,
                 kf_interval_ms: 0.0,
                 kf_interval_ok: false,
+                last_rate_us: None,
+                last_rate_encoded: 0,
+                last_rate_sent: 0,
             })),
             kf: Arc::new(Mutex::new(KfSlot {
                 cancel: None,
@@ -315,7 +325,12 @@ impl Sender {
                 }
             }
         });
-        self.kf.lock().unwrap().handles.push(handle);
+        let mut kf = self.kf.lock().unwrap();
+        // Prune as we go: at the ~500 ms keyframe cadence an hours-long
+        // session would otherwise hoard thousands of completed handles (and
+        // stop() would await the whole backlog).
+        kf.handles.retain(|h| !h.is_finished());
+        kf.handles.push(handle);
     }
 
     /// Chunks a non-keyframe AU into datagrams and applies the failure
@@ -556,24 +571,45 @@ impl Sender {
         s.st.bytes_sent += dgram.len() as u64;
     }
 
-    /// A snapshot of the counters.
+    /// A snapshot of the counters. The fps figures are windowed over the
+    /// interval since the previous call (the Go/browser derivation), so
+    /// consecutive snapshots mean the same thing across all three
+    /// broadcasters when read side by side.
     pub fn stats(&self) -> Stats {
-        let s = self.state.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         let mut st = s.st.clone();
         st.keyframe_interval_available = s.kf_interval_ok;
         st.keyframe_interval_ms = s.kf_interval_ms;
+        let now_us = self.clock.now_us();
+        if let Some(last_us) = s.last_rate_us {
+            let dt = (now_us.saturating_sub(last_us)) as f64 / 1e6;
+            if dt > 0.0 {
+                st.encoder_fps = (st.encoded_frames - s.last_rate_encoded) as f64 / dt;
+                st.sent_fps = (st.sent_frames - s.last_rate_sent) as f64 / dt;
+            }
+        }
+        s.last_rate_us = Some(now_us);
+        s.last_rate_encoded = st.encoded_frames;
+        s.last_rate_sent = st.sent_frames;
         st
     }
 
-    /// Closes the sender to new keyframe writes, then waits for the
-    /// in-flight ones — so teardown does not race a write onto a session it
-    /// is about to close.
+    /// Closes the sender to new keyframe writes, cancels the in-flight one,
+    /// then waits for the writers to settle — so teardown does not race a
+    /// write onto a session it is about to close. The cancel is not
+    /// optional: once `closed` is set nothing can ever supersede a write
+    /// stalled on QUIC flow control, and awaiting it uncancelled would hang
+    /// `stop()` for as long as the uplink stays saturated.
     pub async fn wait(&self) {
-        let handles = {
+        let (cancel, handles) = {
             let mut kf = self.kf.lock().unwrap();
             kf.closed = true;
-            std::mem::take(&mut kf.handles)
+            kf.generation += 1;
+            (kf.cancel.take(), std::mem::take(&mut kf.handles))
         };
+        if let Some(c) = cancel {
+            let _ = c.send(KEYFRAME_SUPERSEDED_CODE);
+        }
         for h in handles {
             let _ = h.await;
         }
@@ -585,5 +621,75 @@ impl Sender {
 
     fn count_keyframe_failed(&self) {
         self.state.lock().unwrap().st.keyframe_streams_failed += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::testing::FakeClock;
+    use crate::media::AccessUnit;
+    use crate::relay::{
+        BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, RelaySession, SendDatagramError,
+        ServerStream, SessionClose,
+    };
+
+    /// Every keyframe write completes immediately; everything else pends.
+    struct InstantRelay;
+
+    struct InstantWriter;
+
+    impl KeyframeWriter for InstantWriter {
+        fn write(
+            self: Box<Self>,
+            _msg: Vec<u8>,
+            _cancel: CancelSignal,
+        ) -> BoxFuture<'static, KeyframeOutcome> {
+            Box::pin(async { KeyframeOutcome::Sent })
+        }
+        fn abort(self: Box<Self>, _code: u32) {}
+    }
+
+    impl RelaySession for InstantRelay {
+        fn send_datagram(&self, _dgram: &[u8]) -> Result<(), SendDatagramError> {
+            Ok(())
+        }
+        fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+            Box::pin(async { Ok(Box::new(InstantWriter) as Box<dyn KeyframeWriter>) })
+        }
+        fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> BoxFuture<'_, SessionClose> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    // A session broadcasts keyframes every ~500 ms for hours: completed
+    // write handles must be pruned as they finish, not hoarded until stop.
+    #[tokio::test]
+    async fn completed_keyframe_handles_are_pruned_not_hoarded() {
+        let sender = Sender::new(Arc::new(InstantRelay), Arc::new(FakeClock::default()));
+        for i in 0..20u64 {
+            sender
+                .send_video(AccessUnit {
+                    data: vec![0xBB; 100],
+                    timestamp_us: 1 + i,
+                    keyframe: true,
+                })
+                .await;
+            // Let the spawned writer task run to completion.
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+        }
+        let retained = sender.kf.lock().unwrap().handles.len();
+        assert!(
+            retained <= 2,
+            "completed handles must be pruned, found {retained}"
+        );
     }
 }

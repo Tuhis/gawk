@@ -51,6 +51,53 @@ enum ShellMsg {
     Engine(EngineEvent),
 }
 
+/// Sequences resume-token persistence against the announce (docs/22 finding
+/// 9: the relay's token stream can arrive BEFORE the announce). On a mint,
+/// `cfg.last_broadcast_id` still holds the previous broadcast's id until the
+/// announce lands — persisting a token the moment it arrives would pair the
+/// new session's token with the old id, and a crash in that window leaves a
+/// config whose Resume can only ever get the R17 gate's 403.
+struct IdentityLatch {
+    /// True once the running session's broadcast id is the persisted one —
+    /// from its announce, or from the start on a resume (a reclaim's id is
+    /// already the one on disk).
+    announced: bool,
+    pending_token: Option<String>,
+}
+
+impl IdentityLatch {
+    fn new() -> Self {
+        Self {
+            announced: false,
+            pending_token: None,
+        }
+    }
+
+    /// A session is starting. `id_known` is true on a resume.
+    fn on_start(&mut self, id_known: bool) {
+        self.announced = id_known;
+        self.pending_token = None;
+    }
+
+    /// A token arrived: returns it if it is safe to persist now, otherwise
+    /// holds it for the announce.
+    fn on_token(&mut self, token_hex: String) -> Option<String> {
+        if self.announced {
+            Some(token_hex)
+        } else {
+            self.pending_token = Some(token_hex);
+            None
+        }
+    }
+
+    /// The announce arrived: returns any held token, to persist together
+    /// with the id it was minted for.
+    fn on_announce(&mut self) -> Option<String> {
+        self.announced = true;
+        self.pending_token.take()
+    }
+}
+
 struct Shell {
     cfg: Config,
     cfg_path: Option<std::path::PathBuf>,
@@ -61,6 +108,7 @@ struct Shell {
     #[cfg(windows)]
     encode_info: Option<pipeline::PipelineInfo>,
     capture_mode: &'static str, // "app" | "screen"
+    identity: IdentityLatch,
     broadcast_id: String,
     last_error: String,
     first_viewer_seen: bool,
@@ -122,6 +170,7 @@ fn main() {
         #[cfg(windows)]
         encode_info: None,
         capture_mode: "app",
+        identity: IdentityLatch::new(),
         broadcast_id: String::new(),
         last_error: String::new(),
         first_viewer_seen: false,
@@ -518,6 +567,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     }
 
     sh.state = UiState::Starting;
+    sh.identity.on_start(!broadcast_id.is_empty());
     sh.last_error.clear();
     sh.first_viewer_seen = false;
     ui.set_error_text("".into());
@@ -639,6 +689,18 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             pipeline,
         } => {
             let mut sh = shell.borrow_mut();
+            // The engine-event forwarder runs while Pipeline::build is still
+            // working, so an Ended (e.g. a 4004 supersede during the
+            // trial-encode phase) can be handled BEFORE this message. That
+            // ending already ran end_broadcast; a late Started must not
+            // resurrect the dead session as "Live" — the run loop's single
+            // Ended has been spent, so nothing would ever flip the UI back.
+            if sh.state != UiState::Starting {
+                #[cfg(windows)]
+                pipeline.shutdown();
+                sh.rt.spawn(async move { session.stop().await });
+                return;
+            }
             sh.session = Some(session);
             #[cfg(windows)]
             {
@@ -692,6 +754,11 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             let mut sh = shell.borrow_mut();
             sh.broadcast_id = broadcast_id.clone();
             sh.cfg.last_broadcast_id = broadcast_id.clone();
+            // A token that beat this announce persists with it, atomically
+            // paired with the id it was minted for.
+            if let Some(token) = sh.identity.on_announce() {
+                sh.cfg.last_resume_token = token;
+            }
             save_config(&mut sh);
             let link = gawk_engine::join_link(&sh.cfg.resolve_app_url(), &broadcast_id);
             drop(sh);
@@ -701,8 +768,10 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
         }
         EngineEvent::ResumeToken { token_hex } => {
             let mut sh = shell.borrow_mut();
-            sh.cfg.last_resume_token = token_hex;
-            save_config(&mut sh);
+            if let Some(token) = sh.identity.on_token(token_hex) {
+                sh.cfg.last_resume_token = token;
+                save_config(&mut sh);
+            }
         }
         EngineEvent::ViewerCount(n) => {
             let mut sh = shell.borrow_mut();
@@ -1137,6 +1206,53 @@ mod tests {
         assert!(s.starts_with("20"));
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[10..11], "T");
+    }
+
+    // docs/22 finding 9: the token stream can beat the announce. On a mint
+    // the persisted id is still the PREVIOUS broadcast's until the announce,
+    // so an early token must be held, never persisted against the old id.
+    #[test]
+    fn a_token_that_beats_the_announce_is_held_for_it() {
+        let mut latch = IdentityLatch::new();
+        latch.on_start(false); // mint: no id yet
+        assert_eq!(latch.on_token("aa11".into()), None, "must not persist yet");
+        assert_eq!(
+            latch.on_announce(),
+            Some("aa11".into()),
+            "the announce releases the held token"
+        );
+        // After the announce, later tokens (mid-session re-mints) persist
+        // immediately — the id on disk is now this session's.
+        assert_eq!(latch.on_token("bb22".into()), Some("bb22".into()));
+    }
+
+    #[test]
+    fn announce_then_token_persists_immediately() {
+        let mut latch = IdentityLatch::new();
+        latch.on_start(false);
+        assert_eq!(latch.on_announce(), None);
+        assert_eq!(latch.on_token("aa11".into()), Some("aa11".into()));
+    }
+
+    #[test]
+    fn a_resume_start_reclaims_a_known_id_so_tokens_persist_immediately() {
+        let mut latch = IdentityLatch::new();
+        latch.on_start(true); // resume: the id on disk IS this session's
+        assert_eq!(latch.on_token("aa11".into()), Some("aa11".into()));
+    }
+
+    #[test]
+    fn a_new_start_clears_any_stale_held_token() {
+        let mut latch = IdentityLatch::new();
+        latch.on_start(false);
+        assert_eq!(latch.on_token("aa11".into()), None);
+        // The session dies before its announce; a new mint starts.
+        latch.on_start(false);
+        assert_eq!(
+            latch.on_announce(),
+            None,
+            "the dead session's token must not attach to the new announce"
+        );
     }
 
     #[test]

@@ -110,7 +110,8 @@ pub struct Converter {
     nv12_view: ID3D11VideoProcessorOutputView,
     /// Rotating outputs for the live path (`convert_rotating`): the async
     /// MFT consumes samples after we return, so a single reused output
-    /// would be overwritten mid-encode. Three slots cover in-flight + next.
+    /// would be overwritten mid-encode. See [`RING_SLOTS`] for the bound
+    /// that keeps a slot from being reused while still in flight.
     ring: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
     ring_next: usize,
     out_width: u32,
@@ -119,6 +120,15 @@ pub struct Converter {
 
 // Guarded by the device's multithread protection (see GpuDevice::create).
 unsafe impl Send for Converter {}
+
+/// Slots in `convert_rotating`'s NV12 ring. The ring alone does NOT bound
+/// frames in flight — the caller must (the pipeline gates on the encoder's
+/// in-flight count staying BELOW this), or a lagging encoder wraps the ring
+/// and `VideoProcessorBlt` overwrites a texture it is still reading. Frames
+/// are handed to the encoder in FIFO order, so "fewer than `RING_SLOTS`
+/// outstanding when a slot is claimed" guarantees the reclaimed slot's frame
+/// has already been consumed.
+pub const RING_SLOTS: usize = 4;
 
 impl Converter {
     pub fn new(
@@ -221,8 +231,7 @@ impl Converter {
     /// encoder can still be reading the previous frame's texture when the
     /// next convert runs. Slots are created lazily.
     pub fn convert_rotating(&mut self, input: &ID3D11Texture2D) -> Result<ID3D11Texture2D> {
-        const SLOTS: usize = 3;
-        if self.ring.len() < SLOTS {
+        if self.ring.len() < RING_SLOTS {
             let tex = new_texture(
                 &self.gpu.device,
                 self.out_width,

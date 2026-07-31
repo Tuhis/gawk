@@ -206,7 +206,12 @@ impl<'a> Frame<'a> {
                 None => return Ok(None),
             };
 
-            if payload_len > Self::MAX_PARSE_PAYLOAD_ALLOWED {
+            // GAWK PATCH: the cap protects known frames only. An unknown
+            // frame MUST be ignored (RFC 9114 §9) whatever its size —
+            // erroring here violation-closes the whole connection.
+            if payload_len > Self::MAX_PARSE_PAYLOAD_ALLOWED
+                && !matches!(kind, FrameKind::Exercise(_))
+            {
                 return Err(ParseError::PayloadTooBig);
             }
 
@@ -250,6 +255,28 @@ impl<'a> Frame<'a> {
                 .into_inner() as usize;
 
             if payload_len > Self::MAX_PARSE_PAYLOAD_ALLOWED {
+                // GAWK PATCH: an unknown frame MUST be ignored (RFC 9114
+                // §9) whatever its size. Discard its payload in bounded
+                // chunks — never buffered whole — and hand back an empty
+                // Exercise frame for the caller's skip loop.
+                if matches!(kind, FrameKind::Exercise(_)) {
+                    let mut chunk = [0; Self::MAX_PARSE_PAYLOAD_ALLOWED];
+                    let mut remaining = payload_len;
+                    while remaining > 0 {
+                        let n = remaining.min(chunk.len());
+                        reader
+                            .get_buffer(&mut chunk[..n])
+                            .await
+                            .map_err(|e| match e {
+                                bytes::IoReadError::ImmediateFin => {
+                                    bytes::IoReadError::UnexpectedFin
+                                }
+                                _ => e,
+                            })?;
+                        remaining -= n;
+                    }
+                    return Ok(Self::new(kind, Cow::Owned(Vec::new()), None));
+                }
                 return Err(IoReadError::Parse(ParseError::PayloadTooBig));
             }
 
@@ -403,9 +430,11 @@ impl<'a> Frame<'a> {
     ///
     /// Panics if the `payload` size if greater than [`VarInt::MAX`].
     fn new(kind: FrameKind, payload: Cow<'a, [u8]>, session_id: Option<SessionId>) -> Self {
-        if let FrameKind::Exercise(id) = kind {
-            debug_assert!(FrameKind::is_id_exercise(id));
-        } else if let FrameKind::WebTransport = kind {
+        // GAWK PATCH: `Exercise` now also represents ANY unknown frame type
+        // read off the wire (see `FrameKind::parse`), so the grease-id shape
+        // check no longer holds here. `new_exercise` still asserts it for
+        // frames this endpoint constructs.
+        if let FrameKind::WebTransport = kind {
             debug_assert!(payload.is_empty());
             debug_assert!(session_id.is_some());
         }
@@ -615,23 +644,68 @@ mod tests {
         }
     }
 
+    // GAWK PATCH: unknown frame types MUST be ignored (RFC 9114 §9) — they
+    // parse as Exercise so callers skip them; never an error, never a panic.
     #[test]
-    fn unknown_frame() {
+    fn unknown_frame_is_ignorable() {
         let buffer = Frame::serialize_any(VarInt::from_u32(0x0042_4242), b"This is a test payload");
 
-        assert!(matches!(
-            Frame::read(&mut buffer.as_slice()),
-            Err(ParseError::UnknownFrame)
-        ));
+        let frame = Frame::read(&mut buffer.as_slice()).unwrap().unwrap();
+        assert!(matches!(frame.kind(), FrameKind::Exercise(_)));
     }
 
     #[tokio::test]
-    async fn unknown_frame_async() {
+    async fn unknown_frame_is_ignorable_async() {
         let buffer = Frame::serialize_any(VarInt::from_u32(0x0042_4242), b"This is a test payload");
 
+        let frame = Frame::read_async(&mut buffer.as_slice()).await.unwrap();
+        assert!(matches!(frame.kind(), FrameKind::Exercise(_)));
+    }
+
+    // GAWK PATCH: "MUST be ignored" has no size limit — an unknown frame
+    // larger than the parse cap is skipped, not turned into a
+    // violation-close of the whole connection.
+    #[test]
+    fn unknown_frame_over_the_payload_cap_is_skipped() {
+        let payload = vec![0xAB; Frame::MAX_PARSE_PAYLOAD_ALLOWED + 1000];
+        let buffer = Frame::serialize_any(VarInt::from_u32(0x0042_4242), &payload);
+        let mut slice = buffer.as_slice();
+
+        let frame = Frame::read(&mut slice).unwrap().unwrap();
+        assert!(matches!(frame.kind(), FrameKind::Exercise(_)));
+        assert!(slice.is_empty(), "the payload must be consumed");
+    }
+
+    #[tokio::test]
+    async fn unknown_frame_over_the_payload_cap_is_skipped_async() {
+        let payload = vec![0xAB; Frame::MAX_PARSE_PAYLOAD_ALLOWED + 1000];
+        let mut buffer = Frame::serialize_any(VarInt::from_u32(0x0042_4242), &payload);
+        // A known frame follows: the reader must resync exactly after the
+        // skipped payload.
+        buffer.extend_from_slice(&Frame::serialize_any(FrameKind::Data.id(), b"after"));
+        let mut slice = buffer.as_slice();
+
+        let frame = Frame::read_async(&mut slice).await.unwrap();
+        assert!(matches!(frame.kind(), FrameKind::Exercise(_)));
+        let frame = Frame::read_async(&mut slice).await.unwrap();
+        assert!(matches!(frame.kind(), FrameKind::Data));
+        assert_eq!(frame.payload(), b"after");
+    }
+
+    // The cap still protects every KNOWN frame type.
+    #[test]
+    fn known_frame_over_the_payload_cap_still_errors() {
+        let mut buffer = Vec::new();
+        buffer.put_varint(FrameKind::Data.id()).unwrap();
+        buffer
+            .put_varint(VarInt::from_u32(
+                Frame::MAX_PARSE_PAYLOAD_ALLOWED as u32 + 1,
+            ))
+            .unwrap();
+
         assert!(matches!(
-            Frame::read_async(&mut buffer.as_slice()).await,
-            Err(IoReadError::Parse(ParseError::UnknownFrame))
+            Frame::read(&mut buffer.as_slice()),
+            Err(ParseError::PayloadTooBig)
         ));
     }
 

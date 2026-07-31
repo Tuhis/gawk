@@ -13,6 +13,7 @@ use gawk_engine::sender::{KEYFRAME_SUPERSEDED_CODE, Sender};
 use gawk_wire as wire;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 // --- The scripted fake relay -------------------------------------------------
 
@@ -327,6 +328,25 @@ async fn a_closed_sender_aborts_new_keyframes_instead_of_writing() {
 }
 
 #[tokio::test]
+async fn wait_cancels_a_stalled_keyframe_write_instead_of_hanging() {
+    let (relay, _clock, sender) = setup();
+    relay.script_keyframes(vec![KfMode::HoldUntilCancelled]);
+    sender.send_video(keyframe(100, 1)).await;
+
+    // Teardown must not await an uplink-stalled write forever: once the
+    // sender is closed to NEW writes, nothing can ever supersede the stalled
+    // one, so wait() itself has to fire the cancel.
+    tokio::time::timeout(Duration::from_secs(5), sender.wait())
+        .await
+        .expect("wait() must cancel the in-flight keyframe write, not hang");
+    assert!(
+        relay
+            .kf_events()
+            .contains(&KfEvent::Cancelled(KEYFRAME_SUPERSEDED_CODE))
+    );
+}
+
+#[tokio::test]
 async fn set_relay_cancels_the_inflight_keyframe() {
     let (relay, _clock, sender) = setup();
     relay.script_keyframes(vec![KfMode::HoldUntilCancelled]);
@@ -518,6 +538,37 @@ async fn a_failed_bitstream_check_latches_audio_off_and_touches_no_video_counter
         st.frames_dropped_at_send, 0,
         "audio never touches video counters"
     );
+}
+
+// --- Windowed fps (the Go engine.go Stats() derivation) --------------------------------
+
+#[tokio::test]
+async fn fps_counters_are_windowed_over_the_interval_between_stats_calls() {
+    let (_relay, clock, sender) = setup();
+    // The first snapshot seeds the window and reports 0 (no interval yet).
+    assert_eq!(sender.stats().encoder_fps, 0.0);
+
+    for i in 0..30u64 {
+        sender.send_video(delta(10, 1 + i)).await;
+    }
+    clock.advance_ms(1000);
+    let st = sender.stats();
+    assert!(
+        (st.encoder_fps - 30.0).abs() < 0.01,
+        "30 frames over 1 s: {}",
+        st.encoder_fps
+    );
+    assert!(
+        (st.sent_fps - 30.0).abs() < 0.01,
+        "30 frames over 1 s: {}",
+        st.sent_fps
+    );
+
+    // The window resets on every call: a quiet second reads 0 again.
+    clock.advance_ms(1000);
+    let st = sender.stats();
+    assert_eq!(st.encoder_fps, 0.0);
+    assert_eq!(st.sent_fps, 0.0);
 }
 
 // --- Keyframe interval measurement -----------------------------------------------------

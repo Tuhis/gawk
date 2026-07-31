@@ -30,6 +30,31 @@ use std::sync::{Arc, Mutex};
 /// A downscaled RGBA thumbnail: width, height, pixels.
 pub type Thumb = (u32, u32, Vec<u8>);
 
+// The ring-soundness pin (see both constants' docs): the backpressure gate
+// must trip before the converter ring can wrap onto an in-flight texture.
+const _: () = assert!(mft::MAX_IN_FLIGHT < gawk_capture::d3d::RING_SLOTS);
+
+/// Aborts the send pump if `build` fails after spawning it; disarmed into
+/// the finished `Pipeline` on success. Without this, every failed Start
+/// attempt (capture target gone, encoder start error) leaked one
+/// ever-running task holding the gate and sender Arcs for the app's
+/// lifetime.
+struct SendTaskGuard(Option<tokio::task::JoinHandle<()>>);
+
+impl SendTaskGuard {
+    fn disarm(mut self) -> tokio::task::JoinHandle<()> {
+        self.0.take().expect("guard disarmed once")
+    }
+}
+
+impl Drop for SendTaskGuard {
+    fn drop(&mut self) {
+        if let Some(task) = &self.0 {
+            task.abort();
+        }
+    }
+}
+
 pub struct PipelineParams {
     pub target: CaptureTarget,
     pub width: u32,
@@ -137,7 +162,7 @@ impl Pipeline {
         // keyframe-flushes (docs/38 D5).
         let gate = Arc::new(Mutex::new(FrameGate::new()));
         let notify = Arc::new(tokio::sync::Notify::new());
-        let send_task = {
+        let send_task = SendTaskGuard(Some({
             let gate = gate.clone();
             let notify = notify.clone();
             let sender = sender.clone();
@@ -153,7 +178,7 @@ impl Pipeline {
                     }
                 }
             })
-        };
+        }));
 
         let failed: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let prepend = accepted.prepend_headers.clone();
@@ -220,6 +245,16 @@ impl Pipeline {
                         return Ok(());
                     }
                     capture_fps.lock().unwrap().observe(ts);
+
+                    // Backpressure (the ring-soundness gate): when the MFT
+                    // lags capture — GPU contention from the captured game
+                    // is the normal cause — DROP the frame rather than
+                    // convert into a ring slot the encoder may still be
+                    // reading. A pending force_idr stays latched for the
+                    // next admitted frame.
+                    if encoder.in_flight() >= mft::MAX_IN_FLIGHT {
+                        return Ok(());
+                    }
 
                     if !converter
                         .as_ref()
@@ -299,7 +334,7 @@ impl Pipeline {
             thumb,
             capture_fps,
             failed,
-            send_task,
+            send_task: send_task.disarm(),
             sender,
             clock,
             hwnd,

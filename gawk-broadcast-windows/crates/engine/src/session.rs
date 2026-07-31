@@ -110,6 +110,19 @@ impl Session {
         let relay: Arc<dyn RelaySession> =
             Arc::new(transport::dial(&url, &cfg.origin, cfg.insecure).await?);
 
+        Ok(Self::start_with_session(cfg, relay, clock))
+    }
+
+    /// Brings the session up on an already-dialed relay — exactly what
+    /// [`Session::start`] does after its dial. This is the relay seam
+    /// (docs/38 §5): lifecycle behavior is defined by what happens when the
+    /// transport fails, and only a scripted [`RelaySession`] lets tests
+    /// produce those failures on demand.
+    pub fn start_with_session(
+        cfg: SessionConfig,
+        relay: Arc<dyn RelaySession>,
+        clock: Arc<dyn Clock>,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<EngineEvent>) {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (stop_tx, stop_rx) = watch::channel(false);
         let sender = Arc::new(Sender::new(relay.clone(), clock.clone()));
@@ -148,7 +161,7 @@ impl Session {
         }));
         *session.run.lock().unwrap() = Some(run);
 
-        Ok((session, events_rx))
+        (session, events_rx)
     }
 
     /// The send surface for the media pumps.
@@ -274,8 +287,12 @@ async fn serve_session(ctx: &mut RunCtx, relay: Arc<dyn RelaySession>) -> ServeE
     let end = loop {
         tokio::select! {
             close = relay.closed() => break ServeEnd::Closed(close),
-            _ = ctx.stop.changed() => {
-                if *ctx.stop.borrow() {
+            changed = ctx.stop.changed() => {
+                // Err means the stop Sender is gone: the shell dropped the
+                // Session without a completed stop() (the quit path's
+                // bounded timeout does this). That is a stop — treating it
+                // as "no stop yet" would busy-loop changed() forever.
+                if changed.is_err() || *ctx.stop.borrow() {
                     break ServeEnd::Stopped;
                 }
             }
@@ -407,8 +424,10 @@ async fn resume(ctx: &mut RunCtx) -> Result<Arc<dyn RelaySession>, Option<String
         let delay = backoff.next_delay();
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
-            _ = ctx.stop.changed() => {
-                if *ctx.stop.borrow() {
+            changed = ctx.stop.changed() => {
+                // A dropped stop Sender is a stop (see serve_session) — and
+                // here spinning would also hammer the relay with dials.
+                if changed.is_err() || *ctx.stop.borrow() {
                     ctx.shared.lock().unwrap().resuming = false;
                     return Err(None);
                 }

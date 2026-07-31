@@ -7,7 +7,8 @@
 //! requested and never used (G3).
 
 use crate::cascade::{Candidate, TrialAu, TrialRun, TrialRunner};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
     ID3D11Device, ID3D11Texture2D,
@@ -19,16 +20,17 @@ use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
     ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEvent, IMFMediaEventGenerator, IMFSample,
     IMFTransform, METransformDrainComplete, METransformHaveOutput, METransformNeedInput,
-    MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NONE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER,
-    MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager,
-    MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateSample, MFMediaType_Video,
-    MFSTARTUP_FULL, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE,
-    MFT_ENUM_FLAG_SORTANDFILTER, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
-    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
-    MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_H264, MFVideoFormat_NV12,
-    MFVideoInterlace_Progressive, eAVEncCommonRateControlMode_PeakConstrainedVBR,
+    MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NO_WAIT,
+    MF_EVENT_FLAG_NONE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE,
+    MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer,
+    MFCreateMediaType, MFCreateSample, MFMediaType_Video, MFSTARTUP_FULL, MFStartup,
+    MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
+    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFTEnumEx,
+    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
+    eAVEncCommonRateControlMode_PeakConstrainedVBR,
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::core::{GUID, Interface, Result};
@@ -135,6 +137,15 @@ pub struct EncoderInput {
 // Textures on the shared multithread-protected device.
 unsafe impl Send for EncoderInput {}
 
+/// The most frames a caller may have in flight (queued + inside the MFT)
+/// before it must DROP new frames instead of sending them. This is what
+/// keeps the capture converter's rotating NV12 ring sound: it must stay
+/// strictly below `gawk_capture::d3d::RING_SLOTS`, or a lagging encoder
+/// still reading a slot's texture gets it overwritten by a newer blt (torn
+/// frames whose content does not match their timestamps, no error
+/// anywhere). The pipeline pins the inequality at compile time.
+pub const MAX_IN_FLIGHT: usize = 3;
+
 /// A live hardware encoder session: one pump thread reacting to the async
 /// MFT's events, frames in through [`EncoderSession::send`], AUs out
 /// through the callback (which runs on the pump thread).
@@ -145,6 +156,9 @@ pub struct EncoderSession {
     /// prepend cache and codec-string fallback.
     pub sequence_header: Vec<u8>,
     codec_api: ICodecAPI,
+    /// Frames sent but not yet seen back as output (queued + held by the
+    /// MFT). The caller's backpressure signal — see [`MAX_IN_FLIGHT`].
+    in_flight: Arc<AtomicUsize>,
 }
 
 // ICodecAPI on hardware MFTs is free-threaded; force-IDR is a single
@@ -164,6 +178,7 @@ struct Pump {
     codec_api: ICodecAPI,
     input_rx: mpsc::Receiver<EncoderInput>,
     on_output: Box<dyn FnMut(EncodedAu) + Send>,
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl EncoderSession {
@@ -256,12 +271,14 @@ impl EncoderSession {
         }
 
         let (input_tx, input_rx) = mpsc::channel();
+        let in_flight = Arc::new(AtomicUsize::new(0));
         let pump = Pump {
             transform,
             events,
             codec_api: codec_api.clone(),
             input_rx,
             on_output,
+            in_flight: in_flight.clone(),
         };
         let handle = std::thread::Builder::new()
             .name("mft-pump".into())
@@ -273,15 +290,29 @@ impl EncoderSession {
             pump: Some(handle),
             sequence_header,
             codec_api,
+            in_flight,
         })
     }
 
     /// Queues one frame. Returns false when the pump has died — the caller
     /// surfaces that as a session error (cascade advance / broadcast end).
     pub fn send(&self, input: EncoderInput) -> bool {
-        self.input_tx
+        let sent = self
+            .input_tx
             .as_ref()
-            .is_some_and(|tx| tx.send(input).is_ok())
+            .is_some_and(|tx| tx.send(input).is_ok());
+        if sent {
+            self.in_flight.fetch_add(1, Ordering::SeqCst);
+        }
+        sent
+    }
+
+    /// Frames sent but not yet seen back as encoded output. Callers reusing
+    /// input textures (the capture converter's ring) gate on this staying
+    /// below [`MAX_IN_FLIGHT`], dropping frames instead — favor dropped
+    /// frames over corrupted ones.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
     }
 
     /// Asks for an IDR outside the frame flow (resume re-prime).
@@ -316,20 +347,45 @@ impl Pump {
     // The async-MFT contract: never ProcessInput before NeedInput, never
     // ProcessOutput before HaveOutput. Input exhaustion (channel closed)
     // triggers the drain sequence; DrainComplete ends the thread.
+    //
+    // NeedInput is a CREDIT, not a blocking obligation: WGC is damage-
+    // driven, so after a NeedInput the next captured frame may be minutes
+    // away — and the MFT may meanwhile finish the last fed frame and queue
+    // a HaveOutput behind it. Blocking in recv() until the next frame would
+    // withhold exactly the frame that shows the final on-screen state, so
+    // while input is owed the pump polls the event queue on a short cadence
+    // instead of going deaf to it.
     fn run(mut self) -> Result<()> {
         let mut draining = false;
+        let mut input_credits: usize = 0;
         loop {
-            let event: IMFMediaEvent = unsafe { self.events.GetEvent(MF_EVENT_FLAG_NONE)? };
-            let ty = unsafe { event.GetType()? } as i32;
-            if ty == METransformNeedInput.0 {
-                if draining {
-                    continue;
+            if input_credits == 0 || draining {
+                let event: IMFMediaEvent = unsafe { self.events.GetEvent(MF_EVENT_FLAG_NONE)? };
+                if self.handle_event(&event, draining, &mut input_credits)? {
+                    return Ok(());
                 }
-                match self.input_rx.recv() {
-                    Ok(input) => self.feed(input)?,
-                    Err(_) => {
+            } else {
+                match self
+                    .input_rx
+                    .recv_timeout(std::time::Duration::from_millis(10))
+                {
+                    Ok(input) => {
+                        self.feed(input)?;
+                        input_credits -= 1;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // No frame yet: deliver whatever the MFT queued
+                        // behind the pending NeedInput.
+                        while let Some(event) = self.try_get_event()? {
+                            if self.handle_event(&event, draining, &mut input_credits)? {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
                         // Input closed: drain what the encoder holds.
                         draining = true;
+                        input_credits = 0;
                         unsafe {
                             self.transform
                                 .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0)?;
@@ -338,11 +394,36 @@ impl Pump {
                         }
                     }
                 }
-            } else if ty == METransformHaveOutput.0 {
-                self.deliver_output()?;
-            } else if ty == METransformDrainComplete.0 {
-                return Ok(());
             }
+        }
+    }
+
+    /// Reacts to one MFT event; returns true when the drain completed.
+    fn handle_event(
+        &mut self,
+        event: &IMFMediaEvent,
+        draining: bool,
+        input_credits: &mut usize,
+    ) -> Result<bool> {
+        let ty = unsafe { event.GetType()? } as i32;
+        if ty == METransformNeedInput.0 {
+            if !draining {
+                *input_credits += 1;
+            }
+        } else if ty == METransformHaveOutput.0 {
+            self.deliver_output()?;
+        } else if ty == METransformDrainComplete.0 {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// A queued event, or `None` when the queue is empty right now.
+    fn try_get_event(&self) -> Result<Option<IMFMediaEvent>> {
+        match unsafe { self.events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+            Ok(event) => Ok(Some(event)),
+            Err(e) if e.code() == MF_E_NO_EVENTS_AVAILABLE => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -388,6 +469,11 @@ impl Pump {
         }
         let buffer = &mut buffers[0];
         if let Some(sample) = std::mem::ManuallyDrop::into_inner(buffer.pSample.clone()) {
+            // One output = one input consumed (no B-frames, verified by the
+            // trial gate): release the caller's in-flight slot.
+            let _ = self
+                .in_flight
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1));
             let time_us = unsafe { sample.GetSampleTime()? } as u64 / 10;
             let data = unsafe {
                 let contiguous = sample.ConvertToContiguousBuffer()?;

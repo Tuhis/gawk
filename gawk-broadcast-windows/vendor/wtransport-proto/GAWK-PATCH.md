@@ -17,4 +17,13 @@ see ../wtransport/GAWK-PATCH.md for the story):
    `FrameKind::parse` maps unknown ids to `Exercise`). RFC 9114 §9 says
    unknown frame types MUST be ignored; quic-go sends GOAWAY (0x07) on the
    control stream during shutdown, which stock wtransport turned into a
-   violation-close of the whole connection.
+   violation-close of the whole connection. Three consequences inside
+   `frame.rs`, all part of the same patch:
+   - `Frame::new` no longer debug-asserts the grease-id shape on
+     `Exercise` — any unknown id is representable now, and the assert made
+     a debug build panic on the first real GOAWAY.
+   - The 4096-byte parse cap applies to **known** frame types only: an
+     unknown frame over the cap is skipped, not `PayloadTooBig`-closed
+     ("MUST be ignored" has no size limit). `Frame::read_async` discards
+     the oversized payload in bounded chunks (never buffered whole) and
+     returns an empty `Exercise` frame for the caller's skip loop.
