@@ -4,3 +4,23 @@ description = "WASAPI process/system loopback capture + Opus encode (WB5, docs/3
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+
+[dependencies]
+gawk-engine = { path = "../engine" }
+# Vendored static libopus (docs/38 D8: fits the single-EXE story). Its
+# bundled CMakeLists predates CMake 3.5, so builds need
+# CMAKE_POLICY_VERSION_MINIMUM=3.5 in the environment (set in CI).
+opus = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Multimedia",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Performance",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+windows-core = "0.62"

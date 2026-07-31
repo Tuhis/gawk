@@ -32,6 +32,11 @@ concurrency:
   group: broadcast-windows-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The vendored libopus (gawk-audio → opus → audiopus_sys) carries a
+# CMakeLists older than CMake 4's floor; this is CMake's own escape hatch.
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 jobs:
   broadcast-windows:
     runs-on: windows-latest
