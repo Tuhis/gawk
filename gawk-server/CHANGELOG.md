@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.23.0...gawk-server-v0.24.0) (2026-07-31)
+
+
+### Features
+
+* R34 native Windows broadcaster — WB0–WB8 ([#208](https://github.com/Tuhis/gawk/issues/208)) ([ec20a50](https://github.com/Tuhis/gawk/commit/ec20a5051ec78781fcfd285eea97e108deeef318))
+
 ## [0.23.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.22.0...gawk-server-v0.23.0) (2026-07-29)
 
 
