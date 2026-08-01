@@ -162,6 +162,23 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
+      # docs/39 D7's claim, asked of the run rather than assumed: unlike the
+      # portal/GPU half of this module, R35's audio control plane IS verifiable
+      # on a runner — but only if the runner can actually host a PipeWire
+      # daemon and a session manager. internal/pwtest skips (rather than fails)
+      # when it cannot, which is right for a developer's machine and wrong here:
+      # a silent skip turns "the tee, churn and the kill -9 matrix are covered"
+      # into a claim nothing checks.
+      - name: The app-audio integration tests actually ran
+        run: |
+          set -o pipefail
+          out=$(go test -count=1 -v ./cmd/gawk-pw-helper/ 2>&1) || { echo "$out"; exit 1; }
+          if echo "$out" | grep -q '^--- SKIP'; then
+            echo "$out" | grep -B1 -A4 '^--- SKIP'
+            echo "::error::the PipeWire integration tests skipped — this runner has no usable sound server, so R35's audio coverage did not run. See docs/39 F6."
+            exit 1
+          fi
+          echo "$out" | grep -c '^--- PASS' | xargs echo "app-audio integration tests passed:"
       # `go test` links the GUI package only as a test binary (its idle-redraw
       # guard, docs/19 finding 12). Building the shells is what proves the real
       # Gio window compiles and links — this job is the only place that

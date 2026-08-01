@@ -552,11 +552,35 @@ layout, re-targeting, the mid-session switch, and a `kill -9` matrix that
 asserts `pw-dump` comes back clean. The engine's own seam is covered end to end
 too, against the real helper.
 
-The harness needed one thing the design did not anticipate: WirePlumber requires
-a session bus (it exits immediately without one), and an emitter started before
-WirePlumber has *adopted* a default sink dies with "no target node available" —
-which reads like a bug in the code under test rather than a race in the harness.
-Both are waited for explicitly.
+The harness needed three things the design did not anticipate, all of them
+environment rather than code:
+
+- **WirePlumber requires a session bus** — it exits immediately without one.
+- **An emitter started before WirePlumber has *adopted* a default sink** dies
+  with "no target node available", which reads like a bug in the code under
+  test rather than a race in the harness. Both the sink node and the default
+  are waited for explicitly.
+- **The stock WirePlumber configuration cannot run on a container runner.** It
+  enables the ALSA, V4L2, libcamera and Bluetooth monitors, and the Bluetooth
+  half loads the logind plugin; with no `/run/systemd` and no system bus that
+  fails hard enough to take WirePlumber down ("failed to start systemd logind
+  monitor: -2", then "disconnected from pipewire") — and with no session
+  manager nothing routes, so an application's stream never negotiates ports and
+  the entire graph is untestable. Found only in CI: a developer's machine has
+  logind and never sees it. The harness therefore writes its own config
+  directory enabling the session manager's *linking* half and nothing else.
+  None of the dropped monitors could have contributed anything — every device
+  in these tests is a null sink the harness creates itself.
+
+Two guards keep this honest rather than merely green. The harness **skips**
+(never fails) when the environment cannot host a sound server, since that says
+nothing about the code under test; and CI **fails on that skip**, because a
+silent skip would turn this section's coverage claim into something nothing
+checks.
+
+`-race` also caught a genuine defect in the harness itself: an `exec.Cmd`
+captures a child's output on its own goroutine, so a `t.Cleanup` that reads the
+buffer to print it races the copier. Every captured log is behind a mutex now.
 
 ### F7 — Two deviations from AG7's letter
 

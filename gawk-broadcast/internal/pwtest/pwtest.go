@@ -28,6 +28,35 @@ import (
 	"time"
 )
 
+// syncBuffer is a log sink written by an exec.Cmd's copier goroutine and read
+// by a t.Cleanup closure on the test goroutine.
+//
+// A bare bytes.Buffer here is a data race, and `-race` in CI is what caught it:
+// exec.Cmd copies a child's output on its own goroutine, which is still running
+// when a failing test reads the buffer to print it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
 // Daemon is a running private PipeWire instance.
 type Daemon struct {
 	t *testing.T
@@ -37,6 +66,9 @@ type Daemon struct {
 
 	runtimeDir string
 	procs      []*exec.Cmd
+	// wpLog is the session manager's output, kept so a skip can explain
+	// itself.
+	wpLog *syncBuffer
 }
 
 // Binaries the harness needs. A machine without them skips rather than fails:
@@ -99,7 +131,12 @@ func StartWithSpeakers(t *testing.T, positions string) *Daemon {
 
 	d.spawn("pipewire")
 	d.waitForDaemon()
-	d.spawn("wireplumber")
+	// WirePlumber runs against a config of our own making — see
+	// minimalWirePlumberConfig for why the stock one cannot be relied on.
+	if dir := d.minimalWirePlumberConfig(); dir != "" {
+		d.Env = append(d.Env, "WIREPLUMBER_CONFIG_DIR="+dir)
+	}
+	d.wpLog = d.spawnLog("wireplumber")
 
 	// Stand-in speakers. Every machine this feature runs on has a real sink;
 	// a runner has none, and an application with nowhere to play never opens
@@ -114,8 +151,148 @@ func StartWithSpeakers(t *testing.T, positions string) *Daemon {
 	// theoretical: an emitter started in that window dies with "stream error:
 	// no target node available", which reads like a bug in the code under test
 	// rather than a race in the harness.
-	d.waitFor("wireplumber to pick a default sink", d.hasDefaultSink)
+	//
+	// A **skip**, not a failure, when it never happens: this is precisely the
+	// "the environment cannot run them" case Start promises to skip on, and a
+	// session manager that will not start says nothing about the code under
+	// test. The message names what was missing so a silently-skipped CI job is
+	// diagnosable from the log rather than from a guess.
+	if !d.waitUntil(10*time.Second, d.hasDefaultSink) {
+		d.t.Skipf("pwtest: wireplumber never published a default sink in this environment "+
+			"(no session manager ⇒ no routing ⇒ no ports on an application's stream). "+
+			"wireplumber said:\n%s", d.sessionManagerLog())
+	}
 	return d
+}
+
+// minimalWirePlumberConfig writes a config directory that loads the session
+// manager's *linking* half and nothing else, returning "" if it cannot.
+//
+// Not tidiness — necessity. The stock configuration enables the ALSA, V4L2,
+// libcamera and Bluetooth monitors, and the Bluetooth half pulls in the logind
+// plugin. On a container runner with no `/run/systemd` and no system bus that
+// path fails hard enough to take WirePlumber down ("failed to start systemd
+// logind monitor: -2", then "disconnected from pipewire"), and with no session
+// manager nothing routes, so an application's stream never negotiates ports and
+// the whole graph is untestable. A developer's machine has logind and never
+// sees it; CI has neither, which is exactly the environment this harness exists
+// to work in.
+//
+// None of the dropped monitors could have contributed anything: the tests'
+// devices are null sinks the harness creates itself.
+func (d *Daemon) minimalWirePlumberConfig() string {
+	const stock = "/usr/share/wireplumber"
+	src := filepath.Join(stock, "main.lua.d")
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return "" // an unexpected layout (0.5+, another distro): use the stock config
+	}
+
+	dir := filepath.Join(d.runtimeDir, "wireplumber")
+	luaDir := filepath.Join(dir, "main.lua.d")
+	if err := os.MkdirAll(luaDir, 0o755); err != nil {
+		return ""
+	}
+	// main.conf is copied verbatim: it configures the PipeWire context, not
+	// the monitors, and rewriting it would be inventing a second thing to keep
+	// in sync with the distro.
+	if err := copyFile(filepath.Join(stock, "main.conf"), filepath.Join(dir, "main.conf")); err != nil {
+		return ""
+	}
+	// Everything from main.lua.d except the enable-all script, which is the
+	// one that turns the monitors on.
+	sawFunctions := false
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".lua") || name == "90-enable-all.lua" {
+			continue
+		}
+		if name == "00-functions.lua" {
+			sawFunctions = true
+		}
+		if err := copyFile(filepath.Join(src, name), filepath.Join(luaDir, name)); err != nil {
+			return ""
+		}
+	}
+	if !sawFunctions {
+		return "" // not the layout we understand; better the stock config than a broken one
+	}
+	// Our replacement: metadata (so `default.audio.sink` exists at all),
+	// the access policy (so clients may do anything), and device defaults +
+	// the linking policy (so a stream is routed to the default sink). No
+	// hardware monitors, no Bluetooth, no logind.
+	enable := `-- Written by internal/pwtest: the session manager's linking half only.
+load_module("metadata")
+default_access.enable()
+device_defaults.enable()
+stream_defaults.enable()
+load_script("suspend-node.lua")
+`
+	if err := os.WriteFile(filepath.Join(luaDir, "90-enable-linking.lua"), []byte(enable), 0o644); err != nil {
+		return ""
+	}
+	// policy.conf and policy.lua.d carry the linking policy itself; copied as
+	// they are.
+	for _, name := range []string{"policy.conf"} {
+		if err := copyFile(filepath.Join(stock, name), filepath.Join(dir, name)); err != nil {
+			return ""
+		}
+	}
+	if err := copyDir(filepath.Join(stock, "policy.lua.d"), filepath.Join(dir, "policy.lua.d")); err != nil {
+		return ""
+	}
+	// wireplumber.conf lists the config "profiles" to load, and one of them is
+	// bluetooth.lua — the path to the logind plugin this whole function exists
+	// to avoid. Drop that line and keep the rest verbatim.
+	conf, err := os.ReadFile(filepath.Join(stock, "wireplumber.conf"))
+	if err != nil {
+		return ""
+	}
+	var kept []string
+	dropped := false
+	for _, line := range strings.Split(string(conf), "\n") {
+		if strings.Contains(line, "bluetooth.lua") && strings.Contains(line, "config/lua") {
+			dropped = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !dropped {
+		// A layout we do not recognise. The stock config is a better bet than
+		// a config we have edited blind.
+		return ""
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wireplumber.conf"), []byte(strings.Join(kept, "\n")), 0o644); err != nil {
+		return ""
+	}
+	return dir
+}
+
+func copyFile(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o644)
+}
+
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if err := copyFile(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) startDBus() string {
@@ -138,9 +315,22 @@ func (d *Daemon) startDBus() string {
 
 func (d *Daemon) spawn(name string, args ...string) *exec.Cmd {
 	d.t.Helper()
+	cmd, _ := d.spawnWithLog(name, args...)
+	return cmd
+}
+
+// spawnLog is spawn, handing back the captured output.
+func (d *Daemon) spawnLog(name string, args ...string) *syncBuffer {
+	d.t.Helper()
+	_, log := d.spawnWithLog(name, args...)
+	return log
+}
+
+func (d *Daemon) spawnWithLog(name string, args ...string) (*exec.Cmd, *syncBuffer) {
+	d.t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Env = d.Env
-	var log bytes.Buffer
+	var log syncBuffer
 	cmd.Stdout, cmd.Stderr = &log, &log
 	if err := cmd.Start(); err != nil {
 		d.t.Fatalf("pwtest: starting %s: %v", name, err)
@@ -151,7 +341,7 @@ func (d *Daemon) spawn(name string, args ...string) *exec.Cmd {
 			d.t.Logf("pwtest: %s log:\n%s", name, log.String())
 		}
 	})
-	return cmd
+	return cmd, &log
 }
 
 func (d *Daemon) waitForDaemon() {
@@ -228,7 +418,7 @@ func (d *Daemon) CreateNullSink(name, class, positions string) {
 type Emitter struct {
 	t    *testing.T
 	cmd  *exec.Cmd
-	log  *bytes.Buffer
+	log  *syncBuffer
 	Name string
 }
 
@@ -277,7 +467,7 @@ func (d *Daemon) StartEmitterChannels(binary string, freq, channels int) *Emitte
 	cmd := d.Command(fake, "-q",
 		"audiotestsrc", "is-live=true", fmt.Sprintf("freq=%d", freq),
 		"!", "audioconvert", "!", fmt.Sprintf("audio/x-raw,channels=%d", channels), "!", "pipewiresink")
-	var log bytes.Buffer
+	var log syncBuffer
 	cmd.Stdout, cmd.Stderr = &log, &log
 	if err := cmd.Start(); err != nil {
 		d.t.Fatalf("pwtest: starting emitter %s: %v", binary, err)
@@ -459,14 +649,31 @@ func (d *Daemon) WaitFor(what string, pred func() bool) {
 
 func (d *Daemon) waitFor(what string, pred func() bool) {
 	d.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	if !d.waitUntil(10*time.Second, pred) {
+		d.t.Fatalf("pwtest: timed out waiting for %s", what)
+	}
+}
+
+// waitUntil is waitFor without a verdict, for the caller that wants to skip
+// rather than fail.
+func (d *Daemon) waitUntil(limit time.Duration, pred func() bool) bool {
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		if pred() {
-			return
+			return true
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	d.t.Fatalf("pwtest: timed out waiting for %s", what)
+	return false
+}
+
+// sessionManagerLog returns what wireplumber printed, for a skip message that
+// says why rather than just that.
+func (d *Daemon) sessionManagerLog() string {
+	if d.wpLog == nil {
+		return "(nothing captured)"
+	}
+	return d.wpLog.String()
 }
 
 // Capture records the monitor of a node and reports the peak sample seen, so a
@@ -477,7 +684,7 @@ func (d *Daemon) Capture(serial uint32, dur time.Duration) float64 {
 	// A .wav, because pw-record picks its output format from the extension and
 	// has no raw mode. The header is skipped below.
 	path := filepath.Join(d.runtimeDir, fmt.Sprintf("cap-%d.wav", serial))
-	var log bytes.Buffer
+	var log syncBuffer
 	cmd := d.Command("pw-record", "--target", fmt.Sprint(serial),
 		"-P", "{ stream.capture.sink=true }",
 		"--format", "s16", "--rate", "48000", "--channels", "2",

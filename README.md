@@ -967,6 +967,13 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   emitter too early gets `stream error: no target node available`, which reads
   like a bug in the code under test rather than a race in the harness.
   ([docs/39](docs/39-linux-app-sharing.md) F6)
+- **The stock WirePlumber config cannot run on a container runner**: it enables
+  the Bluetooth monitor, which loads the logind plugin, which fails fatally
+  with no `/run/systemd` and no system bus — and a dead session manager means
+  nothing routes, so no application stream ever grows ports. Invisible on a
+  developer's machine, which has logind. A headless harness must supply its own
+  config with the linking half and no hardware monitors.
+  ([docs/39](docs/39-linux-app-sharing.md) F6)
 
 **Relay fleet (R17)**
 
