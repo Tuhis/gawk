@@ -894,16 +894,29 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   local count up while the origin fans the global total down — edge
   sessions themselves are never counted.
   ([docs/23](docs/23-live-viewer-count.md))
-- **`pipewiresrc` can die during preroll with `stream error: unhandled
-  format` — that's capture, not the encoder.** The compositor's chosen
-  screencast format sometimes can't be mapped onto the downstream caps
-  (DMA-BUF modifier/DRM-caps skew, 10-bit HDR desktops). The live start
-  walks a three-rung capture ladder per encoder (rate-capped zero-copy —
-  `max-framerate` asked of the compositor — then free negotiation, then
-  system-memory pinned `video/x-raw`) before advancing the cascade, and an
-  all-pipewiresrc failure reports as `ErrCaptureFormat`, never "no hardware
-  encoder". Diagnose with `GST_DEBUG=pipewire*:5` (the child inherits env).
+- **`pipewiresrc` can die with `stream error: unhandled format` — that's
+  capture, not the encoder.** The compositor's chosen screencast format
+  sometimes can't be mapped onto the downstream caps (DMA-BUF modifier/DRM-caps
+  skew, 10-bit HDR desktops). The live start walks a three-rung capture ladder
+  per encoder (rate-capped zero-copy — `max-framerate` asked of the
+  compositor — then free negotiation, then system-memory pinned
+  `video/x-raw`) before advancing the cascade, and an all-pipewiresrc failure
+  reports as `ErrCaptureFormat`, never "no hardware encoder". Diagnose with
+  `GST_DEBUG=pipewire*:5` (the child inherits env).
   ([docs/19](docs/19-linux-native-broadcaster.md))
+- **The same death *mid-broadcast* rebuilds the pipeline instead of ending
+  the broadcast** — a window's screencast format is renegotiated when it
+  resizes, changes output or hands over its surface, and until 2026-08-01
+  that killed a working stream outright (the ladder only ever ran at start).
+  A rebuild reuses the portal grant (no second picker), keeps the relay
+  session, frameId space and the frame/audio channels, and walks the whole
+  ladder from the encoder that was working — so a stack whose DMA-BUF
+  negotiation has gone bad converges on system-memory capture by itself. The
+  bound is a *rate* — 60 rebuilds per 30 s — because the thing worth refusing
+  is a hot loop, not a stream that recovers now and then for hours; and it is
+  counted (`captureRestarts`), since the viewer's only symptom is a freeze
+  ending on the next keyframe.
+  ([docs/39](docs/39-linux-app-sharing.md) D2)
 - **`gawk-broadcast` is its own Go module and its CI job needs cgo + Gio
   headers** (`libwayland-dev`, `libvulkan-dev`, …) and `CGO_ENABLED=1` —
   with cgo off, the GUI fails as "build constraints exclude all Go files in

@@ -113,6 +113,18 @@ type AccessUnit struct {
 	// nothing downstream reads this field.
 	PTSUs  uint64
 	HasPTS bool
+	// EncoderRestarted marks the first access unit produced by a rebuilt
+	// capture pipeline — a source that survived its encoder dying mid-session
+	// (internal/gst's mid-session restart) rather than ending the broadcast.
+	//
+	// It exists because the DecoderConfig is derived once and then cached for
+	// the whole session, which is correct while one child owns the encode and
+	// wrong across a rebuild: the new pipeline may have landed on a different
+	// ladder rung or a different encoder, and on this Annex-B path the codec
+	// string is the only thing telling a viewer's decoder what it is about to
+	// get. Sources that cannot rebuild never set it, and for them nothing
+	// changes.
+	EncoderRestarted bool
 }
 
 // MediaSourceFactory builds a MediaSource. It exists so the engine can hand
@@ -163,4 +175,17 @@ type GeometrySource interface {
 type ShareModeSource interface {
 	// ShareMode is "screen", "window", or "" before the picker has answered.
 	ShareMode() string
+}
+
+// RestartingSource is implemented by media sources that can lose their capture
+// backend mid-session and rebuild it without ending the broadcast.
+//
+// Stats-only, and it is the counter that makes the recovery honest: a rebuild
+// is deliberately quiet — no error, no OnEnded, a freeze the viewer reads as a
+// stall — so without this number a machine renegotiating its screencast every
+// few minutes is indistinguishable from one that never misses a beat. Same
+// reasoning as Stats.Resumes on the transport side.
+type RestartingSource interface {
+	// CaptureRestarts counts rebuilds completed during this session.
+	CaptureRestarts() uint64
 }

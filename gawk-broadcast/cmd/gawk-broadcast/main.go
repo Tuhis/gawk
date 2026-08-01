@@ -354,10 +354,17 @@ func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {
 			if s.KeyframeIntervalAvailable {
 				kf = fmt.Sprintf("%.0fms", s.KeyframeIntervalMs)
 			}
+			// Silent until it happens, then permanent: each rebuild is a
+			// capture death the broadcast survived, and a freeze the viewer
+			// saw. Nothing else in this line would show it.
+			rebuilt := ""
+			if s.CaptureRestarts > 0 {
+				rebuilt = fmt.Sprintf(" · %d capture rebuilds", s.CaptureRestarts)
+			}
 			fmt.Fprintf(os.Stderr,
-				"encode %.1f fps · sent %.1f fps · %s · %s capture · %d keyframes every ~%s (%d failed, %d superseded) · %d dropped at send · %.1f MB · rtt %s\n",
+				"encode %.1f fps · sent %.1f fps · %s · %s capture · %d keyframes every ~%s (%d failed, %d superseded) · %d dropped at send · %.1f MB · rtt %s%s\n",
 				s.EncoderFps, s.SentFps, s.Codec, orNA(s.CapturePath), s.KeyframeStreamsSent, kf, s.KeyframeStreamsFailed,
-				s.KeyframeStreamsSuperseded, s.FramesDroppedAtSend, float64(s.BytesSent)/1e6, rtt)
+				s.KeyframeStreamsSuperseded, s.FramesDroppedAtSend, float64(s.BytesSent)/1e6, rtt, rebuilt)
 		}
 	}
 }

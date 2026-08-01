@@ -47,6 +47,9 @@ func TestStatsJSONKeysAreTheCanonicalSpelling(t *testing.T) {
 		"timeSyncAvailable", "timeSyncRttMs", "timeSyncOffsetUs",
 		"viewerCountAvailable", "viewerCount",
 		"resumes", "resuming",
+		// The capture side of resumes: rebuilds of a pipeline that died
+		// mid-session (RestartingSource).
+		"captureRestarts",
 		"audioPacketsSent", "audioBytesSent", "audioConfigsSent",
 		"audioPacketsDropped",
 		// R29 forward parity (docs/34): the level the relay advertised, and

@@ -45,6 +45,32 @@ const audioProbeBudget = 8 * time.Second
 // ~32 packets ≈ 640 ms at 20 ms per packet (docs/28 Decision 9).
 const audioQueueDepth = 32
 
+// captureRestartBudget and captureRestartWindow bound how often a capture that
+// was *already working* may be rebuilt under one live session: up to 60
+// rebuilds inside any 30-second window, after which the failure is handed to
+// the user.
+//
+// A mid-session death is usually a renegotiation, not a broken machine: the
+// compositor changes a shared window's screencast format — a resize, a move
+// between outputs or scale factors, a page handing its surface to a different
+// buffer type — and pipewiresrc cannot map the new format onto caps it already
+// negotiated. That is "stream error: unhandled format", and in the field
+// (2026-08-01, window share + app audio) it ended a healthy broadcast 27
+// seconds in, viewers and all, over a negotiation the next attempt wins.
+//
+// A rebuild walks the same three-rung capture ladder the start does, so a stack
+// that keeps failing DMA-BUF converges on system-memory capture instead of
+// ending the broadcast. The bound is deliberately a *rate*, not a session
+// total: the thing worth refusing is a hot loop — capture that cannot run at
+// all, spinning up children as fast as they die and masquerading as a
+// permanently frozen stream — and not a broadcast that recovers now and then
+// over hours. At this setting a stream may rebuild every half second all night
+// and carry on; only sustained thrashing faster than that gives up.
+const (
+	captureRestartBudget = 60
+	captureRestartWindow = 30 * time.Second
+)
+
 // Options configure the capture factory.
 type Options struct {
 	// LastGoodEncoder is the cached cascade winner, re-verified before use.
@@ -89,6 +115,11 @@ type Options struct {
 	// LiveProbeWindow overrides how long a child must survive to be believed
 	// (tests; production uses liveProbeWindow).
 	LiveProbeWindow time.Duration
+	// RestartBudget overrides how many mid-session rebuilds may start inside
+	// captureRestartWindow (tests; production uses captureRestartBudget). A
+	// test that wants to watch the limiter fire cannot afford to stage sixty
+	// child deaths.
+	RestartBudget int
 }
 
 // AppAudioOffer is what the shell is asked to choose from in the whose-audio
@@ -126,6 +157,9 @@ func NewFactory(opts Options) engine.MediaSourceFactory {
 		if s.opts.LiveProbeWindow <= 0 {
 			s.opts.LiveProbeWindow = liveProbeWindow
 		}
+		if s.opts.RestartBudget <= 0 {
+			s.opts.RestartBudget = captureRestartBudget
+		}
 		return s, nil
 	}
 }
@@ -155,6 +189,27 @@ type Source struct {
 	sourceType portal.SourceType
 	kid        *child
 	stopped    bool
+
+	// The mid-session rebuild's state (see captureRestartBudget).
+	//
+	// sessCtx is the session-lifetime context Start was handed, retained
+	// because a rebuild happens long after Start returned and must still die
+	// with the session — the engine cancels it in teardown, *before* calling
+	// Stop. A context in a struct is a smell; the alternative is a rebuild that
+	// outlives the broadcast holding the user's screen open, which is worse.
+	sessCtx context.Context
+	// cand is the cascade winner, kept so a rebuild starts from the encoder
+	// that was working rather than re-probing the cascade from the top.
+	cand Candidate
+	// restarts counts completed rebuilds (the stat); restartedUs holds the
+	// clock times of the recent ones, pruned to captureRestartWindow, which is
+	// what makes the bound a rate rather than a session total. Bounded by
+	// construction: nothing is appended once the window is full.
+	restarts    uint64
+	restartedUs []uint64
+	// restartErr is why the last rebuild failed, folded into the session's
+	// error so a broadcaster sees both the death and the failed recovery.
+	restartErr error
 
 	frames chan engine.AccessUnit
 	// audio carries Opus packets when a source won the pre-flight cascade;
@@ -206,6 +261,15 @@ type pumpHandle struct {
 	// Pump-goroutine only; a fresh attempt gets a fresh handle, so a fresh
 	// PTS timeline never inherits a stale offset.
 	anchor ptsAnchor
+
+	// newEpoch marks the handle of a *rebuilt* pipeline, until the first frame
+	// that actually reaches the channel carries it out as
+	// AccessUnit.EncoderRestarted. A rebuild may have landed on a different
+	// encoder or ladder rung, and the sender caches its DecoderConfig for the
+	// whole session — this flag is what makes it re-derive one that describes
+	// the pipeline now producing. Set together with droppingGOP, so the frame
+	// that carries it is always a keyframe.
+	newEpoch bool
 
 	// droppingGOP is the drop-until-keyframe gate, touched only by the pump
 	// goroutine. Drops at the frame channel happen *before* the sender
@@ -293,7 +357,12 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 	s.dumpES = s.openDump("GAWK_DUMP_H264", "the demuxed H.264 elementary stream")
 
 	s.frames = make(chan engine.AccessUnit, 8)
-	if err := s.startWithCascade(ctx, stream, cand); err != nil {
+	// From here the session's context is the source's too: a capture that dies
+	// mid-broadcast rebuilds itself against it, long after this call returned.
+	s.mu.Lock()
+	s.sessCtx = ctx
+	s.mu.Unlock()
+	if err := s.startWithCascade(ctx, stream, cand, false); err != nil {
 		s.stopHelper()
 		stream.Close()
 		s.closeDumps()
@@ -620,9 +689,13 @@ func (s *Source) closeDumps() {
 // stderr implicates an audio element, drop audio for the rest of the pass; if
 // everything still fails, one clean re-run without it. Worst case grows by one
 // pass, not by a factor of two, and only on a machine already failing.
-func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, first Candidate) error {
+//
+// rebuild is true when this is a mid-session rebuild rather than the start:
+// it only reaches the pump handle, where it becomes the wait-for-a-keyframe
+// gate and the config epoch a viewer mid-stream needs (see restartCapture).
+func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, first Candidate, rebuild bool) error {
 	audio := s.audioCandidate()
-	err := s.cascadePass(ctx, stream, first, audio)
+	err := s.cascadePass(ctx, stream, first, audio, rebuild)
 	if err == nil || audio == nil {
 		return err
 	}
@@ -631,21 +704,24 @@ func (s *Source) startWithCascade(ctx context.Context, stream *portal.Stream, fi
 	// finally sees comes from a pass that had no audio in it at all.
 	s.log.Warn("every pipeline failed with audio enabled, retrying without it", "err", err)
 	s.dropAudio("every encoder and capture mode failed while audio was enabled")
-	return s.cascadePass(ctx, stream, first, nil)
+	return s.cascadePass(ctx, stream, first, nil, rebuild)
 }
 
 // cascadePass walks encoders × capture modes once, for one audio decision.
-func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first Candidate, audio *AudioCandidate) error {
+func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first Candidate, audio *AudioCandidate, rebuild bool) error {
 	order := candidatesFrom(first, s.cfg.Encoder != "")
 	var failures []string
 
 	for _, cand := range order {
 		for _, mode := range CaptureModes {
+			if err := s.aborted(ctx); err != nil {
+				return err
+			}
 			// The inner loop runs twice at most: an audio-implicated failure
 			// retries this same rung with audio dropped, and dropping it sets
 			// `audio` to nil, so the retry cannot repeat.
 			for {
-				err := s.attempt(ctx, stream, cand, mode, audio)
+				err := s.attempt(ctx, stream, cand, mode, audio, rebuild)
 				if err == nil {
 					if s.opts.OnEncoderChosen != nil {
 						s.opts.OnEncoderChosen(cand.Element)
@@ -657,6 +733,9 @@ func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first C
 						"audio", audio != nil)
 					s.mu.Lock()
 					s.encoder = cand.Name
+					// The winner, so a mid-session rebuild starts from the
+					// encoder that was working rather than from the top.
+					s.cand = cand
 					s.captureMode, s.captureModeSet = mode, true
 					s.mu.Unlock()
 					return nil
@@ -694,7 +773,7 @@ func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first C
 // On failure it waits out the child's pump and flushes both queues, so the
 // next attempt starts clean: the next attempt may run a different encoder, and
 // its viewers must never see two SPS lineages interleaved.
-func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candidate, mode CaptureMode, audio *AudioCandidate) error {
+func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candidate, mode CaptureMode, audio *AudioCandidate, rebuild bool) error {
 	kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, s.encodeTarget(), mode, audio), stream.FD, s.log)
 	if err != nil {
 		return err
@@ -703,7 +782,14 @@ func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candid
 	// The pump starts with the child, not after the probe: an unread stdout
 	// pipe blocks fdsink at ~64 kB and stalls the encoder for the whole probe
 	// window (see pumpHandle).
-	h := &pumpHandle{done: make(chan struct{})}
+	//
+	// A rebuild's handle starts gated: viewers are mid-stream, so nothing from
+	// this new SPS lineage may go out before its first keyframe (pumpHandle).
+	// Every attempt, not just the winning one — during a rebuild the engine is
+	// consuming the channel, so even an attempt that goes on to lose its probe
+	// window can put frames on the wire, and each such run has to be a
+	// self-contained GOP.
+	h := &pumpHandle{done: make(chan struct{}), newEpoch: rebuild, droppingGOP: rebuild}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -718,11 +804,144 @@ func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candid
 		return err
 	}
 
-	h.adopted.Store(true)
 	s.mu.Lock()
+	if s.stopped {
+		// Stop landed while this child was in its probe window. Two things
+		// would go wrong if it were adopted anyway: Stop has already read s.kid
+		// and would never see this one, leaving a gst-launch and a lit
+		// screen-sharing indicator behind — and its pump, being adopted, would
+		// close the frame channel that the pump driving this rebuild is about
+		// to close as well. A double close is a panic, and the ownership rule
+		// that prevents it is that exactly one *adopted* pump exists.
+		s.mu.Unlock()
+		kid.stop()
+		<-h.done
+		return errCaptureStopped
+	}
+	// Adoption under the same lock Stop sets `stopped` with: whichever wins,
+	// the child is either killed here or visible to Stop as s.kid.
+	h.adopted.Store(true)
 	s.kid = kid
 	s.mu.Unlock()
 	return nil
+}
+
+// errCaptureStopped ends a cascade that has been overtaken by Stop. It is not
+// a diagnosis — nothing failed — so no shell renders it: the engine's own
+// cancellation reaches the user first (Session.pump ignores an error when the
+// session context is done).
+var errCaptureStopped = errors.New("capture stopped")
+
+// aborted reports why no further attempt should be started: the session is
+// being torn down, or Stop has been called.
+//
+// Without it a Stop landing mid-cascade still walks every remaining encoder
+// and capture mode before returning — nine child spawns for a broadcast that
+// is already over, and during a mid-session rebuild that walk happens inside
+// the pump goroutine Stop is blocked in wg.Wait() on.
+func (s *Source) aborted(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return errCaptureStopped
+	}
+	return nil
+}
+
+// restartCapture rebuilds a capture that died under a live session, and
+// reports whether the broadcast carries on.
+//
+// docs/39 D2 named this branch — "if renegotiation instead kills the child …
+// the engine's existing live failure path restarts the cascade reusing the
+// portal session in memory" — and nothing implemented it: an adopted child's
+// death closed the frame channel, which the engine reads as the end of the
+// broadcast (Session.pump). The 2026-08-01 field report is what that costs — a
+// window share 27 s in, one viewer attached, killed by a compositor
+// renegotiating the format pipewiresrc had already agreed on.
+//
+// What makes the recovery a non-event is everything it does *not* touch: the
+// portal grant (no second picker), the relay session and its broadcast ID, the
+// frameId space, the app-audio helper's sink and links (F2 — the new child
+// re-attaches to the same node), and above all the frame and audio channels,
+// whose closing is precisely how the engine learns a broadcast is over. The
+// viewer sees a freeze that ends on the rebuilt pipeline's first keyframe.
+//
+// It runs on the dying child's pump goroutine, which is what serialises it
+// against the new child's pump: that one cannot start until this returns.
+func (s *Source) restartCapture(cause error) bool {
+	s.mu.Lock()
+	if s.stopped || s.sessCtx == nil || s.sessCtx.Err() != nil {
+		// The child died because we killed it, or the session is being torn
+		// down — teardown cancels the context *before* it calls Stop.
+		s.mu.Unlock()
+		return false
+	}
+	// The rate limit: only rebuilds inside the window count against it, so a
+	// broadcast that recovers occasionally over hours never runs out, while
+	// one thrashing faster than the budget allows stops.
+	now := s.clock.NowUs()
+	s.restartedUs = withinWindow(s.restartedUs, now, captureRestartWindow)
+	budget := s.opts.RestartBudget
+	if len(s.restartedUs) >= budget {
+		s.mu.Unlock()
+		s.log.Error("capture is dying faster than it can be rebuilt; ending the broadcast",
+			"err", cause, "rebuilds", s.CaptureRestarts(),
+			"budget", budget, "window", captureRestartWindow)
+		return false
+	}
+	s.restartedUs = append(s.restartedUs, now)
+	inWindow := len(s.restartedUs)
+	ctx, stream, first := s.sessCtx, s.stream, s.cand
+	s.mu.Unlock()
+
+	s.log.Warn("capture died mid-broadcast; rebuilding the pipeline on the same portal grant",
+		"err", cause, "rebuilds_in_window", inWindow, "budget", budget)
+
+	// The full ladder, from the encoder that was working: a rebuild is the
+	// start-time cascade run again, so a stack whose DMA-BUF negotiation has
+	// gone bad falls through to system-memory capture on its own.
+	if err := s.startWithCascade(ctx, stream, first, true); err != nil {
+		s.mu.Lock()
+		s.restartErr = err
+		s.mu.Unlock()
+		s.log.Error("rebuilding capture failed; ending the broadcast", "err", err)
+		return false
+	}
+
+	s.mu.Lock()
+	s.restarts++
+	n, encoder, mode := s.restarts, s.encoder, s.captureMode
+	s.mu.Unlock()
+	s.log.Info("capture rebuilt; the broadcast continues",
+		"restarts", n, "encoder", encoder, "capture", mode.String())
+	return true
+}
+
+// withinWindow drops the timestamps older than window, keeping the rest in
+// place. The slice is the rate limiter's whole state: short by construction
+// (nothing is appended once it is full) and pruned on every consultation, so
+// a session that rebuilds for hours does not accumulate.
+func withinWindow(stamps []uint64, nowUs uint64, window time.Duration) []uint64 {
+	cutoff := uint64(window.Microseconds())
+	kept := stamps[:0]
+	for _, at := range stamps {
+		if nowUs >= at && nowUs-at < cutoff {
+			kept = append(kept, at)
+		}
+	}
+	return kept
+}
+
+// CaptureRestarts implements engine.RestartingSource: completed mid-session
+// rebuilds. Nonzero means viewers saw a freeze this session, and it is the only
+// place that says so — the recovery is deliberately silent everywhere else.
+func (s *Source) CaptureRestarts() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restarts
 }
 
 // drain empties a queue left behind by a dead attempt.
@@ -827,6 +1046,21 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 		// wins.
 		return
 	}
+
+	cause := waitErr
+	if cause == nil {
+		cause = copyErr
+	}
+	if cause == nil {
+		cause = errors.New("the GStreamer pipeline stopped unexpectedly")
+	}
+	// The child is dead; the *broadcast* need not be. A rebuild that succeeds
+	// hands both channels to a new child and this goroutine simply retires —
+	// closing them here is what would end the session (see restartCapture).
+	if s.restartCapture(cause) {
+		return
+	}
+
 	defer close(s.frames)
 	if ch := s.audioChan(); ch != nil {
 		// The engine's audio pump ends the same way the frame pump does.
@@ -838,13 +1072,14 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 	if s.stopped {
 		return // a clean stop: the child died because we killed it
 	}
-	switch {
-	case waitErr != nil:
-		s.err = waitErr
-	case copyErr != nil:
-		s.err = copyErr
-	default:
-		s.err = errors.New("capture ended: the GStreamer pipeline stopped unexpectedly")
+	// The engine prefixes this with "capture ended:" — see Session.pump.
+	s.err = cause
+	if s.restartErr != nil {
+		// Both halves of the story: what killed capture, and why it could not
+		// be brought back. The rebuild's error is the wrapped one — it carries
+		// the sentinels (ErrCaptureFormat, ErrNoHardwareEncoder) the shells
+		// turn into a sentence someone can act on.
+		s.err = fmt.Errorf("capture died (%v) and the pipeline could not be rebuilt: %w", cause, s.restartErr)
 	}
 }
 
@@ -915,11 +1150,17 @@ func (s *Source) offer(frame engine.AccessUnit, h *pumpHandle) {
 	if h.droppingGOP && !frame.Keyframe {
 		return // poisoned GOP: the reference chain is already broken
 	}
+	// The epoch travels on the frame that actually lands, not on the first one
+	// offered: a rebuilt pipeline's opening frames can still be dropped here,
+	// and the sender must re-derive its config from a keyframe the viewer
+	// really receives (pumpHandle.newEpoch).
+	frame.EncoderRestarted = h.newEpoch
 	if frame.Keyframe {
 		for flushed := false; ; {
 			select {
 			case s.frames <- frame:
 				h.droppingGOP = false
+				h.newEpoch = false
 				return
 			default:
 			}
@@ -941,6 +1182,7 @@ func (s *Source) offer(frame engine.AccessUnit, h *pumpHandle) {
 	} else {
 		select {
 		case s.frames <- frame:
+			h.newEpoch = false
 			return
 		default:
 		}

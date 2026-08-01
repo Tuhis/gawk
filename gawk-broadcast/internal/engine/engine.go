@@ -734,6 +734,9 @@ func (s *Session) Stats() Stats {
 		if as, ok := m.(AppAudioSource); ok {
 			st.AudioApp = as.AudioApp()
 		}
+		if rs, ok := m.(RestartingSource); ok {
+			st.CaptureRestarts = rs.CaptureRestarts()
+		}
 	}
 	st.AudioState = s.audioState()
 	s.mu.Lock()

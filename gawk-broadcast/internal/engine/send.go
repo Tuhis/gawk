@@ -197,6 +197,14 @@ func (s *sender) send(au AccessUnit) {
 	}
 	s.mu.Unlock()
 
+	if au.EncoderRestarted {
+		// A rebuilt capture pipeline is a new SPS lineage on a session the
+		// viewer is already decoding (AccessUnit.EncoderRestarted). Drop the
+		// cached config so this frame's own SPS derives it: the frameId space
+		// and the relay session carry on untouched, but what we *say* about
+		// the bitstream has to describe the pipeline now producing it.
+		s.configDatagram, s.codec = nil, ""
+	}
 	if au.Keyframe {
 		s.ensureConfig(au.Data)
 		s.sendKeyframe(frameID, au)

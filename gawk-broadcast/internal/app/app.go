@@ -950,6 +950,14 @@ type Diagnostics struct {
 	// keyframes have left the encoder. The target is the rung's 500 ms GOP.
 	KeyframeIntervalMs *float64 `json:"keyframeIntervalMs"`
 
+	// CaptureRestarts counts capture pipelines rebuilt mid-broadcast after
+	// their child died (docs/39 D2). Zero on a clean session; anything else
+	// says the viewer saw that many freezes and the broadcast survived them.
+	// It belongs in the dump precisely because the recovery is silent
+	// everywhere else — this is the artifact someone pastes when they ask why
+	// their stream hitched.
+	CaptureRestarts uint64 `json:"captureRestarts"`
+
 	TimeSyncRttMs    *float64 `json:"timeSyncRttMs"`
 	TimeSyncOffsetUs *int64   `json:"timeSyncOffsetUs"`
 
@@ -1008,6 +1016,7 @@ func (a *App) Diagnostics() string {
 	d.KeyframeStreamsFailed = s.KeyframeStreamsFailed
 	d.KeyframeStreamsSuperseded = s.KeyframeStreamsSuperseded
 	d.FramesDroppedAtSend = s.FramesDroppedAtSend
+	d.CaptureRestarts = s.CaptureRestarts
 	if s.KeyframeIntervalAvailable {
 		kf := s.KeyframeIntervalMs
 		d.KeyframeIntervalMs = &kf
