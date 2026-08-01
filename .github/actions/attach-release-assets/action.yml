@@ -28,6 +28,25 @@ inputs:
   dir:
     description: directory whose files each become a release asset
     required: true
+  sha:
+    # Exists because the gate is the ONLY thing standing between a build and a
+    # release, and a build that was never made has no commit to match. When
+    # broadcast-windows.yml stopped loading on the v1.1.0 release commit, that
+    # release published with no binary, and no later push could fix it: every
+    # subsequent commit fails `sha !== context.sha` — correctly, since the tag
+    # really does point somewhere else.
+    #
+    # Overriding this does NOT weaken the gate, it re-aims it. The tag must
+    # still point at the commit named here, and the caller is expected to have
+    # BUILT that commit; broadcast-windows.yml checks it out to do so. Passing
+    # a commit you did not build is how you staple the wrong bytes onto a
+    # release, which is the exact failure the gate exists to prevent.
+    description: >-
+      Commit the release tag must point at. Defaults to the commit being built.
+      Set only to backfill a release whose assets were missed, and only to a
+      commit this run actually built.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -40,6 +59,7 @@ runs:
         COMPONENT: ${{ inputs.component }}
         ASSET_DIR: ${{ inputs.dir }}
         HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        EXPECT_SHA: ${{ inputs.sha }}
       with:
         script: |
           const fs = require('fs');
@@ -51,6 +71,12 @@ runs:
           // The manifest at THIS commit already holds the versions being
           // released: release-please updates it in the release PR, and merging
           // that PR is the release commit.
+          // The commit the tag has to point at. context.sha on every ordinary
+          // run; a backfill names an older commit it has just rebuilt, and the
+          // manifest in the workspace must be that commit's — see the
+          // attach-release job in broadcast-windows.yml, which checks it out.
+          const expectSha = process.env.EXPECT_SHA || context.sha;
+
           const manifest = JSON.parse(fs.readFileSync('.release-please-manifest.json', 'utf8'));
           const version = manifest[component];
           if (!version) {
@@ -94,8 +120,8 @@ runs:
             core.info(`${tag} does not exist — nothing to attach`);
             return;
           }
-          if (sha !== context.sha) {
-            core.info(`${tag} points at ${sha.slice(0, 7)}, not this commit — nothing to attach`);
+          if (sha !== expectSha) {
+            core.info(`${tag} points at ${sha.slice(0, 7)}, not ${expectSha.slice(0, 7)} — nothing to attach`);
             return;
           }
 

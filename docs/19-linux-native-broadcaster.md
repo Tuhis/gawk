@@ -1617,4 +1617,86 @@ against the latest release without knowing a version first.
 | The tarball's binaries are executable and `sha256sum -c` passes | packaging steps run locally against the real CI artifact |
 | Re-running the attach job replaces assets rather than failing | `deleteReleaseAsset` before each upload |
 | The upload token is never held by a job running PR-authored code | `if: github.event_name == 'push'` on both attach jobs |
-| A release actually ends up with its assets | **pending the next release** — first real exercise of the upload leg |
+| A release actually ends up with its assets | **half met on first exercise (2026-08-01, `c4a0a80`).** `gawk-broadcast-v1.10.0` got its tarball and `SHA256SUMS`. `gawk-broadcast-windows-v1.1.0` got nothing — not a fault in this mechanism, but in the workflow carrying it; see Decision 25 |
+
+## Decision 25: the attach gate can be re-aimed, because a missed release cannot be re-run (2026-08-01)
+
+Decision 24's first real exercise attached the Linux tarball and nothing at all
+on Windows. The cause was not in the gate: `broadcast-windows.yml` had
+`attach-release: needs: broadcast-windows`, and the three-way lint/test/build
+split (`docs/38` D18) had renamed that job. An unresolvable `needs:` does not
+fail a job — **the workflow does not load at all**: zero jobs, no logs, no
+annotation, and the run titled `.github/workflows/broadcast-windows.yml`,
+because GitHub falls back to the path when it cannot parse the file. `lint`,
+`test` and `build` never ran either.
+
+Both pull requests were green and neither was wrong on its own. #218 added
+`attach-release` against a base that still had a single job; #217 renamed that
+job against a base that had no `attach-release`; the two merged forty minutes
+apart and neither was re-tested against the other's merged state. Nothing
+inside either file could have caught it — the gate for this class is the
+repository's **"Require branches to be up to date before merging"**.
+
+### Why a later push could not repair it
+
+The gate is "does `<component>-v<manifest version>` point at *this* commit",
+and for `gawk-broadcast-windows-v1.1.0` that commit is `c4a0a80` forever. Every
+later commit fails the comparison — correctly. The action's own comment assumed
+a re-run was the recovery path ("the whole recovery path if the upload half
+ever breaks"), but that only holds for the **upload** half. When the **build**
+half is what failed there is nothing to re-run: a GitHub re-run replays the
+workflow file as of that commit, which here is the file that would not load.
+
+So the recovery path had to come from somewhere the broken file is not:
+
+- **`workflow_dispatch` on `broadcast-windows.yml`, with an `attach_to` input.**
+  A dispatch runs the workflow as of the ref you dispatch *from* — a fixed one —
+  against the source you *name*. `lint`, `test` and `build` all check out
+  `attach_to`, so a backfill re-verifies and rebuilds the released commit rather
+  than assuming today's tree still matches it.
+- **An optional `sha` input on `attach-release-assets`.** This **re-aims the
+  gate, it does not weaken it.** The tag must still point at exactly the commit
+  named, and that commit is the one `build` just compiled (`git rev-parse HEAD`
+  of the checked-out tree, threaded through `needs.build.outputs.sha` to the
+  artifact name, `BUILD-INFO.txt` and the gate alike). Passing a commit you did
+  not build is precisely how you staple wrong bytes onto a release, which is
+  what the gate exists to stop.
+
+Three details that are easy to get backwards:
+
+- **`attach-release` deliberately does *not* check out `attach_to`.** It is the
+  one job that runs the composite action, and a backfill exists because
+  something at the target commit was broken; checking it out would run the old,
+  broken tooling to repair the old, broken tooling's damage. At `c4a0a80` the
+  action has no `sha` input at all, so it would silently compare against the
+  wrong commit and attach nothing. Tooling from the dispatched ref, source from
+  the target.
+- **The manifest, however, must be the target's**, since the gate resolves the
+  tag from it and the version being backfilled is the one *that* commit
+  released — not the one `main` has since moved to. A sparse second checkout
+  swaps in that one file.
+- **`BUILD-INFO.txt` reports the commit compiled, not `github.sha`**, which on a
+  backfill is the ref the run was dispatched from. It is provenance; it has to
+  be true.
+
+`workflow_dispatch` does not reopen Decision 24's push-only posture:
+dispatching requires write access to the repository, and the job's `if` names
+the event explicitly rather than leaning on `inputs` being empty outside a
+dispatch — true, but a coercion rule, and not a place to be clever about
+falsiness. `ci.yml`'s Linux half deliberately does **not** get the same input:
+the gap has never bitten there (it attached correctly on the very release the
+Windows half lost, and `ci.yml` has no path filter, so it cannot fail to run
+for a component that bumped). `sha` defaults to `github.sha`, so that half is
+unchanged.
+
+| Acceptance criterion | Verified by |
+|---|---|
+| Every `needs:` in every workflow resolves to a defined job | parsed all three workflows; `attach-release` now `needs: [lint, test, build]` |
+| `needs:` is all three jobs, not just `build` — a release asset is never published off a red lint or test run | the reference it replaces meant "the whole component passed"; only `build` makes the artifact |
+| The four gate cases from Decision 24 still behave identically | stub harness re-run against the shipped script, extracted from `action.yml` rather than copied: match / wrong commit / not bumped / unknown component |
+| A backfill attaches when the tag points at the rebuilt commit | harness case 5 — **failed before the `sha` input, passes after** |
+| A backfill refuses when the tag does *not* point at the named commit | harness case 6 — refuses, naming both shas |
+| An ordinary push is unaffected now that `sha` is always passed | harness case 7 (`sha` == `context.sha`) and case 8 (empty `sha` falls back to `context.sha`, the `ci.yml` path) |
+| The `contents: write` token is still never held by a job running PR-authored code | `if` names `push` and `workflow_dispatch` explicitly; `pull_request` cannot satisfy either clause |
+| A dispatch without `attach_to` builds but touches no release | second clause of the `if` requires a non-empty `attach_to` |
+| The artifact `attach-release` downloads is the one `build` uploaded | both names derive from `build`'s single `git rev-parse` |

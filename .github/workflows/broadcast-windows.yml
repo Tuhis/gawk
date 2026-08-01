@@ -120,6 +120,22 @@ on:
       - "gawk-server/wire/**"
       - ".github/actions/rust-windows-preflight/**"
       - ".github/workflows/broadcast-windows.yml"
+  # The recovery path this workflow lacked. attach-release-assets already
+  # tolerates re-running an upload ("the whole recovery path if the upload half
+  # ever breaks"), but re-running is not available when the BUILD half is what
+  # failed: a re-run replays the workflow file as of that commit, which for
+  # v1.1.0 is the file that would not load. Dispatching runs the file as of the
+  # ref you dispatch from — a fixed one — against the source you name.
+  workflow_dispatch:
+    inputs:
+      attach_to:
+        description: >-
+          Backfill. Ref or SHA of an already-released commit whose release
+          assets were missed. Everything is built FROM that commit and attached
+          to its release. Leave empty for an ordinary on-demand run, which
+          builds the current ref and attaches nothing.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -161,7 +177,13 @@ jobs:
       run:
         working-directory: gawk-broadcast-windows
     steps:
+      # `inputs.attach_to` is empty on push and pull_request, so this is the
+      # ordinary checkout in every case but a backfill. A backfill lints, tests
+      # AND builds the commit it is attaching to, rather than trusting that
+      # today's tree still matches what was released.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/rust-windows-preflight
 
       - name: Format
@@ -208,7 +230,13 @@ jobs:
       # either way and is deliberately left out of this.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
     steps:
+      # `inputs.attach_to` is empty on push and pull_request, so this is the
+      # ordinary checkout in every case but a backfill. A backfill lints, tests
+      # AND builds the commit it is attaching to, rather than trusting that
+      # today's tree still matches what was released.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/rust-windows-preflight
 
       # Wire golden vectors, chunking, strict-parse rejections, GF(256)
@@ -255,12 +283,28 @@ jobs:
 
   build:
     runs-on: ioio-k8s
+    # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
+    # and the gate compares commit SHAs. This is also the single fact that ties
+    # the artifact, the gate and the thing actually compiled together — they
+    # all derive from one `git rev-parse` of the tree that was checked out.
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
     defaults:
       run:
         working-directory: gawk-broadcast-windows
     steps:
+      # `inputs.attach_to` is empty on push and pull_request, so this is the
+      # ordinary checkout in every case but a backfill. A backfill lints, tests
+      # AND builds the commit it is attaching to, rather than trusting that
+      # today's tree still matches what was released.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/rust-windows-preflight
+
+      - name: Resolve the commit being built
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # The critical path. ~4:31 of this is the third-party dependency set and
       # ~2:13 is a single serial tail — the app crate's codegen plus thin LTO
@@ -279,8 +323,11 @@ jobs:
           cp README.md INSTALL.md dist/
           {
             echo "gawk-broadcast-windows (R34, docs/38)"
-            echo "commit:    ${{ github.sha }}"
-            echo "ref:       ${{ github.ref }}"
+            # The commit COMPILED, which on a backfill is not github.sha —
+            # that would name the ref the run was dispatched from and quietly
+            # misattribute the binary. This is provenance; it has to be true.
+            echo "commit:    ${{ steps.source.outputs.sha }}"
+            echo "ref:       ${{ inputs.attach_to || github.ref }}"
             echo "built:     $(date -Iseconds)"
             echo "toolchain: $(rustc --version)"
             echo "target:    ${WINDOWS_TARGET}"
@@ -301,7 +348,9 @@ jobs:
       # verification path itself broke.
       - uses: actions/upload-artifact@v7
         with:
-          name: gawk-broadcast-windows-x86_64-${{ github.sha }}
+          # Keyed by the commit built, which equals github.sha on every run but
+          # a backfill. attach-release downloads it by needs.build.outputs.sha.
+          name: gawk-broadcast-windows-x86_64-${{ steps.source.outputs.sha }}
           path: gawk-broadcast-windows/dist/
           retention-days: 30
           if-no-files-found: error
@@ -323,18 +372,62 @@ jobs:
   # but a green release asset must not be published off a red test run. When
   # the three-way split renamed that job, this reference was left pointing at
   # a job that no longer existed; see the incident note above `jobs:`.
+  #
+  # A dispatch WITHOUT attach_to deliberately skips this: an on-demand build is
+  # for looking at a binary, not for touching a release.
+  #
+  # Never on pull_request, which is the security posture #218 chose and this
+  # keeps: the job holds `contents: write` and `uses:` an action from the tree
+  # it checks out, so on a PR it would run a contributor's own code with a
+  # write token. workflow_dispatch does not reopen that — dispatching requires
+  # write access to the repository, and the action still comes from the
+  # dispatched ref rather than from `attach_to`. The event is named explicitly
+  # in the second clause rather than leaning on `inputs` being empty outside a
+  # dispatch: that is true, but it is a coercion rule, and this is not a place
+  # to be clever about falsiness.
   attach-release:
     needs: [lint, test, build]
-    if: github.event_name == 'push'
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.attach_to != '')
     runs-on: ioio-k8s
     permissions:
       contents: write
     steps:
+      # Deliberately NOT `ref: attach_to`, unlike every other job here. This is
+      # the one job that runs the composite action below, and a backfill exists
+      # precisely because something at the target commit was broken — checking
+      # it out would run the old, broken tooling to repair the damage the old,
+      # broken tooling did. v1.1.0 is the live example: the action at that
+      # commit has no `sha` input, so a backfill checked out there would
+      # silently fall back to comparing against this run's commit and attach
+      # nothing. The tooling comes from the dispatched ref; only the source
+      # being built comes from the target.
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
         with:
-          name: gawk-broadcast-windows-x86_64-${{ github.sha }}
+          name: gawk-broadcast-windows-x86_64-${{ needs.build.outputs.sha }}
           path: staging
+
+      # ...with one exception: the manifest has to be the TARGET's, because the
+      # gate resolves the tag from it and the version being backfilled is the
+      # one that commit released, not the one main happens to be on now.
+      # Sparse, because this is the only file wanted from that tree.
+      - name: Read the manifest as of the commit being attached to
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          path: released
+          sparse-checkout: .release-please-manifest.json
+          sparse-checkout-cone-mode: false
+      - name: Swap in that manifest, and show which one the gate will read
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          cp released/.release-please-manifest.json .release-please-manifest.json
+          echo "manifest as of ${{ needs.build.outputs.sha }}:"
+          cat .release-please-manifest.json
       - name: Package the release assets
         run: |
           set -euo pipefail
@@ -358,3 +451,7 @@ jobs:
         with:
           component: gawk-broadcast-windows
           dir: assets
+          # Equals github.sha on every ordinary push, so this changes nothing
+          # there. On a backfill it is the commit `build` compiled, and the gate
+          # still refuses unless the component's tag points at exactly it.
+          sha: ${{ needs.build.outputs.sha }}

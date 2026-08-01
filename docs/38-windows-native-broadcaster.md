@@ -1015,6 +1015,17 @@ so the badge on a release download reads `+g<commit>` like any other. The
 mechanism, and the two traps in it, are in
 [docs/19 Decision 24](19-linux-native-broadcaster.md#decision-24-releases-carry-the-binaries-and-nothing-rebuilds-them-2026-08-01).
 
+**Renaming a job in `broadcast-windows.yml` is a breaking change — grep
+`needs:` first.** The very first release to exercise the above attached nothing
+here, because `attach-release` still named the single job that D18's three-way
+split had renamed, and an unresolvable `needs:` means the workflow does not
+load *at all* — no jobs, no logs, and the run titled with the file path instead
+of the workflow name. The recovery path (`workflow_dispatch` with `attach_to`,
+and the gate's `sha` input) is
+[docs/19 Decision 25](19-linux-native-broadcaster.md#decision-25-the-attach-gate-can-be-re-aimed-because-a-missed-release-cannot-be-re-run-2026-08-01);
+note that a plain GitHub re-run cannot fix this class, since it replays the
+workflow file as of the commit that could not load it.
+
 **No `version:` line in `BUILD-INFO.txt`**, unlike the Linux artifact, which
 gets one by running its own binary. This job cross-compiles and cannot run the
 EXE, and composing the string in YAML would make the workflow a second mirror of
