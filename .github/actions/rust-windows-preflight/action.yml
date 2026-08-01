@@ -1,0 +1,75 @@
+# Shared by every job in .github/workflows/broadcast-windows.yml.
+#
+# Those jobs install nothing: clang/lld/llvm, cmake+ninja+make, the clang-cl
+# shim, the pinned Rust toolchain with the msvc target, cargo-xwin, Go and the
+# pre-splatted MSVC SDK are all baked into the runner image (ioio
+# runner-image/Dockerfile), which is where the rationale for each piece lives.
+#
+# This action exists so that a missing or stale image fails in two seconds with
+# a sentence naming the fix, instead of thirty minutes later inside a build
+# script. It is also the coupling's only documentation at this end: bumping
+# rust-toolchain.toml still works without touching the image (rustup fetches
+# what it pins), it just costs the download.
+#
+# It is one action rather than a block copied into each job on purpose. The
+# three jobs use overlapping-but-different subsets of the toolchain, and three
+# hand-maintained lists would drift — the whole point is that the check is
+# stricter than any single job needs, so nobody has to reason about which job
+# needs `make`.
+name: Rust/Windows cross preflight
+description: Fail fast when the self-hosted runner image lacks the Rust/Windows cross toolchain.
+
+inputs:
+  windows-target:
+    description: Rust target triple that must already be installed.
+    required: false
+    default: x86_64-pc-windows-msvc
+  working-directory:
+    # A composite action's steps do NOT inherit the calling job's
+    # `defaults.run.working-directory` — they start at GITHUB_WORKSPACE. That
+    # matters here and nowhere else in this file: rustup resolves the pinned
+    # toolchain from the rust-toolchain.toml in its working directory, so run
+    # from the repo root it would report the runner's DEFAULT toolchain and
+    # check that toolchain's installed targets. Both answers would be about a
+    # compiler the build never uses.
+    description: Directory holding rust-toolchain.toml.
+    required: false
+    default: gawk-broadcast-windows
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        WINDOWS_TARGET: ${{ inputs.windows-target }}
+      run: |
+        set -euo pipefail
+        missing=0
+        # ld.lld is here because the host builds link through it
+        # (CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS in the workflow).
+        # Debian's `lld` package provides ld.lld and lld-link together, so a
+        # runner image with one has the other — this asserts it rather than
+        # assuming it.
+        for t in clang clang-cl ld.lld lld-link llvm-lib cmake ninja make cc \
+                 pkg-config rustup cargo cargo-xwin go; do
+          command -v "$t" >/dev/null 2>&1 || { echo "::error::$t not found"; missing=1; }
+        done
+        pkg-config --exists fontconfig || { echo "::error::fontconfig .pc not found"; missing=1; }
+        rustup target list --installed | grep -qx "$WINDOWS_TARGET" \
+          || { echo "::error::rust target $WINDOWS_TARGET not installed"; missing=1; }
+        if [ "$missing" != 0 ]; then
+          echo "::error::This job needs ghcr.io/tuhis/actions-runner with the Rust/Windows cross toolchain (ioio runner-image/Dockerfile). If that image was just changed, wait for the build-runner-image workflow and the Flux rollout."
+          exit 1
+        fi
+        echo "rustc      $(rustc --version)"
+        echo "cargo-xwin $(cargo xwin --version)"
+        echo "go         $(go version)"
+        echo "xwin SDK   ${XWIN_CACHE_DIR:-<unset, will download per run>}"
+        # nproc reports the node's cores (it reads the affinity mask); the CFS
+        # quota in cpu.max is what actually caps this pod, and what cargo's
+        # default -j resolves to. Logged because they disagree, and because
+        # the runner pod's cpu limit is a tuning knob that lives in another
+        # repo (ioio clusters/baremetal/actions-runners/gawk.yaml) — this line
+        # is how you confirm a change to it reached the job.
+        echo "cpus       nproc=$(nproc)  cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo unknown)"

@@ -222,6 +222,15 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   `ViewerPipeline`; `ViewerSession` reconnects only on transport drops. (H.264
   `description` handling also matters: an Annex-B extradata blob must *not* be
   passed as the AVCC `description` — `viewer.ts` sniffs `avcC`'s `0x01` prefix.)
+- **A host-target rustflag makes a cross build stop sharing with a host
+  build**, and it looks like noise rather than a regression. Cargo does not
+  apply `target.<triple>.rustflags` to host artifacts while cross-compiling,
+  but does apply them when building *for* the host — so setting one
+  workflow-wide in `gawk-broadcast-windows` CI made `cargo xwin clippy
+  --target msvc` build all 107 proc-macro and build-script units bare and
+  `cargo clippy` rebuild every one of them (367 units → 481, the step 2:02 →
+  2:58). Scope such flags to the job that needs them.
+  ([docs/38](docs/38-windows-native-broadcaster.md) D18)
 
 **Certificates (Chromium `serverCertificateHashes` rules)**
 
