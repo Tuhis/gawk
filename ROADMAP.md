@@ -3039,6 +3039,18 @@ decides the milestone.** V-2 through V-4 in particular (window resize,
 exclusive-fullscreen, occlusion/minimisation per compositor) are claims this
 work makes on paper that only a desktop can settle.
 
+**Post-ship fix, 2026-08-01 — mid-session capture restart.** A window share
+died 27 s in with `pipewiresrc: stream error: unhandled format`, one viewer
+attached, and ended the broadcast. V-2's fallback branch — "the child dies and
+the cascade restart reuses the portal session" — turned out to be an assumption
+the design doc made and no code implemented: the capture ladder only ever ran
+inside the start-time probe window. `Source.restartCapture` now rebuilds the
+pipeline on the portal grant already in memory (rate-limited, ladder-walking,
+counted as `captureRestarts`, first frame a keyframe carrying a config epoch).
+The correction and its four properties are recorded in docs/39 D2; V-2 itself
+stays open, now as a question about *how well* the rebuild behaves per
+compositor rather than whether it exists.
+
 ---
 
 ## R36 — Telemetry UI usability pass

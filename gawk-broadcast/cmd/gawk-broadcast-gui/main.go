@@ -866,6 +866,11 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 						s.KeyframeStreamsSent, s.KeyframeStreamsFailed, s.KeyframeStreamsSuperseded)},
 					{"Keyframe interval", kf},
 					{"Dropped at send", fmt.Sprintf("%d", s.FramesDroppedAtSend)},
+					// "none" on a healthy session, and the answer to "why did
+					// it hitch?" on any other: each rebuild is a capture death
+					// the broadcast survived, and a freeze viewers saw
+					// (docs/39 D2). Nothing else on screen would say so.
+					{"Capture rebuilds", captureRebuilds(s)},
 					{"Datagrams", fmt.Sprintf("%d · %.1f MB", s.DatagramsSent, float64(s.BytesSent)/1e6)},
 					{"RTT (time-sync)", rtt},
 					{"Audio", gawkapp.AudioStatus(s)},
@@ -1096,6 +1101,17 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// captureRebuilds renders the mid-broadcast capture restarts (docs/39 D2).
+// "none" rather than "0": the row exists to answer a question someone is
+// already asking about a hitch they saw, and a bare zero reads like a number
+// nobody has looked at.
+func captureRebuilds(s engine.Stats) string {
+	if s.CaptureRestarts == 0 {
+		return "none"
+	}
+	return fmt.Sprintf("%d (capture died and was rebuilt; each one was a freeze)", s.CaptureRestarts)
 }
 
 // audioFormat renders the format actually advertised to viewers, or a dash

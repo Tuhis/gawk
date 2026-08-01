@@ -379,6 +379,20 @@ encoders drain frames without that signal ever firing.
   error, never "no hardware encoder". Diagnose with `GST_DEBUG=pipewire*:5` in
   the environment — the child inherits it and its stderr lands in the debug
   log.
+- **A capture death *after* the probe window rebuilds the pipeline; it does
+  not end the broadcast.** Window shares renegotiate their screencast format
+  whenever the window resizes, changes output or hands its surface over, and
+  the same "unhandled format" then arrives mid-stream, where the start-time
+  ladder cannot help. `Source.restartCapture` re-runs the cascade on the
+  portal grant already in memory — no second picker, same relay session, same
+  frameId space, and above all the *same* frame channel, because the engine
+  ends the broadcast when that channel closes. Rebuilds are rate-limited
+  (`captureRestartBudget` starts inside any `captureRestartWindow` — 60 per
+  30 s, so only sustained thrashing gives up) and counted
+  (`Stats.CaptureRestarts`). The rebuilt
+  pipeline's first frame is a keyframe carrying `EncoderRestarted`, which
+  re-derives the DecoderConfig: a rebuild may land on a different rung or
+  encoder, and the viewer's decoder has only that codec string to go on.
 - **`GAWK_DUMP_TS=<path>` tees the raw MPEG-TS to disk** while broadcasting.
   Play it with `mpv`/`ffplay` — it is exactly what the encoder produced, so it
   splits "the capture is black at the source" from "the viewer can't decode

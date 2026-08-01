@@ -155,10 +155,38 @@ Ported from docs/38 D11 (as amended 2026-07-31), adapted to this pipeline:
   stay fixed, the candidate's converter absorbs the scale. Same-aspect
   resizes are invisible; aspect *changes* stretch (non-goal above). If
   renegotiation instead kills the child — DMA-BUF renegotiation is the
-  documented fragile spot (docs/19 gotchas) — the engine's existing live
-  failure path restarts the cascade **reusing the portal session in memory**,
-  same fitted dims, costing a brief freeze and no new picker. Which branch
-  each compositor takes is V-2, not something this doc asserts.
+  documented fragile spot (docs/19 gotchas) — the cascade is restarted
+  **reusing the portal session in memory**, same fitted dims, costing a brief
+  freeze and no new picker. Which branch each compositor takes is V-2, not
+  something this doc asserts.
+
+  **Correction, 2026-08-01.** The sentence above said "the engine's existing
+  live failure path restarts the cascade", and no such path existed: the
+  capture ladder runs only inside the start-time probe window, and an adopted
+  child's death closed the frame channel, which `Session.pump` reads as the end
+  of the broadcast. The field report that found it was not a resize but the
+  same mechanism — a window share, 27 s in, one viewer attached, killed by
+  `pipewiresrc: stream error: unhandled format`. The restart is now
+  implemented where the assumption placed it (`Source.restartCapture`), with
+  four properties this doc did not spell out and the implementation had to
+  settle:
+  1. **rate-limited, not capped** — `captureRestartBudget` rebuilds inside any
+     `captureRestartWindow` (60 per 30 s). A session total was the first cut
+     and was wrong in both directions: it would tell a broadcaster who resized
+     their window a few times over a long stream that their machine was
+     broken, while the thing actually worth refusing is a hot loop — capture
+     that cannot run at all, spinning up children as fast as they die behind a
+     permanently frozen picture;
+  2. **the full ladder, from the encoder that was working** — a stack whose
+     DMA-BUF negotiation has gone bad converges on system-memory capture by
+     itself, rather than dying the same way every time;
+  3. **a config epoch** — the rebuilt pipeline's first frame is a keyframe and
+     carries `AccessUnit.EncoderRestarted`, so the sender re-derives the
+     DecoderConfig it otherwise caches for the whole session (a rebuild may
+     land on a different rung or encoder, and on the Annex-B path that codec
+     string is all the viewer's decoder gets);
+  4. **counted** — `Stats.CaptureRestarts`, because a recovery this quiet is
+     otherwise indistinguishable from a broadcast that never missed a beat.
 
 ### D3 — App audio: a helper-owned virtual sink, port links as a tee, and a gst pipeline that never learns any of it happened
 
@@ -422,7 +450,7 @@ that only a desktop can prove:
 | # | Claim to verify |
 |---|---|
 | V-1 | Fit: a deliberately odd-sized window encodes fitted-not-stretched; the GUI shows fitted dims (AG3) |
-| V-2 | Window resize mid-broadcast: renegotiation either survives (same-aspect invisible; aspect change stretches) or the child dies and the cascade restart reuses the portal session without a picker — per compositor, KWin + Mutter |
+| V-2 | Window resize mid-broadcast: renegotiation either survives (same-aspect invisible; aspect change stretches) or the child dies and the rebuild reuses the portal session without a picker — per compositor, KWin + Mutter. Since 2026-08-01 the second branch is implemented rather than assumed (D2 correction); what a desktop still has to show is that the freeze is brief, the picker stays away, and `captureRestarts` counts what happened |
 | V-3 | Exclusive-fullscreen transition of the captured window: the docs/19 "capture stops on fullscreen" report, re-tested first-hand at last — window streams specifically |
 | V-4 | Occluded and minimized window delivery, KWin vs. Mutter (expected: occluded fine on Wayland; minimized varies) — whichever fails gets an in-GUI hint, not a fight |
 | V-5 | AG1 proper: second app's audio inaudible in a real viewer while the game's audio plays |

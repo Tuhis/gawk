@@ -186,6 +186,7 @@ var fieldMeta = map[string]meta{
 	"targetBitrateBps": gauge("bps", "Bitrate the broadcast was asked to produce."),
 	"timeSyncOffsetUs": gauge("µs", "Clock offset the time-sync exchange settled on."),
 	"resumes":          counter("resumes", "Times the native broadcaster resumed a broadcast."),
+	"captureRestarts":  counter("rebuilds", "Times the native broadcaster rebuilt a capture pipeline that died mid-broadcast. Each one is a freeze the viewer saw."),
 
 	// --- broadcaster: audio lane -------------------------------------------
 	"audioEncodeLagMs":     gauge("ms", "How far behind real time the audio encoder is running."),

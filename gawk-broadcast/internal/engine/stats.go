@@ -117,6 +117,14 @@ type Stats struct {
 	Resumes  uint64 `json:"resumes"`
 	Resuming bool   `json:"resuming"`
 
+	// CaptureRestarts counts how many times the capture pipeline died
+	// mid-session and was rebuilt without ending the broadcast (RestartingSource
+	// — the native path's compositor-renegotiation recovery). It is the capture
+	// side of Resumes and reads the same way: a broadcast that rebuilds every
+	// few minutes is a working broadcast on a failing path, and the viewer's
+	// only symptom is a freeze they cannot attribute.
+	CaptureRestarts uint64 `json:"captureRestarts"`
+
 	// System audio (R25, docs/28), mirroring the browser lane's audio stats
 	// so the two dumps read alike.
 	//

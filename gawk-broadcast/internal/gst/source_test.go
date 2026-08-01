@@ -530,8 +530,10 @@ func TestKeyframeSupersedesAFullQueue(t *testing.T) {
 	}
 }
 
-// A child that dies *after* the probe window was working: that is a genuine
-// failure, and it must surface with its stderr rather than hang or go quiet.
+// A child that dies *after* the probe window was working, so the source first
+// tries to rebuild it (restart_test.go). What this pins is the end of that
+// road: when the rebuilds are spent, the failure surfaces with the child's own
+// stderr rather than hanging or going quiet.
 func TestChildDeathSurfacesWithStderr(t *testing.T) {
 	fp := &fakePortal{}
 	// Streams briefly, then dies complaining.

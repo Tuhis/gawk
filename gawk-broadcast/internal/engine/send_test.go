@@ -254,6 +254,68 @@ func TestKeyframeGoesOnStreamWithEmbeddedConfig(t *testing.T) {
 	}
 }
 
+// highProfileKeyframeAU is a keyframe from a *different* encoder lineage: the
+// same shape, a different SPS profile/level, so the codec string parsed out of
+// it differs from keyframeAU's.
+func highProfileKeyframeAU() []byte {
+	sps := []byte{0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0x99, 0x11}
+	return bytes.Join([][]byte{sps, testPPS, testIDR}, nil)
+}
+
+// configCodec reads the codec string out of the config embedded in a keyframe
+// stream — what a late joiner primed from the relay's cache actually gets.
+func configCodec(t *testing.T, str *fakeSendStream) string {
+	t.Helper()
+	msg := waitForStreamBytes(t, str)
+	hdr, err := wire.ParseStreamFrameHeader(msg)
+	if err != nil {
+		t.Fatalf("stream frame header: %v", err)
+	}
+	if hdr.ConfigLen == 0 {
+		t.Fatal("keyframe carries no config")
+	}
+	cfg, err := wire.ParseDecoderConfig(msg[wire.StreamFrameHeaderSize : wire.StreamFrameHeaderSize+int(hdr.ConfigLen)])
+	if err != nil {
+		t.Fatalf("embedded config: %v", err)
+	}
+	return cfg.Codec
+}
+
+// The DecoderConfig is derived once and cached for the whole broadcast, which
+// is right while one child owns the encode — and wrong the moment capture is
+// rebuilt under a live session (gst's mid-session restart). A rebuild can land
+// on a different rung, or a different encoder entirely, and the codec string is
+// the *only* thing telling a viewer's decoder what it is about to receive on
+// this Annex-B path. So the first frame of a rebuilt pipeline carries the
+// epoch, and the epoch is what re-derives.
+func TestARebuiltPipelineReAdvertisesItsDecoderConfig(t *testing.T) {
+	sess := newFakeSession()
+	s := newTestSender(sess)
+
+	s.send(AccessUnit{Data: keyframeAU(), Keyframe: true, TimestampUs: 1})
+	waitForCond(t, func() bool { return len(sess.sendStreams()) == 1 }, "the first keyframe stream")
+	if got := configCodec(t, sess.sendStreams()[0]); got != "avc1.42E02A" {
+		t.Fatalf("codec = %q, want avc1.42E02A", got)
+	}
+
+	// An unmarked keyframe never re-derives: within one pipeline the config is
+	// settled, and re-parsing every keyframe would be work with no question
+	// behind it.
+	s.send(AccessUnit{Data: highProfileKeyframeAU(), Keyframe: true, TimestampUs: 2})
+	waitForCond(t, func() bool { return len(sess.sendStreams()) == 2 }, "the second keyframe stream")
+	if got := configCodec(t, sess.sendStreams()[1]); got != "avc1.42E02A" {
+		t.Errorf("codec = %q on an unmarked keyframe, want the cached avc1.42E02A", got)
+	}
+
+	// The first frame of a rebuilt pipeline does.
+	s.send(AccessUnit{Data: highProfileKeyframeAU(), Keyframe: true, EncoderRestarted: true, TimestampUs: 3})
+	waitForCond(t, func() bool { return len(sess.sendStreams()) == 3 }, "the rebuilt pipeline's first keyframe stream")
+	if got := configCodec(t, sess.sendStreams()[2]); got != "avc1.640028" {
+		t.Errorf("codec = %q after a rebuild, want avc1.640028 parsed from the new SPS — a viewer configured for the dead pipeline's codec decodes nothing",
+			got)
+	}
+}
+
 // Decision 12: ≤1 keyframe stream in flight. With a 500 ms GOP a stalled
 // uplink would otherwise accumulate open streams toward stream-credit
 // exhaustion — the publisher-side mirror of R10's zombie finding. The browser

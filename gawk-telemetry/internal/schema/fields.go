@@ -224,8 +224,14 @@ var BroadcasterFields = map[string]Kind{
 	"viewerCountAvailable":      KindBool,
 	"resumes":                   KindNumber,
 	"resuming":                  KindBool,
-	"audioSource":               KindString,
-	"audioPacketsDropped":       KindNumber,
+	// The capture-side counterpart of resumes: the native broadcaster rebuilt
+	// a capture pipeline that died mid-session instead of ending the
+	// broadcast. Typed because the recovery is silent by design — a stream
+	// that freezes for a second every few minutes shows up here and nowhere
+	// else.
+	"captureRestarts":     KindNumber,
+	"audioSource":         KindString,
+	"audioPacketsDropped": KindNumber,
 	// R35 single-app sharing: what the picker returned ("screen"/"window")
 	// and, in app mode, whose audio was captured. Typed rather than left to
 	// arrive as unknowns, because "the wrong app's sound went out" is exactly
