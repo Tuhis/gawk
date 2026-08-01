@@ -76,6 +76,10 @@ type fakePortal struct {
 	opens int
 	err   error
 	files []*os.File
+	// R35: what the picker "returned". The zero value is a portal that
+	// reported neither — an older backend, and the pre-R35 behavior.
+	sourceType    portal.SourceType
+	width, height int
 }
 
 func (f *fakePortal) open(ctx context.Context, opts portal.Options) (*portal.Stream, error) {
@@ -91,7 +95,14 @@ func (f *fakePortal) open(ctx context.Context, opts portal.Options) (*portal.Str
 	}
 	w.Close()
 	f.files = append(f.files, r)
-	return &portal.Stream{NodeID: 7, FD: r, Version: 4}, nil
+	return &portal.Stream{
+		NodeID:     7,
+		FD:         r,
+		Version:    4,
+		SourceType: f.sourceType,
+		Width:      f.width,
+		Height:     f.height,
+	}, nil
 }
 
 func (f *fakePortal) openCount() int {
@@ -691,4 +702,72 @@ func mustAbs(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return a
+}
+
+// R35 AS1: the picker's answer has to survive the trip from the portal into
+// the pipeline and back out into the stats the shells read. Before this
+// milestone ParseStartResults dropped both properties on the floor, so the
+// engine could not have branched on them even if it had wanted to.
+func TestSourceReportsShareModeAndFittedGeometry(t *testing.T) {
+	cases := []struct {
+		name          string
+		sourceType    portal.SourceType
+		srcW, srcH    int
+		wantMode      string
+		wantW, wantH  int
+		wantSizeKnown bool
+	}{
+		{
+			name: "a monitor with no reported size keeps the configured rung",
+			// The pre-R35 shape: no source_type, no size.
+			wantMode: "screen", wantW: 1920, wantH: 1080, wantSizeKnown: true,
+		},
+		{
+			name:       "an ultrawide monitor is fitted, not stretched",
+			sourceType: portal.SourceMonitor, srcW: 3440, srcH: 1440,
+			wantMode: "screen", wantW: 1920, wantH: 804, wantSizeKnown: true,
+		},
+		{
+			name:       "a window reports window mode and its fitted size",
+			sourceType: portal.SourceWindow, srcW: 1000, srcH: 700,
+			wantMode: "window", wantW: 1542, wantH: 1080, wantSizeKnown: true,
+		},
+		{
+			name:       "a virtual source takes the screen path",
+			sourceType: portal.SourceVirtual, srcW: 1280, srcH: 720,
+			wantMode: "screen", wantW: 1920, wantH: 1080, wantSizeKnown: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &fakePortal{sourceType: tc.sourceType, width: tc.srcW, height: tc.srcH}
+			s := newSource(t, Options{Binary: streamingBinary(t), OpenPortal: fp.open})
+
+			// Before Start nothing is known, and the engine keeps reporting
+			// the configured rung rather than a guess.
+			if mode := s.ShareMode(); mode != "" {
+				t.Errorf("ShareMode before Start = %q, want empty", mode)
+			}
+			if _, _, ok := s.EncodeSize(); ok {
+				t.Error("EncodeSize is known before the portal has answered")
+			}
+
+			if _, err := s.Start(context.Background()); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer s.Stop()
+
+			if got := s.ShareMode(); got != tc.wantMode {
+				t.Errorf("ShareMode = %q, want %q", got, tc.wantMode)
+			}
+			w, h, ok := s.EncodeSize()
+			if ok != tc.wantSizeKnown {
+				t.Fatalf("EncodeSize known = %v, want %v", ok, tc.wantSizeKnown)
+			}
+			if w != tc.wantW || h != tc.wantH {
+				t.Errorf("EncodeSize = %dx%d, want %dx%d", w, h, tc.wantW, tc.wantH)
+			}
+		})
+	}
 }

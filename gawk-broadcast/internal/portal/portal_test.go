@@ -54,11 +54,22 @@ func newFakeCaller(version uint32) *fakeCaller {
 
 // streamsVariant builds an a(ua{sv}) the way the portal sends it.
 func streamsVariant(nodeID uint32) dbus.Variant {
+	return streamsVariantProps(nodeID, map[string]dbus.Variant{})
+}
+
+// streamsVariantProps is the same with per-stream properties, which is where
+// source_type and size live (R35).
+func streamsVariantProps(nodeID uint32, props map[string]dbus.Variant) dbus.Variant {
 	type stream struct {
 		NodeID uint32
 		Props  map[string]dbus.Variant
 	}
-	return dbus.MakeVariant([]stream{{NodeID: nodeID, Props: map[string]dbus.Variant{}}})
+	return dbus.MakeVariant([]stream{{NodeID: nodeID, Props: props}})
+}
+
+// sizeVariant builds the '(ii)' the portal sends for `size`.
+func sizeVariant(w, h int32) dbus.Variant {
+	return dbus.MakeVariant(struct{ W, H int32 }{w, h})
 }
 
 func (f *fakeCaller) ScreenCastVersion(ctx context.Context) (uint32, error) {
@@ -250,19 +261,139 @@ func TestSessionHandleAcceptsStringOrObjectPath(t *testing.T) {
 
 func TestParseStartResults(t *testing.T) {
 	// A restore_token in the results is ignored, not an error.
-	nodeID, err := ParseStartResults(map[string]dbus.Variant{
+	res, err := ParseStartResults(map[string]dbus.Variant{
 		"streams":       streamsVariant(99),
 		"restore_token": dbus.MakeVariant("tok"),
 	})
 	if err != nil {
 		t.Fatalf("ParseStartResults: %v", err)
 	}
-	if nodeID != 99 {
-		t.Errorf("nodeID = %d, want 99", nodeID)
+	if res.NodeID != 99 {
+		t.Errorf("nodeID = %d, want 99", res.NodeID)
 	}
 
 	if _, err := ParseStartResults(map[string]dbus.Variant{}); err == nil {
 		t.Error("accepted results with no streams")
+	}
+}
+
+// R35 AS1: source_type and size are what the mode and the encode geometry are
+// derived from (docs/39 D1/D2), so what the parser makes of every shape a
+// portal can send is the milestone's foundation.
+func TestParseStartResultsCarriesSourceTypeAndSize(t *testing.T) {
+	cases := []struct {
+		name    string
+		props   map[string]dbus.Variant
+		want    SourceType
+		wantW   int
+		wantH   int
+		window  bool
+		hasSize bool
+	}{
+		{
+			name:  "absent properties behave exactly like a monitor",
+			props: map[string]dbus.Variant{},
+			want:  SourceUnknown,
+		},
+		{
+			name: "monitor with a size",
+			props: map[string]dbus.Variant{
+				"source_type": dbus.MakeVariant(uint32(1)),
+				"size":        sizeVariant(3440, 1440),
+			},
+			want: SourceMonitor, wantW: 3440, wantH: 1440, hasSize: true,
+		},
+		{
+			name: "window with a size turns on app mode",
+			props: map[string]dbus.Variant{
+				"source_type": dbus.MakeVariant(uint32(2)),
+				"size":        sizeVariant(1000, 700),
+				"position":    dbus.MakeVariant(struct{ X, Y int32 }{10, 20}),
+				"id":          dbus.MakeVariant("some-mapping"),
+			},
+			want: SourceWindow, wantW: 1000, wantH: 700, window: true, hasSize: true,
+		},
+		{
+			name: "virtual takes the monitor path",
+			props: map[string]dbus.Variant{
+				"source_type": dbus.MakeVariant(uint32(4)),
+			},
+			want: SourceVirtual,
+		},
+		{
+			name: "a window with no reported size is still a window",
+			props: map[string]dbus.Variant{
+				"source_type": dbus.MakeVariant(uint32(2)),
+			},
+			want: SourceWindow, window: true,
+		},
+		{
+			// A backend sending the wrong type for a property we merely prefer
+			// must not fail a start that would otherwise work.
+			name: "malformed properties degrade instead of failing",
+			props: map[string]dbus.Variant{
+				"source_type": dbus.MakeVariant("window"),
+				"size":        dbus.MakeVariant("1920x1080"),
+			},
+			want: SourceUnknown,
+		},
+		{
+			name: "a nonsense size is treated as absent",
+			props: map[string]dbus.Variant{
+				"source_type": dbus.MakeVariant(uint32(2)),
+				"size":        sizeVariant(0, -4),
+			},
+			want: SourceWindow, window: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := ParseStartResults(map[string]dbus.Variant{
+				"streams": streamsVariantProps(7, tc.props),
+			})
+			if err != nil {
+				t.Fatalf("ParseStartResults: %v", err)
+			}
+			if res.NodeID != 7 {
+				t.Errorf("nodeID = %d, want 7", res.NodeID)
+			}
+			if res.SourceType != tc.want {
+				t.Errorf("sourceType = %v (%d), want %v", res.SourceType, res.SourceType, tc.want)
+			}
+			if res.SourceType.IsWindow() != tc.window {
+				t.Errorf("IsWindow = %v, want %v", res.SourceType.IsWindow(), tc.window)
+			}
+			if res.Width != tc.wantW || res.Height != tc.wantH {
+				t.Errorf("size = %dx%d, want %dx%d", res.Width, res.Height, tc.wantW, tc.wantH)
+			}
+			if res.HasSize() != tc.hasSize {
+				t.Errorf("HasSize = %v, want %v", res.HasSize(), tc.hasSize)
+			}
+		})
+	}
+}
+
+// The handshake must carry the parsed metadata all the way onto the Stream —
+// parsing it and then dropping it is exactly the pre-R35 bug.
+func TestOpenCarriesSourceTypeAndSizeOntoTheStream(t *testing.T) {
+	f := newFakeCaller(4)
+	f.responses["Start"] = fakeResponse{results: map[string]dbus.Variant{
+		"streams": streamsVariantProps(42, map[string]dbus.Variant{
+			"source_type": dbus.MakeVariant(uint32(2)),
+			"size":        sizeVariant(1280, 800),
+		}),
+	}}
+	s, err := Open(context.Background(), Options{Caller: f})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if !s.SourceType.IsWindow() {
+		t.Errorf("SourceType = %v, want window", s.SourceType)
+	}
+	if s.Width != 1280 || s.Height != 800 || !s.HasSize() {
+		t.Errorf("stream size = %dx%d (has=%v), want 1280x800", s.Width, s.Height, s.HasSize())
 	}
 }
 

@@ -4,7 +4,37 @@ import (
 	"fmt"
 
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/fit"
 )
+
+// Target is the granted capture stream one pipeline reads, plus the geometry
+// it encodes at.
+//
+// The split from MediaConfig is R35's point (docs/39 D2): the *configured*
+// resolution is a bounding box the broadcaster chose, while Width/Height here
+// are what the encoder is actually asked for — the source's aspect fitted
+// inside that box. Before R35 the two were the same number and a non-16:9
+// window or an ultrawide desktop was silently stretched to fill the box.
+type Target struct {
+	// NodeID is the portal-granted PipeWire node's global object id.
+	NodeID uint32
+	// Width and Height are the fitted, even encode dimensions. Build one with
+	// TargetFor rather than by hand so the even-floor rule has one home.
+	Width, Height int
+}
+
+// TargetFor computes the encode geometry for a granted stream.
+//
+// srcW/srcH is the portal's reported stream size, or 0 when it reported none —
+// in which case the box is used as-is and behavior is byte-identical to
+// pre-R35 (fit.Within's degenerate case). The fit is taken **once, at start**:
+// the portal hands us the size before the pipeline launches, so the caps can be
+// pinned rather than something letterboxing later. A mid-session aspect change
+// is a documented v1 limitation, not a case this recomputes (docs/39 non-goals).
+func TargetFor(cfg engine.MediaConfig, nodeID uint32, srcW, srcH int) Target {
+	w, h := fit.Within(srcW, srcH, cfg.Width, cfg.Height)
+	return Target{NodeID: nodeID, Width: w, Height: h}
+}
 
 // childPipeWireFD is the descriptor the portal fd lands on in the child.
 // exec.Cmd.ExtraFiles[0] is always fd 3.
@@ -154,7 +184,13 @@ GST_DEBUG=pipewire*:5 set in the environment and save the log output.`
 // is fine — the worst kind of bug.
 // audio nil builds the video-only pipeline; non-nil appends the audio chain
 // and names the muxer so it has something to link to.
-func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode CaptureMode, audio *AudioCandidate) []string {
+//
+// **The caps carry the FITTED dimensions**, not the configured ones (R35,
+// docs/39 D2): target is the box shrunk to the source's aspect. For a 16:9
+// source in a 16:9 box — the common case, and every case before R35 — the two
+// are the same number and these arguments are byte-identical to what this
+// function produced before, which a golden test asserts.
+func BuildPipeline(c Candidate, cfg engine.MediaConfig, target Target, mode CaptureMode, audio *AudioCandidate) []string {
 	args := []string{"-q"}
 	args = append(args,
 		"pipewiresrc",
@@ -167,7 +203,7 @@ func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode Capt
 		// "stream error: target not found". `path` is deprecated in favour of
 		// target-object but is the property that still takes the global id —
 		// and it is what portal-screencast pipelines universally use.
-		fmt.Sprintf("path=%d", nodeID),
+		fmt.Sprintf("path=%d", target.NodeID),
 		// Damage-driven capture with no clock slaving: the timestamps we care
 		// about are stamped on arrival at our end anyway.
 		"do-timestamp=true",
@@ -199,7 +235,7 @@ func BuildPipeline(c Candidate, cfg engine.MediaConfig, nodeID uint32, mode Capt
 		args = append(args, "!")
 		args = append(args, rateGate(cfg)...)
 	}
-	args = append(args, "!", encoderCaps(c, cfg, mode))
+	args = append(args, "!", encoderCaps(c, cfg, target, mode))
 	args = append(args, "!")
 	args = append(args, c.encArgs(cfg)...)
 	args = append(args, "!", "h264parse", "config-interval=-1")
@@ -267,10 +303,16 @@ func rateGate(cfg engine.MediaConfig) []string {
 // exactly system memory, which forces a download + re-upload round trip per
 // frame). System-memory capture keeps bare caps: it is the proven fallback
 // rung and its negotiation semantics stay untouched.
-func encoderCaps(c Candidate, cfg engine.MediaConfig, mode CaptureMode) string {
-	// H.264 wants even dimensions; the ladder math elsewhere in the project
-	// makes the same guarantee (docs/08).
-	w, h := cfg.Width&^1, cfg.Height&^1
+//
+// The scale target is the **fitted** size (R35 D2). Pinning both dimensions is
+// still what makes the converter scale rather than the encoder guess; what
+// changed is that the pinned pair now has the source's aspect ratio, so the
+// converter's scale is uniform and nothing is squashed.
+func encoderCaps(c Candidate, cfg engine.MediaConfig, target Target, mode CaptureMode) string {
+	// H.264 wants even dimensions. fit.Within already guarantees that for a
+	// TargetFor-built target; the mask stays as the belt to its braces, since
+	// a hand-built Target is a legal thing for a test to construct.
+	w, h := target.Width&^1, target.Height&^1
 	media := "video/x-raw"
 	if mode != CaptureSystemMemory && c.memory != "" {
 		media = fmt.Sprintf("video/x-raw(%s)", c.memory)

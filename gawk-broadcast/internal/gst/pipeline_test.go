@@ -1,6 +1,7 @@
 package gst
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,6 +9,14 @@ import (
 )
 
 func pipelineString(args []string) string { return strings.Join(args, " ") }
+
+// wholeScreen is the pre-R35 target: a 16:9 monitor in a 16:9 box, where the
+// fit is the identity and every pipeline below is exactly what this package
+// built before the milestone. The tests that care about the *fitted* case say
+// so explicitly (TestFittedGeometry…).
+func wholeScreen(cfg engine.MediaConfig, nodeID uint32) Target {
+	return TargetFor(cfg, nodeID, cfg.Width, cfg.Height)
+}
 
 // Decision 13's invariants are acceptance criteria, not incidental pipeline
 // args: the protocol and the latency story depend on them, and three hardware
@@ -18,7 +27,7 @@ func TestEveryCandidatePinsTheEncoderInvariants(t *testing.T) {
 	for _, c := range Cascade {
 		for _, mode := range CaptureModes {
 			t.Run(c.Element+"/"+mode.String(), func(t *testing.T) {
-				p := pipelineString(BuildPipeline(c, cfg, 42, mode, nil))
+				p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 42), mode, nil))
 
 				// VFR pass-through, drop-only. A CFR converter would hold the last
 				// frame until the next arrives (unbounded on a static screen) then
@@ -75,7 +84,7 @@ func TestEveryCandidatePinsTheEncoderInvariants(t *testing.T) {
 func TestSystemMemoryCapturePinsThePortalBoundary(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
-		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureSystemMemory, nil))
+		p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 42), CaptureSystemMemory, nil))
 		// The caps pin must sit directly on pipewiresrc, before anything else
 		// gets a say in negotiation.
 		if !strings.Contains(p, "do-timestamp=true ! video/x-raw ! videorate") {
@@ -96,7 +105,7 @@ func TestAutoCaptureKeepsZeroCopyNegotiation(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
 		for _, mode := range []CaptureMode{CaptureAutoCapped, CaptureAuto} {
-			p := pipelineString(BuildPipeline(c, cfg, 42, mode, nil))
+			p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 42), mode, nil))
 			if strings.Contains(p, "do-timestamp=true ! video/x-raw !") {
 				t.Errorf("%s/%s: pins bare caps at the source, which forbids DMA-BUF:\n%s", c.Element, mode, p)
 			}
@@ -118,7 +127,7 @@ func TestEncoderCapsCarryTheNominalFramerate(t *testing.T) {
 	cfg := engine.DefaultMediaConfig() // 60 fps
 	for _, c := range Cascade {
 		for _, mode := range CaptureModes {
-			p := pipelineString(BuildPipeline(c, cfg, 1, mode, nil))
+			p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 1), mode, nil))
 			if !strings.Contains(p, "framerate=60/1") {
 				t.Errorf("%s/%s: encoder caps carry no framerate — vah264enc will budget for 30 fps:\n%s",
 					c.Element, mode, p)
@@ -152,12 +161,12 @@ func TestRateCappedCaptureRequestsMaxFramerateAtTheSource(t *testing.T) {
 	cfg := engine.DefaultMediaConfig() // 60 fps
 	for _, c := range Cascade {
 		first := c.convert(cfg)[0]
-		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAutoCapped, nil))
+		p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 42), CaptureAutoCapped, nil))
 		want := "do-timestamp=true ! video/x-raw(ANY),max-framerate=60/1 ! " + first
 		if !strings.Contains(p, want) {
 			t.Errorf("%s: capped rung does not request max-framerate on the source boundary:\n%s", c.Element, p)
 		}
-		if plain := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto, nil)); strings.Contains(plain, "max-framerate") {
+		if plain := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 42), CaptureAuto, nil)); strings.Contains(plain, "max-framerate") {
 			t.Errorf("%s: plain auto rung grew a max-framerate — it must stay the verified fallback:\n%s", c.Element, plain)
 		}
 	}
@@ -172,7 +181,7 @@ func TestRateCappedCaptureRequestsMaxFramerateAtTheSource(t *testing.T) {
 func TestAutoCapturePutsTheConverterOnThePortalBoundary(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
-		p := pipelineString(BuildPipeline(c, cfg, 42, CaptureAuto, nil))
+		p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 42), CaptureAuto, nil))
 		first := c.convert(cfg)[0]
 		if !strings.Contains(p, "do-timestamp=true ! "+first) {
 			t.Errorf("%s: auto mode does not put %s directly on pipewiresrc:\n%s", c.Element, first, p)
@@ -196,7 +205,7 @@ func TestAutoCaptureEncoderCapsStayOnTheGpu(t *testing.T) {
 			t.Fatalf("%s is not in the cascade", tc.element)
 		}
 		for _, mode := range []CaptureMode{CaptureAutoCapped, CaptureAuto} {
-			p := pipelineString(BuildPipeline(c, cfg, 1, mode, nil))
+			p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 1), mode, nil))
 			if !strings.Contains(p, "video/x-raw("+tc.feature+")") {
 				t.Errorf("%s/%s: encoder caps do not pin %s — the handoff drops to system memory:\n%s",
 					tc.element, mode, tc.feature, p)
@@ -204,7 +213,7 @@ func TestAutoCaptureEncoderCapsStayOnTheGpu(t *testing.T) {
 		}
 		// System-memory capture keeps bare caps on purpose: it is the proven
 		// fallback rung, and its negotiation semantics stay untouched.
-		ps := pipelineString(BuildPipeline(c, cfg, 1, CaptureSystemMemory, nil))
+		ps := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 1), CaptureSystemMemory, nil))
 		if strings.Contains(ps, "video/x-raw(") {
 			t.Errorf("%s: system-memory mode pins a GPU memory feature:\n%s", tc.element, ps)
 		}
@@ -225,7 +234,7 @@ func TestBFramesAreDisabledWhereTheEncoderHasThem(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s is not in the cascade", tc.element)
 		}
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 1), CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: no %q — B-frames would break decode-order == presentation-order:\n%s", tc.element, tc.want, p)
 		}
 	}
@@ -246,7 +255,7 @@ func TestGOPReachesTheEncoder(t *testing.T) {
 		{"vah264enc", "key-int-max=30"},
 	} {
 		c, _ := FindCandidate(tc.element)
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 1), CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: no %q:\n%s", tc.element, tc.want, p)
 		}
 	}
@@ -279,7 +288,7 @@ func TestTrialsNeverTouchThePortal(t *testing.T) {
 func TestEncoderCapsRoundToEvenDimensions(t *testing.T) {
 	cfg := engine.MediaConfig{Width: 1921, Height: 1081, Fps: 60, GOPMs: 500}
 	for _, mode := range CaptureModes {
-		got := encoderCaps(Cascade[len(Cascade)-1], cfg, mode)
+		got := encoderCaps(Cascade[len(Cascade)-1], cfg, wholeScreen(cfg, 1), mode)
 		if !strings.Contains(got, "width=1920") || !strings.Contains(got, "height=1080") {
 			t.Errorf("encoderCaps (%s) = %q, want even dimensions", mode, got)
 		}
@@ -290,7 +299,7 @@ func TestEncoderCapsRoundToEvenDimensions(t *testing.T) {
 func TestPipelineLinksAreWellFormed(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
-		args := BuildPipeline(c, cfg, 1, CaptureAuto, nil)
+		args := BuildPipeline(c, cfg, wholeScreen(cfg, 1), CaptureAuto, nil)
 		if args[0] != "-q" {
 			t.Errorf("%s: first arg = %q, want -q", c.Element, args[0])
 		}
@@ -324,7 +333,7 @@ func TestBitrateIsConvertedToKbps(t *testing.T) {
 		{"vah264enc", "bitrate=8000"},
 	} {
 		c, _ := FindCandidate(tc.element)
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 1), CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: want %q (kbps) for 8 Mbps:\n%s", tc.element, tc.want, p)
 		}
 	}
@@ -355,8 +364,174 @@ func TestRateControlIsVBRWithABitrateCeiling(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s is not in the cascade", tc.element)
 		}
-		if p := pipelineString(BuildPipeline(c, cfg, 1, CaptureAuto, nil)); !strings.Contains(p, tc.want) {
+		if p := pipelineString(BuildPipeline(c, cfg, wholeScreen(cfg, 1), CaptureAuto, nil)); !strings.Contains(p, tc.want) {
 			t.Errorf("%s: want %q:\n%s", tc.element, tc.want, p)
 		}
+	}
+}
+
+// AG2, the milestone's hardest guarantee: **window mode adds zero diff to the
+// whole-screen path**. Not "looks the same" — byte-identical arguments,
+// compared against goldens captured by running the pre-R35 builder (commit
+// 3cccb79) rather than by printing what the code under test currently emits.
+// A golden derived from the code under test proves only that the code equals
+// itself.
+//
+// If a legitimate pipeline change lands later, these lists change with it in
+// the same commit — deliberately and visibly.
+func TestMonitorModePipelineIsByteIdenticalToPreR35(t *testing.T) {
+	cfg := engine.DefaultMediaConfig() // 1080p60, 16 Mbps, 500 ms GOP
+	c, ok := FindCandidate("vah264enc")
+	if !ok {
+		t.Fatal("vah264enc is not in the cascade")
+	}
+	goldens := map[CaptureMode][]string{
+		CaptureAutoCapped: {
+			"-q", "pipewiresrc", "fd=3", "path=42", "do-timestamp=true",
+			"!", "video/x-raw(ANY),max-framerate=60/1",
+			"!", "vapostproc",
+			"!", "videorate", "drop-only=true", "max-rate=60",
+			"!", "video/x-raw(memory:VAMemory),width=1920,height=1080,framerate=60/1",
+			"!", "vah264enc", "rate-control=vbr", "bitrate=16000", "target-percentage=75", "key-int-max=30", "b-frames=0",
+			"!", "h264parse", "config-interval=-1",
+			"!", "mpegtsmux", "!", "fdsink", "fd=1",
+		},
+		CaptureAuto: {
+			"-q", "pipewiresrc", "fd=3", "path=42", "do-timestamp=true",
+			"!", "vapostproc",
+			"!", "videorate", "drop-only=true", "max-rate=60",
+			"!", "video/x-raw(memory:VAMemory),width=1920,height=1080,framerate=60/1",
+			"!", "vah264enc", "rate-control=vbr", "bitrate=16000", "target-percentage=75", "key-int-max=30", "b-frames=0",
+			"!", "h264parse", "config-interval=-1",
+			"!", "mpegtsmux", "!", "fdsink", "fd=1",
+		},
+		CaptureSystemMemory: {
+			"-q", "pipewiresrc", "fd=3", "path=42", "do-timestamp=true",
+			"!", "video/x-raw",
+			"!", "videorate", "drop-only=true", "max-rate=60",
+			"!", "videoconvert",
+			"!", "vapostproc",
+			"!", "video/x-raw,width=1920,height=1080,framerate=60/1",
+			"!", "vah264enc", "rate-control=vbr", "bitrate=16000", "target-percentage=75", "key-int-max=30", "b-frames=0",
+			"!", "h264parse", "config-interval=-1",
+			"!", "mpegtsmux", "!", "fdsink", "fd=1",
+		},
+	}
+
+	// Three ways a whole-screen start can reach the builder, all of which must
+	// produce the pre-R35 arguments exactly: a 16:9 monitor whose size the
+	// portal reported, a portal that reported no size at all (the older-portal
+	// path), and a 4K monitor scaled into the 1080p box (same aspect).
+	sources := []struct {
+		name       string
+		srcW, srcH int
+	}{
+		{"16:9 monitor with a reported size", 1920, 1080},
+		{"portal reported no size", 0, 0},
+		{"4K monitor into the 1080p box", 3840, 2160},
+	}
+	for mode, want := range goldens {
+		for _, src := range sources {
+			got := BuildPipeline(c, cfg, TargetFor(cfg, 42, src.srcW, src.srcH), mode, nil)
+			assertArgsEqual(t, mode.String()+" / "+src.name, got, want)
+		}
+	}
+}
+
+// The same guarantee for the audio pipeline: system audio in whole-screen mode
+// is byte-identical to pre-R35, muxer name and all. R35 adds an app-mode audio
+// source; it must not have moved so much as a property on the existing one.
+func TestSystemAudioPipelineIsByteIdenticalToPreR35(t *testing.T) {
+	cfg := engine.DefaultMediaConfig()
+	c, _ := FindCandidate("vah264enc")
+	cand, ok := FindAudioCandidate("pipewire-monitor")
+	if !ok {
+		t.Fatal("pipewire-monitor is not in the audio cascade")
+	}
+	want := []string{
+		"-q", "pipewiresrc", "fd=3", "path=42", "do-timestamp=true",
+		"!", "video/x-raw(ANY),max-framerate=60/1",
+		"!", "vapostproc",
+		"!", "videorate", "drop-only=true", "max-rate=60",
+		"!", "video/x-raw(memory:VAMemory),width=1920,height=1080,framerate=60/1",
+		"!", "vah264enc", "rate-control=vbr", "bitrate=16000", "target-percentage=75", "key-int-max=30", "b-frames=0",
+		"!", "h264parse", "config-interval=-1",
+		"!", "mpegtsmux", "name=mux", "!", "fdsink", "fd=1",
+		"pipewiresrc", "stream-properties=props,stream.capture.sink=true",
+		"!", "audio/x-raw",
+		"!", "queue", "!", "audioconvert", "!", "audioresample",
+		"!", "audio/x-raw,rate=48000,channels=2",
+		"!", "opusenc", "bitrate=128000", "frame-size=20", "dtx=false",
+		"inband-fec=false", "audio-type=restricted-lowdelay",
+		"!", "queue", "!", "mux.",
+	}
+	got := BuildPipeline(c, cfg, TargetFor(cfg, 42, 1920, 1080), CaptureAutoCapped, &cand)
+	assertArgsEqual(t, "system audio, whole screen", got, want)
+}
+
+func assertArgsEqual(t *testing.T, what string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: %d args, want %d\n got: %s\nwant: %s",
+			what, len(got), len(want), pipelineString(got), pipelineString(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("%s: arg %d = %q, want %q\n got: %s\nwant: %s",
+				what, i, got[i], want[i], pipelineString(got), pipelineString(want))
+		}
+	}
+}
+
+// R35 D2: the configured resolution is a bounding box. A window whose aspect
+// differs from it is *fitted*, and the encoder caps carry the fitted pair —
+// the whole point being that nothing downstream can stretch what it was never
+// given.
+func TestFittedGeometryReachesTheEncoderCaps(t *testing.T) {
+	cfg := engine.DefaultMediaConfig() // a 1920x1080 box
+	cases := []struct {
+		name         string
+		srcW, srcH   int
+		wantW, wantH int
+	}{
+		// The design doc's worked example (docs/39 AS1).
+		{"a 1000x700 window", 1000, 700, 1542, 1080},
+		{"a portrait window", 1080, 1920, 608, 1080},
+		// D2's monitor case: today's silent vertical stretch, fixed.
+		{"an ultrawide desktop", 3440, 1440, 1920, 804},
+		{"a 4:3 window", 1600, 1200, 1440, 1080},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, c := range Cascade {
+				for _, mode := range CaptureModes {
+					tgt := TargetFor(cfg, 42, tc.srcW, tc.srcH)
+					p := pipelineString(BuildPipeline(c, cfg, tgt, mode, nil))
+					want := fmt.Sprintf("width=%d,height=%d,framerate=60/1", tc.wantW, tc.wantH)
+					if !strings.Contains(p, want) {
+						t.Errorf("%s/%s: caps do not carry the fitted size %q:\n%s", c.Element, mode, want, p)
+					}
+					// The box's own dimensions must not appear as a scale
+					// target anywhere: that is precisely the stretch.
+					if tc.wantW != cfg.Width && strings.Contains(p, fmt.Sprintf("width=%d,height=%d", cfg.Width, cfg.Height)) {
+						t.Errorf("%s/%s: still scaling to the configured box (a stretch):\n%s", c.Element, mode, p)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The fit is taken from the portal's reported size, and TargetFor is the only
+// door to it — a Target built with the box's own numbers is the pre-R35
+// behavior, which is what the "no size" fallback relies on.
+func TestTargetForCarriesTheNodeID(t *testing.T) {
+	cfg := engine.DefaultMediaConfig()
+	tgt := TargetFor(cfg, 7, 1000, 700)
+	if tgt.NodeID != 7 {
+		t.Errorf("NodeID = %d, want 7", tgt.NodeID)
+	}
+	if tgt.Width != 1542 || tgt.Height != 1080 {
+		t.Errorf("fitted = %dx%d, want 1542x1080", tgt.Width, tgt.Height)
 	}
 }

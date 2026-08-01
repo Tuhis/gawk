@@ -69,6 +69,8 @@ func TestStatsJSONKeysAreTheCanonicalSpelling(t *testing.T) {
 		AudioState: AudioActive, AudioSource: "pipewire-monitor",
 		AudioCodec: "opus", AudioSampleRate: 48000, AudioChannels: 2,
 		AudioBitrateBps: 128000,
+		// R35: what was shared and whose audio went out.
+		ShareMode: "window", AudioApp: "steam_app_12345",
 	})
 	if err != nil {
 		t.Fatalf("marshal populated: %v", err)
@@ -81,6 +83,7 @@ func TestStatsJSONKeysAreTheCanonicalSpelling(t *testing.T) {
 		"targetWidth", "targetHeight", "targetFps", "targetBitrateBps",
 		"audioState", "audioSource", "audioCodec", "audioSampleRate",
 		"audioChannels", "audioBitrateBps",
+		"shareMode", "audioApp",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("populated Stats is missing key %q", key)

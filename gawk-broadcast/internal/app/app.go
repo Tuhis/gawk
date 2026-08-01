@@ -640,6 +640,14 @@ type Diagnostics struct {
 	Codec       string `json:"codec,omitempty"`
 	Rung        string `json:"rung"`
 
+	// R35: what was shared and whose sound went out. "screen" or "window";
+	// AudioApp is the captured application's binary in app mode and empty for
+	// system audio. Rung above carries the *fitted* dimensions, which for a
+	// window is the aspect-preserving fit inside the configured box (docs/39
+	// D2) — so a pasted dump answers "why is this 1542 wide?" by itself.
+	ShareMode string `json:"shareMode,omitempty"`
+	AudioApp  string `json:"audioApp,omitempty"`
+
 	// CaptureFps is deliberately a string: the GStreamer child owns that
 	// stage, so it is "n/a" rather than a fabricated number (Decision 20).
 	// A number here would answer "is the source keeping up?" wrongly while
@@ -706,6 +714,8 @@ func (a *App) Diagnostics() string {
 	d.CapturePath = s.CapturePath
 	d.Codec = s.Codec
 	d.Rung = fmt.Sprintf("%dx%d@%d %.1fMbps", s.Width, s.Height, s.Fps, float64(s.BitrateBps)/1e6)
+	d.ShareMode = s.ShareMode
+	d.AudioApp = s.AudioApp
 	d.CaptureFps = "n/a"
 	d.EncoderFps = s.EncoderFps
 	d.SentFps = s.SentFps

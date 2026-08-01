@@ -202,7 +202,7 @@ func TestAudioTrialTerminatesAndEncodes(t *testing.T) {
 // one is load-bearing for something a viewer would feel.
 func TestAudioBranchPinsTheDecision3Properties(t *testing.T) {
 	cand := audioCascade[0]
-	p := pipelineString(BuildPipeline(Cascade[0], engine.DefaultMediaConfig(), 42, CaptureAuto, &cand))
+	p := pipelineString(BuildPipeline(Cascade[0], engine.DefaultMediaConfig(), wholeScreen(engine.DefaultMediaConfig(), 42), CaptureAuto, &cand))
 
 	for _, tc := range []struct{ want, why string }{
 		{"rate=48000", "a resampled 48 kHz stream is what the AudioConfig advertises"},
@@ -235,7 +235,7 @@ func TestAudioBranchPinsTheDecision3Properties(t *testing.T) {
 // and would reintroduce a constant lip-sync bias nothing can measure.
 func TestAudioIsMuxedIntoTheExistingStream(t *testing.T) {
 	cand := audioCascade[0]
-	args := BuildPipeline(Cascade[0], engine.DefaultMediaConfig(), 42, CaptureAuto, &cand)
+	args := BuildPipeline(Cascade[0], engine.DefaultMediaConfig(), wholeScreen(engine.DefaultMediaConfig(), 42), CaptureAuto, &cand)
 	p := pipelineString(args)
 
 	if !strings.Contains(p, "mpegtsmux name=mux") {
@@ -273,7 +273,7 @@ func TestAudioOffIsByteIdenticalToTheVideoOnlyPipeline(t *testing.T) {
 	cfg := engine.DefaultMediaConfig()
 	for _, c := range Cascade {
 		for _, mode := range CaptureModes {
-			args := BuildPipeline(c, cfg, 42, mode, nil)
+			args := BuildPipeline(c, cfg, wholeScreen(cfg, 42), mode, nil)
 			p := pipelineString(args)
 			if !strings.HasSuffix(p, "! mpegtsmux ! fdsink fd=1") {
 				t.Errorf("%s/%s: the video-only tail changed:\n%s", c.Element, mode, p)

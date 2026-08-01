@@ -111,8 +111,15 @@ type Source struct {
 	captureModeSet bool
 	err            error
 	stream         *portal.Stream
-	kid            *child
-	stopped        bool
+	// tgt is the granted node plus the fitted encode geometry (R35 D2),
+	// computed once when the portal returns and reused by every cascade
+	// attempt — the fit is taken at start, never per rung.
+	tgt Target
+	// sourceType is what the picker returned; it is the mode switch for the
+	// whole milestone (D1) and what the shells report.
+	sourceType portal.SourceType
+	kid        *child
+	stopped    bool
 
 	frames chan engine.AccessUnit
 	// audio carries Opus packets when a source won the pre-flight cascade;
@@ -198,9 +205,23 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The geometry is settled here, between the picker and the first pipeline:
+	// the portal's reported size is the fit input, and it arrives before any
+	// element is launched (R35, docs/39 D2). Per the standing trust-the-frame
+	// rule the negotiated caps in the child remain the runtime truth — this is
+	// the *request*, and a portal that reported no size falls back to today's
+	// exact caps.
+	tgt := TargetFor(s.cfg, stream.NodeID, stream.Width, stream.Height)
 	s.mu.Lock()
 	s.stream = stream
+	s.tgt = tgt
+	s.sourceType = stream.SourceType
 	s.mu.Unlock()
+	s.log.Info("capturing a portal stream",
+		"source", stream.SourceType.String(),
+		"source_width", stream.Width, "source_height", stream.Height,
+		"encode_width", tgt.Width, "encode_height", tgt.Height,
+		"box_width", s.cfg.Width, "box_height", s.cfg.Height)
 
 	cand, err := SelectEncoder(ctx, s.cfg, s.opts.LastGoodEncoder, s.opts.Trial)
 	if err != nil {
@@ -426,7 +447,7 @@ func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first C
 // next attempt starts clean: the next attempt may run a different encoder, and
 // its viewers must never see two SPS lineages interleaved.
 func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candidate, mode CaptureMode, audio *AudioCandidate) error {
-	kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, stream.NodeID, mode, audio), stream.FD, s.log)
+	kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, s.encodeTarget(), mode, audio), stream.FD, s.log)
 	if err != nil {
 		return err
 	}
@@ -773,6 +794,43 @@ func (s *Source) CapturePath() string {
 		return "system-memory"
 	default:
 		return "zero-copy"
+	}
+}
+
+// encodeTarget returns the node + fitted geometry every attempt builds from.
+func (s *Source) encodeTarget() Target {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tgt
+}
+
+// EncodeSize implements engine.GeometrySource: the dimensions actually asked
+// of the encoder, which are the configured box only when the source's aspect
+// matches it (R35 D2). ok is false before the portal has answered, where the
+// engine keeps reporting the configured rung.
+func (s *Source) EncodeSize() (int, int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tgt.Width <= 0 || s.tgt.Height <= 0 {
+		return 0, 0, false
+	}
+	return s.tgt.Width, s.tgt.Height, true
+}
+
+// ShareMode implements engine.ShareModeSource: "screen" or "window", or ""
+// before the picker has answered. It is the user's own vocabulary rather than
+// the portal's ("monitor"), because it is rendered in the GUI and pasted into
+// diagnostics.
+func (s *Source) ShareMode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.stream == nil:
+		return ""
+	case s.sourceType.IsWindow():
+		return "window"
+	default:
+		return "screen"
 	}
 }
 

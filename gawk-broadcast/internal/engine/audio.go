@@ -118,3 +118,13 @@ type AudioSource interface {
 	// so" path, not an error.
 	AudioFormat() (AudioFormat, bool)
 }
+
+// AppAudioSource is implemented by sources that can capture one application's
+// audio rather than the whole system's (R35, docs/39 D3). Stats-only, and
+// optional exactly like GeometrySource: a source with no notion of app audio
+// simply reports none, which reads as "system audio" everywhere.
+type AppAudioSource interface {
+	// AudioApp is the captured application's binary
+	// (`application.process.binary`), or "" for system audio.
+	AudioApp() string
+}

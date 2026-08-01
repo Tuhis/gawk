@@ -142,3 +142,25 @@ type MediaSource interface {
 	// Err returns the failure that ended capture, or nil for a clean stop.
 	Err() error
 }
+
+// GeometrySource is implemented by media sources whose encode dimensions are
+// not simply the configured ones (R35, docs/39 D2).
+//
+// Optional for the same reason AudioSource is: the fakes and internal/pubsim
+// have nothing to say about geometry, and widening MediaSource would make them
+// answer a question they cannot. A source that does not implement it reports
+// the configured rung, which is what every source did before R35.
+type GeometrySource interface {
+	// EncodeSize is the width and height actually asked of the encoder — the
+	// configured box fitted to the source's aspect. ok is false before the
+	// source knows (i.e. before the portal has answered).
+	EncodeSize() (width, height int, ok bool)
+}
+
+// ShareModeSource is implemented by media sources that know whether the
+// broadcaster shared a screen or a single window (R35, docs/39 D1). Stats-only,
+// like CapturePath: nothing in the engine branches on it.
+type ShareModeSource interface {
+	// ShareMode is "screen", "window", or "" before the picker has answered.
+	ShareMode() string
+}
