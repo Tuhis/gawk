@@ -697,6 +697,46 @@ Rejected while there: dropping `lto = "thin"` to shorten the release build's
 CPU-seconds) — the wrong trade on a shared runner — and it would change the
 bytes `BUILD-INFO.txt` asks testers to report codegen differences against.
 
+**What actually happened**, since the estimates above were made before the
+change ran. Three baseline runs and three after:
+
+| | wall |
+|---|---:|
+| baseline 30665003606 / 30666575352 / 30667766932 | 19:13 / 12:01 / 19:03 |
+| after, fan-out only, 4-CPU pods (30688980949) | 7:42 |
+| after, final config, pods spread (30689379010 #1) | **5:55** |
+| after, final config, pods co-located (30689379010 #2) | **6:39** |
+
+Mean 16:46 → 6:17, about −62%. The honest lower bound is −45%: the worst
+final-config run against the *best* baseline run, which was itself a lucky
+quiet node. `test` is the one step that got slower in isolation (2:25 → ~4:00)
+because it now builds the host dependency tree that the preceding host clippy
+step used to amortise — the duplication predicted above, and it is not on the
+critical path.
+
+Two things only a real run could teach, both worth keeping:
+
+- **A host-target rustflag silently un-shares the two clippy passes.** The
+  first attempt set `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`
+  workflow-wide to get lld. `lint` got *slower* — host clippy 2:02 → 2:58,
+  compiling 481 units where the serial job compiled 367. Cargo does not apply
+  target rustflags to host artifacts when cross-compiling but does when
+  building for the host, so `cargo xwin clippy --target msvc` built all 107
+  proc-macro and build-script units (autocfg, cc, cmake, the derive macros)
+  bare and `cargo clippy` then rebuilt every one. The serial job had been
+  sharing them between its two passes for free. The flag now lives on `test`
+  alone, which is where a linker actually runs — clippy only checks, so `lint`
+  was paying an invalidation for a benefit it cannot receive. Anything added
+  to `RUSTFLAGS` or a host `target.*.rustflags` here has the same hazard.
+- **The fan-out can self-contend.** `nproc` from the three pods reads 16 / 24
+  / 32, so the nodes are unequal and identical values mean co-residence. In
+  the slower of the two final runs all three pods reported `nproc=16` — one
+  16-core node carrying three pods whose quotas now total 24 CPU. That is the
+  whole 5:55-vs-6:39 gap. The runners' `topologySpreadConstraints` are
+  `ScheduleAnyway`, which permits it; ioio's own comment there already plans
+  to promote them to `DoNotSchedule` once kube1/kube2 have request headroom,
+  and this is a second reason to.
+
 The still-Windows-only residue, unchanged: everything on the §10 on-hardware
 register, plus anything about msvc-vs-clang codegen of the shipped EXE.
 
