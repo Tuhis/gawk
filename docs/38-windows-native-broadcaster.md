@@ -700,19 +700,21 @@ bytes `BUILD-INFO.txt` asks testers to report codegen differences against.
 **What actually happened**, since the estimates above were made before the
 change ran. Three baseline runs and three after:
 
-| | wall |
-|---|---:|
-| baseline 30665003606 / 30666575352 / 30667766932 | 19:13 / 12:01 / 19:03 |
-| after, fan-out only, 4-CPU pods (30688980949) | 7:42 |
-| after, final config, pods spread (30689379010 #1) | **5:55** |
-| after, final config, pods co-located (30689379010 #2) | **6:39** |
+| run | pods on nodes (`nproc`) | wall |
+|---|---|---:|
+| baseline 30665003606 / 30666575352 / 30667766932 | — | 19:13 / 12:01 / 19:03 |
+| fan-out only, 4-CPU pods (30688980949) | 16 / 16 / 16 | 7:42 |
+| final config (30689379010 #1) | 16 / 24 / 32 | **5:55** |
+| final config (30689379010 #2) | 16 / 16 / 16 | **6:39** |
+| final config (30689904005) | 24 / 32 / 32 | **4:58** |
 
-Mean 16:46 → 6:17, about −62%. The honest lower bound is −45%: the worst
-final-config run against the *best* baseline run, which was itself a lucky
-quiet node. `test` is the one step that got slower in isolation (2:25 → ~4:00)
-because it now builds the host dependency tree that the preceding host clippy
-step used to amortise — the duplication predicted above, and it is not on the
-critical path.
+Mean of the three final-config runs is 5:51 against a baseline mean of 16:46
+— about **−65%**. The honest lower bound is −45%: the worst final-config run
+against the *best* baseline run, which was itself a lucky quiet node. The
+remaining spread (4:58 to 6:39) is node placement, not anything in the
+workflow. `test` is the one step slower in isolation (2:25 → ~4:00) because it
+now builds the host dependency tree the preceding host clippy step used to
+amortise — the duplication predicted above, and not on the critical path.
 
 Two things only a real run could teach, both worth keeping:
 
