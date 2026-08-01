@@ -53,6 +53,7 @@ feature set exists).
 | R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
 | R33 | [WHIP ingest for OBS support](#r33--whip-ingest-for-obs-support) | 💡 proposed 2026-07-29, not started — no design doc yet |
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
+| R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 💡 proposed 2026-08-01, feasibility investigated the same day (feasible; findings in the item), not started — no design doc yet |
 
 ---
 
@@ -2879,6 +2880,146 @@ make that worth forcing.
 Windows.Graphics.Capture + WASAPI process loopback, Media Foundation
 hardware MFTs only, Slint GUI, portable single EXE; owner decisions
 OD1–OD12). Not started (chunks WB0–WB8).
+
+---
+
+## R35 — Single-app sharing (window + app audio) in the native Linux broadcaster
+
+**Goal**: R34's mode 1, on Linux — `gawk-broadcast` gains a **share one
+application** mode: that app's window as video plus **only** that app's
+audio, so a second app playing sound on the same PC is inaudible to viewers.
+Whole-desktop + system audio (today's behavior) remains the other mode,
+unchanged.
+
+**Why**: the same capture-fidelity driver as R34, and it bites harder on
+Linux — the native app is already the *only* hardware-encode path there
+(R14), so its capture story should not trail the Windows sibling's. Today a
+Linux broadcaster who picks a window in the portal dialog still ships their
+whole desktop's audio: every notification ping, voice call, and second app
+goes out to viewers. "Just this game, video and audio" is the promise the
+Windows app makes; this item is what it takes to make it on Linux.
+
+**Feasibility findings (investigated 2026-08-01)** — recorded here so the
+design doc doesn't restart from zero:
+
+- **Window video already works, silently.** `internal/portal` already
+  requests `types = MONITOR | WINDOW` in `SelectSources`, so the desktop's
+  picker already offers windows and picking one broadcasts it. What's
+  missing is everything *around* that: the engine never learns a window was
+  picked, audio stays whole-system regardless, and the encode geometry
+  stretches the source to the configured rung (see the geometry point
+  below).
+- **The engine can detect the choice without new permissions.** The portal's
+  `Start` results carry a per-stream `source_type` (ScreenCast interface
+  v3+) and a `size`; `ParseStartResults` currently discards both. That is
+  enough to branch the mode and to size the encode — no second dialog, no
+  new portal calls, Decision 5 (the desktop's picker is the picker, every
+  start) untouched.
+- **Per-app audio is a PipeWire-native capability; no portal is involved.**
+  The ScreenCast portal carries no audio (docs/28 Decision 1) and there is
+  no audio portal at all — but gawk-broadcast is unsandboxed and talks to
+  PipeWire directly, which is exactly how the field-proven prior art does
+  it. OBS's `pipewire-audio-capture` plugin's application mode: create a
+  virtual sink (media class `Audio/Sink/Internal`, hidden from apps,
+  channel layout matching the default sink), **link** the target app's
+  `Stream/Output/Audio` ports into it — a tee, not a re-route: PipeWire
+  output ports fan out, so the app keeps playing to the speakers and the
+  sink gets a copy — watch the registry so streams the app opens or reopens
+  get re-linked, and capture the virtual sink's monitor.
+- **The virtual-sink shape fits gawk's architecture unusually well.** The
+  gst child's pipeline is static once launched — it cannot re-target a
+  source mid-flight — but with a virtual sink the child just captures **one
+  static node forever** (`pipewiresrc target-object=<sink serial>`, the
+  existing R25 audio branch and Opus contract byte-for-byte unchanged), and
+  all the dynamism (which app, streams appearing/dying, re-links) lives
+  outside GStreamer in PipeWire link management. No pipeline restarts, no
+  A/V-sync model change: one child, one muxer, one PTS timeline (docs/28
+  Decision 4) survives intact. The control plane can stay subprocess-shaped
+  like everything else in this module: `pw-dump`/`pw-cli`/`pw-link` ship in
+  the stock `pipewire` packages the app already hard-requires (PipeWire is
+  not D-Bus, so `godbus` buys nothing here; if CLI-driving proves too
+  brittle under stream churn, the design doc weighs a small long-lived
+  native helper instead). A
+  simpler-but-weaker variant — target the app's stream node directly, no
+  virtual sink — misses multi-stream apps and dies with the first stream
+  teardown (in-game menu → game restart audio); the design doc decides
+  whether it exists even as a rung.
+- **The honest UX divergence: Linux cannot have the Windows one-picker
+  flow.** The portal deliberately never reveals which app or PID owns the
+  picked window — stream properties are `id`/`position`/`size`/
+  `source_type`/`mapping_id` only (verified against the portal spec). So
+  "you picked this window ⇒ I capture its process's audio" is structurally
+  impossible; window→app correlation does not exist on Linux. The workable
+  flow: portal picker for the window (unchanged), then gawk's own small
+  "whose audio?" step listing audio-emitting apps from the PipeWire
+  registry (`application.name` / `application.process.binary`), preselected
+  when exactly one app is emitting. One extra click, stated plainly in the
+  UI — not fought, and not hidden behind a heuristic that guesses wrong.
+
+**Scope sketch**:
+
+- **Portal/engine**: parse `source_type` + `size` from `Start`; mode in
+  stats, the R28 report, and the GUI's encode line.
+- **Geometry — fit, never stretch**: port docs/38 D11's amendment (the
+  configured resolution is a bounding box; the source aspect is fitted
+  inside it, floored to even; the fit is taken at start and mid-session
+  aspect changes letterbox rather than stretch). Today's Linux pipeline
+  pins exact `width=W,height=H` caps, which stretches any non-16:9 window —
+  a bug this item fixes for window sources and a behavior audit for monitor
+  ones. The portal's `size` supplies the fit input *before* the pipeline
+  launches; per the standing trust-the-frame rule, the negotiated caps are
+  the runtime truth to verify it against.
+- **App-audio capturer**: virtual sink + link management + registry watch
+  in Go; the gst audio branch re-pointed at the sink's monitor in app mode.
+  Audio stays **subordinate** (R25 Decision 6): sink creation or link
+  failures degrade to system audio or audio-off with a notification — never
+  a failed broadcast. Cleanup must be crash-safe; the tee shape makes the
+  worst case benign (a leftover hidden sink, never re-routed app audio),
+  and that property is a design requirement, not an accident to lose.
+- **GUI**: the app-audio picker step in app mode; the D8-style silence
+  hint ported from Windows — if the chosen app stays silent ~10 s while
+  live, offer a one-click switch to whole-system audio (games that route
+  audio through a helper process with a different binary name are the same
+  failure class as Windows' V-3a, and the same honest escape hatch works,
+  because a re-link is a new capture, not a renegotiation: same Opus
+  stream, same seq space, viewers notice nothing).
+
+**Key design questions** (for the design doc):
+
+- Follow semantics: match the app's streams by `application.process.binary`
+  (OBS's choice), `application.name`, or PID — and what "the same app" means
+  across a game restart.
+- Link/sink ownership: which PipeWire object lifetimes are tied to our
+  connection vs. linger, so both a clean stop and a SIGKILL leave the
+  sound server pristine — verified, not assumed.
+- CLI control plane (`pw-cli`/`pw-link`/`pw-dump -m`) vs. a small native
+  helper: is driving links over subprocess tooling reliable enough under
+  stream churn, and what does its failure look like.
+- Window-stream lifecycle on real compositors, on hardware: does capture
+  survive the window resizing (DMA-BUF renegotiation is the fragile spot —
+  docs/19 gotchas), going exclusive-fullscreen (the docs/19 "capture stops
+  on fullscreen" report, never yet re-tested first-hand, is *this* item's
+  problem now), being occluded, being minimized (KWin vs. Mutter differ) —
+  each either works or gets an honest in-GUI hint, per compositor.
+- Whether the audio-app choice may persist across starts, or re-asks every
+  time like the portal picker (Decision 5's spirit) — owner call.
+- Whether mode is chosen before Start in the GUI ("share an app" / "share
+  the desktop", à la R34 D12) or inferred from what the picker returned —
+  and what happens when they disagree (user said app, picked a monitor).
+
+**Non-goals**: any change to the relay, wire format, viewer, or the browser
+broadcaster — zero wire/server diffs, same as R34's G4 stance. A gawk-drawn
+*window* picker (the desktop's portal picker stays the picker — Decision 5
+is not reopened, and neither are restore tokens). Mic capture (OD8's stance
+holds project-wide). Windows-parity for its own sake — where Linux
+structurally can't match (one-picker correlation), the divergence ships
+labeled instead of imitated badly.
+
+**Status**: proposed 2026-08-01; feasibility investigated the same day
+(portal `source_type`/`size` availability, the no-app-identity privacy
+boundary, and the OBS virtual-sink + port-link mechanism verified against
+the portal spec and prior art). Not started — design doc pending; chunk
+prefix to be claimed when the doc is written (two letters, per convention).
 
 ---
 
