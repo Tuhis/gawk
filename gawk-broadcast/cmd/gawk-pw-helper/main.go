@@ -92,9 +92,20 @@ func run(stdin io.Reader, out *pwproto.Writer) error {
 	}
 	defer h.teardown()
 
-	// The first round-trip is what makes "no applications are playing audio"
-	// an answer rather than a guess: until the daemon has walked its registry
-	// for us, an empty list means only that we have not looked yet.
+	// Two round-trips, not one, and the second is not belt-and-braces.
+	//
+	// The first walks the registry, and every audio-relevant global it delivers
+	// triggers a *bind* — which is the only way to reach
+	// `application.process.binary` (see pwgraph.Global). Those bound objects
+	// answer with their own info events, which land after that first sync. So a
+	// helper that declared itself ready here would publish an application list
+	// with every identity still unresolved, i.e. empty — making a running game
+	// look like a machine with nothing playing. The second round-trip is what
+	// makes "no applications are playing audio" an answer rather than a guess.
+	if err := c.roundtrip(roundTripTimeout); err != nil {
+		return err
+	}
+	h.apply()
 	if err := c.roundtrip(roundTripTimeout); err != nil {
 		return err
 	}
@@ -224,6 +235,8 @@ func (h *helper) handle(req pwproto.Request) error {
 		return h.emitApps()
 	case pwproto.OpCapture:
 		return h.capture(req.Binary)
+	case pwproto.OpCaptureSystem:
+		return h.capture(systemTarget)
 	case pwproto.OpRelease:
 		h.releaseLinks()
 		h.target = ""
@@ -239,6 +252,12 @@ func (h *helper) handle(req pwproto.Request) error {
 		})
 	}
 }
+
+// systemTarget is the pseudo-binary that means "the whole machine's output".
+// A sentinel rather than a second field on the helper: everything downstream —
+// re-targeting, the link diff, the events — then works identically for both,
+// and only the plan differs.
+const systemTarget = "\x00system"
 
 // capture points the sink at one application, creating the sink on first use.
 func (h *helper) capture(binary string) error {
@@ -279,7 +298,10 @@ func (h *helper) capture(binary string) error {
 // where it already is, in the gst branch's audioconvert, which is the only
 // place it can be done properly.
 func (h *helper) createSink(binary string) error {
-	chans := h.graph.StreamChannels(binary)
+	var chans []string
+	if binary != systemTarget {
+		chans = h.graph.StreamChannels(binary)
+	}
 	if len(chans) == 0 {
 		chans = h.graph.WidestSinkChannels()
 	}
@@ -338,7 +360,12 @@ func (h *helper) reconcile() error {
 	if h.target == "" || h.sinkNodeID == 0 {
 		return nil
 	}
-	want := h.graph.Plan(h.target, h.sinkNodeID)
+	var want []pwgraph.Link
+	if h.target == systemTarget {
+		want = h.graph.PlanSystemAudio(h.sinkNodeID)
+	} else {
+		want = h.graph.Plan(h.target, h.sinkNodeID)
+	}
 	wanted := make(map[pwgraph.Link]bool, len(want))
 	for _, l := range want {
 		wanted[l] = true
@@ -379,9 +406,15 @@ func (h *helper) emitLinks(force bool) error {
 	}
 	h.lastLinks = len(h.links)
 	h.linksSent = true
+	binary := h.target
+	if binary == systemTarget {
+		// The engine and the GUI speak in binaries; the sentinel is this
+		// process's business and must not leak into either.
+		binary = ""
+	}
 	return h.out.Write(pwproto.Event{
 		Event:  pwproto.EventLinks,
-		Binary: h.target,
+		Binary: binary,
 	}.WithLinks(len(h.links)))
 }
 

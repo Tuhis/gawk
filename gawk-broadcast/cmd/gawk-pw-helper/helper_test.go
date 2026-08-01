@@ -543,3 +543,51 @@ func TestTheSinkMatchesTheApplicationsChannelLayout(t *testing.T) {
 	// have taken.
 	s.awaitLinks(6)
 }
+
+// docs/39 D5's escape hatch, end to end: switching to whole-system audio
+// mid-session is a **re-link**. The sink the gst pipeline is reading keeps its
+// identity, so the Opus stream, its sequence space and the viewer's decoder are
+// all undisturbed — the switch costs the packets in the gap and nothing else.
+func TestSwitchingToSystemAudioKeepsTheSameSink(t *testing.T) {
+	d := pwtest.Start(t)
+	d.StartEmitter("fake-game", 440)
+
+	s := startHelper(t, d)
+	s.awaitReady()
+	s.awaitApp("fake-game")
+	s.send(pwproto.Request{Op: pwproto.OpCapture, Binary: "fake-game"})
+	sinkEvent := s.await("the sink", func(e pwproto.Event) bool { return e.Event == pwproto.EventSink })
+	s.awaitLinks(2)
+
+	s.send(pwproto.Request{Op: pwproto.OpCaptureSystem})
+	e := s.await("the system-audio links", func(e pwproto.Event) bool {
+		n, ok := e.LinkCount()
+		return e.Event == pwproto.EventLinks && ok && n == 2
+	})
+	// The sentinel target is this helper's private business.
+	if e.Binary != "" {
+		t.Errorf("the links event names %q as the captured application; system audio has none", e.Binary)
+	}
+
+	after, ok := gawkSink(t, d)
+	if !ok {
+		t.Fatal("the capture sink disappeared across the switch")
+	}
+	if after.Serial != sinkEvent.Serial {
+		t.Errorf("the sink was recreated (serial %d → %d): the gst pipeline would have lost its target mid-broadcast",
+			sinkEvent.Serial, after.Serial)
+	}
+
+	// And it is really carrying the system's sound now: the application is
+	// still playing, and its tone reaches us through the speakers' monitor.
+	if peak := d.Capture(sinkEvent.Serial, 700*time.Millisecond); peak < 0.05 {
+		t.Errorf("after the switch the sink monitor peaked at %.3f, want the system's audio", peak)
+	}
+
+	// Switching back is the same move in reverse.
+	s.send(pwproto.Request{Op: pwproto.OpCapture, Binary: "fake-game"})
+	s.await("the application's links again", func(e pwproto.Event) bool {
+		n, ok := e.LinkCount()
+		return e.Event == pwproto.EventLinks && ok && n == 2 && e.Binary == "fake-game"
+	})
+}

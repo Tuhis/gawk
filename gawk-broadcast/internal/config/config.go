@@ -164,6 +164,14 @@ type Config struct {
 	// AudioDevice pins one capture device by name (pulsesrc's device
 	// property), skipping the cascade. Empty probes.
 	AudioDevice string `json:"audioDevice,omitempty"`
+	// AudioApp is the application whose audio is captured when a *window* is
+	// shared (R35, docs/39 AD2/AD3): its `application.process.binary`. It is
+	// persisted only as the GUI's preselection — the whose-audio step still
+	// appears on every start, the same way the portal picker does (AD3), so
+	// this can never silently change what a broadcast publishes. Ignored when
+	// a whole screen is shared, and by AudioDevice, which is the bigger
+	// hammer.
+	AudioApp string `json:"audioApp,omitempty"`
 
 	// Rung.
 	Width      int `json:"width,omitempty"`

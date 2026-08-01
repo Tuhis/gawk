@@ -492,6 +492,69 @@ func (g *Graph) WidestSinkChannels() []string {
 	return widest
 }
 
+// PlanSystemAudio links the machine's real output sink's **monitor** ports into
+// the capture sink — the whole system's sound, arriving through the same node
+// the gst pipeline is already reading.
+//
+// This is what makes docs/39 D5's mid-session "switch to whole-system audio" a
+// re-link rather than a renegotiation: the pipeline's target-object never
+// changes, so the Opus stream, its sequence space and the viewer's decoder all
+// carry on undisturbed and the switch costs nothing but the packets in the gap.
+//
+// A monitor is an output that carries what the sink is playing, so this is the
+// same tee shape as the application case and equally incapable of re-routing
+// anything.
+func (g *Graph) PlanSystemAudio(sinkNodeID uint32) []Link {
+	sinkPorts := g.SinkInputs(sinkNodeID)
+	if len(sinkPorts) == 0 {
+		return nil
+	}
+	source, ok := g.widestRealSink()
+	if !ok {
+		return nil
+	}
+	byChannel := map[string]Port{}
+	for _, p := range sinkPorts {
+		if p.Channel != "" {
+			byChannel[p.Channel] = p
+		}
+	}
+	monitors := g.nodePorts(source.ID, true, true)
+	var links []Link
+	for i, mp := range monitors {
+		if ip, ok := byChannel[mp.Channel]; ok && mp.Channel != "" {
+			links = append(links, Link{OutNode: source.ID, OutPort: mp.ID, InNode: sinkNodeID, InPort: ip.ID})
+			continue
+		}
+		if i < len(sinkPorts) {
+			links = append(links, Link{OutNode: source.ID, OutPort: mp.ID, InNode: sinkNodeID, InPort: sinkPorts[i].ID})
+		}
+	}
+	slices.SortFunc(links, func(a, b Link) int {
+		if c := cmp.Compare(a.OutPort, b.OutPort); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.InPort, b.InPort)
+	})
+	return links
+}
+
+// widestRealSink returns the machine's most capable actual output, ignoring
+// internal sinks — ours, and anyone else's capture plumbing.
+func (g *Graph) widestRealSink() (Node, bool) {
+	var best Node
+	bestPorts := 0
+	g.nodes(func(n Node) {
+		if n.MediaClass != "Audio/Sink" {
+			return
+		}
+		if p := len(g.nodePorts(n.ID, false, false)); p > bestPorts {
+			best, bestPorts = n, p
+		}
+	})
+	return best, bestPorts > 0
+}
+
 // DefaultSinkChannels reports the channel layout of the node the daemon calls
 // the default audio sink, as a positional list ("FL", "FR", …).
 //

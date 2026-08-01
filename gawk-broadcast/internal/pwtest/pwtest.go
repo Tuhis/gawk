@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -308,6 +309,36 @@ func (e *Emitter) Kill() {
 // Log returns whatever the emitter printed, for a test that wants to explain
 // itself.
 func (e *Emitter) Log() string { return e.log.String() }
+
+// BuildHelper builds the real gawk-pw-helper and returns its path, so a test
+// outside cmd/gawk-pw-helper can drive the shipping binary rather than a
+// stand-in. Built once per process.
+func BuildHelper(t *testing.T) string {
+	t.Helper()
+	helperOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "gawk-pw-helper")
+		if err != nil {
+			helperErr = err
+			return
+		}
+		helperPath = filepath.Join(dir, "gawk-pw-helper")
+		out, err := exec.Command("go", "build", "-o", helperPath,
+			"github.com/Tuhis/gawk/gawk-broadcast/cmd/gawk-pw-helper").CombinedOutput()
+		if err != nil {
+			helperErr = fmt.Errorf("go build: %v\n%s", err, out)
+		}
+	})
+	if helperErr != nil {
+		t.Fatalf("pwtest: building the helper: %v", helperErr)
+	}
+	return helperPath
+}
+
+var (
+	helperOnce sync.Once
+	helperPath string
+	helperErr  error
+)
 
 // Node is the slice of a pw-dump node this package's assertions need.
 type Node struct {

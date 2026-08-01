@@ -119,6 +119,30 @@ type AudioSource interface {
 	AudioFormat() (AudioFormat, bool)
 }
 
+// AudioTargetMode is what the broadcaster chose in the whose-audio step
+// (R35, docs/39 D5). It exists in the engine rather than in the capture package
+// so both shells can express a choice without importing GStreamer.
+type AudioTargetMode string
+
+const (
+	// AudioTargetSystem is today's behavior: the whole machine's output.
+	// It is the default for every path that does not ask, which is what keeps
+	// the whole-screen flow byte-identical to pre-R35.
+	AudioTargetSystem AudioTargetMode = "system"
+	// AudioTargetApp captures one application's streams and nothing else.
+	AudioTargetApp AudioTargetMode = "app"
+	// AudioTargetNone is silence, chosen deliberately.
+	AudioTargetNone AudioTargetMode = "none"
+)
+
+// AudioTarget is the answer to "whose audio?".
+type AudioTarget struct {
+	Mode AudioTargetMode
+	// Binary is the application's `application.process.binary` (AD2), set only
+	// for AudioTargetApp.
+	Binary string
+}
+
 // AppAudioSource is implemented by sources that can capture one application's
 // audio rather than the whole system's (R35, docs/39 D3). Stats-only, and
 // optional exactly like GeometrySource: a source with no notion of app audio

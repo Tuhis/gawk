@@ -37,6 +37,12 @@ const (
 	// the mid-session "switch to whole-system audio" a re-link rather than a
 	// renegotiation (docs/39 D5).
 	OpCapture Op = "capture"
+	// OpCaptureSystem re-links the sink to the machine's real output monitor:
+	// the whole system's sound, arriving through the same node the gst
+	// pipeline is already reading. It is the mid-session escape hatch of
+	// docs/39 D5 — a re-link, not a renegotiation, so viewers notice nothing
+	// beyond the gap.
+	OpCaptureSystem Op = "capture-system"
 	// OpRelease drops the links and the sink, leaving the daemon as it was
 	// found. The helper stays alive and keeps reporting apps.
 	OpRelease Op = "release"
