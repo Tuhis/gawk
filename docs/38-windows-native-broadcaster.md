@@ -645,6 +645,58 @@ of three. Raising the tmpfs was rejected as the first move: it is RAM against
 an 11 Gi pod limit, and the job does not actually need the space
 simultaneously.
 
+**Revised 2026-08-01 — one job became three.** The move to Linux took the job
+from ~34 min to ~19; this revision takes the critical path to ~7. Nothing
+about *what* CI verifies changed. Measured per-step on run 30667766932:
+
+| Step | | New job |
+|---|---:|---|
+| Clippy (Windows target) | 4:02 | `lint` (6:04) |
+| Clippy (host) | 2:02 | `lint` |
+| Test | 2:25 | `test` (5:22) |
+| Integration vs the real relay | 2:57 | `test` |
+| Build (release) | 7:03 | `build` (7:03) |
+| **serial total** | **18:47** | **critical path ~7:15** |
+
+The split is on the build-tree boundary, which is also the only coupling the
+old job had: no step consumed a previous step's output, and the two reclaims
+existed solely to keep three trees out of one 4 Gi volume. Two consequences
+worth recording, because both invert an assumption the paragraph above makes:
+
+- **It is not duplicated work.** The old job already built the msvc
+  dependency set twice — dev for the cross clippy, release for the artifact —
+  and deleted the first tree in between, so `lint` and `build` shared nothing
+  to lose. The one duplication the split adds is the host dependency build
+  that `test` and `lint` now each do (~1:24), absorbed by `test`'s ~1:40 of
+  slack against the critical path.
+- **It lowers the tmpfs peak rather than raising it.** One tree per pod, not
+  three. `CARGO_PROFILE_DEV_DEBUG=0` and the surviving reclaim in `lint` are
+  kept for exactly the reason above, and it is that headroom that made it
+  possible to triple the concurrent pod count without touching the 4 Gi
+  emptyDir or the runner's 2 Gi memory request.
+
+Two other things the measurement turned up, both acted on:
+
+- **93% of the compile time is third-party.** `cargo build --release
+  --timings`: 660 units, 830 CPU-seconds, of which this workspace's own six
+  crates are 59 s. Any future caching effort should target that and nothing
+  else — and should be measured against in-cluster storage, since the ~6 MB/s
+  that killed the idea above is GitHub's cache CDN, not a LAN.
+- **The runner pod was CPU-starved, and it is the run-to-run variance.** The
+  same commit ran 11:00 on a quiet node and 18:47 on a busy one — a uniform
+  1.7x on every compile step. The runner's `requests.cpu` was 500m, and a
+  cgroup's share of a contended node is proportional to it. Raised to 1, with
+  the limit 4 → 8 (cargo's default `-j` follows the CFS quota, and the build
+  sustains ~5.5 cores when given them). The pod memory *limit* moved 11 Gi →
+  14 Gi with it — not for a volume, but because `-j8` doubles concurrent
+  rustc processes; the tmpfs caps are unchanged and still total 11 Gi. All
+  three live in ioio `clusters/baremetal/actions-runners/gawk.yaml`.
+
+Rejected while there: dropping `lto = "thin"` to shorten the release build's
+~2:13 serial tail. It was measured at ~12% *more* total CPU (874 vs 781
+CPU-seconds) — the wrong trade on a shared runner — and it would change the
+bytes `BUILD-INFO.txt` asks testers to report codegen differences against.
+
 The still-Windows-only residue, unchanged: everything on the §10 on-hardware
 register, plus anything about msvc-vs-clang codegen of the shipped EXE.
 
