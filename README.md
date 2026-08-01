@@ -231,6 +231,15 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   `cargo clippy` rebuild every one of them (367 units → 481, the step 2:02 →
   2:58). Scope such flags to the job that needs them.
   ([docs/38](docs/38-windows-native-broadcaster.md) D18)
+- **`producer | grep -q` under `set -o pipefail` fails on success** — and in CI
+  shell that reads as the opposite of what happened. `grep -q` exits at its
+  first match, the producer's next write gets EPIPE, and `pipefail` hands the
+  pipeline the producer's failure. `tar -tzf … | grep -qx "$want"` therefore
+  reported the file it had just *found* as missing from the release tarball,
+  and published `gawk-broadcast-v1.11.0` with no assets; the same shape in an
+  `if` (`echo "$out" | grep -q`) silently reads as "no match" instead. Use a
+  here-string (`grep -q … <<<"$var"`) — no pipeline, no SIGPIPE. Producers that
+  are read to the end (`grep -c`, `grep -B/-A`) are not exposed to it.
 
 **Certificates (Chromium `serverCertificateHashes` rules)**
 

@@ -18,7 +18,21 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The recovery path, mirroring broadcast-windows.yml. A re-run is not one:
+  # it replays the workflow file as of the commit it re-runs, so a release
+  # whose assets were lost to a bug IN this file cannot be repaired by
+  # re-running it — the bug re-runs too. Dispatching runs the file as of the
+  # ref you dispatch from, a fixed one, against the source you name.
   workflow_dispatch:
+    inputs:
+      attach_to:
+        description: >-
+          Backfill. Ref or SHA of an already-released commit whose release
+          assets were missed. The broadcaster is built FROM that commit and
+          attached to its release. Leave empty for an ordinary on-demand run,
+          which builds the current ref and attaches nothing.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -59,6 +73,13 @@ jobs:
   # relay's job must stay header-free.
   broadcast:
     runs-on: ioio-k8s
+    # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
+    # and the release gate compares commit SHAs. This is also the single fact
+    # that ties the artifact, the gate and the thing actually compiled
+    # together — they all derive from one `git rev-parse` of the tree that was
+    # checked out.
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
     defaults:
       run:
         working-directory: gawk-broadcast
@@ -69,7 +90,17 @@ jobs:
       # rather than anything about cgo.
       CGO_ENABLED: "1"
     steps:
+      # `inputs.attach_to` is empty on push and pull_request, so this is the
+      # ordinary checkout in every case but a backfill — `github.sha` is what
+      # actions/checkout resolves to by itself on both events. A backfill
+      # tests AND builds the commit it is attaching to, rather than trusting
+      # that today's tree still matches what was released.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
+      - name: Resolve the commit being built
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-broadcast/go.mod
@@ -178,7 +209,14 @@ jobs:
           # top-level-only pattern would let exactly this step's most important
           # coverage skip in silence. Same reason the PASS count is counted
           # with the leading-space form.
-          if echo "$out" | grep -qE '^ *--- SKIP'; then
+          # Here-string, not `echo "$out" | grep -q`: with pipefail set above,
+          # grep -q's early exit can SIGPIPE the producer and turn the whole
+          # pipeline non-zero, which in an `if` reads as "no SKIP found" — this
+          # guard silently not firing is precisely the outcome it exists to
+          # prevent. Same bug as the release-tarball check below, opposite and
+          # worse direction. The `grep -B1 -A4` and `grep -cE` below read their
+          # input to the end, so they are not exposed to it.
+          if grep -qE '^ *--- SKIP' <<<"$out"; then
             echo "$out" | grep -B1 -A4 -E '^ *--- SKIP'
             echo "::error::the PipeWire integration tests skipped — this runner has no usable sound server, so R35's audio coverage did not run. See docs/39 F6."
             exit 1
@@ -220,7 +258,10 @@ jobs:
             # constant and the -buildvcs commit both reached the artifact —
             # the badge in the GUI window is the same string.
             echo "version: $(dist/gawk-broadcast -version)"
-            echo "commit:  ${{ github.sha }}"
+            # The resolved source commit, not github.sha: on a backfill those
+            # differ, and this line is the provenance of the bytes in the
+            # tarball — it has to name the commit that was compiled.
+            echo "commit:  ${{ steps.source.outputs.sha }}"
             echo "branch:  ${{ github.ref_name }}"
             echo "built:   $(date -u +%FT%TZ)"
             echo "runner:  $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m))"
@@ -285,7 +326,11 @@ jobs:
         run: cp INSTALL.md dist/
       - uses: actions/upload-artifact@v7
         with:
-          name: gawk-broadcast-linux-amd64-${{ github.sha }}
+          # Keyed by the commit actually built, which is github.sha on every
+          # event but a backfill — where it is the commit being attached to,
+          # and where naming it github.sha would leave the attach job below
+          # looking for an artifact under a name nothing uploaded.
+          name: gawk-broadcast-linux-amd64-${{ steps.source.outputs.sha }}
           # Repo-relative, not job-relative: `defaults.run.working-directory`
           # applies to `run:` steps only, never to an action's inputs.
           path: gawk-broadcast/dist/
@@ -302,30 +347,67 @@ jobs:
   # main push and attaches on almost none of them. The Windows half is the
   # matching job in broadcast-windows.yml; keep the two in step.
   #
-  # One divergence, on purpose: that job also carries a workflow_dispatch
-  # backfill (`attach_to`) and so passes the action's `sha` input. This job
-  # does not, because the gap it recovers from has never bitten here — the
-  # Linux attach worked on the very release where the Windows one was lost, and
-  # ci.yml has no path filter, so it cannot fail to run for a component that
-  # bumped. Nothing about the gate differs: `sha` defaults to github.sha, which
-  # is what this job means. Add the same input here if this half ever needs it.
+  # This job used to note that it carried no `attach_to` backfill, "because the
+  # gap it recovers from has never bitten here". It has now: the packaging step
+  # below verified the tarball with `tar -tzf | grep -q` under pipefail, which
+  # made it fail on a correct tarball (see the step for the mechanism), and
+  # gawk-broadcast-v1.11.0 published with no assets as a result. Re-running the
+  # failed job could not repair it — a re-run replays the buggy step — and the
+  # gate correctly refuses every later commit, since the tag really does point
+  # somewhere else. So the two halves are in step again, and for the same
+  # reason: the recovery path is not optional once the build half can fail.
   #
-  # Push only. The upload needs `contents: write`, and a job holding that token
-  # must not run code from a pull request's own checkout (this job `uses:` an
-  # action from the tree it checks out). Packaging is still exercised on every
-  # main push, which is what stops it rotting between releases.
+  # A dispatch WITHOUT attach_to deliberately skips this: an on-demand run is
+  # for looking at a binary, not for touching a release.
+  #
+  # Never on pull_request. The upload needs `contents: write`, and a job
+  # holding that token must not run code from a pull request's own checkout
+  # (this job `uses:` an action from the tree it checks out). workflow_dispatch
+  # does not reopen that — dispatching requires write access to the repository,
+  # and the action still comes from the dispatched ref rather than from
+  # `attach_to`. Packaging is still exercised on every main push, which is what
+  # stops it rotting between releases.
   attach-broadcast-release:
     needs: broadcast
-    if: github.event_name == 'push'
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.attach_to != '')
     runs-on: ioio-k8s
     permissions:
       contents: write
     steps:
+      # Deliberately NOT `ref: attach_to`, unlike the build job. This is the
+      # job that runs the composite action below, and a backfill exists
+      # precisely because something at the target commit was broken — checking
+      # it out would run the old, broken tooling to repair the damage the old,
+      # broken tooling did. v1.11.0 is the live example: the packaging step at
+      # that commit is the one that cannot succeed. The tooling comes from the
+      # dispatched ref; only the source being built comes from the target.
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
         with:
-          name: gawk-broadcast-linux-amd64-${{ github.sha }}
+          name: gawk-broadcast-linux-amd64-${{ needs.broadcast.outputs.sha }}
           path: staging
+
+      # ...with one exception: the manifest has to be the TARGET's, because the
+      # gate resolves the tag from it and the version being backfilled is the
+      # one that commit released, not the one main happens to be on now.
+      # Sparse, because this is the only file wanted from that tree.
+      - name: Read the manifest as of the commit being attached to
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.broadcast.outputs.sha }}
+          path: released
+          sparse-checkout: .release-please-manifest.json
+          sparse-checkout-cone-mode: false
+      - name: Swap in that manifest, and show which one the gate will read
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          cp released/.release-please-manifest.json .release-please-manifest.json
+          echo "manifest as of ${{ needs.broadcast.outputs.sha }}:"
+          cat .release-please-manifest.json
       - name: Package the release assets
         run: |
           set -euo pipefail
@@ -348,8 +430,19 @@ jobs:
           # Asked of the tarball, not assumed of the command above: the R2
           # question ("does it actually reach production?") applied to the one
           # file whose absence is invisible until a user tries the feature.
+          #
+          # Listed ONCE into a variable, and matched with a here-string rather
+          # than a pipe. `tar -tzf … | grep -q` under `set -o pipefail` is a
+          # trap, and it is what published gawk-broadcast-v1.11.0 with no
+          # assets: grep -q exits on its first match, tar is still
+          # decompressing 26 MB of binaries, its next write gets EPIPE, and
+          # pipefail hands the pipeline tar's failure — so the `||` branch
+          # fires and reports the file that was *found* as missing. The check
+          # was therefore guaranteed to fail on the very first name it looked
+          # for. No pipeline, no SIGPIPE, and one decompression instead of five.
+          listing=$(tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz)
           for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt; do
-            tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz | grep -qx "$want" || {
+            grep -qxF -- "$want" <<<"$listing" || {
               echo "::error::$want is missing from the release tarball"
               exit 1
             }
@@ -369,6 +462,10 @@ jobs:
         with:
           component: gawk-broadcast
           dir: assets
+          # The commit the tag must point at. Identical to github.sha on a
+          # push; on a backfill it is the released commit this run rebuilt,
+          # which is the only thing that re-aims the gate without weakening it.
+          sha: ${{ needs.broadcast.outputs.sha }}
 
   app:
     runs-on: ioio-k8s
@@ -655,9 +752,14 @@ jobs:
   # release-please refreshes that PR after every main merge, so it still
   # re-checks each merged change) plus workflow_dispatch for cluster work.
   # This is the automated successor to docs/22's two-pod smoke.
+  # A backfill dispatch is excluded: it exists to rebuild one commit's
+  # broadcaster binaries and staple them to an existing release, and spinning a
+  # kind cluster for that is fifteen minutes of the disk-backed pool spent on a
+  # question nobody asked. An ordinary dispatch (no attach_to) still runs it —
+  # that is the cluster escape hatch, unchanged.
   e2e-cluster:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.attach_to == '') ||
       (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--'))
     # Disk-backed runner pool: kind needs Docker's data-root on a real
     # filesystem (its inner containerd can't stack overlayfs on the tmpfs the
