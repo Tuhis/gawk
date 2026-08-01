@@ -652,14 +652,20 @@ jobs:
       # A prebuilt binary, pinned: `cargo install cargo-deny` compiles for
       # several minutes on every run, which is a lot of runner time for a
       # check that takes seconds.
+      #
+      # Into RUNNER_TEMP, not /usr/local/bin: the self-hosted runner pods run
+      # as a non-root user, so extracting there fails with a bare
+      # `tar: cargo-deny: Cannot open: Permission denied`.
       - name: Install cargo-deny
         env:
           CARGO_DENY_VERSION: "0.20.2"
         run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
           curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz --strip-components=1 -C /usr/local/bin \
+            | tar -xz --strip-components=1 -C "${RUNNER_TEMP}/bin" \
               "cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny"
-          cargo-deny --version
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+          "${RUNNER_TEMP}/bin/cargo-deny" --version
       - name: Rust dependencies are on the license allowlist
         working-directory: gawk-broadcast-windows
         run: cargo-deny check licenses
