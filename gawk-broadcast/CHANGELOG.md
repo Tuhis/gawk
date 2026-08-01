@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.11.0...gawk-broadcast-v1.11.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **broadcast:** rebuild capture that dies mid-broadcast instead of ending it ([#223](https://github.com/Tuhis/gawk/issues/223)) ([ffc1bcd](https://github.com/Tuhis/gawk/commit/ffc1bcdb44feff2317e2d1c6725c2f42dada6ccb))
+
 ## [1.11.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.10.0...gawk-broadcast-v1.11.0) (2026-08-01)
 
 
