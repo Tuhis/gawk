@@ -73,8 +73,21 @@ cargo build --release                     # target/release/gawk-broadcast(.exe)
 
 ## Getting a Windows build
 
-No installer, no signed release binary — distribution is the CI artifact,
-mirroring the Linux broadcaster's story:
+No installer and nothing signed, but released versions are attached to their
+GitHub Release — one `.exe`, no run to find, no 30-day expiry:
+
+```
+gh release download --pattern 'gawk-broadcast-windows-x86_64.exe'          # newest
+gh release download gawk-broadcast-windows-v1.0.0 --pattern '*.exe'        # specific
+```
+
+`INSTALL.md`, `BUILD-INFO.txt` and `SHA256SUMS` are attached alongside it (the
+EXE is unsigned by design, so the checksum is the only integrity check there
+is). It is not a separate build — it is byte-for-byte the artifact CI built for
+that commit, attached by `attach-release`.
+
+For an *unreleased* build, distribution is the CI artifact, mirroring the Linux
+broadcaster's story:
 
 ```
 gh run download --name gawk-broadcast-windows-x86_64-<commit sha>

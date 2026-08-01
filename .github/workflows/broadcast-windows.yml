@@ -228,3 +228,49 @@ jobs:
           path: gawk-broadcast-windows/dist/
           retention-days: 30
           if-no-files-found: error
+
+  # The Windows half of the release-assets story; the Linux one is
+  # attach-broadcast-release in ci.yml, and the reasoning for both lives in
+  # .github/actions/attach-release-assets. No rebuild — the artifact the job
+  # above just produced is already the --release EXE, and on a release-PR merge
+  # this run and release-please.yml's are the same commit.
+  #
+  # This workflow is path-filtered, which works out exactly right: a release
+  # that bumps this component necessarily touches gawk-broadcast-windows/
+  # (its CHANGELOG.md and Cargo.toml), so the job runs precisely when there is
+  # something to attach.
+  attach-release:
+    needs: broadcast-windows
+    if: github.event_name == 'push'
+    runs-on: ioio-k8s
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: gawk-broadcast-windows-x86_64-${{ github.sha }}
+          path: staging
+      - name: Package the release assets
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          # No archive: a single .exe is the whole product (docs/38 D17), and
+          # one file someone can click beats one they have to unpack. INSTALL
+          # rides alongside because its SmartScreen note is what the first run
+          # needs, and BUILD-INFO because this EXE is cross-compiled with
+          # clang-cl rather than built by MSVC — provenance a tester would not
+          # otherwise guess.
+          cp staging/gawk-broadcast.exe assets/gawk-broadcast-windows-x86_64.exe
+          cp staging/INSTALL.md staging/BUILD-INFO.txt assets/
+          # Unsigned by design (docs/38 D17) — the checksum is the only
+          # integrity check a downloader gets. Written outside `assets` and
+          # moved in, because whether a shell's `*` sees a file the same
+          # command is redirecting into is not something to rely on.
+          (cd assets && sha256sum ./* > ../SHA256SUMS)
+          mv SHA256SUMS assets/
+          ls -l assets
+      - uses: ./.github/actions/attach-release-assets
+        with:
+          component: gawk-broadcast-windows
+          dir: assets

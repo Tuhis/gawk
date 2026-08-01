@@ -37,10 +37,23 @@ is unchanged.
 
 ## Install
 
-Handing a build to someone else to test? Point them at
+Released versions are attached to their GitHub Release, which is the easy path
+— no run to find, no 30-day expiry:
+
+```sh
+gh release download --pattern 'gawk-broadcast-linux-amd64.tar.gz'   # newest release
+gh release download gawk-broadcast-v1.9.0 --pattern '*.tar.gz'      # a specific one
+```
+
+The tarball holds both binaries, `INSTALL.md` and `BUILD-INFO.txt`; a
+`SHA256SUMS` asset sits beside it (the binaries are unsigned, so that is the
+only integrity check there is). It is not a separate build — it is byte-for-byte
+the artifact CI built for that commit, attached by `attach-broadcast-release`.
+
+Handing an *unreleased* build to someone to test? Point them at
 [`INSTALL.md`](INSTALL.md) — it's written for a tester with a binary and no
 context, and CI ships a copy of it inside the artifact. Every green CI run on a
-branch or PR uploads `gawk-broadcast-linux-amd64-<sha>` (both binaries +
+branch or PR uploads `gawk-broadcast-linux-amd64-<sha>` (all binaries +
 `BUILD-INFO.txt` recording the commit, the glibc floor and the exact library
 linkage). Grab it from the run's Artifacts, or:
 
