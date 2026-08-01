@@ -53,7 +53,7 @@ feature set exists).
 | R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
 | R33 | [WHIP ingest for OBS support](#r33--whip-ingest-for-obs-support) | 💡 proposed 2026-07-29, not started — no design doc yet |
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
-| R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 proposed + feasibility investigated 2026-08-01; **designed the same day** (owner decisions AD1–AD4: mode inferred from the picker, `application.process.binary` matching, ask-every-start audio step with preselect, native PipeWire helper day one). Not started (AS1–AS7) ([docs/39](docs/39-linux-app-sharing.md)) |
+| R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; **AS7 on-hardware verification (docs/39 §6) outstanding** and is what decides the milestone ([docs/39](docs/39-linux-app-sharing.md)) |
 
 ---
 
@@ -3015,16 +3015,28 @@ holds project-wide). Windows-parity for its own sake — where Linux
 structurally can't match (one-picker correlation), the divergence ships
 labeled instead of imitated badly.
 
-**Status**: proposed 2026-08-01; feasibility investigated the same day
-(portal `source_type`/`size` availability, the no-app-identity privacy
-boundary, and the OBS virtual-sink + port-link mechanism verified against
-the portal spec and prior art); **designed 2026-08-01** —
-[docs/39](docs/39-linux-app-sharing.md) (mode inferred from the picker,
-bounding-box fit geometry, helper-owned virtual sink + port-link tee with a
-native libpipewire helper subprocess, whose-audio step ask-every-start with
-preselect; owner decisions AD1–AD4). The design resolves this section's open
-questions — where they disagree, docs/39 wins. Not started (chunks AS1–AS7;
-prefix **AS** claimed).
+**Status**: proposed, investigated and designed 2026-08-01
+([docs/39](docs/39-linux-app-sharing.md); owner decisions AD1–AD4);
+**implemented the same day** — chunks AS1–AS6. The design resolves this
+section's open questions, and docs/39 §8 records where the *build* amended the
+design: `application.process.binary` turned out to need object binding rather
+than registry globals (so the helper binds clients and stream nodes, and needs
+two round-trips before it can honestly say "nothing is playing"), and the
+capture sink is created once and never recreated, because recreating it would
+change the serial a running `pipewiresrc` addresses.
+
+What shipped: portal `source_type`/`size` parsing, bounding-box fit geometry
+(which also fixed a live stretch bug for ultrawide *monitors*), the
+`gawk-pw-helper` virtual-sink tee with crash-safe cleanup, engine integration
+with every D6 failure row degrading rather than failing, the GUI's whose-audio
+card and silence escape hatch, `-audio-app` for the CLI, and docs. The audio
+control plane is integration-tested against a real headless PipeWire daemon in
+CI (D7's bet, paid off).
+
+**AS7 — the on-hardware register (docs/39 §6) — is outstanding, and it is what
+decides the milestone.** V-2 through V-4 in particular (window resize,
+exclusive-fullscreen, occlusion/minimisation per compositor) are claims this
+work makes on paper that only a desktop can settle.
 
 ---
 

@@ -1,7 +1,10 @@
 # R35 — Single-app sharing (window + app audio) in the native Linux broadcaster
 
 **Status**: designed 2026-08-01 (owner decisions AD1–AD4 taken the same day,
-listed in §2). Not started (chunks AS1–AS7).
+listed in §2). **Implemented 2026-08-01** — chunks AS1–AS6 landed; AS7 (the
+on-hardware register, §6) is the outstanding half and is what decides the
+milestone. §8 records what the build learned that the design could not have
+known, including two places where reality amended a decision.
 
 `gawk-broadcast` gains a **share one application** mode: the app's window as
 video plus **only** that app's audio — a second app playing sound on the same
@@ -330,7 +333,7 @@ Prefix **AS** (App Sharing — unclaimed; single letters are all spoken for
 per convention). Ordered so the CI-provable core lands before any UI, and
 the doc-gated on-hardware pass is last.
 
-### AS1 — Portal metadata + fit geometry
+### AS1 — Portal metadata + fit geometry ✅
 
 `ParseStartResults` returns `{NodeID, SourceType, Size}`; the `fit` function
 with docs/38's golden cases; `encoderCaps` pins fitted dims; stats/GUI show
@@ -343,7 +346,7 @@ them; source_type in stats + R28 report.
 | Monitor-mode pipeline args byte-identical to pre-R35 for 16:9 sources (AG2) | unit, golden compare |
 | A 1000×700 window at the 1080p rung encodes 1542×1080 (even-floored fit), shown in stats | unit + manual later (V-1) |
 
-### AS2 — The helper: scaffold, build, protocol
+### AS2 — The helper: scaffold, build, protocol ✅
 
 `cmd/gawk-pw-helper` builds (cgo, `libpipewire-0.3-dev` in CI apt list);
 registry watch + `apps` events + protocol state machine; packaging: ships in
@@ -356,7 +359,7 @@ the CI artifact, `BUILD-INFO.txt` + INSTALL.md `ldd` rows updated.
 | Protocol state machine survives event reordering, duplicate serials, stdin EOF ⇒ clean exit | unit over injected seam |
 | stdin EOF / SIGKILL both leave `pw-dump` clean of gawk objects | integration |
 
-### AS3 — Sink + link engine
+### AS3 — Sink + link engine ✅
 
 Sink creation (default-sink layout, `Audio/Sink/Internal`, per-session
 name), `capture` op: link target binary's streams, follow churn, re-link on
@@ -369,7 +372,7 @@ default-layout change, `links` events, `release`.
 | Default sink layout change ⇒ sink recreated, links restored | integration (swap null-sink profiles) |
 | kill -9 matrix leaves no sink/links (AG5) | integration |
 
-### AS4 — Engine integration
+### AS4 — Engine integration ✅
 
 `AudioTarget` in `MediaConfig`; the `app-sink-monitor` candidate +
 `BuildPipeline` target args; helper supervision; `ChooseAudioTarget` seam;
@@ -383,7 +386,7 @@ CLI `-audio-app`; D6's failure mapping incl. the mid-session switch;
 | Mid-session switch to system audio: same seq space, no config re-emit, gap = dropped packets only | integration vs. real relay (AG7's harness) |
 | `-audio-app` headless path works; unset ⇒ pre-R35 behavior | integration |
 
-### AS5 — GUI: the whose-audio card
+### AS5 — GUI: the whose-audio card ✅
 
 The card (live list via helper events, Whole system / No audio rows,
 preselect-last per AD3, the "apps appear when they play sound" caveat), the
@@ -396,7 +399,7 @@ live status line + one-click switch, error sentences for every D6 row.
 | Idle-window zero-frame invariant (docs/19 V9's layout test) still holds with the new card | existing layout test extended |
 | Copy review: every failure is a sentence a friend can act on | review |
 
-### AS6 — Docs + telemetry closeout
+### AS6 — Docs + telemetry closeout ✅
 
 INSTALL.md (helper row, package list), module README, README gotchas if any
 new one landed, R28 report fields, ROADMAP status flip.
@@ -406,7 +409,7 @@ new one landed, R28 report fields, ROADMAP status flip.
 | A fresh reader can install and use app mode from INSTALL.md alone | review |
 | R28 report carries mode + chosen binary + link state | unit |
 
-### AS7 — On-hardware verification (manual, decides the milestone)
+### AS7 — On-hardware verification (manual, decides the milestone) — outstanding
 
 The §6 register on the gaming PC (KDE) + a GNOME session, closing AG1, AG3,
 AG8, AG9's manual halves.
@@ -459,3 +462,114 @@ that only a desktop can prove:
 - **An explicit pre-Start mode switch** (Windows D12's shape) — AD1; it
   adds a disagreement state and no capability on a desktop whose picker
   already offers both kinds.
+
+## 8. What the build found (2026-08-01)
+
+Written down because each of these cost a debugging cycle and two of them
+amend a decision above. Where §8 and an earlier section disagree, §8 is what
+shipped.
+
+### F1 — `application.process.binary` is not in the registry's global properties
+
+AD2's identity is reachable **only by binding the object**. Measured against
+PipeWire 1.0.5: a `Stream/Output/Audio` node's registry globals carry
+`client.id` but no application identity at all, and the owning Client's globals
+stop at `application.name`. The binary appears only in the properties a *bound*
+object reports through its info event.
+
+Consequences, all of them load-bearing:
+
+- The helper binds every Client and every audio-output Stream node, and merges
+  the bound properties over the global's (`pwgraph.Merge`). A helper that
+  trusted globals alone would render an application list it could not link.
+- Identity resolves node → its client, not node alone. GStreamer's
+  `pipewiresink` is one of the producers that sets nothing on the node, and CI's
+  synthetic emitters are exactly that shape.
+- **The helper must complete two registry round-trips before reporting
+  `ready`.** The first delivers the globals and triggers the binds; the info
+  events land after its `done`. A one-round-trip ready published an empty
+  application list while a game was playing — which is precisely the "no apps"
+  vs. "not looked yet" confusion EventReady exists to prevent.
+
+### F2 — The capture sink is created once and never recreated (amends D3)
+
+D3 says a default-sink layout change makes the helper "recreate the sink and
+re-link". Implementation rejects the recreate half: the gst pipeline addresses
+the sink by `object.serial`, so destroying and recreating it changes the target
+out from under a running `pipewiresrc` — turning a headphone switch into a dead
+audio branch and a full audio-off re-run. The design's own claim that
+"`audioconvert` absorbs the monitor's caps change" holds for a caps change; it
+does not survive the node disappearing.
+
+What ships instead: the sink is created once per broadcast, with a layout
+chosen from **the target application's own output ports** (falling back to the
+widest real sink, then stereo), and a layout change mid-session is absorbed by
+re-linking into the existing sink — channel-matched where names agree,
+positional otherwise. This is a better fit for D3's actual goal than the
+default-sink reading was, and F3 explains why.
+
+### F3 — A surround machine is modelled by surround speakers, not a surround application
+
+D3 wants the sink to match the default sink's layout *because* that is the
+layout the application's ports negotiated. That turns out to be exactly right,
+and more directly available than the design assumed: an application's stream
+node is an **adapter**, and its output ports speak the layout it negotiated
+toward the default sink. A 5.1 application playing to stereo speakers has
+**stereo** output ports — its downmix already happened — so a stereo capture
+sink drops nothing. Reading the application's own ports asks D3's question
+directly, needs no `default.audio.sink` metadata binding, and is right even
+when the application is not playing to the default sink at all.
+
+The test that proves it therefore configures 5.1 *speakers*, not a 5.1
+emitter — the first version of that test failed for the right reason and taught
+this.
+
+### F4 — The mid-session switch needed its own operation
+
+D5's "the helper re-links the sink from the app's ports to the default sink's
+monitor ports" is a second link plan, not a variation of the first, so the
+protocol grew `capture-system` alongside `capture`. Internally it is the same
+code path with a sentinel target, which is what keeps re-targeting, the link
+diff and the events identical for both — only the plan differs. Verified
+against a real daemon: the sink keeps its serial across the switch, so the gst
+pipeline and the Opus sequence space are untouched.
+
+### F5 — A capture request must always be answered with a link count
+
+Zero is the most meaningful value the link count takes — it is what the silence
+hint is built on — so the helper reports it on every capture request rather than
+only on a change. Without that, capturing an application that had gone quiet
+since the user picked it produced silence on the protocol as well as in the
+stream, and the engine waited for news that was already true.
+
+### F6 — What CI can now prove
+
+D7's bet paid off: a full PipeWire daemon, WirePlumber and a null sink run
+headless on a runner, and the whole audio control plane is integration-tested
+against them (`internal/pwtest`) — the tee (by capturing *both* monitors and
+requiring signal on each), stream churn, multi-stream applications, the surround
+layout, re-targeting, the mid-session switch, and a `kill -9` matrix that
+asserts `pw-dump` comes back clean. The engine's own seam is covered end to end
+too, against the real helper.
+
+The harness needed one thing the design did not anticipate: WirePlumber requires
+a session bus (it exits immediately without one), and an emitter started before
+WirePlumber has *adopted* a default sink dies with "no target node available" —
+which reads like a bug in the code under test rather than a race in the harness.
+Both are waited for explicitly.
+
+### F7 — Two deviations from AG7's letter
+
+AG7 asks for no diffs outside `gawk-broadcast/`. Two landed, both additive and
+neither on the media path:
+
+- `gawk-telemetry`'s schema types the two new broadcaster fields (`shareMode`,
+  `audioApp`). Without it they arrive as untyped unknowns — stored but not
+  queryable — and AS6's "the R28 report carries mode + chosen binary" would be
+  true only in the weakest sense. "The wrong app's sound went out" is exactly
+  the complaint these two answer.
+- `.github/workflows/ci.yml` installs `libpipewire-0.3-dev` and the PipeWire
+  runtime, and asserts the helper's linkage (AG10).
+
+AG7's substance — zero wire, relay, viewer or browser-broadcaster changes, and a
+stock viewer playing an app-mode broadcast — is intact.

@@ -123,6 +123,8 @@ gawk-broadcast [flags]
   -audio       publish system audio                          (default true)
   -audio-device  capture from this device instead of probing
                                             (env GAWK_AUDIO_DEVICE)
+  -audio-app   when a WINDOW is shared, publish only this application's audio
+                 (its process binary, e.g. supertuxkart; env GAWK_AUDIO_APP)
   -insecure    skip TLS verification (development certificates only)
   -config      path to the config file          (default ~/.config/gawk/broadcast.json)
   -stats       how often to print a stats line, 0 disables (default 5s)
@@ -255,6 +257,45 @@ that says so, and a live pipeline that dies naming an audio element drops audio
 and retries the same encoder rung rather than burning the cascade over a sound
 card. `-audio=false` is for a broadcaster who wants silence, not a workaround
 for breakage.
+
+### Sharing one application (R35, docs/39)
+
+Pick a **window** instead of a screen and two things change.
+
+**The picture is fitted, not stretched.** The configured resolution is a
+bounding box: a 4:3 or portrait window keeps its aspect inside it (a 1000×700
+window at the 1080p rung encodes 1542×1080). This fixed a live bug for whole
+screens too — an ultrawide desktop used to be squashed to 1920×1080 and now
+encodes 1920×804.
+
+**You are asked whose audio to publish**, and only that application's sound
+goes out. The extra click is structural, not a shortcut we did not take: the
+portal deliberately never tells us which application owns the window you picked
+(no PID, no name — by privacy design), so window→application correlation does
+not exist on Linux. Guessing it would silently stream the wrong application's
+audio, which is the worst failure this feature could have, so gawk asks.
+
+The mechanism is a **tee**, and its properties are the design (docs/39 D3):
+
+- `gawk-pw-helper` — a small libpipewire client, spawned per broadcast — creates
+  a hidden virtual sink (`Audio/Sink/Internal`, so it never appears in anyone's
+  device list) and **links** the chosen application's output ports into it.
+  PipeWire output ports fan out, so the application keeps playing to your
+  speakers and the sink receives a copy. Nothing about your audio routing is
+  ever modified; the worst crash leaves a hidden idle sink, never silent
+  speakers.
+- The GStreamer child captures **one static node forever** — the sink's monitor,
+  addressed by `object.serial`. Everything downstream of that source element is
+  the R25 branch byte for byte. All the dynamism (which application, streams
+  dying and reappearing, re-links, a mid-session switch) lives outside GStreamer
+  in PipeWire link management, so there are **no pipeline restarts and no A/V
+  sync model change**.
+- Cleanup is by construction: every object the helper creates belongs to its own
+  connection with no `object.linger`, so the daemon reaps the sink and every
+  link when the helper goes away — clean exit, SIGKILL or OOM alike.
+- Audio stays subordinate. A missing helper, a helper that dies, a sink that
+  will not capture: each degrades to system audio or chosen silence with a
+  sentence, after the portal grant is already in hand.
 
 ## Encoders
 
@@ -408,6 +449,11 @@ encoders drain frames without that signal ever firing.
 internal/engine    Session{Start,Stop} + Callbacks + StartError{Phase,Status}
 internal/portal    XDG ScreenCast handshake (godbus); picker every start
 internal/gst       subprocess supervision + pipeline construction + cascade
+internal/fit       aspect-preserving fit; mirrors the Windows crate's fit.rs
+internal/appaudio  engine side of the app-audio helper: spawn, protocol, degrade
+internal/pwproto   the helper's newline-delimited JSON protocol (both ends)
+internal/pwgraph   the helper's brain: registry state, app list, link plan
+internal/pwtest    a private headless PipeWire daemon for integration tests
 internal/mpegts    TS/PES demux → one AU per PES
 internal/fixture   the committed H.264 MPEG-TS test stream, embedded (fixture.TS)
 internal/pubsim    fixture demux + looping live-timestamped MediaSource
@@ -420,6 +466,9 @@ internal/wirecheck golden wire-vector mirror, kept byte-identical to
 internal/app       the GUI's logic, without the GUI
 cmd/gawk-broadcast      CLI shell — headless, harness, debug
 cmd/gawk-broadcast-gui  GUI shell — Gio window + notifications
+cmd/gawk-pw-helper      the app-audio control plane (R35): cgo + libpipewire,
+                        creates the capture sink and maintains its links.
+                        No media flows through it; if it dies, audio degrades
 cmd/gawk-pubsim         synthetic publisher (R20): loops the embedded fixture
                         through the real engine — CI E2E + manual drills; no
                         Gio, no cgo, prints GAWK_PUBSIM_ID=<code> on stdout
@@ -438,6 +487,17 @@ go test ./...                     # needs the Gio headers (it builds every packa
 go test ./internal/...            # engine only; no headers needed
 go test -short ./internal/...     # skips the tests that build and run the real relay
 ```
+
+The app-audio tests (R35) start a **private, headless PipeWire daemon** and
+drive the real helper against it — the tee, stream churn, and a `kill -9` matrix
+that asserts `pw-dump` comes back clean. They need `pipewire`, `wireplumber`,
+`pw-cli`/`pw-dump`, `dbus-daemon` and `gst-launch-1.0` on PATH, plus
+`libpipewire-0.3-dev` to build the helper at all; without them they skip rather
+than fail. CI installs all of it, so the coverage is real there.
+
+This is the one part of this module CI can genuinely verify. The portal/GPU half
+stays structurally invisible to it (docs/19), which is why R35's on-hardware
+register (docs/39 §6) is what decides the milestone.
 
 The engine's integration tests **build and run the real `gawk-server`** and
 publish a committed H.264 fixture through it, then attach a real subscriber and
