@@ -10,3 +10,8 @@ e2e/out*/
 .claude/worktrees
 
 .DS_Store
+
+# Byte-compiled helpers under tools/ (gen-notices.py is imported by its own
+# negative test, which leaves one behind).
+__pycache__/
+*.pyc

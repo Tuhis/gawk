@@ -1,5 +1,11 @@
 # Vendored wtransport-proto 0.7.1 + gawk patches
 
+> **Modification notice** (Apache-2.0 §4(b)): the files in this directory are
+> a copy of upstream `wtransport-proto` 0.7.1 **modified by the gawk authors**.
+> The changed files are `src/headers.rs` and `src/frame.rs`; every changed site
+> carries a `GAWK PATCH` marker. Upstream's own license texts are alongside
+> this file as `LICENSE-MIT` and `LICENSE-APACHE`.
+
 `wtransport-proto` 0.7.1 from crates.io (MIT OR Apache-2.0, © Biagio Festa
 and contributors), vendored via `[patch.crates-io]`, with two functional
 changes (sites marked `GAWK PATCH`; found against the real gawk-server —

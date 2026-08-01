@@ -608,6 +608,59 @@ jobs:
             exit 1
           fi
 
+  # The license gate. gawk is Apache-2.0, which is a promise about what a user
+  # who takes this code inherits — and that promise is only as good as the
+  # dependencies underneath it. A single transitively-pulled GPL crate would
+  # silently make the shipped binaries undistributable on the terms the README
+  # states, and the symptom would be a licence complaint, not a red build.
+  # So: every dependency's licence must sit on an explicit permissive
+  # allowlist, and adding to that list is a deliberate decision with a human
+  # in the loop.
+  #
+  # Two tools because the ecosystems differ, one policy:
+  #   * Go + npm — tools/licenses/gen-notices.py --check. Go licences are
+  #     classified from the LICENSE text in the module cache (Go modules
+  #     declare nothing); npm licences are read from the lockfile, and only
+  #     packages without `dev: true` count, since build tooling is never
+  #     redistributed.
+  #   * Rust — cargo-deny against gawk-broadcast-windows/deny.toml, because
+  #     Cargo manifests declare SPDX *expressions* and evaluating those is
+  #     what it exists for. It is also where Slint's royalty-free exception
+  #     is written down (docs/38 D12).
+  #
+  # What this job deliberately does NOT do is re-generate THIRD-PARTY-NOTICES.md
+  # and diff it. That needs a full npm install per frontend plus the whole
+  # crate graph on disk, for an artifact that only has to be right at release
+  # time — the allowlist is the property worth checking on every PR.
+  licenses:
+    runs-on: ioio-k8s
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          # Same reasoning as the `tidy` job: this job resolves module graphs
+          # rather than building, so it has no cache worth sharing — and the
+          # duckdb-tagged graph it does pull is exactly the fat working set
+          # that job's comment warns about handing to leaner jobs.
+          cache: false
+      - name: Go and npm dependencies are on the license allowlist
+        run: python3 tools/licenses/gen-notices.py --check
+      # A prebuilt binary, pinned: `cargo install cargo-deny` compiles for
+      # several minutes on every run, which is a lot of runner time for a
+      # check that takes seconds.
+      - name: Install cargo-deny
+        env:
+          CARGO_DENY_VERSION: "0.20.2"
+        run: |
+          curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin \
+              "cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny"
+          cargo-deny --version
+      - name: Rust dependencies are on the license allowlist
+        working-directory: gawk-broadcast-windows
+        run: cargo-deny check licenses
+
   helm:
     runs-on: ioio-k8s
     steps:

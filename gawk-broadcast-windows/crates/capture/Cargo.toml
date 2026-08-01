@@ -4,6 +4,7 @@ description = "Windows.Graphics.Capture frame source + picker enumeration (WB3, 
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 gawk-engine = { path = "../engine" }

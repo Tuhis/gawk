@@ -4,6 +4,7 @@ description = "Session lifecycle, send policy, resume supervisor (WB2, docs/38 D
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 gawk-wire = { path = "../wire" }

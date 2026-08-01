@@ -129,3 +129,29 @@ Blank settings mean "the default", resolved at use, never at save
 | Telemetry ingest | `https://gawk.ioio.fi/api/telemetry/v1/ingest` (`off` = send nothing) |
 | Origin | `gawk-broadcast://windows` — the relay's `-allowed-origins` must include it |
 | Rung | 1080p60, 500 ms GOP, 12 Mbps peak VBR — the resolution is a bounding box: the stream keeps the source's aspect ratio inside it (docs/38 D11) |
+
+## Licensing: the one dependency that is a choice
+
+`gawk-broadcast.exe` is Apache-2.0 like the rest of the repository, and every
+crate it links is permissive — with one deliberate exception. The GUI uses
+**Slint**, which is tri-licensed (`GPL-3.0-only OR
+LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`), and gawk
+takes the **Royalty-free Desktop License v2.0** (docs/38 D12). That is what
+lets this component stay Apache-2.0 instead of becoming the repository's one
+GPL island — a licence seam running between two broadcasters that deliberately
+mirror each other is a standing hazard, not a tidy outcome.
+
+The licence's one condition is attribution. §2(b) accepts the "Made with
+Slint" badge on a public page where the binaries can be downloaded, which is
+the [root README](../README.md#third-party-code) and the releases page.
+
+Two other things about this binary that a licence scan will not tell you:
+**libopus** is statically linked through `audiopus_sys` (ISC bindings over
+Xiph's BSD-3-Clause C library), and the **MSVC C runtime** it links is
+Microsoft's, governed by the Visual Studio licence terms rather than by
+anything in this repository. Full inventory:
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+`deny.toml` in this directory is what keeps the above true: the `licenses` CI
+job runs `cargo-deny check licenses` against it, and a copyleft crate arriving
+through a dependency bump fails the build.
