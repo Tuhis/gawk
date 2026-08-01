@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.9.0...gawk-broadcast-v1.10.0) (2026-08-01)
+
+
+### Features
+
+* **broadcasters:** show the build version in both native broadcaster windows ([#214](https://github.com/Tuhis/gawk/issues/214)) ([aece3fd](https://github.com/Tuhis/gawk/commit/aece3fdce6b598b506428ffcd4564f68ee0adf18))
+
 ## [1.9.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.8.1...gawk-broadcast-v1.9.0) (2026-07-29)
 
 
