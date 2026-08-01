@@ -173,12 +173,17 @@ jobs:
         run: |
           set -o pipefail
           out=$(go test -count=1 -v ./cmd/gawk-pw-helper/ 2>&1) || { echo "$out"; exit 1; }
-          if echo "$out" | grep -q '^--- SKIP'; then
-            echo "$out" | grep -B1 -A4 '^--- SKIP'
+          # `^ *--- SKIP`, not `^--- SKIP`: go test indents subtest results, and
+          # the kill matrix (AG5) acquires its daemon *inside* t.Run — so a
+          # top-level-only pattern would let exactly this step's most important
+          # coverage skip in silence. Same reason the PASS count is counted
+          # with the leading-space form.
+          if echo "$out" | grep -qE '^ *--- SKIP'; then
+            echo "$out" | grep -B1 -A4 -E '^ *--- SKIP'
             echo "::error::the PipeWire integration tests skipped — this runner has no usable sound server, so R35's audio coverage did not run. See docs/39 F6."
             exit 1
           fi
-          echo "$out" | grep -c '^--- PASS' | xargs echo "app-audio integration tests passed:"
+          echo "$out" | grep -cE '^ *--- PASS' | xargs echo "app-audio integration tests passed:"
       # `go test` links the GUI package only as a test binary (its idle-redraw
       # guard, docs/19 finding 12). Building the shells is what proves the real
       # Gio window compiles and links — this job is the only place that

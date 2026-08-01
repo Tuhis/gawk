@@ -89,11 +89,42 @@ func connect() (*conn, error) {
 		done:  make(chan int, 64),
 		fatal: make(chan error, 4),
 	}
+	// Publish the connection *before* the loop can deliver anything into it.
+	// The registry announces every existing global exactly once, in a burst
+	// answering pw_core_get_registry; a callback that arrived while active was
+	// still nil would be dropped, and nothing would ever re-announce it — an
+	// application that was already playing audio would stay invisible for this
+	// helper's whole life. Hence the two-call shim (gawk_pw_new, then
+	// gawk_pw_start) rather than one that starts the loop itself.
 	activeMu.Lock()
 	active = c
 	activeMu.Unlock()
+
+	if testHookBeforeLoopStart != nil {
+		testHookBeforeLoopStart()
+	}
+
+	var startErr *C.char
+	if C.gawk_pw_start(pw, &startErr) < 0 {
+		msg := "could not start the PipeWire loop"
+		if startErr != nil {
+			msg = C.GoString(startErr)
+			C.free(unsafe.Pointer(startErr))
+		}
+		activeMu.Lock()
+		active = nil
+		activeMu.Unlock()
+		C.gawk_pw_free(pw)
+		return nil, errors.New(msg)
+	}
 	return c, nil
 }
+
+// testHookBeforeLoopStart runs in the gap between the connection existing and
+// the event loop being able to deliver anything into it. Nil in production; a
+// test sets it to widen that gap, which is the only way to make the ordering
+// deterministic rather than a matter of thread scheduling.
+var testHookBeforeLoopStart func()
 
 func (c *conn) close() {
 	activeMu.Lock()

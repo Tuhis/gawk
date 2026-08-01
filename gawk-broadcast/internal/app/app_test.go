@@ -832,6 +832,51 @@ func TestAudioPromptBlocksUntilAnswered(t *testing.T) {
 	}
 }
 
+// Answering the card is the one place in this app where the UI goroutine and
+// the engine goroutine touch the config at the same time — and it is not an
+// accident of timing but the shape of the thing: the answer is what *releases*
+// the engine into the encoder cascade, whose OnEncoderChosen writes
+// LastGoodEncoder. Every other saveCfg call site is serialized on the engine
+// goroutine, so this pair is the only cross-goroutine one, and persisting the
+// preselection must not race it (docs/39 F9).
+//
+// Under -race this fails if the save happens after the answer is handed over.
+func TestAnsweringTheCardDoesNotRaceTheEngineWritingConfig(t *testing.T) {
+	fs := &fakeSession{}
+	a, cfg := testApp(t, fs, notify.Discard{})
+
+	engineDone := make(chan struct{})
+	go func() {
+		defer close(engineDone)
+		// The engine goroutine: blocked here until the card is answered…
+		_ = a.chooseAudioTarget(context.Background(), gst.AppAudioOffer{
+			Apps: []pwproto.App{{Binary: "supertuxkart", Name: "SuperTuxKart", Streams: 1}},
+		})
+		// …and then straight into the cascade, whose encoder callback writes
+		// the config exactly like this (mediaFactory's OnEncoderChosen).
+		a.mu.Lock()
+		a.cfg.LastGoodEncoder = "vah264enc"
+		a.mu.Unlock()
+	}()
+
+	waitFor(t, func() bool { return a.AudioPromptState() != nil }, "the whose-audio card to open")
+	a.AnswerAudioPrompt(engine.AudioTarget{Mode: engine.AudioTargetApp, Binary: "supertuxkart"})
+	<-engineDone
+
+	// The preselection is still persisted — the fix is about *when*, not
+	// whether.
+	if cfg.AudioApp != "supertuxkart" {
+		t.Errorf("cfg.AudioApp = %q, want the answered application remembered", cfg.AudioApp)
+	}
+	reloaded, err := config.Load(cfg.Path())
+	if err != nil {
+		t.Fatalf("reloading the saved config: %v", err)
+	}
+	if reloaded.AudioApp != "supertuxkart" {
+		t.Errorf("saved AudioApp = %q, want it on disk for the next start", reloaded.AudioApp)
+	}
+}
+
 // A cancelled start (the user pressing Stop while the card is up) must not
 // hang the engine: it answers whole-system audio, which is the pre-R35
 // behavior and the only answer that is never surprising.

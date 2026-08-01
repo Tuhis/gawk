@@ -597,3 +597,58 @@ neither on the media path:
 
 AG7's substance — zero wire, relay, viewer or browser-broadcaster changes, and a
 stock viewer playing an app-mode broadcast — is intact.
+
+## 9. What the review found (2026-08-01)
+
+A code review of the implementation PR found four defects, each fixed
+test-first per `CODE-REVIEW.md` — the test written and *watched fail* before
+the fix. Recorded because three of them are timing- or lifecycle-shaped: the
+kind that ship green and surface on someone else's machine.
+
+### F8 — The opening registry burst could be dropped, hiding a playing application forever
+
+The C shim's `gawk_pw_new` registered the registry listener **and started the
+event loop** before returning, while Go published the connection (`active`)
+only afterwards. Every callback the loop thread delivered in that gap hit a nil
+connection and was discarded — and the registry answers
+`pw_core_get_registry` with every existing global **exactly once**, so a
+dropped Client or Node global is never re-announced. The visible failure is
+F1's exact symptom re-created by scheduling: an application that was already
+playing audio when the helper started is missing from the card, or present
+with an unresolvable binary, for the helper's whole life.
+
+The fix splits construction from starting: `gawk_pw_new` builds and listens,
+Go publishes `active`, then `gawk_pw_start` releases the loop thread. A
+`testHookBeforeLoopStart` seam (nil in production) widens the gap so the test
+is deterministic rather than a race the scheduler usually wins — with the old
+ordering and a 250 ms gap, the emitting application vanished from the graph
+completely.
+
+### F9 — Persisting the audio preselection raced the encoder cascade
+
+`AnswerAudioPrompt` sent the answer down the channel and *then* called
+`cfg.Save()`. The send is precisely what releases the engine goroutine into
+the encoder cascade, whose `OnEncoderChosen` writes `LastGoodEncoder` — so
+the UI goroutine marshalled the whole config while the engine goroutine wrote
+into it. Every *other* `saveCfg` call site is serialized on the engine
+goroutine; this pair is cross-goroutine by construction, which is why it was
+the only one. Confirmed by the race detector at `app.go:176`, and fixed by
+saving **before** the hand-off, while the engine is still blocked — ordering
+the two rather than locking around them.
+
+### F10 — Choosing "No audio" left the helper running for the whole broadcast
+
+D6's system-audio and failed-capture branches both stop the helper; the
+`AudioTargetNone` branch returned without doing so. A deliberately silent
+broadcast therefore kept an idle `gawk-pw-helper` — a live PipeWire connection
+and registry watch — alive for hours, serving a lane that would never carry a
+sample. One `stopHelper()` closes it; the test asserts the state directly
+rather than the process table.
+
+### F11 — The CI skip-gate could not see skips inside subtests
+
+F6's gate greps `^--- SKIP`, which matches only top-level results. `go test`
+indents subtest results, and the kill matrix (AG5) acquires its daemon *inside*
+`t.Run` — so exactly the coverage the gate exists to protect could have skipped
+in silence on a runner with a half-working sound server. `^ *--- SKIP` closes
+it, and the PASS count uses the same form (it was undercounting subtests).

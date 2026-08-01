@@ -222,16 +222,23 @@ struct gawk_pw *gawk_pw_new(char **err)
 	pw_registry_add_listener(pw->registry, &pw->registry_listener,
 	                         &registry_events, pw);
 
-	if (pw_thread_loop_start(pw->loop) < 0) {
-		*err = dupf("could not start the PipeWire loop%s", "");
-		goto fail;
-	}
-	pw->started = 1;
+	/* The loop is deliberately NOT started here — see the header. The caller
+	 * starts it once it can receive callbacks. */
 	return pw;
 
 fail:
 	gawk_pw_free(pw);
 	return NULL;
+}
+
+int gawk_pw_start(struct gawk_pw *pw, char **err)
+{
+	if (pw_thread_loop_start(pw->loop) < 0) {
+		*err = dupf("could not start the PipeWire loop%s", "");
+		return -1;
+	}
+	pw->started = 1;
+	return 0;
 }
 
 void gawk_pw_free(struct gawk_pw *pw)

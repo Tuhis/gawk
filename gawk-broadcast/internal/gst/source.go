@@ -352,6 +352,10 @@ func (s *Source) chooseAppAudio(ctx context.Context) {
 		s.mu.Lock()
 		s.audioCand, s.audio, s.audioApp = nil, nil, ""
 		s.mu.Unlock()
+		// Same reason as the system-audio branch below: there are no links to
+		// maintain, so a helper would be a live PipeWire connection and
+		// registry watch held open for a lane that will never carry a sample.
+		s.stopHelper()
 		s.log.Info("broadcasting this window without audio, by choice")
 		return
 	case engine.AudioTargetApp:

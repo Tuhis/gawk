@@ -36,10 +36,24 @@ struct gawk_pw {
 #define GAWK_KIND_CLIENT 3
 
 /*
- * Connects to PipeWire and starts the loop. On failure returns NULL and stores
- * a malloc'd message in *err (the caller frees it).
+ * Connects to PipeWire and registers the listeners, but does NOT start the
+ * loop. On failure returns NULL and stores a malloc'd message in *err (the
+ * caller frees it).
+ *
+ * Construction and starting are two calls on purpose. The registry answers
+ * pw_core_get_registry with every existing global exactly once, and those
+ * callbacks hand straight over to Go — so Go must be able to *receive* them
+ * before the loop thread can deliver any. Splitting the two lets Go publish the
+ * connection in between; a single call that started the loop itself would race
+ * the opening burst and silently lose applications that were already playing.
  */
 struct gawk_pw *gawk_pw_new(char **err);
+
+/*
+ * Starts the event loop. Callbacks begin arriving on the loop thread from here
+ * on. Returns 0 on success, -1 on failure (storing a malloc'd message in *err).
+ */
+int gawk_pw_start(struct gawk_pw *pw, char **err);
 
 /* Stops the loop and drops the connection. Every proxy we created dies with
  * it, and — because nothing is linger-flagged — so does every object those

@@ -260,6 +260,26 @@ func TestChoosingNoAudioTurnsTheLaneOff(t *testing.T) {
 	if s.Audio() != nil {
 		t.Error("an audio channel exists after the broadcaster chose silence")
 	}
+	// And nothing is left running to serve a lane that does not exist: a
+	// deliberately silent broadcast must not keep a helper — with its live
+	// PipeWire connection and registry watch — alive on the machine for hours.
+	// The other two non-app answers already end this way; silence is the one
+	// that used to leak (docs/39 F10).
+	assertNoHelper(t, s, "the broadcaster chose silence")
+}
+
+// assertNoHelper checks that the source is not holding a helper open. Every
+// answer that does not capture an application must reach this state: the helper
+// exists to maintain links, and a broadcast with no links to maintain has no
+// use for one.
+func assertNoHelper(t *testing.T, s *Source, why string) {
+	t.Helper()
+	s.mu.Lock()
+	helper := s.helper
+	s.mu.Unlock()
+	if helper != nil {
+		t.Errorf("the audio helper is still running after %s", why)
+	}
 }
 
 // D6, row 1: no helper binary means the step still happens — the shell is told

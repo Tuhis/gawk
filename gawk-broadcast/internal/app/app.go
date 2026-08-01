@@ -172,10 +172,17 @@ func (a *App) AnswerAudioPrompt(target engine.AudioTarget) {
 	}
 	a.mu.Unlock()
 
-	ch <- target
+	// Save **before** handing the answer over, not after. The send is what
+	// releases the engine goroutine into the encoder cascade, and that cascade
+	// writes the config too (OnEncoderChosen → LastGoodEncoder); saving
+	// afterwards would marshal the whole struct alongside a live writer. Every
+	// other saveCfg call site is serialized on the engine goroutine — this is
+	// the one that is cross-goroutine by construction, and ordering it ahead of
+	// the send is what keeps it from being concurrent at all.
 	if err := a.cfg.Save(); err != nil {
 		a.log.Warn("could not save config", "err", err)
 	}
+	ch <- target
 	a.invalidate()
 }
 
