@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.6.0...gawk-telemetry-v1.6.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **broadcast:** rebuild capture that dies mid-broadcast instead of ending it ([#223](https://github.com/Tuhis/gawk/issues/223)) ([ffc1bcd](https://github.com/Tuhis/gawk/commit/ffc1bcdb44feff2317e2d1c6725c2f42dada6ccb))
+
 ## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.5.1...gawk-telemetry-v1.6.0) (2026-08-01)
 
 
