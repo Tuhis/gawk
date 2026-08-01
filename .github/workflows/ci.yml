@@ -244,6 +244,14 @@ jobs:
   # main push and attaches on almost none of them. The Windows half is the
   # matching job in broadcast-windows.yml; keep the two in step.
   #
+  # One divergence, on purpose: that job also carries a workflow_dispatch
+  # backfill (`attach_to`) and so passes the action's `sha` input. This job
+  # does not, because the gap it recovers from has never bitten here — the
+  # Linux attach worked on the very release where the Windows one was lost, and
+  # ci.yml has no path filter, so it cannot fail to run for a component that
+  # bumped. Nothing about the gate differs: `sha` defaults to github.sha, which
+  # is what this job means. Add the same input here if this half ever needs it.
+  #
   # Push only. The upload needs `contents: write`, and a job holding that token
   # must not run code from a pull request's own checkout (this job `uses:` an
   # action from the tree it checks out). Packaging is still exercised on every

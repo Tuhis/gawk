@@ -1032,6 +1032,19 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   per GOP: a healthy stream reads (keyframes/s × viewers) gaps/s. Only
   growth beyond that baseline is loss/reorder.
   ([docs/25](docs/25-e2e-testing-in-ci.md))
+- **A `needs:` naming a job that doesn't exist doesn't fail the job — the
+  whole workflow silently doesn't load.** No jobs, no logs, no annotation,
+  and the run is titled with the *file path* instead of the workflow name,
+  which is the tell. Two individually-green PRs can produce it (one renames
+  a job, the other adds a reference to the old name), so "require branches
+  to be up to date before merging" is what actually prevents it.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
+- **A GitHub re-run replays the workflow file as of that commit** — so it is
+  no help when the file itself was what broke, and a release whose build
+  never ran cannot be repaired by re-running or by any later push (the
+  attach gate compares the tag's commit to the one being built, correctly).
+  Recovery is `workflow_dispatch` with `attach_to`.
+  ([docs/19](docs/19-linux-native-broadcaster.md))
 
 ## License
 
