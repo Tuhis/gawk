@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.5.1...gawk-telemetry-v1.6.0) (2026-08-01)
+
+
+### Features
+
+* **r35:** single-app sharing (window + app audio) on Linux ([#220](https://github.com/Tuhis/gawk/issues/220)) ([2222127](https://github.com/Tuhis/gawk/commit/22221272575ec492badb2233825e4505d8439a52))
+
 ## [1.5.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry-v1.5.0...gawk-telemetry-v1.5.1) (2026-07-30)
 
 

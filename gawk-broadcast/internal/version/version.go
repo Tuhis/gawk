@@ -39,7 +39,7 @@ import (
 // release-please-config.json; the annotation comment is the hook it looks for,
 // so don't reformat this line. TestReleaseMatchesManifest is the proof that the
 // hook still bites.
-const Release = "1.10.0" // x-release-please-version
+const Release = "1.11.0" // x-release-please-version
 
 // shortRevLen is git's classic abbreviation. Long enough to be unique in a
 // repo this size, short enough to sit in a window header.

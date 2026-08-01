@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.10.0...gawk-broadcast-v1.11.0) (2026-08-01)
+
+
+### Features
+
+* **r35:** single-app sharing (window + app audio) on Linux ([#220](https://github.com/Tuhis/gawk/issues/220)) ([2222127](https://github.com/Tuhis/gawk/commit/22221272575ec492badb2233825e4505d8439a52))
+
 ## [1.10.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.9.0...gawk-broadcast-v1.10.0) (2026-08-01)
 
 
