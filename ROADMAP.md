@@ -53,7 +53,7 @@ feature set exists).
 | R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
 | R33 | [WHIP ingest for OBS support](#r33--whip-ingest-for-obs-support) | 💡 proposed 2026-07-29, not started — no design doc yet |
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
-| R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 💡 proposed 2026-08-01, feasibility investigated the same day (feasible; findings in the item), not started — no design doc yet |
+| R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 proposed + feasibility investigated 2026-08-01; **designed the same day** (owner decisions AD1–AD4: mode inferred from the picker, `application.process.binary` matching, ask-every-start audio step with preselect, native PipeWire helper day one). Not started (AS1–AS7) ([docs/39](docs/39-linux-app-sharing.md)) |
 
 ---
 
@@ -3018,8 +3018,13 @@ labeled instead of imitated badly.
 **Status**: proposed 2026-08-01; feasibility investigated the same day
 (portal `source_type`/`size` availability, the no-app-identity privacy
 boundary, and the OBS virtual-sink + port-link mechanism verified against
-the portal spec and prior art). Not started — design doc pending; chunk
-prefix to be claimed when the doc is written (two letters, per convention).
+the portal spec and prior art); **designed 2026-08-01** —
+[docs/39](docs/39-linux-app-sharing.md) (mode inferred from the picker,
+bounding-box fit geometry, helper-owned virtual sink + port-link tee with a
+native libpipewire helper subprocess, whose-audio step ask-every-start with
+preselect; owner decisions AD1–AD4). The design resolves this section's open
+questions — where they disagree, docs/39 wins. Not started (chunks AS1–AS7;
+prefix **AS** claimed).
 
 ---
 
