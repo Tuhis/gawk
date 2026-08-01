@@ -4,6 +4,7 @@ description = "WASAPI process/system loopback capture + Opus encode (WB5, docs/3
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 gawk-engine = { path = "../engine" }

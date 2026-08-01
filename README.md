@@ -1112,7 +1112,44 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
 
 ## License
 
-Proprietary — copyright (c) 2026 Juho Kuusisto, all rights reserved; see
-[LICENSE](LICENSE). Not open source (may be relicensed in the future).
-Outside contributions are not accepted without an explicit license grant —
-relicensing must remain a sole-copyright-holder decision.
+**[Apache-2.0](LICENSE)** — copyright (c) 2026 Juho Kuusisto.
+
+Apache-2.0 rather than MIT for one reason worth stating: this is a codec and
+transport project — H.264 profile negotiation, WebCodecs, QUIC, GF(256)
+forward parity — and Apache-2.0 carries an explicit patent grant from every
+contributor, plus a retaliation clause. MIT carries neither.
+
+Contributions are welcome under the DCO (a `git commit -s` sign-off, no CLA) —
+see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Third-party code
+
+Every component ships a generated `THIRD-PARTY-NOTICES.md` listing what is
+actually linked into that artifact, with licenses and copyright holders:
+[relay](gawk-server/THIRD-PARTY-NOTICES.md) ·
+[app](gawk-app/THIRD-PARTY-NOTICES.md) ·
+[Linux broadcaster](gawk-broadcast/THIRD-PARTY-NOTICES.md) ·
+[Windows broadcaster](gawk-broadcast-windows/THIRD-PARTY-NOTICES.md) ·
+[telemetry](gawk-telemetry/THIRD-PARTY-NOTICES.md) ·
+[telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md).
+Regenerate them with `python3 tools/licenses/gen-notices.py`; CI's `licenses`
+job independently gates every dependency against a permissive allowlist.
+
+Everything gawk links is permissive (MIT, BSD, Apache-2.0, ISC and friends)
+with one deliberate exception: the native Windows broadcaster's GUI uses
+**Slint** under its **Royalty-free Desktop License v2.0**, one of the three
+licenses Slint offers. Note also that the Linux broadcaster *runs*
+`gst-launch-1.0` as a separate, user-installed process — no GStreamer code is
+linked or redistributed here.
+
+Slint's royalty-free license asks for attribution, and this badge is it — §2(b)
+of that license accepts it on a public page where the binaries are downloaded,
+which is this README and the releases page. The asset is committed rather than
+hot-linked so the attribution cannot quietly break if an upstream URL moves.
+
+<a href="https://slint.dev">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/MadeWithSlint-logo-dark.svg">
+    <img alt="Made with Slint" width="106" src="docs/assets/MadeWithSlint-logo-light.svg">
+  </picture>
+</a>

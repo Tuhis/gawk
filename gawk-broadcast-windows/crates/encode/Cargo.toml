@@ -4,6 +4,7 @@ description = "Media Foundation hardware H.264 encoder cascade (WB4, docs/38 D9)
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # Portable: the cascade and the MFT session both narrate into the shell's
 # debug.log (docs/38 F-8) through the facade.

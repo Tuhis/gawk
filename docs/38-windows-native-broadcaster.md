@@ -430,6 +430,31 @@ proprietary, so the GPLv3 edition is unusable; confirming the royalty-free
 terms fit (attribution requirement included) is a WB0 review criterion, with
 the paid license as the fallback if they don't.
 
+> **Revised 2026-08-01, when the repository went Apache-2.0.** The premise
+> above ("the repo is proprietary, so the GPLv3 edition is unusable") no
+> longer holds, and the choice was re-made rather than inherited: the
+> royalty-free tier **stays**. Taking Slint's GPL-3.0-only option would make
+> this the repository's one copyleft component, putting a licence seam
+> between two broadcasters that deliberately mirror each other's code — a
+> standing violation risk, traded for nothing a user of this binary can
+> perceive.
+>
+> The attribution requirement is now **actually satisfied**, which it was not
+> before: this decision recorded it as "handled in the INSTALL doc", but §2 of
+> the licence accepts only (a) the `AboutSlint` widget in an About dialog
+> reachable from the top-level menu, or (b) the "Made with Slint" badge on a
+> public webpage, preferably where the binaries are downloaded. A line in an
+> INSTALL file is neither. Option (b) now ships: the badge is in the root
+> `README.md` and in this component's `README.md`, with the asset committed
+> under `docs/assets/` so the attribution cannot break when an upstream URL
+> moves. Option (a) remains the better long-term answer — the card-based
+> window already has somewhere to put it — and is left as follow-up work.
+>
+> `gawk-broadcast-windows/deny.toml` encodes the choice as a scoped
+> cargo-deny exception, so the eleven Slint crates are allowed under
+> `LicenseRef-Slint-Royalty-free-2.0` specifically and any *other* crate
+> arriving under an unread `LicenseRef-*` still fails CI.
+
 The window layout keeps the Linux GUI's card architecture (it is field-tested
 and R32 confirmed the settings-behind-disclosure pattern) with one structural
 addition — the picker card — and Windows-native look and feel: Fluent-adjacent
@@ -885,7 +910,7 @@ trials. WB6 assembles the product.
 | The workflow triggers only on `gawk-broadcast-windows/**`, `gawk-server/wire/**` + its own file; a docs-only PR does not start it (G10) | CI, observed |
 | release-please: `gawk-broadcast-windows` component (rust type) added to the manifest config; combined-release-PR behavior intact; no publish job | review |
 | Artifact `gawk-broadcast-windows-x86_64-<sha>` uploads with `BUILD-INFO.txt`, `if-no-files-found: error` | CI |
-| Slint royalty-free desktop license confirmed compatible with the proprietary repo (attribution requirement handled); fallback decision recorded if not | review |
+| Slint royalty-free desktop license confirmed compatible with the repo license (attribution requirement handled); fallback decision recorded if not | review — **re-verified 2026-08-01 against the Apache-2.0 relicense** (D12 revision): royalty-free tier kept, attribution now met by the §2(b) badge in both READMEs, and enforced as a scoped `deny.toml` exception in the `licenses` CI job |
 | Spike: quic-go `gawk-server` builds and serves WebTransport on Windows-runner loopback (V-9) | CI spike |
 
 ### WB1 — The wire mirror

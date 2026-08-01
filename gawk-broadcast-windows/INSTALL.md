@@ -64,3 +64,15 @@ Blank always means "the default" — the app follows the fleet when it moves.
 `Telemetry URL` set to `off` sends no diagnostics at all; by default a
 session reports to the reference collector only when broadcasting to the
 default relay.
+
+## Licensing
+
+`gawk-broadcast.exe` is [Apache-2.0](https://github.com/Tuhis/gawk/blob/main/LICENSE);
+`THIRD-PARTY-NOTICES.md` in the repository lists every third-party component
+compiled into it, with licences and copyright holders.
+
+The GUI is built with **[Slint](https://slint.dev)** under its Royalty-free
+Desktop License v2.0.
+
+<a href="https://slint.dev"><img alt="Made with Slint" width="106"
+src="https://raw.githubusercontent.com/Tuhis/gawk/main/docs/assets/MadeWithSlint-logo-light.svg"></a>

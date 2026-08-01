@@ -4,3 +4,4 @@ description = "gawk wire-format mirror — the fourth mirror of gawk-server/wire
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true

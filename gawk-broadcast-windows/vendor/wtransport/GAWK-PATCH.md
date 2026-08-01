@@ -1,5 +1,12 @@
 # Vendored wtransport 0.7.1 + gawk patches
 
+> **Modification notice** (Apache-2.0 §4(b)): the files in this directory are
+> a copy of upstream `wtransport` 0.7.1 **modified by the gawk authors**. The
+> changed files are `src/error.rs`, `src/endpoint.rs`, `src/connection.rs`,
+> `src/driver/mod.rs` and `src/driver/streams/connect.rs`; every changed site
+> carries a `GAWK PATCH` marker. Upstream's own license texts are alongside
+> this file as `LICENSE-MIT` and `LICENSE-APACHE`.
+
 This is `wtransport` 0.7.1 from crates.io (MIT OR Apache-2.0, © Biagio
 Festa and contributors — license declared in Cargo.toml), vendored via
 `[patch.crates-io]` in the workspace root, with three functional changes.
