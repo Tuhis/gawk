@@ -110,7 +110,14 @@ jobs:
       # 7m07s is why it isn't tighter. Neither the job nor the workflow sets
       # one, so without it a wedged apt holds a self-hosted runner for the
       # 6-hour default.
-      - name: Install Gio build dependencies
+      # Two groups, and the second is not optional either: libpipewire-0.3-dev
+      # builds gawk-pw-helper (R35), and the pipewire/wireplumber/gstreamer
+      # runtime is what internal/pwtest starts a private headless daemon from.
+      # Unlike the portal/GPU half of this module, the app-audio control plane
+      # is genuinely CI-verifiable (docs/39 D7) — but only on a runner that has
+      # a sound server to talk to. Without them those tests skip, silently
+      # turning the milestone's integration coverage off.
+      - name: Install Gio and PipeWire build dependencies
         timeout-minutes: 20
         run: |
           set -euo pipefail
@@ -136,8 +143,12 @@ jobs:
           retry sudo apt-get install -y --no-install-recommends \
             gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
-            libffi-dev libxcursor-dev libvulkan-dev || {
-              echo "::error::Gio build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
+            libffi-dev libxcursor-dev libvulkan-dev \
+            libpipewire-0.3-dev \
+            pipewire pipewire-bin wireplumber dbus \
+            gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good || {
+              echo "::error::Build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
               exit 1
             }
       # See the server job — the relay integration tests here run QUIC over
@@ -199,6 +210,7 @@ jobs:
             echo "Minimum glibc to RUN these (check yours with 'ldd --version'):"
             echo "  gawk-broadcast-gui: $(glibc_floor dist/gawk-broadcast-gui)"
             echo "  gawk-broadcast:     $(glibc_floor dist/gawk-broadcast)"
+            echo "  gawk-pw-helper:     $(glibc_floor dist/gawk-pw-helper)"
             echo
             echo "Below that they won't start. Above it, a missing shared library"
             echo "is the likelier failure — see INSTALL.md, and check with:"
@@ -209,7 +221,31 @@ jobs:
             echo
             echo "=== gawk-broadcast (CLI) links against ==="
             ldd dist/gawk-broadcast
+            echo
+            # R35 AG10: the helper's whole packaging claim is "stock distro
+            # libraries only". Recorded from the binary rather than asserted in
+            # prose, and checked below.
+            echo "=== gawk-pw-helper links against ==="
+            ldd dist/gawk-pw-helper
           } | tee dist/BUILD-INFO.txt
+      # AG10, asked of the binary: the helper must link only libraries a stock
+      # distro already has — libpipewire and the C runtime. Anything else would
+      # be a dependency INSTALL.md does not name, discovered by a tester rather
+      # than by CI.
+      - name: The PipeWire helper links only stock libraries
+        run: |
+          unexpected=$(ldd dist/gawk-pw-helper |
+            grep -oE '=> /[^ ]+' | sed 's|=> ||' |
+            grep -vE '/(libpipewire-0\.3|libspa-.*|libc|libm|libpthread|libdl|librt|libatomic|ld-linux[^ ]*)\.so' || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::gawk-pw-helper links unexpected libraries:"
+            echo "$unexpected"
+            exit 1
+          fi
+          ldd dist/gawk-pw-helper | grep -q 'libpipewire-0.3' || {
+            echo "::error::gawk-pw-helper does not link libpipewire — the app-audio path cannot work"
+            exit 1
+          }
       # The R2 question — "does it actually reach production?" — asked of the
       # version badge. The constant alone would pass a unit test while the
       # shipped binary showed a bare release: -buildvcs is what adds the
