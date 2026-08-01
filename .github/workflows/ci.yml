@@ -234,6 +234,62 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  # Puts the binaries on the release page, so getting one is not "find the
+  # right CI run, know the sha, hope it is inside the 30-day retention".
+  #
+  # It re-uses the artifact the job above just built rather than building
+  # again: on a release-PR merge this push and release-please.yml's run are the
+  # same commit, so these binaries ARE the release's binaries. See
+  # .github/actions/attach-release-assets for the gate — this job runs on every
+  # main push and attaches on almost none of them. The Windows half is the
+  # matching job in broadcast-windows.yml; keep the two in step.
+  #
+  # Push only. The upload needs `contents: write`, and a job holding that token
+  # must not run code from a pull request's own checkout (this job `uses:` an
+  # action from the tree it checks out). Packaging is still exercised on every
+  # main push, which is what stops it rotting between releases.
+  attach-broadcast-release:
+    needs: broadcast
+    if: github.event_name == 'push'
+    runs-on: ioio-k8s
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: gawk-broadcast-linux-amd64-${{ github.sha }}
+          path: staging
+      - name: Package the release assets
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          # Belt and braces: the artifact round-trip is a zip, and whether the
+          # executable bit survives it is a property of the upload/download
+          # action pair rather than something this job should depend on. A
+          # tarball of non-executable binaries is a uniquely annoying thing to
+          # hand someone.
+          chmod +x staging/gawk-broadcast staging/gawk-broadcast-gui
+          # gawk-pubsim is in the artifact but is a test fixture publisher, not
+          # something a user of the broadcaster wants.
+          tar -czf assets/gawk-broadcast-linux-amd64.tar.gz \
+            -C staging gawk-broadcast gawk-broadcast-gui INSTALL.md BUILD-INFO.txt
+          # Both binaries are unsigned by design, so a checksum is the only
+          # integrity check a downloader gets. Written outside `assets` and
+          # moved in, because whether a shell's `*` sees a file the same
+          # command is redirecting into is not something to rely on.
+          (cd assets && sha256sum ./* > ../SHA256SUMS)
+          mv SHA256SUMS assets/
+          ls -l assets
+      # Asset names carry no version: the release page already states it, the
+      # tarball's BUILD-INFO.txt repeats it, and a stable name is what makes
+      # `gh release download -p 'gawk-broadcast-linux-amd64.tar.gz'` work
+      # against any release including the latest.
+      - uses: ./.github/actions/attach-release-assets
+        with:
+          component: gawk-broadcast
+          dir: assets
+
   app:
     runs-on: ioio-k8s
     defaults:

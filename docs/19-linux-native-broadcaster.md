@@ -1539,6 +1539,11 @@ and the Windows job uploads an artifact from every CI run. Every binary in
 existence is therefore a CI artifact off `main` or a PR, or a local build — so a
 bare `1.9.0` in the window would be a lie on every copy of it.
 
+That stays true now that releases carry binaries (Decision 24): the release
+asset *is* the CI artifact, so it wears a `+g<commit>` badge like everything
+else. Nothing about the badge distinguishes a release download, and it does not
+need to — the tag it hangs under already says which release it is.
+
 `+` is SemVer build metadata, ignored for precedence, which reads honestly as
 "the 1.9.0 line, at this commit". A `1.9.0-dev.g…` pre-release suffix was
 rejected: it sorts *before* 1.9.0, and these builds come after it.
@@ -1573,3 +1578,43 @@ cleanliness. It is right in CI and right for a normal clone.
 | 6 | Telemetry reports the bare release, not the build string | review of `internal/app` + `cmd/gawk-broadcast` reporter construction |
 | 7 | The GUI header renders the badge without a layout regression | `cmd/gawk-broadcast-gui` idle-frame test lays the header out; visual check on hardware |
 | 8 | On-hardware: the window's badge matches `gawk-broadcast -version` and the artifact's `BUILD-INFO.txt` | **manual, pending** |
+
+## Decision 24: releases carry the binaries, and nothing rebuilds them (2026-08-01)
+
+Getting a broadcaster used to mean finding the right CI run, knowing its sha,
+and being inside the 30-day artifact retention. Releases now carry the binaries
+directly (`gh release download --pattern 'gawk-broadcast-linux-amd64.tar.gz'`).
+
+**Nothing is rebuilt for it.** On a release-PR merge the push to `main` fires
+`ci.yml`, `broadcast-windows.yml` and `release-please.yml` concurrently on the
+same commit, so the artifacts those runs produce *are* the release's binaries —
+already `--release`/`-trimpath`, already carrying `INSTALL.md` and
+`BUILD-INFO.txt`. A release-time rebuild would be minutes of duplicate work for
+a byte-identical result. `ci.yml`'s `attach-broadcast-release` and
+`broadcast-windows.yml`'s `attach-release` repackage and upload what their own
+run just built, via `.github/actions/attach-release-assets`.
+
+Two things this got wrong on the first pass and must not regain:
+
+- **The gate is not "did a release happen".** If only `gawk-app` bumped, this
+  component's tag still exists from an earlier release, and attaching to it
+  would staple a freshly built binary onto an *older* release — mislabelled,
+  silently. The gate is "does `<component>-v<manifest version>` point at *this*
+  commit", which is false for a component that did not bump.
+- **The upload job must not run on `pull_request`.** It holds `contents: write`
+  and `uses:` a composite action from the tree it checks out; on a PR that is
+  the PR's own tree. Push-only. Packaging still runs on every main push, which
+  is what keeps it from rotting between releases.
+
+Asset names carry no version — the release page states it and the tarball's
+`BUILD-INFO.txt` repeats it — so `gh release download --pattern '…'` resolves
+against the latest release without knowing a version first.
+
+| Acceptance criterion | Verified by |
+|---|---|
+| A release's assets are the same bytes CI built for that commit; no second build runs | workflow review — the attach jobs `needs:` the build job and only download |
+| A component that did not bump gets nothing attached to its old release | harness run against the live API on all four cases (match / wrong commit / not bumped / unknown component) |
+| The tarball's binaries are executable and `sha256sum -c` passes | packaging steps run locally against the real CI artifact |
+| Re-running the attach job replaces assets rather than failing | `deleteReleaseAsset` before each upload |
+| The upload token is never held by a job running PR-authored code | `if: github.event_name == 'push'` on both attach jobs |
+| A release actually ends up with its assets | **pending the next release** — first real exercise of the upload leg |

@@ -912,6 +912,15 @@ whether your edit reached the binary.
 console to print to. The window, the debug log's first line, and the diagnostics
 dump are the three places it appears.
 
+**Released versions are attached to their GitHub Release** as a bare
+`gawk-broadcast-windows-x86_64.exe` plus `INSTALL.md`, `BUILD-INFO.txt` and
+`SHA256SUMS` — no archive, because a single EXE is the whole product (D17) and
+one file someone can click beats one they have to unpack. It is not a separate
+build: `attach-release` uploads the artifact this workflow's own run produced,
+so the badge on a release download reads `+g<commit>` like any other. The
+mechanism, and the two traps in it, are in
+[docs/19 Decision 24](19-linux-native-broadcaster.md#decision-24-releases-carry-the-binaries-and-nothing-rebuilds-them-2026-08-01).
+
 **No `version:` line in `BUILD-INFO.txt`**, unlike the Linux artifact, which
 gets one by running its own binary. This job cross-compiles and cannot run the
 EXE, and composing the string in YAML would make the workflow a second mirror of

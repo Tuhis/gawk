@@ -1,0 +1,122 @@
+# Attaches already-built files to the GitHub Release for the commit being
+# built — if there is one. Nothing here compiles anything.
+#
+# Why this exists at all: the binaries a user wants are the ones CI already
+# builds. On a release-PR merge the push to main fires ci.yml,
+# broadcast-windows.yml AND release-please.yml at the same time, on the same
+# commit, so by the time a release exists its binaries have already been built
+# and uploaded as workflow artifacts. Rebuilding them in a release job would be
+# minutes of duplicate work for a byte-identical result. This action moves the
+# bytes instead.
+#
+# Why an action rather than a step in each workflow: the interesting part is
+# the gate, and there must be exactly one copy of it.
+#
+# **The gate is not "did a release happen".** If only gawk-app bumped, this
+# component's tag still exists from an earlier release, and attaching to it
+# would staple a freshly built binary onto an *older* release — mislabelled,
+# and silently so. The gate is "does <component>-v<manifest version> point at
+# THIS commit", which is false for a component that did not bump and false on
+# every ordinary push.
+name: Attach release assets
+description: Upload files to this commit's GitHub Release for a release-please component, if one exists.
+
+inputs:
+  component:
+    description: release-please component name, exactly as keyed in .release-please-manifest.json
+    required: true
+  dir:
+    description: directory whose files each become a release asset
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      env:
+        # Passed as env, never interpolated into the script body: a commit
+        # message is attacker-controlled text and `${{ }}` inside `script:` is
+        # a code-injection sink.
+        COMPONENT: ${{ inputs.component }}
+        ASSET_DIR: ${{ inputs.dir }}
+        HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const { owner, repo } = context.repo;
+          const component = process.env.COMPONENT;
+          const dir = process.env.ASSET_DIR;
+
+          // The manifest at THIS commit already holds the versions being
+          // released: release-please updates it in the release PR, and merging
+          // that PR is the release commit.
+          const manifest = JSON.parse(fs.readFileSync('.release-please-manifest.json', 'utf8'));
+          const version = manifest[component];
+          if (!version) {
+            core.setFailed(`${component} is not a package in .release-please-manifest.json`);
+            return;
+          }
+          const tag = `${component}-v${version}`;
+
+          // release-please runs in a parallel workflow on this same push. Its
+          // job is ~30 s where the build this one waits on takes minutes, so
+          // the tag has existed for a while by the time we look — but wait
+          // rather than race, and only when the commit says to expect one.
+          const expectRelease = (process.env.HEAD_COMMIT_MESSAGE || '').startsWith('chore: release main');
+          const attempts = expectRelease ? 6 : 1;
+
+          const tagSha = async () => {
+            try {
+              const ref = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+              // release-please creates lightweight tags today; deref anyway,
+              // so an annotated one would not silently never match.
+              if (ref.data.object.type !== 'tag') return ref.data.object.sha;
+              const annotated = await github.rest.git.getTag({ owner, repo, tag_sha: ref.data.object.sha });
+              return annotated.data.object.sha;
+            } catch (e) {
+              if (e.status === 404) return null;
+              throw e;
+            }
+          };
+
+          let sha = null;
+          for (let i = 1; i <= attempts; i++) {
+            sha = await tagSha();
+            if (sha) break;
+            if (i < attempts) await new Promise((r) => setTimeout(r, 10_000));
+          }
+
+          // Both misses are ordinary, not failures: a component that did not
+          // bump in this release has no new tag, and one that has never been
+          // released has no tag at all.
+          if (!sha) {
+            core.info(`${tag} does not exist — nothing to attach`);
+            return;
+          }
+          if (sha !== context.sha) {
+            core.info(`${tag} points at ${sha.slice(0, 7)}, not this commit — nothing to attach`);
+            return;
+          }
+
+          const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+          const files = fs.readdirSync(dir);
+          for (const name of files) {
+            // Re-running this job must not fail on a name already there —
+            // which is the whole recovery path if the upload half ever breaks.
+            const existing = release.data.assets.find((a) => a.name === name);
+            if (existing) {
+              await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.id });
+            }
+            const data = fs.readFileSync(path.join(dir, name));
+            await github.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.data.id,
+              name,
+              headers: { 'content-type': 'application/octet-stream', 'content-length': data.length },
+              data,
+            });
+            core.info(`uploaded ${name} (${data.length} bytes)`);
+          }
+          core.notice(`Attached ${files.length} asset(s) to ${tag}`);
