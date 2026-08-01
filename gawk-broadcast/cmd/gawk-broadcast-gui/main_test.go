@@ -12,6 +12,7 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/pwproto"
 )
 
 // idleFrames lays the window out for n frames with nothing happening — no
@@ -26,7 +27,19 @@ import (
 // never fail in CI.
 func idleFrames(t *testing.T, cfg *config.Config, n int) int {
 	t.Helper()
-	u := newUI(gawkapp.New(gawkapp.Options{Config: cfg}), cfg)
+	return idleFramesWith(t, cfg, n, nil)
+}
+
+// idleFramesWith is idleFrames with a chance to put the app into a particular
+// state first — R35's whose-audio card is a whole new set of widgets, and a
+// window that free-runs only while the card is open would pass the plain case.
+func idleFramesWith(t *testing.T, cfg *config.Config, n int, prepare func(*gawkapp.App)) int {
+	t.Helper()
+	a := gawkapp.New(gawkapp.Options{Config: cfg})
+	if prepare != nil {
+		prepare(a)
+	}
+	u := newUI(a, cfg)
 	var (
 		r    input.Router
 		ops  op.Ops
@@ -71,6 +84,29 @@ func TestIdleWindowSchedulesNoRedraws(t *testing.T) {
 		}
 		if got := idleFrames(t, cfg, frames); got != 0 {
 			t.Errorf("idle window asked for an immediate redraw on %d of %d frames, want 0", got, frames)
+		}
+	})
+
+	// R35's whose-audio card: a list of buttons that appears mid-start, with
+	// live-updating contents. Every one of those is a chance to reintroduce
+	// exactly the bug this test exists for, and the card is on screen at the
+	// worst possible moment — while the broadcaster is waiting to go live.
+	t.Run("the whose-audio card is open", func(t *testing.T) {
+		cfg := &config.Config{RelayURL: "https://relay.example.com", AudioApp: "supertuxkart"}
+		got := idleFramesWith(t, cfg, frames, func(a *gawkapp.App) {
+			go a.ChooseAudioTargetForTest(gawkapp.AppAudioOfferForTest([]pwproto.App{
+				{Binary: "supertuxkart", Name: "SuperTuxKart", Streams: 1},
+				{Binary: "firefox", Name: "Firefox", Streams: 2},
+			}, nil))
+			// The card opens on another goroutine; wait for it rather than
+			// racing the first frame.
+			deadline := time.Now().Add(2 * time.Second)
+			for a.AudioPromptState() == nil && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+		})
+		if got != 0 {
+			t.Errorf("the window asked for an immediate redraw on %d of %d frames with the card open, want 0", got, frames)
 		}
 	})
 

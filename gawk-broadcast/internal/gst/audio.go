@@ -99,6 +99,44 @@ var audioDeviceCandidate = AudioCandidate{
 	},
 }
 
+// AppAudioSourceName is the candidate name single-application capture reports
+// (stats, the GUI's audio line, the R28 report). It is deliberately not in the
+// cascade: this source is created per broadcast around a sink serial that only
+// exists for the life of that broadcast, so it can never be a cached last-good
+// answer the way the system candidates are.
+const AppAudioSourceName = "app-sink-monitor"
+
+// AppAudioCandidate captures the monitor of the helper-owned virtual sink
+// (R35, docs/39 D3).
+//
+// Everything downstream of the source element is the R25 branch, unchanged and
+// byte-for-byte: the whole point of the virtual-sink shape is that GStreamer
+// never learns any of this happened. The pipeline captures **one static node
+// forever** and all the dynamism — which application, streams dying and
+// reappearing, re-links — lives outside it in PipeWire link management.
+//
+// The node is addressed by `object.serial`, not by name: serials are unique for
+// the daemon's lifetime, so nothing can race us to the name and win.
+func AppAudioCandidate(sinkSerial uint32) AudioCandidate {
+	return AudioCandidate{
+		Name:        AppAudioSourceName,
+		Element:     "pipewiresrc",
+		Package:     "gstreamer1.0-pipewire",
+		Description: "PipeWire capture of one application's audio, through a private sink",
+		src: func(string) []string {
+			return []string{
+				"pipewiresrc",
+				fmt.Sprintf("target-object=%d", sinkSerial),
+				// The same caps pin and the same capture-sink property as the
+				// system candidate: this is a sink monitor too, and pipewiresrc
+				// negotiates video as happily as audio without the filter.
+				"stream-properties=props,stream.capture.sink=true",
+				"!", "audio/x-raw",
+			}
+		},
+	}
+}
+
 // AudioCandidates returns the cascade to probe.
 //
 // An explicit device pins exactly one candidate — the same rule as the encoder

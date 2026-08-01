@@ -42,6 +42,48 @@ const (
 	sourceWindow  = 1 << 1
 )
 
+// SourceType is what the picker actually returned, read from the per-stream
+// `source_type` property of Start's results (ScreenCast interface v3+).
+//
+// This is the mode switch for the whole of R35 (docs/39 AD1): the desktop's
+// picker offers both kinds in one dialog, so what came back *is* the user's
+// choice and no separate mode UI can disagree with it. The property is
+// optional, and SourceUnknown — an older portal, or a backend that omits it —
+// deliberately behaves exactly like a monitor, i.e. exactly like pre-R35.
+type SourceType uint32
+
+const (
+	// SourceUnknown: the portal reported no source_type. Treated as a monitor
+	// everywhere, because "we could not tell" must degrade to today's
+	// behavior rather than into a half-configured app mode.
+	SourceUnknown SourceType = 0
+	// SourceMonitor: a whole screen. The pre-R35 path, untouched.
+	SourceMonitor SourceType = sourceMonitor
+	// SourceWindow: one window. The only value that turns on app mode.
+	SourceWindow SourceType = sourceWindow
+	// SourceVirtual is the portal's third kind (a virtual display). Nothing
+	// here treats it as a window: it has no owning application to pair audio
+	// with, so it takes the monitor path.
+	SourceVirtual SourceType = 1 << 2
+)
+
+// IsWindow reports whether this stream is a single window — the one condition
+// that turns on the whose-audio step and app-mode audio.
+func (t SourceType) IsWindow() bool { return t == SourceWindow }
+
+func (t SourceType) String() string {
+	switch t {
+	case SourceMonitor:
+		return "monitor"
+	case SourceWindow:
+		return "window"
+	case SourceVirtual:
+		return "virtual"
+	default:
+		return "unknown"
+	}
+}
+
 // Cursor modes.
 const (
 	cursorHidden   = 1 << 0
@@ -65,12 +107,39 @@ var ErrCancelled = errors.New("portal: the screen share was cancelled")
 // error a machine with no xdg-desktop-portal backend gets.
 var ErrUnavailable = errors.New("portal: no ScreenCast portal available")
 
+// StartResult is what the portal's Start told us about the granted stream.
+//
+// Before R35 only NodeID was kept and the rest of the properties were dropped
+// on the floor. They are the whole of this milestone's input: SourceType is the
+// mode (docs/39 D1) and Size is the fit input for the encode geometry (D2) —
+// available *before* the pipeline launches, which is what lets the caps be
+// pinned to fitted dimensions instead of letterboxing something later.
+type StartResult struct {
+	// NodeID is the PipeWire node's global object id.
+	NodeID uint32
+	// SourceType is the picker's answer, or SourceUnknown on a portal that
+	// does not report one.
+	SourceType SourceType
+	// Width and Height are the stream's reported size in pixels; both zero
+	// when the portal omitted `size` (it is optional in the spec). Zero means
+	// "no fit input", which the geometry treats as today's exact caps.
+	Width, Height int
+}
+
+// HasSize reports whether the portal gave us a usable fit input.
+func (r StartResult) HasSize() bool { return r.Width > 0 && r.Height > 0 }
+
 // Stream is a granted screen-capture stream.
 type Stream struct {
 	// NodeID is the PipeWire node's global object id, to consume via
 	// `pipewiresrc path=<NodeID>` (not target-object, which matches a node
 	// name/serial rather than the global id — see internal/gst/pipeline.go).
 	NodeID uint32
+	// SourceType and Size come from the same Start results as NodeID; see
+	// StartResult. They are what the engine branches the mode on and sizes the
+	// encode from — no second portal call, no new permission (docs/39 D1).
+	SourceType    SourceType
+	Width, Height int
 	// FD is the PipeWire remote fd. The caller owns it and must Close it —
 	// it is passed to the child via ExtraFiles.
 	FD *os.File
@@ -80,6 +149,9 @@ type Stream struct {
 	session dbus.ObjectPath
 	caller  Caller
 }
+
+// HasSize reports whether the portal reported a stream size.
+func (s *Stream) HasSize() bool { return s.Width > 0 && s.Height > 0 }
 
 // Close releases the fd and the portal session.
 func (s *Stream) Close() error {
@@ -150,7 +222,7 @@ func Open(ctx context.Context, opts Options) (*Stream, error) {
 		return nil, err
 	}
 
-	nodeID, err := start(ctx, caller, session)
+	res, err := start(ctx, caller, session)
 	if err != nil {
 		caller.Close()
 		return nil, err
@@ -163,11 +235,14 @@ func Open(ctx context.Context, opts Options) (*Stream, error) {
 	}
 
 	return &Stream{
-		NodeID:  nodeID,
-		FD:      fd,
-		Version: version,
-		session: session,
-		caller:  caller,
+		NodeID:     res.NodeID,
+		SourceType: res.SourceType,
+		Width:      res.Width,
+		Height:     res.Height,
+		FD:         fd,
+		Version:    version,
+		session:    session,
+		caller:     caller,
 	}, nil
 }
 
@@ -231,38 +306,91 @@ func SelectSourcesOptions() map[string]dbus.Variant {
 	}
 }
 
-func start(ctx context.Context, c Caller, session dbus.ObjectPath) (uint32, error) {
+func start(ctx context.Context, c Caller, session dbus.ObjectPath) (StartResult, error) {
 	opts := map[string]dbus.Variant{}
 	// parent_window is empty: we have no window to parent the dialog to at
 	// this point, and the portal handles that fine.
 	resp, results, err := c.Call(ctx, "Start", opts, session, "")
 	if err != nil {
-		return 0, fmt.Errorf("portal: Start failed: %w", err)
+		return StartResult{}, fmt.Errorf("portal: Start failed: %w", err)
 	}
 	if err := responseErr(resp, "Start"); err != nil {
-		return 0, err
+		return StartResult{}, err
 	}
 	return ParseStartResults(results)
 }
 
-// ParseStartResults extracts the node id from Start's results. Exported for
-// tests.
-func ParseStartResults(results map[string]dbus.Variant) (uint32, error) {
+// ParseStartResults extracts the granted stream's node id, source type and
+// size from Start's results. Exported for tests.
+//
+// Only the node id is required. `source_type` and `size` are optional in the
+// spec and every parse failure below degrades to the zero value rather than an
+// error: a portal that reports an unexpected type for a property we merely
+// *prefer* to have must not be able to fail a broadcast that would otherwise
+// work exactly as it did before R35.
+func ParseStartResults(results map[string]dbus.Variant) (StartResult, error) {
 	v, ok := results["streams"]
 	if !ok {
-		return 0, errors.New("portal: Start returned no streams")
+		return StartResult{}, errors.New("portal: Start returned no streams")
 	}
 	var streams []struct {
 		NodeID uint32
 		Props  map[string]dbus.Variant
 	}
 	if err := v.Store(&streams); err != nil {
-		return 0, fmt.Errorf("portal: cannot decode streams: %w", err)
+		return StartResult{}, fmt.Errorf("portal: cannot decode streams: %w", err)
 	}
 	if len(streams) == 0 {
-		return 0, errors.New("portal: Start returned an empty stream list")
+		return StartResult{}, errors.New("portal: Start returned an empty stream list")
 	}
-	return streams[0].NodeID, nil
+	s := streams[0]
+	out := StartResult{NodeID: s.NodeID}
+	if st, ok := parseSourceType(s.Props["source_type"]); ok {
+		out.SourceType = st
+	}
+	out.Width, out.Height = parseSize(s.Props["size"])
+	return out, nil
+}
+
+// parseSourceType reads the `source_type` property (spec type 'u').
+//
+// Some backends have been observed sending integer variants of other widths,
+// so any integral type is accepted; anything else is "not reported", which is
+// the monitor path.
+func parseSourceType(v dbus.Variant) (SourceType, bool) {
+	switch n := v.Value().(type) {
+	case uint32:
+		return SourceType(n), true
+	case uint64:
+		return SourceType(n), true
+	case int32:
+		if n >= 0 {
+			return SourceType(n), true
+		}
+	case int64:
+		if n >= 0 {
+			return SourceType(n), true
+		}
+	}
+	return SourceUnknown, false
+}
+
+// parseSize reads the `size` property (spec type '(ii)'), returning 0,0 when
+// it is absent or unusable. A negative or zero dimension is treated as absent:
+// the fit function would reject it anyway, and "no size" is a state the
+// geometry already has to handle.
+func parseSize(v dbus.Variant) (int, int) {
+	var size struct{ W, H int32 }
+	if v.Signature().String() != "(ii)" {
+		return 0, 0
+	}
+	if err := v.Store(&size); err != nil {
+		return 0, 0
+	}
+	if size.W <= 0 || size.H <= 0 {
+		return 0, 0
+	}
+	return int(size.W), int(size.H)
 }
 
 func responseErr(resp uint32, method string) error {

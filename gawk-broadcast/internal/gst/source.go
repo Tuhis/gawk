@@ -13,9 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/appaudio"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/mpegts"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/pwproto"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -63,9 +65,42 @@ type Options struct {
 	AudioTrial AudioTrialFunc
 	// OpenPortal overrides the portal handshake (tests).
 	OpenPortal func(ctx context.Context, opts portal.Options) (*portal.Stream, error)
+
+	// R35 (docs/39 D1/D5). The three fields below are the whose-audio step.
+	// All are optional: a shell that sets none behaves exactly as it did
+	// before the milestone, whatever the picker returned.
+	//
+	// ChooseAudioTarget is called **only when the picker returned a window**,
+	// after the portal handshake and before any pipeline is built. It blocks:
+	// the GUI shows its card and waits for a click; the CLI answers from
+	// -audio-app without asking anyone.
+	ChooseAudioTarget func(ctx context.Context, offer AppAudioOffer) engine.AudioTarget
+	// OnAudioApps receives the live list of applications currently emitting
+	// audio, so the card can update while it is on screen. Called from the
+	// helper's reader goroutine.
+	OnAudioApps func([]pwproto.App)
+	// OnAudioLinks receives the number of ports linked from the chosen
+	// application into the capture sink. Zero means it has gone quiet, which
+	// is what drives the GUI's silence hint (D6).
+	OnAudioLinks func(int)
+	// HelperBinary overrides the app-audio helper's path (tests).
+	HelperBinary string
+
 	// LiveProbeWindow overrides how long a child must survive to be believed
 	// (tests; production uses liveProbeWindow).
 	LiveProbeWindow time.Duration
+}
+
+// AppAudioOffer is what the shell is asked to choose from in the whose-audio
+// step.
+//
+// Err carries the one thing the shell cannot find out for itself: whether
+// per-application audio is available on this machine at all. When it is set the
+// list will stay empty and the honest offer is whole-system audio or silence —
+// D6's first row, rendered as a sentence rather than an empty picker.
+type AppAudioOffer struct {
+	Apps []pwproto.App
+	Err  error
 }
 
 // NewFactory returns an engine.MediaSourceFactory that captures via the portal
@@ -111,8 +146,15 @@ type Source struct {
 	captureModeSet bool
 	err            error
 	stream         *portal.Stream
-	kid            *child
-	stopped        bool
+	// tgt is the granted node plus the fitted encode geometry (R35 D2),
+	// computed once when the portal returns and reused by every cascade
+	// attempt — the fit is taken at start, never per rung.
+	tgt Target
+	// sourceType is what the picker returned; it is the mode switch for the
+	// whole milestone (D1) and what the shells report.
+	sourceType portal.SourceType
+	kid        *child
+	stopped    bool
 
 	frames chan engine.AccessUnit
 	// audio carries Opus packets when a source won the pre-flight cascade;
@@ -125,6 +167,11 @@ type Source struct {
 	audioCand  *AudioCandidate
 	audioOK    bool
 	audioState engine.AudioState
+	// helper is the app-audio control plane (R35), nil for every whole-screen
+	// broadcast and for every window broadcast whose audio stayed system-wide.
+	helper *appaudio.Controller
+	// audioApp is the captured application's binary, "" for system audio.
+	audioApp string
 
 	wg sync.WaitGroup
 
@@ -198,12 +245,46 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The geometry is settled here, between the picker and the first pipeline:
+	// the portal's reported size is the fit input, and it arrives before any
+	// element is launched (R35, docs/39 D2). Per the standing trust-the-frame
+	// rule the negotiated caps in the child remain the runtime truth — this is
+	// the *request*, and a portal that reported no size falls back to today's
+	// exact caps.
+	tgt := TargetFor(s.cfg, stream.NodeID, stream.Width, stream.Height)
 	s.mu.Lock()
 	s.stream = stream
+	s.tgt = tgt
+	s.sourceType = stream.SourceType
 	s.mu.Unlock()
+	s.log.Info("capturing a portal stream",
+		"source", stream.SourceType.String(),
+		"source_width", stream.Width, "source_height", stream.Height,
+		"encode_width", tgt.Width, "encode_height", tgt.Height,
+		"box_width", s.cfg.Width, "box_height", s.cfg.Height)
+
+	// The whose-audio step (R35, docs/39 D1): only for a window, only after the
+	// picker, and never able to fail the start. A whole-screen broadcast does
+	// not reach this at all, which is what AG2's byte-compare guarantee rests
+	// on.
+	if stream.SourceType.IsWindow() {
+		s.chooseAppAudio(ctx)
+	}
+	// The whose-audio card can be open for as long as the broadcaster likes,
+	// and Stop cancels this context underneath it. Returning the cancellation
+	// itself — rather than falling into the encoder cascade, where every trial
+	// would fail against a dead context and the user would be told their
+	// machine has no hardware encoder — is what keeps "I pressed Stop" from
+	// reading as a hardware fault.
+	if err := ctx.Err(); err != nil {
+		s.stopHelper()
+		stream.Close()
+		return nil, err
+	}
 
 	cand, err := SelectEncoder(ctx, s.cfg, s.opts.LastGoodEncoder, s.opts.Trial)
 	if err != nil {
+		s.stopHelper()
 		stream.Close()
 		return nil, err
 	}
@@ -213,11 +294,199 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 
 	s.frames = make(chan engine.AccessUnit, 8)
 	if err := s.startWithCascade(ctx, stream, cand); err != nil {
+		s.stopHelper()
 		stream.Close()
 		s.closeDumps()
 		return nil, err
 	}
 	return s.frames, nil
+}
+
+// chooseAppAudio runs the whose-audio step and, if an application was chosen,
+// swaps the audio candidate for one that captures the helper's virtual sink.
+//
+// Every branch here ends in a working state. That is not politeness: R25
+// Decision 6 makes audio subordinate, and this step happens *after* the user
+// has picked a window — a failure that stopped the broadcast now would throw
+// away a portal grant over a sound card.
+func (s *Source) chooseAppAudio(ctx context.Context) {
+	if s.opts.ChooseAudioTarget == nil {
+		return // a shell with no whose-audio step: system audio, as before
+	}
+	if s.cfg.DisableAudio {
+		return // the broadcaster asked for silence; there is nothing to ask about
+	}
+	if s.cfg.AudioDevice != "" {
+		// The explicit-device override is the bigger hammer, and two audio
+		// masters would be worse than either (docs/39 D3). Say so rather than
+		// silently ignoring one of them.
+		s.log.Info("capturing the named audio device; the per-application audio step is skipped",
+			"device", s.cfg.AudioDevice)
+		return
+	}
+
+	helper, err := appaudio.Start(ctx, appaudio.Options{
+		Binary:  s.opts.HelperBinary,
+		Log:     s.log,
+		OnApps:  s.opts.OnAudioApps,
+		OnLinks: s.opts.OnAudioLinks,
+		OnFatal: s.onHelperFatal,
+	})
+	if err != nil {
+		s.log.Warn("per-application audio is unavailable on this machine", "err", err)
+	} else {
+		s.mu.Lock()
+		s.helper = helper
+		s.mu.Unlock()
+	}
+
+	offer := AppAudioOffer{Err: err}
+	if helper != nil {
+		offer.Apps = helper.Apps()
+	}
+	target := s.opts.ChooseAudioTarget(ctx, offer)
+
+	switch target.Mode {
+	case engine.AudioTargetNone:
+		s.setAudioState(engine.AudioOff)
+		s.mu.Lock()
+		s.audioCand, s.audio, s.audioApp = nil, nil, ""
+		s.mu.Unlock()
+		// Same reason as the system-audio branch below: there are no links to
+		// maintain, so a helper would be a live PipeWire connection and
+		// registry watch held open for a lane that will never carry a sample.
+		s.stopHelper()
+		s.log.Info("broadcasting this window without audio, by choice")
+		return
+	case engine.AudioTargetApp:
+		if helper == nil || target.Binary == "" {
+			s.log.Warn("per-application audio was chosen but is not available; using system audio")
+			s.stopHelper()
+			return
+		}
+		if err := s.captureApp(ctx, helper, target.Binary); err != nil {
+			// Degrade to whatever the system cascade already found, which is
+			// the state we were in a moment ago.
+			s.log.Warn("could not capture this application's audio; using system audio instead",
+				"app", target.Binary, "err", err)
+			s.stopHelper()
+			return
+		}
+	default:
+		// Whole-system audio: nothing to do, and no reason to keep a helper
+		// running for a broadcast that will not use it.
+		s.stopHelper()
+	}
+}
+
+// captureApp asks the helper for the sink and proves the capture path works
+// before the broadcast depends on it.
+func (s *Source) captureApp(ctx context.Context, helper *appaudio.Controller, binary string) error {
+	serial, err := helper.Capture(ctx, binary)
+	if err != nil {
+		return err
+	}
+	cand := AppAudioCandidate(serial)
+
+	// A second audio trial, against the freshly created sink (docs/39 D1). A
+	// monitor of an idle sink still clocks out silence samples and the trial
+	// checks samples rather than loudness, so this passes on a quiet
+	// application — what it proves is that the capture path negotiates, which
+	// is exactly the thing that would otherwise fail three seconds later
+	// inside a live pipeline.
+	probeCtx, cancel := context.WithTimeout(ctx, audioProbeBudget)
+	defer cancel()
+	if err := s.opts.AudioTrial(probeCtx, cand, ""); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.audioCand = &cand
+	s.audioApp = binary
+	s.audioOK = true
+	s.audioState = engine.AudioActive
+	if s.audio == nil {
+		// A machine whose system-audio cascade found nothing can still capture
+		// an application: the queue is created here rather than only in
+		// selectAudio.
+		s.audio = make(chan engine.AudioPacket, audioQueueDepth)
+	}
+	s.mu.Unlock()
+	s.log.Info("capturing one application's audio", "app", binary, "sink_serial", serial)
+	return nil
+}
+
+// SwitchToSystemAudio is docs/39 D5's one permitted mid-session audio change.
+//
+// It is a **re-link**, not a renegotiation: the helper points the same capture
+// sink at the machine's own output, so the gst pipeline's target never changes
+// and the Opus stream keeps its sequence space. Viewers see the packets in the
+// gap go missing and nothing else — which the wire model already treats as
+// truth.
+//
+// Safe to call when there is nothing to switch: it reports that plainly rather
+// than doing something surprising.
+func (s *Source) SwitchToSystemAudio(ctx context.Context) error {
+	s.mu.Lock()
+	helper, app := s.helper, s.audioApp
+	s.mu.Unlock()
+	if helper == nil {
+		return errors.New("this broadcast is not capturing a single application's audio")
+	}
+	if _, err := helper.CaptureSystem(ctx); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.audioApp = ""
+	s.mu.Unlock()
+	s.log.Info("switched to whole-system audio mid-broadcast", "was", app)
+	return nil
+}
+
+// onHelperFatal applies D6's helper-death row: audio is marked errored and the
+// user is offered the switch, while video does not notice.
+func (s *Source) onHelperFatal(err error) {
+	s.mu.Lock()
+	capturing := s.audioApp != ""
+	s.mu.Unlock()
+	if !capturing {
+		return
+	}
+	s.log.Warn("the app-audio helper died; this application's audio has stopped, video continues", "err", err)
+	s.setAudioState(engine.AudioUnavailable)
+}
+
+// stopHelper ends the control plane. The sink and every link go with it,
+// because they belong to the helper's connection and nothing is linger-flagged.
+func (s *Source) stopHelper() {
+	s.mu.Lock()
+	helper := s.helper
+	s.helper = nil
+	s.mu.Unlock()
+	if helper != nil {
+		_ = helper.Close()
+	}
+}
+
+// AudioApp implements engine.AppAudioSource: the captured application's binary,
+// or "" for system audio.
+func (s *Source) AudioApp() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.audioApp
+}
+
+// AudioLinks reports how many of the chosen application's ports are currently
+// captured, and whether the helper has said. Zero while it is silent — the
+// signal the GUI's silence hint is built on (D6), rather than a level meter.
+func (s *Source) AudioLinks() (int, bool) {
+	s.mu.Lock()
+	helper := s.helper
+	s.mu.Unlock()
+	if helper == nil {
+		return 0, false
+	}
+	return helper.Links()
 }
 
 // selectAudio runs the audio cascade and records the outcome. It never fails
@@ -426,7 +695,7 @@ func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first C
 // next attempt starts clean: the next attempt may run a different encoder, and
 // its viewers must never see two SPS lineages interleaved.
 func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candidate, mode CaptureMode, audio *AudioCandidate) error {
-	kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, stream.NodeID, mode, audio), stream.FD, s.log)
+	kid, err := startChild(ctx, s.opts.Binary, BuildPipeline(cand, s.cfg, s.encodeTarget(), mode, audio), stream.FD, s.log)
 	if err != nil {
 		return err
 	}
@@ -742,6 +1011,10 @@ func (s *Source) Stop() error {
 		kid.stop()
 	}
 	s.wg.Wait()
+	// The helper goes with the broadcast: the sink and its links exist only for
+	// the life of one capture, and leaving them behind would be a hidden node
+	// on the user's machine for no reason.
+	s.stopHelper()
 	s.closeDumps()
 	if stream != nil {
 		return stream.Close()
@@ -773,6 +1046,43 @@ func (s *Source) CapturePath() string {
 		return "system-memory"
 	default:
 		return "zero-copy"
+	}
+}
+
+// encodeTarget returns the node + fitted geometry every attempt builds from.
+func (s *Source) encodeTarget() Target {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tgt
+}
+
+// EncodeSize implements engine.GeometrySource: the dimensions actually asked
+// of the encoder, which are the configured box only when the source's aspect
+// matches it (R35 D2). ok is false before the portal has answered, where the
+// engine keeps reporting the configured rung.
+func (s *Source) EncodeSize() (int, int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tgt.Width <= 0 || s.tgt.Height <= 0 {
+		return 0, 0, false
+	}
+	return s.tgt.Width, s.tgt.Height, true
+}
+
+// ShareMode implements engine.ShareModeSource: "screen" or "window", or ""
+// before the picker has answered. It is the user's own vocabulary rather than
+// the portal's ("monitor"), because it is rendered in the GUI and pasted into
+// diagnostics.
+func (s *Source) ShareMode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.stream == nil:
+		return ""
+	case s.sourceType.IsWindow():
+		return "window"
+	default:
+		return "screen"
 	}
 }
 

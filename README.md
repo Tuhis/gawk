@@ -933,6 +933,48 @@ Hard-won; each cost real debugging time. Details live in the linked docs.
   CMake 4, or the build script dies before compiling a line.
   ([docs/38](docs/38-windows-native-broadcaster.md) F-7)
 
+**Single-application audio on Linux (R35)**
+
+- **`application.process.binary` is not in PipeWire's registry global
+  properties.** A stream node's globals carry `client.id` and no application
+  identity; the owning Client's globals stop at `application.name`. The binary
+  — which is what per-application capture must match on across a game restart —
+  appears only in the properties a **bound** object reports through its info
+  event. A helper that trusted globals would show an application list it could
+  not link, and would report "nothing is playing audio" while a game was.
+  Binding also means **two** registry round-trips before that list is
+  trustworthy: the first delivers the globals and triggers the binds, and the
+  info events land after its `done`.
+  ([docs/39](docs/39-linux-app-sharing.md) F1)
+- **Never recreate the capture sink mid-broadcast.** The GStreamer child
+  addresses it by `object.serial`, so destroying and recreating it — the
+  obvious reaction to a default-device layout change — moves the target out
+  from under a running `pipewiresrc` and kills the audio branch. Re-link into
+  the existing sink instead. ([docs/39](docs/39-linux-app-sharing.md) F2)
+- **An application's stream node is an adapter, and its output ports speak the
+  layout it negotiated toward the default sink.** A 5.1 game playing to stereo
+  speakers has *stereo* output ports — the downmix already happened. So a
+  surround machine is modelled by surround speakers, not by a surround
+  application, and reading the application's own ports is the direct way to ask
+  what layout a capture sink must have.
+  ([docs/39](docs/39-linux-app-sharing.md) F3)
+- **The portal never says which application owns the window you picked** — no
+  PID, no name, by privacy design. Windows' one-picker "share this app, get its
+  audio" flow is structurally impossible on Linux; the shipping flow asks, and
+  says why. ([docs/39](docs/39-linux-app-sharing.md) §1)
+- **WirePlumber needs a session bus, and a default sink takes a moment after
+  the sink node exists.** A headless PipeWire test harness that starts an
+  emitter too early gets `stream error: no target node available`, which reads
+  like a bug in the code under test rather than a race in the harness.
+  ([docs/39](docs/39-linux-app-sharing.md) F6)
+- **The stock WirePlumber config cannot run on a container runner**: it enables
+  the Bluetooth monitor, which loads the logind plugin, which fails fatally
+  with no `/run/systemd` and no system bus — and a dead session manager means
+  nothing routes, so no application stream ever grows ports. Invisible on a
+  developer's machine, which has logind. A headless harness must supply its own
+  config with the linking half and no hardware monitors.
+  ([docs/39](docs/39-linux-app-sharing.md) F6)
+
 **Relay fleet (R17)**
 
 - **`reason: "context canceled"` in a session-ended log meant "we don't

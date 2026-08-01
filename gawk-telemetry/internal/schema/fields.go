@@ -226,6 +226,12 @@ var BroadcasterFields = map[string]Kind{
 	"resuming":                  KindBool,
 	"audioSource":               KindString,
 	"audioPacketsDropped":       KindNumber,
+	// R35 single-app sharing: what the picker returned ("screen"/"window")
+	// and, in app mode, whose audio was captured. Typed rather than left to
+	// arrive as unknowns, because "the wrong app's sound went out" is exactly
+	// the complaint these two answer, and an unknown is not queryable.
+	"shareMode": KindString,
+	"audioApp":  KindString,
 
 	// LEGACY: the same fields under Go's default capitalized names, which the
 	// native broadcaster emitted before it carried JSON tags. Kept because

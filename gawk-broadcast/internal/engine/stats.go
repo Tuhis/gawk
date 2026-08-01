@@ -143,4 +143,18 @@ type Stats struct {
 	// never touches FramesDroppedAtSend, so a glance at the two separates a
 	// saturated uplink from an audio-only problem.
 	AudioPacketsDropped uint64 `json:"audioPacketsDropped"`
+
+	// Single-app sharing (R35, docs/39). Both are empty on a whole-screen
+	// broadcast, which is what makes them worth reporting: a viewer complaint
+	// about the wrong sound is answered by these two fields plus AudioState,
+	// without an ssh session.
+	//
+	// ShareMode is "screen" or "window" — what the desktop's picker returned
+	// (D1), in the user's vocabulary rather than the portal's.
+	ShareMode string `json:"shareMode,omitempty"`
+	// AudioApp is the captured application's binary
+	// (`application.process.binary`, AD2) in app mode. Empty means system
+	// audio, which is also what "window video, whole-system sound" looks
+	// like — a legal and explicitly offered combination.
+	AudioApp string `json:"audioApp,omitempty"`
 }

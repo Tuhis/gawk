@@ -46,6 +46,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/pwproto"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/version"
 )
 
@@ -150,6 +151,16 @@ type ui struct {
 
 	resPick dropdown
 	fpsPick dropdown
+
+	// R35's whose-audio card. appBtns is one clickable per listed application,
+	// grown as the live list does; the two fixed rows and the mid-session
+	// switch have their own.
+	appBtns    []*widget.Clickable
+	sysAudio   widget.Clickable
+	noAudio    widget.Clickable
+	switchSys  widget.Clickable
+	audioApps  []pwproto.App
+	audioReady bool
 
 	list   widget.List
 	copied string
@@ -269,6 +280,7 @@ func (u *ui) layout(gtx layout.Context) layout.Dimensions {
 				layout.Rigid(spacer(16)),
 				layout.Rigid(u.controls),
 				layout.Rigid(spacer(16)),
+				layout.Rigid(u.audioCard),
 				layout.Rigid(u.code),
 				layout.Rigid(spacer(12)),
 				layout.Rigid(u.errorBox),
@@ -303,6 +315,27 @@ func (u *ui) handleEvents(gtx layout.Context) {
 			gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(id))})
 			u.copied = "Code copied"
 		}
+	}
+	// R35: the whose-audio card. Answering it unblocks the engine goroutine
+	// that is waiting inside Start.
+	if prompt := u.app.AudioPromptState(); prompt != nil {
+		for i, b := range u.appBtns {
+			if i < len(u.audioApps) && b.Clicked(gtx) {
+				u.app.AnswerAudioPrompt(engine.AudioTarget{
+					Mode:   engine.AudioTargetApp,
+					Binary: u.audioApps[i].Binary,
+				})
+			}
+		}
+		if u.sysAudio.Clicked(gtx) {
+			u.app.AnswerAudioPrompt(engine.AudioTarget{Mode: engine.AudioTargetSystem})
+		}
+		if u.noAudio.Clicked(gtx) {
+			u.app.AnswerAudioPrompt(engine.AudioTarget{Mode: engine.AudioTargetNone})
+		}
+	}
+	if u.switchSys.Clicked(gtx) {
+		u.app.SwitchToSystemAudio(context.Background())
 	}
 	if u.copyDia.Clicked(gtx) {
 		gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(u.app.Diagnostics()))})
@@ -408,6 +441,12 @@ func (u *ui) header(gtx layout.Context) layout.Dimensions {
 				return layout.Dimensions{}
 			}
 			line := fmt.Sprintf("%dx%d@%d · %.0f Mbps", s.Width, s.Height, s.Fps, float64(s.BitrateBps)/1e6)
+			// R35: the dimensions above are the *fitted* ones, so saying a
+			// window is being shared is what makes "1542x1080" read as
+			// deliberate rather than as a bug.
+			if s.ShareMode == "window" {
+				line = "window · " + line
+			}
 			if s.CapturePath != "" {
 				line += " · " + s.CapturePath + " capture"
 			}
@@ -482,6 +521,135 @@ func (u *ui) controls(gtx layout.Context) layout.Dimensions {
 			}),
 		)
 	}
+}
+
+// audioCard is R35's whose-audio step, and — while live — the status line it
+// collapses into.
+//
+// Linux structurally cannot have the Windows sibling's one-picker flow: the
+// portal never says which application owns the window that was picked
+// (docs/39 §1). So rather than guessing — a wrong guess silently streams the
+// wrong application's sound, the worst failure this feature can have — gawk
+// asks, once, and says plainly why.
+func (u *ui) audioCard(gtx layout.Context) layout.Dimensions {
+	if prompt := u.app.AudioPromptState(); prompt != nil {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return u.audioPrompt(gtx, prompt)
+			}),
+			layout.Rigid(spacer(16)),
+		)
+	}
+	hint := u.app.AudioSilenceHint()
+	if hint == "" {
+		return layout.Dimensions{}
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return card(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(label(u.th, "Audio")),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						t := material.Body2(u.th, hint)
+						t.Color = colText
+						return t.Layout(gtx)
+					}),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.secondaryBtn(&u.switchSys, "Switch to whole-system audio", colButton).Layout(gtx)
+					}),
+				)
+			})
+		}),
+		layout.Rigid(spacer(16)),
+	)
+}
+
+// audioPrompt draws the card itself.
+func (u *ui) audioPrompt(gtx layout.Context, prompt *gawkapp.AudioPrompt) layout.Dimensions {
+	u.audioApps = prompt.Apps
+	for len(u.appBtns) < len(u.audioApps) {
+		u.appBtns = append(u.appBtns, new(widget.Clickable))
+	}
+
+	children := []layout.FlexChild{
+		layout.Rigid(label(u.th, "Whose audio?")),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			t := material.Body2(u.th, "You are sharing one window. Choose whose sound goes out with it.")
+			t.Color = colText
+			return t.Layout(gtx)
+		}),
+		layout.Rigid(spacer(10)),
+	}
+
+	if prompt.Err != nil {
+		// D6's first row: per-application audio is unavailable on this
+		// machine. Say what and why in one sentence, then offer what works.
+		children = append(children,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				t := material.Body2(u.th, gawkapp.Message(prompt.Err))
+				t.Color = colError
+				return t.Layout(gtx)
+			}),
+			layout.Rigid(spacer(10)),
+		)
+	} else if len(u.audioApps) == 0 {
+		// The card's one honest caveat. Streams only exist once an application
+		// opens them, and the list updates live — so this is a wait, not a
+		// dead end.
+		children = append(children,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				t := material.Body2(u.th,
+					"Apps appear here when they play sound — start the game's audio first if the list looks empty.")
+				t.Color = colMuted
+				return t.Layout(gtx)
+			}),
+			layout.Rigid(spacer(10)),
+		)
+	}
+
+	for i, appRow := range u.audioApps {
+		i, appRow := i, appRow
+		children = append(children,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				text := appRow.Name
+				if appRow.Binary != "" && appRow.Binary != appRow.Name {
+					text += "  ·  " + appRow.Binary
+				}
+				if appRow.Streams > 1 {
+					text += fmt.Sprintf("  (%d streams)", appRow.Streams)
+				}
+				bg := colButton
+				if appRow.Binary == prompt.Preselect {
+					// AD3: the last-used application, highlighted only when it
+					// is present and emitting, so the common restart-the-same-
+					// game case is one click.
+					bg = colPrimary
+					text += "   ← last used"
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.secondaryBtn(u.appBtns[i], text, bg).Layout(gtx)
+					}),
+					layout.Rigid(spacer(6)),
+				)
+			}),
+		)
+	}
+
+	children = append(children,
+		layout.Rigid(spacer(4)),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return u.secondaryBtn(&u.sysAudio, "Whole system", colButton).Layout(gtx)
+		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return u.secondaryBtn(&u.noAudio, "No audio", colButton).Layout(gtx)
+		}),
+	)
+	return card(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	})
 }
 
 func (u *ui) code(gtx layout.Context) layout.Dimensions {
@@ -679,6 +847,10 @@ func (u *ui) stats(gtx layout.Context) layout.Dimensions {
 				}
 				rows := [][2]string{
 					{"Watching", watching},
+					// R35: what was actually shared. "Rung" below carries the
+					// *fitted* dimensions, so a window's odd numbers are
+					// explained by the row above them.
+					{"Sharing", shareMode(s)},
 					{"Encoder", encoder},
 					{"Capture path", orDash(s.CapturePath)},
 					{"Codec", orDash(s.Codec)},
@@ -901,6 +1073,23 @@ func spacerW(dp int) layout.Widget {
 }
 
 func rgb(r, g, b uint8) color.NRGBA { return color.NRGBA{R: r, G: g, B: b, A: 0xff} }
+
+// shareMode renders what the desktop's picker returned, in the user's
+// vocabulary. Empty until capture starts, which is honest rather than a guess:
+// the picker is what decides, and it has not been answered yet.
+func shareMode(s engine.Stats) string {
+	switch s.ShareMode {
+	case "window":
+		if s.AudioApp != "" {
+			return "One window · audio from " + s.AudioApp
+		}
+		return "One window · whole-system audio"
+	case "screen":
+		return "Whole screen"
+	default:
+		return "—"
+	}
+}
 
 func orDash(s string) string {
 	if s == "" {

@@ -216,6 +216,8 @@ var fieldMeta = map[string]meta{
 	"encoder":         {SemText, "", "Encoder element in use (native broadcaster)."},
 	"capturePath":     {SemText, "", "Capture path in use (native broadcaster)."},
 	"audioSource":     {SemText, "", "Audio source in use (native broadcaster)."},
+	"shareMode":       {SemText, "", "What the desktop's picker returned: screen or window (native broadcaster, R35)."},
+	"audioApp":        {SemText, "", "Application whose audio is captured, by process binary (native broadcaster, R35)."},
 	"codec":           {SemText, "", "Negotiated video codec."},
 	"acceleration":    {SemText, "", "Hardware-acceleration preference the encoder was configured with."},
 

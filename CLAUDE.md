@@ -102,7 +102,13 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   it (R14 Decision 1). Reuse it; **never mirror it**.
 - `gawk-broadcast` — native Linux broadcaster: a **separate** Go module (GUI +
   CLI over a shared `internal/engine`). Not a container/chart/deploy
-  component — a binary you run on your own PC.
+  component — a binary you run on your own PC. Since R35 it ships a **third
+  binary**, `gawk-pw-helper`: cgo against `libpipewire-0.3`, spawned per
+  broadcast to capture one application's audio. It is a control plane — no
+  media passes through it — and its crash-safety comes from owning nothing:
+  every object it creates is a proxy on its own connection with no
+  `object.linger`, so the daemon reaps them however it dies. Don't give it
+  media, and don't make it linger (`docs/39`).
 - `gawk-broadcast-windows` — native Windows broadcaster (R34): a **Rust Cargo
   workspace**, not a Go module. Its `crates/wire` is the **fourth wire
   mirror** (vectors restated, never imported); its CI job **runs on the

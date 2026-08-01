@@ -60,6 +60,7 @@ func run() error {
 		encoder    = fs.String("encoder", "", "force an encoder ("+strings.Join(gst.CandidateNames(), ", ")+"); default probes them in order")
 		audio      = fs.Bool("audio", true, "publish system audio (the default output's monitor)")
 		audioDev   = fs.String("audio-device", "", "capture audio from this device instead of probing (a pulsesrc device name, e.g. alsa_output.pci-0000_00_1f.3.analog-stereo.monitor)")
+		audioApp   = fs.String("audio-app", "", "when a WINDOW is shared, publish only this application's audio (its process binary, e.g. supertuxkart); unset publishes system audio")
 		verbose    = fs.Bool("v", false, "verbose logging (the GStreamer child's stderr included)")
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
 		telemetry  = fs.String("telemetry-url", "", "R28 telemetry ingest endpoint (env GAWK_TELEMETRY_URL); default "+config.DefaultTelemetryURL+" on the default relay, "+config.Off+" disables reporting")
@@ -97,6 +98,7 @@ func run() error {
 	applyString(&cfg.Origin, *origin, os.Getenv("GAWK_ORIGIN"))
 	applyString(&cfg.Encoder, *encoder, os.Getenv("GAWK_ENCODER"))
 	applyString(&cfg.AudioDevice, *audioDev, os.Getenv("GAWK_AUDIO_DEVICE"))
+	applyString(&cfg.AudioApp, *audioApp, os.Getenv("GAWK_AUDIO_APP"))
 	// -audio defaults to true, so only an explicit -audio=false is an
 	// override: a bare run must not clear a config that says disableAudio.
 	if isFlagSet(fs, "audio") {
@@ -257,6 +259,22 @@ func run() error {
 				OnEncoderChosen:     func(enc string) { cfg.LastGoodEncoder = enc; saveCfg() },
 				LastGoodAudioSource: cfg.LastGoodAudioSource,
 				OnAudioSourceChosen: func(src string) { cfg.LastGoodAudioSource = src; saveCfg() },
+				// R35: the CLI is the engine harness, not the product
+				// (docs/19), so it never prompts. -audio-app answers the
+				// whose-audio step from the command line, and unset means
+				// system audio exactly as before.
+				ChooseAudioTarget: func(context.Context, gst.AppAudioOffer) engine.AudioTarget {
+					if cfg.AudioApp == "" {
+						return engine.AudioTarget{Mode: engine.AudioTargetSystem}
+					}
+					return engine.AudioTarget{Mode: engine.AudioTargetApp, Binary: cfg.AudioApp}
+				},
+				OnAudioLinks: func(n int) {
+					if n == 0 {
+						log.Warn("no audio is reaching the stream from this application right now",
+							"app", cfg.AudioApp)
+					}
+				},
 			}),
 		},
 	)

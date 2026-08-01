@@ -712,9 +712,28 @@ func (s *Session) Stats() Stats {
 			st.TimeSyncOffsetUs = sample.OffsetUs
 		}
 	}
+	st.Width = s.cfg.Media.Width
+	st.Height = s.cfg.Media.Height
 	if m := s.mediaSource(); m != nil {
 		st.Encoder = m.Encoder()
 		st.CapturePath = m.CapturePath()
+		// R35 D2: the configured resolution is a bounding box, and what the
+		// encoder was actually asked for is the box fitted to the source's
+		// aspect. Reporting the box would misstate the stream for every
+		// non-16:9 window and every ultrawide desktop — and these are the
+		// fields R28's D17 target rules read, so the honest number has to be
+		// the one that ships. Sources that do not know keep the box.
+		if g, ok := m.(GeometrySource); ok {
+			if w, h, known := g.EncodeSize(); known {
+				st.Width, st.Height = w, h
+			}
+		}
+		if sm, ok := m.(ShareModeSource); ok {
+			st.ShareMode = sm.ShareMode()
+		}
+		if as, ok := m.(AppAudioSource); ok {
+			st.AudioApp = as.AudioApp()
+		}
 	}
 	st.AudioState = s.audioState()
 	s.mu.Lock()
@@ -723,8 +742,6 @@ func (s *Session) Stats() Stats {
 	st.Resumes = s.resumes
 	st.Resuming = s.resuming
 	s.mu.Unlock()
-	st.Width = s.cfg.Media.Width
-	st.Height = s.cfg.Media.Height
 	st.Fps = s.cfg.Media.Fps
 	st.BitrateBps = s.cfg.Media.BitrateBps
 	// Decision 20: the child owns capture, so this stage is genuinely

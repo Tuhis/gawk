@@ -110,7 +110,14 @@ jobs:
       # 7m07s is why it isn't tighter. Neither the job nor the workflow sets
       # one, so without it a wedged apt holds a self-hosted runner for the
       # 6-hour default.
-      - name: Install Gio build dependencies
+      # Two groups, and the second is not optional either: libpipewire-0.3-dev
+      # builds gawk-pw-helper (R35), and the pipewire/wireplumber/gstreamer
+      # runtime is what internal/pwtest starts a private headless daemon from.
+      # Unlike the portal/GPU half of this module, the app-audio control plane
+      # is genuinely CI-verifiable (docs/39 D7) — but only on a runner that has
+      # a sound server to talk to. Without them those tests skip, silently
+      # turning the milestone's integration coverage off.
+      - name: Install Gio and PipeWire build dependencies
         timeout-minutes: 20
         run: |
           set -euo pipefail
@@ -136,8 +143,12 @@ jobs:
           retry sudo apt-get install -y --no-install-recommends \
             gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
-            libffi-dev libxcursor-dev libvulkan-dev || {
-              echo "::error::Gio build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
+            libffi-dev libxcursor-dev libvulkan-dev \
+            libpipewire-0.3-dev \
+            pipewire pipewire-bin wireplumber dbus \
+            gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good || {
+              echo "::error::Build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
               exit 1
             }
       # See the server job — the relay integration tests here run QUIC over
@@ -151,6 +162,28 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
+      # docs/39 D7's claim, asked of the run rather than assumed: unlike the
+      # portal/GPU half of this module, R35's audio control plane IS verifiable
+      # on a runner — but only if the runner can actually host a PipeWire
+      # daemon and a session manager. internal/pwtest skips (rather than fails)
+      # when it cannot, which is right for a developer's machine and wrong here:
+      # a silent skip turns "the tee, churn and the kill -9 matrix are covered"
+      # into a claim nothing checks.
+      - name: The app-audio integration tests actually ran
+        run: |
+          set -o pipefail
+          out=$(go test -count=1 -v ./cmd/gawk-pw-helper/ 2>&1) || { echo "$out"; exit 1; }
+          # `^ *--- SKIP`, not `^--- SKIP`: go test indents subtest results, and
+          # the kill matrix (AG5) acquires its daemon *inside* t.Run — so a
+          # top-level-only pattern would let exactly this step's most important
+          # coverage skip in silence. Same reason the PASS count is counted
+          # with the leading-space form.
+          if echo "$out" | grep -qE '^ *--- SKIP'; then
+            echo "$out" | grep -B1 -A4 -E '^ *--- SKIP'
+            echo "::error::the PipeWire integration tests skipped — this runner has no usable sound server, so R35's audio coverage did not run. See docs/39 F6."
+            exit 1
+          fi
+          echo "$out" | grep -cE '^ *--- PASS' | xargs echo "app-audio integration tests passed:"
       # `go test` links the GUI package only as a test binary (its idle-redraw
       # guard, docs/19 finding 12). Building the shells is what proves the real
       # Gio window compiles and links — this job is the only place that
@@ -199,6 +232,7 @@ jobs:
             echo "Minimum glibc to RUN these (check yours with 'ldd --version'):"
             echo "  gawk-broadcast-gui: $(glibc_floor dist/gawk-broadcast-gui)"
             echo "  gawk-broadcast:     $(glibc_floor dist/gawk-broadcast)"
+            echo "  gawk-pw-helper:     $(glibc_floor dist/gawk-pw-helper)"
             echo
             echo "Below that they won't start. Above it, a missing shared library"
             echo "is the likelier failure — see INSTALL.md, and check with:"
@@ -209,7 +243,31 @@ jobs:
             echo
             echo "=== gawk-broadcast (CLI) links against ==="
             ldd dist/gawk-broadcast
+            echo
+            # R35 AG10: the helper's whole packaging claim is "stock distro
+            # libraries only". Recorded from the binary rather than asserted in
+            # prose, and checked below.
+            echo "=== gawk-pw-helper links against ==="
+            ldd dist/gawk-pw-helper
           } | tee dist/BUILD-INFO.txt
+      # AG10, asked of the binary: the helper must link only libraries a stock
+      # distro already has — libpipewire and the C runtime. Anything else would
+      # be a dependency INSTALL.md does not name, discovered by a tester rather
+      # than by CI.
+      - name: The PipeWire helper links only stock libraries
+        run: |
+          unexpected=$(ldd dist/gawk-pw-helper |
+            grep -oE '=> /[^ ]+' | sed 's|=> ||' |
+            grep -vE '/(libpipewire-0\.3|libspa-.*|libc|libm|libpthread|libdl|librt|libatomic|ld-linux[^ ]*)\.so' || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::gawk-pw-helper links unexpected libraries:"
+            echo "$unexpected"
+            exit 1
+          fi
+          ldd dist/gawk-pw-helper | grep -q 'libpipewire-0.3' || {
+            echo "::error::gawk-pw-helper does not link libpipewire — the app-audio path cannot work"
+            exit 1
+          }
       # The R2 question — "does it actually reach production?" — asked of the
       # version badge. The constant alone would pass a unit test while the
       # shipped binary showed a bare release: -buildvcs is what adds the
@@ -277,12 +335,26 @@ jobs:
           # action pair rather than something this job should depend on. A
           # tarball of non-executable binaries is a uniquely annoying thing to
           # hand someone.
-          chmod +x staging/gawk-broadcast staging/gawk-broadcast-gui
+          chmod +x staging/gawk-broadcast staging/gawk-broadcast-gui staging/gawk-pw-helper
           # gawk-pubsim is in the artifact but is a test fixture publisher, not
           # something a user of the broadcaster wants.
+          #
+          # gawk-pw-helper IS wanted: the app spawns it for per-application
+          # audio (R35) and looks for it next to itself, so a tarball without
+          # it ships a feature that silently degrades to system audio on every
+          # machine that downloads it.
           tar -czf assets/gawk-broadcast-linux-amd64.tar.gz \
-            -C staging gawk-broadcast gawk-broadcast-gui INSTALL.md BUILD-INFO.txt
-          # Both binaries are unsigned by design, so a checksum is the only
+            -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt
+          # Asked of the tarball, not assumed of the command above: the R2
+          # question ("does it actually reach production?") applied to the one
+          # file whose absence is invisible until a user tries the feature.
+          for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt; do
+            tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz | grep -qx "$want" || {
+              echo "::error::$want is missing from the release tarball"
+              exit 1
+            }
+          done
+          # The binaries are unsigned by design, so a checksum is the only
           # integrity check a downloader gets. Written outside `assets` and
           # moved in, because whether a shell's `*` sees a file the same
           # command is redirecting into is not something to rely on.
