@@ -66,6 +66,26 @@
 # the same min-7/max-10 warm pool with no path filters, so a PR touching this
 # component can queue for a few minutes behind it. That is bounded by ci.yml's
 # own 3-4 min runtime and is a much smaller number than the 11:32 this saves.
+#
+# RENAMING A JOB HERE IS A BREAKING CHANGE — grep `needs:` first.
+#
+# The split above renamed the single `broadcast-windows` job, and #218 had
+# landed `attach-release: needs: broadcast-windows` forty minutes earlier. Both
+# PRs were green: #218's base still had the one job, #217's base had no
+# attach-release, and neither branch was re-tested against the other's merged
+# state. The broken combination therefore first ran on main, on the release
+# commit — and an unresolvable `needs:` is not a failing job, it is a workflow
+# that does not load: zero jobs, no logs, no annotation, the run labelled
+# `.github/workflows/broadcast-windows.yml` instead of `broadcast-windows`
+# because GitHub falls back to the path when it cannot parse the file. lint,
+# test and build never ran either. gawk-broadcast-windows-v1.1.0 was published
+# with no binary attached as a direct result.
+#
+# Nothing inside this file could have caught that: each branch was internally
+# consistent. The gate that catches it is the repository's, "Require branches
+# to be up to date before merging" on main, which forces the second PR to
+# re-run against the first. If that setting is off, two concurrently-open PRs
+# touching this workflow need a deliberate re-run of the second before merge.
 # ---------------------------------------------------------------------------
 #
 # The toolchain lives in the runner image, NOT here — see
@@ -288,16 +308,23 @@ jobs:
 
   # The Windows half of the release-assets story; the Linux one is
   # attach-broadcast-release in ci.yml, and the reasoning for both lives in
-  # .github/actions/attach-release-assets. No rebuild — the artifact the job
-  # above just produced is already the --release EXE, and on a release-PR merge
+  # .github/actions/attach-release-assets. No rebuild — the artifact `build`
+  # just produced is already the --release EXE, and on a release-PR merge
   # this run and release-please.yml's are the same commit.
   #
   # This workflow is path-filtered, which works out exactly right: a release
   # that bumps this component necessarily touches gawk-broadcast-windows/
   # (its CHANGELOG.md and Cargo.toml), so the job runs precisely when there is
   # something to attach.
+  #
+  # `needs` is all three jobs, not just `build`, and that is deliberate. This
+  # read `needs: broadcast-windows` when the workflow was a single job, which
+  # meant "lint, test AND build passed" — only `build` produces the artifact,
+  # but a green release asset must not be published off a red test run. When
+  # the three-way split renamed that job, this reference was left pointing at
+  # a job that no longer existed; see the incident note above `jobs:`.
   attach-release:
-    needs: broadcast-windows
+    needs: [lint, test, build]
     if: github.event_name == 'push'
     runs-on: ioio-k8s
     permissions:
