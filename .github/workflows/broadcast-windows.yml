@@ -129,14 +129,6 @@ env:
   # ever applied to this workspace's own crates (cargo never uses incremental
   # for registry dependencies), so the win is small; it is simply free.
   CARGO_INCREMENTAL: "0"
-  # Link the HOST artifacts with lld instead of the default bfd — the test
-  # job links a test binary per crate, each pulling the whole dependency
-  # graph. Scoped to the host triple through CARGO_TARGET_<TRIPLE>_RUSTFLAGS
-  # rather than RUSTFLAGS on purpose: a bare RUSTFLAGS would also reach the
-  # msvc units, where `-fuse-ld=lld` is a clang-driver flag that lld-link
-  # does not accept. cargo-xwin picks its own linker for that target and is
-  # untouched by this.
-  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
 jobs:
   # Both clippy passes, because neither alone covers the tree. The msvc one is
@@ -176,6 +168,25 @@ jobs:
     defaults:
       run:
         working-directory: gawk-broadcast-windows
+    env:
+      # Link the host artifacts with lld instead of the default bfd: this job
+      # links a test binary per crate, each pulling the whole dependency graph.
+      #
+      # Job-scoped, NOT workflow-scoped, and that distinction cost a run to
+      # find (30688980949). Cargo does not apply target rustflags to host
+      # artifacts when cross-compiling, but does when building for the host —
+      # so with this set workflow-wide, `lint`'s two passes disagreed about the
+      # flags on every proc-macro and build-script unit. The cross clippy built
+      # 107 of them (autocfg, cc, cmake, the derive macros) with no flags, the
+      # host clippy then rebuilt every one: 367 units became 481 and the step
+      # went 2:02 -> 2:58. `lint` runs no linker at all — clippy only checks —
+      # so it was paying that for nothing.
+      #
+      # Scoped to the host triple rather than a bare RUSTFLAGS because the
+      # latter would also reach msvc units, where `-fuse-ld=lld` is a
+      # clang-driver flag lld-link does not accept. `build` is unaffected
+      # either way and is deliberately left out of this.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-windows-preflight
