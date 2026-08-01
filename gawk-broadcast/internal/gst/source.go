@@ -66,6 +66,15 @@ const audioQueueDepth = 32
 // permanently frozen stream — and not a broadcast that recovers now and then
 // over hours. At this setting a stream may rebuild every half second all night
 // and carry on; only sustained thrashing faster than that gives up.
+//
+// Read together with liveProbeWindow, that makes this a backstop rather than a
+// policy that fires: a rebuild only *succeeds* if its child survives the 3 s
+// probe, so sixty of them cannot fit in thirty seconds on the shipping
+// configuration. What actually ends a broadcast whose capture is truly broken
+// is the rebuild failing outright — every encoder × every rung, in one pass —
+// and that is the intended division of labour. The limiter is here so a future
+// configuration (a shorter probe window, a child that dies the instant it is
+// adopted) cannot turn recovery into a spin.
 const (
 	captureRestartBudget = 60
 	captureRestartWindow = 30 * time.Second
