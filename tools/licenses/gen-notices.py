@@ -322,13 +322,19 @@ def collect_npm(project: str) -> list[Package]:
         if path and not entry.get("dev")
     }
     # Licence *texts* only exist on disk, so install exactly the runtime tree.
+    had_node_modules = (cwd / "node_modules").is_dir()
     run(["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], cwd)
     out = []
     for path, entry in sorted(runtime.items()):
         name = re.sub(r"^.*node_modules/", "", path)
         root = cwd / path
         out.append(Package(name, entry.get("version", ""), entry.get("license"), root))
-    run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd)
+    if had_node_modules:
+        # Put back what was there: a working tree that could `npm run build`
+        # before this script ran must still be able to afterwards. On a fresh
+        # clone (CI, and Renovate's postUpgradeTasks) there was nothing to
+        # restore, and a second full install is a minute of nothing.
+        run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd)
     return sorted(out, key=lambda p: p.name.lower())
 
 

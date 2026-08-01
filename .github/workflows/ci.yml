@@ -644,6 +644,9 @@ jobs:
           # duckdb-tagged graph it does pull is exactly the fat working set
           # that job's comment warns about handing to leaner jobs.
           cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
       - name: Go and npm dependencies are on the license allowlist
         run: python3 tools/licenses/gen-notices.py --check
       # A prebuilt binary, pinned: `cargo install cargo-deny` compiles for
@@ -660,6 +663,90 @@ jobs:
       - name: Rust dependencies are on the license allowlist
         working-directory: gawk-broadcast-windows
         run: cargo-deny check licenses
+
+  # The other half of the licence story: the allowlist above says the terms are
+  # acceptable, this says the ATTRIBUTION is accurate. THIRD-PARTY-NOTICES.md
+  # is what discharges the MIT/BSD/ISC notice requirements for the binaries and
+  # images we publish, and a file that silently drifts from the dependency set
+  # discharges nothing.
+  #
+  # Drift is not hypothetical here: Renovate opens the dependency PRs, so the
+  # regeneration has to be somebody's job or it is nobody's. It is now
+  # Renovate's (postUpgradeTasks in renovate.json regenerates in the same PR
+  # as the bump) — and this job is what makes that guarantee testable, and
+  # what catches the case Renovate does not cover: a human editing a manifest
+  # by hand.
+  #
+  # Not a path-filtered workflow, deliberately. This file's header explains why
+  # it has no path filters, and required-vs-skipped semantics are exactly the
+  # complication it declines to take on. So the job always runs and always
+  # reports; the guard step below decides whether the EXPENSIVE part
+  # (regeneration: two npm installs, three Go module graphs, the whole crate
+  # graph) has any reason to happen. On a docs PR that is two seconds.
+  licenses-fresh:
+    runs-on: ioio-k8s
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The guard diffs against the base commit, which shallow cannot see.
+          fetch-depth: 0
+      - name: Can the dependency set have moved?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # No usable base (first push on a branch, a force-push, a manual
+          # dispatch) means we cannot prove nothing moved — so check.
+          if [ -z "$base" ] \
+            || [ "$base" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit — regenerating to be sure."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The notices files themselves are in the list on purpose: a
+          # hand-edit to one is exactly the thing this job should overturn.
+          changed=$(git diff --name-only "${base}...HEAD" -- \
+            '**/go.mod' '**/go.sum' \
+            '**/Cargo.toml' '**/Cargo.lock' \
+            '**/package.json' '**/package-lock.json' \
+            '**/THIRD-PARTY-NOTICES.md' \
+            'tools/licenses/**')
+          if [ -n "$changed" ]; then
+            echo "Manifests or notices moved:"; echo "$changed" | sed 's/^/  /'
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No manifest, notice or generator change — nothing to verify."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v7
+        if: steps.scope.outputs.run == 'true'
+        with:
+          go-version-file: gawk-server/go.mod
+          cache: false # same reasoning as `tidy` and `licenses`
+      - uses: actions/setup-node@v7
+        if: steps.scope.outputs.run == 'true'
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v6
+        if: steps.scope.outputs.run == 'true'
+        with:
+          python-version: "3.11"
+      # No Rust setup step and no rust-windows-preflight: `cargo tree
+      # --target x86_64-pc-windows-msvc` only FILTERS by target, it does not
+      # build for it, so the cross toolchain this repo's Windows jobs need is
+      # irrelevant here. Plain cargo from the runner image is enough.
+      - name: THIRD-PARTY-NOTICES.md matches the dependencies actually linked
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          python3 tools/licenses/gen-notices.py
+          if ! git diff --exit-code -- '**/THIRD-PARTY-NOTICES.md'; then
+            echo "::error::Third-party notices are stale. Run 'python3 tools/licenses/gen-notices.py' and commit the result (see CONTRIBUTING.md)."
+            exit 1
+          fi
 
   helm:
     runs-on: ioio-k8s
