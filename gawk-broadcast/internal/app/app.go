@@ -21,6 +21,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/pwproto"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/telemetry"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/version"
 	"github.com/Tuhis/gawk/gawk-server/wire"
@@ -99,6 +100,217 @@ type App struct {
 	// engine so a session with none configured is byte-identical to pre-R28,
 	// and so it survives across Start/Stop cycles like the config does.
 	telemetry *telemetry.Reporter
+
+	// R35, the whose-audio step (docs/39 D5). prompt is non-nil exactly while
+	// the card is on screen; answer carries the click back to the engine
+	// goroutine that is blocked inside Start.
+	prompt *AudioPrompt
+	answer chan engine.AudioTarget
+	// audioLinks is the helper's live link count and audioSilentSince when it
+	// last went to zero — the two things the silence hint is derived from. A
+	// link count rather than a level meter (D6).
+	audioLinks      int
+	audioLinksKnown bool
+	audioSilentAt   time.Time
+	// media is the live capture source, kept only so the mid-session switch
+	// has something to call. Nil outside a broadcast.
+	media any
+}
+
+// AudioPrompt is the whose-audio card's state: what to list, and what is
+// already selected.
+//
+// It exists because Linux structurally cannot have the Windows sibling's
+// one-picker flow — the portal never says which application owns the window
+// that was picked (docs/39 §1) — so gawk asks, once, in its own words.
+type AudioPrompt struct {
+	// Apps is the live list of applications currently emitting audio.
+	Apps []pwproto.App
+	// Err is set when per-application audio is unavailable on this machine.
+	// The card then says so and offers the two rows that still work.
+	Err error
+	// Preselect is the binary to highlight: the last-used application, but
+	// only when it is present and actually emitting (AD3). Empty means nothing
+	// is preselected, which is the honest state when the remembered
+	// application is not running.
+	Preselect string
+}
+
+// AudioPromptState returns the whose-audio card's state, or nil when the card
+// is not open.
+func (a *App) AudioPromptState() *AudioPrompt {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prompt == nil {
+		return nil
+	}
+	p := *a.prompt
+	p.Apps = append([]pwproto.App(nil), a.prompt.Apps...)
+	return &p
+}
+
+// AnswerAudioPrompt delivers the broadcaster's choice.
+//
+// Called from the UI thread; the engine goroutine is blocked in
+// chooseAudioTarget waiting for exactly one of these. A second call, or one
+// with no prompt open, is a no-op rather than a panic — a double click on a
+// card that has already closed is a normal thing for a user to do.
+func (a *App) AnswerAudioPrompt(target engine.AudioTarget) {
+	a.mu.Lock()
+	ch := a.answer
+	if ch == nil {
+		a.mu.Unlock()
+		return
+	}
+	a.answer = nil
+	a.prompt = nil
+	// AD3: remember the choice as a *preselection* for next time. It never
+	// silently reuses itself — the card always appears — so this can only ever
+	// save a click, not change what a broadcast publishes.
+	if target.Mode == engine.AudioTargetApp {
+		a.cfg.AudioApp = target.Binary
+	}
+	a.mu.Unlock()
+
+	ch <- target
+	if err := a.cfg.Save(); err != nil {
+		a.log.Warn("could not save config", "err", err)
+	}
+	a.invalidate()
+}
+
+// chooseAudioTarget is the engine's ChooseAudioTarget seam: open the card and
+// block until the broadcaster answers.
+//
+// Cancelling (the context ending, i.e. the broadcast being stopped) answers
+// "whole system", which is the pre-R35 behavior and the only answer that is
+// never surprising.
+func (a *App) chooseAudioTarget(ctx context.Context, offer gst.AppAudioOffer) engine.AudioTarget {
+	ch := make(chan engine.AudioTarget, 1)
+	a.mu.Lock()
+	a.answer = ch
+	a.prompt = &AudioPrompt{
+		Apps:      offer.Apps,
+		Err:       offer.Err,
+		Preselect: preselect(a.cfg.AudioApp, offer.Apps),
+	}
+	a.status = "Choose whose audio to share…"
+	a.mu.Unlock()
+	a.invalidate()
+
+	select {
+	case target := <-ch:
+		a.setStatus("Starting capture…")
+		return target
+	case <-ctx.Done():
+		a.mu.Lock()
+		a.answer, a.prompt = nil, nil
+		a.mu.Unlock()
+		a.invalidate()
+		return engine.AudioTarget{Mode: engine.AudioTargetSystem}
+	}
+}
+
+// preselect implements AD3: the last-used application is highlighted only when
+// it is present and emitting. A remembered name that is not in the list is not
+// a selection — it is a memory, and presenting it as a selection would invite a
+// blind Enter that captures nothing.
+func preselect(last string, apps []pwproto.App) string {
+	if last == "" {
+		return ""
+	}
+	for _, a := range apps {
+		if a.Binary == last {
+			return last
+		}
+	}
+	return ""
+}
+
+// onAudioApps keeps the open card's list live, so an application that starts
+// playing while the card is up appears without the user doing anything. That
+// is what makes the card's one caveat — "apps appear here when they play
+// sound" — a wait rather than a dead end.
+func (a *App) onAudioApps(apps []pwproto.App) {
+	a.mu.Lock()
+	if a.prompt != nil {
+		a.prompt.Apps = apps
+		a.prompt.Preselect = preselect(a.cfg.AudioApp, apps)
+	}
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// onAudioLinks records the helper's link count and the moment it went to zero,
+// which is all the silence hint needs (D6).
+func (a *App) onAudioLinks(n int) {
+	a.mu.Lock()
+	if n == 0 && (!a.audioLinksKnown || a.audioLinks != 0) {
+		a.audioSilentAt = time.Now()
+	}
+	a.audioLinks, a.audioLinksKnown = n, true
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// AudioSilenceHint is the sentence to show when the chosen application has
+// been quiet long enough to be worth mentioning, or "" when there is nothing
+// to say.
+//
+// This is docs/38 D8's escape hatch ported to Linux, driven by a link count
+// instead of a level meter: zero links means the application has no audio
+// streams open at all, which is a stronger signal than a quiet meter and needs
+// no metering to observe. The residual case it covers is Windows' V-3a — a game
+// whose audio moved to a helper process with a different binary name.
+func (a *App) AudioSilenceHint() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state != StateLive || a.stats.AudioApp == "" {
+		return ""
+	}
+	if !a.audioLinksKnown || a.audioLinks > 0 {
+		return ""
+	}
+	if time.Since(a.audioSilentAt) < audioSilenceGrace {
+		return ""
+	}
+	return fmt.Sprintf(
+		"No audio from %s right now — it may have stopped playing sound, or another "+
+			"process took over. Switch to whole-system audio?", a.stats.AudioApp)
+}
+
+// audioSilenceGrace is how long a captured application may be silent before the
+// hint appears. Ten seconds, matching the Windows sibling: long enough that a
+// loading screen or a menu transition does not trigger it, short enough that a
+// broadcaster does not stream silence for a whole match.
+const audioSilenceGrace = 10 * time.Second
+
+// SwitchToSystemAudio is the card's one mid-session action (docs/39 D5).
+//
+// It is a re-link, not a renegotiation: same Opus stream, same sequence space,
+// nothing re-emitted. Viewers lose the packets in the gap and notice nothing
+// else.
+func (a *App) SwitchToSystemAudio(ctx context.Context) {
+	a.mu.Lock()
+	media := a.media
+	a.mu.Unlock()
+	sw, ok := media.(interface {
+		SwitchToSystemAudio(context.Context) error
+	})
+	if !ok {
+		return
+	}
+	if err := sw.SwitchToSystemAudio(ctx); err != nil {
+		a.log.Warn("could not switch to whole-system audio", "err", err)
+		a.mu.Lock()
+		a.lastErr = "Could not switch to whole-system audio: " + err.Error()
+		a.mu.Unlock()
+	} else {
+		a.mu.Lock()
+		a.audioLinks, a.audioLinksKnown = 0, false
+		a.mu.Unlock()
+	}
+	a.invalidate()
 }
 
 // Options configure the app.
@@ -235,6 +447,8 @@ func (a *App) Start(ctx context.Context, id string) {
 	a.lastErr = ""
 	a.canMint = false
 	a.firstViewerSeen = false
+	a.audioLinks, a.audioLinksKnown = 0, false
+	a.prompt, a.answer = nil, nil
 	a.id = id
 	a.mu.Unlock()
 	a.invalidate()
@@ -330,16 +544,8 @@ func (a *App) run(ctx context.Context, id string) {
 			},
 		},
 		engine.Options{
-			Log: a.log,
-			MediaFactory: gst.NewFactory(gst.Options{
-				LastGoodEncoder: a.cfg.LastGoodEncoder,
-				OnEncoderChosen: func(enc string) {
-					a.mu.Lock()
-					a.cfg.LastGoodEncoder = enc
-					a.mu.Unlock()
-					saveCfg()
-				},
-			}),
+			Log:          a.log,
+			MediaFactory: a.mediaFactory(saveCfg),
 		},
 	)
 
@@ -367,6 +573,39 @@ func (a *App) run(ctx context.Context, id string) {
 	a.notifier.Notify("Broadcast started", a.liveBody(), notify.UrgencyNormal)
 }
 
+// mediaFactory builds the capture factory and remembers the source it makes.
+//
+// The source is kept for exactly one reason: the mid-session switch to
+// whole-system audio has to reach it, and the engine deliberately does not
+// expose its media source (it knows about frames and the relay, not about
+// PipeWire). Wrapping the factory is the smallest seam that gets there without
+// widening engine.Session for one button.
+func (a *App) mediaFactory(saveCfg func()) engine.MediaSourceFactory {
+	inner := gst.NewFactory(gst.Options{
+		LastGoodEncoder: a.cfg.LastGoodEncoder,
+		OnEncoderChosen: func(enc string) {
+			a.mu.Lock()
+			a.cfg.LastGoodEncoder = enc
+			a.mu.Unlock()
+			saveCfg()
+		},
+		// R35: the whose-audio step. Only reached when the picker returned a
+		// window, so a whole-screen broadcast never touches any of it.
+		ChooseAudioTarget: a.chooseAudioTarget,
+		OnAudioApps:       a.onAudioApps,
+		OnAudioLinks:      a.onAudioLinks,
+	})
+	return func(cfg engine.MediaConfig, clock engine.Clock, log *slog.Logger) (engine.MediaSource, error) {
+		src, err := inner(cfg, clock, log)
+		if err == nil {
+			a.mu.Lock()
+			a.media = src
+			a.mu.Unlock()
+		}
+		return src, err
+	}
+}
+
 // startFailed applies Decision 10's rule.
 func (a *App) startFailed(err error) {
 	msg := Message(err)
@@ -381,6 +620,8 @@ func (a *App) startFailed(err error) {
 	a.mu.Lock()
 	a.state = StateIdle
 	a.sess = nil
+	a.media = nil
+	a.prompt, a.answer = nil, nil
 	a.status = "Ready"
 	a.lastErr = msg
 	a.canMint = canMint
@@ -409,6 +650,8 @@ func (a *App) ended() {
 	wasLive := a.state != StateIdle
 	a.state = StateIdle
 	a.sess = nil
+	a.media = nil
+	a.prompt, a.answer = nil, nil
 	a.status = "Ready"
 	a.resuming = false
 	hadErr := a.lastErr != ""
@@ -564,6 +807,13 @@ func (a *App) mediaConfig() engine.MediaConfig {
 func AudioStatus(s engine.Stats) string {
 	switch s.AudioState {
 	case engine.AudioActive:
+		// R35: naming the application is the whole point of the feature, and
+		// the line a broadcaster glances at to confirm the right sound is
+		// going out. The source name stays for system audio, where *which*
+		// candidate won is the first thing to know when audio is wrong.
+		if s.AudioApp != "" {
+			return fmt.Sprintf("Audio from %s only", s.AudioApp)
+		}
 		if s.AudioSource != "" {
 			return fmt.Sprintf("System audio · %s", s.AudioSource)
 		}

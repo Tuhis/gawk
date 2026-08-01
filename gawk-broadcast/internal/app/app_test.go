@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/appaudio"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/portal"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/pwproto"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/version"
 )
 
@@ -740,5 +742,245 @@ func TestAudioConfigKeysReachTheMediaConfig(t *testing.T) {
 	}
 	if m.AudioDevice != "my-sink.monitor" {
 		t.Errorf("AudioDevice = %q, want the configured device", m.AudioDevice)
+	}
+}
+
+// R35 AS5: the whose-audio card's logic, without a window.
+//
+// The card is the one place a wrong answer streams the wrong application's
+// sound, so its rules — when it appears, what it preselects, what an answer
+// does — are worth pinning here rather than discovering on a desktop.
+
+// AD3: the card always appears in app mode, and the last-used application is
+// preselected *only* when it is present and emitting. A remembered name that
+// is not running is a memory, not a selection; presenting it as one would
+// invite a blind Enter that captures nothing.
+func TestAudioPromptPreselectsOnlyARunningLastChoice(t *testing.T) {
+	apps := []pwproto.App{
+		{Binary: "supertuxkart", Name: "SuperTuxKart", Streams: 1},
+		{Binary: "firefox", Name: "Firefox", Streams: 2},
+	}
+	for _, tc := range []struct {
+		name string
+		last string
+		apps []pwproto.App
+		want string
+	}{
+		{"nothing remembered", "", apps, ""},
+		{"remembered and running", "firefox", apps, "firefox"},
+		{"remembered but not running", "mpv", apps, ""},
+		{"remembered but nothing is playing", "firefox", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := preselect(tc.last, tc.apps); got != tc.want {
+				t.Errorf("preselect(%q) = %q, want %q", tc.last, got, tc.want)
+			}
+		})
+	}
+}
+
+// The card opens, blocks the engine, and the click is what unblocks it.
+func TestAudioPromptBlocksUntilAnswered(t *testing.T) {
+	fs := &fakeSession{}
+	a, cfg := testApp(t, fs, notify.Discard{})
+	cfg.AudioApp = "supertuxkart"
+
+	answered := make(chan engine.AudioTarget, 1)
+	go func() {
+		answered <- a.chooseAudioTarget(context.Background(), gst.AppAudioOffer{
+			Apps: []pwproto.App{{Binary: "supertuxkart", Name: "SuperTuxKart", Streams: 1}},
+		})
+	}()
+
+	// The card appears, with the remembered application preselected.
+	var prompt *AudioPrompt
+	waitFor(t, func() bool {
+		prompt = a.AudioPromptState()
+		return prompt != nil
+	}, "the whose-audio card to open")
+	if len(prompt.Apps) != 1 || prompt.Apps[0].Binary != "supertuxkart" {
+		t.Fatalf("the card lists %+v, want the one running application", prompt.Apps)
+	}
+	if prompt.Preselect != "supertuxkart" {
+		t.Errorf("preselect = %q, want supertuxkart", prompt.Preselect)
+	}
+
+	// Nothing has been answered yet.
+	select {
+	case target := <-answered:
+		t.Fatalf("the engine proceeded without an answer: %+v", target)
+	default:
+	}
+
+	a.AnswerAudioPrompt(engine.AudioTarget{Mode: engine.AudioTargetApp, Binary: "firefox"})
+	select {
+	case target := <-answered:
+		if target.Mode != engine.AudioTargetApp || target.Binary != "firefox" {
+			t.Errorf("the engine got %+v, want the clicked application", target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the answer never reached the engine")
+	}
+
+	// The card closes, and the choice is remembered as a preselection for
+	// next time — never as something that reuses itself silently.
+	if a.AudioPromptState() != nil {
+		t.Error("the card is still open after being answered")
+	}
+	if cfg.AudioApp != "firefox" {
+		t.Errorf("cfg.AudioApp = %q, want firefox remembered for next time", cfg.AudioApp)
+	}
+}
+
+// A cancelled start (the user pressing Stop while the card is up) must not
+// hang the engine: it answers whole-system audio, which is the pre-R35
+// behavior and the only answer that is never surprising.
+func TestAudioPromptCancelsToSystemAudio(t *testing.T) {
+	fs := &fakeSession{}
+	a, _ := testApp(t, fs, notify.Discard{})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	answered := make(chan engine.AudioTarget, 1)
+	go func() { answered <- a.chooseAudioTarget(ctx, gst.AppAudioOffer{}) }()
+	waitFor(t, func() bool { return a.AudioPromptState() != nil }, "the card to open")
+
+	cancel()
+	select {
+	case target := <-answered:
+		if target.Mode != engine.AudioTargetSystem {
+			t.Errorf("a cancelled card answered %+v, want system audio", target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelling the card hung the engine")
+	}
+	if a.AudioPromptState() != nil {
+		t.Error("the card is still open after cancellation")
+	}
+}
+
+// D6's first row: with no helper, the card still appears — the shell is what
+// tells the user — carrying the error so it can say a sentence instead of
+// showing an empty list.
+func TestAudioPromptCarriesTheUnavailableReason(t *testing.T) {
+	fs := &fakeSession{}
+	a, _ := testApp(t, fs, notify.Discard{})
+	go a.chooseAudioTarget(context.Background(), gst.AppAudioOffer{Err: appaudio.ErrHelperMissing})
+
+	var prompt *AudioPrompt
+	waitFor(t, func() bool {
+		prompt = a.AudioPromptState()
+		return prompt != nil
+	}, "the card to open")
+	if prompt.Err == nil {
+		t.Fatal("the card was not told that per-application audio is unavailable")
+	}
+	if msg := Message(prompt.Err); !strings.Contains(msg, "gawk-pw-helper") {
+		t.Errorf("the sentence shown is %q; it should name the missing program", msg)
+	}
+	a.AnswerAudioPrompt(engine.AudioTarget{Mode: engine.AudioTargetSystem})
+}
+
+// The list stays live while the card is open, so an application that starts
+// playing after the card appears can be picked without restarting anything.
+func TestAudioPromptListUpdatesWhileOpen(t *testing.T) {
+	fs := &fakeSession{}
+	a, _ := testApp(t, fs, notify.Discard{})
+	go a.chooseAudioTarget(context.Background(), gst.AppAudioOffer{})
+	waitFor(t, func() bool { return a.AudioPromptState() != nil }, "the card to open")
+
+	a.onAudioApps([]pwproto.App{{Binary: "late-starter", Name: "Late Starter", Streams: 1}})
+	waitFor(t, func() bool {
+		p := a.AudioPromptState()
+		return p != nil && len(p.Apps) == 1 && p.Apps[0].Binary == "late-starter"
+	}, "the list to update")
+	a.AnswerAudioPrompt(engine.AudioTarget{Mode: engine.AudioTargetSystem})
+}
+
+// The silence hint (D6, ported from docs/38 D8) fires only when a *chosen
+// application* has had no audio streams for the grace period, and only while
+// live. Everything else — system audio, a live application, a broadcast that
+// has not started — says nothing.
+func TestSilenceHintFiresOnlyForASilentChosenApplication(t *testing.T) {
+	fs := &fakeSession{}
+	a, _ := testApp(t, fs, notify.Discard{})
+
+	// Not live: nothing to say.
+	a.onAudioLinks(0)
+	if hint := a.AudioSilenceHint(); hint != "" {
+		t.Errorf("hint before going live: %q", hint)
+	}
+
+	a.mu.Lock()
+	a.state = StateLive
+	a.stats = engine.Stats{ShareMode: "window", AudioApp: "supertuxkart"}
+	a.mu.Unlock()
+
+	// Links present: the application is audible, so no hint.
+	a.onAudioLinks(2)
+	if hint := a.AudioSilenceHint(); hint != "" {
+		t.Errorf("hint while the application is audible: %q", hint)
+	}
+
+	// Links gone, but only just: the grace period exists so a menu
+	// transition or a loading screen does not trigger it.
+	a.onAudioLinks(0)
+	if hint := a.AudioSilenceHint(); hint != "" {
+		t.Errorf("hint before the grace period elapsed: %q", hint)
+	}
+
+	// Silent for long enough.
+	a.mu.Lock()
+	a.audioSilentAt = time.Now().Add(-audioSilenceGrace - time.Second)
+	a.mu.Unlock()
+	hint := a.AudioSilenceHint()
+	if !strings.Contains(hint, "supertuxkart") {
+		t.Errorf("hint = %q, want it to name the silent application", hint)
+	}
+	if !strings.Contains(hint, "whole-system audio") {
+		t.Errorf("hint = %q, want it to offer the escape hatch", hint)
+	}
+
+	// System audio never gets a hint: there is no application to blame and
+	// nothing to switch to.
+	a.mu.Lock()
+	a.stats.AudioApp = ""
+	a.mu.Unlock()
+	if hint := a.AudioSilenceHint(); hint != "" {
+		t.Errorf("hint for a system-audio broadcast: %q", hint)
+	}
+}
+
+// The audio line names the application in app mode. It is the line a
+// broadcaster glances at to confirm the right sound is going out, and "System
+// audio" there while one game's audio is being captured would be a lie.
+func TestAudioStatusNamesTheCapturedApplication(t *testing.T) {
+	got := AudioStatus(engine.Stats{
+		AudioState:  engine.AudioActive,
+		AudioSource: "app-sink-monitor",
+		AudioApp:    "supertuxkart",
+	})
+	if got != "Audio from supertuxkart only" {
+		t.Errorf("AudioStatus = %q, want it to name the application", got)
+	}
+}
+
+// The diagnostics dump carries both R35 fields, so "the wrong app's sound went
+// out" is answerable from a pasted dump alone.
+func TestDiagnosticsCarryTheShareModeAndApplication(t *testing.T) {
+	fs := &fakeSession{}
+	a, _ := testApp(t, fs, notify.Discard{})
+	a.mu.Lock()
+	a.stats = engine.Stats{ShareMode: "window", AudioApp: "supertuxkart", Width: 1542, Height: 1080, Fps: 60}
+	a.mu.Unlock()
+
+	var d Diagnostics
+	if err := json.Unmarshal([]byte(a.Diagnostics()), &d); err != nil {
+		t.Fatalf("diagnostics are not valid JSON: %v", err)
+	}
+	if d.ShareMode != "window" || d.AudioApp != "supertuxkart" {
+		t.Errorf("diagnostics = %+v, want the share mode and application", d)
+	}
+	if !strings.HasPrefix(d.Rung, "1542x1080") {
+		t.Errorf("rung = %q, want the fitted dimensions", d.Rung)
 	}
 }
