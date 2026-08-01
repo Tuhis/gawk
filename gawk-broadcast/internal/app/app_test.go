@@ -984,3 +984,32 @@ func TestDiagnosticsCarryTheShareModeAndApplication(t *testing.T) {
 		t.Errorf("rung = %q, want the fitted dimensions", d.Rung)
 	}
 }
+
+// Pressing Stop while a start is in flight — during the share picker, the
+// whose-audio card, or the encoder cascade — is the user's own action, not a
+// fault. R35's card widened that window from a second to however long a person
+// takes to choose, so it must not ring critically or leave an error on screen.
+func TestCancelledStartIsNotReportedAsAFailure(t *testing.T) {
+	n := &recordingNotifier{}
+	fs := &fakeSession{startErr: &engine.StartError{
+		Phase: engine.PhaseCapture,
+		Err:   context.Canceled,
+	}}
+	a, _ := testApp(t, fs, n)
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateIdle }, "the start to end")
+
+	if msg := a.LastError(); msg != "" {
+		t.Errorf("a cancelled start left an error on screen: %q", msg)
+	}
+	for _, sent := range n.all() {
+		if sent.urgency == notify.UrgencyCritical {
+			t.Errorf("a cancelled start notified critically: %+v", sent)
+		}
+	}
+	// And when it *is* rendered — in a diagnostics dump, say — it reads as a
+	// sentence rather than a Go error.
+	if got := Message(context.Canceled); !strings.Contains(got, "stopped before it started") {
+		t.Errorf("Message(context.Canceled) = %q", got)
+	}
+}

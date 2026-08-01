@@ -270,6 +270,17 @@ func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
 	if stream.SourceType.IsWindow() {
 		s.chooseAppAudio(ctx)
 	}
+	// The whose-audio card can be open for as long as the broadcaster likes,
+	// and Stop cancels this context underneath it. Returning the cancellation
+	// itself — rather than falling into the encoder cascade, where every trial
+	// would fail against a dead context and the user would be told their
+	// machine has no hardware encoder — is what keeps "I pressed Stop" from
+	// reading as a hardware fault.
+	if err := ctx.Err(); err != nil {
+		s.stopHelper()
+		stream.Close()
+		return nil, err
+	}
 
 	cand, err := SelectEncoder(ctx, s.cfg, s.opts.LastGoodEncoder, s.opts.Trial)
 	if err != nil {

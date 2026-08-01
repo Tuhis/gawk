@@ -608,6 +608,23 @@ func (a *App) mediaFactory(saveCfg func()) engine.MediaSourceFactory {
 
 // startFailed applies Decision 10's rule.
 func (a *App) startFailed(err error) {
+	// A start the user themselves cancelled is not a failure and must not ring
+	// critically: R35's whose-audio card widened the window in which Stop can
+	// land, and "Broadcast failed to start" for a deliberate Stop would train
+	// the user to ignore the notifications that do matter.
+	if errors.Is(err, context.Canceled) {
+		a.mu.Lock()
+		a.state = StateIdle
+		a.sess = nil
+		a.media = nil
+		a.prompt, a.answer = nil, nil
+		a.status = "Ready"
+		a.lastErr = ""
+		a.canMint = false
+		a.mu.Unlock()
+		a.invalidate()
+		return
+	}
 	msg := Message(err)
 	canMint := false
 	if se, ok := engine.AsStartError(err); ok {
@@ -851,6 +868,12 @@ func Message(err error) string {
 	case errors.Is(err, portal.ErrUnavailable):
 		return "No screen-sharing portal is available. Check that xdg-desktop-portal " +
 			"and your desktop's backend are installed and running."
+	case errors.Is(err, context.Canceled):
+		// Stop pressed while starting — during the share picker, the
+		// whose-audio card, or the encoder cascade. A sentence, because the
+		// raw error is "context canceled" and the user's own action should not
+		// look like a fault.
+		return "The broadcast was stopped before it started."
 	case errors.Is(err, gst.ErrNoLaunchBinary):
 		return "GStreamer is not installed. Install gst-launch-1.0 " +
 			"(gstreamer1.0-tools on Debian/Ubuntu, gstreamer on Arch, gstreamer1-tools on Fedora)."

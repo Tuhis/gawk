@@ -313,12 +313,26 @@ jobs:
           # action pair rather than something this job should depend on. A
           # tarball of non-executable binaries is a uniquely annoying thing to
           # hand someone.
-          chmod +x staging/gawk-broadcast staging/gawk-broadcast-gui
+          chmod +x staging/gawk-broadcast staging/gawk-broadcast-gui staging/gawk-pw-helper
           # gawk-pubsim is in the artifact but is a test fixture publisher, not
           # something a user of the broadcaster wants.
+          #
+          # gawk-pw-helper IS wanted: the app spawns it for per-application
+          # audio (R35) and looks for it next to itself, so a tarball without
+          # it ships a feature that silently degrades to system audio on every
+          # machine that downloads it.
           tar -czf assets/gawk-broadcast-linux-amd64.tar.gz \
-            -C staging gawk-broadcast gawk-broadcast-gui INSTALL.md BUILD-INFO.txt
-          # Both binaries are unsigned by design, so a checksum is the only
+            -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt
+          # Asked of the tarball, not assumed of the command above: the R2
+          # question ("does it actually reach production?") applied to the one
+          # file whose absence is invisible until a user tries the feature.
+          for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt; do
+            tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz | grep -qx "$want" || {
+              echo "::error::$want is missing from the release tarball"
+              exit 1
+            }
+          done
+          # The binaries are unsigned by design, so a checksum is the only
           # integrity check a downloader gets. Written outside `assets` and
           # moved in, because whether a shell's `*` sees a file the same
           # command is redirecting into is not something to rely on.
