@@ -83,7 +83,21 @@ runs:
             core.setFailed(`${component} is not a package in .release-please-manifest.json`);
             return;
           }
-          const tag = `${component}-v${version}`;
+          // Tags moved from `component-vX.Y.Z` to `component/vX.Y.Z` — the
+          // layout Go requires of a module in a subdirectory, so that
+          // gawk-server/wire is `go get`-able (release-please emits it via
+          // tag-separator in release-please-config.json).
+          //
+          // BOTH spellings are tried, newest first, and this is not
+          // belt-and-braces: `attach_to` backfills a release cut BEFORE the
+          // change, whose tag is legacy-spelled and always will be. Hardcoding
+          // either format alone breaks half the releases this action exists to
+          // serve — and it would break them silently, since a tag that is
+          // merely absent is an ordinary "nothing to attach" (see below), the
+          // exact shape of the bug that published gawk-broadcast-v1.11.0 with
+          // no assets. Drop the legacy candidate only once no reachable
+          // release predates the change.
+          const candidates = [`${component}/v${version}`, `${component}-v${version}`];
 
           // release-please runs in a parallel workflow on this same push. Its
           // job is ~30 s where the build this one waits on takes minutes, so
@@ -92,7 +106,7 @@ runs:
           const expectRelease = (process.env.HEAD_COMMIT_MESSAGE || '').startsWith('chore: release main');
           const attempts = expectRelease ? 6 : 1;
 
-          const tagSha = async () => {
+          const tagSha = async (tag) => {
             try {
               const ref = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
               // release-please creates lightweight tags today; deref anyway,
@@ -106,18 +120,24 @@ runs:
             }
           };
 
+          let tag = null;
           let sha = null;
-          for (let i = 1; i <= attempts; i++) {
-            sha = await tagSha();
-            if (sha) break;
-            if (i < attempts) await new Promise((r) => setTimeout(r, 10_000));
+          for (let i = 1; i <= attempts && !sha; i++) {
+            for (const candidate of candidates) {
+              sha = await tagSha(candidate);
+              if (sha) {
+                tag = candidate;
+                break;
+              }
+            }
+            if (!sha && i < attempts) await new Promise((r) => setTimeout(r, 10_000));
           }
 
           // Both misses are ordinary, not failures: a component that did not
           // bump in this release has no new tag, and one that has never been
           // released has no tag at all.
           if (!sha) {
-            core.info(`${tag} does not exist — nothing to attach`);
+            core.info(`neither ${candidates.join(' nor ')} exists — nothing to attach`);
             return;
           }
           if (sha !== expectSha) {
