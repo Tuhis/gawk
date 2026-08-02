@@ -1,9 +1,14 @@
 # gawk
 
 [![CI](https://github.com/Tuhis/gawk/actions/workflows/ci.yml/badge.svg)](https://github.com/Tuhis/gawk/actions/workflows/ci.yml)
-[![Windows broadcaster](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml/badge.svg)](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml)
-[![Relay release](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-server*&label=relay)](https://github.com/Tuhis/gawk/releases)
+[![Windows broadcaster CI](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml/badge.svg)](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+[![Relay](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-server*&label=relay)](https://github.com/Tuhis/gawk/releases)
+[![App](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-app*&label=app)](https://github.com/Tuhis/gawk/releases)
+[![Linux broadcaster](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-broadcast%2Fv*&label=broadcast-linux)](https://github.com/Tuhis/gawk/releases)
+[![Windows broadcaster](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-broadcast-windows*&label=broadcast-windows)](https://github.com/Tuhis/gawk/releases)
+[![Telemetry](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-telemetry*&label=telemetry)](https://github.com/Tuhis/gawk/releases)
 
 Self-hosted, low-latency live game streaming for the browser. A broadcaster
 shares their screen; viewers join with a 6-character code and watch at
