@@ -3,8 +3,29 @@
 # docker builds (no push — publishing happens in release-please.yml on
 # release).
 #
-# No path filters on purpose: the whole matrix takes a few minutes, and
-# skipped-vs-required check semantics aren't worth it at this repo size.
+# Every job is gated on the `changes` job below, which asks one question — can
+# this diff have affected this component? — and answers it once for the whole
+# matrix. This file used to say path filters weren't worth it "because
+# skipped-vs-required check semantics" and because the matrix is only a few
+# minutes. Both halves were re-examined and neither survived:
+#
+#  * There are no required checks to break. Branch protection and rulesets are
+#    not available on this repository's plan (the API answers 403 "Upgrade to
+#    GitHub Pro" for both), so nothing can block on a skipped check. The gating
+#    is done with `needs: changes` + `if:` rather than `on: paths:` anyway,
+#    precisely so that it keeps reporting a check run and stays correct if that
+#    ever changes — a skipped JOB still reports; a filtered-out WORKFLOW does
+#    not, and that is the shape that wedges a required check forever.
+#  * "A few minutes" is per job, not per run. Measured over 53 runs the matrix
+#    costs ~20 job-minutes and a median 5.7 min of wall clock, of which a median
+#    1.3 min (p90 3.3) is jobs queueing for a slot in a min-7/max-10 pool. Over
+#    the last 150 merged changes, 51% of that job-time was spent on components
+#    the change did not touch, and 19% of changes — docs, ROADMAP, BUGS,
+#    CLAUDE.md — needed no job at all.
+#
+# broadcast-windows.yml has filtered on paths since it moved to these runners,
+# including for release-asset attachment, so the pattern is already load-bearing
+# here; this brings the rest of the matrix in line with it.
 #
 # The R20 E2E jobs (docs/25) deviate from the rest of the matrix on purpose:
 # they run on pull_request ONLY, never on push to main — every change reaches
@@ -37,8 +58,172 @@ on:
 permissions:
   contents: read
 
+# A superseded PR run is cancelled whole. `e2e` and `e2e-cluster` used to carry
+# their own job-level groups, which cancelled those two jobs and left the other
+# thirteen running: in run 30750673466 a force-push cancelled `e2e` while the
+# same run went on to finish a 4m40s telemetry image build for a commit nobody
+# would ever look at.
+#
+# Only pull_request runs are grouped. A push to main and a workflow_dispatch
+# share `github.ref`, so a shared group would make them queue behind each other
+# — and a release-PR merge's push is the run that attaches release assets. The
+# run_id fallback gives every non-PR run a group of its own, which is the same
+# thing as no concurrency at all.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
+  # Which components can this diff have affected? Asked once, in one place, and
+  # answered for every job below.
+  #
+  # Deliberately coarse. The unit is the component directory, not the file: this
+  # decides whether to RUN a test suite, and the cost of running one that did
+  # not need to run is a few minutes, while the cost of skipping one that did is
+  # a broken main. Where a dependency is not visible from the directory name it
+  # is written out below with the reason.
+  changes:
+    runs-on: ioio-k8s
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      broadcast: ${{ steps.filter.outputs.broadcast }}
+      app: ${{ steps.filter.outputs.app }}
+      telemetry: ${{ steps.filter.outputs.telemetry }}
+      telemetry_ui: ${{ steps.filter.outputs.telemetry_ui }}
+      tidy: ${{ steps.filter.outputs.tidy }}
+      licenses: ${{ steps.filter.outputs.licenses }}
+      notices: ${{ steps.filter.outputs.notices }}
+      helm: ${{ steps.filter.outputs.helm }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+      docker_any: ${{ steps.filter.outputs.docker_any }}
+      docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The diff is against the base commit, which shallow cannot see. The
+          # repo is ~12 MB, so a full clone is cheaper than reasoning about how
+          # deep is deep enough.
+          fetch-depth: 0
+      - name: What moved?
+        id: filter
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request) base="${{ github.event.pull_request.base.sha }}" ;;
+            push)         base="${{ github.event.before }}" ;;
+            *)            base="" ;;
+          esac
+
+          all=false
+          changed="$RUNNER_TEMP/changed.txt"
+          # No usable base — a first push on a branch, a force-push, or a
+          # workflow_dispatch (including a backfill, which must build the
+          # broadcaster whatever today's diff says). We cannot prove nothing
+          # moved, so nothing is skipped.
+          if [ -z "$base" ] \
+            || [ "$base" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit — running everything."
+            all=true
+            : > "$changed"
+          else
+            git diff --name-only "${base}...HEAD" > "$changed"
+            echo "Changed files vs ${base}:"
+            sed 's/^/  /' "$changed"
+          fi
+
+          # A change to this file, or to a composite action it runs, runs
+          # everything: the filter cannot reason about edits to itself, and the
+          # run that proves a CI change works is the one that runs all of it.
+          if grep -qE '^\.github/(workflows/ci\.yml|actions/)' "$changed"; then
+            echo "A CI definition moved — running everything."
+            all=true
+          fi
+
+          decide() { # decide <output-name> <ERE over changed paths>
+            local name=$1 ere=$2 v=false
+            if [ "$all" = true ] || grep -qE "$ere" "$changed"; then v=true; fi
+            echo "${name}=${v}" >> "$GITHUB_OUTPUT"
+            printf '  %-14s %s\n' "$name" "$v" >&2
+            echo "$v"
+          }
+
+          echo "Decisions:" >&2
+          # gawk-broadcast and gawk-telemetry both `replace` gawk-server with the
+          # local tree, and gawk-broadcast's relay_integration_test builds the
+          # real relay binary — so a relay change is a change to both of them.
+          server=$(decide       server       '^gawk-server/')
+          broadcast=$(decide    broadcast    '^(gawk-broadcast|gawk-server)/')
+          telemetry=$(decide    telemetry    '^(gawk-telemetry|gawk-server)/')
+          # gawk-app/src/transport/wire.test.ts is the TS wire mirror. Its golden
+          # vectors are restated, never imported, so a relay wire change must run
+          # it — the same blind spot broadcast-windows.yml closed for the Rust
+          # mirror by triggering on gawk-server/wire/**.
+          app=$(decide          app          '^(gawk-app/|gawk-server/wire/)')
+          # The off-origin assertion lives in internal/dashboard but can only run
+          # against a built bundle, which is why it is in the UI job.
+          telemetry_ui=$(decide telemetry_ui '^gawk-telemetry/(ui|internal/dashboard)/')
+          # `go mod tidy` resolves the import graph, so any .go file can untidy a
+          # module — not just a manifest.
+          tidy=$(decide         tidy         '(^|/)go\.(mod|sum)$|\.go$')
+          licenses=$(decide     licenses     '(^|/)(go\.(mod|sum)|package(-lock)?\.json|Cargo\.(toml|lock)|deny\.toml)$|^tools/licenses/')
+          # The notices files are in their own list on purpose: a hand-edit to
+          # one is exactly what the freshness job should overturn.
+          notices=$(decide      notices      '(^|/)(go\.(mod|sum)|package(-lock)?\.json|Cargo\.(toml|lock)|THIRD-PARTY-NOTICES\.md)$|^tools/licenses/')
+          helm=$(decide         helm         '/deploy/charts/')
+          # E2E is the only job that spans modules, and it is what keeps path
+          # filtering honest: two PRs that each skip the other's tests still meet
+          # here, on the merged tree.
+          e2e=$(decide          e2e          '^(gawk-server|gawk-app|gawk-broadcast|gawk-telemetry|e2e)/')
+
+          # The docker matrix, filtered to the images whose inputs moved. It is
+          # built HERE rather than declared in the `docker` job because a static
+          # matrix can only be gated as a whole — `if:` cannot reach one entry.
+          # The per-image notes stay with the entries.
+          #
+          # `if`, not `[ x = y ] && add …`: under `set -e` a trailing && list
+          # whose test fails IS the failing command, so the false case would
+          # end the step — silently, with every decision already written.
+          # The relay refuses to start without a certificate, so a bare run is
+          # not a health check — `-dev-cert` gives it a self-signed one and
+          # /healthz on the ops port is the answer.
+          relay='{"context":"gawk-server","dockerfile":"gawk-server/deploy/Dockerfile","tag":"gawk-server:ci","scope":"gawk-server","run_args":"-dev-cert -addr :4433 -metrics-addr :2112","probe_port":2112,"probe_path":"/healthz"}'
+          spa='{"context":"gawk-app","dockerfile":"gawk-app/deploy/Dockerfile","tag":"gawk-app:ci","scope":"gawk-app","run_args":"","probe_port":8080,"probe_path":"/"}'
+          # R28: the build context is the REPO ROOT, not the module dir —
+          # gawk-telemetry consumes gawk-server/wire through a local `replace`
+          # (docs/33 D12), so the relay module's tree must be present.
+          # R31: this is the ONLY cgo image, and `read_port` is what asks it
+          # whether the DuckDB engine actually opened.
+          tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","tag":"gawk-telemetry:ci","scope":"gawk-telemetry","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081}'
+          images=""
+          add() { images="${images:+$images,}$1"; }
+          if [ "$server" = true ]; then add "$relay"; fi
+          if [ "$app" = true ]; then add "$spa"; fi
+          if [ "$telemetry" = true ]; then add "$tel"; fi
+
+          if [ -n "$images" ]; then
+            echo "docker_any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docker_any=false" >> "$GITHUB_OUTPUT"
+            # `docker_any` is the gate and this matrix is never read when it is
+            # false — but it is emitted non-empty anyway, and deliberately.
+            # `fromJSON` yielding `{"include":[]}` is a workflow-LEVEL error
+            # ("Matrix vector 'include' does not contain any values"), and a
+            # workflow that does not load is not a failing job: it is zero jobs,
+            # no logs, no annotation. This repository has already published a
+            # release with no binaries that way (see the incident note in
+            # broadcast-windows.yml). Falling back to all three entries means
+            # that if the gate ever fails open, CI does what it did before this
+            # change instead of refusing to start — the safe direction, and one
+            # this PR cannot test on itself, since editing ci.yml sets all=true.
+            images="$relay,$spa,$tel"
+          fi
+          echo "docker_matrix={\"include\":[$images]}" >> "$GITHUB_OUTPUT"
+          echo "  docker         {\"include\":[$images]}" >&2
+
   server:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
     runs-on: ioio-k8s
     defaults:
       run:
@@ -72,6 +257,8 @@ jobs:
   # only this job — pays for the cgo/Wayland/X11/EGL/Vulkan headers. The
   # relay's job must stay header-free.
   broadcast:
+    needs: changes
+    if: needs.changes.outputs.broadcast == 'true'
     runs-on: ioio-k8s
     # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
     # and the release gate compares commit SHAs. This is also the single fact
@@ -360,6 +547,14 @@ jobs:
   # A dispatch WITHOUT attach_to deliberately skips this: an on-demand run is
   # for looking at a binary, not for touching a release.
   #
+  # Path filtering does not need to reach this job, and must not: `needs:
+  # broadcast` already carries it. A release commit that bumps gawk-broadcast
+  # necessarily edits gawk-broadcast/CHANGELOG.md and internal/version/
+  # version.go, so `broadcast` runs and there is an artifact; a release that
+  # does not bump it skips both jobs, which is what the tag-SHA gate would have
+  # concluded anyway. A backfill dispatch has no usable base, so `changes` runs
+  # everything — the one case where getting this wrong would be unrecoverable.
+  #
   # Never on pull_request. The upload needs `contents: write`, and a job
   # holding that token must not run code from a pull request's own checkout
   # (this job `uses:` an action from the tree it checks out). workflow_dispatch
@@ -468,6 +663,8 @@ jobs:
           sha: ${{ needs.broadcast.outputs.sha }}
 
   app:
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ioio-k8s
     defaults:
       run:
@@ -505,6 +702,8 @@ jobs:
   # `-tags duckdb`, which the image uses — is covered by the extra step at the
   # end, because a build tag nobody exercises is a build tag that rots.
   telemetry:
+    needs: changes
+    if: needs.changes.outputs.telemetry == 'true'
     runs-on: ioio-k8s
     defaults:
       run:
@@ -544,6 +743,8 @@ jobs:
   # own stage (deploy/Dockerfile), so CI proves the UI is sound and the image
   # build is what ships it.
   telemetry-ui:
+    needs: changes
+    if: needs.changes.outputs.telemetry_ui == 'true'
     runs-on: ioio-k8s
     defaults:
       run:
@@ -578,6 +779,8 @@ jobs:
         run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
 
   tidy:
+    needs: changes
+    if: needs.changes.outputs.tidy == 'true'
     runs-on: ioio-k8s
     steps:
       - uses: actions/checkout@v7
@@ -633,6 +836,8 @@ jobs:
   # crate graph on disk, for an artifact that only has to be right at release
   # time — the allowlist is the property worth checking on every PR.
   licenses:
+    needs: changes
+    if: needs.changes.outputs.licenses == 'true'
     runs-on: ioio-k8s
     steps:
       - uses: actions/checkout@v7
@@ -683,62 +888,28 @@ jobs:
   # what catches the case Renovate does not cover: a human editing a manifest
   # by hand.
   #
-  # Not a path-filtered workflow, deliberately. This file's header explains why
-  # it has no path filters, and required-vs-skipped semantics are exactly the
-  # complication it declines to take on. So the job always runs and always
-  # reports; the guard step below decides whether the EXPENSIVE part
-  # (regeneration: two npm installs, three Go module graphs, the whole crate
-  # graph) has any reason to happen. On a docs PR that is two seconds.
+  # This job used to carry its own copy of the base-resolution and diff logic,
+  # because the workflow ran everything unconditionally and something had to
+  # decide whether the EXPENSIVE part (regeneration: two npm installs, three Go
+  # module graphs, the whole crate graph) had any reason to happen. The `changes`
+  # job now answers that question for the whole matrix, and its `notices` filter
+  # is that guard's file list — including the notices files themselves, since a
+  # hand-edit to one is exactly what this job should overturn. One
+  # implementation, not two.
   licenses-fresh:
+    needs: changes
+    if: needs.changes.outputs.notices == 'true'
     runs-on: ioio-k8s
     steps:
       - uses: actions/checkout@v7
-        with:
-          # The guard diffs against the base commit, which shallow cannot see.
-          fetch-depth: 0
-      - name: Can the dependency set have moved?
-        id: scope
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-          else
-            base="${{ github.event.before }}"
-          fi
-          # No usable base (first push on a branch, a force-push, a manual
-          # dispatch) means we cannot prove nothing moved — so check.
-          if [ -z "$base" ] \
-            || [ "$base" = "0000000000000000000000000000000000000000" ] \
-            || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "No usable base commit — regenerating to be sure."
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # The notices files themselves are in the list on purpose: a
-          # hand-edit to one is exactly the thing this job should overturn.
-          changed=$(git diff --name-only "${base}...HEAD" -- \
-            '**/go.mod' '**/go.sum' \
-            '**/Cargo.toml' '**/Cargo.lock' \
-            '**/package.json' '**/package-lock.json' \
-            '**/THIRD-PARTY-NOTICES.md' \
-            'tools/licenses/**')
-          if [ -n "$changed" ]; then
-            echo "Manifests or notices moved:"; echo "$changed" | sed 's/^/  /'
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No manifest, notice or generator change — nothing to verify."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/setup-go@v7
-        if: steps.scope.outputs.run == 'true'
         with:
           go-version-file: gawk-server/go.mod
           cache: false # same reasoning as `tidy` and `licenses`
       - uses: actions/setup-node@v7
-        if: steps.scope.outputs.run == 'true'
         with:
           node-version: 22
       - uses: actions/setup-python@v6
-        if: steps.scope.outputs.run == 'true'
         with:
           python-version: "3.11"
       # No Rust setup step and no rust-windows-preflight: `cargo tree
@@ -746,7 +917,6 @@ jobs:
       # build for it, so the cross toolchain this repo's Windows jobs need is
       # irrelevant here. Plain cargo from the runner image is enough.
       - name: THIRD-PARTY-NOTICES.md matches the dependencies actually linked
-        if: steps.scope.outputs.run == 'true'
         run: |
           python3 tools/licenses/gen-notices.py
           if ! git diff --exit-code -- '**/THIRD-PARTY-NOTICES.md'; then
@@ -755,6 +925,8 @@ jobs:
           fi
 
   helm:
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
     runs-on: ioio-k8s
     steps:
       - uses: actions/checkout@v7
@@ -794,14 +966,17 @@ jobs:
   # fixture (gawk-pubsim), and the production viewer surface in headless
   # system Chrome, with flow-shaped assertions read from the viewer's own
   # Copy-diagnostics JSON. Advisory until the docs/25 Z4 burn-in completes.
+  #
+  # It is also the job that keeps the path filtering above honest: it is the
+  # only one that spans modules, and it triggers on all four, so two PRs that
+  # each skipped the other's unit tests still meet here — on the merged tree.
   e2e:
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true'
     runs-on: ioio-k8s
     timeout-minutes: 10
-    # A force-push supersedes the previous run instead of paying for it.
-    concurrency:
-      group: e2e-${{ github.ref }}
-      cancel-in-progress: true
+    # No job-level concurrency: the workflow-level group above supersedes the
+    # whole run, which is what this one only ever managed for itself.
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -913,9 +1088,10 @@ jobs:
     # ioio-k8s. See ioio repo: clusters/baremetal/actions-runners/gawk-e2e.yaml.
     runs-on: ioio-k8s-disk
     timeout-minutes: 15
-    concurrency:
-      group: e2e-cluster-${{ github.ref }}
-      cancel-in-progress: true
+    # No job-level concurrency, and no `changes` gate either: this runs on
+    # release-please PRs and on dispatch only, and both want the cluster tier
+    # whatever the diff looks like. The workflow-level group supersedes a
+    # release PR that release-please has already refreshed.
     env:
       KIND_VERSION: v0.30.0
       KIND_NODE_IMAGE: kindest/node:v1.34.0
@@ -1102,39 +1278,17 @@ jobs:
           path: e2e/out/
           retention-days: 7
 
+  # The matrix entries are built by the `changes` job, which is where they are
+  # documented — a static matrix can only be gated as a whole, and building all
+  # three images because one module moved is most of what this change exists to
+  # stop. `docker_any` covers the case where none of them moved: an `include`
+  # with no entries is a workflow error, not an empty job.
   docker:
+    needs: changes
+    if: needs.changes.outputs.docker_any == 'true'
     runs-on: ioio-k8s
     strategy:
-      matrix:
-        include:
-          - context: gawk-server
-            dockerfile: gawk-server/deploy/Dockerfile
-            tag: gawk-server:ci
-            # The relay refuses to start without a certificate, so a bare run
-            # is not a health check — `-dev-cert` gives it a self-signed one
-            # and /healthz on the ops port is the answer.
-            run_args: -dev-cert -addr :4433 -metrics-addr :2112
-            probe_port: 2112
-            probe_path: /healthz
-          - context: gawk-app
-            dockerfile: gawk-app/deploy/Dockerfile
-            tag: gawk-app:ci
-            probe_port: 8080
-            probe_path: /
-          # R28: the build context is the REPO ROOT, not the module dir —
-          # gawk-telemetry consumes gawk-server/wire through a local `replace`
-          # (docs/33 D12), so the relay module's tree must be present.
-          - context: .
-            dockerfile: gawk-telemetry/deploy/Dockerfile
-            tag: gawk-telemetry:ci
-            run_args: >-
-              -telemetry-key 0000000000000000000000000000000000000000000000000000000000000000
-              -data-dir /tmp/d -log-level warn
-            probe_port: 8080
-            probe_path: /healthz
-            # R31: this is the ONLY cgo image, and the one whose failure mode
-            # this whole step exists for (see below).
-            read_port: 8081
+      matrix: ${{ fromJSON(needs.changes.outputs.docker_matrix) }}
     steps:
       - uses: actions/checkout@v7
       # Host networking on both levels: the ioio-k8s pod network MTU is 1480
@@ -1154,9 +1308,34 @@ jobs:
           # `load` so the next step can actually RUN what was just built.
           load: true
           tags: ${{ matrix.tag }}
-          # Distinct scope per image or the two builds evict each other.
-          cache-from: type=gha,scope=${{ matrix.context }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.context }}
+          # Distinct scope per image or the builds evict each other. Named, not
+          # derived from the context: the telemetry image's context is the repo
+          # ROOT, so `scope=${{ matrix.context }}` scoped it "." here while
+          # release-please.yml scoped the same image "gawk-telemetry". The two
+          # never shared a layer — visible in the cache listing as
+          # `index-gawk-telemetry` with 2 entries against `index-.` with 22.
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          # Written on main only, and this is not a micro-optimisation.
+          #
+          # A cache entry written from a PR lands in that PR's own scope, which
+          # no other run — not main, not another PR — can ever restore from. So
+          # exporting there buys a re-run of the same PR and nothing else, and
+          # it is expensive twice over:
+          #
+          #  * Directly. In run 30720233685 the telemetry image's export was
+          #    `#26 exporting to GitHub Actions Cache … DONE 177.6s` (82s
+          #    preparing, 96s sending) — three minutes of an 8m43s job.
+          #  * Indirectly, and worse. The repository's Actions cache was at
+          #    10.00 GiB against a 10 GB cap, 251 entries, 68% of it buildkit
+          #    layer blobs and 5.6 GiB of THAT sitting in refs/pull/* scopes.
+          #    A full cache evicts LRU, and what it was evicting is the
+          #    setup-go entries (2.6 GiB) that six jobs here restore — which is
+          #    how `server`'s setup-go step came to take 112s.
+          #
+          # PRs still READ main's cache: the Actions cache falls back to the
+          # default branch when a key misses in the PR's own scope. What they
+          # stop doing is filling the budget with copies nothing reads.
+          cache-to: ${{ github.event_name == 'push' && format('type=gha,mode=max,scope={0}', matrix.scope) || '' }}
 
       # **Building an image is not evidence that it runs.**
       #
