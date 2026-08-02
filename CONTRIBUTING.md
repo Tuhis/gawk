@@ -155,7 +155,7 @@ learn about it from a red check. It needs Go, Node, Python and cargo on your
 PATH, and it goes to the network.
 
 For **Renovate PRs this happens automatically**: `postUpgradeTasks` in
-`renovate.json` runs the generator on the bump branch, so the notices land in
+`renovate.json5` runs the generator on the bump branch, so the notices land in
 the same PR as the version change. That block only takes effect when the
 self-hosted bot's global config allowlists the command; if Renovate PRs start
 failing `licenses-fresh`, that allowlist is what is missing.

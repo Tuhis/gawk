@@ -490,7 +490,7 @@ jobs:
   # `go vet`/`go build` then refuse — the failure that broke PR #75
   # (client_golang bumped in gawk-server left gawk-broadcast's go.mod untidy).
   # Renovate's `gomodTidy` tidies the module it edits, and grouping shared deps
-  # (renovate.json) makes cross-module bumps touch both go.mod files at once —
+  # (renovate.json5) makes cross-module bumps touch both go.mod files at once —
   # but the transitive local-replace case only surfaces here, so every module
   # must be `go mod tidy`-clean, checked independently of any build. `go mod
   # tidy` resolves the module graph without compiling cgo, so this stays
@@ -678,7 +678,7 @@ jobs:
   #
   # Drift is not hypothetical here: Renovate opens the dependency PRs, so the
   # regeneration has to be somebody's job or it is nobody's. It is now
-  # Renovate's (postUpgradeTasks in renovate.json regenerates in the same PR
+  # Renovate's (postUpgradeTasks in renovate.json5 regenerates in the same PR
   # as the bump) — and this job is what makes that guarantee testable, and
   # what catches the case Renovate does not cover: a human editing a manifest
   # by hand.
