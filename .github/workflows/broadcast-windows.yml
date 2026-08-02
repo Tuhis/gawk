@@ -352,7 +352,7 @@ jobs:
           # a backfill. attach-release downloads it by needs.build.outputs.sha.
           name: gawk-broadcast-windows-x86_64-${{ steps.source.outputs.sha }}
           path: gawk-broadcast-windows/dist/
-          retention-days: 30
+          retention-days: 1
           if-no-files-found: error
 
   # The Windows half of the release-assets story; the Linux one is
