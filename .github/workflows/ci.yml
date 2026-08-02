@@ -851,7 +851,7 @@ jobs:
           cache: false
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       - name: Go and npm dependencies are on the license allowlist
         run: python3 tools/licenses/gen-notices.py --check
       # A prebuilt binary, pinned: `cargo install cargo-deny` compiles for
@@ -911,7 +911,7 @@ jobs:
           node-version: 22
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       # No Rust setup step and no rust-windows-preflight: `cargo tree
       # --target x86_64-pc-windows-msvc` only FILTERS by target, it does not
       # build for it, so the cross toolchain this repo's Windows jobs need is
