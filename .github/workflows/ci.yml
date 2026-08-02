@@ -1125,15 +1125,8 @@ jobs:
           mkdir -p e2e/bin e2e/out
           (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen)
           (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
-      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
-      # and buildkit's default bridged networks assume 1500 — large downloads
-      # inside RUN steps black-hole otherwise.
-      - uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [worker.oci]
-              networkMode = "host"
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
       - name: Build the relay image (reusing the docker job's cache scope)
         uses: docker/build-push-action@v7
         with:
@@ -1297,15 +1290,8 @@ jobs:
       matrix: ${{ fromJSON(needs.changes.outputs.docker_matrix) }}
     steps:
       - uses: actions/checkout@v7
-      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
-      # and buildkit's default bridged networks assume 1500 — large downloads
-      # inside RUN steps black-hole otherwise.
-      - uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [worker.oci]
-              networkMode = "host"
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}

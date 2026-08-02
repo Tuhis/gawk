@@ -8,7 +8,30 @@
 # gawk-echo against localhost — and it doubles as an in-container
 # connectivity diagnostic.
 
-FROM golang:1.26 AS build
+# `-trixie`, not the bare `1.26`, and this is a no-op for what gets built: on
+# linux/amd64 both tags resolve to the SAME manifest,
+# sha256:dbb10bd1b3400ba0858e2f7c354fd4556b782c187feeff52789d4ee156a84db8. The
+# bare tag's index merely carries two extra windows/amd64 entries on top of the
+# Linux set, which nothing here can use.
+#
+# It is pinned because of those two entries. The CI runners resolve base images
+# through an in-cluster pull-through cache (ioio
+# clusters/baremetal/actions-runners/registry-cache.yaml), and zot refuses to
+# sync the bare tag's index — "invalid manifest content". A tag the cache cannot
+# serve is not a neutral miss: buildkit falls back to Docker Hub directly, and
+# that path is the pathologically slow one this cache exists to avoid. Measured
+# on gawk run 30762746378, before this pin:
+#
+#   #3 [internal] load metadata for docker.io/library/golang:1.26   465.0s
+#
+# 465 of that job's 504 seconds, resolving one manifest. With the pin it is
+# served from the cache in ~0s.
+#
+# gawk-telemetry's Dockerfile pins its builder for an unrelated reason — a cgo
+# binary must not link a newer glibc than its runtime carries. This binary is
+# static and cgo-free, so that argument does not apply here; naming the Debian
+# release is just good practice that happens to also make it cacheable.
+FROM golang:1.26-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

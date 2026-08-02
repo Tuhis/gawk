@@ -1,0 +1,52 @@
+# Buildx, configured for the ioio-k8s runners. Every image build in this
+# repository goes through here — the `docker` matrix and `e2e-cluster` in
+# ci.yml, and the three publish jobs in release-please.yml.
+#
+# It exists because that configuration was five identical copies, and the
+# registry mirror below would have made it five copies of a hostname.
+#
+# HOST NETWORKING, on both levels. The ioio-k8s pod network MTU is 1480 and
+# buildkit's default bridged networks assume 1500 — large downloads inside RUN
+# steps black-hole otherwise.
+#
+# THE REGISTRY MIRROR is an in-cluster pull-through cache (zot), defined in the
+# ioio repo at clusters/baremetal/actions-runners/registry-cache.yaml. The
+# runners' dind keeps its image store on a RAM emptyDir that dies with the pod,
+# so without it every job re-pulls every base image from the internet. Measured
+# on the telemetry image (run 30720233685): golang:1.26-trixie's 139 MB layer
+# took 119s and node:26-alpine's 59 MB took 57s, both about 1 MB/s — ~200s of
+# an 8m43s build.
+#
+# Both upstreams gawk builds FROM are mirrored: docker.io (golang, node,
+# nginxinc) and gcr.io (distroless). ghcr.io deliberately is not — nothing here
+# pulls from it, and the images this repo publishes there are pushed, which a
+# read-through cache must not sit in front of.
+#
+# `http = true` is declared against the mirror's own host, which is how buildkit
+# is told a mirror is plain HTTP. TLS would need a cert for a hostname that only
+# resolves inside the cluster, for traffic that never leaves it.
+#
+# **A mirror is advisory.** buildkit tries mirrors first and falls back to the
+# canonical registry, so a miss, a 404 for a repository outside the cache's
+# prefix list, or the Service being down all degrade to the old behaviour — a
+# slow build, not a failed one. That is the property that makes it safe to put
+# this in front of the release publish jobs too. If a build ever fails to
+# resolve a base image, this action is the first thing to revert.
+name: Set up Buildx
+description: buildx with host networking and the in-cluster pull-through registry cache.
+
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v4
+      with:
+        driver-opts: network=host
+        buildkitd-config-inline: |
+          [worker.oci]
+            networkMode = "host"
+          [registry."docker.io"]
+            mirrors = ["registry-cache.actions-runners.svc.cluster.local:5000"]
+          [registry."gcr.io"]
+            mirrors = ["registry-cache.actions-runners.svc.cluster.local:5000"]
+          [registry."registry-cache.actions-runners.svc.cluster.local:5000"]
+            http = true
