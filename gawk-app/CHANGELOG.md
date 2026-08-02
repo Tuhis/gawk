@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.39.1...gawk-app/v0.39.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **app:** let a self-hosted deployment configure its relay URL (+ README/docs restructure) ([#227](https://github.com/Tuhis/gawk/issues/227)) ([e618abc](https://github.com/Tuhis/gawk/commit/e618abc223b8804c0756c16e38e7f098194b6a18))
+
 ## [0.39.1](https://github.com/Tuhis/gawk/compare/gawk-app-v0.39.0...gawk-app-v0.39.1) (2026-07-29)
 
 
