@@ -334,7 +334,7 @@ jobs:
           # Repo-relative, not job-relative: `defaults.run.working-directory`
           # applies to `run:` steps only, never to an action's inputs.
           path: gawk-broadcast/dist/
-          retention-days: 30
+          retention-days: 1
           if-no-files-found: error
 
   # Puts the binaries on the release page, so getting one is not "find the
