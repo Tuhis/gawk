@@ -52,6 +52,14 @@ resources:
 # the SPA at load — deploy-time flags with no image rebuild and no server
 # endpoint. See gawk-app/src/config.ts.
 config:
+  # CHANGEME for any self-hosted install: the relay's public URL, matching the
+  # gawk-server chart's certificate.dnsNames[0] and service.port, e.g.
+  #   relayUrl: "https://relay.example.com:4433"
+  # Without it the app falls back to https://localhost:4433 on every origin
+  # but the reference deployment's, and each viewer would have to paste the
+  # URL into settings before a join link worked. See docs/self-hosting.md.
+  relayUrl: ""
+
   # Prompt broadcasters for the relay's publish secret on "Start a stream".
   # Set true when the relay runs with -publish-secret (server chart's
   # config.publishSecret); the value itself is never shipped to the client.

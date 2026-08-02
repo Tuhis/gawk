@@ -26,7 +26,9 @@ authoritative home. Read it there.
 |---|---|---|
 | Status of every milestone (R1–R32+) | `ROADMAP.md` status table | copy status here |
 | Design + decisions for a milestone | its `docs/NN-*.md` | summarise it here |
-| Consolidated gotchas | `README.md` "Important gotchas" | duplicate them here |
+| Consolidated gotchas | `docs/gotchas.md` | duplicate them here |
+| How to self-host a deployment | `docs/self-hosting.md` | re-explain it here |
+| What each design doc covers | `docs/README.md` (the index) | maintain a second list |
 | Open confirmed bugs | `BUGS.md` | enumerate them here |
 | Coding + review rules | `CODE-REVIEW.md` | restate them here |
 | Wire types, close codes | `gawk-server/wire/wire.go` | maintain a second list |
@@ -187,7 +189,7 @@ Re-deriving them costs a cycle and has happened before.
   with golden vectors kept byte-identical across all mirrors. The Windows
   CI job triggers on `gawk-server/wire/**` too, so the Rust mirror's gates run
   in the same PR as the wire change (this was not true before 2026-07-31).
-- Keep `README.md`'s gotcha list in sync when a new gotcha lands in `docs/`,
+- Keep `docs/gotchas.md` in sync when a new gotcha lands in `docs/`,
   and remove `BUGS.md` entries when they are fixed.
 
 ## Deployment & CI (locked in — decided 2026-07-12)

@@ -9,6 +9,7 @@ import { getRuntimeConfig, requiresPublishSecret,
   getOperatorName,
   getOperatorContact,
   getTermsUrl,
+  getRelayUrl,
 } from './config';
 
 beforeEach(() => {
@@ -97,6 +98,23 @@ describe('terms config', () => {
   it('takes a configured version', () => {
     window.__GAWK_CONFIG__ = { termsVersion: '2027-01-01' };
     expect(getTermsVersion()).toBe('2027-01-01');
+  });
+
+  // The one value a self-hosted install cannot do without: without it the
+  // app falls back to https://localhost:4433 on every origin but the
+  // reference deployment's, and each viewer has to paste the URL by hand.
+  it('reports the configured relay URL, and empty when unset', () => {
+    window.__GAWK_CONFIG__ = {};
+    expect(getRelayUrl()).toBe('');
+    window.__GAWK_CONFIG__ = { relayUrl: 'https://relay.example.com:4433' };
+    expect(getRelayUrl()).toBe('https://relay.example.com:4433');
+  });
+
+  // The ConfigMap renders "" rather than omitting the key, so blank and
+  // whitespace must read as unset like every other getter here.
+  it('treats a blank relay URL as unset', () => {
+    window.__GAWK_CONFIG__ = { relayUrl: '   ' };
+    expect(getRelayUrl()).toBe('');
   });
 
   it('shows a neutral operator name when unset', () => {
