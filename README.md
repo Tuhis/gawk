@@ -80,20 +80,19 @@ flowchart LR
         R1["relay pod<br/>(origin for this broadcast)"]
         R2["relay pod (edge)"]
     end
-    subgraph AUD["Viewers"]
-        V1["Chrome / Edge"]
-        V2["Firefox"]
-        V3["iPhone Safari<br/>fMP4 + ManagedMediaSource"]
-    end
+    V["Viewers<br/>web browser, joined by 6-char code"]
     B1 -- "WebTransport<br/>QUIC datagrams" --> LB
     B2 --> LB
     B3 --> LB
     LB --> R1
     R1 -- "edge pull" --> R2
-    R1 --> V1
-    R2 --> V2
-    R2 --> V3
+    R1 --> V
+    R2 --> V
 ```
+
+Every relay pod serves any viewer: the load balancer lands a connection
+wherever, and a pod that isn't the broadcast's origin pulls the stream
+from the pod that is ("edge pull").
 
 The pipeline in one breath: capture → WebCodecs `VideoEncoder` → chunk into
 ≤ 1200-byte datagrams → relay fans out → reassemble → `VideoDecoder` →
