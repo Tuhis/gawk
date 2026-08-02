@@ -320,7 +320,12 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp "target/${WINDOWS_TARGET}/release/gawk-broadcast.exe" dist/
-          cp README.md INSTALL.md dist/
+          # THIRD-PARTY-NOTICES.md discharges the attribution obligations of
+          # everything statically linked into the .exe (373 crates incl.
+          # libopus); LICENSE is the repo root's (working-directory is
+          # gawk-broadcast-windows). Both ride to the release page via the
+          # attach job's explicit cp list — keep the two lists in step.
+          cp README.md INSTALL.md THIRD-PARTY-NOTICES.md ../LICENSE dist/
           {
             echo "gawk-broadcast-windows (R34, docs/38)"
             # The commit COMPILED, which on a backfill is not github.sha —
@@ -439,7 +444,11 @@ jobs:
           # clang-cl rather than built by MSVC — provenance a tester would not
           # otherwise guess.
           cp staging/gawk-broadcast.exe assets/gawk-broadcast-windows-x86_64.exe
-          cp staging/INSTALL.md staging/BUILD-INFO.txt assets/
+          # NOTICES/LICENSE alongside the .exe: the attribution obligations
+          # attach to the distributed binary, so they must be assets a
+          # downloader gets, not files that only live in the repo.
+          cp staging/INSTALL.md staging/BUILD-INFO.txt \
+             staging/THIRD-PARTY-NOTICES.md staging/LICENSE assets/
           # Unsigned by design (docs/38 D17) — the checksum is the only
           # integrity check a downloader gets. Written outside `assets` and
           # moved in, because whether a shell's `*` sees a file the same

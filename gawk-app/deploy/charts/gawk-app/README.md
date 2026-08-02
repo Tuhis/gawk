@@ -31,7 +31,7 @@ The default text renders with your name + contact substituted in:
 
 ```yaml
 config:
-  operatorName: "Juho's homelab"
+  operatorName: "Example Org"
   operatorContact: "gawk@example.com"
   # Bump on any meaningful edit to re-prompt broadcasters for acknowledgment.
   termsVersion: "2026-07-24"

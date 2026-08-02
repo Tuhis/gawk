@@ -1,3 +1,6 @@
 node_modules
 dist
 *.md
+# The one .md the image must carry: deploy/Dockerfile copies it into the
+# final stage so the shipped bundle's attribution travels with it.
+!THIRD-PARTY-NOTICES.md

@@ -1,6 +1,7 @@
 {
   "name": "gawk-e2e",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "R20 browser E2E harness (docs/25): drives the production viewer in headless system Chrome against a real relay fed by gawk-pubsim, and asserts flow from the viewer's own diagnostics.",
   "scripts": {
