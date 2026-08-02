@@ -145,11 +145,12 @@ service:
   loadBalancerIP: ""               # pin it if your DNS record is fixed
 
 config:
-  # MUST contain the app's origin, scheme included. The relay checks the
-  # Origin header on CONNECT; empty allows anything, which is fine for a
-  # first smoke test and wrong to leave in place.
+  # Who may connect — see the note below. Empty allows anything, which is
+  # fine for a first smoke test and wrong to leave in place.
   allowedOrigins:
-    - https://gawk.example.com     # CHANGEME
+    - https://gawk.example.com     # CHANGEME: the web app
+    - gawk-broadcast://native      # the Linux native broadcaster
+    - gawk-broadcast://windows     # the Windows native broadcaster
 
   # Capacity. Defaults are conservative; raise them against your uplink.
   maxSubscribers: 15               # per broadcast
@@ -160,6 +161,30 @@ config:
   # a stream. Strongly recommended on anything public.
   publishSecret: "change-me"       # or publishSecretKeyRef, see below
 ```
+
+**About `allowedOrigins`.** The relay checks the `Origin` header on every
+CONNECT, and the list is exact strings — no wildcards, and the scheme counts.
+Three kinds of client, and only the first two go in the list:
+
+| Client | Origin it sends | Action |
+|---|---|---|
+| The web app | `https://` + the app's Ingress host | **Add it.** Must match `ingress.host` exactly |
+| `gawk-broadcast` (Linux) | `gawk-broadcast://native` | **Add it** if anyone will broadcast from the Linux app |
+| `gawk-broadcast-windows` | `gawk-broadcast://windows` | **Add it** if anyone will broadcast from Windows |
+| Relay pods, in cluster mode | `gawk-server://native-internal-edge` | **Do not add it.** Built in |
+
+The native broadcasters do not send an `https://` origin — they are not
+browsers — so leaving them out is a working web app plus native apps that
+are refused, with `origin rejected` in the relay log and nothing obviously
+wrong on the client. Add them now even if you only expect browser
+broadcasters; the strings are fixed and cost nothing.
+
+The pod-to-pod edge origin is the opposite case: the relay accepts it
+**only** on the PSK-gated `/internal/*` routes and never on a client-facing
+path, so it is honoured without being listed and adding it buys nothing. It
+is deliberately unlistable rather than merely unnecessary — that exemption
+exists because setting `-allowed-origins` at all once made cluster-mode edge
+dials fail silently ([docs/22](22-relay-scale-out.md) finding 12).
 
 Prefer a Secret over a literal:
 
@@ -232,11 +257,14 @@ helm upgrade --install gawk-app oci://ghcr.io/tuhis/charts/gawk-app \
 ```
 
 **On the terms text**: the app ships a default Terms of Use, and it is a
-protective template, not legal advice. If your deployment will be used by
-anyone beyond people you know, have a lawyer read it — the liability,
-consumer-law and personal-data clauses interact with mandatory provisions no
-contract can waive. `config.termsUrl` + `config.termsHtml` replace the whole
-document with your own ([docs/29](29-terms-and-conditions.md)).
+**template**. `operatorName` and `operatorContact` are substituted into it so
+it names you rather than a placeholder, and `config.termsUrl` +
+`config.termsHtml` replace the document wholesale with your own
+([docs/29](29-terms-and-conditions.md)). Whoever runs an instance is
+responsible for the terms it presents being meaningful for that deployment —
+the bundled default is a starting point, not a decision anyone has made on
+your behalf. Bump `config.termsVersion` after a meaningful edit and every
+broadcaster is re-prompted to acknowledge them.
 
 ## 5. Verify
 
@@ -314,6 +342,10 @@ config:
   trustedCidrs: ["10.42.0.0/16", "10.12.0.0/24"]   # CHANGEME
 ```
 
+**`allowedOrigins` needs nothing added for cluster mode.** Pods announce
+`gawk-server://native-internal-edge` to each other, which the relay accepts
+only on the PSK-gated internal route — see [§4.2](#42-relay-values).
+
 **Set `resumeTokenKeyRef` explicitly.** Left empty, the resume-token key is
 derived from the publish secret — which every broadcaster holds, so any
 broadcaster could compute another's token and take over their broadcast ID.
@@ -349,10 +381,9 @@ or set the relay URL in the GUI's settings. Set the telemetry URL to `off`
 unless you are running your own telemetry service — the pairing rule already
 means a non-default relay reports nowhere, but being explicit costs nothing.
 
-Note the origin: the native broadcasters send `gawk-broadcast://native`
-(Linux) and `gawk-broadcast://windows` as their Origin header, not an
-`https://` one — so add whichever you use to `config.allowedOrigins`, or they
-will be rejected once you lock the allowlist down.
+Both send their own `Origin` header rather than an `https://` one, so they
+have to be in the relay's `allowedOrigins` — see the table in
+[§4.2](#42-relay-values).
 
 ## 8. Operating it
 
