@@ -509,8 +509,12 @@ jobs:
             *"+g"*) ;;
             *) echo "::error::'$v' carries no +g<commit> suffix — go build stamped no VCS info. Check that the checkout left a usable .git and that -buildvcs was not disabled."; exit 1 ;;
           esac
-      - name: Include install instructions with the binaries
-        run: cp INSTALL.md dist/
+      - name: Include install instructions and license notices with the binaries
+        # THIRD-PARTY-NOTICES.md is what discharges the MIT/BSD/ISC
+        # attribution obligations for the *distributed* binaries — it has to
+        # travel in the tarball, not just sit in the repo. LICENSE comes from
+        # the repo root (this job's working-directory is gawk-broadcast).
+        run: cp INSTALL.md THIRD-PARTY-NOTICES.md ../LICENSE dist/
       - uses: actions/upload-artifact@v7
         with:
           # Keyed by the commit actually built, which is github.sha on every
@@ -621,7 +625,8 @@ jobs:
           # it ships a feature that silently degrades to system audio on every
           # machine that downloads it.
           tar -czf assets/gawk-broadcast-linux-amd64.tar.gz \
-            -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt
+            -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
+            THIRD-PARTY-NOTICES.md LICENSE
           # Asked of the tarball, not assumed of the command above: the R2
           # question ("does it actually reach production?") applied to the one
           # file whose absence is invisible until a user tries the feature.
@@ -636,7 +641,8 @@ jobs:
           # was therefore guaranteed to fail on the very first name it looked
           # for. No pipeline, no SIGPIPE, and one decompression instead of five.
           listing=$(tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz)
-          for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt; do
+          for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
+                      THIRD-PARTY-NOTICES.md LICENSE; do
             grep -qxF -- "$want" <<<"$listing" || {
               echo "::error::$want is missing from the release tarball"
               exit 1

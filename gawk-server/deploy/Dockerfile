@@ -28,5 +28,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/gawk-server /gawk-server
 COPY --from=build /out/gawk-echo /gawk-echo
+# The MIT/BSD/ISC attribution obligations attach to the distributed binary,
+# so the notices ride in the image, not just the repo. Via the build stage:
+# the repo-root LICENSE is outside this module-dir build context.
+COPY --from=build /src/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES.md
 EXPOSE 4433/udp
 ENTRYPOINT ["/gawk-server"]

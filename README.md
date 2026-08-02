@@ -64,7 +64,7 @@ fallbacks; iPhone playback uses an fMP4 + `ManagedMediaSource` path
 |---|---|
 | **Run it yourself** | [`docs/self-hosting.md`](docs/self-hosting.md) — DNS, TLS, single-node and cluster mode |
 | **Local dev in 5 minutes** | [Quickstart](#quickstart-local-dev) below |
-| **How it works** | [below](#architecture), then [`docs/`](docs/README.md) — 40 design docs, one per milestone |
+| **How it works** | [below](#architecture), then [`docs/`](docs/README.md) — 39 design docs, one per milestone |
 | **What's built, what's next** | [`ROADMAP.md`](ROADMAP.md) |
 | **Known bugs** | [`BUGS.md`](BUGS.md) |
 | **Gotchas** | [`docs/gotchas.md`](docs/gotchas.md) |
@@ -178,7 +178,7 @@ mode, verification, and upgrades.
 | [`gawk-broadcast-windows/`](gawk-broadcast-windows/) | Native **Windows** broadcaster (Rust) — Windows.Graphics.Capture + Media Foundation, single static EXE. |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
-| [`docs/`](docs/README.md) | 40 numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria. |
+| [`docs/`](docs/README.md) | 39 numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria. |
 | [`tools/`](tools/) | Repo tooling (third-party license notice generation). |
 
 ## Project status
@@ -211,7 +211,7 @@ you first:
 
 ## Design docs
 
-Forty numbered docs, one per milestone, each recording the decisions, the
+Thirty-nine numbered docs, one per milestone, each recording the decisions, the
 alternatives that were rejected and why, and explicit acceptance criteria.
 [**`docs/README.md`**](docs/README.md) is the index; start with
 [`docs/03`](docs/03-single-client-e2e.md) (the end-to-end path),

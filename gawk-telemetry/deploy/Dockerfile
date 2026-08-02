@@ -72,6 +72,13 @@ RUN CGO_ENABLED=1 go build -tags duckdb -trimpath -ldflags "-s -w -X main.versio
 # see the header. Still distroless, still nonroot, still no shell.
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /out/gawk-telemetry /gawk-telemetry
+# Attribution ships with the binary that links it: the Go/DuckDB notices for
+# the -tags duckdb build, the UI notices for the embedded dashboard bundle,
+# and LICENSE (repo-root context makes it reachable here, unlike the other
+# two images).
+COPY LICENSE /LICENSE
+COPY gawk-telemetry/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES.md
+COPY gawk-telemetry/ui/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES-ui.md
 # 8080 is the PUBLIC ingest listener; 8081 is the read listener (dashboard,
 # read API, MCP) and must never be routed publicly — D14.
 EXPOSE 8080
