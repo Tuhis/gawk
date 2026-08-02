@@ -26,6 +26,39 @@ process — no separate form to sign, no copyright assignment. Your
 contributions stay yours, licensed to everyone under
 [Apache-2.0](LICENSE) like the rest of the repository.
 
+## Using AI
+
+**A large part of gawk was written with AI assistance** — code, tests and
+design docs alike, including much of what you are reading. That is stated
+plainly because it is true and because it shapes what this section asks for,
+not as a disclaimer. AI-assisted contributions are welcome and expected to
+continue; there is no label to apply and no separate process to follow.
+
+There are two requirements, and they are the same two whether or not a model
+was involved.
+
+**You understand every line you are submitting.** Not "it passes the tests"
+and not "the model explained it to me" — you can say why the code is shaped
+the way it is, what happens when it fails, and which of the alternatives it
+rejected. If a reviewer asks about a branch you did not know was there, the
+PR was not ready. The [DCO sign-off](#sign-your-commits-dco) is where you
+assert the right to submit a contribution; this is the standard for having
+authored it.
+
+**Scope it and build it as you would have before any of this existed.** The
+thing AI changes is not the quality ceiling, it is how cheap volume becomes,
+and volume is precisely what a solo-maintained project cannot absorb. So:
+the change you would have made by hand, not the one that was free to
+generate. No speculative abstraction because it cost nothing to add. No
+drive-by rewrite of a file you were passing through. No configuration knob
+nobody asked for. One concern per PR, tests for the behaviour that changed,
+and a diff someone can hold in their head.
+
+A concrete version of the same rule: if the honest summary of a PR is "I
+asked for X and this is what came back", it is not finished — that is a
+draft you have not yet reviewed as its author. Read it, cut what does not
+belong, and submit the part you would defend.
+
 ## Commit messages are load-bearing
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please)

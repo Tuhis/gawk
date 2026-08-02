@@ -6,6 +6,17 @@
 // installs fall back to the defaults below.
 
 export interface GawkRuntimeConfig {
+  // Where this deployment's relay lives, e.g. "https://relay.example.com:4433".
+  //
+  // The one value a self-hosted install cannot do without. Before this
+  // existed, the relay URL was decided entirely by a hostname check in
+  // transportStore.ts — gawk.ioio.fi got the production fleet and EVERY other
+  // origin got https://localhost:4433, so a self-hoster's viewers each had to
+  // open settings and paste the URL by hand before a join link would work.
+  // Unset still falls back to that behaviour, which is what keeps local dev
+  // (localhost:5173 → localhost:4433) working with no config at all.
+  relayUrl?: string;
+
   // The relay requires a pre-shared publish secret (server started with
   // -publish-secret). When true, the broadcaster asks for it on "Start a
   // stream". Default false.
@@ -58,6 +69,16 @@ declare global {
 
 export function getRuntimeConfig(): GawkRuntimeConfig {
   return (typeof window !== 'undefined' && window.__GAWK_CONFIG__) || {};
+}
+
+// The relay this deployment talks to, or '' when nothing is configured — in
+// which case transportStore falls back to its origin-derived default. Kept
+// here rather than in transportStore so every runtime knob has one home, and
+// so the "empty string counts as unset" rule is the same as every other
+// getter's (the ConfigMap renders "" rather than omitting the key).
+export function getRelayUrl(): string {
+  const v = getRuntimeConfig().relayUrl;
+  return (typeof v === 'string' && v.trim()) || '';
 }
 
 export function requiresPublishSecret(): boolean {
