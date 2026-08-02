@@ -9,92 +9,151 @@ gawk-broadcast -url https://relay.example   # …or somebody else's
 → Broadcast code: K7M2QP   join: https://gawk.example/#/view/K7M2QP
 ```
 
-It speaks the existing publisher protocol byte for byte — zero server changes,
-zero wire changes, zero viewer changes — by importing the relay's own `wire`
-package rather than reimplementing it. The browser broadcaster is untouched and
-remains the path for Windows/macOS, for Linux machines without a usable hardware
-encoder, and for anyone who doesn't want to install anything.
+<!-- GUI SCREENSHOT PLACEHOLDER ────────────────────────────────────────────
+  Replace this block with:   ![gawk-broadcast GUI](docs/assets/gui.png)
 
-Design and decisions: [`docs/19`](../docs/19-linux-native-broadcaster.md).
+  What to capture: the Gio GUI mid-broadcast — stats card visible
+  (fps, bitrate, keyframe interval, viewer count), version string in the
+  window header. PNG, ~800 px wide. Take it on the real broadcasting
+  machine so the numbers are believable. Commit as docs/assets/gui.png.
+──────────────────────────────────────────────────────────────────────── -->
+> 📸 **Screenshot coming here** — the GUI mid-broadcast with live stats.
 
-## Why this exists
+It speaks the existing publisher protocol byte for byte — zero server,
+wire or viewer changes — by importing the relay's own `wire` package. The
+browser broadcaster remains the path for Windows/macOS, for Linux machines
+without a usable hardware encoder, and for anyone who doesn't want to
+install anything.
 
-**The browser cannot hardware-encode on Linux.** This is a platform gap, not a
-tuning problem, and it is worth stating precisely so nobody re-litigates it with
-a flag hunt:
-
-- WebCodecs `VideoEncoder` hardware encode ships on Windows, macOS and Android.
-  Linux gets hardware *decode* only, and Chromium's own VA-API doc disclaims
-  Linux support outright.
-- On NVIDIA it is structurally impossible: Chromium's Linux encode path is
-  VA-API only, and `nvidia-vaapi-driver` is NVDEC-backed and decode-only by
-  design.
-
-So a Linux broadcaster means software x264 — and the game fps that costs —
-unless it stops being a browser. What this buys is **encode capacity and game
-fps on the broadcasting machine**, not lower latency: the glass-to-glass budget
-is unchanged.
+**Why does this exist?** The browser cannot hardware-encode on Linux — a
+platform gap, not a tuning problem. WebCodecs hardware encode ships on
+Windows/macOS/Android only; Chromium's Linux encode path is VA-API only,
+and on NVIDIA `nvidia-vaapi-driver` is decode-only by design. A native
+broadcaster buys **encode capacity and game fps on the broadcasting
+machine**, not lower latency. Full reasoning:
+[`docs/19`](../docs/19-linux-native-broadcaster.md).
 
 ## Install
 
-Released versions are attached to their GitHub Release, which is the easy path
-— no run to find, no 30-day expiry:
+Grab the latest tarball from the
+**[Releases page](https://github.com/Tuhis/gawk/releases)** (assets named
+`gawk-broadcast-linux-amd64.tar.gz`), or with the GitHub CLI:
 
 ```sh
 gh release download --pattern 'gawk-broadcast-linux-amd64.tar.gz'   # newest release
 gh release download gawk-broadcast-v1.9.0 --pattern '*.tar.gz'      # a specific one
 ```
 
-The tarball holds both binaries, `INSTALL.md` and `BUILD-INFO.txt`; a
-`SHA256SUMS` asset sits beside it (the binaries are unsigned, so that is the
-only integrity check there is). It is not a separate build — it is byte-for-byte
-the artifact CI built for that commit, attached by `attach-broadcast-release`.
+The tarball holds both binaries, `INSTALL.md` and `BUILD-INFO.txt`, with a
+`SHA256SUMS` asset beside it (the binaries are unsigned, so the checksum is
+the integrity check). Every green CI run also uploads an artifact
+(`gawk-broadcast-linux-amd64-<sha>`) for testing unreleased builds —
+[`INSTALL.md`](INSTALL.md) is written for a tester with a binary and no
+context.
 
-Handing an *unreleased* build to someone to test? Point them at
-[`INSTALL.md`](INSTALL.md) — it's written for a tester with a binary and no
-context, and CI ships a copy of it inside the artifact. Every green CI run on a
-branch or PR uploads `gawk-broadcast-linux-amd64-<sha>` (all binaries +
-`BUILD-INFO.txt` recording the commit, the glibc floor and the exact library
-linkage). Grab it from the run's Artifacts, or:
+Built on Ubuntu 24.04, but the actual floor is **glibc 2.34** (measured
+per build into `BUILD-INFO.txt`), so Ubuntu 22.04+, Debian 12+, RHEL 9+,
+Fedora and Arch all run it.
 
-```sh
-gh run download --name gawk-broadcast-linux-amd64-<sha>
-```
-
-Built on Ubuntu 24.04, but that is **not** the floor: the binaries reference
-glibc symbols only up to **2.34** (measured per build into `BUILD-INFO.txt`,
-never assumed from the builder), so Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora
-and Arch all run them. Two linkage facts worth knowing before someone reports a
-bug: the GUI links **both** window backends, so X11 libraries must be present
-even on a Wayland-only session (`libxkbcommon-x11` is the one that bites
-first), and **Vulkan is `dlopen`ed, not linked** — nothing to install for it.
-
-**Wayland or X11?** Use Wayland. Capture goes through the XDG ScreenCast
-portal, and portal screencast support is what varies: Wayland works everywhere
-(GNOME/KDE/wlroots), X11 works on GNOME but generally not on KDE, whose portal
-offers no screencast backend there. The app gates on the portal call
-succeeding, never on the session type (docs/19 Decision 5) — so it doesn't
-refuse X11, it just reports what the portal says. The Gio window itself prefers
-Wayland and falls back to X11 on its own.
-
-Everything below is a stock distro package. Nothing is built from source.
-
-**Runtime:**
+**Runtime dependencies** — all stock distro packages, nothing built from
+source:
 
 | Package (Debian/Ubuntu) | Why |
 |---|---|
 | `gstreamer1.0-tools` | `gst-launch-1.0`, which runs capture + encode |
 | `gstreamer1.0-pipewire` | `pipewiresrc` — how desktops already do screencast |
-| `gstreamer1.0-plugins-base`, `-good`, `-bad` | the encoders (`vulkanh264enc`, `nvh264enc`, `vah264enc`), the parser and the muxer |
-| `xdg-desktop-portal` + your desktop's backend | the share dialog; every Wayland desktop already ships one |
+| `gstreamer1.0-plugins-base`, `-good`, `-bad` | the encoders, parser and muxer |
+| `xdg-desktop-portal` + your desktop's backend | the share dialog; every Wayland desktop ships one |
 
-On NVIDIA the `nvcodec` plugin `dlopen`s the driver's encode library at runtime,
-so distro packages suffice — there is nothing special to build.
+On NVIDIA the `nvcodec` plugin `dlopen`s the driver's encode library at
+runtime — distro packages suffice. The GUI links both window backends, so
+X11 libraries must be present even on a Wayland-only session
+(`libxkbcommon-x11` is the one that bites first).
 
-**Build:**
+**Wayland or X11?** Use Wayland. Capture goes through the XDG ScreenCast
+portal, and portal screencast support is what varies: Wayland works
+everywhere; X11 works on GNOME but generally not on KDE. The app gates on
+the portal call succeeding, never on the session type.
+
+## Usage
+
+The flags you'll actually set (run `-help` for the full list):
+
+```
+-url          relay URL                (env GAWK_URL; default https://api.gawk.ioio.fi:4433)
+-app-url      frontend URL, for join links          (env GAWK_APP_URL)
+-secret       publish secret, if the relay requires one  (env GAWK_SECRET)
+-id           reclaim this broadcast code instead of minting a new one
+-resolution   1920x1080    -fps 60    -bitrate 16   (Mbps, the VBR peak)
+-audio        publish system audio                  (default true)
+-audio-app    when a window is shared, publish only this application's
+              audio (its process binary, e.g. supertuxkart)
+-encoder      force one of vulkanh264enc, nvh264enc, vah264enc
+-v            verbose, including the GStreamer child's stderr
+```
+
+Settings persist in `~/.config/gawk/broadcast.json` (mode 0600 — it holds
+the publish secret); flags and env override them, and the GUI writes the
+same file. Blank means "the default", resolved at use — never frozen in at
+save time. Prefer env vars for the secret: a command line is visible in
+`ps`.
+
+`gawk-broadcast -version` (or the GUI window header) prints
+`v1.9.0+g1a2b3c4` — release plus the commit it was built from; that string
+identifies any binary, released or CI-built.
+
+### If the relay restricts origins
+
+With `-allowed-origins` set on the relay, this broadcaster's default
+`Origin` of **`gawk-broadcast://native`** must be whitelisted:
+
+```
+GAWK_ALLOWED_ORIGINS=https://gawk.example,gawk-broadcast://native
+```
+
+…or pass `-origin https://gawk.example` to send an origin the relay
+already allows. Loopback connections bypass the check.
+
+### Diagnostics reporting
+
+Against the default relay, the broadcaster reports session diagnostics
+(fps, drop counters, RTT, viewer count — never screen content, file names,
+machine name or IP) to that fleet's telemetry collector. `-telemetry-url
+off` sends nothing; a self-hosted relay reports nowhere unless you point
+it at your own collector, since telemetry tokens are minted by the relay
+you connect to ([docs/33](../docs/33-telemetry-and-diagnostics.md)). The
+CLI prints where it reports on startup; the GUI shows it in settings.
+
+### Terms of use
+
+This broadcaster publishes under the same terms as the browser broadcaster
+([`docs/29`](../docs/29-terms-and-conditions.md)): you are responsible for
+what you stream. The terms live at `<app-url>/#/terms`; running the native
+app is the acknowledgment.
+
+## How it works
+
+The picture stays on the GPU the whole way — portal → PipeWire dmabufs →
+a GStreamer child scaling/converting/encoding on the GPU's encode block →
+MPEG-TS back over a pipe → the Go engine demuxes access units and ships
+them: keyframes whole on a reliable stream, deltas sliced into datagrams.
+The Go code never touches a pixel.
+
+Encoders are hardware-only, probed by real trial encodes at startup,
+Vulkan first: `vulkanh264enc → nvh264enc → vah264enc → refusal`. There is
+deliberately no software rung — a machine where nothing passes is told to
+use the browser broadcaster instead.
+
+The full walk-through, the app-audio tee, the encoder cascade and the
+package layout: **[`docs/internals.md`](docs/internals.md)**.
+Failure modes, debug taps (`GAWK_DUMP_TS`, `GAWK_DUMP_H264`) and hard-won
+sharp edges: **[`docs/troubleshooting.md`](docs/troubleshooting.md)**.
+
+## Build
 
 ```sh
-# Go, plus Gio's Linux headers (Debian/Ubuntu):
+# Go, plus Gio's Linux headers (Debian/Ubuntu) — GUI only; the CLI and
+# engine need none of them:
 sudo apt install gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
   libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev \
   libxcursor-dev libvulkan-dev
@@ -102,422 +161,19 @@ sudo apt install gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
 go build ./cmd/...
 ```
 
-Those headers are the honest price of a native Wayland GUI (docs/19
-Decision 14). They are only needed for `cmd/gawk-broadcast-gui`; the engine and
-the CLI need none of them, so `go test ./internal/...` works without them.
-
-## Usage
-
-```
-gawk-broadcast [flags]
-
-  -url         relay URL                       (env GAWK_URL)
-                 default https://api.gawk.ioio.fi:4433
-  -app-url     frontend URL, for join links    (env GAWK_APP_URL)
-  -secret      publish secret, if required     (env GAWK_SECRET)
-  -origin      Origin header to send           (env GAWK_ORIGIN)
-  -id          reclaim this broadcast code instead of minting a new one
-  -resolution  1920x1080     -fps 60     -bitrate 16   (Mbps, the VBR peak;
-                                            typical motion averages ~75% of it)
-  -encoder     force one of vulkanh264enc, nvh264enc, vah264enc
-  -audio       publish system audio                          (default true)
-  -audio-device  capture from this device instead of probing
-                                            (env GAWK_AUDIO_DEVICE)
-  -audio-app   when a WINDOW is shared, publish only this application's audio
-                 (its process binary, e.g. supertuxkart; env GAWK_AUDIO_APP)
-  -insecure    skip TLS verification (development certificates only)
-  -config      path to the config file          (default ~/.config/gawk/broadcast.json)
-  -stats       how often to print a stats line, 0 disables (default 5s)
-  -telemetry-url  R28 telemetry ingest endpoint  (env GAWK_TELEMETRY_URL)
-                 default https://gawk.ioio.fi/api/telemetry/v1/ingest on the
-                 default relay; `off` sends nothing
-  -v           verbose, including the GStreamer child's stderr
-  -version     print the build version and exit
-```
-
-**Which build am I running?** `gawk-broadcast -version` prints
-`gawk-broadcast v1.9.0+g1a2b3c4`, and the GUI shows the same string in the
-window header. The `+g` part is the commit it was built from — there is no
-tagged release build for this component, so every binary is a CI artifact or a
-local build and the release number alone would not identify it. A `.dirty`
-suffix means the tree had uncommitted changes; a bare `1.9.0` means the build
-had no VCS information at all. See
-[docs/19 V9](../docs/19-linux-native-broadcaster.md#v9--the-build-version-in-the-window-added-2026-08-01).
-
-Settings live in `~/.config/gawk/broadcast.json` (mode 0600); flags and env
-override them. The GUI writes the same file. Prefer the env vars for the secret:
-a command line is visible in `ps`.
-
-**Blank means "the default", not "nothing".** Neither the config file nor the
-GUI stores a resolved default, so a release that moves the fleet address moves
-with it instead of being frozen into every user's config the first time they
-pressed Save.
-
-### Diagnostics reporting
-
-Running against the default relay, the broadcaster reports session diagnostics
-to that fleet's R28 collector (`docs/33`) — the same numbers the GUI's **Copy
-diagnostics** button produces, sampled over time: encode/sent fps, keyframe and
-drop counters, RTT, viewer count. No screen content, no file names, no machine
-name, no IP stored; the broadcast is identified by the relay's obfuscated key,
-never the joinable code.
-
-Three ways to change it, in precedence order — `-telemetry-url` / the GUI's
-**Telemetry URL** field / `GAWK_TELEMETRY_URL`:
-
-| value | what happens |
-| --- | --- |
-| blank | the default fleet's collector — **only** when the relay is also the default one |
-| a URL | that endpoint, whichever relay you use |
-| `off` | nothing is sent, and no request of any kind leaves the process |
-
-The pairing in the first row is deliberate. A session's telemetry token is an
-HMAC minted by *the relay you connected to* (docs/33 D2), so a batch from a
-self-hosted relay could not be verified by someone else's collector anyway —
-and pointing a private deployment at a third party's collector by default would
-be the wrong default even though nothing would land. Point your own fleet at
-your own collector with an explicit URL.
-
-Reporting also requires the relay to have a telemetry key configured: without
-one it sends no R28 hello, and a client that never gets a hello never collects
-or sends anything. The CLI prints where it reports on startup; the GUI's
-settings card shows the same thing under the fields.
-
-### If the relay restricts origins
-
-If your relay runs with `-allowed-origins` / `GAWK_ALLOWED_ORIGINS` set (the
-"safe by default" install), it checks the `Origin` header on every connection.
-A browser sends the frontend's origin automatically; this native broadcaster
-sends **`gawk-broadcast://native`** by default. Either whitelist that on the
-relay —
-
-```
-GAWK_ALLOWED_ORIGINS=https://gawk.example,gawk-broadcast://native
-```
-
-— or point the broadcaster at an origin the relay already allows, with
-`-origin https://gawk.example` (env `GAWK_ORIGIN`), and add no relay entry.
-Without one of these, the relay rejects the dial and the broadcaster reports it
-could not connect. (Loopback connections bypass the check, so this only bites
-over a real network — the homelab case.)
-
-**The file is 0600 for a reason.** It holds the publish secret, which is a
-credential — anything that can read it can publish to the relay under your
-broadcaster identity.
-
-## Terms of use
-
-This broadcaster publishes to the operator's relay under **the same terms of
-use as the browser broadcaster** (R23, [`docs/29`](../docs/29-terms-and-conditions.md)):
-you are responsible for the content you stream, it must be lawful where you are,
-and the service is provided as is, with no warranty. Read the operator's terms
-at `<app-url>/#/terms` — the GUI shows the link once you set the app URL, and
-the CLI's `-app-url` is the same value. Unlike the browser broadcaster, the
-native app does not present a one-time acknowledgment gate; running it is the
-acknowledgment.
-
-## How it works
-
-The shape to hold in your head: **the picture stays on the GPU the whole way,
-and our Go code never touches a pixel.** By the time anything reaches this
-process it is already H.264 — the app is a byte pump, which is why it can be
-simple.
-
-1. **You click Start.** It dials `/publish` *first*. If the relay refuses —
-   wrong secret, code taken, at capacity — no share dialog ever appears.
-2. **It asks your desktop for a screen, over D-Bus.** The XDG ScreenCast portal
-   shows *your* desktop's share dialog. We don't draw it, we don't theme it.
-   **The picker appears on every start — we never persist the choice, so you
-   pick what to share each run.**
-3. **The portal returns a PipeWire fd.** Frames are dmabufs — handles to GPU
-   memory, not pixels. Nothing has been copied.
-4. **GStreamer runs as a child process**, given that fd, writing to our pipe.
-5. **It rate-limits (drop-only), scales and converts on the GPU**, then
-   **encodes on the GPU's dedicated encode block** — not the CPU, and not the
-   shader cores, so it isn't taking from the game's frame budget. This is the
-   step the browser cannot do on Linux.
-6. **Compressed MPEG-TS comes back down the pipe.** Now it is in CPU memory —
-   but it's ~1% of the size, because it's already H.264.
-7. **We split it into access units** (one PES = one frame — structural, no
-   start-code guessing), stamp arrival, and read the NAL types.
-8. **Keyframes go whole on a reliable stream; deltas are sliced into
-   datagrams.** Exactly the browser's R8 design, because the bytes are
-   identical.
-
-**System audio rides the same pipeline** (R25, docs/28). It is captured from
-the default output's *monitor* via PipeWire — not from the portal, which
-carries no audio — encoded to Opus by the same GStreamer child, and muxed into
-the same MPEG-TS. One muxer means **one PTS timeline**, which is the whole A/V
-sync design: both media are mapped onto the engine clock by one anchor, so the
-relative skew is zero by construction. A second pipe would have been less code
-and would have reintroduced a constant lip-sync bias nothing can measure.
-
-Audio is **subordinate**: no usable source means video-only and a stats line
-that says so, and a live pipeline that dies naming an audio element drops audio
-and retries the same encoder rung rather than burning the cascade over a sound
-card. `-audio=false` is for a broadcaster who wants silence, not a workaround
-for breakage.
-
-### Sharing one application (R35, docs/39)
-
-Pick a **window** instead of a screen and two things change.
-
-**The picture is fitted, not stretched.** The configured resolution is a
-bounding box: a 4:3 or portrait window keeps its aspect inside it (a 1000×700
-window at the 1080p rung encodes 1542×1080). This fixed a live bug for whole
-screens too — an ultrawide desktop used to be squashed to 1920×1080 and now
-encodes 1920×804.
-
-**You are asked whose audio to publish**, and only that application's sound
-goes out. The extra click is structural, not a shortcut we did not take: the
-portal deliberately never tells us which application owns the window you picked
-(no PID, no name — by privacy design), so window→application correlation does
-not exist on Linux. Guessing it would silently stream the wrong application's
-audio, which is the worst failure this feature could have, so gawk asks.
-
-The mechanism is a **tee**, and its properties are the design (docs/39 D3):
-
-- `gawk-pw-helper` — a small libpipewire client, spawned per broadcast — creates
-  a hidden virtual sink (`Audio/Sink/Internal`, so it never appears in anyone's
-  device list) and **links** the chosen application's output ports into it.
-  PipeWire output ports fan out, so the application keeps playing to your
-  speakers and the sink receives a copy. Nothing about your audio routing is
-  ever modified; the worst crash leaves a hidden idle sink, never silent
-  speakers.
-- The GStreamer child captures **one static node forever** — the sink's monitor,
-  addressed by `object.serial`. Everything downstream of that source element is
-  the R25 branch byte for byte. All the dynamism (which application, streams
-  dying and reappearing, re-links, a mid-session switch) lives outside GStreamer
-  in PipeWire link management, so there are **no pipeline restarts and no A/V
-  sync model change**.
-- Cleanup is by construction: every object the helper creates belongs to its own
-  connection with no `object.linger`, so the daemon reaps the sink and every
-  link when the helper goes away — clean exit, SIGKILL or OOM alike.
-- Audio stays subordinate. A missing helper, a helper that dies, a sink that
-  will not capture: each degrades to system audio or chosen silence with a
-  sentence, after the portal grant is already in hand.
-
-## Encoders
-
-Hardware only, probed per machine at startup, **Vulkan first**:
-
-```
-vulkanh264enc  →  nvh264enc  →  vah264enc  →  refusal
-```
-
-Vulkan Video is the target encode API (docs/19 Decision 21): the only one
-spanning RADV, ANV and NVIDIA with no asterisk. NVENC and VAAPI stay behind it
-permanently — friends broadcast from GPUs we can't survey.
-
-**There is no software rung, by decision.** Hardware encode is the entire reason
-this app exists, and the browser broadcaster already covers software encode
-fine. A machine where nothing passes is told to use the browser, not quietly
-degraded to x264 — which would burn the game's CPU budget to produce a stream
-the browser could have produced.
-
-Candidates are accepted only by a **real trial encode**, never by the element
-being listed: `gst-inspect-1.0` happily lists elements that fail at runtime on
-the actual device. Trials encode `videotestsrc`, never the portal — probing must
-not pop share dialogs. The last-good encoder is cached and *re-verified* (not
-trusted) on the next run, and because a `videotestsrc` trial can't prove the real
-path's dmabuf import, **the live start is the final probe**: a child that dies
-immediately walks a three-rung capture ladder — zero-copy (capped) → zero-copy
-→ system memory (`CaptureModes` in `internal/gst/pipeline.go`) — before
-advancing to the next encoder, every retry reusing the portal grant.
-
-## Fixed rung
-
-1080p60, 500 ms GOP. No ladder, no auto-fallback, no mid-session changes: this
-engine is hardware-encode by construction, so 1080p60 is coherent rather than
-aspirational. R4's `FallbackController` is deliberately not ported — its trigger
-is `encodeQueueSize` growth, and R4's own hardware finding was that hardware
-encoders drain frames without that signal ever firing.
-
-## Gotchas
-
-- **This is the Annex-B publisher.** The engine emits raw Annex-B with **empty
-  DecoderConfig extradata** and never builds an avcC record; the viewer's
-  `isAnnexB` start-code sniff routes it into the branch that ignores extradata.
-  The browser broadcaster always sends AVCC, so **this path is the only thing
-  exercising the viewer's Annex-B branch** — if it ever regresses, native
-  broadcasts break and browser ones don't.
-- **`h264parse config-interval=-1` is load-bearing, not cosmetic.** Empty
-  extradata means a late joiner primed with the relay's cached keyframe can only
-  decode if SPS/PPS travel *inside* the keyframe AU. Without it, late joiners
-  see nothing while everyone already watching is fine — the worst kind of bug.
-- **The Opus-in-MPEG-TS control header starts `0x7F`, not `0xFF`.** The mapping
-  spec's 11-bit prefix holds `0x3FF` — which is *ten* ones — so an 11-bit field
-  containing it is one zero bit followed by ten ones, and the first byte is
-  `0x7F`. A demuxer syncing on `0xFF` finds nothing, forever. Also: one PES may
-  carry **several** Opus packets (GStreamer writes one, ffmpeg batches five),
-  and only the PES has a timestamp, so the rest are derived by adding what each
-  packet's TOC says it lasts.
-- **Audio's declared framerate keeps audio smooth on a still screen.**
-  `mpegtsmux` is a `GstAggregator`: it aggregates against a deadline derived
-  from the *declared caps framerate*, not from what actually arrives. Because
-  `BuildPipeline` pins `framerate=<fps>/1` on the encoder caps (originally a
-  rate-control fix, docs/19), audio keeps flowing at 20 ms while damage-driven
-  video delivers nothing. Measured: video absent for 4.6 s, zero audio gaps
-  over 100 ms. Declare `1/5` instead and audio bursts in five-second clumps
-  (docs/28 findings 6 and 8).
-- **One `ptsAnchor` maps both media, and that is the A/V sync design.** Audio
-  and video are muxed by one `mpegtsmux` from one pipeline running time, so one
-  anchor maps both with one affine function and the relative skew is zero by
-  construction. Giving audio its own anchor looks tidier and silently
-  reintroduces a constant lip-sync bias the viewer cannot measure or remove.
-  `TestOneAnchorStampsBothMedia` exists to stop that refactor.
-- **Don't gate on Wayland.** The portal works on X11 GNOME sessions too. Gate on
-  the portal call succeeding.
-- **`pipewiresrc` dying in preroll with `stream error: unhandled format` is a
-  capture problem, not an encoder problem.** The compositor's chosen screencast
-  format sometimes can't be mapped onto the downstream caps (DMA-BUF
-  modifier/DRM-caps skew between `gst-plugin-pipewire` and the encoder's
-  converter, or 10-bit HDR desktop formats). The live start walks the
-  three-rung capture ladder (zero-copy capped → zero-copy → system-memory, the
-  last pinning bare `video/x-raw` at the source) for each encoder before
-  advancing, and an all-`pipewiresrc` failure reports as a capture
-  error, never "no hardware encoder". Diagnose with `GST_DEBUG=pipewire*:5` in
-  the environment — the child inherits it and its stderr lands in the debug
-  log.
-- **A capture death *after* the probe window rebuilds the pipeline; it does
-  not end the broadcast.** Window shares renegotiate their screencast format
-  whenever the window resizes, changes output or hands its surface over, and
-  the same "unhandled format" then arrives mid-stream, where the start-time
-  ladder cannot help. `Source.restartCapture` re-runs the cascade on the
-  portal grant already in memory — no second picker, same relay session, same
-  frameId space, and above all the *same* frame channel, because the engine
-  ends the broadcast when that channel closes. Rebuilds are rate-limited
-  (`captureRestartBudget` starts inside any `captureRestartWindow` — 60 per
-  30 s, so only sustained thrashing gives up) and counted
-  (`Stats.CaptureRestarts`). The rebuilt
-  pipeline's first frame is a keyframe carrying `EncoderRestarted`, which
-  re-derives the DecoderConfig: a rebuild may land on a different rung or
-  encoder, and the viewer's decoder has only that codec string to go on.
-- **`GAWK_DUMP_TS=<path>` tees the raw MPEG-TS to disk** while broadcasting.
-  Play it with `mpv`/`ffplay` — it is exactly what the encoder produced, so it
-  splits "the capture is black at the source" from "the viewer can't decode
-  it" in one step.
-- **`GAWK_DUMP_H264=<path>` tees the demuxed Annex-B elementary stream** —
-  every access unit exactly as the MPEG-TS demuxer reconstructed it, before
-  any drop policy (also playable with `mpv`/`ffplay`). Against the TS dump it
-  isolates the demuxer: identical quality convicts the encoder, damage only
-  here convicts AU reconstruction, damage only on the viewer convicts
-  drops/wire/decode.
-- **A dropped delta drops the rest of its GOP.** The pump's channel-full
-  drops happen before frameIds are assigned, so the wire stays contiguous and
-  the viewer's freeze-on-gap cannot see them — sending the GOP remainder
-  would decode as reference-broken garbage (the first real viewer session
-  did exactly that). `Source.offer` gates deltas until the next keyframe,
-  and a keyframe arriving into a full queue flushes the stale backlog rather
-  than being dropped. Under sustained backpressure the stream degrades to a
-  clean keyframe cadence, never to artifacts.
-- **The encoder caps must carry `framerate=<fps>/1` even though the stream
-  is VFR.** The portal's caps say `0/1` (damage-driven capture) and
-  `vah264enc` silently budgets rate control for 30 fps when it sees that —
-  at 60 fps that halves the effective bitrate and motion turns to mush.
-  With `videorate drop-only=true` upstream the pin is signalling, not CFR:
-  no frame is ever synthesized. Related: a bare `video/x-raw` capsfilter
-  between a GPU converter and a GPU encoder means *system memory* — pin the
-  memory feature (`video/x-raw(memory:VAMemory)`) or pay a download +
-  re-upload per frame.
-- **Frame timestamps are clock-anchored PES PTS, never arrival stamps.**
-  Arrival stamping (post-encode/mux/pipe) clumps timestamps, and the viewer
-  trusts timestamps for pacing — clumped stamps inflate its adaptive
-  playout offset and schedule decode bursts that trip its
-  discard-until-keyframe backpressure: decode fps intermittently craters
-  on native streams while browser streams decode fine. `ptsAnchor` maps
-  pipewiresrc's capture-time PTS onto the engine clock (min observed
-  arrival−pts; re-anchors on PTS wrap/restart).
-- **The keyframe cadence stretches when capture runs under the nominal
-  fps.** `key-int-max`/`gop-size` count *frames*; at 40 fps real rate a
-  30-frame GOP is 750 ms, not 500. gst-launch cannot inject force-key-unit
-  events, so the cadence is measured (stats line `keyframes every ~…`,
-  GUI "Keyframe interval") rather than silently assumed.
-- **Demuxed AUs must be cloned before they outlive the demux callback.**
-  `mpegts.AU.Data` aliases the demuxer's internal buffer and is rewritten by
-  the next AU; a frame handed to the channel un-cloned gets scrambled while
-  it waits for the sender. In the field this produced clean dumps (both taps
-  read the bytes while still valid) with a black viewer: the SPS parse ran on
-  recycled bytes, no DecoderConfig was ever derived, and an unconfigured
-  `VideoDecoder` swallows chunks silently. Motion scrambled queued frames
-  into reference soup while a static screen (drained channel) stayed sharp.
-  `-race` catches the aliasing outright; the pump clones at the callback
-  boundary.
-- **`pipewiregrab` is not in mainline FFmpeg** — an unmerged patchset carried
-  downstream by Jami. Mainline ffmpeg has no PipeWire input at all. Don't
-  re-propose it without checking it actually merged.
-- **Notifications must be critical urgency to matter.** KDE's portal inhibits
-  normal notifications *while screen casting*, so the act of broadcasting
-  suppresses them. Failures use critical urgency; going live doesn't.
-- **Viewer count (R18)**: the relay pushes the live "N watching" count
-  (`TypeViewerCount` 0x0B) once a second; the GUI shows it on the stats card
-  and rings a critical-urgency notification on the first 0→1 viewer
-  transition, once per broadcast. Nothing arrives until the first push, so
-  the count reads unavailable rather than `0` before then.
-- **Building the GUI needs the Gio headers above**; `go test ./internal/...`
-  does not.
-
-## Layout
-
-```
-internal/engine    Session{Start,Stop} + Callbacks + StartError{Phase,Status}
-internal/portal    XDG ScreenCast handshake (godbus); picker every start
-internal/gst       subprocess supervision + pipeline construction + cascade
-internal/fit       aspect-preserving fit; mirrors the Windows crate's fit.rs
-internal/appaudio  engine side of the app-audio helper: spawn, protocol, degrade
-internal/pwproto   the helper's newline-delimited JSON protocol (both ends)
-internal/pwgraph   the helper's brain: registry state, app list, link plan
-internal/pwtest    a private headless PipeWire daemon for integration tests
-internal/mpegts    TS/PES demux → one AU per PES
-internal/fixture   the committed H.264 MPEG-TS test stream, embedded (fixture.TS)
-internal/pubsim    fixture demux + looping live-timestamped MediaSource
-internal/config    ~/.config/gawk/broadcast.json (0600)
-internal/notify    D-Bus notifications with urgency
-internal/telemetry R28 telemetry reporter (env GAWK_TELEMETRY_URL); on by
-                        default against the default relay, `off` disables
-internal/wirecheck golden wire-vector mirror, kept byte-identical to
-                        gawk-server/wire and gawk-app/src/transport/wire.ts
-internal/app       the GUI's logic, without the GUI
-cmd/gawk-broadcast      CLI shell — headless, harness, debug
-cmd/gawk-broadcast-gui  GUI shell — Gio window + notifications
-cmd/gawk-pw-helper      the app-audio control plane (R35): cgo + libpipewire,
-                        creates the capture sink and maintains its links.
-                        No media flows through it; if it dies, audio degrades
-cmd/gawk-pubsim         synthetic publisher (R20): loops the embedded fixture
-                        through the real engine — CI E2E + manual drills; no
-                        Gio, no cgo, prints GAWK_PUBSIM_ID=<code> on stdout
-```
-
-`Session`/`Callbacks` deliberately mirror the TypeScript
-`BroadcastSessionLike`/`BroadcastCallbacks` in
-`gawk-app/src/transport/broadcaster.ts`. Same idea, same names, other language:
-a second broadcaster only stays survivable if the two remain legible to each
-other.
-
-## Tests
+## Test
 
 ```sh
-go test ./...                     # needs the Gio headers (it builds every package)
+go test ./...                     # needs the Gio headers (builds every package)
 go test ./internal/...            # engine only; no headers needed
 go test -short ./internal/...     # skips the tests that build and run the real relay
 ```
 
-The app-audio tests (R35) start a **private, headless PipeWire daemon** and
-drive the real helper against it — the tee, stream churn, and a `kill -9` matrix
-that asserts `pw-dump` comes back clean. They need `pipewire`, `wireplumber`,
-`pw-cli`/`pw-dump`, `dbus-daemon` and `gst-launch-1.0` on PATH, plus
-`libpipewire-0.3-dev` to build the helper at all; without them they skip rather
-than fail. CI installs all of it, so the coverage is real there.
+The engine's integration tests build and run the real `gawk-server` and
+publish a committed H.264 fixture through it; the app-audio tests drive
+the real helper against a private headless PipeWire daemon (they skip if
+PipeWire tooling is absent — CI installs it). Details:
+[`docs/internals.md`](docs/internals.md#testing-notes).
 
-This is the one part of this module CI can genuinely verify. The portal/GPU half
-stays structurally invisible to it (docs/19), which is why R35's on-hardware
-register (docs/39 §6) is what decides the milestone.
-
-The engine's integration tests **build and run the real `gawk-server`** and
-publish a committed H.264 fixture through it, then attach a real subscriber and
-check what comes out. A hand-written fake relay would only test the engine
-against our belief about the relay — the belief most worth doubting in a second
-implementation.
-
-This is not a container/chart/CI-deploy component: it's a binary you run on your
-own PC, deliberately outside the cluster deployment model.
+This is not a container/chart/CI-deploy component: it's a binary you run
+on your own PC, deliberately outside the cluster deployment model.

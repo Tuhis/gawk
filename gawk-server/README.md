@@ -1,36 +1,43 @@
 # gawk-server
 
-Go WebTransport relay for gawk. Publishers (a broadcaster's browser or the
-native Linux broadcaster) send encoded video as QUIC datagrams; the relay
-fans each broadcast out to its subscribers, caching the latest keyframe and
-decoder config to prime late joiners. It runs standalone or, in cluster mode
-(R17), as a self-federating fleet of pods that spreads one hot broadcast's
-audience across nodes. Per-broadcast and fleet-wide subscriber caps are
-configurable (`-max-subscribers`, default 15 per broadcast;
-`-max-total-subscribers`, default 50 per node) — see the flags table below.
+The Go WebTransport relay for gawk. Publishers (a broadcaster's browser or
+a native broadcaster) send encoded video as QUIC datagrams; the relay fans
+each broadcast out to its subscribers, caching the latest keyframe and
+decoder config to prime late joiners. It runs standalone or, in cluster
+mode, as a self-federating fleet of pods that spreads one hot broadcast's
+audience across nodes.
 
-Design, wire format and task breakdown: [`../docs/implementation-tasks.md`](../docs/implementation-tasks.md).
+Design, wire format and task breakdown:
+[`../docs/implementation-tasks.md`](../docs/implementation-tasks.md);
+cluster mode: [`../docs/22-relay-scale-out.md`](../docs/22-relay-scale-out.md).
 
-Routes: `CONNECT /publish` (mint a new broadcast ID), `CONNECT /publish/{id}`
-(reclaim an existing ID — a token-bearing reclaim supersedes an active
-publisher session, R17 "newest publisher wins"), `CONNECT /subscribe/{id}`
-(subscribe to a broadcast ID; 429 when full; primed with cached decoder
-config + last keyframe on join; `?delivery=reliable` opts into R19 resilient
-carrier-stream delivery, and adding `&buffer=<ms>` upgrades that to the R21
-DVR ring — "Deep buffer" delivery — as long as `<ms>` is at least
-`MinDVRBufferMs` and clamped to `-dvr-window`), `CONNECT
-/internal/subscribe/{id}` (R17 edge pull — a cluster-mode pod dialing
-another pod's origin hub directly; PSK-gated, never exposed publicly),
-`CONNECT /echo` (connectivity diagnostic), `GET /healthz`,
-`GET /statusz` (JSON stats: subscribers, frames/datagrams relayed, drops,
-cached keyframe, per-subscriber detail).
+```mermaid
+flowchart LR
+    P["Publisher"] -- "CONNECT /publish" --> H["hub<br/>(keyframe + config cache)"]
+    H --> S1["Subscriber"]
+    H --> S2["Subscriber"]
+    H -- "CONNECT /internal/subscribe<br/>(cluster mode, PSK-gated)" --> E["edge pod"]
+    E --> S3["Subscriber"]
+```
 
-A separate plain-TCP **ops endpoint** (R9, [`../docs/13-observability.md`](../docs/13-observability.md))
-serves `GET /metrics` (Prometheus), `GET /healthz` and a mirror of
-`GET /statusz` on `-metrics-addr` (default `:2112`) — the main server is
-HTTP/3-over-UDP only, which Prometheus (and plain curl) can't reach. Never
-expose this port publicly; the Helm chart exposes it via a ClusterIP Service
-+ optional ServiceMonitor only.
+## Routes
+
+| Route | Purpose |
+|---|---|
+| `CONNECT /publish` | Start a broadcast; the relay mints a new broadcast ID |
+| `CONNECT /publish/{id}` | Reclaim an existing ID. A token-bearing reclaim supersedes an active publisher session ("newest publisher wins") |
+| `CONNECT /subscribe/{id}` | Watch a broadcast; 429 when full; primed with cached decoder config + last keyframe. `?delivery=reliable` opts into resilient carrier-stream delivery; adding `&buffer=<ms>` upgrades to the DVR ring (clamped to `-dvr-window`) |
+| `CONNECT /internal/subscribe/{id}` | Cluster-mode edge pull — one pod dialing another's origin hub. PSK-gated, never exposed publicly |
+| `CONNECT /echo` | Connectivity diagnostic (see `gawk-echo` below) |
+| `GET /healthz` | Liveness |
+| `GET /statusz` | JSON stats: subscribers, frames/datagrams relayed, drops, cached keyframe, per-subscriber detail |
+
+A separate plain-TCP **ops endpoint** serves `GET /metrics` (Prometheus),
+`/healthz` and a mirror of `/statusz` on `-metrics-addr` (default `:2112`)
+— the main server is HTTP/3-over-UDP only, which Prometheus and plain curl
+can't reach. Never expose this port publicly; the Helm chart exposes it via
+a ClusterIP Service + optional ServiceMonitor only. Details:
+[`../docs/13-observability.md`](../docs/13-observability.md).
 
 ## Build & test
 
@@ -50,98 +57,46 @@ go run ./cmd/gawk-server -dev-cert
 go run ./cmd/gawk-server -cert-file /tls/tls.crt -key-file /tls/tls.key
 ```
 
-To verify connectivity from the CLI (`-cert-hash` value is logged by the
-server at startup; omit it to skip cert verification):
+Verify connectivity from the CLI (`-cert-hash` is logged by the server at
+startup; a real CA-issued cert needs no `-cert-hash`):
 
 ```sh
 go run ./cmd/gawk-echo -cert-hash <cert_hash_hex>
+go run ./cmd/gawk-echo -url https://api.gawk.example:4433/echo -origin https://gawk.example
 ```
 
-Against a deployment with `-allowed-origins` set (e.g. production), also
-pass `-origin` with one of the allowed values — a real CA-issued cert needs
-no `-cert-hash`:
+(The `-origin` flag matters when the relay runs with `-allowed-origins`.)
+
+## Configuration
+
+Every flag has a `GAWK_*` environment fallback (flag > env > default). The
+ones a first install actually touches:
+
+| Flag | Default | Why you'd set it |
+|---|---|---|
+| `-addr` | `:4433` | Listen address (UDP) |
+| `-cert-file` / `-key-file` | (empty) | TLS cert + key; or `-dev-cert` for local dev |
+| `-allowed-origins` | allow all | Set to your frontend's origin in any real deployment |
+| `-publish-secret` | (empty) | Require a secret to publish |
+| `-max-subscribers` / `-max-broadcasts` / `-max-total-subscribers` | 15 / 5 / 50 | Capacity limits |
+| `-keepalive-period` | `10s` | Keeps idle viewers connected while the broadcaster is away — this, not `-max-idle-timeout`, is the knob |
+| `-metrics-addr` | `:2112` | Ops endpoint; the literal value `off` disables |
+| `-cluster-mode` | `false` | Multi-pod federation; requires `-internal-psk` and `-internal-server-name` |
+
+The full table — ~38 flags including DVR, forward parity, telemetry and
+cluster keys — with notes on the non-obvious ones:
+**[`docs/flags.md`](docs/flags.md)**.
+
+On SIGINT/SIGTERM the server drains before exiting: every open session gets
+close code 4002 (clients reconnect immediately), cluster mode releases this
+pod's Leases, and the process exits within ~1.5 s.
+
+`cmd/gawk-loadgen` is the synthetic-viewer load tool: N subscribe sessions
+against one broadcast, reporting frames/s, keyframes, frameID gaps and
+aggregate bitrate:
 
 ```sh
-go run ./cmd/gawk-echo -url https://api.gawk.ioio.fi:4433/echo -origin https://gawk.ioio.fi
-```
-
-Every flag has a `GAWK_*` environment fallback (flag > env > default):
-
-| Flag | Env | Default |
-|------|-----|---------|
-| `-addr` | `GAWK_ADDR` | `:4433` |
-| `-cert-file` | `GAWK_CERT_FILE` | (empty) |
-| `-key-file` | `GAWK_KEY_FILE` | (empty) |
-| `-dev-cert` | `GAWK_DEV_CERT` | `false` |
-| `-dev-cert-hosts` | `GAWK_DEV_CERT_HOSTS` | `localhost,127.0.0.1` |
-| `-log-level` | `GAWK_LOG_LEVEL` | `info` |
-| `-log-format` | `GAWK_LOG_FORMAT` | `text` |
-| `-max-subscribers` | `GAWK_MAX_SUBSCRIBERS` | `15` |
-| `-max-broadcasts` | `GAWK_MAX_BROADCASTS` | `5` |
-| `-max-total-subscribers` | `GAWK_MAX_TOTAL_SUBSCRIBERS` | `50` |
-| `-publish-secret` | `GAWK_PUBLISH_SECRET` | (empty) |
-| `-conn-rate-limit` | `GAWK_CONN_RATE_LIMIT` | `3.0` |
-| `-conn-burst-limit` | `GAWK_CONN_BURST_LIMIT` | `10` |
-| `-max-bandwidth` | `GAWK_MAX_BANDWIDTH` | `0` (unlimited) |
-| `-max-keyframe-bytes` | `GAWK_MAX_KEYFRAME_BYTES` | `8388608` (8 MiB) |
-| `-keyframe-write-timeout` | `GAWK_KEYFRAME_WRITE_TIMEOUT` | `1s` |
-| `-dvr-window` | `GAWK_DVR_WINDOW` | `3s` (R21 DVR ring depth per broadcast) |
-| `-dvr-max-bytes` | `GAWK_DVR_MAX_BYTES` | `25165824` (24 MiB) |
-| `-dvr-max-catchup` | `GAWK_DVR_MAX_CATCHUP` | `4` (per-subscriber catch-up multiplier cap) |
-| `-dvr-audio` | `GAWK_DVR_AUDIO` | `true` (include audio in the DVR ring) |
-| `-metrics-addr` | `GAWK_METRICS_ADDR` | `:2112` (`off` disables) |
-| `-allowed-origins` | `GAWK_ALLOWED_ORIGINS` | (empty = allow all) |
-| `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
-| `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |
-| `-broadcast-grace` | `GAWK_BROADCAST_GRACE` | `5m` |
-| `-quiet-probe-logs` | `GAWK_QUIET_PROBE_LOGS` | `false` |
-| `-live-edge-audio-on-reliable-stream` | `GAWK_LIVE_EDGE_AUDIO_ON_RELIABLE_STREAM` | `false` (measure before flipping — see chart values) |
-| `-parity-default` | `GAWK_PARITY_DEFAULT` | `2` (forward-parity symbols per delta frame; `0` disables fleet-wide — R29) |
-| `-striped-delivery` | `GAWK_STRIPED_DELIVERY` | `true` (accept stripe-leg sessions + StripeState; off is byte-identical to pre-R30 — R30) |
-| `-stateless-reset-key` | `GAWK_STATELESS_RESET_KEY` | (empty = disabled; 64 hex chars, shared fleet-wide) |
-| `-resume-token-key` | `GAWK_RESUME_TOKEN_KEY` | (empty; wins over the publish-secret derivation when set — recommended for fleets, R17) |
-| `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars — R17) |
-| `-telemetry-key` | `GAWK_TELEMETRY_KEY` | (empty = telemetry disabled; 64 hex chars, shared with gawk-telemetry — R28) |
-| `-telemetry-report-interval` | `GAWK_TELEMETRY_REPORT_INTERVAL` | `2s` (500ms–60s) |
-| `-cluster-mode` | `GAWK_CLUSTER_MODE` | `false` |
-| `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
-| `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |
-| `-trusted-cidrs` | `GAWK_TRUSTED_CIDRS` | (empty) |
-
-The keepalive is what keeps idle viewers connected while the broadcaster is
-away: QUIC PINGs reset both endpoints' idle timers. Raising
-`-max-idle-timeout` alone does not help — the effective idle timeout is the
-minimum of both endpoints' advertised values, and browsers advertise ~30s.
-
-`-metrics-addr` takes the literal value `off` to disable (not the empty
-string: an empty environment variable reads as unset and silently falls back
-to the default — the Helm chart passes `off` when `metrics.enabled=false`).
-
-`-quiet-probe-logs` suppresses the `session started`/`session ended` INFO
-logs for `/echo` sessions dialed from loopback — i.e. the k8s exec probe,
-which otherwise logs on every startup/liveness/readiness period, forever.
-It defaults to `false` here (plain binary / local dev logs everything as
-usual); the Helm chart sets it `true` by default (`config.quietProbeLogs`).
-Real, off-pod echo diagnostic use is never affected — only loopback traffic
-is quieted.
-
-The R17 flags (`-cluster-mode` and the shared keys/PSK) enable the
-multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod
-edge pulls, and resume tokens. Off (the default) the server never touches
-the Kubernetes API and behaves exactly like the single-pod relay; see
-[docs/22](../docs/22-relay-scale-out.md) for the design and
-[docs/05](../docs/05-resilience-deploy.md) for the multi-replica runbook.
-
-On SIGINT/SIGTERM the server drains before exiting (R17 W1): every open
-session gets close code 4002 (clients reconnect immediately), cluster mode
-releases this pod's Leases, and the process exits within ~1.5 s.
-
-`cmd/gawk-loadgen` is the synthetic-viewer load tool (R17 W6): N subscribe
-sessions against one broadcast, reporting frames/s, keyframes, frameID gaps
-and aggregate bitrate:
-
-```sh
-go run ./cmd/gawk-loadgen -url https://api.gawk.ioio.fi:4433 -id K7XQ2M -viewers 200 -duration 60s
+go run ./cmd/gawk-loadgen -url https://api.gawk.example:4433 -id K7XQ2M -viewers 200 -duration 60s
 ```
 
 ## Docker
@@ -150,34 +105,33 @@ go run ./cmd/gawk-loadgen -url https://api.gawk.ioio.fi:4433 -id K7XQ2M -viewers
 docker build -f deploy/Dockerfile -t gawk-server:dev .
 docker run --rm -d --name gawk -p 4433:4433/udp gawk-server:dev -dev-cert
 docker logs gawk 2>&1 | grep cert_hash_hex   # → hash for gawk-echo / the app
-go run ./cmd/gawk-echo -url https://localhost:4433/echo -cert-hash <hex>
 ```
 
-Distroless static, non-root (uid 65532), ~16 MB. `gawk-echo` is included in
-the image: the server is HTTP/3-only, so the Helm chart's k8s probes exec it
-against localhost (kubelet can't speak h3), and it doubles as an
-in-container diagnostic. There is no shell in the image — anything exec'd
-must be a binary path in exec-form.
+Distroless static, non-root, ~16 MB. `gawk-echo` is included in the image:
+the server is HTTP/3-only, so the Helm chart's k8s probes exec it against
+localhost, and it doubles as an in-container diagnostic. There is no shell
+in the image — anything exec'd must be a binary path in exec-form.
 
 ## Deploy (Helm)
 
-The chart lives in `deploy/charts/gawk-server/` and is published by CI to
+The chart lives in `deploy/charts/gawk-server/` and is published to
 `oci://ghcr.io/tuhis/charts/gawk-server`, versioned in lockstep with the
-image (chart `version` == `appVersion` == image tag). Values that must be
-set per install: `certificate.dnsNames`, `config.allowedOrigins` (the
-frontend's origin) and `imagePullSecrets` — see the comments in
-[`deploy/charts/gawk-server/values.yaml`](deploy/charts/gawk-server/values.yaml). Full runbook incl.
-the GHCR pull secret: [`../docs/05-resilience-deploy.md`](../docs/05-resilience-deploy.md).
+image (chart `version` == `appVersion` == image tag).
 
 ```sh
 helm upgrade --install gawk-server oci://ghcr.io/tuhis/charts/gawk-server \
   --version <X.Y.Z> -n gawk -f my-values.yaml
 ```
 
+Values that must be set per install: `certificate.dnsNames`,
+`config.allowedOrigins` (the frontend's origin) and `imagePullSecrets` —
+see the comments in
+[`deploy/charts/gawk-server/values.yaml`](deploy/charts/gawk-server/values.yaml).
+Full runbook: [`../docs/05-resilience-deploy.md`](../docs/05-resilience-deploy.md).
+
 `replicas` defaults to `1`; the chart refuses `replicas > 1` unless
-`config.clusterMode: true` (R17, [docs/22](../docs/22-relay-scale-out.md)) —
-without it the hub is an in-memory single-pod pub/sub and overlapping pods
-would split the publisher from its subscribers. The Deployment strategy is
-`RollingUpdate` (`maxSurge: 1`, `maxUnavailable: 0`): pods drain one at a
-time (close code 4002, reconnect at 0 ms) with a Ready replacement already up
-before the old one exits, even at `replicas: 1`.
+`config.clusterMode: true` — without it the hub is an in-memory single-pod
+pub/sub and overlapping pods would split the publisher from its
+subscribers. The Deployment strategy is `RollingUpdate` (`maxSurge: 1`,
+`maxUnavailable: 0`): pods drain one at a time with a Ready replacement
+already up before the old one exits, even at `replicas: 1`.
