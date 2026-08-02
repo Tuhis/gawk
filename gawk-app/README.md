@@ -1,24 +1,26 @@
 # gawk-app
 
 React SPA frontend for the gawk game stream: screen capture, WebCodecs
-encode/decode, and WebTransport datagram transport to the relay. Project
-overview, quickstart and gotchas: [root README](../README.md).
+encode/decode, and WebTransport datagram transport to the relay. Requires
+a Chromium-based browser for broadcasting; viewing works on Firefox and
+iPhone Safari through documented fallbacks. Project overview, quickstart
+and gotchas: [root README](../README.md).
 
 ## Pages (hash-routed)
 
-Production surfaces (R6):
+Production surfaces:
 
 - `#/` — landing page; join-by-code entry, broadcaster/viewer chrome
 - `#/broadcast` — capture the screen, encode, publish chunked datagrams
-- `#/view/<id>` — subscribe to a broadcast ID, reassemble datagrams, decode,
-  paint to canvas
-- `#/terms` — usage terms (R23)
+- `#/view/<id>` — subscribe to a broadcast ID, reassemble datagrams,
+  decode, paint to canvas
+- `#/terms` — usage terms
 
-The pre-R6 pages are frozen, undecorated diagnostics under `#/debug/*` (not
-shared components with the production surfaces above):
+Frozen, undecorated diagnostics live under `#/debug/*` (not shared
+components with the production surfaces above):
 
-- `#/debug/broadcast`, `#/debug/view`, `#/debug/loopback` (capture → encode →
-  decode in one tab, no network — a pipeline diagnostic)
+- `#/debug/broadcast`, `#/debug/view`, `#/debug/loopback` (capture →
+  encode → decode in one tab, no network — a pipeline diagnostic)
 
 ## Structure
 
@@ -28,10 +30,10 @@ shared components with the production surfaces above):
 | `src/transport/` | Wire format mirror (`wire.ts`, golden-tested against the Go source of truth), packetizer, reassembler, WebTransport connection, broadcaster/viewer pipelines |
 | `src/features/` | Pages and components (landing, broadcaster, viewer, terms, debug) |
 | `src/state/` | Zustand stores (pipeline state, persisted server settings) |
-| `src/ui/` | Shared design-system primitives (monochrome tokens, R6) |
-| `src/device-probe/` | Standalone on-device capability harnesses (e.g. the R22 iOS MSE/AAC probe), never imported by the app bundle |
-| `src/lib/` | Small shared utilities (broadcast ID formatting, diagnostics JSON, feature gates, fullscreen/hotkey/wake-lock hooks, telemetry, R9/R28) |
-| `src/e2e/` | Standalone entry points the R20 CI harness injects into headless Chrome (e.g. the R22 muxer-check driver), never part of the app bundle |
+| `src/ui/` | Shared design-system primitives (monochrome tokens) |
+| `src/device-probe/` | Standalone on-device capability harnesses (e.g. the iOS MSE/AAC probe), never imported by the app bundle |
+| `src/lib/` | Small shared utilities (broadcast ID formatting, diagnostics JSON, feature gates, fullscreen/hotkey/wake-lock hooks, telemetry) |
+| `src/e2e/` | Standalone entry points the CI harness injects into headless Chrome, never part of the app bundle |
 | `src/styles/` | Global CSS + design tokens |
 
 ## Commands
