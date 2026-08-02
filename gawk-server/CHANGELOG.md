@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.24.0...gawk-server/v0.24.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* ship license notices with distributed artifacts, and doc/manifest license fixes ([#233](https://github.com/Tuhis/gawk/issues/233)) ([dae3de5](https://github.com/Tuhis/gawk/commit/dae3de5b295f31de8112d6a8debb90043fbf1195))
+
 ## [0.24.0](https://github.com/Tuhis/gawk/compare/gawk-server-v0.23.0...gawk-server-v0.24.0) (2026-07-31)
 
 

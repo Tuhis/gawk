@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.3](https://github.com/Tuhis/gawk/compare/gawk-app/v0.39.2...gawk-app/v0.39.3) (2026-08-02)
+
+
+### Bug Fixes
+
+* ship license notices with distributed artifacts, and doc/manifest license fixes ([#233](https://github.com/Tuhis/gawk/issues/233)) ([dae3de5](https://github.com/Tuhis/gawk/commit/dae3de5b295f31de8112d6a8debb90043fbf1195))
+
 ## [0.39.2](https://github.com/Tuhis/gawk/compare/gawk-app-v0.39.1...gawk-app/v0.39.2) (2026-08-02)
 
 

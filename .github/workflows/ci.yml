@@ -187,14 +187,14 @@ jobs:
           # The relay refuses to start without a certificate, so a bare run is
           # not a health check — `-dev-cert` gives it a self-signed one and
           # /healthz on the ops port is the answer.
-          relay='{"context":"gawk-server","dockerfile":"gawk-server/deploy/Dockerfile","tag":"gawk-server:ci","scope":"gawk-server","run_args":"-dev-cert -addr :4433 -metrics-addr :2112","probe_port":2112,"probe_path":"/healthz"}'
-          spa='{"context":"gawk-app","dockerfile":"gawk-app/deploy/Dockerfile","tag":"gawk-app:ci","scope":"gawk-app","run_args":"","probe_port":8080,"probe_path":"/"}'
+          relay='{"context":"gawk-server","dockerfile":"gawk-server/deploy/Dockerfile","tag":"gawk-server:ci","run_args":"-dev-cert -addr :4433 -metrics-addr :2112","probe_port":2112,"probe_path":"/healthz"}'
+          spa='{"context":"gawk-app","dockerfile":"gawk-app/deploy/Dockerfile","tag":"gawk-app:ci","run_args":"","probe_port":8080,"probe_path":"/"}'
           # R28: the build context is the REPO ROOT, not the module dir —
           # gawk-telemetry consumes gawk-server/wire through a local `replace`
           # (docs/33 D12), so the relay module's tree must be present.
           # R31: this is the ONLY cgo image, and `read_port` is what asks it
           # whether the DuckDB engine actually opened.
-          tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","tag":"gawk-telemetry:ci","scope":"gawk-telemetry","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081}'
+          tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","tag":"gawk-telemetry:ci","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081}'
           images=""
           add() { images="${images:+$images,}$1"; }
           if [ "$server" = true ]; then add "$relay"; fi
@@ -509,8 +509,12 @@ jobs:
             *"+g"*) ;;
             *) echo "::error::'$v' carries no +g<commit> suffix — go build stamped no VCS info. Check that the checkout left a usable .git and that -buildvcs was not disabled."; exit 1 ;;
           esac
-      - name: Include install instructions with the binaries
-        run: cp INSTALL.md dist/
+      - name: Include install instructions and license notices with the binaries
+        # THIRD-PARTY-NOTICES.md is what discharges the MIT/BSD/ISC
+        # attribution obligations for the *distributed* binaries — it has to
+        # travel in the tarball, not just sit in the repo. LICENSE comes from
+        # the repo root (this job's working-directory is gawk-broadcast).
+        run: cp INSTALL.md THIRD-PARTY-NOTICES.md ../LICENSE dist/
       - uses: actions/upload-artifact@v7
         with:
           # Keyed by the commit actually built, which is github.sha on every
@@ -621,7 +625,8 @@ jobs:
           # it ships a feature that silently degrades to system audio on every
           # machine that downloads it.
           tar -czf assets/gawk-broadcast-linux-amd64.tar.gz \
-            -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt
+            -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
+            THIRD-PARTY-NOTICES.md LICENSE
           # Asked of the tarball, not assumed of the command above: the R2
           # question ("does it actually reach production?") applied to the one
           # file whose absence is invisible until a user tries the feature.
@@ -636,7 +641,8 @@ jobs:
           # was therefore guaranteed to fail on the very first name it looked
           # for. No pipeline, no SIGPIPE, and one decompression instead of five.
           listing=$(tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz)
-          for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt; do
+          for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
+                      THIRD-PARTY-NOTICES.md LICENSE; do
             grep -qxF -- "$want" <<<"$listing" || {
               echo "::error::$want is missing from the release tarball"
               exit 1
@@ -1119,16 +1125,11 @@ jobs:
           mkdir -p e2e/bin e2e/out
           (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen)
           (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
-      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
-      # and buildkit's default bridged networks assume 1500 — large downloads
-      # inside RUN steps black-hole otherwise.
-      - uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [worker.oci]
-              networkMode = "host"
-      - name: Build the relay image (reusing the docker job's cache scope)
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      # No layer cache — importing one measured slower than building. The `docker`
+      # job carries the numbers.
+      - name: Build the relay image
         uses: docker/build-push-action@v7
         with:
           context: gawk-server
@@ -1136,7 +1137,6 @@ jobs:
           push: false
           load: true
           tags: gawk-server:e2e
-          cache-from: type=gha,scope=gawk-server
       - name: Install kind (pinned)
         run: |
           sudo curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
@@ -1291,15 +1291,8 @@ jobs:
       matrix: ${{ fromJSON(needs.changes.outputs.docker_matrix) }}
     steps:
       - uses: actions/checkout@v7
-      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
-      # and buildkit's default bridged networks assume 1500 — large downloads
-      # inside RUN steps black-hole otherwise.
-      - uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [worker.oci]
-              networkMode = "host"
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -1308,34 +1301,38 @@ jobs:
           # `load` so the next step can actually RUN what was just built.
           load: true
           tags: ${{ matrix.tag }}
-          # Distinct scope per image or the builds evict each other. Named, not
-          # derived from the context: the telemetry image's context is the repo
-          # ROOT, so `scope=${{ matrix.context }}` scoped it "." here while
-          # release-please.yml scoped the same image "gawk-telemetry". The two
-          # never shared a layer — visible in the cache listing as
-          # `index-gawk-telemetry` with 2 entries against `index-.` with 22.
-          cache-from: type=gha,scope=${{ matrix.scope }}
-          # Written on main only, and this is not a micro-optimisation.
+          # NO LAYER CACHE, and that is the fast configuration — measured, and
+          # the opposite of what everyone expects.
           #
-          # A cache entry written from a PR lands in that PR's own scope, which
-          # no other run — not main, not another PR — can ever restore from. So
-          # exporting there buys a re-run of the same PR and nothing else, and
-          # it is expensive twice over:
+          # These runners are ephemeral with dind's image store on a RAM
+          # emptyDir, so every build starts from a cold buildkit either way. The
+          # only question is where the layers come from, and importing them from
+          # GitHub's Actions cache is slower than rebuilding them. Four builds,
+          # serialized so contention could not confound them (run 30769004833):
           #
-          #  * Directly. In run 30720233685 the telemetry image's export was
-          #    `#26 exporting to GitHub Actions Cache … DONE 177.6s` (82s
-          #    preparing, 96s sending) — three minutes of an 8m43s job.
-          #  * Indirectly, and worse. The repository's Actions cache was at
-          #    10.00 GiB against a 10 GB cap, 251 entries, 68% of it buildkit
-          #    layer blobs and 5.6 GiB of THAT sitting in refs/pull/* scopes.
-          #    A full cache evicts LRU, and what it was evicting is the
-          #    setup-go entries (2.6 GiB) that six jobs here restore — which is
-          #    how `server`'s setup-go step came to take 112s.
+          #     gawk-server      with type=gha  160s (3 cache hits)
+          #                      without         55s
+          #     gawk-telemetry   with type=gha  248s (5 cache hits)
+          #                      without         72s
           #
-          # PRs still READ main's cache: the Actions cache falls back to the
-          # default branch when a key misses in the PR's own scope. What they
-          # stop doing is filling the budget with copies nothing reads.
-          cache-to: ${{ github.event_name == 'push' && format('type=gha,mode=max,scope={0}', matrix.scope) || '' }}
+          # It is not that the cache missed — it hit, and the hits are what cost.
+          # `RUN go mod download` was a CACHE HIT that took 123s, because
+          # materialising that layer out of the Actions cache moves far more
+          # bytes, far more slowly, than just running the command. Same shape on
+          # telemetry: 217s to restore the UI build, 119s for the base image
+          # layer, against 72s to do the entire build from scratch.
+          #
+          # Base images come from the in-cluster pull-through mirror instead
+          # (see .github/actions/setup-buildx), which is the store that IS fast:
+          # the FROM stage measured 17s against the Actions cache's 27s.
+          #
+          # Dropping the export also returns the repository's 10 GB Actions
+          # cache budget — it was pinned at ~10.8 GiB, mostly buildkit blobs,
+          # evicting the setup-go entries that six jobs here restore.
+          #
+          # Before re-adding any of this: re-run that A/B. The result depends on
+          # this repository's build being small (a 32s `go build`) and the link
+          # to GitHub's cache being slow, and either could change.
 
       # **Building an image is not evidence that it runs.**
       #

@@ -15,4 +15,7 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.31-alpine
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+# Attribution for the bundled JS ships with the image that distributes it.
+# .dockerignore excludes *.md and carries an explicit exception for this file.
+COPY THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES.md
 EXPOSE 8080

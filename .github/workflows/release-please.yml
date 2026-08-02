@@ -62,20 +62,18 @@ jobs:
       VERSION: ${{ needs.release-please.outputs.server_version }}
     steps:
       - uses: actions/checkout@v7
-      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
-      # and buildkit's default bridged networks assume 1500 — large downloads
-      # inside RUN steps black-hole otherwise.
-      - uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [worker.oci]
-              networkMode = "host"
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # No layer cache. Importing one from GitHub's Actions cache measured
+      # slower than building from scratch on these runners — 160s against 55s
+      # for this image, with the cache HITTING (run 30769004833). ci.yml's
+      # `docker` job carries the full numbers and the caveat about when to
+      # re-measure. Base images come from the in-cluster mirror instead.
       - uses: docker/build-push-action@v7
         with:
           context: gawk-server
@@ -86,8 +84,6 @@ jobs:
           tags: |
             ghcr.io/tuhis/gawk-server:${{ env.VERSION }}
             ghcr.io/tuhis/gawk-server:latest
-          cache-from: type=gha,scope=gawk-server
-          cache-to: type=gha,mode=max,scope=gawk-server
       - name: Push Helm chart
         # The tagged commit's Chart.yaml already carries the right versions
         # (release-please extra-files); the explicit flags are
@@ -109,15 +105,8 @@ jobs:
       VERSION: ${{ needs.release-please.outputs.app_version }}
     steps:
       - uses: actions/checkout@v7
-      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
-      # and buildkit's default bridged networks assume 1500 — large downloads
-      # inside RUN steps black-hole otherwise.
-      - uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [worker.oci]
-              networkMode = "host"
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -131,8 +120,6 @@ jobs:
           tags: |
             ghcr.io/tuhis/gawk-app:${{ env.VERSION }}
             ghcr.io/tuhis/gawk-app:latest
-          cache-from: type=gha,scope=gawk-app
-          cache-to: type=gha,mode=max,scope=gawk-app
       - name: Push Helm chart
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -153,15 +140,8 @@ jobs:
       VERSION: ${{ needs.release-please.outputs.telemetry_version }}
     steps:
       - uses: actions/checkout@v7
-      # Host networking on both levels: the ioio-k8s pod network MTU is 1480
-      # and buildkit's default bridged networks assume 1500 — large downloads
-      # inside RUN steps black-hole otherwise.
-      - uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [worker.oci]
-              networkMode = "host"
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -179,8 +159,6 @@ jobs:
           tags: |
             ghcr.io/tuhis/gawk-telemetry:${{ env.VERSION }}
             ghcr.io/tuhis/gawk-telemetry:latest
-          cache-from: type=gha,scope=gawk-telemetry
-          cache-to: type=gha,mode=max,scope=gawk-telemetry
       - name: Push Helm chart
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
