@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.2](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.11.1...gawk-broadcast/v1.11.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **broadcast:** correct the release-download tag, and move tags to `component/vX.Y.Z` ([#229](https://github.com/Tuhis/gawk/issues/229)) ([49214c3](https://github.com/Tuhis/gawk/commit/49214c3fe623b65fbeb725937c8c48395793d2e3))
+
 ## [1.11.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-v1.11.0...gawk-broadcast-v1.11.1) (2026-08-01)
 
 

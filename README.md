@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Tuhis/gawk/actions/workflows/ci.yml/badge.svg)](https://github.com/Tuhis/gawk/actions/workflows/ci.yml)
 [![Windows broadcaster](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml/badge.svg)](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml)
-[![Relay release](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-server-v*&label=relay)](https://github.com/Tuhis/gawk/releases)
+[![Relay release](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-server*&label=relay)](https://github.com/Tuhis/gawk/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Self-hosted, low-latency live game streaming for the browser. A broadcaster

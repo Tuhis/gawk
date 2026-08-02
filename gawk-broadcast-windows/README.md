@@ -25,8 +25,11 @@ GitHub CLI:
 
 ```
 gh release download --pattern 'gawk-broadcast-windows-x86_64.exe'          # newest
-gh release download gawk-broadcast-windows-v1.0.0 --pattern '*.exe'        # specific
+gh release download gawk-broadcast-windows-v1.1.0 --pattern '*.exe'        # specific
 ```
+
+(Releases newer than v1.1.0 are tagged `gawk-broadcast-windows/vX.Y.Z` —
+the separator changed repo-wide in August 2026; older tags use the dash.)
 
 `INSTALL.md`, `BUILD-INFO.txt` and `SHA256SUMS` are attached alongside it.
 The EXE is unsigned by design (distribution is to known operators, docs/38
