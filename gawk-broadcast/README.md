@@ -42,8 +42,14 @@ Released versions are attached to their GitHub Release, which is the easy path
 
 ```sh
 gh release download --pattern 'gawk-broadcast-linux-amd64.tar.gz'   # newest release
-gh release download gawk-broadcast-v1.9.0 --pattern '*.tar.gz'      # a specific one
+gh release download gawk-broadcast/v1.11.2 --pattern '*.tar.gz'     # a specific one
 ```
+
+Note the slash: tags are `gawk-broadcast/vX.Y.Z` from v1.11.2 onward, and
+`gawk-broadcast-vX.Y.Z` before it. The separator changed because Go requires
+`<subdir>/vX.Y.Z` of a module in a repository subdirectory, without which
+`gawk-server/wire` — the package this module and both other clients import
+rather than mirror — cannot be resolved by `go get` at a version at all.
 
 The tarball holds both binaries, `INSTALL.md` and `BUILD-INFO.txt`; a
 `SHA256SUMS` asset sits beside it (the binaries are unsigned, so that is the
