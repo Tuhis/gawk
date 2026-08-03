@@ -297,7 +297,7 @@ Useful facts when something looks wrong:
 Needed if your glibc is older than 2.34, or you're not on x86-64.
 
 ```sh
-# Go ≥ 1.23, plus Gio's build headers (Debian/Ubuntu):
+# Go ≥ 1.26, plus Gio's build headers (Debian/Ubuntu):
 sudo apt install golang gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
   libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev \
   libxcursor-dev libvulkan-dev
