@@ -1056,7 +1056,7 @@ own), let the cluster auto-deploy, then confirm:
   needs relay-side leg support, and the viewer half (0x0F parsing, the
   controller, the menu) ships with gawk-app.
 
-### 13.1 UI browser verify (ST5's manual half, ~5 min)
+### 13.1 UI browser verify (ST5's manual half, ~5 min) — ✅ passed 2026-08-03
 
 Desktop Chrome against the fleet, on a small/quiet broadcast:
 
