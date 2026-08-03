@@ -106,6 +106,26 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   2026-07-21/22 (the two Safari entries below are built on those captures).
   Same Safari version fails now. The bump merged 2026-07-30; the relay
   deployed 2026-08-02.
+- **Upstream, and it confirms this**:
+  [quic-go/webtransport-go#355](https://github.com/quic-go/webtransport-go/issues/355)
+  — *"Safari iOS Fails from SETTINGS_WT_MAX_SESSIONS"*, open, introduced in
+  v0.12.0. It reports the same empty-message `WebTransportError` ~50 ms after
+  construction, and names the mechanism more precisely than the draft-version
+  framing above: a server using an **empty `Config`** advertises
+  `SETTINGS_WT_MAX_SESSIONS` but none of the three `WT_INITIAL_MAX_*`
+  settings, and Safari refuses the session *before sending the extended
+  CONNECT* — which is exactly why nothing reaches our handlers. v0.11.0 sent
+  all four.
+  **This makes the fix a few lines, not a rollback**: `webtransport.Server`
+  has an exported `Config *Config` field (`MaxIncomingStreams`,
+  `MaxIncomingUniStreams`, `MaxIncomingData`; each omits its setting when
+  zero). `internal/transport/server.go:219` never sets it, so it is nil and
+  every setting is dropped. Populating it restores the v0.11.1 advertisement
+  on v0.12.0. Upstream's own suggested fix is for `ConfigureHTTP3Server` to
+  set all four itself.
+  The issue also offers live endpoints for confirming Safari's behaviour
+  without touching our relay: `echo.semantic-ui.com` port **4433** (v0.12.0,
+  expected to fail) and **4436** (v0.11.0, expected to work).
 - **Confirmation procedure**: run a relay pinned to `webtransport-go v0.11.1`
   and point Safari at it. Recovery confirms the draft version is the trigger;
   no recovery means the draft change is a red herring and the quic-go
