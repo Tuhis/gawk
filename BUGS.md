@@ -55,6 +55,71 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   row. Whether it also reads `Main thread` on the same machine was not
   checked, and it would not have the same cause if it does.
 
+## Every WebKit viewer fails to join since the webtransport-go draft-16 bump
+
+- **Found**: 2026-08-03, from a live report — broadcast `DDP4H7` showed
+  "Streamer offline" on macOS Safari while Firefox on the same machine, same
+  network, same minute played it fine. Reproduced on iPhone Safari too.
+- **Impact**: **every Safari/WebKit viewer on the fleet, macOS and iOS, cannot
+  join any broadcast**, and the error card tells them the streamer is offline
+  (see the misleading-card entry below — this is its worst instance). Silent
+  since the relay rolled `0.24.1` on 2026-08-02. The whole iOS audience is cut
+  off, which also makes any R22 `MF5` iOS verification fail for reasons that
+  have nothing to do with R22.
+- **Symptom, from the viewer**: `viewer error (unreachable)` with an empty
+  message ~144–278 ms after load. A direct dial in the Safari console gives
+  `WebTransportError`, `source: "session"`, `streamErrorCode: null`, and an
+  empty `message` on both `ready` and `closed`.
+- **Cause — strong, one link unproven.** `chore(deps): update quic-go` (#131,
+  merged 2026-07-30) moved `webtransport-go` v0.11.1 → v0.12.0, which is a
+  **WebTransport draft version change**, not a patch: v0.11.1's README says it
+  implements draft-15, v0.12.0's says draft-16. With it, the server stopped
+  advertising draft-15's three session flow-control SETTINGS —
+  `settingsWebTransportInitialMaxStreamsUni`, `…MaxStreamsBidi` and
+  `…InitialMaxData`, all `1 << 60` (the `AdditionalSettings` map shrank from 6
+  entries to 3) — in favour of draft-16's capsule-based flow control. A
+  draft-15 client sees no session flow-control credit and cannot establish the
+  session. `settingsEnableWebtransportDraft06` (`0x2b603742`) is unchanged, so
+  the failure is in session establishment, not feature detection.
+  **What is not proven**: that Safari 26.5.2 implements draft-15 specifically.
+  Everything else here is read from the two module versions and the timeline.
+- **Why the relay logged nothing** — and this is the fact that ruled out every
+  other hypothesis: the failure happens during H3 SETTINGS / session
+  negotiation, *upstream* of `CheckOrigin` and route dispatch. So there is no
+  `origin rejected`, no `subscribe rejected pre-upgrade`, no session line, and
+  the counters stay clean (`gawk_origin_rejected_total 0`,
+  `gawk_rate_limited_total 0`). A viewer that cannot join leaves no trace at
+  all.
+- **Ruled out**, each checked against the live fleet on 2026-08-03: 404/429
+  (the only `not_found`s that day were another client, hours earlier, with
+  different IDs); the Origin allowlist; the per-IP rate limiter; subscriber
+  caps; an empty `config.relayUrl` (real, fixed separately, but the
+  `gawk.ioio.fi` hostname fallback resolves correctly); iCloud Private Relay
+  (off, and toggling it changed nothing); macOS Local Network permission
+  (neither browser holds a grant, and Firefox works); and certificate trust —
+  a QUIC dial from the same Mac shows the relay serving the full 3-cert chain
+  (leaf → LE `YR1` → `ISRG Root YR` cross-signed by `ISRG Root X1`) and the
+  macOS system trust store verifies it. Worth keeping in mind separately:
+  `ISRG Root YR` is **not** in the macOS trust store, so Apple clients depend
+  entirely on that cross-sign continuing to be served.
+- **Timeline**: macOS Safari 26.5.2 connected and streamed for minutes on
+  2026-07-21/22 (the two Safari entries below are built on those captures).
+  Same Safari version fails now. The bump merged 2026-07-30; the relay
+  deployed 2026-08-02.
+- **Confirmation procedure**: run a relay pinned to `webtransport-go v0.11.1`
+  and point Safari at it. Recovery confirms the draft version is the trigger;
+  no recovery means the draft change is a red herring and the quic-go
+  v0.60.0 → v0.61.0 half of the same bump needs the same treatment.
+- **Fix would start**: with the decision of which draft to serve, which is a
+  product decision, not a dependency one — draft-16 is where the ecosystem is
+  going and Safari will get there. Options are pinning back until WebKit
+  catches up, or serving both drafts if webtransport-go can. Whichever is
+  chosen, the durable lesson is that **`webtransport-go`'s minor version is a
+  wire-compatibility surface**: it must not arrive as an unattended Renovate
+  bump, and CI cannot catch this because the e2e suite has no WebKit client.
+  Constrain it in `renovate.json5` and add a WebKit reachability check before
+  trusting a future bump.
+
 ## Windows broadcaster: viewers black for the first minute (keyframe supersede livelock)
 
 - **Found**: 2026-07-31, first working field broadcast from the RTX 2070
