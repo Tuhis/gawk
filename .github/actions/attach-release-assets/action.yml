@@ -51,7 +51,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/github-script@v7
+    - uses: actions/github-script@v9
       env:
         # Passed as env, never interpolated into the script body: a commit
         # message is attacker-controlled text and `${{ }}` inside `script:` is
