@@ -409,7 +409,7 @@ jobs:
       # nothing. The tooling comes from the dispatched ref; only the source
       # being built comes from the target.
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: gawk-broadcast-windows-x86_64-${{ needs.build.outputs.sha }}
           path: staging
