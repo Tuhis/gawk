@@ -398,6 +398,12 @@ freeze-on-gap + parity already handle. **Primary death** is exactly today's
 session death: `ViewerSession` reconnects, legs are torn down with the
 pipeline (they are owned by the transport, which is per-attempt).
 
+> **Correction (2026-08-06)**: the viewer-owned teardown above only holds
+> when the viewer's runtime notices the primary's death — a live fleet
+> capture caught a relay-side eviction whose legs nobody tore down, holding
+> subscriber slots for as long as the broadcast lived (BUGS.md 2026-08-03).
+> The relay-side lifecycle this paragraph is missing is specified in §14.
+
 **Relay-side safety** is Decision 4's TTL: any state where the viewer
 believes it is unstriped while the relay believes it is striped self-heals
 in ≤ 5 s; the opposite state (relay unsuppressed, viewer striped) costs
@@ -594,6 +600,10 @@ its instrument work (loss-profile striped mode) is deliberately inside it so
 the experiment and the acceptance tool are the same code. ST3/ST4 can land in
 parallel against ST2's wire; ST5 needs ST4's transport; ST6 needs ST5's
 stats.
+
+**ST8–ST10** (the leg-lifecycle correction, added 2026-08-06 after the
+BUGS.md orphaned-leg finding) are specified in §14, with their own
+acceptance-criteria table there.
 
 ---
 
@@ -1133,3 +1143,169 @@ session:
   rejection is a valid completion).
 - Close out: update §12 and the ST1/ST7 chunk rows, the ROADMAP entry, and —
   only if the measurements say so — BUGS.md.
+
+---
+
+## 14. Leg lifecycle correction — reaping orphaned stripe legs (2026-08-06)
+
+Status: **designed, not implemented** (chunks ST8–ST10 below). Repro test
+committed skipped: `gawk-server/internal/hub/stripe_lifecycle_test.go`
+(`TestStripeLegsReapedWhenPrimaryEvicted`) — un-skipping it is ST8's first
+step. The defect entry lives in BUGS.md ("Stripe legs outlive the primary
+that owns them") until ST8 ships; remove it then and fold the durable lesson
+into `docs/gotchas.md`.
+
+### 14.1 The defect, and why the design missed it
+
+A live capture (2026-08-03) found `subscribers: 4 / stripeLegs: 4 /
+viewersGlobal: 0` an hour after a broadcast's only viewer lost its primary
+to the R10 `KeyframeOpenFailEvictThreshold` eviction. Nothing ever ends an
+orphaned leg short of broadcast expiry, because every teardown path assumed
+someone else held the job:
+
+- **§5.6 assigned teardown to the viewer** ("legs are torn down with the
+  pipeline"). True only when the viewer's runtime *notices* the primary's
+  death — and the two Safari entries in BUGS.md document a browser that
+  surfaces nothing when a session dies under it.
+- **The QUIC idle timeout cannot fire**: legs receive delta datagrams
+  forever, and the peer's QUIC stack (which outlives a wedged or
+  backgrounded app) keeps acking them. A leg is the one session shape with
+  a permanent outbound flow and no required inbound, so transport-level
+  liveness is structurally blind to it.
+- **Decision 4's `StripeStateTTL` heals suppression, not legs** — it lives
+  on the primary, and here the primary is gone.
+- **The registry has no primary→leg edge to act on.** A leg is an ordinary
+  `Subscriber` carrying only `(stripeLeg, N, member)`; §5.8 even notes the
+  sessions "share nothing else" as a feature. `Subscriber.Close` removes
+  only itself; the sole paths that close a leg today are the leg's own
+  session end and `expireBroadcast` (terminal 4000).
+
+Impact compounds beyond the slots (`MaxSubscribers`/`MaxTotalSubscribers`)
+and the fan-out work: on an edge pod, orphaned legs count in
+`ExternalSubscribers` **by design** (§5.8's linger rule), so a lost viewer
+whose legs landed on an edge also pins that edge hub and its upstream
+internal session alive indefinitely. And because legs are deliberately
+excluded from the R18 viewer count, the one surface an operator watches is
+the one place the leak is invisible.
+
+### 14.2 The invariant to establish
+
+> **Pod-local**: a stripe leg must not outlive the primary session of the
+> viewer that dialed it, when that primary lives on the same pod — however
+> the primary ends (eviction, clean close, abrupt death, depose).
+> **Fleet-wide**: a leg must not outlive its viewer's demonstrated liveness
+> by more than a bounded TTL, because §5.7 lets legs land on pods that
+> never see the primary and the design owes those pods no cross-pod state.
+
+Two mechanisms, because no single one covers both halves: an **ownership
+reap** (ST8/ST9) for the pod-local invariant, and a **liveness lease**
+(ST10) as the cross-pod and defense-in-depth backstop. Both closes are
+non-terminal: a live viewer that merely lost its primary re-enters the
+§5.6 leg-death fallback (unstripe, backoff, re-engage) — reaping is always
+safe against a false positive, which is what makes this correction cheap
+to hold.
+
+### 14.3 Decisions
+
+1. **Ownership is declared by the viewer at dial time** — a new
+   `?owner=<16 lowercase hex>` query parameter on `CONNECT /subscribe/{id}`,
+   carried on the primary dial and on every leg dial of one transport
+   attempt. The viewer mints 8 random bytes per attempt (fresh per
+   reconnect, matching "legs are per-attempt"). Rationale over the
+   alternatives:
+   - *Relay-derived heuristics* are either imprecise or broken: same-IP
+     matching dies behind NAT (two friends on one router), and
+     "reap every leg of the broadcast when any striped primary dies" causes
+     collateral leg churn on exactly the hot-broadcast scale (§1000-viewer
+     ambition) the feature targets.
+   - *A new wire type* for ownership would buy nothing over a dial param —
+     legs already declare themselves via dial params (`?stripe`/`?leg`),
+     which are relay-and-viewer-only and need no wire mirrors.
+   - *Trust*: the token has the same trust model as the stripe params
+     themselves. Forging or reusing one can only get *your own* sessions
+     reaped (guessing another viewer's 64-bit token is not a practical
+     attack); it is never exposed in `/statusz` or logs, and it is not an
+     authentication surface. Malformed or absent → treated as unowned,
+     never a rejection (the no-subscribe-param-may-reject rule; the strict
+     stripe params stay the sole exception).
+2. **The reap lives in `Subscriber.Close`** — the single funnel every
+   primary end already passes through (transport handler defer, all three
+   eviction paths, DVR `evictOnce`, depose, GC). Closing a non-leg external
+   subscriber collects, under `Registry.mu`, the same-hub legs whose owner
+   token matches, and closes them outside the lock (the
+   `CloseInternalSubscribers` pattern). Legs reap nothing (`stripeLeg`
+   guard), so there is no recursion; `Close` is already idempotent, so
+   racing the expiry sweep is benign.
+3. **Skew fallback for unowned legs**: a primary that ever armed
+   suppression (`ApplyStripeState{striped}` — latch a sticky `everStriped`)
+   and closes with an **empty** owner token reaps the hub's **unowned**
+   legs. This is the collateral-churn heuristic confined to where it is
+   needed: viewers predating ST9 during the rollout window (the SPA
+   redeploys with the fleet, so the window is open tabs, not weeks). Owned
+   legs are never touched by it, unowned legs disappear as clients update,
+   and a collateral reap degrades to the §5.6 fallback. It is also what
+   keeps the committed repro test meaningful forever — the test exercises
+   exactly this path.
+4. **A dedicated non-terminal close code**: `4005
+   CloseCodeStripeLegOrphaned` ("stripe leg orphaned: owning primary
+   session ended"), allocated in `gawk-server/wire/wire.go` and mirrored in
+   `wire.ts`, `gawk-broadcast/internal/wirecheck` and
+   `gawk-broadcast-windows/crates/wire` with byte-identical vectors (the
+   Windows wire CI co-triggers on `gawk-server/wire/**` already). Reusing
+   4001 was considered and rejected: the misleading-card entry in BUGS.md
+   is the standing record of what collapsing distinct causes into one code
+   costs, and the close code is the only machine-readable reason a client
+   gets. Skew is safe: the TS viewer treats only 4000 as terminal
+   (`viewer-session.ts`), so an old client reaping to 4005 takes the
+   leg-death fallback — the correct behavior.
+5. **Liveness lease (ST10)** — the cross-pod backstop. The viewer sends its
+   existing 1 Hz `0x10 StripeState` refresh **on every leg as well as the
+   primary** (same bytes, already built each second; `ApplyStripeState` is
+   already inert on legs, so the datagram is semantically a no-op and
+   purely a keepalive). The relay arms a per-leg lease on the **first**
+   inbound datagram and reaps with 4005 after `StripeLegLease = 30 s` of
+   silence. Design points, each load-bearing:
+   - *Arm-on-first-inbound* grandfathers pre-ST10 clients (they never send
+     on a leg, so they are never armed — no churn during skew) and mirrors
+     the viewer's own dead-session watchdog arming rule.
+   - *30 s* = 30 missed sends, sized for background-tab timer throttling
+     (Chrome throttles hidden-tab timers to 1/min under intensive
+     throttling; a backgrounded viewer already loses suppression to the
+     5 s `StripeStateTTL` and fails open to duplicates, so a lease reap at
+     30 s only ends sessions that stopped being useful 25 s earlier).
+     A constant beside the eviction thresholds, not a knob.
+   - *Division of responsibility*: the wedged-WebKit captures show exactly
+     the client this covers — its datagram *sends* fail (the swallowed
+     TimeSync writes), so it goes silent and is reaped; a client alive
+     enough to keep sending is alive enough for its own watchdogs
+     (keyframe-stall fires when deltas flow but keyframes stop) to tear
+     down and reconnect, and the fresh attempt re-dials everything.
+   - This is also what un-pins the edge-linger amplification in §14.1: a
+     dead viewer's cross-pod legs go silent, the lease ends them, and the
+     edge linger-out proceeds.
+6. **Observability**: `stripeLegsReaped` on the broadcast stats and totals
+   (omitempty — the `-striped-delivery=false` byte-identical rule holds),
+   a `gawk_stripe_legs_reaped_total` Prometheus counter, and one log line
+   per reap carrying the leg count and cause (`primary-ended` vs
+   `lease-expired`). The counter is the operator-visible tombstone of a
+   state that used to be invisible; it also feeds ST9's e2e criterion that
+   healthy striped runs reap **zero** legs.
+7. **No new knobs.** `StripeLegLease` is a constant; the owner param needs
+   no config. `registryOptions`/Helm/flags are untouched, so the R2
+   carry-all-limits rule has nothing new to carry — stated here so the
+   review checklist's plumbing question has its answer on record.
+
+### 14.4 Chunks
+
+| Chunk | Work | Acceptance criteria | Status |
+|-------|------|---------------------|--------|
+| **ST8** | **Relay ownership reap**: `?owner=` param (validate `[0-9a-f]{16}`, else unowned) threaded through `handleSubscribe` into `subscribeOpts`/`StripeLeg`; sticky `everStriped` latch in `ApplyStripeState`; reap in `Subscriber.Close` per D2/D3; `CloseCodeStripeLegOrphaned = 4005` in `wire.go` + the three mirrors with golden vectors; `stripeLegsReaped` in `/statusz` + `gawk_stripe_legs_reaped_total`; reap log line | Test-first: un-skip `TestStripeLegsReapedWhenPrimaryEvicted`, watch it fail, make it pass (tightening its loose close-code assertion to 4005). Then: owned-precision test — two striping viewers on one broadcast, only the dead primary's legs close, the other viewer's survive; no-reap guards — mismatched token, unowned legs beside an unowned **never-striped** primary, internal/reliable/DVR closes never trigger; reap fires on clean `Close` and on `TakeOverPublish` depose, not just eviction; legs closed by broadcast expiry still get terminal 4000 (the reap must not race it into 4005); 4005 vectors byte-identical across all four mirrors and the TS viewer treats it as non-terminal (skew test); `/statusz` and metrics byte-identical to pre-ST8 while the counter is zero; reaped legs' counters fold per CODE-REVIEW ("counters survive their owner") | planned |
+| **ST9** | **Viewer ownership**: mint 8-byte token per transport attempt in `StripedViewerTransport`/the transport worker path; append `owner` to the primary dial and every leg dial | Token identical across all dials of one attempt, fresh across attempts; unstriped viewers still dial with the param (it is attempt-scoped, not stripe-scoped — the primary must be owned *before* auto-detect engages); existing transport suites green unmodified (the param is additive); tier-1 striped e2e extended: `stripeLegsReaped` stays 0 across a healthy striped pass, and a forced primary kill (test hook) drives it to N with the viewer re-engaging | planned |
+| **ST10** | **Liveness lease, both sides**: relay per-leg lease armed on first inbound datagram, `StripeLegLease` reap with 4005 (cause `lease-expired`); viewer sends the 1 Hz `0x10` refresh on each leg | Relay (fake clock): unarmed leg is never reaped however long it idles (grandfather); armed leg reaped after exactly the lease of silence; any inbound datagram renews; `ApplyStripeState` still inert on legs (regression). Viewer: 1 Hz send on every live leg asserted against fake transports; sends stop with the controller so a torn-down attempt cannot keep a lease alive. E2e: healthy striped pass reaps zero (the cadence is comfortably inside the lease) | planned — enforcement decision-gated on confirming the worker-context timer-throttling budget on real backgrounded tabs before shipping |
+
+Ordering: **ST8 → ST9**, then **ST10** independently (ST8's reap needs no
+client change to fix the observed class via D3; ST9 makes it precise; ST10
+closes the cross-pod residue). On ST8+ST9 landing: remove the BUGS.md
+entry, add the gotcha ("sessions created as a group must carry their group
+identity from birth — a later association is unreconstructable"), update
+the ROADMAP R30 row, and keep §5.6's correction note pointing here.

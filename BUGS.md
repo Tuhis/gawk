@@ -53,6 +53,27 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   of what the viewer does, which is the property §5.6's viewer-owned teardown
   is missing. Test-first per CODE-REVIEW.md: evict a primary with legs
   attached, assert the leg sessions end and `subscribers` returns to zero.
+- **Confirmed 2026-08-06 by code reading and a reproducing test.** The
+  structural claim holds end to end: `SubscribeStripeLeg` stores only
+  `(stripeLeg, N, member)` on an ordinary `Subscriber` (`hub.go`
+  `subscribeOpts`), `Subscriber.Close` removes only itself, and the only
+  paths that ever end a leg are the leg's own session death and broadcast
+  expiry (`expireBroadcast`, terminal 4000) — so the orphans live exactly as
+  long as the broadcast, as observed. The transport can't associate either:
+  a leg dial carries only the broadcast ID and `?stripe=N&leg=j`
+  (`server.go` `handleSubscribe`), and docs/35 §5.7 allows legs to land on
+  pods that never see the primary at all. Repro:
+  `gawk-server/internal/hub/stripe_lifecycle_test.go`
+  (`TestStripeLegsReapedWhenPrimaryEvicted`) drives the exact field
+  sequence — striped primary evicted via the R10 open-failure streak with
+  four legs attached — and fails today at "timed out waiting for the evicted
+  primary's stripe legs to be closed" (committed skipped; un-skipping it is
+  the fix's first step).
+- **Fix plan**: docs/35 §14 (chunks ST8–ST10) — a viewer-declared ownership
+  token reaped in `Subscriber.Close` (every end path funnels there), a
+  skew fallback for unowned legs, a dedicated non-terminal close code, and a
+  cross-pod liveness lease as backstop. §5.6's viewer-owned-teardown
+  paragraph carries a correction note pointing there.
 - **Related**: the eviction that triggered this is itself the keyframe-stream
   failure family tracked in the two Safari entries below, but here it hit a
   viewer that had connected successfully and it was `openFailed`, not a stalled
