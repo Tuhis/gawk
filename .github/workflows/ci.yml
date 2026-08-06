@@ -855,7 +855,7 @@ jobs:
           # duckdb-tagged graph it does pull is exactly the fat working set
           # that job's comment warns about handing to leaner jobs.
           cache: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: Go and npm dependencies are on the license allowlist
@@ -915,7 +915,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       # No Rust setup step and no rust-windows-preflight: `cargo tree
