@@ -19,11 +19,11 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 373 packages
+## Summary — 374 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT OR Apache-2.0` | 170 |
+| `MIT OR Apache-2.0` | 171 |
 | `MIT` | 63 |
 | `Apache-2.0 OR MIT` | 30 |
 | `Unicode-3.0` | 25 |
@@ -82,6 +82,7 @@ script for what counts as a dependency here and why.
 | `av1-grain` | 0.2.5 | `BSD-2-Clause` | Copyright (c) 2022-2022, the rav1e contributors |
 | `avif-serialize` | 0.8.9 | `BSD-3-Clause` | Copyright (c) 2020, Cloudflare, Inc |
 | `base64` | 0.22.1 | `MIT OR Apache-2.0` | Copyright (c) 2015 Alice Maz |
+| `base64` | 0.23.1 | `MIT OR Apache-2.0` | Copyright (c) 2025 Alice Maz, Marshall Pierce |
 | `bit_field` | 0.10.3 | `Apache-2.0/MIT` | Copyright (c) 2016 Philipp Oppermann |
 | `bitflags` | 2.13.1 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `bitstream-io` | 4.10.0 | `MIT/Apache-2.0` | Copyright (c) 2017 Brian Langenberger |
@@ -245,7 +246,7 @@ script for what counts as a dependency here and why.
 | `parley_data` | 0.10.0 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
 | `paste` | 1.0.15 | `MIT OR Apache-2.0` | — |
 | `pastey` | 0.1.1 | `MIT OR Apache-2.0` | — |
-| `pem` | 3.0.6 | `MIT` | Copyright (c) 2016 Jonathan Creekmore |
+| `pem` | 4.0.0 | `MIT` | Copyright (c) 2016 Jonathan Creekmore |
 | `percent-encoding` | 2.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `pico-args` | 0.5.0 | `MIT` | Copyright (c) 2019 Yevhenii Reizner |
 | `pin-project` | 1.1.13 | `Apache-2.0 OR MIT` | — |
