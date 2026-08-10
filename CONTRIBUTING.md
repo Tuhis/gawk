@@ -120,7 +120,7 @@ cd gawk-telemetry         && go vet ./... && go test ./...   # plus -tags duckdb
 cd gawk-app               && npm ci && npm run lint && npm test && npm run build
 cd gawk-telemetry/ui      && npm ci && npm run lint && npm test && npm run build
 cd gawk-broadcast-windows && cargo test --workspace && \
-                             cargo clippy --target x86_64-pc-windows-msvc
+                             cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
 Every Go module must also be `go mod tidy`-clean — the `tidy` job checks all
