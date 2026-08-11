@@ -27,8 +27,8 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
-| `gioui.org` | v0.10.1 | `Unlicense OR MIT` | Copyright (c) 2019 The Gio authors |
-| `gioui.org/shader` | v1.0.8 | `Unlicense OR MIT` | Copyright (c) 2019 The Gio authors |
+| `gioui.org` | v0.10.2 | `Unlicense OR MIT` | Copyright (c) 2019 The Gio authors |
+| `gioui.org/shader` | v1.0.9 | `Unlicense OR MIT` | Copyright (c) 2019 The Gio authors |
 | `github.com/dunglas/httpsfv` | v1.1.0 | `BSD-3-Clause` | Copyright (c) 2020 Kévin Dunglas. All rights reserved |
 | `github.com/go-text/typesetting` | v0.3.4 | `Unlicense OR BSD-3-Clause` | Copyright 2021 The go-text authors |
 | `github.com/godbus/dbus/v5` | v5.2.2 | `BSD-2-Clause` | Copyright (c) 2013, Georg Reinke (<guelfey at gmail dot com>), Google |
