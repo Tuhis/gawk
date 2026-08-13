@@ -279,4 +279,56 @@ describe('LocalViewerTransport striping (R30)', () => {
     transport.close();
     expect(legs.every((l) => l.closeCalled)).toBe(true);
   });
+
+  it('legs inherit the primary dial\'s ?owner= token (docs/35 §14)', async () => {
+    // The token is the relay's only handle tying one viewer's sessions
+    // together (a leg dialed without it is rejected 400), and it must be the
+    // SAME token on every session of the attempt: dialLeg copies the primary
+    // URL, params included, so nothing here mints a second identity.
+    transport = new LocalViewerTransport(
+      'https://relay.test:4433/subscribe/ABC123?owner=aabbccdd00112233',
+      {},
+    );
+    await transport.connect({
+      onDatagram: (d) => received.push(d),
+      onKeyframe: () => {},
+      onStripeChange: (n) => stripeChanges.push(n),
+      onClosed: () => {},
+    });
+    transport.setStripe(2);
+    await flush();
+    expect(FakeWT.legs()).toHaveLength(2);
+    for (const l of FakeWT.legs()) {
+      expect(new URL(l.url).searchParams.get('owner')).toBe('aabbccdd00112233');
+    }
+  });
+
+  it('heartbeats each leg at 1 Hz while striped, and stops with the stripe (docs/35 §14)', async () => {
+    // The relay reaps a leg after StripeLegLease (20 s) without any inbound
+    // datagram — the cross-pod orphan backstop — so a live stripe must keep
+    // every leg's lease renewed. The heartbeat is the same 0x10 the primary
+    // refreshes with, sent on the legs' own sessions.
+    vi.useFakeTimers();
+    try {
+      await connectTransport();
+      transport.setStripe(2);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.advanceTimersByTimeAsync(3100);
+      for (const leg of FakeWT.legs()) {
+        const beats = stripeStatesWritten(leg);
+        expect(beats.length).toBeGreaterThanOrEqual(4); // engage + ≥3 refreshes
+        expect(beats.every((s) => s.striped && s.stripeN === 2)).toBe(true);
+      }
+      // Disengage: heartbeats stop with the stripe — a torn-down attempt
+      // must not keep a lease alive (the lease exists to end exactly the
+      // legs nobody is renewing).
+      transport.setStripe(0);
+      await vi.advanceTimersByTimeAsync(100);
+      const counts = FakeWT.legs().map((l) => stripeStatesWritten(l).length);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(FakeWT.legs().map((l) => stripeStatesWritten(l).length)).toEqual(counts);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

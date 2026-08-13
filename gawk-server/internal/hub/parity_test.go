@@ -66,15 +66,15 @@ func TestParityFanOutIsPerSubscriberPrefix(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f2, f1, f0 := &fakeSender{}, &fakeSender{}, &fakeSender{}
-	s2, err := r.SubscribeParity(id, f2, 2)
+	s2, err := r.SubscribeParity(id, f2, 2, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity(2): %v", err)
 	}
-	s1, err := r.SubscribeParity(id, f1, 1)
+	s1, err := r.SubscribeParity(id, f1, 1, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity(1): %v", err)
 	}
-	s0, err := r.SubscribeParity(id, f0, 0)
+	s0, err := r.SubscribeParity(id, f0, 0, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity(0): %v", err)
 	}
@@ -112,7 +112,7 @@ func TestParityPrefixServesPNotQ(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	s, err := r.SubscribeParity(id, f, 1)
+	s, err := r.SubscribeParity(id, f, 1, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestParityForwardedVerbatim(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	s, err := r.SubscribeParity(id, f, 2)
+	s, err := r.SubscribeParity(id, f, 2, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestParityDoesNotCountAsFrame(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	s, err := r.SubscribeParity(id, f, 2)
+	s, err := r.SubscribeParity(id, f, 2, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
@@ -296,11 +296,11 @@ func TestParitySurvivesTheCascade(t *testing.T) {
 		t.Fatalf("edge EdgePublish: %v", err)
 	}
 	f2, f1 := &fakeSender{}, &fakeSender{}
-	v2, err := edge.SubscribeParity(edgeID, f2, 2)
+	v2, err := edge.SubscribeParity(edgeID, f2, 2, "")
 	if err != nil {
 		t.Fatalf("edge SubscribeParity(2): %v", err)
 	}
-	v1, err := edge.SubscribeParity(edgeID, f1, 1)
+	v1, err := edge.SubscribeParity(edgeID, f1, 1, "")
 	if err != nil {
 		t.Fatalf("edge SubscribeParity(1): %v", err)
 	}
@@ -337,7 +337,7 @@ func TestParityFleetOffSuppressesEverything(t *testing.T) {
 	if served != 0 {
 		t.Fatalf("served = %d with the fleet off, want 0 (requested %d)", served, req)
 	}
-	s, err := r.SubscribeParity(id, f, served)
+	s, err := r.SubscribeParity(id, f, served, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}

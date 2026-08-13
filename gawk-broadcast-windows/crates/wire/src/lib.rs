@@ -97,6 +97,9 @@ pub const CLOSE_CODE_ORIGIN_MOVED: u32 = 4003;
 /// Terminal for resume: a newer publisher session claimed this broadcast ID
 /// with a verified token. The deposed client must NOT auto-resume back.
 pub const CLOSE_CODE_PUBLISHER_SUPERSEDED: u32 = 4004;
+/// Viewer stripe legs only (docs/35 §14); never sent to a publisher like
+/// this one. Non-terminal: the relay reaped an orphaned R30 stripe leg.
+pub const CLOSE_CODE_STRIPE_LEG_ORPHANED: u32 = 4005;
 
 /// The broadcast ID alphabet (gawk-server/internal/broadcastid): 31 symbols,
 /// no `0 O 1 I L`. IDs are 6 chars; announce parsing validates against this.

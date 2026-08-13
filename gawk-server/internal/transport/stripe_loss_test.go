@@ -269,12 +269,15 @@ func TestStripedDeliveryBeatsBurstThresholdLoss(t *testing.T) {
 
 	control := dial(t, ctx, base, clientTLS)
 	defer control.CloseWithError(0, "")
-	primary := dial(t, ctx, base, clientTLS)
+	// docs/35 §14: the primary carries the owner token (suppression is inert
+	// on an unowned session) and every leg shares it (unowned legs are 400).
+	const owner = "aabbccdd00112233"
+	primary := dial(t, ctx, base+"?owner="+owner, clientTLS)
 	defer primary.CloseWithError(0, "")
 	const stripeN = 3
 	legs := make([]*webtransport.Session, stripeN)
 	for j := range legs {
-		legs[j] = dial(t, ctx, fmt.Sprintf("%s?stripe=%d&leg=%d", base, stripeN, j), clientTLS)
+		legs[j] = dial(t, ctx, fmt.Sprintf("%s?stripe=%d&leg=%d&owner=%s", base, stripeN, j, owner), clientTLS)
 		defer legs[j].CloseWithError(0, "")
 	}
 	waitFor(t, 10*time.Second, func() bool { return r.Stats().Totals.Subscribers == 5 }, "all sessions registered")

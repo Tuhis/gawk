@@ -480,6 +480,7 @@ fn wire_constants_are_pinned() {
     assert_eq!(CLOSE_CODE_SERVER_DRAINING, 4002);
     assert_eq!(CLOSE_CODE_ORIGIN_MOVED, 4003);
     assert_eq!(CLOSE_CODE_PUBLISHER_SUPERSEDED, 4004);
+    assert_eq!(CLOSE_CODE_STRIPE_LEG_ORPHANED, 4005);
 
     assert_eq!(BROADCAST_ID_ALPHABET, "23456789ABCDEFGHJKMNPQRSTUVWXYZ");
     assert_eq!(BROADCAST_ID_ALPHABET.len(), 31);

@@ -18,12 +18,12 @@ func TestStripeMetricsExposeLegsAndSuppression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	primary, err := r.SubscribeParity(id, fakeConn{}, 2)
+	primary, err := r.SubscribeParity(id, fakeConn{}, 2, "aabbccdd00112233")
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
 	for j := 0; j < 2; j++ {
-		if _, err := r.SubscribeStripeLeg(id, fakeConn{}, hub.StripeLeg{N: 2, Member: j}, 2); err != nil {
+		if _, err := r.SubscribeStripeLeg(id, fakeConn{}, hub.StripeLeg{N: 2, Member: j, Owner: "aabbccdd00112233"}, 2); err != nil {
 			t.Fatalf("SubscribeStripeLeg(%d): %v", j, err)
 		}
 	}
@@ -48,6 +48,8 @@ func TestStripeMetricsExposeLegsAndSuppression(t *testing.T) {
 		{"gawk_broadcast_stripe_transitions_total", b, 1},
 		{"gawk_relay_stripe_suppressed_datagrams_total", nil, 1},
 		{"gawk_relay_stripe_transitions_total", nil, 1},
+		{"gawk_broadcast_stripe_legs_reaped_total", b, 0},
+		{"gawk_relay_stripe_legs_reaped_total", nil, 0},
 	} {
 		if got := value(mfs, c.name, c.labels); got != c.want {
 			t.Errorf("%s%v = %v, want %v", c.name, c.labels, got, c.want)
@@ -77,6 +79,7 @@ func TestStripeMetricsZeroWhenUnused(t *testing.T) {
 	for _, name := range []string{
 		"gawk_relay_stripe_suppressed_datagrams_total",
 		"gawk_relay_stripe_transitions_total",
+		"gawk_relay_stripe_legs_reaped_total",
 	} {
 		if got := value(mfs, name, nil); got != 0 {
 			t.Errorf("%s = %v on a striping-unused fleet, want 0", name, got)

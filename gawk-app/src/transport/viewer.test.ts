@@ -132,18 +132,49 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// docs/35 §14: every primary dial carries a freshly minted ?owner= token.
+// These URL tests assert everything EXCEPT the token (random per attempt):
+// the token is validated for shape, stripped, and the rest compared exactly.
+function expectDialed(expectedWithoutOwner: string, opts: unknown): void {
+  const call = connectWebTransport.mock.calls.at(-1) as [string, unknown];
+  const u = new URL(call[0]);
+  expect(u.searchParams.get('owner')).toMatch(/^[0-9a-f]{16}$/);
+  u.searchParams.delete('owner');
+  expect(u.toString()).toBe(expectedWithoutOwner);
+  expect(call[1]).toBe(opts);
+}
+
 describe('ViewerPipeline', () => {
   it('dials /subscribe/<id>', async () => {
     connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
     readDatagrams.mockReturnValue(new Promise(() => {})); // session stays up
     const { cbs } = makeCallbacks();
-    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+    const opts = {};
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
     await pipeline.start();
-    expect(connectWebTransport).toHaveBeenCalledWith(
-      'https://relay.test:4433/subscribe/K7XQ2M',
-      {},
-    );
+    expectDialed('https://relay.test:4433/subscribe/K7XQ2M', opts);
     await pipeline.stop();
+  });
+
+  it('mints a fresh ?owner= token per attempt (docs/35 §14)', async () => {
+    // Legs are per-attempt, and a reconnect's fresh session set must not
+    // share the dead set's identity — a reused token would let the old
+    // primary's death reap the new attempt's legs.
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    const { cbs } = makeCallbacks();
+    const tokens: (string | null)[] = [];
+    for (let i = 0; i < 2; i++) {
+      connectWebTransport.mockClear();
+      const p = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+      await p.start();
+      const [calledUrl] = connectWebTransport.mock.calls[0] as [string, unknown];
+      tokens.push(new URL(calledUrl).searchParams.get('owner'));
+      await p.stop();
+    }
+    expect(tokens[0]).toMatch(/^[0-9a-f]{16}$/);
+    expect(tokens[1]).toMatch(/^[0-9a-f]{16}$/);
+    expect(tokens[0]).not.toBe(tokens[1]);
   });
 
   it('appends ?parity= only when the viewer opted DOWN from the fleet default (R29)', async () => {
@@ -153,12 +184,10 @@ describe('ViewerPipeline', () => {
     connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
     readDatagrams.mockReturnValue(new Promise(() => {}));
     const { cbs } = makeCallbacks();
-    const p1 = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+    const defaultOpts = {};
+    const p1 = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', defaultOpts, cbs);
     await p1.start();
-    expect(connectWebTransport).toHaveBeenCalledWith(
-      'https://relay.test:4433/subscribe/K7XQ2M',
-      {},
-    );
+    expectDialed('https://relay.test:4433/subscribe/K7XQ2M', defaultOpts);
     await p1.stop();
 
     for (const level of [0, 1] as const) {
@@ -166,10 +195,7 @@ describe('ViewerPipeline', () => {
       const opts = { parityLevel: level };
       const p2 = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
       await p2.start();
-      expect(connectWebTransport).toHaveBeenCalledWith(
-        `https://relay.test:4433/subscribe/K7XQ2M?parity=${level}`,
-        opts,
-      );
+      expectDialed(`https://relay.test:4433/subscribe/K7XQ2M?parity=${level}`, opts);
       await p2.stop();
     }
   });
@@ -187,10 +213,7 @@ describe('ViewerPipeline', () => {
     // and NOT for a ring. Sending buffer= here would have the relay serve this
     // viewer from a cursor with a 3 s staleness bound while it holds ~0.5 s —
     // the two ends disagreeing about how far behind it is.
-    expect(connectWebTransport).toHaveBeenCalledWith(
-      'https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable',
-      opts,
-    );
+    expectDialed('https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable', opts);
     await pipeline.stop();
   });
 
@@ -203,7 +226,7 @@ describe('ViewerPipeline', () => {
       const opts = { deliveryMode: 'reliable' as const };
       const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
       await pipeline.start();
-      expect(connectWebTransport).toHaveBeenCalledWith(
+      expectDialed(
         `https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable&buffer=${DVR_BUFFER_MS}`,
         opts,
       );

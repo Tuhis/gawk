@@ -260,6 +260,12 @@ type Options struct {
 	// by the carry-all-limits test).
 	StripedDelivery bool
 
+	// StripeLegLease is how long a stripe leg may go without any inbound
+	// datagram before it is reaped as orphaned (docs/35 §14 Decision 5).
+	// Defaults to DefaultStripeLegLease; an Options field for tests only,
+	// like DVRProgressTimeout — deliberately no flag.
+	StripeLegLease time.Duration
+
 	// DVRMaxCatchup caps how much faster than live a recovering DVR subscriber
 	// may send, as a multiple of the broadcast's own bitrate (docs/26
 	// Decision 6). Negative disables the ceiling.
@@ -468,6 +474,11 @@ type Stats struct {
 	StripedPrimaries          int    `json:"stripedPrimaries,omitempty"`
 	StripeSuppressedDatagrams uint64 `json:"stripeSuppressedDatagrams,omitempty"`
 	StripeTransitions         uint64 `json:"stripeTransitions,omitempty"`
+	// StripeLegsReaped counts leg sessions the relay ended as orphaned
+	// (docs/35 §14): owner-reaped when their primary closed, or lease-reaped
+	// after silence. Zero on a healthy fleet — non-zero says viewers are
+	// losing primaries without tearing their legs down.
+	StripeLegsReaped uint64 `json:"stripeLegsReaped,omitempty"`
 
 	// R19 reliable delivery (docs/24 Decision 10).
 	ReliableSubscribers   int    `json:"reliableSubscribers"`   // live local subscribers in reliable mode
@@ -542,6 +553,7 @@ type TotalStats struct {
 	StripedPrimaries          int    `json:"stripedPrimaries,omitempty"`
 	StripeSuppressedDatagrams uint64 `json:"stripeSuppressedDatagrams,omitempty"`
 	StripeTransitions         uint64 `json:"stripeTransitions,omitempty"`
+	StripeLegsReaped          uint64 `json:"stripeLegsReaped,omitempty"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -590,6 +602,7 @@ type Registry struct {
 	totalEgressParityBytes         uint64
 	totalStripeSuppressedDatagrams uint64
 	totalStripeTransitions         uint64
+	totalStripeLegsReaped          uint64
 
 	limiter *bandwidthLimiter
 
@@ -712,6 +725,10 @@ type broadcastHub struct {
 	// not suppression, and is deliberately not counted anywhere.
 	stripeSuppressedDatagrams uint64
 	stripeTransitions         uint64
+	// Leg sessions the relay reaped as orphaned (docs/35 §14): the operator-
+	// visible tombstone of a state that used to be invisible. Non-zero on a
+	// healthy fleet means viewers are losing primaries without tearing down.
+	stripeLegsReaped uint64
 }
 
 type bandwidthLimiter struct {
@@ -764,6 +781,9 @@ func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	}
 	if opts.DVRProgressTimeout <= 0 {
 		opts.DVRProgressTimeout = DefaultDVRProgressTimeout
+	}
+	if opts.StripeLegLease <= 0 {
+		opts.StripeLegLease = DefaultStripeLegLease
 	}
 	if opts.DVR.Window <= 0 {
 		opts.DVR.Window = DefaultDVRWindow
@@ -1365,14 +1385,22 @@ type subscribeOpts struct {
 	stripeLeg    bool
 	stripeN      uint8
 	stripeMember uint8
+	// owner is the viewer-minted ?owner= token tying one viewer's sessions
+	// together (docs/35 §14 Decision 1): required on legs, optional on
+	// primaries (empty = unowned, which also bars striping). Validated at
+	// the transport layer.
+	owner string
 }
 
 // SubscribeParity subscribes a datagram-delivery viewer served parityK
 // forward-parity symbols per delta frame (R29, docs/34). parityK is the
 // already-negotiated SERVED level — see NegotiateParity, which owns the
-// clamping policy so the hub never re-derives it.
-func (r *Registry) SubscribeParity(id string, conn Conn, parityK int) (*Subscriber, error) {
-	return r.subscribeOpts(id, conn, subscribeOpts{parityK: parityK, parityRequested: parityK})
+// clamping policy so the hub never re-derives it. owner is the viewer's
+// validated ?owner= token, or empty for an unowned session (docs/35 §14):
+// only the datagram path takes one, because only a datagram-delivery viewer
+// can become a striping primary whose legs the token ties back.
+func (r *Registry) SubscribeParity(id string, conn Conn, parityK int, owner string) (*Subscriber, error) {
+	return r.subscribeOpts(id, conn, subscribeOpts{parityK: parityK, parityRequested: parityK, owner: owner})
 }
 
 func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Subscriber, error) {
@@ -1415,6 +1443,7 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		stripeLeg:       so.stripeLeg,
 		stripeN:         so.stripeN,
 		stripeMember:    so.stripeMember,
+		owner:           so.owner,
 		queue:           make(chan []byte, r.opts.QueueDepth),
 		done:            make(chan struct{}),
 		statsKey:        newSubscriberStatsKey(),
@@ -1457,6 +1486,13 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 	go s.drain()
 	if s.audioQueue != nil {
 		go s.drainAudioSideband()
+	}
+	if s.stripeLeg {
+		// Arm the liveness lease at subscribe (docs/35 §14 Decision 5):
+		// owner enforcement means every admitted leg has promised the 1 Hz
+		// heartbeat, so a leg that never sends anything IS the orphan case.
+		s.legLastInbound.Store(time.Now().UnixNano())
+		go s.legLeaseWatch(r.opts.StripeLegLease)
 	}
 
 	// A stripe leg gets no join primes at all (docs/35 §5.1): the clock
@@ -1644,6 +1680,7 @@ func (r *Registry) Stats() RegistryStats {
 		totals.StripedPrimaries += stripedPrimaries
 		totals.StripeSuppressedDatagrams += b.stripeSuppressedDatagrams
 		totals.StripeTransitions += stripeTransitions
+		totals.StripeLegsReaped += b.stripeLegsReaped
 
 		var graceRemaining int
 		if !b.publisherActive && !b.graceStart.IsZero() {
@@ -1682,6 +1719,7 @@ func (r *Registry) Stats() RegistryStats {
 			StripedPrimaries:          stripedPrimaries,
 			StripeSuppressedDatagrams: b.stripeSuppressedDatagrams,
 			StripeTransitions:         stripeTransitions,
+			StripeLegsReaped:          b.stripeLegsReaped,
 			DVRSubscribers:            dvrSubs,
 			DVRRingBytes:              ringBytes,
 			DVRRingGops:               ringGops,
@@ -1745,6 +1783,7 @@ func (r *Registry) Stats() RegistryStats {
 	totals.EgressParityBytes += r.totalEgressParityBytes
 	totals.StripeSuppressedDatagrams += r.totalStripeSuppressedDatagrams
 	totals.StripeTransitions += r.totalStripeTransitions
+	totals.StripeLegsReaped += r.totalStripeLegsReaped
 	totals.KeyframeStreamsDropped = totals.KeyframeDrops.Total()
 
 	return RegistryStats{
@@ -1837,6 +1876,7 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool 
 	r.totalEgressParityBytes += b.egressParityBytes
 	r.totalStripeSuppressedDatagrams += b.stripeSuppressedDatagrams
 	r.totalStripeTransitions += b.stripeTransitions
+	r.totalStripeLegsReaped += b.stripeLegsReaped
 	if b.edge {
 		r.totalEdgeIngressFramesLost += b.ingressFramesLost
 		r.totalEdgeIngressChunksLost += b.ingressChunksLost
@@ -2439,6 +2479,15 @@ type Subscriber struct {
 	stripeUntil       atomic.Int64
 	stripeNInfo       atomic.Uint32
 	stripeTransitions atomic.Uint64
+	// owner is the viewer-minted session-group token (docs/35 §14): shared
+	// by one viewer's primary and legs, empty on unowned sessions. Fixed at
+	// subscribe time, read-only after — no lock.
+	owner string
+	// legLastInbound is a stripe leg's liveness-lease stamp (UnixNano):
+	// armed at subscribe, renewed by NoteLegAlive on any inbound datagram,
+	// read by legLeaseWatch's timer goroutine — hence atomic. Unused on
+	// non-leg subscribers.
+	legLastInbound atomic.Int64
 
 	// downstreamViewers is the local viewer count this INTERNAL (edge)
 	// subscriber last reported up (R18, docs/23 Decision 5b); always 0 for
@@ -3260,6 +3309,12 @@ func (s *Subscriber) Close() {
 	}
 	s.closed.Store(true)
 	delete(b.subs, s)
+	// A closing primary takes its stripe legs with it (docs/35 §14
+	// Decision 2): this is the single funnel every primary end passes
+	// through — eviction, clean session end, abrupt death — so collecting
+	// here is what makes the reap hold regardless of the cause. Collected
+	// under the lock, closed outside it below.
+	orphanedLegs := s.orphanedLegsLocked()
 	close(s.queue)
 	if s.audioQueue != nil {
 		close(s.audioQueue)
@@ -3270,6 +3325,8 @@ func (s *Subscriber) Close() {
 		close(s.dvrStop)
 	}
 	r.mu.Unlock()
+
+	s.reapLegs(orphanedLegs)
 
 	// Cancel any in-flight keyframe stream and wait for its writer to finish,
 	// outside the registry lock (stream ops must never hold it).

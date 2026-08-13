@@ -35,16 +35,22 @@ func TestStripeLegDialValidation(t *testing.T) {
 	defer pub.CloseWithError(0, "")
 
 	base := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id)
+	// Every case carries a valid owner so it exercises ITS OWN rejection;
+	// the owner-specific rejections (docs/35 §14) then get their own cases.
+	const owner = "&owner=aabbccdd00112233"
 	for name, params := range map[string]string{
-		"width over max":       "?stripe=5&leg=0",
-		"width zero":           "?stripe=0&leg=0",
-		"member out of range":  "?stripe=2&leg=2",
-		"member negative":      "?stripe=2&leg=-1",
-		"stripe without leg":   "?stripe=2",
-		"leg without stripe":   "?leg=0",
-		"garbage width":        "?stripe=x&leg=0",
-		"reliable combination": "?stripe=2&leg=0&delivery=reliable",
-		"dvr combination":      "?stripe=2&leg=0&delivery=reliable&buffer=2500",
+		"width over max":       "?stripe=5&leg=0" + owner,
+		"width zero":           "?stripe=0&leg=0" + owner,
+		"member out of range":  "?stripe=2&leg=2" + owner,
+		"member negative":      "?stripe=2&leg=-1" + owner,
+		"stripe without leg":   "?stripe=2" + owner,
+		"leg without stripe":   "?leg=0" + owner,
+		"garbage width":        "?stripe=x&leg=0" + owner,
+		"reliable combination": "?stripe=2&leg=0&delivery=reliable" + owner,
+		"dvr combination":      "?stripe=2&leg=0&delivery=reliable&buffer=2500" + owner,
+		"leg without owner":    "?stripe=2&leg=0",
+		"leg with short owner": "?stripe=2&leg=0&owner=aabb",
+		"leg with bad owner":   "?stripe=2&leg=0&owner=AABBCCDD00112233",
 	} {
 		if _, sess, err := dialOnce(t, ctx, base+params, clientTLS); err == nil {
 			sess.CloseWithError(0, "")
@@ -53,7 +59,7 @@ func TestStripeLegDialValidation(t *testing.T) {
 	}
 
 	// A valid leg dial is accepted.
-	leg := dial(t, ctx, base+"?stripe=2&leg=1", clientTLS)
+	leg := dial(t, ctx, base+"?stripe=2&leg=1"+owner, clientTLS)
 	leg.CloseWithError(0, "")
 }
 
@@ -69,7 +75,7 @@ func TestStripeLegRejectedWhenDisabled(t *testing.T) {
 	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
 	defer pub.CloseWithError(0, "")
 
-	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s?stripe=2&leg=0", port, id)
+	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s?stripe=2&leg=0&owner=aabbccdd00112233", port, id)
 	if _, sess, err := dialOnce(t, ctx, url, clientTLS); err == nil {
 		sess.CloseWithError(0, "")
 		t.Fatal("leg dial accepted on a striping-disabled relay, want 400")
@@ -106,11 +112,14 @@ func TestStripeLegEndToEnd(t *testing.T) {
 	defer pub.CloseWithError(0, "")
 
 	base := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id)
-	primary := dial(t, ctx, base, clientTLS)
+	// docs/35 §14: one owner token across the viewer's whole session set —
+	// the primary must be owned or its StripeState suppression is inert.
+	const owner = "aabbccdd00112233"
+	primary := dial(t, ctx, base+"?owner="+owner, clientTLS)
 	defer primary.CloseWithError(0, "")
-	leg0 := dial(t, ctx, base+"?stripe=2&leg=0", clientTLS)
+	leg0 := dial(t, ctx, base+"?stripe=2&leg=0&owner="+owner, clientTLS)
 	defer leg0.CloseWithError(0, "")
-	leg1 := dial(t, ctx, base+"?stripe=2&leg=1", clientTLS)
+	leg1 := dial(t, ctx, base+"?stripe=2&leg=1&owner="+owner, clientTLS)
 	defer leg1.CloseWithError(0, "")
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 3 }, "all three sessions registered")
 

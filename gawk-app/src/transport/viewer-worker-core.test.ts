@@ -291,10 +291,15 @@ describe('ViewerWorkerCore integration (real pipeline, mocked I/O)', () => {
     core.start(startParams);
     await flush();
 
-    expect(connectWebTransport).toHaveBeenCalledWith(
-      'https://relay.test:4433/subscribe/K7XQ2M',
-      {},
-    );
+    {
+      // docs/35 §14: the dial carries a minted ?owner= token; assert the
+      // rest of the URL exactly and the token by shape.
+      const [calledUrl] = connectWebTransport.mock.calls[0] as [string, unknown];
+      const u = new URL(calledUrl);
+      expect(u.searchParams.get('owner')).toMatch(/^[0-9a-f]{16}$/);
+      u.searchParams.delete('owner');
+      expect(u.toString()).toBe('https://relay.test:4433/subscribe/K7XQ2M');
+    }
     const push = deliver as unknown as (d: Uint8Array) => void;
     push(encodeDecoderConfig({ codec: 'vp8', extradata: new Uint8Array(0) }));
     push(

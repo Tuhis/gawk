@@ -8,12 +8,17 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
+// testOwner is a well-formed ?owner= token for tests: legs require one
+// (docs/35 §14), and a primary needs one before ApplyStripeState will arm.
+const testOwner = "aabbccdd00112233"
+
 // TestNegotiateStripe pins the dial-validation rules: strict, because a
 // mis-striped leg cannot degrade to anything useful (docs/35 §5.3).
 func TestNegotiateStripe(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		stripe, leg string
+		owner       string
 		enabled     bool
 		reliable    bool
 		wantLeg     StripeLeg
@@ -21,22 +26,31 @@ func TestNegotiateStripe(t *testing.T) {
 		wantErr     bool
 	}{
 		{name: "absent params are the ordinary viewer path", enabled: true},
-		{name: "valid leg", stripe: "3", leg: "1", enabled: true, wantLeg: StripeLeg{N: 3, Member: 1}, wantIsLeg: true},
-		{name: "member zero", stripe: "1", leg: "0", enabled: true, wantLeg: StripeLeg{N: 1, Member: 0}, wantIsLeg: true},
-		{name: "max width", stripe: "4", leg: "3", enabled: true, wantLeg: StripeLeg{N: 4, Member: 3}, wantIsLeg: true},
-		{name: "stripe without leg", stripe: "3", enabled: true, wantErr: true},
-		{name: "leg without stripe", leg: "1", enabled: true, wantErr: true},
-		{name: "disabled fleet rejects", stripe: "3", leg: "1", enabled: false, wantErr: true},
-		{name: "reliable delivery rejects", stripe: "3", leg: "1", enabled: true, reliable: true, wantErr: true},
-		{name: "width over max", stripe: "5", leg: "0", enabled: true, wantErr: true},
-		{name: "width zero", stripe: "0", leg: "0", enabled: true, wantErr: true},
-		{name: "member out of range", stripe: "2", leg: "2", enabled: true, wantErr: true},
-		{name: "member negative", stripe: "2", leg: "-1", enabled: true, wantErr: true},
-		{name: "garbage width", stripe: "banana", leg: "0", enabled: true, wantErr: true},
-		{name: "garbage member", stripe: "2", leg: "x", enabled: true, wantErr: true},
+		{name: "absent params ignore a stray owner", owner: testOwner, enabled: true},
+		{name: "valid leg", stripe: "3", leg: "1", owner: testOwner, enabled: true, wantLeg: StripeLeg{N: 3, Member: 1, Owner: testOwner}, wantIsLeg: true},
+		{name: "member zero", stripe: "1", leg: "0", owner: testOwner, enabled: true, wantLeg: StripeLeg{N: 1, Member: 0, Owner: testOwner}, wantIsLeg: true},
+		{name: "max width", stripe: "4", leg: "3", owner: testOwner, enabled: true, wantLeg: StripeLeg{N: 4, Member: 3, Owner: testOwner}, wantIsLeg: true},
+		{name: "stripe without leg", stripe: "3", owner: testOwner, enabled: true, wantErr: true},
+		{name: "leg without stripe", leg: "1", owner: testOwner, enabled: true, wantErr: true},
+		// §14 (owner decision 2026-08-13): a leg without a valid owner token
+		// is an unreapable orphan waiting to happen — rejected like any other
+		// unusable leg, so a pre-token viewer simply stays unstriped.
+		{name: "leg without owner rejects", stripe: "3", leg: "1", enabled: true, wantErr: true},
+		{name: "short owner rejects", stripe: "3", leg: "1", owner: "aabbccdd", enabled: true, wantErr: true},
+		{name: "long owner rejects", stripe: "3", leg: "1", owner: testOwner + "00", enabled: true, wantErr: true},
+		{name: "uppercase owner rejects", stripe: "3", leg: "1", owner: "AABBCCDD00112233", enabled: true, wantErr: true},
+		{name: "non-hex owner rejects", stripe: "3", leg: "1", owner: "zzbbccdd00112233", enabled: true, wantErr: true},
+		{name: "disabled fleet rejects", stripe: "3", leg: "1", owner: testOwner, enabled: false, wantErr: true},
+		{name: "reliable delivery rejects", stripe: "3", leg: "1", owner: testOwner, enabled: true, reliable: true, wantErr: true},
+		{name: "width over max", stripe: "5", leg: "0", owner: testOwner, enabled: true, wantErr: true},
+		{name: "width zero", stripe: "0", leg: "0", owner: testOwner, enabled: true, wantErr: true},
+		{name: "member out of range", stripe: "2", leg: "2", owner: testOwner, enabled: true, wantErr: true},
+		{name: "member negative", stripe: "2", leg: "-1", owner: testOwner, enabled: true, wantErr: true},
+		{name: "garbage width", stripe: "banana", leg: "0", owner: testOwner, enabled: true, wantErr: true},
+		{name: "garbage member", stripe: "2", leg: "x", owner: testOwner, enabled: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			leg, isLeg, err := NegotiateStripe(tc.stripe, tc.leg, tc.enabled, tc.reliable)
+			leg, isLeg, err := NegotiateStripe(tc.stripe, tc.leg, tc.owner, tc.enabled, tc.reliable)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("accepted, want error")
@@ -95,7 +109,7 @@ func TestStripeLegPartitionIsExactCover(t *testing.T) {
 					t.Fatalf("StartPublish: %v", err)
 				}
 				control := &fakeSender{}
-				cs, err := r.SubscribeParity(id, control, 2)
+				cs, err := r.SubscribeParity(id, control, 2, "")
 				if err != nil {
 					t.Fatalf("SubscribeParity: %v", err)
 				}
@@ -103,7 +117,7 @@ func TestStripeLegPartitionIsExactCover(t *testing.T) {
 				legSubs := make([]*Subscriber, stripeN)
 				for j := range legs {
 					legs[j] = &fakeSender{}
-					legSubs[j], err = r.SubscribeStripeLeg(id, legs[j], StripeLeg{N: stripeN, Member: j}, 2)
+					legSubs[j], err = r.SubscribeStripeLeg(id, legs[j], StripeLeg{N: stripeN, Member: j, Owner: testOwner}, 2)
 					if err != nil {
 						t.Fatalf("SubscribeStripeLeg(%d): %v", j, err)
 					}
@@ -179,7 +193,7 @@ func TestStripeLegParityPrefixComposes(t *testing.T) {
 	// One leg covering ALL ordinals (N=1) but with k=0: it must see chunks
 	// and never parity.
 	f := &fakeSender{}
-	s, err := r.SubscribeStripeLeg(id, f, StripeLeg{N: 1, Member: 0}, 0)
+	s, err := r.SubscribeStripeLeg(id, f, StripeLeg{N: 1, Member: 0, Owner: testOwner}, 0)
 	if err != nil {
 		t.Fatalf("SubscribeStripeLeg: %v", err)
 	}
@@ -212,7 +226,7 @@ func TestStripeLegReceivesNoControlOrAudio(t *testing.T) {
 	ingestKeyframe(t, p, keyframeMsg(t, 9, "avc1.42E02A", "kf"))
 
 	f := &fakeSender{}
-	s, err := r.SubscribeStripeLeg(id, f, StripeLeg{N: 1, Member: 0}, 2)
+	s, err := r.SubscribeStripeLeg(id, f, StripeLeg{N: 1, Member: 0, Owner: testOwner}, 2)
 	if err != nil {
 		t.Fatalf("SubscribeStripeLeg: %v", err)
 	}
@@ -260,7 +274,7 @@ func TestStripeSuppressionOnPrimary(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	s, err := r.SubscribeParity(id, f, 2)
+	s, err := r.SubscribeParity(id, f, 2, testOwner)
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
@@ -315,7 +329,7 @@ func TestStripeRefreshDoesNotInflateTransitions(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	s, err := r.SubscribeParity(id, f, 2)
+	s, err := r.SubscribeParity(id, f, 2, testOwner)
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
@@ -352,7 +366,7 @@ func TestApplyStripeStateInertOnWrongSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubscribeInternal: %v", err)
 	}
-	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0}, 0)
+	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0, Owner: testOwner}, 0)
 	if err != nil {
 		t.Fatalf("SubscribeStripeLeg: %v", err)
 	}
@@ -382,12 +396,12 @@ func TestStripeLegCountsAgainstCapsNotViewers(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	defer viewer.Close()
-	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0}, 0)
+	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0, Owner: testOwner}, 0)
 	if err != nil {
 		t.Fatalf("SubscribeStripeLeg: %v", err)
 	}
 	defer leg.Close()
-	if _, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 1}, 0); err == nil {
+	if _, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 1, Owner: testOwner}, 0); err == nil {
 		t.Fatal("third session admitted past MaxSubscribers=2 — legs must count against the cap")
 	}
 
@@ -420,12 +434,12 @@ func TestStripeSubscriberDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	primary, err := r.SubscribeParity(id, &fakeSender{}, 2)
+	primary, err := r.SubscribeParity(id, &fakeSender{}, 2, testOwner)
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
 	defer primary.Close()
-	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 3, Member: 2}, 2)
+	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 3, Member: 2, Owner: testOwner}, 2)
 	if err != nil {
 		t.Fatalf("SubscribeStripeLeg: %v", err)
 	}
@@ -478,13 +492,13 @@ func benchmarkFanOut(b *testing.B, striped bool) {
 		b.Fatalf("StartPublish: %v", err)
 	}
 	for i := 0; i < 12; i++ {
-		if _, err := r.SubscribeParity(id, &fakeSender{}, 2); err != nil {
+		if _, err := r.SubscribeParity(id, &fakeSender{}, 2, ""); err != nil {
 			b.Fatalf("SubscribeParity: %v", err)
 		}
 	}
 	if striped {
 		for j := 0; j < 3; j++ {
-			if _, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 3, Member: j}, 2); err != nil {
+			if _, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 3, Member: j, Owner: testOwner}, 2); err != nil {
 				b.Fatalf("SubscribeStripeLeg: %v", err)
 			}
 		}
@@ -513,11 +527,11 @@ func TestExpiryKeepsStripeAndParityTotals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	primary, err := r.SubscribeParity(id, &fakeSender{}, 2)
+	primary, err := r.SubscribeParity(id, &fakeSender{}, 2, testOwner)
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}
-	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0}, 0)
+	leg, err := r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0, Owner: testOwner}, 0)
 	if err != nil {
 		t.Fatalf("SubscribeStripeLeg: %v", err)
 	}

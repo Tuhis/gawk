@@ -15,6 +15,7 @@ import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
 import {
   LocalViewerTransport,
+  mintStripeOwnerToken,
   type TransportClosedInfo,
   type ViewerTransport,
   type ViewerTransportFactory,
@@ -710,6 +711,12 @@ export class ViewerPipeline {
     if (this.connectOpts.parityLevel != null) {
       url.searchParams.set('parity', String(this.connectOpts.parityLevel));
     }
+    // docs/35 §14: the session-group token, minted per attempt and sent on
+    // EVERY primary dial — striping engages by auto-detect mid-session, so
+    // the primary must already be owned when it does, and the relay rejects
+    // leg dials without it. Legs inherit it for free: dialLeg copies this
+    // URL, params included. A pre-§14 relay ignores the unknown parameter.
+    url.searchParams.set('owner', mintStripeOwnerToken());
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
     try {
