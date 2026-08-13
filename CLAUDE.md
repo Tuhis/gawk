@@ -89,8 +89,10 @@ and, for the multi-pod cascade, `docs/22`.
   own reclaim fall back to minting a new ID, orphaning every viewer. The R17
   resume-token gate must pass first, so tokenless requests can't kill a healthy
   broadcast.
-- **Close code 4000 is terminal** — no client reconnect. 4001/4002/4003/4004
-  are not; see the doc comments in `wire.go` before adding a code.
+- **Close codes 4000 and 4004 are terminal** — no client reconnect (4004 is a
+  publisher's own zombie session losing a resume-token race, "terminal for
+  resume" per its `wire.go` doc comment). 4001/4002/4003 are not; see the doc
+  comments in `wire.go` before adding a code.
 - Session-end reasons are cause-recovered via `http3.Server.ConnContext`
   (`internal/transport/endreason.go`). Without it every abrupt death logged an
   identical, useless `reason: "context canceled"`. Don't "simplify" it back.
@@ -116,7 +118,7 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   mirror** (vectors restated, never imported); its CI job **runs on the
   self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** — see
   `docs/38` D18 before touching it, especially the clang-cl/libopus wrapper.
-- `gawk-telemetry` — optional per-session diagnostics service; the **fourth**
+- `gawk-telemetry` — optional per-session diagnostics service; the **third**
   top-level Go module, **default off everywhere**. Two listeners, and the split
   **is** the security posture: ingest is public (same-origin path on the
   frontend Ingress), while the dashboard/read API/MCP sit on a listener that is

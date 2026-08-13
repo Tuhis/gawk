@@ -130,8 +130,15 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   row. Whether it also reads `Main thread` on the same machine was not
   checked, and it would not have the same cause if it does.
 
-## Every WebKit viewer fails to join since the webtransport-go draft-16 bump
+## Every WebKit viewer fails to join since the quic-go bump — two defects, WebKit accepted as unsupported
 
+- **Status (decided 2026-08-04)**: **not being fixed by pinning.** The project
+  stays on current `quic-go` / `webtransport-go`; WebKit (Safari everywhere,
+  and *every* iOS browser) is an unsupported viewer platform until upstream
+  moves. Chromium and Firefox are unaffected and remain the supported set. The
+  app now detects WebKit on load and warns before the user hits the failure —
+  `gawk-app/src/lib/browserSupport.ts`, surfaced by
+  `UnsupportedBrowserModal`. This entry stays open as the record of *why*.
 - **Found**: 2026-08-03, from a live report — broadcast `DDP4H7` showed
   "Streamer offline" on macOS Safari while Firefox on the same machine, same
   network, same minute played it fine. Reproduced on iPhone Safari too.
@@ -145,19 +152,56 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   message ~144–278 ms after load. A direct dial in the Safari console gives
   `WebTransportError`, `source: "session"`, `streamErrorCode: null`, and an
   empty `message` on both `ready` and `closed`.
-- **Cause — strong, one link unproven.** `chore(deps): update quic-go` (#131,
-  merged 2026-07-30) moved `webtransport-go` v0.11.1 → v0.12.0, which is a
-  **WebTransport draft version change**, not a patch: v0.11.1's README says it
-  implements draft-15, v0.12.0's says draft-16. With it, the server stopped
-  advertising draft-15's three session flow-control SETTINGS —
-  `settingsWebTransportInitialMaxStreamsUni`, `…MaxStreamsBidi` and
-  `…InitialMaxData`, all `1 << 60` (the `AdditionalSettings` map shrank from 6
-  entries to 3) — in favour of draft-16's capsule-based flow control. A
-  draft-15 client sees no session flow-control credit and cannot establish the
-  session. `settingsEnableWebtransportDraft06` (`0x2b603742`) is unchanged, so
-  the failure is in session establishment, not feature detection.
-  **What is not proven**: that Safari 26.5.2 implements draft-15 specifically.
-  Everything else here is read from the two module versions and the timeline.
+- **Cause — TWO independent defects came in on the same bump.**
+  `chore(deps): update quic-go` (#131, merged 2026-07-30) moved *both*
+  `webtransport-go` v0.11.1 → v0.12.0 (draft-15 → draft-16) and `quic-go`
+  v0.60.0 → v0.61.0. Fixing the first defect alone does **not** restore Safari.
+
+  **Defect A — the missing SETTINGS trio (understood, fixable, not sufficient).**
+  v0.12.0's `ConfigureHTTP3Server` stopped advertising the three session
+  flow-control SETTINGS — `WT_INITIAL_MAX_STREAMS_UNI` (`0x2b64`),
+  `…_STREAMS_BIDI` (`0x2b65`), `…_MAX_DATA` (`0x2b61`), all `1 << 60` — in
+  favour of draft-16's capsule flow control (`make(map, 6)` → `make(map, 3)`).
+  draft-13 makes the trio *conditionally required* whenever
+  `WT_MAX_SESSIONS > 1`, and webtransport-go still forces
+  `WT_MAX_SESSIONS = 2^62−1`, so the advertisement is spec-violating.
+  Safari 26.4+ enforces it and refuses before sending the extended CONNECT.
+  **Verified against our own relay**, not inferred: a raw `http3.ClientConn`
+  dialled at `transport.New(...)` reads back exactly 3 entries
+  (`ENABLE_WEBTRANSPORT_draft06`, `WT_ENABLED`, `WT_MAX_SESSIONS`) with all
+  three `WT_INITIAL_MAX_*` missing.
+
+  **Defect B — an unidentified refusal of the v0.12/v0.61 pair (open).**
+  Even with the trio restored, shipping Safari still refuses the session.
+  Confirmed 2026-08-04 against the upstream reporter's live matrix: port
+  **4440** is v0.12.0 + quic-go v0.61.0 *with the trio configured* and it
+  fails, while **4436** (v0.11.0 + quic-go v0.60.0) binds. Server-side
+  signature of the refusal: the peer opens the extended CONNECT stream,
+  writes **zero bytes**, sends `stop_sending(stream 0, 0x10C`
+  = `H3_REQUEST_CANCELLED`) and closes with `0x100` (`H3_NO_ERROR`) — a clean
+  application-level "I have decided not to make this request", taken after the
+  QUIC handshake but before any request headers.
+
+  **Best lead for B, and it contradicts upstream's framing.** The exhibit says
+  the two builds' SETTINGS and transport parameters "match on every value
+  compared so far" and concludes "the difference is in behavior neither peer
+  advertises". There *is* an advertised difference: quic-go moved the
+  RESET_STREAM_AT transport parameter between the two releases —
+  ```
+  v0.60.0:  resetStreamAtParameterID       = 0x17f7586d2cb571  (draft-06)
+  v0.61.0:  resetStreamAtParameterID       = 0x1d              (draft-09)  ← only this is sent
+            legacyResetStreamAtParameterID = 0x17f7586d2cb571  (parsed, never sent)
+  ```
+  This is on the wire for both builds, because `ServeQUICConn` in **both**
+  v0.11.1 and v0.12.0 hard-requires `SupportsStreamResetPartialDelivery` — so
+  4436 advertises the extension at the old high codepoint and 4440 at the new
+  low one, and as far as we can tell that is the only wire-visible delta.
+  **Not proven**, and one fact cuts against it: a transport-parameter objection
+  would normally be a handshake-level `CONNECTION_CLOSE`, not the clean H3
+  cancel observed. Confirmable from a qlog on both ports.
+  **If it is the cause, no configuration of webtransport-go v0.12.0 can serve
+  Safari** — it mandates the extension, quic-go v0.61 only sends `0x1d`, and
+  there is no knob for either.
 - **Why the relay logged nothing** — and this is the fact that ruled out every
   other hypothesis: the failure happens during H3 SETTINGS / session
   negotiation, *upstream* of `CheckOrigin` and route dispatch. So there is no
@@ -181,39 +225,69 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   2026-07-21/22 (the two Safari entries below are built on those captures).
   Same Safari version fails now. The bump merged 2026-07-30; the relay
   deployed 2026-08-02.
-- **Upstream, and it confirms this**:
+- **Upstream**:
   [quic-go/webtransport-go#355](https://github.com/quic-go/webtransport-go/issues/355)
-  — *"Safari iOS Fails from SETTINGS_WT_MAX_SESSIONS"*, open, introduced in
-  v0.12.0. It reports the same empty-message `WebTransportError` ~50 ms after
-  construction, and names the mechanism more precisely than the draft-version
-  framing above: a server using an **empty `Config`** advertises
-  `SETTINGS_WT_MAX_SESSIONS` but none of the three `WT_INITIAL_MAX_*`
-  settings, and Safari refuses the session *before sending the extended
-  CONNECT* — which is exactly why nothing reaches our handlers. v0.11.0 sent
-  all four.
-  **This makes the fix a few lines, not a rollback**: `webtransport.Server`
-  has an exported `Config *Config` field (`MaxIncomingStreams`,
-  `MaxIncomingUniStreams`, `MaxIncomingData`; each omits its setting when
-  zero). `internal/transport/server.go:219` never sets it, so it is nil and
-  every setting is dropped. Populating it restores the v0.11.1 advertisement
-  on v0.12.0. Upstream's own suggested fix is for `ConfigureHTTP3Server` to
-  set all four itself.
-  The issue also offers live endpoints for confirming Safari's behaviour
-  without touching our relay: `echo.semantic-ui.com` port **4433** (v0.12.0,
-  expected to fail) and **4436** (v0.11.0, expected to work).
-- **Confirmation procedure**: run a relay pinned to `webtransport-go v0.11.1`
-  and point Safari at it. Recovery confirms the draft version is the trigger;
-  no recovery means the draft change is a red herring and the quic-go
-  v0.60.0 → v0.61.0 half of the same bump needs the same treatment.
-- **Fix would start**: with the decision of which draft to serve, which is a
-  product decision, not a dependency one — draft-16 is where the ecosystem is
-  going and Safari will get there. Options are pinning back until WebKit
-  catches up, or serving both drafts if webtransport-go can. Whichever is
-  chosen, the durable lesson is that **`webtransport-go`'s minor version is a
-  wire-compatibility surface**: it must not arrive as an unattended Renovate
-  bump, and CI cannot catch this because the e2e suite has no WebKit client.
-  Constrain it in `renovate.json5` and add a WebKit reachability check before
-  trusting a future bump.
+  — *"Safari iOS Fails from SETTINGS_WT_MAX_SESSIONS"*, **open, zero comments,
+  no maintainer response, no PR**, and v0.12.0 is still `@latest` on the module
+  proxy. Waiting for upstream is not currently a plan. The reporter also keeps
+  a live matrix at `echo.semantic-ui.com` — **:4433** (v0.12.0, nil `Config`),
+  **:4436** (v0.11.0, works), **:4440** (v0.12.0 + quic-go v0.61.0, trio
+  configured — the one that proves defect B), and `/exhibits/quic-go` runs them
+  from the browser.
+- **The two dependencies are atomic — there is no bisect, and no partial
+  rollback.** Verified by compiling both cross-pairings:
+  - `webtransport-go v0.11.0/v0.11.1` + `quic-go v0.61.0` →
+    `undefined: http3.ParseCapsule`
+  - `webtransport-go v0.12.0` + `quic-go v0.60.0` →
+    `undefined: http3.CapsuleParser`, `http3.CapsuleReader`, and missing
+    `SetReceiveFinalSizeCallback` / `WriteWithLimit` on the quic types
+
+  So the fifth endpoint upstream says "does not exist yet" **cannot** be built,
+  and "roll back only webtransport-go, keep quic-go v0.61" is not an option
+  either. It is both or neither.
+- **What defect A's fix looks like, for whenever it lands** (it is spec
+  correctness and should ride along with any future bump, but it is *not* the
+  Safari fix): set the exported `Config` on `webtransport.Server` —
+  ```go
+  s.wt = &webtransport.Server{
+      Config: &webtransport.Config{
+          MaxIncomingStreams:    1 << 60,
+          MaxIncomingUniStreams: 1 << 60,
+          MaxIncomingData:       1 << 60,
+      },
+      H3: &http3.Server{ /* … */ },
+  }
+  ```
+  Verified: this restores exactly 6 SETTINGS, each `1 << 60`, byte-identical to
+  v0.11.1's advertisement, and the full `gawk-server` suite stays green —
+  including with capsule flow control genuinely active on both sides (set the
+  same `Config` on the test dialer, or the path never runs: `sessionFlowControl`
+  needs *both* peers to advertise, and our Go clients send nil `Config`, so CI
+  otherwise exercises none of it).
+  **Trap — the obvious version silently does nothing.** Writing the three keys
+  into `H3.AdditionalSettings` yourself is wiped: `Server.init()` calls
+  `Config.addSettings`, which `delete()`s all three keys before conditionally
+  re-adding them. It compiles, looks right, and still advertises 3 entries.
+  `Server.Config` is the only door.
+  Note also that enabling `Config` turns capsule flow control **on** for any
+  peer that also advertises, and our *outgoing* limits then come from the peer
+  (`MaxOutgoingUniStreams` = peer's `WT_INITIAL_MAX_STREAMS_UNI`). The relay
+  opens one uni stream per keyframe per viewer and today ignores those limits
+  entirely, so that is a real behaviour change to canary — and it lands
+  precisely on the browsers CI cannot drive.
+- **Durable lessons**:
+  - **`quic-go`'s and `webtransport-go`'s minor versions are a
+    wire-compatibility surface**, and they move together. They must not arrive
+    as an unattended Renovate bump — constrain `github.com/quic-go/**` in
+    `renovate.json5` beyond the existing grouping.
+  - **CI cannot catch this.** The failure is upstream of `CheckOrigin` and route
+    dispatch, so there is no server-side signal at all, and `e2e/run.mjs` is
+    Chromium-only (`playwright-core`, system chromium binary). The cheap
+    deterministic gate that *would* have caught defect A is a unit test dialling
+    the relay with a raw `http3.ClientConn` and asserting the six SETTINGS;
+    defect B needs a real WebKit client, which we do not have anywhere.
+  - Before trusting a future bump, re-run the upstream live matrix on real
+    Safari — it costs a minute and needs no deployment.
 
 ## Windows broadcaster: viewers black for the first minute (keyframe supersede livelock)
 

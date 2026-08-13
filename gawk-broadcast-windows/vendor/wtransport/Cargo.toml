@@ -129,7 +129,7 @@ required-features = ["self-signed"]
 version = "1.4.0"
 
 [dependencies.pem]
-version = "3.0.4"
+version = "4.0.0"
 
 [dependencies.quinn]
 version = "0.11.6"
