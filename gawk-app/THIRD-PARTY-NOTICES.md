@@ -25,7 +25,7 @@ script for what counts as a dependency here and why.
 | `react` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-dom` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `scheduler` | 0.27.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `zustand` | 5.0.14 | `MIT` | Copyright (c) 2019 Paul Henschel |
+| `zustand` | 5.0.15 | `MIT` | Copyright (c) 2019 Paul Henschel |
 
 ## License texts
 
