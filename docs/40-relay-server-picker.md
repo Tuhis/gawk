@@ -1,13 +1,14 @@
 # R37 — Streamlined relay server picker (docs/40)
 
-**Status**: designed 2026-08-06, **not started**. Chunks **SP1–SP10** (`SP` =
+**Status**: designed 2026-08-06, **not started**. Chunks **SP1–SP13** (`SP` =
 Server Picker; two-letter prefix per the R21+ convention — `TU` is reserved
 for R36, `SP` collides with nothing). Phased: **A** (gawk-app core,
 frontend-only) → **B** (relay identity probe: `gawk-server` + all four wire
 mirrors) → **C** (server directory) → **D** (native broadcaster parity:
-`gawk-broadcast` + `gawk-broadcast-windows`). Phase A ships value on its own;
-each phase is releasable independently under the per-component release-please
-tags.
+`gawk-broadcast` + `gawk-broadcast-windows`) → **E** (telemetry follows the
+relay: `gawk-server` + `gawk-telemetry` + app). Phase A ships value on its
+own; each phase is releasable independently under the per-component
+release-please tags.
 
 **Revised 2026-08-13** after the owner's adversarial review (PR #258,
 findings F1–F11; evidence in `docs/reviews/relay-server-picker-design-review.md`
@@ -17,6 +18,13 @@ prompt becomes per-resolved-server (F3), the default entry's credential
 storage and rotation are specified (F4/F9), and the identity handshake
 gains timing, robustness, and display-sanitization rules (F5–F7), plus the
 F8/F10/F11 clarifications. The D1–D13 decision set is unchanged.
+
+**Extended 2026-08-13** (owner decision, same session): cross-relay
+telemetry is **in scope**, not deferred — a picker that lets users roam
+relays while their telemetry is silently rejected at token verification
+(§4.10) would be a half-delivered feature. New decisions **D14–D17**, new
+§4.10, new phase **E** (SP11–SP13); the former §7 "telemetry-URL awareness"
+deferral is deleted.
 
 ---
 
@@ -64,6 +72,10 @@ What R37 adds:
   relays the picker can offer (§4.5).
 - **Native parity** — saved server profiles in both native broadcaster GUIs
   (§4.8).
+- **Telemetry that follows the relay** — the relay advertises its own
+  telemetry ingest URL in-band, so sessions on a foreign relay report to
+  *that* operator's collector instead of being rejected at the home
+  deployment's token check (§4.10).
 - **Managed-relay groundwork** — design-only: the schemas ship with the
   extension points a future paid/managed relay needs, no auth code (§4.9).
 
@@ -84,6 +96,10 @@ What R37 adds:
 | D11 | **Native parity = saved server profiles in both native GUIs** (Go/Linux and Rust/Windows), backed by the same entry semantics in each app's existing persistence (0600 JSON config on Linux, DPAPI-wrapped fields on Windows). CLIs stay flag-driven. | The GUIs already persist exactly one server + secret; generalizing to a list is the same shape the frontend gets. The CLI's `-url` flag is already a per-invocation picker. |
 | D12 | **One milestone, phased chunks.** Phase A (app core) is releasable alone; B, C, D follow in any order after their dependencies. | The link grammar + picker deliver the product value without any server change; the probe, directory, and native parity each improve it independently. |
 | D13 | **The relay's origin allowlist remains the relay-side gate.** A relay operator chooses which UI origins may use their relay via the existing `allowedOrigins` (empty = allow all, the current dev default). R37 adds no new server-side access control — it documents the interplay (§4.6, SP10). | "Usable from any UI" needs consent on both sides: the UI's `allowCustomRelays` and the relay's `allowedOrigins`. Both controls already exist or default open; what's missing is only the self-hosting doc telling a relay operator the second one matters now. |
+| D14 *(2026-08-13)* | **The relay advertises its telemetry ingest URL in-band: new wire message `TypeTelemetryEndpoint` (0x12), relay→client on its own uni stream**, composing with the frozen 0x0D hello (whose strict exact-length parser cannot be extended). Sent on publish/subscribe sessions only when the relay both collects telemetry and has an advertised URL configured (`-telemetry-advertise-url` / `GAWK_TELEMETRY_ADVERTISE_URL` / chart `telemetry.advertiseUrl`, plumbed per the registryOptions invariant); never on `/internal/subscribe`. Clients parse it and never send it. | The ingest endpoint lives on the operator's *frontend* Ingress, not the relay, so the relay can only advertise what it is configured with — but it is the one party that also mints the token, so it is the only party that can name a destination where that token verifies. In-band because WebTransport exposes no response headers (the 0x09/0x0D/0x11 precedent). |
+| D15 *(2026-08-13)* | **A relay-advertised URL always wins; `config.js` `telemetryUrl` is the fallback** for relays that advertise nothing (including every pre-R37 relay). A client on a **non-default** relay that advertises no URL reports nothing at all — its batches could only be rejected at the home deployment's token check, so sending them is pure waste. | Owner choice: the source of truth moves relay-side, one precedence rule everywhere. The accepted cost is duplication on the happy path — a deployment's relay chart and app chart both name the same ingest URL — and the doc says so rather than hiding it. |
+| D16 *(2026-08-13)* | **Choosing a relay is the telemetry consent: any resolved relay's advertised URL is honored — saved selection or bare `?relay=` link override alike** — and the in-session indicator (§4.3) states when diagnostics are being reported to a foreign operator. | Owner choice. The operator already terminates the session's QUIC traffic; diagnostics about that same session going to the same operator is proportionate, and the indicator makes it visible rather than silent. The alternative consent gates (saved-only, per-server toggle) were considered and declined as friction that mostly starves relay operators of the data they need to debug. |
+| D17 *(2026-08-13)* | **Cross-origin ingest = wildcard CORS + a CORS-safelisted beacon.** The telemetry ingest listener answers preflights with `Access-Control-Allow-Origin: *`, and the unload flush switches to a safelisted content type (`text/plain` carrying the unchanged JSON envelope) so `sendBeacon` needs no preflight it cannot perform during unload. The dashboard/read listener stays never-public, unchanged. | Wildcard is safe here because auth is the in-body HMAC token — no cookies, no credentialed requests — and ingest is already the public listener by design (CLAUDE.md posture). The safelisted beacon is what keeps the final batch alive cross-origin; losing it was considered and declined. |
 
 ## 3. Where it plugs into the existing code (grounded)
 
@@ -122,13 +138,20 @@ What R37 adds:
   (`gawk-echo` against 127.0.0.1) ignore unread incoming uni streams, so
   they are unaffected.
 - **`gawk-server/wire/wire.go`** — 0x10 is the last allocated type; SP4
-  allocates **0x11 `TypeRelayIdentity`** and mirrors it in
+  allocates **0x11 `TypeRelayIdentity`** and **0x12 `TypeTelemetryEndpoint`**
+  and mirrors them in
   `gawk-app/src/transport/wire.ts`, `gawk-broadcast/internal/wirecheck`, and
   `gawk-broadcast-windows/crates/wire`, golden vectors byte-identical, all in
   the same PR (the Windows CI job triggers on `gawk-server/wire/**`).
 - **`cmd/gawk-server/main.go`** — the new `-server-name` knob goes through
   `registryOptions` with flag + `GAWK_SERVER_NAME` + chart value, per the
   CLAUDE.md invariant.
+- **`gawk-telemetry/internal/ingest/ingest.go`** — batch tokens are
+  verified against the service's own fleet key
+  (`VerifyTelemetrySessionToken(h.opts.Key, …)`, `ingest.go:341`), which is
+  exactly why a foreign relay's sessions can't land data anywhere today;
+  SP12 adds ingest-listener CORS + the safelisted beacon content type
+  (§4.10) and touches nothing else.
 - **`gawk-broadcast/internal/config/config.go`** — the 0600 JSON settings
   file (URL + secret + telemetry already). SP8 generalizes it to carry a
   server list. **`gawk-broadcast-windows/crates/app`** persists the same
@@ -448,6 +471,87 @@ managed relays become real they get their own milestone and design doc; R37's
 promise is only that these three schemas won't need breaking revs to start
 it.
 
+### 4.10 Telemetry follows the relay (phase E)
+
+Without this phase, R28 telemetry and R37 relay roaming contradict each
+other: collection is gated by the *relay* (wire 0x0D `TelemetryHello` —
+enabled flag, cadence, and a session token minted with the fleet's
+telemetry key), but batches POST to the *UI deployment's* `telemetryUrl`,
+whose ingest verifies tokens with its own key
+(`gawk-telemetry/internal/ingest/ingest.go:341`). A session on a foreign
+relay therefore either collects nothing (that fleet has telemetry off — the
+default) or collects and is rejected at token verification. Nobody gets
+data. Phase E makes the destination follow the same party that already owns
+the gating and the token: the relay fleet.
+
+**Wire (D14).** New message `TypeTelemetryEndpoint` (0x12), relay→client on
+its own reliable unidirectional stream (the 0x0D hello is a strict
+exact-length message on its own stream — extending either would break every
+existing reader, the RelayCapabilities append-trap):
+
+```
+byte 0    Version (0x01)
+byte 1    TypeTelemetryEndpoint (0x12)
+byte 2    flags — all bits reserved, must be 0
+bytes 3-4 uint16 urlLen (1–512), then that many bytes: an absolute https
+          URL, ASCII, the fleet's ingest endpoint
+rest      reserved extension bytes — parsers MUST ignore them (the
+          RelayIdentity forward-compat stance, §4.4)
+```
+
+Sent once per publish/subscribe session, only when the relay both collects
+telemetry and has an advertised URL configured; never on
+`/internal/subscribe` (an edge is plumbing, not a client). Clients parse it
+and never send it (the ViewerCount rule); a malformed message is dropped and
+degrades to "no advertised URL". The knob —
+`-telemetry-advertise-url` / `GAWK_TELEMETRY_ADVERTISE_URL` / chart
+`telemetry.advertiseUrl` — goes through `registryOptions` per the
+invariant. It names infrastructure the relay does not itself serve (ingest
+rides the operator's frontend Ingress), so the self-hosting doc's SP10
+section pairs it with a "verify with a probe from a foreign UI" step; the
+reference deployment sets it to its own public ingest URL.
+
+**Client precedence (D15).** Advertised URL → `config.js` `telemetryUrl` →
+`DEFAULT_TELEMETRY_URL`, with one guard: on a **non-default** resolved relay
+whose fleet enabled collection but advertised no URL, the client reports
+**nothing** — those batches could only die at the home deployment's token
+check, and traffic that can only be rejected is not sent. On the pinned
+default this guard never engages, so an existing deployment that configures
+nothing new behaves byte-identically to today. Client-side the URL is
+validated like every other URL in this design (absolute https, else
+ignored).
+
+**Consent and visibility (D16).** Any resolved relay qualifies — saved
+entry or bare link override. The in-session indicator (§4.3) carries the
+disclosure: when a foreign relay's telemetry is active, the indicator names
+it ("diagnostics shared with this server's operator"). No extra prompt: the
+operator in question is already terminating the session's media transport.
+
+**Cross-origin ingest (D17).** Two changes in `gawk-telemetry`, both on the
+ingest listener only:
+
+- **CORS**: answer `OPTIONS` preflights and set
+  `Access-Control-Allow-Origin: *` on ingest responses. Wildcard is
+  deliberate — authentication is the in-body HMAC token, no cookies or
+  credentialed requests exist, and ingest is already the public listener;
+  an origin allowlist would just be a second `allowedOrigins` for every
+  relay operator to forget.
+- **Beacon content type**: the unload flush switches to `text/plain`
+  carrying the unchanged JSON envelope — a CORS-safelisted content type, so
+  `sendBeacon` sends it cross-origin without the preflight it cannot
+  perform during unload. Ingest accepts `text/plain` alongside
+  `application/json`; in-session batches (fetch, which can preflight) stay
+  `application/json`. The envelope bytes are identical either way — this is
+  a transport-header concession, not a format fork.
+
+**Native broadcasters.** Both native apps honor 0x12 with the same
+precedence and guard (their wire mirrors gain the message in SP4's
+allocation pass). This retires the awkwardness of
+`gawk-broadcast/internal/config`'s `DefaultTelemetryURL` — a hardcoded
+second constant that exists precisely because the ingest URL was never
+derivable from the relay URL; it remains only as the final fallback for the
+reference fleet.
+
 ## 5. Security considerations
 
 - **Credentials stay home.** Never in links or directories (D3, schema-level
@@ -481,6 +585,21 @@ it.
 - **Probe abuse**: the probe is user-initiated, bounded (a few datagrams),
   and subject to `/echo`'s existing rate limiter; no background probing
   (§4.4).
+- **The advertised telemetry URL is attacker-influenced** (§4.10): the
+  relay a crafted link points at chooses where the client POSTs batches.
+  Bounds: https-only and length-capped, honored only while that same
+  relay's hello enables collection, payload is solely the session's own
+  diagnostics envelope (with the *obfuscated* broadcast key — raw IDs never
+  ride telemetry, R9 D3), cadence is the hello's report interval, and the
+  in-session indicator discloses the foreign destination. As an "exfil"
+  primitive it can carry nothing the malicious relay doesn't already see as
+  the session's transport endpoint; as a DDoS reflector it is a trickle on
+  a per-user opt-in path. Accepted (D16).
+- **Wildcard CORS on ingest** (D17) widens nothing that matters: the
+  listener was already public by design, requests carry no cookies or
+  ambient credentials, and every batch still dies without a valid HMAC
+  token for *that* fleet's key. The dashboard/read listener is untouched
+  and never routed publicly (the CLAUDE.md split stands).
 
 ## 6. Rejected alternatives
 
@@ -512,6 +631,16 @@ it.
   WebTransport failure causes (fingerprinting); promising "wrong origin" vs
   "bad cert" copy would be guessing. One honest combined failure state.
   (§4.4)
+- **Extending `TelemetryHello` (0x0D) in place with the URL** — its parser
+  is strict exact-length in all four mirrors, so any appended field breaks
+  every existing reader; and sending only an extended v2 hello would cut
+  pre-change clients off from telemetry entirely. A composing message on
+  its own stream costs one type allocation and breaks nobody. (D14, §4.10)
+- **Dropping the final batch on cross-origin telemetry** — considered as
+  the zero-change alternative to the safelisted beacon; declined because
+  session-end data is disproportionately the diagnostic payload (the 0x0D
+  design notes already record why one-shot session-boundary delivery gets
+  special treatment). (D17)
 
 ## 7. Out of scope
 
@@ -522,10 +651,10 @@ it.
 - Background/periodic probing, health monitoring, or auto-failover between
   saved servers.
 - `allowCustomRelays` enforcement in native apps (§4.8).
-- Telemetry-URL awareness per server: R28 ingest stays deployment-scoped
-  (`telemetryUrl` config) — a foreign relay's sessions simply report to the
-  UI deployment's collector if enabled, which is the honest current
-  behaviour. Revisit only if it produces confusing data in practice.
+- Cross-fleet telemetry *aggregation* (one dashboard over sessions spread
+  across operators): phase E routes each session's data to its own relay's
+  operator (§4.10); joining datasets across operators is nobody's current
+  need.
 
 ## 8. Chunks & acceptance criteria
 
@@ -541,7 +670,7 @@ Phase B — probe + identity (server + wire mirrors + app):
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| SP4 | Wire: `TypeRelayIdentity` 0x11 in `wire.go` + all three mirrors, golden vectors | Append/Parse with vectors byte-identical across Go, TS, wirecheck, and Rust; parser tolerates trailing bytes (tested), rejects nonzero flags, rejects out-of-range name/version lengths and invalid UTF-8; **client-side, a parse failure degrades to "no identity" without failing the probe** (F7); drop-if-sent-by-client rule tested. All four modules' gates green in one PR. |
+| SP4 | Wire: `TypeRelayIdentity` 0x11 **and `TypeTelemetryEndpoint` 0x12** in `wire.go` + all three mirrors, golden vectors (one allocation pass, one PR) | Append/Parse with vectors byte-identical across Go, TS, wirecheck, and Rust for both messages; parsers tolerate trailing bytes (tested), reject nonzero flags, reject out-of-range lengths and (0x11) invalid UTF-8, (0x12) non-https/oversize URLs; **client-side, a parse failure degrades to "no identity" / "no advertised URL" without failing the probe or the session** (F7); drop-if-sent-by-client rule tested for both. All four modules' gates green in one PR. |
 | SP5 | Relay: send identity on `/echo` open (best-effort, non-blocking); `-server-name` knob (flag + `GAWK_SERVER_NAME` + chart `config.serverName`) through `registryOptions` | Go test: echo session receives exactly one identity uni stream with configured name/version; empty name when unset; **an echo client granting no uni-stream credit does not stall or fail the echo loop — the identity send is abandoned, echoes keep flowing** (F5); k8s exec probe path (`gawk-echo`) unaffected (probe test stays green); knob reaches production config (registryOptions test, the R2 lesson). |
 | SP6 | App probe: on-demand `/echo` dial per entry, median RTT, identity wait window, sanitized identity display, combined failure state | Unit (mocked transport): median over lossy samples; timeout → failure state; identity absent → URL-labelled entry still selectable; **identity arriving after the echoes complete is still shown — the §4.4 wait window works** (F5); **name sanitization (control/bidi strip, rune-boundary truncation) and host-always-alongside-name asserted** (F6). e2e (tier-1): panel shows a live RTT against the test relay and its configured name. No probe traffic without user action (asserted). |
 
@@ -555,21 +684,32 @@ Phase D — native parity:
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| SP8 | `gawk-broadcast`: profiles in `internal/config` (+ migration), GUI dropdown + editor, probe | Go unit: config round-trip + migration idempotency, file stays 0600; engine dials the selected profile; probe shows RTT/name in the GUI against a test relay. CLI behaviour unchanged. |
-| SP9 | `gawk-broadcast-windows`: same, DPAPI-wrapped per-profile secrets | Rust unit: settings round-trip, DPAPI wrap-on-save/plaintext-on-read per profile; identity parse via `crates/wire`; GUI dropdown drives the engine's dial. Cross-compiled CI job green. |
+| SP8 | `gawk-broadcast`: profiles in `internal/config` (+ migration), GUI dropdown + editor, probe, 0x12 honor | Go unit: config round-trip + migration idempotency, file stays 0600; engine dials the selected profile; probe shows RTT/name in the GUI against a test relay; **R28 reporter uses an advertised 0x12 URL over the configured one, and the §4.10 no-URL-on-foreign-relay guard holds**. CLI behaviour unchanged. |
+| SP9 | `gawk-broadcast-windows`: same, DPAPI-wrapped per-profile secrets | Rust unit: settings round-trip, DPAPI wrap-on-save/plaintext-on-read per profile; identity + telemetry-endpoint parse via `crates/wire`; GUI dropdown drives the engine's dial; **reporter honors 0x12 with the same precedence + guard**. Cross-compiled CI job green. |
+
+Phase E — telemetry follows the relay (§4.10; depends on SP4's wire pass +
+phase A's resolution model):
+
+| Chunk | Scope | Acceptance criteria |
+|---|---|---|
+| SP11 | Relay: send 0x12 on publish/subscribe when telemetry is enabled and `-telemetry-advertise-url` is set (flag + `GAWK_TELEMETRY_ADVERTISE_URL` + chart `telemetry.advertiseUrl`, through `registryOptions`); never on `/internal/subscribe` | Go test: enabled+URL ⇒ exactly one 0x12 stream per session on both routes; disabled or unset ⇒ none; internal subscribe ⇒ none; invalid configured URL refused at startup (fail fast, not a silent no-send); knob reaches production config (registryOptions test). |
+| SP12 | `gawk-telemetry` ingest: CORS preflight + `Access-Control-Allow-Origin: *`, accept `text/plain` beacon bodies alongside `application/json` | Go test: OPTIONS answered with the CORS headers, POST responses carry them; identical envelope accepted under both content types; token verification and rate limits unchanged and still enforced under `text/plain`; dashboard/read listener serves **no** CORS headers (asserted — the never-public posture is visible in tests). |
+| SP13 | App: 0x12 precedence (advertised → config → default), the §4.10 no-URL-on-foreign-relay guard, `text/plain` unload beacon, indicator disclosure | Unit: precedence matrix incl. malformed-0x12-degrades; guard asserted (foreign relay, hello enabled, no 0x12 ⇒ zero POSTs); unload flush uses a safelisted content type (no preflight dependency); indicator shows the disclosure only when foreign telemetry is active. e2e (tier-1): session against the test relay with an advertised URL lands batches at that URL cross-origin, incl. an unload flush. |
 
 Docs & closure:
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| SP10 | `docs/self-hosting.md` "using your relay from other gawk UIs" (+ directory hosting note), `docs/gotchas.md` sync for anything learned, manual verification pass | Self-hosting section covers `allowedOrigins`, `serverName`, directory hosting incl. CORS. Manual pass: cross-relay share link end-to-end between two real deployments (reference fleet + a second relay), picker add/probe/select/remove, `allowCustomRelays: false` posture, link with unknown relay on a gated install. |
+| SP10 | `docs/self-hosting.md` "using your relay from other gawk UIs" (+ directory hosting note + `telemetry.advertiseUrl` guidance incl. the verify-from-a-foreign-UI step), `docs/gotchas.md` sync for anything learned, manual verification pass | Self-hosting section covers `allowedOrigins`, `serverName`, directory hosting incl. CORS, and telemetry advertising. Manual pass: cross-relay share link end-to-end between two real deployments (reference fleet + a second relay), picker add/probe/select/remove, `allowCustomRelays: false` posture, link with unknown relay on a gated install, **and a foreign-relay session whose telemetry lands in that relay operator's dashboard** (§4.10). |
 
 ## 9. Verification
 
 Automated gates are per-chunk above. The milestone-closing manual pass
 (SP10) is the product claim end-to-end: broadcaster on relay B shares a link
 into a UI deployed against relay A; a fresh viewer opens it, watches, saves
-relay B, and joins by plain code after selecting it — while a second UI with
+relay B, and joins by plain code after selecting it — with that session's
+telemetry landing in relay B's operator's dashboard, not deployment A's
+(§4.10) — while a second UI with
 `allowCustomRelays: false` degrades the same link to its quiet note. Glass
 latency and every existing flow (join-by-code on the default relay, R23
 terms, R26 armed links once they exist) must be visibly unchanged on the
