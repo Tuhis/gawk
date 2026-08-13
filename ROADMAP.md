@@ -55,6 +55,7 @@ feature set exists).
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
 | R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; **AS7 on-hardware verification (docs/39 §6) outstanding** and is what decides the milestone ([docs/39](docs/39-linux-app-sharing.md)) |
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
+| R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, not started (SP1–SP10 in four releasable phases: app core → `/echo` identity probe (wire 0x11) → server directory → native parity) ([docs/40](docs/40-relay-server-picker.md)) |
 
 ---
 
@@ -3179,6 +3180,34 @@ information architecture stands, this is the usability layer on top of it.
 **Status**: proposed 2026-08-01, not started — no design doc yet. Chunk
 prefix `TU` is reserved for it (every single-letter prefix is claimed;
 `TU` collides with nothing existing).
+
+---
+
+## R37 — Streamlined relay server picker
+
+**Goal**: make a self-hosted (or, someday, managed) `gawk-server` usable
+from **any** gawk UI that permits alternative relays — while keeping the
+join-by-code flow exactly as streamlined as it is today. The mechanism that
+matters most: broadcast IDs are per-relay, so once two relays exist a plain
+code only joins if viewer and broadcaster share one. R37's answer is a
+**`?relay=` query parameter on share and broadcast links** (the link "just
+works" whatever relay the sharer is on, as a session-only override that
+never silently persists), backed by a **server picker reachable from the
+home screen** — a subtle chip opening a panel with a saved-server list in
+localStorage (per-server label, URL, publish secret, and dev cert hash; the
+deployment's own relay pinned and non-removable), a **probe** over the
+existing `/echo` route for validity + latency plus a new relay-identity wire
+message (0x11 — version and operator-set name in-band, since WebTransport
+exposes no response headers), an operator-fetched **server directory**, and
+**saved server profiles in both native broadcaster GUIs**. Gated on both
+sides: `allowCustomRelays` in the frontend's config.js (default on) and the
+relay's existing `allowedOrigins`. Managed-relay support is groundwork only —
+the schemas reserve extension points, no auth code ships.
+
+**Status**: designed 2026-08-06 (owner decisions D1–D13), not started.
+Chunks SP1–SP10 in four independently releasable phases (A app core,
+frontend-only → B probe/identity, all four wire mirrors → C directory →
+D native parity). See [docs/40](docs/40-relay-server-picker.md).
 
 ---
 

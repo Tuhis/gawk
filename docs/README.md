@@ -16,7 +16,7 @@ Not a design doc, but in this directory:
 
 ## Where to start
 
-Reading all thirty-nine is not the point. Three give you the shape of the system:
+Reading all forty is not the point. Three give you the shape of the system:
 
 - [`03`](03-single-client-e2e.md) — the end-to-end path: hub, publish,
   subscribe, and the wire format everything else is built on.
@@ -96,6 +96,7 @@ Reading all thirty-nine is not the point. Three give you the shape of the system
 | [`11`](11-cross-browser-compatibility.md) | Cross-browser: Firefox ↔ Chrome H.264 |
 | [`29`](29-terms-and-conditions.md) | R23 — Terms & conditions |
 | [`31`](31-quick-start-links.md) | R26 — Quick-start broadcast links |
+| [`40`](40-relay-server-picker.md) | R37 — Streamlined relay server picker |
 
 ## Testing, telemetry, operations
 
