@@ -119,7 +119,7 @@ sends.
 Hive-partitioned, so retention is a **directory delete, not a query**, and
 DuckDB can read it straight off the PVC. DuckDB is a query option, not a
 runtime dependency — the service is plain, cgo-free Go. Raw sessions are
-kept 14 days; **rollups are permanent**. Ten viewers × 2 h/day ≈ 5 MB/day.
+kept 30 days; **rollups are permanent**. Ten viewers × 2 h/day ≈ 5 MB/day.
 
 ## Privacy
 
