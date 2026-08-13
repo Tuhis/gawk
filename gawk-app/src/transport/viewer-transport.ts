@@ -101,6 +101,27 @@ export interface StripeTransportStats {
 
 export type ViewerTransportFactory = (url: string, opts: ConnectOptions) => ViewerTransport;
 
+// docs/35 §14 Decision 1: the viewer-minted session-group token — 8 random
+// bytes as lowercase hex, appended as ?owner= to the primary subscribe dial
+// (viewer.ts) and inherited by every leg dial (dialLeg copies the primary
+// URL). It is the relay's only handle tying one viewer's sessions together,
+// so a primary's death reaps its legs. Minted per pipeline attempt: legs are
+// per-attempt, and a reconnect's fresh set must not share the dead set's
+// identity. Not a credential — the worst a forged token achieves is getting
+// the forger's own sessions reaped.
+export function mintStripeOwnerToken(): string {
+  const bytes = new Uint8Array(8);
+  const c = (globalThis as { crypto?: Crypto }).crypto;
+  if (c?.getRandomValues) {
+    c.getRandomValues(bytes);
+  } else {
+    // Non-secure-context fallback: the token only needs to be unique among
+    // concurrent viewers of one broadcast, not unguessable.
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 // In-process transport: exactly the connection handling ViewerPipeline had
 // before the seam (extracted verbatim, including the close-code race below).
 export class LocalViewerTransport implements ViewerTransport {
@@ -280,6 +301,10 @@ export class LocalViewerTransport implements ViewerTransport {
     // Suppress only once the new set is complete; on a grow the suppression
     // is already armed and the width rides the next 1 Hz refresh.
     this.sendStripeState(true, target);
+    // First heartbeat immediately (docs/35 §14 Decision 5): the relay armed
+    // each leg's liveness lease at subscribe, and the 1 Hz refresh below is
+    // what keeps renewing it.
+    this.sendLegHeartbeats();
     if (firstEngage) this.startStripeRefresh();
     for (const leg of old) leg.close();
     this.cb?.onStripeChange?.(target);
@@ -352,13 +377,29 @@ export class LocalViewerTransport implements ViewerTransport {
     }
   }
 
+  // Each leg gets the same 1 Hz StripeState the primary does, as a liveness
+  // heartbeat (docs/35 §14 Decision 5): the relay reaps a leg that goes
+  // StripeLegLease (20 s) without any inbound datagram — the cross-pod
+  // backstop for legs whose primary lives on a different pod. The relay's
+  // leg route only renews the lease and discards the bytes, so the message
+  // is semantically inert there; failures are swallowed like the primary's
+  // refresh (a leg that cannot send is exactly what the lease is for).
+  private sendLegHeartbeats(): void {
+    if (this.stripeActive === 0) return;
+    for (const leg of this.legs) leg.heartbeat(this.stripeActive);
+  }
+
   private startStripeRefresh(): void {
     this.stopStripeRefresh();
     // Level state at 1 Hz (the R15 audio-config cadence): each send re-arms
     // the relay's TTL, so a lost refresh costs nothing and a wedged client
-    // fails open to duplicates.
+    // fails open to duplicates. The legs heartbeat on the same tick — one
+    // timer owns the whole stripe's liveness signalling.
     this.stripeRefresh = setInterval(() => {
-      if (this.stripeActive > 0) this.sendStripeState(true, this.stripeActive);
+      if (this.stripeActive > 0) {
+        this.sendStripeState(true, this.stripeActive);
+        this.sendLegHeartbeats();
+      }
     }, 1000);
   }
 
@@ -456,18 +497,45 @@ export class LocalViewerTransport implements ViewerTransport {
 // One stripe leg's session handle (R30). Deliberately minimal: a leg has no
 // sampler, no TimeSync, no carrier counters — it is a datagram pipe with a
 // member number, and everything interesting about it lives on the primary.
+// Since §14 it holds one outbound concern of its own: the liveness heartbeat
+// the relay's leg lease is renewed by.
 class StripeLegSession {
   readonly abort = new AbortController();
   readonly member: number;
   private wt: WebTransport;
+  private writer: WritableStreamDefaultWriter<BufferSource> | null = null;
 
   constructor(wt: WebTransport, member: number) {
     this.wt = wt;
     this.member = member;
+    const datagrams = (wt as { datagrams?: { writable?: WritableStream<BufferSource> } }).datagrams;
+    if (datagrams?.writable) {
+      try {
+        this.writer = datagrams.writable.getWriter();
+      } catch {
+        this.writer = null; // a locked/odd writable — the lease will reap us
+      }
+    }
+  }
+
+  heartbeat(stripeN: number): void {
+    const writer = this.writer;
+    if (!writer) return;
+    try {
+      void writer.write(encodeStripeState({ striped: true, stripeN })).catch(() => {});
+    } catch {
+      // a closing leg may have released the writer — nothing to renew
+    }
   }
 
   close(): void {
     this.abort.abort();
+    try {
+      this.writer?.releaseLock();
+    } catch {
+      // a pending write may hold the lock — the session close ends it anyway
+    }
+    this.writer = null;
     try {
       this.wt.close();
     } catch {

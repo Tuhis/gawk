@@ -955,8 +955,15 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// useful (serving it a wrong share would manufacture holes), so rejection
 	// is the graceful outcome: the viewer stays unstriped. Reliable/DVR
 	// combinations are rejected here too (striping is live-edge only, §3).
+	//
+	// §14 (owner decision 2026-08-13): ?owner= is the viewer-minted token
+	// tying one viewer's sessions together, REQUIRED on legs (an unowned leg
+	// is an unreapable orphan waiting to happen) and optional elsewhere — an
+	// invalid token on a non-leg dial degrades to an unowned session that
+	// simply cannot stripe, never to a rejection.
+	ownerParam := r.URL.Query().Get("owner")
 	stripeLeg, isStripeLeg, stripeErr := hub.NegotiateStripe(
-		r.URL.Query().Get("stripe"), r.URL.Query().Get("leg"),
+		r.URL.Query().Get("stripe"), r.URL.Query().Get("leg"), ownerParam,
 		s.cfg.StripedDelivery, r.URL.Query().Get("delivery") == "reliable" || r.URL.Query().Get("buffer") != "")
 	if stripeErr != nil {
 		s.log.Warn("stripe leg rejected pre-upgrade",
@@ -1036,7 +1043,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	case mode == wire.DeliveryReliable:
 		sub, err = s.registry.SubscribeReliable(id, adapter)
 	default:
-		sub, err = s.registry.SubscribeParity(id, adapter, parityServed)
+		owner := ""
+		if hub.ValidOwnerToken(ownerParam) {
+			owner = ownerParam
+		}
+		sub, err = s.registry.SubscribeParity(id, adapter, parityServed, owner)
 	}
 	if err != nil {
 		s.log.Warn("subscribe rejected after upgrade", "id", id, "remote", sess.RemoteAddr(), "err", err)
@@ -1083,8 +1094,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 				log.Info("stripe leg session ended", "reason", sessionEndReason(r.Context(), err), "dropped", sub.Dropped())
 				return
 			}
-			// Legs send nothing the relay acts on; TimeSync is answered for
-			// symmetry with every other route, everything else is discarded.
+			// Any inbound datagram renews the leg's liveness lease (docs/35
+			// §14 Decision 5) — the viewer heartbeats with its 1 Hz
+			// StripeState refresh. TimeSync is answered for symmetry with
+			// every other route, everything else is discarded.
+			sub.NoteLegAlive()
 			maybeAnswerTimeSync(sess, dgram, legLimiter)
 		}
 	}

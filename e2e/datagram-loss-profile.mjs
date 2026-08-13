@@ -44,9 +44,20 @@ const STRIPE = Number(process.env.GAWK_FF_STRIPE || 0);
 async function runInPage({ relay, secs, stripe }) {
   const frames = new Map(); // frameId -> { count, idx:Set, par:Set, sizes:Map, at:Map(ordinal->conn) }
   // conn 0 is the primary; 1..stripe are legs (leg j dials ?stripe=N&leg=j-1).
+  // docs/35 §14: a striping session set shares a viewer-minted ?owner= token —
+  // the relay rejects tokenless legs (400) and ignores 0x10 on an unowned
+  // primary. The unstriped control dials with no params, byte-identical.
+  const owner = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) =>
+    b.toString(16).padStart(2, '0'),
+  ).join('');
   const conns = [];
   const connOf = (i) => {
-    const url = i === 0 ? relay : `${relay}?stripe=${stripe}&leg=${i - 1}`;
+    const url =
+      stripe > 0
+        ? i === 0
+          ? `${relay}?owner=${owner}`
+          : `${relay}?stripe=${stripe}&leg=${i - 1}&owner=${owner}`
+        : relay;
     return new WebTransport(url, { requireUnreliable: true, congestionControl: 'low-latency' });
   };
   const total = stripe > 0 ? stripe + 1 : 1;
@@ -54,10 +65,13 @@ async function runInPage({ relay, secs, stripe }) {
   await Promise.all(conns.map((c) => c.ready));
   let refresh = null;
   if (stripe > 0) {
-    // The 0x10 suppression: level state, re-sent at 1 Hz like the client.
-    const writer = conns[0].datagrams.writable.getWriter();
+    // The 0x10 suppression on the primary, and — docs/35 §14 — the same
+    // bytes on every leg as its liveness-lease heartbeat: a leg silent for
+    // StripeLegLease (20 s) is reaped as orphaned, and this instrument runs
+    // longer than that. Level state, re-sent at 1 Hz like the client.
+    const writers = conns.map((c) => c.datagrams.writable.getWriter());
     const st = new Uint8Array([0x01, 0x10, 0x01, stripe, 0x00]);
-    const send = () => void writer.write(st).catch(() => {});
+    const send = () => writers.forEach((w) => void w.write(st).catch(() => {}));
     send();
     refresh = setInterval(send, 1000);
   }

@@ -257,6 +257,15 @@ const CloseCodeOriginMoved = 4003
 // resume, like CloseCodeBroadcastEnded is for viewers).
 const CloseCodePublisherSuperseded = 4004
 
+// CloseCodeStripeLegOrphaned is sent to an R30 stripe-leg session the relay
+// reaps because its owner is gone (docs/35 §14): the primary session sharing
+// its ?owner= token ended (eviction, clean close, or abrupt death), or the
+// leg's liveness lease expired with no inbound datagram. NOT terminal — the
+// leg-death fallback applies (the viewer unstripes and re-engages through a
+// fresh session set), exactly as for any other leg death. Never sent to a
+// primary or any non-leg session.
+const CloseCodeStripeLegOrphaned = 4005
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen

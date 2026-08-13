@@ -848,6 +848,22 @@ Add to it when a new gotcha lands in `docs/`.
 
 **Relay fleet (R17)**
 
+- **Sessions created as a group must carry their group identity from
+  birth — a later association is unreconstructable.** R30's stripe legs
+  were ordinary subscribers "sharing nothing" with their primary by design,
+  so when the relay evicted a primary out from under a viewer that never
+  reacted, its legs held subscriber slots for the life of the broadcast —
+  and the QUIC idle timeout can never fire on a leg, because the relay's own
+  delta flow keeps the peer's stack acking while the app is gone. The one
+  live capture read `subscribers: 4 / viewersGlobal: 0`: invisible on
+  exactly the surface an operator watches, since legs are excluded from the
+  viewer count. Fixed by a viewer-minted `?owner=` token on every dial of an
+  attempt (required on legs; an unowned primary cannot stripe), an ownership
+  reap in `Subscriber.Close`, and a 20 s per-leg liveness lease renewed by a
+  1 Hz heartbeat — the cross-pod backstop, since legs may land on pods that
+  never see the primary. Watch `stripeLegsReaped` /
+  `gawk_stripe_legs_reaped_total`: zero on a healthy fleet.
+  ([docs/35](35-connection-interleaving.md) §14)
 - **`reason: "context canceled"` in a session-ended log meant "we don't
   know"** — and it is the *normal* reason for any abrupt death, so an idle
   timeout, a stateless reset and a peer's CONNECTION_CLOSE all looked
