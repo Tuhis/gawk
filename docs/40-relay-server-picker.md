@@ -9,15 +9,25 @@ mirrors) → **C** (server directory) → **D** (native broadcaster parity:
 each phase is releasable independently under the per-component release-please
 tags.
 
+**Revised 2026-08-13** after the owner's adversarial review (PR #258,
+findings F1–F11; evidence in `docs/reviews/relay-server-picker-design-review.md`
+on its review branch): the production settings surface is re-grounded (F1),
+the override indicator moves onto the session screens (F2), the secret
+prompt becomes per-resolved-server (F3), the default entry's credential
+storage and rotation are specified (F4/F9), and the identity handshake
+gains timing, robustness, and display-sanitization rules (F5–F7), plus the
+F8/F10/F11 clarifications. The D1–D13 decision set is unchanged.
+
 ---
 
 ## 1. Purpose
 
 Today one gawk UI speaks to one relay. The frontend resolves its relay from
 `config.js` (`relayUrl`) → a hostname check → `https://localhost:4433`
-(`transportStore.ts:17`), and the only way to point it elsewhere is a
-dev-gated settings field (`ServerSettings.tsx`, hidden unless
-`isDevEnvironment()`). That is the right shape for "one operator, one
+(`transportStore.ts:17`), and the only production way to point it elsewhere
+is the dev-gated inline server panels on the broadcaster and viewer screens
+(`showDevSettings = isDevEnvironment()` — `BroadcasterScreen.tsx:128`,
+`ViewerScreen.tsx:227`). That is the right shape for "one operator, one
 deployment" — and the wrong shape for where self-hosting is going: people run
 their own `gawk-server` (docs/self-hosting.md), and eventually some may buy a
 managed one. A relay you run yourself should be usable **from any gawk UI
@@ -94,10 +104,17 @@ What R37 adds:
   the split; the other consumes it** — the two grammars are disjoint
   (`relay` vs. R26's quality params) and both inherit R26 D7 (unknown params
   ignored, collected into a quiet note).
-- **`src/features/stream/ServerSettings.tsx`** — the dev-gated three-field
-  form. SP3 replaces it with the picker panel; the dev gate stays only on
-  the cert-hash field's *visibility* (real users on real certs never need
-  it), not on the panel.
+- **`src/features/broadcaster/BroadcasterScreen.tsx` /
+  `src/features/viewer/ViewerScreen.tsx`** — the production surfaces' inline
+  dev-gated server panels (`showDevSettings = isDevEnvironment()`,
+  `BroadcasterScreen.tsx:128`, `ViewerScreen.tsx:227`). SP3 **removes both**
+  and points both screens at the store's resolved values; the picker panel
+  is the replacement, with the dev gate surviving only on the cert-hash
+  field's *visibility* inside it (real users on real certs never need it).
+  Not to be confused with `src/features/stream/ServerSettings.tsx`: that
+  form's only consumers are the frozen `#/debug/*` tree's pages
+  (`BroadcastPage.tsx:169`, `ViewPage.tsx:175`), and the debug tree stays
+  untouched (F1).
 - **`gawk-server/internal/transport/server.go`** — `handleEcho`
   (`server.go:1297`): upgrade, then echo datagrams verbatim; rate-limited,
   drain-aware, origin-checked like every route. SP5 adds one write: open a
@@ -137,8 +154,15 @@ interface RelayServerEntry {
 
 Two localStorage keys replace the three legacy ones:
 
-- `gawk.servers` — JSON array of `RelayServerEntry` (custom entries only;
-  the pinned default is never stored, D5).
+- `gawk.servers` — JSON array of `RelayServerEntry`: custom entries, plus at
+  most one **credentials-only record for the default** (`id: "default"`, no
+  label, `url` set to the normalized default URL the credentials were saved
+  against). The pinned default's *identity* is still never stored (D5 — its
+  URL is recomputed every load); the record exists only so the default can
+  carry a secret/cert hash, and its `url` is a guard: **when the recomputed
+  default no longer matches it, the credentials are discarded** — a
+  chart-side `relayUrl` change must not present the old relay's secret and
+  cert hash to the new host (F9).
 - `gawk.selectedServer` — the selected entry's `id`; absent/unknown ⇒
   `"default"`.
 
@@ -156,17 +180,25 @@ Resolution precedence, top wins:
 The session override is an in-memory pseudo-entry with empty
 `publishSecret`/`certHashHex` unless the URL exactly matches a saved entry —
 in which case that entry is used, credentials included. "Exactly matches"
-means normalized-origin equality (§4.2).
+means normalized-origin equality (§4.2) — and to make that test honest,
+**entry URLs are normalized to origin form on every write path** (save,
+edit, migration, directory add) with the same rule §4.2 applies to `?relay=`
+values, so a hand-entered `https://Relay.Example.com:4433/` can never
+silently fail to match its own link (F8).
+
+Cross-tab rule (F11): the panel re-reads localStorage when it opens; writes
+are last-writer-wins; no `storage`-event reactivity is promised — an open
+tab keeps its resolved server until its own next navigation.
 
 #### 4.1.2 Migration
 
 On first load with legacy keys present (`gawk.serverUrl`, `gawk.certHashHex`,
 `gawk.publishSecret`):
 
-- Legacy URL equals the computed default (or is empty) → attach the legacy
-  secret + cert hash to the pinned default entry's credential slots (stored
-  under `gawk.servers` as a credentials-only shadow record for `"default"`),
-  select `"default"`.
+- Legacy URL equals the computed default (or is empty) → store the legacy
+  secret + cert hash as the default's credentials-only record (§4.1.1),
+  keyed to the normalized URL they were saved against, and select
+  `"default"`.
 - Otherwise → create one custom entry ("Migrated server", the legacy URL,
   legacy credentials) and select it — the user who pointed their install at a
   custom relay keeps working without noticing.
@@ -190,8 +222,10 @@ Behaviour on a valid value (and `allowCustomRelays` true):
 
 - The session override is set before the connection is attempted; viewer and
   broadcaster flows are otherwise byte-identical.
-- The chip (§4.3) renders prominently, showing the override's host — the user
-  can always see they are not on their default.
+- The in-session indicator (§4.3) renders on the viewer or broadcaster
+  screen itself, naming the override's host — link-borne sessions route
+  straight to those screens and never visit the landing page, so the
+  warning lives where the session actually is (F2).
 - The chip's panel offers **"Save this server"** for an override URL not in
   the list (D2). Saving creates a normal entry (label defaulted to the host)
   but does **not** change `gawk.selectedServer` — selection is its own click.
@@ -199,10 +233,22 @@ Behaviour on a valid value (and `allowCustomRelays` true):
 With `allowCustomRelays` false: the override is not applied; the quiet note
 says the link asked for another server and this deployment doesn't allow it.
 
-Broadcast-route specifics: the override relay has no stored secret (unless
-saved, §4.1.1), so on a `requirePublishSecret` deployment the normal secret
-prompt appears — a crafted link can redirect a broadcaster's *attention*, but
-never their credential (D1/D4). The R26 armed surface, when it exists,
+Broadcast-route specifics — **the secret prompt is decided per resolved
+server, not per deployment** (F3). `requiresPublishSecret()`
+(`config.ts:84`) is a property of the UI deployment and keeps governing only
+the pinned default; needing a secret is a property of the *target relay*
+(`server.go:513` answers a wrong or missing secret with a 401 at CONNECT,
+which the browser surfaces as an opaque failure). So for any non-default
+resolved server: prompt whenever that entry's `publishSecret` is empty, and
+treat a publish connect failure with no secret presented as "this relay may
+require a publish secret" — an entry field plus retry, not a dead end
+indistinguishable from "unreachable". (The inverse mismatch — UI requires,
+foreign relay open — disappears with the same rule.) A prompted secret is
+stored in the resolved entry's §4.1.1 slot; for an unsaved link override it
+is held for the session only (D2/D3) and persists only through "Save this
+server". That the override relay starts with no stored secret is also the
+security property: a crafted link can redirect a broadcaster's *attention*,
+but never their credential (D1/D4). The R26 armed surface, when it exists,
 renders the override host on the armed card for the same reason.
 
 ### 4.3 The picker UI
@@ -213,11 +259,24 @@ renders the override host on the armed card for the same reason.
   override it is prominent and names the host. The chip is the only new
   landing-page element (priority 1). Hidden entirely when
   `allowCustomRelays` is false.
+- **The in-session indicator** (F2 — phase A, not deferred to R26). The
+  chip's counterpart on the viewer and broadcaster screens: whenever the
+  resolved server is not the pinned default — saved selection or link
+  override — a persistent element on the session screen names the
+  normalized host (plus the relay's §4.4 display name once known, host
+  always alongside). It renders before capture is granted or a secret
+  entered and is not dismissible while the non-default resolution is
+  active. This is the load-bearing control in §5's crafted-link story, so
+  it lives where link-borne sessions actually land; on the default server
+  it does not render at all, keeping both screens exactly as today.
 - **The panel.** Opened from the chip: the pinned default first, then custom
   entries; each row shows label, host, probe state (§4.4: latency in ms /
   probing / unreachable), and select-on-click. Add/edit/remove for custom
   entries (add form: label, URL, optional publish secret; cert-hash field
-  dev-gated as today). Directory offers render in their own section (§4.5).
+  dev-gated as today). The pinned default's *identity* (label, URL) is
+  locked, but its **credential slots are editable** — that is the rotation
+  path for a deployment relay's publish secret or dev cert hash after
+  migration (F4; stored as the §4.1.1 credentials-only record). Directory offers render in their own section (§4.5).
   Broadcast and view pages keep using whatever the store resolves — the
   panel is reachable from the landing page and from the (dev-visible)
   server settings location it replaces.
@@ -229,15 +288,23 @@ renders the override host on the armed card for the same reason.
 **RTT** — frontend-only. Open `new WebTransport(url + '/echo')` (with
 `serverCertificateHashes` when the entry carries a cert hash), send a few
 small datagrams stamped with `performance.now()`, read the echoes, take the
-median of the successful samples (target: 5 samples over ≲1 s), close.
-Displayed per-entry in the panel; probed on panel open and on demand, never
+median of the successful samples (target: 5 samples over ≲1 s), close. The
+session is held open until the identity stream has been read **or** an
+identity deadline (~1.5 s from upgrade) passes, whichever comes first — on a
+fast link the echoes complete before the relay's uni stream arrives, and
+closing on RTT alone would nondeterministically label a current relay as
+pre-R37 (F5). Displayed per-entry in the panel; probed on panel open and on demand, never
 in the background (an idle landing page generates zero relay traffic — the
 probe rides the same rate limiter as every route, and k8s probes already
 exercise `/echo` constantly).
 
 **Identity** — the relay's half (SP4/SP5). On upgrading an echo session the
 relay opens one unidirectional stream, writes one `RelayIdentity` message,
-and closes the stream:
+and closes the stream. The send is **best-effort and non-blocking**: it runs
+off the echo loop's critical path with a short deadline, and any failure —
+including an echo client that grants no uni-stream credit — abandons the
+identity send, never the echo service (a hostile client must not be able to
+wedge `handleEcho`; F5):
 
 ```
 byte 0    Version (0x01)
@@ -264,8 +331,17 @@ appended fields. Clients parse `RelayIdentity` and never send it; one
 arriving where a client is the sender is dropped (the ViewerCount rule).
 
 **Picker semantics**: upgrade succeeded + echoes returned ⇒ *valid relay*,
-show RTT; identity received ⇒ show name ("Juho's homelab · gawk-server
-1.42.0"); no identity ⇒ label by URL (pre-R37 relay — still fully usable).
+show RTT. Identity received ⇒ show the display name — **sanitized, and
+never in place of the host** (F6). The name is attacker-influenced trust
+UI: the relay a crafted link points at chooses it, and "Official relay ✓"
+must not be able to displace the one string a user can verify. So: control
+and bidi-control characters are stripped, the name renders as plain text,
+the 64-byte cap is enforced after UTF-8 validation with truncation on a
+rune boundary, and for any non-default server the normalized host always
+renders alongside it — "Juho's homelab — relay.example.com · gawk-server
+1.42.0". A malformed identity message (nonzero flags, bad lengths, invalid
+UTF-8) degrades to "no identity" and never fails an otherwise-good probe
+(F7). No identity ⇒ label by URL (pre-R37 relay — still fully usable).
 Failure is one combined state: browsers surface WebTransport failures
 opaquely, so "unreachable", "not a gawk relay", "invalid certificate", and
 "this relay does not allow this UI's origin (D13)" are generally
@@ -298,8 +374,11 @@ boot (D9).
 (boolean, default false — display groundwork for §4.9, no behaviour in R37).
 **No credential fields exist in the schema**; an entry carrying extra fields
 has them ignored. Directory rows render in their own panel section with the
-probe available, and "Add" copies one into `gawk.servers` — the same
-explicit act as manual entry (D9). CORS note for operators: the URL is
+probe available **on demand only — offers are never auto-probed on panel
+open** (F10: opening the picker must not disclose the user's address to
+every third-party host an operator listed; SP6's no-unrequested-traffic
+assertion covers directory rows too), and "Add" copies one into
+`gawk.servers` — the same explicit act as manual entry (D9). CORS note for operators: the URL is
 fetched from the app origin, so serve it same-origin (a ConfigMap-mounted
 static asset next to `/config.js`, the `terms.html` pattern) or with
 `Access-Control-Allow-Origin` for the app's origin.
@@ -357,8 +436,11 @@ of what kind* before connecting. R37 reserves, and does not implement:
 - **Entry schema**: a reserved `auth` object on `RelayServerEntry`
   (unknown-field-preserving storage, §4.1.1, is what makes this a no-op
   now).
-- **Identity message**: the reserved flags bits + trailing extension bytes
-  (§4.4) — an auth-modes field appends without a wire break.
+- **Identity message**: the trailing extension bytes (§4.4) — an auth-modes
+  field appends without a wire break. Deliberately *not* the flags byte:
+  R37 parsers reject nonzero flags, so a future flag bit would break
+  identity parsing on every R37-era client; appended fields are the
+  extension mechanism, flags are not (F7).
 - **Directory schema**: the `managed` marker (§4.5).
 
 Nothing else — no token formats, no account model, no billing surface. When
@@ -375,13 +457,16 @@ it.
   links acceptable.
 - **A malicious relay in a viewer link** receives a viewer connection and
   serves it bytes; the viewer's parsers are already strict against hostile
-  input (every wire parser validates), and the chip prominently names the
-  non-default host. Worst case is garbage video from a server the user can
-  see they're on.
+  input (every wire parser validates), and the in-session indicator (§4.3)
+  names the non-default host on the viewer screen itself. Worst case is
+  garbage video from a server the user can see they're on.
 - **A malicious relay in a broadcast link** gets the broadcaster's *stream*
-  only if the broadcaster proceeds past a prominently non-default chip —
-  and never gets a stored credential (above). Residual risk is social, the
-  same class as any phishing link, and is why the override is loud (§4.2).
+  only if the broadcaster proceeds past the persistent in-session indicator
+  on the broadcaster screen (§4.3 — rendered before capture is granted or a
+  secret entered, not dismissible while the override is active) — and never
+  gets a stored credential (above). Residual risk is social, the same class
+  as any phishing link, and is why the indicator lives on the session
+  screen, where link-borne sessions actually land (F2).
 - **`?relay=` value hygiene**: https-only origin, no embedded credentials,
   no path/query (§4.2) — the value can name a host and nothing else.
 - **Locked-down installs**: `allowCustomRelays: false` removes the whole
@@ -448,23 +533,23 @@ Phase A — app core (frontend-only; releasable alone):
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| SP1 | Server model: entry schema, `gawk.servers`/`gawk.selectedServer`, resolution precedence, migration | Unit: precedence (override > selected > default) exhaustively tested; migration from both legacy shapes (default-URL and custom-URL) verified incl. idempotency + legacy-key removal; corrupt JSON degrades to empty list; unknown entry fields survive a rewrite. All existing transport-consumer tests pass unchanged. |
-| SP2 | `?relay=` grammar on `#/view/{id}` + `#/broadcast`: query split, validation/normalization, session override, save affordance, quiet notes, `allowCustomRelays` gating | Unit: valid/invalid value matrix (scheme, credentials, path, port normalization); route tests for both routes with and without the flag; override never written to localStorage; saved-entry URL match attaches credentials, non-match yields empty ones. Compatible with QL1's query-split seam (whichever lands second rebases on the first). |
-| SP3 | Picker UI: landing chip (quiet/prominent states), panel (list/select/add/edit/remove, pinned default, dev-gated cert-hash field), config plumbing (`allowCustomRelays` getter + chart value) | UI tests: chip hidden when flag off; quiet on default, prominent on non-default/override; default entry not deletable/editable; selection persists; manual selection during a link session persists. `configmap.yaml` renders the new key; landing page DOM unchanged vs. today except the chip. |
+| SP1 | Server model: entry schema, `gawk.servers`/`gawk.selectedServer`, resolution precedence, URL normalization, migration | Unit: precedence (override > selected > default) exhaustively tested; **URLs normalized on every write path** — a mixed-case/trailing-slash saved entry still credential-matches its normalized link (F8); the default's credentials-only record is keyed to its URL and **discarded when the recomputed default URL changes** (F9); cross-tab semantics per §4.1.1 (re-read on panel open, last-writer-wins) tested (F11); migration from both legacy shapes (default-URL and custom-URL) verified incl. idempotency + legacy-key removal; corrupt JSON degrades to empty list; unknown entry fields survive a rewrite. All existing transport-consumer tests pass unchanged. |
+| SP2 | `?relay=` grammar on `#/view/{id}` + `#/broadcast`: query split, validation/normalization, session override, save affordance, quiet notes, `allowCustomRelays` gating, per-server secret-prompt semantics | Unit: valid/invalid value matrix (scheme, credentials, path, port normalization); route tests for both routes with and without the flag; override never written to localStorage; saved-entry URL match attaches credentials, non-match yields empty ones. **F3 semantics tested**: deployment flag governs only the pinned default; a non-default server with an empty entry secret prompts; publish connect failure with no secret presented offers secret entry + retry; a prompted secret lands in the resolved entry's slot, session-only for an unsaved override. Compatible with QL1's query-split seam (whichever lands second rebases on the first). |
+| SP3 | Picker UI: landing chip (quiet/prominent states), **in-session indicator on both session screens**, panel (list/select/add/edit/remove, pinned default, dev-gated cert-hash field), removal of both production dev panels, config plumbing (`allowCustomRelays` getter + chart value) | UI tests: chip hidden when flag off; quiet on default, prominent on non-default/override; **in-session indicator present on viewer and broadcaster screens before capture/secret whenever the resolved server is non-default, not dismissible while active, absent on the default server** (F2); default entry's identity not deletable/editable but its **credential slots editable** (F4); selection persists; manual selection during a link session persists. **Both production dev panels (`BroadcasterScreen.tsx:128`, `ViewerScreen.tsx:227`) removed, both screens read resolved values from the new store; the frozen `#/debug/*` tree incl. `ServerSettings.tsx` untouched** (F1). `configmap.yaml` renders the new key; landing page DOM unchanged vs. today except the chip. |
 
 Phase B — probe + identity (server + wire mirrors + app):
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| SP4 | Wire: `TypeRelayIdentity` 0x11 in `wire.go` + all three mirrors, golden vectors | Append/Parse with vectors byte-identical across Go, TS, wirecheck, and Rust; parser tolerates trailing bytes (tested), rejects nonzero flags, rejects out-of-range name/version lengths; client-side drop-if-sent-by-client rule tested. All four modules' gates green in one PR. |
-| SP5 | Relay: send identity on `/echo` open; `-server-name` knob (flag + `GAWK_SERVER_NAME` + chart `config.serverName`) through `registryOptions` | Go test: echo session receives exactly one identity uni stream with configured name/version; empty name when unset; k8s exec probe path (`gawk-echo`) unaffected (probe test stays green); knob reaches production config (registryOptions test, the R2 lesson). |
-| SP6 | App probe: on-demand `/echo` dial per entry, median RTT, identity display, combined failure state | Unit (mocked transport): median over lossy samples; timeout → failure state; identity absent → URL-labelled entry still selectable. e2e (tier-1): panel shows a live RTT against the test relay and its configured name. No probe traffic without user action (asserted). |
+| SP4 | Wire: `TypeRelayIdentity` 0x11 in `wire.go` + all three mirrors, golden vectors | Append/Parse with vectors byte-identical across Go, TS, wirecheck, and Rust; parser tolerates trailing bytes (tested), rejects nonzero flags, rejects out-of-range name/version lengths and invalid UTF-8; **client-side, a parse failure degrades to "no identity" without failing the probe** (F7); drop-if-sent-by-client rule tested. All four modules' gates green in one PR. |
+| SP5 | Relay: send identity on `/echo` open (best-effort, non-blocking); `-server-name` knob (flag + `GAWK_SERVER_NAME` + chart `config.serverName`) through `registryOptions` | Go test: echo session receives exactly one identity uni stream with configured name/version; empty name when unset; **an echo client granting no uni-stream credit does not stall or fail the echo loop — the identity send is abandoned, echoes keep flowing** (F5); k8s exec probe path (`gawk-echo`) unaffected (probe test stays green); knob reaches production config (registryOptions test, the R2 lesson). |
+| SP6 | App probe: on-demand `/echo` dial per entry, median RTT, identity wait window, sanitized identity display, combined failure state | Unit (mocked transport): median over lossy samples; timeout → failure state; identity absent → URL-labelled entry still selectable; **identity arriving after the echoes complete is still shown — the §4.4 wait window works** (F5); **name sanitization (control/bidi strip, rune-boundary truncation) and host-always-alongside-name asserted** (F6). e2e (tier-1): panel shows a live RTT against the test relay and its configured name. No probe traffic without user action (asserted). |
 
 Phase C — directory:
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| SP7 | `serverDirectoryUrl` config key + chart value, fetch-on-open, schema v1 validation, panel section, explicit add | Unit: version/URL/label validation incl. per-entry drop; fetch failure/timeout degrades without blocking the panel; no fetch at boot (asserted); added entry equals a manually-added one; credential-bearing fields in a directory entry are ignored. Chart renders the key. |
+| SP7 | `serverDirectoryUrl` config key + chart value, fetch-on-open, schema v1 validation, panel section, explicit add | Unit: version/URL/label validation incl. per-entry drop; fetch failure/timeout degrades without blocking the panel; no fetch at boot (asserted); **directory offers are probed on demand only — opening the panel generates no traffic to listed servers** (F10); added entry equals a manually-added one; credential-bearing fields in a directory entry are ignored. Chart renders the key. |
 
 Phase D — native parity:
 
