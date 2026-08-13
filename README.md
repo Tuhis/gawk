@@ -55,8 +55,12 @@ images, and a **[self-hosting guide](docs/self-hosting.md)**.
   multi-pod cluster
 
 **Browser support:** Chromium-first. Firefox works through documented
-fallbacks; iPhone playback uses an fMP4 + `ManagedMediaSource` path
-([docs/27](docs/27-ios-mse-fullscreen.md)).
+fallbacks. **WebKit — Safari on every OS, and every browser on iOS — cannot
+currently join a broadcast**: it refuses the WebTransport session outright
+(see [BUGS.md](BUGS.md)), so the app detects it on load and warns. The iPhone
+fMP4 + `ManagedMediaSource` playback path
+([docs/27](docs/27-ios-mse-fullscreen.md)) is unchanged and still documented,
+but nothing reaches it until that is resolved.
 
 ## Quick links
 
