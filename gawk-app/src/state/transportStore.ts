@@ -387,6 +387,16 @@ export function customServers(servers: RelayServerEntry[]): RelayServerEntry[] {
   return servers.filter((s) => s.id !== DEFAULT_SERVER_ID);
 }
 
+// True when the RESOLVED server names the deployment's own relay — by
+// normalized-URL equality, not entry id (docs/40 §5 G3): a user who manually
+// saved the deployment's relay as a custom entry is id-non-default but
+// URL-default, and anything keyed on identity semantics (the foreign-
+// telemetry disclosure) must not treat them as foreign.
+export function resolvedUrlIsDefault(): boolean {
+  const { serverUrl } = useTransportStore.getState();
+  return normalizeRelayOrigin(serverUrl) === normalizeRelayOrigin(defaultServerUrl());
+}
+
 export const useTransportStore = create<TransportSettingsState>((set, get) => {
   const initial = loadInitialState();
 

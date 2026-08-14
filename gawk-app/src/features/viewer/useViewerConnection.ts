@@ -38,7 +38,7 @@ import {
   audioProfileForDeliveryMode,
   type AudioBufferProfile,
 } from '../../transport/audio-buffer';
-import { useTransportStore } from '../../state/transportStore';
+import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import { readVisibility } from '../../lib/visibility';
 import { log } from '../../lib/logger';
@@ -552,7 +552,9 @@ export function useViewerConnection(
       // the disclosure flag flips only for a non-default resolution.
       case 'telemetryEndpoint':
         telemetry.setAdvertisedUrl(ev.url);
-        if (useTransportStore.getState().resolvedSource !== 'default') {
+        // URL-keyed, not id-keyed (G3): a saved duplicate of the deployment's
+        // own relay is not foreign.
+        if (!resolvedUrlIsDefault()) {
           useTransportStore.getState().setForeignTelemetryActive(true);
         }
         break;

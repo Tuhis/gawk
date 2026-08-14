@@ -15,7 +15,7 @@ import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
 import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
-import { useTransportStore } from '../../state/transportStore';
+import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
 import { allowCustomRelays, requiresPublishSecret } from '../../config';
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { ServerPickerPanel } from '../servers/ServerPickerPanel';
@@ -222,8 +222,11 @@ export function BroadcasterScreen() {
       // disclosure flips only when this session is on a foreign relay.
       onTelemetryEndpoint: (url: string) => {
         telemetry.setAdvertisedUrl(url);
-        const st = useTransportStore.getState();
-        if (st.resolvedSource !== 'default') st.setForeignTelemetryActive(true);
+        // URL-keyed, not id-keyed (G3): a saved duplicate of the deployment's
+        // own relay is not foreign.
+        if (!resolvedUrlIsDefault()) {
+          useTransportStore.getState().setForeignTelemetryActive(true);
+        }
       },
     });
 

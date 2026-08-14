@@ -577,3 +577,30 @@ func TestPostRetriesOn429ButNotOnOther4xx(t *testing.T) {
 		})
 	}
 }
+
+// R37 (docs/40 §5 G3): the 250 ms sampling floor is security-load-bearing —
+// the hello's interval is relay-chosen and, with 0x12, the destination can be
+// a hostile relay's choice too, so the clamp is what bounds the reflector
+// rate. A relay asking for 0 ms must not make this reporter sample faster
+// than the floor.
+func TestReporterClampsBelowFloorInterval(t *testing.T) {
+	c := newCapture(t)
+	now := time.Unix(1700000000, 0)
+	r := New(Options{URL: c.srv.URL, Version: "1", now: func() time.Time { return now }})
+	h := hello(true)
+	h.ReportIntervalMs = 0 // hostile/misconfigured relay asks for "as fast as possible"
+	r.Begin(h)
+
+	r.Report(map[string]any{"i": 0})
+	now = now.Add(100 * time.Millisecond) // under the floor — must coalesce
+	r.Report(map[string]any{"i": 1})
+	now = now.Add(200 * time.Millisecond) // 300 ms total — past the floor
+	r.Report(map[string]any{"i": 2})
+	r.Flush(false)
+	r.Close()
+
+	b := c.batches(t)[0]
+	if len(b.Samples) != 2 {
+		t.Fatalf("samples = %d, want 2 (the floor must coalesce the 100 ms sample)", len(b.Samples))
+	}
+}

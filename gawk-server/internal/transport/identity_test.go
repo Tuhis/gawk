@@ -177,8 +177,13 @@ func TestMediaRoutesAdvertiseTelemetryEndpoint(t *testing.T) {
 		TelemetryAdvertiseURL:   advertised,
 	})
 
-	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
-	pubURLs := endpointsFrom(t, collectUniMessages(t, pub, 2*time.Second))
+	// The handshake helper consumes uni streams in whatever order they are
+	// accepted — the 0x12 may be among its leftovers (review finding R3-B),
+	// so the assertion runs over consumed + subsequently-collected messages.
+	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+	id, _, consumed := readPublisherHandshakeMsgs(t, ctx, pub)
+	pubMsgs := append(consumed, collectUniMessages(t, pub, 2*time.Second)...)
+	pubURLs := endpointsFrom(t, pubMsgs)
 	if len(pubURLs) != 1 || pubURLs[0] != advertised {
 		t.Fatalf("publish endpoints = %v, want exactly [%s]", pubURLs, advertised)
 	}
@@ -214,8 +219,10 @@ func TestNoTelemetryEndpointWhenUnconfigured(t *testing.T) {
 			cfg.KeepAlivePeriod = 10 * time.Second
 			port, clientTLS, _, _ := startTestServerCfg(t, ctx, cfg)
 
-			pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
-			if urls := endpointsFrom(t, collectUniMessages(t, pub, 1500*time.Millisecond)); len(urls) != 0 {
+			pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+			id, _, consumed := readPublisherHandshakeMsgs(t, ctx, pub)
+			pubMsgs := append(consumed, collectUniMessages(t, pub, 1500*time.Millisecond)...)
+			if urls := endpointsFrom(t, pubMsgs); len(urls) != 0 {
 				t.Fatalf("publish endpoints = %v, want none", urls)
 			}
 			sub := dialSubscriber(t, ctx, port, id, clientTLS)

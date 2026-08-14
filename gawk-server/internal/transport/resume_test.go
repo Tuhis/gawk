@@ -100,6 +100,20 @@ func TestResumeTokenKeyModes(t *testing.T) {
 // dispatching by wire type so stream arrival order doesn't matter.
 func readPublisherHandshake(t *testing.T, ctx context.Context, sess *webtransport.Session) (id, tokenHex string) {
 	t.Helper()
+	id, tokenHex, _ = readPublisherHandshakeMsgs(t, ctx, sess)
+	return id, tokenHex
+}
+
+// readPublisherHandshakeMsgs additionally returns EVERY message consumed
+// while hunting for the announce + token. The relay sends other session-start
+// messages on their own streams (R28 TelemetryHello, R29 RelayCapabilities,
+// R37 TelemetryEndpoint) and accept order is unspecified — so a test
+// asserting on one of those must take this helper's leftovers, or whether it
+// sees the message at all becomes an accept-order coin flip (R37 review
+// finding R3-B: exactly that race, deterministic-failing on one machine and
+// green on another).
+func readPublisherHandshakeMsgs(t *testing.T, ctx context.Context, sess *webtransport.Session) (id, tokenHex string, consumed [][]byte) {
+	t.Helper()
 	// Loop until BOTH are in hand rather than reading a fixed number of
 	// streams: the relay sends a publisher other session-start messages too
 	// (R29 RelayCapabilities, R28 TelemetryHello), and webtransport-go does
@@ -117,6 +131,7 @@ func readPublisherHandshake(t *testing.T, ctx context.Context, sess *webtranspor
 		if err != nil {
 			t.Fatalf("read uni stream: %v", err)
 		}
+		consumed = append(consumed, data)
 		_, typ, err := wire.PeekType(data)
 		if err != nil {
 			t.Fatalf("PeekType: %v", err)
@@ -142,7 +157,7 @@ func readPublisherHandshake(t *testing.T, ctx context.Context, sess *webtranspor
 	if id == "" || tokenHex == "" {
 		t.Fatalf("incomplete publisher handshake: id=%q tokenSet=%v", id, tokenHex != "")
 	}
-	return id, tokenHex
+	return id, tokenHex, consumed
 }
 
 // The publisher handshake delivers a resume token alongside the announce.

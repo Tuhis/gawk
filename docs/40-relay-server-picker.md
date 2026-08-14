@@ -48,6 +48,14 @@ review-visible:
 - **`off` beats an advertised 0x12 in the native apps**: the explicit
   telemetry opt-out (`TelemetryOff`) wins over D15's advertised-URL
   precedence — off means off. D15 is about *destination*, not consent.
+- **D15's foreign-relay suppression guard was reverted (2026-08-14, review
+  R3-A/R3-C)**: the frontend now matches the native fallback semantics —
+  advertised wins, else the configured URL on any relay. The suppression
+  variant silently stopped telemetry for same-fleet-via-non-default-URL
+  topologies (direct IP, alternate DNS, migrated legacy settings), which
+  the e2e telemetry scenario caught; the D15 row carries the dated
+  revision. Per-send precedence re-resolution (G2), the 250 ms floor pins
+  (G3), and the URL-keyed disclosure predicate landed in the same pass.
 - **Both native engines' server-message read caps were raised** (258 →
   517 bytes) — the old cap, sized for BroadcastAnnounce, would have
   truncated a full-length TelemetryEndpoint into a parse failure. Found
@@ -127,7 +135,7 @@ What R37 adds:
 | D12 | **One milestone, phased chunks.** Phase A (app core) is releasable alone; B, C, D follow in any order after their dependencies. | The link grammar + picker deliver the product value without any server change; the probe, directory, and native parity each improve it independently. |
 | D13 | **The relay's origin allowlist remains the relay-side gate.** A relay operator chooses which UI origins may use their relay via the existing `allowedOrigins` (empty = allow all, the current dev default). R37 adds no new server-side access control — it documents the interplay (§4.6, SP10). | "Usable from any UI" needs consent on both sides: the UI's `allowCustomRelays` and the relay's `allowedOrigins`. Both controls already exist or default open; what's missing is only the self-hosting doc telling a relay operator the second one matters now. |
 | D14 *(2026-08-13)* | **The relay advertises its telemetry ingest URL in-band: new wire message `TypeTelemetryEndpoint` (0x12), relay→client on its own uni stream**, composing with the frozen 0x0D hello (whose strict exact-length parser cannot be extended). Sent on publish/subscribe sessions only when the relay both collects telemetry and has an advertised URL configured (`-telemetry-advertise-url` / `GAWK_TELEMETRY_ADVERTISE_URL` / chart `telemetry.advertiseUrl`, plumbed per the registryOptions invariant); never on `/internal/subscribe`. Clients parse it and never send it. | The ingest endpoint lives on the operator's *frontend* Ingress, not the relay, so the relay can only advertise what it is configured with — but it is the one party that also mints the token, so it is the only party that can name a destination where that token verifies. In-band because WebTransport exposes no response headers (the 0x09/0x0D/0x11 precedent). |
-| D15 *(2026-08-13)* | **A relay-advertised URL always wins; `config.js` `telemetryUrl` is the fallback** for relays that advertise nothing (including every pre-R37 relay). A client on a **non-default** relay that advertises no URL reports nothing at all — its batches could only be rejected at the home deployment's token check, so sending them is pure waste. | Owner choice: the source of truth moves relay-side, one precedence rule everywhere. The accepted cost is duplication on the happy path — a deployment's relay chart and app chart both name the same ingest URL — and the doc says so rather than hiding it. |
+| D15 *(2026-08-13; revised 2026-08-14, review R3-A/R3-C)* | **A relay-advertised URL always wins; the configured URL is the fallback on ANY relay** (including every pre-R37 relay). *Revision note*: the original wording added a guard — "a non-default relay that advertises no URL reports nothing" — which the R3-A review falsified: the same fleet is legitimately reached through non-default URLs (direct IP, alternate DNS, a migrated legacy setting, the e2e harness), where the configured collector shares the fleet key and the suppressed batches would have verified. The guard silently stopped exactly those users' telemetry (the e2e failure was the proof), so it is dropped: fallback everywhere, precedence re-resolved at every send. Truly foreign fleets reject fallback batches at token verification — bounded, honest waste, the pre-R37 posture. | Owner choice: the source of truth moves relay-side, one precedence rule everywhere. The accepted cost is duplication on the happy path — a deployment's relay chart and app chart both name the same ingest URL — and the doc says so rather than hiding it. |
 | D16 *(2026-08-13)* | **Choosing a relay is the telemetry consent: any resolved relay's advertised URL is honored — saved selection or bare `?relay=` link override alike** — and the in-session indicator (§4.3) states when diagnostics are being reported to a foreign operator. | Owner choice. The operator already terminates the session's QUIC traffic; diagnostics about that same session going to the same operator is proportionate, and the indicator makes it visible rather than silent. The alternative consent gates (saved-only, per-server toggle) were considered and declined as friction that mostly starves relay operators of the data they need to debug. |
 | D17 *(2026-08-13)* | **Cross-origin ingest = wildcard CORS + a CORS-safelisted beacon.** The telemetry ingest listener answers preflights with `Access-Control-Allow-Origin: *`, and the unload flush switches to a safelisted content type (`text/plain` carrying the unchanged JSON envelope) so `sendBeacon` needs no preflight it cannot perform during unload. The dashboard/read listener stays never-public, unchanged. | Wildcard is safe here because auth is the in-body HMAC token — no cookies, no credentialed requests — and ingest is already the public listener by design (CLAUDE.md posture). The safelisted beacon is what keeps the final batch alive cross-origin; losing it was considered and declined. |
 
@@ -541,15 +549,20 @@ rides the operator's frontend Ingress), so the self-hosting doc's SP10
 section pairs it with a "verify with a probe from a foreign UI" step; the
 reference deployment sets it to its own public ingest URL.
 
-**Client precedence (D15).** Advertised URL → `config.js` `telemetryUrl` →
-`DEFAULT_TELEMETRY_URL`, with one guard: on a **non-default** resolved relay
-whose fleet enabled collection but advertised no URL, the client reports
-**nothing** — those batches could only die at the home deployment's token
-check, and traffic that can only be rejected is not sent. On the pinned
-default this guard never engages, so an existing deployment that configures
-nothing new behaves byte-identically to today. Client-side the URL is
+**Client precedence (D15, revised 2026-08-14).** Advertised URL →
+configured URL (`config.js` `telemetryUrl` / its same-origin default), on
+ANY relay — the pre-R37 fallback behavior, everywhere. Precedence is
+**re-resolved at every send** (G2): 0x0D and 0x12 ride separate uni streams
+with no ordering guarantee, so a late 0x12 simply redirects the rest of the
+session's batches (already-sent ones went to the fallback; the ingest's
+`seq` field keeps either dataset honest about gaps). Client-side the URL is
 validated like every other URL in this design (absolute https, else
-ignored).
+ignored, parse failure degrades to "no advertised URL"). The
+reflector-rate bound on this attacker-influenced destination is the
+client-side **250 ms sampling floor** (G3) — `lib/telemetry.ts` and the
+native reporters clamp the hello's relay-chosen interval, and that clamp is
+pinned by its own test in each module because a refactor dropping it would
+otherwise fail nothing.
 
 **Consent and visibility (D16).** Any resolved relay qualifies — saved
 entry or bare link override. The in-session indicator (§4.3) carries the
@@ -574,13 +587,19 @@ ingest listener only:
   `application/json`. The envelope bytes are identical either way — this is
   a transport-header concession, not a format fork.
 
-**Native broadcasters.** Both native apps honor 0x12 with the same
-precedence and guard (their wire mirrors gain the message in SP4's
-allocation pass). This retires the awkwardness of
+**Native broadcasters (G1's native rule, stated).** A native app has no
+deployment, so "default" is defined by URL provenance, not a resolution
+model: an advertised 0x12 wins; an **explicitly configured** telemetry URL
+(flag/env/config field) is honored on any relay; the hardcoded
+`DefaultTelemetryURL` fallback pairs only with the reference fleet's relay —
+against any other relay with nothing configured and nothing advertised, the
+reporter sends nothing (there is no honest destination to fall back to).
+The explicit `off` opt-out beats everything, an advertised URL included —
+D15 is about *destination*, not consent. Both wire mirrors gain 0x12 in
+SP4's allocation pass. This retires the awkwardness of
 `gawk-broadcast/internal/config`'s `DefaultTelemetryURL` — a hardcoded
 second constant that exists precisely because the ingest URL was never
-derivable from the relay URL; it remains only as the final fallback for the
-reference fleet.
+derivable from the relay URL.
 
 ## 5. Security considerations
 
@@ -620,11 +639,16 @@ reference fleet.
   Bounds: https-only and length-capped, honored only while that same
   relay's hello enables collection, payload is solely the session's own
   diagnostics envelope (with the *obfuscated* broadcast key — raw IDs never
-  ride telemetry, R9 D3), cadence is the hello's report interval, and the
-  in-session indicator discloses the foreign destination. As an "exfil"
-  primitive it can carry nothing the malicious relay doesn't already see as
-  the session's transport endpoint; as a DDoS reflector it is a trickle on
-  a per-user opt-in path. Accepted (D16).
+  ride telemetry, R9 D3), and the in-session indicator discloses the
+  foreign destination. The cadence bound is NOT the hello's interval (a
+  hostile relay sends 0): it is the client-side 250 ms sampling floor,
+  test-pinned in every reporting module (G3). The envelope carries nothing
+  *sensitive* beyond what the chosen relay already observes as the
+  session's transport endpoint — client-side decode/render metrics and a
+  coarse browser/OS class ride along; as a DDoS reflector it is a trickle
+  on a per-user opt-in path. The disclosure keys on **normalized-URL
+  equality** with the recomputed default, never entry identity — a saved
+  duplicate of the deployment's own relay is not foreign. Accepted (D16).
 - **Wildcard CORS on ingest** (D17) widens nothing that matters: the
   listener was already public by design, requests carry no cookies or
   ambient credentials, and every batch still dies without a valid HMAC
@@ -724,7 +748,7 @@ phase A's resolution model):
 |---|---|---|
 | SP11 | Relay: send 0x12 on publish/subscribe when telemetry is enabled and `-telemetry-advertise-url` is set (flag + `GAWK_TELEMETRY_ADVERTISE_URL` + chart `telemetry.advertiseUrl`, through `registryOptions`); never on `/internal/subscribe` | Go test: enabled+URL ⇒ exactly one 0x12 stream per session on both routes; disabled or unset ⇒ none; internal subscribe ⇒ none; invalid configured URL refused at startup (fail fast, not a silent no-send); knob reaches production config (registryOptions test). |
 | SP12 | `gawk-telemetry` ingest: CORS preflight + `Access-Control-Allow-Origin: *`, accept `text/plain` beacon bodies alongside `application/json` | Go test: OPTIONS answered with the CORS headers, POST responses carry them; identical envelope accepted under both content types; token verification and rate limits unchanged and still enforced under `text/plain`; dashboard/read listener serves **no** CORS headers (asserted — the never-public posture is visible in tests). |
-| SP13 | App: 0x12 precedence (advertised → config → default), the §4.10 no-URL-on-foreign-relay guard, `text/plain` unload beacon, indicator disclosure | Unit: precedence matrix incl. malformed-0x12-degrades; guard asserted (foreign relay, hello enabled, no 0x12 ⇒ zero POSTs); unload flush uses a safelisted content type (no preflight dependency); indicator shows the disclosure only when foreign telemetry is active. e2e (tier-1): session against the test relay with an advertised URL lands batches at that URL cross-origin, incl. an unload flush. |
+| SP13 | App: 0x12 precedence (advertised wins, configured fallback on any relay — D15 as revised 2026-08-14), per-send re-resolution, `text/plain` unload beacon, indicator disclosure | Unit: precedence matrix incl. malformed-0x12-degrades, the configured-URL fallback with no 0x12 (pre-R37 behavior restored), a LATE 0x12 redirecting subsequent batches (G2), and the 250 ms floor clamping a below-floor hello (G3); unload flush uses a safelisted content type (no preflight dependency); indicator disclosure keys on normalized-URL equality, never entry id (G3). e2e (tier-1): the telemetry scenario pins the fallback path end-to-end (relay with no advertise URL, batches land at the configured collector); the advertised path is unit-covered on every side — its e2e needs an https ingest front the harness doesn't have. |
 
 Docs & closure:
 

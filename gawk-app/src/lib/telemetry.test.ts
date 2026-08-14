@@ -29,7 +29,7 @@ interface Sent {
 
 // A collector wired to fake time and a recording transport. Timers are driven
 // explicitly so nothing here waits on a wall clock.
-function harness(opts: { fail?: boolean; reportIntervalMs?: number; retryable?: boolean; requireAdvertisedUrl?: boolean } = {}) {
+function harness(opts: { fail?: boolean; reportIntervalMs?: number; retryable?: boolean } = {}) {
   const sent: Sent[] = [];
   const timers: { fn: () => void; ms: number }[] = [];
   let clock = 0;
@@ -38,7 +38,6 @@ function harness(opts: { fail?: boolean; reportIntervalMs?: number; retryable?: 
   const collector = new TelemetryCollector<Record<string, unknown>>({
     url: '/api/telemetry/v1/ingest',
     role: 'viewer',
-    requireAdvertisedUrl: opts.requireAdvertisedUrl === undefined ? undefined : () => opts.requireAdvertisedUrl!,
     now: () => 1_700_000_000_000,
     transport: async (url, body, beacon) => {
       sent.push({ url, body, beacon });
@@ -583,7 +582,7 @@ describe('TelemetryCollector — interval minima (docs/33 D16)', () => {
 
 // --- R37 (docs/40 §4.10 SP13): the relay-advertised destination ------------
 
-describe('advertised telemetry endpoint (R37)', () => {
+describe('advertised telemetry endpoint (R37, revised per review R3-A/R3-C)', () => {
   it('an advertised URL wins over the configured one (D15)', () => {
     const h = harness();
     h.begin();
@@ -593,36 +592,34 @@ describe('advertised telemetry endpoint (R37)', () => {
     expect(h.sent.at(-1)!.url).toBe('https://foreign.example/api/telemetry/v1/ingest');
   });
 
-  it('the §4.10 guard: foreign relay, hello enabled, no 0x12 ⇒ zero requests', () => {
-    const h = harness({ requireAdvertisedUrl: true });
+  // The revised D15 fallback: with no 0x12, batches go to the CONFIGURED
+  // URL on any relay — the pre-R37 behavior. The same fleet is legitimately
+  // reached through non-default URLs (direct IP, alternate DNS, a migrated
+  // legacy setting) where the configured collector shares the key; the
+  // suppression variant silently stopped those sessions' telemetry (the
+  // e2e failure that proved it).
+  it('falls back to the configured URL when no 0x12 arrives', () => {
+    const h = harness();
     h.begin();
     h.collector.sample({ fps: 30 });
-    h.collector.flush();
-    h.collector.flushForUnload();
-    h.collector.finish();
-    expect(h.sent).toHaveLength(0);
-  });
-
-  it('a late 0x12 releases the buffered batch (the streams race, F5-adjacent)', () => {
-    const h = harness({ requireAdvertisedUrl: true });
-    h.begin();
-    h.collector.sample({ fps: 30 });
-    h.collector.flush();
-    expect(h.sent).toHaveLength(0);
-    h.collector.setAdvertisedUrl('https://foreign.example/ingest');
     h.collector.flush();
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0].url).toBe('https://foreign.example/ingest');
-    // The buffered sample rode the released batch, not the void.
-    expect(h.sent[0].body).toContain('"fps":30');
+    expect(h.sent[0].url).toBe('/api/telemetry/v1/ingest');
   });
 
-  it('on the default relay the configured URL keeps working unchanged', () => {
-    const h = harness({ requireAdvertisedUrl: false });
+  // G2: precedence re-resolves at every send — a late 0x12 redirects the
+  // rest of the session's batches (already-sent ones went to the fallback).
+  it('a late 0x12 redirects subsequent batches', () => {
+    const h = harness();
     h.begin();
     h.collector.sample({ fps: 30 });
     h.collector.flush();
-    expect(h.sent.at(-1)!.url).toBe('/api/telemetry/v1/ingest');
+    expect(h.sent[0].url).toBe('/api/telemetry/v1/ingest');
+    h.collector.setAdvertisedUrl('https://foreign.example/ingest');
+    h.advance(3000); // past the sampling floor so the next sample lands
+    h.collector.sample({ fps: 31 });
+    h.collector.flush();
+    expect(h.sent[1].url).toBe('https://foreign.example/ingest');
   });
 
   it('reportingToAdvertised backs the indicator disclosure (D16)', () => {
@@ -631,6 +628,22 @@ describe('advertised telemetry endpoint (R37)', () => {
     expect(h.collector.reportingToAdvertised).toBe(false);
     h.collector.setAdvertisedUrl('https://foreign.example/ingest');
     expect(h.collector.reportingToAdvertised).toBe(true);
+  });
+
+  // G3: the 250 ms sampling floor is security-load-bearing since R37 — the
+  // hello's interval is relay-chosen and the destination can be a hostile
+  // relay's choice, so the clamp is what bounds the reflector rate. A relay
+  // asking for 0 ms must not sample faster than the floor.
+  it('clamps a below-floor hello interval to 250 ms', () => {
+    const h = harness({ reportIntervalMs: 0 });
+    h.begin();
+    h.collector.sample({ fps: 1 });
+    // A second sample immediately after must be coalesced by the floor.
+    h.collector.sample({ fps: 2 });
+    h.collector.flush();
+    expect(h.sent).toHaveLength(1);
+    const batch = JSON.parse(h.sent[0].body) as { samples: unknown[] };
+    expect(batch.samples).toHaveLength(1);
   });
 });
 

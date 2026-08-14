@@ -137,14 +137,6 @@ export type TelemetryTransport = (
 export interface TelemetryCollectorOptions<T> {
   url: string;
   role: TelemetryRole;
-  // R37 (docs/40 §4.10 D15): reports true when this session's relay is NOT
-  // the deployment default. Batches then go nowhere until the relay
-  // advertises its ingest URL (wire 0x12) — against a foreign fleet, the
-  // configured `url` could only die at the home deployment's token check,
-  // and traffic that can only be rejected is not sent. A getter (not a
-  // boolean) because the resolved server can change while the collector
-  // lives.
-  requireAdvertisedUrl?: () => boolean;
   transport?: TelemetryTransport;
   now?: () => number;
   // Injectable so tests drive time without wall-clock waits. Defaults to the
@@ -256,6 +248,10 @@ export class TelemetryCollector<T> {
       this.session = null;
     }
     this.broadcastKey = hello.broadcastKey;
+    // The 250 ms floor is security-load-bearing since R37 (docs/40 §5 G3):
+    // with 0x12 the destination is attacker-influenced, and the hello's
+    // interval is relay-chosen — this clamp is what bounds the reflector
+    // rate a hostile relay can extract. Pinned by its own test.
     this.reportIntervalMs = Math.max(hello.reportIntervalMs, 250);
     this.startedAtMs = this.opts.now();
     this.startedAtPerf = perfNow();
@@ -359,10 +355,6 @@ export class TelemetryCollector<T> {
   // marked final there would be finalized while it is still streaming.
   flush(final = false, beacon = false): void {
     if (this.token === null) return;
-    // R37 (docs/40 §4.10): a foreign relay that advertised no destination
-    // gets ZERO requests — the samples stay buffered (bounded by the byte
-    // budget) in case a late 0x12 names one.
-    if (this.effectiveUrl() === null) return;
     if (this.samples.length === 0 && this.events.length === 0 && !final) return;
 
     const batch: TelemetryBatch<T> = {
@@ -433,10 +425,17 @@ export class TelemetryCollector<T> {
     return this.active && this.advertisedUrl !== null;
   }
 
-  private effectiveUrl(): string | null {
-    if (this.advertisedUrl !== null) return this.advertisedUrl;
-    if (this.opts.requireAdvertisedUrl?.()) return null;
-    return this.opts.url;
+  // D15, revised semantics (R37 review R3-A/R3-C): an advertised URL wins;
+  // otherwise the configured URL is used on ANY relay — the pre-R37
+  // behavior. Suppressing on a "foreign" relay was tried first and reverted:
+  // the same fleet is legitimately reached through non-default URLs
+  // (direct IP, alternate DNS, a migrated legacy setting), where the
+  // configured collector shares the fleet key and the batches verify fine.
+  // Truly foreign fleets reject the batches at token verification, which is
+  // bounded waste and honest, exactly as before R37. Re-resolved at every
+  // send, so a late 0x12 redirects subsequent batches (G2).
+  private effectiveUrl(): string {
+    return this.advertisedUrl ?? this.opts.url;
   }
 
   // The visibilitychange → hidden hook. `pagehide`/`unload` are unreliable on
@@ -482,8 +481,9 @@ export class TelemetryCollector<T> {
   }
 
   private async send(body: string, beacon: boolean, attempt: number): Promise<void> {
+    // Re-resolved per attempt (G2): a 0x12 landing between flushes — or
+    // between retries — redirects the rest of the session's batches.
     const url = this.effectiveUrl();
-    if (url === null) return;
     let outcome: boolean | TelemetrySendOutcome = false;
     try {
       outcome = await this.opts.transport(url, body, beacon);
