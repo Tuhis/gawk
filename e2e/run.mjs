@@ -616,6 +616,16 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
     ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel, stripeMode }) => {
+      // R37 (docs/40): the test relay is configured the way a real
+      // deployment's is — config.relayUrl — so the app resolves it as the
+      // pinned DEFAULT server. The legacy gawk.serverUrl key would instead
+      // migrate into a selected custom entry, and a non-default resolution
+      // legitimately withholds telemetry until the relay advertises an
+      // ingest URL (wire 0x12, the §4.10 guard) — which is exactly what
+      // broke the telemetry pass when this harness still used the old key.
+      // The legacy keys stay seeded on purpose: every run now also
+      // exercises the R37 migration folding them into the default's
+      // credentials record (cert hash included).
       localStorage.setItem('gawk.serverUrl', serverUrl);
       if (hash) localStorage.setItem('gawk.certHashHex', hash);
       // R19/R21: the persisted delivery choice is the only way in — the mode
@@ -637,7 +647,7 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
       // move as requirePublishSecret:false above (skip a pre-start modal the
       // gate has its own unit coverage for). Pinning the version keeps this
       // robust when the bundled version bumps. Viewers are never gated.
-      window.__GAWK_CONFIG__ = { requirePublishSecret: false, termsVersion: 'e2e' };
+      window.__GAWK_CONFIG__ = { requirePublishSecret: false, termsVersion: 'e2e', relayUrl: serverUrl };
       // R28: the split-origin override (docs/33 D1). Only set for the
       // telemetry pass — every other pass leaves it unset, which is what makes
       // the zero-request assertion below a real check rather than a tautology.
