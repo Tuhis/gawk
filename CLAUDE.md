@@ -31,6 +31,7 @@ authoritative home. Read it there.
 | What each design doc covers | `docs/README.md` (the index) | maintain a second list |
 | Open confirmed bugs | `BUGS.md` | enumerate them here |
 | Coding + review rules | `CODE-REVIEW.md` | restate them here |
+| Commit type/scope table, PR etiquette | `CONTRIBUTING.md` | restate them here |
 | Wire types, close codes | `gawk-server/wire/wire.go` | maintain a second list |
 | v0.x server chunk breakdown (A1–D3) | `docs/implementation-tasks.md` | — |
 | Build/run per module | that module's `README.md` | — |
@@ -191,6 +192,13 @@ Re-deriving them costs a cycle and has happened before.
   with golden vectors kept byte-identical across all mirrors. The Windows
   CI job triggers on `gawk-server/wire/**` too, so the Rust mirror's gates run
   in the same PR as the wire change (this was not true before 2026-07-31).
+- **Commit messages *and* PR titles must be Conventional Commits.** PRs land by
+  squash merge, so the PR title becomes the commit subject on `main` — it is the
+  string release-please parses. A non-conforming title releases nothing and
+  leaves the change out of the changelog; commit 74c3107 ("R37: streamlined
+  relay server picker") is exactly that failure. This applies to the title of
+  every PR, including docs- and chore-only ones. Type/scope table and the
+  bump rules: `CONTRIBUTING.md`.
 - Keep `docs/gotchas.md` in sync when a new gotcha lands in `docs/`,
   and remove `BUGS.md` entries when they are fixed.
 
