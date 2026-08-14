@@ -22,7 +22,7 @@ mod toast;
 mod version;
 
 use gawk_engine::clock::MonotonicClock;
-use gawk_engine::config::{self, Config};
+use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
 use gawk_engine::telemetry::{Hello, Reporter};
 use messages::{StartFailure, can_mint, first_line, message};
@@ -189,7 +189,7 @@ fn main() {
         .build()
         .expect("tokio runtime");
 
-    let cfg = match &cfg_path {
+    let mut cfg = match &cfg_path {
         Some(p) => {
             let (cfg, warn) = config::load(p, &*creds());
             if let Some(w) = warn {
@@ -199,6 +199,18 @@ fn main() {
         }
         None => Config::default(),
     };
+    // R37 SP9: fold the legacy flat relay/secret pair into server profiles
+    // (docs/40 §4.1.2). Writing the migrated shape back is what retires the
+    // legacy fields; failure is only a warning — the in-memory shape is
+    // already migrated and the write retries on the next settings save.
+    if config::migrate(&mut cfg) {
+        log::info!("migrated legacy relay settings to server profiles");
+        if let Some(p) = &cfg_path
+            && let Err(e) = config::save(p, &cfg, &*creds())
+        {
+            log::warn!("could not save migrated settings: {e}");
+        }
+    }
 
     let (msg_tx, msg_rx) = mpsc::channel();
     let shell = Rc::new(RefCell::new(Shell {
@@ -234,7 +246,7 @@ fn main() {
     let ui = MainWindow::new().expect("create window");
     ui.set_app_version(format!("v{}", version::display()).into());
     seed_settings(&ui, &shell.borrow().cfg);
-    refresh_captions(&ui);
+    refresh_captions(&ui, &shell.borrow().cfg);
     ui.set_resume_code(shell.borrow().cfg.last_broadcast_id.clone().into());
     refresh_picker(&ui, &mut shell.borrow_mut());
 
@@ -261,10 +273,84 @@ fn main() {
     ui.run().expect("run event loop");
 }
 
+/// The custom (non-default) profiles, in stored order — the combo box lists
+/// them after the pinned default at index 0. The default's credentials-only
+/// record is not a listed server; its secret shows in the secret field when
+/// the default is selected.
+fn custom_profiles(cfg: &Config) -> Vec<&ServerProfile> {
+    cfg.servers
+        .iter()
+        .filter(|p| p.name != DEFAULT_SERVER_NAME)
+        .collect()
+}
+
+fn server_labels(cfg: &Config) -> Vec<SharedString> {
+    let mut labels = vec![SharedString::from(format!(
+        "Default relay — {}",
+        gawk_engine::defaults::RELAY_URL
+    ))];
+    for p in custom_profiles(cfg) {
+        let name = p.name.trim();
+        let url = p.url.trim();
+        labels.push(
+            if name.is_empty() && url.is_empty() {
+                "(new server)".to_string()
+            } else if name.is_empty() {
+                url.to_string()
+            } else {
+                name.to_string()
+            }
+            .into(),
+        );
+    }
+    labels
+}
+
+/// The combo index of the selected server (0 = default; unknown names fall
+/// back to the default, matching `Config::selected_profile`).
+fn selected_combo_index(cfg: &Config) -> i32 {
+    custom_profiles(cfg)
+        .iter()
+        .position(|p| p.name == cfg.selected_server)
+        .map_or(0, |i| (i + 1) as i32)
+}
+
+/// The profile name a combo index selects ("default" = the pinned default).
+fn combo_index_to_name(cfg: &Config, index: i32) -> String {
+    if index <= 0 {
+        return DEFAULT_SERVER_NAME.to_string();
+    }
+    custom_profiles(cfg)
+        .get((index - 1) as usize)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| DEFAULT_SERVER_NAME.to_string())
+}
+
+/// Seeds the server dropdown and the per-server fields from the config.
+/// Called on load and whenever the selection or the list changes — NOT on
+/// every keystroke (rewriting a LineEdit's text mid-edit moves the caret).
+fn seed_server_fields(ui: &MainWindow, cfg: &Config) {
+    ui.set_server_labels(ModelRc::new(VecModel::from(server_labels(cfg))));
+    ui.set_set_server(selected_combo_index(cfg));
+    match cfg.selected_profile() {
+        Some(p) => {
+            ui.set_server_is_custom(true);
+            ui.set_set_server_name(p.name.clone().into());
+            ui.set_set_relay(p.url.clone().into());
+            ui.set_set_secret(p.publish_secret.clone().into());
+        }
+        None => {
+            ui.set_server_is_custom(false);
+            ui.set_set_server_name("".into());
+            ui.set_set_relay("".into());
+            ui.set_set_secret(cfg.resolve_publish_secret().into());
+        }
+    }
+}
+
 fn seed_settings(ui: &MainWindow, cfg: &Config) {
-    ui.set_set_relay(cfg.relay_url.clone().into());
+    seed_server_fields(ui, cfg);
     ui.set_set_app_url(cfg.app_url.clone().into());
-    ui.set_set_secret(cfg.publish_secret.clone().into());
     ui.set_set_telemetry(cfg.telemetry_url.clone().into());
     ui.set_set_bitrate(if cfg.bitrate_bps == 0 {
         SharedString::new()
@@ -293,11 +379,41 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
 
 /// Reads the settings widgets back into the config: verbatim including
 /// blanks — blank means "follow the default", and baking today's default in
-/// would pin this user to it forever.
+/// would pin this user to it forever. The server fields land in the SELECTED
+/// profile (R37 SP9); the legacy flat relay/secret pair stays retired after
+/// migration.
 fn read_settings(ui: &MainWindow, cfg: &mut Config) {
-    cfg.relay_url = ui.get_set_relay().trim().to_string();
+    let secret = ui.get_set_secret().trim().to_string();
+    let selected = cfg.selected_server.clone();
+    let is_custom = cfg.selected_profile().is_some();
+    if is_custom {
+        // A rename follows the Linux UpdateCustomServer rule: an empty,
+        // reserved, or already-taken new name keeps the old one — the name
+        // is the selection key, so a collision would make two profiles
+        // indistinguishable. The selection follows the rename.
+        let new_name = ui.get_set_server_name().trim().to_string();
+        let rename =
+            !new_name.is_empty() && new_name != selected && !cfg.profile_name_taken(&new_name);
+        let p = cfg
+            .servers
+            .iter_mut()
+            .find(|p| p.name == selected)
+            .expect("selected profile exists");
+        if rename {
+            p.name = new_name.clone();
+        }
+        p.url = ui.get_set_relay().trim().to_string();
+        p.publish_secret = secret;
+        if rename {
+            cfg.selected_server = new_name;
+        }
+    } else {
+        // The default: the secret edits its credentials-only record (F4 —
+        // identity fixed, credential slot editable), keyed to the URL it is
+        // saved against (F9). An empty secret removes the record.
+        cfg.set_default_secret(&secret);
+    }
     cfg.app_url = ui.get_set_app_url().trim().to_string();
-    cfg.publish_secret = ui.get_set_secret().trim().to_string();
     cfg.telemetry_url = ui.get_set_telemetry().trim().to_string();
     cfg.bitrate_bps = parse_bitrate_mbps(ui.get_set_bitrate().as_str());
     (cfg.width, cfg.height) = match ui.get_set_resolution() {
@@ -369,28 +485,20 @@ fn save_config(shell: &mut Shell) {
     }
 }
 
-fn refresh_captions(ui: &MainWindow) {
-    let relay = ui.get_set_relay();
-    let telemetry = ui.get_set_telemetry();
-    ui.set_caption_broadcast(
-        format!(
-            "Broadcasting to {}",
-            config::resolve_relay_url(relay.as_str())
-        )
-        .into(),
-    );
-    let diag = config::resolve_telemetry_url(relay.as_str(), telemetry.as_str())
-        .unwrap_or_else(|| "off — nothing is sent".into());
-    ui.set_caption_diag(format!("Diagnostics to {diag}").into());
-    let app_url = {
-        let s = ui.get_set_app_url();
-        let t = s.trim();
-        if t.is_empty() {
-            gawk_engine::defaults::APP_URL.to_string()
+fn refresh_captions(ui: &MainWindow, cfg: &Config) {
+    ui.set_caption_broadcast(format!("Broadcasting to {}", cfg.resolve_relay_url()).into());
+    // What is known before dialing: a non-default relay may still advertise
+    // an ingest URL in-session (0x12), and the reporter follows it then.
+    let opted_out = cfg.telemetry_url.trim().eq_ignore_ascii_case(config::OFF);
+    let diag = cfg.resolve_telemetry_url().unwrap_or_else(|| {
+        if cfg.selected_profile().is_some() && !opted_out {
+            "off unless this server advertises a diagnostics endpoint".into()
         } else {
-            t.to_string()
+            "off — nothing is sent".into()
         }
-    };
+    });
+    ui.set_caption_diag(format!("Diagnostics to {diag}").into());
+    let app_url = cfg.resolve_app_url();
     ui.set_terms_link(format!("{}/#/terms", app_url.trim_end_matches('/')).into());
 }
 
@@ -525,8 +633,58 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 let mut sh = shell.borrow_mut();
                 read_settings(&ui, &mut sh.cfg);
                 save_config(&mut sh);
-                drop(sh);
-                refresh_captions(&ui);
+                // The labels model follows name/URL edits live; the full
+                // reseed is reserved for selection changes (it would move
+                // the caret of the field being typed in).
+                ui.set_server_labels(ModelRc::new(VecModel::from(server_labels(&sh.cfg))));
+                refresh_captions(&ui, &sh.cfg);
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_server_selected(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                // Field edits were already persisted per keystroke, so the
+                // old selection's values are safe; just repoint and reseed.
+                sh.cfg.selected_server = combo_index_to_name(&sh.cfg, ui.get_set_server());
+                save_config(&mut sh);
+                seed_server_fields(&ui, &sh.cfg);
+                refresh_captions(&ui, &sh.cfg);
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_add_server(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                let name = sh.cfg.add_custom_server();
+                sh.cfg.selected_server = name;
+                save_config(&mut sh);
+                seed_server_fields(&ui, &sh.cfg);
+                refresh_captions(&ui, &sh.cfg);
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_remove_server(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                let selected = sh.cfg.selected_server.clone();
+                if sh.cfg.selected_profile().is_none() {
+                    return; // the pinned default is not removable
+                }
+                sh.cfg.servers.retain(|p| p.name != selected);
+                sh.cfg.selected_server = DEFAULT_SERVER_NAME.to_string();
+                save_config(&mut sh);
+                seed_server_fields(&ui, &sh.cfg);
+                refresh_captions(&ui, &sh.cfg);
             }
         });
     }
@@ -598,7 +756,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     }
     read_settings(ui, &mut sh.cfg);
     save_config(&mut sh);
-    refresh_captions(ui);
+    refresh_captions(ui, &sh.cfg);
 
     // The reclaim identity: only on the Resume button, and the persisted
     // token travels only with the ID it was minted for.
@@ -677,14 +835,16 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         relay_url: sh.cfg.resolve_relay_url(),
         broadcast_id,
         resume_token_hex: resume_token,
-        publish_secret: sh.cfg.publish_secret.clone(),
+        publish_secret: sh.cfg.resolve_publish_secret(),
         origin: sh.cfg.resolve_origin(),
         insecure: false,
     };
     let clock: Arc<dyn gawk_engine::clock::Clock> = sh.clock.clone();
     let msg_tx = sh.msg_tx.clone();
     let rt_handle = sh.rt.handle().clone();
-    sh.reporter.set_url(sh.cfg.resolve_telemetry_url());
+    // No advertised URL yet — a fresh session starts from the configured
+    // resolution; a 0x12 TelemetryEndpoint repoints it when it arrives.
+    sh.reporter.set_url(sh.cfg.effective_telemetry_url(None));
 
     #[cfg(windows)]
     let build_params = {
@@ -922,6 +1082,17 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
                 token,
                 broadcast_key_hex,
             });
+        }
+        EngineEvent::TelemetryEndpoint { url } => {
+            // R37 §4.10: the fleet that gates collection and mints the token
+            // owns the destination — the advertised URL wins over the
+            // configured one. The user's "off" still wins over both, and the
+            // hello/endpoint arrival order doesn't matter (the reporter
+            // adopts a session before its URL resolves).
+            let sh = shell.borrow();
+            let effective = sh.cfg.effective_telemetry_url(Some(&url));
+            log::info!("relay advertised telemetry ingest {url}; reporting to {effective:?}");
+            sh.reporter.set_url(effective);
         }
         EngineEvent::Resuming { attempt } => {
             log::info!("resuming (attempt {attempt})");
@@ -1421,6 +1592,69 @@ mod tests {
             None,
             "the dead session's token must not attach to the new announce"
         );
+    }
+
+    fn cfg_with_two_customs() -> Config {
+        Config {
+            servers: vec![
+                ServerProfile {
+                    name: DEFAULT_SERVER_NAME.into(),
+                    url: gawk_engine::defaults::RELAY_URL.into(),
+                    publish_secret: "default-secret".into(),
+                },
+                ServerProfile {
+                    name: "Juho's homelab".into(),
+                    url: "https://relay.example:4433".into(),
+                    publish_secret: "s1".into(),
+                },
+                ServerProfile {
+                    name: "  ".into(), // hand-edited file; the GUI never writes this
+                    url: "https://other.example:4433".into(),
+                    publish_secret: String::new(),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    // R37 SP9: the combo mapping — index 0 is the pinned default, customs
+    // follow in stored order, and the default's credentials-only record is
+    // never a listed server.
+    #[test]
+    fn server_combo_mapping_round_trips() {
+        let mut cfg = cfg_with_two_customs();
+        let labels = server_labels(&cfg);
+        assert_eq!(labels.len(), 3, "default + 2 customs, no credential row");
+        assert!(labels[0].starts_with("Default relay"));
+        assert_eq!(labels[1], "Juho's homelab");
+        // A nameless profile is labelled by its URL, never a blank row.
+        assert_eq!(labels[2], "https://other.example:4433");
+
+        assert_eq!(selected_combo_index(&cfg), 0);
+        cfg.selected_server = "Juho's homelab".into();
+        assert_eq!(selected_combo_index(&cfg), 1);
+        // Unknown selection degrades to the default.
+        cfg.selected_server = "gone".into();
+        assert_eq!(selected_combo_index(&cfg), 0);
+
+        assert_eq!(combo_index_to_name(&cfg, 0), DEFAULT_SERVER_NAME);
+        assert_eq!(combo_index_to_name(&cfg, 1), "Juho's homelab");
+        assert_eq!(combo_index_to_name(&cfg, 2), "  ");
+        // Out-of-range indices name the default, never a panic.
+        assert_eq!(combo_index_to_name(&cfg, -1), DEFAULT_SERVER_NAME);
+        assert_eq!(combo_index_to_name(&cfg, 99), DEFAULT_SERVER_NAME);
+    }
+
+    #[test]
+    fn the_engine_dial_follows_the_selected_profile() {
+        let mut cfg = cfg_with_two_customs();
+        // Default selected: default URL, the credential record's secret.
+        assert_eq!(cfg.resolve_relay_url(), gawk_engine::defaults::RELAY_URL);
+        assert_eq!(cfg.resolve_publish_secret(), "default-secret");
+        // Custom selected: that profile's URL and secret.
+        cfg.selected_server = "Juho's homelab".into();
+        assert_eq!(cfg.resolve_relay_url(), "https://relay.example:4433");
+        assert_eq!(cfg.resolve_publish_secret(), "s1");
     }
 
     #[test]

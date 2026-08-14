@@ -51,6 +51,11 @@ pub enum EngineEvent {
         token: Vec<u8>,
         broadcast_key_hex: String,
     },
+    /// The relay fleet's advertised telemetry ingest URL (0x12, R37 docs/40
+    /// §4.10) — validated absolute https. Rides its own uni stream, so it
+    /// can arrive before OR after the hello; the shell must tolerate both
+    /// orders.
+    TelemetryEndpoint { url: String },
     /// A reclaim attempt is running (attempt counter for the status line).
     Resuming { attempt: u32 },
     /// The broadcast is back on a fresh session. The media side should force
@@ -369,6 +374,9 @@ fn handle_server_message(
                 token,
                 broadcast_key_hex,
             });
+        }
+        Ok(ServerMessage::TelemetryEndpoint(url)) => {
+            let _ = events.send(EngineEvent::TelemetryEndpoint { url });
         }
         // Unknown types and malformed messages: ignored — a newer relay
         // must not break this client, and strict parsing already dropped

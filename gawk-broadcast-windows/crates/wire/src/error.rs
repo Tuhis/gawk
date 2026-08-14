@@ -46,6 +46,15 @@ pub enum WireError {
     UnknownDeliveryMode(u8),
     /// A StripeState with unknown flag bits set.
     UnknownStripeFlags(u8),
+    /// A RelayIdentity with a set reserved flag bit, an out-of-range or
+    /// overrunning version/name length, a non-printable version, or a name
+    /// that is not valid UTF-8 (trailing bytes are NOT this error — parsers
+    /// ignore them, docs/40 §4.4).
+    BadRelayIdentity,
+    /// A TelemetryEndpoint with a set reserved flag bit, an out-of-range or
+    /// overrunning URL length, or a URL that is not absolute https ASCII
+    /// (trailing bytes are NOT this error — parsers ignore them).
+    BadTelemetryEndpoint,
     /// A frame shape parity cannot cover (k, n, or width out of range).
     ParityUnsupported,
 }
@@ -98,6 +107,8 @@ impl fmt::Display for WireError {
             Self::BadTelemetryHello => write!(f, "wire: invalid telemetry hello"),
             Self::UnknownDeliveryMode(m) => write!(f, "wire: unknown delivery mode {m}"),
             Self::UnknownStripeFlags(b) => write!(f, "wire: unknown stripe flags 0x{b:02x}"),
+            Self::BadRelayIdentity => write!(f, "wire: invalid relay identity"),
+            Self::BadTelemetryEndpoint => write!(f, "wire: invalid telemetry endpoint"),
             Self::ParityUnsupported => write!(f, "wire: parity unsupported for this frame"),
         }
     }

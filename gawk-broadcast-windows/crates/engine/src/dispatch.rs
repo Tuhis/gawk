@@ -7,10 +7,15 @@
 
 use gawk_wire as wire;
 
-/// Read bound for any server uni stream. The largest legitimate message is
-/// a 255-byte announce/token (3 + 255 = 258); capabilities are 5 and the
-/// telemetry hello 35.
-pub const SERVER_STREAM_READ_LIMIT: usize = 258;
+/// Read bound for any server uni stream, matching the Go engine's
+/// `serverMessageReadLimit`. The largest message the relay sends a publisher
+/// is a TelemetryEndpoint (R37, 0x12): 5 header bytes plus a maximal URL
+/// (announce/token top out at 258, capabilities are 5, the telemetry hello
+/// 35). Anything larger is a misbehaving or hostile relay and must not be
+/// able to grow our heap; the one thing the cap can clip is reserved
+/// extension bytes past a maximal payload — which parsers ignore anyway
+/// (docs/40 §4.9).
+pub const SERVER_STREAM_READ_LIMIT: usize = 5 + wire::MAX_TELEMETRY_ENDPOINT_URL_LEN;
 /// Deadline for reading one server stream to completion.
 pub const SERVER_STREAM_READ_TIMEOUT_MS: u64 = 10_000;
 
@@ -30,6 +35,9 @@ pub enum ServerMessage {
         /// Hex-encoded obfuscated broadcast key (never the joinable raw ID).
         broadcast_key_hex: String,
     },
+    /// The relay fleet's advertised telemetry ingest URL (0x12, R37 docs/40
+    /// §4.10) — already validated as absolute https by the wire parser.
+    TelemetryEndpoint(String),
     /// A type this build does not know — ignored, never an error.
     Unknown(u8),
 }
@@ -62,6 +70,9 @@ pub fn dispatch_server_message(msg: &[u8]) -> Result<ServerMessage, wire::WireEr
                 broadcast_key_hex: hex(h.broadcast_key),
             })
         }
+        wire::TYPE_TELEMETRY_ENDPOINT => Ok(ServerMessage::TelemetryEndpoint(
+            wire::parse_telemetry_endpoint(msg)?.to_owned(),
+        )),
         other => Ok(ServerMessage::Unknown(other)),
     }
 }
@@ -107,6 +118,39 @@ mod tests {
         assert_eq!(
             dispatch_server_message(&[0x01, 0x7f, 0xaa]).unwrap(),
             ServerMessage::Unknown(0x7f)
+        );
+    }
+
+    #[test]
+    fn telemetry_endpoint_dispatches_and_malformed_ones_error() {
+        let mut msg = Vec::new();
+        wire::append_telemetry_endpoint(&mut msg, "https://gawk.example.com/ingest").unwrap();
+        assert_eq!(
+            dispatch_server_message(&msg).unwrap(),
+            ServerMessage::TelemetryEndpoint("https://gawk.example.com/ingest".into())
+        );
+        // A malformed KNOWN type is an error the session logs and ignores —
+        // the client never adopts a destination that failed validation
+        // (docs/40 §4.10: degrades to "no advertised URL").
+        let mut flagged = msg.clone();
+        flagged[2] = 0x80;
+        assert!(dispatch_server_message(&flagged).is_err());
+    }
+
+    // The read bound must fit the largest legitimate message or a current
+    // relay's 0x12 would be dropped as oversize.
+    #[test]
+    fn read_limit_covers_a_maximal_telemetry_endpoint() {
+        let url = format!(
+            "https://x.example/{}",
+            "p".repeat(wire::MAX_TELEMETRY_ENDPOINT_URL_LEN - "https://x.example/".len())
+        );
+        let mut msg = Vec::new();
+        wire::append_telemetry_endpoint(&mut msg, &url).unwrap();
+        assert!(msg.len() <= SERVER_STREAM_READ_LIMIT);
+        assert_eq!(
+            dispatch_server_message(&msg).unwrap(),
+            ServerMessage::TelemetryEndpoint(url)
         );
     }
 

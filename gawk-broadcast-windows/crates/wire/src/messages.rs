@@ -7,10 +7,12 @@ use crate::{
     AUDIO_FRAME_HEADER_SIZE, BROADCAST_ID_ALPHABET, CARRIER_PROLOGUE_SIZE,
     CARRIER_RECORD_HEADER_SIZE, CLOCK_MAPPING_SIZE, DELIVERY_ACK_SIZE, FLAG_KEYFRAME,
     FLAG_TELEMETRY_ENABLED, MAX_AUDIO_PAYLOAD, MAX_CHUNK_COUNT, MAX_CHUNK_PAYLOAD,
-    MAX_DATAGRAM_SIZE, MAX_KEYFRAME_BYTES, STREAM_FRAME_HEADER_SIZE, TELEMETRY_BROADCAST_KEY_SIZE,
-    TELEMETRY_HELLO_SIZE, TELEMETRY_SESSION_TOKEN_SIZE, TIME_SYNC_SIZE, TYPE_AUDIO_CONFIG,
-    TYPE_AUDIO_FRAME, TYPE_BROADCAST_ANNOUNCE, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG,
-    TYPE_DELIVERY_ACK, TYPE_RELIABLE_CARRIER, TYPE_RESUME_TOKEN, TYPE_STREAM_FRAME,
+    MAX_DATAGRAM_SIZE, MAX_KEYFRAME_BYTES, MAX_RELAY_IDENTITY_NAME_LEN,
+    MAX_RELAY_IDENTITY_VERSION_LEN, MAX_TELEMETRY_ENDPOINT_URL_LEN, STREAM_FRAME_HEADER_SIZE,
+    TELEMETRY_BROADCAST_KEY_SIZE, TELEMETRY_HELLO_SIZE, TELEMETRY_SESSION_TOKEN_SIZE,
+    TIME_SYNC_SIZE, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_BROADCAST_ANNOUNCE,
+    TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_DELIVERY_ACK, TYPE_RELAY_IDENTITY,
+    TYPE_RELIABLE_CARRIER, TYPE_RESUME_TOKEN, TYPE_STREAM_FRAME, TYPE_TELEMETRY_ENDPOINT,
     TYPE_TELEMETRY_HELLO, TYPE_TIME_SYNC, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, VERSION,
     VIDEO_CHUNK_HEADER_SIZE, VIEWER_COUNT_SIZE,
 };
@@ -622,6 +624,171 @@ pub fn parse_stream_frame_header(buf: &[u8]) -> Result<StreamFrameHeader, WireEr
     Ok(h)
 }
 
+// --- RelayIdentity (0x11) ----------------------------------------------------
+
+/// The parsed contents of a RelayIdentity message (R37, docs/40 §4.4),
+/// borrowing the input. Layout after the common prefix: uint8 flags (all
+/// reserved, must be 0), uint8 versionLen + that many printable-ASCII bytes,
+/// uint8 nameLen + that many UTF-8 bytes, then reserved extension bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayIdentity<'a> {
+    /// The relay's release version string, e.g. "1.42.0".
+    pub server_version: &'a str,
+    /// The operator-set display name (-server-name), possibly empty.
+    /// Attacker-influenced trust UI: renderers sanitize and never show it in
+    /// place of the host (docs/40 §4.4 F6).
+    pub name: &'a str,
+}
+
+/// Appends a RelayIdentity message (relay-originated; this producer only
+/// parses it, but the encoder is mirrored by rule like every other message).
+pub fn append_relay_identity(dst: &mut Vec<u8>, id: &RelayIdentity<'_>) -> Result<(), WireError> {
+    if id.server_version.is_empty() || id.server_version.len() > MAX_RELAY_IDENTITY_VERSION_LEN {
+        return Err(WireError::BadRelayIdentity);
+    }
+    if !id
+        .server_version
+        .bytes()
+        .all(|b| (0x20..=0x7e).contains(&b))
+    {
+        return Err(WireError::BadRelayIdentity);
+    }
+    // A &str is UTF-8 by construction; only the length can be wrong here
+    // (the Go original also rejects invalid UTF-8 on append).
+    if id.name.len() > MAX_RELAY_IDENTITY_NAME_LEN {
+        return Err(WireError::BadRelayIdentity);
+    }
+    dst.extend_from_slice(&[
+        VERSION,
+        TYPE_RELAY_IDENTITY,
+        0,
+        id.server_version.len() as u8,
+    ]);
+    dst.extend_from_slice(id.server_version.as_bytes());
+    dst.push(id.name.len() as u8);
+    dst.extend_from_slice(id.name.as_bytes());
+    Ok(())
+}
+
+/// Parses a RelayIdentity message. Deliberate deviation from house parser
+/// strictness (docs/40 §4.4, restated so it survives review): trailing bytes
+/// beyond the name are IGNORED — they are the message's reserved extension
+/// space, the mechanism managed mode will append fields through. The flags
+/// byte stays strict (reserved-must-be-zero): flags gate *interpretation* of
+/// what a parser already reads, so an unknown flag genuinely is unparseable.
+pub fn parse_relay_identity(msg: &[u8]) -> Result<RelayIdentity<'_>, WireError> {
+    if msg.len() < 5 {
+        return Err(WireError::ShortDatagram {
+            len: msg.len(),
+            need: 5,
+        });
+    }
+    check_prefix(msg, TYPE_RELAY_IDENTITY)?;
+    if msg[2] != 0 {
+        return Err(WireError::BadRelayIdentity);
+    }
+    let version_len = msg[3] as usize;
+    if version_len == 0 || version_len > MAX_RELAY_IDENTITY_VERSION_LEN {
+        return Err(WireError::BadRelayIdentity);
+    }
+    if 4 + version_len + 1 > msg.len() {
+        return Err(WireError::BadRelayIdentity);
+    }
+    let version_bytes = &msg[4..4 + version_len];
+    if !version_bytes.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        return Err(WireError::BadRelayIdentity);
+    }
+    // Printable ASCII, so this cannot fail after the check above.
+    let server_version =
+        std::str::from_utf8(version_bytes).map_err(|_| WireError::BadRelayIdentity)?;
+    let name_len = msg[4 + version_len] as usize;
+    if name_len > MAX_RELAY_IDENTITY_NAME_LEN {
+        return Err(WireError::BadRelayIdentity);
+    }
+    let name_start = 4 + version_len + 1;
+    if name_start + name_len > msg.len() {
+        return Err(WireError::BadRelayIdentity);
+    }
+    let name = std::str::from_utf8(&msg[name_start..name_start + name_len])
+        .map_err(|_| WireError::BadRelayIdentity)?;
+    // Bytes past the name are the reserved extension space — ignored.
+    Ok(RelayIdentity {
+        server_version,
+        name,
+    })
+}
+
+// --- TelemetryEndpoint (0x12) ------------------------------------------------
+
+/// Appends a TelemetryEndpoint message (R37, docs/40 §4.10; relay-originated,
+/// mirrored by rule). Layout after the common prefix: uint8 flags (0), uint16
+/// urlLen (big-endian), then urlLen bytes of an absolute https URL.
+pub fn append_telemetry_endpoint(dst: &mut Vec<u8>, ingest_url: &str) -> Result<(), WireError> {
+    if !valid_telemetry_endpoint_url(ingest_url) {
+        return Err(WireError::BadTelemetryEndpoint);
+    }
+    dst.extend_from_slice(&[VERSION, TYPE_TELEMETRY_ENDPOINT, 0]);
+    dst.extend_from_slice(&(ingest_url.len() as u16).to_be_bytes());
+    dst.extend_from_slice(ingest_url.as_bytes());
+    Ok(())
+}
+
+/// Parses a TelemetryEndpoint message. Same parser stance as RelayIdentity:
+/// strict flags, tolerated trailing bytes, and the URL must validate — a
+/// message that fails here degrades client-side to "no advertised URL",
+/// never to a failed session (docs/40 §4.10).
+pub fn parse_telemetry_endpoint(msg: &[u8]) -> Result<&str, WireError> {
+    if msg.len() < 6 {
+        return Err(WireError::ShortDatagram {
+            len: msg.len(),
+            need: 6,
+        });
+    }
+    check_prefix(msg, TYPE_TELEMETRY_ENDPOINT)?;
+    if msg[2] != 0 {
+        return Err(WireError::BadTelemetryEndpoint);
+    }
+    let url_len = u16::from_be_bytes(msg[3..5].try_into().unwrap()) as usize;
+    if url_len == 0 || url_len > MAX_TELEMETRY_ENDPOINT_URL_LEN {
+        return Err(WireError::BadTelemetryEndpoint);
+    }
+    if 5 + url_len > msg.len() {
+        return Err(WireError::BadTelemetryEndpoint);
+    }
+    let ingest_url =
+        std::str::from_utf8(&msg[5..5 + url_len]).map_err(|_| WireError::BadTelemetryEndpoint)?;
+    if !valid_telemetry_endpoint_url(ingest_url) {
+        return Err(WireError::BadTelemetryEndpoint);
+    }
+    // Bytes past the URL are the reserved extension space — ignored.
+    Ok(ingest_url)
+}
+
+/// The one rule for advertised ingest URLs, applied on append and on parse
+/// like the Go original's validateTelemetryEndpointURL. Documented mirror
+/// divergence: Go delegates structure to url.Parse; this is a conservative
+/// hand check (printable ASCII above space, "https://" case-insensitive,
+/// non-empty host) — an exotic host Go's parser would reject can pass here,
+/// but the engine re-validates any adopted URL with a full URL parser, and a
+/// well-behaved relay never emits one.
+fn valid_telemetry_endpoint_url(s: &str) -> bool {
+    if s.is_empty() || s.len() > MAX_TELEMETRY_ENDPOINT_URL_LEN {
+        return false;
+    }
+    if !s.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+        return false;
+    }
+    let Some(rest) = s
+        .get(..8)
+        .filter(|p| p.eq_ignore_ascii_case("https://"))
+        .map(|_| &s[8..])
+    else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !host.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -984,6 +1151,200 @@ mod tests {
         assert_eq!(
             parse_stream_frame_header(&buf),
             Err(WireError::KeyframeTooLarge)
+        );
+    }
+
+    fn relay_identity(version: &str, name: &str) -> Vec<u8> {
+        let mut v = Vec::new();
+        append_relay_identity(
+            &mut v,
+            &RelayIdentity {
+                server_version: version,
+                name,
+            },
+        )
+        .unwrap();
+        v
+    }
+
+    #[test]
+    fn relay_identity_rejects_nonzero_flags_strictly() {
+        // Flags gate interpretation, so they stay strict even though
+        // trailing bytes are tolerated (docs/40 §4.4).
+        let mut flagged = relay_identity("1.42.0", "gawk home");
+        flagged[2] = 0x01;
+        assert_eq!(
+            parse_relay_identity(&flagged),
+            Err(WireError::BadRelayIdentity)
+        );
+    }
+
+    #[test]
+    fn relay_identity_rejects_length_overruns() {
+        let good = relay_identity("1.42.0", "gawk home");
+
+        // versionLen overrunning the message.
+        let mut overrun = good.clone();
+        overrun[3] = (good.len() - 4) as u8 + 1;
+        assert_eq!(
+            parse_relay_identity(&overrun),
+            Err(WireError::BadRelayIdentity)
+        );
+        // versionLen == 0 and versionLen > max.
+        let mut zero = good.clone();
+        zero[3] = 0;
+        assert_eq!(
+            parse_relay_identity(&zero),
+            Err(WireError::BadRelayIdentity)
+        );
+        let mut over_max = good.clone();
+        over_max[3] = (MAX_RELAY_IDENTITY_VERSION_LEN + 1) as u8;
+        assert_eq!(
+            parse_relay_identity(&over_max),
+            Err(WireError::BadRelayIdentity)
+        );
+        // nameLen overrunning the message (in range, declared past the end).
+        let mut name_overrun = good.clone();
+        name_overrun[4 + 6] = 60;
+        assert_eq!(
+            parse_relay_identity(&name_overrun),
+            Err(WireError::BadRelayIdentity)
+        );
+        // nameLen above the bound.
+        let mut name_too_long = good.clone();
+        name_too_long[4 + 6] = (MAX_RELAY_IDENTITY_NAME_LEN + 1) as u8;
+        assert_eq!(
+            parse_relay_identity(&name_too_long),
+            Err(WireError::BadRelayIdentity)
+        );
+        // Shorter than the 5-byte minimum.
+        assert!(matches!(
+            parse_relay_identity(&good[..4]),
+            Err(WireError::ShortDatagram { .. })
+        ));
+    }
+
+    #[test]
+    fn relay_identity_rejects_bad_strings() {
+        // Non-printable version byte on the wire.
+        let mut bad_version = relay_identity("1.42.0", "");
+        bad_version[4] = 0x00;
+        assert_eq!(
+            parse_relay_identity(&bad_version),
+            Err(WireError::BadRelayIdentity)
+        );
+        // Invalid UTF-8 in the name on the wire (a lone continuation byte).
+        let mut bad_name = relay_identity("1.42.0", "ok");
+        let name_start = 4 + 6 + 1;
+        bad_name[name_start] = 0xff;
+        assert_eq!(
+            parse_relay_identity(&bad_name),
+            Err(WireError::BadRelayIdentity)
+        );
+        // Append-side refusals: empty/oversize version, non-printable
+        // version, oversize name.
+        let oversize_version = "v".repeat(MAX_RELAY_IDENTITY_VERSION_LEN + 1);
+        for bad in ["", oversize_version.as_str(), "1.\x01"] {
+            assert_eq!(
+                append_relay_identity(
+                    &mut Vec::new(),
+                    &RelayIdentity {
+                        server_version: bad,
+                        name: "",
+                    }
+                ),
+                Err(WireError::BadRelayIdentity),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            append_relay_identity(
+                &mut Vec::new(),
+                &RelayIdentity {
+                    server_version: "1",
+                    name: &"n".repeat(MAX_RELAY_IDENTITY_NAME_LEN + 1),
+                }
+            ),
+            Err(WireError::BadRelayIdentity)
+        );
+    }
+
+    #[test]
+    fn telemetry_endpoint_rejects_nonzero_flags_and_overruns() {
+        let mut good = Vec::new();
+        append_telemetry_endpoint(&mut good, "https://x.example/ingest").unwrap();
+
+        let mut flagged = good.clone();
+        flagged[2] = 0x80;
+        assert_eq!(
+            parse_telemetry_endpoint(&flagged),
+            Err(WireError::BadTelemetryEndpoint)
+        );
+        // urlLen 256 > remaining bytes.
+        let mut overrun = good.clone();
+        overrun[3] = 0x01;
+        overrun[4] = 0x00;
+        assert_eq!(
+            parse_telemetry_endpoint(&overrun),
+            Err(WireError::BadTelemetryEndpoint)
+        );
+        // urlLen == 0 and urlLen > max.
+        let mut zero = good.clone();
+        zero[3] = 0;
+        zero[4] = 0;
+        assert_eq!(
+            parse_telemetry_endpoint(&zero),
+            Err(WireError::BadTelemetryEndpoint)
+        );
+        let mut over_max = good.clone();
+        over_max[3..5]
+            .copy_from_slice(&((MAX_TELEMETRY_ENDPOINT_URL_LEN + 1) as u16).to_be_bytes());
+        assert_eq!(
+            parse_telemetry_endpoint(&over_max),
+            Err(WireError::BadTelemetryEndpoint)
+        );
+        assert!(matches!(
+            parse_telemetry_endpoint(&good[..5]),
+            Err(WireError::ShortDatagram { .. })
+        ));
+    }
+
+    #[test]
+    fn telemetry_endpoint_refuses_non_https_urls_on_both_sides() {
+        // Non-https and unparseable URLs are refused on append and parse —
+        // a client must never adopt them (docs/40 §5).
+        for bad in [
+            "http://x.example/ingest",
+            "not a url",
+            "",
+            "https://",
+            "HTTPS://",
+        ] {
+            assert_eq!(
+                append_telemetry_endpoint(&mut Vec::new(), bad),
+                Err(WireError::BadTelemetryEndpoint),
+                "{bad:?}"
+            );
+        }
+        let oversize = format!(
+            "https://x.example/{}",
+            "p".repeat(MAX_TELEMETRY_ENDPOINT_URL_LEN)
+        );
+        assert_eq!(
+            append_telemetry_endpoint(&mut Vec::new(), &oversize),
+            Err(WireError::BadTelemetryEndpoint)
+        );
+        // Scheme matching is case-insensitive, like Go's url.Parse.
+        assert!(append_telemetry_endpoint(&mut Vec::new(), "HTTPS://x.example/i").is_ok());
+        // A bad URL on the wire is a parse error too, not just an append one.
+        let url = "https://x.example/i";
+        let mut on_wire = vec![VERSION, TYPE_TELEMETRY_ENDPOINT, 0];
+        on_wire.extend_from_slice(&(url.len() as u16).to_be_bytes());
+        on_wire.extend_from_slice(url.as_bytes());
+        on_wire[5] = b'x'; // "xttps://…"
+        assert_eq!(
+            parse_telemetry_endpoint(&on_wire),
+            Err(WireError::BadTelemetryEndpoint)
         );
     }
 }
