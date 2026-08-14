@@ -958,3 +958,22 @@ Add to it when a new gotcha lands in `docs/`.
   attach gate compares the tag's commit to the one being built, correctly).
   Recovery is `workflow_dispatch` with `attach_to`.
   ([docs/19](19-linux-native-broadcaster.md))
+- **A client that grants no incoming uni streams cannot even complete the
+  WebTransport handshake** — HTTP/3 itself needs uni credit for the peer's
+  control/QPACK streams, so a `MaxIncomingUniStreams: -1` quic-go client
+  blocks forever inside `Dial` waiting for SETTINGS. You cannot simulate a
+  "no uni credit" peer at that layer; test the observable half (streams
+  unread) and make the no-wedge property structural (send in a goroutine).
+  ([docs/40](40-relay-server-picker.md) SP5)
+- **"AcceptUniStream blocks until session close" stops being true the moment
+  a route grows a real server-initiated stream** — the R17 drain test used
+  that idiom to await the close code, and R37's `/echo` RelayIdentity stream
+  started satisfying the accept instead; loop until error. Any test using
+  AcceptUniStream as a close-barrier inherits this trap when a new 0x-type
+  ships. ([docs/40](40-relay-server-picker.md) SP5)
+- **A server-message read cap sized to yesterday's largest message silently
+  truncates tomorrow's** — both native engines capped relay uni-stream reads
+  at 258 bytes (BroadcastAnnounce-era); a full-length TelemetryEndpoint
+  (517 bytes) parsed as malformed. Both were caught test-first in R37; size
+  read limits from the wire package's max constants, never from the current
+  biggest message. ([docs/40](40-relay-server-picker.md) SP8/SP9)

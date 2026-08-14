@@ -1,6 +1,8 @@
 # R37 — Streamlined relay server picker (docs/40)
 
-**Status**: designed 2026-08-06, **not started**. Chunks **SP1–SP13** (`SP` =
+**Status**: designed 2026-08-06; **implemented 2026-08-14** (SP1–SP9 +
+SP11–SP13 — see the implementation-status note below; SP10's manual pass
+pending). Chunks **SP1–SP13** (`SP` =
 Server Picker; two-letter prefix per the R21+ convention — `TU` is reserved
 for R36, `SP` collides with nothing). Phased: **A** (gawk-app core,
 frontend-only) → **B** (relay identity probe: `gawk-server` + all four wire
@@ -25,6 +27,34 @@ relays while their telemetry is silently rejected at token verification
 (§4.10) would be a half-delivered feature. New decisions **D14–D17**, new
 §4.10, new phase **E** (SP11–SP13); the former §7 "telemetry-URL awareness"
 deferral is deleted.
+
+**Implementation status (2026-08-14)**: SP1–SP9 and SP11–SP13 implemented,
+all module gates green (gawk-app 1255 tests + build; gawk-server race suite;
+gawk-telemetry suite; gawk-broadcast full-module race suite;
+gawk-broadcast-windows workspace tests + native clippy — the two Opus-linked
+crates' cross-lint rides CI's clang-cl runner per docs/38 D18). SP10's
+manual cross-deployment pass is the open item. Recorded deviations, all
+review-visible:
+
+- **Native GUI probe display deferred (both GUIs)**: the 0x11 parse side
+  ships in both wire mirrors and the pickers' plumbing is in place, but
+  neither native GUI renders RTT/identity yet — the SP8/SP9 rows' probe
+  criterion moves to a follow-up chunk. No probe traffic exists, so nothing
+  regresses.
+- **Native profiles are name-keyed** (`"default"` reserved), not id-keyed
+  like the frontend schema — the two native apps share one shape
+  deliberately; the frontend's id-keyed storage is browser-local and never
+  interchanges files with them.
+- **`off` beats an advertised 0x12 in the native apps**: the explicit
+  telemetry opt-out (`TelemetryOff`) wins over D15's advertised-URL
+  precedence — off means off. D15 is about *destination*, not consent.
+- **Both native engines' server-message read caps were raised** (258 →
+  517 bytes) — the old cap, sized for BroadcastAnnounce, would have
+  truncated a full-length TelemetryEndpoint into a parse failure. Found
+  test-first on both sides; now in docs/gotchas.md.
+- **Ingest's pre-R37 `-cors-origins` allowlist is deprecated and inert**
+  (D17 wildcard superseded it); the flag still parses so existing deploys
+  upgrade without an argument change, and a warning names the change.
 
 ---
 

@@ -55,7 +55,7 @@ feature set exists).
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
 | R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; **AS7 on-hardware verification (docs/39 §6) outstanding** and is what decides the milestone ([docs/39](docs/39-linux-app-sharing.md)) |
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
-| R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11 addressed in place) + extended same day with relay-advertised telemetry (D14–D17, wire 0x12), not started (SP1–SP13 in five releasable phases: app core → `/echo` identity probe (wire 0x11) → server directory → native parity → telemetry-follows-the-relay) ([docs/40](docs/40-relay-server-picker.md)) |
+| R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
 
 ---
 
@@ -3212,15 +3212,14 @@ token check. Managed-relay support is groundwork only — the schemas reserve
 extension points, no auth code ships.
 
 **Status**: designed 2026-08-06 (owner decisions D1–D13); revised
-2026-08-13 after the owner's adversarial review — findings F1–F11 folded
-into the doc (re-grounded settings surface, in-session override indicator,
-per-server secret prompts, default-credential rotation/keying, identity
-timing/robustness/display rules) and extended the same day with the
-telemetry phase (D14–D17). Not started. Chunks SP1–SP13 in five
-independently releasable phases (A app core, frontend-only → B
-probe/identity, all four wire mirrors → C directory → D native parity →
-E telemetry-follows-the-relay: relay + `gawk-telemetry` + app).
-See [docs/40](docs/40-relay-server-picker.md).
+2026-08-13 after the owner's adversarial review (F1–F11 folded in) and
+extended the same day with the telemetry phase (D14–D17). **SP1–SP9 +
+SP11–SP13 implemented 2026-08-14** across all five modules, gates green
+(app 1255 tests/lint/build; relay, telemetry and Linux broadcaster race
+suites; Windows workspace tests + native clippy). Remaining: SP10's manual
+cross-deployment verification pass, and the deferred native-GUI probe
+display — see the implementation-status note in
+[docs/40](docs/40-relay-server-picker.md).
 
 ---
 

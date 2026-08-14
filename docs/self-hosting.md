@@ -417,6 +417,36 @@ nothing.
 **Backups**: there is nothing to back up. The relay is stateless — broadcasts
 live in memory and IDs are minted per session.
 
+**Using your relay from other gawk UIs (R37,
+[docs/40](40-relay-server-picker.md)).** Since R37 any gawk frontend that
+permits alternative relays (its operator's `config.allowCustomRelays`,
+default on) can talk to your relay — viewers arrive through share links
+carrying `?relay=`, or by picking your server in the UI. Three things are
+yours to configure:
+
+- **Allow the UI origins.** The relay's `config.allowedOrigins` is the
+  gate: list every frontend origin you want to serve (e.g.
+  `["https://gawk.example.com", "https://gawk.ioio.fi"]`), or leave it
+  empty to accept any origin. A UI you haven't allowed fails at CONNECT,
+  which a browser can only report as "unreachable".
+- **Name your relay.** `config.serverName` (e.g. `"Juho's homelab"`) is
+  what server pickers show next to your relay's host after probing it over
+  `/echo` — unset leaves it identified by version only.
+- **Advertise your telemetry ingest** (only with `telemetry.enabled`).
+  `telemetry.advertiseUrl` names YOUR frontend's public ingest URL (e.g.
+  `https://gawk.example.com/api/telemetry/v1/ingest`); sessions arriving
+  from foreign UIs then report diagnostics to *your* collector instead of
+  dying at their home deployment's token check. An invalid URL fails relay
+  startup on purpose. Verify the pairing end-to-end: join your relay from a
+  foreign UI and check the session appears in your dashboard.
+
+You can also **host a server directory** for your own UI's picker: a static
+JSON (schema v1 — `{"version": 1, "servers": [{"label": "...", "url":
+"https://relay...:4433"}]}`) referenced by the gawk-app chart's
+`config.serverDirectoryUrl`. Serve it same-origin next to `/config.js` (the
+`terms.html` ConfigMap pattern) or from any host that answers CORS for your
+frontend's origin. Directory entries never carry credentials.
+
 ## 9. Troubleshooting
 
 | Symptom | Likely cause |
