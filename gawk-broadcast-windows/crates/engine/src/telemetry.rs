@@ -374,14 +374,20 @@ fn deliver(url: &str, body: &[u8]) {
 }
 
 fn post(url: &str, body: &[u8]) -> Result<u16, String> {
-    let agent = ureq::AgentBuilder::new().timeout(SEND_TIMEOUT).build();
+    // `http_status_as_error(false)` keeps a non-2xx response on the Ok arm so
+    // deliver()'s status policy stays in one place; ureq 3 would otherwise
+    // report it as Error::StatusCode.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(SEND_TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+        .into();
     match agent
         .post(url)
-        .set("Content-Type", "application/json")
-        .send_bytes(body)
+        .header("Content-Type", "application/json")
+        .send(body)
     {
-        Ok(resp) => Ok(resp.status()),
-        Err(ureq::Error::Status(code, _)) => Ok(code),
+        Ok(resp) => Ok(resp.status().as_u16()),
         Err(e) => Err(e.to_string()),
     }
 }
