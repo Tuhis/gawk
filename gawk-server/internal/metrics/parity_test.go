@@ -32,10 +32,10 @@ func TestParityMetricsExposeForwardedSuppressedAndBytes(t *testing.T) {
 	}
 	// One subscriber served both symbols, one served none: the suppressed
 	// counter only means something with a subscriber declining them.
-	if _, err := r.SubscribeParity(id, fakeConn{}, 2); err != nil {
+	if _, err := r.SubscribeParity(id, fakeConn{}, 2, ""); err != nil {
 		t.Fatalf("SubscribeParity(2): %v", err)
 	}
-	if _, err := r.SubscribeParity(id, fakeConn{}, 0); err != nil {
+	if _, err := r.SubscribeParity(id, fakeConn{}, 0, ""); err != nil {
 		t.Fatalf("SubscribeParity(0): %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestParityBytesAreASliceOfDatagramEgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	sub, err := r.SubscribeParity(id, fakeConn{}, 2)
+	sub, err := r.SubscribeParity(id, fakeConn{}, 2, "")
 	if err != nil {
 		t.Fatalf("SubscribeParity: %v", err)
 	}

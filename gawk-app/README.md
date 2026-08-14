@@ -2,9 +2,12 @@
 
 React SPA frontend for the gawk game stream: screen capture, WebCodecs
 encode/decode, and WebTransport datagram transport to the relay. Requires
-a Chromium-based browser for broadcasting; viewing works on Firefox and
-iPhone Safari through documented fallbacks. Project overview, quickstart
-and gotchas: [root README](../README.md).
+a Chromium-based browser for broadcasting; viewing works on Chromium and
+Firefox. **WebKit — Safari everywhere, and every browser on iOS — currently
+cannot join at all** (see [BUGS.md](../BUGS.md)); the app detects it on load
+and warns before the user hits the failure. The iPhone Safari fallbacks are
+still in the code and still documented, but nothing reaches them today.
+Project overview, quickstart and gotchas: [root README](../README.md).
 
 ## Pages (hash-routed)
 

@@ -33,7 +33,7 @@ script for what counts as a dependency here and why.
 | `tslib` | 2.3.0 | `0BSD` | Copyright (c) Microsoft Corporation |
 | `tslib` | 2.3.0 | `0BSD` | Copyright (c) Microsoft Corporation |
 | `zrender` | 6.1.0 | `BSD-3-Clause` | Copyright (c) 2017, Baidu Inc |
-| `zustand` | 5.0.14 | `MIT` | Copyright (c) 2019 Paul Henschel |
+| `zustand` | 5.0.15 | `MIT` | Copyright (c) 2019 Paul Henschel |
 
 ## License texts
 

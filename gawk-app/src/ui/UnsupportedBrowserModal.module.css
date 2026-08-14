@@ -1,0 +1,69 @@
+/* App-level warning, so unlike the per-screen modals (which sit inside a
+   positioned surface and use `position: absolute`) this one is fixed and above
+   every screen's own chrome. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.center {
+  position: fixed;
+  inset: 0;
+  z-index: 91;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  pointer-events: none;
+}
+
+.modal {
+  width: min(92vw, 420px);
+  padding: 1.75rem 1.5rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  text-align: center;
+  pointer-events: auto;
+  animation: overlayIn var(--dur) var(--ease);
+}
+
+@keyframes overlayIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--warning);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.text {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+.actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  margin-top: 0.4rem;
+}

@@ -67,6 +67,7 @@ type RegistryCollector struct {
 	stripedPrimaries    *prometheus.Desc
 	stripeSuppressed    desc
 	stripeTransitions   desc
+	stripeLegsReaped    desc
 	dvrRingBytes        *prometheus.Desc
 	edgeSessions        *prometheus.Desc
 	viewersGlobal       *prometheus.Desc
@@ -186,6 +187,8 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"R30 delta datagrams withheld from striped primaries because their legs carry them (docs/35 §7). A leg's non-matching share is routing, not suppression, and is not counted."),
 		stripeTransitions: newDesc("stripe_transitions_total",
 			"R30 stripe suppression level flips observed (engage or release; the 1 Hz refresh does not count). Churning against a flat stripe_legs gauge is the flapping signature."),
+		stripeLegsReaped: newDesc("stripe_legs_reaped_total",
+			"R30 stripe-leg sessions the relay ended as orphaned (docs/35 \u00a714): owner-reaped when their primary session closed, or lease-reaped after inbound silence. Zero on a healthy fleet \u2014 rising means viewers are losing primaries without tearing their legs down."),
 	}
 }
 
@@ -219,7 +222,7 @@ func (c *RegistryCollector) counterDescs() []desc {
 		c.egressBytes, c.bwDroppedBytes, c.kfIn, c.kfSent, c.kfDropped, c.kfOversize,
 		c.carrierStreams, c.carrierRecords, c.carrierDropped, c.dvrResyncs,
 		c.parityDatagrams, c.paritySuppressed, c.egressParity,
-		c.stripeSuppressed, c.stripeTransitions,
+		c.stripeSuppressed, c.stripeTransitions, c.stripeLegsReaped,
 	}
 }
 
@@ -308,6 +311,7 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.egressParity.broadcast, s.EgressParityBytes, id)
 		counter(c.stripeSuppressed.broadcast, s.StripeSuppressedDatagrams, id)
 		counter(c.stripeTransitions.broadcast, s.StripeTransitions, id)
+		counter(c.stripeLegsReaped.broadcast, s.StripeLegsReaped, id)
 		gauge(c.stripeLegs, float64(s.StripeLegs), id)
 		gauge(c.stripedPrimaries, float64(s.StripedPrimaries), id)
 		counter(c.dvrResyncs.broadcast, s.DVRResyncs, id)
@@ -351,6 +355,7 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.egressParity.relay, t.EgressParityBytes)
 	counter(c.stripeSuppressed.relay, t.StripeSuppressedDatagrams)
 	counter(c.stripeTransitions.relay, t.StripeTransitions)
+	counter(c.stripeLegsReaped.relay, t.StripeLegsReaped)
 }
 
 // ServerMetrics are the transport-layer connection counters (R9 M4). All

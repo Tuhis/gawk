@@ -133,6 +133,13 @@ export const CLOSE_CODE_ORIGIN_MOVED = 4003;
 // own zombie session; a live session receiving it has been replaced and
 // must not resume back. Mirrored from Go wire.CloseCodePublisherSuperseded.
 export const CLOSE_CODE_PUBLISHER_SUPERSEDED = 4004;
+// The relay reaped this R30 stripe leg as orphaned (docs/35 §14): the
+// primary session sharing its ?owner= token ended, or the leg's liveness
+// lease expired. NOT terminal — the leg-death fallback applies (unstripe,
+// then re-engage through a fresh session set), exactly as for any other leg
+// death. Never sent to a primary. Mirrored from Go
+// wire.CloseCodeStripeLegOrphaned.
+export const CLOSE_CODE_STRIPE_LEG_ORPHANED = 4005;
 
 // Wire frameIds are uint32 and wrap; consumers must compare them with serial
 // arithmetic (RFC 1982 flavored), not `<`/`>`. `a` is ahead of `b` when the
