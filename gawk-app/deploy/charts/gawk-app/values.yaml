@@ -112,3 +112,15 @@ config:
   # service lives on a DIFFERENT origin — and then that origin has to answer
   # CORS preflights, which the unload beacon cannot perform.
   telemetryUrl: ""
+
+  # R37 (docs/40 D6): whether this UI may talk to relays other than its own —
+  # the server picker and the ?relay= link parameter. Default TRUE so shared
+  # cross-relay links work out of the box; set false to lock the UI to its
+  # deployment relay (picker hidden, ?relay= ignored with a quiet note).
+  allowCustomRelays: true
+
+  # R37 (docs/40 D9): optional URL of a server-directory JSON (schema v1) the
+  # picker offers. Fetched when the picker opens, never at boot. Host it
+  # same-origin (the terms.html ConfigMap pattern) or with CORS for this
+  # frontend's origin. Empty ⇒ no directory section.
+  serverDirectoryUrl: ""

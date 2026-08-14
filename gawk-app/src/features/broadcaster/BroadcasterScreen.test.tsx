@@ -53,6 +53,7 @@ vi.mock('./workerBroadcastSession', () => ({
 import { BroadcasterScreen } from './BroadcasterScreen';
 import { BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import { acceptCurrentTerms } from '../terms/acceptance';
+import { useTransportStore } from '../../state/transportStore';
 import { BUNDLED_TERMS_VERSION } from '../../config';
 import {
   AUDIO_NOTE,
@@ -354,6 +355,106 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
 // and a slept display can stop delivering getDisplayMedia frames, taking the
 // broadcast down rather than just dimming one desk. The hook's rules live in
 // lib/useWakeLock.test.ts; this covers the wiring to the live status.
+// R37 (docs/40 §4.2 F3): the publish-secret prompt is decided per resolved
+// server — config.requirePublishSecret governs only the pinned default, and
+// a non-default server prompts exactly when its entry holds no secret. A
+// secret-less connect failure against a non-default relay is offered as
+// "may require a secret" + retry, never a dead end.
+describe('BroadcasterScreen per-server secret prompt (R37 F3)', () => {
+  beforeEach(() => {
+    const s = useTransportStore.getState();
+    s.setSessionOverride(null);
+    s.reloadFromStorage();
+    s.selectServer('default');
+  });
+
+  // The store is a module singleton — clear the override/selection so later
+  // describes start from the default server.
+  afterEach(() => {
+    act(() => {
+      const s = useTransportStore.getState();
+      s.setSessionOverride(null);
+      s.selectServer('default');
+    });
+  });
+
+  it('does not prompt on the default server when the deployment does not require one', () => {
+    scripts.push(async () => {});
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    expect(screen.queryByRole('dialog', { name: 'Publish secret' })).toBeNull();
+  });
+
+  it('prompts on a non-default server with no stored secret', () => {
+    act(() => {
+      useTransportStore.getState().setSessionOverride('https://foreign.example:4433');
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    expect(screen.getByRole('dialog', { name: 'Publish secret' })).toBeTruthy();
+  });
+
+  it('skips the prompt on a non-default server whose entry stores a secret', async () => {
+    const store = useTransportStore.getState();
+    const id = store.addServer({
+      label: 'Secured',
+      url: 'https://foreign.example:4433',
+      publishSecret: 'stored-secret',
+    })!;
+    act(() => useTransportStore.getState().selectServer(id));
+    scripts.push(async () => {});
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    expect(screen.queryByRole('dialog', { name: 'Publish secret' })).toBeNull();
+    await waitFor(() => expect(created).toHaveLength(1));
+    // Cleanup: drop the entry so later describes see a clean list.
+    act(() => useTransportStore.getState().removeServer(id));
+  });
+
+  it('offers secret entry + retry when a secret-less connect to a non-default relay fails', async () => {
+    const store = useTransportStore.getState();
+    const id = store.addServer({ label: 'Maybe secured', url: 'https://foreign2.example:4433' })!;
+    act(() => useTransportStore.getState().selectServer(id));
+    // The entry has no secret — the pre-start prompt appears; submit empty to
+    // attempt without one (the open-relay hope), which then 401s.
+    scripts.push(async () => {
+      throw new BroadcastStartError('connect', new Error('opening handshake failed'));
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    // Pre-start prompt (empty secret) — continue without one.
+    fireEvent.click(screen.getByRole('button', { name: 'Start broadcasting' }));
+    // The connect failed; instead of a dead-end error card the secret prompt
+    // returns with the may-require note.
+    await waitFor(() =>
+      expect(screen.getByText(/may require a publish secret/)).toBeTruthy(),
+    );
+    // Entering a secret retries.
+    scripts.push(async () => {});
+    fireEvent.change(screen.getByPlaceholderText('shared secret'), {
+      target: { value: 'now-i-know' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Start broadcasting' }));
+    await waitFor(() => expect(created).toHaveLength(2));
+    // The prompted secret landed on the resolved entry (F3 storage rule).
+    expect(
+      useTransportStore.getState().servers.find((e) => e.id === id)?.publishSecret,
+    ).toBe('now-i-know');
+    act(() => useTransportStore.getState().removeServer(id));
+  });
+
+  // F2: the indicator renders on the broadcaster screen before capture.
+  it('shows the in-session indicator pre-start on a non-default server', () => {
+    act(() => {
+      useTransportStore.getState().setSessionOverride('https://foreign.example:4433');
+    });
+    render(<BroadcasterScreen />);
+    expect(screen.getByTestId('server-indicator').textContent).toContain(
+      'foreign.example:4433',
+    );
+  });
+});
+
 describe('BroadcasterScreen screen wake lock', () => {
   const locks: Array<{ released: boolean }> = [];
 

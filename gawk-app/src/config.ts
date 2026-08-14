@@ -59,6 +59,18 @@ export interface GawkRuntimeConfig {
   // default. Recommended shape: "/terms.html", a ConfigMap-mounted static
   // asset (see the gawk-app chart). An absolute URL is allowed.
   termsUrl?: string;
+
+  // R37 (docs/40 D6): whether this deployment's UI may talk to relays other
+  // than its own — the server picker and the ?relay= link parameter. Default
+  // TRUE (out of the box, shared cross-relay links work on any install);
+  // false hides the picker and ignores ?relay= with a quiet note.
+  allowCustomRelays?: boolean;
+
+  // R37 (docs/40 D9): optional URL of a directory JSON the picker offers
+  // (schema v1). Fetched when the picker opens — never at boot. Empty/unset
+  // means no directory section. Same-origin path recommended (the terms.html
+  // ConfigMap pattern); a cross-origin URL must serve CORS itself.
+  serverDirectoryUrl?: string;
 }
 
 declare global {
@@ -99,6 +111,21 @@ export function getMaxDecoderQueueSize(): number {
   // Worst case this queues ~10 frames ≈ 330 ms at 30 fps before the resync
   // policy kicks in — acceptable against a 500 ms GOP recovery.
   return 10;
+}
+
+// R37 (docs/40 D6): default true — a missing key means the deployment allows
+// alternative relays, which is what keeps a shared ?relay= link working on
+// installs whose operator configured nothing.
+export function allowCustomRelays(): boolean {
+  const v = getRuntimeConfig().allowCustomRelays;
+  return v === undefined ? true : v;
+}
+
+// R37 (docs/40 D9): '' when unset ⇒ no directory section in the picker. The
+// "empty string counts as unset" rule, same as every other getter here.
+export function getServerDirectoryUrl(): string {
+  const v = getRuntimeConfig().serverDirectoryUrl;
+  return (typeof v === 'string' && v.trim()) || '';
 }
 
 // "Debug build" per the product spec = running locally. Vite dev mode, or a

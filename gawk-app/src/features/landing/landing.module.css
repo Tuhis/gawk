@@ -121,3 +121,13 @@
 .terms:hover {
   color: var(--muted);
 }
+
+/* R37: the server chip row, pinned above the terms link — present but out of
+ * the join-by-code eye line. */
+.chipRow {
+  position: absolute;
+  z-index: 1;
+  bottom: 3rem;
+  left: 50%;
+  transform: translateX(-50%);
+}
