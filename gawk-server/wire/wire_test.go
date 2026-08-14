@@ -1696,3 +1696,156 @@ func TestTelemetryTokenValidUntilExpiry(t *testing.T) {
 		}
 	}
 }
+
+// --- R37 RelayIdentity (0x11) + TelemetryEndpoint (0x12) (docs/40 SP4) ---
+
+// Golden vectors, computed by hand from the wire format spec. Restated
+// byte-identically in all three mirrors (wire.ts, wirecheck, crates/wire).
+const (
+	// RelayIdentity: ServerVersion="1.42.0", Name="gawk home".
+	//
+	//   01                          version
+	//   11                          type = RelayIdentity
+	//   00                          flags (reserved)
+	//   06                          versionLen = 6
+	//   31 2e 34 32 2e 30           "1.42.0"
+	//   09                          nameLen = 9
+	//   67 61 77 6b 20 68 6f 6d 65  "gawk home"
+	goldenRelayIdentityHex = "01110006312e34322e30096761776b20686f6d65"
+
+	// RelayIdentity with no operator name (nameLen = 0) — an unset
+	// -server-name still identifies the release.
+	goldenRelayIdentityNoNameHex = "01110006312e34322e3000"
+
+	// TelemetryEndpoint: the reference deployment's ingest URL shape (R37,
+	// docs/40 §4.10).
+	//
+	//   01       version
+	//   12       type = TelemetryEndpoint
+	//   00       flags (reserved)
+	//   00 30    urlLen = 48 (uint16, big-endian)
+	//   68 74 74 70 73 ... "https://gawk.example.com/api/telemetry/v1/ingest"
+	goldenTelemetryEndpointHex = "011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374"
+)
+
+func TestGoldenRelayIdentity(t *testing.T) {
+	want := mustHex(t, goldenRelayIdentityHex)
+	got, err := AppendRelayIdentity(nil, RelayIdentity{ServerVersion: "1.42.0", Name: "gawk home"})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("golden mismatch:\n got %x\nwant %x", got, want)
+	}
+	id, err := ParseRelayIdentity(want)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if id.ServerVersion != "1.42.0" || id.Name != "gawk home" {
+		t.Fatalf("round-trip mismatch: %+v", id)
+	}
+
+	wantNoName := mustHex(t, goldenRelayIdentityNoNameHex)
+	gotNoName, err := AppendRelayIdentity(nil, RelayIdentity{ServerVersion: "1.42.0"})
+	if err != nil {
+		t.Fatalf("append no-name: %v", err)
+	}
+	if !bytes.Equal(gotNoName, wantNoName) {
+		t.Fatalf("no-name golden mismatch:\n got %x\nwant %x", gotNoName, wantNoName)
+	}
+}
+
+// The extension-point contract (docs/40 §4.4/§4.9): trailing bytes parse as
+// if absent — appended fields must not break R37-era readers.
+func TestRelayIdentityToleratesTrailingBytes(t *testing.T) {
+	msg := append(mustHex(t, goldenRelayIdentityHex), 0xa1, 0xb2, 0xc3)
+	id, err := ParseRelayIdentity(msg)
+	if err != nil {
+		t.Fatalf("parse with trailing bytes: %v", err)
+	}
+	if id.ServerVersion != "1.42.0" || id.Name != "gawk home" {
+		t.Fatalf("trailing bytes changed the parse: %+v", id)
+	}
+}
+
+func TestRelayIdentityRejects(t *testing.T) {
+	base := mustHex(t, goldenRelayIdentityHex)
+	flagged := append([]byte(nil), base...)
+	flagged[2] = 0x01
+	if _, err := ParseRelayIdentity(flagged); !errors.Is(err, ErrBadRelayIdentity) {
+		t.Fatalf("flags: got %v, want ErrBadRelayIdentity", err)
+	}
+	// versionLen overrunning the message.
+	overrun := append([]byte(nil), base...)
+	overrun[3] = 0xff
+	if _, err := ParseRelayIdentity(overrun); !errors.Is(err, ErrBadRelayIdentity) {
+		t.Fatalf("overrun: got %v, want ErrBadRelayIdentity", err)
+	}
+	// nameLen overrunning the message.
+	nameOverrun := append([]byte(nil), base...)
+	nameOverrun[10] = 0x40
+	if _, err := ParseRelayIdentity(nameOverrun); !errors.Is(err, ErrBadRelayIdentity) {
+		t.Fatalf("name overrun: got %v, want ErrBadRelayIdentity", err)
+	}
+	// Invalid UTF-8 in the name.
+	badUTF8 := append([]byte(nil), base...)
+	badUTF8[11] = 0xff
+	if _, err := ParseRelayIdentity(badUTF8); !errors.Is(err, ErrBadRelayIdentity) {
+		t.Fatalf("bad utf8: got %v, want ErrBadRelayIdentity", err)
+	}
+	// Non-printable version byte.
+	if _, err := AppendRelayIdentity(nil, RelayIdentity{ServerVersion: "1.\x00"}); !errors.Is(err, ErrBadRelayIdentity) {
+		t.Fatalf("non-printable version: want ErrBadRelayIdentity")
+	}
+	// Oversize name on append.
+	if _, err := AppendRelayIdentity(nil, RelayIdentity{ServerVersion: "1", Name: strings.Repeat("n", MaxRelayIdentityNameLen+1)}); !errors.Is(err, ErrBadRelayIdentity) {
+		t.Fatalf("oversize name: want ErrBadRelayIdentity")
+	}
+}
+
+func TestGoldenTelemetryEndpoint(t *testing.T) {
+	const url = "https://gawk.example.com/api/telemetry/v1/ingest"
+	want := mustHex(t, goldenTelemetryEndpointHex)
+	got, err := AppendTelemetryEndpoint(nil, url)
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("golden mismatch:\n got %x\nwant %x", got, want)
+	}
+	parsed, err := ParseTelemetryEndpoint(want)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed != url {
+		t.Fatalf("round-trip mismatch: %q", parsed)
+	}
+	// Trailing extension bytes tolerated, same contract as RelayIdentity.
+	if parsed, err = ParseTelemetryEndpoint(append(append([]byte(nil), want...), 0x7f)); err != nil || parsed != url {
+		t.Fatalf("trailing bytes: %q, %v", parsed, err)
+	}
+}
+
+func TestTelemetryEndpointRejects(t *testing.T) {
+	base := mustHex(t, goldenTelemetryEndpointHex)
+	flagged := append([]byte(nil), base...)
+	flagged[2] = 0x80
+	if _, err := ParseTelemetryEndpoint(flagged); !errors.Is(err, ErrBadTelemetryEndpoint) {
+		t.Fatalf("flags: got %v, want ErrBadTelemetryEndpoint", err)
+	}
+	overrun := append([]byte(nil), base...)
+	overrun[3], overrun[4] = 0x01, 0x00 // urlLen 256 > remaining bytes
+	if _, err := ParseTelemetryEndpoint(overrun); !errors.Is(err, ErrBadTelemetryEndpoint) {
+		t.Fatalf("overrun: got %v, want ErrBadTelemetryEndpoint", err)
+	}
+	// Non-https and unparseable URLs are refused on both sides — a client
+	// must never adopt them, and SP11's relay fails fast at startup.
+	for _, bad := range []string{"http://x.example/ingest", "not a url", "", "https://"} {
+		if _, err := AppendTelemetryEndpoint(nil, bad); !errors.Is(err, ErrBadTelemetryEndpoint) {
+			t.Fatalf("append %q: got %v, want ErrBadTelemetryEndpoint", bad, err)
+		}
+	}
+	if _, err := AppendTelemetryEndpoint(nil, "https://x.example/"+strings.Repeat("p", MaxTelemetryEndpointURLLen)); !errors.Is(err, ErrBadTelemetryEndpoint) {
+		t.Fatalf("oversize URL: want ErrBadTelemetryEndpoint")
+	}
+}

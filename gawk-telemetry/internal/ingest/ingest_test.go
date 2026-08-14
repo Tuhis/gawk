@@ -530,75 +530,47 @@ func TestNewRequiresAKeyAndASink(t *testing.T) {
 
 // --- CORS: the split-origin deployment only (D1) -------------------------
 
-// The DEFAULT deployment is same-origin and must have no cross-origin surface
-// at all: no headers, and a preflight that is simply refused.
-func TestNoCORSWithoutAnAllowlist(t *testing.T) {
-	h := newHandler(t, &recordingSink{})
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	req, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(body(t, nil)))
-	req.Header.Set("Origin", "https://gawk.example")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("Access-Control-Allow-Origin = %q with no allowlist, want none", got)
-	}
-
-	req, _ = http.NewRequest(http.MethodOptions, srv.URL, nil)
-	req.Header.Set("Origin", "https://gawk.example")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("preflight status = %d with no allowlist, want 403", resp.StatusCode)
-	}
-}
-
-func TestCORSForListedOriginsOnly(t *testing.T) {
+// R37 (docs/40 D17): the ingest listener serves wildcard CORS,
+// unconditionally — any UI origin may report here, auth is the in-body
+// token. The pre-R37 origin allowlist is gone.
+func TestWildcardCORS(t *testing.T) {
 	sink := &recordingSink{}
-	h, err := New(Options{
-		Key: testKey, Sink: sink, Now: func() time.Time { return testNow },
-		AllowedOrigins: []string{"https://gawk.example", "http://127.0.0.1:4173"},
-	})
+	h, err := New(Options{Key: testKey, Sink: sink, Now: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	t.Run("preflight from a listed origin", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodOptions, srv.URL, nil)
-		req.Header.Set("Origin", "https://gawk.example")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("status = %d, want 204", resp.StatusCode)
-		}
-		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://gawk.example" {
-			t.Errorf("allow-origin = %q, want the echoed origin (never *)", got)
-		}
-		// Content-Type must be permitted or the JSON POST can never follow.
-		if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type" {
-			t.Errorf("allow-headers = %q", got)
-		}
-		if resp.Header.Get("Vary") != "Origin" {
-			t.Error("no Vary: Origin — the response would be cached across origins")
+	t.Run("preflight from any origin", func(t *testing.T) {
+		for _, origin := range []string{"https://gawk.example", "https://some-other-ui.example", ""} {
+			req, _ := http.NewRequest(http.MethodOptions, srv.URL, nil)
+			if origin != "" {
+				req.Header.Set("Origin", origin)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Errorf("preflight status = %d for origin %q, want 204", resp.StatusCode, origin)
+			}
+			if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+				t.Errorf("allow-origin = %q for origin %q, want *", got, origin)
+			}
+			if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type" {
+				t.Errorf("allow-headers = %q", got)
+			}
+			if got := resp.Header.Get("Access-Control-Allow-Methods"); got != "POST" {
+				t.Errorf("allow-methods = %q", got)
+			}
 		}
 	})
 
-	t.Run("post from a listed origin", func(t *testing.T) {
+	t.Run("post carries the wildcard too", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(body(t, nil)))
-		req.Header.Set("Origin", "http://127.0.0.1:4173")
+		req.Header.Set("Origin", "https://any-ui.example")
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -608,58 +580,54 @@ func TestCORSForListedOriginsOnly(t *testing.T) {
 		if resp.StatusCode != http.StatusNoContent {
 			t.Errorf("status = %d, want 204", resp.StatusCode)
 		}
-		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://127.0.0.1:4173" {
-			t.Errorf("allow-origin = %q", got)
-		}
-	})
-
-	t.Run("an unlisted origin gets nothing", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodOptions, srv.URL, nil)
-		req.Header.Set("Origin", "https://evil.example")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("preflight status = %d for an unlisted origin, want 403", resp.StatusCode)
-		}
-		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("allow-origin = %q for an unlisted origin", got)
-		}
-	})
-
-	// Exact match only: a prefix/suffix rule is how allowlists get bypassed.
-	t.Run("near-miss origins are not allowed", func(t *testing.T) {
-		for _, o := range []string{
-			"https://gawk.example.evil.com",
-			"https://evil.com?https://gawk.example",
-			"http://gawk.example",
-			"https://gawk.example/",
-		} {
-			req, _ := http.NewRequest(http.MethodOptions, srv.URL, nil)
-			req.Header.Set("Origin", o)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusForbidden {
-				t.Errorf("origin %q was allowed", o)
-			}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("allow-origin = %q, want *", got)
 		}
 	})
 }
 
-// A null is ABSENCE, not a type error. ViewerStats declares dozens of fields
-// as `T | null` by design — avSkewMs with no audio, connection because no
-// browser ships getStats(), renderedFps on the main-thread path — so a client
-// sending one is reporting correctly.
-//
-// Counting those as anomalies made a healthy session's tally read as nonsense:
-// the e2e pass produced 70 "dropped" fields across 13 samples, which
-// distrustReason() then reported as a likely client bug. This is the
-// false-alarm mirror of a confidently-wrong verdict.
+// R37 (docs/40 D17): the unload beacon rides a CORS-safelisted content type;
+// the identical JSON envelope must be accepted under text/plain, with token
+// verification and both rate-limit tiers unchanged.
+func TestBeaconContentTypeAccepted(t *testing.T) {
+	sink := &recordingSink{}
+	h, err := New(Options{Key: testKey, Sink: sink, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(body(t, nil)))
+	req.Header.Set("Origin", "https://any-ui.example")
+	req.Header.Set("Content-Type", "text/plain;charset=UTF-8") // what sendBeacon(Blob) sends
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d for a text/plain envelope, want 204", resp.StatusCode)
+	}
+	if len(sink.batches) != 1 {
+		t.Fatalf("sink got %d batches, want 1", len(sink.batches))
+	}
+
+	// A bad token under text/plain is rejected exactly like under JSON —
+	// the safelisted type relaxes no verification.
+	bad := body(t, map[string]any{"token": strings.Repeat("00", 24)})
+	req, _ = http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(bad))
+	req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		t.Error("bad token accepted under text/plain")
+	}
+}
+
 func TestNullIsAbsenceNotAnAnomaly(t *testing.T) {
 	h := newHandler(t, &recordingSink{})
 	// Exactly the shape a real viewer sends on a video-only stream.

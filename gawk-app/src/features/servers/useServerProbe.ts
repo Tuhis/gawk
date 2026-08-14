@@ -1,0 +1,59 @@
+// R37 (docs/40 §4.4 / SP6): probe state for the picker's rows. Saved servers
+// (the pinned default + custom entries) are probed once when the panel opens
+// and on demand; directory offers are probed ON DEMAND ONLY (F10 — opening
+// the picker must not disclose the user's address to every third-party host
+// an operator listed). No background probing exists anywhere: this hook
+// lives inside the panel, so an idle landing page generates zero traffic.
+
+import { useEffect, useRef, useState } from 'react';
+
+import { probeRelay, type ProbeResult } from './probe';
+
+export type RowProbeState = { state: 'idle' } | { state: 'probing' } | ProbeResult;
+
+export interface ProbeTarget {
+  key: string;
+  url: string;
+  certHashHex: string;
+  // false ⇒ never probed without an explicit request (directory offers).
+  auto: boolean;
+}
+
+export type ProbeFn = typeof probeRelay;
+
+export function useServerProbe(
+  targets: ProbeTarget[],
+  probeFn: ProbeFn = probeRelay,
+): { results: Record<string, RowProbeState>; probe: (key: string) => void } {
+  const [results, setResults] = useState<Record<string, RowProbeState>>({});
+  const startedRef = useRef(new Set<string>());
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
+  const probeFnRef = useRef(probeFn);
+  probeFnRef.current = probeFn;
+
+  const start = (key: string) => {
+    const target = targetsRef.current.find((t) => t.key === key);
+    if (!target) return;
+    startedRef.current.add(key);
+    setResults((r) => ({ ...r, [key]: { state: 'probing' } }));
+    void probeFnRef.current(target.url, target.certHashHex).then((result) => {
+      setResults((r) => ({ ...r, [key]: result }));
+    });
+  };
+
+  // Auto targets probe once per panel lifetime; a target added later (a new
+  // saved entry) is picked up on the render that introduces it.
+  const autoKeys = targets
+    .filter((t) => t.auto)
+    .map((t) => t.key)
+    .join(' ');
+  useEffect(() => {
+    for (const t of targetsRef.current) {
+      if (t.auto && !startedRef.current.has(t.key)) start(t.key);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the auto set only
+  }, [autoKeys]);
+
+  return { results, probe: start };
+}

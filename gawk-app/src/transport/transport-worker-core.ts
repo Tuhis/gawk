@@ -48,6 +48,7 @@ export type TransportWorkerEvent =
   // bearer credential — keeping it out of ViewerStats is what keeps it out of
   // the Copy-diagnostics blob a user pastes into a chat.
   | { type: 'telemetryHello'; hello: TelemetryHelloMessage }
+  | { type: 'telemetryEndpoint'; url: string }
   // R29/R30: the relay's capabilities — the stripe controller's gate.
   | { type: 'relayCapabilities'; caps: RelayCapabilities }
   // R30: the stripe width actually engaged (0 = unstriped).
@@ -111,6 +112,7 @@ export class TransportWorkerCore {
             keyframeTransferables(kf),
           ),
         onTelemetryHello: (hello) => this.host.post({ type: 'telemetryHello', hello }),
+        onTelemetryEndpoint: (url) => this.host.post({ type: 'telemetryEndpoint', url }),
         onRelayCapabilities: (caps) => this.host.post({ type: 'relayCapabilities', caps }),
         onStripeChange: (active) => this.host.post({ type: 'stripeChange', active }),
         onClosed: (info: TransportClosedInfo) => {

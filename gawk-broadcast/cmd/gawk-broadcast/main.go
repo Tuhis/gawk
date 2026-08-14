@@ -107,7 +107,12 @@ func run() error {
 	// Blank is not an error any more: it means the default fleet. Only an
 	// emptied-out default could land here, and refusing is still better than
 	// dialling "".
-	relay := cfg.Relay()
+	//
+	// R37 SP8: URL and secret are resolved together through the server
+	// profiles — a -url/GAWK_URL override still wins (it lands in the flat
+	// field above), and a stored secret travels only to the server it was
+	// saved against (D4).
+	relay, publishSecret := cfg.Server()
 	if relay == "" {
 		fs.Usage()
 		return errors.New("no relay URL: pass -url or set GAWK_URL")
@@ -193,7 +198,7 @@ func run() error {
 		engine.Config{
 			RelayURL:      relay,
 			BroadcastID:   *id,
-			PublishSecret: cfg.PublishSecret,
+			PublishSecret: publishSecret,
 			ResumeToken:   resumeToken,
 			Origin:        cfg.Origin,
 			Insecure:      *insecure,
@@ -251,6 +256,17 @@ func run() error {
 			},
 			OnStats:          func(s engine.Stats) { reporter.Report(s) },
 			OnTelemetryHello: func(h wire.TelemetryHello) { reporter.Begin(h) },
+			// R37 (docs/40 §4.10): the relay may advertise its own fleet's
+			// ingest endpoint (wire 0x12); it wins over the configured one —
+			// unless the user said off, which no relay may overrule. Said out
+			// loud for the same reason the default destination is.
+			OnTelemetryEndpoint: func(u string) {
+				if config.TelemetryOff(cfg.TelemetryURL) {
+					return
+				}
+				reporter.SetAdvertisedURL(u)
+				fmt.Fprintf(os.Stderr, "The relay advertises its own diagnostics endpoint; reporting to %s instead (-telemetry-url %s to stop).\n", u, config.Off)
+			},
 		},
 		engine.Options{
 			Log: log,

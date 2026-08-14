@@ -4,6 +4,7 @@ import { CodeInput } from './CodeInput';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { isValidBroadcastId } from '../../lib/broadcastId';
+import { ServerChip } from '../servers/ServerChip';
 
 // The front door (docs/10 J2). Segmented code entry is the hero; a smaller
 // "start a stream" affordance sits below. A friend handed a #/view/<id> link
@@ -44,6 +45,13 @@ export function LandingPage() {
           Start a stream <span aria-hidden="true">→</span>
         </button>
       </GlassPanel>
+
+      {/* R37 (docs/40 §4.3): the server chip — quiet on the default relay so
+          join-by-code reads exactly as before; hidden when the deployment
+          disallows custom relays. */}
+      <div className={styles.chipRow}>
+        <ServerChip />
+      </div>
 
       {/* R23 (docs/29): terms reachable from the front door, unobtrusively. */}
       <a className={styles.terms} href="#/terms">

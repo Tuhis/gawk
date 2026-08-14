@@ -579,3 +579,99 @@ describe('TelemetryCollector — interval minima (docs/33 D16)', () => {
     }
   });
 });
+
+// --- R37 (docs/40 §4.10 SP13): the relay-advertised destination ------------
+
+describe('advertised telemetry endpoint (R37, revised per review R3-A/R3-C)', () => {
+  it('an advertised URL wins over the configured one (D15)', () => {
+    const h = harness();
+    h.begin();
+    h.collector.setAdvertisedUrl('https://foreign.example/api/telemetry/v1/ingest');
+    h.collector.sample({ fps: 30 });
+    h.collector.flush();
+    expect(h.sent.at(-1)!.url).toBe('https://foreign.example/api/telemetry/v1/ingest');
+  });
+
+  // The revised D15 fallback: with no 0x12, batches go to the CONFIGURED
+  // URL on any relay — the pre-R37 behavior. The same fleet is legitimately
+  // reached through non-default URLs (direct IP, alternate DNS, a migrated
+  // legacy setting) where the configured collector shares the key; the
+  // suppression variant silently stopped those sessions' telemetry (the
+  // e2e failure that proved it).
+  it('falls back to the configured URL when no 0x12 arrives', () => {
+    const h = harness();
+    h.begin();
+    h.collector.sample({ fps: 30 });
+    h.collector.flush();
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].url).toBe('/api/telemetry/v1/ingest');
+  });
+
+  // G2: precedence re-resolves at every send — a late 0x12 redirects the
+  // rest of the session's batches (already-sent ones went to the fallback).
+  it('a late 0x12 redirects subsequent batches', () => {
+    const h = harness();
+    h.begin();
+    h.collector.sample({ fps: 30 });
+    h.collector.flush();
+    expect(h.sent[0].url).toBe('/api/telemetry/v1/ingest');
+    h.collector.setAdvertisedUrl('https://foreign.example/ingest');
+    h.advance(3000); // past the sampling floor so the next sample lands
+    h.collector.sample({ fps: 31 });
+    h.collector.flush();
+    expect(h.sent[1].url).toBe('https://foreign.example/ingest');
+  });
+
+  it('reportingToAdvertised backs the indicator disclosure (D16)', () => {
+    const h = harness();
+    h.begin();
+    expect(h.collector.reportingToAdvertised).toBe(false);
+    h.collector.setAdvertisedUrl('https://foreign.example/ingest');
+    expect(h.collector.reportingToAdvertised).toBe(true);
+  });
+
+  // G3: the 250 ms sampling floor is security-load-bearing since R37 — the
+  // hello's interval is relay-chosen and the destination can be a hostile
+  // relay's choice, so the clamp is what bounds the reflector rate. A relay
+  // asking for 0 ms must not sample faster than the floor.
+  it('clamps a below-floor hello interval to 250 ms', () => {
+    const h = harness({ reportIntervalMs: 0 });
+    h.begin();
+    h.collector.sample({ fps: 1 });
+    // A second sample immediately after must be coalesced by the floor.
+    h.collector.sample({ fps: 2 });
+    h.collector.flush();
+    expect(h.sent).toHaveLength(1);
+    const batch = JSON.parse(h.sent[0].body) as { samples: unknown[] };
+    expect(batch.samples).toHaveLength(1);
+  });
+});
+
+// D17: the unload beacon rides a CORS-safelisted content type so sendBeacon
+// needs no preflight it cannot perform during unload — cross-origin included.
+describe('beacon content type (R37 D17)', () => {
+  it('sendBeacon is handed a text/plain blob', async () => {
+    const calls: Array<{ url: string; type: string }> = [];
+    const nav = navigator as unknown as Record<string, unknown>;
+    const original = nav.sendBeacon;
+    nav.sendBeacon = (url: string, blob: Blob) => {
+      calls.push({ url, type: blob.type });
+      return true;
+    };
+    try {
+      const collector = new TelemetryCollector<Record<string, unknown>>({
+        url: '/api/telemetry/v1/ingest',
+        role: 'viewer',
+      });
+      collector.begin(HELLO);
+      collector.sample({ fps: 1 });
+      collector.flushForUnload();
+      await Promise.resolve();
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type.toLowerCase()).toBe('text/plain;charset=utf-8');
+    } finally {
+      if (original === undefined) delete nav.sendBeacon;
+      else nav.sendBeacon = original;
+    }
+  });
+});

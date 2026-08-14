@@ -97,7 +97,8 @@ export type ViewerWorkerEvent =
   // thread where collection lives (D13). Its own message rather than a field
   // on 'stats' because the token is a bearer credential and ViewerStats is
   // what Copy diagnostics serializes for pasting into a chat.
-  | { type: 'telemetryHello'; hello: TelemetryHelloMessage };
+  | { type: 'telemetryHello'; hello: TelemetryHelloMessage }
+  | { type: 'telemetryEndpoint'; url: string };
 
 // R22: the muxer's output events (see ViewerWorkerEvent above). `track` routes
 // the segment to its own SourceBuffer on the main thread — video and audio are
@@ -251,6 +252,9 @@ export class ViewerWorkerCore {
       // superseded attempt's hello can't relabel the live session.
       onTelemetryHello: (hello) => {
         if (current()) this.host.post({ type: 'telemetryHello', hello });
+      },
+      onTelemetryEndpoint: (url) => {
+        if (current()) this.host.post({ type: 'telemetryEndpoint', url });
       },
       // R22: the encoded-frame fork for the shell's muxer. Generation-guarded
       // so a superseded session's late releases can't interleave a stale

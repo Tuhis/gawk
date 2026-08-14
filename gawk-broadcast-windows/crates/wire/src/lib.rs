@@ -62,6 +62,8 @@ pub const TYPE_TELEMETRY_HELLO: u8 = 0x0D;
 pub const TYPE_PARITY_CHUNK: u8 = 0x0E;
 pub const TYPE_RELAY_CAPABILITIES: u8 = 0x0F;
 pub const TYPE_STRIPE_STATE: u8 = 0x10;
+pub const TYPE_RELAY_IDENTITY: u8 = 0x11;
+pub const TYPE_TELEMETRY_ENDPOINT: u8 = 0x12;
 
 // Size constants. A change to any of these is a protocol change, not a
 // tuning knob — the constants test pins every one.
@@ -82,6 +84,12 @@ pub const TELEMETRY_HELLO_SIZE: usize = 35;
 pub const TELEMETRY_SESSION_TOKEN_SIZE: usize = 24;
 pub const TELEMETRY_BROADCAST_KEY_SIZE: usize = 6;
 pub const DELIVERY_ACK_SIZE: usize = 5;
+/// RelayIdentity (0x11, R37): a release version is a short string ("1.42.0").
+pub const MAX_RELAY_IDENTITY_VERSION_LEN: usize = 32;
+/// RelayIdentity (0x11, R37): a display name is one label, not a paragraph.
+pub const MAX_RELAY_IDENTITY_NAME_LEN: usize = 64;
+/// TelemetryEndpoint (0x12, R37): real ingest URLs are well under this.
+pub const MAX_TELEMETRY_ENDPOINT_URL_LEN: usize = 512;
 
 // WebTransport application close codes. Doc comments with the full semantics
 // live on the Go constants; the one-line summaries here are what the resume

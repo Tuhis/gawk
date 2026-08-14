@@ -444,6 +444,7 @@ export interface ViewerCallbacks {
   // R28 (docs/33 D2): this session's telemetry identity, straight off wire
   // 0x0D. Absent callback = this consumer does not do telemetry.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
+  onTelemetryEndpoint?: (url: string) => void;
   // R22 audio (docs/27 finding 2): the encoded-AUDIO fork for the same muxer.
   // Forked at the demux point, not at a playout gate — the muxed timeline is
   // built from broadcaster timestamps, so arrival order is all this needs, and
@@ -743,6 +744,7 @@ export class ViewerPipeline {
         // context for both (it may be inside two nested workers), and keeping
         // the token off ViewerStats keeps it out of Copy diagnostics.
         onTelemetryHello: (hello) => this.cb.onTelemetryHello?.(hello),
+        onTelemetryEndpoint: (url) => this.cb.onTelemetryEndpoint?.(url),
         // R30 (docs/35 §5.3): the striping gate. An old relay never sends the
         // bit, so a new viewer against it never dials a leg — and a reliable/
         // DVR viewer never stripes regardless (nothing to win there, §3).

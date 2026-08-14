@@ -36,6 +36,12 @@ const GOLDEN_RELAY_CAPABILITIES: &str = "010f000102";
 const GOLDEN_CAPABILITIES_BOTH_BITS: &str = "010f000302";
 const GOLDEN_STRIPE_STATE_STRIPED: &str = "0110010300";
 const GOLDEN_STRIPE_STATE_UNSTRIPED: &str = "0110000000";
+// R37 (docs/40 SP4): ServerVersion "1.42.0", Name "gawk home".
+const GOLDEN_RELAY_IDENTITY: &str = "01110006312e34322e30096761776b20686f6d65";
+// An unset operator name is nameLen 0, not an absent field.
+const GOLDEN_RELAY_IDENTITY_NO_NAME: &str = "01110006312e34322e3000";
+// URL "https://gawk.example.com/api/telemetry/v1/ingest" (48 bytes, u16 BE).
+const GOLDEN_TELEMETRY_ENDPOINT: &str = "011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374";
 
 // Cross-implementation parity-symbol vectors, generated 2026-07-30 by running
 // gawk-server/wire's ComputeParity (Go) over the inputs below — pinning that
@@ -426,6 +432,63 @@ fn golden_stripe_state() {
     assert_eq!(to_hex(&unstriped), GOLDEN_STRIPE_STATE_UNSTRIPED);
 }
 
+#[test]
+fn golden_relay_identity() {
+    let mut got = Vec::new();
+    append_relay_identity(
+        &mut got,
+        &RelayIdentity {
+            server_version: "1.42.0",
+            name: "gawk home",
+        },
+    )
+    .unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_RELAY_IDENTITY);
+    let id = parse_relay_identity(&got).unwrap();
+    assert_eq!(id.server_version, "1.42.0");
+    assert_eq!(id.name, "gawk home");
+
+    let mut no_name = Vec::new();
+    append_relay_identity(
+        &mut no_name,
+        &RelayIdentity {
+            server_version: "1.42.0",
+            name: "",
+        },
+    )
+    .unwrap();
+    assert_eq!(to_hex(&no_name), GOLDEN_RELAY_IDENTITY_NO_NAME);
+    let id = parse_relay_identity(&no_name).unwrap();
+    assert_eq!(id.server_version, "1.42.0");
+    assert!(id.name.is_empty());
+}
+
+// The deliberate deviation from house strictness (docs/40 §4.4): trailing
+// bytes are this message's reserved extension space — managed mode appends
+// fields through it without a wire break — so parsers ignore them.
+#[test]
+fn relay_identity_tolerates_trailing_extension_bytes() {
+    let mut msg = from_hex(GOLDEN_RELAY_IDENTITY);
+    msg.extend_from_slice(&[0xa1, 0xb2, 0xc3]);
+    let id = parse_relay_identity(&msg).unwrap();
+    assert_eq!(id.server_version, "1.42.0");
+    assert_eq!(id.name, "gawk home");
+}
+
+#[test]
+fn golden_telemetry_endpoint() {
+    const URL: &str = "https://gawk.example.com/api/telemetry/v1/ingest";
+    let mut got = Vec::new();
+    append_telemetry_endpoint(&mut got, URL).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_TELEMETRY_ENDPOINT);
+    assert_eq!(parse_telemetry_endpoint(&got).unwrap(), URL);
+
+    // Trailing extension bytes tolerated, same contract as RelayIdentity.
+    let mut trailing = from_hex(GOLDEN_TELEMETRY_ENDPOINT);
+    trailing.push(0x7f);
+    assert_eq!(parse_telemetry_endpoint(&trailing).unwrap(), URL);
+}
+
 // The constants the engine's chunking, buffering and refusal limits are built
 // on. A change to any of these is a protocol change, not a tuning knob —
 // update the relay, both native broadcasters and the viewer together.
@@ -448,6 +511,8 @@ fn wire_constants_are_pinned() {
     assert_eq!(TYPE_PARITY_CHUNK, 0x0E);
     assert_eq!(TYPE_RELAY_CAPABILITIES, 0x0F);
     assert_eq!(TYPE_STRIPE_STATE, 0x10);
+    assert_eq!(TYPE_RELAY_IDENTITY, 0x11);
+    assert_eq!(TYPE_TELEMETRY_ENDPOINT, 0x12);
 
     assert_eq!(MAX_DATAGRAM_SIZE, 1200);
     assert_eq!(VIDEO_CHUNK_HEADER_SIZE, 20);
@@ -471,6 +536,9 @@ fn wire_constants_are_pinned() {
     assert_eq!(MAX_PARITY_DATA_CHUNKS, 255);
     assert_eq!(RELAY_CAPABILITIES_SIZE, 5);
     assert_eq!(STRIPE_STATE_SIZE, 5);
+    assert_eq!(MAX_RELAY_IDENTITY_VERSION_LEN, 32);
+    assert_eq!(MAX_RELAY_IDENTITY_NAME_LEN, 64);
+    assert_eq!(MAX_TELEMETRY_ENDPOINT_URL_LEN, 512);
     assert_eq!(MAX_STRIPE_LEGS, 4);
     assert_eq!(CAP_PARITY_CHUNKS, 1 << 0);
     assert_eq!(CAP_STRIPED_DELIVERY, 1 << 1);

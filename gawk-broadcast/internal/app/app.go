@@ -478,20 +478,26 @@ func (a *App) run(ctx context.Context, id string) {
 	if id != "" && id == a.cfg.LastBroadcastID {
 		resumeToken = a.cfg.LastResumeToken
 	}
-	relayURL := a.cfg.Relay()
+	// R37 SP8: the selected server profile is what this broadcast dials — URL
+	// and credentials resolved together, because secrets are per-server (D4).
+	relayURL, publishSecret := a.cfg.Server()
 	ingestURL := a.cfg.Telemetry()
+	telemetryOff := config.TelemetryOff(a.cfg.TelemetryURL)
 	a.mu.Unlock()
 
 	// Settings are read per broadcast, not once at launch, so editing the
 	// telemetry field and pressing Start means what it says. Repointing between
-	// sessions is exactly the window SetURL documents.
+	// sessions is exactly the window SetURL documents. The advertised URL is
+	// cleared first: it belongs to the previous session's relay, and a new
+	// session against a relay that advertises nothing must not inherit it.
+	a.telemetry.SetAdvertisedURL("")
 	a.telemetry.SetURL(ingestURL)
 
 	sess := a.newSess(
 		engine.Config{
 			RelayURL:      relayURL,
 			BroadcastID:   id,
-			PublishSecret: a.cfg.PublishSecret,
+			PublishSecret: publishSecret,
 			ResumeToken:   resumeToken,
 			Origin:        a.cfg.Origin,
 			Media:         a.mediaConfig(),
@@ -545,6 +551,16 @@ func (a *App) run(ctx context.Context, id string) {
 			// reporter then stays inert.
 			OnTelemetryHello: func(h wire.TelemetryHello) {
 				a.telemetry.Begin(h)
+			},
+			// R37 (docs/40 §4.10): the relay names where this session's
+			// diagnostics verify; an advertised URL wins over the configured
+			// one. Unless the user said off — off means off, and no relay may
+			// overrule that.
+			OnTelemetryEndpoint: func(u string) {
+				if telemetryOff {
+					return
+				}
+				a.telemetry.SetAdvertisedURL(u)
 			},
 			OnViewerCount: func(count uint32) {
 				a.onViewerCount(count)

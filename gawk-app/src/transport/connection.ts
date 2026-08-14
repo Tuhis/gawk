@@ -14,6 +14,9 @@ import {
   TYPE_RELIABLE_CARRIER,
   TYPE_STREAM_FRAME,
   TYPE_TELEMETRY_HELLO,
+  TYPE_TELEMETRY_ENDPOINT,
+  TELEMETRY_ENDPOINT_MAX_URL_LEN,
+  parseTelemetryEndpoint,
   WIRE_VERSION,
   WireError,
   parseDecoderConfig,
@@ -153,6 +156,8 @@ export interface ServerStreamCallbacks {
   // telemetry off, sends none, and the correct client behaviour is then to
   // collect nothing rather than to wait for a message that will not come.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
+  // R37 (docs/40 §4.10): the relay-advertised telemetry ingest URL (0x12).
+  onTelemetryEndpoint?: (url: string) => void;
   // R29/R30 (docs/35 §5.3 + §12 finding 1): the relay's capabilities. The
   // relay has sent this on the subscribe route since R29, but the viewer had
   // no branch for it and counted every one as malformed. It is now also
@@ -256,6 +261,7 @@ async function readOneServerStream(
       (head1 !== TYPE_STREAM_FRAME &&
         head1 !== TYPE_RELIABLE_CARRIER &&
         head1 !== TYPE_TELEMETRY_HELLO &&
+        head1 !== TYPE_TELEMETRY_ENDPOINT &&
         head1 !== TYPE_RELAY_CAPABILITIES)
     ) {
       // Unknown stream kind or version: cancel without wedging the accept
@@ -280,6 +286,24 @@ async function readOneServerStream(
       } catch (e) {
         carrier.malformed++;
         log.warn('telemetry hello unreadable; this session will not report:', e);
+      }
+      return;
+    }
+
+    if (head1 === TYPE_TELEMETRY_ENDPOINT) {
+      // R37 (docs/40 §4.10): variable length, bounded by the wire cap; read
+      // to EOF and parse leniently — a malformed endpoint costs only the
+      // advertised destination (the session falls back to D15's precedence),
+      // never the media path.
+      for (;;) {
+        if (total > 5 + TELEMETRY_ENDPOINT_MAX_URL_LEN + 64) break;
+        if (!(await readMore())) break;
+      }
+      try {
+        cb.onTelemetryEndpoint?.(parseTelemetryEndpoint(concatChunks(chunks, total)));
+      } catch (e) {
+        carrier.malformed++;
+        log.warn('telemetry endpoint unreadable; reporting stays on the configured URL:', e);
       }
       return;
     }

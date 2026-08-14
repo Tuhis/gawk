@@ -139,17 +139,6 @@ type Options struct {
 	// authenticated, so unlike an IP or a header it cannot be borrowed.
 	SessionRatePerSec float64
 	SessionBurst      float64
-	// AllowedOrigins enables CORS for the SPLIT-ORIGIN deployment only — an
-	// operator who pointed config.telemetryUrl at a different host (D1). The
-	// default same-origin deployment needs none of this and gets none of it:
-	// an empty list means no CORS headers and no preflight handling at all,
-	// so the common case has no cross-origin surface to reason about.
-	//
-	// Note what this does NOT rescue: `sendBeacon` cannot perform a
-	// preflight, so in split-origin mode the unload flush is lost and only
-	// the periodic one survives. That is a property of the browser, not of
-	// this allowlist, and it is why same-origin is the default.
-	AllowedOrigins []string
 }
 
 // Handler serves POST /v1/ingest.
@@ -208,19 +197,23 @@ func New(opts Options) (*Handler, error) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// CORS, only where an operator explicitly split the origins. Echoing the
-	// request's Origin (rather than "*") keeps the allowlist meaningful and
-	// keeps the response uncacheable across origins.
-	origin := r.Header.Get("Origin")
-	if origin != "" && h.originAllowed(origin) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
-	}
+	// R37 (docs/40 D17): wildcard CORS, unconditionally, on the INGEST
+	// listener only. Any gawk UI's sessions may report to any relay
+	// operator's ingest — that is the cross-relay telemetry feature itself.
+	// Wildcard is safe here because authentication is the in-body HMAC
+	// token: no cookies, no credentialed requests, nothing ambient for a
+	// foreign origin to ride on; every batch still dies without a valid
+	// token for THIS fleet's key. (The pre-R37 origin allowlist was a
+	// second `allowedOrigins` for every operator to forget, and the browsers
+	// it gated could always POST via non-CORS carriers anyway.)
+	//
+	// The unload flush pairs with this server-side half via a CORS-safelisted
+	// content type (text/plain) that sendBeacon can send cross-origin
+	// without the preflight it cannot perform during unload; the envelope
+	// bytes are identical, and this handler has never dispatched on
+	// Content-Type.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if r.Method == http.MethodOptions {
-		if origin == "" || !h.originAllowed(origin) {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
 		w.Header().Set("Access-Control-Allow-Methods", "POST")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.Header().Set("Access-Control-Max-Age", "600")
@@ -272,18 +265,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 204: there is nothing useful to say back, and a body would only be
 	// parsed by a client that should be fire-and-forget.
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// originAllowed reports whether an explicitly-listed origin may post here.
-// Exact match only: a prefix or suffix rule on an origin is how allowlists
-// get bypassed.
-func (h *Handler) originAllowed(origin string) bool {
-	for _, o := range h.opts.AllowedOrigins {
-		if o == origin {
-			return true
-		}
-	}
-	return false
 }
 
 // Validate applies the D15 split: strict envelope, tolerant payload. Exported

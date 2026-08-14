@@ -208,6 +208,20 @@ spec:
               {{- end }}
             - name: GAWK_TELEMETRY_REPORT_INTERVAL
               value: {{ .Values.telemetry.reportInterval | quote }}
+            {{- if .Values.telemetry.advertiseUrl }}
+            # R37 (docs/40 §4.10): the fleet's ingest URL, advertised to
+            # clients in-band (wire 0x12) so foreign-UI sessions report HERE
+            # instead of dying at their home deployment's token check. Names
+            # the FRONTEND ingress (ingest rides it), not this relay.
+            - name: GAWK_TELEMETRY_ADVERTISE_URL
+              value: {{ .Values.telemetry.advertiseUrl | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.config.serverName }}
+            # R37 (docs/40 §4.4): the display name server pickers show for
+            # this relay (wire 0x11 on /echo).
+            - name: GAWK_SERVER_NAME
+              value: {{ .Values.config.serverName | quote }}
             {{- end }}
             # R17 W1: the QUIC stateless reset key (docs/22 Decision 3) —
             # SHARED across all relay pods (that is the whole point), so it

@@ -55,6 +55,7 @@ feature set exists).
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
 | R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; **AS7 on-hardware verification (docs/39 §6) outstanding** and is what decides the milestone ([docs/39](docs/39-linux-app-sharing.md)) |
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
+| R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
 
 ---
 
@@ -3182,6 +3183,46 @@ information architecture stands, this is the usability layer on top of it.
 **Status**: proposed 2026-08-01, not started — no design doc yet. Chunk
 prefix `TU` is reserved for it (every single-letter prefix is claimed;
 `TU` collides with nothing existing).
+
+---
+
+## R37 — Streamlined relay server picker
+
+**Goal**: make a self-hosted (or, someday, managed) `gawk-server` usable
+from **any** gawk UI that permits alternative relays — while keeping the
+join-by-code flow exactly as streamlined as it is today. The mechanism that
+matters most: broadcast IDs are per-relay, so once two relays exist a plain
+code only joins if viewer and broadcaster share one. R37's answer is a
+**`?relay=` query parameter on share and broadcast links** (the link "just
+works" whatever relay the sharer is on, as a session-only override that
+never silently persists), backed by a **server picker reachable from the
+home screen** — a subtle chip opening a panel with a saved-server list in
+localStorage (per-server label, URL, publish secret, and dev cert hash; the
+deployment's own relay pinned and non-removable), a **probe** over the
+existing `/echo` route for validity + latency plus a new relay-identity wire
+message (0x11 — version and operator-set name in-band, since WebTransport
+exposes no response headers), an operator-fetched **server directory**, and
+**saved server profiles in both native broadcaster GUIs**. Gated on both
+sides: `allowCustomRelays` in the frontend's config.js (default on) and the
+relay's existing `allowedOrigins`. **Telemetry follows the relay** (owner
+decision 2026-08-13, D14–D17): the relay advertises its own ingest URL
+in-band (wire 0x12, composing with the frozen 0x0D hello), a
+relay-advertised URL always wins over the deployment's `telemetryUrl`, the
+ingest listener grows wildcard CORS + a CORS-safelisted unload beacon, and
+choosing a relay is the consent — so foreign-relay sessions report to that
+operator's collector instead of being rejected at the home deployment's
+token check. Managed-relay support is groundwork only — the schemas reserve
+extension points, no auth code ships.
+
+**Status**: designed 2026-08-06 (owner decisions D1–D13); revised
+2026-08-13 after the owner's adversarial review (F1–F11 folded in) and
+extended the same day with the telemetry phase (D14–D17). **SP1–SP9 +
+SP11–SP13 implemented 2026-08-14** across all five modules, gates green
+(app 1255 tests/lint/build; relay, telemetry and Linux broadcaster race
+suites; Windows workspace tests + native clippy). Remaining: SP10's manual
+cross-deployment verification pass, and the deferred native-GUI probe
+display — see the implementation-status note in
+[docs/40](docs/40-relay-server-picker.md).
 
 ---
 

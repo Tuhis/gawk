@@ -239,6 +239,74 @@ func TestSetURLRepointsAndDisables(t *testing.T) {
 	}
 }
 
+// R37 (docs/40 §4.10, D15): a relay-advertised ingest endpoint (wire 0x12)
+// wins over the configured one — the relay minted the session's token, so it
+// is the one party that can name a destination where that token verifies.
+func TestAdvertisedURLWinsOverConfigured(t *testing.T) {
+	configured, advertised := newCapture(t), newCapture(t)
+	r := New(Options{URL: configured.srv.URL, Version: "1.2.3"})
+	r.SetAdvertisedURL(advertised.srv.URL)
+	r.Begin(hello(true))
+	r.Report(map[string]any{"encoderFps": 60})
+	r.Flush(false)
+	r.Close()
+
+	if got := advertised.count(); got == 0 {
+		t.Error("the advertised endpoint received nothing")
+	}
+	if got := configured.count(); got != 0 {
+		t.Errorf("the configured endpoint received %d batches while an advertised one was active, want 0", got)
+	}
+
+	// Clearing falls back to the configured endpoint (a later session against
+	// a relay that advertises nothing must not inherit this relay's URL).
+	r2 := New(Options{URL: configured.srv.URL, Version: "1.2.3"})
+	r2.SetAdvertisedURL(advertised.srv.URL)
+	r2.SetAdvertisedURL("")
+	if !r2.Enabled() {
+		t.Fatal("Enabled() false with a configured URL after the advertised one cleared")
+	}
+	r2.Begin(hello(true))
+	r2.Report(map[string]any{"encoderFps": 30})
+	r2.Flush(false)
+	r2.Close()
+	if got := configured.count(); got == 0 {
+		t.Error("clearing the advertised URL did not fall back to the configured endpoint")
+	}
+}
+
+// The docs/40 §4.10 guard, and its release: with no configured endpoint (a
+// foreign relay, nothing set explicitly) a collecting session sends NOTHING —
+// its batches could only be rejected at the home deployment's token check.
+// And because the 0x12 stream races the 0x0D hello, an advertisement arriving
+// *after* the hello must still turn reporting on, buffered recent window
+// included.
+func TestNoEndpointMeansNoRequestsUntilAdvertised(t *testing.T) {
+	c := newCapture(t)
+	r := New(Options{Version: "1.2.3"}) // no configured URL: the foreign-relay shape
+	r.Begin(hello(true))
+	r.Report(map[string]any{"encoderFps": 60})
+	r.Event("resumed", "")
+	r.Flush(false)
+	r.Flush(true)
+	if got := c.count(); got != 0 {
+		t.Fatalf("sent %d batches with no endpoint anywhere, want 0 — they could only be rejected", got)
+	}
+
+	// The late advertisement: hello first, 0x12 second.
+	r.SetAdvertisedURL(c.srv.URL)
+	r.Flush(false)
+	r.Close()
+	batches := c.batches(t)
+	if len(batches) == 0 {
+		t.Fatal("an advertised URL arriving after the hello never turned reporting on")
+	}
+	if len(batches[0].Samples) == 0 || len(batches[0].Events) == 0 {
+		t.Errorf("the pre-advertisement window was lost: samples/events = %d/%d, want the buffered ones",
+			len(batches[0].Samples), len(batches[0].Events))
+	}
+}
+
 // truncateStr() bounds Event Kind/Detail (gawk-telemetry/internal/ingest has
 // the same fix under the name clip() — the two Go modules share no util
 // package, so the fix is duplicated rather than shared). A byte slice can
@@ -507,5 +575,32 @@ func TestPostRetriesOn429ButNotOnOther4xx(t *testing.T) {
 				t.Errorf("status %d: retry = %v, want %v", tc.status, retry, tc.wantRetry)
 			}
 		})
+	}
+}
+
+// R37 (docs/40 §5 G3): the 250 ms sampling floor is security-load-bearing —
+// the hello's interval is relay-chosen and, with 0x12, the destination can be
+// a hostile relay's choice too, so the clamp is what bounds the reflector
+// rate. A relay asking for 0 ms must not make this reporter sample faster
+// than the floor.
+func TestReporterClampsBelowFloorInterval(t *testing.T) {
+	c := newCapture(t)
+	now := time.Unix(1700000000, 0)
+	r := New(Options{URL: c.srv.URL, Version: "1", now: func() time.Time { return now }})
+	h := hello(true)
+	h.ReportIntervalMs = 0 // hostile/misconfigured relay asks for "as fast as possible"
+	r.Begin(h)
+
+	r.Report(map[string]any{"i": 0})
+	now = now.Add(100 * time.Millisecond) // under the floor — must coalesce
+	r.Report(map[string]any{"i": 1})
+	now = now.Add(200 * time.Millisecond) // 300 ms total — past the floor
+	r.Report(map[string]any{"i": 2})
+	r.Flush(false)
+	r.Close()
+
+	b := c.batches(t)[0]
+	if len(b.Samples) != 2 {
+		t.Fatalf("samples = %d, want 2 (the floor must coalesce the 100 ms sample)", len(b.Samples))
 	}
 }

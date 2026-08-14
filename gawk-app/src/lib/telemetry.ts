@@ -177,6 +177,9 @@ export class TelemetryCollector<T> {
   private intervalMin: Record<string, number> | null = null;
   private timer: unknown = null;
   private stopped = false;
+  // R37 (docs/40 D15): the relay-advertised ingest URL (wire 0x12). Wins
+  // over the configured one whenever present.
+  private advertisedUrl: string | null = null;
   // Set once a batch has been abandoned: further failures are not worth
   // logging, and the session's coverage is already imperfect.
   private givenUp = false;
@@ -245,6 +248,10 @@ export class TelemetryCollector<T> {
       this.session = null;
     }
     this.broadcastKey = hello.broadcastKey;
+    // The 250 ms floor is security-load-bearing since R37 (docs/40 §5 G3):
+    // with 0x12 the destination is attacker-influenced, and the hello's
+    // interval is relay-chosen — this clamp is what bounds the reflector
+    // rate a hostile relay can extract. Pinned by its own test.
     this.reportIntervalMs = Math.max(hello.reportIntervalMs, 250);
     this.startedAtMs = this.opts.now();
     this.startedAtPerf = perfNow();
@@ -405,6 +412,32 @@ export class TelemetryCollector<T> {
     this.stopped = true;
   }
 
+  // R37 (docs/40 D15): adopt the relay-advertised ingest URL. Arriving on
+  // its own uni stream it races the 0x0D hello, so this is legal before OR
+  // after begin(); a flush blocked by requireAdvertisedUrl unblocks here.
+  setAdvertisedUrl(url: string): void {
+    this.advertisedUrl = url;
+  }
+
+  // True while batches are actually leaving for a relay-advertised (foreign)
+  // destination — the in-session indicator's disclosure reads this.
+  get reportingToAdvertised(): boolean {
+    return this.active && this.advertisedUrl !== null;
+  }
+
+  // D15, revised semantics (R37 review R3-A/R3-C): an advertised URL wins;
+  // otherwise the configured URL is used on ANY relay — the pre-R37
+  // behavior. Suppressing on a "foreign" relay was tried first and reverted:
+  // the same fleet is legitimately reached through non-default URLs
+  // (direct IP, alternate DNS, a migrated legacy setting), where the
+  // configured collector shares the fleet key and the batches verify fine.
+  // Truly foreign fleets reject the batches at token verification, which is
+  // bounded waste and honest, exactly as before R37. Re-resolved at every
+  // send, so a late 0x12 redirects subsequent batches (G2).
+  private effectiveUrl(): string {
+    return this.advertisedUrl ?? this.opts.url;
+  }
+
   // The visibilitychange → hidden hook. `pagehide`/`unload` are unreliable on
   // mobile; `hidden` is the one that fires, and it is bfcache-compatible — a
   // page that comes back simply keeps collecting under the same identity.
@@ -448,9 +481,12 @@ export class TelemetryCollector<T> {
   }
 
   private async send(body: string, beacon: boolean, attempt: number): Promise<void> {
+    // Re-resolved per attempt (G2): a 0x12 landing between flushes — or
+    // between retries — redirects the rest of the session's batches.
+    const url = this.effectiveUrl();
     let outcome: boolean | TelemetrySendOutcome = false;
     try {
-      outcome = await this.opts.transport(this.opts.url, body, beacon);
+      outcome = await this.opts.transport(url, body, beacon);
     } catch {
       outcome = false;
     }
@@ -509,9 +545,12 @@ function truncateUtf16Safe(s: string, n: number): string {
 const defaultTransport: TelemetryTransport = async (url, body, beacon) => {
   if (beacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     try {
-      // A Blob carries the content type; sendBeacon cannot set headers, which
-      // is the other reason the endpoint is same-origin.
-      if (navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }))) return true;
+      // A Blob carries the content type; sendBeacon cannot set headers.
+      // text/plain is CORS-safelisted (R37, docs/40 D17): no preflight —
+      // which sendBeacon cannot perform during unload — even when the
+      // destination is a foreign relay's ingest. The envelope bytes are
+      // identical; the ingest never dispatched on Content-Type.
+      if (navigator.sendBeacon(url, new Blob([body], { type: 'text/plain;charset=UTF-8' }))) return true;
     } catch {
       // Fall through to fetch — a refused beacon is not a reason to lose the
       // batch when the page is merely hidden rather than closing.

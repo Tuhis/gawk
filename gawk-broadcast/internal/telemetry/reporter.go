@@ -129,7 +129,14 @@ type Reporter struct {
 	// url is Options.URL after any SetURL. It lives under the lock because the
 	// settings UI can repoint it between sessions while the sender goroutine is
 	// still draining the previous one's queue.
-	url              string
+	url string
+	// advertisedURL is the relay-advertised ingest endpoint (R37, wire 0x12,
+	// docs/40 §4.10). Non-empty, it wins over url (D15): the relay minted the
+	// session's token, so it is the one party that can name a destination
+	// where that token verifies. The shells clear it at session start and set
+	// it when the engine dispatches a 0x12 — and never set it when the user
+	// said "off", which is why that rule does not live here.
+	advertisedURL    string
 	token            string
 	broadcastKey     string
 	reportInterval   time.Duration
@@ -189,11 +196,22 @@ func New(opts Options) *Reporter {
 	return r
 }
 
-// Enabled reports whether this reporter can currently send anything.
+// Enabled reports whether this reporter can currently send anything — a
+// configured URL or a relay-advertised one.
 func (r *Reporter) Enabled() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.url != ""
+	return r.effectiveURL() != ""
+}
+
+// effectiveURL is the endpoint batches go to right now: the relay-advertised
+// URL when one exists, the configured one otherwise (docs/40 D15). Callers
+// hold r.mu.
+func (r *Reporter) effectiveURL() string {
+	if r.advertisedURL != "" {
+		return r.advertisedURL
+	}
+	return r.url
 }
 
 // SetURL repoints the reporter, "" turning it off. The settings UI owns this
@@ -210,6 +228,29 @@ func (r *Reporter) SetURL(u string) {
 	r.mu.Unlock()
 }
 
+// SetAdvertisedURL records the relay-advertised ingest endpoint (R37, wire
+// 0x12); "" clears it — a new session against a relay that advertises nothing
+// must not inherit the previous relay's endpoint. Like SetURL it governs what
+// is produced from here on: batches already queued keep the endpoint they
+// were produced for.
+//
+// The 0x12 stream races the 0x0D hello (separate uni streams, no ordering),
+// so this may legitimately arrive after Begin — which is why Begin adopts the
+// session identity even with no endpoint yet, and the endpoint check happens
+// per flush.
+func (r *Reporter) SetAdvertisedURL(u string) {
+	r.mu.Lock()
+	changed := r.advertisedURL != u
+	r.advertisedURL = u
+	r.mu.Unlock()
+	if changed && u != "" {
+		// Out loud, like every other repoint: diagnostics landing at a
+		// different operator's collector should be readable in this process's
+		// own logs, not just inferred from the wire.
+		r.log.Info("relay advertised its telemetry ingest endpoint; reporting there", "url", u)
+	}
+}
+
 // Begin adopts a session identity from wire 0x0D. A reconnect is a NEW relay
 // session with a NEW token, so this closes the previous session with a final
 // batch and starts a fresh one — two transport sessions must never merge into
@@ -221,8 +262,12 @@ func (r *Reporter) Begin(h wire.TelemetryHello) {
 	// after the fact meant reading relay pod logs against stored sessions
 	// (2026-07-27). Each of these lines is that investigation, pre-answered.
 	if !r.Enabled() {
-		r.log.Warn("telemetry hello received but no ingest URL is configured; this session will not report")
-		return
+		// Not a hard stop (R37, docs/40 §4.10): the relay may advertise its
+		// ingest endpoint on its own uni stream (wire 0x12), which can arrive
+		// after this hello. Adopt the identity and collect into the bounded
+		// buffers; Flush sends nothing until an endpoint exists, so with no
+		// advertisement this session still makes zero requests.
+		r.log.Warn("telemetry hello received but no ingest URL is configured; nothing is sent unless the relay advertises an endpoint")
 	}
 	if !h.Enabled {
 		// A fleet with telemetry off. Drop anything buffered and go inert
@@ -309,6 +354,17 @@ func (r *Reporter) Event(kind, detail string) {
 // Flush sends whatever is pending. `final` marks the session's last batch so
 // the service can finalize without waiting out an idle timeout.
 func (r *Reporter) Flush(final bool) {
+	r.mu.Lock()
+	url := r.effectiveURL()
+	r.mu.Unlock()
+	// No endpoint, configured or advertised: nothing could be delivered, so
+	// keep the (bounded, oldest-shed) buffers instead of draining them into a
+	// void — a 0x12 advertisement arriving moments from now still gets the
+	// session's recent window. With none ever arriving this is the docs/40
+	// §4.10 guard: batches that could only be rejected are never sent.
+	if url == "" {
+		return
+	}
 	batch, ok := r.take(final)
 	if !ok {
 		return
@@ -327,7 +383,6 @@ func (r *Reporter) Flush(final bool) {
 	if crossed {
 		r.truncated = true
 	}
-	url := r.url
 	r.mu.Unlock()
 
 	if crossed {
@@ -336,9 +391,6 @@ func (r *Reporter) Flush(final bool) {
 		// empty and return early, so the marker would never reach the wire and
 		// a clipped session would read as one that simply ended here.
 		r.Event("telemetry-budget-exhausted", "events only from here")
-	}
-	if url == "" {
-		return
 	}
 	r.enqueue(outbound{url: url, body: body})
 }

@@ -67,6 +67,8 @@ import {
   TYPE_RESUME_TOKEN,
   TYPE_RELAY_CAPABILITIES,
   TYPE_TELEMETRY_HELLO,
+  TYPE_TELEMETRY_ENDPOINT,
+  parseTelemetryEndpoint,
   TYPE_VIEWER_COUNT,
   VIEWER_COUNT_SIZE,
   type TelemetryHelloMessage,
@@ -271,6 +273,7 @@ export interface BroadcastCallbacks {
   // collect nothing. Fires once per transport session, so an auto-resume
   // delivers a fresh identity for the new session.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
+  onTelemetryEndpoint?: (url: string) => void;
 }
 
 function roundDownToEven(n: number): number {
@@ -626,6 +629,14 @@ export class BroadcastPipeline {
         case TYPE_TELEMETRY_HELLO: {
           const hello = parseTelemetryHello(data);
           if (!this.stopping) this.cb.onTelemetryHello?.(hello);
+          break;
+        }
+        // R37 (docs/40 §4.10): where this session's telemetry should go.
+        // Same route as the hello (main-thread pipeline; the worker shell
+        // forwards neither — collection begins only where a hello lands).
+        case TYPE_TELEMETRY_ENDPOINT: {
+          const url = parseTelemetryEndpoint(data);
+          if (!this.stopping) this.cb.onTelemetryEndpoint?.(url);
           break;
         }
         // R29 (docs/34 §4.4): the fleet's parity level. A relay predating R29

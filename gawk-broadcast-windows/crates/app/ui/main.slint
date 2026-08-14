@@ -3,7 +3,7 @@
 // gawk accent shared with gawk-app so the two broadcasters read as one
 // product. One window; window-is-the-app.
 
-import { Button, LineEdit, ScrollView, CheckBox } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ScrollView, CheckBox } from "std-widgets.slint";
 
 export struct WindowRow {
     hwnd: int,
@@ -126,6 +126,12 @@ export component MainWindow inherits Window {
 
     // ----- settings -----
     in-out property <bool> show-settings: false;
+    // R37 SP9 server profiles: index 0 is always the built-in default relay,
+    // then one entry per saved custom server. The shell owns the mapping.
+    in property <[string]> server-labels: ["Default relay"];
+    in-out property <int> set-server: 0;
+    in property <bool> server-is-custom: false;
+    in-out property <string> set-server-name: "";
     in-out property <string> set-relay: "";
     in-out property <string> set-app-url: "";
     in-out property <string> set-secret: "";
@@ -156,6 +162,9 @@ export component MainWindow inherits Window {
     callback copy-code();
     callback copy-diagnostics();
     callback settings-edited();
+    callback server-selected();
+    callback add-server();
+    callback remove-server();
     callback switch-to-system-audio();
     callback open-link(string);
     callback quit-confirmed();
@@ -491,15 +500,64 @@ export component MainWindow inherits Window {
                 if root.show-settings: VerticalLayout {
                     spacing: 8px;
                     Text {
-                        text: "Relay URL (blank = the default relay)";
+                        text: "Server";
                         color: Palette.muted;
                         font-size: 11px;
                     }
-                    LineEdit {
-                        text <=> root.set-relay;
-                        enabled: !root.busy;
-                        edited => {
-                            root.settings-edited();
+                    HorizontalLayout {
+                        spacing: 6px;
+                        ComboBox {
+                            model: root.server-labels;
+                            current-index <=> root.set-server;
+                            enabled: !root.busy;
+                            selected => {
+                                root.server-selected();
+                            }
+                        }
+                        Button {
+                            text: "Add";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.add-server();
+                            }
+                        }
+                        if root.server-is-custom: Button {
+                            text: "Remove";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.remove-server();
+                            }
+                        }
+                    }
+                    // The default's identity is not editable (its URL is the
+                    // build's pinned fleet); only custom servers expose name
+                    // and URL. The secret below edits whichever is selected —
+                    // the default's credential slot stays editable (F4).
+                    if root.server-is-custom: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Server name";
+                            color: Palette.muted;
+                            font-size: 11px;
+                        }
+                        LineEdit {
+                            text <=> root.set-server-name;
+                            enabled: !root.busy;
+                            edited => {
+                                root.settings-edited();
+                            }
+                        }
+                        Text {
+                            text: "Relay URL";
+                            color: Palette.muted;
+                            font-size: 11px;
+                        }
+                        LineEdit {
+                            text <=> root.set-relay;
+                            enabled: !root.busy;
+                            edited => {
+                                root.settings-edited();
+                            }
                         }
                     }
                     Text {

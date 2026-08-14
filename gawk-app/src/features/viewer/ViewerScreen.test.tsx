@@ -1021,61 +1021,95 @@ describe('ViewerScreen audio UI (R15)', () => {
   });
 });
 
-// The viewer half of the developer server override. The broadcaster has had
-// "Development settings" in its settings panel since v0.2; the viewer read the
-// same store but offered no way to reach it, so a dev build could only be
-// pointed at another relay by first visiting #/broadcast — impossible when the
-// viewer is opened straight from a share link, which is exactly the on-device
-// case (an iPhone joining a code against a laptop's relay).
-describe('viewer development settings', () => {
+// R37 (docs/40 §4.3): the server picker replaced the dev-only relay panel.
+// The viewer needs it reachable in-session because a viewer is usually opened
+// straight from a share link (an iPhone joining a code against a laptop's
+// relay never passes through #/broadcast). Selecting a server is a deliberate
+// teardown + reconnect: useViewerConnection depends on the store's resolved
+// serverUrl.
+describe('viewer server picker', () => {
   const openMenu = () =>
     fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
 
   beforeEach(() => {
     devEnv.value = true;
-    localStorage.removeItem('gawk.serverUrl');
-    localStorage.removeItem('gawk.certHashHex');
-    useTransportStore.setState({ serverUrl: 'https://localhost:4433', certHashHex: '' });
+    delete window.__GAWK_CONFIG__;
+    localStorage.removeItem('gawk.servers');
+    localStorage.removeItem('gawk.selectedServer');
+    const s = useTransportStore.getState();
+    s.setSessionOverride(null);
+    s.reloadFromStorage();
+    s.selectServer('default');
   });
 
-  it('is not offered outside a dev build', async () => {
+  afterEach(() => {
+    delete window.__GAWK_CONFIG__;
+  });
+
+  // D6: the deployment-level gate removes the whole surface.
+  it('is not offered when the deployment disallows custom relays', async () => {
+    window.__GAWK_CONFIG__ = { allowCustomRelays: false };
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    openMenu();
+    expect(screen.queryByText('Server…')).toBeNull();
+  });
+
+  // F1: the picker is a production surface — offered outside dev builds too;
+  // only the cert-hash field stays dev-gated.
+  it('is offered outside a dev build, without the cert-hash field', async () => {
     devEnv.value = false;
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     openMenu();
-    expect(screen.queryByText(/Relay server/)).toBeNull();
+    fireEvent.click(screen.getByText('Server…'));
+    expect(screen.getByRole('dialog', { name: 'Server picker' })).toBeTruthy();
+    fireEvent.click(screen.getByText('Add a server'));
+    expect(screen.getByLabelText('Server URL')).toBeTruthy();
+    expect(screen.queryByLabelText(/Dev cert hash/)).toBeNull();
   });
 
-  it('reconnects to the new relay when applied, and persists it', async () => {
+  it('reconnects to a newly added, selected server, and persists it', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(sessions[0].url).toBe('https://localhost:4433');
 
     openMenu();
-    fireEvent.click(screen.getByText(/Relay server/));
-
+    fireEvent.click(screen.getByText('Server…'));
+    fireEvent.click(screen.getByText('Add a server'));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Test relay' } });
     fireEvent.change(screen.getByLabelText('Server URL'), {
       target: { value: 'https://api.gawk.example:4433' },
     });
     fireEvent.change(screen.getByLabelText(/Dev cert hash/), {
       target: { value: 'abc123' },
     });
-    fireEvent.click(screen.getByText('Connect'));
+    fireEvent.click(screen.getByText('Save'));
 
-    // A settings change is a deliberate teardown + reconnect, exactly like an
-    // R19 delivery-mode flip — not a value the next reconnect happens to pick up.
+    // Adding never selects (D2's explicit-act rule) — the select is its own
+    // click, and THAT is the deliberate teardown + reconnect.
+    expect(sessions).toHaveLength(1);
+    fireEvent.click(screen.getByRole('option', { name: /Test relay/ }));
+
     await waitFor(() => expect(sessions).toHaveLength(2));
     expect(sessions[1].url).toBe('https://api.gawk.example:4433');
     expect((sessions[1].opts as { certHashHex: string }).certHashHex).toBe('abc123');
-    // Persisted through the same store the broadcaster writes, so the two
-    // surfaces cannot disagree about which relay this build talks to.
-    expect(localStorage.getItem('gawk.serverUrl')).toBe('https://api.gawk.example:4433');
+    // Persisted through the same store the broadcaster reads, as a saved
+    // entry + selection (R37 replaced the single gawk.serverUrl key).
+    const stored = JSON.parse(localStorage.getItem('gawk.servers')!) as Array<{
+      id: string;
+      url: string;
+      certHashHex: string;
+    }>;
+    const added = stored.find((e) => e.url === 'https://api.gawk.example:4433');
+    expect(added).toBeTruthy();
+    expect(added!.certHashHex).toBe('abc123');
+    expect(localStorage.getItem('gawk.selectedServer')).toBe(added!.id);
   });
 
-  // The situation the panel exists for: a dev build aimed at a relay that will
-  // not answer. It must be reachable *while the error card is up* — the first
-  // implementation shared the card's full-inset wrapper and z-index, so the
-  // later-in-DOM error card covered it and the panel was unreachable exactly
+  // The situation the picker must cover: a viewer aimed at a relay that will
+  // not answer. It must be reachable *while the error card is up* — the old
+  // dev panel's first implementation was covered by the error card exactly
   // here. jsdom cannot see stacking; this pins the requirement behaviourally,
   // and the layering itself is verified in a real browser.
   it('is reachable while the connection-failed card is showing', async () => {
@@ -1084,28 +1118,38 @@ describe('viewer development settings', () => {
     await waitFor(() => expect(screen.getByText('Streamer offline')).toBeTruthy());
 
     fireEvent.contextMenu(screen.getByText('error').closest('div')!.parentElement!);
-    fireEvent.click(screen.getByText(/Relay server/));
+    fireEvent.click(screen.getByText('Server…'));
 
-    expect(screen.getByLabelText('Server URL')).toBeTruthy();
-    // The error card is still mounted underneath — the panel is layered over it,
-    // not swapped for it.
+    expect(screen.getByRole('dialog', { name: 'Server picker' })).toBeTruthy();
+    // The error card is still mounted underneath — the panel is layered over
+    // it, not swapped for it.
     expect(screen.getByText('Streamer offline')).toBeTruthy();
   });
 
-  it('closes without reconnecting when cancelled', async () => {
+  it('closes without reconnecting when dismissed', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
 
     openMenu();
-    fireEvent.click(screen.getByText(/Relay server/));
-    fireEvent.change(screen.getByLabelText('Server URL'), {
-      target: { value: 'https://nope.example:4433' },
-    });
-    fireEvent.click(screen.getByText('Cancel'));
+    fireEvent.click(screen.getByText('Server…'));
+    fireEvent.click(screen.getByText('Done'));
 
-    expect(screen.queryByLabelText('Server URL')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Server picker' })).toBeNull();
     expect(sessions).toHaveLength(1);
     expect(useTransportStore.getState().serverUrl).toBe('https://localhost:4433');
+  });
+
+  // F2: the in-session indicator renders on this screen for a non-default
+  // resolution — and not at all on the default server.
+  it('shows the in-session indicator only on a non-default server', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(screen.queryByTestId('server-indicator')).toBeNull();
+
+    act(() => {
+      useTransportStore.getState().setSessionOverride('https://link.example:4433');
+    });
+    expect(screen.getByTestId('server-indicator').textContent).toContain('link.example:4433');
   });
 });
 

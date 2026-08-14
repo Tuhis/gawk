@@ -1038,3 +1038,35 @@ func maximalRelayLines(t *testing.T, sessionID string) [][]byte {
 				}}}),
 	}
 }
+
+// R37 (docs/40 D17 / SP12): wildcard CORS lives on the INGEST listener only.
+// The read surface stays never-public and must serve no CORS headers at all —
+// a browser on a foreign origin gets nothing here, preflight included. This
+// pins the split so a future "just add CORS to the mux" change fails loudly.
+func TestReadSurfaceServesNoCORS(t *testing.T) {
+	f := newFixture(t)
+	srv := httptest.NewServer(f.api.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/v1/sessions", nil)
+	req.Header.Set("Origin", "https://any-ui.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("read listener answered CORS (allow-origin %q); it must serve none", got)
+	}
+
+	getReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/sessions", nil)
+	getReq.Header.Set("Origin", "https://any-ui.example")
+	resp, err = http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("read listener GET carried allow-origin %q; it must serve none", got)
+	}
+}

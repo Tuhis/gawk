@@ -11,12 +11,12 @@ Not a design doc, but in this directory:
 | File | What |
 |---|---|
 | [`self-hosting.md`](self-hosting.md) | **Run your own gawk** — prerequisites, TLS, install, cluster mode, troubleshooting |
-| [`gotchas.md`](gotchas.md) | Consolidated gotchas, 112 of them, each of which cost real debugging time |
+| [`gotchas.md`](gotchas.md) | Consolidated gotchas, 115 of them, each of which cost real debugging time |
 | [`implementation-tasks.md`](implementation-tasks.md) | The v0.x server design + chunk breakdown (A1–D3) |
 
 ## Where to start
 
-Reading all thirty-nine is not the point. Three give you the shape of the system:
+Reading all forty is not the point. Three give you the shape of the system:
 
 - [`03`](03-single-client-e2e.md) — the end-to-end path: hub, publish,
   subscribe, and the wire format everything else is built on.
@@ -96,6 +96,7 @@ Reading all thirty-nine is not the point. Three give you the shape of the system
 | [`11`](11-cross-browser-compatibility.md) | Cross-browser: Firefox ↔ Chrome H.264 |
 | [`29`](29-terms-and-conditions.md) | R23 — Terms & conditions |
 | [`31`](31-quick-start-links.md) | R26 — Quick-start broadcast links |
+| [`40`](40-relay-server-picker.md) | R37 — Streamlined relay server picker |
 
 ## Testing, telemetry, operations
 

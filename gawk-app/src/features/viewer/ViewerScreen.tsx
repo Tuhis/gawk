@@ -16,7 +16,7 @@ import {
   StatsIcon,
 } from '../../ui/Icons';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
-import { isDevEnvironment } from '../../config';
+import { allowCustomRelays } from '../../config';
 import { StatsOverlay } from './StatsOverlay';
 import { ViewerSettingsPanel } from './ViewerSettingsPanel';
 import {
@@ -39,12 +39,14 @@ import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscre
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
 import { fmtWatching } from '../../lib/format';
+import { buildViewLink } from '../../lib/shareLink';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
 import type { ViewerErrorKind } from '../../transport/viewer-session';
 import type { PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import { HOME } from '../../routing';
-import { useTransportStore } from '../../state/transportStore';
+import { ServerIndicator } from '../servers/ServerIndicator';
+import { ServerPickerPanel } from '../servers/ServerPickerPanel';
 
 const CONTROL_IDLE_MS = 3000;
 
@@ -218,29 +220,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // Lowest latency is 'off', every other preset is 'adaptive'.
   const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
 
-  // Developer-only relay override, the viewer counterpart of the broadcaster's
-  // "Development settings" panel. Both write the same `transportStore`, so a dev
-  // build cannot end up with the two surfaces pointed at different relays — what
-  // was missing was only a way to reach it from here, which matters because a
-  // viewer is usually opened straight from a share link (an iPhone joining a
-  // code against a laptop's relay never passes through #/broadcast).
-  const showDevSettings = isDevEnvironment();
-  const storedServerUrl = useTransportStore((s) => s.serverUrl);
-  const storedCertHash = useTransportStore((s) => s.certHashHex);
-  const setStoredServerUrl = useTransportStore((s) => s.setServerUrl);
-  const setStoredCertHash = useTransportStore((s) => s.setCertHashHex);
-  // Draft state: the store is only written on Connect, because writing it live
-  // would reconnect on every keystroke (the session effect depends on it).
-  const [devDraft, setDevDraft] = useState<{ url: string; hash: string } | null>(null);
-  const openDevSettings = useCallback(() => {
-    setDevDraft({ url: storedServerUrl, hash: storedCertHash });
-  }, [storedServerUrl, storedCertHash]);
-  const applyDevSettings = useCallback(() => {
-    if (!devDraft) return;
-    setStoredServerUrl(devDraft.url.trim());
-    setStoredCertHash(devDraft.hash.trim());
-    setDevDraft(null);
-  }, [devDraft, setStoredServerUrl, setStoredCertHash]);
+  // R37 (docs/40 §4.3, F1): the picker replaced the dev-only relay override
+  // panel — the picker is a production surface (gated by allowCustomRelays at
+  // the menu item), and selecting a server is a deliberate reconnect because
+  // useViewerConnection depends on the store's resolved serverUrl.
+  const [showServerPicker, setShowServerPicker] = useState(false);
   const setPlayoutMode = useCallback((next: PlayoutMode) => {
     setPlayoutModeState(() => {
       try {
@@ -671,7 +655,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   }, []);
 
   const copyLink = useCallback(() => {
-    const link = `${window.location.origin}${window.location.pathname}#/view/${broadcastId}`;
+    const link = buildViewLink(broadcastId);
     void navigator.clipboard?.writeText(link).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
@@ -767,9 +751,11 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       : []),
     { label: 'Playback settings…', onSelect: () => setShowSettings(true) },
     { label: 'Copy link', onSelect: copyLink },
-    // Dev builds only, same gate as the broadcaster's panel — a real viewer
-    // never sees it and cannot be talked into repointing its relay.
-    ...(showDevSettings ? [{ label: 'Relay server (dev)…', onSelect: openDevSettings }] : []),
+    // R37 (docs/40 §4.3): the server picker, a production surface gated by
+    // the deployment's allowCustomRelays flag (D6).
+    ...(allowCustomRelays()
+      ? [{ label: 'Server…', onSelect: () => setShowServerPicker(true) }]
+      : []),
     // R23 (docs/29): terms reachable from the viewer without adding chrome.
     // Opens in a new tab so reading the terms never tears down the live
     // stream (a hash change would unmount the viewer).
@@ -823,44 +809,15 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         />
       )}
 
-      {/* Developer-only relay override. Applying is a deliberate reconnect:
-          useViewerConnection depends on these store values, so Connect tears the
-          session down and dials the new address. */}
-      {devDraft && (
-        <div className={styles.devOverlay}>
-          <GlassPanel className={styles.devPanel}>
-            <h2 className={styles.cardTitle}>Relay server (dev)</h2>
-            <label className={styles.devField}>
-              <span>Server URL</span>
-              <input
-                value={devDraft.url}
-                onChange={(e) => setDevDraft((d) => (d ? { ...d, url: e.target.value } : d))}
-                placeholder="https://localhost:4433"
-                spellCheck={false}
-                autoCapitalize="off"
-                autoCorrect="off"
-              />
-            </label>
-            <label className={styles.devField}>
-              <span>Dev cert hash (hex; empty for a real cert)</span>
-              <input
-                value={devDraft.hash}
-                onChange={(e) => setDevDraft((d) => (d ? { ...d, hash: e.target.value } : d))}
-                placeholder="cert_hash_hex from the server startup log"
-                spellCheck={false}
-                autoCapitalize="off"
-                autoCorrect="off"
-              />
-            </label>
-            <div className={styles.devActions}>
-              <Button variant="ghost" onClick={() => setDevDraft(null)}>
-                Cancel
-              </Button>
-              <Button onClick={applyDevSettings}>Connect</Button>
-            </div>
-          </GlassPanel>
-        </div>
-      )}
+      {/* R37 (docs/40 §4.3): the server picker (replaces the dev-only relay
+          override panel). Selecting a server is a deliberate reconnect:
+          useViewerConnection depends on the store's resolved values. */}
+      {showServerPicker && <ServerPickerPanel onClose={() => setShowServerPicker(false)} />}
+
+      {/* R37 (docs/40 §4.3 F2): the in-session server indicator — renders
+          only when this session is not on the deployment's own relay (or a
+          link's relay was quietly ignored). */}
+      <ServerIndicator />
 
       {(status === 'connecting' || status === 'ended' || status === 'error') && (
         <div className={styles.center}>

@@ -121,6 +121,26 @@ type Config struct {
 	// milliseconds can carry and a client can honour.
 	TelemetryReportInterval time.Duration
 
+	// TelemetryAdvertiseURL is the fleet's telemetry ingest URL a
+	// TelemetryEndpoint (wire 0x12) advertises to clients (R37, docs/40
+	// §4.10 D14): it names infrastructure the relay does NOT itself serve —
+	// ingest rides the operator's frontend Ingress — so it can only be
+	// configured, never derived. Validated at parse (an invalid URL fails
+	// startup, not a silent no-send); empty means nothing is advertised.
+	// Only meaningful while telemetry is enabled (the key is present).
+	TelemetryAdvertiseURL string
+
+	// ServerName is the operator display name a RelayIdentity (wire 0x11)
+	// carries on /echo sessions (R37, docs/40 §4.4) so server pickers can
+	// label this relay. Validated at parse against the wire limits (UTF-8,
+	// ≤ wire.MaxRelayIdentityNameLen bytes); empty means unset.
+	ServerName string
+
+	// ReleaseVersion is the build version stamped by main (-ldflags), not a
+	// flag — carried here so the transport can put it in RelayIdentity
+	// without importing main.
+	ReleaseVersion string
+
 	// StatelessResetKey is the 32-byte QUIC stateless reset key (R17 W1,
 	// docs/22 Decision 3), decoded from 64 hex chars. Shared across every
 	// relay pod, it lets ANY pod answer packets for a connection it doesn't
@@ -286,6 +306,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"R28 telemetry session-token HMAC key as 64 hex chars (32 bytes), shared with the gawk-telemetry service; empty disables telemetry entirely (no hello is sent)")
 	telemetryReportInterval := fs.String("telemetry-report-interval", env("GAWK_TELEMETRY_REPORT_INTERVAL", "2s"),
 		"sampling cadence the relay asks telemetry clients to use")
+	telemetryAdvertiseURL := fs.String("telemetry-advertise-url", env("GAWK_TELEMETRY_ADVERTISE_URL", ""),
+		"absolute https URL of this fleet's telemetry ingest, advertised to clients in-band (R37 wire 0x12); empty advertises nothing")
+	serverName := fs.String("server-name", env("GAWK_SERVER_NAME", ""),
+		"operator display name advertised to server pickers over /echo (R37 wire 0x11); empty leaves the relay unnamed")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -408,6 +432,21 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 			*telemetryReportInterval, MinTelemetryReportInterval, MaxTelemetryReportInterval)
 	}
 
+	if *telemetryAdvertiseURL != "" {
+		// The wire package owns the one URL rule (absolute https, bounded);
+		// failing startup here is SP11's fail-fast acceptance criterion.
+		if _, err := wire.AppendTelemetryEndpoint(nil, *telemetryAdvertiseURL); err != nil {
+			return Config{}, fmt.Errorf("invalid telemetry-advertise-url %q: %w", *telemetryAdvertiseURL, err)
+		}
+	}
+	if *serverName != "" {
+		// Same source of truth for the name limits ("x" stands in for the
+		// version, which main stamps later).
+		if _, err := wire.AppendRelayIdentity(nil, wire.RelayIdentity{ServerVersion: "x", Name: *serverName}); err != nil {
+			return Config{}, fmt.Errorf("invalid server-name %q: %w", *serverName, err)
+		}
+	}
+
 	return Config{
 		Addr:           *addr,
 		CertFile:       *certFile,
@@ -436,6 +475,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		LiveEdgeAudioOnReliableStream: *liveEdgeAudioOnReliableStream,
 		ParityDefault:                 parityDef,
 		StripedDelivery:               *stripedDelivery,
+
+		TelemetryAdvertiseURL: *telemetryAdvertiseURL,
+		ServerName:            *serverName,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,

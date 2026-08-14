@@ -761,6 +761,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// telemetry failure must never cost a broadcast, so it is the one that
 	// cannot abort setup.
 	pub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleBroadcaster, log))
+	// R37 (docs/40 §4.10): where this session's telemetry should go —
+	// composes with the hello, never sent on /internal/subscribe.
+	s.sendTelemetryEndpoint(sess, log)
 
 	log.Info("publisher session started")
 
@@ -1143,6 +1146,8 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// the delivery ack — a subscriber whose hello fails still watches, it just
 	// never reports, which the dashboard shows as unknown rather than ok.
 	sub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleViewer, log))
+	// R37 (docs/40 §4.10): same endpoint advertisement as the publish route.
+	s.sendTelemetryEndpoint(sess, log)
 
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
@@ -1331,6 +1336,10 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 	// while still logging real (off-pod) echo diagnostic use normally.
 	quiet := s.cfg.QuietProbeLogs && isLoopbackAddr(r.RemoteAddr)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "echo")
+	// R37 (docs/40 §4.4): identity for probes, off the echo loop's critical
+	// path — a client that grants no uni credit or never reads must not be
+	// able to wedge this handler (SP5).
+	go s.sendRelayIdentity(sess, log)
 	if !quiet {
 		log.Info("session started")
 	}

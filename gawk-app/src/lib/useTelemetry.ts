@@ -24,6 +24,9 @@ import { TelemetryCollector, type TelemetryRole } from './telemetry';
 export function useTelemetryCollector<T>(role: TelemetryRole): TelemetryCollector<T> {
   const ref = useRef<TelemetryCollector<T> | null>(null);
   if (ref.current === null) {
+    // R37 (docs/40 D15, revised per review R3-A/R3-C): the configured URL
+    // is the fallback on ANY relay; a relay-advertised 0x12 wins when it
+    // arrives (collector.setAdvertisedUrl).
     ref.current = new TelemetryCollector<T>({ url: getTelemetryUrl(), role });
   }
   const collector = ref.current;

@@ -171,18 +171,24 @@ impl Reporter {
     /// Adopts a session identity. A second hello finishes the previous
     /// session first (final batch, seq restart) — reconnects mint fresh
     /// tokens.
+    ///
+    /// A hello with no ingest URL yet still adopts the session: the R37
+    /// TelemetryEndpoint (0x12) rides its OWN uni stream and can land after
+    /// the hello — refusing here would lose that race half the time (the
+    /// docs/22 finding 9 lesson). Until a URL arrives nothing is sent and
+    /// pending buffers stay bounded; if none ever does (the §4.10
+    /// foreign-relay guard), the session ends having sent nothing.
     pub fn begin(&self, hello: &Hello) {
         self.finish();
         let mut inner = self.inner.lock().unwrap();
-        if inner.url.is_none() {
-            eprintln!(
-                "telemetry hello received but no ingest URL is configured; this session will not report"
-            );
-            return;
-        }
         if !hello.enabled {
             eprintln!("relay reports fleet telemetry is off; this session will not report");
             return;
+        }
+        if inner.url.is_none() {
+            eprintln!(
+                "telemetry hello received with no ingest URL resolved; nothing is sent unless the relay advertises one"
+            );
         }
         let now_us = self.clock.now_us();
         inner.session = Some(SessionState {
@@ -510,10 +516,16 @@ mod tests {
     fn inert_without_url_and_when_fleet_disabled() {
         let clock = Arc::new(FakeClock::default());
         let r = Reporter::new("", clock.clone());
-        // No URL: begin refuses the session.
+        // No URL: the session is adopted (a 0x12 may still arrive) but
+        // nothing is ever queued for send — the §4.10 guard's reporter half.
         r.begin(&hello());
         r.report(Stats::default());
+        r.event("resuming", "");
         r.finish(); // must not panic or send (no server exists to hit)
+        assert!(
+            r.send.queue.lock().unwrap().is_empty(),
+            "no URL ever resolved: zero batches queued"
+        );
 
         // URL set but fleet disabled.
         let r = Reporter::new("", clock);
@@ -523,6 +535,24 @@ mod tests {
             ..hello()
         });
         assert!(r.inner.lock().unwrap().session.is_none());
+    }
+
+    // The R37 settle-order race (docs/40 §4.10): the 0x12 endpoint rides its
+    // own uni stream and can arrive AFTER the 0x0D hello. The hello must not
+    // refuse the session just because no URL has resolved yet.
+    #[test]
+    fn an_advertised_url_arriving_after_the_hello_still_reports() {
+        let clock = Arc::new(FakeClock::default());
+        let (url, rx) = serve(204, 1);
+        let r = Reporter::new("", clock.clone());
+        r.begin(&hello()); // hello first, no URL resolved yet
+        r.report(Stats::default());
+        r.set_url(Some(url)); // the 0x12 lands
+        r.finish();
+        let body = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["final"], true);
+        assert_eq!(v["samples"].as_array().unwrap().len(), 1);
     }
 
     #[test]

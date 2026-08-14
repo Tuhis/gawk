@@ -116,11 +116,13 @@ func run() error {
 		log.Info("recovered orphaned sessions from a previous run", "count", n)
 	}
 
+	// R37 (docs/40 D17): ingest CORS is wildcard and unconditional now; the
+	// old -cors-origins allowlist is parsed but inert (see the deprecation
+	// warning below) so existing deployments upgrade without a flag change.
 	handler, err := ingest.New(ingest.Options{
 		Key: cfg.key, Sink: writer, Log: log,
 		RatePerSec: cfg.rateLimit, Burst: cfg.rateBurst,
 		SessionRatePerSec: cfg.sessionRate, SessionBurst: cfg.sessionBurst,
-		AllowedOrigins: cfg.corsOrigins,
 	})
 	if err != nil {
 		return err
@@ -149,11 +151,10 @@ func run() error {
 		// Whether the code -> broadcast-key lookup is available. The key itself
 		// is never logged; only that one was supplied.
 		"resolve_enabled", len(cfg.statsKey) > 0,
-		// Non-empty means an operator split the origins; the same-origin
-		// default has no cross-origin surface, and the unload beacon only
-		// works in that default.
-		"cors_origins", len(cfg.corsOrigins),
 	)
+	if len(cfg.corsOrigins) > 0 {
+		log.Warn("-cors-origins is deprecated and ignored since R37: the ingest listener serves wildcard CORS (docs/40 D17)")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

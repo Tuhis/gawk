@@ -15,12 +15,15 @@ import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
 import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
-import { useTransportStore } from '../../state/transportStore';
-import { isDevEnvironment, requiresPublishSecret } from '../../config';
+import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
+import { allowCustomRelays, requiresPublishSecret } from '../../config';
+import { ServerIndicator } from '../servers/ServerIndicator';
+import { ServerPickerPanel } from '../servers/ServerPickerPanel';
 import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import type { TelemetryHelloMessage } from '../../transport/wire';
+import { buildViewLink } from '../../lib/shareLink';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -59,6 +62,14 @@ function selectionLabel(selection: ResolutionSelection): string {
   return selection === 'native' ? 'native' : `${selection}p`;
 }
 
+function serverHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 // The production broadcaster (docs/10 J5): preview-hero, controls float, and
 // R3/R4 feedback as quiet badges. Reuses BroadcastPipeline and the reclaim→mint
 // fallback verbatim; LadderPicker drops into the gear panel. Server URL / cert
@@ -83,6 +94,9 @@ export function BroadcasterScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [secretPrompt, setSecretPrompt] = useState(false);
   const [secretDraft, setSecretDraft] = useState('');
+  // R37 (docs/40 §4.2 F3): set when a secret-less connect to a non-default
+  // relay failed — the retry path out of an otherwise opaque CONNECT 401.
+  const [secretPromptNote, setSecretPromptNote] = useState<string | null>(null);
   // R23 (docs/29): one-time terms acknowledgment, shown before the first
   // broadcast's transport connect (ahead of the secret prompt below).
   const [termsPrompt, setTermsPrompt] = useState(false);
@@ -124,12 +138,10 @@ export function BroadcasterScreen() {
   const supportMatrix = useSupportMatrix();
   const codecMatrices = useCodecMatrices(settingsOpen);
 
-  // Developer-only settings (localhost). Wired straight to the transport store.
-  const showDevSettings = isDevEnvironment();
-  const serverUrl = useTransportStore((s) => s.serverUrl);
-  const certHashHex = useTransportStore((s) => s.certHashHex);
-  const setServerUrl = useTransportStore((s) => s.setServerUrl);
-  const setCertHashHex = useTransportStore((s) => s.setCertHashHex);
+  // R37 (docs/40 §4.3, F1): the server picker replaced the dev-only inline
+  // panel; the resolved server renders in the settings section for context.
+  const [showServerPicker, setShowServerPicker] = useState(false);
+  const resolvedServerUrl = useTransportStore((s) => s.serverUrl);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -206,6 +218,16 @@ export function BroadcasterScreen() {
       onTelemetryHello: (hello: TelemetryHelloMessage) => {
         telemetry.begin(hello);
       },
+      // R37 (docs/40 D15/D16): the relay-advertised ingest URL; the
+      // disclosure flips only when this session is on a foreign relay.
+      onTelemetryEndpoint: (url: string) => {
+        telemetry.setAdvertisedUrl(url);
+        // URL-keyed, not id-keyed (G3): a saved duplicate of the deployment's
+        // own relay is not foreign.
+        if (!resolvedUrlIsDefault()) {
+          useTransportStore.getState().setForeignTelemetryActive(true);
+        }
+      },
     });
 
     const { resolutionSelection: res, framerateSelection } =
@@ -269,9 +291,29 @@ export function BroadcasterScreen() {
       // Same stage reset as the reclaim catch above: no onEnded follows a
       // start() rejection.
       setSourceStream(null);
+      pipelineRef.current = null;
+      // R37 (docs/40 §4.2 F3): a connect-phase failure against a non-default
+      // relay with no secret presented is offered as "may require a publish
+      // secret" + retry — the relay answers a missing secret with a 401 the
+      // browser surfaces opaquely, so without this the foreign-secured-relay
+      // case dead-ends indistinguishable from "unreachable".
+      const resolved = useTransportStore.getState();
+      if (
+        e instanceof BroadcastStartError &&
+        e.phase === 'connect' &&
+        resolved.resolvedSource !== 'default' &&
+        publishSecret === ''
+      ) {
+        setStatus('idle');
+        setSecretDraft('');
+        setSecretPromptNote(
+          'The server refused the connection. It may require a publish secret — enter one to retry, or cancel.',
+        );
+        setSecretPrompt(true);
+        return;
+      }
       setError(err.message);
       setStatus('error');
-      pipelineRef.current = null;
     }
   }, [broadcastId, telemetry]);
 
@@ -281,12 +323,19 @@ export function BroadcasterScreen() {
     await pipelineRef.current.stop();
   }, []);
 
-  // Past the terms gate: when the deploy requires a publish secret, ask for it
-  // first (pre-filled with any stored value so returning broadcasters just
-  // confirm). Otherwise start straight away.
+  // Past the terms gate: ask for a publish secret first when one is called
+  // for. R37 (docs/40 §4.2 F3): the decision is per resolved server, not per
+  // deployment — config.requirePublishSecret governs only the pinned default
+  // (pre-filled with any stored value so returning broadcasters just
+  // confirm); any other resolved server prompts exactly when its entry holds
+  // no secret. Otherwise start straight away.
   const proceedStart = useCallback(() => {
-    if (requiresPublishSecret()) {
-      setSecretDraft(useTransportStore.getState().publishSecret);
+    const { publishSecret, resolvedSource } = useTransportStore.getState();
+    const needsPrompt =
+      resolvedSource === 'default' ? requiresPublishSecret() : publishSecret === '';
+    if (needsPrompt) {
+      setSecretDraft(publishSecret);
+      setSecretPromptNote(null);
       setSecretPrompt(true);
       return;
     }
@@ -312,14 +361,18 @@ export function BroadcasterScreen() {
   }, [proceedStart]);
 
   const submitSecret = useCallback(() => {
+    // Per-resolved-server storage (F3): the setter writes to whatever entry
+    // the store resolves to — the default's record, a saved entry, or
+    // session-only memory for an unsaved link override.
     useTransportStore.getState().setPublishSecret(secretDraft.trim());
     setSecretPrompt(false);
+    setSecretPromptNote(null);
     void handleStart();
   }, [secretDraft, handleStart]);
 
   const handleCopy = useCallback(() => {
     if (!broadcastId) return;
-    const link = `${window.location.origin}${window.location.pathname}#/view/${broadcastId}`;
+    const link = buildViewLink(broadcastId);
     void navigator.clipboard?.writeText(link).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
@@ -404,30 +457,21 @@ export function BroadcasterScreen() {
           <p className={styles.settingsAudioNote}>{AUDIO_SETTINGS[guidance]}</p>
         </section>
 
-        {showDevSettings && (
+        {/* R37 (docs/40 §4.3): the server picker replaced the dev-only inline
+            fields (F1) — a production surface gated by allowCustomRelays. */}
+        {allowCustomRelays() && (
           <section className={styles.group}>
-            <h3 className={styles.groupTitle}>Development settings</h3>
-            {/* Stacked, full-width — no horizontal scroll in the side panel. */}
-            <label className={styles.field}>
-              <span>Server URL</span>
-              <input
-                value={serverUrl}
-                onChange={(e) => setServerUrl(e.target.value)}
-                disabled={running}
-                placeholder="https://localhost:4433"
-                spellCheck={false}
-              />
-            </label>
-            <label className={styles.field}>
-              <span>Dev cert hash (hex; empty for a real cert)</span>
-              <input
-                value={certHashHex}
-                onChange={(e) => setCertHashHex(e.target.value)}
-                disabled={running}
-                placeholder="cert_hash_hex from the server startup log"
-                spellCheck={false}
-              />
-            </label>
+            <h3 className={styles.groupTitle}>Server</h3>
+            <p className={styles.settingsAudioNote}>
+              Broadcasting to {serverHost(resolvedServerUrl)}
+            </p>
+            <Button
+              variant="secondary"
+              disabled={running}
+              onClick={() => setShowServerPicker(true)}
+            >
+              Change server…
+            </Button>
           </section>
         )}
 
@@ -559,6 +603,8 @@ export function BroadcasterScreen() {
 
         {copied && <div className={styles.toast}>Join link copied</div>}
         {settingsPanel}
+        {showServerPicker && <ServerPickerPanel onClose={() => setShowServerPicker(false)} />}
+        <ServerIndicator />
       </div>
     );
   }
@@ -666,13 +712,20 @@ export function BroadcasterScreen() {
         </>
       )}
 
+      {showServerPicker && <ServerPickerPanel onClose={() => setShowServerPicker(false)} />}
+      {/* R37 (docs/40 §4.3 F2): rendered before capture is granted or a
+          secret entered — the crafted-link warning lives on this screen. */}
+      <ServerIndicator />
+
       {secretPrompt && (
         <>
           <div className={styles.scrim} onClick={() => setSecretPrompt(false)} />
           <div className={styles.modalCenter}>
             <GlassPanel className={styles.modal} role="dialog" aria-label="Publish secret">
               <h2 className={styles.modalTitle}>Publish secret</h2>
-              <p className={styles.cardText}>This relay requires a secret to broadcast.</p>
+              <p className={styles.cardText}>
+                {secretPromptNote ?? 'This relay requires a secret to broadcast.'}
+              </p>
               <form
                 className={styles.modalForm}
                 onSubmit={(e) => {

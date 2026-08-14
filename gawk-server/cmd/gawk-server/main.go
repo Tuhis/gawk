@@ -43,6 +43,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// R37: the build version rides config so the transport's RelayIdentity
+	// (wire 0x11) can carry it without importing main.
+	cfg.ReleaseVersion = version
 
 	var handler slog.Handler
 	opts := &slog.HandlerOptions{Level: cfg.LogLevel}
@@ -88,6 +91,8 @@ func run() error {
 		// the key itself is never logged.
 		"telemetry_enabled", len(cfg.TelemetryKey) > 0,
 		"telemetry_report_interval", cfg.TelemetryReportInterval,
+		"telemetry_advertise_url", cfg.TelemetryAdvertiseURL,
+		"server_name", cfg.ServerName,
 		"cluster_mode", cfg.ClusterMode,
 	)
 

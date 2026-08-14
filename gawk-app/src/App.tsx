@@ -11,14 +11,26 @@ import { ViewPage } from './features/stream/ViewPage';
 import { LoopbackPage } from './features/loopback/LoopbackPage';
 import { detectBrowserSupport, readBrowserEnv } from './lib/browserSupport';
 import { UnsupportedBrowserModal } from './ui/UnsupportedBrowserModal';
+import { applyRouteRelay } from './features/servers/relayOverride';
 
 // Hash-based routing (docs/10 Decision 1): production surfaces at #/,
 // #/broadcast, #/view/<id>; the frozen diagnostic pages under #/debug/*.
 // parseRoute is pure and unit-tested; this shell only subscribes + redirects.
+//
+// R37 (docs/40 §4.2): the ?relay= session override is applied synchronously
+// with route resolution — before the route's screen mounts — because the
+// viewer/broadcaster connection effects dial on mount and must never open a
+// real connection to the wrong relay first.
+function resolveRoute(hash: string): Route {
+  const route = parseRoute(hash);
+  applyRouteRelay(route);
+  return route;
+}
+
 function useRoute(): Route {
-  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash));
+  const [route, setRoute] = useState<Route>(() => resolveRoute(window.location.hash));
   useEffect(() => {
-    const onChange = () => setRoute(parseRoute(window.location.hash));
+    const onChange = () => setRoute(resolveRoute(window.location.hash));
     window.addEventListener('hashchange', onChange);
     return () => window.removeEventListener('hashchange', onChange);
   }, []);
