@@ -109,6 +109,17 @@ export const TYPE_RELAY_CAPABILITIES = 0x0f;
 // converges to duplicates, never holes. Encoding lives beside the other
 // fixed-size messages below.
 export const TYPE_STRIPE_STATE = 0x10;
+// RelayIdentity (R37, docs/40 §4.4): relay→client on a uni stream at /echo
+// session start — version + operator display name for the server picker's
+// probe. Trailing bytes past the declared fields are TOLERATED (the managed-
+// mode extension space, a documented deviation from house strictness); the
+// flags byte stays strict. Clients parse it and never send it.
+export const TYPE_RELAY_IDENTITY = 0x11;
+// TelemetryEndpoint (R37, docs/40 §4.10): relay→client on its own uni stream
+// on the media routes — the fleet's advertised telemetry ingest URL, which
+// wins over the deployment's configured one (D15). Same trailing-bytes
+// tolerance and strict flags as RelayIdentity; never sent by clients.
+export const TYPE_TELEMETRY_ENDPOINT = 0x12;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -925,4 +936,149 @@ export function parseBroadcastAnnounce(dgram: Uint8Array): string {
     }
   }
   return id;
+}
+
+// RelayIdentity (R37, docs/40 §4.4): version, type 0x11, strict-zero flags,
+// uint8 versionLen (1–32) + printable-ASCII release version, uint8 nameLen
+// (0–64) + valid-UTF-8 operator name, then IGNORED trailing extension bytes —
+// the one message family whose parser deliberately tolerates a longer buffer
+// (docs/40 §4.9; appended fields are the extension mechanism, flags are not).
+// The encoder exists for tests and golden vectors; browsers only ever parse.
+
+export const RELAY_IDENTITY_MAX_VERSION_LEN = 32;
+export const RELAY_IDENTITY_MAX_NAME_LEN = 64;
+
+export interface RelayIdentityMessage {
+  serverVersion: string;
+  // Attacker-influenced trust UI: render sanitized, never in place of the
+  // host (docs/40 §4.4 F6).
+  name: string;
+}
+
+export function encodeRelayIdentity(msg: RelayIdentityMessage): Uint8Array<ArrayBuffer> {
+  const version = new TextEncoder().encode(msg.serverVersion);
+  const name = new TextEncoder().encode(msg.name);
+  if (version.length === 0 || version.length > RELAY_IDENTITY_MAX_VERSION_LEN) {
+    throw new WireError(`relay identity version must be 1-${RELAY_IDENTITY_MAX_VERSION_LEN} bytes`);
+  }
+  if (name.length > RELAY_IDENTITY_MAX_NAME_LEN) {
+    throw new WireError(`relay identity name exceeds ${RELAY_IDENTITY_MAX_NAME_LEN} bytes`);
+  }
+  const out = new Uint8Array(4 + version.length + 1 + name.length);
+  out[0] = WIRE_VERSION;
+  out[1] = TYPE_RELAY_IDENTITY;
+  out[2] = 0;
+  out[3] = version.length;
+  out.set(version, 4);
+  out[4 + version.length] = name.length;
+  out.set(name, 4 + version.length + 1);
+  return out;
+}
+
+export function parseRelayIdentity(msg: Uint8Array): RelayIdentityMessage {
+  if (msg.length < 5) {
+    throw new WireError(`relay identity needs at least 5 bytes, got ${msg.length}`);
+  }
+  if (msg[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${msg[0].toString(16)}`);
+  }
+  if (msg[1] !== TYPE_RELAY_IDENTITY) {
+    throw new WireError(`unexpected message type 0x${msg[1].toString(16)}, want relay identity`);
+  }
+  if (msg[2] !== 0) {
+    throw new WireError(`relay identity sets reserved flag bits (0x${msg[2].toString(16)})`);
+  }
+  const versionLen = msg[3];
+  if (versionLen === 0 || versionLen > RELAY_IDENTITY_MAX_VERSION_LEN) {
+    throw new WireError(`relay identity versionLen ${versionLen} out of range`);
+  }
+  if (4 + versionLen + 1 > msg.length) {
+    throw new WireError('relay identity versionLen overruns the message');
+  }
+  const versionBytes = msg.subarray(4, 4 + versionLen);
+  for (const b of versionBytes) {
+    if (b < 0x20 || b > 0x7e) throw new WireError('relay identity version is not printable ASCII');
+  }
+  const nameLen = msg[4 + versionLen];
+  if (nameLen > RELAY_IDENTITY_MAX_NAME_LEN) {
+    throw new WireError(`relay identity nameLen ${nameLen} out of range`);
+  }
+  const nameStart = 4 + versionLen + 1;
+  if (nameStart + nameLen > msg.length) {
+    throw new WireError('relay identity nameLen overruns the message');
+  }
+  let name: string;
+  try {
+    name = new TextDecoder('utf-8', { fatal: true }).decode(msg.subarray(nameStart, nameStart + nameLen));
+  } catch {
+    throw new WireError('relay identity name is not valid UTF-8');
+  }
+  // Bytes past the name are the reserved extension space — ignored.
+  return { serverVersion: new TextDecoder().decode(versionBytes), name };
+}
+
+// TelemetryEndpoint (R37, docs/40 §4.10): version, type 0x12, strict-zero
+// flags, uint16 urlLen (1–512, big-endian) + an absolute https URL, then
+// ignored trailing extension bytes. A message failing any rule here degrades
+// caller-side to "no advertised URL" — never to a failed session.
+
+export const TELEMETRY_ENDPOINT_MAX_URL_LEN = 512;
+
+export function encodeTelemetryEndpoint(url: string): Uint8Array<ArrayBuffer> {
+  validateTelemetryEndpointUrl(url);
+  const bytes = new TextEncoder().encode(url);
+  const out = new Uint8Array(5 + bytes.length);
+  const view = new DataView(out.buffer);
+  out[0] = WIRE_VERSION;
+  out[1] = TYPE_TELEMETRY_ENDPOINT;
+  out[2] = 0;
+  view.setUint16(3, bytes.length);
+  out.set(bytes, 5);
+  return out;
+}
+
+export function parseTelemetryEndpoint(msg: Uint8Array): string {
+  if (msg.length < 6) {
+    throw new WireError(`telemetry endpoint needs at least 6 bytes, got ${msg.length}`);
+  }
+  if (msg[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${msg[0].toString(16)}`);
+  }
+  if (msg[1] !== TYPE_TELEMETRY_ENDPOINT) {
+    throw new WireError(`unexpected message type 0x${msg[1].toString(16)}, want telemetry endpoint`);
+  }
+  if (msg[2] !== 0) {
+    throw new WireError(`telemetry endpoint sets reserved flag bits (0x${msg[2].toString(16)})`);
+  }
+  const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength);
+  const urlLen = view.getUint16(3);
+  if (urlLen === 0 || urlLen > TELEMETRY_ENDPOINT_MAX_URL_LEN) {
+    throw new WireError(`telemetry endpoint urlLen ${urlLen} out of range`);
+  }
+  if (5 + urlLen > msg.length) {
+    throw new WireError('telemetry endpoint urlLen overruns the message');
+  }
+  const url = new TextDecoder().decode(msg.subarray(5, 5 + urlLen));
+  validateTelemetryEndpointUrl(url);
+  // Bytes past the URL are the reserved extension space — ignored.
+  return url;
+}
+
+function validateTelemetryEndpointUrl(url: string): void {
+  if (url.length === 0 || url.length > TELEMETRY_ENDPOINT_MAX_URL_LEN) {
+    throw new WireError(`telemetry endpoint URL must be 1-${TELEMETRY_ENDPOINT_MAX_URL_LEN} bytes`);
+  }
+  for (let i = 0; i < url.length; i++) {
+    const c = url.charCodeAt(i);
+    if (c <= 0x20 || c > 0x7e) throw new WireError('telemetry endpoint URL contains a non-URL byte');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new WireError('telemetry endpoint URL does not parse');
+  }
+  if (parsed.protocol !== 'https:' || parsed.host === '') {
+    throw new WireError('telemetry endpoint URL is not absolute https');
+  }
 }

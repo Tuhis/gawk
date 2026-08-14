@@ -57,6 +57,15 @@ const (
 	goldenStripeStateStripedHex   = "0110010300"
 	goldenStripeStateUnstripedHex = "0110000000"
 	goldenCapabilitiesBothBitsHex = "010f000302"
+	// R37 (docs/40 SP4). RelayIdentity (0x11) is echo-route relay→client — the
+	// probe's identity message, which this module's GUI picker parses via the
+	// shared wire package. TelemetryEndpoint (0x12) this module's publisher
+	// sessions actually receive: it is what repoints the R28 reporter on a
+	// foreign relay (docs/40 §4.10), so like the hello above this is coupling
+	// on a message this module really uses.
+	goldenRelayIdentityHex       = "01110006312e34322e30096761776b20686f6d65"
+	goldenRelayIdentityNoNameHex = "01110006312e34322e3000"
+	goldenTelemetryEndpointHex   = "011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -251,6 +260,13 @@ func TestWireConstants(t *testing.T) {
 		{"TypeParityChunk", wire.TypeParityChunk, 0x0E},
 		{"TypeRelayCapabilities", wire.TypeRelayCapabilities, 0x0F},
 		{"TypeStripeState", wire.TypeStripeState, 0x10},
+		// R37 (docs/40 SP4): the probe's identity message and the telemetry
+		// endpoint advertisement, with the bounds their parsers enforce.
+		{"TypeRelayIdentity", wire.TypeRelayIdentity, 0x11},
+		{"TypeTelemetryEndpoint", wire.TypeTelemetryEndpoint, 0x12},
+		{"MaxRelayIdentityVersionLen", wire.MaxRelayIdentityVersionLen, 32},
+		{"MaxRelayIdentityNameLen", wire.MaxRelayIdentityNameLen, 64},
+		{"MaxTelemetryEndpointURLLen", wire.MaxTelemetryEndpointURLLen, 512},
 		{"CarrierPrologueSize", wire.CarrierPrologueSize, 2},
 		{"CarrierRecordHeaderSize", wire.CarrierRecordHeaderSize, 2},
 		{"ViewerCountSize", wire.ViewerCountSize, 6},
@@ -423,6 +439,76 @@ func TestCapabilitiesSurviveStripedBit(t *testing.T) {
 	}
 	if back.Flags&wire.CapParityChunks == 0 {
 		t.Errorf("CapParityChunks lost when CapStripedDelivery is set: %+v", back)
+	}
+}
+
+// --- R37 relay identity + telemetry endpoint -------------------------------
+
+// RelayIdentity is relay-originated (echo route); this module parses it in the
+// GUI's server probe. Both vectors — named and unset-name — are pinned, plus
+// the one deliberate parser deviation both R37 messages share: trailing bytes
+// are TOLERATED (the reserved extension space, docs/40 §4.9), unlike every
+// strict exact-length parser before them.
+func TestGoldenRelayIdentity(t *testing.T) {
+	want := mustHex(t, goldenRelayIdentityHex)
+	got, err := wire.AppendRelayIdentity(nil, wire.RelayIdentity{ServerVersion: "1.42.0", Name: "gawk home"})
+	if err != nil {
+		t.Fatalf("AppendRelayIdentity: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("RelayIdentity bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	id, err := wire.ParseRelayIdentity(want)
+	if err != nil {
+		t.Fatalf("ParseRelayIdentity: %v", err)
+	}
+	if id.ServerVersion != "1.42.0" || id.Name != "gawk home" {
+		t.Errorf("parsed identity = %+v, want 1.42.0 / gawk home", id)
+	}
+
+	wantNoName := mustHex(t, goldenRelayIdentityNoNameHex)
+	gotNoName, err := wire.AppendRelayIdentity(nil, wire.RelayIdentity{ServerVersion: "1.42.0"})
+	if err != nil {
+		t.Fatalf("AppendRelayIdentity(no name): %v", err)
+	}
+	if !bytes.Equal(gotNoName, wantNoName) {
+		t.Errorf("RelayIdentity(no name) bytes drifted from the golden vector\n got %x\nwant %x", gotNoName, wantNoName)
+	}
+	if id, err := wire.ParseRelayIdentity(wantNoName); err != nil || id.Name != "" {
+		t.Errorf("ParseRelayIdentity(no name) = %+v, %v, want an empty name", id, err)
+	}
+
+	// The forward-compat stance a strict parser here would break: bytes past
+	// the name are the extension space a managed relay will someday use.
+	trailing := append(append([]byte(nil), want...), 0xa1, 0xb2, 0xc3)
+	if id, err := wire.ParseRelayIdentity(trailing); err != nil || id.ServerVersion != "1.42.0" || id.Name != "gawk home" {
+		t.Errorf("trailing extension bytes broke the parse: %+v, %v", id, err)
+	}
+}
+
+// TelemetryEndpoint is what makes a foreign relay's telemetry land somewhere
+// its token can verify (docs/40 §4.10) — this producer receives it on its
+// publish sessions and repoints the R28 reporter with it.
+func TestGoldenTelemetryEndpoint(t *testing.T) {
+	const url = "https://gawk.example.com/api/telemetry/v1/ingest"
+	want := mustHex(t, goldenTelemetryEndpointHex)
+	got, err := wire.AppendTelemetryEndpoint(nil, url)
+	if err != nil {
+		t.Fatalf("AppendTelemetryEndpoint: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("TelemetryEndpoint bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	parsed, err := wire.ParseTelemetryEndpoint(want)
+	if err != nil {
+		t.Fatalf("ParseTelemetryEndpoint: %v", err)
+	}
+	if parsed != url {
+		t.Errorf("parsed URL = %q, want %q", parsed, url)
+	}
+	// Same trailing-bytes contract as RelayIdentity.
+	if parsed, err := wire.ParseTelemetryEndpoint(append(append([]byte(nil), want...), 0x7f)); err != nil || parsed != url {
+		t.Errorf("trailing extension bytes broke the parse: %q, %v", parsed, err)
 	}
 }
 

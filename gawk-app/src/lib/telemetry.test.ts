@@ -29,7 +29,7 @@ interface Sent {
 
 // A collector wired to fake time and a recording transport. Timers are driven
 // explicitly so nothing here waits on a wall clock.
-function harness(opts: { fail?: boolean; reportIntervalMs?: number; retryable?: boolean } = {}) {
+function harness(opts: { fail?: boolean; reportIntervalMs?: number; retryable?: boolean; requireAdvertisedUrl?: boolean } = {}) {
   const sent: Sent[] = [];
   const timers: { fn: () => void; ms: number }[] = [];
   let clock = 0;
@@ -38,6 +38,7 @@ function harness(opts: { fail?: boolean; reportIntervalMs?: number; retryable?: 
   const collector = new TelemetryCollector<Record<string, unknown>>({
     url: '/api/telemetry/v1/ingest',
     role: 'viewer',
+    requireAdvertisedUrl: opts.requireAdvertisedUrl === undefined ? undefined : () => opts.requireAdvertisedUrl!,
     now: () => 1_700_000_000_000,
     transport: async (url, body, beacon) => {
       sent.push({ url, body, beacon });
@@ -576,6 +577,88 @@ describe('TelemetryCollector — interval minima (docs/33 D16)', () => {
       if (min !== undefined) {
         expect(Number.isFinite(min.receivedFps)).toBe(true);
       }
+    }
+  });
+});
+
+// --- R37 (docs/40 §4.10 SP13): the relay-advertised destination ------------
+
+describe('advertised telemetry endpoint (R37)', () => {
+  it('an advertised URL wins over the configured one (D15)', () => {
+    const h = harness();
+    h.begin();
+    h.collector.setAdvertisedUrl('https://foreign.example/api/telemetry/v1/ingest');
+    h.collector.sample({ fps: 30 });
+    h.collector.flush();
+    expect(h.sent.at(-1)!.url).toBe('https://foreign.example/api/telemetry/v1/ingest');
+  });
+
+  it('the §4.10 guard: foreign relay, hello enabled, no 0x12 ⇒ zero requests', () => {
+    const h = harness({ requireAdvertisedUrl: true });
+    h.begin();
+    h.collector.sample({ fps: 30 });
+    h.collector.flush();
+    h.collector.flushForUnload();
+    h.collector.finish();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('a late 0x12 releases the buffered batch (the streams race, F5-adjacent)', () => {
+    const h = harness({ requireAdvertisedUrl: true });
+    h.begin();
+    h.collector.sample({ fps: 30 });
+    h.collector.flush();
+    expect(h.sent).toHaveLength(0);
+    h.collector.setAdvertisedUrl('https://foreign.example/ingest');
+    h.collector.flush();
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].url).toBe('https://foreign.example/ingest');
+    // The buffered sample rode the released batch, not the void.
+    expect(h.sent[0].body).toContain('"fps":30');
+  });
+
+  it('on the default relay the configured URL keeps working unchanged', () => {
+    const h = harness({ requireAdvertisedUrl: false });
+    h.begin();
+    h.collector.sample({ fps: 30 });
+    h.collector.flush();
+    expect(h.sent.at(-1)!.url).toBe('/api/telemetry/v1/ingest');
+  });
+
+  it('reportingToAdvertised backs the indicator disclosure (D16)', () => {
+    const h = harness();
+    h.begin();
+    expect(h.collector.reportingToAdvertised).toBe(false);
+    h.collector.setAdvertisedUrl('https://foreign.example/ingest');
+    expect(h.collector.reportingToAdvertised).toBe(true);
+  });
+});
+
+// D17: the unload beacon rides a CORS-safelisted content type so sendBeacon
+// needs no preflight it cannot perform during unload — cross-origin included.
+describe('beacon content type (R37 D17)', () => {
+  it('sendBeacon is handed a text/plain blob', async () => {
+    const calls: Array<{ url: string; type: string }> = [];
+    const nav = navigator as unknown as Record<string, unknown>;
+    const original = nav.sendBeacon;
+    nav.sendBeacon = (url: string, blob: Blob) => {
+      calls.push({ url, type: blob.type });
+      return true;
+    };
+    try {
+      const collector = new TelemetryCollector<Record<string, unknown>>({
+        url: '/api/telemetry/v1/ingest',
+        role: 'viewer',
+      });
+      collector.begin(HELLO);
+      collector.sample({ fps: 1 });
+      collector.flushForUnload();
+      await Promise.resolve();
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type.toLowerCase()).toBe('text/plain;charset=utf-8');
+    } finally {
+      if (original === undefined) delete nav.sendBeacon;
+      else nav.sendBeacon = original;
     }
   });
 });

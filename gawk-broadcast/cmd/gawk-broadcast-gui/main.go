@@ -143,6 +143,17 @@ type ui struct {
 	copyDia widget.Clickable
 	details widget.Bool
 
+	// R37 SP8: the server picker. serverSel is the profile whose fields the
+	// editor currently shows — 0 is the pinned default, i>0 is
+	// cfg.CustomServers()[i-1]. relay/secret below edit the selected profile;
+	// the default's URL is built in and not editable (its credential slot is,
+	// docs/40 F4).
+	serverPick dropdown
+	serverName textInput
+	addSrv     widget.Clickable
+	removeSrv  widget.Clickable
+	serverSel  int
+
 	relay     textInput
 	appURL    textInput
 	secret    textInput
@@ -178,9 +189,14 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 		ContrastFg: colBright,
 	}
 	u.list.Axis = layout.Vertical
-	u.relay.SetText(cfg.RelayURL)
+	// A config built by hand (tests, embedding) may still carry the pre-R37
+	// flat relay/secret pair; fold it into the profiles the picker edits.
+	// Load already did this for the real config file — Migrate is idempotent.
+	cfg.Migrate()
+	u.serverSel = selectedServerIndex(cfg)
+	u.rebuildServerPick()
+	u.loadServerFields()
 	u.appURL.SetText(cfg.AppURL)
-	u.secret.SetText(cfg.PublishSecret)
 	u.secret.ed.Mask = '•'
 	u.telemetry.SetText(cfg.TelemetryURL)
 	if cfg.BitrateBps > 0 {
@@ -197,6 +213,71 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 		u.fpsPick.custom = fmt.Sprintf("%d fps (custom)", cfg.Fps)
 	}
 	return u
+}
+
+// selectedServerIndex maps cfg.SelectedServer to the picker's index space:
+// 0 for the default, 1+i for a custom profile; unknown selections degrade to
+// the default, same as the config's own resolution rule.
+func selectedServerIndex(cfg *config.Config) int {
+	if name := cfg.SelectedServer; name != "" && name != config.DefaultServerName {
+		for i, p := range cfg.CustomServers() {
+			if p.Name == name {
+				return i + 1
+			}
+		}
+	}
+	return 0
+}
+
+// selectionName is the inverse: what to store in cfg.SelectedServer for a
+// picker index.
+func selectionName(cfg *config.Config, sel int) string {
+	if custom := cfg.CustomServers(); sel > 0 && sel <= len(custom) {
+		return custom[sel-1].Name
+	}
+	return config.DefaultServerName
+}
+
+// rebuildServerPick regenerates the dropdown from the profile list. Called
+// whenever the list or a display name changes — the dropdown holds its labels
+// by value.
+func (u *ui) rebuildServerPick() {
+	labels := []string{"Default relay"}
+	for _, p := range u.cfg.CustomServers() {
+		labels = append(labels, p.Name)
+	}
+	u.serverPick = newDropdown("Server", labels, u.serverSel)
+}
+
+// loadServerFields points the editor fields at the selected profile.
+func (u *ui) loadServerFields() {
+	if u.serverSel == 0 {
+		// The default's identity is built in (docs/40 D5) — only its
+		// credential slot is editable (F4).
+		u.serverName.SetText("")
+		u.relay.SetText("")
+		u.secret.SetText(u.cfg.DefaultSecret())
+		return
+	}
+	p := u.cfg.CustomServers()[u.serverSel-1]
+	u.serverName.SetText(p.Name)
+	u.relay.SetText(p.URL)
+	u.secret.SetText(p.PublishSecret)
+}
+
+// commitServerFields writes the editor fields back into the profile they show.
+// The config package owns the invariants (unique names, the reserved
+// "default", the URL-keyed default record).
+func (u *ui) commitServerFields() {
+	if u.serverSel == 0 {
+		u.cfg.SetDefaultSecret(u.secret.Text())
+		return
+	}
+	u.cfg.UpdateCustomServer(u.serverSel-1, config.ServerProfile{
+		Name:          strings.TrimSpace(u.serverName.Text()),
+		URL:           strings.TrimSpace(u.relay.Text()),
+		PublishSecret: u.secret.Text(),
+	})
 }
 
 // The rungs mirror the browser broadcaster's pickers (R3), minus its
@@ -294,6 +375,35 @@ func (u *ui) layout(gtx layout.Context) layout.Dimensions {
 }
 
 func (u *ui) handleEvents(gtx layout.Context) {
+	// R37 SP8: server picker actions. A dropdown choice made during the last
+	// frame's layout is applied here: commit the fields of the profile being
+	// left, then load the newly selected one. Selection persists immediately —
+	// choosing a server is a deliberate act, not a pending edit.
+	if sel := u.serverPick.sel; sel >= 0 && sel != u.serverSel {
+		u.commitServerFields()
+		u.serverSel = sel
+		u.cfg.SelectedServer = selectionName(u.cfg, sel)
+		u.rebuildServerPick() // a rename on the profile just left may have changed its label
+		u.loadServerFields()
+		u.saveCfg()
+	}
+	if u.addSrv.Clicked(gtx) {
+		u.commitServerFields()
+		p := u.cfg.AddCustomServer()
+		u.cfg.SelectedServer = p.Name
+		u.serverSel = len(u.cfg.CustomServers())
+		u.rebuildServerPick()
+		u.loadServerFields()
+		u.saveCfg()
+	}
+	if u.removeSrv.Clicked(gtx) && u.serverSel > 0 {
+		u.cfg.RemoveCustomServer(u.serverSel - 1)
+		u.serverSel = 0
+		u.cfg.SelectedServer = config.DefaultServerName
+		u.rebuildServerPick()
+		u.loadServerFields()
+		u.saveCfg()
+	}
 	if u.start.Clicked(gtx) {
 		u.save()
 		u.copied = ""
@@ -345,9 +455,14 @@ func (u *ui) handleEvents(gtx layout.Context) {
 
 // save writes the settings fields back to the config.
 func (u *ui) save() {
-	u.cfg.RelayURL = strings.TrimSpace(u.relay.Text())
+	u.commitServerFields()
+	u.cfg.SelectedServer = selectionName(u.cfg, u.serverSel)
+	u.rebuildServerPick() // a rename may have changed the selected label
+	// The flat relay/secret slots are per-run overrides (-url/GAWK_URL) since
+	// R37; the GUI's server choice lives in the profiles, and persisting a
+	// flat copy would shadow every future selection.
+	u.cfg.RelayURL, u.cfg.PublishSecret = "", ""
 	u.cfg.AppURL = strings.TrimSpace(u.appURL.Text())
-	u.cfg.PublishSecret = u.secret.Text()
 	u.cfg.BitrateBps = parseBitrateMbps(u.bitrate.Text())
 	// Stored verbatim, blanks and all: blank means "follow the default" and
 	// baking today's default in would pin this user to it forever.
@@ -358,9 +473,13 @@ func (u *ui) save() {
 	if i := u.fpsPick.sel; i >= 0 {
 		u.cfg.Fps = fpsRungs[i].fps
 	}
+	u.saveCfg()
+}
+
+// saveCfg persists the config, non-fatally: the broadcast can still run, the
+// settings just won't survive a restart.
+func (u *ui) saveCfg() {
 	if err := u.cfg.Save(); err != nil {
-		// Non-fatal: the broadcast can still run, the settings just won't
-		// survive a restart.
 		fmt.Fprintln(os.Stderr, "could not save settings:", err)
 	}
 }
@@ -747,16 +866,17 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 					gtx = gtx.Disabled()
 				}
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					// R37 SP8: which server the next broadcast dials, with
+					// add/edit/remove for custom profiles. The default's
+					// identity is built in; only its secret is editable (F4).
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return u.relay.Layout(gtx, u.th, "Relay URL (blank = the default relay)")
+						return u.dropdownRow(gtx, &u.serverPick)
 					}),
+					layout.Rigid(spacer(6)),
+					layout.Rigid(u.serverEditor),
 					layout.Rigid(spacer(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return u.appURL.Layout(gtx, u.th, "App URL, for join links (https://…)")
-					}),
-					layout.Rigid(spacer(8)),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return u.secret.Layout(gtx, u.th, "Publish secret (if the relay needs one)")
 					}),
 					layout.Rigid(spacer(8)),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -784,10 +904,23 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 			// reading the README.
 			layout.Rigid(spacer(8)),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				relay := config.ResolveRelayURL(u.relay.Text())
-				ingest := config.ResolveTelemetryURL(u.relay.Text(), u.telemetry.Text())
+				// The default profile's URL is not typed anywhere: blank
+				// resolves to it, exactly like the config does.
+				relayRaw := ""
+				if u.serverSel > 0 {
+					relayRaw = u.relay.Text()
+				}
+				relay := config.ResolveRelayURL(relayRaw)
+				ingest := config.ResolveTelemetryURL(relayRaw, u.telemetry.Text())
 				if ingest == "" {
-					ingest = "off — nothing is sent"
+					if u.serverSel > 0 && !config.TelemetryOff(u.telemetry.Text()) {
+						// The §4.10 rule made visible: on a foreign server the
+						// destination is the relay's to name (wire 0x12), and
+						// with no advertisement nothing is sent at all.
+						ingest = "wherever this server advertises — otherwise nothing is sent"
+					} else {
+						ingest = "off — nothing is sent"
+					}
 				}
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(caption(u.th, "Broadcasting to "+relay)),
@@ -816,6 +949,55 @@ func (u *ui) settings(gtx layout.Context) layout.Dimensions {
 			}),
 		)
 	})
+}
+
+// serverEditor renders the selected profile's fields: name/URL/secret for a
+// custom server, secret-only (identity built in, docs/40 D5/F4) for the
+// default — plus add/remove.
+func (u *ui) serverEditor(gtx layout.Context) layout.Dimensions {
+	var children []layout.FlexChild
+	if u.serverSel == 0 {
+		children = append(children,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return caption(u.th, "Relay URL: "+config.DefaultRelayURL+" (built in)")(gtx)
+			}),
+			layout.Rigid(spacer(6)),
+		)
+	} else {
+		children = append(children,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return u.serverName.Layout(gtx, u.th, "Server name")
+			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return u.relay.Layout(gtx, u.th, "Relay URL (https://…)")
+			}),
+			layout.Rigid(spacer(8)),
+		)
+	}
+	children = append(children,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return u.secret.Layout(gtx, u.th, "Publish secret for this server (if it needs one)")
+		}),
+		layout.Rigid(spacer(8)),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			row := []layout.FlexChild{
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return u.secondaryBtn(&u.addSrv, "Add server", colButton).Layout(gtx)
+				}),
+			}
+			if u.serverSel > 0 {
+				row = append(row,
+					layout.Rigid(spacerW(8)),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.secondaryBtn(&u.removeSrv, "Remove server", colDanger).Layout(gtx)
+					}),
+				)
+			}
+			return layout.Flex{}.Layout(gtx, row...)
+		}),
+	)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
 func (u *ui) stats(gtx layout.Context) layout.Dimensions {

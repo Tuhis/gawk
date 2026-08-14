@@ -97,6 +97,9 @@ export class WorkerViewerTransport implements ViewerTransport {
           case 'telemetryHello':
             if (!this.closing) cb.onTelemetryHello?.(ev.hello);
             break;
+          case 'telemetryEndpoint':
+            if (!this.closing) cb.onTelemetryEndpoint?.(ev.url);
+            break;
           case 'relayCapabilities':
             if (!this.closing) cb.onRelayCapabilities?.(ev.caps);
             break;

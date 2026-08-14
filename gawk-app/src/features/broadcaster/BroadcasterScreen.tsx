@@ -218,6 +218,13 @@ export function BroadcasterScreen() {
       onTelemetryHello: (hello: TelemetryHelloMessage) => {
         telemetry.begin(hello);
       },
+      // R37 (docs/40 D15/D16): the relay-advertised ingest URL; the
+      // disclosure flips only when this session is on a foreign relay.
+      onTelemetryEndpoint: (url: string) => {
+        telemetry.setAdvertisedUrl(url);
+        const st = useTransportStore.getState();
+        if (st.resolvedSource !== 'default') st.setForeignTelemetryActive(true);
+      },
     });
 
     const { resolutionSelection: res, framerateSelection } =

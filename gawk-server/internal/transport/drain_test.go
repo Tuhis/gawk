@@ -168,14 +168,21 @@ func TestServerDrainsOnShutdown(t *testing.T) {
 	srvCancel()
 
 	for i, sess := range []*webtransport.Session{sessA, sessB} {
-		// AcceptUniStream blocks until the session ends and then returns the
-		// definitive close error — unlike ReceiveDatagram, whose stream-end
-		// error races the close-capsule parse (the Go twin of the JS
-		// wt.closed settle race, README gotcha).
+		// AcceptUniStream returns the definitive close error once the session
+		// ends — unlike ReceiveDatagram, whose stream-end error races the
+		// close-capsule parse (the Go twin of the JS wt.closed settle race,
+		// README gotcha). Since R37 an /echo session also carries one real
+		// uni stream (the RelayIdentity), so drain those until the error.
 		acceptCtx, acceptCancel := context.WithTimeout(ctx, 5*time.Second)
-		_, err := sess.AcceptUniStream(acceptCtx)
+		var err error
+		for {
+			_, err = sess.AcceptUniStream(acceptCtx)
+			if err != nil {
+				break
+			}
+		}
 		acceptCancel()
-		if err == nil {
+		if errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("session %d still alive after server drain", i)
 		}
 		var se *webtransport.SessionError

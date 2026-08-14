@@ -48,7 +48,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 )
@@ -198,6 +200,40 @@ const (
 	// datagram-delivery subscribe session that is not itself a leg —
 	// anywhere else it is silently discarded like any unknown datagram.
 	TypeStripeState = 0x10
+
+	// TypeRelayIdentity identifies a RelayIdentity message (R37, docs/40
+	// §4.4): relay→client on a server-opened unidirectional stream at
+	// /echo session start, carrying the relay's release version and an
+	// operator-set display name so a server picker can label a probed
+	// relay. Echo-route only in R37 — publish/subscribe sessions stay
+	// byte-identical. The browser WebTransport API exposes no response
+	// headers (the ResumeToken/TelemetryHello precedent), so identity is
+	// in-band.
+	//
+	// Deliberate deviation from house parser strictness (docs/40 §4.4,
+	// stated there so it survives review): TRAILING BYTES ARE TOLERATED —
+	// this message is the managed-mode extension point, and appended
+	// fields are its extension mechanism. The flags byte stays strict
+	// (reserved-must-be-zero): flags gate interpretation of what a parser
+	// already reads, so an unknown flag genuinely is unparseable, unlike
+	// appended fields. Clients parse it and never send it — a
+	// RelayIdentity arriving where a client is the sender is dropped (the
+	// ViewerCount rule).
+	TypeRelayIdentity = 0x11
+
+	// TypeTelemetryEndpoint identifies a TelemetryEndpoint message (R37,
+	// docs/40 §4.10 D14): relay→client on its own unidirectional stream on
+	// publish/subscribe sessions, advertising the fleet's telemetry ingest
+	// URL. It composes with the frozen 0x0D TelemetryHello (whose strict
+	// exact-length parser cannot be extended without breaking every
+	// existing reader — the RelayCapabilities append-trap); sent only when
+	// the relay both collects telemetry and has an advertised URL
+	// configured, and never on /internal/subscribe (an edge is plumbing,
+	// not a client). A relay-advertised URL always wins over the client's
+	// configured telemetry URL (docs/40 D15). Same trailing-bytes
+	// tolerance and strict flags byte as RelayIdentity, same
+	// never-sent-by-clients rule.
+	TypeTelemetryEndpoint = 0x12
 )
 
 // DeliveryMode names what a subscriber is actually being served, as carried
@@ -298,6 +334,17 @@ const (
 	// key a TelemetryHello carries — the raw digest behind Registry.ObfuscateID,
 	// which the client hex-encodes for the ingest envelope.
 	TelemetryBroadcastKeySize = 6
+	// MaxRelayIdentityVersionLen / MaxRelayIdentityNameLen bound the two
+	// variable fields of a RelayIdentity (R37): a release version is a short
+	// ASCII string, and the display name cap is enforced AFTER UTF-8
+	// validation with rune-boundary truncation on the producing side
+	// (docs/40 §4.4 F6).
+	MaxRelayIdentityVersionLen = 32
+	MaxRelayIdentityNameLen    = 64
+	// MaxTelemetryEndpointURLLen bounds a TelemetryEndpoint's advertised
+	// ingest URL (R37, docs/40 §4.10) — generous for any real ingress path,
+	// small enough that a hostile relay cannot stuff kilobytes into it.
+	MaxTelemetryEndpointURLLen = 512
 	// MaxAudioPayload is the largest payload a single AudioFrame may carry —
 	// one Opus packet. 20 ms at 128 kbps is ~320 bytes; anything up to
 	// ~470 kbps fits, so a conforming encoder never comes near this.
@@ -352,6 +399,14 @@ var (
 	// ErrBadTelemetryHello indicates a TelemetryHello whose token or broadcast
 	// key is the wrong length, or which sets a reserved flag bit (R28).
 	ErrBadTelemetryHello = errors.New("wire: invalid telemetry hello")
+	// ErrBadRelayIdentity indicates a RelayIdentity with a set reserved flag
+	// bit, an out-of-range version/name length, a non-printable version, or
+	// a name that is not valid UTF-8 (R37).
+	ErrBadRelayIdentity = errors.New("wire: invalid relay identity")
+	// ErrBadTelemetryEndpoint indicates a TelemetryEndpoint with a set
+	// reserved flag bit, an out-of-range URL length, or a URL that is not an
+	// absolute https URL (R37).
+	ErrBadTelemetryEndpoint = errors.New("wire: invalid telemetry endpoint")
 )
 
 // VideoChunkHeader is the parsed header of a VideoChunk datagram.
@@ -1032,4 +1087,166 @@ func ParseStreamFrameHeader(buf []byte) (StreamFrameHeader, error) {
 		return StreamFrameHeader{}, fmt.Errorf("%w: header+%d+%d bytes", ErrKeyframeTooLarge, h.ConfigLen, h.PayloadLen)
 	}
 	return h, nil
+}
+
+// RelayIdentity is the parsed contents of a RelayIdentity message (R37,
+// docs/40 §4.4). Layout, after the common prefix:
+//
+//	byte 2    uint8 flags — all bits reserved, must be 0
+//	byte 3    uint8 versionLen (1–MaxRelayIdentityVersionLen), then that many
+//	          bytes of printable-ASCII release version ("1.42.0")
+//	next      uint8 nameLen (0–MaxRelayIdentityNameLen), then that many bytes
+//	          of valid UTF-8 operator display name (empty = unset)
+//	rest      reserved extension bytes — ignored by parsers (see the type
+//	          constant's doc comment for why this deviates from house
+//	          strictness)
+type RelayIdentity struct {
+	// ServerVersion is the relay's release version string, e.g. "1.42.0".
+	ServerVersion string
+	// Name is the operator-set display name (-server-name), possibly empty.
+	// Attacker-influenced trust UI: renderers sanitize and never show it in
+	// place of the host (docs/40 §4.4 F6).
+	Name string
+}
+
+// AppendRelayIdentity appends a RelayIdentity message encoding id to dst and
+// returns the extended slice. It returns ErrBadRelayIdentity for an empty or
+// oversize version, a non-printable-ASCII version, an oversize name, or a
+// name that is not valid UTF-8.
+func AppendRelayIdentity(dst []byte, id RelayIdentity) ([]byte, error) {
+	if len(id.ServerVersion) == 0 || len(id.ServerVersion) > MaxRelayIdentityVersionLen {
+		return nil, fmt.Errorf("%w: version %d bytes, want 1-%d", ErrBadRelayIdentity, len(id.ServerVersion), MaxRelayIdentityVersionLen)
+	}
+	for i := 0; i < len(id.ServerVersion); i++ {
+		if id.ServerVersion[i] < 0x20 || id.ServerVersion[i] > 0x7e {
+			return nil, fmt.Errorf("%w: non-printable version byte 0x%02x", ErrBadRelayIdentity, id.ServerVersion[i])
+		}
+	}
+	if len(id.Name) > MaxRelayIdentityNameLen {
+		return nil, fmt.Errorf("%w: name %d bytes, max %d", ErrBadRelayIdentity, len(id.Name), MaxRelayIdentityNameLen)
+	}
+	if !utf8.ValidString(id.Name) {
+		return nil, fmt.Errorf("%w: name is not valid UTF-8", ErrBadRelayIdentity)
+	}
+	dst = append(dst, Version, TypeRelayIdentity, 0, uint8(len(id.ServerVersion)))
+	dst = append(dst, id.ServerVersion...)
+	dst = append(dst, uint8(len(id.Name)))
+	dst = append(dst, id.Name...)
+	return dst, nil
+}
+
+// ParseRelayIdentity parses a RelayIdentity message. Trailing bytes beyond
+// the name are IGNORED — they are the message's reserved extension space
+// (docs/40 §4.9) — but the flags byte is strict (reserved bits must be 0)
+// and the declared version/name must fit inside msg and pass validation.
+func ParseRelayIdentity(msg []byte) (RelayIdentity, error) {
+	if len(msg) < 5 {
+		return RelayIdentity{}, fmt.Errorf("%w: %d bytes, need at least 5 for relay identity", ErrShortDatagram, len(msg))
+	}
+	if msg[0] != Version {
+		return RelayIdentity{}, fmt.Errorf("%w: 0x%02x", ErrBadVersion, msg[0])
+	}
+	if msg[1] != TypeRelayIdentity {
+		return RelayIdentity{}, fmt.Errorf("%w: got 0x%02x, want relay identity 0x%02x", ErrBadType, msg[1], TypeRelayIdentity)
+	}
+	if msg[2] != 0 {
+		return RelayIdentity{}, fmt.Errorf("%w: reserved flag bits set (0x%02x)", ErrBadRelayIdentity, msg[2])
+	}
+	versionLen := int(msg[3])
+	if versionLen == 0 || versionLen > MaxRelayIdentityVersionLen {
+		return RelayIdentity{}, fmt.Errorf("%w: versionLen %d, want 1-%d", ErrBadRelayIdentity, versionLen, MaxRelayIdentityVersionLen)
+	}
+	if 4+versionLen+1 > len(msg) {
+		return RelayIdentity{}, fmt.Errorf("%w: versionLen %d overruns %d-byte message", ErrBadRelayIdentity, versionLen, len(msg))
+	}
+	serverVersion := string(msg[4 : 4+versionLen])
+	for i := 0; i < len(serverVersion); i++ {
+		if serverVersion[i] < 0x20 || serverVersion[i] > 0x7e {
+			return RelayIdentity{}, fmt.Errorf("%w: non-printable version byte 0x%02x", ErrBadRelayIdentity, serverVersion[i])
+		}
+	}
+	nameLen := int(msg[4+versionLen])
+	if nameLen > MaxRelayIdentityNameLen {
+		return RelayIdentity{}, fmt.Errorf("%w: nameLen %d, max %d", ErrBadRelayIdentity, nameLen, MaxRelayIdentityNameLen)
+	}
+	nameStart := 4 + versionLen + 1
+	if nameStart+nameLen > len(msg) {
+		return RelayIdentity{}, fmt.Errorf("%w: nameLen %d overruns %d-byte message", ErrBadRelayIdentity, nameLen, len(msg))
+	}
+	name := string(msg[nameStart : nameStart+nameLen])
+	if !utf8.ValidString(name) {
+		return RelayIdentity{}, fmt.Errorf("%w: name is not valid UTF-8", ErrBadRelayIdentity)
+	}
+	// Bytes past the name are the reserved extension space — ignored.
+	return RelayIdentity{ServerVersion: serverVersion, Name: name}, nil
+}
+
+// AppendTelemetryEndpoint appends a TelemetryEndpoint message (R37, docs/40
+// §4.10) to dst and returns the extended slice. Layout after the common
+// prefix: uint8 flags (0), uint16 urlLen (big-endian), then urlLen bytes of
+// an absolute https URL. It returns ErrBadTelemetryEndpoint for an empty,
+// oversize, non-https, or unparseable URL.
+func AppendTelemetryEndpoint(dst []byte, ingestURL string) ([]byte, error) {
+	if err := validateTelemetryEndpointURL(ingestURL); err != nil {
+		return nil, err
+	}
+	dst = append(dst, Version, TypeTelemetryEndpoint, 0)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(ingestURL)))
+	dst = append(dst, ingestURL...)
+	return dst, nil
+}
+
+// ParseTelemetryEndpoint parses a TelemetryEndpoint message. Same parser
+// stance as RelayIdentity: strict flags, tolerated trailing bytes, and the
+// URL must validate (absolute, https, parseable) — a message that fails here
+// degrades client-side to "no advertised URL", never to a failed session.
+func ParseTelemetryEndpoint(msg []byte) (string, error) {
+	if len(msg) < 6 {
+		return "", fmt.Errorf("%w: %d bytes, need at least 6 for telemetry endpoint", ErrShortDatagram, len(msg))
+	}
+	if msg[0] != Version {
+		return "", fmt.Errorf("%w: 0x%02x", ErrBadVersion, msg[0])
+	}
+	if msg[1] != TypeTelemetryEndpoint {
+		return "", fmt.Errorf("%w: got 0x%02x, want telemetry endpoint 0x%02x", ErrBadType, msg[1], TypeTelemetryEndpoint)
+	}
+	if msg[2] != 0 {
+		return "", fmt.Errorf("%w: reserved flag bits set (0x%02x)", ErrBadTelemetryEndpoint, msg[2])
+	}
+	urlLen := int(binary.BigEndian.Uint16(msg[3:5]))
+	if urlLen == 0 || urlLen > MaxTelemetryEndpointURLLen {
+		return "", fmt.Errorf("%w: urlLen %d, want 1-%d", ErrBadTelemetryEndpoint, urlLen, MaxTelemetryEndpointURLLen)
+	}
+	if 5+urlLen > len(msg) {
+		return "", fmt.Errorf("%w: urlLen %d overruns %d-byte message", ErrBadTelemetryEndpoint, urlLen, len(msg))
+	}
+	ingestURL := string(msg[5 : 5+urlLen])
+	if err := validateTelemetryEndpointURL(ingestURL); err != nil {
+		return "", err
+	}
+	// Bytes past the URL are the reserved extension space — ignored.
+	return ingestURL, nil
+}
+
+// validateTelemetryEndpointURL is the one rule for advertised ingest URLs,
+// applied on append (the relay refuses to advertise junk — SP11 fails fast
+// at startup) and on parse (a client never adopts a destination that isn't
+// an absolute https URL — docs/40 §5).
+func validateTelemetryEndpointURL(ingestURL string) error {
+	if len(ingestURL) == 0 || len(ingestURL) > MaxTelemetryEndpointURLLen {
+		return fmt.Errorf("%w: %d bytes, want 1-%d", ErrBadTelemetryEndpoint, len(ingestURL), MaxTelemetryEndpointURLLen)
+	}
+	for i := 0; i < len(ingestURL); i++ {
+		if ingestURL[i] <= 0x20 || ingestURL[i] > 0x7e {
+			return fmt.Errorf("%w: non-URL byte 0x%02x", ErrBadTelemetryEndpoint, ingestURL[i])
+		}
+	}
+	u, err := url.Parse(ingestURL)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrBadTelemetryEndpoint, err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("%w: not an absolute https URL", ErrBadTelemetryEndpoint)
+	}
+	return nil
 }

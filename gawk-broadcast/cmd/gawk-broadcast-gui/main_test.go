@@ -69,6 +69,66 @@ func idleFramesWith(t *testing.T, cfg *config.Config, n int, prepare func(*gawka
 	return imm
 }
 
+// R37 SP8: the picker mirrors the config's profiles, a hand-built flat config
+// is migrated on the way in, and a dropdown selection commits + persists
+// through the same path the config package tests in depth.
+func TestServerPickerDrivesTheConfig(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerProfile{
+			{Name: "Homelab", URL: "https://relay.home.example:4433", PublishSecret: "s3"},
+		},
+		SelectedServer: "Homelab",
+	}
+	a := gawkapp.New(gawkapp.Options{Config: cfg})
+	u := newUI(a, cfg)
+	if u.serverSel != 1 {
+		t.Fatalf("serverSel = %d, want 1 (the selected custom profile)", u.serverSel)
+	}
+	if got := u.relay.Text(); got != "https://relay.home.example:4433" {
+		t.Errorf("URL field = %q, want the selected profile's", got)
+	}
+
+	// A dropdown choice made during layout is applied on the next
+	// handleEvents pass: selection moves to the default and persists.
+	u.serverPick.sel = 0
+	var (
+		r   input.Router
+		ops op.Ops
+	)
+	gtx := layout.Context{
+		Ops: &ops, Now: time.Unix(0, 0), Source: r.Source(),
+		Metric: unit.Metric{PxPerDp: 1, PxPerSp: 1}, Constraints: layout.Exact(image.Pt(460, 560)),
+	}
+	u.handleEvents(gtx)
+	if cfg.SelectedServer != config.DefaultServerName {
+		t.Errorf("SelectedServer = %q after picking the default, want %q", cfg.SelectedServer, config.DefaultServerName)
+	}
+	if u.serverSel != 0 {
+		t.Errorf("serverSel = %d, want 0", u.serverSel)
+	}
+	// The profile left behind kept its data.
+	if got := cfg.CustomServers()[0]; got.URL != "https://relay.home.example:4433" || got.PublishSecret != "s3" {
+		t.Errorf("profile after switching away = %+v", got)
+	}
+}
+
+// A pre-R37 flat config handed straight to newUI (bypassing Load) is folded
+// into the same profile shape.
+func TestFlatConfigIsMigratedIntoThePicker(t *testing.T) {
+	cfg := &config.Config{RelayURL: "https://relay.example.com", PublishSecret: "hunter2"}
+	a := gawkapp.New(gawkapp.Options{Config: cfg})
+	u := newUI(a, cfg)
+	if u.serverSel != 1 {
+		t.Fatalf("serverSel = %d, want the migrated profile selected", u.serverSel)
+	}
+	if got := u.relay.Text(); got != "https://relay.example.com" {
+		t.Errorf("URL field = %q, want the migrated URL", got)
+	}
+	if relayURL, secret := cfg.Server(); relayURL != "https://relay.example.com" || secret != "hunter2" {
+		t.Errorf("Server() = (%q, %q), want the flat pair preserved through migration", relayURL, secret)
+	}
+}
+
 func TestIdleWindowSchedulesNoRedraws(t *testing.T) {
 	const frames = 20
 

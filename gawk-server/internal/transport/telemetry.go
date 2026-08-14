@@ -105,3 +105,52 @@ func (s *Server) sendTelemetryHello(sess *webtransport.Session, broadcastID stri
 	}
 	return sessionID
 }
+
+// sendTelemetryEndpoint advertises the fleet's ingest URL (R37, docs/40
+// §4.10 D14) on its own uni stream, composing with the 0x0D hello — the
+// hello's strict exact-length parser cannot be extended without breaking
+// every existing reader. Sent only when the fleet both collects telemetry
+// and has an advertised URL configured; callers on /internal/subscribe never
+// call this (an edge is plumbing, not a client). Best-effort under the same
+// docs/33 D9 posture as the hello: failure never degrades the session.
+func (s *Server) sendTelemetryEndpoint(sess *webtransport.Session, log *slog.Logger) {
+	if !s.telemetryEnabled() || s.cfg.TelemetryAdvertiseURL == "" {
+		return
+	}
+	msg, err := wire.AppendTelemetryEndpoint(nil, s.cfg.TelemetryAdvertiseURL)
+	if err != nil {
+		// Config parsing validated the URL, so this is unreachable outside a
+		// hand-built Config; skipping beats killing a working session.
+		log.Warn("telemetry endpoint skipped: encode failed", "err", err)
+		return
+	}
+	if err := sendUniMessage(sess, msg); err != nil {
+		log.Warn("telemetry endpoint not sent; this session reports to its configured URL", "err", err)
+	}
+}
+
+// sendRelayIdentity answers a probe's identity half (R37, docs/40 §4.4):
+// one RelayIdentity on a server-opened uni stream at /echo session start.
+// Runs in its own goroutine and is best-effort by construction — an echo
+// client that grants no uni-stream credit (OpenUniStream errors) or never
+// reads simply gets no identity, and the echo loop never notices (SP5's
+// no-wedging criterion). Media routes never call this in R37.
+func (s *Server) sendRelayIdentity(sess *webtransport.Session, log *slog.Logger) {
+	version := s.cfg.ReleaseVersion
+	if version == "" {
+		version = "dev"
+	}
+	msg, err := wire.AppendRelayIdentity(nil, wire.RelayIdentity{
+		ServerVersion: version,
+		Name:          s.cfg.ServerName,
+	})
+	if err != nil {
+		// Config parsing validated the name; a bad build-stamped version is
+		// the only path here and is a build bug, not a session's problem.
+		log.Warn("relay identity skipped: encode failed", "err", err)
+		return
+	}
+	if err := sendUniMessage(sess, msg); err != nil {
+		log.Debug("relay identity not sent", "err", err)
+	}
+}

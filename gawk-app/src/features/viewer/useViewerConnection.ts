@@ -547,6 +547,15 @@ export function useViewerConnection(
         // under (a disabled fleet carries a token and starts no session).
         setTelemetrySessionId(telemetry.sessionId);
         break;
+      // R37 (docs/40 D15/D16): the relay-advertised ingest URL. Races the
+      // hello on its own stream, so the collector accepts it in any order;
+      // the disclosure flag flips only for a non-default resolution.
+      case 'telemetryEndpoint':
+        telemetry.setAdvertisedUrl(ev.url);
+        if (useTransportStore.getState().resolvedSource !== 'default') {
+          useTransportStore.getState().setForeignTelemetryActive(true);
+        }
+        break;
     }
   }, [handleAudioChunk, handleAudioReset, telemetry]);
 
@@ -714,6 +723,9 @@ export function useViewerConnection(
         },
         onTelemetryHello: (hello) => {
           if (active) applyEvent({ type: 'telemetryHello', hello });
+        },
+        onTelemetryEndpoint: (url) => {
+          if (active) applyEvent({ type: 'telemetryEndpoint', url });
         },
       },
     );

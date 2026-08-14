@@ -251,6 +251,11 @@ interface TransportSettingsState extends ResolvedTransport {
   // Route-scoped like the override itself; rendered by the in-session
   // indicator, never fatal.
   relayLinkNote: string | null;
+  // R37 (docs/40 D16): true while this session reports diagnostics to a
+  // foreign relay's advertised collector — the in-session indicator carries
+  // the disclosure. Session-scoped, set by the screens when a 0x12 lands on
+  // a non-default resolution, cleared with the override on route change.
+  foreignTelemetryActive: boolean;
 
   // Picker actions (SP3).
   selectServer: (id: string) => void;
@@ -264,6 +269,7 @@ interface TransportSettingsState extends ResolvedTransport {
   // — routing only ever passes normalized origins.
   setSessionOverride: (url: string | null) => void;
   setRelayLinkNote: (note: string | null) => void;
+  setForeignTelemetryActive: (active: boolean) => void;
   // Cross-tab rule (F11): the panel re-reads storage when it opens;
   // last-writer-wins; no storage-event reactivity.
   reloadFromStorage: () => void;
@@ -457,8 +463,10 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
     ...initial,
     ...resolve(initial),
     relayLinkNote: null,
+    foreignTelemetryActive: false,
 
     setRelayLinkNote: (relayLinkNote) => set({ relayLinkNote }),
+    setForeignTelemetryActive: (foreignTelemetryActive) => set({ foreignTelemetryActive }),
 
     selectServer: (id) => {
       const s = get();

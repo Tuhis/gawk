@@ -88,6 +88,15 @@ telemetry:
   headlessService:
     enabled: true
     annotations: {}
+  # R37 (docs/40 §4.10 D14): the absolute https URL of THIS fleet's telemetry
+  # ingest, advertised to every publish/subscribe session in-band (wire 0x12)
+  # so sessions arriving from foreign gawk UIs report to this operator's
+  # collector. It names the FRONTEND's public ingress + ingest path (the same
+  # place the gawk-app chart's telemetry.path routes), e.g.
+  #   advertiseUrl: "https://gawk.example.com/api/telemetry/v1/ingest"
+  # Empty advertises nothing; an invalid URL fails relay startup (fail-fast).
+  # Only meaningful with telemetry.enabled.
+  advertiseUrl: ""
 
 certificate:
   # cert-manager Certificate for the relay's public name. The server's
@@ -110,6 +119,10 @@ config:
   # (gawk-server://native-internal-edge) is built in and honored only on
   # the PSK-gated internal route — never list it here (docs/22 finding 12).
   allowedOrigins: []
+  # R37 (docs/40 §4.4): operator display name advertised to server pickers
+  # over /echo (wire 0x11), e.g. "Juho's homelab". Rendered by picker UIs
+  # next to (never instead of) this relay's host. Empty leaves it unnamed.
+  serverName: ""
   maxSubscribers: 15
   maxBroadcasts: 5
   maxTotalSubscribers: 50

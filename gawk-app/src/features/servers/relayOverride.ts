@@ -20,6 +20,9 @@ export const NOTE_RELAY_INVALID =
 
 export function applyRouteRelay(route: Route): void {
   const store = useTransportStore.getState();
+  // A new route is a new session: any foreign-telemetry disclosure belongs
+  // to the session that produced it (D16).
+  store.setForeignTelemetryActive(false);
   if (route.view !== 'viewer' && route.view !== 'broadcaster') {
     store.setSessionOverride(null);
     store.setRelayLinkNote(null);

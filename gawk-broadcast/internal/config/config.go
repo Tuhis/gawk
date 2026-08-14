@@ -113,11 +113,42 @@ func normalizeRelayURL(raw string) string {
 	return out
 }
 
+// DefaultServerName is the reserved profile name for the pinned default relay
+// (docs/40 §4.1.1's `"default"` id, restated for this module). The default's
+// *identity* is never persisted — its URL is DefaultRelayURL, recomputed on
+// every use — so a ServerProfile with this name is only a credentials record:
+// a publish secret saved against the default, keyed to the URL it was saved
+// against so a moved default discards it (F9) rather than presenting it to
+// the new host.
+const DefaultServerName = "default"
+
+// ServerProfile is one saved relay server (R37 SP8, docs/40 §4.8): the
+// browser picker's entry schema in this module's shape. There is no
+// certHashHex here because the native broadcaster has no
+// serverCertificateHashes dance — it trusts the system store, with -insecure
+// as the dev-cert escape hatch (see dialRelay in internal/engine).
+type ServerProfile struct {
+	// Name is the user-editable display name; it doubles as the selection key
+	// (Config.SelectedServer), so it is unique within Servers. The name
+	// "default" is reserved (DefaultServerName).
+	Name string `json:"name"`
+	// URL is the relay's https:// origin.
+	URL string `json:"url,omitempty"`
+	// PublishSecret is this server's own R2 publish secret. Per-server on
+	// purpose (docs/40 D4): the secret stored for server A is never presented
+	// to server B.
+	PublishSecret string `json:"publishSecret,omitempty"`
+}
+
 // Config is the persisted settings. Everything is optional; the zero value is
 // a usable first run.
 type Config struct {
 	// RelayURL is the relay's https:// origin. Blank uses DefaultRelayURL —
-	// read it through Relay(), never directly.
+	// read it through Relay() or Server(), never directly.
+	//
+	// Since R37 this is an *override* slot, not the home of the relay choice:
+	// Load migrates a pre-R37 flat value into Servers (docs/40 §4.1.2), and
+	// what remains here afterwards is only what -url/GAWK_URL write per run.
 	RelayURL string `json:"relayUrl,omitempty"`
 	// AppURL is the *frontend* origin, used to build "join:" links and Copy
 	// link. It is deliberately separate: it is not derivable from the relay
@@ -173,6 +204,14 @@ type Config struct {
 	// hammer.
 	AudioApp string `json:"audioApp,omitempty"`
 
+	// Servers is the saved server list (R37 SP8): custom profiles plus at most
+	// one credentials-only record for the pinned default (DefaultServerName).
+	Servers []ServerProfile `json:"servers,omitempty"`
+	// SelectedServer names the profile broadcasts dial: a ServerProfile.Name,
+	// or DefaultServerName. Absent or unknown means the default (docs/40
+	// §4.1.1's rule).
+	SelectedServer string `json:"selectedServer,omitempty"`
+
 	// Rung.
 	Width      int `json:"width,omitempty"`
 	Height     int `json:"height,omitempty"`
@@ -209,7 +248,65 @@ func Load(path string) (*Config, error) {
 		return c, fmt.Errorf("config %s is not valid JSON (using defaults): %w", path, err)
 	}
 	c.path = path
+	c.Migrate()
 	return c, nil
+}
+
+// Migrate folds the pre-R37 flat relay/secret fields into the server list
+// (docs/40 §4.1.2, SP8) and applies the F9 guard. Load applies it; it is
+// exported for shells that build a Config by hand. Idempotent — a migrated
+// config passes through unchanged.
+//
+// The two legacy shapes, exactly as §4.1.2:
+//
+//   - flat URL names the default fleet (or is blank) → the secret becomes the
+//     default's credentials-only record, keyed to the normalized URL it was
+//     saved against, and the default is selected;
+//   - any other URL → one custom "Migrated server" profile carrying URL and
+//     secret, selected — a user who pointed their install at a custom relay
+//     keeps working without noticing.
+//
+// The flat fields are cleared afterwards (the frontend removes its legacy
+// localStorage keys the same way); from then on they are per-run override
+// slots for -url/GAWK_URL and -secret/GAWK_SECRET.
+func (c *Config) Migrate() {
+	// F9 guard, applied on every load, migrated or not: the default record's
+	// credentials are keyed to the URL they were saved against. If the
+	// built-in default has moved (a binary upgrade), discard them — the old
+	// relay's secret must not be presented to the new host.
+	kept := c.Servers[:0]
+	for _, p := range c.Servers {
+		if p.Name == DefaultServerName && normalizeRelayURL(p.URL) != normalizeRelayURL(DefaultRelayURL) {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	c.Servers = kept
+
+	if len(c.Servers) > 0 || c.SelectedServer != "" {
+		return // already migrated; the flat fields are overrides now
+	}
+	if strings.TrimSpace(c.RelayURL) == "" && c.PublishSecret == "" {
+		return // nothing legacy to migrate (a first run)
+	}
+	if isDefaultRelay(c.RelayURL) {
+		if c.PublishSecret != "" {
+			c.Servers = append(c.Servers, ServerProfile{
+				Name:          DefaultServerName,
+				URL:           normalizeRelayURL(DefaultRelayURL),
+				PublishSecret: c.PublishSecret,
+			})
+		}
+		c.SelectedServer = DefaultServerName
+	} else {
+		c.Servers = append(c.Servers, ServerProfile{
+			Name:          "Migrated server",
+			URL:           strings.TrimSpace(c.RelayURL),
+			PublishSecret: c.PublishSecret,
+		})
+		c.SelectedServer = "Migrated server"
+	}
+	c.RelayURL, c.PublishSecret = "", ""
 }
 
 // Save writes the config atomically, 0600.
@@ -253,12 +350,207 @@ func (c *Config) Save() error {
 	return os.Rename(tmpName, c.path)
 }
 
+// Server resolves the relay to dial and the publish secret to present — one
+// call, because since R37 the two must never be resolved separately: secrets
+// are stored per server (docs/40 D4) and attach only to the server they were
+// saved against.
+//
+// URL precedence: the flat RelayURL (where -url/GAWK_URL overrides land) >
+// the selected profile > DefaultRelayURL. The secret is the resolved
+// *server's* own: an override URL picks up a stored secret only when it names
+// a saved profile's URL (normalized comparison, same rule as isDefaultRelay);
+// pointing at a server nothing is saved for presents no stored credential.
+// The flat PublishSecret (an explicit -secret/GAWK_SECRET) always wins.
+func (c *Config) Server() (relayURL, publishSecret string) {
+	p := c.selectedProfile()
+	urlRaw, secret := p.URL, p.PublishSecret
+	if s := strings.TrimSpace(c.RelayURL); s != "" {
+		if normalizeRelayURL(ResolveRelayURL(s)) != normalizeRelayURL(ResolveRelayURL(urlRaw)) {
+			// The override names a different server than the selected profile:
+			// its secret must not travel (D4). A profile saved for the
+			// override's URL, if any, supplies the credential instead.
+			secret = c.storedSecretFor(s)
+		}
+		urlRaw = s
+	}
+	if c.PublishSecret != "" {
+		secret = c.PublishSecret
+	}
+	return ResolveRelayURL(urlRaw), secret
+}
+
+// selectedProfile resolves SelectedServer: the named custom profile, or the
+// pinned default when the selection is absent, "default", or names a profile
+// that no longer exists (docs/40 §4.1.1: absent/unknown ⇒ default).
+func (c *Config) selectedProfile() ServerProfile {
+	if name := c.SelectedServer; name != "" && name != DefaultServerName {
+		for _, p := range c.Servers {
+			if p.Name == name {
+				return p
+			}
+		}
+	}
+	return c.defaultProfile()
+}
+
+// defaultProfile is the pinned default: URL recomputed from DefaultRelayURL
+// (never persisted, docs/40 D5), credentials from the default record when one
+// exists.
+func (c *Config) defaultProfile() ServerProfile {
+	p := ServerProfile{Name: DefaultServerName, URL: DefaultRelayURL}
+	for _, q := range c.Servers {
+		if q.Name == DefaultServerName {
+			p.PublishSecret = q.PublishSecret
+			break
+		}
+	}
+	return p
+}
+
+// storedSecretFor returns the secret saved against rawURL's server, or "" when
+// no profile names it. The default record participates like any other entry.
+func (c *Config) storedSecretFor(rawURL string) string {
+	n := normalizeRelayURL(ResolveRelayURL(rawURL))
+	for _, p := range c.Servers {
+		if normalizeRelayURL(ResolveRelayURL(p.URL)) == n {
+			return p.PublishSecret
+		}
+	}
+	return ""
+}
+
+// DefaultSecret is the publish secret saved against the pinned default, "" for
+// none.
+func (c *Config) DefaultSecret() string { return c.defaultProfile().PublishSecret }
+
+// SetDefaultSecret stores, rotates, or ("") clears the pinned default's publish
+// secret — the docs/40 F4 rotation path. The record it writes is keyed to the
+// current default URL, so the F9 guard can discard it if the default moves.
+func (c *Config) SetDefaultSecret(secret string) {
+	for i := range c.Servers {
+		if c.Servers[i].Name != DefaultServerName {
+			continue
+		}
+		if secret == "" {
+			c.Servers = append(c.Servers[:i], c.Servers[i+1:]...)
+			return
+		}
+		c.Servers[i].URL = normalizeRelayURL(DefaultRelayURL)
+		c.Servers[i].PublishSecret = secret
+		return
+	}
+	if secret != "" {
+		c.Servers = append(c.Servers, ServerProfile{
+			Name:          DefaultServerName,
+			URL:           normalizeRelayURL(DefaultRelayURL),
+			PublishSecret: secret,
+		})
+	}
+}
+
+// CustomServers returns the saved custom profiles in order, the default's
+// credentials record excluded.
+func (c *Config) CustomServers() []ServerProfile {
+	var out []ServerProfile
+	for _, p := range c.Servers {
+		if p.Name != DefaultServerName {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// AddCustomServer appends a new empty profile under a unique placeholder name
+// and returns it.
+func (c *Config) AddCustomServer() ServerProfile {
+	name := "New server"
+	for i := 2; c.profileNameTaken(name); i++ {
+		name = fmt.Sprintf("New server %d", i)
+	}
+	p := ServerProfile{Name: name}
+	c.Servers = append(c.Servers, p)
+	return p
+}
+
+// UpdateCustomServer replaces the i-th custom profile (CustomServers order).
+// A rename follows the selection so the profile stays selected; an empty,
+// reserved, or already-taken new name keeps the old one — Name is the
+// selection key, so a collision would make two profiles indistinguishable.
+func (c *Config) UpdateCustomServer(i int, p ServerProfile) {
+	idx := c.customIndex(i)
+	if idx < 0 {
+		return
+	}
+	old := c.Servers[idx]
+	p.Name = strings.TrimSpace(p.Name)
+	if p.Name == "" || p.Name == DefaultServerName || (p.Name != old.Name && c.profileNameTaken(p.Name)) {
+		p.Name = old.Name
+	}
+	c.Servers[idx] = p
+	if c.SelectedServer == old.Name {
+		c.SelectedServer = p.Name
+	}
+}
+
+// RemoveCustomServer deletes the i-th custom profile (CustomServers order); a
+// selection pointing at it falls back to the default.
+func (c *Config) RemoveCustomServer(i int) {
+	idx := c.customIndex(i)
+	if idx < 0 {
+		return
+	}
+	if c.SelectedServer == c.Servers[idx].Name {
+		c.SelectedServer = DefaultServerName
+	}
+	c.Servers = append(c.Servers[:idx], c.Servers[idx+1:]...)
+}
+
+// customIndex maps a CustomServers index to a Servers index, or -1.
+func (c *Config) customIndex(i int) int {
+	n := 0
+	for idx, p := range c.Servers {
+		if p.Name == DefaultServerName {
+			continue
+		}
+		if n == i {
+			return idx
+		}
+		n++
+	}
+	return -1
+}
+
+func (c *Config) profileNameTaken(name string) bool {
+	for _, p := range c.Servers {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Relay is the relay URL to dial, defaults applied.
-func (c *Config) Relay() string { return ResolveRelayURL(c.RelayURL) }
+func (c *Config) Relay() string {
+	relayURL, _ := c.Server()
+	return relayURL
+}
 
 // Telemetry is the ingest endpoint to POST to, defaults applied; "" means this
-// process reports nowhere.
-func (c *Config) Telemetry() string { return ResolveTelemetryURL(c.RelayURL, c.TelemetryURL) }
+// process reports nowhere. The pairing rule (see ResolveTelemetryURL) is
+// applied against the *resolved* relay, so a selected foreign profile reports
+// nowhere unless an endpoint is configured explicitly — exactly the docs/40
+// §4.10 guard, which a relay-advertised endpoint (wire 0x12) then overrides
+// at the reporter.
+func (c *Config) Telemetry() string {
+	relayURL, _ := c.Server()
+	return ResolveTelemetryURL(relayURL, c.TelemetryURL)
+}
+
+// TelemetryOff reports whether raw is the explicit telemetry opt-out. It
+// exists for the shells' docs/40 §4.10 wiring: ResolveTelemetryURL returns ""
+// both for "off" and for "unset on a foreign relay", and only the former
+// forbids honoring a relay-advertised 0x12 endpoint — off means off.
+func TelemetryOff(raw string) bool { return strings.EqualFold(strings.TrimSpace(raw), Off) }
 
 // Path returns where this config lives.
 func (c *Config) Path() string { return c.path }

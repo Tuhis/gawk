@@ -19,12 +19,20 @@
 import { useEffect, useRef } from 'react';
 
 import { getTelemetryUrl } from '../config';
+import { useTransportStore } from '../state/transportStore';
 import { TelemetryCollector, type TelemetryRole } from './telemetry';
 
 export function useTelemetryCollector<T>(role: TelemetryRole): TelemetryCollector<T> {
   const ref = useRef<TelemetryCollector<T> | null>(null);
   if (ref.current === null) {
-    ref.current = new TelemetryCollector<T>({ url: getTelemetryUrl(), role });
+    ref.current = new TelemetryCollector<T>({
+      url: getTelemetryUrl(),
+      role,
+      // R37 (docs/40 §4.10): on a non-default relay the configured URL could
+      // only die at the home deployment's token check — batches wait for the
+      // relay's advertised destination (wire 0x12) or never leave.
+      requireAdvertisedUrl: () => useTransportStore.getState().resolvedSource !== 'default',
+    });
   }
   const collector = ref.current;
 

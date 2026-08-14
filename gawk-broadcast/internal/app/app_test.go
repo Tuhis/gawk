@@ -529,6 +529,80 @@ func TestUnconfiguredStartUsesTheDefaultRelay(t *testing.T) {
 	}
 }
 
+// R37 SP8: the selected server profile is what Start dials — URL and its own
+// per-server secret together.
+func TestSelectedServerProfileReachesTheDial(t *testing.T) {
+	fs := &fakeSession{}
+	cfg := &config.Config{
+		Servers: []config.ServerProfile{
+			{Name: "Homelab", URL: "https://relay.home.example:4433", PublishSecret: "home-secret"},
+		},
+		SelectedServer: "Homelab",
+	}
+	cfg.SetPath(filepath.Join(t.TempDir(), "broadcast.json"))
+	a := New(Options{
+		Config: cfg,
+		NewSession: func(ec engine.Config, cb engine.Callbacks, _ engine.Options) Session {
+			fs.cb, fs.cfg = cb, ec
+			return fs
+		},
+	})
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+
+	if fs.cfg.RelayURL != "https://relay.home.example:4433" {
+		t.Errorf("engine got RelayURL %q, want the selected profile's", fs.cfg.RelayURL)
+	}
+	if fs.cfg.PublishSecret != "home-secret" {
+		t.Errorf("engine got PublishSecret %q, want the selected profile's own", fs.cfg.PublishSecret)
+	}
+	// The §4.10 guard: a foreign profile with nothing configured reports
+	// nowhere (until the relay advertises, below).
+	if a.telemetry.Enabled() {
+		t.Error("telemetry enabled against a foreign profile with no endpoint configured or advertised")
+	}
+}
+
+// R37 (docs/40 §4.10): a relay-advertised 0x12 endpoint turns reporting on for
+// a foreign-relay session — and an explicit "off" is not overruled by it.
+func TestAdvertisedTelemetryEndpointIsHonoredUnlessOff(t *testing.T) {
+	start := func(t *testing.T, telemetryURL string) (*App, *fakeSession) {
+		t.Helper()
+		fs := &fakeSession{}
+		cfg := &config.Config{
+			Servers:        []config.ServerProfile{{Name: "Homelab", URL: "https://relay.home.example:4433"}},
+			SelectedServer: "Homelab",
+			TelemetryURL:   telemetryURL,
+		}
+		cfg.SetPath(filepath.Join(t.TempDir(), "broadcast.json"))
+		a := New(Options{
+			Config: cfg,
+			NewSession: func(ec engine.Config, cb engine.Callbacks, _ engine.Options) Session {
+				fs.cb, fs.cfg = cb, ec
+				return fs
+			},
+		})
+		a.Start(context.Background(), "")
+		waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "live")
+		return a, fs
+	}
+
+	t.Run("advertised endpoint enables reporting", func(t *testing.T) {
+		a, fs := start(t, "")
+		fs.cb.OnTelemetryEndpoint("https://gawk.home.example/api/telemetry/v1/ingest")
+		if !a.telemetry.Enabled() {
+			t.Error("an advertised endpoint did not reach the reporter")
+		}
+	})
+	t.Run("off means off, advertised or not", func(t *testing.T) {
+		a, fs := start(t, config.Off)
+		fs.cb.OnTelemetryEndpoint("https://gawk.home.example/api/telemetry/v1/ingest")
+		if a.telemetry.Enabled() {
+			t.Errorf("an advertised endpoint overruled an explicit %q", config.Off)
+		}
+	})
+}
+
 // The settings field has to mean something without an app restart: the
 // reporter outlives a broadcast, so Start re-reads it.
 func TestTelemetryFieldTakesEffectOnTheNextStart(t *testing.T) {

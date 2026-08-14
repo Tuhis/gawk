@@ -38,6 +38,7 @@ export interface ViewerTransportCallbacks {
   // it — it is forwarded to the pipeline and out to the main thread, which is
   // the only place collection happens (D13).
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
+  onTelemetryEndpoint?: (url: string) => void;
   // R29/R30: the relay's capabilities (docs/35 §5.3). The stripe controller
   // gates every engagement on CAP_STRIPED_DELIVERY — a relay that never
   // advertises is never dialed for legs, which is the whole skew story.
@@ -218,6 +219,7 @@ export class LocalViewerTransport implements ViewerTransport {
         onKeyframe: cb.onKeyframe,
         onCarrierRecord: (record) => cb.onDatagram(record),
         onTelemetryHello: (hello) => cb.onTelemetryHello?.(hello),
+        onTelemetryEndpoint: (url) => cb.onTelemetryEndpoint?.(url),
         onRelayCapabilities: (caps) => cb.onRelayCapabilities?.(caps),
       },
       this.carrier,

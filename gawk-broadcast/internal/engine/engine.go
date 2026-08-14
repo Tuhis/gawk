@@ -32,12 +32,13 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// announceReadLimit bounds each server-message read. Both messages the relay
-// sends a publisher — BroadcastAnnounce and ResumeToken — are at most 3 + 255
-// bytes by construction (wire.AppendBroadcastAnnounce/AppendResumeToken), so
-// anything larger is a misbehaving or hostile relay and must not be able to
-// grow our heap.
-const announceReadLimit = 258
+// serverMessageReadLimit bounds each server-message read. The largest message
+// the relay sends a publisher is a TelemetryEndpoint (R37, wire 0x12): a
+// 5-byte header plus a MaxTelemetryEndpointURLLen URL. Anything larger is a
+// misbehaving or hostile relay and must not be able to grow our heap. The one
+// thing the cap can clip is reserved extension bytes past a maximal payload —
+// which parsers ignore anyway (docs/40 §4.9).
+const serverMessageReadLimit = 5 + wire.MaxTelemetryEndpointURLLen
 
 // announceReadTimeout bounds each server-message read. A relay that opens a
 // stream and then says nothing must not pin the reader forever (Decision 10).
@@ -107,6 +108,14 @@ type Callbacks struct {
 	// predating R28 or with telemetry off — which is exactly the same thing
 	// as a shell that installs no callback: nothing is collected or sent.
 	OnTelemetryHello func(hello wire.TelemetryHello)
+	// OnTelemetryEndpoint fires when the relay advertises its fleet's
+	// telemetry ingest URL (R37, wire 0x12, docs/40 §4.10). The URL has
+	// already passed wire validation (absolute https, length-capped). Its
+	// precedence — an advertised URL wins over the configured one, and an
+	// explicit "off" still means off — is the shell's business, exactly like
+	// the hello above. A relay that advertises nothing (every pre-R37 relay)
+	// never fires it.
+	OnTelemetryEndpoint func(ingestURL string)
 	// OnViewerCount fires whenever the relay pushes the live "N watching"
 	// number (R18, docs/23 — the SubscriberCount R14 deferred as Decision
 	// 18; the wire message exists now, TypeViewerCount 0x0B). The count is
@@ -130,6 +139,12 @@ func (c Callbacks) resumeToken(token string) {
 func (c Callbacks) telemetryHello(h wire.TelemetryHello) {
 	if c.OnTelemetryHello != nil {
 		c.OnTelemetryHello(h)
+	}
+}
+
+func (c Callbacks) telemetryEndpoint(ingestURL string) {
+	if c.OnTelemetryEndpoint != nil {
+		c.OnTelemetryEndpoint(ingestURL)
 	}
 }
 
@@ -478,7 +493,7 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 	})
 	defer stopWatch()
 	_ = str.SetReadDeadline(time.Now().Add(announceReadTimeout))
-	buf, err := io.ReadAll(io.LimitReader(str, announceReadLimit))
+	buf, err := io.ReadAll(io.LimitReader(str, serverMessageReadLimit))
 	if err != nil {
 		s.log.Warn("server message read failed", "err", err)
 		return
@@ -541,6 +556,21 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 		}
 		s.sender.applyCapabilities(caps)
 		s.log.Debug("relay capabilities", "parity_level", caps.ParityLevel, "flags", caps.Flags)
+	case wire.TypeTelemetryEndpoint:
+		// R37 (docs/40 §4.10): where this fleet wants its diagnostics sent —
+		// the one party that mints the telemetry token naming the one place
+		// that token verifies. A malformed message degrades to "no advertised
+		// URL", never to a failed session (the F7 rule).
+		ingestURL, err := wire.ParseTelemetryEndpoint(buf)
+		if err != nil {
+			s.log.Warn("telemetry endpoint parse failed", "err", err)
+			return
+		}
+		// Logged for the same reason the hello is: an advertisement that never
+		// arrived and one that was ignored look identical from the outside,
+		// and the difference decides whose collector to go read.
+		s.log.Info("relay advertised telemetry endpoint", "url", ingestURL)
+		s.cb.telemetryEndpoint(ingestURL)
 	default:
 		s.log.Debug("server message ignored: unknown type", "type", buf[1])
 	}

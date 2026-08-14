@@ -68,6 +68,7 @@ export interface ViewerSessionCallbacks {
   // fires again — the collector must treat each as a fresh session rather than
   // as a repeat of the first.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
+  onTelemetryEndpoint?: (url: string) => void;
 }
 
 // The subset of ViewerPipeline the session drives; injectable for tests.
@@ -184,6 +185,7 @@ export class ViewerSession {
       ...(this.cb.onAudioReset ? { onAudioReset: () => this.cb.onAudioReset?.() } : {}),
       ...(this.cb.onReleasedFrame ? { onReleasedFrame: (f) => this.cb.onReleasedFrame?.(f) } : {}),
       ...(this.cb.onTelemetryHello ? { onTelemetryHello: (h) => this.cb.onTelemetryHello?.(h) } : {}),
+      ...(this.cb.onTelemetryEndpoint ? { onTelemetryEndpoint: (u: string) => this.cb.onTelemetryEndpoint?.(u) } : {}),
     };
     this.cb.onAudioReset?.();
     return this.createPipeline(this.serverUrl, this.broadcastId, this.connectOpts, inner);

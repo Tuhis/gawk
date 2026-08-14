@@ -22,6 +22,10 @@ import {
   parseTelemetryHello,
   telemetrySessionId,
   TELEMETRY_HELLO_SIZE,
+  encodeRelayIdentity,
+  parseRelayIdentity,
+  encodeTelemetryEndpoint,
+  parseTelemetryEndpoint,
   TELEMETRY_SESSION_ID_LEN,
   TYPE_STRIPE_STATE,
   STRIPE_STATE_SIZE,
@@ -872,5 +876,94 @@ describe('StripeState (R30)', () => {
     const legOf = (d: number) => d % 3;
     expect(legOf(stripeOrdinal(0, 20, 0))).toBe(2);
     expect(legOf(stripeOrdinal(0, 20, 1))).toBe(0);
+  });
+});
+
+// --- R37 RelayIdentity (0x11) + TelemetryEndpoint (0x12) (docs/40 SP4) ---
+// Golden vectors restated byte-identically from gawk-server/wire/wire_test.go.
+
+const GOLDEN_RELAY_IDENTITY_HEX = '01110006312e34322e30096761776b20686f6d65';
+const GOLDEN_RELAY_IDENTITY_NO_NAME_HEX = '01110006312e34322e3000';
+const GOLDEN_TELEMETRY_ENDPOINT_HEX =
+  '011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374';
+const GOLDEN_TELEMETRY_ENDPOINT_URL = 'https://gawk.example.com/api/telemetry/v1/ingest';
+
+describe('relay identity (0x11)', () => {
+  it('encodes the golden vectors byte-identically', () => {
+    expect(toHex(encodeRelayIdentity({ serverVersion: '1.42.0', name: 'gawk home' }))).toBe(
+      GOLDEN_RELAY_IDENTITY_HEX,
+    );
+    expect(toHex(encodeRelayIdentity({ serverVersion: '1.42.0', name: '' }))).toBe(
+      GOLDEN_RELAY_IDENTITY_NO_NAME_HEX,
+    );
+  });
+
+  it('parses the golden vectors', () => {
+    expect(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX))).toEqual({
+      serverVersion: '1.42.0',
+      name: 'gawk home',
+    });
+    expect(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_NO_NAME_HEX))).toEqual({
+      serverVersion: '1.42.0',
+      name: '',
+    });
+  });
+
+  // The extension-point contract (docs/40 §4.9): trailing bytes parse as if
+  // absent — appended future fields must not break this build.
+  it('tolerates trailing extension bytes', () => {
+    expect(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX + 'a1b2c3'))).toEqual({
+      serverVersion: '1.42.0',
+      name: 'gawk home',
+    });
+  });
+
+  it('rejects nonzero flags and length overruns', () => {
+    const flagged = fromHex(GOLDEN_RELAY_IDENTITY_HEX);
+    flagged[2] = 0x01;
+    expect(() => parseRelayIdentity(flagged)).toThrow(/reserved flag/);
+
+    const overrun = fromHex(GOLDEN_RELAY_IDENTITY_HEX);
+    overrun[3] = 0xff;
+    expect(() => parseRelayIdentity(overrun)).toThrow(/out of range|overruns/);
+
+    const nameOverrun = fromHex(GOLDEN_RELAY_IDENTITY_HEX);
+    nameOverrun[10] = 0x40;
+    expect(() => parseRelayIdentity(nameOverrun)).toThrow(/overruns/);
+
+    const badUtf8 = fromHex(GOLDEN_RELAY_IDENTITY_HEX);
+    badUtf8[11] = 0xff;
+    expect(() => parseRelayIdentity(badUtf8)).toThrow(/UTF-8/);
+  });
+});
+
+describe('telemetry endpoint (0x12)', () => {
+  it('round-trips the golden vector byte-identically', () => {
+    expect(toHex(encodeTelemetryEndpoint(GOLDEN_TELEMETRY_ENDPOINT_URL))).toBe(
+      GOLDEN_TELEMETRY_ENDPOINT_HEX,
+    );
+    expect(parseTelemetryEndpoint(fromHex(GOLDEN_TELEMETRY_ENDPOINT_HEX))).toBe(
+      GOLDEN_TELEMETRY_ENDPOINT_URL,
+    );
+  });
+
+  it('tolerates trailing extension bytes', () => {
+    expect(parseTelemetryEndpoint(fromHex(GOLDEN_TELEMETRY_ENDPOINT_HEX + '7f'))).toBe(
+      GOLDEN_TELEMETRY_ENDPOINT_URL,
+    );
+  });
+
+  it('rejects nonzero flags, overruns, and non-https URLs', () => {
+    const flagged = fromHex(GOLDEN_TELEMETRY_ENDPOINT_HEX);
+    flagged[2] = 0x80;
+    expect(() => parseTelemetryEndpoint(flagged)).toThrow(/reserved flag/);
+
+    const overrun = fromHex(GOLDEN_TELEMETRY_ENDPOINT_HEX);
+    overrun[3] = 0x01;
+    overrun[4] = 0x00;
+    expect(() => parseTelemetryEndpoint(overrun)).toThrow(/overruns/);
+
+    expect(() => encodeTelemetryEndpoint('http://insecure.example/x')).toThrow(/https/);
+    expect(() => encodeTelemetryEndpoint('not a url')).toThrow(/non-URL byte|parse/);
   });
 });

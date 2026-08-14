@@ -11,16 +11,49 @@ import { useEffect, useState } from 'react';
 import styles from './servers.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
-import { isDevEnvironment } from '../../config';
+import { getServerDirectoryUrl, isDevEnvironment } from '../../config';
 import {
   DEFAULT_SERVER_ID,
   defaultServerUrl,
   useTransportStore,
   type RelayServerEntry,
 } from '../../state/transportStore';
+import { fetchServerDirectory, type DirectoryOffer } from './directory';
+import { sanitizeIdentityName } from './probe';
+import { useServerProbe, type ProbeFn, type RowProbeState } from './useServerProbe';
 
 interface Props {
   onClose: () => void;
+  // Injectable for tests (jsdom has no WebTransport).
+  probeFn?: ProbeFn;
+  fetchFn?: typeof fetch;
+}
+
+// One probe cell (docs/40 §4.4): RTT + sanitized identity next to — never in
+// place of — the host the row already shows; one honest combined failure
+// state (browsers blur the causes).
+function ProbeCell({ probe }: { probe: RowProbeState | undefined }) {
+  if (!probe || probe.state === 'idle') return null;
+  if (probe.state === 'probing') return <span className={styles.rowProbe}>…</span>;
+  if (probe.state === 'failed') {
+    return (
+      <span
+        className={`${styles.rowProbe} ${styles.rowProbeBad}`}
+        title="Unreachable — or not a gawk server, a certificate problem, or a server that does not allow this app"
+      >
+        unreachable
+      </span>
+    );
+  }
+  const name = probe.identity ? sanitizeIdentityName(probe.identity.name) : '';
+  const detail = probe.identity
+    ? ` · ${name !== '' ? `${name} · ` : ''}gawk-server ${probe.identity.serverVersion}`
+    : '';
+  return (
+    <span className={styles.rowProbe}>
+      {Math.round(probe.rttMs)} ms{detail}
+    </span>
+  );
 }
 
 function hostOf(url: string): string {
@@ -46,10 +79,13 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = { label: '', url: '', publishSecret: '', certHashHex: '' };
 
-export function ServerPickerPanel({ onClose }: Props) {
+export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
   const servers = useTransportStore((s) => s.servers);
   const selectedServerId = useTransportStore((s) => s.selectedServerId);
   const sessionOverrideUrl = useTransportStore((s) => s.sessionOverrideUrl);
+  // Directory (docs/40 §4.5): fetched when the panel opens, never at boot;
+  // failure degrades to a quiet note. undefined = still loading.
+  const [directory, setDirectory] = useState<DirectoryOffer[] | null | undefined>(undefined);
 
   const [editing, setEditing] = useState<Editing>({ mode: 'closed' });
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
@@ -69,6 +105,50 @@ export function ServerPickerPanel({ onClose }: Props) {
   useEffect(() => {
     useTransportStore.getState().reloadFromStorage();
   }, []);
+
+  const directoryUrl = getServerDirectoryUrl();
+  useEffect(() => {
+    if (directoryUrl === '') {
+      setDirectory(null);
+      return;
+    }
+    let live = true;
+    void fetchServerDirectory(directoryUrl, fetchFn).then((offers) => {
+      if (live) setDirectory(offers);
+    });
+    return () => {
+      live = false;
+    };
+  }, [directoryUrl, fetchFn]);
+
+  // Saved servers probe on open + demand; directory offers on demand ONLY
+  // (F10 — the probe discloses the user's address to the probed host).
+  const { results: probeResults, probe } = useServerProbe(
+    [
+      { key: DEFAULT_SERVER_ID, url: defaultServerUrl(), certHashHex: defaultCreds().certHashHex, auto: true },
+      ...customServersOf(servers).map((e) => ({
+        key: e.id,
+        url: e.url,
+        certHashHex: e.certHashHex,
+        auto: true,
+      })),
+      ...(Array.isArray(directory) ? directory : []).map((o, i) => ({
+        key: `dir-${i}-${o.url}`,
+        url: o.url,
+        certHashHex: '',
+        auto: false,
+      })),
+    ],
+    probeFn,
+  );
+
+  function defaultCreds(): { certHashHex: string } {
+    const record = servers.find((e) => e.id === DEFAULT_SERVER_ID);
+    return { certHashHex: record?.certHashHex ?? '' };
+  }
+  function customServersOf(list: RelayServerEntry[]): RelayServerEntry[] {
+    return list.filter((e) => e.id !== DEFAULT_SERVER_ID);
+  }
 
   const openAdd = () => {
     setDraft(EMPTY_DRAFT);
@@ -242,6 +322,7 @@ export function ServerPickerPanel({ onClose }: Props) {
                 <span className={styles.rowLabel}>This deployment</span>
                 <span className={styles.rowHost}>{hostOf(defaultUrl)}</span>
               </span>
+              <ProbeCell probe={probeResults[DEFAULT_SERVER_ID]} />
               <span className={styles.rowActions}>
                 <span
                   className={styles.rowActionBtn}
@@ -277,6 +358,7 @@ export function ServerPickerPanel({ onClose }: Props) {
                   <span className={styles.rowLabel}>{entry.label || hostOf(entry.url)}</span>
                   <span className={styles.rowHost}>{hostOf(entry.url)}</span>
                 </span>
+                <ProbeCell probe={probeResults[entry.id]} />
                 <span className={styles.rowActions}>
                   <span
                     className={styles.rowActionBtn}
@@ -318,6 +400,58 @@ export function ServerPickerPanel({ onClose }: Props) {
               </button>
             ))}
           </div>
+
+          {directoryUrl !== '' && (
+            <>
+              <h3 className={styles.sectionTitle}>Directory</h3>
+              {directory === undefined && <p className={styles.note}>Loading directory…</p>}
+              {directory === null && <p className={styles.note}>Directory unavailable.</p>}
+              {Array.isArray(directory) && directory.length === 0 && (
+                <p className={styles.note}>The directory lists no servers.</p>
+              )}
+              {Array.isArray(directory) && directory.length > 0 && (
+                <div className={styles.list}>
+                  {directory.map((offer, i) => {
+                    const key = `dir-${i}-${offer.url}`;
+                    const alreadySaved = custom.some((e) => e.url === offer.url);
+                    return (
+                      <div key={key} className={styles.row} role="listitem">
+                        <span className={styles.rowMain}>
+                          <span className={styles.rowLabel}>
+                            {offer.label}
+                            {offer.managed ? ' · managed' : ''}
+                          </span>
+                          <span className={styles.rowHost}>{hostOf(offer.url)}</span>
+                        </span>
+                        <ProbeCell probe={probeResults[key]} />
+                        <span className={styles.rowActions}>
+                          <button
+                            type="button"
+                            className={styles.rowActionBtn}
+                            aria-label={`Ping ${offer.label}`}
+                            onClick={() => probe(key)}
+                          >
+                            Ping
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.rowActionBtn}
+                            aria-label={`Add ${offer.label}`}
+                            disabled={alreadySaved}
+                            onClick={() =>
+                              useTransportStore.getState().addServer({ label: offer.label, url: offer.url })
+                            }
+                          >
+                            {alreadySaved ? 'Added' : 'Add'}
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
 
           {editing.mode === 'closed' ? (
             <div className={styles.formActions}>

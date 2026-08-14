@@ -22,6 +22,7 @@ export function ServerIndicator() {
   const resolvedSource = useTransportStore((s) => s.resolvedSource);
   const serverUrl = useTransportStore((s) => s.serverUrl);
   const relayLinkNote = useTransportStore((s) => s.relayLinkNote);
+  const foreignTelemetryActive = useTransportStore((s) => s.foreignTelemetryActive);
 
   const nonDefault = resolvedSource !== 'default';
   if (!nonDefault && relayLinkNote === null) return null;
@@ -43,6 +44,13 @@ export function ServerIndicator() {
         {hostOf(serverUrl)}
       </span>
       {relayLinkNote !== null && <span className={styles.indicatorDetail}>{relayLinkNote}</span>}
+      {/* D16: choosing the relay is the telemetry consent; this is the
+          disclosure that makes it visible rather than silent. */}
+      {foreignTelemetryActive && (
+        <span className={styles.indicatorDetail}>
+          Diagnostics are shared with this server’s operator.
+        </span>
+      )}
     </div>
   );
 }

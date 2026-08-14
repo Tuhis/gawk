@@ -365,6 +365,108 @@ func TestTelemetryHelloIsDispatchedBehindTheOtherServerMessages(t *testing.T) {
 	}
 }
 
+// R37's TelemetryEndpoint (0x12, docs/40 §4.10) rides its own uni stream like
+// every server message. The URL here is deliberately longer than the old
+// 258-byte announce read cap: the wire allows up to 512 URL bytes, and a read
+// limit sized for the announce would silently truncate the message into a
+// parse failure — a session that streams fine and reports to the wrong
+// operator's collector, with nothing visible anywhere.
+func TestTelemetryEndpointIsDispatched(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	longURL := "https://gawk.example.com/api/telemetry/v1/ingest?pad=" + strings.Repeat("x", 300)
+	msg, err := wire.AppendTelemetryEndpoint(nil, longURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.incoming <- announceStream(msg)
+
+	got := make(chan string, 1)
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{OnTelemetryEndpoint: func(u string) { got <- u }},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	select {
+	case u := <-got:
+		if u != longURL {
+			t.Errorf("advertised URL = %q, want %q", u, longURL)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the telemetry endpoint was never dispatched: a foreign relay's telemetry would silently go nowhere")
+	}
+}
+
+// A malformed 0x12 degrades to "no advertised URL" (docs/40 F7): no callback,
+// and the session keeps working — later server messages still dispatch.
+func TestMalformedTelemetryEndpointIsIgnored(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	msg, err := wire.AppendTelemetryEndpoint(nil, "https://gawk.example.com/ingest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg[2] = 0x01 // a reserved flag bit — strict, unlike trailing bytes
+	sess.incoming <- announceStream(msg)
+	announce, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.incoming <- announceStream(announce)
+
+	gotID := make(chan string, 1)
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{
+			OnTelemetryEndpoint: func(u string) { t.Errorf("a malformed endpoint message was honored: %q", u) },
+			OnBroadcastID:       func(id string) { gotID <- id },
+		},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	select {
+	case <-gotID:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a malformed telemetry endpoint stopped later server messages from dispatching")
+	}
+}
+
+// An unknown server-message type is skipped, not an error: a newer relay
+// (version skew during a rolling upgrade) allocates types this binary has
+// never heard of, and each rides its own stream — ignoring one must not cost
+// the messages that follow. 0x13 is the next unallocated type today, so this
+// is literally tomorrow's message arriving early.
+func TestUnknownServerMessageTypeIsTolerated(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	sess.incoming <- announceStream([]byte{wire.Version, 0x13, 0xde, 0xad, 0xbe, 0xef})
+	announce, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.incoming <- announceStream(announce)
+
+	gotID := make(chan string, 1)
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	select {
+	case <-gotID:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an unknown-type stream broke server-message dispatch")
+	}
+}
+
 // The captured token is surfaced (hex, the relay's query-param encoding) so
 // the app can persist it beside the broadcast ID — an R17 relay refuses every
 // /publish/{id} claim without it.
@@ -476,8 +578,8 @@ func TestAnnounceReadIsBounded(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer s.Stop()
-	// The read is capped at announceReadLimit, so the parse sees 258 bytes
-	// (not a megabyte) and rejects them as a length mismatch.
+	// The read is capped at serverMessageReadLimit, so the parse sees 517
+	// bytes (not a megabyte) and rejects them as a length mismatch.
 	time.Sleep(50 * time.Millisecond)
 	if s.BroadcastID() != "" {
 		t.Errorf("BroadcastID = %q, want empty", s.BroadcastID())
