@@ -618,14 +618,13 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
     ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel, stripeMode }) => {
       // R37 (docs/40): the test relay is configured the way a real
       // deployment's is — config.relayUrl — so the app resolves it as the
-      // pinned DEFAULT server. The legacy gawk.serverUrl key would instead
-      // migrate into a selected custom entry, and a non-default resolution
-      // legitimately withholds telemetry until the relay advertises an
-      // ingest URL (wire 0x12, the §4.10 guard) — which is exactly what
-      // broke the telemetry pass when this harness still used the old key.
-      // The legacy keys stay seeded on purpose: every run now also
-      // exercises the R37 migration folding them into the default's
-      // credentials record (cert hash included).
+      // pinned DEFAULT server rather than a migrated custom entry. (The
+      // interim D15 suppression guard this originally worked around was
+      // reverted — review R3-A — but this seeding stays right on its own:
+      // it models a real deployment's config shape.) The legacy keys stay
+      // seeded on purpose: every run also exercises the R37 migration
+      // folding them into the default's credentials record (cert hash
+      // included).
       localStorage.setItem('gawk.serverUrl', serverUrl);
       if (hash) localStorage.setItem('gawk.certHashHex', hash);
       // R19/R21: the persisted delivery choice is the only way in — the mode

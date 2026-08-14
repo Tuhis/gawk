@@ -40,7 +40,10 @@ review-visible:
   ships in both wire mirrors and the pickers' plumbing is in place, but
   neither native GUI renders RTT/identity yet — the SP8/SP9 rows' probe
   criterion moves to a follow-up chunk. No probe traffic exists, so nothing
-  regresses.
+  regresses. **The same follow-up chunk owns the native D16 disclosure
+  surface** (review G4): natively, a 0x12 repointing the reporter is
+  disclosed only by an Info log line today — visible on the CLI, invisible
+  in both GUIs — where the frontend shows it on the in-session indicator.
 - **Native profiles are name-keyed** (`"default"` reserved), not id-keyed
   like the frontend schema — the two native apps share one shape
   deliberately; the frontend's id-keyed storage is browser-local and never
