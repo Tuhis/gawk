@@ -19,11 +19,11 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 374 packages
+## Summary — 377 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT OR Apache-2.0` | 171 |
+| `MIT OR Apache-2.0` | 175 |
 | `MIT` | 63 |
 | `Apache-2.0 OR MIT` | 30 |
 | `Unicode-3.0` | 25 |
@@ -41,7 +41,6 @@ script for what counts as a dependency here and why.
 | `BSD-3-Clause OR Apache-2.0` | 2 |
 | `BSD-3-Clause OR MIT OR Apache-2.0` | 2 |
 | `BSL-1.0` | 2 |
-| `CDLA-Permissive-2.0` | 2 |
 | `Unlicense OR MIT` | 2 |
 | `Zlib` | 2 |
 | `(MIT OR Apache-2.0) AND Unicode-3.0` | 1 |
@@ -50,6 +49,7 @@ script for what counts as a dependency here and why.
 | `Apache-2.0 AND ISC` | 1 |
 | `Apache-2.0 AND MIT` | 1 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
+| `CDLA-Permissive-2.0` | 1 |
 | `MIT / Apache-2.0` | 1 |
 | `MIT OR Zlib OR Apache-2.0` | 1 |
 
@@ -163,6 +163,8 @@ script for what counts as a dependency here and why.
 | `heck` | 0.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `htmlparser` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2018 Reizner Evgeniy |
 | `httlib-huffman` | 0.3.4 | `MIT` | — |
+| `http` | 1.5.0 | `MIT OR Apache-2.0` | Copyright 2017 http-rs authors<br>Copyright (c) 2017 http-rs authors |
+| `httparse` | 1.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2015-2025 Sean McArthur |
 | `hybrid-array` | 0.4.13 | `MIT OR Apache-2.0` | Copyright (c) 2022-2026 The RustCrypto Project Developers |
 | `i-slint-backend-selector` | 1.17.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `i-slint-backend-winit` | 1.17.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
@@ -378,16 +380,17 @@ script for what counts as a dependency here and why.
 | `unicode-width` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `unicode-xid` | 0.2.6 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
-| `ureq` | 2.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
+| `ureq` | 3.3.0 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
+| `ureq-proto` | 0.6.0 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
 | `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `usvg` | 0.47.0 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
+| `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.0.4 | `Apache-2.0 OR MIT` | — |
 | `uuid` | 1.24.0 | `Apache-2.0 OR MIT` | Copyright (c) 2014 The Rust Project Developers<br>Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
 | `v_frame` | 0.3.9 | `BSD-2-Clause` | Copyright (c) 2017-2022, the rav1e contributors |
 | `vtable` | 0.4.0 | `MIT OR Apache-2.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `vtable-macro` | 0.4.0 | `MIT OR Apache-2.0` | — |
 | `webbrowser` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2015-2022 Amod Malviya |
-| `webpki-roots` | 0.26.11 | `CDLA-Permissive-2.0` | — |
 | `webpki-roots` | 1.0.9 | `CDLA-Permissive-2.0` | — |
 | `weezl` | 0.1.12 | `MIT OR Apache-2.0` | Copyright (c) HeroicKatora 2020 |
 | `windows` | 0.62.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
@@ -678,9 +681,9 @@ You should also get your employer (if you work as a programmer) or school, if an
 The GNU General Public License does not permit incorporating your program into proprietary programs. If your program is a subroutine library, you may consider it more useful to permit linking proprietary applications with the library. If this is what you want to do, use the GNU Lesser General Public License instead of this License. But first, please read <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 ```
 
-### 2. Apache-2.0 — 146 packages
+### 2. Apache-2.0 — 148 packages
 
-Applies to: `aligned`, `arrayvec`, `as-slice`, `asn1-rs`, `asn1-rs-derive`, `base64`, `bitflags`, `bitstream-io`, `block-buffer`, `by_address`, `cfg-if`, `chacha20` — and 134 more
+Applies to: `aligned`, `arrayvec`, `as-slice`, `asn1-rs`, `asn1-rs-derive`, `base64`, `bitflags`, `bitstream-io`, `block-buffer`, `by_address`, `cfg-if`, `chacha20` — and 136 more
 
 ```
 Apache License
@@ -886,9 +889,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 3. Apache-2.0 — 43 packages
+### 3. Apache-2.0 — 44 packages
 
-Applies to: `allocator-api2`, `anyhow`, `arboard`, `auto_enums`, `derive_utils`, `fdeflate`, `field-offset`, `half`, `image`, `image-webp`, `itoa`, `libc` — and 31 more
+Applies to: `allocator-api2`, `anyhow`, `arboard`, `auto_enums`, `derive_utils`, `fdeflate`, `field-offset`, `half`, `image`, `image-webp`, `itoa`, `libc` — and 32 more
 
 ```
 Apache License
@@ -4896,9 +4899,9 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 45. MIT — 177 packages
+### 45. MIT — 181 packages
 
-Applies to: `adler2`, `aligned`, `allocator-api2`, `annotate-snippets`, `anstyle`, `anyhow`, `arrayvec`, `as-slice`, `asn1-rs`, `asn1-rs-derive`, `auto_enums`, `bitflags` — and 165 more
+Applies to: `adler2`, `aligned`, `allocator-api2`, `annotate-snippets`, `anstyle`, `anyhow`, `arrayvec`, `as-slice`, `asn1-rs`, `asn1-rs-derive`, `auto_enums`, `bitflags` — and 169 more
 
 ```
 Permission is hereby granted, free of charge, to any
