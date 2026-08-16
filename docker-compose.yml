@@ -1,0 +1,134 @@
+# gawk's local development stack (R38, docs/41).
+#
+# THIS IS A DEVELOPMENT AND EVALUATION TOOL, NOT A DEPLOYMENT PATH (docs/41
+# D12). Helm remains the only supported way to run gawk for real: the charts
+# carry the operational properties this file does not have and is not trying
+# to have — pod draining, probes, cluster mode, certificate renewal, capacity
+# limits. Read docs/self-hosting.md before deploying anything.
+#
+#   docker compose up                 the default lane: relay + app, a
+#                                     self-signed certificate generated once
+#                                     and persisted, its hash injected into
+#                                     the frontend. No prerequisites but
+#                                     Docker; open http://localhost:8080
+#   ./dev/certs.sh                    pick a different certificate lane
+#                                     (mkcert, or ACME on your own domain)
+#   docker compose --profile sim up   add a synthetic broadcaster
+#
+# Images are BUILT FROM THIS CHECKOUT (D15) — a contributor runs the stack to
+# see their own change, so nothing here pulls ghcr.io/tuhis/*.
+#
+# Every ${VAR} carries an inline default so a bare `docker compose up` works
+# with no .env at all; ./dev/certs.sh writes .env for the other lanes.
+
+# Pinned so the project (and therefore its containers, network and volumes) is
+# called the same thing however the checkout directory is named.
+name: gawk
+
+services:
+  # The relay. In the default lane GAWK_DEV_CERT plus GAWK_CERT_FILE means
+  # "generate into these paths if absent, otherwise load them" (docs/41 D3),
+  # so the certificate — and therefore the hash the browser was given —
+  # survives a restart. In the mkcert/ACME lanes DEV_CERT is empty and the
+  # same paths are simply loaded.
+  relay:
+    build:
+      context: ./gawk-server
+      dockerfile: deploy/Dockerfile
+    # HOST_UID/HOST_GID decide who owns the generated pair. Unset means root,
+    # which can always write into ./certs; ./dev/certs.sh writes your real ids
+    # so the pair stays yours — which is what lets the host-binary inner loop
+    # (README, docs/41 §4.5) read the same key.
+    user: "${HOST_UID:-0}:${HOST_GID:-0}"
+    ports:
+      # WebTransport is QUIC, so this is UDP and only UDP.
+      - "${BIND_ADDR:-127.0.0.1}:${RELAY_PORT:-4433}:4433/udp"
+      # The ops listener (/healthz, /statusz, /metrics) is 127.0.0.1 in every
+      # lane, deliberately NOT ${BIND_ADDR} (docs/41 D14): a LAN-exposed dev
+      # stack is exactly where "expose the ops port too" becomes a habit.
+      - "127.0.0.1:2112:2112"
+    volumes:
+      - ./certs:/certs
+    environment:
+      GAWK_CERT_FILE: /certs/cert.pem
+      GAWK_KEY_FILE: /certs/key.pem
+      # Empty (the mkcert/ACME lanes) is false; `1` is the default lane.
+      GAWK_DEV_CERT: "${DEV_CERT-1}"
+      GAWK_DEV_CERT_HOSTS: "${CERT_HOSTS:-localhost,127.0.0.1}"
+      # Set, not left open: the dev default is allow-all, so without this the
+      # origin allowlist would first meet a developer in production.
+      GAWK_ALLOWED_ORIGINS: "${APP_ORIGIN:-http://localhost:8080}"
+      GAWK_LOG_LEVEL: "${LOG_LEVEL:-info}"
+      # The healthcheck below is an /echo session every 5 s; without this it
+      # buries the two lines a developer actually reads (the cert hash, and
+      # the broadcast ids).
+      GAWK_QUIET_PROBE_LOGS: "1"
+    healthcheck:
+      # Exec form is mandatory — the relay image is distroless and has no
+      # shell. No -cert-hash (empty skips verification) and no -origin (the
+      # loopback bypass in transport/server.go admits a probe without one).
+      test: ["CMD", "/gawk-echo", "-url", "https://127.0.0.1:4433/echo", "-count", "1", "-timeout", "2s"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  # Renders dev/generated/config.js — the same /config.js mechanism the
+  # gawk-app chart uses via its ConfigMap, so the frontend needs no dev-only
+  # code path. Runs once per `up` and exits.
+  config-gen:
+    image: alpine:3.21
+    entrypoint: ["/bin/sh", "/dev-scripts/config-gen.sh"]
+    volumes:
+      - ./certs:/certs:ro
+      - ./dev:/dev-scripts:ro
+      - ./dev/generated:/out
+    environment:
+      # 127.0.0.1, not localhost, and it is load-bearing: `localhost` resolves
+      # to ::1 first on macOS and on most Linux desktops, Docker publishes the
+      # relay's UDP port on IPv4 only, and a QUIC dial gets none of the
+      # happy-eyeballs fallback that hides this for the app's TCP port. The
+      # browser simply fails the opening handshake.
+      RELAY_URL: "${RELAY_URL:-https://127.0.0.1:4433}"
+      CERT_MODE: "${CERT_MODE:-devcert}"
+      APP_URL: "${APP_URL:-http://localhost:8080}"
+      OUT: /out/config.js
+    depends_on:
+      relay:
+        condition: service_healthy
+
+  # The frontend image, unmodified, with two read-only mounts: a copy of its
+  # own nginx conf that aliases /config.js, and the generated file itself.
+  # The image runs unprivileged and cannot write into its docroot, which is
+  # why the generated config is aliased rather than copied over the shipped
+  # one (docs/41 §4.1.2).
+  app:
+    build:
+      context: ./gawk-app
+      dockerfile: deploy/Dockerfile
+    ports:
+      # Lanes B and C put Caddy in front and move this to loopback:8081.
+      - "${APP_HTTP_ADDR:-127.0.0.1:8080}:8080"
+    volumes:
+      - ./dev/nginx-dev.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./dev/generated:/gawk-gen:ro
+    depends_on:
+      config-gen:
+        condition: service_completed_successfully
+
+  # HTTPS front door for the mkcert and ACME lanes: those serve a real
+  # hostname, and a real hostname over plain HTTP is not a secure context, so
+  # getDisplayMedia and WebCodecs would be unavailable. ./dev/certs.sh turns
+  # this on by writing COMPOSE_PROFILES=tls into .env.
+  caddy:
+    image: caddy:2.10-alpine
+    profiles: ["tls"]
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${APP_PORT:-8443}:443"
+    volumes:
+      - ./dev/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+    depends_on:
+      app:
+        condition: service_started

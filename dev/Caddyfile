@@ -1,0 +1,23 @@
+# HTTPS front door for the local stack's trusted-certificate lanes (R38,
+# docs/41 §4.1.2). Only the mkcert and ACME lanes start it — the default lane
+# is plain HTTP on localhost, which is already a secure context.
+#
+# It exists because a real hostname over plain HTTP is NOT a secure context:
+# getDisplayMedia, WebCodecs and WebTransport would all be unavailable at
+# https://gawk.localhost's http:// sibling. Caddy terminates TLS with the
+# lane's certificate and proxies to the unchanged app image.
+{
+	# The certificate is the developer's, from ./dev/certs.sh. Caddy must not
+	# try to obtain one of its own — this stack is not reachable from the
+	# internet and an ACME attempt here would only produce noise.
+	auto_https off
+	admin off
+}
+
+# Any host, port 443 inside the container. Matching by port rather than by
+# name keeps one Caddyfile correct for gawk.localhost, a LAN name and an ACME
+# name alike — the certificate is what decides which names actually work.
+:443 {
+	tls /certs/cert.pem /certs/key.pem
+	reverse_proxy app:8080
+}
