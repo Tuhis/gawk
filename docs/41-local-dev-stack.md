@@ -745,16 +745,153 @@ fails the QUIC handshake with `QUIC_TLS_CERTIFICATE_UNKNOWN` regardless. There
 is no way to fake trust for a browser test — which is precisely why lane B
 exists, and why its last step needs a real trust-store write.
 
-### 10.4 Still manual
+### 10.4 Still manual — the two remaining passes, step by step
 
-- **`mkcert -install`** writes the system trust store and can only ask for an
-  administrator password from a terminal, so lane B's final step — and with it
-  the Firefox-as-viewer pass that justifies the lane — is the owner's. The
-  wizard now fails with that exact instruction rather than continuing to issue
-  a certificate nothing would trust (`TRUST_STORES=nss mkcert -install` covers
-  Firefox alone, no password).
-- **Lane C's live issuance and the phone-on-the-LAN pass.** The wizard was
-  exercised against Let's Encrypt staging on a real domain up to the point
-  where it waits on the TXT record; everything before that (CAA check,
-  challenge extraction, authoritative polling) ran for real, and everything
-  after it is covered by the stub suite.
+Both are blocked on something a session cannot supply: an administrator
+password, and a DNS record in a zone it does not control. Neither is a known
+defect; each is the last mile of §9's verification plan. **This is the
+runbook — follow it literally, and record the outcome where §10.5 says.**
+
+#### A. Lane B: `mkcert -install`, then a Firefox viewer
+
+The claim to prove is §8 LD5's: *a broadcast completes with Firefox as the
+viewer*. Everything up to the trust-store write is already verified (§10.3).
+
+1. **Install the CA.** In a terminal, so it can prompt:
+
+   ```sh
+   mkcert -install          # types your password; idempotent
+   ```
+
+   Expect `The local CA is already installed in the system trust store! 👍`
+   (and a second line for the NSS store if `certutil` is present). If Firefox
+   is the only target, `TRUST_STORES=nss mkcert -install` needs no password —
+   but it needs `certutil`: `brew install nss` on macOS.
+
+   `brew install mkcert` on 2026-08-17 already created the CA at
+   `$(mkcert -CAROOT)` without trusting it; this step is what trusts it.
+   `mkcert -uninstall` reverses it.
+
+2. **Switch the stack to the lane.**
+
+   ```sh
+   ./dev/certs.sh mkcert
+   docker compose up -d --wait
+   ```
+
+   Expect `.env` to carry `CERT_MODE=mkcert`, `DEV_CERT=` (empty),
+   `GAWK_HOST=gawk.localhost`, `APP_PORT=8443`, `COMPOSE_PROFILES=tls`,
+   `APP_HTTP_ADDR=127.0.0.1:8081`, and `RELAY_URL=https://127.0.0.1:4433` —
+   an **IPv4 literal on purpose** (§10.1). `docker compose ps` should show
+   `relay`, `app` and `caddy`.
+
+3. **Check the two things that are asserted, not assumed.**
+
+   ```sh
+   cat dev/generated/config.js                    # must contain NO devCertHashHex
+   docker compose logs relay | grep 'loaded certificate'   # not "persisted dev certificate"
+   ```
+
+4. **Chrome first** — it isolates "is the stack right" from "does Firefox
+   trust the CA". Open `https://gawk.localhost:8443/#/broadcast`, **Start a
+   stream**, accept the terms modal, share any window; copy the 6-character
+   code and open `https://gawk.localhost:8443/#/view/<code>` in a second
+   window. `Ctrl+Alt+Shift+D` toggles the stats overlay: *Decoded* must climb.
+
+5. **Then Firefox** (this is the pass that justifies the lane). Same join URL,
+   in Firefox Developer Edition. Watch for:
+   - *"Secure Connection Failed" / untrusted issuer* → the NSS store did not
+     get the root. `brew install nss && mkcert -install`, restart Firefox.
+   - *The name does not resolve* → Firefox's built-in `*.localhost` mapping is
+     not in play; add `127.0.0.1  gawk.localhost` to `/etc/hosts`.
+   - *Connects, never decodes* → a codec problem, not a certificate one: the
+     Chrome broadcaster negotiated H.264 and this is Firefox's decode path.
+     That is a `docs/11` finding, not a lane-B failure — record it as such.
+
+6. **What a pass looks like**: the Firefox viewer's *Decoded* counter climbing
+   with no hash anywhere in the flow. Note the codec and the fps from the
+   overlay; they belong in §10.3.
+
+#### B. Lane C: a live issuance, then a phone on the LAN
+
+The wizard has been driven against Let's Encrypt **staging** on a real domain
+through CAA, challenge extraction and authoritative polling; it timed out
+waiting for a TXT record nobody added, and correctly reported that nothing had
+been submitted. What remains is the second half.
+
+1. **Choose the sub-lane.** `ioio.fi` is on Route 53, so **C-1 is available
+   and is the better long-term answer** — it renews without a human:
+
+   ```sh
+   # in .env, never committed:
+   LEGO_DNS_PROVIDER=route53
+   AWS_ACCESS_KEY_ID=...
+   AWS_SECRET_ACCESS_KEY=...
+   AWS_REGION=eu-north-1
+   ```
+
+   Scope the key to that hosted zone. `dev/certs.sh` passes every non-gawk
+   variable in `.env` to lego through a 0600 env file and never prints one.
+   C-2 (manual TXT) needs no credentials and is what §9 asks for; do that one
+   if the point is to rehearse what a person actually experiences.
+
+2. **Rehearse on staging.** `ACME_STAGING=1` in `.env`. Staging certificates
+   are untrusted by design — the browser warning is expected and is not the
+   thing being tested.
+
+   ```sh
+   ACME_TXT_TIMEOUT=3600 ./dev/certs.sh acme
+   ```
+
+   The default wait is 900 s; raise it when a human has to go and edit DNS.
+   The wizard prints:
+
+   ```
+       name   _acme-challenge.dev.ioio.fi
+       type   TXT
+       value  <43 characters>
+   ```
+
+   **The value changes on every run** — take it from the run that is waiting,
+   not from an earlier one. In the Route 53 console the value must be quoted:
+   `"<value>"`. The wizard polls all four `awsdns` nameservers every 10 s and
+   proceeds by itself; leave it running.
+
+3. **Expect**, in order: `✓ seen on every authoritative nameserver after Ns —
+   validating`, lego's issuance lines, `→ certs/cert.pem, certs/key.pem`, the
+   A records to add, and — in C-2 — the warning that this sub-lane cannot
+   renew itself.
+
+4. **Add the A records** (they point at loopback; nothing is exposed):
+
+   ```
+   gawk.dev.ioio.fi   A   127.0.0.1
+   lan.dev.ioio.fi    A   <this machine's LAN address>
+   ```
+
+   If `gawk.dev.ioio.fi` then does not resolve locally while the authoritative
+   server answers, the wizard says so and prints the `/etc/hosts` line — that
+   is DNS-rebinding protection in the local resolver, not a mistake.
+
+5. **Run it.** `docker compose up -d --wait`, then
+   `https://gawk.dev.ioio.fi:8443`. Repeat step A.4's broadcast/join check.
+
+6. **The pass that justifies the lane**: from a **phone on the same LAN**, with
+   nothing installed on it, open `https://lan.dev.ioio.fi:8443/#/view/<code>`.
+   That needs `BIND_ADDR=0.0.0.0` — `./dev/certs.sh` sets it when you give it a
+   LAN address — and a **trusted** certificate, so re-run with
+   `ACME_STAGING=0` first. Production rate limits: 50 certificates per
+   registered domain per week, 5 duplicates of the same name set; the wizard
+   explains both if you meet them.
+
+7. **Sub-lane note for whoever renews it later**: C-2 cannot renew
+   automatically — there is no DNS API to answer the next challenge with. If
+   this certificate is meant to survive, use C-1.
+
+### 10.5 Where to record the outcome
+
+When either pass completes, update **§10.3** with what was observed (codec,
+fps, device), strike the corresponding entry from §10.4, and move the
+`ROADMAP.md` R38 row from 🔧 to ✅ once both are done. If a pass *fails*, the
+finding belongs in §10.3 too — and, if it is a browser behaviour rather than a
+stack one, in `docs/gotchas.md` under the cross-browser section.

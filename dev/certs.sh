@@ -11,6 +11,12 @@
 #   ./dev/certs.sh renew           re-issue in the lane .env already names
 #   ./dev/certs.sh check           run the preflight checks and report
 #
+# Two knobs come from the shell environment rather than .env (which is read
+# key by key, not sourced): ACME_TXT_TIMEOUT, how long to wait for the
+# challenge record before giving up without submitting (default 900 s — raise
+# it when a person has to go and edit DNS), and ACME_TXT_POLL, how often to
+# ask (default 10 s).
+#
 # This script never writes outside ./certs, ./dev/generated and ./.env, all of
 # which are gitignored — a private key in a public repository is not a mistake
 # with a warning attached, since CAs must revoke keys reported as compromised
@@ -749,7 +755,9 @@ main() {
         renew) lane_renew; exit 0 ;;
         check) ensure_env; preflight; exit $? ;;
         -h|--help|help)
-            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+            # The header block, to the first line that is not a comment — so
+            # help cannot drift out of step with what the file says.
+            awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
             exit 0
             ;;
         "")
