@@ -30,6 +30,13 @@ if ! docker compose version >/dev/null 2>&1; then
     exit 2
 fi
 
+# Every compose invocation ignores .env deliberately: these are assertions
+# about the stack's DESIGN, and a developer who has switched to the mkcert
+# lane must not turn them red. It also means the inline defaults in
+# docker-compose.yml — the ones a bare `docker compose up` on a fresh clone
+# uses — are what gets checked.
+dc() { docker compose --env-file /dev/null "$@"; }
+
 echo "compose file"
 
 # D14, and §5 states it as a literal instruction about this file: the ops
@@ -65,7 +72,7 @@ echo "profiles"
 
 # The default `up` is relay + app + config-gen only: a default that starts
 # five containers is a default people stop running (D11).
-default_services=$(docker compose config --services 2>/dev/null | sort | tr '\n' ' ')
+default_services=$(dc config --services 2>/dev/null | sort | tr '\n' ' ')
 if [ "$default_services" = "app config-gen relay " ]; then
     ok "a bare \`up\` starts exactly relay, config-gen and app"
 else
@@ -73,24 +80,28 @@ else
 fi
 
 for p in sim telemetry app-dev tls; do
-    case "$(docker compose config --profiles 2>/dev/null)" in
+    case "$(dc config --profiles 2>/dev/null)" in
         *"$p"*) ok "the $p profile exists" ;;
         *)      fail "the $p profile is missing" ;;
     esac
 done
 
-profiled_services() { COMPOSE_PROFILES=$1 docker compose config --services 2>/dev/null | sort | tr '\n' ' '; }
+in_profile() { # in_profile <profile> <service>
+    [ "$(COMPOSE_PROFILES=$1 dc config --services 2>/dev/null | grep -c "^$2\$")" = 1 ]
+}
 
-check "the tls profile adds caddy"          sh -c '[ "$(COMPOSE_PROFILES=tls docker compose config --services | grep -c "^caddy$")" = 1 ]'
-check "the sim profile adds pubsim"         sh -c '[ "$(COMPOSE_PROFILES=sim docker compose config --services | grep -c "^pubsim$")" = 1 ]'
+check "the tls profile adds caddy"   in_profile tls caddy
+check "the sim profile adds pubsim"  in_profile sim pubsim
+check "the app-dev profile adds it"  in_profile app-dev app-dev
 check "telemetry does not start without its profile" \
-    sh -c '! docker compose config --services | grep -q "^telemetry$"'
-check "the telemetry profile adds telemetry" \
-    sh -c '[ "$(COMPOSE_PROFILES=telemetry docker compose config --services | grep -c "^telemetry$")" = 1 ]'
+    sh -c '! docker compose --env-file /dev/null config --services | grep -q "^telemetry$"'
+check "the telemetry profile adds telemetry" in_profile telemetry telemetry
 
 # The read/dashboard listener is never routed publicly (CLAUDE.md), so it is
-# not published at all — reach it with `docker compose exec`.
-if COMPOSE_PROFILES=telemetry docker compose config 2>/dev/null | grep -q 'published: "8081"'; then
+# not published at all — reach it with `docker compose exec`. Asserted on the
+# CONTAINER port: a published mapping renders as `target: 8081`, whatever host
+# port it was given.
+if COMPOSE_PROFILES=telemetry dc config 2>/dev/null | grep -q 'target: 8081'; then
     fail "the telemetry read listener is published"
 else
     ok "the telemetry read listener is not published"
