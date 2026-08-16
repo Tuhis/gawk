@@ -56,6 +56,7 @@ feature set exists).
 | R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; **AS7 on-hardware verification (docs/39 §6) outstanding** and is what decides the milestone ([docs/39](docs/39-linux-app-sharing.md)) |
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
 | R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
+| R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, not started (LD1–LD7) — run gawk locally with one `docker compose up`, with a certificate the browser accepts and no hash to copy-paste; three setup levels from "Docker only" to "works from your phone". Tooling + docs, plus one relay cert flag and one dev-only frontend config key; zero wire/viewer/broadcaster change ([docs/41](docs/41-local-dev-stack.md)) |
 
 ---
 
@@ -3223,6 +3224,101 @@ suites; Windows workspace tests + native clippy). Remaining: SP10's manual
 cross-deployment verification pass, and the deferred native-GUI probe
 display — see the implementation-status note in
 [docs/40](docs/40-relay-server-picker.md).
+
+---
+
+## R38 — Local development stack
+
+**Goal**: **you can run gawk on your own computer with one command.**
+
+Today, getting a stream working locally looks like this:
+
+```sh
+# install Go, install Node, then:
+go run ./cmd/gawk-server -dev-cert   # terminal 1
+npm run dev                          # terminal 2
+# then: find "cert_hash_hex" in terminal 1's log, copy it,
+#       open the app's ⚙ settings, paste it in
+# then: do that copy-paste AGAIN every time you restart the relay
+```
+
+After R38:
+
+```sh
+git clone https://github.com/Tuhis/gawk && cd gawk
+docker compose up
+# open the printed URL and broadcast. That's it.
+```
+
+**Who this is for and what they get**:
+
+- **Someone trying gawk out** — sees it working in a couple of minutes
+  instead of giving up during setup.
+- **A new contributor** — can run the thing they're changing, without
+  installing Go and Node first.
+- **A self-hoster** — practises the real certificate setup on their laptop
+  before doing it for real on a server.
+- **Us** — "let me just check that locally" becomes a normal thing to do.
+  Most of gawk's behaviour is only visible with a relay, a broadcaster and a
+  viewer all running at once, and right now that is enough work that we
+  mostly don't bother.
+
+**Why the certificate is the hard part**: browsers refuse to open a
+WebTransport connection unless they trust the server's certificate — and
+nobody will issue you a certificate for `localhost`, because certificates
+prove *you own a name*, and everyone's machine "owns" localhost. Every bit of
+today's awkwardness (the hash, the copy-paste, the pasting it again) is a
+workaround for that one problem.
+
+So R38 builds **one stack where the certificate is a swappable part**, and
+offers three ways to fill it:
+
+| | What you need | What you get |
+|---|---|---|
+| **A** *(default)* | nothing but Docker | Works in Chrome on your own machine. No setup, no internet needed. |
+| **B** | run `mkcert -install` once | Also works in **Firefox** — real trusted certificate, nothing to copy-paste ever. |
+| **C** | a domain name you own | Also works from **your phone and other computers**, with nothing installed on them. A guided wizard walks you through it. |
+
+Everything else in the stack is identical in all three — only where the
+certificate comes from changes.
+
+**Two fixes that do most of the work in lane A**:
+
+- **Stop throwing the certificate away.** The relay currently generates a new
+  one every start, which is the only reason you re-paste the hash. Generate
+  it once, keep it, and the copy-paste disappears — and local dev starts
+  using the same certificate-from-a-file path the real deployment uses.
+- **Give the app the hash itself.** Today the viewer page can only find it
+  because the broadcast page happened to save it in the browser first, so a
+  fresh browser profile or a second computer just fails. Handing it to the
+  app at startup fixes that.
+
+**Also included**: optional extras you turn on only when you want them — a
+fake broadcaster (so you can test the viewer without screen-sharing),
+telemetry, and a hot-reloading frontend for UI work. Plus a CI job that runs
+the whole thing, because a dev setup nobody tests quietly breaks.
+
+**Non-goals**: this is **not** a way to deploy gawk for real — Helm charts
+stay the only supported path, and the compose file says so out loud. The
+native Linux/Windows broadcasters aren't part of it either (they're apps you
+install, not services). And gawk will not run a DNS or certificate service of
+its own.
+
+**Rejected in the design** (see [docs/41](docs/41-local-dev-stack.md) §6, so
+nobody re-proposes them): free "magic DNS" services like `nip.io`/`sslip.io`
+(they hand out *names*, not certificates, and you can't get a certificate for
+a name that points at your own laptop without running a public DNS server);
+services like `localhost.direct` that publish a ready-made certificate *and
+its private key* (convenient, but a public key gets revoked sooner or later
+and then every contributor breaks at once, for reasons we can't fix);
+committing a certificate and key to this repo (same problem, faster); and
+running a whole local Kubernetes (k3d/Tilt — that just brings back the pile
+of prerequisites this milestone exists to remove, and the `e2e` kind tier
+already covers cluster testing in CI).
+
+**Status**: designed 2026-08-14, not started (LD1–LD7). Built in three
+phases: A (compose + the zero-setup lane) → B (the trusted-certificate lanes)
+→ C (extras, CI, docs).
 
 ---
 
