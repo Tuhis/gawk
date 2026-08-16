@@ -1,10 +1,8 @@
 package tlsutil
 
 import (
-	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"io"
 	"log/slog"
 	"os"
@@ -23,20 +21,10 @@ func writeCertPair(t *testing.T, dir string, mtime time.Time) string {
 	if err != nil {
 		t.Fatalf("GenerateDevCert: %v", err)
 	}
-	keyDER, err := x509.MarshalECPrivateKey(cert.PrivateKey.(*ecdsa.PrivateKey))
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
 	certPath := filepath.Join(dir, "tls.crt")
 	keyPath := filepath.Join(dir, "tls.key")
-	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		t.Fatal(err)
+	if err := WriteCertPair(certPath, keyPath, cert); err != nil {
+		t.Fatalf("WriteCertPair: %v", err)
 	}
 	// Set an explicit mtime so consecutive writes are always distinguishable
 	// regardless of filesystem timestamp granularity.

@@ -14,9 +14,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
 	"net"
+	"os"
 	"strings"
 	"time"
 )
@@ -88,6 +92,127 @@ func GenerateDevCert(hosts []string, validity time.Duration) (tls.Certificate, e
 		PrivateKey:  key,
 		Leaf:        leaf,
 	}, nil
+}
+
+// WriteCertPair writes cert (0644) and key (0600) as PEM to the given paths:
+// a CERTIFICATE block and an EC PRIVATE KEY block, the encoding gawk-devcert
+// has always produced. Parent directories must already exist. The modes are
+// applied explicitly rather than left to the umask, so a key written under a
+// permissive umask is still owner-only.
+func WriteCertPair(certPath, keyPath string, cert tls.Certificate) error {
+	if len(cert.Certificate) == 0 {
+		return fmt.Errorf("tlsutil: certificate has no DER blocks")
+	}
+	key, ok := cert.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return fmt.Errorf("tlsutil: private key is %T, want *ecdsa.PrivateKey", cert.PrivateKey)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("tlsutil: marshal key: %w", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	if err := writeFileMode(certPath, certPEM, 0o644); err != nil {
+		return fmt.Errorf("tlsutil: write certificate: %w", err)
+	}
+	if err := writeFileMode(keyPath, keyPEM, 0o600); err != nil {
+		return fmt.Errorf("tlsutil: write key: %w", err)
+	}
+	return nil
+}
+
+func writeFileMode(path string, data []byte, mode os.FileMode) error {
+	if err := os.WriteFile(path, data, mode); err != nil {
+		return err
+	}
+	return os.Chmod(path, mode)
+}
+
+// LoadOrGenerate returns the certificate at certPath/keyPath, generating and
+// writing a fresh dev certificate for hosts when NEITHER file exists.
+// generated reports whether it wrote one. If exactly one of the two paths
+// exists it returns an error without writing anything: half-generating over a
+// stray file is how a developer loses a key they meant to keep.
+//
+// This is what makes a local dev certificate survive a restart (R38, docs/41
+// D3) — the hash a browser was given stays valid instead of being invalidated
+// by every `-dev-cert` start.
+func LoadOrGenerate(certPath, keyPath string, hosts []string, validity time.Duration) (tls.Certificate, bool, error) {
+	certExists, err := regularFileExists(certPath)
+	if err != nil {
+		return tls.Certificate{}, false, err
+	}
+	keyExists, err := regularFileExists(keyPath)
+	if err != nil {
+		return tls.Certificate{}, false, err
+	}
+
+	switch {
+	case certExists && keyExists:
+		cert, err := loadPairWithLeaf(certPath, keyPath)
+		return cert, false, err
+	case certExists != keyExists:
+		kind, present, absent := "cert", certPath, keyPath
+		if keyExists {
+			kind, present, absent = "key", keyPath, certPath
+		}
+		return tls.Certificate{}, false, fmt.Errorf(
+			"tlsutil: refusing to overwrite an existing %s file: %s exists but %s does not",
+			kind, present, absent)
+	}
+
+	cert, err := GenerateDevCert(hosts, validity)
+	if err != nil {
+		return tls.Certificate{}, false, err
+	}
+	if err := WriteCertPair(certPath, keyPath, cert); err != nil {
+		return tls.Certificate{}, false, err
+	}
+	// Re-read what was written rather than returning the in-memory pair, so a
+	// caller that logs an identity logs the identity of the bytes on disk.
+	loaded, err := loadPairWithLeaf(certPath, keyPath)
+	if err != nil {
+		return tls.Certificate{}, false, err
+	}
+	return loaded, true, nil
+}
+
+func loadPairWithLeaf(certPath, keyPath string) (tls.Certificate, error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("tlsutil: load certificate: %w", err)
+	}
+	if cert.Leaf == nil {
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("tlsutil: parse certificate: %w", err)
+		}
+		cert.Leaf = leaf
+	}
+	return cert, nil
+}
+
+// regularFileExists distinguishes "absent" from "unreadable": a stat error
+// that is not ErrNotExist (a permission problem, a broken mount) must not be
+// read as "generate a fresh one over the top".
+func regularFileExists(path string) (bool, error) {
+	if path == "" {
+		return false, nil
+	}
+	fi, err := os.Stat(path)
+	switch {
+	case err == nil:
+		if fi.IsDir() {
+			return false, fmt.Errorf("tlsutil: %s is a directory, want a PEM file", path)
+		}
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return false, fmt.Errorf("tlsutil: stat %s: %w", path, err)
+	}
 }
 
 // SPKIFingerprint returns base64(SHA-256(SubjectPublicKeyInfo)), the value

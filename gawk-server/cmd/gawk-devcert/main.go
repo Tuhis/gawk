@@ -5,9 +5,6 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/x509"
-	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
@@ -43,17 +40,10 @@ func run() error {
 	certPath := filepath.Join(*out, "cert.pem")
 	keyPath := filepath.Join(*out, "key.pem")
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
-	keyDER, err := x509.MarshalECPrivateKey(cert.PrivateKey.(*ecdsa.PrivateKey))
-	if err != nil {
-		return fmt.Errorf("marshal key: %w", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	// One PEM encoder for both writers (R38, docs/41 §4.0): the relay's
+	// generate-if-absent path writes the same pair, and two encoders would be
+	// two things to keep identical.
+	if err := tlsutil.WriteCertPair(certPath, keyPath, cert); err != nil {
 		return err
 	}
 
