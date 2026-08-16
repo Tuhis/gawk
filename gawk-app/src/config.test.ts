@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { getRuntimeConfig, requiresPublishSecret,
   getDvrBufferMs,
   DEFAULT_DVR_BUFFER_MS,
@@ -10,6 +10,7 @@ import { getRuntimeConfig, requiresPublishSecret,
   getOperatorContact,
   getTermsUrl,
   getRelayUrl,
+  getDevCertHashHex,
 } from './config';
 
 beforeEach(() => {
@@ -131,5 +132,65 @@ describe('terms config', () => {
     window.__GAWK_CONFIG__ = { operatorContact: 'x@y.z', termsUrl: '/terms.html' };
     expect(getOperatorContact()).toBe('x@y.z');
     expect(getTermsUrl()).toBe('/terms.html');
+  });
+});
+
+// R38 (docs/41 D4): the local stack's dev certificate hash. The gate is the
+// point of the key — it exists so `#/view/{id}` works on a local stack, and
+// must be inert anywhere else.
+describe('getDevCertHashHex', () => {
+  afterEach(() => {
+    delete window.__GAWK_CONFIG__;
+  });
+
+  it('returns the configured hash on a loopback origin', () => {
+    window.__GAWK_CONFIG__ = { devCertHashHex: 'a1b2c3' };
+    expect(getDevCertHashHex()).toBe('a1b2c3');
+  });
+
+  // isDevEnvironment() is "Vite dev mode OR a loopback hostname", and the test
+  // runner is itself Vite dev mode — so proving the hostname half of the gate
+  // means turning the other half off.
+  it('returns "" on a non-loopback origin even when the key is set', () => {
+    vi.stubEnv('DEV', false);
+    (window as any).location = { hostname: 'gawk.example.com' };
+    window.__GAWK_CONFIG__ = { devCertHashHex: 'a1b2c3' };
+    expect(getDevCertHashHex()).toBe('');
+    vi.unstubAllEnvs();
+  });
+
+  it('treats empty and whitespace as unset', () => {
+    window.__GAWK_CONFIG__ = {};
+    expect(getDevCertHashHex()).toBe('');
+    window.__GAWK_CONFIG__ = { devCertHashHex: '' };
+    expect(getDevCertHashHex()).toBe('');
+    window.__GAWK_CONFIG__ = { devCertHashHex: '   ' };
+    expect(getDevCertHashHex()).toBe('');
+  });
+});
+
+// D4 says this key is deliberately NOT a chart value: offering the knob would
+// invite a production deployment to paper over a TLS misconfiguration with
+// it. A deliberate omission is invisible to a reader of the chart, so it is
+// asserted here rather than left to be "tidied up" by a later sweep.
+describe('the gawk-app chart does not learn devCertHashHex (D4)', () => {
+  // Read through Vite's glob rather than node:fs — this package has no Node
+  // type definitions and D4 is not worth a dependency.
+  const chartFiles = import.meta.glob('../deploy/charts/**/*', {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }) as Record<string, string>;
+
+  it('sees the chart at all (a vacuous pass would prove nothing)', () => {
+    expect(Object.keys(chartFiles).length).toBeGreaterThan(0);
+    expect(Object.keys(chartFiles).some((p) => p.endsWith('configmap.yaml'))).toBe(true);
+  });
+
+  it('is absent from every file under deploy/charts', () => {
+    const offenders = Object.entries(chartFiles)
+      .filter(([, body]) => body.includes('devCertHashHex'))
+      .map(([path]) => path);
+    expect(offenders).toEqual([]);
   });
 });

@@ -66,6 +66,18 @@ export interface GawkRuntimeConfig {
   // false hides the picker and ignores ?relay= with a quiet note.
   allowCustomRelays?: boolean;
 
+  // R38 (docs/41 D4): hex SHA-256 of the relay's self-signed dev certificate
+  // DER, for local stacks whose relay presents an untrusted cert. Read ONLY in
+  // a dev environment, and deliberately NOT a gawk-app chart value: a
+  // production deployment needing this has a TLS misconfiguration, not a
+  // missing knob. The local stack's dev/config-gen.sh renders it.
+  //
+  // It is what lets the bare `#/view/{id}` route — which has no cert-hash
+  // field, by design — work in a fresh profile, in incognito and on a second
+  // machine, instead of only where the broadcaster page had already written
+  // the hash to same-origin localStorage.
+  devCertHashHex?: string;
+
   // R37 (docs/40 D9): optional URL of a directory JSON the picker offers
   // (schema v1). Fetched when the picker opens — never at boot. Empty/unset
   // means no directory section. Same-origin path recommended (the terms.html
@@ -136,6 +148,16 @@ export function isDevEnvironment(): boolean {
   if (typeof window === 'undefined') return false;
   const h = window.location.hostname;
   return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+}
+
+// R38 (docs/41 D4): the local stack's relay certificate hash, '' anywhere
+// that is not a dev environment. The gate is not decoration — a bundle served
+// from a real hostname must never present a hash it was handed by config, and
+// a deployment that thinks it needs one has a TLS problem to fix instead.
+export function getDevCertHashHex(): string {
+  if (!isDevEnvironment()) return '';
+  const v = getRuntimeConfig().devCertHashHex;
+  return (typeof v === 'string' && v.trim()) || '';
 }
 
 export const DEFAULT_DVR_BUFFER_MS = 3000;

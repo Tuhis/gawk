@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import { getRelayUrl } from '../config';
+import { getDevCertHashHex, getRelayUrl } from '../config';
 import { normalizeRelayOrigin } from '../lib/relayUrl';
 
 // R37 (docs/40 §4.1): the server model. What was three global values
@@ -302,10 +302,34 @@ function defaultCredentials(servers: RelayServerEntry[]): { publishSecret: strin
   return { publishSecret: '', certHashHex: '' };
 }
 
+// R38 (docs/41 §4.2.3): a local stack renders its relay's dev-certificate
+// hash into /config.js, which is what makes the chrome-free `#/view/{id}`
+// route work in a fresh profile instead of only where the broadcaster page
+// had already written the hash to localStorage.
+//
+// A FALLBACK, never an override: a hash the developer typed wins, because
+// they typed it while pointing somewhere else. And it is scoped by URL, not
+// by entry id — the configured hash belongs to THIS deployment's relay, so
+// presenting it to a foreign `?relay=` target would be handing one relay's
+// identity to another.
+function withDevCertFallback(resolved: ResolvedTransport): ResolvedTransport {
+  if (resolved.certHashHex !== '') return resolved;
+  const configured = getDevCertHashHex();
+  if (configured === '') return resolved;
+  if (normalizeRelayOrigin(resolved.serverUrl) !== normalizeRelayOrigin(defaultServerUrl())) {
+    return resolved;
+  }
+  return { ...resolved, certHashHex: configured };
+}
+
 // Precedence, top wins: session override > selected entry > pinned default
 // (docs/40 §4.1.1). An override whose URL equals a saved entry (the default
 // included) resolves to that entry, credentials attached.
 function resolve(inputs: ResolutionInputs): ResolvedTransport {
+  return withDevCertFallback(resolveEntry(inputs));
+}
+
+function resolveEntry(inputs: ResolutionInputs): ResolvedTransport {
   const { servers, selectedServerId, sessionOverrideUrl } = inputs;
   const defaultUrl = defaultServerUrl();
   const normalizedDefault = normalizeRelayOrigin(defaultUrl);
