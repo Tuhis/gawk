@@ -1,0 +1,32 @@
+# gawk-pubsim: the synthetic broadcaster the `sim` profile runs (R38, docs/41
+# §4.5). It drives the real engine — announce, resume token, reliable keyframe
+# streams, delta datagrams, TimeSync — with a committed H.264 fixture instead
+# of a GPU, so a developer can watch a live broadcast without screen-sharing
+# anything. The fixture is embedded in the binary, so the runtime image needs
+# nothing beside it.
+#
+# It imports the engine and wire only (no Gio, no cgo, no GStreamer), so it
+# builds anywhere the relay does.
+#
+# The build context is the REPO ROOT, not gawk-broadcast/: that module reaches
+# gawk-server/wire through a local `replace ../gawk-server`, so the relay
+# module's tree has to be present at build time — the same constraint
+# gawk-telemetry's image documents.
+#
+#   docker build -f dev/Dockerfile.pubsim -t gawk-pubsim:dev .
+#
+# It lives under dev/ rather than gawk-broadcast/deploy/ deliberately:
+# gawk-broadcast is a binary you run on your own PC, not a deployed component,
+# and it should not grow a deploy/ directory for a dev convenience.
+
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY gawk-server/ ./gawk-server/
+COPY gawk-broadcast/ ./gawk-broadcast/
+WORKDIR /src/gawk-broadcast
+RUN go mod download
+RUN go build -trimpath -o /out/gawk-pubsim ./cmd/gawk-pubsim
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/gawk-pubsim /gawk-pubsim
+ENTRYPOINT ["/gawk-pubsim"]

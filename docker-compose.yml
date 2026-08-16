@@ -56,13 +56,21 @@ services:
       GAWK_DEV_CERT: "${DEV_CERT-1}"
       GAWK_DEV_CERT_HOSTS: "${CERT_HOSTS:-localhost,127.0.0.1}"
       # Set, not left open: the dev default is allow-all, so without this the
-      # origin allowlist would first meet a developer in production.
-      GAWK_ALLOWED_ORIGINS: "${APP_ORIGIN:-http://localhost:8080}"
+      # origin allowlist would first meet a developer in production. The
+      # second value is the origin every native broadcaster sends — the `sim`
+      # profile's publisher, and the Linux/Windows apps when you point one at
+      # this stack (docs/self-hosting.md carries the same row).
+      GAWK_ALLOWED_ORIGINS: "${APP_ORIGIN:-http://localhost:8080},gawk-broadcast://native"
       GAWK_LOG_LEVEL: "${LOG_LEVEL:-info}"
       # The healthcheck below is an /echo session every 5 s; without this it
       # buries the two lines a developer actually reads (the cert hash, and
       # the broadcast ids).
       GAWK_QUIET_PROBE_LOGS: "1"
+      # Telemetry is off unless you turn it on, here as everywhere else: an
+      # empty key means the relay never sends a client a hello, so no session
+      # is ever collected. The `telemetry` profile needs this set on both
+      # sides — see .env.example.
+      GAWK_TELEMETRY_KEY: "${GAWK_TELEMETRY_KEY-}"
     healthcheck:
       # Exec form is mandatory — the relay image is distroless and has no
       # shell. No -cert-hash (empty skips verification) and no -origin (the
@@ -117,6 +125,102 @@ services:
       config-gen:
         condition: service_completed_successfully
 
+  # ── Optional profiles (docs/41 D11) ───────────────────────────────────────
+  # Each answers one specific question and costs nothing when unused, which is
+  # why they are not in the default `up`.
+
+  # "I want a live broadcast without screen-sharing anything."
+  #     docker compose --profile sim up
+  # The join code is the GAWK_PUBSIM_ID= line in the logs.
+  pubsim:
+    profiles: ["sim"]
+    build:
+      context: .
+      dockerfile: dev/Dockerfile.pubsim
+    # -insecure is correct here and ONLY here (docs/41 §5): an in-container Go
+    # client dialing a self-signed relay over the compose network, where there
+    # is no hash to pin and nothing outside this host to be fooled by it. It
+    # must not spread to any other service or example.
+    command: ["-url", "https://relay:4433", "-insecure", "-fps", "30"]
+    depends_on:
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # "I'm working on telemetry."
+  #     docker compose --profile telemetry up
+  # Reach the dashboard/read API with `docker compose exec` — it is NOT
+  # published, here as everywhere else (CLAUDE.md: that listener is never
+  # routed publicly). Ingest is same-origin through the app's nginx.
+  telemetry:
+    profiles: ["telemetry"]
+    build:
+      # Repo root: gawk-telemetry consumes gawk-server/wire through a local
+      # replace, so the relay module's tree must be present.
+      context: .
+      dockerfile: gawk-telemetry/deploy/Dockerfile
+    # The image runs as uid 65532 and a fresh named volume is root-owned, so
+    # it cannot create its data directory. The chart solves this with
+    # `fsGroup: 65532`; compose has no equivalent, and the volume holds only
+    # local diagnostics, so the dev stack runs this one as root.
+    user: "0:0"
+    command:
+      - "-telemetry-key=${GAWK_TELEMETRY_KEY:-0000000000000000000000000000000000000000000000000000000000000000}"
+      - "-ingest-addr=:8080"
+      - "-read-addr=:8081"
+      - "-data-dir=/data"
+      - "-relay-addrs=relay:2112"
+      - "-scrape-interval=5s"
+      # MUST exceed the client's 10 s flush interval: a shorter idle finalizes
+      # a live session between its own flushes, and every later batch then
+      # arrives for an already-finalized session (e2e/README.md records what
+      # that looked like — three rollup rows for one viewer).
+      - "-session-idle=2m"
+    ports:
+      # Ingest, on loopback only — the browser reaches it same-origin through
+      # the app's nginx, so this is for curl. The read/dashboard listener
+      # (8081) is deliberately not published at all.
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - telemetry-data:/data
+    depends_on:
+      relay:
+        condition: service_healthy
+
+  # "I'm iterating on the frontend." Vite with HMR over a bind mount, so an
+  # edit under gawk-app/src is live without rebuilding an image:
+  #
+  #     docker compose --profile app-dev up --scale app=0
+  #
+  # --scale app=0 keeps the built frontend out of the way; without it both are
+  # up and the one on ${APP_PORT} is the stale one. Open :5173.
+  app-dev:
+    profiles: ["app-dev"]
+    image: node:26-alpine
+    working_dir: /app
+    command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0 --port 5173"]
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:5173:5173"
+    volumes:
+      - ./gawk-app:/app
+      # An anonymous volume over node_modules so the container's install is
+      # not shadowed by a host one built for another platform.
+      - /app/node_modules
+      # Vite serves public/ as the site root, so the generated config lands
+      # exactly where the built image's nginx alias puts it. create_host_path
+      # is off deliberately: a missing source file would otherwise be created
+      # as a DIRECTORY named config.js, which then breaks config-gen's write
+      # for good. Failing to start is the better half of that trade.
+      - type: bind
+        source: ./dev/generated/config.js
+        target: /app/public/config.js
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      config-gen:
+        condition: service_completed_successfully
+
   # HTTPS front door for the mkcert and ACME lanes: those serve a real
   # hostname, and a real hostname over plain HTTP is not a secure context, so
   # getDisplayMedia and WebCodecs would be unavailable. ./dev/certs.sh turns
@@ -132,3 +236,9 @@ services:
     depends_on:
       app:
         condition: service_started
+
+volumes:
+  # The telemetry service's DuckDB store. Named, not a bind mount: nothing on
+  # the host reads it, and it is the one piece of stack state a developer is
+  # likely to want to throw away wholesale (`docker compose down -v`).
+  telemetry-data:
