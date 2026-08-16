@@ -287,8 +287,10 @@ func certSource(cfg config.Config, log *slog.Logger) (func(*tls.ClientHelloInfo)
 		if err != nil {
 			return nil, err
 		}
+		// Not `docker compose down -v`: the stack bind-mounts ./certs, so the
+		// pair outlives the volumes. One command covers all three lanes.
 		logCertIdentity(log, cert.Leaf, "persisted dev certificate",
-			"docker compose down -v (or delete the pair) to regenerate",
+			"./dev/certs.sh renew (or delete the pair) to regenerate",
 			"cert_file", cfg.CertFile, "generated", generated)
 		if generated {
 			log.Info("chrome flags for this cert",

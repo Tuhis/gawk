@@ -323,12 +323,14 @@ function withDevCertFallback(resolved: ResolvedTransport): ResolvedTransport {
 }
 
 // Precedence, top wins: session override > selected entry > pinned default
-// (docs/40 §4.1.1). An override whose URL equals a saved entry (the default
-// included) resolves to that entry, credentials attached.
+// (docs/40 §4.1.1) — then R38's fallback fills a hash the resolution left
+// empty. Every consumer reads this one, never resolveEntry.
 function resolve(inputs: ResolutionInputs): ResolvedTransport {
   return withDevCertFallback(resolveEntry(inputs));
 }
 
+// An override whose URL equals a saved entry (the default included) resolves
+// to that entry, credentials attached.
 function resolveEntry(inputs: ResolutionInputs): ResolvedTransport {
   const { servers, selectedServerId, sessionOverrideUrl } = inputs;
   const defaultUrl = defaultServerUrl();
