@@ -125,34 +125,95 @@ Design points worth knowing up front:
 
 ## Quickstart (local dev)
 
-Prerequisites: Go ≥ 1.26, Node ≥ 22, a Chromium-based browser.
+Prerequisites: Docker, and a Chromium-based browser. That is the whole list.
 
 ```sh
-# 1. Relay with an ephemeral dev certificate
-cd gawk-server
-go run ./cmd/gawk-server -dev-cert
-#    → copy cert_hash_hex from the startup log
-
-# 2. Frontend
-cd gawk-app
-npm install
-npm run dev            # http://localhost:5173
+git clone https://github.com/Tuhis/gawk && cd gawk
+docker compose up
 ```
 
-Open `http://localhost:5173/#/broadcast`, paste the cert hash into the
-**⚙ settings** panel, click **Start a stream**, and pick a screen — you get
-a 6-character code. Open the join link in another tab and it connects. No
-Chrome flags needed.
+Open `http://localhost:8080/#/broadcast`, click **Start a stream** and pick a
+screen — you get a 6-character code. Open the join link in another tab, or in
+a fresh incognito window, and it connects. Nothing to paste, no Chrome flags.
+
+What happened: the relay generated a self-signed certificate into `certs/`
+and **kept** it, and the stack rendered that certificate's hash into the
+frontend's `/config.js`. Neither changes when you restart, so a join link
+keeps working — and because the hash arrives through configuration rather
+than through the broadcaster page's `localStorage`, the chrome-free
+`#/view/<code>` route works in a fresh profile and in incognito too.
+
+The stack is a **development and evaluation tool, never a deployment path** —
+[Helm](#run-your-own) is the only supported way to run gawk for real.
+
+### Choosing a certificate
+
+The three setup levels differ only in where the certificate comes from;
+everything downstream of `certs/` is identical. `./dev/certs.sh` picks one and
+writes the `.env` that goes with it.
+
+| Level | Prerequisite | What it adds |
+|---|---|---|
+| **devcert** (default) | Docker | Chromium on this machine. Works offline, no prompts, no accounts. |
+| **mkcert** | `mkcert`, and one admin password | An ordinarily *trusted* certificate: **Firefox works**, and no hash is involved anywhere. |
+| **acme** | a domain you control | A publicly trusted certificate on your own name, so a **phone or a second laptop joins with nothing installed**. It is also a rehearsal of the DNS-01 issuance [`docs/self-hosting.md`](docs/self-hosting.md) asks of you. |
+
+The ACME level uses DNS-01, and the wizard leads with the thing that stops
+people trying it: **DNS-01 proves control of the name, not reachability of the
+host.** The A records you add point at `127.0.0.1`; nothing about your machine
+is exposed.
+
+To reach the stack from another device on your LAN, run `./dev/certs.sh` and
+give it your LAN address when it asks — it widens `BIND_ADDR` and puts the
+address in the certificate. The relay's ops listener stays on `127.0.0.1`
+either way.
+
+### The inner loop
+
+The stack does not replace your editor loop. Relay work stays a host binary,
+now pointed at the same persisted certificate:
+
+```sh
+cd gawk-server
+go run ./cmd/gawk-server -dev-cert -cert-file ../certs/cert.pem -key-file ../certs/key.pem
+```
+
+That is the same pair the containerised relay presents, so the browser side
+needs no reconfiguration when you switch between the two. (On Linux, run
+`./dev/certs.sh` once first: it records your uid so the generated pair belongs
+to you rather than to root.)
+
+Frontend work — Vite with HMR, against the same relay:
+
+```sh
+docker compose --profile app-dev up --scale app=0     # http://localhost:5173
+```
+
+Three optional profiles, each answering one question and costing nothing when
+unused:
+
+| Profile | For |
+|---|---|
+| `sim` | a live broadcast without screen-sharing anything (the join code is the `GAWK_PUBSIM_ID=` line in the logs) |
+| `telemetry` | the optional diagnostics service, same-origin ingest; needs `GAWK_TELEMETRY_KEY` set too |
+| `app-dev` | Vite with HMR over a bind mount |
+
+Prefer the `app-dev` profile over a bare `npm run dev` when the relay is in a
+container: it is served the generated `/config.js`, and a hand-run Vite is
+not — it would fall back to `https://localhost:4433`, which resolves to `::1`
+where the published UDP port is IPv4-only.
 
 Run the test suites:
 
 ```sh
 cd gawk-server && go vet ./... && CGO_ENABLED=1 go test -race ./...
 cd gawk-app    && npm test && npm run lint && npm run build
+./dev/stack_test.sh && ./dev/certs_test.sh   # the dev stack's own gates
 ```
 
 Browser E2E (a real headless-Chrome viewer decoding real relayed frames)
 runs on every PR; see [`e2e/README.md`](e2e/README.md) to run it locally.
+The full design of the stack is [`docs/41`](docs/41-local-dev-stack.md).
 
 ## Run your own
 

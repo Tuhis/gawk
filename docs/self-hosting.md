@@ -100,6 +100,19 @@ So: **cert-manager issues a real certificate** for the relay's name, the
 chart mounts it at `/tls`, and the relay's reloader picks up renewals per
 handshake — no pod restart, no downtime.
 
+**Rehearse this part before you touch Kubernetes.** The local development
+stack's ACME level does the same issuance on your own domain, by hand:
+`./dev/certs.sh` → *Let's Encrypt on a domain you control* obtains a
+DNS-01-validated wildcard, checks CAA before spending an attempt, waits for
+the TXT record to reach your authoritative nameservers, and explains the rate
+limits when you hit them. What you learn there — which zone the challenge
+lands in, how long propagation takes, what a CAA record does to you — is
+exactly what the ClusterIssuer will need. It costs nothing and touches no
+cluster: the A records point at `127.0.0.1`, because DNS-01 proves control of
+the *name*, not reachability of the host. See
+[`docs/41`](41-local-dev-stack.md) §4.4 and the
+[README quickstart](../README.md#quickstart-local-dev).
+
 **Two names, both pointing at this cluster:**
 
 | Name | Points at | Example |

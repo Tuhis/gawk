@@ -1,6 +1,9 @@
 # R38 — Local development stack (docs/41)
 
-**Status**: designed 2026-08-14; not started. Chunks **LD1–LD7** (`LD` =
+**Status**: designed 2026-08-14; **LD1–LD7 implemented 2026-08-17**. What the
+implementation found, where it deviated from this specification and why, and
+what remains a manual pass, are all in **§10** — read that alongside §4, not
+instead of it. Chunks **LD1–LD7** (`LD` =
 Local Dev; two-letter prefix per the R21+ convention — collides with
 nothing). Phased: **A** (LD1–LD3: compose skeleton + the zero-prerequisite
 lane) → **B** (LD4–LD5: the trusted-certificate lanes) → **C** (LD6–LD7:
@@ -625,3 +628,133 @@ The standing claim across all three: a contributor who has never seen this
 repository gets from `git clone` to a rendered frame without reading a
 design doc, and a self-hoster who completes lane C has already performed the
 DNS-01 issuance that `docs/self-hosting.md` §3 asks of them.
+
+## 10. Implementation status (2026-08-17)
+
+All seven chunks landed. This section is the record of what the design could
+not have known: §10.1 answers the §4.7 risks, §10.2 lists every deviation from
+§4 with its reason, §10.3 says what was actually verified and how, and §10.4
+names what is still a manual pass.
+
+### 10.1 The §4.7 risks, answered
+
+- **QUIC through Docker's UDP port publishing on macOS: it works, but the
+  runtime matters.** A real browser broadcast completed through the published
+  port on macOS (Apple Silicon) — 52 fps, hardware H.264, a viewer decoding in
+  a separate profile. The condition is the port forwarder: **Colima's default
+  is SSH, which is TCP-only**, so a published UDP port accepts the mapping
+  (`docker port` shows it) and silently swallows every packet. `colima start
+  --port-forwarder grpc` fixes it; Docker Desktop's userland proxy handles UDP
+  as-is. Neither documented fallback (`network_mode: host`, or the host relay
+  of §4.5) was needed.
+- **A second, sharper finding in the same area: `localhost` is the wrong
+  spelling.** It resolves to `::1` first on macOS and most Linux desktops,
+  Docker publishes UDP on IPv4 only, and a QUIC dial has none of the
+  happy-eyeballs fallback that hides this for the app's TCP port. The symptom
+  is a bare "Opening handshake failed" with **nothing in the relay's log**,
+  because nothing reached it. Every lane's `RELAY_URL` therefore names an IPv4
+  literal or a name whose A record the developer controls.
+- **LAN IP detection** is per-OS (`ipconfig getifaddr` on macOS, `ip -4 -o
+  addr` elsewhere), filters Docker's 172.16/12 pools and bridge interfaces,
+  and asks rather than guessing when it finds none or several. LAN exposure
+  stays opt-in.
+- **`alpine`'s `openssl`: it is not there.** The base image (verified on 3.21)
+  carries the libraries but no binary. Rather than pin `alpine/openssl` —
+  which would mean a second image pull in the lane whose claim is that it
+  works offline — `dev/config-gen.sh` computes the DER hash with busybox
+  (`awk` the leaf block out, `base64 -d`, `sha256sum`). Verified byte-identical
+  to both `openssl` and `tlsutil.CertHashHex`.
+
+### 10.2 Deviations from §4, and why
+
+| § | Specified | Implemented | Why |
+|---|---|---|---|
+| §4.1.1 | `certs` as a **named volume** | a **bind mount** on `./certs` | §4.5's shared-certificate inner loop, §4.3's `mkcert -cert-file certs/cert.pem` and §5's "`certs/` is gitignored" all assume a host directory; a named volume can satisfy none of them. `certs/.gitkeep` is tracked so the directory exists before Docker can create it root-owned. |
+| §4.1.1 | `config-gen` mounts `./dev:/dev-scripts` but runs `/dev/config-gen.sh` | runs `/dev-scripts/config-gen.sh` | `/dev` is the device filesystem; mounting over it is not survivable. The spec contradicted itself. |
+| §4.1.1 | lane A only sets `GAWK_DEV_CERT` | `GAWK_DEV_CERT: "${DEV_CERT-1}"` | Compose cannot make an environment key conditional on a lane. An empty value is false to the relay's parser, so `dev/certs.sh` clears it for the trusted lanes. |
+| §4.1.1 | in lanes B/C `app` "publishes no port" | it publishes `127.0.0.1:8081` | Compose cannot drop a port mapping per profile either. Loopback-only preserves what the rule was protecting (no LAN-exposed plain HTTP) and keeps a debugging door. |
+| §4.5 | `pubsim` builds with context `gawk-broadcast/` | context is the **repo root** | `gawk-broadcast` reaches `gawk-server/wire` through `replace ../gawk-server`, so the relay's tree must be in the context — the same constraint `gawk-telemetry`'s image documents. |
+| §4.5 | — | `GAWK_ALLOWED_ORIGINS` also carries `gawk-broadcast://native` | Every native broadcaster — `pubsim` included — sends that origin, and without it the `sim` profile is rejected with a bare 403. `docs/self-hosting.md` already lists the same row for real deployments. |
+| §4.5 | — | the `telemetry` service runs as root | The chart gives it `fsGroup: 65532` so it can write its volume; compose has no equivalent and a fresh named volume is root-owned. |
+| §4.4 | `lego … --dns manual` | plus `--dns.resolvers` | lego finds the zone to write into by walking up the name with SOA queries, and **Docker's embedded resolver does not answer them**: it walks to the TLD and fails before printing a challenge at all. Defaults to `1.1.1.1:53,8.8.8.8:53`, overridable with `LEGO_DNS_RESOLVERS`. |
+| §4.2.1 | expiry remedy named as `docker compose down -v` | `./dev/certs.sh renew` | With a bind-mounted `certs/`, `down -v` does not remove the pair. One command now covers all three lanes. |
+| §4.0 | — | adds `dev/certs_test.sh`, `dev/stack_test.sh`, `certs/.gitkeep` | LD4 and LD6 require assertions ("asserted by reading the compose file", "each §4.6 row has a test"); these are where they live. |
+
+### 10.3 What was verified, and how
+
+Automated, and running in CI (`dev-stack` job in `ci.yml`):
+
+- `certsource_test.go` — every row of the §4.2.1 truth table, including two
+  consecutive starts serving an identical `CertHashHex`.
+- `config.test.ts` / `transportStore.test.ts` — the dev-only gate, the
+  fallback-not-override precedence, the foreign-`?relay=` exclusion, and a
+  test that greps the chart for `devCertHashHex` (D4's deliberate omission).
+- `dev/stack_test.sh` — 22 static assertions: the ops listener's binding, the
+  default service set, each profile, the unpublished telemetry read listener,
+  `-insecure` appearing once, and what is gitignored.
+- `dev/certs_test.sh` — 38 assertions against stub `dig`/`docker`/`mkcert`,
+  one per §4.6 row plus the two that matter most: the ACME lane **never**
+  submits before the record is live on the authoritative nameservers
+  (asserted by event ordering, not by timing), and a DNS provider credential
+  reaches neither stdout, stderr nor the docker command line.
+- The CI job additionally proves the leg nothing else sees: a datagram
+  round-trip through the **published** UDP port, the rendered
+  `devCertHashHex` equalling the relay's logged `cert_hash_hex`, and the
+  certificate surviving `docker compose restart relay`.
+
+**The CI job was verified to fail**, as LD7 requires, by breaking the stack
+deliberately in the way that matters most: `dev/config-gen.sh` was changed to
+hash the certificate's PEM text instead of its DER, which yields a
+plausible-looking 64-hex value that is simply wrong. The stack still came up
+healthy and the frontend still received a hash; only the comparison caught it:
+
+```
+relay logged:   e49a447a603a78465306841d3f67850e735865a20806f03680eb4503b635b9eb
+config.js says: 6f146bcd30ef01cd14e19db2abc03c2b7d7bc263117a33516b98e4f5be283985
+::error::the frontend was handed a hash that is not the relay's certificate
+```
+
+exit 1. A browser against that same stack fails with "Opening handshake
+failed" and the relay logs nothing at all — the shape of failure this
+milestone exists to keep out of a contributor's first hour. Reverting the
+change turned the step green again.
+
+By hand on macOS (Apple Silicon, Colima + gRPC forwarder):
+
+- **Lane A, end to end.** A headless-Chrome broadcaster minted a code; a
+  viewer in a **separate browser profile with empty `localStorage`** decoded
+  144 frames at 52 fps over hardware H.264. That profile is the
+  `docs/gotchas.md:56` regression test, passing for the first time without a
+  hash pasted by hand.
+- **`sim`**: a browser viewer joined the pubsim broadcast using the
+  `GAWK_PUBSIM_ID=` line from the logs, with no browser broadcaster.
+- **`telemetry`**: four real client batches reached the service through the
+  app's same-origin `/api/telemetry/` proxy; the read listener refused a
+  connection from the host and answered on the compose network.
+- **`app-dev`**: an edit under `gawk-app/src` reached the served module in
+  about a second, with `app` scaled to zero.
+- **Lane B**, up to the trust store: `mkcert` issued for
+  `gawk.localhost`/`127.0.0.1`, the chain validates against the mkcert root,
+  Caddy serves the app over HTTPS with it, the generated `config.js` contains
+  **no** `devCertHashHex`, and the relay presents exactly that certificate
+  over QUIC (`gawk-echo -cert-hash`, origin `https://gawk.localhost:8443`).
+
+A finding worth its own line: **`--ignore-certificate-errors` and
+`--ignore-certificate-errors-spki-list` do not apply to WebTransport.** Chrome
+fails the QUIC handshake with `QUIC_TLS_CERTIFICATE_UNKNOWN` regardless. There
+is no way to fake trust for a browser test — which is precisely why lane B
+exists, and why its last step needs a real trust-store write.
+
+### 10.4 Still manual
+
+- **`mkcert -install`** writes the system trust store and can only ask for an
+  administrator password from a terminal, so lane B's final step — and with it
+  the Firefox-as-viewer pass that justifies the lane — is the owner's. The
+  wizard now fails with that exact instruction rather than continuing to issue
+  a certificate nothing would trust (`TRUST_STORES=nss mkcert -install` covers
+  Firefox alone, no password).
+- **Lane C's live issuance and the phone-on-the-LAN pass.** The wizard was
+  exercised against Let's Encrypt staging on a real domain up to the point
+  where it waits on the TXT record; everything before that (CAA check,
+  challenge extraction, authoritative polling) ran for real, and everything
+  after it is covered by the stub suite.

@@ -19,6 +19,24 @@ Add to it when a new gotcha lands in `docs/`.
   Chrome cannot complete a QUIC handshake to a server in WSL2 NAT mode
   (localhost forwarding is TCP-only; via the NAT IP Chrome idle-times-out
   even though CLI clients work). ([docs/02](02-webtransport-hello.md))
+- **Point a browser at the relay by IP literal, not `localhost`, whenever the
+  relay is in a container.** `localhost` resolves to `::1` first on macOS and
+  most Linux desktops, Docker publishes a UDP port on IPv4 only, and a QUIC
+  dial gets none of the happy-eyeballs fallback that hides this for the app's
+  TCP port — the browser reports a bare "Opening handshake failed" and the
+  relay logs nothing at all, because nothing reached it. The compose stack
+  therefore renders `relayUrl: "https://127.0.0.1:4433"`.
+  ([docs/41](41-local-dev-stack.md) §4.7)
+- **Colima does not forward UDP with its default port forwarder**, so a
+  published QUIC port silently swallows every packet (`docker port` shows the
+  mapping; nothing arrives). Its forwarder is SSH, which is TCP-only. Fix:
+  `colima start --port-forwarder grpc`. Docker Desktop's userland proxy
+  handles UDP as-is. ([docs/41](41-local-dev-stack.md) §4.7)
+- **The `alpine` base image has no `openssl` binary** (verified on 3.21) —
+  only the libraries. `dev/config-gen.sh` computes the certificate's DER hash
+  with busybox instead (PEM is base64-wrapped DER), because installing
+  openssl would need the network in the one lane whose claim is that it works
+  offline. ([docs/41](41-local-dev-stack.md) §4.7)
 - **`go test -race` needs `CGO_ENABLED=1`** — this environment defaults to 0.
 - **`gawk-telemetry` builds cgo-free by default and its SQL engine does not
   exist in that build.** `internal/sqlengine` sits behind `//go:build duckdb`;
@@ -54,10 +72,14 @@ Add to it when a new gotcha lands in `docs/`.
   208 KiB. `sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000`
   for real streaming loads.
 - **The production viewer (`#/view/<id>`) has no cert-hash field** — it is
-  deliberately chrome-free (fullscreen + leave only). For `-dev-cert` local
-  testing set the hash once in the broadcaster's ⚙ panel; it persists to
-  `localStorage` (shared same-origin, so the viewer picks it up). Or use
-  `#/debug/view`, which keeps the full settings form. ([docs/10](10-production-ui.md))
+  deliberately chrome-free (fullscreen + leave only). The local `docker
+  compose` stack solves this by *configuring* the hash: `dev/config-gen.sh`
+  renders `devCertHashHex` into `/config.js`, so the route works in a fresh
+  profile, in incognito and on a second machine (R38, `docs/41` D4). Without
+  that stack, set the hash once in the broadcaster's ⚙ panel — it persists to
+  same-origin `localStorage`, which is why a fresh profile used to fail — or
+  use `#/debug/view`, which keeps the full settings form.
+  ([docs/10](10-production-ui.md), [docs/41](41-local-dev-stack.md))
 - **The debug viewer uses `#/debug/view/<id>`, not `#/view/<id>`** — R6 gave
   `#/view/<id>` to the production viewer, and `ViewPage` syncs its code into the
   hash, so it must stay in its own namespace or clicking **Watch** bounces you
@@ -96,11 +118,21 @@ Add to it when a new gotcha lands in `docs/`.
   clock-skew backdate included** — a 14 d + 1 h cert is rejected with an
   opaque `CERTIFICATE_VERIFY_FAILED (certificate unknown)`. The Go probe
   won't catch this; only Chrome enforces it. ([docs/02](02-webtransport-hello.md))
-- The dev cert is **regenerated on every server start** — re-paste the fresh
-  `cert_hash_hex` after each restart; a stale hash fails identically. This
-  also means the viewer's **auto-reconnect can never heal a relay restart in
-  `-dev-cert` mode** — test that with a file-based dev cert
-  (`gawk-devcert -out certs`). ([docs/05](05-resilience-deploy.md))
+- `-dev-cert` **alone** regenerates the certificate on every server start —
+  the hash has to be re-pasted after each restart, and a stale one fails
+  identically. It also means the viewer's **auto-reconnect can never heal a
+  relay restart** in that mode. Since R38 the fix is a flag combination
+  rather than a separate tool: `-dev-cert` **with** `-cert-file`/`-key-file`
+  generates the pair once into those paths and loads it every time after,
+  which is what `docker compose up` uses and what the host-binary inner loop
+  should use too. (`gawk-devcert -out certs` still writes a pair by hand.)
+  ([docs/05](05-resilience-deploy.md), [docs/41](41-local-dev-stack.md) §4.2.1)
+- **`--ignore-certificate-errors` does not apply to WebTransport**, and
+  neither does `--ignore-certificate-errors-spki-list`: Chrome's QUIC
+  handshake still fails with `QUIC_TLS_CERTIFICATE_UNKNOWN`. The only two
+  ways into a browser are `serverCertificateHashes` (Chromium, ECDSA, ≤ 14 d)
+  and a certificate its trust store already accepts — which is exactly why
+  the mkcert lane exists. ([docs/41](41-local-dev-stack.md) §4.3)
 
 **webtransport-go (v0.11.x) — all fail at runtime, not compile time**
 
