@@ -1,6 +1,6 @@
-# HTTPS front door for the local stack's trusted-certificate lanes (R38,
-# docs/41 §4.1.2). Only the mkcert and ACME lanes start it — the default lane
-# is plain HTTP on localhost, which is already a secure context.
+# HTTPS front door for the local stack's trusted-certificate lane (R38,
+# docs/41 §4.1.2). Only the ACME lane starts it — the default lane is plain
+# HTTP on localhost, which is already a secure context.
 #
 # It exists because a real hostname over plain HTTP is NOT a secure context:
 # getDisplayMedia, WebCodecs and WebTransport would all be unavailable at

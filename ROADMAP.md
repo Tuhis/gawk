@@ -56,7 +56,7 @@ feature set exists).
 | R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; **AS7 on-hardware verification (docs/39 §6) outstanding** and is what decides the milestone ([docs/39](docs/39-linux-app-sharing.md)) |
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
 | R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
-| R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, **LD1–LD7 implemented 2026-08-17** — `docker compose up` gives a working broadcast with nothing to copy-paste; the relay's dev certificate now persists (`-dev-cert` + `-cert-file`), its hash reaches the frontend through `/config.js` so the chrome-free viewer route works in a fresh profile, and `dev/certs.sh` switches between the self-signed, mkcert and ACME lanes. Profiles for a synthetic broadcaster, telemetry and Vite HMR; a `dev-stack` CI job that round-trips a datagram through the published port. **Remaining: the owner's `mkcert -install` (Firefox pass) and lane C's live issuance** ([docs/41](docs/41-local-dev-stack.md) §10) |
+| R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, **LD1–LD7 implemented 2026-08-17** — `docker compose up` gives a working broadcast with nothing to copy-paste; the relay's dev certificate now persists (`-dev-cert` + `-cert-file`), its hash reaches the frontend through `/config.js` so the chrome-free viewer route works in a fresh profile, and `dev/certs.sh` switches between the self-signed and ACME lanes. Profiles for a synthetic broadcaster, telemetry and Vite HMR; a `dev-stack` CI job that round-trips a datagram through the published port. The **Firefox pass is done** — it joins the default lane unchanged, which is why the mkcert lane was withdrawn (no browser does WebTransport over a locally-installed CA, [docs/41](docs/41-local-dev-stack.md) §6). **Remaining: lane C's live issuance** ([docs/41](docs/41-local-dev-stack.md) §10) |
 
 ---
 
@@ -3271,16 +3271,21 @@ today's awkwardness (the hash, the copy-paste, the pasting it again) is a
 workaround for that one problem.
 
 So R38 builds **one stack where the certificate is a swappable part**, and
-offers three ways to fill it:
+offers two ways to fill it:
 
 | | What you need | What you get |
 |---|---|---|
-| **A** *(default)* | nothing but Docker | Works in Chrome on your own machine. No setup, no internet needed. |
-| **B** | run `mkcert -install` once | Also works in **Firefox** — real trusted certificate, nothing to copy-paste ever. |
+| **A** *(default)* | nothing but Docker | Works in **Chrome and Firefox** on your own machine. No setup, no internet needed. |
 | **C** | a domain name you own | Also works from **your phone and other computers**, with nothing installed on them. A guided wizard walks you through it. |
 
-Everything else in the stack is identical in all three — only where the
-certificate comes from changes.
+Everything else in the stack is identical in both — only where the certificate
+comes from changes.
+
+A third lane (**B**, `mkcert -install` for a locally-trusted CA) was designed,
+built and then **withdrawn on 2026-08-17**: no browser will open a WebTransport
+session over a locally-installed root, so the page loaded and the stream never
+started. Firefox — the reason that lane existed — turns out to work on lane A
+unchanged. The measurements are in [docs/41](docs/41-local-dev-stack.md) §6.
 
 **Two fixes that do most of the work in lane A**:
 

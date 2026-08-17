@@ -12,7 +12,7 @@
 #                                     the frontend. No prerequisites but
 #                                     Docker; open http://localhost:8080
 #   ./dev/certs.sh                    pick a different certificate lane
-#                                     (mkcert, or ACME on your own domain)
+#                                     (ACME on your own domain)
 #   docker compose --profile sim up   add a synthetic broadcaster
 #
 # Images are BUILT FROM THIS CHECKOUT (D15) — a contributor runs the stack to
@@ -29,7 +29,7 @@ services:
   # The relay. In the default lane GAWK_DEV_CERT plus GAWK_CERT_FILE means
   # "generate into these paths if absent, otherwise load them" (docs/41 D3),
   # so the certificate — and therefore the hash the browser was given —
-  # survives a restart. In the mkcert/ACME lanes DEV_CERT is empty and the
+  # survives a restart. In the ACME lane DEV_CERT is empty and the
   # same paths are simply loaded.
   relay:
     build:
@@ -52,7 +52,7 @@ services:
     environment:
       GAWK_CERT_FILE: /certs/cert.pem
       GAWK_KEY_FILE: /certs/key.pem
-      # Empty (the mkcert/ACME lanes) is false; `1` is the default lane.
+      # Empty (the ACME lane) is false; `1` is the default lane.
       GAWK_DEV_CERT: "${DEV_CERT-1}"
       GAWK_DEV_CERT_HOSTS: "${CERT_HOSTS:-localhost,127.0.0.1}"
       # Set, not left open: the dev default is allow-all, so without this the
@@ -221,8 +221,8 @@ services:
       config-gen:
         condition: service_completed_successfully
 
-  # HTTPS front door for the mkcert and ACME lanes: those serve a real
-  # hostname, and a real hostname over plain HTTP is not a secure context, so
+  # HTTPS front door for the ACME lane: it serves a real hostname, and a real
+  # hostname over plain HTTP is not a secure context, so
   # getDisplayMedia and WebCodecs would be unavailable. ./dev/certs.sh turns
   # this on by writing COMPOSE_PROFILES=tls into .env.
   caddy:

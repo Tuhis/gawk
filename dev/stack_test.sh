@@ -31,7 +31,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 # Every compose invocation ignores .env deliberately: these are assertions
-# about the stack's DESIGN, and a developer who has switched to the mkcert
+# about the stack's DESIGN, and a developer who has switched to the ACME
 # lane must not turn them red. It also means the inline defaults in
 # docker-compose.yml — the ones a bare `docker compose up` on a fresh clone
 # uses — are what gets checked.

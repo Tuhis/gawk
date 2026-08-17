@@ -112,7 +112,7 @@ Add to it when a new gotcha lands in `docs/`.
   here-string (`grep -q … <<<"$var"`) — no pipeline, no SIGPIPE. Producers that
   are read to the end (`grep -c`, `grep -B/-A`) are not exposed to it.
 
-**Certificates (Chromium `serverCertificateHashes` rules)**
+**Certificates (`serverCertificateHashes` rules — Chromium *and* Firefox)**
 
 - Dev cert must be **ECDSA P-256** and its **total validity span ≤ 14 days,
   clock-skew backdate included** — a 14 d + 1 h cert is rejected with an
@@ -130,9 +130,20 @@ Add to it when a new gotcha lands in `docs/`.
 - **`--ignore-certificate-errors` does not apply to WebTransport**, and
   neither does `--ignore-certificate-errors-spki-list`: Chrome's QUIC
   handshake still fails with `QUIC_TLS_CERTIFICATE_UNKNOWN`. The only two
-  ways into a browser are `serverCertificateHashes` (Chromium, ECDSA, ≤ 14 d)
-  and a certificate its trust store already accepts — which is exactly why
-  the mkcert lane exists. ([docs/41](41-local-dev-stack.md) §4.3)
+  ways into a browser are `serverCertificateHashes` (ECDSA P-256, ≤ 14 d —
+  **Firefox implements it too**, not just Chromium) and a **publicly**
+  trusted certificate. ([docs/41](41-local-dev-stack.md) §6)
+- **Installing a local CA does not help — in any browser.** `mkcert` and
+  friends give you a certificate the browser trusts for ordinary TLS, so the
+  page loads over HTTPS with no warning, and then the WebTransport dial to the
+  relay is refused: Chrome fails with `ERR_QUIC_CERT_ROOT_NOT_KNOWN` (its QUIC
+  proof verifier requires `is_issued_by_known_root`), and Firefox verifies the
+  certificate successfully and closes the session anyway
+  (`Http3Session::Authenticated … hasThirdPartyRoots=1,
+  servCertHashesSucceeded=0` → `NS_ERROR_NET_RESET`). The symptom is a working
+  UI that cannot connect, which reads like a relay bug and is not one. Measured
+  in both engines on 2026-08-17; it is why R38 has no mkcert lane.
+  ([docs/41](41-local-dev-stack.md) §6)
 
 **webtransport-go (v0.11.x) — all fail at runtime, not compile time**
 

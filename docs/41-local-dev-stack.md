@@ -8,8 +8,16 @@ Local Dev; two-letter prefix per the R21+ convention — collides with
 nothing). Phased: **A** (LD1–LD3: compose skeleton + the zero-prerequisite
 lane) → **B** (LD4–LD5: the trusted-certificate lanes) → **C** (LD6–LD7:
 profiles, CI smoke, docs). Phase A is the whole product claim for a
-contributor with nothing but Docker installed; B unlocks Firefox and second
-devices; C stops the stack rotting.
+contributor with nothing but Docker installed; B unlocks second devices; C
+stops the stack rotting.
+
+**Lane B (mkcert) was withdrawn on 2026-08-17**, after implementation, when its
+premise was measured to be false: no browser will open a WebTransport session
+against a certificate from a locally-installed CA. The evidence and the
+consequences are in **§6** and **D5**; the lane letters are left as they were so
+every existing cross-reference still resolves, so this document has a **lane A**
+and a **lane C** and no lane B. Firefox — the reason lane B was designed —
+works on lane A (§10.3).
 
 **How to read this document**: §1–§2 are the why and the locked decisions.
 **§3–§4 are the implementation specification** — exact files, exact flags,
@@ -39,10 +47,13 @@ The specific hurdles, each grounded:
   first. A fresh profile, an incognito window, or a second machine simply
   fails; the E2E harness works around this by seeding `localStorage` directly
   (`e2e/run.mjs:628`).
-- **`serverCertificateHashes` is a Chromium mechanism.** The whole documented
-  certificate path is written in Chromium's terms (`docs/gotchas.md:93`).
-  Firefox is a supported *viewer* browser in production, and there is no
-  evidence anyone has ever joined a local dev relay from it.
+- **`serverCertificateHashes` was believed to be a Chromium-only mechanism.**
+  The whole documented certificate path is written in Chromium's terms
+  (`docs/gotchas.md:93`), and Firefox — a supported *viewer* browser in
+  production — had never been observed joining a local dev relay. **This
+  premise was false**, and it is what motivated the withdrawn lane B: Firefox
+  implements `serverCertificateHashes` too, and joins the default lane
+  unmodified (§10.3). The hurdle was real; the diagnosis was not.
 - **There is no LAN path at all.** `-dev-cert-hosts` defaults to
   `localhost,127.0.0.1` (`gawk-server/internal/config/config.go:240`) and the
   app is served over plain HTTP, so a phone, a second laptop, or the gaming
@@ -74,7 +85,7 @@ becomes a normal act rather than a small project.
 | D2 | **Lane A (self-signed, persisted, hash auto-injected) is the default.** No prerequisites beyond Docker, works offline, no admin prompt, no account, no domain. | The default has to serve the contributor who cloned the repo to fix one thing. Anything requiring a trust-store write, a domain, or an internet round-trip is a prerequisite that some contributor will not clear, and a default nobody can run is not a default. |
 | D3 | **The dev certificate is persisted to a volume, not regenerated per start.** `-dev-cert` combined with `-cert-file`/`-key-file` means "generate into these paths if absent, otherwise load them" (exact semantics: §4.2.1). | This is the single highest-value fix in the milestone and it is nearly free. It kills the re-paste loop (`docs/gotchas.md:99`), and it moves local dev onto the **file-backed** certificate path production uses instead of the dev-only in-memory one (`docs/gotchas.md:102`). It also helps the non-Docker path, which is where most relay work will still happen. |
 | D4 | **New dev-only runtime config key `devCertHashHex`, read only when `isDevEnvironment()`** (`gawk-app/src/config.ts:134`). It is **not** a Helm chart value and the `gawk-app` ConfigMap does not render it. | This is what closes the `docs/gotchas.md:56` hole: with the hash arriving via `/config.js` rather than `localStorage`, the bare `#/view/{id}` route works in a fresh profile, in incognito, and on a second machine. Keeping it out of the chart is deliberate — a production deployment that wants this key has misconfigured its TLS, and offering the knob would invite exactly that. |
-| D5 | **Lane B is mkcert** — a local CA, one `mkcert -install`, certs for `gawk.localhost` plus the machine's LAN IP. | It is the cheapest way to a genuinely *trusted* certificate: ordinary chain validation, no hashes, no 14-day cap, and it writes to the NSS store so **Firefox works**. Chrome exempts locally-installed roots from both CT enforcement and the 398-day leaf limit, so there is no hidden trap. |
+| D5 | ~~**Lane B is mkcert** — a local CA, one `mkcert -install`, certs for `gawk.localhost` plus the machine's LAN IP.~~ **WITHDRAWN 2026-08-17, after implementation.** | The rationale was: "the cheapest way to a genuinely *trusted* certificate — ordinary chain validation, no hashes, no 14-day cap, and it writes to the NSS store so **Firefox works**. Chrome exempts locally-installed roots from both CT enforcement and the 398-day leaf limit, so there is no hidden trap." **There is a hidden trap, and it is fatal**: browsers apply a *second*, WebTransport-specific rule that a locally-installed root can never satisfy, so the page loads over HTTPS and the relay leg never connects. Measured in both engines; see §6 for the evidence and §10.2 for how it was found. Firefox, the lane's whole justification, needs nothing beyond lane A. |
 | D6 | **Lane C is a guided ACME wizard against a domain the developer controls** — DNS-01, Let's Encrypt, one **wildcard**, `lego`. | It is the only lane where the private key is genuinely the developer's, and the only one where another device joins with nothing installed. It doubles as a rehearsal of the production path (`docs/self-hosting.md` §3 requires the same CA and the same challenge type), so the person most likely to need it is already the person it teaches. |
 | D7 | **Lane C issues one wildcard (`*.<sub>.<domain>`), then the developer only edits A records.** | Issue-once is what makes the lane tolerable. A new device, a new LAN IP, a DHCP move — all become DNS edits against a certificate that already covers them, with no second ACME round-trip. Wildcards require DNS-01 anyway, which this lane already uses. |
 | D8 | **DNS-01 proves control of the *name*, not reachability of the *host*.** The A record points at `127.0.0.1` throughout; nothing about the dev machine is ever exposed. This is stated prominently in the wizard's first screen and in the docs. | It is the misconception that stops people attempting this lane, and it is one sentence to remove. Worth a decision row precisely because the docs must not bury it. |
@@ -101,7 +112,7 @@ is stale, the design note is what is wrong, not the code.
 | Cert flags | `-dev-cert` (`GAWK_DEV_CERT`), `-dev-cert-hosts` (`GAWK_DEV_CERT_HOSTS`, default `localhost,127.0.0.1`), `-cert-file` (`GAWK_CERT_FILE`), `-key-file` (`GAWK_KEY_FILE`) — `internal/config/config.go:236–240` | No new flags. LD1 makes an existing *combination* meaningful. |
 | Origin allowlist | `-allowed-origins` (`GAWK_ALLOWED_ORIGINS`), enforced in `internal/transport/server.go:247–270`: exact string match via `slices.Contains`, **with a loopback bypass** (`isLoopbackAddr(r.RemoteAddr)`) so in-container probes work without an Origin header | Set explicitly in every lane. The loopback bypass is why the healthcheck (§4.1) needs no origin. |
 | Runtime frontend config | `gawk-app/public/config.js` (shipped empty) → `window.__GAWK_CONFIG__`; getters in `gawk-app/src/config.ts`; loaded by `<script src="/config.js">` at `gawk-app/index.html:12` | Gains `devCertHashHex` (LD2). The stack serves a generated `config.js` in its place — the same mechanism the Helm chart uses via its ConfigMap. |
-| Dev-surface gate | `isDevEnvironment()` — `gawk-app/src/config.ts:134` — true for Vite dev **or** a bundle served from `localhost`/`127.0.0.1`/`::1` | Gates the new key (D4). Note it is **hostname-based**, so lanes B and C (`gawk.localhost`, `gawk.dev.example.com`) are **not** dev environments by this test — which is correct, because those lanes have trusted certs and emit no hash. |
+| Dev-surface gate | `isDevEnvironment()` — `gawk-app/src/config.ts:134` — true for Vite dev **or** a bundle served from `localhost`/`127.0.0.1`/`::1` | Gates the new key (D4). Note it is **hostname-based**, so lane C (`gawk.dev.example.com`) is **not** a dev environment by this test — which is correct, because that lane has a trusted cert and emits no hash. |
 | Publish-secret prompt | `requiresPublishSecret()` — `config.ts:96` — falls back to `isDevEnvironment()`, i.e. **true on localhost** | The generated `config.js` must set `requirePublishSecret: false` explicitly, or lane A's broadcaster prompts for a secret the stack never set. `e2e/run.mjs:649` sets it for the same reason. |
 | Relay URL default | `defaultServerUrl()` — `gawk-app/src/state/transportStore.ts:53–66` (config.js `relayUrl` → `gawk.ioio.fi` hostname check → `https://localhost:4433`) | Unchanged. The generated `config.js` sets `relayUrl` explicitly so no lane depends on the fallback. |
 | App image | `gawk-app/deploy/Dockerfile` → `nginxinc/nginx-unprivileged:1.31-alpine`, **listens on 8080**, root `/usr/share/nginx/html`, conf at `/etc/nginx/conf.d/default.conf` (from `gawk-app/deploy/nginx.conf`). That conf already sets `Cache-Control: no-cache` on `location /`, so a regenerated `config.js` is never served stale. | Reused. LD3 mounts a dev conf over `default.conf` to alias `/config.js` (§4.1.2). |
@@ -124,10 +135,10 @@ saying why.
 |---|---|
 | `docker-compose.yml` | The stack (§4.1). Header comment carries D12. |
 | `.env.example` | Every variable in §4.1.3, with defaults and comments. Copied to `.env` by `dev/certs.sh` if absent. |
-| `dev/certs.sh` | `CERT_MODE` dispatch + the lane B/C wizards (§4.3, §4.4). |
+| `dev/certs.sh` | `CERT_MODE` dispatch + the lane C wizard (§4.4). |
 | `dev/config-gen.sh` | Renders `dev/generated/config.js` (§4.2.2). Runs inside the `config-gen` service. |
 | `dev/nginx-dev.conf` | `gawk-app/deploy/nginx.conf` plus the `/config.js` alias (§4.1.2). Header comment names the file it is a copy of. |
-| `dev/Caddyfile` | HTTPS front for lanes B and C (§4.1.2). |
+| `dev/Caddyfile` | HTTPS front for lane C (§4.1.2). |
 | `dev/Dockerfile.pubsim` | Builds `gawk-pubsim` (LD6); context `gawk-broadcast/`. |
 | `dev/generated/.gitkeep` | Keeps the bind-mount source directory in the repo. |
 | `gawk-server/cmd/gawk-server/certsource_test.go` | LD1's truth table (§4.2.1). |
@@ -207,12 +218,12 @@ never opens it.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CERT_MODE` | `devcert` | `devcert` \| `mkcert` \| `acme` |
-| `GAWK_HOST` | `localhost` | The hostname browsers use. Lane B: `gawk.localhost`. Lane C: `gawk.<sub>.<domain>` |
-| `APP_PORT` | `8080` (lanes B/C: `8443`) | Published app port |
+| `CERT_MODE` | `devcert` | `devcert` \| `acme` |
+| `GAWK_HOST` | `localhost` | The hostname browsers use. Lane C: `gawk.<sub>.<domain>` |
+| `APP_PORT` | `8080` (lane C: `8443`) | Published app port |
 | `RELAY_PORT` | `4433` | Published relay UDP port |
 | `BIND_ADDR` | `127.0.0.1` | `0.0.0.0` to expose to the LAN (opt-in, §5) |
-| `APP_ORIGIN` | derived | `http://localhost:8080` (A) or `https://${GAWK_HOST}:${APP_PORT}` (B/C). Goes to `GAWK_ALLOWED_ORIGINS` **and** must equal the browser's Origin exactly — no trailing slash |
+| `APP_ORIGIN` | derived | `http://localhost:8080` (A) or `https://${GAWK_HOST}:${APP_PORT}` (C). Goes to `GAWK_ALLOWED_ORIGINS` **and** must equal the browser's Origin exactly — no trailing slash |
 | `RELAY_URL` | derived | `https://${GAWK_HOST}:${RELAY_PORT}` |
 | `CERT_HOSTS` | `localhost,127.0.0.1` | Lane A SANs; `dev/certs.sh` appends `${LAN_IP}` when set |
 | `LAN_IP` | unset | Auto-detected by `dev/certs.sh`; only used when the developer opts into LAN exposure |
@@ -298,7 +309,7 @@ a Chromium requirement, not a choice.
    window.__GAWK_CONFIG__ = {
      relayUrl: "https://localhost:4433",
      requirePublishSecret: false,
-     devCertHashHex: "a1b2…"   // lane A only; omitted entirely in lanes B and C
+     devCertHashHex: "a1b2…"   // lane A only; omitted entirely in lane C
    };
    ```
    `requirePublishSecret: false` is **required, not decorative**:
@@ -346,30 +357,21 @@ pinned default entry and to any entry whose normalized URL equals
 `defaultServerUrl()`; it must **not** be attached to a foreign `?relay=`
 override, which would be presenting one relay's hash to another.
 
-### 4.3 Lane B — mkcert (`CERT_MODE=mkcert`)
+### 4.3 Lane B — mkcert (`CERT_MODE=mkcert`) — **WITHDRAWN**
 
-`dev/certs.sh` in mkcert mode:
+This lane was specified, implemented, and then removed on 2026-08-17 when the
+first browser test of its finished form showed that **it cannot work in any
+browser** — the page loads over HTTPS and the WebTransport dial to the relay is
+refused, because both engines apply a WebTransport-specific rule that no
+locally-installed CA can satisfy.
 
-1. Require `mkcert` on `PATH`; if missing, print the install line for the
-   detected OS and exit non-zero. Do **not** attempt to install it.
-2. Run `mkcert -install` (idempotent; the admin prompt appears at most once
-   per machine).
-3. Issue into the `certs` volume:
-   ```sh
-   mkcert -cert-file certs/cert.pem -key-file certs/key.pem \
-     gawk.localhost "*.gawk.localhost" localhost 127.0.0.1 ::1 ${LAN_IP:+$LAN_IP}
-   ```
-4. Rewrite `.env`: `GAWK_HOST=gawk.localhost`, `APP_PORT=8443`,
-   `APP_ORIGIN=https://gawk.localhost:8443`,
-   `RELAY_URL=https://gawk.localhost:4433`, `COMPOSE_PROFILES=tls`.
+The measurements, the two upstream mechanisms, and the hypotheses that were
+ruled out are in **§6, "A locally-trusted CA (mkcert) for the relay"**. What
+replaced it: nothing — Firefox, the lane's entire justification, works on
+lane A (§10.3), and lane C remains the answer for other devices.
 
-`*.localhost` resolves to loopback in Chromium and Firefox without any hosts
-file entry. The certificate is trusted, so `config-gen` emits **no**
-`devCertHashHex` and the relay runs without `GAWK_DEV_CERT`.
-
-Boundary: other devices need the mkcert root installed
-(`mkcert -CAROOT`). The wizard prints that path and says so rather than
-implying LAN devices work.
+`CERT_MODE` therefore takes `devcert` and `acme` only, and `dev/certs.sh` has
+no `mkcert` subcommand.
 
 ### 4.4 Lane C — guided ACME on your own domain (`CERT_MODE=acme`)
 
@@ -427,7 +429,8 @@ $ ./dev/certs.sh
   Then: docker compose up
 ```
 
-The wizard then rewrites `.env` exactly as lane B does, with
+The wizard then rewrites `.env` — `APP_PORT=8443`, `APP_ORIGIN`/`APP_URL` on
+`https://${GAWK_HOST}:8443`, `COMPOSE_PROFILES=tls`, `DEV_CERT` empty — with
 `GAWK_HOST=gawk.${ACME_SUBDOMAIN}.${ACME_DOMAIN}`.
 
 Renewal: automatic in C-1. In C-2 the certificate **cannot** auto-renew, so
@@ -471,9 +474,8 @@ reproduction.
 | Failed-validation rate limit | Classify the ACME error | Explain the 5/hour limit and when it resets |
 | Issuance rate limit | Classify the ACME error | Explain 50/domain/week and 5 duplicates/week |
 | Cert does not cover `${GAWK_HOST}` | Compare SANs against `.env` before starting the stack | Refuse to start rather than fail opaquely in the browser |
-| Cert near expiry | On every `up` | Warn under 72 h (lane A) / 30 days (lanes B, C) |
+| Cert near expiry | On every `up` | Warn under 72 h (lane A) / 30 days (lane C) |
 | Clock skew | Compare container time to `NotBefore` | Name it — a backdated cert failing validation is otherwise inscrutable |
-| `mkcert` absent | `command -v mkcert` | Print the install line for the detected OS; do not auto-install |
 | Port already in use | Bind check before `up` | Name the port and the `.env` variable that changes it |
 
 ### 4.7 Risks to settle during implementation
@@ -520,6 +522,44 @@ implementer has them.
 
 ## 6. Rejected alternatives
 
+- **A locally-trusted CA (mkcert) for the relay** — this was D5, it was
+  built, and it was **withdrawn on 2026-08-17 after measurement**. Do not
+  re-propose it, for gawk or for any other WebTransport service.
+
+  **Both browser engines refuse a WebTransport session whose certificate
+  chains to a locally-installed root, however correctly that root is
+  installed.** The failure is invisible until the relay leg: the page loads
+  over HTTPS with no interstitial, `curl` returns 200, and only the
+  `WebTransport` dial fails — Chrome with "Opening handshake failed", Firefox
+  with "WebTransport connection rejected".
+
+  | Engine | Evidence | Mechanism |
+  |---|---|---|
+  | Chrome | relay's quic-go log records the client's own alert: `CRYPTO_ERROR 0x12e (remote): TLS handshake failure (ENCRYPTION_HANDSHAKE) 46: certificate unknown … CERTIFICATE_VERIFY_FAILED` | `net/quic/crypto/proof_verifier_chromium.cc` fails anything that is not `is_issued_by_known_root` with `ERR_QUIC_CERT_ROOT_NOT_KNOWN`, unless the host is in `hostnames_to_allow_unknown_roots_` (populated only from command-line switches) |
+  | Firefox 154 | `MOZ_LOG=nsHttp:5`: `Http3Session::Authenticated error=0x0` — the certificate **verified** — immediately followed by `hasThirdPartyRoots=1, servCertHashesSucceeded=0` and `CloseTransaction[reason=804b0014]` (`NS_ERROR_NET_RESET`) | a third-party root is accepted for ordinary TLS and refused for WebTransport unless the certificate was pinned with `serverCertificateHashes` |
+
+  Ruled out by experiment, so that none of it is re-derived:
+
+  - **Not the certificate's lifetime.** mkcert issues ~823 days; a freshly
+    issued 90-day leaf from the same CA, same SANs, fails identically.
+  - **Not the IPv4 literal in `RELAY_URL`.** The SANs carry
+    `IP Address:127.0.0.1`, `openssl verify -verify_ip 127.0.0.1` passes
+    against the mkcert root, and Chrome loads `https://127.0.0.1:8443` over
+    TCP with no interstitial. (Dialing the *hostname* instead is worse, not
+    better: `*.localhost` resolves to `::1` first and the relay publishes
+    UDP on IPv4 only, so those dials never reach the relay at all — §10.1.)
+  - **Not the origin allowlist.** No `origin rejected` is logged; the
+    connections die in the TLS handshake, before any HTTP/3 request exists.
+  - **Not fixable with Chrome flags.** `--ignore-certificate-errors` and
+    `--ignore-certificate-errors-spki-list` do not apply to WebTransport
+    (§10.3). A lane whose instructions begin "launch your browser with a
+    flag" is not the lane this milestone wanted anyway.
+
+  The two shapes that *do* work are the two that survive: a self-signed
+  certificate pinned by `serverCertificateHashes` (lane A — and Firefox
+  implements that mechanism too, §10.3, which is what removed the last reason
+  for this lane), or a publicly-trusted certificate (lane C).
+
 - **nip.io / sslip.io as the certificate answer** — they are DNS-only by
   design. HTTP-01 cannot validate a name that resolves to loopback or RFC1918
   (Let's Encrypt would be connecting to itself or to an unroutable address),
@@ -537,10 +577,11 @@ implementer has them.
   reissuance after users leaked its key, and now recommends a self-signed
   certificate as its own default. A dev stack that breaks for every
   contributor simultaneously, for reasons outside this project's control, is
-  worse than one that asks for a single `mkcert -install`. They remain
-  reasonable things for an individual to use for a one-off phone test, and
-  the docs may mention them as such — but nothing in the repo depends on
-  them.
+  worse than one that asks nothing of the contributor at all (lane A). They
+  remain reasonable things for an individual to use for a one-off phone test
+  — their certificates are publicly trusted, so unlike a local CA they do
+  satisfy WebTransport — and the docs may mention them as such, but nothing
+  in the repo depends on them.
 - **Committing a certificate and key to the repository** — same revocation
   argument, arriving faster: keys in public repositories are found and
   reported, and the CA is then obliged to revoke.
@@ -599,8 +640,8 @@ Phase B — trusted certificates:
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| LD4 | `dev/certs.sh`: `CERT_MODE` dispatch, lane B, lane C (C-1 and C-2), `.env` authoring, and every §4.6 check | Each §4.6 row has a test or a documented manual reproduction — none may be silently unimplemented. TXT polling **never submits before the record is visible on the authoritative NS** (asserted against a stub resolver); the CAA check precedes issuance; a SAN/`${GAWK_HOST}` mismatch refuses to start; secrets never echoed to stdout or logs. `certs/`, `.env` and `dev/generated/*` gitignored, asserted by a test that greps the repo rather than by hope. Lane C tests run against the Let's Encrypt **staging** endpoint (`ACME_STAGING=1`). |
-| LD5 | Lanes B and C wired in: `dev/Caddyfile`, the `tls` profile, LAN opt-in, no `devCertHashHex` when the cert is trusted | Lane B: a broadcast completes **with Firefox as the viewer** — the claim that justifies the lane. Lane C: a second device on the LAN joins with nothing installed. Both: the generated `config.js` contains **no** `devCertHashHex` key at all (asserted), and the relay runs without `GAWK_DEV_CERT`. `BIND_ADDR` still defaults to `127.0.0.1`; the ops mapping is `127.0.0.1` even when it does not. |
+| LD4 | `dev/certs.sh`: `CERT_MODE` dispatch, lane C (C-1 and C-2), `.env` authoring, and every §4.6 check | Each §4.6 row has a test or a documented manual reproduction — none may be silently unimplemented. TXT polling **never submits before the record is visible on the authoritative NS** (asserted against a stub resolver); the CAA check precedes issuance; a SAN/`${GAWK_HOST}` mismatch refuses to start; secrets never echoed to stdout or logs. `certs/`, `.env` and `dev/generated/*` gitignored, asserted by a test that greps the repo rather than by hope. Lane C tests run against the Let's Encrypt **staging** endpoint (`ACME_STAGING=1`). |
+| LD5 | Lane C wired in: `dev/Caddyfile`, the `tls` profile, LAN opt-in, no `devCertHashHex` when the cert is trusted | A second device on the LAN joins with nothing installed. The generated `config.js` contains **no** `devCertHashHex` key at all (asserted), and the relay runs without `GAWK_DEV_CERT`. `BIND_ADDR` still defaults to `127.0.0.1`; the ops mapping is `127.0.0.1` even when it does not. **Firefox as the viewer** was originally lane B's criterion; it moved to lane A, where it is met (§10.3) — a trusted-CA lane was never what Firefox needed. |
 
 Phase C — profiles, gates, docs:
 
@@ -618,7 +659,10 @@ prerequisite:
 1. **Lane A, Docker only, offline.** `docker compose up`, broadcast in
    Chromium, join from a second tab and from a fresh incognito profile.
    Restart the stack; the viewer still joins with **nothing re-pasted**.
-2. **Lane B, plus mkcert.** The same, with the viewer in **Firefox**.
+2. **Lane A in Firefox.** The same stack, unmodified, with the viewer in
+   **Firefox** — no CA installed and no admin password anywhere. (This was
+   lane B's run before that lane was withdrawn; it is a property of lane A,
+   which is why lane B's removal costs nothing.)
 3. **Lane C, plus a domain.** The wizard end to end on a registrar without an
    API (the C-2 path, which is the one that needs the hand-holding), then a
    phone on the LAN joining `https://lan.<sub>.<domain>:8443` with nothing
@@ -669,10 +713,11 @@ names what is still a manual pass.
 
 | § | Specified | Implemented | Why |
 |---|---|---|---|
-| §4.1.1 | `certs` as a **named volume** | a **bind mount** on `./certs` | §4.5's shared-certificate inner loop, §4.3's `mkcert -cert-file certs/cert.pem` and §5's "`certs/` is gitignored" all assume a host directory; a named volume can satisfy none of them. `certs/.gitkeep` is tracked so the directory exists before Docker can create it root-owned. |
+| §4.3, D5 | **lane B (mkcert)** | **removed entirely** — no `mkcert` in `CERT_MODE`, `dev/certs.sh`, `.env.example` or the README | Built to spec, then measured against a browser for the first time and found unusable: neither engine will run WebTransport over a locally-installed root (§6 for the evidence). Nothing replaced it, because the lane's justification — Firefox — turned out to be satisfied by lane A. This is the deviation the milestone's post-implementation review actually earned. |
+| §4.1.1 | `certs` as a **named volume** | a **bind mount** on `./certs` | §4.5's shared-certificate inner loop, lane C's `install_lego_output` and §5's "`certs/` is gitignored" all assume a host directory; a named volume can satisfy none of them. `certs/.gitkeep` is tracked so the directory exists before Docker can create it root-owned. |
 | §4.1.1 | `config-gen` mounts `./dev:/dev-scripts` but runs `/dev/config-gen.sh` | runs `/dev-scripts/config-gen.sh` | `/dev` is the device filesystem; mounting over it is not survivable. The spec contradicted itself. |
 | §4.1.1 | lane A only sets `GAWK_DEV_CERT` | `GAWK_DEV_CERT: "${DEV_CERT-1}"` | Compose cannot make an environment key conditional on a lane. An empty value is false to the relay's parser, so `dev/certs.sh` clears it for the trusted lanes. |
-| §4.1.1 | in lanes B/C `app` "publishes no port" | it publishes `127.0.0.1:8081` | Compose cannot drop a port mapping per profile either. Loopback-only preserves what the rule was protecting (no LAN-exposed plain HTTP) and keeps a debugging door. |
+| §4.1.1 | in the trusted lanes `app` "publishes no port" | it publishes `127.0.0.1:8081` | Compose cannot drop a port mapping per profile either. Loopback-only preserves what the rule was protecting (no LAN-exposed plain HTTP) and keeps a debugging door. |
 | §4.5 | `pubsim` builds with context `gawk-broadcast/` | context is the **repo root** | `gawk-broadcast` reaches `gawk-server/wire` through `replace ../gawk-server`, so the relay's tree must be in the context — the same constraint `gawk-telemetry`'s image documents. |
 | §4.5 | — | `GAWK_ALLOWED_ORIGINS` also carries `gawk-broadcast://native` | Every native broadcaster — `pubsim` included — sends that origin, and without it the `sim` profile is rejected with a bare 403. `docs/self-hosting.md` already lists the same row for real deployments. |
 | §4.5 | — | the `telemetry` service runs as root | The chart gives it `fsGroup: 65532` so it can write its volume; compose has no equivalent and a fresh named volume is root-owned. |
@@ -692,7 +737,7 @@ Automated, and running in CI (`dev-stack` job in `ci.yml`):
 - `dev/stack_test.sh` — 22 static assertions: the ops listener's binding, the
   default service set, each profile, the unpublished telemetry read listener,
   `-insecure` appearing once, and what is gitignored.
-- `dev/certs_test.sh` — 38 assertions against stub `dig`/`docker`/`mkcert`,
+- `dev/certs_test.sh` — assertions against stub `dig`/`docker`,
   one per §4.6 row plus the two that matter most: the ACME lane **never**
   submits before the record is live on the authoritative nameservers
   (asserted by event ordering, not by timing), and a DNS provider credential
@@ -733,84 +778,66 @@ By hand on macOS (Apple Silicon, Colima + gRPC forwarder):
   connection from the host and answered on the compose network.
 - **`app-dev`**: an edit under `gawk-app/src` reached the served module in
   about a second, with `app` scaled to zero.
-- **Lane B**, up to the trust store: `mkcert` issued for
-  `gawk.localhost`/`127.0.0.1`, the chain validates against the mkcert root,
-  Caddy serves the app over HTTPS with it, the generated `config.js` contains
-  **no** `devCertHashHex`, and the relay presents exactly that certificate
-  over QUIC (`gawk-echo -cert-hash`, origin `https://gawk.localhost:8443`).
+- **Lane A in Firefox** (2026-08-17, Firefox Developer Edition 154, macOS):
+  the viewer joined a `sim` broadcast on the **unmodified default lane** — no
+  CA installed, no admin password, nothing pasted. `/statusz` for that
+  broadcast: `viewersGlobal 1`, five sessions (one primary + four stripe
+  legs), `egressDatagramBytes 3,501,522`, `keyframeStreamsSent 45`,
+  `dropped 0`, `sendErrors 0`. Firefox implements `serverCertificateHashes`,
+  and `connection.ts` already sends it to every browser, so lane A's ECDSA
+  P-256 / 14-day dev certificate (`tlsutil/devcert.go`) satisfies it exactly
+  as it satisfies Chromium. This is the run that made lane B unnecessary, and
+  it is the pass §9 item 2 now asks for.
+
+  Confirmed at the glass, too: the owner watched that viewer and reports the
+  picture rendering with *Decoded* climbing as expected, over the fixture's
+  `avc1.42C00D` at 30 fps. So the pass covers the whole path — certificate,
+  session, all five striped legs, egress, and decode — not just the half a
+  relay can see.
+
+- **Lane B** — built, then **withdrawn**; see §6. What was verified before the
+  browser test (`mkcert` issuing for `gawk.localhost`/`127.0.0.1`, the chain
+  validating, Caddy serving HTTPS with it, `config.js` carrying **no**
+  `devCertHashHex`, the relay presenting exactly that certificate over QUIC
+  via `gawk-echo -cert-hash`) all passed and none of it mattered: every one of
+  those checks is server-side or TCP-side, and the rule that kills the lane is
+  applied by the browser on the QUIC path alone. **The lesson is the general
+  one**: a certificate lane is not verified until a *browser* has completed a
+  WebTransport session over it.
 
 A finding worth its own line: **`--ignore-certificate-errors` and
 `--ignore-certificate-errors-spki-list` do not apply to WebTransport.** Chrome
 fails the QUIC handshake with `QUIC_TLS_CERTIFICATE_UNKNOWN` regardless. There
-is no way to fake trust for a browser test — which is precisely why lane B
-exists, and why its last step needs a real trust-store write.
+is no way to fake trust for a browser test — which is why the withdrawn lane
+could not be rescued with a flag, and why `serverCertificateHashes` (lane A) is
+the only local mechanism that works.
 
-### 10.4 Still manual — the two remaining passes, step by step
+### 10.4 Still manual — the remaining pass, step by step
 
-Both are blocked on something a session cannot supply: an administrator
-password, and a DNS record in a zone it does not control. Neither is a known
-defect; each is the last mile of §9's verification plan. **This is the
-runbook — follow it literally, and record the outcome where §10.5 says.**
+One pass is left, and it is blocked on something a session cannot supply: a
+DNS record in a zone it does not control. It is not a known defect; it is the
+last mile of §9's verification plan. **This is the runbook — follow it
+literally, and record the outcome where §10.5 says.**
 
-#### A. Lane B: `mkcert -install`, then a Firefox viewer
+#### A. Firefox on lane A — **done, 2026-08-17**
 
-The claim to prove is §8 LD5's: *a broadcast completes with Firefox as the
-viewer*. Everything up to the trust-store write is already verified (§10.3).
+This was lane B's pass. It was run on lane A instead, because lane B turned
+out to be impossible (§6) and lane A turned out to be sufficient. Result and
+numbers are in §10.3; nothing here is outstanding.
 
-1. **Install the CA.** In a terminal, so it can prompt:
+For anyone repeating it: `./dev/certs.sh devcert && ./dev/certs.sh renew`, then
+`docker compose --profile sim up -d --wait`, take the `GAWK_PUBSIM_ID=` code
+from `docker compose logs pubsim`, and open
+`http://localhost:8080/#/view/<code>` in Firefox. `Ctrl+Alt+Shift+D` toggles
+the stats overlay; *Decoded* must climb. If it connects but never decodes,
+that is a `docs/11` codec finding, not a certificate one.
 
-   ```sh
-   mkcert -install          # types your password; idempotent
-   ```
-
-   Expect `The local CA is already installed in the system trust store! 👍`
-   (and a second line for the NSS store if `certutil` is present). If Firefox
-   is the only target, `TRUST_STORES=nss mkcert -install` needs no password —
-   but it needs `certutil`: `brew install nss` on macOS.
-
-   `brew install mkcert` on 2026-08-17 already created the CA at
-   `$(mkcert -CAROOT)` without trusting it; this step is what trusts it.
-   `mkcert -uninstall` reverses it.
-
-2. **Switch the stack to the lane.**
-
-   ```sh
-   ./dev/certs.sh mkcert
-   docker compose up -d --wait
-   ```
-
-   Expect `.env` to carry `CERT_MODE=mkcert`, `DEV_CERT=` (empty),
-   `GAWK_HOST=gawk.localhost`, `APP_PORT=8443`, `COMPOSE_PROFILES=tls`,
-   `APP_HTTP_ADDR=127.0.0.1:8081`, and `RELAY_URL=https://127.0.0.1:4433` —
-   an **IPv4 literal on purpose** (§10.1). `docker compose ps` should show
-   `relay`, `app` and `caddy`.
-
-3. **Check the two things that are asserted, not assumed.**
-
-   ```sh
-   cat dev/generated/config.js                    # must contain NO devCertHashHex
-   docker compose logs relay | grep 'loaded certificate'   # not "persisted dev certificate"
-   ```
-
-4. **Chrome first** — it isolates "is the stack right" from "does Firefox
-   trust the CA". Open `https://gawk.localhost:8443/#/broadcast`, **Start a
-   stream**, accept the terms modal, share any window; copy the 6-character
-   code and open `https://gawk.localhost:8443/#/view/<code>` in a second
-   window. `Ctrl+Alt+Shift+D` toggles the stats overlay: *Decoded* must climb.
-
-5. **Then Firefox** (this is the pass that justifies the lane). Same join URL,
-   in Firefox Developer Edition. Watch for:
-   - *"Secure Connection Failed" / untrusted issuer* → the NSS store did not
-     get the root. `brew install nss && mkcert -install`, restart Firefox.
-   - *The name does not resolve* → Firefox's built-in `*.localhost` mapping is
-     not in play; add `127.0.0.1  gawk.localhost` to `/etc/hosts`.
-   - *Connects, never decodes* → a codec problem, not a certificate one: the
-     Chrome broadcaster negotiated H.264 and this is Firefox's decode path.
-     That is a `docs/11` finding, not a lane-B failure — record it as such.
-
-6. **What a pass looks like**: the Firefox viewer's *Decoded* counter climbing
-   with no hash anywhere in the flow. Note the codec and the fps from the
-   overlay; they belong in §10.3.
+A note for whoever automates this: Firefox has no extension automation here,
+but it does not need any — launch it with
+`-no-remote -new-instance -profile <tmp>` and `MOZ_LOG="timestamp,nsHttp:5"`,
+and `Http3Session::Authenticated` states the certificate verdict, whether the
+chain has third-party roots, and whether `serverCertificateHashes` matched.
+That log line is what diagnosed the withdrawn lane in minutes.
 
 #### B. Lane C: a live issuance, then a phone on the LAN
 
@@ -874,7 +901,9 @@ been submitted. What remains is the second half.
    is DNS-rebinding protection in the local resolver, not a mistake.
 
 5. **Run it.** `docker compose up -d --wait`, then
-   `https://gawk.dev.ioio.fi:8443`. Repeat step A.4's broadcast/join check.
+   `https://gawk.dev.ioio.fi:8443`: **Start a stream**, accept the terms
+   modal, share any window, and join `#/view/<code>` in a second window with
+   the stats overlay (`Ctrl+Alt+Shift+D`) showing *Decoded* climbing.
 
 6. **The pass that justifies the lane**: from a **phone on the same LAN**, with
    nothing installed on it, open `https://lan.dev.ioio.fi:8443/#/view/<code>`.
@@ -890,8 +919,12 @@ been submitted. What remains is the second half.
 
 ### 10.5 Where to record the outcome
 
-When either pass completes, update **§10.3** with what was observed (codec,
-fps, device), strike the corresponding entry from §10.4, and move the
-`ROADMAP.md` R38 row from 🔧 to ✅ once both are done. If a pass *fails*, the
-finding belongs in §10.3 too — and, if it is a browser behaviour rather than a
-stack one, in `docs/gotchas.md` under the cross-browser section.
+When the lane C pass completes, update **§10.3** with what was observed (codec,
+fps, device), strike its entry from §10.4, and move the `ROADMAP.md` R38 row
+from 🔧 to ✅ — it is the only thing still holding that row. If a pass *fails*,
+the finding belongs in §10.3 too — and, if it is a browser behaviour rather
+than a stack one, in `docs/gotchas.md` under the cross-browser section.
+
+The Firefox pass is the worked example of that last clause: it failed, the
+cause was a browser behaviour, and it produced §6's rejected-alternative entry,
+a `docs/gotchas.md` row, and the withdrawal of D5.

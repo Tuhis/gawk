@@ -148,15 +148,20 @@ The stack is a **development and evaluation tool, never a deployment path** —
 
 ### Choosing a certificate
 
-The three setup levels differ only in where the certificate comes from;
+The two setup levels differ only in where the certificate comes from;
 everything downstream of `certs/` is identical. `./dev/certs.sh` picks one and
 writes the `.env` that goes with it.
 
 | Level | Prerequisite | What it adds |
 |---|---|---|
-| **devcert** (default) | Docker | Chromium on this machine. Works offline, no prompts, no accounts. |
-| **mkcert** | `mkcert`, and one admin password | An ordinarily *trusted* certificate: **Firefox works**, and no hash is involved anywhere. |
+| **devcert** (default) | Docker | This machine, in **Chrome or Firefox**. Works offline, no prompts, no accounts. |
 | **acme** | a domain you control | A publicly trusted certificate on your own name, so a **phone or a second laptop joins with nothing installed**. It is also a rehearsal of the DNS-01 issuance [`docs/self-hosting.md`](docs/self-hosting.md) asks of you. |
+
+There is deliberately no "install a local CA" level. `mkcert` and friends
+produce a certificate your *browser chrome* trusts, but no browser will open a
+**WebTransport** session over a locally-installed root — the page would load
+and the stream would not. The default level's `serverCertificateHashes` path is
+what both engines accept locally ([`docs/41`](docs/41-local-dev-stack.md) §6).
 
 The ACME level uses DNS-01, and the wizard leads with the thing that stops
 people trying it: **DNS-01 proves control of the name, not reachability of the

@@ -5,7 +5,7 @@
 # ACME lane NEVER submits before the challenge record is live, and that a DNS
 # provider credential never reaches stdout, stderr or a log.
 #
-# Everything runs against stub `dig`, `mkcert` and `docker` binaries on PATH,
+# Everything runs against stub `dig` and `docker` binaries on PATH,
 # inside a throwaway copy of the repository skeleton — no network, no CA, and
 # nothing written to the real ./certs or ./.env. Run from the repo root:
 #
@@ -48,7 +48,6 @@ setup() { # setup → sets T
     : > "$T/dig.log"
     write_stub_dig
     write_stub_docker
-    write_stub_mkcert
 }
 
 teardown() { rm -rf "$T"; }
@@ -155,38 +154,6 @@ STUB
     chmod +x "$T/bin/docker"
 }
 
-write_stub_mkcert() {
-    cat > "$T/bin/mkcert" <<'STUB'
-#!/bin/sh
-echo "mkcert $*" >> "$T/docker.log"
-case "$1" in
-  -install) echo "The local CA is already installed"; exit 0 ;;
-  -CAROOT)  echo "$T/caroot"; exit 0 ;;
-esac
-cert=; key=; names=
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -cert-file) cert=$2; shift 2 ;;
-    -key-file)  key=$2; shift 2 ;;
-    *) names="$names $1"; shift ;;
-  esac
-done
-san=
-for n in $names; do
-  case "$n" in
-    ::1)    item="IP:::1" ;;
-    [0-9]*) item="IP:$n" ;;
-    *)      item="DNS:$n" ;;
-  esac
-  san="${san:+$san,}$item"
-done
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-  -keyout "$key" -out "$cert" -days 30 -subj "/CN=mkcert-stub" \
-  -addext "subjectAltName=$san" 2>/dev/null
-STUB
-    chmod +x "$T/bin/mkcert"
-}
-
 # A self-signed certificate with chosen SANs and lifetime, for the checks that
 # read one off disk.
 make_cert() { # make_cert <days> <san-list>
@@ -229,12 +196,12 @@ want "a covering certificate passes" "certificate covers localhost" "$T/out"
 want_not "…and says nothing about SANs" "does NOT cover" "$T/out"
 teardown
 
-# Near expiry: the trusted lanes warn at 30 days, so a 30-day certificate in
-# mkcert mode is inside the window and a 90-day one is not.
+# Near expiry: the trusted lane warns at 30 days, so a 20-day certificate in
+# acme mode is inside the window and a 90-day one is not.
 setup
 run_certs devcert
 make_cert 20 "DNS:localhost"
-sed -i.bak 's/^CERT_MODE=.*/CERT_MODE=mkcert/' "$T/.env"
+sed -i.bak 's/^CERT_MODE=.*/CERT_MODE=acme/' "$T/.env"
 run_certs check
 want "warns when a trusted-lane certificate is inside 30 days" "expires within 30 days" "$T/out"
 teardown
@@ -242,7 +209,7 @@ teardown
 setup
 run_certs devcert
 make_cert 90 "DNS:localhost"
-sed -i.bak 's/^CERT_MODE=.*/CERT_MODE=mkcert/' "$T/.env"
+sed -i.bak 's/^CERT_MODE=.*/CERT_MODE=acme/' "$T/.env"
 run_certs check
 want_not "…and not when it is comfortably ahead" "expires within" "$T/out"
 teardown
@@ -275,33 +242,27 @@ want "a busy port names the port" "8080/tcp" "$T/out"
 want "…and the .env variable that changes it" "change APP_HTTP_ADDR in .env" "$T/out"
 teardown
 
-# ── §4.6: mkcert absent ───────────────────────────────────────────────────
+# ── the withdrawn mkcert lane (docs/41 §6) ────────────────────────────────
+# The lane was built and removed: no browser will run WebTransport over a
+# locally-installed CA. What is asserted here is the *migration* — an old
+# command or an old .env must land on an explanation, not on a stack that
+# comes up and then fails in the browser with an error naming nothing.
 
 echo
-echo "mkcert lane (§4.3)"
+echo "withdrawn mkcert lane (§6)"
 setup
-rm "$T/bin/mkcert"
-# An empty PATH but for the stubs, so the real mkcert (if the developer has
-# one) cannot make this pass by accident.
-(
-    cd "$T"
-    PATH="$T/bin:/usr/bin:/bin"
-    export PATH T
-    GAWK_CERTS_NONINTERACTIVE=1 sh dev/certs.sh mkcert
-) > "$T/out" 2>&1 || true
-want "a missing mkcert prints the install line" "mkcert is not on PATH" "$T/out"
-want_not "…and does not install it" "installing the local CA" "$T/out"
+run_certs mkcert || true
+want "the mkcert subcommand says the lane was removed" "mkcert lane was removed" "$T/out"
+want "…and names the reason"        "locally-installed CA" "$T/out"
+want "…and points at the lane Firefox actually needs" "./dev/certs.sh devcert" "$T/out"
+want_not "…and issues nothing"      "cert.pem" "$T/docker.log"
 teardown
 
 setup
-run_certs mkcert
-want "issues for the pretty name"      "gawk.localhost" "$T/docker.log"
-want "…and for loopback"               "127.0.0.1" "$T/docker.log"
-want "switches the stack to HTTPS"     "APP_ORIGIN=https://gawk.localhost:8443" "$T/.env"
-want "turns the tls front door on"     "COMPOSE_PROFILES=tls" "$T/.env"
-want "stops the relay self-signing"    "DEV_CERT=" "$T/.env"
-want "keeps the relay on an IPv4 literal" "RELAY_URL=https://127.0.0.1:4433" "$T/.env"
-want "says other devices need the root" "rootCA.pem" "$T/out"
+run_certs devcert
+sed -i.bak 's/^CERT_MODE=.*/CERT_MODE=mkcert/' "$T/.env"
+run_certs renew || true
+want "a stale CERT_MODE=mkcert in .env is explained too" "mkcert lane was removed" "$T/out"
 teardown
 
 # ── §4.6: CAA, propagation, rate limits (the ACME lane) ───────────────────
