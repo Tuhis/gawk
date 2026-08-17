@@ -40,6 +40,8 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars) |
 | `-telemetry-key` | `GAWK_TELEMETRY_KEY` | (empty = telemetry disabled; 64 hex chars, shared with gawk-telemetry) |
 | `-telemetry-report-interval` | `GAWK_TELEMETRY_REPORT_INTERVAL` | `2s` (500ms–60s) |
+| `-telemetry-advertise-url` | `GAWK_TELEMETRY_ADVERTISE_URL` | (empty = nothing advertised; absolute https URL) |
+| `-server-name` | `GAWK_SERVER_NAME` | (empty = unnamed; operator display name advertised over `/echo`) |
 | `-cluster-mode` | `GAWK_CLUSTER_MODE` | `false` |
 | `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
 | `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |

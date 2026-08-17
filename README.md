@@ -34,8 +34,9 @@ encode/decode path) — no accounts, no plugins, no native app required.
 > visible on both, showing the actual glass-to-glass latency.
 
 **[gawk.ioio.fi](https://gawk.ioio.fi)** runs this exact stack. This
-repository is everything needed to run your own: two Helm charts, two
-images, and a **[self-hosting guide](docs/self-hosting.md)**.
+repository is everything needed to run your own: two required Helm charts
+(plus an optional third for telemetry), two-to-three images, and a
+**[self-hosting guide](docs/self-hosting.md)**.
 
 ## Features
 
@@ -156,7 +157,8 @@ runs on every PR; see [`e2e/README.md`](e2e/README.md) to run it locally.
 
 ## Run your own
 
-Two Helm charts, two images, published to GHCR on every release with chart
+Two required Helm charts (`gawk-server`, `gawk-app`), plus an optional
+`gawk-telemetry` chart, published to GHCR on every release with chart
 version, `appVersion` and image tag always in lockstep:
 
 ```sh
@@ -195,7 +197,7 @@ confirmed open defects rather than hiding them.
 
 ## Gotchas
 
-The full list — 115 entries, each of which cost real debugging time — lives
+The full list — 116 entries, each of which cost real debugging time — lives
 in **[`docs/gotchas.md`](docs/gotchas.md)**. The ones most likely to catch
 you first:
 

@@ -33,7 +33,8 @@ flowchart LR
 | `GET /statusz` | JSON stats: subscribers, frames/datagrams relayed, drops, cached keyframe, per-subscriber detail |
 
 A separate plain-TCP **ops endpoint** serves `GET /metrics` (Prometheus),
-`/healthz` and a mirror of `/statusz` on `-metrics-addr` (default `:2112`)
+`/healthz`, `/readyz` (drain-aware; used by the Helm chart's readiness probe)
+and a mirror of `/statusz` on `-metrics-addr` (default `:2112`)
 — the main server is HTTP/3-over-UDP only, which Prometheus and plain curl
 can't reach. Never expose this port publicly; the Helm chart exposes it via
 a ClusterIP Service + optional ServiceMonitor only. Details:
@@ -83,7 +84,7 @@ ones a first install actually touches:
 | `-metrics-addr` | `:2112` | Ops endpoint; the literal value `off` disables |
 | `-cluster-mode` | `false` | Multi-pod federation; requires `-internal-psk` and `-internal-server-name` |
 
-The full table — ~38 flags including DVR, forward parity, telemetry and
+The full table — ~40 flags including DVR, forward parity, telemetry and
 cluster keys — with notes on the non-obvious ones:
 **[`docs/flags.md`](docs/flags.md)**.
 

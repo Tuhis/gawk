@@ -1,8 +1,9 @@
 # Self-hosting gawk
 
-Everything you need to run your own gawk. Two Helm charts, two container
-images, one Kubernetes namespace. Budget an hour for a first install, most of
-it waiting for DNS and certificates.
+Everything you need to run your own gawk. Two required Helm charts and
+container images, plus an optional third for telemetry, one Kubernetes
+namespace. Budget an hour for a first install, most of it waiting for DNS
+and certificates.
 
 If you only want to try gawk locally, you do not need any of this — the
 [Quickstart](../README.md#quickstart-local-dev) runs the relay and the app on

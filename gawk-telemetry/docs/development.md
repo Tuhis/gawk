@@ -93,7 +93,7 @@ hashing would buy, and stable names mean a rebuild overwrites in place.
   it answer a request. If you bump one side, bump the other.
 - **The image builds from the repo root** — this module consumes
   `gawk-server/wire` through a local `replace`:
-  `docker build -f gawk-telemetry/deploy/Dockerfile -t gawk-telemetry:dev ..`
+  `docker build -f gawk-telemetry/deploy/Dockerfile -t gawk-telemetry:dev .`
 
 ## Traps
 

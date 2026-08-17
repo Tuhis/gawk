@@ -21,9 +21,10 @@ gawk-broadcast -url https://relay.example   # …or somebody else's
 
 It speaks the existing publisher protocol byte for byte — zero server,
 wire or viewer changes — by importing the relay's own `wire` package. The
-browser broadcaster remains the path for Windows/macOS, for Linux machines
-without a usable hardware encoder, and for anyone who doesn't want to
-install anything.
+browser broadcaster remains the path for macOS, for Linux machines without
+a usable hardware encoder, and for anyone who doesn't want to install
+anything; Windows has its own native broadcaster,
+[`gawk-broadcast-windows`](../gawk-broadcast-windows/README.md).
 
 **Why does this exist?** The browser cannot hardware-encode on Linux — a
 platform gap, not a tuning problem. WebCodecs hardware encode ships on
@@ -50,9 +51,12 @@ Note the slash: tags are `gawk-broadcast/vX.Y.Z` from v1.11.2 onward, and
 `gawk-server/wire` — the package this module and both other clients import
 rather than mirror — cannot be resolved by `go get` at a version at all.
 
-The tarball holds both binaries, `INSTALL.md` and `BUILD-INFO.txt`, with a
-`SHA256SUMS` asset beside it (the binaries are unsigned, so the checksum is
-the integrity check). Every green CI run also uploads an artifact
+The tarball holds all three binaries (`gawk-broadcast`, `gawk-broadcast-gui`
+and `gawk-pw-helper`, the per-application audio capture helper spawned by
+the engine — see [`docs/internals.md`](docs/internals.md)), `INSTALL.md`
+and `BUILD-INFO.txt`, with a `SHA256SUMS` asset beside it (the binaries are
+unsigned, so the checksum is the integrity check). Every green CI run also
+uploads an artifact
 (`gawk-broadcast-linux-amd64-<sha>`) for testing unreleased builds —
 [`INSTALL.md`](INSTALL.md) is written for a tester with a binary and no
 context.
@@ -159,10 +163,10 @@ sharp edges: **[`docs/troubleshooting.md`](docs/troubleshooting.md)**.
 
 ```sh
 # Go, plus Gio's Linux headers (Debian/Ubuntu) — GUI only; the CLI and
-# engine need none of them:
+# engine need none of them — and libpipewire-0.3-dev for gawk-pw-helper:
 sudo apt install gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
   libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev \
-  libxcursor-dev libvulkan-dev
+  libxcursor-dev libvulkan-dev libpipewire-0.3-dev
 
 go build ./cmd/...
 ```

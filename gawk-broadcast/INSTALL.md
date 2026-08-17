@@ -297,15 +297,16 @@ Useful facts when something looks wrong:
 Needed if your glibc is older than 2.34, or you're not on x86-64.
 
 ```sh
-# Go ≥ 1.26, plus Gio's build headers (Debian/Ubuntu):
+# Go ≥ 1.26, plus Gio's build headers (Debian/Ubuntu) and libpipewire-0.3-dev
+# for gawk-pw-helper:
 sudo apt install golang gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
   libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev \
-  libxcursor-dev libvulkan-dev
+  libxcursor-dev libvulkan-dev libpipewire-0.3-dev
 
 git clone https://github.com/Tuhis/gawk
 cd gawk/gawk-broadcast
 go build ./cmd/...
 ```
 
-Those headers are only needed to build the GUI. The runtime dependency list
+Gio's headers are only needed to build the GUI. The runtime dependency list
 above still applies.

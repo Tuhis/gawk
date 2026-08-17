@@ -141,7 +141,7 @@ go test -race ./...
 go test -tags duckdb ./internal/sqlengine/...
 
 # The image builds from the REPO ROOT (local `replace` on gawk-server/wire):
-docker build -f gawk-telemetry/deploy/Dockerfile -t gawk-telemetry:dev ..
+docker build -f gawk-telemetry/deploy/Dockerfile -t gawk-telemetry:dev .
 ```
 
 Dashboard development (hot reload against a live backend), bundle build
@@ -172,7 +172,7 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback
 | `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no auth) |
 | `-ingest-rate` / `-ingest-burst` | `GAWK_TELEMETRY_INGEST_RATE` / `_BURST` | `300` / `1200` (global) |
 | `-ingest-session-rate` / `-ingest-session-burst` | `GAWK_TELEMETRY_INGEST_SESSION_RATE` / `_SESSION_BURST` | `1` / `10` (per session) |
-| `-cors-origin` | `GAWK_TELEMETRY_CORS_ORIGIN` | (empty) |
+| `-cors-origin` | `GAWK_TELEMETRY_CORS_ORIGIN` | *(deprecated, ignored since R37 — ingest always serves wildcard CORS; see docs/40 D17)* |
 | `-log-level` | `GAWK_TELEMETRY_LOG_LEVEL` | `info` |
 | `-log-format` | `GAWK_TELEMETRY_LOG_FORMAT` | `json` |
 
