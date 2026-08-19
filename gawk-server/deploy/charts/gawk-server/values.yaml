@@ -6,13 +6,8 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# GHCR is private: create a pull secret once per namespace with a classic
-# PAT that has read:packages only (fine-grained PATs don't cover GHCR):
-#
-#   kubectl -n gawk create secret docker-registry ghcr-pull \
-#     --docker-server=ghcr.io --docker-username=Tuhis --docker-password=<PAT>
-#
-# then set: imagePullSecrets: [{name: ghcr-pull}]
+# The published images are public; a pull secret is only for a registry of
+# your own.
 imagePullSecrets: []
 
 # R17 (docs/22): relay pod count. Anything above 1 REQUIRES
