@@ -373,6 +373,12 @@ acme_env
 run_certs acme
 want "without a LAN address it is loopback"    "gawk.dev.example.com   A  127.0.0.1" "$T/out"
 want "…and the stack stays on this machine"    "BIND_ADDR=127.0.0.1" "$T/.env"
+# The lane asks for a LAN address before issuing now, like the devcert lane.
+# The prompt itself needs a terminal, so what is assertable here is the
+# guidance: it must name the route that works without one, because the
+# previous text offered only "re-run and it will ask" — of a lane that never
+# asked.
+want "…and the guidance names a route that always works" "set LAN_IP in .env" "$T/out"
 teardown
 
 # ── §4.6: the tls lane's front door (finding 4) ───────────────────────────

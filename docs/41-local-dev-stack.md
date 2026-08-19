@@ -932,8 +932,10 @@ been submitted. What remains is the second half.
    A records to add, and — in C-2 — the warning that this sub-lane cannot
    renew itself.
 
-4. **Add the one A record.** Give the wizard this machine's LAN address when
-   it asks, and it prints a single record pointing there:
+4. **Add the one A record.** The wizard asks for this machine's LAN address
+   **before** it issues anything — answer it, and it prints a single record
+   pointing there. (Non-interactively, set `LAN_IP` in `.env` first; the
+   question is skipped when there is no terminal to ask.)
 
    ```
    gawk.dev.ioio.fi   A   <this machine's LAN address>
@@ -995,6 +997,16 @@ each names a class of mistake worth not repeating.
 | 4 | **The ACME lane's front door was never preflighted.** `APP_HTTP_ADDR` moves to loopback:8081 there, so the checked port was not the one a browser opens; `check` said all clear and `up` failed to bind Caddy | `preflight` checks `APP_PORT` too whenever the `tls` profile is active |
 | 5 | **A guard that could never fire**: `config-gen`'s empty-hash check, because `sha256sum` of zero bytes is a perfectly good digest, so a wrong-but-plausible hash would reach the browser — the exact failure the guard exists to prevent | Reject the empty-input digest explicitly |
 | 6 | **A dev command prescribed to production.** The file-backed arm — what a k8s deployment with a cert-manager Secret runs — logged `remedy="./dev/certs.sh renew"` | A remedy naming both audiences |
+
+A **seventh**, found by the re-review and caused by fix 1: the new no-LAN
+guidance told the user to "re-run this lane and give it your LAN address when
+it asks" — but `lane_acme` only ever *read* `LAN_IP`; `choose_lan_ip` was wired
+into `lane_devcert` alone. Re-running would never ask, and in the manual
+sub-lane that costs a full reissue against the 5-duplicates-per-week limit to
+learn it. Exactly the class of finding 3, introduced while fixing 1. The lane
+now asks **before** issuance (so the guidance and `BIND_ADDR` are right on the
+first pass), and the printed text names `LAN_IP` in `.env` as well, since the
+prompt needs a terminal and a scripted run has none.
 
 Two of these (1 and 5) are the same shape: **something that reads correctly and
 has never been executed.** The `lan.*` record was printed by a lane whose live

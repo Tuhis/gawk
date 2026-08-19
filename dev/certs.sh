@@ -630,6 +630,17 @@ lane_acme() { # lane_acme [renew]
     _staging=$(env_get ACME_STAGING); _staging=${_staging:-0}
     _provider=$(env_get LEGO_DNS_PROVIDER)
 
+    # Ask BEFORE issuing, exactly as lane_devcert does. The answer decides the
+    # A record this lane prints and whether BIND_ADDR opens up, so asking
+    # afterwards would mean a correct certificate with wrong guidance — and in
+    # the manual sub-lane, a full reissue (against the 5-duplicates-per-week
+    # limit) to correct it.
+    _lan=$(env_get LAN_IP)
+    if [ -z "$_lan" ] && [ -z "$NONINTERACTIVE" ]; then
+        _lan=$(choose_lan_ip)
+    fi
+    env_set LAN_IP "$_lan"
+
     env_set ACME_DOMAIN "$_domain"
     env_set ACME_SUBDOMAIN "$_sub"
     env_set ACME_EMAIL "$_email"
@@ -650,7 +661,8 @@ lane_acme() { # lane_acme [renew]
     fi
     install_lego_output "$_wildcard"
 
-    _lan=$(env_get LAN_IP)
+    # $_lan was decided before issuance; re-reading it here would only pick up
+    # an edit made while lego ran.
     _bind="127.0.0.1"
     [ -n "$_lan" ] && _bind="0.0.0.0"
     env_set BIND_ADDR "$_bind"
@@ -680,8 +692,13 @@ lane_acme() { # lane_acme [renew]
         say ""
         say "      $_host   A  127.0.0.1"
         say ""
-        say "  For other devices, re-run this lane and give it your LAN address when"
-        say "  it asks — the record then points there instead, and nothing else changes."
+        # No promise this lane cannot keep: it asks only when it has a terminal
+        # and LAN_IP is unset, so name the .env key too — that route always
+        # works, including from a script.
+        say "  For other devices, set LAN_IP in .env (or re-run this lane interactively,"
+        say "  which asks) and run it again — the record then points at that address"
+        say "  instead, and nothing else changes. The wildcard already covers the name,"
+        say "  so re-running costs an issuance; on the manual sub-lane, prefer .env."
     fi
     say ""
     check_rebinding "$_host" "$_domain"
