@@ -186,6 +186,11 @@ export function getTelemetryUrl(): string {
   return (typeof v === 'string' && v.trim()) || DEFAULT_TELEMETRY_URL;
 }
 
+// Where this software comes from. Deliberately a constant and NOT a runtime
+// knob: it points at the project every deployment is built from, not at the
+// deployment — a fork that wants its own link edits it in the fork.
+export const SOURCE_URL = 'https://github.com/Tuhis/gawk';
+
 // R23 (docs/29): terms & conditions. The version baked into this release; the
 // acknowledgment key stores whichever version a broadcaster last agreed to, so
 // an operator bumps config.termsVersion to re-prompt on a meaningful edit (D7).
