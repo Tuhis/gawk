@@ -69,13 +69,15 @@ affected — only loopback traffic is quieted.
 **`-live-edge-audio-on-reliable-stream`** — measure before flipping; see
 the chart values for the discussion.
 
-**The two R37 advertisement flags** are what a relay tells clients about
-itself. `-server-name` is the operator display name a server picker shows
-after probing `/echo` (wire 0x11); `-telemetry-advertise-url` names the
-ingest URL sessions should report to (wire 0x12), so viewers arriving from
-someone else's frontend reach your collector instead of dying at theirs. An
-invalid URL fails startup on purpose. Both are optional; see
-[docs/40](../../docs/40-relay-server-picker.md) and
+**`-server-name`** is the display name a server picker shows next to your
+relay's host once it has probed `/echo`. Unset, the relay is listed by
+version alone.
+
+**`-telemetry-advertise-url`** tells every session which telemetry ingest to
+report to. Without it a viewer who arrived from someone else's frontend
+reports to *that* deployment's collector, where its token is rejected and
+the diagnostics are lost; with it, those sessions land in yours. An invalid
+URL fails startup rather than silently advertising nothing. See
 [`docs/self-hosting.md`](../../docs/self-hosting.md) §8.
 
 **The cluster flags** (`-cluster-mode` and the shared keys/PSK) enable the
