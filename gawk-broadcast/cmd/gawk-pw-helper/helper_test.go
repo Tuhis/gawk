@@ -148,6 +148,37 @@ func (s *session) await(what string, pred func(pwproto.Event) bool) pwproto.Even
 	}
 }
 
+// awaitFenced returns the LAST event matching pred that the helper wrote
+// before answering a ping — the reply to the request just sent, rather than
+// whichever earlier event happens to fit.
+//
+// A links event is not addressed to a request: the helper emits one whenever
+// the graph changes, so registry churn that takes a link away and gives it
+// back leaves a second, stale links event in the stream. await() then matches
+// that one and reads the state from *before* the request under test. The
+// helper's loop is single-threaded over one request channel, so a ping queued
+// behind the request is answered only after everything that request emitted:
+// the last match before the pong is the state the request produced.
+func (s *session) awaitFenced(what string, pred func(pwproto.Event) bool) pwproto.Event {
+	s.t.Helper()
+	s.send(pwproto.Request{Op: pwproto.OpPing})
+	var last pwproto.Event
+	var found bool
+	s.await("the pong after "+what, func(e pwproto.Event) bool {
+		if e.Event == pwproto.EventPong {
+			return true
+		}
+		if pred(e) {
+			last, found = e, true
+		}
+		return false
+	})
+	if !found {
+		s.t.Fatalf("the helper answered the ping without sending %s", what)
+	}
+	return last
+}
+
 func (s *session) awaitReady() pwproto.Event {
 	return s.await("ready", func(e pwproto.Event) bool { return e.Event == pwproto.EventReady })
 }
@@ -560,7 +591,7 @@ func TestSwitchingToSystemAudioKeepsTheSameSink(t *testing.T) {
 	s.awaitLinks(2)
 
 	s.send(pwproto.Request{Op: pwproto.OpCaptureSystem})
-	e := s.await("the system-audio links", func(e pwproto.Event) bool {
+	e := s.awaitFenced("the system-audio links", func(e pwproto.Event) bool {
 		n, ok := e.LinkCount()
 		return e.Event == pwproto.EventLinks && ok && n == 2
 	})
