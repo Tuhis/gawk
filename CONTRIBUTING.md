@@ -165,6 +165,6 @@ failing `licenses-fresh`, that allowlist is what is missing.
 - One concern per PR. "Fix the thing" plus "and reformat this file" is two.
 - Tests for anything behavioral, written before the fix if it is a bug.
 - The design doc updated when a decision changes, not just the code.
-- `ROADMAP.md` status and `README.md` gotchas kept in sync when your change
+- `ROADMAP.md` status and `docs/gotchas.md` kept in sync when your change
   makes them wrong. `BUGS.md` entries deleted when your change fixes them.
 - A description that says what changes and why; the diff already says how.

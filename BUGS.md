@@ -780,8 +780,9 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Competing explanation**, equally consistent with the evidence: a plain
   >30 s uplink drop hitting `-max-idle-timeout` on both ends.
 - **Why it was undiagnosable**: the relay could not report the real reason —
-  see the `context canceled` gotcha in the README. That is **fixed** as of
-  2026-07-27 (`internal/transport/endreason.go`), so the *next* occurrence
+  see the `context canceled` gotcha in [`docs/gotchas.md`](docs/gotchas.md).
+  That is **fixed** as of 2026-07-27
+  (`internal/transport/endreason.go`), so the *next* occurrence
   should log `timeout: no recent network activity` (idle timeout) or a
   stateless-reset error, which discriminates the two hypotheses outright.
 - **Fix would start**: with the next captured reason. If it is a stateless
@@ -793,4 +794,4 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
 (The Chrome 152 `WebTransport.getStats()` entry was resolved 2026-07-14: not
 a gawk defect — Chromium removed the API entirely; see the gotcha in
-`docs/13-observability.md` D7 and the README gotcha list.)
+`docs/13-observability.md` D7 and [`docs/gotchas.md`](docs/gotchas.md).)
