@@ -791,6 +791,131 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   auto-resume, or routing publishers differently from viewers. Do not change
   the LB shape speculatively — docs/22 finding 10 chose etp=Local deliberately.
 
+## Viewer latency metrics emit session-age values — the fleet's `capToRenderMs` p95 reads 48 minutes
+
+- **Found**: 2026-08-20, diagnosing the previous evening's demo-recording
+  streams (broadcasts `b9b42c60ab14`, `aa67099035bb`, `e970addda9f9`) through
+  the telemetry read API. Not introduced by that session's changes and not new:
+  the poisoned aggregate goes back to at least 2026-08-12, the earliest bucket
+  `/v1/trends` still covers.
+- **Impact**: `capToRenderMs` is the headline metric — "the number this project
+  exists to keep small", per its own field description — and its fleet p95 is
+  meaningless. `/v1/trends?metric=capToRenderMs&stat=p95` reads **2 903 675 ms
+  (48 minutes)** for the 08-16 bucket, 682 017 ms for 08-12 and 358 569 ms for
+  08-19; `liveEdgeDriftMs` p95 is wrong by the same amounts. The median stat is
+  unaffected (156–485 ms), so the damage is confined to max/p95 — but rollups
+  are **permanent**, so every poisoned bucket is permanent too, and any
+  latency-regression question asked of history is currently unanswerable
+  above the median.
+- **Confirmed shape** (8 bad samples across 8 viewer sessions — 4 in
+  `13585b24…`, 3 in `b393325e…`, 1 in `532e65f7…`; every other sample in those
+  same sessions reads a healthy 52–70 ms):
+  - each bad value equals wall-clock *now* minus a **fixed instant**, growing
+    exactly 1:1 with elapsed session time (one session gained 43 674 ms of
+    value across 43 499 ms of wall time, another 39 013 across 39 004);
+  - that instant is the **same** ≈`1787175899400` (2026-08-19 23:44:59 local)
+    in all three broadcasts and all eight viewer sessions, including sessions
+    that started five minutes later;
+  - it is also exactly what `videoScheduleBaseEpochMs` reports in **every**
+    session — that field never moves off ≈`1787175899.3–900.0` all evening;
+  - `liveEdgeDriftMs` carries the same number minus ~50 ms, so both metrics
+    come from one bad term, not two.
+- **Hypothesis, not a diagnosis**: the constant is a `timeOrigin`, and the two
+  metrics are mixing clocks across contexts. `videoScheduleBaseEpochMs()`
+  (`gawk-app/src/transport/viewer.ts:1143`) is
+  `arrivalBaselineMs() + getPlayoutOffsetMs() + timeOriginMs()` — if the
+  baseline is measured in one context and `timeOriginMs()` belongs to another
+  (a viewer page open across several broadcasts, or a transport worker
+  respawned mid-view), the sum lands on the older context's origin instead of
+  the anchor instant, which is precisely the reading observed.
+  `observeCapToRender` (`viewer.ts:1151`) has a guard for exactly this hazard —
+  the rebasing onto `sync.timeOriginMs` at `viewer.ts:1155-1161`, added because
+  a nested transport worker's `timeOrigin` is "minutes after this worker's" —
+  and a second guard that returns early while `broadcastClockOffsetUs` is null.
+  Neither covers whatever produces these samples, and the shared constant says
+  the surviving hole is upstream of both metrics rather than in the clock
+  mapping alone.
+- **Not a telemetry defect**: the service stores what it is sent by design
+  (D15's tolerant reader — `gawk-telemetry/internal/ingest/ingest.go:11`,
+  and the deferred stats decode at `:58` exists so one absurd value cannot
+  reject a batch). The numbers are wrong before they leave the browser.
+- **Fix would start**: in `viewer.ts`, test-first per CODE-REVIEW.md. Reproduce
+  by driving `videoScheduleBaseEpochMs()`/`observeCapToRender()` with an
+  `arrivalBaselineMs()` and a `timeOriginMs()` from deliberately different
+  contexts and asserting the epoch lands on the anchor, not the older origin —
+  the red test is the deliverable, because the arithmetic is what is in doubt.
+  Consider also a plausibility clamp at the *source*: a `capToRenderMs` larger
+  than, say, the DVR ring is not a latency reading and should be dropped rather
+  than published, so a future recurrence cannot poison permanent rollups again.
+  The already-stored buckets need a separate decision — rollups are permanent
+  by design, so either they stay poisoned with this entry as the explanation,
+  or a one-off rewrite drops the outliers.
+
+## Telemetry SQL console: the `rollups` view rots after boot, and any unpruned `sessions` query OOMs
+
+- **Found**: 2026-08-20, during the same investigation, reaching for the SQL
+  console to read text-valued config facts (`renderer`, `acceleration`,
+  `pipelineContext`) that the read API's numeric series does not carry. Both
+  failures are store-age dependent, which is why TH10's acceptance criteria
+  (`docs/36-telemetry-ui-history.md` §TH10 — "a query returns a result set",
+  "a malformed or long-running query fails safely") passed when they were
+  checked and pass on any fresh store.
+- **Impact**: the console is the answer to every question the fixed API shape
+  cannot answer (UD18), and right now it answers none of them on the deployed
+  fleet. `rollups` — the permanent, one-row-per-session view, the most valuable
+  of the four — is unusable outright. `sessions` works only if the operator
+  already knows to scope the query. `relay` is fine (`SELECT count(*) FROM
+  relay` → 307 197 rows in 1.4 s), so the console *looks* healthy until you ask
+  it something.
+- **Failure 1 — `rollups` always errors.** Every query against it, down to
+  `SELECT sessionId, role, config FROM rollups WHERE date >= '2026-08-19'`,
+  returns `Binder Error: Contents of view were altered: types don't match!`
+  followed by the whole expected `STRUCT` type.
+  **Cause (confirmed, structural)**: `duckdb.go:62` registers each view **once
+  at process start**, as
+  `CREATE VIEW … AS SELECT * FROM read_json_auto(glob, union_by_name=1, …)`.
+  DuckDB records the inferred column types at `CREATE` time, while the store
+  keeps growing under the glob — and D15 guarantees the stats objects gain
+  fields every milestone, which is exactly why `union_by_name=1` is there. The
+  first rollup line carrying a new stat makes the re-inferred type disagree
+  with the recorded one, permanently, for that process. The deployed pod has
+  been up since **2026-08-02 with 0 restarts** — eighteen days of new rollup
+  lines against a schema pinned on day one. It self-heals on restart and then
+  rots again, which is the worst possible shape for an operator tool.
+- **Failure 2 — unpruned `sessions` queries die on memory.** Any query without
+  a `date`/`broadcast` predicate returns `Out of Memory Error: failed to
+  allocate data of size 32.0 MiB (1.5 GiB/1.5 GiB used)` — including a bare
+  `SELECT count(*) FROM sessions`, so it is the scan itself and not the
+  projection. The same count with `WHERE date = '2026-08-19'` returns 381 rows
+  in 1.8 s.
+  **Cause (confirmed)**: `duckdb.go` sets no PRAGMA at all — no `memory_limit`,
+  no `threads`, no `preserve_insertion_order` — so DuckDB takes its default
+  ~80 % of what the container reports, and the chart's 2 GiB limit yields
+  exactly the 1.5 GiB in the message. `DefaultRowLimit` and `DefaultTimeout`
+  (`sqlengine.go:46`, `:51`) bound the *result set and the clock*, not the
+  bytes a scan touches. Hive pruning is the design's answer to scan size and it
+  works — but nothing asks for a predicate, so the first query an operator
+  naturally types is the one that fails.
+- **Second-order risk**: 1.5 GiB of DuckDB inside a 2 GiB container means a
+  slightly heavier query can take the pod over its limit rather than failing
+  the query. Ingest and the read API are **one process**, so an OOMKill there
+  drops public telemetry ingest for every session on the fleet — an operator
+  running a console query should not be able to do that.
+- **Fix would start**: in `gawk-telemetry/internal/sqlengine/duckdb.go`, both
+  halves test-first (`duckdb_test.go` already runs under `-tags duckdb`, and
+  the drift case is reproducible by writing one extra NDJSON field after
+  `Open`).
+  1. Stop pinning inference: re-register the views per query, or catch the
+     binder error and `CREATE OR REPLACE VIEW` + retry once. Either way the
+     regression test is "add a field to a partition after `Open`, then query".
+  2. Set the budget explicitly at `Open` — `memory_limit` sized from the
+     container's limit rather than the node's RAM, `threads`, and
+     `preserve_insertion_order=false` — and give DuckDB a `temp_directory` on
+     the PVC so a big scan spills instead of failing.
+  3. Optionally have `Check` (`sqlengine.go:108`) *warn* — never refuse — when
+     a `sessions` query carries no partition predicate. The console already
+     renders the view catalogue, so the hint has a home next to it.
+
 
 (The Chrome 152 `WebTransport.getStats()` entry was resolved 2026-07-14: not
 a gawk defect — Chromium removed the API entirely; see the gotcha in
