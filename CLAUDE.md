@@ -177,6 +177,12 @@ Re-deriving them costs a cycle and has happened before.
   `docs/27`)
 - **Tray icon and global hotkeys for the native GUI** — deferred; the research
   is already written down. Don't re-derive it. (`docs/19`)
+- **Dropping the compiled-in default relay** (making `-url` required, or
+  defaulting to empty because the repository is public) — rejected 2026-08-19.
+  Prioritising the official deployment is the product decision; the answer to
+  "someone else's binary points at my uplink" is the relay's own gates —
+  `-publish-secret`, `allowedOrigins`, and the `docs/07` caps — not a worse
+  first run for everyone. (`docs/40`)
 
 ## Conventions
 - **Every design doc must define explicit acceptance criteria** for its
@@ -215,6 +221,13 @@ Re-deriving them costs a cycle and has happened before.
 - **Registry**: GHCR — images `ghcr.io/tuhis/<component>`, charts
   `oci://ghcr.io/tuhis/charts/<component>` (lowercase; packages are public —
   pulls need no credentials).
+- **The official deployment is the default target.** The broadcasters compile
+  in `https://api.gawk.ioio.fi:4433` (and, only when that same fleet is the
+  resolved relay, the telemetry ingest); `gawk.ioio.fi` is the reference UI.
+  Self-hosting and third-party relays are first-class, not tolerated: R37's
+  server picker, `?relay=` links and per-server secrets (`docs/40`) are the
+  supported path to them, and the default is what makes the short join link
+  and the zero-flag `gawk-broadcast` work.
 - **CI is publish-only; deploys are automated cluster-side.** Whenever a new
   version is released it is deployed to the homelab automatically. CI never
   touches the cluster — no cluster credentials in GitHub. Manual
