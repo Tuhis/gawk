@@ -22,7 +22,7 @@ interleaving" (the ROADMAP title) and "striped delivery" name the same thing.
 
 ## 1. The evidence
 
-Carried from [docs/34](docs/34-live-edge-forward-parity.md) findings 2–5 and
+Carried from [docs/34](34-live-edge-forward-parity.md) findings 2–5 and
 the R30 ROADMAP entry; summarized here so the design is self-contained, but
 docs/34 holds the full chain including the two conclusions that were
 withdrawn on measurement.

@@ -1,0 +1,84 @@
+name: Bug report
+description: Something behaves differently than it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things worth checking first, because they are already known and a
+        report about them tells us nothing new:
+
+        - **Safari, and every browser on iOS, cannot join a broadcast.** WebKit
+          refuses the WebTransport session outright — see
+          [BUGS.md](https://github.com/Tuhis/gawk/blob/main/BUGS.md).
+        - Other confirmed, unfixed defects are listed in that same file.
+
+        Security vulnerabilities do **not** belong here — follow
+        [SECURITY.md](https://github.com/Tuhis/gawk/blob/main/SECURITY.md) instead.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part?
+      options:
+        - Relay (gawk-server)
+        - Web app (gawk-app) — broadcaster side
+        - Web app (gawk-app) — viewer side
+        - Linux broadcaster (gawk-broadcast)
+        - Windows broadcaster (gawk-broadcast.exe)
+        - Telemetry (gawk-telemetry)
+        - Docs, charts, or CI
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        Release tag, image tag, or commit. The native broadcasters print it
+        with `--version`; the web app shows it in the debug panel.
+      placeholder: gawk-server-v0.21.0
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Which deployment?
+      options:
+        - gawk.ioio.fi
+        - My own (Helm charts)
+        - The local dev stack (docker compose)
+        - Another server, via the picker or a ?relay= link
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and OS
+      description: Both ends if they differ — the broadcaster's and the viewer's.
+      placeholder: Broadcasting from Chrome 141 on Windows 11, watching in Firefox 145 on Fedora 43
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Include the settings that were in play — resolution and framerate,
+        codec if you pinned one, and whether audio was on. A stream that fails
+        only at 1440p60 is a different bug than one that fails at 720p30.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, console output, screenshots
+      description: >-
+        Useful sources: the browser console, the debug panel's stats, the
+        relay's logs (`kubectl logs`), and the close code if a session ended —
+        the code is the single most informative number in a disconnect report.
+      render: text

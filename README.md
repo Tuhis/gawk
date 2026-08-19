@@ -15,23 +15,7 @@ shares their screen; viewers join with a 6-character code and watch at
 **sub-500 ms glass-to-glass latency** (≈50 ms measured on a hardware
 encode/decode path) — no accounts, no plugins, no native app required.
 
-<!-- DEMO GIF PLACEHOLDER ──────────────────────────────────────────────────
-  Replace this block with:   ![gawk demo](docs/assets/demo.gif)
-
-  What to capture (the single highest-impact asset in this README):
-  - Two windows side by side: broadcaster sharing a screen that shows a
-    running millisecond stopwatch (e.g. a game + an on-screen timer), and a
-    viewer tab playing it. The visible clock delta IS the latency proof.
-  - Show the join flow: code appears on the broadcaster, viewer types it.
-  - ~10–15 s loop, ≤ 900 px wide, ≤ 10 MB (GitHub renders GIFs inline;
-    keep it small so the page stays fast).
-  - Record with any screen recorder; convert with e.g.
-    `ffmpeg -i demo.mp4 -vf "fps=12,scale=900:-1" docs/assets/demo.gif`
-    (or use Kap/Peek/LICEcap which export GIF directly).
-  - Commit the file as docs/assets/demo.gif.
-──────────────────────────────────────────────────────────────────────── -->
-> 📸 **Demo GIF coming here** — broadcaster and viewer side by side, clock
-> visible on both, showing the actual glass-to-glass latency.
+![gawk demo — a broadcaster sharing a screen next to a viewer tab playing it, a millisecond stopwatch visible on both, the delta between them showing the glass-to-glass latency](docs/assets/demo.gif)
 
 **[gawk.ioio.fi](https://gawk.ioio.fi)** runs this exact stack. This
 repository is everything needed to run your own: two Helm charts, two
