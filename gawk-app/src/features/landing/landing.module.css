@@ -105,21 +105,36 @@
   color: var(--text);
 }
 
-/* R23: a quiet terms link pinned below the card. */
-.terms {
+/* R23: a quiet footer pinned below the card — the terms link, and since the
+   repository went public the source link beside it. Wraps on narrow viewports
+   rather than colliding with the card. */
+.foot {
   position: absolute;
   z-index: 1;
   bottom: 1.25rem;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-width: 92vw;
   font-size: var(--fs-xs);
+}
+
+.foot a {
   color: var(--faint);
   text-decoration: none;
   transition: color var(--dur-fast) var(--ease);
 }
 
-.terms:hover {
+.foot a:hover {
   color: var(--muted);
+}
+
+.footSep {
+  color: var(--faint);
 }
 
 /* R37: the server chip row, pinned above the terms link — present but out of

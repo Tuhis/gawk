@@ -4,6 +4,7 @@ import { CodeInput } from './CodeInput';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { isValidBroadcastId } from '../../lib/broadcastId';
+import { SOURCE_URL } from '../../config';
 import { ServerChip } from '../servers/ServerChip';
 
 // The front door (docs/10 J2). Segmented code entry is the hero; a smaller
@@ -53,10 +54,18 @@ export function LandingPage() {
         <ServerChip />
       </div>
 
-      {/* R23 (docs/29): terms reachable from the front door, unobtrusively. */}
-      <a className={styles.terms} href="#/terms">
-        Terms of use
-      </a>
+      {/* R23 (docs/29): terms reachable from the front door, unobtrusively —
+          joined since the repository went public by a source link, which is the
+          same quiet weight and the only outbound link on the page. */}
+      <footer className={styles.foot}>
+        <a href="#/terms">Terms of use</a>
+        <span className={styles.footSep} aria-hidden="true">
+          ·
+        </span>
+        <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">
+          GitHub
+        </a>
+      </footer>
     </div>
   );
 }
