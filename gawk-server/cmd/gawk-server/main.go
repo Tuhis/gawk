@@ -331,8 +331,15 @@ func certSource(cfg config.Config, log *slog.Logger) (func(*tls.ClientHelloInfo)
 		// a developer running against a persisted dev cert with no way to
 		// obtain its hash — the ephemeral arm's log was the only source.
 		if cert, err := r.GetCertificate(nil); err == nil && cert != nil && cert.Leaf != nil {
+			// This arm is both the dev stack's ACME lane and every real
+			// deployment, so the remedy has to name both. It used to name only
+			// `./dev/certs.sh renew` — a command that does not exist inside the
+			// image and means nothing for a mounted Secret, which is exactly
+			// the operator this log line reaches when cert-manager has stopped
+			// renewing.
 			logCertIdentity(log, cert.Leaf, "loaded certificate",
-				"./dev/certs.sh renew", "cert_file", cfg.CertFile)
+				"locally: ./dev/certs.sh renew — in a deployment the CA/cert-manager renews the mounted Secret (docs/self-hosting.md)",
+				"cert_file", cfg.CertFile)
 		}
 		return r.GetCertificate, nil
 	default:
@@ -361,7 +368,19 @@ func logCertIdentity(log *slog.Logger, leaf *x509.Certificate, msg, remedy strin
 	}, extra...)
 	log.Info(msg, args...)
 
-	if remaining := time.Until(leaf.NotAfter); remaining < certExpiryWarning {
+	// Already dead is not "expires soon". A negative `remaining` in a WARN was
+	// the only signal a stack whose certificate had run out ever produced, and
+	// it reads like a rounding artefact rather than the reason the browser is
+	// refusing to connect.
+	remaining := time.Until(leaf.NotAfter)
+	switch {
+	case remaining <= 0:
+		log.Error("certificate has EXPIRED — browsers will refuse to connect",
+			"not_after", leaf.NotAfter,
+			"expired_ago", (-remaining).Round(time.Minute),
+			"remedy", remedy,
+		)
+	case remaining < certExpiryWarning:
 		log.Warn("certificate expires soon",
 			"not_after", leaf.NotAfter,
 			"remaining", remaining.Round(time.Minute),

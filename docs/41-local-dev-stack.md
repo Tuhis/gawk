@@ -272,19 +272,44 @@ table. Nothing else about its behaviour changes.
 | no | set | both present | `NewReloader` (**unchanged**) |
 | no | set | either absent | **Error** from `NewReloader`. Unchanged, and load-bearing: a production deployment whose cert Secret failed to mount must crash, never self-sign |
 | yes | **not** set | — | Ephemeral in-memory cert (**unchanged** — today's `-dev-cert`) |
-| **yes** | **set** | both present | **Load via `NewReloader`. Do not regenerate.** Log identity + expiry |
+| **yes** | **set** | both present, still valid | **Load via `NewReloader`. Do not regenerate.** Log identity + expiry |
+| **yes** | **set** | both present, **expired**, and ours | **Regenerate** over them, then load. Log identity + `generated=true` |
+| **yes** | **set** | both present, **expired**, not ours | Load unchanged, and log `certificate has EXPIRED` at **error** |
 | **yes** | **set** | both absent | `LoadOrGenerate` writes the pair, then `NewReloader` loads it. Log identity + expiry + `generated=true` |
 | **yes** | **set** | exactly one present | **Error**: `refusing to overwrite an existing <cert|key> file`. Half-generating over a stray file is how a developer loses a key they meant to keep |
 
-Two logging changes, both in `certSource`:
+The two expired rows were added on 2026-08-19, after review: a dev certificate
+lives at most 14 days, and **nothing downstream notices a dead one**. The
+healthcheck dials without `-cert-hash` so it skips verification, `config-gen`
+hashes the expired leaf quite happily, `docker compose ps` reports healthy —
+and only the browser fails, opaquely. "Come back after a fortnight" is an
+ordinary thing to do with a dev stack, so this was a two-week fuse on exactly
+the failure the milestone exists to remove.
+
+Regeneration is gated on the pair being one this package issued
+(`tlsutil.isReplaceableDevCert`): Subject **and** Issuer of
+`gawk-server dev cert`, plus a verified self-signature. Both halves are
+needed — the Subject alone is copyable by anything, self-issued alone would
+match a developer's own CA root — and the gate is the same instinct as the
+exactly-one-present row: an expired certificate we did not issue belongs to
+whoever put it there.
+
+Three logging rules, all in `certSource`:
 
 1. The **file-backed** arm currently logs nothing identifying. It must log
    `not_after`, `cert_hash_hex` and `spki_fingerprint` at `info` — otherwise
    a developer on the host loop has no way to obtain the hash once the
    ephemeral path stops being the default one they use.
 2. Warn at `warn` level when `NotAfter` is under **72 h** away, naming the
-   remedy (`docker compose down -v` in lane A, `./dev/certs.sh renew`
-   otherwise).
+   remedy. The remedy differs per arm, and the file-backed arm's has to serve
+   both audiences it actually has: `./dev/certs.sh renew` locally, and the
+   CA/cert-manager renewing a mounted Secret in a deployment. Naming only the
+   dev script sent a real operator chasing a command that does not exist in
+   the image.
+3. **Already expired is not "expires soon"** — log it at `error`, saying
+   browsers will refuse to connect. A negative `remaining` inside a warning
+   was the only signal an expired stack ever produced, and it reads as a
+   rounding artefact rather than the reason nothing connects.
 
 The generated certificate keeps `MaxDevCertValidity` (14 d) — unchanged, and
 a Chromium requirement, not a choice.
@@ -421,17 +446,35 @@ $ ./dev/certs.sh
   ✓ Wildcard issued, valid until 2026-11-12
     → certs/cert.pem, certs/key.pem
 
-  Now add A records for whatever you want to reach:
+  Now add ONE A record — it serves this machine and every device on your LAN:
 
-      gawk.dev.example.com   A  127.0.0.1
-      lan.dev.example.com    A  192.168.1.50   ← this machine's LAN IP
+      gawk.dev.example.com   A  192.168.1.50   ← this machine's LAN address
 
   Then: docker compose up
 ```
 
+(Without a LAN address the same record points at `127.0.0.1` instead; nothing
+else about the lane changes.)
+
 The wizard then rewrites `.env` — `APP_PORT=8443`, `APP_ORIGIN`/`APP_URL` on
 `https://${GAWK_HOST}:8443`, `COMPOSE_PROFILES=tls`, `DEV_CERT` empty — with
 `GAWK_HOST=gawk.${ACME_SUBDOMAIN}.${ACME_DOMAIN}`.
+
+**One name, not two.** An earlier draft of this lane printed a second
+`lan.<sub>.<domain>` record for other devices. It cannot work, on two
+independent layers, and both are worth stating because the mistake is natural:
+
+- the frontend hands **every** viewer the same `relayUrl` from `/config.js`
+  (`https://gawk.<sub>.<domain>:4433`), so a phone that opened `lan.<…>` still
+  dials `gawk.<…>` — which, per the record it was told to add, resolves to
+  `127.0.0.1`, i.e. the phone itself;
+- `GAWK_ALLOWED_ORIGINS` gets exactly `APP_ORIGIN`, and the relay's check is an
+  exact match (`gawk-server/internal/transport/server.go`), so the phone's
+  `Origin: https://lan.<…>:8443` is rejected even if the dial had landed.
+
+The wildcard covers every name under the subdomain, so a second name is free
+to *issue* and impossible to *use*. Point the one name the stack knows about at
+whichever address the devices you care about can reach.
 
 Renewal: automatic in C-1. In C-2 the certificate **cannot** auto-renew, so
 the wizard prints the expiry date and the stack warns under 30 days. That
@@ -665,8 +708,8 @@ prerequisite:
    which is why lane B's removal costs nothing.)
 3. **Lane C, plus a domain.** The wizard end to end on a registrar without an
    API (the C-2 path, which is the one that needs the hand-holding), then a
-   phone on the LAN joining `https://lan.<sub>.<domain>:8443` with nothing
-   installed.
+   phone on the LAN joining `https://gawk.<sub>.<domain>:8443` — the same URL
+   the desktop uses, pointed at the LAN address — with nothing installed.
 
 The standing claim across all three: a contributor who has never seen this
 repository gets from `git clone` to a rendered frame without reading a
@@ -889,16 +932,24 @@ been submitted. What remains is the second half.
    A records to add, and — in C-2 — the warning that this sub-lane cannot
    renew itself.
 
-4. **Add the A records** (they point at loopback; nothing is exposed):
+4. **Add the one A record.** Give the wizard this machine's LAN address when
+   it asks, and it prints a single record pointing there:
 
    ```
-   gawk.dev.ioio.fi   A   127.0.0.1
-   lan.dev.ioio.fi    A   <this machine's LAN address>
+   gawk.dev.ioio.fi   A   <this machine's LAN address>
    ```
+
+   That one name serves the desktop and the phone alike — see §4.4 for why a
+   separate `lan.<sub>.<domain>` cannot work. Nothing is exposed beyond the
+   LAN: the address is private, and `BIND_ADDR` is `0.0.0.0` only on this
+   machine's own interfaces. (With no LAN address the record is `127.0.0.1`
+   and step 6 is not available.)
 
    If `gawk.dev.ioio.fi` then does not resolve locally while the authoritative
    server answers, the wizard says so and prints the `/etc/hosts` line — that
-   is DNS-rebinding protection in the local resolver, not a mistake.
+   is DNS-rebinding protection in the local resolver, not a mistake. Resolvers
+   that filter RFC1918 answers from public DNS do the same thing to a LAN
+   address, so expect it on this record too.
 
 5. **Run it.** `docker compose up -d --wait`, then
    `https://gawk.dev.ioio.fi:8443`: **Start a stream**, accept the terms
@@ -906,12 +957,13 @@ been submitted. What remains is the second half.
    the stats overlay (`Ctrl+Alt+Shift+D`) showing *Decoded* climbing.
 
 6. **The pass that justifies the lane**: from a **phone on the same LAN**, with
-   nothing installed on it, open `https://lan.dev.ioio.fi:8443/#/view/<code>`.
-   That needs `BIND_ADDR=0.0.0.0` — `./dev/certs.sh` sets it when you give it a
-   LAN address — and a **trusted** certificate, so re-run with
-   `ACME_STAGING=0` first. Production rate limits: 50 certificates per
-   registered domain per week, 5 duplicates of the same name set; the wizard
-   explains both if you meet them.
+   nothing installed on it, open the **same** URL —
+   `https://gawk.dev.ioio.fi:8443/#/view/<code>`. That needs
+   `BIND_ADDR=0.0.0.0` — `./dev/certs.sh` sets it when you give it a LAN
+   address — and a **trusted** certificate, so re-run with `ACME_STAGING=0`
+   first. Production rate limits: 50 certificates per registered domain per
+   week, 5 duplicates of the same name set; the wizard explains both if you
+   meet them.
 
 7. **Sub-lane note for whoever renews it later**: C-2 cannot renew
    automatically — there is no DNS API to answer the next challenge with. If
@@ -928,3 +980,26 @@ than a stack one, in `docs/gotchas.md` under the cross-browser section.
 The Firefox pass is the worked example of that last clause: it failed, the
 cause was a browser behaviour, and it produced §6's rejected-alternative entry,
 a `docs/gotchas.md` row, and the withdrawal of D5.
+
+### 10.6 Post-review corrections (2026-08-19)
+
+A full review of the branch found six defects that the gates, the preflight and
+the healthcheck all missed. Every one is fixed here; they are listed because
+each names a class of mistake worth not repeating.
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | **Lane C's phone-on-the-LAN flow could not work**, on two independent layers. The wizard guided a second `lan.<sub>.<domain>` record, but the frontend hands every viewer the same `relayUrl` (`gawk.<…>`, which the guided record pointed at `127.0.0.1` — the phone itself), and `GAWK_ALLOWED_ORIGINS` is one exact string, so the phone's Origin was rejected regardless | One name, pointed at the LAN address when there is one. §4.4, §9, §10.4 B and the wizard all say the same thing now, and `certs_test.sh` asserts both the record and the absence of a second name |
+| 2 | **An expired persisted dev cert was loaded, not replaced** — a two-week fuse after which the stack looks healthy and only the browser fails | `LoadOrGenerate` regenerates an expired pair it issued itself (§4.2.1), guarded so a foreign certificate is never clobbered; expired now logs at `error` rather than as a warning with a negative `remaining` |
+| 3 | **A printed remedy that did nothing**: `could not find zone` told the user to set `LEGO_DNS_RESOLVERS` in `.env`, which the wizard never read | Read from the shell environment *or* `.env`, shell winning; documented in the header and `.env.example` |
+| 4 | **The ACME lane's front door was never preflighted.** `APP_HTTP_ADDR` moves to loopback:8081 there, so the checked port was not the one a browser opens; `check` said all clear and `up` failed to bind Caddy | `preflight` checks `APP_PORT` too whenever the `tls` profile is active |
+| 5 | **A guard that could never fire**: `config-gen`'s empty-hash check, because `sha256sum` of zero bytes is a perfectly good digest, so a wrong-but-plausible hash would reach the browser — the exact failure the guard exists to prevent | Reject the empty-input digest explicitly |
+| 6 | **A dev command prescribed to production.** The file-backed arm — what a k8s deployment with a cert-manager Secret runs — logged `remedy="./dev/certs.sh renew"` | A remedy naming both audiences |
+
+Two of these (1 and 5) are the same shape: **something that reads correctly and
+has never been executed.** The `lan.*` record was printed by a lane whose live
+pass is still outstanding, and the empty-hash guard only runs on a corruption
+nobody had produced. Neither is caught by a test that asserts what the code
+says rather than what it does — which is why the fixes for 1 and 4 ship with
+assertions that fail against the previous version, verified by running them
+against it.

@@ -22,6 +22,10 @@
 # it when a person has to go and edit DNS), and ACME_TXT_POLL, how often to
 # ask (default 10 s).
 #
+# LEGO_DNS_RESOLVERS (the recursive resolvers lego walks the zone with,
+# default 1.1.1.1:53,8.8.8.8:53) is read from EITHER, the shell winning —
+# because the failure it fixes prints a remedy naming .env.
+#
 # This script never writes outside ./certs, ./dev/generated and ./.env, all of
 # which are gitignored — a private key in a public repository is not a mistake
 # with a warning attached, since CAs must revoke keys reported as compromised
@@ -253,6 +257,17 @@ preflight() {
     check_port_free "${_app_addr%:*}" "${_app_addr##*:}" tcp APP_HTTP_ADDR || _rc=1
     _relay_port=$(env_get RELAY_PORT); _relay_port=${_relay_port:-4433}
     check_port_free "$_bind" "$_relay_port" udp RELAY_PORT || _rc=1
+    # In the tls profile the browser-facing port is Caddy's, not the app's:
+    # APP_HTTP_ADDR has moved to loopback:8081 and APP_PORT is the one a
+    # browser opens. Checking only the former reported "all clear" for the one
+    # lane whose front door is a different port, and `up` then failed to bind
+    # caddy — the §4.6 port row, missed exactly where it mattered.
+    case "$(env_get COMPOSE_PROFILES)" in
+        *tls*)
+            _app_port=$(env_get APP_PORT); _app_port=${_app_port:-8443}
+            check_port_free "$_bind" "$_app_port" tcp APP_PORT || _rc=1
+            ;;
+    esac
     return $_rc
 }
 
@@ -463,7 +478,12 @@ lego_args() { # lego_args <wildcard> <email> <staging>
     # it ever prints a challenge record. Pointing it at real recursive
     # resolvers is the fix — configurable, because a machine behind a
     # filtering network may need its own.
-    printf '%s\n' "--dns.resolvers=${LEGO_DNS_RESOLVERS:-1.1.1.1:53,8.8.8.8:53}"
+    #
+    # Read from BOTH the shell environment and .env, shell winning, because
+    # explain_acme_failure tells the user to set it in .env — and a printed
+    # remedy that does nothing is worse than no remedy at all.
+    _resolvers=${LEGO_DNS_RESOLVERS:-$(env_get LEGO_DNS_RESOLVERS)}
+    printf '%s\n' "--dns.resolvers=${_resolvers:-1.1.1.1:53,8.8.8.8:53}"
     [ "$3" = "1" ] && printf '%s\n' "--server=https://acme-staging-v02.api.letsencrypt.org/directory"
     return 0
 }
@@ -569,9 +589,16 @@ acme_run_manual() { # acme_run_manual <wildcard> <email> <staging> <domain> <sub
     say ""
     say "  Waiting for it to appear on the authoritative nameservers…"
     if ! wait_for_txt "$_fqdn" "$_value" "$_domain"; then
-        exec 9>&-
+        # Kill BEFORE closing the write end. Closing first hands lego an EOF on
+        # stdin while it is still alive, and what a client does with that is
+        # its business, not ours: today's lego treats EOF from its manual
+        # provider as an error and aborts without submitting, which is the
+        # behaviour this message promises — but the promise should not rest on
+        # that. Killing first makes "nothing was sent" true under either
+        # semantic.
         kill "$_lego" 2>/dev/null || true
         wait "$_lego" 2>/dev/null || true
+        exec 9>&-
         die "gave up before submitting — nothing was sent to Let's Encrypt"
     fi
 
@@ -630,11 +657,32 @@ lane_acme() { # lane_acme [renew]
     write_common_env acme "" "$_host" 8443 \
         "https://$_host:8443" "https://$_host:8443" "https://$_host:4433" tls "127.0.0.1:8081"
 
+    # ONE name, and it must be the name the stack was configured with. An
+    # earlier version printed a second `lan.<sub>.<domain>` record for other
+    # devices, which could not work: the phone opening that name still fetches
+    # a /config.js whose relayUrl is https://gawk.<sub>.<domain>:4433 (which
+    # the guided record pointed at 127.0.0.1 — the phone itself), and its
+    # Origin would be lan.<...>, which is not the exact string in
+    # GAWK_ALLOWED_ORIGINS. Pointing the one name at the LAN address instead
+    # is what actually serves both the desktop and the phone: BIND_ADDR is
+    # already 0.0.0.0 whenever LAN_IP is set.
     say ""
-    say "  Now add A records for whatever you want to reach:"
-    say ""
-    say "      $_host   A  127.0.0.1"
-    [ -n "$_lan" ] && say "      lan.$_sub.$_domain   A  $_lan   ← this machine's LAN address"
+    if [ -n "$_lan" ]; then
+        say "  Now add ONE A record — it serves this machine and every device on your LAN:"
+        say ""
+        say "      $_host   A  $_lan   ← this machine's LAN address"
+        say ""
+        say "  Use https://$_host:8443 from the phone as well as from here. A second"
+        say "  name would not work: the frontend hands every viewer the same relay URL,"
+        say "  and the relay's origin allowlist holds this exact one."
+    else
+        say "  Now add the A record for the name the stack serves:"
+        say ""
+        say "      $_host   A  127.0.0.1"
+        say ""
+        say "  For other devices, re-run this lane and give it your LAN address when"
+        say "  it asks — the record then points there instead, and nothing else changes."
+    fi
     say ""
     check_rebinding "$_host" "$_domain"
     if [ -z "$_provider" ]; then

@@ -42,11 +42,20 @@ cert_hash_hex() {
          f' "$CERT" | base64 -d | sha256sum | cut -d' ' -f1
 }
 
+# sha256sum of nothing. An empty extraction — a PEM whose leaf block is
+# missing, truncated or misnamed — does not produce an empty HASH: base64 -d
+# and sha256sum are both perfectly happy with zero bytes and emit this digest.
+# So `[ -z "$HASH" ]` alone could never fire, and the guard that exists to stop
+# a plausible-but-wrong hash reaching the browser would have shipped a
+# plausible-but-wrong hash.
+EMPTY_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
 HASH=
 if [ "$CERT_MODE" = "devcert" ]; then
     HASH=$(cert_hash_hex)
-    if [ -z "$HASH" ]; then
+    if [ -z "$HASH" ] || [ "$HASH" = "$EMPTY_SHA256" ]; then
         echo "config-gen: could not compute the certificate hash from $CERT" >&2
+        echo "config-gen: no CERTIFICATE block was read — is $CERT a PEM certificate?" >&2
         exit 1
     fi
 fi

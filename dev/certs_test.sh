@@ -140,7 +140,16 @@ case "${STUB_LEGO:-manual}" in
     echo "lego: Press 'Enter' when you have added the TXT record to proceed."
     # Blocks until the wizard says the record is live. That moment is the
     # assertion this whole stub exists for.
-    read -r _line || true
+    #
+    # EOF is an ERROR here, matching real lego: its manual provider reads with
+    # bufio.Reader.ReadBytes('\n') and returns a wrapped error when stdin
+    # closes, so it aborts without submitting. A stub that treated EOF as
+    # "proceed" would pass a timeout path that real lego punishes — the never-
+    # submits-on-timeout property is only assertable if the stub agrees.
+    if ! read -r _line; then
+      echo "lego: EOF on stdin, aborting without submitting" >&2
+      exit 1
+    fi
     echo PROCEED >> "$T/order.log"
     ;;
 esac
@@ -342,6 +351,40 @@ setup
 acme_env
 run_certs acme
 want "the manual sub-lane states it cannot renew" "cannot renew automatically" "$T/out"
+teardown
+
+# ── the LAN record (§4.4) ─────────────────────────────────────────────────
+# One name, pointed wherever the devices are. A second `lan.*` record was
+# guided once and could not work: the frontend hands every viewer the same
+# relayUrl, and GAWK_ALLOWED_ORIGINS holds one exact origin.
+setup
+acme_env
+echo "LAN_IP=192.168.1.50" >> "$T/.env"
+run_certs acme
+want "the guided A record points at the LAN address" "gawk.dev.example.com   A  192.168.1.50" "$T/out"
+want_not "…and no second name is invented"     "lan.dev.example.com" "$T/out"
+want "…and the stack is opened to the LAN"     "BIND_ADDR=0.0.0.0" "$T/.env"
+want "the relay URL stays the one name the origin allowlist holds" \
+    "RELAY_URL=https://gawk.dev.example.com:4433" "$T/.env"
+teardown
+
+setup
+acme_env
+run_certs acme
+want "without a LAN address it is loopback"    "gawk.dev.example.com   A  127.0.0.1" "$T/out"
+want "…and the stack stays on this machine"    "BIND_ADDR=127.0.0.1" "$T/.env"
+teardown
+
+# ── §4.6: the tls lane's front door (finding 4) ───────────────────────────
+# APP_HTTP_ADDR moves to loopback:8081 in that lane, so checking it alone
+# reported all clear while `up` failed to bind caddy on APP_PORT.
+setup
+run_certs devcert
+sed -i.bak 's/^COMPOSE_PROFILES=.*/COMPOSE_PROFILES=tls/' "$T/.env"
+sed -i.bak 's/^APP_PORT=.*/APP_PORT=8443/' "$T/.env"
+STUB_PORT_BUSY=1 run_certs check
+want "a busy front-door port is caught in the tls lane" "8443/tcp" "$T/out"
+want "…and names APP_PORT as the knob"         "change APP_PORT in .env" "$T/out"
 teardown
 
 # ── secrets ───────────────────────────────────────────────────────────────
