@@ -22,8 +22,8 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
-| `@tanstack/react-virtual` | 3.14.9 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/virtual-core` | 3.17.7 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-virtual` | 3.14.10 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/virtual-core` | 3.17.8 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
 | `@types/react` | 19.2.18 | `MIT` | Copyright (c) Microsoft Corporation |
 | `csstype` | 3.2.3 | `MIT` | Copyright (c) 2017-2018 Fredrik Nicol |
 | `echarts` | 6.1.0 | `Apache-2.0` | Copyright 2017-2026 The Apache Software Foundation |
