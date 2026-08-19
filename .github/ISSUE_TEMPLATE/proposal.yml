@@ -1,0 +1,37 @@
+name: Proposal
+description: An idea, a feature, or a change worth discussing before anyone writes it.
+labels: ["proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the right first step for anything large.
+        [CONTRIBUTING.md](https://github.com/Tuhis/gawk/blob/main/CONTRIBUTING.md) explains why: a big PR
+        that cuts across the relay, the wire format and two broadcasters can
+        sit unreviewed for a long time, and scoping it together first is how
+        that is avoided.
+
+        Worth knowing before you write: `CLAUDE.md` has a **"Rejected — don't
+        re-propose"** section listing things that were investigated and
+        settled, each with the reasoning. If your idea is there, new evidence
+        is what reopens it.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What do you propose?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What else did you consider?
+      description: >-
+        Including "live with it". Knowing which alternatives you rejected, and
+        why, is most of the review.

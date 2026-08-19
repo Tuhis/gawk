@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Tuhis/gawk/security/advisories/new
+    about: Report privately through a GitHub Security Advisory — never as an issue. See SECURITY.md for scope and what to expect.
+  - name: Self-hosting a deployment
+    url: https://github.com/Tuhis/gawk/blob/main/docs/self-hosting.md
+    about: Charts, TLS and DNS, and the parts that most often go wrong.
+  - name: Running the stack locally
+    url: https://github.com/Tuhis/gawk/blob/main/docs/41-local-dev-stack.md
+    about: docker compose up, the certificate lanes, and why WebTransport needs a real certificate.
