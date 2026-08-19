@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.40.0...gawk-app/v0.41.0) (2026-08-19)
+
+
+### Features
+
+* **app:** link the GitHub repository from the landing footer ([#275](https://github.com/Tuhis/gawk/issues/275)) ([8502195](https://github.com/Tuhis/gawk/commit/8502195bfd9ef8a8864bed39e3181b4d1d96c3c6))
+
 ## [0.40.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.39.3...gawk-app/v0.40.0) (2026-08-19)
 
 
