@@ -261,7 +261,7 @@ confirmed open defects rather than hiding them.
 
 ## Gotchas
 
-The full list — 115 entries, each of which cost real debugging time — lives
+The full list — 129 entries, each of which cost real debugging time — lives
 in **[`docs/gotchas.md`](docs/gotchas.md)**. The ones most likely to catch
 you first:
 
