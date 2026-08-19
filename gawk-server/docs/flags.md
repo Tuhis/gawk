@@ -40,6 +40,8 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars) |
 | `-telemetry-key` | `GAWK_TELEMETRY_KEY` | (empty = telemetry disabled; 64 hex chars, shared with gawk-telemetry) |
 | `-telemetry-report-interval` | `GAWK_TELEMETRY_REPORT_INTERVAL` | `2s` (500ms–60s) |
+| `-telemetry-advertise-url` | `GAWK_TELEMETRY_ADVERTISE_URL` | (empty = advertise nothing; absolute https URL of this fleet's telemetry ingest) |
+| `-server-name` | `GAWK_SERVER_NAME` | (empty = the relay stays unnamed) |
 | `-cluster-mode` | `GAWK_CLUSTER_MODE` | `false` |
 | `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
 | `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |
@@ -66,6 +68,15 @@ affected — only loopback traffic is quieted.
 
 **`-live-edge-audio-on-reliable-stream`** — measure before flipping; see
 the chart values for the discussion.
+
+**The two R37 advertisement flags** are what a relay tells clients about
+itself. `-server-name` is the operator display name a server picker shows
+after probing `/echo` (wire 0x11); `-telemetry-advertise-url` names the
+ingest URL sessions should report to (wire 0x12), so viewers arriving from
+someone else's frontend reach your collector instead of dying at theirs. An
+invalid URL fails startup on purpose. Both are optional; see
+[docs/40](../../docs/40-relay-server-picker.md) and
+[`docs/self-hosting.md`](../../docs/self-hosting.md) §8.
 
 **The cluster flags** (`-cluster-mode` and the shared keys/PSK) enable the
 multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod
