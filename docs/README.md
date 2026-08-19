@@ -105,7 +105,7 @@ Reading all forty-one is not the point. Three give you the shape of the system:
 | [`25`](25-e2e-testing-in-ci.md) | R20 — Real-browser E2E in CI, both tiers |
 | [`33`](33-telemetry-and-diagnostics.md) | R28 — Advanced diagnostics & telemetry |
 | [`36`](36-telemetry-ui-history.md) | R31 — Telemetry UI v2: a diagnosis SPA |
-| [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, three TLS lanes |
+| [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, two certificate lanes |
 
 ## Conventions
 
