@@ -8,6 +8,7 @@ import { useState } from 'react';
 
 import styles from './servers.module.css';
 import { ServerPickerPanel } from './ServerPickerPanel';
+import { ServerIcon } from '../../ui/Icons';
 import { allowCustomRelays } from '../../config';
 import { useTransportStore } from '../../state/transportStore';
 
@@ -36,7 +37,7 @@ export function ServerChip() {
         aria-label="Choose server"
         data-testid="server-chip"
       >
-        <span className={styles.chipDot} aria-hidden="true" />
+        <ServerIcon className={styles.chipIcon} />
         {quiet ? 'Server' : hostOf(serverUrl)}
       </button>
       {open && <ServerPickerPanel onClose={() => setOpen(false)} />}

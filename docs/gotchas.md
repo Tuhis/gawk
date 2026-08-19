@@ -259,6 +259,55 @@ Add to it when a new gotcha lands in `docs/`.
   (`displaySurface`, an advisory category only — never pipeline config).
   ([docs/30](30-broadcaster-capture-audio-guidance.md))
 
+**Frontend UI**
+
+- **A modal overlay must be portalled to `<body>`, never mounted where it is
+  triggered.** `position: fixed` resolves against the nearest ancestor with a
+  `transform`, `filter`, `backdrop-filter`, `perspective`, `contain` or
+  `container-type` — not the viewport. The R37 server picker was opened from
+  the landing chip, whose row is `position: absolute; transform:
+  translateX(-50%)`, so the picker's full-screen scrim and centring layer
+  collapsed to the chip's own ~78px box: a sliver of a panel pinned to the
+  bottom of the page. Nothing in the panel's own CSS was wrong, and the two
+  session-screen call sites rendered it correctly, which is what made it look
+  like a panel bug rather than a mount-point bug. Portalled to `<body>` it also
+  leaves every in-app stacking context, so it needs a z-index above all of them
+  (the viewer's `.pseudoFullscreen` reaches 100), and the host must be
+  `document.fullscreenElement ?? document.body` — the Fullscreen API paints
+  only the fullscreen element's own subtree, and the viewer goes fullscreen on
+  its root, so a `<body>` child would be invisible over a fullscreen stream.
+  ([docs/40](40-relay-server-picker.md) §4.3)
+- **A full-screen centring layer stacked over a scrim eats every
+  "click outside".** The dismiss handler sat on the scrim, but the transparent
+  centring layer above it covered the same area and had none, so no click ever
+  reached the scrim. One element that both dims and centres — closing only when
+  the click's `target` is the element itself — has no such gap. Pair it with an
+  Escape handler; neither substitutes for the other.
+  ([docs/40](40-relay-server-picker.md) §4.3)
+
+- **A bare element rule in `global.css` outranks every CSS-module `:hover`.**
+  `button:hover:not(:disabled)` scores (0,2,1) — higher than a module's
+  `.row:hover` at (0,2,0) — so the legacy base-button background bled into
+  every production surface whose hover rule did not restate `background`:
+  server-list rows, the landing "Start a stream" link, the broadcaster's
+  "Sharing tips", the viewer's unmute prompt. Each rendered near-white text on
+  the light-blue accent, unreadable. The `<Button>` primitive looked fine
+  purely by accident — its rules also use `:not(:disabled)`, so they tie-break
+  above the global one, which is why the damage looked like scattered
+  one-off bugs instead of one rule. Fix: wrap a legacy global element rule in
+  `:where()` so it carries zero specificity and any single class beats it.
+  Don't chase it by adding `background` to each module hover.
+  ([docs/10](10-production-ui.md))
+- **An exit-animation class must come *after* the base rule that animates the
+  same element**, not merely exist. `.panel` and `.panelOut` both score
+  (0,1,0), so source order alone picks the winner: declared above `.panel`,
+  the picker's `.panelOut` lost and the panel vanished instantly while the
+  backdrop faded out behind it. Nothing in the DOM looked wrong — the class
+  was applied, the `closing` flag flipped, the element unmounted on schedule.
+  The only tell is `getComputedStyle(el).animationName` still naming the
+  *enter* animation mid-exit, which is worth sampling whenever an exit
+  animation "does not play". ([docs/40](40-relay-server-picker.md) §4.3)
+
 **Media pipeline**
 
 - **A canvas player gets no free display wake lock — take one explicitly.**

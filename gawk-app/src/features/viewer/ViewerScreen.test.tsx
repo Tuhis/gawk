@@ -1066,6 +1066,10 @@ describe('viewer server picker', () => {
     expect(screen.getByRole('dialog', { name: 'Server picker' })).toBeTruthy();
     fireEvent.click(screen.getByText('Add a server'));
     expect(screen.getByLabelText('Server URL')).toBeTruthy();
+    // Expand Advanced first — otherwise the field is merely collapsed, and
+    // this assertion would pass in a dev build too.
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    expect(screen.getByLabelText(/Publish secret/)).toBeTruthy();
     expect(screen.queryByLabelText(/Dev cert hash/)).toBeNull();
   });
 
@@ -1081,6 +1085,8 @@ describe('viewer server picker', () => {
     fireEvent.change(screen.getByLabelText('Server URL'), {
       target: { value: 'https://api.gawk.example:4433' },
     });
+    // The credential fields sit behind the form's Advanced disclosure.
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
     fireEvent.change(screen.getByLabelText(/Dev cert hash/), {
       target: { value: 'abc123' },
     });
@@ -1134,7 +1140,10 @@ describe('viewer server picker', () => {
     fireEvent.click(screen.getByText('Server…'));
     fireEvent.click(screen.getByText('Done'));
 
-    expect(screen.queryByRole('dialog', { name: 'Server picker' })).toBeNull();
+    // Dismissal plays an exit animation before it unmounts.
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Server picker' })).toBeNull(),
+    );
     expect(sessions).toHaveLength(1);
     expect(useTransportStore.getState().serverUrl).toBe('https://localhost:4433');
   });

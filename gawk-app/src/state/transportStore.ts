@@ -312,14 +312,23 @@ function defaultCredentials(servers: RelayServerEntry[]): { publishSecret: strin
 // by entry id — the configured hash belongs to THIS deployment's relay, so
 // presenting it to a foreign `?relay=` target would be handing one relay's
 // identity to another.
-function withDevCertFallback(resolved: ResolvedTransport): ResolvedTransport {
-  if (resolved.certHashHex !== '') return resolved;
+// Exported because the picker's probe must resolve a row's hash exactly the
+// way a real connection does. Reading the stored entry directly instead made
+// a local stack's own relay probe as "unreachable" while the viewer was
+// streaming from it — the connection went through this fallback and the probe
+// did not.
+export function certHashWithDevFallback(url: string, certHashHex: string): string {
+  if (certHashHex !== '') return certHashHex;
   const configured = getDevCertHashHex();
-  if (configured === '') return resolved;
-  if (normalizeRelayOrigin(resolved.serverUrl) !== normalizeRelayOrigin(defaultServerUrl())) {
-    return resolved;
-  }
-  return { ...resolved, certHashHex: configured };
+  if (configured === '') return '';
+  if (normalizeRelayOrigin(url) !== normalizeRelayOrigin(defaultServerUrl())) return '';
+  return configured;
+}
+
+function withDevCertFallback(resolved: ResolvedTransport): ResolvedTransport {
+  const certHashHex = certHashWithDevFallback(resolved.serverUrl, resolved.certHashHex);
+  if (certHashHex === resolved.certHashHex) return resolved;
+  return { ...resolved, certHashHex };
 }
 
 // Precedence, top wins: session override > selected entry > pinned default

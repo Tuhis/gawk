@@ -32,6 +32,7 @@
   --live: #e5484d;
   --danger: #e5484d;
   --warning: #d0a215;
+  --ok: #30a46c;
 
   /* ── Legacy aliases kept for the frozen debug pages ── */
   --panel: var(--surface-1);
@@ -71,8 +72,20 @@ html, body, #root {
 }
 
 /* Legacy base button — still used by the frozen debug pages. Production uses
-   the <Button> primitive (src/ui) instead. */
-button {
+   the <Button> primitive (src/ui) instead.
+
+   Wrapped in :where() so it carries ZERO specificity. It was written as a
+   plain element rule, which makes `button:hover:not(:disabled)` (0,2,1)
+   outrank every module's own `.foo:hover` (0,2,0) — so any production button
+   whose hover rule did not restate `background` silently took the accent
+   fill, painting near-white text on light blue. That hit the server-list
+   rows, the landing "Start a stream" link, the broadcaster's "Sharing tips"
+   and the viewer's unmute prompt. The <Button> primitive escaped only by
+   accident: its rules use :not(:disabled) too, so they tie-break above this
+   one. At zero specificity a single class wins, which is what the comment
+   above always claimed was true. The debug pages have no competing rules, so
+   they render exactly as before. */
+:where(button) {
   font: inherit;
   color: inherit;
   background: var(--accent);
@@ -82,7 +95,7 @@ button {
   cursor: pointer;
 }
 
-button:hover:not(:disabled) {
+:where(button:hover:not(:disabled)) {
   background: var(--accent-hover);
 }
 
