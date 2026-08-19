@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.40.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.39.3...gawk-app/v0.40.0) (2026-08-19)
+
+
+### Features
+
+* **app:** make the server picker usable — layout, dismissal, status, hover ([#268](https://github.com/Tuhis/gawk/issues/268)) ([fac22b4](https://github.com/Tuhis/gawk/commit/fac22b47ff2ddeeed95837c41ab0b01cd739f4d5))
+* **dev:** local development stack — docker compose up (R38) ([#261](https://github.com/Tuhis/gawk/issues/261)) ([831c6f8](https://github.com/Tuhis/gawk/commit/831c6f84c138816d28a8e9f50a5ccd7b219d9be9))
+* **gawk-app:** warn WebKit viewers before they hit the join failure ([#247](https://github.com/Tuhis/gawk/issues/247)) ([7c004fa](https://github.com/Tuhis/gawk/commit/7c004faed892a6694a22739fc66416c66dd7d1ce))
+
+
+### Bug Fixes
+
+* reap orphaned stripe legs via viewer-owned session groups and a liveness lease ([#259](https://github.com/Tuhis/gawk/issues/259)) ([dae116e](https://github.com/Tuhis/gawk/commit/dae116e87a41ce90992d56d11a1e9c77c0ef32c6))
+
 ## [0.39.3](https://github.com/Tuhis/gawk/compare/gawk-app/v0.39.2...gawk-app/v0.39.3) (2026-08-02)
 
 
