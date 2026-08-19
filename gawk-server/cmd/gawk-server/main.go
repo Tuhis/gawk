@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
@@ -268,10 +269,43 @@ func resumeTokenKeyMode(cfg config.Config) string {
 }
 
 // certSource returns the per-handshake certificate callback: an ephemeral
-// in-memory dev cert (hashes logged for the browser side), or a reloading
-// file-backed pair for production.
+// in-memory dev cert (hashes logged for the browser side), a *persisted* dev
+// cert generated once into -cert-file/-key-file, or a reloading file-backed
+// pair for production. The full truth table is docs/41 §4.2.1.
 func certSource(cfg config.Config, log *slog.Logger) (func(*tls.ClientHelloInfo) (*tls.Certificate, error), error) {
 	switch {
+	// R38 (docs/41 D3): -dev-cert AND -cert-file means "generate into these
+	// paths if absent, otherwise load them". Persisting the pair is what stops
+	// every restart invalidating the hash a browser was given, and it moves
+	// local dev onto the file-backed path production actually uses.
+	case cfg.DevCert && cfg.CertFile != "":
+		if cfg.KeyFile == "" {
+			return nil, fmt.Errorf("-dev-cert with -cert-file also needs -key-file")
+		}
+		cert, generated, err := tlsutil.LoadOrGenerate(cfg.CertFile, cfg.KeyFile,
+			strings.Split(cfg.DevCertHosts, ","), tlsutil.MaxDevCertValidity)
+		if err != nil {
+			return nil, err
+		}
+		// Not `docker compose down -v`: the stack bind-mounts ./certs, so the
+		// pair outlives the volumes. One command covers all three lanes.
+		logCertIdentity(log, cert.Leaf, "persisted dev certificate",
+			"./dev/certs.sh renew (or delete the pair) to regenerate",
+			"cert_file", cfg.CertFile, "generated", generated)
+		if generated {
+			log.Info("chrome flags for this cert",
+				"flags", fmt.Sprintf("--origin-to-force-quic-on=localhost%s --ignore-certificate-errors-spki-list=%s",
+					cfg.Addr, tlsutil.SPKIFingerprint(cert.Leaf)),
+			)
+		}
+		// The reloader, not the pair just loaded: a developer who replaces the
+		// files (./dev/certs.sh renew) gets the new ones without a restart,
+		// exactly as production does.
+		r, err := tlsutil.NewReloader(cfg.CertFile, cfg.KeyFile, log)
+		if err != nil {
+			return nil, err
+		}
+		return r.GetCertificate, nil
 	case cfg.DevCert:
 		cert, err := tlsutil.GenerateDevCert(strings.Split(cfg.DevCertHosts, ","), tlsutil.MaxDevCertValidity)
 		if err != nil {
@@ -293,8 +327,64 @@ func certSource(cfg config.Config, log *slog.Logger) (func(*tls.ClientHelloInfo)
 		if err != nil {
 			return nil, err
 		}
+		// R38: the file-backed arm used to log nothing identifying, which left
+		// a developer running against a persisted dev cert with no way to
+		// obtain its hash — the ephemeral arm's log was the only source.
+		if cert, err := r.GetCertificate(nil); err == nil && cert != nil && cert.Leaf != nil {
+			// This arm is both the dev stack's ACME lane and every real
+			// deployment, so the remedy has to name both. It used to name only
+			// `./dev/certs.sh renew` — a command that does not exist inside the
+			// image and means nothing for a mounted Secret, which is exactly
+			// the operator this log line reaches when cert-manager has stopped
+			// renewing.
+			logCertIdentity(log, cert.Leaf, "loaded certificate",
+				"locally: ./dev/certs.sh renew — in a deployment the CA/cert-manager renews the mounted Secret (docs/self-hosting.md)",
+				"cert_file", cfg.CertFile)
+		}
 		return r.GetCertificate, nil
 	default:
 		return nil, fmt.Errorf("no certificate configured: pass -dev-cert or -cert-file/-key-file")
+	}
+}
+
+// certExpiryWarning is how close to NotAfter a certificate has to be before
+// the relay says so at startup. 72 h is comfortably longer than a working day
+// and comfortably shorter than the 14-day dev-cert life, so it fires while
+// there is still time to act rather than on the morning it breaks.
+const certExpiryWarning = 72 * time.Hour
+
+// logCertIdentity logs what the browser side of a local stack needs (the hex
+// DER hash) plus the two values that make an expiry failure legible, and
+// warns when the certificate is nearly out of time. remedy names the command
+// that replaces it, which differs per lane (docs/41 §4.2.1).
+func logCertIdentity(log *slog.Logger, leaf *x509.Certificate, msg, remedy string, extra ...any) {
+	if leaf == nil {
+		return
+	}
+	args := append([]any{
+		"not_after", leaf.NotAfter,
+		"cert_hash_hex", tlsutil.CertHashHex(leaf),
+		"spki_fingerprint", tlsutil.SPKIFingerprint(leaf),
+	}, extra...)
+	log.Info(msg, args...)
+
+	// Already dead is not "expires soon". A negative `remaining` in a WARN was
+	// the only signal a stack whose certificate had run out ever produced, and
+	// it reads like a rounding artefact rather than the reason the browser is
+	// refusing to connect.
+	remaining := time.Until(leaf.NotAfter)
+	switch {
+	case remaining <= 0:
+		log.Error("certificate has EXPIRED — browsers will refuse to connect",
+			"not_after", leaf.NotAfter,
+			"expired_ago", (-remaining).Round(time.Minute),
+			"remedy", remedy,
+		)
+	case remaining < certExpiryWarning:
+		log.Warn("certificate expires soon",
+			"not_after", leaf.NotAfter,
+			"remaining", remaining.Round(time.Minute),
+			"remedy", remedy,
+		)
 	}
 }

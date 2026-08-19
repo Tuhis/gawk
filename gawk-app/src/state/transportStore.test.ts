@@ -35,6 +35,7 @@ afterEach(() => {
   });
   delete window.__GAWK_CONFIG__;
   localStorage.clear();
+  vi.unstubAllEnvs();
 });
 
 describe('transportStore default relay URL', () => {
@@ -190,6 +191,89 @@ describe('resolution precedence (override > selected > default)', () => {
     const s = await freshStore();
     expect(s.serverUrl).toBe('https://localhost:4433');
     expect(s.selectedServerId).toBe('default');
+  });
+});
+
+// R38 (docs/41 §4.2.3): the local stack renders its relay's dev certificate
+// hash into /config.js so the chrome-free viewer route works in a fresh
+// profile. A fallback, and scoped to this deployment's own relay.
+describe('devCertHashHex fallback', () => {
+  it('fills in the pinned default’s empty hash', async () => {
+    setHostname('localhost');
+    window.__GAWK_CONFIG__ = { devCertHashHex: 'beef00' };
+    const s = await freshStore();
+    expect(s.serverUrl).toBe('https://localhost:4433');
+    expect(s.certHashHex).toBe('beef00');
+  });
+
+  it('does not override a hash the developer typed', async () => {
+    setHostname('localhost');
+    window.__GAWK_CONFIG__ = { devCertHashHex: 'beef00' };
+    const mod = await freshModule();
+    const store = mod.useTransportStore;
+    store.getState().setCertHashHex('cafe11');
+    expect(store.getState().certHashHex).toBe('cafe11');
+
+    // Clearing it hands the resolution back to the configured value rather
+    // than to an empty string — the stack's hash is still the right one.
+    store.getState().setCertHashHex('');
+    expect(store.getState().certHashHex).toBe('beef00');
+  });
+
+  it('does not override an entry-stored hash', async () => {
+    setHostname('localhost');
+    window.__GAWK_CONFIG__ = { devCertHashHex: 'beef00' };
+    const mod = await freshModule();
+    const store = mod.useTransportStore;
+    const id = store.getState().addServer({
+      label: 'Other',
+      url: 'https://localhost:4433',
+      certHashHex: 'aa11',
+    });
+    store.getState().selectServer(id!);
+    expect(store.getState().certHashHex).toBe('aa11');
+  });
+
+  // The scoping rule: it belongs to THIS deployment's relay. Handing it to a
+  // link-supplied relay would present one relay's identity to another.
+  it('is not applied to a foreign ?relay= override', async () => {
+    setHostname('localhost');
+    window.__GAWK_CONFIG__ = { devCertHashHex: 'beef00' };
+    const mod = await freshModule();
+    const store = mod.useTransportStore;
+    store.getState().setSessionOverride('https://relay.elsewhere.example:4433');
+    expect(store.getState().certHashHex).toBe('');
+
+    // …but an override naming the deployment's own relay is not foreign.
+    store.getState().setSessionOverride('https://localhost:4433');
+    expect(store.getState().certHashHex).toBe('beef00');
+  });
+
+  // A saved custom entry that happens to name the same relay is the same
+  // relay (docs/40 §5 G3 uses URL equality for exactly this reason).
+  it('applies to a custom entry whose URL equals the default', async () => {
+    setHostname('localhost');
+    window.__GAWK_CONFIG__ = { devCertHashHex: 'beef00' };
+    const mod = await freshModule();
+    const store = mod.useTransportStore;
+    const id = store.getState().addServer({ label: 'Same relay', url: 'https://localhost:4433' });
+    store.getState().selectServer(id!);
+    expect(store.getState().certHashHex).toBe('beef00');
+  });
+
+  // The gate lives in config.ts; assert the store inherits it rather than
+  // re-deriving "is this local" for itself. The runner is Vite dev mode, so
+  // the other half of isDevEnvironment() has to be turned off explicitly.
+  it('is inert on a non-dev origin', async () => {
+    vi.stubEnv('DEV', false);
+    setHostname('gawk.example.com');
+    window.__GAWK_CONFIG__ = {
+      relayUrl: 'https://relay.example.com:4433',
+      devCertHashHex: 'beef00',
+    };
+    const s = await freshStore();
+    expect(s.serverUrl).toBe('https://relay.example.com:4433');
+    expect(s.certHashHex).toBe('');
   });
 });
 

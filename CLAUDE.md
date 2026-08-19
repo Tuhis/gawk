@@ -28,6 +28,7 @@ authoritative home. Read it there.
 | Design + decisions for a milestone | its `docs/NN-*.md` | summarise it here |
 | Consolidated gotchas | `docs/gotchas.md` | duplicate them here |
 | How to self-host a deployment | `docs/self-hosting.md` | re-explain it here |
+| How to run the stack locally | `README.md` §Quickstart, `docs/41` | restate the lanes here |
 | What each design doc covers | `docs/README.md` (the index) | maintain a second list |
 | Open confirmed bugs | `BUGS.md` | enumerate them here |
 | Coding + review rules | `CODE-REVIEW.md` | restate them here |

@@ -12,4 +12,12 @@
 //   operatorContact: string        — terms contact point.
 //   termsUrl: string               — full terms-body override URL (e.g.
 //                                    "/terms.html"); empty ⇒ bundled default.
+//
+// DEV-ONLY (R38, docs/41 D4) — read only when the page is served from
+// localhost, and deliberately NOT a chart value; the local docker compose
+// stack renders it via dev/config-gen.sh:
+//   devCertHashHex: string         — hex SHA-256 of the relay's self-signed
+//                                    dev certificate DER. A deployment that
+//                                    thinks it needs this has a TLS
+//                                    misconfiguration, not a missing knob.
 window.__GAWK_CONFIG__ = window.__GAWK_CONFIG__ || {};

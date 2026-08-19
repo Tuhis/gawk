@@ -11,6 +11,17 @@ e2e/out*/
 
 .DS_Store
 
+# R38 (docs/41 §5): the local dev stack's working files. A private key in a
+# public repository is not a mistake with a warning attached — CAs must revoke
+# keys reported as compromised within 24 hours — so the certificate directory
+# is ignored wholesale and only its placeholder is tracked. .env holds DNS
+# provider tokens in the ACME lane.
+certs/*
+!certs/.gitkeep
+dev/generated/*
+!dev/generated/.gitkeep
+.env
+
 # Byte-compiled helpers under tools/ (gen-notices.py is imported by its own
 # negative test, which leaves one behind).
 __pycache__/

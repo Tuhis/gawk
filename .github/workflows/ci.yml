@@ -95,6 +95,7 @@ jobs:
       notices: ${{ steps.filter.outputs.notices }}
       helm: ${{ steps.filter.outputs.helm }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      dev_stack: ${{ steps.filter.outputs.dev_stack }}
       docker_any: ${{ steps.filter.outputs.docker_any }}
       docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
     steps:
@@ -175,6 +176,11 @@ jobs:
           # filtering honest: two PRs that each skip the other's tests still meet
           # here, on the merged tree.
           e2e=$(decide          e2e          '^(gawk-server|gawk-app|gawk-broadcast|gawk-telemetry|e2e)/')
+          # R38 (docs/41): the compose stack is assembled from the relay's
+          # certificate path, the frontend's runtime config, both images and
+          # the dev/ scripts — so a change to any of them can break the one
+          # command a new contributor runs first.
+          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/)')
 
           # The docker matrix, filtered to the images whose inputs moved. It is
           # built HERE rather than declared in the `docker` job because a static
@@ -966,6 +972,115 @@ jobs:
                   --set telemetry.enabled=true --set telemetry.key=00)
           echo "$out" | grep -q GAWK_TELEMETRY_KEY
           echo "$out" | grep -q metrics-headless
+
+  # R38 (docs/41 LD7): the local development stack, smoke-tested. `docker
+  # compose up` is the first thing a new contributor runs, so it is the one
+  # command that must never be broken on main — and it is assembled from parts
+  # (the relay's generate-if-absent certificate, a shell script's hash
+  # computation, an nginx alias, a bind mount) that no other job touches.
+  #
+  # What it proves, in order: the static decisions still hold, the wizard's
+  # failure register still fires, the stack comes up, the hash the frontend is
+  # handed IS the certificate the relay presents, and a datagram round-trips
+  # through the PUBLISHED port — the last one being the property that made the
+  # difference between a working stack and a silent handshake failure on
+  # macOS, and the one nothing else here would notice.
+  dev-stack:
+    needs: changes
+    if: needs.changes.outputs.dev_stack == 'true'
+    runs-on: ioio-k8s
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      # The ARC runner image ships the docker CLI and buildx, but no compose
+      # plugin (actions/runner's images/Dockerfile installs the CLI and buildx
+      # from binaries and nothing else), so the stack's own command has to be
+      # installed before it can be run.
+      - uses: docker/setup-compose-action@v2
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      # See the server job — the probe below is QUIC over loopback.
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
+
+      - name: The stack's decisions still hold
+        run: ./dev/stack_test.sh
+
+      - name: The certificate wizard's failure register still fires
+        run: ./dev/certs_test.sh
+
+      # HOST_UID/HOST_GID decide who owns the pair the relay generates into
+      # ./certs; without them it writes as root, which is exactly the case the
+      # README tells a Linux developer to avoid.
+      - name: Bring the default lane up
+        run: |
+          set -euo pipefail
+          {
+            echo "HOST_UID=$(id -u)"
+            echo "HOST_GID=$(id -g)"
+          } >> .env
+          docker compose up -d --build --wait
+
+      # The whole point of the milestone in one assertion: the frontend is
+      # handed the hash of the certificate the relay actually presents. A
+      # mismatch here is the failure this stack exists to make impossible, and
+      # it is invisible from either side alone.
+      - name: The generated config carries the relay's own certificate hash
+        run: |
+          set -euo pipefail
+          cat dev/generated/config.js
+          logged=$(docker compose logs relay | sed -n 's/.*cert_hash_hex=\([0-9a-f]\{64\}\).*/\1/p' | tail -1)
+          rendered=$(sed -n 's/.*devCertHashHex: "\([0-9a-f]\{64\}\)".*/\1/p' dev/generated/config.js)
+          echo "relay logged:   ${logged:-<none>}"
+          echo "config.js says: ${rendered:-<none>}"
+          if [ -z "$logged" ] || [ "$logged" != "$rendered" ]; then
+            echo "::error::the frontend was handed a hash that is not the relay's certificate"
+            exit 1
+          fi
+          grep -q 'requirePublishSecret: false' dev/generated/config.js
+          curl -fsS http://127.0.0.1:8080/config.js | diff - dev/generated/config.js
+
+      # Through the PUBLISHED UDP port, from outside the compose network — the
+      # leg the healthcheck (which runs inside the container) cannot see. The
+      # -origin is the app's, because the stack sets -allowed-origins rather
+      # than leaving it open, and this probe is not loopback from the relay's
+      # point of view.
+      - name: A datagram round-trips through the published port
+        run: |
+          set -euo pipefail
+          cd gawk-server
+          go run ./cmd/gawk-echo \
+            -url https://127.0.0.1:4433/echo \
+            -origin http://localhost:8080 \
+            -count 3 -timeout 5s
+
+      - name: The certificate survives a restart (the re-paste loop, gone)
+        run: |
+          set -euo pipefail
+          before=$(sha256sum certs/cert.pem | cut -d' ' -f1)
+          docker compose restart relay
+          docker compose up -d --wait
+          after=$(sha256sum certs/cert.pem | cut -d' ' -f1)
+          [ "$before" = "$after" ] || {
+            echo "::error::the relay regenerated its certificate on restart"
+            exit 1
+          }
+
+      - name: Logs, if anything above failed
+        if: failure()
+        run: docker compose logs --no-color | tail -100
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans
 
   # R20 tier 1 (docs/25): browser E2E on every PR — the real relay
   # (-dev-cert), the real native engine publishing the committed H.264
