@@ -73,26 +73,12 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
-# RUNNER POOL. Every job below says `runs-on: ${{ vars.RUNNER_LABEL || ... }}`
-# instead of naming a pool directly. This repository sets RUNNER_LABEL to
-# `ioio-k8s` (and RUNNER_LABEL_DISK to `ioio-k8s-disk`), so where CI runs does
-# not change: those pools carry system dependencies the hosted images do not
-# have, and every run lands there — fork pull requests included, because a
-# `pull_request` run executes in the BASE repository's context and reads this
-# repository's variables no matter where the branch came from.
-#
-# The fallback exists for forks. A contributor who pushes to their own fork
-# gets a run in THEIR repository, where these variables do not exist (GitHub
-# does not copy repository variables into a fork), and a hardcoded `ioio-k8s`
-# there queues against a pool with no runners — forever, with no error and no
-# failed check. `ubuntu-latest` runs and fails on whatever system dependency is
-# actually missing, which is a diagnosis instead of a hang.
-#
-# That same fallback is why an unset RUNNER_LABEL *here* would be quiet rather
-# than loud: CI would move to hosted runners and silently lose the registry
-# mirror, the disk pool and those system dependencies. The `changes` job writes
-# the label it resolved into every run's summary so a missing variable is
-# visible in the run that used it, not inferred from a later failure.
+# RUNNER POOL. `runs-on` reads RUNNER_LABEL (and RUNNER_LABEL_DISK for the one
+# kind job), set on this repository to `ioio-k8s` / `ioio-k8s-disk` — fork PRs
+# included, since they run in the base repository's context. The fallback is
+# for a fork's own runs: a fork inherits no variables, and a hardcoded label
+# there queues against a pool with no runners forever. An unset variable HERE
+# moves CI to hosted runners silently, so `changes` prints what it resolved.
 
 jobs:
   # Which components can this diff have affected? Asked once, in one place, and
@@ -120,10 +106,7 @@ jobs:
       docker_any: ${{ steps.filter.outputs.docker_any }}
       docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
     steps:
-      # Which pool did RUNNER_LABEL resolve to? Printed because the unset case
-      # is silent (see the RUNNER POOL note above): hosted runners would run
-      # the matrix, slower and without the system dependencies, and nothing
-      # else in the run would say so.
+      # Nothing else in a run says which pool it landed on.
       - name: Runner pool
         run: |
           echo "Runner label: ${{ vars.RUNNER_LABEL || 'ubuntu-latest (RUNNER_LABEL unset)' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -166,9 +166,8 @@ env:
   # for registry dependencies), so the win is small; it is simply free.
   CARGO_INCREMENTAL: "0"
 
-# Runner pool: `runs-on` reads the RUNNER_LABEL repository variable, falling
-# back to `ubuntu-latest` in a fork that has no such variable. The reasoning is
-# in ci.yml's header and is not repeated here.
+# Runner pool: `runs-on` reads RUNNER_LABEL, falling back to `ubuntu-latest`
+# in a fork that has no such variable. Why: ci.yml's header.
 
 jobs:
   # Both clippy passes, because neither alone covers the tree. The msvc one is

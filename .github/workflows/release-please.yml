@@ -34,9 +34,8 @@ permissions:
   contents: write
   pull-requests: write
 
-# Runner pool: `runs-on` reads the RUNNER_LABEL repository variable, falling
-# back to `ubuntu-latest` in a fork that has no such variable. The reasoning is
-# in ci.yml's header and is not repeated here.
+# Runner pool: `runs-on` reads RUNNER_LABEL, falling back to `ubuntu-latest`
+# in a fork that has no such variable. Why: ci.yml's header.
 
 jobs:
   release-please:
