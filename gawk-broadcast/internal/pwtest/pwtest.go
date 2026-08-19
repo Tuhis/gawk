@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -564,11 +566,44 @@ func (d *Daemon) Dump() []dumpObject {
 	if err != nil {
 		d.t.Fatalf("pwtest: pw-dump: %v", err)
 	}
-	var objs []dumpObject
-	if err := json.Unmarshal(out, &objs); err != nil {
-		d.t.Fatalf("pwtest: decoding pw-dump: %v", err)
+	objs, err := decodeDump(out)
+	if err != nil {
+		d.t.Fatalf("pwtest: decoding pw-dump: %v\noutput was:\n%s", err, out)
 	}
 	return objs
+}
+
+// decodeDump reads pw-dump's output as a STREAM of arrays, not one.
+//
+// pw-dump prints its snapshot and then, when registry events arrive before it
+// exits, prints a second array after it — so a single json.Unmarshal fails on
+// the trailing bytes with "invalid character '[' after top-level value", which
+// is a harness failure wearing an unrelated test's name.
+//
+// The later array is the newer state of objects the snapshot already listed, so
+// the batches are folded by id with the last write winning rather than
+// concatenated: two entries for one id would make FindNode answer with the
+// stale one and LinksInto count the same link twice.
+func decodeDump(out []byte) ([]dumpObject, error) {
+	var objs []dumpObject
+	at := map[uint32]int{}
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var batch []dumpObject
+		if err := dec.Decode(&batch); errors.Is(err, io.EOF) {
+			return objs, nil
+		} else if err != nil {
+			return nil, err
+		}
+		for _, o := range batch {
+			if i, seen := at[o.ID]; seen {
+				objs[i] = o
+				continue
+			}
+			at[o.ID] = len(objs)
+			objs = append(objs, o)
+		}
+	}
 }
 
 // Nodes lists the graph's nodes.
