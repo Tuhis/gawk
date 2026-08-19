@@ -166,13 +166,17 @@ env:
   # for registry dependencies), so the win is small; it is simply free.
   CARGO_INCREMENTAL: "0"
 
+# Runner pool: `runs-on` reads the RUNNER_LABEL repository variable, falling
+# back to `ubuntu-latest` in a fork that has no such variable. The reasoning is
+# in ci.yml's header and is not repeated here.
+
 jobs:
   # Both clippy passes, because neither alone covers the tree. The msvc one is
   # the port of what the Windows runner did: it is the pass that lints every
   # cfg(windows) block. The host one covers what that pass cannot see — the
   # cfg(unix) code, which no Windows runner ever linted.
   lint:
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: gawk-broadcast-windows
@@ -206,7 +210,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
   test:
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: gawk-broadcast-windows
@@ -282,7 +286,7 @@ jobs:
         run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
 
   build:
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
     # and the gate compares commit SHAs. This is also the single fact that ties
     # the artifact, the gate and the thing actually compiled together — they
@@ -395,7 +399,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.attach_to != '')
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: write
     steps:

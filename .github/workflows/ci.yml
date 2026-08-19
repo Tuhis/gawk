@@ -73,6 +73,27 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
+# RUNNER POOL. Every job below says `runs-on: ${{ vars.RUNNER_LABEL || ... }}`
+# instead of naming a pool directly. This repository sets RUNNER_LABEL to
+# `ioio-k8s` (and RUNNER_LABEL_DISK to `ioio-k8s-disk`), so where CI runs does
+# not change: those pools carry system dependencies the hosted images do not
+# have, and every run lands there — fork pull requests included, because a
+# `pull_request` run executes in the BASE repository's context and reads this
+# repository's variables no matter where the branch came from.
+#
+# The fallback exists for forks. A contributor who pushes to their own fork
+# gets a run in THEIR repository, where these variables do not exist (GitHub
+# does not copy repository variables into a fork), and a hardcoded `ioio-k8s`
+# there queues against a pool with no runners — forever, with no error and no
+# failed check. `ubuntu-latest` runs and fails on whatever system dependency is
+# actually missing, which is a diagnosis instead of a hang.
+#
+# That same fallback is why an unset RUNNER_LABEL *here* would be quiet rather
+# than loud: CI would move to hosted runners and silently lose the registry
+# mirror, the disk pool and those system dependencies. The `changes` job writes
+# the label it resolved into every run's summary so a missing variable is
+# visible in the run that used it, not inferred from a later failure.
+
 jobs:
   # Which components can this diff have affected? Asked once, in one place, and
   # answered for every job below.
@@ -83,7 +104,7 @@ jobs:
   # a broken main. Where a dependency is not visible from the directory name it
   # is written out below with the reason.
   changes:
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     outputs:
       server: ${{ steps.filter.outputs.server }}
       broadcast: ${{ steps.filter.outputs.broadcast }}
@@ -99,6 +120,13 @@ jobs:
       docker_any: ${{ steps.filter.outputs.docker_any }}
       docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
     steps:
+      # Which pool did RUNNER_LABEL resolve to? Printed because the unset case
+      # is silent (see the RUNNER POOL note above): hosted runners would run
+      # the matrix, slower and without the system dependencies, and nothing
+      # else in the run would say so.
+      - name: Runner pool
+        run: |
+          echo "Runner label: ${{ vars.RUNNER_LABEL || 'ubuntu-latest (RUNNER_LABEL unset)' }}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v7
         with:
           # The diff is against the base commit, which shallow cannot see. The
@@ -230,7 +258,7 @@ jobs:
   server:
     needs: changes
     if: needs.changes.outputs.server == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: gawk-server
@@ -265,7 +293,7 @@ jobs:
   broadcast:
     needs: changes
     if: needs.changes.outputs.broadcast == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
     # and the release gate compares commit SHAs. This is also the single fact
     # that ties the artifact, the gate and the thing actually compiled
@@ -577,7 +605,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.attach_to != '')
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: write
     steps:
@@ -677,7 +705,7 @@ jobs:
   app:
     needs: changes
     if: needs.changes.outputs.app == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: gawk-app
@@ -716,7 +744,7 @@ jobs:
   telemetry:
     needs: changes
     if: needs.changes.outputs.telemetry == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: gawk-telemetry
@@ -757,7 +785,7 @@ jobs:
   telemetry-ui:
     needs: changes
     if: needs.changes.outputs.telemetry_ui == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: gawk-telemetry/ui
@@ -793,7 +821,7 @@ jobs:
   tidy:
     needs: changes
     if: needs.changes.outputs.tidy == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -850,7 +878,7 @@ jobs:
   licenses:
     needs: changes
     if: needs.changes.outputs.licenses == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -911,7 +939,7 @@ jobs:
   licenses-fresh:
     needs: changes
     if: needs.changes.outputs.notices == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -939,7 +967,7 @@ jobs:
   helm:
     needs: changes
     if: needs.changes.outputs.helm == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
       - run: helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
@@ -988,7 +1016,7 @@ jobs:
   dev-stack:
     needs: changes
     if: needs.changes.outputs.dev_stack == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -1094,7 +1122,7 @@ jobs:
   e2e:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 10
     # No job-level concurrency: the workflow-level group above supersedes the
     # whole run, which is what this one only ever managed for itself.
@@ -1205,9 +1233,10 @@ jobs:
       (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--'))
     # Disk-backed runner pool: kind needs Docker's data-root on a real
     # filesystem (its inner containerd can't stack overlayfs on the tmpfs the
-    # default ioio-k8s pool uses for /var/lib/docker). Every other job stays on
-    # ioio-k8s. See ioio repo: clusters/baremetal/actions-runners/gawk-e2e.yaml.
-    runs-on: ioio-k8s-disk
+    # default ioio-k8s pool uses for /var/lib/docker). This is the only job on
+    # RUNNER_LABEL_DISK; every other one takes RUNNER_LABEL. See ioio repo:
+    # clusters/baremetal/actions-runners/gawk-e2e.yaml.
+    runs-on: ${{ vars.RUNNER_LABEL_DISK || 'ubuntu-latest' }}
     timeout-minutes: 15
     # No job-level concurrency, and no `changes` gate either: this runs on
     # release-please PRs and on dispatch only, and both want the cluster tier
@@ -1401,7 +1430,7 @@ jobs:
   docker:
     needs: changes
     if: needs.changes.outputs.docker_any == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     strategy:
       matrix: ${{ fromJSON(needs.changes.outputs.docker_matrix) }}
     steps:
