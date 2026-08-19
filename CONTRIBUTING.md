@@ -132,6 +132,22 @@ The native Windows broadcaster cross-compiles from Linux with
 [`gawk-broadcast-windows/README.md`](gawk-broadcast-windows/README.md) before
 touching that build.
 
+### CI on your own fork
+
+This repository's jobs run on a self-hosted runner pool that carries system
+dependencies the GitHub-hosted images do not have. The label is not hardcoded:
+`runs-on` reads the `RUNNER_LABEL` repository variable (and `RUNNER_LABEL_DISK`
+for the one kind-based job), falling back to `ubuntu-latest`.
+
+Your fork does not inherit those variables, so pushes to a branch **in your
+fork** run on `ubuntu-latest` and some jobs will fail on a missing dependency.
+That is the intended failure mode — the alternative, a hardcoded label your
+fork has no runners for, queues forever and never reports anything. Run the
+gates above locally instead, and open the PR: the run **on the pull request**
+executes in this repository's context, picks up `RUNNER_LABEL`, and is the one
+that counts. If you do want green checks on your own fork, point the variables
+at a pool you control.
+
 ## Adding a dependency
 
 Dependencies are held to gawk's license policy, and CI enforces it: the

@@ -34,9 +34,12 @@ permissions:
   contents: write
   pull-requests: write
 
+# Runner pool: `runs-on` reads RUNNER_LABEL, falling back to `ubuntu-latest`
+# in a fork that has no such variable. Why: ci.yml's header.
+
 jobs:
   release-please:
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     outputs:
       server_release: ${{ steps.rp.outputs['gawk-server--release_created'] }}
       server_version: ${{ steps.rp.outputs['gawk-server--version'] }}
@@ -54,7 +57,7 @@ jobs:
   publish-server:
     needs: release-please
     if: needs.release-please.outputs.server_release == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: read
       packages: write
@@ -97,7 +100,7 @@ jobs:
   publish-app:
     needs: release-please
     if: needs.release-please.outputs.app_release == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: read
       packages: write
@@ -132,7 +135,7 @@ jobs:
   publish-telemetry:
     needs: release-please
     if: needs.release-please.outputs.telemetry_release == 'true'
-    runs-on: ioio-k8s
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: read
       packages: write
