@@ -126,6 +126,26 @@ export function MoreIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// Stacked rack units — the landing chip's mark. It replaces a bare filled
+// circle, which read as a status LED the chip has no status to report.
+export function PlusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+export function ServerIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="3.5" y="4" width="17" height="6.5" rx="1.6" />
+      <rect x="3.5" y="13.5" width="17" height="6.5" rx="1.6" />
+      <path d="M6.8 7.25h.01M6.8 16.75h.01" />
+    </svg>
+  );
+}
+
 export function CloseIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>
