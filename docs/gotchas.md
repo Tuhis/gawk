@@ -1023,8 +1023,8 @@ Add to it when a new gotcha lands in `docs/`.
   one) — use one combined release PR (`"separate-pull-requests": false`);
   tags/releases/publishes stay per-component.
   ([docs/05](05-resilience-deploy.md))
-- **GHCR**: refs are lowercase-only (`tuhis`), and cluster pulls need a
-  **classic** PAT with `read:packages` (fine-grained PATs don't cover GHCR).
+- **GHCR**: refs are lowercase-only (`tuhis`). The packages are public, so
+  pulls need no credentials.
 - **The relay is HTTP/3-only (no TCP listener)** — kubelet probes must exec
   the bundled `gawk-echo` binary; `httpGet`/`tcpSocket` can never succeed.
 - **That exec probe crash-loops the pod once `allowedOrigins` is set** —

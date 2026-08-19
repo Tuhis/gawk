@@ -13,7 +13,7 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# GHCR is private — the same pull secret as the other charts.
+# The published images are public; see the gawk-server chart's values.
 imagePullSecrets: []
 
 # ONE replica, always. The service owns per-session files on a PVC with one

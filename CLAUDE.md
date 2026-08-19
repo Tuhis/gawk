@@ -213,8 +213,8 @@ Re-deriving them costs a cycle and has happened before.
   on the shared manifest, don't switch back; tags stay per-component:
   `gawk-server-vX.Y.Z` / `gawk-app-vX.Y.Z`).
 - **Registry**: GHCR — images `ghcr.io/tuhis/<component>`, charts
-  `oci://ghcr.io/tuhis/charts/<component>` (lowercase; private → classic PAT
-  pull secret).
+  `oci://ghcr.io/tuhis/charts/<component>` (lowercase; packages are public —
+  pulls need no credentials).
 - **CI is publish-only; deploys are automated cluster-side.** Whenever a new
   version is released it is deployed to the homelab automatically. CI never
   touches the cluster — no cluster credentials in GitHub. Manual

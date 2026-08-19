@@ -65,16 +65,7 @@ oci://ghcr.io/tuhis/charts/gawk-app         ghcr.io/tuhis/gawk-app
   (`config.maxSubscribers`, `config.maxBandwidth`) — set them to match your
   link rather than discovering the limit during a stream.
 
-If `helm pull` or the image pull returns 401/403, the packages are not public
-to you and you need a pull secret. A classic PAT with `read:packages`
-(fine-grained PATs do not cover GHCR):
-
-```sh
-kubectl -n gawk create secret docker-registry ghcr-pull \
-  --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT>
-```
-
-then set `imagePullSecrets: [{name: ghcr-pull}]` in both charts' values.
+The images and charts are public. Nothing here needs a registry login.
 
 ## 3. TLS and DNS — read this before installing
 

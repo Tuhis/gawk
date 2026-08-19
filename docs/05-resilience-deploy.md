@@ -208,12 +208,6 @@ automation (since 2026-07-12) — no cluster credentials in GitHub. The manual
 break-glass runbook:
 
 ```sh
-# once per namespace — classic PAT with read:packages ONLY
-# (fine-grained PATs don't cover GHCR):
-kubectl -n gawk create secret docker-registry ghcr-pull \
-  --docker-server=ghcr.io --docker-username=Tuhis --docker-password=<PAT>
-
-helm registry login ghcr.io -u Tuhis   # paste the same PAT
 helm upgrade --install gawk-server oci://ghcr.io/tuhis/charts/gawk-server \
   --version 0.5.0 -n gawk -f my-values.yaml
 helm upgrade --install gawk-app oci://ghcr.io/tuhis/charts/gawk-app \
@@ -222,8 +216,7 @@ helm upgrade --install gawk-app oci://ghcr.io/tuhis/charts/gawk-app \
 
 Deploy-time placeholders to fill in a values file: relay DNS name
 (`certificate.dnsNames`), frontend host (`ingress.host`),
-`config.allowedOrigins` (= the frontend origin), `imagePullSecrets`,
-optional MetalLB IP pin.
+`config.allowedOrigins` (= the frontend origin), optional MetalLB IP pin.
 
 ## R17 addendum — multi-replica install/upgrade (2026-07-16)
 
@@ -304,10 +297,8 @@ delta for `replicas: 2+`:
   silent (`if:` sees an empty string) — check the publish jobs ran after the
   first merge.
 - **GHCR is lowercase-only** (`tuhis`, not `Tuhis` — and
-  `github.repository_owner` returns `Tuhis`, so refs are hardcoded), and
-  **cluster pulls need a classic PAT** with `read:packages`; fine-grained
-  PATs still don't cover GHCR. Note the PAT expiry in the runbook — it will
-  eventually manifest as `ImagePullBackOff`.
+  `github.repository_owner` returns `Tuhis`, so refs are hardcoded). The
+  packages are public (2026-08-19), so pulls need no credentials.
 - **Charts publish under `oci://ghcr.io/tuhis/charts/`** — the `charts/`
   prefix keeps the chart package from colliding with the same-named image
   package.

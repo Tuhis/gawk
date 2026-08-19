@@ -5,8 +5,7 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# GHCR is private — same pull secret as the gawk-server chart (one per
-# namespace suffices): imagePullSecrets: [{name: ghcr-pull}]
+# The published images are public; see the gawk-server chart's values.
 imagePullSecrets: []
 
 # Stateless static-file serving; safe to scale.
