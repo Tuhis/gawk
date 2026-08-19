@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows-v1.1.0...gawk-broadcast-windows/v1.1.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* reap orphaned stripe legs via viewer-owned session groups and a liveness lease ([#259](https://github.com/Tuhis/gawk/issues/259)) ([dae116e](https://github.com/Tuhis/gawk/commit/dae116e87a41ce90992d56d11a1e9c77c0ef32c6))
+
 ## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows-v1.0.0...gawk-broadcast-windows-v1.1.0) (2026-08-01)
 
 

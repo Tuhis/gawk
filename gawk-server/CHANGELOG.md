@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.25.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.24.1...gawk-server/v0.25.0) (2026-08-19)
+
+
+### Features
+
+* **dev:** local development stack — docker compose up (R38) ([#261](https://github.com/Tuhis/gawk/issues/261)) ([831c6f8](https://github.com/Tuhis/gawk/commit/831c6f84c138816d28a8e9f50a5ccd7b219d9be9))
+
+
+### Bug Fixes
+
+* reap orphaned stripe legs via viewer-owned session groups and a liveness lease ([#259](https://github.com/Tuhis/gawk/issues/259)) ([dae116e](https://github.com/Tuhis/gawk/commit/dae116e87a41ce90992d56d11a1e9c77c0ef32c6))
+
 ## [0.24.1](https://github.com/Tuhis/gawk/compare/gawk-server-v0.24.0...gawk-server/v0.24.1) (2026-08-02)
 
 
