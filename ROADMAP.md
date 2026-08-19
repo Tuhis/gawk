@@ -58,6 +58,7 @@ feature set exists).
 | R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
 | R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, **LD1–LD7 implemented 2026-08-17** — `docker compose up` gives a working broadcast with nothing to copy-paste; the relay's dev certificate now persists (`-dev-cert` + `-cert-file`), its hash reaches the frontend through `/config.js` so the chrome-free viewer route works in a fresh profile, and `dev/certs.sh` switches between the self-signed and ACME lanes. Profiles for a synthetic broadcaster, telemetry and Vite HMR; a `dev-stack` CI job that round-trips a datagram through the published port. The **Firefox pass is done** — it joins the default lane unchanged, which is why the mkcert lane was withdrawn (no browser does WebTransport over a locally-installed CA, [docs/41](docs/41-local-dev-stack.md) §6). **Remaining: lane C's live issuance** ([docs/41](docs/41-local-dev-stack.md) §10) |
 | R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | 💡 proposed 2026-08-19, not started — no design doc yet |
+| R40 | [Automatic content flagging (NSFW keyframe screening)](#r40--automatic-content-flagging-nsfw-keyframe-screening) | 💡 proposed 2026-08-19, not started — no design doc yet; **depends on R39** (needs its kill/ban actuator) |
 
 ---
 
@@ -3406,7 +3407,9 @@ actually enforce them, per-broadcast, without collateral damage.
 
 **Non-goals**: user accounts or viewer-side identity — join-by-code stays;
 content *detection* (this is a tool for a human operator acting on their own
-judgment, not automated moderation); banning *viewers* (viewers are anonymous
+judgment, not automated moderation — automated *flagging* is proposed
+separately as R40, which feeds this portal rather than growing inside it);
+banning *viewers* (viewers are anonymous
 by design; the abuse vector is publishing); a public-facing report/flag
 button (single-operator platform — reports arrive out of band); any general
 live-config mutation beyond the narrow, explicitly-listed knobs if the
@@ -3415,6 +3418,99 @@ dynamic-settings idea survives design at all.
 **Status**: proposed 2026-08-19, not started — no design doc yet. Chunk
 prefix `AP` is reserved for it (every single-letter prefix is claimed; `AP`
 collides with nothing existing).
+
+---
+
+## R40 — Automatic content flagging (NSFW keyframe screening)
+
+**Goal**: detect prohibited visual content on live broadcasts automatically
+and surface it to the operator for action. The category we most want to keep
+off the platform is CSAM; the dedicated tooling for that (PhotoDNA,
+Google CSAI Match) is gated to vetted large platforms and hash-matches only
+*known* material, so it is unavailable and largely inapplicable to live
+screen capture. The practical instrument is a **general NSFW/nudity
+classifier used as a proxy**: this is not a nudity platform, so *any*
+sustained high-confidence NSFW signal is grounds to flag — and the worst
+category is a subset of what such a classifier fires on. The milestone must
+be honest about this: it detects skin, not legality; a human decides.
+
+**Depends on R39.** A verdict without an actuator is useless. Fleet-wide
+kill, the reclaim-proof durable ban, the terminal close code and the
+operator notification surface are all R39 deliverables; R40 is a *producer*
+of flag/kill events into that machinery, not a second enforcement path.
+
+**Why this is wanted**: R23 gave the platform usage terms and R39 gives the
+operator enforcement, but both assume the operator *finds out*. A
+single-operator platform has no 24/7 eyes; automatic screening closes the
+gap between "abusive broadcast starts" and "operator learns of it" from
+hours to seconds. Doing it deliberately also puts the operator in a better
+legal position than informal spot-checking (see the DSA notes in the design
+questions).
+
+**Posture: flag-and-notify, not auto-block.** Sampler scores keyframes;
+above threshold it pages the operator and pins the broadcast to the top of
+the R39 portal; the operator joins, judges, and kills/bans through R39.
+Auto-terminate exists only as an optional, very-high-confidence,
+sustained-signal tier (defaults conservative or off) — a false auto-kill on
+a known-operator platform costs more than minutes of human latency.
+
+**Scope sketch**:
+
+- **A sampler service, not relay code.** A separate deployable that attaches
+  to each live broadcast and periodically obtains its **latest keyframe** —
+  keyframes are self-contained, ride reliable streams, and the hub already
+  caches one per broadcast, so sampling costs one decode every few seconds
+  per broadcast, entirely off the hot path (zero viewer-latency impact).
+  Candidate taps: pull like an internal edge via `/internal/subscribe/{id}`,
+  or a new internal "current keyframe" endpoint on the relay. The sampler
+  carries the heavy dependencies (H.264/VP9/VP8 decode via libavcodec or an
+  ffmpeg subprocess; ONNX runtime for the model) so the relay image stays
+  lean. Default **off**, internal-only — the `gawk-telemetry` posture.
+- **Classifier**: a self-hostable NudeNet-class NSFW model (ONNX, CPU-fast).
+  No external API — verdicts on captured screens never leave the deployment.
+- **Scoring with hysteresis**: decisions on a sustained window of sampled
+  keyframes, never a single frame (game content produces skin-toned false
+  positives constantly).
+- **Notify + act through R39**: a flag event carries broadcast ID (HMAC'd or
+  raw per R39's decision), timestamps, scores — and pushes an operator
+  notification. Kill/ban is invoked via the R39 API, never directly.
+- **Evidence is metadata only.** Flagged *frames* are never persisted — if
+  the flag is right, retaining the material is itself the legal hazard. The
+  operator inspects by joining the live broadcast (which R39 enables).
+
+**Key design questions**:
+
+- **Where the sampler lives**: a new top-level module (fifth), or a second
+  binary in `gawk-server`'s module sharing the wire/edge-pull code it needs?
+  Fixes the Helm/release-please footprint; interacts with R39's same
+  question about the portal.
+- **Model selection and thresholds**: which open model, what precision on
+  *game* footage (the dominant legitimate content), what sampling cadence ×
+  hundreds of broadcasts costs in CPU, and whether the auto-terminate tier
+  survives design at all.
+- **Decode dependency shape**: cgo libavcodec vs. ffmpeg subprocess — image
+  size, CVE surface, and crash isolation (a malformed bitstream must kill at
+  most one sample, never the sampler).
+- **Legal fit (DSA)**: under DSA Art. 7 (Good Samaritan), voluntary
+  own-initiative detection does **not** forfeit the Art. 6 hosting-liability
+  exemption — but knowledge gained **must be acted on expeditiously**, so an
+  unwatched flag queue is legally worse than no scanner. The design must
+  ensure a flag always reaches a human (or the auto-tier) — no silent
+  backlog. Also decide what, if anything, triggers a report to authorities
+  (Finland: police / NCMEC-equivalent routing) and document it in the R23
+  terms.
+- **Knob plumbing**: everything (enable, cadence, thresholds, auto-tier)
+  through `registryOptions`-style flags + `GAWK_*` envs + Helm values in
+  whichever module it lands — the R2 lesson applies verbatim.
+
+**Non-goals**: CSAM hash-matching (tooling is gated and inapplicable to live
+capture — revisit only if access is ever actually obtainable); audio
+analysis; copyright/DMCA detection; text/chat moderation (there is no chat);
+persisting flagged media; any viewer-side scanning or identity; building
+enforcement machinery of its own (that is R39's job).
+
+**Status**: proposed 2026-08-19, not started — no design doc yet; blocked on
+R39. Chunk prefix `CF` is reserved for it (collides with nothing existing).
 
 ---
 
