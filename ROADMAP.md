@@ -57,6 +57,7 @@ feature set exists).
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
 | R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
 | R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, **LD1–LD7 implemented 2026-08-17** — `docker compose up` gives a working broadcast with nothing to copy-paste; the relay's dev certificate now persists (`-dev-cert` + `-cert-file`), its hash reaches the frontend through `/config.js` so the chrome-free viewer route works in a fresh profile, and `dev/certs.sh` switches between the self-signed and ACME lanes. Profiles for a synthetic broadcaster, telemetry and Vite HMR; a `dev-stack` CI job that round-trips a datagram through the published port. The **Firefox pass is done** — it joins the default lane unchanged, which is why the mkcert lane was withdrawn (no browser does WebTransport over a locally-installed CA, [docs/41](docs/41-local-dev-stack.md) §6). **Remaining: lane C's live issuance** ([docs/41](docs/41-local-dev-stack.md) §10) |
+| R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | 💡 proposed 2026-08-19, not started — no design doc yet |
 
 ---
 
@@ -3324,6 +3325,96 @@ already covers cluster testing in CI).
 **Status**: designed 2026-08-14, not started (LD1–LD7). Built in three
 phases: A (compose + the zero-setup lane) → B (the trusted-certificate lanes)
 → C (extras, CI, docs).
+
+---
+
+## R39 — Admin portal for moderation
+
+**Goal**: give the operator a management surface for the things `kubectl` and
+the telemetry UI can't do today: **stop a fraudulent or malicious broadcast**
+immediately, **ban a broadcaster from publishing** (timed or permanent), and —
+lower priority, an idea rather than a commitment — adjust a small set of
+relay settings dynamically. The portal is an *actuator*; for *observation* it
+links into the R31 telemetry UI (per-broadcast and per-session views) rather
+than duplicating any of its read functionality.
+
+**Why this is wanted**: today there is no moderation story at all. If someone
+streams something abusive, the operator's only tools are killing relay pods
+(which takes every other broadcast down with them) or rotating the deployment.
+R23 gave the platform usage terms; this milestone gives the operator a way to
+actually enforce them, per-broadcast, without collateral damage.
+
+**Scope sketch**:
+
+- **Stop a broadcast**: enumerate live broadcasts (the `/statusz` data the
+  relay already has), pick one, terminate it — publisher session closed with a
+  terminal close code, caches (keyframe/config, DVR ring) purged, viewers
+  disconnected. Must take effect **fleet-wide**: since R17 a broadcast's
+  publisher lives on one pod but edges pull it everywhere, so a kill is a
+  control-plane operation across pods, not a call to one of them.
+- **Ban from broadcasting** (timed or permanent): a kill that sticks. The
+  ban must survive the R17 "newest publisher wins" reclaim — a resume token
+  must not resurrect a killed broadcast — and must survive pod restarts, so
+  bans need durable, fleet-shared storage (the relay currently persists
+  nothing).
+- **Admin surface**: a small UI + API. Security posture follows
+  `gawk-telemetry`'s split exactly: the admin listener/Ingress is **never
+  routed publicly** — network placement *is* the auth boundary, with
+  credentials on top TBD in the design doc.
+- **Telemetry integration, not duplication**: each broadcast row deep-links
+  to the R31 broadcast view (and session traces) where telemetry is deployed;
+  the portal itself renders only what it needs to act (ID, uptime, viewer
+  count, pod placement).
+- **Dynamic settings** (explicitly lower priority): the deploy model is
+  GitOps — CI never touches the cluster, cluster-side automation deploys
+  releases — so "adjust settings from a portal" most plausibly means the
+  portal writes to the config repo (or a values file) and the existing
+  machinery rolls it out, not the portal mutating live pods. May well be cut
+  from v1; moderation is the point.
+
+**Key design questions**:
+
+- **What identity does a ban attach to?** There are no accounts (join-by-code
+  is a locked-in principle). Candidate handles: the broadcast ID (weak — the
+  banned party mints a new one), the R17 resume token, source IP (NAT
+  collateral; also needs the LB to preserve client IPs), or some combination
+  with a short default ban that mostly serves to stop an active abuser's
+  re-mint loop. Whether "ban" can mean anything stronger than "this ID +
+  this IP, for a while" without introducing accounts is *the* central
+  question, and the design doc must answer it honestly rather than promise
+  permanence it can't deliver.
+- **Where the control plane lives.** Options: a new admin listener inside
+  `gawk-server` with pod-to-pod fan-out over the existing internal-federation
+  path; a separate small service that talks to all pods; or piggybacking on
+  the Kubernetes API (a ConfigMap/CRD the pods watch — which would also give
+  bans durability and GitOps-style auditability for free). Interacts directly
+  with the ban-storage question.
+- **Raw broadcast IDs in the portal.** The "never expose raw broadcast IDs"
+  invariant exists because `/statusz` was unauthenticated-adjacent; an admin
+  surface is privileged and arguably *needs* the raw ID (the operator can
+  join the stream to inspect it). Decide whether the invariant relaxes for
+  the authenticated admin surface or the portal acts through the HMAC'd keys.
+- **A new terminal close code** (or reuse of 4000) for "terminated by
+  operator" / "banned" — anything new must be allocated in `wire.go` and
+  mirrored in all four wire implementations with golden vectors, and clients
+  must treat it as terminal (no reconnect loop hammering a ban).
+- **Where the UI lives**: a fourth deployable, a page inside `gawk-telemetry`
+  (wrong on the face of it — telemetry is read-only, default-off, and its
+  posture doc says the internal listener never mutates), or served by the
+  relay itself on the admin listener. Needs deciding early because it fixes
+  the Helm/release-please footprint.
+
+**Non-goals**: user accounts or viewer-side identity — join-by-code stays;
+content *detection* (this is a tool for a human operator acting on their own
+judgment, not automated moderation); banning *viewers* (viewers are anonymous
+by design; the abuse vector is publishing); a public-facing report/flag
+button (single-operator platform — reports arrive out of band); any general
+live-config mutation beyond the narrow, explicitly-listed knobs if the
+dynamic-settings idea survives design at all.
+
+**Status**: proposed 2026-08-19, not started — no design doc yet. Chunk
+prefix `AP` is reserved for it (every single-letter prefix is claimed; `AP`
+collides with nothing existing).
 
 ---
 
