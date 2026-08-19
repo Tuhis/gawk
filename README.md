@@ -261,9 +261,9 @@ confirmed open defects rather than hiding them.
 
 ## Gotchas
 
-The full list — 115 entries, each of which cost real debugging time — lives
-in **[`docs/gotchas.md`](docs/gotchas.md)**. The ones most likely to catch
-you first:
+The full list — each entry of which cost real debugging time — lives in
+**[`docs/gotchas.md`](docs/gotchas.md)**. The ones most likely to catch you
+first:
 
 - **`go test -race` needs `CGO_ENABLED=1`**; many environments default to `0`.
 - **Browser hardware encode does not exist on Linux.** That is why the

@@ -40,6 +40,8 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars) |
 | `-telemetry-key` | `GAWK_TELEMETRY_KEY` | (empty = telemetry disabled; 64 hex chars, shared with gawk-telemetry) |
 | `-telemetry-report-interval` | `GAWK_TELEMETRY_REPORT_INTERVAL` | `2s` (500ms–60s) |
+| `-telemetry-advertise-url` | `GAWK_TELEMETRY_ADVERTISE_URL` | (empty = advertise nothing; absolute https URL of this fleet's telemetry ingest) |
+| `-server-name` | `GAWK_SERVER_NAME` | (empty = the relay stays unnamed) |
 | `-cluster-mode` | `GAWK_CLUSTER_MODE` | `false` |
 | `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
 | `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |
@@ -66,6 +68,17 @@ affected — only loopback traffic is quieted.
 
 **`-live-edge-audio-on-reliable-stream`** — measure before flipping; see
 the chart values for the discussion.
+
+**`-server-name`** is the display name a server picker shows next to your
+relay's host once it has probed `/echo`. Unset, the relay is listed by
+version alone.
+
+**`-telemetry-advertise-url`** tells every session which telemetry ingest to
+report to. Without it a viewer who arrived from someone else's frontend
+reports to *that* deployment's collector, where its token is rejected and
+the diagnostics are lost; with it, those sessions land in yours. An invalid
+URL fails startup rather than silently advertising nothing. See
+[`docs/self-hosting.md`](../../docs/self-hosting.md) §8.
 
 **The cluster flags** (`-cluster-mode` and the shared keys/PSK) enable the
 multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod

@@ -11,7 +11,7 @@ Not a design doc, but in this directory:
 | File | What |
 |---|---|
 | [`self-hosting.md`](self-hosting.md) | **Run your own gawk** — prerequisites, TLS, install, cluster mode, troubleshooting |
-| [`gotchas.md`](gotchas.md) | Consolidated gotchas, 115 of them, each of which cost real debugging time |
+| [`gotchas.md`](gotchas.md) | A consolidated list of gotchas, each of which cost real debugging time |
 | [`implementation-tasks.md`](implementation-tasks.md) | The v0.x server design + chunk breakdown (A1–D3) |
 
 ## Where to start
@@ -105,7 +105,7 @@ Reading all forty-one is not the point. Three give you the shape of the system:
 | [`25`](25-e2e-testing-in-ci.md) | R20 — Real-browser E2E in CI, both tiers |
 | [`33`](33-telemetry-and-diagnostics.md) | R28 — Advanced diagnostics & telemetry |
 | [`36`](36-telemetry-ui-history.md) | R31 — Telemetry UI v2: a diagnosis SPA |
-| [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, three TLS lanes |
+| [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, two certificate lanes |
 
 ## Conventions
 

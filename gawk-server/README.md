@@ -83,8 +83,8 @@ ones a first install actually touches:
 | `-metrics-addr` | `:2112` | Ops endpoint; the literal value `off` disables |
 | `-cluster-mode` | `false` | Multi-pod federation; requires `-internal-psk` and `-internal-server-name` |
 
-The full table — ~38 flags including DVR, forward parity, telemetry and
-cluster keys — with notes on the non-obvious ones:
+The full table — including DVR, forward parity, telemetry and cluster
+keys — with notes on the non-obvious ones:
 **[`docs/flags.md`](docs/flags.md)**.
 
 On SIGINT/SIGTERM the server drains before exiting: every open session gets

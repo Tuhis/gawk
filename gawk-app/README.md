@@ -7,7 +7,8 @@ Firefox. **WebKit — Safari everywhere, and every browser on iOS — currently
 cannot join at all** (see [BUGS.md](../BUGS.md)); the app detects it on load
 and warns before the user hits the failure. The iPhone Safari fallbacks are
 still in the code and still documented, but nothing reaches them today.
-Project overview, quickstart and gotchas: [root README](../README.md).
+Project overview and quickstart: [root README](../README.md); gotchas:
+[`docs/gotchas.md`](../docs/gotchas.md).
 
 ## Pages (hash-routed)
 
