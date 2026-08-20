@@ -328,19 +328,19 @@ func TestTrackPublisherRecordsRemoteIP(t *testing.T) {
 	sess := &fakeDrainSession{}
 	untrack := srv.trackPublisher(bannedTestID, sess, netip.MustParseAddr("203.0.113.7"))
 
-	got, ok := srv.publisherRemote(bannedTestID)
+	got, ok := srv.PublisherRemote(bannedTestID)
 	if !ok || got.String() != "203.0.113.7" {
-		t.Fatalf("publisherRemote = %v/%v, want 203.0.113.7/true", got, ok)
+		t.Fatalf("PublisherRemote = %v/%v, want 203.0.113.7/true", got, ok)
 	}
 	untrack()
-	if _, ok := srv.publisherRemote(bannedTestID); ok {
-		t.Error("publisherRemote still reports a publisher after untrack")
+	if _, ok := srv.PublisherRemote(bannedTestID); ok {
+		t.Error("PublisherRemote still reports a publisher after untrack")
 	}
 
 	// An unparseable RemoteAddr yields no address rather than a bogus one.
 	untrack = srv.trackPublisher(bannedTestID, sess, netip.Addr{})
 	defer untrack()
-	if _, ok := srv.publisherRemote(bannedTestID); ok {
+	if _, ok := srv.PublisherRemote(bannedTestID); ok {
 		t.Error("an invalid remote was reported as usable")
 	}
 }
@@ -361,12 +361,12 @@ func TestPublisherRemoteIPRecordedEndToEnd(t *testing.T) {
 
 	_, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
 	waitFor(t, 5*time.Second, func() bool {
-		_, ok := srv.publisherRemote(id)
+		_, ok := srv.PublisherRemote(id)
 		return ok
 	}, "publisher remote address recorded")
 
-	got, _ := srv.publisherRemote(id)
+	got, _ := srv.PublisherRemote(id)
 	if !got.IsLoopback() {
-		t.Fatalf("publisherRemote(%s) = %v, want the loopback address the test dialed from", id, got)
+		t.Fatalf("PublisherRemote(%s) = %v, want the loopback address the test dialed from", id, got)
 	}
 }

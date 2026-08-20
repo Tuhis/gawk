@@ -74,6 +74,23 @@ type Options struct {
 	// Log is required.
 	Log *slog.Logger
 
+	// OnBanAdded is the actuation trigger (R39 AP3, docs/42 §4.3): called
+	// once per record whenever a source applies one — an informer add/update,
+	// AND every record of a file reload or an informer resync. It fires for
+	// records that were already in force, so the handler must be idempotent;
+	// that is deliberate, because "already applied" and "newly applied" are
+	// not distinguishable from a resync and the safe direction is to re-kill
+	// a broadcast that is already gone (a no-op) rather than to miss one.
+	//
+	// Never called for a REMOVED ban: lifting a ban does not resurrect
+	// anything, so there is nothing to actuate.
+	//
+	// Called from the source's own goroutine, so a slow handler delays that
+	// source's next event — kills are synchronous by design (a ban that
+	// returns before the broadcast is dead is a ban an operator cannot
+	// trust), and terminate's work is bounded.
+	OnBanAdded func(moderation.Record)
+
 	// Namespace overrides POD_NAMESPACE for the k8s source (tests).
 	Namespace string
 	// PollInterval overrides the file source's mtime poll cadence (tests).

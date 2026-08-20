@@ -182,7 +182,7 @@ func TestInformerAddUpdateDeleteDrivesSet(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go RunInformer(ctx, lw, set, discardLog, time.Second, time.Hour)
+	go RunInformer(ctx, lw, Sink{Set: set}, discardLog, time.Second, time.Hour)
 
 	// A break-glass ban applied by hand: no labels whatsoever.
 	unlabelled := banObject(t, "ban-id-abc23z",
@@ -241,7 +241,7 @@ func TestInformerEnforcesTheInitialList(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go RunInformer(ctx, lw, set, discardLog, time.Second, time.Hour)
+	go RunInformer(ctx, lw, Sink{Set: set}, discardLog, time.Second, time.Hour)
 
 	waitSet(t, "the listed ban to enforce", func() bool {
 		_, ok := set.BannedID("ABC23Z", time.Now())
@@ -259,7 +259,7 @@ func TestInformerSkipsUnparseableBans(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go RunInformer(ctx, lw, set, discardLog, time.Second, time.Hour)
+	go RunInformer(ctx, lw, Sink{Set: set}, discardLog, time.Second, time.Hour)
 
 	fw.Add(banObject(t, "ban-bogus",
 		moderation.Target{Type: "publisher", Value: "whatever"}, "bad type", nil))
@@ -282,7 +282,7 @@ func TestInformerSkipsUnparseableBans(t *testing.T) {
 // still land.
 func TestBanEventHandlerHandlesTombstones(t *testing.T) {
 	set := moderation.NewSet()
-	h := BanEventHandler(set, discardLog)
+	h := BanEventHandler(Sink{Set: set}, discardLog)
 	obj := banObject(t, "ban-id-abc23z",
 		moderation.Target{Type: moderation.TargetBroadcastID, Value: "ABC23Z"}, "x", nil)
 
@@ -315,7 +315,7 @@ func TestInformerWarnsWhenItCannotSync(t *testing.T) {
 	// server: the reflector's LIST simply never completes.
 	lw := &stallingListerWatcher{done: ctx.Done()}
 	set := moderation.NewSet()
-	go RunInformer(ctx, lw, set, log, 50*time.Millisecond, time.Hour)
+	go RunInformer(ctx, lw, Sink{Set: set}, log, 50*time.Millisecond, time.Hour)
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(buf.String(), "EMPTY ban set") {

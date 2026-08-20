@@ -125,6 +125,10 @@ func run() error {
 		Source: cfg.ModerationSource,
 		Set:    bans,
 		Log:    log,
+		// R39 AP3 (docs/42 §4.3): the actuation half. Wired for EVERY source
+		// and independently of -cluster-mode — a single-pod relay kills just
+		// as well as a fleet, and each pod acts on its own event.
+		OnBanAdded: srv.HandleBanAdded,
 	}); err != nil {
 		return err
 	}
@@ -144,9 +148,34 @@ func run() error {
 	// tests drive PumpViewerCounts ticks directly.
 	go r.RunViewerCountPump(runCtx)
 
+	// R39 AP3 (docs/42 §4.5): the credential-gated admin API on the ops
+	// listener. NewAdminAuth never blocks and never fails on an unreachable
+	// IdP — discovery is retried in the background — so the relay starts
+	// whether or not the identity provider is up. With neither credential
+	// configured, Handler registers no admin route at all (404).
+	adminAuth := ops.NewAdminAuth(runCtx, ops.AdminAuthOptions{
+		Token:      cfg.AdminAPIToken,
+		Issuer:     cfg.AdminOIDCIssuer,
+		Audience:   cfg.AdminOIDCAudience,
+		RolesClaim: cfg.AdminOIDCRolesClaim,
+		Role:       cfg.AdminOIDCRole,
+		Log:        log,
+	})
+	adminOpts := &ops.AdminOptions{
+		Registry:        r,
+		Config:          cfg,
+		Pod:             os.Getenv("POD_NAME"),
+		Version:         version,
+		PublisherRemote: srv.PublisherRemote,
+		Auth:            adminAuth,
+		Log:             log,
+	}
+
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(runCtx) }()
-	go func() { errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, promReg, log, srv.Ready), log) }()
+	go func() {
+		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, promReg, log, srv.Ready, adminOpts), log)
+	}()
 
 	var firstErr error
 	for range 2 {
@@ -203,8 +232,16 @@ func logStartup(log *slog.Logger, cfg config.Config, version string) {
 		"server_name", cfg.ServerName,
 		"cluster_mode", cfg.ClusterMode,
 		// R39 (docs/42 §4.3): the operator's confirmation surface for which
-		// ban source this pod is actually enforcing from.
+		// ban source this pod is actually enforcing from, and which
+		// credentials open the admin API. The token itself is never logged —
+		// only whether one is set, which is what decides 404 vs. 401.
 		"moderation_source", cfg.ModerationSource,
+		"admin_api_token_set", cfg.AdminAPIToken != "",
+		"admin_oidc_issuer", cfg.AdminOIDCIssuer,
+		"admin_oidc_audience", cfg.AdminOIDCAudience,
+		"admin_oidc_roles_claim", cfg.AdminOIDCRolesClaim,
+		"admin_oidc_role", cfg.AdminOIDCRole,
+		"admin_api_enabled", cfg.AdminAPIToken != "" || cfg.AdminOIDCIssuer != "",
 	)
 }
 
@@ -280,21 +317,13 @@ func buildCoordinator(cfg config.Config, onLeaseDeleted func(string), onLeaseLos
 
 // resumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
 // logged so a fleet misconfiguration (per-process keys on multiple pods,
-// which silently breaks cross-pod resume) is visible at startup. Order
-// mirrors newResumeTokens: the explicit key wins over the publish-secret
-// derivation (PR #47 security review — a secret-derived key is computable
-// by every broadcaster holding the secret; "explicit-key" is the mode that
-// actually closes the graced-ID hijack between broadcasters).
-func resumeTokenKeyMode(cfg config.Config) string {
-	switch {
-	case len(cfg.ResumeTokenKey) > 0:
-		return "explicit-key"
-	case cfg.PublishSecret != "":
-		return "derived-from-publish-secret"
-	default:
-		return "per-process-random"
-	}
-}
+// which silently breaks cross-pod resume) is visible at startup.
+//
+// One definition, in config, since R39: GET /internal/admin/config reports
+// the same mode (docs/42 §4.5 — "the resume key also says which mode,
+// echoing the startup log"), and two copies of a three-way switch is exactly
+// the drift CODE-REVIEW.md's shared-constants rule exists to stop.
+func resumeTokenKeyMode(cfg config.Config) string { return cfg.ResumeTokenKeyMode() }
 
 // certSource returns the per-handshake certificate callback: an ephemeral
 // in-memory dev cert (hashes logged for the browser side), a *persisted* dev

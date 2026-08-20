@@ -1476,11 +1476,16 @@ func TestObfuscatedStatsKeysArePerRegistry(t *testing.T) {
 	r1 := NewRegistry(discardLog, Options{})
 	r2 := NewRegistry(discardLog, Options{})
 	const id = "ABCDEF"
-	if r1.ObfuscateID(id) == r2.ObfuscateID(id) {
-		t.Errorf("ObfuscateID(%q) identical across registries (%q): keying is offline-computable", id, r1.ObfuscateID(id))
+	key1, key2 := r1.ObfuscateID(id), r2.ObfuscateID(id)
+	if key1 == key2 {
+		t.Errorf("ObfuscateID(%q) identical across registries (%q): keying is offline-computable", id, key1)
 	}
-	if r1.ObfuscateID(id) != r1.ObfuscateID(id) {
-		t.Error("ObfuscateID not stable within a registry")
+	// Stability within one registry. Compared through a VARIABLE, not two
+	// inline calls: `f(x) != f(x)` is an assertion staticcheck reads as
+	// vacuous (SA4000), and a reader has to squint to tell whether it ever
+	// checks anything.
+	if again := r1.ObfuscateID(id); again != key1 {
+		t.Errorf("ObfuscateID not stable within a registry: %q then %q", key1, again)
 	}
 
 	mintedID, p, err := r1.StartPublish("")

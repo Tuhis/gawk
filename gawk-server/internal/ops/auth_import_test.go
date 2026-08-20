@@ -1,0 +1,87 @@
+package ops
+
+// The dependency-containment rule for R39's OIDC library (docs/42 §5, and the
+// AP3 brief): go-oidc and go-jose exist in this module for ONE reason — the
+// ops listener's admin-API auth — and must not spread. The relay's data plane
+// (transport, hub, wire, the moderation contract package) is a security
+// surface whose dependency set is a property worth asserting, not a habit.
+//
+// A source walk rather than `go list -deps`: it needs no toolchain subprocess,
+// it names the offending FILE when it fails, and it catches the import the
+// moment it is written rather than once it links.
+
+import (
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestOnlyTheOpsAuthPathImportsAnOIDCLibrary(t *testing.T) {
+	// Relative to this package's directory, which `go test` makes the cwd.
+	const moduleRoot = "../.."
+	forbidden := []string{
+		"github.com/coreos/go-oidc",
+		"github.com/go-jose/go-jose",
+	}
+	// The only files allowed to import them, module-root-relative.
+	allowed := map[string]bool{
+		"internal/ops/auth.go":       true,
+		"internal/ops/admin_test.go": true, // the fake issuer harness
+	}
+
+	fset := token.NewFileSet()
+	scanned := 0
+	err := filepath.WalkDir(moduleRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Skip vendor and dot-directories — but never the walk root
+			// itself, whose Name() is ".." and would abort the whole walk.
+			name := d.Name()
+			if path != moduleRoot && (name == "vendor" || strings.HasPrefix(name, ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		scanned++
+		rel, relErr := filepath.Rel(moduleRoot, path)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+		f, parseErr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			for _, bad := range forbidden {
+				if strings.HasPrefix(p, bad) && !allowed[rel] {
+					t.Errorf(`%s imports %s.
+
+Only the ops listener's admin-API auth path may reach an OIDC library
+(docs/42 §5): the relay's data plane keeps its dependency set, and a token
+verified anywhere but there is a second, drifting answer to "is this
+credential good?". If this import is genuinely intended, extend `+"`allowed`"+`
+above and say why in the review.`, rel, p)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the module: %v", err)
+	}
+	// A walk that silently found nothing would pass forever. The module has
+	// well over a hundred Go files; anything near zero means the walk broke.
+	if scanned < 50 {
+		t.Fatalf("scanned only %d Go files — the walk is not reaching the module tree", scanned)
+	}
+}

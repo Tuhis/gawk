@@ -37,7 +37,8 @@ func startK8s(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	go RunInformer(ctx, BanListerWatcher(client, namespace), opts.Set, opts.Log, opts.SyncTimeout, opts.ResyncInterval)
+	sink := Sink{Set: opts.Set, OnAdded: opts.OnBanAdded}
+	go RunInformer(ctx, BanListerWatcher(client, namespace), sink, opts.Log, opts.SyncTimeout, opts.ResyncInterval)
 	opts.Log.Info("moderation k8s source started", "namespace", namespace,
 		"resource", moderation.GroupVersionResource.String())
 	return nil
@@ -64,9 +65,46 @@ func BanListerWatcher(client dynamic.Interface, namespace string) cache.ListerWa
 	}
 }
 
+// Sink is where a source delivers ban records: the Set the publish path
+// evaluates from, plus the optional AP3 actuation callback (docs/42 §4.3).
+// Bundled rather than passed as two more parameters because every source
+// needs both and neither is useful without the other.
+type Sink struct {
+	// Set is required.
+	Set *moderation.Set
+	// OnAdded fires once per applied record; nil actuates nothing, which is
+	// what a relay wired for enforcement-on-reconnect only would do.
+	OnAdded func(moderation.Record)
+}
+
+// apply upserts a record and fires the actuation callback. The Set is updated
+// FIRST, always: the gate must already be closed when the kill lands, or a
+// broadcaster whose session we just terminated could win the race to reclaim
+// its own ID before the ban is evaluable (docs/42 §4.1 step 4).
+func (s Sink) apply(rec moderation.Record) error {
+	if err := s.Set.Upsert(rec); err != nil {
+		return err
+	}
+	if s.OnAdded != nil {
+		s.OnAdded(rec)
+	}
+	return nil
+}
+
+// replace swaps the whole list in and then actuates each record.
+func (s Sink) replace(recs []moderation.Record) {
+	s.Set.Replace(recs)
+	if s.OnAdded == nil {
+		return
+	}
+	for _, rec := range recs {
+		s.OnAdded(rec)
+	}
+}
+
 // RunInformer drives a moderation.Set from a Ban ListerWatcher, blocking
 // until ctx is cancelled. Exported for the same reason BanListerWatcher is.
-func RunInformer(ctx context.Context, lw cache.ListerWatcher, set *moderation.Set, log *slog.Logger, syncTimeout, resync time.Duration) {
+func RunInformer(ctx context.Context, lw cache.ListerWatcher, sink Sink, log *slog.Logger, syncTimeout, resync time.Duration) {
 	if syncTimeout <= 0 {
 		syncTimeout = defaultSyncTimeout
 	}
@@ -74,7 +112,7 @@ func RunInformer(ctx context.Context, lw cache.ListerWatcher, set *moderation.Se
 		resync = defaultResync
 	}
 	informer := cache.NewSharedIndexInformer(lw, &unstructured.Unstructured{}, 0, cache.Indexers{})
-	_, _ = informer.AddEventHandler(BanEventHandler(set, log))
+	_, _ = informer.AddEventHandler(BanEventHandler(sink, log))
 
 	go func() {
 		// The docs/42 §6 residual risk, made loud: a relay that cold-starts
@@ -88,7 +126,7 @@ func RunInformer(ctx context.Context, lw cache.ListerWatcher, set *moderation.Se
 			return
 		}
 		log.Info("moderation ban informer synced", "bans", len(informer.GetStore().List()))
-		replaceFromStore(informer, set, log)
+		replaceFromStore(informer, sink, log)
 
 		// Periodic reconcile of the Set against the informer's store. The
 		// Add/Update/Delete stream above is complete on its own (a watch
@@ -104,7 +142,7 @@ func RunInformer(ctx context.Context, lw cache.ListerWatcher, set *moderation.Se
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				replaceFromStore(informer, set, log)
+				replaceFromStore(informer, sink, log)
 			}
 		}
 	}()
@@ -114,10 +152,10 @@ func RunInformer(ctx context.Context, lw cache.ListerWatcher, set *moderation.Se
 
 // BanEventHandler maps informer events onto Set mutations. Exported so unit
 // tests can drive add/update/delete without an API server.
-func BanEventHandler(set *moderation.Set, log *slog.Logger) cache.ResourceEventHandler {
+func BanEventHandler(sink Sink, log *slog.Logger) cache.ResourceEventHandler {
 	return cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { upsert(set, log, obj, "add") },
-		UpdateFunc: func(_, obj any) { upsert(set, log, obj, "update") },
+		AddFunc:    func(obj any) { upsert(sink, log, obj, "add") },
+		UpdateFunc: func(_, obj any) { upsert(sink, log, obj, "update") },
 		DeleteFunc: func(obj any) {
 			// A watch gap can deliver the last-known state in a tombstone
 			// rather than the object itself.
@@ -129,7 +167,7 @@ func BanEventHandler(set *moderation.Set, log *slog.Logger) cache.ResourceEventH
 				log.Warn("moderation ban CR delete ignored", "err", err)
 				return
 			}
-			if err := set.Remove(ban.Spec.Target); err != nil {
+			if err := sink.Set.Remove(ban.Spec.Target); err != nil {
 				log.Warn("moderation ban CR delete ignored", "name", ban.Name, "err", err)
 				return
 			}
@@ -139,7 +177,7 @@ func BanEventHandler(set *moderation.Set, log *slog.Logger) cache.ResourceEventH
 	}
 }
 
-func upsert(set *moderation.Set, log *slog.Logger, obj any, why string) {
+func upsert(sink Sink, log *slog.Logger, obj any, why string) {
 	ban, err := banFrom(obj)
 	if err != nil {
 		log.Warn("moderation ban CR ignored", "reason", why, "err", err)
@@ -152,7 +190,7 @@ func upsert(set *moderation.Set, log *slog.Logger, obj any, why string) {
 		log.Warn("moderation ban CR ignored", "name", ban.Name, "reason", why, "err", err)
 		return
 	}
-	if err := set.Upsert(rec); err != nil {
+	if err := sink.apply(rec); err != nil {
 		log.Warn("moderation ban CR ignored", "name", ban.Name, "reason", why, "err", err)
 		return
 	}
@@ -189,7 +227,7 @@ func banFrom(obj any) (*moderation.Ban, error) {
 	}
 }
 
-func replaceFromStore(informer cache.SharedIndexInformer, set *moderation.Set, log *slog.Logger) {
+func replaceFromStore(informer cache.SharedIndexInformer, sink Sink, log *slog.Logger) {
 	objs := informer.GetStore().List()
 	records := make([]moderation.Record, 0, len(objs))
 	for _, obj := range objs {
@@ -205,5 +243,5 @@ func replaceFromStore(informer cache.SharedIndexInformer, set *moderation.Set, l
 		}
 		records = append(records, rec)
 	}
-	set.Replace(records)
+	sink.replace(records)
 }

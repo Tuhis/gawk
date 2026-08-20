@@ -474,9 +474,12 @@ func (s *Server) trackPublisher(id string, sess drainSession, remote netip.Addr)
 	}
 }
 
-// publisherRemote returns the recorded source address of the live publisher
-// for a broadcast. The seam AP3's IP-ban kill walks (docs/42 §4.3).
-func (s *Server) publisherRemote(id string) (netip.Addr, bool) {
+// PublisherRemote returns the recorded source address of the live publisher
+// for a broadcast: the seam the R39 IP-ban kill walks, and the source of
+// publisherRemoteIp on GET /internal/admin/broadcasts (docs/42 §4.3, §4.5).
+// Exported because the ops listener is a different package and must not
+// re-derive session bookkeeping the transport already owns.
+func (s *Server) PublisherRemote(id string) (netip.Addr, bool) {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
 	entry, ok := s.publishers[id]

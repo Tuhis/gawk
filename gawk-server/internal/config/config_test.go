@@ -52,6 +52,12 @@ func TestDefaults(t *testing.T) {
 		// source, so a relay predating R39 and a relay with the flag unset
 		// behave identically.
 		ModerationSource: "off",
+		// R39 AP3 (docs/42 §4.5): the admin API's AUTHORIZATION policy has
+		// defaults; its CREDENTIALS do not. With no token and no issuer the
+		// routes are never registered, so these two carry a usable role
+		// policy that only matters once an operator supplies a credential.
+		AdminOIDCRolesClaim: DefaultAdminOIDCRolesClaim,
+		AdminOIDCRole:       DefaultAdminOIDCRole,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -504,6 +510,82 @@ func TestModerationSource(t *testing.T) {
 	for _, v := range invalid {
 		if _, err := ParseFlags([]string{"-moderation-source", v}, noEnv); err == nil {
 			t.Errorf("ParseFlags(-moderation-source %q) succeeded, want an error", v)
+		}
+	}
+}
+
+// R39 AP3 (docs/42 §4.3 table, §9): the admin-API knobs parse from flag and
+// env with flag-over-env precedence, carry working defaults for the
+// authorization policy, and reject the two shapes that fail SILENTLY.
+func TestAdminAPIKnobs(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"-admin-api-token", "tok",
+		"-admin-oidc-issuer", "https://idp.example/realms/gawk",
+		"-admin-oidc-audience", "gawk-admin",
+		"-admin-oidc-roles-claim", "realm_access.roles",
+		"-admin-oidc-role", "moderator",
+	}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.AdminAPIToken != "tok" || cfg.AdminOIDCIssuer != "https://idp.example/realms/gawk" ||
+		cfg.AdminOIDCAudience != "gawk-admin" || cfg.AdminOIDCRolesClaim != "realm_access.roles" ||
+		cfg.AdminOIDCRole != "moderator" {
+		t.Errorf("flags not carried through: %+v", cfg)
+	}
+
+	// Env fallback for every one of them.
+	cfg, err = ParseFlags(nil, envMap(map[string]string{
+		"GAWK_ADMIN_API_TOKEN":        "env-tok",
+		"GAWK_ADMIN_OIDC_ISSUER":      "https://idp.example/env",
+		"GAWK_ADMIN_OIDC_AUDIENCE":    "env-aud",
+		"GAWK_ADMIN_OIDC_ROLES_CLAIM": "groups",
+		"GAWK_ADMIN_OIDC_ROLE":        "env-role",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags(env): %v", err)
+	}
+	if cfg.AdminAPIToken != "env-tok" || cfg.AdminOIDCIssuer != "https://idp.example/env" ||
+		cfg.AdminOIDCAudience != "env-aud" || cfg.AdminOIDCRolesClaim != "groups" ||
+		cfg.AdminOIDCRole != "env-role" {
+		t.Errorf("env fallback not honoured: %+v", cfg)
+	}
+
+	// Flag wins over env.
+	cfg, err = ParseFlags([]string{"-admin-api-token", "flag-tok"},
+		envMap(map[string]string{"GAWK_ADMIN_API_TOKEN": "env-tok"}))
+	if err != nil {
+		t.Fatalf("ParseFlags(flag over env): %v", err)
+	}
+	if cfg.AdminAPIToken != "flag-tok" {
+		t.Errorf("AdminAPIToken = %q, want the flag to win", cfg.AdminAPIToken)
+	}
+
+	// A token alone needs no OIDC configuration at all — that is the machine
+	// path gawk-admin uses.
+	if _, err := ParseFlags([]string{"-admin-api-token", "tok"}, noEnv); err != nil {
+		t.Errorf("a token-only admin API was rejected: %v", err)
+	}
+
+	// The two silent failures. A half-configured pair would either accept
+	// tokens minted for ANY client of the IdP (issuer without audience) or do
+	// nothing at all (audience without issuer); a blanked role policy would
+	// leave authentication on and AUTHORIZATION off.
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"issuer without audience", []string{"-admin-oidc-issuer", "https://idp.example"}},
+		{"audience without issuer", []string{"-admin-oidc-audience", "gawk-admin"}},
+		{"blanked roles claim", []string{
+			"-admin-oidc-issuer", "https://idp.example", "-admin-oidc-audience", "a",
+			"-admin-oidc-roles-claim", "  "}},
+		{"blanked role", []string{
+			"-admin-oidc-issuer", "https://idp.example", "-admin-oidc-audience", "a",
+			"-admin-oidc-role", ""}},
+	} {
+		if _, err := ParseFlags(tc.args, noEnv); err == nil {
+			t.Errorf("ParseFlags accepted %s", tc.name)
 		}
 	}
 }

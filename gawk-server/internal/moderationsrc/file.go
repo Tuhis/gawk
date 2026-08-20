@@ -25,7 +25,7 @@ import (
 // is the instant path when a second of latency is a second too many.
 type fileSource struct {
 	path string
-	set  *moderation.Set
+	sink Sink
 	log  *slog.Logger
 
 	lastMod  time.Time
@@ -40,7 +40,7 @@ func startFile(ctx context.Context, path string, opts Options) error {
 	if poll <= 0 {
 		poll = defaultPoll
 	}
-	f := &fileSource{path: path, set: opts.Set, log: opts.Log}
+	f := &fileSource{path: path, sink: Sink{Set: opts.Set, OnAdded: opts.OnBanAdded}, log: opts.Log}
 
 	// Load once synchronously so a relay is enforcing before it accepts its
 	// first publish. A missing file is not fatal — it is simply "no bans yet"
@@ -96,7 +96,7 @@ func (f *fileSource) reload(why string) {
 			f.log.Warn("moderation ban file unreadable: enforcing an empty ban set",
 				"path", f.path, "reason", why, "err", err)
 		}
-		f.set.Replace(nil)
+		f.sink.Set.Replace(nil)
 		f.missing = true
 		f.lastMod, f.lastSize = time.Time{}, -1
 		return
@@ -122,7 +122,7 @@ func (f *fileSource) reload(why string) {
 		}
 		valid = append(valid, norm)
 	}
-	f.set.Replace(valid)
+	f.sink.replace(valid)
 	f.markLoaded()
 	f.log.Info("moderation ban file loaded",
 		"path", f.path, "reason", why, "records", len(valid), "skipped", len(records)-len(valid))
