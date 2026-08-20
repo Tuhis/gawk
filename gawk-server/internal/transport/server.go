@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
+	"github.com/Tuhis/gawk/gawk-server/moderation"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -106,13 +108,21 @@ type Server struct {
 	// methods are nil-receiver no-ops) so tests can run the server unwired.
 	metrics *metrics.ServerMetrics
 
+	// bans is the R39 moderation ban set (docs/42 §4.3), fed by
+	// internal/moderationsrc. Nil — and a nil *moderation.Set — is the
+	// -moderation-source=off shape: every check is a cheap miss.
+	bans *moderation.Set
+	// now is the clock ban expiry is evaluated against; injectable so tests
+	// can step past an expiry without sleeping.
+	now func() time.Time
+
 	// Open-session tracking for the SIGTERM drain (R17 W1): every upgraded
 	// session registers here and unregisters when its handler returns.
 	sessMu   sync.Mutex
 	sessions map[drainSession]struct{}
 	// Live publisher sessions by broadcast ID (R17 W5): the demote path
 	// closes the stale one when the broadcast's Lease is force-taken.
-	publishers map[string]drainSession
+	publishers map[string]*publisherSession
 	draining   atomic.Bool
 	// onDrain runs after the 4002s have been sent, before Run returns — the
 	// seam where W3 releases this pod's broadcast Leases. Nil-safe.
@@ -183,6 +193,62 @@ func (s *Server) rateLimited(r *http.Request) bool {
 	return true
 }
 
+// SetModeration installs the R39 ban set (docs/42 §4.3). Called once at
+// startup from main, before Run; a Server without one enforces nothing,
+// which is exactly -moderation-source=off.
+func (s *Server) SetModeration(bans *moderation.Set) { s.bans = bans }
+
+// remoteIP extracts the peer address from an http.Request's RemoteAddr,
+// canonicalized (zone stripped, v4-mapped-v6 collapsed) so a ban written as
+// 203.0.113.7/32 catches a peer the stack reports as ::ffff:203.0.113.7.
+// Returns an invalid Addr when RemoteAddr is not an address, which every
+// caller must treat as "no IP to match" rather than "matches nothing".
+func remoteIP(remoteAddr string) netip.Addr {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return moderation.CanonicalAddr(addr)
+}
+
+// rejectBanned answers a banned publish attempt with HTTP 451 pre-upgrade
+// (docs/42 D15: 403 stays "resume token / secret rejected", so the native
+// broadcasters can say "banned" instead of "auth failed"; a browser sees a
+// generic dial failure, accepted and documented).
+//
+// The ban REASON never appears at Warn — reasons carry operator-private
+// context (docs/42 §4.3). Warn gets the remote and the target type; the
+// reason, the target value and the actor go to Debug.
+func (s *Server) rejectBanned(w http.ResponseWriter, r *http.Request, rec moderation.Record, broadcastID string) {
+	s.metrics.Connection("publish", metrics.OutcomeBanned)
+	attrs := []any{
+		"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"),
+		"target_type", string(rec.Target.Type),
+	}
+	if broadcastID != "" {
+		// Only the claim path has one; the mint path is rejected before an ID
+		// exists at all.
+		attrs = append(attrs, "id", broadcastID)
+	}
+	s.log.Warn("publish rejected: banned", attrs...)
+	s.log.Debug("publish ban detail",
+		"remote", r.RemoteAddr, "target_type", string(rec.Target.Type),
+		"target", rec.Target.Value, "ban_reason", rec.Reason, "created_by", rec.CreatedBy)
+	w.WriteHeader(http.StatusUnavailableForLegalReasons)
+}
+
+// clock returns the time ban expiry is evaluated against.
+func (s *Server) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
 // New builds the server. getCert supplies the TLS certificate per handshake
 // (a tlsutil.Reloader in production, a fixed dev cert locally). m carries the
 // connection-outcome counters and may be nil (tests).
@@ -199,7 +265,7 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		metrics:    m,
 		resume:     newResumeTokens(cfg),
 		sessions:   make(map[drainSession]struct{}),
-		publishers: make(map[string]drainSession),
+		publishers: make(map[string]*publisherSession),
 		drainSleep: time.Sleep,
 	}
 
@@ -381,19 +447,43 @@ func (s *Server) trackSession(sess drainSession) func() {
 	}
 }
 
+// publisherSession is what the pod remembers about a live publisher.
+type publisherSession struct {
+	sess drainSession
+	// remote is the publisher's source address as the relay saw it (R39 AP2,
+	// docs/42 §4.3). Recorded at track time because an IP ban has to find
+	// live sessions to kill (AP3) long after the CONNECT request that
+	// carried r.RemoteAddr is gone. Invalid when the address was unparseable.
+	remote netip.Addr
+}
+
 // trackPublisher additionally indexes a publisher session by broadcast ID
-// so the W5 demote path can close the stale one on lease loss.
-func (s *Server) trackPublisher(id string, sess drainSession) func() {
+// so the W5 demote path can close the stale one on lease loss, and so an
+// R39 IP ban can find it (AP3).
+func (s *Server) trackPublisher(id string, sess drainSession, remote netip.Addr) func() {
+	entry := &publisherSession{sess: sess, remote: remote}
 	s.sessMu.Lock()
-	s.publishers[id] = sess
+	s.publishers[id] = entry
 	s.sessMu.Unlock()
 	return func() {
 		s.sessMu.Lock()
-		if s.publishers[id] == sess {
+		if s.publishers[id] == entry {
 			delete(s.publishers, id)
 		}
 		s.sessMu.Unlock()
 	}
+}
+
+// publisherRemote returns the recorded source address of the live publisher
+// for a broadcast. The seam AP3's IP-ban kill walks (docs/42 §4.3).
+func (s *Server) publisherRemote(id string) (netip.Addr, bool) {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
+	entry, ok := s.publishers[id]
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return entry.remote, entry.remote.IsValid()
 }
 
 // HandleLeaseLost is the demote path (R17 W5, docs/22 Decision 11): this
@@ -412,7 +502,7 @@ func (s *Server) HandleLeaseLost(broadcastID string, _ cluster.Origin) {
 	s.sessMu.Unlock()
 	if stale != nil {
 		s.log.Info("origin lease lost: closing stale publisher session", "broadcast_id", broadcastID)
-		_ = stale.CloseWithError(0, "origin moved")
+		_ = stale.sess.CloseWithError(0, "origin moved")
 	}
 
 	s.registry.CloseInternalSubscribers(broadcastID, uint32(wire.CloseCodeOriginMoved), "origin moved")
@@ -519,6 +609,17 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R39 (docs/42 §4.3): the IP ban gates BOTH the mint and the claim path —
+	// an IP is the only handle that spans a re-mint loop (D4), so checking it
+	// only on reclaim would let a banned broadcaster simply mint a fresh ID.
+	// Pre-upgrade, immediately after the secret gate and before any hub state
+	// is touched.
+	peer := remoteIP(r.RemoteAddr)
+	if rec, banned := s.bans.BannedIP(peer, s.clock()); banned {
+		s.rejectBanned(w, r, rec, "")
+		return
+	}
+
 	id := r.PathValue("id")
 	var pub *hub.Publisher
 	var err error
@@ -536,6 +637,16 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("publish claim rejected: invalid broadcast ID",
 				"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// R39 (docs/42 §4.3): the ID ban check sits BEFORE resume.verify, and
+		// that order is the whole point — the resume token is
+		// HMAC(key, broadcastID), so a killed broadcaster still holds a
+		// perfectly valid one. Checking after verification would let a valid
+		// token resurrect a banned broadcast on any pod, including pods that
+		// never had the hub (docs/42 §4.1 step 4).
+		if rec, banned := s.bans.BannedID(normID, s.clock()); banned {
+			s.rejectBanned(w, r, rec, normID)
 			return
 		}
 		if !s.resume.verify(normID, r.URL.Query().Get("resume")) {
@@ -687,7 +798,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	defer pub.Close()
 	defer s.trackSession(sess)()
-	defer s.trackPublisher(id, sess)()
+	defer s.trackPublisher(id, sess, peer)()
 
 	// Bind the session so a later token-bearing claim can depose this
 	// publisher. A false return means a takeover already won while this

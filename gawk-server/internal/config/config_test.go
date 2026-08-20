@@ -48,6 +48,10 @@ func TestDefaults(t *testing.T) {
 		// R28: telemetry is off by default (no key), but the cadence it would
 		// ask for still has a default so enabling it is one value, not two.
 		TelemetryReportInterval: 2 * time.Second,
+		// R39 (docs/42 §4.3): moderation is off unless an operator names a
+		// source, so a relay predating R39 and a relay with the flag unset
+		// behave identically.
+		ModerationSource: "off",
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -448,6 +452,58 @@ func TestTelemetryReportInterval(t *testing.T) {
 	for _, bad := range []string{"nonsense", "100ms", "5m", "0s", "-2s"} {
 		if _, err := ParseFlags([]string{"-telemetry-report-interval", bad}, noEnv); err == nil {
 			t.Errorf("ParseFlags accepted out-of-range telemetry-report-interval %q", bad)
+		}
+	}
+}
+
+// R39 AP2 (docs/42 §4.3, §9): -moderation-source parses all three forms,
+// honours the env fallback and the flag-over-env precedence, and rejects
+// anything else at startup rather than silently enforcing nothing.
+func TestModerationSource(t *testing.T) {
+	valid := []struct {
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{nil, nil, "off"},
+		{[]string{"-moderation-source", "off"}, nil, "off"},
+		{[]string{"-moderation-source", "k8s"}, nil, "k8s"},
+		{[]string{"-moderation-source", "file:/etc/gawk/bans.json"}, nil, "file:/etc/gawk/bans.json"},
+		// Env fallback.
+		{nil, map[string]string{"GAWK_MODERATION_SOURCE": "k8s"}, "k8s"},
+		{nil, map[string]string{"GAWK_MODERATION_SOURCE": "file:/tmp/bans.json"}, "file:/tmp/bans.json"},
+		// Flag wins over env.
+		{[]string{"-moderation-source", "off"}, map[string]string{"GAWK_MODERATION_SOURCE": "k8s"}, "off"},
+		// Surrounding whitespace is trimmed, not rejected.
+		{[]string{"-moderation-source", "  k8s  "}, nil, "k8s"},
+	}
+	for _, tt := range valid {
+		getenv := noEnv
+		if tt.env != nil {
+			getenv = envMap(tt.env)
+		}
+		cfg, err := ParseFlags(tt.args, getenv)
+		if err != nil {
+			t.Errorf("ParseFlags(%v, %v): %v", tt.args, tt.env, err)
+			continue
+		}
+		if cfg.ModerationSource != tt.want {
+			t.Errorf("ParseFlags(%v, %v).ModerationSource = %q, want %q",
+				tt.args, tt.env, cfg.ModerationSource, tt.want)
+		}
+	}
+
+	invalid := []string{
+		"postgres",    // not a known kind
+		"file",        // missing the colon and the path
+		"file:",       // missing the path
+		"file:   ",    // whitespace-only path
+		"k8s:default", // k8s takes no argument
+		"off:",
+	}
+	for _, v := range invalid {
+		if _, err := ParseFlags([]string{"-moderation-source", v}, noEnv); err == nil {
+			t.Errorf("ParseFlags(-moderation-source %q) succeeded, want an error", v)
 		}
 	}
 }

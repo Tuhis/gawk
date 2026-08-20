@@ -378,6 +378,12 @@ const (
 	// OutcomeDraining marks CONNECTs rejected 503 during the SIGTERM drain
 	// (R17 W1) — the pod is exiting and must not accept new sessions.
 	OutcomeDraining = "draining"
+	// OutcomeBanned marks publish attempts rejected 451 by an R39 moderation
+	// ban (docs/42 §4.3). Distinct from "unauthorized" on purpose: a banned
+	// broadcaster holds a perfectly valid secret and resume token, and
+	// conflating the two would hide an enforcement event inside the
+	// credential-failure rate every operator already watches.
+	OutcomeBanned = "banned"
 )
 
 // NewServerMetrics builds and registers the transport counters.

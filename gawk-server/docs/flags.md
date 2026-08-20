@@ -46,6 +46,7 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
 | `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |
 | `-trusted-cidrs` | `GAWK_TRUSTED_CIDRS` | (empty) |
+| `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` (`off` \| `k8s` \| `file:<path>`) |
 
 ## Notes on the non-obvious ones
 
@@ -79,6 +80,24 @@ reports to *that* deployment's collector, where its token is rejected and
 the diagnostics are lost; with it, those sessions land in yours. An invalid
 URL fails startup rather than silently advertising nothing. See
 [`docs/self-hosting.md`](../../docs/self-hosting.md) §8.
+
+**`-moderation-source`** selects where R39 bans come from
+([docs/42](../../docs/42-admin-moderation-portal.md) §4.3). `off` — the
+default — constructs nothing: the ban set stays empty, every publish-path
+check is a cheap miss, and the relay behaves exactly as it did before R39.
+`k8s` watches `Ban` custom resources in `POD_NAMESPACE` and is *independent
+of `-cluster-mode`* (enforcement is not a federation feature); it needs the
+CRD installed and read-only RBAC on `bans`. `file:<path>` reads a JSON array
+of ban records and reloads it when the file changes or the process gets
+SIGHUP — the dev/compose lane. A banned publisher is rejected with HTTP
+**451** before the WebTransport upgrade, counted as
+`gawk_connections_total{route="publish",outcome="banned"}`; ban reasons are
+logged at Debug only.
+
+> Chart plumbing (values, the CRD, RBAC, and the mounted ban file) lands with
+> R39 chunk AP8 — until then this knob is set on the binary or through
+> `GAWK_MODERATION_SOURCE` in the pod spec, which is why it is the one flag
+> in this file the chart does not yet carry.
 
 **The cluster flags** (`-cluster-mode` and the shared keys/PSK) enable the
 multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod

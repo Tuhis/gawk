@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/moderationsrc"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -198,6 +199,22 @@ type Config struct {
 	// width cap and burst target are constants, not knobs (docs/35 §11).
 	StripedDelivery bool
 
+	// ModerationSource selects the R39 ban source (docs/42 §4.3), kept
+	// verbatim so the startup log states exactly what the operator asked
+	// for. One of:
+	//
+	//	off            (default) nothing is constructed; the ban set stays
+	//	               empty and every publish-path check is a cheap miss —
+	//	               byte-identical to a relay predating R39.
+	//	k8s            informer on Ban CRs in POD_NAMESPACE. Independent of
+	//	               ClusterMode: enforcement is not a federation feature.
+	//	file:<path>    JSON array of moderation.Records, reloaded on change
+	//	               and on SIGHUP — the dev/compose lane (docs/42 §4.14).
+	//
+	// Parsed (and rejected) at startup by internal/moderationsrc.Parse, the
+	// same parser the source itself uses.
+	ModerationSource string
+
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
 	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
@@ -310,6 +327,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"absolute https URL of this fleet's telemetry ingest, advertised to clients in-band (R37 wire 0x12); empty advertises nothing")
 	serverName := fs.String("server-name", env("GAWK_SERVER_NAME", ""),
 		"operator display name advertised to server pickers over /echo (R37 wire 0x11); empty leaves the relay unnamed")
+	moderationSource := fs.String("moderation-source", env("GAWK_MODERATION_SOURCE", "off"),
+		"R39 ban source: off | k8s (Ban CRs in POD_NAMESPACE) | file:<path> (JSON array, reloaded on change and SIGHUP)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -439,6 +458,11 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid telemetry-advertise-url %q: %w", *telemetryAdvertiseURL, err)
 		}
 	}
+	// R39 (docs/42 §4.3): validated with the very parser the source uses, so
+	// a value that starts the process is a value the source can honour.
+	if _, _, err := moderationsrc.Parse(*moderationSource); err != nil {
+		return Config{}, err
+	}
 	if *serverName != "" {
 		// Same source of truth for the name limits ("x" stands in for the
 		// version, which main stamps later).
@@ -478,6 +502,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 		TelemetryAdvertiseURL: *telemetryAdvertiseURL,
 		ServerName:            *serverName,
+		ModerationSource:      strings.TrimSpace(*moderationSource),
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,
