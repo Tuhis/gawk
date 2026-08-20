@@ -1,0 +1,450 @@
+// Package api serves gawk-admin's /api/v1 (R39, docs/42 §4.7).
+//
+// **Authentication is injected, never implemented here.** Options.Authn and
+// Options.RequireRole come from internal/auth; this package only READS the
+// identity that middleware put on the request context (internal/identity).
+// The two packages do not import each other, so the authentication mechanism
+// and the routes it protects stay independently buildable and testable — and
+// swapping the mechanism later touches one package rather than every handler.
+//
+// Three rules run through every handler:
+//
+//   - **No cookies, ever** (D17). There is no session, no CSRF machinery, and
+//     a Set-Cookie on any response is a bug.
+//   - **Raw broadcast IDs and IP addresses are allowed here** — this is the
+//     OIDC-gated admin surface D8 scopes the relaxation to — but they must
+//     never reach a webhook payload. Handlers persist events; AP7's dispatcher
+//     copies only the named webhook-safe payload keys.
+//   - **Postgres is the commitment point.** A mutation that has written its
+//     `bans` row has happened; the Ban CR is a projection the reconciler heals.
+//     Handlers therefore write the row, project the CR inline, and report a
+//     projection failure honestly rather than pretending either way.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/Tuhis/gawk/gawk-admin/internal/config"
+	"github.com/Tuhis/gawk/gawk-admin/internal/identity"
+	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
+	"github.com/Tuhis/gawk/gawk-admin/internal/store"
+)
+
+// Error codes in the {"error":{"code","message"}} envelope. The SPA branches
+// on `code`, so these are contract, not log text.
+const (
+	CodeBadRequest      = "bad_request"
+	CodeNotFound        = "not_found"
+	CodeDuplicateActive = "duplicate_active"
+	CodeDuplicateName   = "duplicate_name"
+	CodeSourceImmutable = "source_immutable"
+	CodeInternal        = "internal"
+	CodeUnavailable     = "unavailable"
+	CodeProjectionFail  = "projection_failed"
+	CodeInvalidTarget   = "invalid_target"
+	CodeNotActive       = "ban_not_active"
+)
+
+// Projector writes one ban row's Ban CR. Implemented by *kube.Reconciler.
+//
+// It is called INLINE by every mutation, on whichever replica served the
+// request: CR names are deterministic, so a non-leader writing its own
+// projection is safe, and it is what makes a kill take effect in the time of
+// one API call instead of by the next 60 s sweep.
+type Projector interface {
+	Project(ctx context.Context, b store.Ban) error
+}
+
+// Kicker asks the local reconciler for an immediate sweep. Best-effort: on a
+// non-leader replica there is no loop to wake, and the leader's next sweep
+// heals anything this request could not finish.
+type Kicker interface {
+	Kick()
+}
+
+// Fleet is the relay enumeration this package reads. Implemented by
+// *relayscan.Scanner.
+type Fleet interface {
+	Snapshot(ctx context.Context) (relayscan.Snapshot, error)
+	Invalidate()
+}
+
+// Enqueuer hands a persisted event to the webhook dispatcher (AP7).
+//
+// The dispatcher — not this package — decides WHICH webhooks an event fans out
+// to and writes the delivery rows: it is the component that knows both the
+// config-sourced and UI-created sets and holds the signing secrets. Handlers
+// only guarantee that every event they persist is offered exactly once.
+type Enqueuer interface {
+	Enqueue(ctx context.Context, ev store.Event) error
+}
+
+// TestResult is the outcome of POST /webhooks/{name}/test.
+type TestResult struct {
+	OK         bool   `json:"ok"`
+	Status     int    `json:"status,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DeliveryID string `json:"deliveryId,omitempty"`
+}
+
+// Tester performs a synthetic signed delivery. Implemented by AP7's
+// dispatcher; this package never signs or sends anything itself.
+type Tester interface {
+	TestWebhook(ctx context.Context, name string) (TestResult, error)
+}
+
+// ReadyCheck is one additional readiness gate. main.go folds internal/auth's
+// Ready() in through this, so /readyz answers for the whole process while this
+// package owns only the Postgres half.
+type ReadyCheck struct {
+	Name  string
+	Check func(ctx context.Context) error
+}
+
+// Options configure an API.
+type Options struct {
+	// Store is the system of record. Required.
+	Store *store.Store
+	// Projector writes Ban CRs. Required in production; a nil Projector makes
+	// mutations record-only, which is useful in tests and useless in a cluster.
+	Projector Projector
+	// Reconciler, when set, is kicked after every mutation.
+	Reconciler Kicker
+	// Fleet enumerates relay pods. Required for /broadcasts and /relays.
+	Fleet Fleet
+	// Config carries the deep-link bases, the kill cooldown, the operator role
+	// and the chart-defined webhooks.
+	Config config.Config
+
+	// Authn wraps a handler so it runs only for a request carrying a valid
+	// token whose identity has been placed on the context. Supplied by
+	// internal/auth; api never validates a token itself.
+	Authn func(http.Handler) http.Handler
+	// RequireRole wraps a handler so it runs only when the context identity
+	// carries role. Supplied by internal/auth.
+	RequireRole func(role string) func(http.Handler) http.Handler
+
+	// Enqueuer and Tester are AP7's dispatcher. Both have safe defaults so
+	// this package is testable without internal/notify.
+	Enqueuer Enqueuer
+	Tester   Tester
+
+	// ReadyChecks run alongside the Postgres check in /readyz.
+	ReadyChecks []ReadyCheck
+
+	Log *slog.Logger
+	// Clock is the time source; nil means time.Now.
+	Clock func() time.Time
+}
+
+// API serves /api/v1 plus the two probe endpoints.
+type API struct {
+	opts Options
+	log  *slog.Logger
+
+	// readyMu guards the last readiness verdict, so the "refusing to serve"
+	// line is logged on transitions rather than once per probe — a kubelet
+	// polls /readyz every few seconds and an unbootable pod must not drown its
+	// own explanation.
+	readyMu   sync.Mutex
+	lastReady *bool
+}
+
+// New builds an API.
+func New(opts Options) (*API, error) {
+	if opts.Store == nil {
+		return nil, errors.New("api: Options.Store is required")
+	}
+	if opts.Log == nil {
+		opts.Log = slog.New(slog.DiscardHandler)
+	}
+	if opts.Clock == nil {
+		opts.Clock = time.Now
+	}
+	if opts.Enqueuer == nil {
+		opts.Enqueuer = noopEnqueuer{}
+	}
+	if opts.Tester == nil {
+		opts.Tester = unavailableTester{}
+	}
+	return &API{opts: opts, log: opts.Log}, nil
+}
+
+// Routes returns the /api/v1 subtree with absolute patterns, so main.go can
+// mount it on the root mux alongside the portal SPA:
+//
+//	root.Handle("/api/v1/", api.Routes())
+//	root.HandleFunc("/healthz", api.Healthz)
+//	root.HandleFunc("/readyz", api.Readyz)
+//	root.Handle("/", portal)
+func (a *API) Routes() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.Handle("GET /api/v1/me", a.protect(a.handleMe))
+
+	mux.Handle("GET /api/v1/broadcasts", a.protect(a.handleListBroadcasts))
+	mux.Handle("POST /api/v1/broadcasts/{id}/kill", a.protect(a.handleKill))
+
+	mux.Handle("GET /api/v1/bans", a.protect(a.handleListBans))
+	mux.Handle("POST /api/v1/bans", a.protect(a.handleCreateBan))
+	mux.Handle("DELETE /api/v1/bans/{id}", a.protect(a.handleDeleteBan))
+
+	mux.Handle("GET /api/v1/events", a.protect(a.handleListEvents))
+	mux.Handle("GET /api/v1/relays", a.protect(a.handleListRelays))
+
+	mux.Handle("GET /api/v1/webhooks", a.protect(a.handleListWebhooks))
+	mux.Handle("POST /api/v1/webhooks", a.protect(a.handleCreateWebhook))
+	mux.Handle("PUT /api/v1/webhooks/{id}", a.protect(a.handleUpdateWebhook))
+	mux.Handle("DELETE /api/v1/webhooks/{id}", a.protect(a.handleDeleteWebhook))
+	mux.Handle("POST /api/v1/webhooks/{name}/test", a.protect(a.handleTestWebhook))
+
+	// The catch-all keeps unknown /api/v1 paths answering the documented error
+	// envelope instead of net/http's plain text — and it is how
+	// POST /api/v1/content-flags returns 404 in R39. That route is R40's
+	// (docs/42 §4.11, D11): the path is frozen and deliberately NOT registered
+	// here, so nothing can squat it in the meantime.
+	//
+	// It is unauthenticated on purpose: "this path does not exist" is not a
+	// secret, and requiring a token to learn it would only make the reserved
+	// route harder to verify.
+	mux.Handle("/api/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, CodeNotFound, "no such endpoint")
+	}))
+	return mux
+}
+
+// protect wraps a handler in the injected authentication and role check. Both
+// are optional so the package is testable standalone; in production main.go
+// supplies them and every route below is behind a valid token carrying the
+// operator role (D17).
+func (a *API) protect(h http.HandlerFunc) http.Handler {
+	var handler http.Handler = h
+	if a.opts.RequireRole != nil {
+		handler = a.opts.RequireRole(a.opts.Config.OperatorRole)(handler)
+	}
+	if a.opts.Authn != nil {
+		handler = a.opts.Authn(handler)
+	}
+	return handler
+}
+
+// Healthz is liveness: the process is running. It deliberately does NOT touch
+// Postgres — a database outage must not get every replica restarted.
+func (a *API) Healthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+// Readyz is readiness: Postgres reachable, schema version compatible, plus
+// every injected check (internal/auth's JWKS resolution, via main.go).
+//
+// The schema check is the serving process's whole relationship with
+// migrations (§4.15/D18): it READS the version and refuses to serve when the
+// database is older than this build requires. It never applies DDL.
+func (a *API) Readyz(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	type result struct {
+		Name  string `json:"name"`
+		Error string `json:"error,omitempty"`
+	}
+	out := struct {
+		Ready  bool     `json:"ready"`
+		Checks []result `json:"checks"`
+	}{Ready: true}
+
+	var firstErr error
+	if err := a.opts.Store.Ready(ctx); err != nil {
+		out.Ready = false
+		firstErr = err
+		out.Checks = append(out.Checks, result{Name: "postgres", Error: err.Error()})
+	} else {
+		out.Checks = append(out.Checks, result{Name: "postgres"})
+	}
+	for _, c := range a.opts.ReadyChecks {
+		if c.Check == nil {
+			continue
+		}
+		if err := c.Check(ctx); err != nil {
+			out.Ready = false
+			if firstErr == nil {
+				firstErr = err
+			}
+			out.Checks = append(out.Checks, result{Name: c.Name, Error: err.Error()})
+			continue
+		}
+		out.Checks = append(out.Checks, result{Name: c.Name})
+	}
+
+	a.noteReadiness(out.Ready, firstErr)
+
+	status := http.StatusOK
+	if !out.Ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, out)
+}
+
+// noteReadiness logs the one clear line the acceptance criteria ask for, on
+// each transition rather than on every probe.
+func (a *API) noteReadiness(ready bool, err error) {
+	a.readyMu.Lock()
+	changed := a.lastReady == nil || *a.lastReady != ready
+	a.lastReady = &ready
+	a.readyMu.Unlock()
+	if !changed {
+		return
+	}
+	if ready {
+		a.log.Info("readiness restored: serving")
+		return
+	}
+	switch {
+	case errors.Is(err, store.ErrSchemaTooOld):
+		a.log.Error("refusing to serve: the database schema is older than this build requires; run the gawk-admin migrate step", "err", err)
+	case errors.Is(err, store.ErrSchemaDirty):
+		a.log.Error("refusing to serve: the database schema is marked dirty by a failed migration", "err", err)
+	default:
+		a.log.Error("refusing to serve: a readiness check failed", "err", err)
+	}
+}
+
+// StoreReady exposes the Postgres half of readiness on its own, for a caller
+// that composes the whole answer itself.
+func (a *API) StoreReady(ctx context.Context) error { return a.opts.Store.Ready(ctx) }
+
+func (a *API) now() time.Time { return a.opts.Clock() }
+
+// caller returns the authenticated identity. Its absence on a protected route
+// is a programming error — the middleware refuses the request long before a
+// handler runs — so it is a 500, never an anonymous caller.
+func (a *API) caller(w http.ResponseWriter, r *http.Request) (identity.Identity, bool) {
+	id, ok := identity.FromContext(r.Context())
+	if !ok {
+		a.log.Error("no identity on an authenticated route: authentication middleware is not wired", "path", r.URL.Path)
+		writeError(w, http.StatusInternalServerError, CodeInternal, "authentication is not configured")
+		return identity.Identity{}, false
+	}
+	return id, true
+}
+
+type errorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type errorEnvelope struct {
+	Error errorBody `json:"error"`
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, errorEnvelope{Error: errorBody{Code: code, Message: message}})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// The portal must never cache an actuator's answers: a stale broadcast
+	// list is a stale kill button.
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	if body == nil {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// decodeJSON reads a request body into v, rejecting unknown fields so a
+// mistyped field name is an error rather than a silently-ignored intent — on
+// an enforcement API, "cooldownSecs" quietly defaulting to 10 minutes is the
+// wrong failure.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	return nil
+}
+
+// storeStatus maps a store error onto its deliberate HTTP status. Every
+// sentinel gets one; the catch-all is 500 and is logged by the caller.
+func storeStatus(err error) (int, string, bool) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return http.StatusNotFound, CodeNotFound, true
+	case errors.Is(err, store.ErrDuplicateActive):
+		return http.StatusConflict, CodeDuplicateActive, true
+	case errors.Is(err, store.ErrDuplicateName):
+		return http.StatusConflict, CodeDuplicateName, true
+	case errors.Is(err, store.ErrNotActive):
+		return http.StatusConflict, CodeNotActive, true
+	default:
+		return 0, "", false
+	}
+}
+
+// fail is the single unhandled-error exit: 503 when Postgres is the problem
+// (the operator should retry, §6 "portal mutations 503"), 500 otherwise.
+func (a *API) fail(w http.ResponseWriter, r *http.Request, what string, err error) {
+	if status, code, ok := storeStatus(err); ok {
+		writeError(w, status, code, err.Error())
+		return
+	}
+	a.log.Error("request failed", "path", r.URL.Path, "what", what, "err", err)
+	if a.opts.Store.Ping(r.Context()) != nil {
+		writeError(w, http.StatusServiceUnavailable, CodeUnavailable,
+			"the moderation database is unreachable; enforcement of existing bans is unaffected")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, CodeInternal, "internal error")
+}
+
+// project writes the ban's CR inline and reports whether it succeeded. A
+// failure is NOT hidden: the row is committed and the reconciler will heal the
+// CR within its sweep, but the operator is told, because "the kill worked"
+// when the enforcement object was never written is the one lie this surface
+// must not tell.
+func (a *API) project(ctx context.Context, b store.Ban) error {
+	if a.opts.Projector == nil {
+		return nil
+	}
+	return a.opts.Projector.Project(ctx, b)
+}
+
+func (a *API) kick() {
+	if a.opts.Reconciler != nil {
+		a.opts.Reconciler.Kick()
+	}
+}
+
+// record persists an event and offers it to the dispatcher. Failures are
+// logged, never fatal to the mutation that caused them: the enforcement action
+// has already happened, and losing its notification must not un-happen it.
+func (a *API) record(ctx context.Context, ev store.Event) {
+	saved, err := a.opts.Store.AppendEvent(ctx, ev)
+	if err != nil {
+		a.log.Error("recording a moderation event failed", "type", ev.Type, "err", err)
+		return
+	}
+	if err := a.opts.Enqueuer.Enqueue(ctx, saved); err != nil {
+		a.log.Warn("enqueueing webhook deliveries failed", "eventId", saved.ID, "err", err)
+	}
+}
+
+type noopEnqueuer struct{}
+
+// Enqueue drops the event. Zero configured webhooks is explicitly fine
+// (docs/42 §4.10): events always land in Postgres and the portal feed.
+func (noopEnqueuer) Enqueue(context.Context, store.Event) error { return nil }
+
+type unavailableTester struct{}
+
+func (unavailableTester) TestWebhook(context.Context, string) (TestResult, error) {
+	return TestResult{}, errors.New("the webhook dispatcher is not configured")
+}

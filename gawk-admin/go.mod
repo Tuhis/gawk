@@ -10,6 +10,7 @@ go 1.26.0
 replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 
 require (
+	github.com/Tuhis/gawk/gawk-server v0.25.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/golang-migrate/migrate/v4 v4.19.1
@@ -20,7 +21,6 @@ require (
 )
 
 require (
-	github.com/Tuhis/gawk/gawk-server v0.25.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
