@@ -9,7 +9,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseStreamFrameHeader, parseDecoderConfig, STREAM_FRAME_HEADER_SIZE } from './wire';
-import { CLOSE_CODE_SERVER_DRAINING } from './wire';
+import {
+  CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_SERVER_DRAINING,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
+} from './wire';
 import { ABRUPT_DROP_RETRY_DELAY_MS } from './reconnect';
 
 const connectWebTransport = vi.fn();
@@ -343,6 +347,35 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     await flush();
     expect(connectWebTransport).toHaveBeenCalledTimes(2);
     expect(cbs.onResumed).toHaveBeenCalledTimes(1);
+
+    await pipeline.stop();
+  });
+
+  // R39 (docs/42 §4.4): 4006 is the operator's kill. Auto-resuming would
+  // burn the relay's 451 rejection budget for the whole cooldown — and the
+  // browser cannot even read that status (D15), so the pipeline would loop
+  // blind until the ladder ran out. 4004 is here for the same reason it is in
+  // both natives: "newest publisher wins" only converges if the deposed
+  // session stays down.
+  it.each([
+    [CLOSE_CODE_TERMINATED_BY_OPERATOR, /terminated by the server operator/],
+    [CLOSE_CODE_PUBLISHER_SUPERSEDED, /superseded/],
+  ])('never auto-resumes after close code %i', async (code, expected) => {
+    const cbs = makeCallbacks();
+    const { pipeline, first } = await startBroadcast(cbs);
+
+    first.die({ closeCode: code, reason: 'terminal' });
+    await flush();
+
+    expect(cbs.onReconnecting).not.toHaveBeenCalled();
+    expect(cbs.onError).toHaveBeenCalledTimes(1);
+    expect(cbs.onError.mock.calls[0][0].message).toMatch(expected);
+    expect(cbs.onEnded).toHaveBeenCalled();
+
+    // Nothing is scheduled behind it either: no second dial, ever.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flush();
+    expect(connectWebTransport).toHaveBeenCalledTimes(1);
 
     await pipeline.stop();
   });

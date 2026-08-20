@@ -10,16 +10,23 @@ import {
   reconnectDelayMs,
   ViewerSession,
   type PipelineHandle,
+  type ViewerEndReason,
   type ViewerSessionCallbacks,
 } from './viewer-session';
-import { CLOSE_CODE_SERVER_DRAINING } from './wire';
+import { isTerminalPublisherClose, isTerminalViewerClose } from './reconnect';
+import {
+  CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_SERVER_DRAINING,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
+} from './wire';
 
 class FakePipeline implements PipelineHandle {
   stopped = false;
   cbs: ViewerCallbacks;
-  private startResult: 'ok' | 'fail' | 'fail-4000';
+  private startResult: StartResult;
 
-  constructor(cbs: ViewerCallbacks, startResult: 'ok' | 'fail' | 'fail-4000') {
+  constructor(cbs: ViewerCallbacks, startResult: StartResult) {
     this.cbs = cbs;
     this.startResult = startResult;
   }
@@ -30,7 +37,10 @@ class FakePipeline implements PipelineHandle {
     }
     const err = new Error('connect failed') as any;
     if (this.startResult === 'fail-4000') {
-      err.closeCode = 4000;
+      err.closeCode = CLOSE_CODE_BROADCAST_ENDED;
+    }
+    if (this.startResult === 'fail-4006') {
+      err.closeCode = CLOSE_CODE_TERMINATED_BY_OPERATOR;
     }
     return Promise.reject(err);
   }
@@ -61,18 +71,26 @@ class FakePipeline implements PipelineHandle {
   }
 }
 
+// A pipeline's start() outcome: connect, fail without a code, or fail with a
+// terminal close code the relay sent before the dial completed.
+type StartResult = 'ok' | 'fail' | 'fail-4000' | 'fail-4006';
+
 interface Harness {
   session: ViewerSession;
   pipelines: FakePipeline[];
   events: string[];
+  // The reason of every onEnded, in order — kept beside `events` so the
+  // existing ordering assertions stay readable.
+  endReasons: ViewerEndReason[];
   cb: ViewerSessionCallbacks;
 }
 
 // startResults[i] applies to the i-th created pipeline; past the end of the
 // array, pipelines start successfully.
-function makeHarness(startResults: ('ok' | 'fail' | 'fail-4000')[] = []): Harness {
+function makeHarness(startResults: StartResult[] = []): Harness {
   const pipelines: FakePipeline[] = [];
   const events: string[] = [];
+  const endReasons: ViewerEndReason[] = [];
   const cb: ViewerSessionCallbacks = {
     onDecodedFrame: () => {},
     onConfig: () => {},
@@ -80,14 +98,17 @@ function makeHarness(startResults: ('ok' | 'fail' | 'fail-4000')[] = []): Harnes
     onConnected: () => events.push('connected'),
     onReconnecting: ({ attempt, delayMs }) => events.push(`reconnecting:${attempt}:${delayMs}`),
     onError: (e) => events.push(`error:${e.message}`),
-    onEnded: () => events.push('ended'),
+    onEnded: (reason) => {
+      events.push('ended');
+      endReasons.push(reason);
+    },
   };
   const session = new ViewerSession('https://relay.test:4433', 'ABC123', {}, cb, (_url, _id, _opts, cbs) => {
     const p = new FakePipeline(cbs, startResults[pipelines.length] ?? 'ok');
     pipelines.push(p);
     return p;
   });
-  return { session, pipelines, events, cb };
+  return { session, pipelines, events, endReasons, cb };
 }
 
 beforeEach(() => {
@@ -261,17 +282,33 @@ describe('ViewerSession', () => {
   });
 
   it('stops reconnecting and ends cleanly when closed with code 4000', async () => {
-    const { session, pipelines, events } = makeHarness();
+    const { session, pipelines, events, endReasons } = makeHarness();
     await session.start();
     expect(events).toEqual(['connected']);
 
-    pipelines[0].crash('broadcast ended', 4000);
+    pipelines[0].crash('broadcast ended', CLOSE_CODE_BROADCAST_ENDED);
     expect(events).toEqual(['connected', 'ended']);
+    expect(endReasons).toEqual(['normal']);
+    expect(pipelines).toHaveLength(1);
+  });
+
+  // R39 (docs/42 §4.4): 4006 joins 4000 in the terminal set, and carries the
+  // distinct reason the end card renders. Without both halves a kill turns
+  // into a reconnect loop against the relay's ban gate.
+  it('stops reconnecting and reports "moderated" when closed with code 4006', async () => {
+    const { session, pipelines, events, endReasons } = makeHarness();
+    await session.start();
+
+    pipelines[0].crash('terminated by operator', CLOSE_CODE_TERMINATED_BY_OPERATOR);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(events).toEqual(['connected', 'ended']);
+    expect(endReasons).toEqual(['moderated']);
+    // No second pipeline was ever built — nothing was retried.
     expect(pipelines).toHaveLength(1);
   });
 
   it('stops reconnecting and ends cleanly when reconnect start rejects with code 4000', async () => {
-    const { session, pipelines, events } = makeHarness(['ok', 'fail-4000']);
+    const { session, pipelines, events, endReasons } = makeHarness(['ok', 'fail-4000']);
     await session.start();
 
     pipelines[0].crash('drop');
@@ -280,6 +317,50 @@ describe('ViewerSession', () => {
 
     await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
     expect(events).toEqual(['connected', retry, 'ended']);
+    expect(endReasons).toEqual(['normal']);
     expect(pipelines).toHaveLength(2);
+  });
+
+  // The second terminal check (the reconnect dial's own rejection) has to know
+  // about 4006 too — the kill can land between two attempts.
+  it('stops reconnecting when a reconnect start rejects with code 4006', async () => {
+    const { session, pipelines, events, endReasons } = makeHarness(['ok', 'fail-4006']);
+    await session.start();
+
+    pipelines[0].crash('drop');
+    const retry = `reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`;
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    expect(events).toEqual(['connected', retry, 'ended']);
+    expect(endReasons).toEqual(['moderated']);
+
+    // And nothing further is scheduled.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pipelines).toHaveLength(2);
+  });
+});
+
+// R39 (docs/42 §4.4). One named set per role, so the two viewer call sites and
+// the browser broadcaster cannot drift apart.
+describe('terminal close-code sets', () => {
+  it('holds exactly 4000 and 4006 for viewers', () => {
+    expect(isTerminalViewerClose(CLOSE_CODE_BROADCAST_ENDED)).toBe(true);
+    expect(isTerminalViewerClose(CLOSE_CODE_TERMINATED_BY_OPERATOR)).toBe(true);
+    // 4001 eviction, 4002 drain, 4003 origin-moved, 4005 leg-orphaned are all
+    // explicitly retryable; an abrupt drop (no code) is the reconnect case.
+    for (const code of [4001, 4002, 4003, 4004, 4005, 429, 0]) {
+      expect(isTerminalViewerClose(code)).toBe(false);
+    }
+    expect(isTerminalViewerClose(null)).toBe(false);
+    expect(isTerminalViewerClose(undefined)).toBe(false);
+  });
+
+  it('holds 4000, 4004 and 4006 for publishers, matching the natives', () => {
+    expect(isTerminalPublisherClose(CLOSE_CODE_BROADCAST_ENDED)).toBe(true);
+    expect(isTerminalPublisherClose(CLOSE_CODE_PUBLISHER_SUPERSEDED)).toBe(true);
+    expect(isTerminalPublisherClose(CLOSE_CODE_TERMINATED_BY_OPERATOR)).toBe(true);
+    for (const code of [4001, 4002, 4003, 4005, 0]) {
+      expect(isTerminalPublisherClose(code)).toBe(false);
+    }
+    expect(isTerminalPublisherClose(null)).toBe(false);
   });
 });

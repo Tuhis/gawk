@@ -37,6 +37,11 @@ fn relay_message(se: &StartError) -> String {
         404 => "That broadcast code no longer exists on the relay. Start a new broadcast to get a fresh code.".into(),
         409 => "Someone is already publishing to that broadcast code. Start a new broadcast to get a fresh code.".into(),
         429 => "The relay is at capacity (too many broadcasts, or too many connection attempts). Try again in a moment.".into(),
+        // R39 (docs/42 D15): the ban gate answers pre-upgrade, so there is no
+        // close code to carry the reason — the status IS the message. The
+        // browser broadcaster cannot read it at all, which is exactly why
+        // spelling it out here is worth doing.
+        451 => "This broadcast ID or your address is banned by the relay operator. Contact the operator if you think this is a mistake.".into(),
         _ => match se.phase {
             StartPhase::Connect => format!("Could not reach the relay: {}", se.message),
             StartPhase::Capture => format!("Could not start capture: {}", se.message),
@@ -82,6 +87,7 @@ mod tests {
             (404, "no longer exists"),
             (409, "already publishing"),
             (429, "at capacity"),
+            (451, "banned by the relay operator"),
         ] {
             let m = message(&relay(StartPhase::Connect, status), "https://gawk.ioio.fi");
             assert!(m.contains(needle), "{status}: {m}");

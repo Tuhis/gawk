@@ -302,6 +302,15 @@ const CloseCodePublisherSuperseded = 4004
 // primary or any non-leg session.
 const CloseCodeStripeLegOrphaned = 4005
 
+// CloseCodeTerminatedByOperator (4006) is sent when the operator (or, later,
+// the R40 auto-tier) terminates a broadcast: to the publisher session being
+// killed, to every viewer of that broadcast, and to internal edge sessions
+// so downstream pods tear down too. TERMINAL in every role: a viewer must
+// not reconnect, a publisher must not auto-resume — the ID is banned for at
+// least the kill cooldown, so a resume attempt would only burn the 451
+// rejection budget. Allocated 2026-08-20 (R39, docs/42).
+const CloseCodeTerminatedByOperator = 4006
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen
