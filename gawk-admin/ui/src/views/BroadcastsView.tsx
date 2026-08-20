@@ -23,10 +23,19 @@ const REFRESH_MS = 5_000;
  * OIDC-gated portal, and Postgres). They are joinable, so they never leave
  * through a webhook or a log.
  */
-export function BroadcastsView({ killCooldownSeconds }: { killCooldownSeconds: number }) {
+export function BroadcastsView({
+  killCooldownSeconds,
+  // The poll is a prop so it can be switched off (0). Production always uses
+  // the default; a test that left a 5 s interval running would fire refetches
+  // and out-of-act state updates in the middle of its own assertions.
+  refreshMs = REFRESH_MS,
+}: {
+  killCooldownSeconds: number;
+  refreshMs?: number;
+}) {
   const api = useApi();
   const load = useCallback(() => api.broadcasts(), [api]);
-  const { data, error, loading, reload } = useLoader<Broadcast[]>(load, REFRESH_MS);
+  const { data, loadedAt, error, loading, reload } = useLoader<Broadcast[]>(load, refreshMs);
 
   const [killing, setKilling] = useState<Broadcast | null>(null);
   const [banning, setBanning] = useState<Broadcast | null>(null);
@@ -35,7 +44,9 @@ export function BroadcastsView({ killCooldownSeconds }: { killCooldownSeconds: n
   const [note, setNote] = useState<string | null>(null);
 
   const broadcasts = data ?? [];
-  const now = Date.now();
+  // Uptime is measured from the fetch that produced these rows, not from
+  // whenever React re-rendered them (see `useLoader`'s `loadedAt`).
+  const now = loadedAt;
 
   async function confirmKill(draft: KillRequestDraft) {
     if (!killing) return;
@@ -98,7 +109,8 @@ export function BroadcastsView({ killCooldownSeconds }: { killCooldownSeconds: n
       <div className={ui.head}>
         <h1>Broadcasts</h1>
         <span className={ui.sub}>
-          {broadcasts.length} live · refreshing every {REFRESH_MS / 1000}s
+          {broadcasts.length} live
+          {refreshMs ? ` · refreshing every ${refreshMs / 1000}s` : ''}
         </span>
         <span className={ui.spacer} />
         <button type="button" onClick={reload}>

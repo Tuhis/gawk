@@ -28,8 +28,11 @@ function mount(broadcasts: Broadcast[], cooldown = 600) {
     if (path === 'api/v1/broadcasts') return json(broadcasts);
     return json({});
   });
+  // `refreshMs={0}`: the 5 s poll is production behaviour, not test behaviour.
+  // Left on, a slow file (a cold transform is enough) lets it fire mid-test and
+  // push state updates outside `act` while assertions are running.
   const view = renderWithSession(
-    <BroadcastsView killCooldownSeconds={cooldown} />,
+    <BroadcastsView killCooldownSeconds={cooldown} refreshMs={0} />,
     session,
   );
   return { session, view };
@@ -233,7 +236,7 @@ describe('the shared-IP warning (§4.9, §5)', () => {
     const session = stubSession((path) =>
       path === 'api/v1/broadcasts' ? json(fleet) : json({}),
     );
-    renderWithSession(<BroadcastsView killCooldownSeconds={600} />, session);
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
     fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
 
     const alert = screen.getByRole('alert');
@@ -252,7 +255,7 @@ describe('the shared-IP warning (§4.9, §5)', () => {
     const session = stubSession((path) =>
       path === 'api/v1/broadcasts' ? json(fleet) : json({}),
     );
-    renderWithSession(<BroadcastsView killCooldownSeconds={600} />, session);
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
     fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
     expect(screen.queryByText(/externalTrafficPolicy/)).toBeNull();
   });
@@ -270,7 +273,7 @@ describe('server refusals', () => {
       }
       return json({});
     });
-    renderWithSession(<BroadcastsView killCooldownSeconds={600} />, session);
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
     fireEvent.click(await screen.findByRole('button', { name: 'Kill' }));
     fireEvent.change(screen.getByLabelText('Reason (required)'), {
       target: { value: 'spam' },

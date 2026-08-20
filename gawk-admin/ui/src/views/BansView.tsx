@@ -19,12 +19,14 @@ export function BansView() {
   const api = useApi();
   const [filter, setFilter] = useState<'active' | 'all'>('active');
   const load = useCallback(() => api.bans(filter), [api, filter]);
-  const { data, error, loading, reload } = useLoader<Ban[]>(load);
+  const { data, loadedAt, error, loading, reload } = useLoader<Ban[]>(load);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const bans = data ?? [];
-  const now = Date.now();
+  // Countdowns run from the fetch that produced these rows, not from render
+  // time (see `useLoader`'s `loadedAt`).
+  const now = loadedAt;
 
   async function unban(ban: Ban) {
     setBusyId(ban.id);

@@ -55,6 +55,23 @@ function Portal() {
 
   const cooldown = me?.defaults?.killCooldownSeconds ?? DEFAULT_KILL_COOLDOWN_SECONDS;
 
+  // **The views wait for the probe to settle**, and that is a correctness rule,
+  // not a loading spinner.
+  //
+  // `me` carries both the identity this portal just confirmed and the server's
+  // configured defaults. A view rendered before it lands shows Kill and
+  // Kill + ban for a caller whose `operator` role has not been confirmed yet,
+  // and — because a dialog seeds its fields once, when it opens — an operator
+  // fast enough to click in that window would get a kill dialog holding the
+  // SPA's fallback cooldown instead of the deployment's `-kill-cooldown`. That
+  // is a wrong number on an irreversible action, arriving silently.
+  //
+  // "Settled" deliberately includes failure: a probe that errored (anything but
+  // the 403 handled above) still lets the portal through, degraded, with the
+  // documented default and the error on screen — a dead `/api/v1/me` should not
+  // black out a moderation console.
+  const probeSettled = me !== null || error !== null;
+
   return (
     <div className={styles.app}>
       <header className={styles.header}>
@@ -81,7 +98,11 @@ function Portal() {
 
       <main className={styles.main}>
         {error ? <p className={styles.error}>{error}</p> : null}
-        <Routed view={route.view} path={route.path} cooldownSeconds={cooldown} />
+        {probeSettled ? (
+          <Routed view={route.view} path={route.path} cooldownSeconds={cooldown} />
+        ) : (
+          <p className={styles.dim}>Loading…</p>
+        )}
       </main>
     </div>
   );

@@ -51,9 +51,23 @@ describe('the authorization gate (§4.8, AP6)', () => {
 });
 
 describe('the shell', () => {
-  function mount(me: Record<string, unknown>) {
-    const session = stubSession((path) => {
-      if (path === 'api/v1/me') return json(me);
+  /**
+   * `lateMe` delays `/api/v1/me` by a macrotask.
+   *
+   * React runs child effects before parent ones, so `BroadcastsView`'s fetch is
+   * always issued before `Portal`'s identity probe — which means the broadcast
+   * rows can commit while `me` is still in flight. Before the fix, the Kill
+   * button appeared in that window and a dialog opened from it seeded its
+   * cooldown from the SPA's fallback instead of the server's configured value.
+   * These tests run with the skew forced on, so the ordering cannot quietly
+   * reverse and hide the bug again.
+   */
+  function mount(me: Record<string, unknown>, lateMe = false) {
+    const session = stubSession(async (path) => {
+      if (path === 'api/v1/me') {
+        if (lateMe) await new Promise((resolve) => setTimeout(resolve, 0));
+        return json(me);
+      }
       if (path === 'api/v1/broadcasts') {
         return json([
           {
@@ -88,14 +102,44 @@ describe('the shell', () => {
   });
 
   it('feeds the server’s kill cooldown into the kill dialog', async () => {
-    mount({ ...OPERATOR, defaults: { killCooldownSeconds: 900 } });
+    mount({ ...OPERATOR, defaults: { killCooldownSeconds: 900 } }, true);
     fireEvent.click(await screen.findByRole('button', { name: 'Kill' }));
     expect((screen.getByLabelText('Cooldown (seconds)') as HTMLInputElement).value).toBe('900');
   });
 
   it('falls back to the documented 600 s when the API does not carry a default', async () => {
-    mount(OPERATOR);
+    mount(OPERATOR, true);
     fireEvent.click(await screen.findByRole('button', { name: 'Kill' }));
     expect((screen.getByLabelText('Cooldown (seconds)') as HTMLInputElement).value).toBe('600');
+  });
+
+  // The rule behind the two tests above, stated directly: no actuator is on
+  // screen until `/api/v1/me` has answered. Kill and Kill + ban end someone's
+  // broadcast, and offering them for an identity whose `operator` role has not
+  // come back yet is the wrong default even though a 403 would flip the whole
+  // app a moment later.
+  it('renders no kill controls until the authorization probe has answered', async () => {
+    mount(OPERATOR, true);
+    expect(screen.queryByRole('button', { name: 'Kill' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Kill + ban' })).toBeNull();
+    expect(screen.getByText('Loading…')).toBeTruthy();
+    // …and then it does.
+    expect(await screen.findByRole('button', { name: 'Kill' })).toBeTruthy();
+  });
+
+  // A dead /api/v1/me must not black out a moderation console: the portal comes
+  // up degraded, on the documented default, with the failure on screen.
+  it('still renders the views when the probe fails for a reason other than 403', async () => {
+    const session = stubSession((path) => {
+      if (path === 'api/v1/me') {
+        return json({ error: { code: 'internal', message: 'postgres unreachable' } }, 500);
+      }
+      if (path === 'api/v1/broadcasts') return json([]);
+      return json({});
+    });
+    renderWithSession(<App />, session);
+
+    expect(await screen.findByText('postgres unreachable')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Broadcasts' })).toBeTruthy();
   });
 });

@@ -161,6 +161,7 @@ export class AuthSession {
   private meta: ProviderMetadata | null = null;
   private renewTimer: number | null = null;
   private renewInflight: Promise<Tokens | null> | null = null;
+  private loginInflight: Promise<void> | null = null;
   private state: SessionState = { status: 'idle' };
   private readonly listeners = new Set<() => void>();
 
@@ -269,6 +270,31 @@ export class AuthSession {
    * which matters because the webhook `portalUrl` IS a deep link (§4.10).
    */
   async beginLogin(returnTo?: string): Promise<void> {
+    // Single-flight, for the same reason `tryRenew` is.
+    //
+    // The body below writes the PKCE record and then AWAITS the S256
+    // challenge before redirecting, so two overlapping calls interleave as
+    // "write record1, write record2, redirect with state1, redirect with
+    // state2". sessionStorage keeps only the last record, and if the browser
+    // commits the first navigation the callback fails the state check — the
+    // operator gets "authorization response did not match the request" with
+    // nothing to act on.
+    //
+    // Overlap is ordinary: a failed silent renewal drops the tokens and calls
+    // this, and the broadcasts view's 5 s poll then finds no token and calls it
+    // again while the first is still awaiting discovery.
+    //
+    // It clears when it settles rather than latching, because the sign-in error
+    // page's "Try again" is a legitimate second request.
+    if (this.loginInflight) return this.loginInflight;
+    const run = this.startLogin(returnTo).finally(() => {
+      this.loginInflight = null;
+    });
+    this.loginInflight = run;
+    return run;
+  }
+
+  private async startLogin(returnTo?: string): Promise<void> {
     this.setState('authenticating');
     const cfg = await this.loadConfig();
     const meta = await this.discover();
