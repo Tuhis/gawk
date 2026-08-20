@@ -177,6 +177,14 @@ Re-deriving them costs a cycle and has happened before.
   `docs/27`)
 - **Tray icon and global hotkeys for the native GUI** — deferred; the research
   is already written down. Don't re-derive it. (`docs/19`)
+- **Broadcaster worker offload (R11) on Chrome/macOS** — not a gate bug and
+  not fixable in gawk. Measured 2026-08-20: Chrome 150 exposes MSTP on
+  `Window` only, and worker scope has no `MediaStreamTrackProcessor`,
+  `MediaStreamTrackGenerator` or `MediaStreamTrack` — so the track is not
+  transferable and the worker can't build a processor. There is no path to
+  worker-side encode without native support; the main-thread fallback is the
+  accepted outcome there, as it is on Safari and Firefox. Probe the capability
+  before re-proposing. (`docs/16` Decision 1, `docs/gotchas.md`, `BUGS.md`)
 - **Dropping the compiled-in default relay** (making `-url` required, or
   defaulting to empty because the repository is public) — rejected 2026-08-19.
   Prioritising the official deployment is the product decision; the answer to
