@@ -11,12 +11,14 @@
 
 import type { AuthSession } from '../auth/session.ts';
 import type {
+  ApiErrorCode,
   Ban,
   Broadcast,
   CreateBanRequest,
   CreateWebhookRequest,
   EventPage,
   KillRequest,
+  KillResponse,
   Me,
   Relay,
   Webhook,
@@ -24,43 +26,35 @@ import type {
 } from './types.ts';
 
 /**
- * An error carrying the API's own words. §4.7 specifies
- * `{"error":{"code","message"}}`; `code` is what the UI branches on
- * (`source_immutable` on a config-sourced webhook write, for one), `message` is
- * what it shows.
+ * An error carrying the API's own words: `{"error": {code, message}}` (§4.7).
+ * `code` is what the UI branches on, `message` is what it shows.
+ *
+ * `ban` is the part that is easy to miss. Two refusals are *about* a specific
+ * ban and return it alongside the error:
+ *
+ *   * `409 duplicate_active` — the ban already in force on that target.
+ *   * `502 projection_failed` — the ban row WAS committed; only the projection
+ *     to a Ban CR failed, so the record exists and the reconciler will heal it,
+ *     but enforcement is not live yet. A caller that treated this as a plain
+ *     failure would tell the operator nothing happened, which is false.
  */
 export class ApiError extends Error {
   // Plain fields rather than constructor parameter properties:
   // `erasableSyntaxOnly` is on, matching gawk-app's and telemetry's tsconfig.
   status: number;
-  code: string;
+  code: ApiErrorCode | '';
+  ban: Ban | null;
 
-  constructor(message: string, status: number, code = '') {
+  constructor(message: string, status: number, code: ApiErrorCode | '' = '', ban: Ban | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.ban = ban;
   }
 }
 
 const BASE = 'api/v1/';
-
-/**
- * Pull a list out of a response that may be bare or enveloped.
- *
- * §4.7 names the rows each route returns but not whether they arrive as a bare
- * array or under a key, and `internal/api` (AP4) is the authority on that. This
- * is the one seam where the SPA accepts both rather than pinning a shape the
- * design doc does not.
- */
-function list<T>(body: unknown, key: string): T[] {
-  if (Array.isArray(body)) return body as T[];
-  if (body && typeof body === 'object') {
-    const inner = (body as Record<string, unknown>)[key];
-    if (Array.isArray(inner)) return inner as T[];
-  }
-  return [];
-}
 
 export class ApiClient {
   private readonly session: AuthSession;
@@ -93,16 +87,20 @@ export class ApiClient {
     return this.json<Me>('me');
   }
 
+  // Every list route answers with a keyed envelope, so each of these reads its
+  // one key. `?? []` covers a null/absent list on an otherwise valid response
+  // (a degraded read), never a differently-shaped one.
   async broadcasts(): Promise<Broadcast[]> {
-    return list<Broadcast>(await this.json<unknown>('broadcasts'), 'broadcasts');
+    return (await this.json<{ broadcasts: Broadcast[] }>('broadcasts')).broadcasts ?? [];
   }
 
-  kill(id: string, req: KillRequest): Promise<{ ban?: Ban }> {
-    return this.post<{ ban?: Ban }>(`broadcasts/${encodeURIComponent(id)}/kill`, req);
+  /** The one single-object route that is enveloped: `201 {"ban": {...}}`. */
+  kill(id: string, req: KillRequest): Promise<KillResponse> {
+    return this.post<KillResponse>(`broadcasts/${encodeURIComponent(id)}/kill`, req);
   }
 
   async bans(state: 'active' | 'all'): Promise<Ban[]> {
-    return list<Ban>(await this.json<unknown>(`bans?state=${state}`), 'bans');
+    return (await this.json<{ bans: Ban[] }>(`bans?state=${state}`)).bans ?? [];
   }
 
   createBan(req: CreateBanRequest): Promise<Ban> {
@@ -114,24 +112,24 @@ export class ApiClient {
     await this.request(`bans/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
+  /**
+   * A page of the audit feed. `nextAfterId` is always present and is non-null
+   * only when this page came back full — so null means exhausted, and the view
+   * stops offering "Load older" rather than paging into an empty response.
+   */
   async events(afterId?: number, limit = 50): Promise<EventPage> {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (afterId !== undefined) qs.set('afterId', String(afterId));
-    const body = await this.json<unknown>(`events?${qs.toString()}`);
-    const events = list<EventPage['events'][number]>(body, 'events');
-    const next =
-      body && typeof body === 'object' && !Array.isArray(body)
-        ? ((body as Record<string, unknown>).nextAfterId as number | null | undefined)
-        : undefined;
-    return { events, nextAfterId: next ?? null };
+    const page = await this.json<EventPage>(`events?${qs.toString()}`);
+    return { events: page.events ?? [], nextAfterId: page.nextAfterId ?? null };
   }
 
   async relays(): Promise<Relay[]> {
-    return list<Relay>(await this.json<unknown>('relays'), 'relays');
+    return (await this.json<{ relays: Relay[] }>('relays')).relays ?? [];
   }
 
   async webhooks(): Promise<Webhook[]> {
-    return list<Webhook>(await this.json<unknown>('webhooks'), 'webhooks');
+    return (await this.json<{ webhooks: Webhook[] }>('webhooks')).webhooks ?? [];
   }
 
   createWebhook(req: CreateWebhookRequest): Promise<Webhook> {
@@ -159,9 +157,14 @@ export class ApiClient {
 /** Turn a failed response into the API's own error, falling back to the status. */
 async function apiError(res: Response): Promise<ApiError> {
   try {
-    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    const body = (await res.json()) as {
+      error?: { code?: ApiErrorCode; message?: string };
+      ban?: Ban;
+    };
     const err = body.error;
-    if (err?.message) return new ApiError(err.message, res.status, err.code ?? '');
+    if (err?.message) {
+      return new ApiError(err.message, res.status, err.code ?? '', body.ban ?? null);
+    }
   } catch {
     // Not JSON, or no body at all — the status is all we have.
   }

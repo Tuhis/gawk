@@ -17,9 +17,10 @@ import ui from '../styles/ui.module.css';
  */
 export function EventsView() {
   const api = useApi();
-  // Pages accumulate; the cursor is what the last page said, or the oldest id
-  // on screen when the server did not say. §4.7 pins `afterId` as the cursor
-  // but not the envelope field that carries the next one.
+  // Pages accumulate. `nextAfterId` is always present on the response and is
+  // non-null only when that page came back full, so null means the feed is
+  // exhausted — the view stops offering "Load older" instead of paging into an
+  // empty response.
   const [pages, setPages] = useState<ModerationEvent[]>([]);
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [exhausted, setExhausted] = useState(false);
@@ -27,8 +28,8 @@ export function EventsView() {
   const load = useCallback(async (): Promise<EventPage> => {
     const page = await api.events();
     setPages(page.events);
-    setCursor(oldest(page));
-    setExhausted(page.events.length === 0);
+    setCursor(page.nextAfterId ?? undefined);
+    setExhausted(page.nextAfterId === null);
     return page;
   }, [api]);
   const { error, loading, reload } = useLoader<EventPage>(load);
@@ -42,12 +43,9 @@ export function EventsView() {
     setOlderError(null);
     try {
       const page = await api.events(cursor);
-      if (page.events.length === 0) {
-        setExhausted(true);
-        return;
-      }
       setPages((prev) => [...prev, ...page.events]);
-      setCursor(oldest(page));
+      setCursor(page.nextAfterId ?? undefined);
+      setExhausted(page.nextAfterId === null);
     } catch (err) {
       setOlderError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -135,10 +133,4 @@ function Deliveries({ deliveries }: { deliveries?: WebhookDelivery[] }) {
       ))}
     </div>
   );
-}
-
-function oldest(page: EventPage): number | undefined {
-  if (page.nextAfterId !== undefined && page.nextAfterId !== null) return page.nextAfterId;
-  const last = page.events[page.events.length - 1];
-  return last?.id;
 }

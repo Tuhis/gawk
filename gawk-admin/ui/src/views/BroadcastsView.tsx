@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
-import type { Broadcast } from '../api/types.ts';
+import { ApiError } from '../api/client.ts';
+import type { Broadcast, BroadcastBanState } from '../api/types.ts';
 import { BanDialog } from '../components/BanDialog.tsx';
 import type { BanRequestDraft } from '../components/BanDialog.tsx';
 import { FlaggedPinSlot } from '../components/FlaggedPin.tsx';
@@ -42,6 +43,7 @@ export function BroadcastsView({
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
 
   const broadcasts = data ?? [];
   // Uptime is measured from the fetch that produced these rows, not from
@@ -58,9 +60,16 @@ export function BroadcastsView({
         cooldownSeconds: draft.cooldownSeconds,
       });
       setNote(`Killed ${killing.id}.`);
+      setWarning(null);
       setKilling(null);
       reload();
     } catch (err) {
+      if (notEnforcedYet(err)) {
+        setWarning(unenforcedMessage(killing.id));
+        setKilling(null);
+        reload();
+        return;
+      }
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -95,9 +104,16 @@ export function BroadcastsView({
         });
       }
       setNote(`Banned ${target.id}${draft.ip ? ' and its publisher IP' : ''}.`);
+      setWarning(null);
       setBanning(null);
       reload();
     } catch (err) {
+      if (notEnforcedYet(err)) {
+        setWarning(unenforcedMessage(target.id));
+        setBanning(null);
+        reload();
+        return;
+      }
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -120,6 +136,11 @@ export function BroadcastsView({
 
       {error ? <p className={ui.error}>{error}</p> : null}
       {note ? <p className={ui.ok}>{note}</p> : null}
+      {warning ? (
+        <p className={ui.warning} role="alert">
+          {warning}
+        </p>
+      ) : null}
 
       <div className={ui.scroll}>
         <table className={ui.table}>
@@ -170,11 +191,7 @@ export function BroadcastsView({
                   )}
                 </td>
                 <td>
-                  {b.banState?.banned ? (
-                    <span className={ui.badgeBad}>banned</span>
-                  ) : (
-                    <span className={ui.dim}>—</span>
-                  )}
+                  <BanCell state={b.banState} />
                 </td>
                 <td>
                   <div className={ui.actions}>
@@ -241,6 +258,50 @@ export function BroadcastsView({
       ) : null}
     </section>
   );
+}
+
+/**
+ * A ban write that was RECORDED but is not yet ENFORCED (`502
+ * projection_failed`).
+ *
+ * The Postgres row is committed; only the projection to a Ban CR failed, and
+ * the reconciler will heal it. So this is neither a success nor a failure, and
+ * calling it either would mislead: "failed" invites a retry that will now 409
+ * against the row that does exist, and "done" claims an enforcement that has
+ * not started.
+ */
+function notEnforcedYet(err: unknown): boolean {
+  return err instanceof ApiError && err.code === 'projection_failed';
+}
+
+function unenforcedMessage(id: string): string {
+  return (
+    `Ban recorded for ${id}, but it is NOT enforced yet — the relay-side object ` +
+    `could not be written. The reconciler retries automatically; the broadcast ` +
+    `stays live until it succeeds. Do not re-submit.`
+  );
+}
+
+/**
+ * Three states, not two.
+ *
+ * `banState: null` means AP4 could not reach Postgres and degraded this read
+ * instead of failing it, so an operator can still see the fleet during a
+ * database outage (§4.7). The broadcast rows are true; the ban column is simply
+ * not known. Rendering that as "—" would assert the broadcast is clean, which
+ * is the one claim we cannot make — and is exactly the confusion the null
+ * exists to prevent.
+ */
+function BanCell({ state }: { state: BroadcastBanState | null }) {
+  if (state === null) {
+    return (
+      <span className={ui.badgeWarn} title="the ban store was unreachable for this read">
+        unknown
+      </span>
+    );
+  }
+  if (!state.banned) return <span className={ui.dim}>—</span>;
+  return <span className={ui.badgeBad}>banned</span>;
 }
 
 function CopyButton({ value }: { value: string }) {

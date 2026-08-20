@@ -40,7 +40,7 @@ function removedBan(): Ban {
 describe('the ban list (§4.9)', () => {
   it('shows the target, actor, reason and the time left', async () => {
     const session = stubSession((path) =>
-      path.startsWith('api/v1/bans') ? json([activeBan()]) : json({}),
+      path.startsWith('api/v1/bans') ? json({ bans: [activeBan()] }) : json({}),
     );
     renderWithSession(<BansView />, session);
 
@@ -54,7 +54,7 @@ describe('the ban list (§4.9)', () => {
 
   it('says "permanent" rather than showing an empty expiry', async () => {
     const session = stubSession((path) =>
-      path.startsWith('api/v1/bans') ? json([{ ...activeBan(), expiresAt: null }]) : json({}),
+      path.startsWith('api/v1/bans') ? json({ bans: [{ ...activeBan(), expiresAt: null }] }) : json({}),
     );
     renderWithSession(<BansView />, session);
     expect(await screen.findByText('permanent')).toBeTruthy();
@@ -62,7 +62,7 @@ describe('the ban list (§4.9)', () => {
 
   it('asks the server for active bans by default and for all on request', async () => {
     const session = stubSession((path) =>
-      path.startsWith('api/v1/bans') ? json([activeBan()]) : json({}),
+      path.startsWith('api/v1/bans') ? json({ bans: [activeBan()] }) : json({}),
     );
     renderWithSession(<BansView />, session);
     await screen.findByText('ABC123');
@@ -76,7 +76,7 @@ describe('the ban list (§4.9)', () => {
 
   it('offers Unban only on an active ban', async () => {
     const session = stubSession((path) =>
-      path.startsWith('api/v1/bans') ? json([removedBan()]) : json({}),
+      path.startsWith('api/v1/bans') ? json({ bans: [removedBan()] }) : json({}),
     );
     renderWithSession(<BansView />, session);
     await screen.findByText('203.0.113.7/32');
@@ -95,7 +95,7 @@ describe('unban round-trips (AP6)', () => {
         bans = [];
         return new Response(null, { status: 204 });
       }
-      if (path.startsWith('api/v1/bans')) return json(bans);
+      if (path.startsWith('api/v1/bans')) return json({ bans });
       return json({});
     });
     renderWithSession(<BansView />, session);
@@ -115,7 +115,7 @@ describe('unban round-trips (AP6)', () => {
       if (init.method === 'DELETE') {
         return json({ error: { code: 'not_found', message: 'no such ban' } }, 404);
       }
-      if (path.startsWith('api/v1/bans')) return json([activeBan()]);
+      if (path.startsWith('api/v1/bans')) return json({ bans: [activeBan()] });
       return json({});
     });
     renderWithSession(<BansView />, session);

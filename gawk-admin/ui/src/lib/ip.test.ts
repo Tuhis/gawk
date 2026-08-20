@@ -12,6 +12,7 @@ function broadcast(id: string, ip: string | null): Broadcast {
     startedAt: new Date().toISOString(),
     viewersGlobal: 0,
     pods: [],
+    banState: { banned: false, ban: null },
   };
 }
 

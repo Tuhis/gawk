@@ -18,7 +18,7 @@ const relays = [
 ];
 
 function mount() {
-  const session = stubSession((path) => (path === 'api/v1/relays' ? json(relays) : json({})));
+  const session = stubSession((path) => (path === 'api/v1/relays' ? json({ relays }) : json({})));
   renderWithSession(<RelaysView />, session);
   return session;
 }

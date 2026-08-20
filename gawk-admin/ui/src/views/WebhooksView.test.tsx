@@ -25,7 +25,8 @@ const FROM_PORTAL: Webhook = {
 
 function mount(webhooks: Webhook[], extra?: (path: string, init: RequestInit) => Response) {
   const session = stubSession((path, init) => {
-    if (path === 'api/v1/webhooks' && (init.method ?? 'GET') === 'GET') return json(webhooks);
+    if (path === 'api/v1/webhooks' && (init.method ?? 'GET') === 'GET')
+      return json({ webhooks });
     if (extra) return extra(path, init);
     return json({ ok: true, status: 200 });
   });

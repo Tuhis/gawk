@@ -69,17 +69,20 @@ describe('the shell', () => {
         return json(me);
       }
       if (path === 'api/v1/broadcasts') {
-        return json([
-          {
-            id: 'ABC123',
-            key: '3f9a1c2b4d5e',
-            publisherActive: true,
-            publisherRemoteIp: '203.0.113.7',
-            startedAt: new Date().toISOString(),
-            viewersGlobal: 1,
-            pods: [],
-          },
-        ]);
+        return json({
+          broadcasts: [
+            {
+              id: 'ABC123',
+              key: '3f9a1c2b4d5e',
+              publisherActive: true,
+              publisherRemoteIp: '203.0.113.7',
+              startedAt: new Date().toISOString(),
+              viewersGlobal: 1,
+              pods: [],
+              banState: { banned: false, ban: null },
+            },
+          ],
+        });
       }
       return json({});
     });
@@ -134,7 +137,7 @@ describe('the shell', () => {
       if (path === 'api/v1/me') {
         return json({ error: { code: 'internal', message: 'postgres unreachable' } }, 500);
       }
-      if (path === 'api/v1/broadcasts') return json([]);
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [] });
       return json({});
     });
     renderWithSession(<App />, session);

@@ -15,6 +15,7 @@ const flagged: Broadcast = {
   startedAt: new Date().toISOString(),
   viewersGlobal: 3,
   pods: [],
+  banState: { banned: false, ban: null },
 };
 
 // AP6's last criterion: the slot exists, and renders NOTHING.

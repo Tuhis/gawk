@@ -24,7 +24,9 @@ function event(id: number, over: Partial<ModerationEvent> = {}): ModerationEvent
 describe('the audit feed (§4.9)', () => {
   it('renders the newest events with actor and type', async () => {
     const session = stubSession((path) =>
-      path.startsWith('api/v1/events') ? json({ events: [event(9), event(8)] }) : json({}),
+      path.startsWith('api/v1/events')
+        ? json({ events: [event(9), event(8)], nextAfterId: null })
+        : json({}),
     );
     renderWithSession(<EventsView />, session);
     expect(await screen.findAllByText('broadcast.killed')).toHaveLength(2);
@@ -33,7 +35,7 @@ describe('the audit feed (§4.9)', () => {
 
   it('pages older events with the afterId cursor', async () => {
     const session = stubSession((path) => {
-      if (path.includes('afterId=8')) return json({ events: [event(7)] });
+      if (path.includes('afterId=8')) return json({ events: [event(7)], nextAfterId: null });
       if (path.startsWith('api/v1/events')) {
         return json({ events: [event(9), event(8)], nextAfterId: 8 });
       }
@@ -47,20 +49,17 @@ describe('the audit feed (§4.9)', () => {
     expect(session.calls.some((c) => c.path.includes('afterId=8'))).toBe(true);
   });
 
-  it('falls back to the oldest id on screen when the server sends no cursor', async () => {
-    // §4.7 pins `afterId` as the cursor but not the field that carries the next
-    // one; the feed must still page rather than stall.
-    const session = stubSession((path) => {
-      if (path.includes('afterId=8')) return json([event(7)]);
-      if (path.startsWith('api/v1/events')) return json([event(9), event(8)]);
-      return json({});
-    });
+  it('stops offering "Load older" once nextAfterId comes back null', async () => {
+    // The key is always present; non-null only when the page came back full. So
+    // null means exhausted, and the view must not page into an empty response.
+    const session = stubSession((path) =>
+      path.startsWith('api/v1/events')
+        ? json({ events: [event(9), event(8)], nextAfterId: null })
+        : json({}),
+    );
     renderWithSession(<EventsView />, session);
     await screen.findAllByText('broadcast.killed');
-    fireEvent.click(screen.getByRole('button', { name: 'Load older' }));
-    await waitFor(() => {
-      expect(session.calls.some((c) => c.path.includes('afterId=8'))).toBe(true);
-    });
+    expect(screen.queryByRole('button', { name: 'Load older' })).toBeNull();
   });
 });
 
@@ -72,6 +71,7 @@ describe('webhook delivery state per event (§4.10, AP6)', () => {
     const session = stubSession((path) =>
       path.startsWith('api/v1/events')
         ? json({
+            nextAfterId: null,
             events: [
               event(9, {
                 deliveries: [
@@ -93,6 +93,7 @@ describe('webhook delivery state per event (§4.10, AP6)', () => {
     const session = stubSession((path) =>
       path.startsWith('api/v1/events')
         ? json({
+            nextAfterId: null,
             events: [
               event(9, {
                 deliveries: [{ webhookName: 'ntfy-oncall', state: 'pending', attempts: 2 }],
@@ -108,7 +109,9 @@ describe('webhook delivery state per event (§4.10, AP6)', () => {
   it('says nothing about deliveries when no webhook is configured', async () => {
     // Zero webhooks is a supported state (§4.10) — events still land here.
     const session = stubSession((path) =>
-      path.startsWith('api/v1/events') ? json({ events: [event(9)] }) : json({}),
+      path.startsWith('api/v1/events')
+        ? json({ events: [event(9)], nextAfterId: null })
+        : json({}),
     );
     renderWithSession(<EventsView />, session);
     await screen.findByText('broadcast.killed');

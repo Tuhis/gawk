@@ -19,13 +19,14 @@ function broadcast(over: Partial<Broadcast> = {}): Broadcast {
     startedAt: new Date(NOW - 90_000).toISOString(),
     viewersGlobal: 12,
     pods: [{ pod: 'gawk-server-0', role: 'origin', viewersLocal: 7 }],
+    banState: { banned: false, ban: null },
     ...over,
   };
 }
 
 function mount(broadcasts: Broadcast[], cooldown = 600) {
   const session = stubSession((path) => {
-    if (path === 'api/v1/broadcasts') return json(broadcasts);
+    if (path === 'api/v1/broadcasts') return json({ broadcasts });
     return json({});
   });
   // `refreshMs={0}`: the 5 s poll is production behaviour, not test behaviour.
@@ -54,9 +55,29 @@ describe('the fleet table', () => {
     expect(await screen.findByText('away')).toBeTruthy();
   });
 
+  // Three states, and the third is the one that matters. AP4 degrades the fleet
+  // read rather than 503ing it when Postgres is unreachable, so `banState` can
+  // be null — and calling that "not banned" would tell an operator a banned
+  // broadcast is clean.
   it('shows an existing ban on the row', async () => {
-    mount([broadcast({ banState: { banned: true } })]);
+    mount([broadcast({ banState: { banned: true, ban: null } })]);
     expect(await screen.findByText('banned')).toBeTruthy();
+  });
+
+  it('shows no ban when the store says there is none', async () => {
+    mount([broadcast({ banState: { banned: false, ban: null } })]);
+    await screen.findByText('ABC123');
+    expect(screen.queryByText('banned')).toBeNull();
+    expect(screen.queryByText('unknown')).toBeNull();
+  });
+
+  it('says "unknown" — never "not banned" — when the ban store was unreachable', async () => {
+    mount([broadcast({ banState: null })]);
+    expect(await screen.findByText('unknown')).toBeTruthy();
+    expect(screen.queryByText('banned')).toBeNull();
+    // The fleet itself is still readable during the outage; that is the point
+    // of the degraded read.
+    expect(screen.getByText('ABC123')).toBeTruthy();
   });
 });
 
@@ -234,7 +255,7 @@ describe('the shared-IP warning (§4.9, §5)', () => {
       broadcast({ id: 'CCC333', publisherRemoteIp: '203.0.113.7' }),
     ];
     const session = stubSession((path) =>
-      path === 'api/v1/broadcasts' ? json(fleet) : json({}),
+      path === 'api/v1/broadcasts' ? json({ broadcasts: fleet }) : json({}),
     );
     renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
     fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
@@ -253,7 +274,7 @@ describe('the shared-IP warning (§4.9, §5)', () => {
       broadcast({ id: 'CCC333', publisherRemoteIp: '203.0.113.3' }),
     ];
     const session = stubSession((path) =>
-      path === 'api/v1/broadcasts' ? json(fleet) : json({}),
+      path === 'api/v1/broadcasts' ? json({ broadcasts: fleet }) : json({}),
     );
     renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
     fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
@@ -264,7 +285,7 @@ describe('the shared-IP warning (§4.9, §5)', () => {
 describe('server refusals', () => {
   it('shows the API’s own words when a kill hits an existing ban', async () => {
     const session = stubSession((path) => {
-      if (path === 'api/v1/broadcasts') return json([broadcast()]);
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
       if (path.endsWith('/kill')) {
         return json(
           { error: { code: 'ban_exists', message: 'an active ban already covers ABC123' } },
@@ -281,5 +302,61 @@ describe('server refusals', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
 
     expect(await screen.findByText(/an active ban already covers ABC123/)).toBeTruthy();
+  });
+
+  // 502 projection_failed is the awkward middle state and the one most likely
+  // to be mishandled: the Postgres row IS committed, only the Ban CR write
+  // failed. Treating it as a failure invites a retry that will now 409 against
+  // the row that does exist; treating it as success claims an enforcement that
+  // has not started.
+  it('reports a ban that was recorded but not yet enforced (502 projection_failed)', async () => {
+    const session = stubSession((path) => {
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
+      if (path === 'api/v1/bans') {
+        return json(
+          {
+            error: { code: 'projection_failed', message: 'could not write the Ban CR' },
+            ban: { id: 'committed', state: 'active' },
+          },
+          502,
+        );
+      }
+      return json({});
+    });
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
+    fireEvent.change(screen.getByLabelText('Reason (required)'), {
+      target: { value: 'terms' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
+
+    const note = await screen.findByRole('alert');
+    expect(note.textContent).toMatch(/recorded/i);
+    expect(note.textContent).toMatch(/NOT enforced yet/);
+    expect(note.textContent).toMatch(/Do not re-submit/);
+    // Not reported as a plain failure, and the dialog is done with.
+    expect(screen.queryByRole('button', { name: 'Kill and ban' })).toBeNull();
+  });
+
+  it('does the same for a plain kill that could not be projected', async () => {
+    const session = stubSession((path) => {
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
+      if (path.endsWith('/kill')) {
+        return json(
+          {
+            error: { code: 'projection_failed', message: 'could not write the Ban CR' },
+            ban: { id: 'committed', state: 'active' },
+          },
+          502,
+        );
+      }
+      return json({});
+    });
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    fireEvent.click(await screen.findByRole('button', { name: 'Kill' }));
+    fireEvent.change(screen.getByLabelText('Reason (required)'), { target: { value: 'spam' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/NOT enforced yet/);
   });
 });

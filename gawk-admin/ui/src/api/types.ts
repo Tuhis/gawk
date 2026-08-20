@@ -1,10 +1,14 @@
-// Wire shapes for the portal API (docs/42 §4.7). One home for them, so no view
-// re-describes a response inline.
+// Wire shapes for the portal API (docs/42 §4.7), pinned to what `internal/api`
+// (AP4) actually serves. One home for them, so no view re-describes a response
+// inline.
 //
-// Where §4.7 pins a field, the type pins it. Where it does not — the inner
-// shape of `banState`, the events envelope — the type is deliberately tolerant
-// and the views render defensively; `internal/api` (AP4) is the authority and
-// this file follows it rather than inventing a second contract.
+// The shapes here are the contract, not a guess: every list route answers with
+// a KEYED envelope (`{"broadcasts": [...]}`), single objects come back bare
+// except `kill`, and the refusal envelope is
+// `{"error": {code, message}}` — carrying `ban` too on the two refusals that
+// are about a specific ban. An earlier draft of this file accepted either a
+// bare array or an envelope, because §4.7 named the rows without naming the
+// wrapper. It now has one authority, so it has one shape.
 
 /** `GET /api/v1/me` — the SPA's authorization probe. */
 export interface Me {
@@ -12,12 +16,13 @@ export interface Me {
   subject: string;
   roles: string[];
   /**
-   * Server-side defaults the portal pre-fills into dialogs. Optional: the
-   * dialogs fall back to the documented values (§4.12) when absent, so an
-   * older backend still renders a usable kill dialog.
+   * Server-side defaults the portal pre-fills into dialogs. AP4 always sends
+   * this, sourced from `cfg.KillCooldown`; it stays optional only so a portal
+   * served by an older binary still renders a usable kill dialog against the
+   * documented fallback (§4.12).
    */
   defaults?: {
-    /** `-kill-cooldown` in seconds. Default 600 (§4.7, §4.12). */
+    /** `-kill-cooldown` in seconds. Documented default 600 (§4.7, §4.12). */
     killCooldownSeconds?: number;
   };
 }
@@ -70,10 +75,19 @@ export interface BroadcastLinks {
   telemetry?: string;
 }
 
-/** Whether an active ban already covers this broadcast. */
+/**
+ * Whether an active ban already covers this broadcast.
+ *
+ * `ban` is null when `banned` is false. The whole object being null is a THIRD
+ * state and means *unknown*: AP4 degrades the fleet read rather than 503ing it
+ * when Postgres is unreachable, so an operator can still see what is
+ * broadcasting during a database outage — it just cannot say whether any of it
+ * is banned. Rendering that as "not banned" would tell an operator a banned
+ * broadcast is clean, which is the exact confusion the null exists to prevent.
+ */
 export interface BroadcastBanState {
   banned: boolean;
-  ban?: Ban | null;
+  ban: Ban | null;
 }
 
 export interface Broadcast {
@@ -87,7 +101,8 @@ export interface Broadcast {
   viewersGlobal: number;
   pods: BroadcastPod[];
   links?: BroadcastLinks;
-  banState?: BroadcastBanState | null;
+  /** null = unknown (see BroadcastBanState), NOT "not banned". */
+  banState: BroadcastBanState | null;
 }
 
 export type DeliveryState = 'pending' | 'delivered' | 'failed';
@@ -120,8 +135,12 @@ export interface ModerationEvent {
 
 export interface EventPage {
   events: ModerationEvent[];
-  /** Cursor for the next (older) page; absent when the feed is exhausted. */
-  nextAfterId?: number | null;
+  /**
+   * Cursor for the next (older) page. The key is ALWAYS present; it is
+   * non-null only when this page came back full, so `null` means the feed is
+   * exhausted and there is nothing more to ask for.
+   */
+  nextAfterId: number | null;
 }
 
 export interface Relay {
@@ -150,6 +169,28 @@ export interface WebhookTestResult {
   status?: number;
   error?: string | null;
   deliveryId?: string;
+}
+
+/**
+ * Every `error.code` `internal/api` emits. A union rather than a bare string so
+ * a view that branches on one cannot quietly branch on a code that does not
+ * exist — `source_immutable` and `projection_failed` both drive real UI.
+ */
+export type ApiErrorCode =
+  | 'bad_request'
+  | 'not_found'
+  | 'duplicate_active'
+  | 'duplicate_name'
+  | 'source_immutable'
+  | 'invalid_target'
+  | 'ban_not_active'
+  | 'projection_failed'
+  | 'unavailable'
+  | 'internal';
+
+/** `POST /broadcasts/{id}/kill` — the one single-object route that is enveloped. */
+export interface KillResponse {
+  ban: Ban;
 }
 
 export interface KillRequest {
