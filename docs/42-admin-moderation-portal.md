@@ -1013,10 +1013,12 @@ code.
 | § | Specified | Implemented | Why |
 |---|---|---|---|
 | §4.3, §4.14 | the file ban source reloads on **fsnotify** + SIGHUP | a **stat poll** (mtime + size) + SIGHUP | `internal/tlsutil/reload.go` already solves "notice this file changed" this way, and matching it adds no dependency to the relay module for a dev-lane feature. The observable behaviour — a changed file is picked up without a restart — is unchanged; the latency is one poll interval instead of a kernel event. |
-| §4.8, §6 | an unreachable IdP is discussed only as a *running* failure | **`New` does not fail on an unreachable issuer at all**: discovery retries in the background, authenticated routes answer `401 idp_unavailable` (never 500, and deliberately without spending the caller's rate-limit budget) until it resolves, and `Ready()`/`ResolveError()` feed `/readyz` | A portal that refuses to start because the IdP is briefly down is a portal that is down for longer than the IdP was — and it turns "restart the pods" into a step that can fail for a reason unrelated to the pods. The security posture is identical: no request is ever authorized while the issuer is unresolved. It is also what makes the CI image smoke test meaningful, since `/healthz` must answer with neither Postgres nor an IdP present. |
+| §4.8, §6 | an unreachable IdP is discussed only as a *running* failure | **`New` does not fail on an unreachable issuer at all**: discovery retries in the background, authenticated routes answer `401 idp_unavailable` (never 500, and deliberately without spending the caller's rate-limit budget) until it resolves, and `Ready()`/`ResolveError()` feed `/readyz` | A portal that refuses to start because the IdP is briefly down is a portal that is down for longer than the IdP was — and it turns "restart the pods" into a step that can fail for a reason unrelated to the pods. The security posture is identical: no request is ever authorized while the issuer is unresolved. It also lets the CI image smoke get all the way to its one expected failure with neither Postgres nor an IdP present, instead of stopping at the IdP. |
 | §4.13, §4.15 | the migration Job hooks `pre-install`/`pre-upgrade` | `post-install`/`pre-upgrade` | A `pre-install` hook runs **before** the release's own manifests, so with `postgres.cnpg.enabled` (the default) it waits for a Secret Helm will not create until the hook finishes — a deadlock on every first install. `pre-upgrade` is untouched, so everything §4.15 actually guarantees still holds: migrated to completion before the new Deployment rolls, and a failed migration halts the upgrade with the previous pods still serving. On a first install there are no previous pods to protect, and the new ones simply come up NotReady with the "schema too old" log line §4.15 already specifies until the Job lands. Recorded as a gotcha, because the Helm ordering is the surprising half. |
 | §4.13 | — | the relay chart's `moderation.source` is a value (`k8s` default), not just `moderation.enabled` | `-moderation-source` accepts `file:<path>` too (§4.14), and a chart that hardcoded `k8s` would have made the compose-lane source unreachable from a Helm install for no reason. |
 | §9 AP8 | *(the kind `e2e-cluster` scenario is listed under AP3)* | landed in **AP8**, as `e2e/moderation-assert.sh` | It needs the CRD template, the relay Role's `bans` access and a chart value — all deployment files — so building it from AP3 would have collided with the chunk that owns them. What it asserts and what it deliberately does not are in the script's own header. |
+| §9 AP8 | the `docker` job smoke-probes every image's HTTP endpoint | the `gawk-admin` entry carries **no probe**; it asserts the process reaches its documented cluster-less failure | The image genuinely cannot serve without Kubernetes (§4.14). The probe was written before `cmd/gawk-admin/main.go` existed and would have failed on its first CI run. A smoke that asserts something false is worse than one that asserts less. |
+| §4.14 | the local lane is "kind or envtest" | `main.go` also falls back to the ordinary kubeconfig loading rules when in-cluster config is absent | That fallback is what makes "run it against kind" work without pretending to be a pod. Deliberately **not** a knob: `KUBECONFIG` is the conventional mechanism, and a flag would have to reach the chart to satisfy the carry-all-limits rule for something a pod would never set. A missing API server stays fatal — unlike the IdP, there is nowhere to write a Ban CR, and a kill button that records a row nothing enforces is worse than a refusal to start. |
 | §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |
 
 ### 11.2 What is verified, and by what
@@ -1052,9 +1054,17 @@ Automated, and gating every PR:
   nothing moderation-related at all.
 - **The `docker` job** builds the `gawk-admin` image from the repo root and
   then RUNS it, pointed at a database that does not exist and an issuer that
-  does not resolve, asserting `/healthz` answers anyway. Building an image is
-  not evidence that it starts (R31 taught this the expensive way).
-- **The kind `e2e-cluster` tier** applies a real `Ban` CR to a two-pod fleet
+  does not resolve. It cannot assert that `/healthz` answers — `gawk-admin`
+  requires Kubernetes by design (§4.14) and exits without it — so it asserts
+  the failure instead: reaching `kubernetes:` proves the binary linked, the
+  entrypoint is right, every flag parsed, and the Postgres and OIDC
+  construction ahead of it were wired. Building an image is not evidence that
+  it starts (R31 taught this the expensive way), and asserting a `/healthz`
+  this image cannot serve would have been worse than asserting nothing.
+- **The kind `e2e-cluster` tier** — note it does **not** run on an ordinary
+  feature PR: it is gated to release-please PRs and `workflow_dispatch`
+  (docs/25 Decision 1, unchanged by R39), so the first automated run of the
+  moderation scenario is the release PR, or a dispatch on demand. It applies a real `Ban` CR to a two-pod fleet
   and asserts the fleet-wide kill from outside every process: the broadcast's
   key leaves **both** pods' `/statusz`, `gawk_moderation_terminations_total`
   reaches ≥1 on **each** pod, an IP ban makes a fresh publish fail and
