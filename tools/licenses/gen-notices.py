@@ -488,6 +488,17 @@ COMPONENTS = {
         sources="`package-lock.json` entries without `dev: true`.",
         collect=lambda: collect_npm("gawk-telemetry/ui"),
     ),
+    "admin-ui": dict(
+        path="gawk-admin/ui",
+        blurb=(
+            "The moderation portal SPA, embedded into the `gawk-admin` binary.\n"
+            "Build-time-only packages are excluded, as for `gawk-app`. The OIDC\n"
+            "public-client flow is hand-rolled against WebCrypto (docs/42 §4.8),\n"
+            "so no OIDC library appears here."
+        ),
+        sources="`package-lock.json` entries without `dev: true`.",
+        collect=lambda: collect_npm("gawk-admin/ui"),
+    ),
     "windows": dict(
         path="gawk-broadcast-windows",
         blurb=(
@@ -576,7 +587,7 @@ def check() -> int:
             if not expression_allowed(pkg.spdx):
                 failures.append(f"{module}: {pkg.name}@{pkg.version} is {pkg.spdx}")
 
-    for project in ("gawk-app", "gawk-telemetry/ui"):
+    for project in ("gawk-app", "gawk-telemetry/ui", "gawk-admin/ui"):
         lock = json.loads(
             (REPO / project / "package-lock.json").read_text(encoding="utf-8")
         )

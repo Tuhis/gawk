@@ -1,0 +1,187 @@
+/* Shared view chrome: headings, tables, badges, dialogs. Per-view modules only
+   carry what is genuinely local to them. */
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+
+.head h1 {
+  font-size: var(--fs-lg);
+  margin: 0;
+}
+
+.sub {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line-strong);
+  padding: var(--sp-1) var(--sp-2);
+  white-space: nowrap;
+}
+
+.table td {
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-2);
+  vertical-align: top;
+}
+
+/* Lifecycle by contrast: an ended or away row is recessed so it cannot
+   out-shout a live one. */
+.recessed td {
+  color: var(--text-dim);
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.error {
+  color: var(--bad);
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.badgeBad {
+  composes: badge;
+  color: var(--bad);
+  background: var(--bad-bg);
+  border-color: var(--bad);
+}
+
+.badgeWarn {
+  composes: badge;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.badgeOk {
+  composes: badge;
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok);
+}
+
+.actions {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+.danger {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+/* Dialogs. A plain fixed overlay rather than <dialog>: jsdom does not implement
+   showModal(), and a moderation confirm is not the place to discover that in
+   production. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  z-index: 100;
+}
+
+.dialog {
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  padding: var(--sp-4);
+  width: min(34rem, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.dialog h2 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-lg);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-3);
+}
+
+.field label {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.row {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.warning {
+  border: 1px solid var(--bad);
+  background: var(--bad-bg);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.caveat {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  margin: var(--sp-1) 0 0;
+}
