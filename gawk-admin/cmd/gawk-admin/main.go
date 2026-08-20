@@ -37,6 +37,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/auth"
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
+	"github.com/Tuhis/gawk/gawk-admin/internal/notify"
 	"github.com/Tuhis/gawk/gawk-admin/internal/portal"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
@@ -113,10 +114,19 @@ func run(args []string, getenv func(string) string) error {
 		return err
 	}
 
+	// The dispatcher is constructed on every replica because Enqueue runs
+	// inline on whichever one served the mutation; only its send LOOP is
+	// singleton work, started from the leadership callback below.
+	dispatcher, err := notify.New(notify.Options{Store: st, Config: cfg, Log: log})
+	if err != nil {
+		return err
+	}
+
 	reconciler, err := kube.NewReconciler(kube.ReconcilerOptions{
 		Records: st,
 		Bans:    bans,
 		Log:     log,
+		Enqueue: dispatcher.Enqueue,
 	})
 	if err != nil {
 		return err
@@ -139,6 +149,8 @@ func run(args []string, getenv func(string) string) error {
 		Config:      cfg,
 		Authn:       authn.Middleware,
 		RequireRole: authn.RequireRole,
+		Enqueuer:    dispatcher,
+		Tester:      dispatcher,
 		// Readiness is the AND of "the schema is one we can serve" and "we can
 		// authenticate somebody". A portal that is up but cannot validate a
 		// token serves nothing an operator can use, so it should not take
@@ -190,6 +202,10 @@ func run(args []string, getenv func(string) string) error {
 		// moment leadership is lost, so a demoted replica stops reconciling
 		// before the new leader begins.
 		OnLeading: func(ctx context.Context) {
+			// Both singletons D16 names. The dispatcher's claims use
+			// FOR UPDATE SKIP LOCKED, so even a leadership handover that
+			// briefly overlaps cannot double-send.
+			go dispatcher.Run(ctx)
 			reconciler.Run(ctx)
 		},
 		// A clean shutdown hands the Lease over rather than making the next
