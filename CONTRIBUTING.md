@@ -119,12 +119,16 @@ cd gawk-broadcast         && go vet ./... && CGO_ENABLED=1 go test -race ./...
 cd gawk-telemetry         && go vet ./... && go test ./...   # plus -tags duckdb
 cd gawk-app               && npm ci && npm run lint && npm test && npm run build
 cd gawk-telemetry/ui      && npm ci && npm run lint && npm test && npm run build
+cd gawk-admin             && go vet ./... && go test ./...   # Postgres-backed
+                                                             # tests SKIP unless
+                                                             # GAWK_ADMIN_TEST_DSN is set
+cd gawk-admin/ui          && npm ci && npm run lint && npm test && npm run build
 cd gawk-broadcast-windows && cargo test --workspace && \
                              cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
 Every Go module must also be `go mod tidy`-clean — the `tidy` job checks all
-three independently, because a bump in one module can leave another (which
+four independently, because a bump in one module can leave another (which
 reaches it through a local `replace`) with a stale graph.
 
 The native Windows broadcaster cross-compiles from Linux with

@@ -1,0 +1,116 @@
+{{- if .Values.moderation.enabled }}
+# R39 (docs/42 §4.2, D14): the Ban custom resource — the distribution layer for
+# enforcement. gawk-admin writes these; every relay pod watches them and answers
+# 451 on the publish path from pod-local memory. The k8s API (replicated etcd)
+# is what makes enforcement survive both a gawk-admin outage and a relay
+# cold-start while gawk-admin is down.
+#
+# It ships in the RELAY chart, not gawk-admin's, and that is D14: the relay is
+# the enforcement owner and works without gawk-admin installed (the file source,
+# §4.14); the reverse is not true.
+#
+# `templates/`, NOT `crds/`. Helm never upgrades a chart's crds/ directory —
+# it installs those once and then leaves them alone forever, so a schema change
+# in a later release would silently not apply. Templated CRDs are ordinary
+# release resources and get patched like everything else. The cost of that
+# choice is that `helm uninstall` would delete the CRD and, with it, every live
+# ban — which is what the resource-policy annotation below is for.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bans.gawk.ioio.fi
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+  annotations:
+    # Uninstalling the relay chart must never delete live enforcement objects.
+    # Deleting a CRD cascades to every CR of that kind; on a cluster where
+    # gawk-admin is still running, that would silently unban everyone.
+    "helm.sh/resource-policy": keep
+spec:
+  group: gawk.ioio.fi
+  scope: Namespaced
+  names:
+    plural: bans
+    singular: ban
+    kind: Ban
+    listKind: BanList
+    shortNames: [ban]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      # NO status subresource in v1alpha1 (docs/42 §4.2, and the rejected
+      # alternative in §7): relays only ever read Bans, which is what keeps
+      # their RBAC at get/list/watch. Per-pod acks would buy observability at
+      # the cost of giving every relay pod write access to enforcement objects.
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            One enforcement decision: a single banned target, optionally
+            time-boxed. Relay pods evaluate expiresAt against their own clock at
+            check time, so enforcement ends on schedule whether or not the
+            janitor has deleted the object yet.
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [target]
+              properties:
+                target:
+                  type: object
+                  description: The handle being banned. Exactly one per object.
+                  required: [type, value]
+                  properties:
+                    type:
+                      type: string
+                      enum: [broadcastId, ip]
+                      description: >-
+                        broadcastId bans one broadcast (and therefore its resume
+                        token, which is HMAC(key, broadcastID) and stateless);
+                        ip bans a CIDR and is the only handle that spans a
+                        re-mint loop.
+                    value:
+                      type: string
+                      minLength: 1
+                      maxLength: 64
+                      description: >-
+                        A normalized uppercase broadcast ID, or a canonical CIDR
+                        ("203.0.113.7/32", "2001:db8::/64"). A bare IP is
+                        canonicalized to /32 or /128 by the writer.
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: >-
+                    RFC 3339. ABSENT means permanent. A value in the past is
+                    simply inert — an expired record never matches.
+                reason:
+                  type: string
+                  maxLength: 512
+                  description: >-
+                    Informational operator text. It may carry operator-private
+                    context, which is why relays log it at Debug only.
+                createdBy:
+                  type: string
+                  maxLength: 256
+                  description: >-
+                    Informational: an OIDC email, "system", or "kubectl" for a
+                    break-glass ban the reconciler later adopts.
+      # `kubectl get bans` is a real emergency surface — the break-glass path
+      # when gawk-admin is down is `kubectl apply` of one of these, and the
+      # operator doing that needs to read the result without piping it through
+      # jsonpath.
+      additionalPrinterColumns:
+        - name: Type
+          type: string
+          jsonPath: .spec.target.type
+        - name: Value
+          type: string
+          jsonPath: .spec.target.value
+        - name: Expires
+          type: string
+          jsonPath: .spec.expiresAt
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+{{- end }}

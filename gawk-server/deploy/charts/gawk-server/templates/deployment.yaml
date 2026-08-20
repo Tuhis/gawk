@@ -35,7 +35,9 @@ spec:
       # with 4002 inside ~1.25s and exits — 10s is generous headroom, and a
       # hung pod must not linger into the next rollout step.
       terminationGracePeriodSeconds: 10
-      {{- if .Values.config.clusterMode }}
+      {{- if or .Values.config.clusterMode .Values.moderation.enabled }}
+      # Cluster mode wants Lease verbs; moderation wants read-only Bans. Either
+      # alone needs the identity — see rbac.yaml.
       serviceAccountName: {{ include "gawk-server.fullname" . }}
       {{- end }}
       {{- with .Values.imagePullSecrets }}
@@ -132,6 +134,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- end }}
+            {{- if or .Values.config.clusterMode .Values.moderation.enabled }}
+            # Which namespace this pod's Leases and Ban CRs live in. Wanted by
+            # cluster mode (R17 W3) and, independently, by the moderation
+            # informer (R39) — so it is not gated on either one alone.
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -215,6 +222,47 @@ spec:
             # the FRONTEND ingress (ingest rides it), not this relay.
             - name: GAWK_TELEMETRY_ADVERTISE_URL
               value: {{ .Values.telemetry.advertiseUrl | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.moderation.enabled }}
+            # R39 (docs/42 §4.3): where this pod reads enforcement from.
+            # "k8s" watches Ban CRs in POD_NAMESPACE — independent of cluster
+            # mode, so kills and bans work on a single-pod install too.
+            - name: GAWK_MODERATION_SOURCE
+              value: {{ .Values.moderation.source | quote }}
+            {{- if or .Values.moderation.adminApi.tokenRef .Values.moderation.adminApi.token }}
+            # The static bearer credential for /internal/admin/* on the ops
+            # listener — the machine path gawk-admin uses to enumerate the
+            # fleet. Its own token, deliberately NOT the internal PSK: a
+            # different trust domain, independently rotatable (docs/42 §5).
+            # With neither this nor an OIDC issuer set, those routes 404.
+            - name: GAWK_ADMIN_API_TOKEN
+              {{- if .Values.moderation.adminApi.tokenRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.moderation.adminApi.tokenRef.name | quote }}
+                  key: {{ .Values.moderation.adminApi.tokenRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.moderation.adminApi.token | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.moderation.adminApi.oidc.issuer }}
+            # The alternative credential for the same routes: an OIDC JWT,
+            # verified offline against a cached JWKS. It lets a human (or a
+            # JWT-holding tool) reach them with the same identity the portal
+            # uses, and lets the IdP govern who may read raw broadcast IDs.
+            - name: GAWK_ADMIN_OIDC_ISSUER
+              value: {{ .Values.moderation.adminApi.oidc.issuer | quote }}
+            - name: GAWK_ADMIN_OIDC_AUDIENCE
+              value: {{ .Values.moderation.adminApi.oidc.audience | quote }}
+            {{- with .Values.moderation.adminApi.oidc.rolesClaim }}
+            - name: GAWK_ADMIN_OIDC_ROLES_CLAIM
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.moderation.adminApi.oidc.role }}
+            - name: GAWK_ADMIN_OIDC_ROLE
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if .Values.config.serverName }}

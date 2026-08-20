@@ -1027,7 +1027,55 @@ Add to it when a new gotcha lands in `docs/`.
   forwarded mapping would corrupt viewers' capture→render latency by that
   epoch difference. ([docs/22](22-relay-scale-out.md))
 
+**Moderation and the admin portal (R39)**
+
+- **client-go ≥ 1.35 defaults the `WatchListClient` feature gate ON, which
+  makes a `SharedIndexInformer` fed by a `watch.FakeWatcher` never sync and
+  never call `List`.** The reflector opens a streaming watch-list and waits
+  forever for an `initial-events-end` bookmark the fake never sends. It fails
+  as a silent 5-second timeout with **nothing logged below klog `-v=3`**, so
+  the informer simply appears to do nothing. Fix in informer tests:
+  `clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)`.
+  Production is unaffected — a real API server sends the bookmark.
+  ([docs/42](42-admin-moderation-portal.md) §4.2)
+- **A Helm `pre-install` hook runs before the chart's own manifests**, so a
+  migration Job cannot read a Secret the same chart creates. With a CNPG
+  `Cluster` in the chart, a `pre-install` migration deadlocks on a first
+  install: Helm waits for the Job, the Job's pod waits for a Secret Helm will
+  not create until the Job finishes. `post-install,pre-upgrade` keeps
+  everything the upgrade guarantee needs and drops the deadlock.
+  ([docs/42](42-admin-moderation-portal.md) §4.15)
+- **Helm never upgrades a chart's `crds/` directory** — it installs those once
+  and then leaves them alone forever, so a schema change in a later release
+  silently does not apply. Ship CRDs from `templates/` (with
+  `helm.sh/resource-policy: keep`, so uninstall does not cascade-delete every
+  live custom resource) when the schema is expected to evolve.
+  ([docs/42](42-admin-moderation-portal.md) D14)
+- **CloudNativePG's generated application Secret is `<cluster-name>-app`**, and
+  its `uri` key is a complete connection URI. That naming is the operator's
+  contract, not a choice the chart makes — derive it, do not ask the operator
+  to restate it.
+- **Postgres-backed Go tests that `t.Skip` without a DSN report as PASSES**, so
+  a CI job that forgets to set the environment variable is green and proves
+  nothing. The database is where the interesting invariants live (partial
+  unique indexes, `FOR UPDATE SKIP LOCKED`, advisory locks), so the job has to
+  assert the tests actually ran, not just that they did not fail.
+  ([docs/42](42-admin-moderation-portal.md) AP4/AP8)
+- **A raw broadcast ID is a join capability**, which is why it may appear in
+  exactly three places — the credential-gated relay admin endpoints, the
+  OIDC-gated portal, and Postgres — and never in a webhook payload, `/statusz`
+  or a log line at Info+. Webhooks carry the HMAC'd key and a portal link
+  instead. Ban *reasons*, by contrast, do ride webhooks: they are operator text
+  and the receiver sees them.
+  ([docs/42](42-admin-moderation-portal.md) D8)
+
 **CI / deployment**
+
+- **`cmd | grep -q` inverts a "this must fail" test under `set -o pipefail`**
+  (which is GitHub Actions' default shell): the pipeline reports the *failing*
+  command's status, so `if helm template … | grep -q 'expected error'` takes
+  the else branch even when the message matched. Assign the output first
+  (`if out=$(cmd 2>&1); then …`), then grep the variable.
 
 - **Tags created with `GITHUB_TOKEN` don't trigger workflows** — publish
   jobs must chain off release-please outputs in the same workflow, never

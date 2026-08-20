@@ -1,0 +1,10 @@
+apiVersion: v2
+name: gawk-admin
+description: Moderation portal for a gawk relay fleet (R39) — fleet-wide kill, durable ID/IP bans projected into Ban CRs, an OIDC-gated operator SPA and signed webhook notifications.
+type: application
+# Both fields are bumped by release-please; the image tag defaults to
+# appVersion, so chart version == image version always holds — and the
+# migration hook Job derives its tag from the SAME expression, so the schema
+# that runs is always the one this release carries (docs/42 §4.15).
+version: 0.1.0 # x-release-please-version
+appVersion: "0.1.0" # x-release-please-version

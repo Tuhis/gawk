@@ -1,0 +1,234 @@
+# gawk-admin (R39, docs/42) — the moderation portal.
+#
+# Install it together with:
+#   * the relay chart's  moderation.enabled=true  (installs the Ban CRD, gives
+#     relay pods read-only watch access to it, and sets the relay's
+#     -admin-api-token to the SAME value as relayAdminToken below)
+#   * a CloudNativePG operator already running in the cluster (docs/42 D3), or
+#     postgres.cnpg.enabled=false plus your own DSN in a Secret.
+#
+# Two things are NOT optional, because the service refuses to start without
+# them (and that refusal is the design — docs/42 D7: a portal that comes up
+# with authentication silently off is the one failure this service must never
+# have):
+#   * externalUrl
+#   * oidc.issuer / oidc.clientId / oidc.audience
+#   * relayAdminToken
+# The chart renders them empty by default so a `helm template` works; the pod
+# will CrashLoopBackOff with a named flag until they are set.
+
+image:
+  repository: ghcr.io/tuhis/gawk-admin
+  # Empty = the chart's appVersion, which release-please keeps in lockstep with
+  # the published image tag. The migration hook Job derives its tag from this
+  # SAME expression: the schema that runs is always the one this release ships
+  # (docs/42 §4.15), never a floating :latest that could be a version ahead.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The published images are public; see the gawk-server chart's values.
+imagePullSecrets: []
+
+# TWO replicas by default (docs/42 D16). The API is stateless — every request
+# carries its own OIDC JWT and every replica reads and writes the same
+# Postgres — so HA of the moderation plane is a property of the chart, not a
+# later migration. Singleton background work (the reconciler/janitor and the
+# webhook dispatcher) runs only on the replica holding the leader Lease; the
+# others serve API traffic and stand by.
+replicaCount: 2
+
+# Voluntary disruptions (node drains) must never take the whole moderation
+# plane: a paged operator with a phone is exactly the person who cannot wait
+# for a drain to finish. Rendered only at replicaCount > 1, like the relay's.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# The single HTTP listener: the SPA, /api/v1, /auth/config, /healthz, /readyz.
+# There is no non-public half to keep off an Ingress (contrast gawk-telemetry's
+# two-Service split) — here the auth boundary is OIDC, not network placement.
+service:
+  port: 8090
+  annotations: {}
+
+# The portal base URL. It is the OIDC redirect base the SPA registers with the
+# provider AND the portalUrl that webhook payloads carry instead of a raw
+# broadcast ID (docs/42 D8), so it must be the URL an operator actually opens.
+#   externalUrl: "https://admin.gawk.example.com"
+externalUrl: ""
+
+# OPTIONAL and deliberate: this is the first internet-exposable admin surface
+# in the stack (docs/42 D7). Enabling it makes the chart demand the three OIDC
+# knobs below — it refuses to ROUTE a configuration that cannot authenticate,
+# even though the process enforces auth regardless.
+#
+# Default off: ClusterIP + `kubectl -n gawk port-forward svc/gawk-admin
+# 8090:8090` is the zero-exposure way to use the portal.
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
+# OIDC (docs/42 §4.8, D17). Any spec-compliant provider works; the SPA is a
+# PUBLIC client (authorization code + PKCE) and there is no client secret
+# anywhere in this chart, by design.
+oidc:
+  # e.g. "https://id.example.com/realms/gawk"
+  issuer: ""
+  # The public client ID the portal SPA authenticates with.
+  clientId: ""
+  # The audience every accepted JWT must carry. With Keycloak this is normally
+  # the same string as clientId.
+  audience: ""
+  # Dot-path to the roles array inside the JWT. The default is Keycloak's
+  # client-roles shape with {clientId} substituted at parse time; override it
+  # for providers that put roles elsewhere (e.g. "groups" for a top-level
+  # claim). Blank makes the service refuse to start — with no roles claim
+  # every valid token would be an operator.
+  rolesClaim: "resource_access.{clientId}.roles"
+  # The role every R39 route requires. Grant it in the IdP, where access is
+  # managed and audited; there is deliberately no allowlist here (D17).
+  operatorRole: operator
+  # Reserved for R40's flag-only service identity. No R39 route consults it.
+  flaggerRole: flagger
+
+# How gawk-admin finds relay pods (docs/42 D12). The relay chart's HEADLESS
+# metrics Service publishes one A record per ready pod; a plain ClusterIP would
+# load-balance, so a scrape would hit one random pod and the fleet view would
+# flicker. Requires the relay chart's metrics.enabled and moderation.enabled
+# (that pair is what makes it render).
+relay:
+  scanTarget: gawk-server-metrics-headless
+  opsPort: 2112
+  # The bearer token for the relay's /internal/admin/* routes. MUST equal the
+  # relay chart's moderation.adminApi.token — it is a machine credential in its
+  # own trust domain, deliberately not the internal PSK (docs/42 §5).
+  #   kubectl -n gawk create secret generic gawk-admin-relay-token \
+  #     --from-literal=token=$(openssl rand -hex 32)
+  # then set: adminTokenRef: {name: gawk-admin-relay-token, key: token}
+  adminToken: ""
+  adminTokenRef: {}
+
+# Deep links the portal renders next to each broadcast. Empty hides that link
+# rather than rendering a dead one.
+links:
+  # The frontend origin — watch links are <appBaseUrl>/#/view/<id>.
+  appBaseUrl: ""
+  # The telemetry UI — links are <telemetryBaseUrl>/#/broadcast/<key>, keyed by
+  # the HMAC'd broadcast key so the portal never needs the relay's stats key.
+  telemetryBaseUrl: ""
+
+config:
+  # A plain "kill" is an ID ban with this cooldown (docs/42 D5): the
+  # broadcaster auto-reclaims with its resume token within seconds, so a kill
+  # with no cooldown resurrects before the portal has refreshed. The operator
+  # is never racing auto-resume while deciding on a real ban.
+  killCooldown: 10m
+  logLevel: info
+  logFormat: json
+
+# Chart-defined webhooks (docs/42 D9). These stay GitOps-reviewable and are
+# immutable in the portal (any write against one answers 409 source_immutable);
+# operator-created webhooks live in Postgres instead and can be added from a
+# phone.
+#
+# Each entry's signing key is sourced from a Kubernetes Secret through an
+# environment variable, so the key never sits in this file — the JSON knob the
+# chart renders carries only the env var's NAME:
+#
+#   notifications:
+#     webhooks:
+#       - name: ntfy
+#         url: https://ntfy.sh/gawk-moderation-abc123
+#         secretRef: {name: gawk-admin-webhooks, key: ntfy}
+#       - name: staging-test
+#         url: https://example.invalid/hook
+#         secret: "a-literal-key-for-a-throwaway-environment"
+#         enabled: false
+#
+# The receiver sees ban REASONS (they are operator-chosen text and may carry
+# private context) but never a raw broadcast ID or IP — see docs/self-hosting.md
+# for what a receiver must verify.
+notifications:
+  webhooks: []
+
+# The database (docs/42 D3). CloudNativePG by default: it is the operator-grade
+# way to run Postgres, and gawk-admin needs a SHARED store precisely because it
+# scales horizontally (D16) — pod-local state could never back two replicas.
+#
+# The CNPG OPERATOR IS A PREREQUISITE, not something this chart installs:
+#   kubectl apply --server-side -f \
+#     https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.28/releases/cnpg-1.28.0.yaml
+#
+# Bring-your-own-Postgres: set cnpg.enabled=false and point dsnSecretRef at a
+# Secret holding a libpq DSN or postgres:// URL.
+postgres:
+  cnpg:
+    enabled: true
+    # The CNPG operand image. Pinned rather than floating: a major-version jump
+    # is a migration, not an upgrade.
+    imageName: ghcr.io/cloudnative-pg/postgresql:18.2
+  # Two instances: a primary and one hot standby. HA of the moderation plane is
+  # a stated reason the system of record is a real database (D16), and a
+  # single-instance cluster would make node maintenance an outage of it.
+  instances: 2
+  storage:
+    size: 2Gi
+    storageClass: ""
+  database: gawk_admin
+  owner: gawk_admin
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  # Used ONLY when cnpg.enabled is false. The key must hold a complete DSN.
+  #   kubectl -n gawk create secret generic gawk-admin-pg \
+  #     --from-literal=dsn='postgres://user:pw@host:5432/gawk_admin?sslmode=require'
+  dsnSecretRef: {}
+
+# The migration step (docs/42 D18/§4.15). A Helm pre-install/pre-upgrade hook
+# Job running `gawk-admin migrate` from THIS release's image, to completion,
+# before the Deployment rolls. If it fails the upgrade halts and the previous
+# pods keep serving against the pre-migration schema — which the expand-contract
+# policy guarantees they can.
+#
+# Turning it off is a break-glass posture, not a supported one: the serving
+# process never runs DDL, so nothing else will apply the schema. Run
+# `gawk-admin migrate` by hand if you disable it.
+migrations:
+  enabled: true
+  # Hook weight -5: ahead of anything else a future chart version might hook.
+  backoffLimit: 3
+  # The Job's pod lingers until the next pre-* hook replaces it
+  # (before-hook-creation), which is what leaves its logs readable after a
+  # failed upgrade — the one moment anybody wants them.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+serviceAccount:
+  # Set to use an existing ServiceAccount instead of the one this chart creates
+  # (which carries the Ban CRUD + leader-election Lease permissions).
+  create: true
+  name: ""
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 512Mi
+
+# Verbatim pod-spec env entries, for a knob this chart has not grown a value
+# for yet. GAWK_ADMIN_*-prefixed names are what the binary reads.
+extraEnv: []

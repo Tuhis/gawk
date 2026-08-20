@@ -1,5 +1,9 @@
-{{- if and .Values.metrics.enabled .Values.telemetry.enabled .Values.telemetry.headlessService.enabled }}
-# R28 TM4 (docs/33 D5): the per-pod address source for gawk-telemetry.
+{{- if and .Values.metrics.enabled (or (and .Values.telemetry.enabled .Values.telemetry.headlessService.enabled) .Values.moderation.enabled) }}
+# R28 TM4 (docs/33 D5): the per-pod address source for gawk-telemetry — and,
+# since R39 (docs/42 D12), for gawk-admin's fleet enumeration too. Both scrape
+# every pod; neither can do it through a load-balancing ClusterIP. The gate
+# therefore widened from "telemetry wants it" to "either consumer wants it",
+# and one Service serves both: the addresses are the same addresses.
 #
 # The relay is SCRAPED, never pushed from — the process carrying every
 # broadcast's hot path must not grow an outbound HTTP client or a queue. But

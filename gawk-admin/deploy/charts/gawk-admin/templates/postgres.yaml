@@ -1,0 +1,49 @@
+{{- if .Values.postgres.cnpg.enabled }}
+# The system of record (docs/42 D3): Postgres, run by CloudNativePG.
+#
+# The CNPG OPERATOR IS A PREREQUISITE. This chart renders a Cluster custom
+# resource; it does not install the controller that reconciles one. Installing
+# an operator on someone's behalf is not a dependency this chart should own —
+# operators are cluster-scoped, carry CRDs and webhooks, and are usually
+# already there. docs/self-hosting.md carries the one-line install command.
+#
+# resource-policy: keep — `helm uninstall` must never take the database with
+# it. The audit trail is the one artifact here that cannot be rebuilt from
+# anything else: the Ban CRs can be re-projected, the fleet view is scraped
+# live, but the record of who killed what and why exists only in these tables.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "gawk-admin.pgClusterName" . }}
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  # TWO instances by default — a primary and one hot standby. HA of the
+  # moderation plane is a stated reason gawk-admin has a dedicated database at
+  # all (D16); a single-instance cluster would make routine node maintenance an
+  # outage of the thing an operator reaches for during an incident.
+  instances: {{ .Values.postgres.instances }}
+  imageName: {{ .Values.postgres.cnpg.imageName | quote }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.postgres.database | quote }}
+      owner: {{ .Values.postgres.owner | quote }}
+  storage:
+    size: {{ .Values.postgres.storage.size | quote }}
+    {{- with .Values.postgres.storage.storageClass }}
+    storageClass: {{ . | quote }}
+    {{- end }}
+  resources:
+    {{- toYaml .Values.postgres.resources | nindent 4 }}
+{{- else }}
+{{- if not .Values.postgres.dsnSecretRef.name }}
+{{- fail "postgres.cnpg.enabled=false requires postgres.dsnSecretRef: {name, key} naming a Secret that holds a Postgres DSN (docs/42 §4.13)" }}
+{{- end }}
+# postgres.cnpg.enabled=false — bring-your-own-Postgres. Nothing is rendered
+# here; the DSN comes from {{ .Values.postgres.dsnSecretRef.name }} and both the
+# Deployment and the migration Job read it from there. The escape hatch exists
+# so a self-hoster with an existing database (or a managed one) is not forced to
+# adopt an operator (docs/42 §4.13).
+{{- end }}

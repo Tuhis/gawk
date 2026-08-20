@@ -93,6 +93,60 @@ telemetry:
   # Only meaningful with telemetry.enabled.
   advertiseUrl: ""
 
+# R39 (docs/42): MODERATION — the fleet-wide kill/ban enforcement path.
+# OFF by default: a deployment that leaves it off renders byte-identically to
+# the pre-R39 chart — no CRD, no RBAC, no environment, no headless Service.
+#
+# Turning it on does three things: installs the Ban CustomResourceDefinition
+# (annotated resource-policy: keep, so `helm uninstall` never deletes live
+# bans), gives relay pods READ-ONLY watch access to it, and points the relay's
+# -moderation-source at it. Enforcement then works with or without
+# config.clusterMode — the Ban informer is independent of federation.
+#
+# The relay is the enforcement owner and needs nothing else installed: a
+# `kubectl apply` of a Ban CR enforces on its own. gawk-admin is the operator
+# surface that writes them (its own chart), and it is what the adminApi block
+# below exists for.
+moderation:
+  enabled: false
+  # Where enforcement comes from. "k8s" watches Ban CRs in this pod's
+  # namespace. "file:/path/to/bans.json" is the dev/compose lane, reloaded on
+  # change and on SIGHUP — set it here only if you are mounting such a file.
+  source: k8s
+  # The relay's read-only admin API (docs/42 §4.5): GET /internal/admin/broadcasts
+  # and /internal/admin/config on the ops listener (ClusterIP-only, port
+  # metrics.port). These are how gawk-admin enumerates live broadcasts and shows
+  # each pod's effective config.
+  #
+  # THE SURFACE STAYS DARK UNTIL A CREDENTIAL IS SET: with neither token nor
+  # OIDC issuer configured the routes answer 404, not 401. Setting one is what
+  # brings them into existence.
+  #
+  # These responses carry RAW broadcast IDs — the one deliberate, scoped
+  # relaxation of the never-expose-raw-IDs invariant (docs/42 D8). /statusz on
+  # either listener is unchanged and still HMAC-only. Do not route the ops port
+  # publicly.
+  adminApi:
+    # The machine credential gawk-admin uses. MUST equal the gawk-admin chart's
+    # relay.adminToken. Generate once:
+    #   kubectl -n gawk create secret generic gawk-admin-relay-token \
+    #     --from-literal=token=$(openssl rand -hex 32)
+    # then set: tokenRef: {name: gawk-admin-relay-token, key: token}
+    token: ""
+    tokenRef: {}
+    # OPTIONAL second credential for the SAME routes: an OIDC JWT, verified
+    # offline against a cached JWKS (the relay never blocks on the IdP). Lets a
+    # human reach them with the identity the portal already issued, instead of
+    # a shared string. issuer and audience must be set together.
+    oidc:
+      issuer: ""
+      audience: ""
+      # Both blank = the binary's defaults, which are the Keycloak client-roles
+      # shape ("resource_access.{audience}.roles") and the role "operator".
+      # Override for a provider that puts roles elsewhere.
+      rolesClaim: ""
+      role: ""
+
 certificate:
   # cert-manager Certificate for the relay's public name. The server's
   # tlsutil.Reloader picks up renewals on the fly — no pod restart needed.

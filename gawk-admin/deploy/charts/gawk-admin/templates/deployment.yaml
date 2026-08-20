@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gawk-admin.fullname" . }}
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+spec:
+  # TWO by default (docs/42 D16). Not an aspiration the code has to grow into:
+  # the API is stateless (every request carries its own JWT — D17), the store is
+  # shared Postgres, CR names are deterministic, ban writes are guarded by a
+  # unique index, and webhook deliveries are claimed FOR UPDATE SKIP LOCKED.
+  # Singleton work runs under a leader Lease. Scaling this to 1 is allowed; it
+  # just costs HA of the moderation plane.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "gawk-admin.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gawk-admin.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gawk-admin.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gawk-admin
+          image: "{{ include "gawk-admin.image" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: GAWK_ADMIN_ADDR
+              value: ":{{ .Values.service.port }}"
+            - name: GAWK_ADMIN_EXTERNAL_URL
+              value: {{ .Values.externalUrl | quote }}
+            # OIDC (docs/42 §4.8). Every one of these is required by the
+            # binary: it refuses to start rather than serve a portal whose
+            # authentication is silently off.
+            - name: GAWK_ADMIN_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: GAWK_ADMIN_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            - name: GAWK_ADMIN_OIDC_AUDIENCE
+              value: {{ .Values.oidc.audience | quote }}
+            - name: GAWK_ADMIN_OIDC_ROLES_CLAIM
+              value: {{ .Values.oidc.rolesClaim | quote }}
+            - name: GAWK_ADMIN_OPERATOR_ROLE
+              value: {{ .Values.oidc.operatorRole | quote }}
+            - name: GAWK_ADMIN_FLAGGER_ROLE
+              value: {{ .Values.oidc.flaggerRole | quote }}
+            # The system of record. Same Secret the migration hook Job reads,
+            # by construction (one helper).
+            {{- include "gawk-admin.pgDsnEnv" . | nindent 12 }}
+            # Fleet discovery (docs/42 D12): the relay's HEADLESS metrics
+            # Service, whose A records are the ready pods.
+            - name: GAWK_ADMIN_RELAY_SCAN_TARGET
+              value: {{ .Values.relay.scanTarget | quote }}
+            - name: GAWK_ADMIN_RELAY_OPS_PORT
+              value: {{ .Values.relay.opsPort | quote }}
+            # The machine credential for the relay's /internal/admin/* routes.
+            # MUST equal the relay chart's moderation.adminApi.token.
+            - name: GAWK_ADMIN_RELAY_ADMIN_TOKEN
+              {{- if .Values.relay.adminTokenRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.relay.adminTokenRef.name | quote }}
+                  key: {{ .Values.relay.adminTokenRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.relay.adminToken | quote }}
+              {{- end }}
+            # Where Ban CRs live. The binary defaults -namespace to
+            # POD_NAMESPACE, so the downward API is the whole wiring.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GAWK_ADMIN_KILL_COOLDOWN
+              value: {{ .Values.config.killCooldown | quote }}
+            - name: GAWK_ADMIN_APP_BASE_URL
+              value: {{ .Values.links.appBaseUrl | quote }}
+            - name: GAWK_ADMIN_TELEMETRY_BASE_URL
+              value: {{ .Values.links.telemetryBaseUrl | quote }}
+            {{- with .Values.notifications.webhooks }}
+            # Chart-defined webhooks (docs/42 D9). This knob carries names,
+            # URLs and the NAME of each signing key's environment variable —
+            # never a key. The keys themselves are the env vars below.
+            - name: GAWK_ADMIN_STATIC_WEBHOOKS
+              value: {{ include "gawk-admin.staticWebhooksJson" $ | quote }}
+            {{- range . }}
+            - name: {{ include "gawk-admin.webhookSecretEnv" .name }}
+              {{- if .secretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretRef.name | quote }}
+                  key: {{ .secretRef.key | quote }}
+              {{- else }}
+              value: {{ .secret | quote }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
+            - name: GAWK_ADMIN_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: GAWK_ADMIN_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # /healthz is "the process is up"; /readyz is "this replica can
+          # actually act" — Postgres reachable, schema version within the
+          # compatibility window (docs/42 §4.15), OIDC discovery resolved.
+          # Readiness on /readyz is deliberate: a replica that cannot reach the
+          # system of record would answer 503 to every mutation anyway, and
+          # taking it out of the Service says so honestly instead of letting a
+          # load balancer spread failures at random.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

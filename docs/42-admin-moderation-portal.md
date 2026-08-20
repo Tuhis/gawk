@@ -1,6 +1,6 @@
 # R39 — Admin portal for moderation (docs/42)
 
-**Status**: designed 2026-08-20, not started. Chunks AP1–AP8.
+**Status**: designed 2026-08-20; **AP1–AP8 implemented 2026-08-20**. One item outstanding and it is the milestone-closing one — the manual pass on the reference deployment (§11.3), which needs a real cluster, a real identity provider and a live broadcast. Implementation record: §11.
 
 ---
 
@@ -245,7 +245,7 @@ added at `main.go:64-96` — the operator's confirmation surface):
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` | `off` \| `k8s` \| `file:<path>`. `k8s`: informer on Ban CRs in `POD_NAMESPACE` (in-cluster config; independent of `-cluster-mode`). `file`: JSON array of records, reloaded on fsnotify + SIGHUP — the dev/compose lane (§4.14). |
+| `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` | `off` \| `k8s` \| `file:<path>`. `k8s`: informer on Ban CRs in `POD_NAMESPACE` (in-cluster config; independent of `-cluster-mode`). `file`: JSON array of records, reloaded on a **stat poll** (mtime+size) and on SIGHUP — the dev/compose lane (§4.14). *(Implementation deviation, §11.1: stat-polling rather than fsnotify, following `internal/tlsutil/reload.go` — no new dependency.)* |
 | `-admin-api-token` | `GAWK_ADMIN_API_TOKEN` | `""` | Static bearer token for `/internal/admin/*` on the ops listener (the machine credential `gawk-admin` uses). |
 | `-admin-oidc-issuer` / `-admin-oidc-audience` | `GAWK_ADMIN_OIDC_ISSUER` / `GAWK_ADMIN_OIDC_AUDIENCE` | `""` | Alternative credential for the same routes: accept OIDC JWTs with this issuer + audience, verified offline against a cached JWKS (§4.5). Both set or both empty. **When neither the token nor the issuer is configured, the routes return 404** — the surface stays dark, not merely locked. |
 | `-admin-oidc-roles-claim` / `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLES_CLAIM` / `GAWK_ADMIN_OIDC_ROLE` | see §4.5 | Roles-claim dot-path (default `resource_access.{audience}.roles`) and the role a JWT must carry (default `operator`). |
@@ -409,7 +409,7 @@ gawk-admin/
   internal/auth/                # JWT validation (cached JWKS), role-claim authorization
   internal/api/                 # /api/v1 handlers
   internal/notify/              # webhook signer + retry queue (dispatcher runs on the leader)
-  internal/dashboard/           # go:embed dist (telemetry pattern incl. notBuilt page)
+  internal/portal/              # go:embed dist (telemetry pattern incl. notBuilt page)
   ui/                           # Vite + React + TS + CSS modules SPA
   deploy/                       # Dockerfile + chart
   go.mod                        # replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
@@ -749,7 +749,7 @@ admin URL.
 ### 4.14 Dev and non-Kubernetes story
 
 - **Relay enforcement** develops and tests without k8s:
-  `-moderation-source=file:bans.json` (fsnotify + SIGHUP reload) slots into
+  `-moderation-source=file:bans.json` (stat-poll + SIGHUP reload, §11.1) slots into
   the R38 compose lane; unit tests drive `moderation.Set` directly.
 - **`gawk-admin`** requires Kubernetes (CRs) and Postgres by design. Local
   lane: `kind` (the `e2e` tier already exists) or envtest for the
@@ -993,3 +993,150 @@ sees it end with the moderator message, the broadcaster cannot return with
 its resume token or a fresh mint from the same IP, `kubectl get bans` shows
 the enforcement object, and the whole exchange left an audit trail in
 Postgres. Glass stays intact for every other broadcast on the fleet.
+
+---
+
+## 11. Implementation status (2026-08-20)
+
+All eight chunks landed on the same day the design did. This section is the
+record of what the design could not have known: §11.1 lists every deviation
+from §4 with its reason, §11.2 says what is verified and by what, §11.3 is the
+one pass that is still manual — **and it is the milestone-closing one** — and
+§11.4 says where to record its outcome.
+
+Per-chunk verification is not restated here: each chunk's acceptance-criteria
+cell in §9 is its contract, and the tests that discharge it live next to the
+code.
+
+### 11.1 Deviations from §4, and why
+
+| § | Specified | Implemented | Why |
+|---|---|---|---|
+| §4.3, §4.14 | the file ban source reloads on **fsnotify** + SIGHUP | a **stat poll** (mtime + size) + SIGHUP | `internal/tlsutil/reload.go` already solves "notice this file changed" this way, and matching it adds no dependency to the relay module for a dev-lane feature. The observable behaviour — a changed file is picked up without a restart — is unchanged; the latency is one poll interval instead of a kernel event. |
+| §4.8, §6 | an unreachable IdP is discussed only as a *running* failure | **`New` does not fail on an unreachable issuer at all**: discovery retries in the background, authenticated routes answer `401 idp_unavailable` (never 500, and deliberately without spending the caller's rate-limit budget) until it resolves, and `Ready()`/`ResolveError()` feed `/readyz` | A portal that refuses to start because the IdP is briefly down is a portal that is down for longer than the IdP was — and it turns "restart the pods" into a step that can fail for a reason unrelated to the pods. The security posture is identical: no request is ever authorized while the issuer is unresolved. It is also what makes the CI image smoke test meaningful, since `/healthz` must answer with neither Postgres nor an IdP present. |
+| §4.13, §4.15 | the migration Job hooks `pre-install`/`pre-upgrade` | `post-install`/`pre-upgrade` | A `pre-install` hook runs **before** the release's own manifests, so with `postgres.cnpg.enabled` (the default) it waits for a Secret Helm will not create until the hook finishes — a deadlock on every first install. `pre-upgrade` is untouched, so everything §4.15 actually guarantees still holds: migrated to completion before the new Deployment rolls, and a failed migration halts the upgrade with the previous pods still serving. On a first install there are no previous pods to protect, and the new ones simply come up NotReady with the "schema too old" log line §4.15 already specifies until the Job lands. Recorded as a gotcha, because the Helm ordering is the surprising half. |
+| §4.13 | — | the relay chart's `moderation.source` is a value (`k8s` default), not just `moderation.enabled` | `-moderation-source` accepts `file:<path>` too (§4.14), and a chart that hardcoded `k8s` would have made the compose-lane source unreachable from a Helm install for no reason. |
+| §9 AP8 | *(the kind `e2e-cluster` scenario is listed under AP3)* | landed in **AP8**, as `e2e/moderation-assert.sh` | It needs the CRD template, the relay Role's `bans` access and a chart value — all deployment files — so building it from AP3 would have collided with the chunk that owns them. What it asserts and what it deliberately does not are in the script's own header. |
+| §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |
+
+### 11.2 What is verified, and by what
+
+Automated, and gating every PR:
+
+- **The four modules' own suites.** `admin` (with a Postgres service container,
+  and a step that fails if the database-backed tests *skipped* — a suite that
+  silently skips is worse than one that fails), `admin-ui`, `server`, `app`,
+  and the wire mirrors in all four languages.
+- **`admin-migrations`** — the §4.15 migration-lint gate: forward-only
+  numbering from `0001` with no gaps, no `.down.sql` anywhere, and no
+  already-merged `.sql` file modified, renamed or deleted relative to the merge
+  base.
+- **`admin-schema-compat`** — the §4.15 MUST, executable: the *previous
+  release's* store tests run against *this branch's* migrations. Until the
+  first `gawk-admin-vX.Y.Z` tag exists it is a documented no-op that says so in
+  its own log; it starts enforcing on the first run after that release with no
+  further wiring.
+- **The `helm` job's R39 assertions** — the fail-guard fires (and names the
+  missing knob and this doc) for each of the three OIDC values; `replicaCount`
+  defaults to 2 with a PDB, and no PDB at 1; the migration hook Job carries
+  this release's own image tag, identical to the Deployment's, with the hook
+  annotations and `args: ["migrate"]`; the admin Role covers Ban CRUD *and*
+  leader-election Leases; secrets render through both the literal and the
+  `Ref` form; `notifications.webhooks` renders into `-static-webhooks`
+  carrying env var *names* and never a signing key; the CNPG `Cluster` renders
+  with `instances: 2` and `resource-policy: keep`, and the `dsnSecretRef`
+  escape hatch works with CNPG off (and is *required* when it is off); the
+  relay chart renders the CRD with `resource-policy: keep`, printer columns and
+  **read-only** `bans` RBAC with `clusterMode` off; and — the check in the
+  other direction — with `moderation.enabled=false` the relay chart renders
+  nothing moderation-related at all.
+- **The `docker` job** builds the `gawk-admin` image from the repo root and
+  then RUNS it, pointed at a database that does not exist and an issuer that
+  does not resolve, asserting `/healthz` answers anyway. Building an image is
+  not evidence that it starts (R31 taught this the expensive way).
+- **The kind `e2e-cluster` tier** applies a real `Ban` CR to a two-pod fleet
+  and asserts the fleet-wide kill from outside every process: the broadcast's
+  key leaves **both** pods' `/statusz`, `gawk_moderation_terminations_total`
+  reaches ≥1 on **each** pod, an IP ban makes a fresh publish fail and
+  increments `gawk_connections_total{route="publish",outcome="banned"}`, and
+  deleting both bans returns every pod's `gawk_moderation_bans_active` to zero
+  and lets a fresh mint through. It also proves the admin API answers on the
+  ops listener with the token, 401s without it, and that its raw-ID → HMAC-key
+  mapping agrees with `/statusz`.
+
+**Not covered by anything automated**, and named rather than glossed:
+
+- **That close code 4006 reaches viewers in a cluster.** Unit tests cover 4006
+  per client and per role (AP1) and `TerminateBroadcast`'s fan-out (AP3), but
+  nothing in the E2E harness observes close codes: `gawk-loadgen` holds a
+  session and never reports why it ended. The honest fix is an
+  `-expect-close-code` flag on `gawk-loadgen` — roughly ten lines, and worth
+  more than scraping `kubectl logs`, which would prove the log line rather than
+  the wire. Deliberately left undone rather than faked.
+- **HTTP 451 as a status a native broadcaster can read.** The E2E tier proves
+  the *rejection* (the publish fails and the relay counts it as `banned`), not
+  that `gawk-pubsim` surfaced the status — `pubsim` reports a generic dial
+  failure today.
+- **Everything in §11.3.**
+
+### 11.3 Still manual — the milestone-closing pass, step by step
+
+**This is the verification §10 describes, and nothing else can stand in for
+it.** It needs the reference deployment, a real identity provider, a real
+broadcast and a phone — none of which a CI job or a working session can supply.
+It is not a known defect; it is the last mile.
+
+Run it in this order and record the outcome where §11.4 says.
+
+**Setup (once).**
+
+1. Install the CNPG operator if it is not already there, then upgrade the relay
+   with `moderation.enabled=true` and a fresh `moderation.adminApi.tokenRef`
+   Secret, and install `gawk-admin` behind an OIDC-gated Ingress at
+   `admin.gawk.ioio.fi`. `docs/self-hosting.md` §9.2 is the runbook.
+2. In the IdP: a public client with PKCE, a **client role `operator`** assigned
+   to your own account, an access-token lifespan of **5–15 minutes**, and
+   refresh-token rotation on. §9.3.
+3. Confirm the relay's Service is `externalTrafficPolicy: Local` **before**
+   step 8 — otherwise every publisher shares a node IP and the IP-ban step is
+   a fleet-wide outage rather than a test. §9.4.
+4. Point one chart-defined webhook at an ntfy topic on your phone.
+
+**The pass.**
+
+5. Start a real broadcast (native broadcaster or the web app). Open the portal
+   **on the phone**, through the OIDC redirect flow, and confirm: the broadcast
+   is listed, the watch deep link opens it in the viewer, and the telemetry
+   deep link resolves to the same broadcast.
+6. **Kill it, with a reason.** Expected, all four: every viewer's player ends
+   with *"This broadcast was ended by a moderator"* (distinct from "broadcast
+   ended"); the broadcaster stops and does **not** auto-resume; the
+   broadcaster's own reclaim attempt is refused (the natives should say
+   *banned*, a browser broadcaster sees a generic dial failure — D15, expected);
+   and the ntfy notification arrives on the phone carrying **no raw broadcast
+   ID and no IP**.
+7. `kubectl -n production get bans` shows the cooldown ban with its printer
+   columns. Wait out the cooldown (or shorten it) and confirm a **re-mint
+   succeeds**.
+8. **Ban the publisher's IP** from the portal, using the resolved-IP checkbox.
+   Confirm a fresh mint from that address is refused, and that a broadcaster on
+   a *different* address is unaffected.
+9. **Unban** from the portal. Confirm publishing works again, and that
+   `kubectl get bans` is empty.
+10. Read the events view: every action above appears, with actor, reason and
+    timestamp, and the webhook deliveries are visible against each event.
+11. Sanity-check the revocation horizon: remove the `operator` client role from
+    your account in the IdP and confirm the portal 403s **at the next token
+    refresh** — that horizon *is* the access-token lifetime (D17), and seeing it
+    once is worth more than the paragraph that says so.
+
+**If a step fails**, the finding belongs in §11.2's "not covered" list or in
+`BUGS.md`, and — if it turns out to be a browser or Kubernetes behaviour rather
+than a gawk one — in `docs/gotchas.md`.
+
+### 11.4 Where to record the outcome
+
+When the pass completes, add what was observed to §11.2 (client, device, IdP,
+and anything that behaved differently from the expectation above), strike §11.3,
+and move the `ROADMAP.md` R39 row from 🔧 to ✅ — that pass is the only thing
+still holding it.
