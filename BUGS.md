@@ -4,56 +4,63 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
-## Broadcaster worker offload never engages on macOS — `Pipeline: Main thread` in every browser
+## Broadcaster falls back to the main-thread pipeline with no reason given (seen on Chrome/macOS)
 
 - **Found**: 2026-08-03, running R11's overdue manual browser verification on
-  macOS. The broadcaster stats overlay reads `Pipeline: Main thread` in every
-  browser tried on that machine. R11 shipped 2026-07-14 with green automated
-  gates and the manual verify never happened, so this has plausibly been true
-  since the milestone landed.
-- **Impact**: the whole point of R11 is lost on macOS — capture, encode and
-  send run on the main thread, so UI work and encoder work contend for it.
-  This is the failure mode R11 exists to remove (docs/16). Not a display
-  glitch and not cosmetic: in the worker path the stats object is constructed
-  *inside* the worker, where `window` is undefined, and
-  `broadcaster.ts` sets `pipelineContext` from exactly that
-  (`typeof window === 'undefined' ? 'worker' : 'main-thread'`), and
-  `WorkerBroadcastSession` forwards the worker's own stats verbatim
-  (`workerBroadcastSession.ts` `case 'stats'`). A reading of `main-thread`
-  therefore means `createBroadcastSession` returned the plain
-  `BroadcastPipeline` — the worker path was genuinely not taken.
-- **Not yet distinguished**: which gate rejected it. `createBroadcastSession`
-  falls back silently through four independent ones, and the fallback is
-  *correct* behaviour for some browsers, so part of this report may be
-  expected rather than defective:
-  - `canAttemptWorker()` — `Worker`, `document`, `HTMLCanvasElement`,
-    `HTMLCanvasElement.prototype.captureStream`;
-  - the worker's boot handshake (`broadcaster.worker.ts`) — needs
-    `VideoEncoder`, `WebTransport`, `MediaStreamTrackProcessor` **and**
-    `OffscreenCanvas` *in worker scope*;
-  - `waitForBoot`'s timeout;
-  - `probeTrackTransfer` — a `DataCloneError` on transferring a
-    `MediaStreamTrack`.
-  **Safari and Firefox are expected to fail here** and fall back by design —
-  neither has `MediaStreamTrackProcessor`, and CLAUDE.md already records that
-  as the reason for the Firefox `<video>` + `rVFC` path. So the report's
-  load-bearing half is **Chrome on macOS**, which does have MSTP and should
-  have taken the worker path. Confirm the browser list before assuming a
-  defect: if only Safari/Firefox were tried, there is no bug here and this
-  entry should be closed as expected behaviour.
-- **Fix would start**: by making the fallback say *why*. The four gates
-  currently fail silently apart from `probeTrackTransfer`'s one `log.info`,
-  which is why an on-hardware pass can see the symptom and not the cause.
-  Have `createBroadcastSession` record the rejecting gate and surface it next
-  to the overlay's `Pipeline` row (a reason string, the way R32's disabled
-  preset rows carry theirs). That turns this and every future recurrence into
-  a one-glance diagnosis. Then re-run on Chrome/macOS and, if a real gate is
-  wrongly rejecting, fix that gate test-first per CODE-REVIEW.md.
-- **Untested on the viewer side**: `useViewerConnection`'s `canUseWorker` is a
-  *different* gate list (`Worker` + `OffscreenCanvas` +
-  `transferControlToOffscreen`), and the viewer overlay has its own `Pipeline`
-  row. Whether it also reads `Main thread` on the same machine was not
-  checked, and it would not have the same cause if it does.
+  macOS — the broadcaster stats overlay read `Pipeline: Main thread` in every
+  browser tried. **Diagnosed 2026-08-20** by probing the four gates directly
+  in Chrome 150 on macOS against `gawk.ioio.fi`, which settles the question
+  this entry used to carry and narrows it to the one defect below.
+- **The offload itself is not a defect and is not fixable here.** Chrome 150
+  on macOS does not expose the API it needs. Measured in a dedicated worker
+  (module *and* classic — identical results):
+  - `MediaStreamTrackProcessor`, `MediaStreamTrackGenerator` and
+    `MediaStreamTrack` itself are **all absent from worker scope**, while
+    `VideoEncoder`, `VideoDecoder`, `WebTransport` and `OffscreenCanvas` are
+    present. So the boot handshake in `broadcaster.worker.ts` reports
+    `supported: false`.
+  - `probeTrackTransfer` throws
+    `DataCloneError: Value at index 0 does not have a transferable type` —
+    a `MediaStreamTrack` is not transferable on this build.
+  - The other two gates pass: `canAttemptWorker()` is satisfied, and boot
+    arrives well inside `waitForBoot`'s 2 s.
+  On the main thread MSTP is present and constructs a working `readable`, so
+  the *capture* path is fine — it is the whole breakout-box-in-worker surface
+  that is missing, which is one platform capability, not two failures. There
+  is no path to worker-side encode without native browser support, so this is
+  the same accepted fallback as Safari and Firefox. **Do not re-propose worker
+  offload for Chrome/macOS without evidence the platform shipped it**; the
+  capability check belongs in a probe, not a plan.
+- **The defect that remains: the fallback is silent.** `createBroadcastSession`
+  drops through four independent gates and only `probeTrackTransfer` logs
+  anything, so an on-hardware pass sees the symptom (`Pipeline: Main thread`)
+  and none of the cause. That is what made a one-line overlay reading cost two
+  investigations, and it will cost the same again on the next platform that
+  regresses one of the gates.
+- **Impact**: on Chrome/macOS, capture, encode and send share the main thread,
+  so UI work and encoder work contend — the failure mode R11 exists to remove
+  (docs/16). Read that as *unavailable on this platform* rather than *lost*:
+  nothing gawk does can reclaim it. The overlay reading is trustworthy — in
+  the worker path the stats object is constructed *inside* the worker, where
+  `window` is undefined, and `broadcaster.ts` sets `pipelineContext` from
+  exactly that (`typeof window === 'undefined' ? 'worker' : 'main-thread'`),
+  with `WorkerBroadcastSession` forwarding the worker's stats verbatim
+  (`workerBroadcastSession.ts` `case 'stats'`).
+- **The viewer side is unaffected** (measured the same session, closing this
+  entry's old open question): all four of `useViewerConnection`'s
+  `canUseWorker` gates pass — `Worker`, `OffscreenCanvas`,
+  `HTMLCanvasElement`, `transferControlToOffscreen` — and the viewer worker's
+  own boot gate (`VideoDecoder` + `WebTransport`) passes in worker scope. The
+  viewer's offload does not depend on transferable tracks, which is precisely
+  why it survives where the broadcaster's does not.
+- **Fix would start**: by making the fallback say *why*. Have
+  `createBroadcastSession` record the rejecting gate and surface it next to
+  the overlay's `Pipeline` row (a reason string, the way R32's disabled preset
+  rows carry theirs), so `Main thread — MediaStreamTrackProcessor unavailable
+  in worker scope` is a one-glance diagnosis instead of a probe session. The
+  gate list is stable and each rejection point already exists; this is a
+  reason string threaded through `tryCreateBroadcastWorker`, test-first per
+  CODE-REVIEW.md.
 
 ## Every WebKit viewer fails to join since the quic-go bump — two defects, WebKit accepted as unsupported
 

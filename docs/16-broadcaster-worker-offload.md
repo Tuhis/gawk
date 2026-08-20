@@ -38,6 +38,19 @@ messages between them, media never crossing back.
    Track transfer is also the spec-aligned shape (the current
    mediacapture-transform spec exposes MSTP in workers only; Chromium's
    Window exposure is legacy).
+
+   **Correction, 2026-08-20 — that last parenthetical is not true of every
+   Chromium build, and the decision rests on it.** Chrome 150 on macOS is the
+   exact inverse: MSTP works on `Window` and worker scope has no
+   `MediaStreamTrackProcessor`, no `MediaStreamTrackGenerator` and no
+   `MediaStreamTrack`, so a `MediaStreamTrack` is not transferable there
+   either. Track transfer remains the right shape where the platform supports
+   it — the readable-transfer argument above is unaffected — but it makes the
+   whole worker path *unreachable* on that platform rather than merely
+   slower, and the boot handshake + `probeTrackTransfer` correctly fall back.
+   Treat worker-scope MSTP as a runtime capability to probe, never as a
+   Chromium baseline. (`docs/gotchas.md`, and the BUGS.md entry on the silent
+   fallback.)
 2. **`getDisplayMedia` stays on main; connect-before-picker ordering is
    preserved.** Acquisition needs the window scope + user gesture. The worker
    connects `/publish` first and only then asks main for capture

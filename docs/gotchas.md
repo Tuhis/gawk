@@ -495,6 +495,20 @@ Add to it when a new gotcha lands in `docs/`.
   pipeline via the same boot-handshake fallback as the viewer; the overlay's
   broadcaster "Pipeline" row shows which path is live.
   ([docs/16](16-broadcaster-worker-offload.md))
+- **Chrome on macOS exposes MSTP on `Window` only — worker scope has no
+  `MediaStreamTrackProcessor`, no `MediaStreamTrackGenerator`, and no
+  `MediaStreamTrack` at all**, so the broadcaster's worker offload can never
+  engage there and `probeTrackTransfer` throws `DataCloneError` for the same
+  underlying reason (the whole breakout-box + transferable-track surface is
+  off). Measured on Chrome 150 / macOS, 2026-08-20, in both module and classic
+  dedicated workers; `VideoEncoder`, `VideoDecoder`, `WebTransport` and
+  `OffscreenCanvas` are all present there, so a "worker capability" check that
+  stops at those reads healthy and tells you nothing. This is the exact
+  inverse of what the spec assumes, so **probe the capability, don't infer it
+  from the spec or from another platform**. The *viewer's* offload is
+  unaffected — it needs only `OffscreenCanvas` +
+  `transferControlToOffscreen` + a worker-scope `VideoDecoder`, all present.
+  ([docs/16](16-broadcaster-worker-offload.md), [BUGS.md](../BUGS.md))
 - **`isConfigSupported({hardwareAcceleration: 'prefer-hardware'})` answering
   `supported: true` is Chromium's hardware commitment** — the spec has no
   "require hardware", but Chromium returns false when it can't do HW, which
