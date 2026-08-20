@@ -106,6 +106,7 @@ Reading all forty-one is not the point. Three give you the shape of the system:
 | [`33`](33-telemetry-and-diagnostics.md) | R28 — Advanced diagnostics & telemetry |
 | [`36`](36-telemetry-ui-history.md) | R31 — Telemetry UI v2: a diagnosis SPA |
 | [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, two certificate lanes |
+| [`42`](42-admin-moderation-portal.md) | R39 — Admin portal for moderation: fleet-wide kill, durable bans, `gawk-admin` |
 
 ## Conventions
 
