@@ -1133,21 +1133,40 @@ Automated, and gating every PR:
   deleting both bans returns every pod's `gawk_moderation_bans_active` to zero
   and lets a fresh mint through. It also proves the admin API answers on the
   ops listener with the token, 401s without it, and that its raw-ID → HMAC-key
-  mapping agrees with `/statusz`.
+  mapping agrees with `/statusz`. It also observes the two things nothing in
+  the harness could see before. Synthetic viewers attach through
+  `gawk-loadgen -expect-close-code 4006` before the kill, and the script waits
+  until **both** pods are serving some of them — so what it asserts is that
+  4006 crossed the *cascade*, read off the session itself rather than scraped
+  from `kubectl logs`, which would have proved the log line and not the wire.
+  A 4000, a transport death carrying no application code at all, and a session
+  nothing ever closed each fail differently, because they are different
+  diagnoses. And the IP-ban step asserts the *status*, not merely the failure:
+  `gawk-pubsim` prints `GAWK_PUBSIM_DIAL_STATUS=451` and exits 3. That is the
+  only automated evidence for the property D15 exists for — a browser sees an
+  opaque dial failure, so "451 lets a native broadcaster say *banned* instead
+  of *auth failed*" is a claim only a native client can make, and until now
+  nothing made it.
 
 **Not covered by anything automated**, and named rather than glossed:
 
-- **That close code 4006 reaches viewers in a cluster.** Unit tests cover 4006
-  per client and per role (AP1) and `TerminateBroadcast`'s fan-out (AP3), but
-  nothing in the E2E harness observes close codes: `gawk-loadgen` holds a
-  session and never reports why it ended. The honest fix is an
-  `-expect-close-code` flag on `gawk-loadgen` — roughly ten lines, and worth
-  more than scraping `kubectl logs`, which would prove the log line rather than
-  the wire. Deliberately left undone rather than faked.
-- **HTTP 451 as a status a native broadcaster can read.** The E2E tier proves
-  the *rejection* (the publish fails and the relay counts it as `banned`), not
-  that `gawk-pubsim` surfaced the status — `pubsim` reports a generic dial
-  failure today.
+- **That either of the two assertions above gates a feature PR.** They live in
+  the kind tier, so a regression in the 4006 fan-out or in the readable 451
+  reaches `main` and is caught by the release PR or a dispatch, not by the PR
+  that caused it. What does gate every PR is the layer underneath: AP1's
+  per-client and per-role 4006 tests, AP3's `TerminateBroadcast` fan-out, and
+  `internal/engine`'s 451 rendering.
+- **The 4006-vs-4000 ordering on an edge pod, in the residual case.** The
+  origin's kill deletes the cluster Lease, and a pod that saw the lease
+  deletion before its own Ban event would once have expired the hub through
+  the ordinary path and closed its viewers with 4000. `HandleLeaseDeleted` now
+  consults the ban set, so the arrival order no longer decides the message —
+  but it consults `BannedID` only, so a lease deletion racing an **IP-only**
+  ban still takes the 4000 path. Every portal kill creates an ID ban, so the
+  covered case is the one that matters; the gap is reachable only from a
+  break-glass `kubectl` IP ban with no accompanying ID ban, is
+  presentation-only, and is arguably unknowable from an edge that holds no
+  publisher entry to map the address onto.
 - **Everything in §11.3.**
 
 ### 11.3 Still manual — the milestone-closing pass, step by step
