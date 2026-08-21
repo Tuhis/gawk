@@ -285,3 +285,61 @@ func TestHandleBanAddedStopsTheEdgePull(t *testing.T) {
 		t.Errorf("gawk_moderation_terminations_total = %v, want 1", got)
 	}
 }
+
+// The kill and the Lease deletion race, and the loser must not downgrade the
+// message. The origin's kill deletes the cluster Lease, so an EDGE pod can see
+// the lease deletion BEFORE its own Ban informer event — and the ordinary
+// lease-deletion path expires the hub with 4000, "broadcast ended". A viewer
+// would then be told the broadcast simply finished, which is exactly the
+// outcome D6 spent a new close code to avoid.
+//
+// Nothing forces the arrival order (the Ban event has a head start of the
+// origin's whole handler plus an API round trip, but that is a race, not a
+// guarantee), so HandleLeaseDeleted consults the ban set instead of trusting
+// the order. This test drives the LOSING order deliberately: the ban is in the
+// set, and only the lease deletion is delivered.
+func TestLeaseDeletionOfABannedBroadcastStillSays4006(t *testing.T) {
+	srv, _, r := newOutcomeServer(t, config.Config{}, hub.Options{})
+	f := newKillFixture(t, srv, r, "203.0.113.7")
+
+	// The pod knows about the ban, but HandleBanAdded has NOT run yet.
+	bans := moderation.NewSet()
+	if err := bans.Upsert(idBan(f.id, "kill")); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	srv.SetModeration(bans)
+
+	srv.HandleLeaseDeleted(f.id)
+
+	code, closed := f.viewer.closeInfo()
+	if !closed {
+		t.Fatal("the viewer was not closed at all")
+	}
+	if code != uint32(wire.CloseCodeTerminatedByOperator) {
+		t.Errorf("viewer close code = %d, want %d (4006): a lease deletion that lost the race to "+
+			"the Ban event must not downgrade the kill to 'broadcast ended'",
+			code, wire.CloseCodeTerminatedByOperator)
+	}
+}
+
+// The control, and it is sharper than "4000 instead of 4006": with no ban in
+// the set, a lease deletion for a hub whose publisher is still live changes
+// nothing at all, because EndBroadcast honours the publisherActive guard
+// (hub.go) that stops a racing janitor killing a live broadcast. So this
+// asserts BOTH halves of the invariant at once — the ban path deliberately
+// bypasses that guard, and the ordinary path still respects it. A ban lookup
+// that turned every lease deletion into a termination would fail here.
+func TestLeaseDeletionWithoutABanRespectsTheGCGuard(t *testing.T) {
+	srv, _, r := newOutcomeServer(t, config.Config{}, hub.Options{})
+	f := newKillFixture(t, srv, r, "203.0.113.7")
+	srv.SetModeration(moderation.NewSet())
+
+	srv.HandleLeaseDeleted(f.id)
+
+	if _, closed := f.viewer.closeInfo(); closed {
+		t.Error("an unbanned lease deletion killed a live broadcast: the publisherActive guard no longer holds")
+	}
+	if _, _, closed := f.sess.info(); closed {
+		t.Error("an unbanned lease deletion closed the publisher session")
+	}
+}

@@ -584,6 +584,23 @@ func (s *Server) SetCluster(c ClusterCoordinator, podName string) {
 // (cluster-wide "broadcast ended"): stop any edge pull for the broadcast,
 // then expire the local hub so viewers get the terminal 4000.
 func (s *Server) HandleLeaseDeleted(broadcastID string) {
+	// R39: the origin's kill deletes the Lease, so on an EDGE pod the lease
+	// deletion can arrive before that pod's own Ban informer event. Ending the
+	// hub through the ordinary path would close its viewers with 4000 —
+	// "broadcast ended" — when the truthful answer is 4006, and viewer-visible
+	// transparency is the entire reason 4006 was allocated rather than reusing
+	// 4000 (docs/42 D6). Consulting the ban set here makes the arrival order
+	// irrelevant: whichever event this pod sees first, its viewers are told the
+	// same thing.
+	//
+	// Deliberately BEFORE the edge teardown below, because terminate() stops
+	// the edge pull itself and then tears the hub down with the right code.
+	if rec, banned := s.bans.BannedID(broadcastID, s.clock()); banned {
+		s.log.Debug("lease deletion for a banned broadcast: terminating instead of ending",
+			"id", broadcastID, "target_type", string(rec.Target.Type))
+		s.terminate(broadcastID, "lease-deleted:banned")
+		return
+	}
 	if s.edges != nil {
 		s.edges.OnLeaseDeleted(broadcastID)
 	}
