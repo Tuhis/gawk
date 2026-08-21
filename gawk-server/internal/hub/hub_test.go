@@ -2563,8 +2563,21 @@ func TestCarrierBandwidthCapDropsRecords(t *testing.T) {
 
 	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
 	p.HandleDatagram(d1)
-	waitFor(t, 5*time.Second, func() bool { return sub.Dropped() == 1 }, "over-cap record dropped")
+	// Wait on the counter this test ASSERTS, not on the subscriber's own drop
+	// count. They are incremented by different goroutines with no ordering
+	// between them: the subscriber's bumps on the drain goroutine's own path,
+	// while countBandwidthDrop takes r.mu separately (hub.go). Waiting for
+	// sub.Dropped() therefore proves the drop happened but says nothing about
+	// whether the hub-level counters have been credited yet — on a loaded
+	// machine the assertions below can run first and read a zero-valued Stats,
+	// which is what CI run 32497862767 hit.
+	waitFor(t, 5*time.Second, func() bool {
+		return r.Stats().Broadcasts[r.ObfuscateID(id)].BandwidthDroppedDatagrams == 1
+	}, "over-cap record dropped and credited to the broadcast")
 
+	if got := sub.Dropped(); got != 1 {
+		t.Errorf("subscriber Dropped = %d, want 1", got)
+	}
 	if n := len(f.carrierStreams()); n != 0 {
 		t.Errorf("carrier streams = %d, want 0 (drop happens before any open)", n)
 	}

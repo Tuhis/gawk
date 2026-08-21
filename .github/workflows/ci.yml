@@ -1878,6 +1878,14 @@ jobs:
         run: |
           kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s
           kind load docker-image gawk-server:e2e
+      # maxSubscribers/maxTotalSubscribers are raised well above the chart
+      # defaults (15/50) because this job stacks tiers on one fleet: the R30
+      # steps hold 18 viewers for 600s, a STRIPED viewer holds up to 5 sessions
+      # each (see values.yaml's stripedDelivery note), and R39's step then
+      # attaches its own observing viewers. At the defaults their dials are
+      # refused for capacity, which failed the 4006 assertion for a reason that
+      # has nothing to do with the wire (run 32497862767: "6 session(s) never
+      # connected"). The cap is not what any assertion in this job is testing.
       - name: Install the relay chart (replicas=2, clusterMode, NodePort)
         run: |
           ./e2e/bin/gawk-devcert -out e2e/out/certs -hosts localhost,127.0.0.1 > e2e/out/devcert.txt
@@ -1914,6 +1922,8 @@ jobs:
             --set config.resumeTokenKey="$(openssl rand -hex 32)" \
             --set config.statsKey="$(openssl rand -hex 32)" \
             --set config.connBurstLimit=50 \
+            --set config.maxSubscribers=120 \
+            --set config.maxTotalSubscribers=240 \
             --set moderation.enabled=true \
             --set moderation.adminApi.token="$ADMIN_API_TOKEN" \
             --set-json 'extraEnv=[{"name":"SSL_CERT_FILE","value":"/tls/tls.crt"}]' \
