@@ -19,20 +19,28 @@
 #      everywhere, and `gawk_moderation_terminations_total` reaches ≥1 on each
 #      pod. The counter is the fleet-wide-kill proof /statusz alone cannot
 #      give — a hub can also vanish by expiring.
-#   4. An IP ban makes a fresh publish attempt fail, and the relay counts it as
-#      `gawk_connections_total{route="publish",outcome="banned"}` — the 451
-#      rejection observed from outside the process.
-#   5. Deleting both bans restores service: the gauges return to zero on every
+#   4. Close code 4006 reaches VIEWERS, on the edge pod as well as the origin.
+#      Synthetic viewers attach through `gawk-loadgen -expect-close-code 4006`
+#      first and the script waits until BOTH pods report subscribers for the
+#      broadcast, so the sessions the kill has to close are spread across the
+#      cascade — which is the point of TerminateBroadcast closing internal
+#      edge sessions and local subscribers on every pod, not just the origin's.
+#      loadgen reads the code off the session itself, so this is the wire, not
+#      a log line: 4000 (broadcast ended), a transport death with no code at
+#      all, and a session nothing ever closed each fail differently.
+#   5. An IP ban makes a fresh publish attempt fail with a READABLE 451:
+#      `gawk-pubsim` reports `GAWK_PUBSIM_DIAL_STATUS=451` and exits 3, and the
+#      relay counts `gawk_connections_total{route="publish",outcome="banned"}`.
+#      Asserting the status rather than "it failed" is the whole of docs/42
+#      D15 — 451 was chosen over reusing 403 precisely so a native broadcaster
+#      can say "banned" instead of "auth failed", and a harness that only sees
+#      a failed dial proves the rejection but never that property.
+#   6. Deleting both bans restores service: the gauges return to zero on every
 #      pod and a fresh mint succeeds. An enforcement mechanism that cannot be
 #      switched off is a worse bug than one that never switched on.
 #
-# What it deliberately does NOT assert: that close code 4006 reached viewers.
-# Nothing in the harness observes close codes today (gawk-loadgen holds the
-# session but never reports why it ended), so scraping `kubectl logs` would be
-# the only option and that proves the log line, not the wire. The honest
-# version of that assertion is a `-expect-close-code` flag on gawk-loadgen; it
-# is written down here rather than faked. Unit coverage for 4006 is AP1's and
-# AP3's, per-client and per-role.
+# Unit coverage for 4006 is still AP1's and AP3's, per-client and per-role;
+# what only this tier can add is that the code crosses a real cascade.
 #
 # Usage: moderation-assert.sh <namespace> <broadcast-id> <admin-token> [deadline-seconds]
 set -euo pipefail
@@ -41,8 +49,13 @@ set -euo pipefail
 # workflow runs it from the repo root, a human debugging it may not.
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PUBSIM="$E2E_DIR/bin/gawk-pubsim"
+LOADGEN="$E2E_DIR/bin/gawk-loadgen"
 OUT="$E2E_DIR/out"
 mkdir -p "$OUT"
+# The media port is UDP and reaches the fleet through kind's NodePort mapping;
+# only the ops endpoints need port-forwarding. Same URL the job's own pubsim
+# and loadgen invocations use.
+RELAY_URL=${GAWK_E2E_URL:-https://127.0.0.1:4433}
 
 NS=${1:?usage: moderation-assert.sh <namespace> <broadcast-id> <admin-token> [deadline]}
 BID=${2:?usage: moderation-assert.sh <namespace> <broadcast-id> <admin-token> [deadline]}
@@ -138,7 +151,75 @@ done
 [ "$seen" -eq 1 ] || fail "the admin API's key $KEY for $BID does not appear on any pod's /statusz"
 echo "PASS: admin API — 401 without the token, raw id $BID <-> key $KEY consistent with /statusz${PUBLISHER_IP:+, publisher $PUBLISHER_IP}"
 
-# --------------------------------------------- 3. an ID ban kills, fleet-wide
+# --------------------------------- 3. observers that will report the 4006
+# Viewers that report WHY they were closed, attached before the ban so the
+# kill has real subscriber sessions to close on both pods.
+#
+# 8 sessions, not more: the job's own `gawk-loadgen -viewers 12` + `-viewers 6`
+# may still be holding slots against the chart's per-pod maxSubscribers (15),
+# and an observer whose dial was refused for capacity would fail this
+# assertion for a reason that has nothing to do with 4006.
+#
+# -duration is a ceiling, not a wait: loadgen exits as soon as every session
+# has ended, so on the happy path this costs the kill's own latency. It also
+# exits non-zero if it is still holding open sessions when the ceiling
+# arrives — the failure "the kill never reached this viewer" — so the ceiling
+# has to outlive the spread wait plus the kill deadline below, with slack.
+OBSERVERS=8
+SPREAD_WAIT=45
+OBSERVER_PID=""
+OBSERVER_ATTEMPT=0
+start_observers() {
+  if [ -n "$OBSERVER_PID" ]; then
+    # REPLACE the batch rather than add to it: this only happens when every
+    # session landed on one pod, so those sessions are re-rolling the same
+    # conntrack dice from fresh 5-tuples — and freeing their slots first
+    # keeps the subscriber cap out of the picture. SIGTERM, so loadgen still
+    # writes its log.
+    kill "$OBSERVER_PID" 2>/dev/null || true
+    wait "$OBSERVER_PID" 2>/dev/null || true
+  fi
+  OBSERVER_ATTEMPT=$((OBSERVER_ATTEMPT + 1))
+  "$LOADGEN" -url "$RELAY_URL" -id "$BID" -viewers "$OBSERVERS" -ramp-ms 150 \
+    -insecure -duration "$((DEADLINE + SPREAD_WAIT + 60))s" -expect-close-code 4006 \
+    > "$OUT/loadgen-4006-$OBSERVER_ATTEMPT.log" 2>&1 &
+  OBSERVER_PID=$!
+}
+
+# Both pods must actually be serving some of them: kube-proxy spreads UDP by
+# 5-tuple, so placement is probabilistic and has to be observed rather than
+# assumed. Without this the assertion could pass with every observer on the
+# origin, and the edge half of the fan-out — TerminateBroadcast closing local
+# subscribers on a pod that only ever pulled the broadcast — would go untested.
+observers_spread() {
+  local p spread=0
+  for p in "${PODS[@]}"; do
+    statusz "$p" 2>/dev/null \
+      | jq -e --arg k "$KEY" '(.broadcasts[$k].subscribers // 0) >= 1' >/dev/null 2>&1 \
+      && spread=$((spread + 1))
+  done
+  [ "$spread" -eq "${#PODS[@]}" ]
+}
+
+start_observers
+end=$((SECONDS + SPREAD_WAIT))
+while ! observers_spread; do
+  if [ "$SECONDS" -ge "$end" ]; then
+    # One re-roll, the cluster-assert.sh precedent: P(all 8 on one pod) is
+    # ~2⁻⁷ per attempt, so a retry is far cheaper than a rerun of the tier.
+    if [ "$OBSERVER_ATTEMPT" -lt 2 ]; then
+      echo "conntrack put every observer on one pod; re-rolling $OBSERVERS sessions"
+      start_observers
+      end=$((SECONDS + SPREAD_WAIT))
+      continue
+    fi
+    fail "after $OBSERVER_ATTEMPT attempts no subscriber for $KEY appears on every pod — the 4006 fan-out cannot be observed across the cascade (check for refused dials in $OUT/loadgen-4006-*.log)"
+  fi
+  sleep 2
+done
+echo "PASS: $OBSERVERS observing viewers attached (attempt $OBSERVER_ATTEMPT), subscribers for $KEY present on all ${#PODS[@]} pods"
+
+# --------------------------------------------- 4. an ID ban kills, fleet-wide
 ID_BAN="ban-id-$(printf '%s' "$BID" | tr '[:upper:]' '[:lower:]')"
 EXPIRES=$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
           || date -u -v+10M +%Y-%m-%dT%H:%M:%SZ)
@@ -185,10 +266,30 @@ for p in "${PODS[@]}"; do
 done
 echo "PASS: every pod's informer holds the ban (gawk_moderation_bans_active >= 1)"
 
-# ------------------------------------------------- 4. an IP ban yields 451
+# The wire, not the log line: every observing session must have been closed by
+# the relay with 4006, and loadgen names the code it got instead when one was
+# not. Sessions on the edge pod count the same as the origin's, which is the
+# claim TerminateBroadcast's per-pod fan-out exists to make.
+#
+# One ordering caveat, written down because a flake here is otherwise
+# baffling: the origin's own terminate deletes the cluster Lease, and a pod
+# that saw the lease deletion BEFORE its own Ban event would expire the hub
+# through the ordinary path, closing its viewers with 4000. The Ban event has
+# a head start of the origin's entire handler plus an API round trip, so 4006
+# is what lands — but if this ever reports 4000 on one pod, that race is the
+# first place to look, not a wire regression.
+rc=0
+OBSERVER_LOG="$OUT/loadgen-4006-$OBSERVER_ATTEMPT.log"
+wait "$OBSERVER_PID" || rc=$?
+# loadgen's verdict block is everything from its first `gawk-loadgen:` line on;
+# the load report above it is noise here and stays in the uploaded artifact.
+[ "$rc" -eq 0 ] || fail "gawk-loadgen -expect-close-code 4006 exited $rc: $(sed -n '/^gawk-loadgen: /,$p' "$OBSERVER_LOG" | tr '\n' ' ')(full log: $OBSERVER_LOG)"
+echo "PASS: 4006 reached every observing viewer across all ${#PODS[@]} pods (read off the session, not from a log)"
+
+# ------------------------------------------------- 5. an IP ban yields 451
 # The publish path's rejection, observed from outside the process. Skipped
 # only if the admin API reported no publisher IP, which would itself mean the
-# broadcast had already ended — and step 3 asserts it was live before the ban.
+# broadcast had already ended — and step 4 asserts it was live before the ban.
 IP_BAN=""
 if [ -n "$PUBLISHER_IP" ]; then
   case "$PUBLISHER_IP" in
@@ -224,21 +325,29 @@ EOF
     sleep 1
   done
 
-  if "$PUBSIM" -url https://127.0.0.1:4433 -insecure -duration 8s \
-       > "$OUT/pubsim-banned.out" 2> "$OUT/pubsim-banned.err"; then
-    fail "gawk-pubsim published successfully from a banned IP ($CIDR)"
-  fi
+  rc=0
+  "$PUBSIM" -url "$RELAY_URL" -insecure -duration 8s \
+    > "$OUT/pubsim-banned.out" 2> "$OUT/pubsim-banned.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "gawk-pubsim published successfully from a banned IP ($CIDR)"
+  # The status, not merely the failure. docs/42 D15 chose 451 over reusing 403
+  # so a NATIVE broadcaster can tell "banned" from "auth failed" — a property
+  # that is only real if something reads the status, and only pubsim can (a
+  # browser sees an opaque dial failure, docs/22 finding 12). Exit code 3 is
+  # pubsim's "the relay refused the dial with an HTTP status"; the status line
+  # says which status, and 401/404/409/429 would all fail this check.
+  grep -qx 'GAWK_PUBSIM_DIAL_STATUS=451' "$OUT/pubsim-banned.err" && [ "$rc" -eq 3 ] \
+    || fail "the publish from $CIDR failed (exit $rc) but gawk-pubsim did not report a readable 451: $(grep -m1 GAWK_PUBSIM_DIAL_STATUS "$OUT/pubsim-banned.err" || echo 'no GAWK_PUBSIM_DIAL_STATUS line at all')"
   after=0
   for p in "${PODS[@]}"; do
     after=$((after + $(metric_sum "$p" 'gawk_connections_total{' 'outcome="banned"')))
   done
   [ "$after" -gt "$before" ] || fail "the publish attempt failed but no pod counted outcome=\"banned\" ($before -> $after) — it failed for some other reason"
-  echo "PASS: IP ban — publish from $CIDR refused, outcome=\"banned\" $before -> $after across the fleet"
+  echo "PASS: IP ban — publish from $CIDR refused with a readable HTTP 451 (pubsim exit 3), outcome=\"banned\" $before -> $after across the fleet"
 else
   fail "the admin API reported no publisherRemoteIp for the live broadcast $BID"
 fi
 
-# ------------------------------------------------------- 5. unban restores
+# ------------------------------------------------------- 6. unban restores
 kubectl -n "$NS" delete ban "$ID_BAN" ${IP_BAN:+"$IP_BAN"}
 end=$((SECONDS + DEADLINE))
 while true; do
@@ -251,11 +360,11 @@ while true; do
   sleep 2
 done
 
-"$PUBSIM" -url https://127.0.0.1:4433 -insecure -duration 8s \
+"$PUBSIM" -url "$RELAY_URL" -insecure -duration 8s \
   > "$OUT/pubsim-unbanned.out" 2> "$OUT/pubsim-unbanned.err" \
   || fail "a fresh mint still fails after the bans were deleted: $(tail -5 "$OUT/pubsim-unbanned.err")"
 grep -q GAWK_PUBSIM_ID "$OUT/pubsim-unbanned.out" \
   || fail "the post-unban publisher never minted an ID"
 echo "PASS: unban — every pod's gauge back to 0 and a fresh mint succeeds"
 
-echo "PASS: R39 fleet-wide kill, 451 enforcement and unban, across ${#PODS[@]} pods"
+echo "PASS: R39 fleet-wide kill, 4006 to viewers, readable 451 and unban, across ${#PODS[@]} pods"

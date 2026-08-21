@@ -13,7 +13,17 @@
 //
 //	GAWK_PUBSIM_ID=AB2CD3
 //
-// Everything human-facing goes to stderr.
+// Everything human-facing goes to stderr — and so does the other
+// machine-readable line, emitted whenever a publish or reclaim dial is
+// refused with an HTTP status:
+//
+//	GAWK_PUBSIM_DIAL_STATUS=451
+//
+// That line (and exit code 3) is what makes docs/42 D15 testable end to end.
+// The point of answering a banned publisher 451 rather than reusing 403 is
+// that a NATIVE broadcaster can read the status where a browser cannot — so a
+// harness that only observes "the publish failed" proves the rejection but
+// never the property the status code exists for.
 package main
 
 import (
@@ -32,11 +42,40 @@ import (
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/pubsim"
 )
 
+// exitDialRejected is the exit code for "the relay refused the dial with an
+// HTTP status" — 451 banned, 401 bad secret, 404 unknown ID, 409 taken, 429 at
+// capacity. Distinct from the catch-all 1 so a harness can tell a policy
+// refusal from a crash without parsing prose, and 3 rather than 2 because
+// flag.Parse already owns 2 for a bad flag.
+const exitDialRejected = 3
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "gawk-pubsim:", err)
+		if reportDialStatus(err) {
+			os.Exit(exitDialRejected)
+		}
 		os.Exit(1)
 	}
+}
+
+// reportDialStatus prints the machine-readable status line and the engine's
+// own sentence for a dial the relay answered with an HTTP status, and reports
+// whether there was one.
+//
+// The status is taken from engine.StartError rather than re-derived: the
+// engine already carries it (webtransport-go's Dial returns the *http.Response
+// even on rejection) and already renders each status as a sentence a human can
+// act on, including R39's 451. Two places deciding what 451 means is exactly
+// the drift docs/42 D13 exists to avoid.
+func reportDialStatus(err error) bool {
+	se, ok := engine.AsStartError(err)
+	if !ok || se.Status == 0 {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "GAWK_PUBSIM_DIAL_STATUS=%d\n", se.Status)
+	fmt.Fprintln(os.Stderr, "gawk-pubsim:", se.Message())
+	return true
 }
 
 func run() error {
@@ -123,6 +162,11 @@ func run() error {
 			},
 			OnError: func(err error) {
 				fmt.Fprintln(os.Stderr, "gawk-pubsim:", err)
+				// A reclaim refused mid-session (the R39 kill path: the
+				// broadcast is killed, its ID banned, and every auto-resume
+				// answers 451) never reaches run()'s return value — it
+				// arrives here, and would otherwise be prose only.
+				reportDialStatus(err)
 			},
 			OnEnded: func() {
 				select {
