@@ -461,15 +461,28 @@ export class AuthSession {
     const generation = this.generation;
     const renewed = await this.tryRenew();
     if (renewed) return;
-    // Signed out while this was in flight. "Renewal failed ⇒ go to the IdP" is
-    // right for a revoked grant and exactly wrong here: against a live IdP
-    // session the bounce is invisible, so Sign out would end with the operator
-    // signed back in — the same resurrection as adopting the tokens, one step
-    // further round. There is no credential to recover and nobody asked for
-    // one.
+    await this.fallBackToLogin(generation).catch((err) => this.setState('error', message(err)));
+  }
+
+  /**
+   * Renewal is not going to save the caller: drop the credential and run the
+   * redirect flow — UNLESS the session was deliberately ended while the caller
+   * was awaiting something.
+   *
+   * The one place that decision is made, because it was made in two and was
+   * wrong in both. "Renewal failed ⇒ go to the IdP" is right for a revoked
+   * grant and exactly wrong after a Sign out: the authorize request carries no
+   * `prompt`, so an IdP holding a live SSO session answers it immediately and
+   * the operator is signed back in without ever seeing a login screen. There
+   * is no credential to recover and nobody asked for one.
+   *
+   * `generation` is the era the caller was in when it started awaiting; see
+   * the field's comment.
+   */
+  private async fallBackToLogin(generation: number): Promise<void> {
     if (generation !== this.generation) return;
     this.abandon();
-    await this.beginLogin().catch((err) => this.setState('error', message(err)));
+    await this.beginLogin();
   }
 
   /**
@@ -556,7 +569,15 @@ export class AuthSession {
    * produce the same token with the same missing role.
    */
   async authorizedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+    // Captured before the request, not before the refresh: a Sign out can land
+    // during the original fetch just as easily as during the renewal that
+    // follows it, and that window is the longer of the two.
+    const generation = this.generation;
     const token = this.tokens?.accessToken;
+    // No generation check here: nothing has been awaited yet, so it cannot
+    // have moved, and routing this through `fallBackToLogin` would call
+    // `abandon` — bumping the era and cancelling an unrelated renewal that is
+    // legitimately in flight.
     if (!token) {
       await this.beginLogin();
       throw new AuthRedirect();
@@ -579,8 +600,11 @@ export class AuthSession {
       }
       if (res.status !== 401) return res;
     }
-    this.abandon();
-    await this.beginLogin();
+    // `AuthRedirect` even when the fallback was suppressed: the caller's page
+    // is going away either way — to the IdP, or to the signed-out shell — and
+    // `useLoader` swallows it. Returning the 401 instead would surface a red
+    // "HTTP 401" under a page the operator has just signed out of.
+    await this.fallBackToLogin(generation);
     throw new AuthRedirect();
   }
 

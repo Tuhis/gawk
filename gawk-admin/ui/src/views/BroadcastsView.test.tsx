@@ -252,10 +252,13 @@ describe('the ban dialog (§4.9, AP6)', () => {
     await waitFor(() => {
       expect(session.calls.filter((c) => c.path === 'api/v1/bans')).toHaveLength(2);
     });
-    const ipBan = bodyOf(session.calls.filter((c) => c.path === 'api/v1/bans')[1]) as {
-      target: { type: string; value: string; prefixLength: number };
+    const bodies = session.calls.filter((c) => c.path === 'api/v1/bans').map(bodyOf) as {
+      target: { type: string; value: string; prefixLength?: number };
       sourceBroadcastId: string;
-    };
+    }[];
+    // Found by target type, not by position: which of the two writes goes
+    // first is a separate property, asserted in "kill + ban is two writes".
+    const ipBan = bodies.find((b) => b.target.type === 'ip')!;
     // §4.7: the literal "publisher" plus sourceBroadcastId, so the SERVER
     // resolves the address through relayscan rather than trusting an IP this
     // page read seconds ago.
@@ -393,73 +396,6 @@ describe('server refusals', () => {
 
   // The clean case still reads as clean: a 201 carries no `enforcement`, so
   // nothing goes amber and the operator gets the plain confirmation.
-  // Regression (PR #280 review). Kill + ban is TWO writes, and the second one
-  // is the fragile one: the ID ban's `afterMutation()` invalidates the
-  // relayscan fleet cache, so the IP ban's server-side `"publisher"` resolve
-  // does a fresh scan that races the kill the ID ban just triggered. If the
-  // publisher is already gone it 400s.
-  //
-  // Retrying used to be impossible: the ID ban now exists, so the first call
-  // 409s and the shared catch aborts before the IP ban is ever attempted.
-  // `BansView` has no create form and the killed broadcast has left the table,
-  // so kubectl was the only remaining route — silently.
-  it('reaches the IP ban on a retry, when the ID ban already landed', async () => {
-    let ipAttempts = 0;
-    let idAttempts = 0;
-    const session = stubSession((path, init) => {
-      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
-      if (path !== 'api/v1/bans') return json({});
-      const body = JSON.parse(String(init.body)) as { target: { type: string } };
-      if (body.target.type === 'broadcastId') {
-        idAttempts++;
-        return idAttempts === 1
-          ? json({ id: 'ban-id', state: 'active' }, 201)
-          : json(
-              {
-                error: {
-                  code: 'duplicate_active',
-                  message: 'an active ban already covers this target',
-                },
-                ban: { id: 'ban-id', state: 'active' },
-              },
-              409,
-            );
-      }
-      ipAttempts++;
-      return ipAttempts === 1
-        ? json(
-            {
-              error: {
-                code: 'invalid_target',
-                message: "the live publisher's IP could not be resolved",
-              },
-            },
-            400,
-          )
-        : json({ id: 'ban-ip', state: 'active' }, 201);
-    });
-    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
-    fireEvent.change(screen.getByLabelText('Reason (required)'), {
-      target: { value: 'ban evasion' },
-    });
-    fireEvent.click(screen.getByLabelText(/Also ban the publisher IP/));
-    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
-
-    // First attempt: the ID ban landed, the IP ban did not, and the dialog
-    // stays open with the server's own words.
-    expect(await screen.findByText(/could not be resolved/)).toBeTruthy();
-    expect(idAttempts).toBe(1);
-    expect(ipAttempts).toBe(1);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
-
-    await waitFor(() => expect(ipAttempts).toBe(2));
-    // The confirmation is honest about which half was already in force.
-    expect(await screen.findByText(/was already banned/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Kill and ban' })).toBeNull();
-  });
-
   it('says a broadcast was already banned rather than showing the 409 as a failure', async () => {
     const session = stubSession((path) => {
       if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
@@ -498,5 +434,145 @@ describe('server refusals', () => {
 
     expect(await screen.findByText('Killed ABC123.')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+/**
+ * Kill + ban is TWO writes, and the order is load-bearing (PR #280 review).
+ *
+ * The IP ban goes FIRST. Its server-side `"publisher"` resolve reads the live
+ * publisher's address through relayscan, so it has to run before anything has
+ * started terminating the session: the ID ban's handler calls
+ * `afterMutation()`, which invalidates the relayscan fleet cache, so an IP ban
+ * placed after it does a *fresh* scan racing the kill the ID ban just
+ * triggered — and loses, 400ing on a publisher that has already gone. Placing
+ * it first costs nothing, because the IP ban's own AP3 actuation ends the
+ * session just the same.
+ *
+ * The ID ban is then attempted WHATEVER happened to the IP ban: it is the
+ * action that must land, and letting a 503 on the IP half abort it would leave
+ * the operator with a live broadcast and nothing enforced.
+ *
+ * Both writes tolerate `409 duplicate_active`, so clicking again retries only
+ * what is missing, in either direction.
+ */
+describe('kill + ban is two writes (§4.9, AP3)', () => {
+  const created = (id: string) => json({ id, state: 'active' }, 201);
+  const duplicate = (id: string) =>
+    json(
+      {
+        error: { code: 'duplicate_active', message: 'an active ban already covers this target' },
+        ban: { id, state: 'active' },
+      },
+      409,
+    );
+  const unresolved = () =>
+    json(
+      { error: { code: 'invalid_target', message: "the live publisher's IP could not be resolved" } },
+      400,
+    );
+  const unavailable = () =>
+    json({ error: { code: 'unavailable', message: 'the ban store is unreachable' } }, 503);
+
+  /** A `/bans` stub answering per target type, recording the order they went out in. */
+  function banStub(plan: { ip: (n: number) => Response; id: (n: number) => Response }) {
+    const sent: string[] = [];
+    let ip = 0;
+    let id = 0;
+    const session = stubSession((path, init) => {
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
+      if (path !== 'api/v1/bans') return json({});
+      const body = JSON.parse(String(init.body)) as { target: { type: string } };
+      sent.push(body.target.type);
+      return body.target.type === 'ip' ? plan.ip(++ip) : plan.id(++id);
+    });
+    return { session, sent, ip: () => ip, id: () => id };
+  }
+
+  async function submitKillAndBan(session: ReturnType<typeof stubSession>, withIp = true) {
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
+    fireEvent.change(screen.getByLabelText('Reason (required)'), {
+      target: { value: 'ban evasion' },
+    });
+    if (withIp) fireEvent.click(screen.getByLabelText(/Also ban the publisher IP/));
+    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
+  }
+
+  it('places the publisher-IP ban first, while the publisher is still live', async () => {
+    const h = banStub({ ip: () => created('ban-ip'), id: () => created('ban-id') });
+    await submitKillAndBan(h.session);
+
+    await waitFor(() => expect(h.sent).toHaveLength(2));
+    expect(h.sent).toEqual(['ip', 'broadcastId']);
+    expect(await screen.findByText('Banned ABC123 and its publisher IP.')).toBeTruthy();
+  });
+
+  it('still bans the broadcast when the publisher-IP ban fails outright', async () => {
+    // A 503 rather than a failed resolve: the ID ban must survive ANY failure
+    // of the IP half, not just the one the ordering was chosen to avoid.
+    const h = banStub({ ip: unavailable, id: () => created('ban-id') });
+    await submitKillAndBan(h.session);
+
+    await waitFor(() => expect(h.sent).toEqual(['ip', 'broadcastId']));
+    // Honest about which half is in force — that is what decides what the
+    // operator does next — and the dialog stays open so they can do it.
+    const alert = await screen.findByText(/ABC123 is banned, but its publisher IP is not/);
+    expect(alert.textContent).toMatch(/the ban store is unreachable/);
+    expect(screen.getByRole('button', { name: 'Kill and ban' })).toBeTruthy();
+    expect(screen.queryByText('Banned ABC123 and its publisher IP.')).toBeNull();
+  });
+
+  it('retries only the IP ban when the broadcast ban already landed', async () => {
+    const h = banStub({
+      ip: (n) => (n === 1 ? unresolved() : created('ban-ip')),
+      id: (n) => (n === 1 ? created('ban-id') : duplicate('ban-id')),
+    });
+    await submitKillAndBan(h.session);
+
+    expect(await screen.findByText(/could not be resolved/)).toBeTruthy();
+    expect(h.sent).toEqual(['ip', 'broadcastId']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
+
+    await waitFor(() => expect(h.ip()).toBe(2));
+    expect(h.sent).toEqual(['ip', 'broadcastId', 'ip', 'broadcastId']);
+    // The 409 on the second broadcast ban is the state we want, not a failure.
+    expect(
+      await screen.findByText("Banned ABC123's publisher IP; ABC123 was already banned."),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Kill and ban' })).toBeNull();
+  });
+
+  it('keeps the publisher-IP ban when the broadcast ban fails, and retries that', async () => {
+    // The other direction, which only exists because the IP ban goes first:
+    // the address was captured while the publisher was demonstrably live, so
+    // a failed ID ban does not cost the operator the IP ban as well.
+    const h = banStub({
+      ip: (n) => (n === 1 ? created('ban-ip') : duplicate('ban-ip')),
+      id: (n) => (n === 1 ? unavailable() : created('ban-id')),
+    });
+    await submitKillAndBan(h.session);
+
+    expect(await screen.findByText(/the ban store is unreachable/)).toBeTruthy();
+    expect(h.ip()).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
+
+    await waitFor(() => expect(h.id()).toBe(2));
+    expect(h.sent).toEqual(['ip', 'broadcastId', 'ip', 'broadcastId']);
+    expect(
+      await screen.findByText('Banned ABC123; its publisher IP was already banned.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Kill and ban' })).toBeNull();
+  });
+
+  it('reports both failures, and nothing banned, when neither write lands', async () => {
+    const h = banStub({ ip: unavailable, id: unavailable });
+    await submitKillAndBan(h.session);
+
+    const alert = await screen.findByText(/Nothing was banned/);
+    expect(alert.textContent).toMatch(/the ban store is unreachable/);
+    expect(screen.getByRole('button', { name: 'Kill and ban' })).toBeTruthy();
   });
 });

@@ -613,7 +613,53 @@ describe('logout (§4.8)', () => {
     // And the seam every view goes through agrees: there is no session here.
     await expect(session.authorizedFetch('api/v1/me')).rejects.toBeInstanceOf(AuthRedirect);
     // The refused token never reached a request.
-    const everything = h.calls.map((c) => h.bearerOf(c) ?? '').join(' ');
+    const everything = h.calls.map((c) => h.bearerOf(c) ?? '').join('\u0000');
     expect(everything).not.toContain('access-2');
+  });
+
+  // Regression (PR #280 review, second pass). The THIRD sibling of the same
+  // bug, and the one with the widest window: `authorizedFetch`'s 401 tail.
+  //
+  // A polling view's fetch 401s on a token that has just expired, its refresh
+  // goes in flight, and the operator clicks Sign out. The refresh is correctly
+  // refused as stale — and the fallthrough then walked to the IdP anyway. The
+  // authorize request carries no `prompt`, so an IdP holding a live SSO
+  // session answers it immediately and the operator is signed back in without
+  // ever seeing a login screen. In-flight requests at sign-out time are
+  // routine: the fleet view polls every five seconds.
+  it('does not sign back in when a 401 fallback is overtaken by Sign out', async () => {
+    const h = harness((url) =>
+      url.startsWith('api/v1/') ? new Response(null, { status: 401 }) : json({}),
+    );
+    const session = await login(h);
+
+    const pinned = pinnedToken();
+    h.tokenPlan.push(pinned.responder);
+    const inflight = session.authorizedFetch('api/v1/broadcasts');
+    await until('the 401 refresh to be in flight', () => h.tokenCalls().length === 2);
+
+    await session.logout();
+    expect(h.redirects).toHaveLength(2);
+    expect(h.redirects[1].startsWith(END_SESSION)).toBe(true);
+
+    // The IdP answers the refresh it was already handling: valid tokens for a
+    // session that has just ended.
+    pinned.deliver({
+      access_token: 'access-2',
+      refresh_token: 'refresh-2',
+      token_type: 'Bearer',
+      expires_in: 300,
+    });
+
+    // Awaiting the call itself is the sync point: it settles only once the
+    // whole 401 tail has run, redirect and all.
+    await expect(inflight).rejects.toBeInstanceOf(AuthRedirect);
+
+    expect(h.redirects).toHaveLength(2);
+    expect(session.accessToken()).toBeNull();
+    expect(session.getState().status).toBe('idle');
+    // `logout` cleared the flow record and nothing wrote a new one, so no
+    // authorization request was started behind the operator's back.
+    expect(window.sessionStorage.getItem(FLOW_STORAGE_KEY)).toBeNull();
   });
 });

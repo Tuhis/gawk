@@ -90,39 +90,60 @@ export function BroadcastsView({
     setBusy(true);
     setActionError(null);
     try {
-      // The ID ban is the action that ends the broadcast: the relay kills every
-      // live publisher matching a new Ban (AP3), so this both stops it now and
-      // keeps it stopped.
-      const idBan = await ensureBan(api, {
+      // The IP ban goes FIRST, and the order is the whole point.
+      //
+      // The literal "publisher" is §4.7's contract: the server resolves the
+      // live publisher's address through relayscan rather than trusting an
+      // address this page read seconds ago. That resolve therefore has to run
+      // before anything has started terminating the session — and the ID ban
+      // is exactly that, twice over: it triggers the AP3 kill, and its handler
+      // calls `afterMutation()`, which invalidates the relayscan fleet cache,
+      // so an IP ban placed after it does a *fresh* scan racing that kill and
+      // loses. Going first costs nothing, because the IP ban's own AP3
+      // actuation ends the session just the same.
+      const ip = draft.ip
+        ? await attemptBan(api, {
+            target: { type: 'ip', value: 'publisher', prefixLength: draft.ip.prefixLength },
+            expiresAt: draft.expiresAt,
+            reason: draft.reason,
+            sourceBroadcastId: target.id,
+          })
+        : null;
+      // And the ID ban is attempted WHATEVER happened to it. It is the action
+      // that must land — the relay kills every live publisher matching a new
+      // Ban (AP3), so it both stops the broadcast now and keeps it stopped —
+      // and letting a 503 on the IP half abort it would leave the operator
+      // with a live broadcast and nothing enforced at all.
+      const id = await attemptBan(api, {
         target: { type: 'broadcastId', value: target.id },
         expiresAt: draft.expiresAt,
         reason: draft.reason,
         sourceBroadcastId: target.id,
       });
+
       // Either write can come back 202 on its own; one unenforced ban is
       // enough to make this amber, so the first notice wins.
-      let pending = notice(target.id, idBan.ban);
-      let ipBan: BanOutcome | null = null;
-      if (draft.ip) {
-        // The literal "publisher" is §4.7's contract: the server resolves the
-        // live publisher's address through relayscan rather than trusting an
-        // address this page read seconds ago, and applies the prefix the
-        // operator just confirmed.
-        ipBan = await ensureBan(api, {
-          target: { type: 'ip', value: 'publisher', prefixLength: draft.ip.prefixLength },
-          expiresAt: draft.expiresAt,
-          reason: draft.reason,
-          sourceBroadcastId: target.id,
-        });
-        pending = pending ?? notice(target.id, ipBan.ban);
+      const pending = notice(target.id, banOf(id)) ?? notice(target.id, banOf(ip));
+      const failure = partialFailure(target.id, id, ip);
+      if (failure !== null) {
+        // The dialog stays OPEN: both writes tolerate a 409, so clicking again
+        // retries only what is missing — and once the broadcast has been
+        // killed it leaves the table, taking that button with it.
+        setNote(null);
+        setWarning(pending);
+        setActionError(failure);
+        reload();
+        return;
       }
       reportSuccess(
         pending,
-        banSummary(target.id, idBan.existed, ipBan === null ? null : ipBan.existed),
+        banSummary(target.id, id.ok && id.existed, ip === null ? null : ip.ok && ip.existed),
       );
       setBanning(null);
       reload();
     } catch (err) {
+      // Neither write throws — `attemptBan` answers with an outcome either way
+      // — but a handler that can fail silently is worse than one line of belt.
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -269,39 +290,65 @@ export function BroadcastsView({
   );
 }
 
-/** What one `POST /bans` left behind: the ban, and whether it predates the click. */
-interface BanOutcome {
-  /** The created ban, or the existing one a `409 duplicate_active` returned. */
-  ban: Ban | null;
-  existed: boolean;
+/**
+ * The result of one `POST /bans`, as an outcome rather than an exception.
+ *
+ * Kill + ban runs two of these and the second must not be skipped because the
+ * first failed, so neither may throw.
+ */
+type BanAttempt =
+  | { ok: true; ban: Ban | null; existed: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Place a ban, treating `409 duplicate_active` as "already in force" and every
+ * other failure as an outcome to report.
+ *
+ * A 409 is the one refusal that is not a refusal: it means the target already
+ * carries an active ban — the state the operator is asking for — and it comes
+ * back WITH that ban, so there is nothing to guess. That is what makes a retry
+ * idempotent in either direction: whichever of the two writes already landed
+ * is tolerated, and only the missing one is really re-sent.
+ */
+async function attemptBan(api: ApiClient, req: CreateBanRequest): Promise<BanAttempt> {
+  try {
+    return { ok: true, ban: await api.createBan(req), existed: false };
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'duplicate_active') {
+      return { ok: true, ban: err.ban, existed: true };
+    }
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function banOf(attempt: BanAttempt | null): Ban | null {
+  return attempt !== null && attempt.ok ? attempt.ban : null;
 }
 
 /**
- * Place a ban, treating `409 duplicate_active` as "already in force".
+ * The error line when kill + ban did not land in full, or null when it did.
  *
- * Kill + ban is two sequential writes and the second is the fragile one: the
- * first ban's `afterMutation()` invalidates the relayscan fleet cache, so the
- * IP ban's server-side `"publisher"` resolve does a *fresh* scan racing the
- * kill the first ban just triggered — if the publisher has already gone it
- * 400s. Without this, the retry that failure demands re-sent the ID ban, got a
- * 409, and aborted before ever reaching the IP ban: `BansView` has no create
- * form and the killed broadcast has left the table, so the IP ban became
- * unreachable from the UI entirely.
- *
- * A 409 is the one refusal that is not a refusal. It means the target already
- * carries an active ban — the state the operator is asking for — and it comes
- * back WITH that ban, so there is nothing to guess. Every other failure still
- * throws.
+ * It has to name which half is in force, because that is what decides what the
+ * operator does next — and, since `BansView` has no create form and a killed
+ * broadcast leaves the table, this dialog is the only place they can do it.
  */
-async function ensureBan(api: ApiClient, req: CreateBanRequest): Promise<BanOutcome> {
-  try {
-    return { ban: await api.createBan(req), existed: false };
-  } catch (err) {
-    if (err instanceof ApiError && err.code === 'duplicate_active') {
-      return { ban: err.ban, existed: true };
-    }
-    throw err;
+function partialFailure(
+  id: string,
+  idAttempt: BanAttempt,
+  ipAttempt: BanAttempt | null,
+): string | null {
+  const idError = idAttempt.ok ? null : idAttempt.error;
+  const ipError = ipAttempt === null || ipAttempt.ok ? null : ipAttempt.error;
+  if (idError === null && ipError === null) return null;
+  if (idError !== null && ipError !== null) {
+    return `Nothing was banned. The broadcast: ${idError}. The publisher IP: ${ipError}.`;
   }
+  if (idError !== null) {
+    return ipAttempt === null
+      ? idError
+      : `The publisher IP is banned, but ${id} is not: ${idError}. Kill and ban again to retry it — the IP ban already in place will not be duplicated.`;
+  }
+  return `${id} is banned, but its publisher IP is not: ${ipError}. Kill and ban again to retry it — the broadcast ban already in place will not be duplicated.`;
 }
 
 /**
