@@ -57,12 +57,13 @@ type fakeIDP struct {
 	// verifies is proving this counter did not move.
 	keyFetches atomic.Int64
 
-	mu      sync.Mutex
-	handler *oidctest.Server // replaced wholesale on rotation; never mutated in place
-	signer  *rsa.PrivateKey
-	kid     string
-	hangCh  chan struct{} // when non-nil, /keys blocks on it
-	down    bool          // when true, every endpoint 503s
+	mu       sync.Mutex
+	handler  *oidctest.Server // replaced wholesale on rotation; never mutated in place
+	signer   *rsa.PrivateKey
+	kid      string
+	hangCh   chan struct{} // when non-nil, /keys blocks on it
+	down     bool          // when true, every endpoint 503s
+	keyDelay time.Duration // when non-zero, /keys sleeps this long
 }
 
 func newFakeIDP(t *testing.T) *fakeIDP {
@@ -76,7 +77,7 @@ func newFakeIDP(t *testing.T) *fakeIDP {
 
 func (f *fakeIDP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	h, hang, down := f.handler, f.hangCh, f.down
+	h, hang, down, delay := f.handler, f.hangCh, f.down, f.keyDelay
 	f.mu.Unlock()
 	if down {
 		// An IdP that is up enough to answer but not to serve — the shape a
@@ -86,6 +87,16 @@ func (f *fakeIDP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/keys" {
 		f.keyFetches.Add(1)
+		if delay > 0 {
+			// A JWKS that takes a human-visible moment to answer, so a herd of
+			// concurrent verifications demonstrably overlaps inside one fetch
+			// instead of racing through it one at a time.
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if hang != nil {
 			// An IdP that accepts the connection and then says nothing — the
 			// shape that turns "blocks on the IdP" into a stalled request or a
@@ -105,6 +116,13 @@ func (f *fakeIDP) setDown(down bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.down = down
+}
+
+// delayKeys makes every subsequent JWKS request take d.
+func (f *fakeIDP) delayKeys(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keyDelay = d
 }
 
 // hangKeys makes every subsequent JWKS request block. The returned func

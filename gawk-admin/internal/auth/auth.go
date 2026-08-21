@@ -10,12 +10,12 @@
 //
 // Two properties this package is built around:
 //
-//   - **Per-request verification is offline.** The JWKS is cached and
-//     refreshed by a background goroutine, so an operator can kill a stream
-//     while the IdP is slow or down. The only request that reaches the IdP is
-//     one carrying a token signed by a key the cache has never seen — a key
-//     rotation — and even that fetch is floored so a fuzzing loop cannot turn
-//     into a stampede against the IdP (keyset.go).
+//   - **Per-request verification is offline.** The JWKS is cached by
+//     go-oidc's oidc.RemoteKeySet, whose cache has no expiry, so an operator
+//     can kill a stream while the IdP is slow or down. The only request that
+//     reaches the IdP is one whose signature no cached key verifies — a key
+//     rotation, or a forgery — and even that fetch is rate-floored so a
+//     fuzzing loop cannot turn into a stampede against the IdP (keyset.go).
 //   - **The refresh horizon is the revocation horizon.** A JWT cannot be
 //     revoked server-side before it expires, so removing an operator's role at
 //     the IdP takes effect at the next access-token refresh — which is exactly
@@ -23,9 +23,9 @@
 //     role is removed is refused here; one minted before it keeps working
 //     until it expires. That trade is stated, not hidden (§5).
 //   - **An unreachable IdP degrades the portal; it does not kill the pod.**
-//     Discovery and the first JWKS fetch happen in the background, with
-//     retries, so New never fails on a transient IdP outage. Until they
-//     succeed, authenticated routes answer 401 and Ready reports false — the
+//     Discovery happens in the background, with retries, so New never fails on
+//     a transient IdP outage. Until it
+//     succeeds, authenticated routes answer 401 and Ready reports false — the
 //     signal cmd/gawk-admin folds into /readyz. §6's "OIDC provider down" row
 //     describes exactly this: no new logins, enforcement untouched. Refusing
 //     to boot instead would turn a 30-second IdP blip into a CrashLoopBackOff
@@ -89,14 +89,17 @@ var _ Authenticator = (*Auth)(nil)
 // Defaults. Every one of these is overridable through Options, but the zero
 // Options value is what production runs.
 const (
-	// defaultJWKSRefreshInterval is the background refresh cadence. Short
-	// enough that a rotation is usually already cached before the first token
-	// signed by the new key arrives, long enough to be invisible to the IdP.
-	defaultJWKSRefreshInterval = 5 * time.Minute
-	// defaultJWKSMinRefreshInterval floors on-demand (unknown-key) refreshes.
-	defaultJWKSMinRefreshInterval = 30 * time.Second
+	// defaultJWKSFetchInterval and defaultJWKSFetchBurst size the JWKS fetch
+	// bucket (keyset.go): three fetches per minute, bucket full at startup.
+	// The burst is what makes a genuine rotation free — the herd it produces
+	// is coalesced into one fetch upstream, and the bucket has three. The
+	// interval is what an attacker feeding unverifiable tokens is reduced to,
+	// and it is also the worst case a rotation landing mid-attack waits: 20
+	// seconds, one retry away for the operator.
+	defaultJWKSFetchInterval = 20 * time.Second
+	defaultJWKSFetchBurst    = 3
 	// defaultFetchTimeout bounds a single JWKS request. It is also the longest
-	// a request can wait on the IdP, and only ever on an unknown-key path.
+	// a request can wait on the IdP, and only ever on a cache-miss path.
 	defaultFetchTimeout = 5 * time.Second
 	// defaultHTTPTimeout bounds discovery and JWKS requests end to end.
 	defaultHTTPTimeout = 10 * time.Second
@@ -129,10 +132,12 @@ type Options struct {
 	HTTPClient *http.Client
 	// Now defaults to time.Now.
 	Now func() time.Time
-	// JWKSRefreshInterval is the background refresh cadence.
-	JWKSRefreshInterval time.Duration
-	// JWKSMinRefreshInterval floors unknown-key refreshes.
-	JWKSMinRefreshInterval time.Duration
+	// JWKSFetchInterval and JWKSFetchBurst size the JWKS fetch bucket: one
+	// token accrues per interval, the bucket holds burst of them and starts
+	// full. Zero means the default (three fetches per minute). Only a
+	// verification that no cached key satisfies ever spends one.
+	JWKSFetchInterval time.Duration
+	JWKSFetchBurst    int
 	// ResolveRetryInterval is the delay before the first retry of OIDC
 	// discovery, doubling up to 30s. Defaults to one second.
 	ResolveRetryInterval time.Duration
@@ -142,7 +147,7 @@ type Options struct {
 }
 
 // Auth validates tokens and authorizes roles. Construct it with New; it owns a
-// background goroutine (JWKS refresh + limiter sweep) that Close stops.
+// background goroutine (issuer resolution + limiter sweep) that Close stops.
 type Auth struct {
 	issuer   string
 	clientID string
@@ -152,18 +157,16 @@ type Auth struct {
 
 	client       *http.Client
 	now          func() time.Time
-	minRefresh   time.Duration
-	refresh      time.Duration
 	resolveRetry time.Duration
+	throttle     *jwksThrottle
 
 	limiter *ipLimiter
 	log     *slog.Logger
 	csp     string
 
 	// mu guards the resolution state below. verifier is nil until discovery
-	// and the first JWKS fetch succeed; once set it is never unset — from then
-	// on the cached JWKS keeps verifying tokens whatever the IdP is doing
-	// (docs/42 §6).
+	// succeeds; once set it is never unset — from then on the cached JWKS
+	// keeps verifying tokens whatever the IdP is doing (docs/42 §6).
 	mu         sync.RWMutex
 	verifier   *oidc.IDTokenVerifier
 	resolveErr error
@@ -175,8 +178,7 @@ type Auth struct {
 }
 
 // New validates the configuration and starts the background worker that
-// resolves the provider (discovery + first JWKS fetch), retries until it
-// succeeds, and then keeps the JWKS fresh.
+// resolves the provider (OIDC discovery), retrying until it succeeds.
 //
 // It fails ONLY on a configuration that could never be safe — a blank issuer,
 // client ID, audience, roles-claim path or operator role. That is D7's actual
@@ -222,14 +224,6 @@ func New(ctx context.Context, cfg config.Config, opts Options) (*Auth, error) {
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
-	refresh := opts.JWKSRefreshInterval
-	if refresh <= 0 {
-		refresh = defaultJWKSRefreshInterval
-	}
-	minRefresh := opts.JWKSMinRefreshInterval
-	if minRefresh < 0 {
-		minRefresh = defaultJWKSMinRefreshInterval
-	}
 	resolveRetry := opts.ResolveRetryInterval
 	if resolveRetry <= 0 {
 		resolveRetry = defaultResolveRetryInterval
@@ -256,9 +250,8 @@ func New(ctx context.Context, cfg config.Config, opts Options) (*Auth, error) {
 		rolesPath:    rolesPath,
 		client:       client,
 		now:          now,
-		minRefresh:   minRefresh,
-		refresh:      refresh,
 		resolveRetry: resolveRetry,
+		throttle:     newJWKSThrottle(opts.JWKSFetchInterval, opts.JWKSFetchBurst, now),
 		limiter:      newIPLimiter(rate, burst, now),
 		log:          log,
 		csp:          buildCSP(cfg.OIDCIssuer),
@@ -269,13 +262,19 @@ func New(ctx context.Context, cfg config.Config, opts Options) (*Auth, error) {
 	return a, nil
 }
 
-// Ready reports whether the provider has been resolved: discovery answered and
-// the first JWKS fetch succeeded. Until it does, every authenticated route
+// Ready reports whether the provider has been resolved: OIDC discovery
+// answered and the verifier exists. Until it does, every authenticated route
 // answers 401, so cmd/gawk-admin folds this into /readyz alongside the store's
 // own check — an unready pod should not take portal traffic.
 //
-// It never goes back to false. Once the keys are cached, verification is
-// offline and an IdP outage no longer affects this process (§4.8, §6).
+// It never goes back to false. Note what it does NOT claim: the JWKS is
+// fetched lazily, on the first token whose signature no cached key verifies,
+// so a ready pod that has not yet served an authenticated request still needs
+// one round trip to the IdP. From that fetch onwards verification is offline
+// and an IdP outage no longer affects this process (§4.8, §6). Priming the
+// cache at resolve time would buy a narrow window — a pod that went ready and
+// then never saw a request until the IdP was down — at the cost of a fetch
+// every pod makes whether or not anyone authenticates.
 func (a *Auth) Ready() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -301,15 +300,16 @@ func (a *Auth) currentVerifier() (*oidc.IDTokenVerifier, bool) {
 	return a.verifier, a.verifier != nil
 }
 
-// resolve performs discovery and the first JWKS fetch. On success it publishes
-// the verifier, after which Ready is true forever.
-func (a *Auth) resolve(ctx context.Context) (*keySet, error) {
+// resolve performs OIDC discovery and publishes the verifier, after which
+// Ready is true forever. It does not touch the JWKS: the key set fetches
+// lazily and caches for the process lifetime (keyset.go).
+func (a *Auth) resolve(ctx context.Context) error {
 	// go-oidc verifies that the document's own `issuer` matches the URL we
 	// asked for, which is the check that makes the rest of the validation
 	// meaningful.
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, a.client), a.issuer)
 	if err != nil {
-		return nil, fmt.Errorf("discovery for %q: %w", a.issuer, err)
+		return fmt.Errorf("discovery for %q: %w", a.issuer, err)
 	}
 	// go-oidc exposes neither the issuer it validated nor the jwks_uri as
 	// fields, so read them back off the raw discovery document. Issuer is
@@ -323,29 +323,16 @@ func (a *Auth) resolve(ctx context.Context) (*keySet, error) {
 		Algorithms []string `json:"id_token_signing_alg_values_supported"`
 	}
 	if err := provider.Claims(&meta); err != nil {
-		return nil, fmt.Errorf("reading provider metadata: %w", err)
+		return fmt.Errorf("reading provider metadata: %w", err)
 	}
 	if meta.JWKSURL == "" {
-		return nil, fmt.Errorf("provider %q advertises no jwks_uri", a.issuer)
+		return fmt.Errorf("provider %q advertises no jwks_uri", a.issuer)
 	}
 	if meta.Issuer == "" {
 		meta.Issuer = a.issuer
 	}
 
-	keys := &keySet{
-		url:          meta.JWKSURL,
-		client:       a.client,
-		log:          a.log,
-		now:          a.now,
-		minRefresh:   a.minRefresh,
-		fetchTimeout: defaultFetchTimeout,
-	}
-	// Prime the cache before declaring readiness: a pod that says it is ready
-	// must be able to verify a token without touching the network.
-	if err := keys.fetch(ctx); err != nil {
-		return nil, fmt.Errorf("fetching JWKS from %q: %w", meta.JWKSURL, err)
-	}
-
+	keys := newRemoteKeySet(ctx, meta.JWKSURL, a.client, a.throttle, a.log)
 	verifier := oidc.NewVerifier(meta.Issuer, keys, &oidc.Config{
 		// go-oidc names this ClientID; it is the value compared against the
 		// token's `aud`, which for an access token is the audience the IdP
@@ -369,7 +356,7 @@ func (a *Auth) resolve(ctx context.Context) (*keySet, error) {
 	} else {
 		a.log.Info("oidc issuer resolved", "issuer", a.issuer)
 	}
-	return keys, nil
+	return nil
 }
 
 // noteResolveFailure records why we are still unresolved and says so once,
@@ -400,9 +387,14 @@ func (a *Auth) Close() error {
 	return nil
 }
 
-// run is the single background goroutine. It has two phases — resolve the
-// provider, then keep its JWKS fresh — and evicts limiter buckets throughout,
-// because 401s (and therefore failure budgets) exist in both phases.
+// run is the single background goroutine: retry discovery until it resolves,
+// and evict limiter buckets throughout — 401s (and therefore failure budgets)
+// exist before resolution as well as after.
+//
+// It performs no JWKS traffic at all. R39's background refresher is gone with
+// the bespoke cache: oidc.RemoteKeySet fetches on a verification miss and its
+// cache never expires, so a periodic refresh would be a request to the IdP
+// that changes nothing, on every replica, forever.
 func (a *Auth) run(ctx context.Context) {
 	defer close(a.done)
 
@@ -411,22 +403,12 @@ func (a *Auth) run(ctx context.Context) {
 	// Fire immediately: the common case is an IdP that is already up.
 	attempt := time.NewTimer(0)
 	defer attempt.Stop()
-	var refresh *time.Ticker
-	defer func() {
-		if refresh != nil {
-			refresh.Stop()
-		}
-	}()
 
-	var keys *keySet
 	backoff := a.resolveRetry
 	for {
-		var attemptC, refreshC <-chan time.Time
+		var attemptC <-chan time.Time
 		if attempt != nil {
 			attemptC = attempt.C
-		}
-		if refresh != nil {
-			refreshC = refresh.C
 		}
 
 		select {
@@ -437,8 +419,7 @@ func (a *Auth) run(ctx context.Context) {
 			a.limiter.sweep()
 
 		case <-attemptC:
-			resolved, err := a.resolve(ctx)
-			if err != nil {
+			if err := a.resolve(ctx); err != nil {
 				if ctx.Err() != nil {
 					return // shutting down, not a real failure
 				}
@@ -447,20 +428,10 @@ func (a *Auth) run(ctx context.Context) {
 				backoff = min(2*backoff, max(resolveRetryMax, a.resolveRetry))
 				continue
 			}
-			keys = resolved
-			// Resolution happens once. From here the only IdP traffic is the
-			// periodic refresh and the floored unknown-key fetch.
+			// Resolution happens once. From here the only IdP traffic is a
+			// throttled fetch behind a verification miss.
 			attempt.Stop()
 			attempt = nil
-			refresh = time.NewTicker(a.refresh)
-
-		case <-refreshC:
-			// Warn, not Error: the cached keys keep verifying tokens, so an
-			// unreachable IdP is degraded, not broken. A refresh aborted by
-			// our own shutdown is neither, so it says nothing.
-			if err := keys.fetch(ctx); err != nil && ctx.Err() == nil {
-				a.log.Warn("jwks refresh failed", "err", err)
-			}
 		}
 	}
 }

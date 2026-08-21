@@ -1,14 +1,40 @@
 package auth
 
+// JWKS handling for the portal's token verification (docs/42 §4.8).
+//
+// The key set is go-oidc's own oidc.RemoteKeySet. R39 shipped a bespoke cache
+// instead, on the premise that RemoteKeySet could not give §4.8 its two named
+// properties. Re-reading the upstream source (go-oidc v3.20.0, oidc/jwks.go)
+// says otherwise — it already has all three of the properties that mattered:
+//
+//   - **Cached keys never expire.** keysFromCache() has no freshness check at
+//     all, so once a `kid` is in the cache every later token signed by it
+//     verifies from memory. Steady-state verification is pure CPU, and an IdP
+//     outage cannot break it. That is the guarantee §4.8 and §6 rest on, and
+//     it is the one the bespoke cache existed to provide.
+//   - **Concurrent misses share one fetch.** keysFromRemote() coalesces
+//     through an inflight record, so a rotation's thundering herd — every
+//     operator's next token carrying a key this process has not seen — costs
+//     one round trip, and every waiter is answered from that fetch's result
+//     rather than from the cache it was queued to replace. Hand-rolling that
+//     is what produced R39's own generation-snapshot race, which would have
+//     401'd the whole fleet through a key rotation.
+//   - **A failed fetch leaves the cache alone.** cachedKeys is replaced only
+//     on success, so losing contact with the IdP never revokes access that is
+//     already working.
+//
+// It is also at least as strict as the bespoke key filter was: `alg` values
+// outside the asymmetric set are skipped when the JWKS is decoded, and the
+// verifier's own SupportedSigningAlgs allowlist (auth.go, signingAlgs) is
+// applied before any key is tried — so "none" and the HMAC family are
+// unreachable from both ends.
+//
+// What upstream does NOT have is a floor on how often a verification may
+// reach the network. That gap, and only that gap, is what this file fills.
+
 import (
 	"context"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/rsa"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,229 +42,155 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	jose "github.com/go-jose/go-jose/v4"
 )
 
 // maxJWKSBytes bounds what we will read from the IdP. A JWKS is a handful of
 // kilobytes; anything past this is a misconfigured or hostile endpoint, and
-// this process must not be knocked over by it.
+// this process must not be knocked over by it. go-oidc reads the body with an
+// unbounded io.ReadAll, so the limit is applied here, on the response body the
+// throttling transport hands back.
 const maxJWKSBytes = 512 << 10
 
-// errRefreshThrottled means an unknown-key refresh was skipped because one was
-// attempted too recently. The token is refused; the next one after the floor
-// elapses gets a real fetch.
-var errRefreshThrottled = errors.New("jwks refresh throttled")
+// errJWKSThrottled is what a refused fetch surfaces. It travels back through
+// the key set as an ordinary verification failure, so the caller answers 401 —
+// never a 5xx, and never a valid token.
+var errJWKSThrottled = errors.New("jwks fetch throttled: too many verification misses to fetch the key set again yet")
 
-// keySet is the cached, background-refreshed JWKS §4.8 requires.
+// jwksThrottle is the rate floor go-oidc lacks: a token bucket spent by JWKS
+// fetches, installed as the RoundTripper of the HTTP client oidc.RemoteKeySet
+// uses. A fetch with no token in the bucket never leaves the process — the key
+// set sees a transport error, verification fails, and the request is answered
+// 401.
 //
-// go-oidc ships oidc.RemoteKeySet, which caches keys but (a) never refreshes
-// them in the background and (b) puts no floor on how often an unknown `kid`
-// may trigger a fetch. §4.8 asks for both by name — "cached,
-// background-refreshed — per-request verification is offline" — so the cache
-// is ours. The signature check itself still runs inside go-oidc
-// (oidc.StaticKeySet), which keeps the crypto in one reviewed place.
-type keySet struct {
-	url    string
-	client *http.Client
-	log    *slog.Logger
-	now    func() time.Time
-
-	// minRefresh floors how often a verification miss may reach the IdP. A
-	// token signed by an unseen key is either a rotation (rare) or a forgery
-	// (possibly a tight loop); only the first deserves a network round trip.
-	minRefresh time.Duration
-	// fetchTimeout bounds one JWKS request. It is also the longest a request
-	// can wait on the IdP, and only ever on the unknown-key path.
-	fetchTimeout time.Duration
-
-	// fetchMu serializes fetches so a burst of unknown-key requests produces
-	// one round trip, not one each. It is never held while verifying.
-	fetchMu sync.Mutex
-
-	mu   sync.RWMutex
-	keys []crypto.PublicKey
-	// generation counts successful cache replacements. A request that waited
-	// on fetchMu compares it to decide whether someone else's refresh already
-	// did its work.
-	generation uint64
-	// lastOnDemand is when a VERIFICATION last triggered a fetch. Startup and
-	// background refreshes deliberately do not touch it: if they did, the
-	// refresh that runs seconds before a key rotation would spend the budget
-	// and every operator would be refused until the floor elapsed.
-	lastOnDemand time.Time
-
-	// testHookAfterCachedVerify runs between the cached verification and the
-	// on-demand refresh, so a test can land another request's refresh exactly
-	// in that window without goroutines or timing. Nil in production; the same
-	// seam R1's post-upgrade race needed (CODE-REVIEW.md).
-	testHookAfterCachedVerify func()
-}
-
-// VerifySignature implements oidc.KeySet.
+// THE BUCKET SITS AT THE TRANSPORT, not in an oidc.KeySet wrapper that guesses
+// from the token's `kid` whether the inner call will fetch, and that placement
+// is the crux of the design. RemoteKeySet.verify() falls through to a fetch on
+// ANY verification miss, not merely an unknown `kid`: a valid `kid` carrying a
+// garbage signature misses too, and so does the post-rotation tail of tokens
+// still signed by the retired key. A wrapper that throttled only unseen-`kid`
+// calls would therefore leave the two commonest fetch-per-request paths
+// completely unthrottled. Gating the transport needs no guess about what the
+// inner call is about to do: a token is spent when, and only when, a request
+// is actually made.
 //
-// The cached path is pure CPU: with the issuer switched off, every token
-// signed by a key we already hold still validates. That is the guarantee the
-// portal's availability rests on (§4.8, D7).
-func (k *keySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
-	// Keys and generation are snapshotted TOGETHER, and the generation is the
-	// one that belongs to the key set this verification actually tried. Taking
-	// it later — inside refreshForVerify — makes a refresh that lands in
-	// between invisible: the waiter then sees an unchanged generation, hits the
-	// floor, and answers from the cache it was queued to replace. That was a
-	// live 401-during-rotation bug, reproduced by
-	// TestRefreshLandingBetweenCachedVerifyAndRefreshIsNoticed.
-	keys, seen := k.snapshot()
-	payload, cachedErr := verifyWith(ctx, keys, jwt)
-	if cachedErr == nil {
-		return payload, nil
+// The bucket starts FULL, so a genuine key rotation gets its fetch
+// immediately and costs zero 401s. Only an attack — or a rotation that lands
+// while one is in progress — ever waits, and then for at most one refill
+// interval: 20 seconds at the defaults (defaultJWKSFetchInterval, burst
+// defaultJWKSFetchBurst = 3 fetches per minute). An operator whose token was
+// minted by the new key inside that window retries and is in.
+type jwksThrottle struct {
+	burst    float64
+	interval time.Duration // time to accrue one token
+	now      func() time.Time
+
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
+}
+
+func newJWKSThrottle(interval time.Duration, burst int, now func() time.Time) *jwksThrottle {
+	if now == nil {
+		now = time.Now
 	}
-	if hook := k.testHookAfterCachedVerify; hook != nil {
-		hook()
+	if interval <= 0 {
+		interval = defaultJWKSFetchInterval
 	}
-	// No cached key verified this token. Either the IdP rotated its signing
-	// key, or the token is a forgery. Refresh (at most once per minRefresh)
-	// and try again — the rotation case must not require a restart, and the
-	// forgery case must not become a stampede against the IdP.
-	if err := k.refreshForVerify(ctx, seen); err != nil {
-		if errors.Is(err, errRefreshThrottled) {
-			return nil, cachedErr
+	if burst <= 0 {
+		burst = defaultJWKSFetchBurst
+	}
+	return &jwksThrottle{
+		burst:    float64(burst),
+		interval: interval,
+		now:      now,
+		tokens:   float64(burst), // full: the first rotation never waits
+		last:     now(),
+	}
+}
+
+// tokensLeft reports the bucket's current contents WITHOUT refilling or
+// spending. It exists for the tests: "this verification did not touch the
+// IdP" is the guarantee §4.8 rests on and the hardest one to observe from
+// outside, and an unchanged, non-empty bucket is direct evidence that the
+// fetch path was never even consulted.
+func (t *jwksThrottle) tokensLeft() float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.tokens
+}
+
+// allow spends one token and reports whether there was one.
+func (t *jwksThrottle) allow() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := t.now()
+	if elapsed := now.Sub(t.last); elapsed > 0 {
+		t.tokens = min(t.burst, t.tokens+float64(elapsed)/float64(t.interval))
+		t.last = now
+	}
+	if t.tokens < 1 {
+		return false
+	}
+	t.tokens--
+	return true
+}
+
+// throttledTransport spends a throttle token per JWKS request and caps the
+// response body.
+type throttledTransport struct {
+	base     http.RoundTripper
+	throttle *jwksThrottle
+	log      *slog.Logger
+}
+
+func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !t.throttle.allow() {
+		// RoundTrip owns the body once it is called, on the error path too.
+		if req.Body != nil {
+			_ = req.Body.Close()
 		}
-		return nil, fmt.Errorf("%w (jwks refresh failed: %v)", cachedErr, err)
+		t.log.Debug("jwks fetch throttled", "url", req.URL.String())
+		return nil, errJWKSThrottled
 	}
-	keys, _ = k.snapshot()
-	return verifyWith(ctx, keys, jwt)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	resp.Body = cappedBody{Reader: io.LimitReader(resp.Body, maxJWKSBytes), Closer: resp.Body}
+	return resp, nil
 }
 
-// snapshot returns the current keys and the generation they belong to. The
-// slice is replaced wholesale on every refresh and never mutated in place, so
-// the snapshot is safe to use unlocked.
-func (k *keySet) snapshot() ([]crypto.PublicKey, uint64) {
-	k.mu.RLock()
-	defer k.mu.RUnlock()
-	return k.keys, k.generation
+// cappedBody is a response body truncated at maxJWKSBytes. Truncation fails
+// closed: the JSON decode of a clipped document errors, the fetch fails, and
+// the previously cached keys stay in place.
+type cappedBody struct {
+	io.Reader
+	io.Closer
 }
 
-// verifyWith runs the signature check inside go-oidc, which keeps the crypto
-// in one reviewed place.
-func verifyWith(ctx context.Context, keys []crypto.PublicKey, jwt string) ([]byte, error) {
-	return (&oidc.StaticKeySet{PublicKeys: keys}).VerifySignature(ctx, jwt)
-}
-
-// fetch replaces the cache unconditionally, honouring ctx. Used to prime at
-// startup and by the background refresher, whose ctx is cancelled at shutdown
-// — an in-flight refresh must not hold the process open for the fetch timeout.
-func (k *keySet) fetch(ctx context.Context) error {
-	k.fetchMu.Lock()
-	defer k.fetchMu.Unlock()
-	return k.fetchLocked(ctx)
-}
-
-// refreshForVerify is the on-demand path: floored by minRefresh, and shared by
-// everyone who arrives while it runs. A nil return means "the cache is now as
-// fresh as a fetch of our own would make it" — the caller retries against it.
+// newRemoteKeySet builds the throttled key set for jwksURL.
 //
-// seen is the generation of the key set whose verification failed, captured by
-// the caller before it ran that verification.
-func (k *keySet) refreshForVerify(ctx context.Context, seen uint64) error {
-	k.fetchMu.Lock()
-	defer k.fetchMu.Unlock()
-
-	k.mu.RLock()
-	current, last := k.generation, k.lastOnDemand
-	k.mu.RUnlock()
-	if current != seen {
-		// The key set changed since the verification that failed — someone
-		// else's refresh already did our work, whether it landed while we
-		// waited for the lock or just before we asked for it. A rotation is a
-		// thundering herd — every operator's next token carries the new key at
-		// once — so answering these from the stale cache we were queued to
-		// replace would 401 the whole fleet off one refresh.
-		return nil
+// base supplies the transport (so an injected client — a test's counting
+// RoundTripper, an operator's proxy — still applies) but not the timeout: a
+// JWKS fetch happens on the REQUEST path here, so it gets the tighter of
+// defaultFetchTimeout and whatever bound the caller set.
+func newRemoteKeySet(ctx context.Context, jwksURL string, base *http.Client, throttle *jwksThrottle, log *slog.Logger) oidc.KeySet {
+	timeout := defaultFetchTimeout
+	if base.Timeout > 0 && base.Timeout < timeout {
+		timeout = base.Timeout
 	}
-	// Throttle on the last on-demand *attempt*, not on its success: an IdP
-	// that is down must not turn every forged token into another failing round
-	// trip.
-	if !last.IsZero() && k.now().Sub(last) < k.minRefresh {
-		return errRefreshThrottled
+	transport := base.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
 	}
-	k.mu.Lock()
-	k.lastOnDemand = k.now()
-	k.mu.Unlock()
-	// Detached: this fetch serves every request waiting behind it, so the one
-	// that happened to trigger it going away must not cancel it. The timeout
-	// inside fetchLocked keeps it bounded.
-	return k.fetchLocked(context.WithoutCancel(ctx))
-}
-
-// fetchLocked performs the request. Callers hold fetchMu.
-func (k *keySet) fetchLocked(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, k.fetchTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.url, nil)
-	if err != nil {
-		return err
+	client := &http.Client{
+		Transport: &throttledTransport{base: transport, throttle: throttle, log: log},
+		Timeout:   timeout,
 	}
-	req.Header.Set("Cache-Control", "no-cache")
-	resp, err := k.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBytes))
-	if err != nil {
-		return fmt.Errorf("reading jwks: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("jwks endpoint returned %s", resp.Status)
-	}
-	keys, err := parseJWKS(body)
-	if err != nil {
-		return err
-	}
-
-	k.mu.Lock()
-	k.keys = keys
-	k.generation++
-	k.mu.Unlock()
-	k.log.Debug("jwks refreshed", "url", k.url, "keys", len(keys))
-	return nil
-}
-
-// parseJWKS decodes the key set, keeping only keys this package will verify
-// with.
-//
-// Keys are decoded one at a time so that a single key using an algorithm we do
-// not know (providers do ship such keys — ES256K, post-quantum experiments)
-// cannot invalidate the whole set. **Only asymmetric public keys survive the
-// filter**: a symmetric (`oct`) key from a public JWKS endpoint is the
-// algorithm-confusion attack in raw form, and oidc.StaticKeySet rejects the
-// entire set if it is handed one.
-func parseJWKS(body []byte) ([]crypto.PublicKey, error) {
-	var raw struct {
-		Keys []json.RawMessage `json:"keys"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("decoding jwks: %w", err)
-	}
-	var out []crypto.PublicKey
-	for _, entry := range raw.Keys {
-		var jwk jose.JSONWebKey
-		if err := json.Unmarshal(entry, &jwk); err != nil {
-			continue
-		}
-		if jwk.Use == "enc" {
-			continue
-		}
-		switch jwk.Key.(type) {
-		case *rsa.PublicKey, *ecdsa.PublicKey, ed25519.PublicKey:
-			out = append(out, jwk.Key)
-		default:
-			continue
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("jwks contains no usable public keys")
-	}
-	return out, nil
+	// RemoteKeySet reads its HTTP client off this context and deliberately
+	// drops the cancellation (context.WithoutCancel, upstream), so a fetch is
+	// bounded by the client timeout alone — which is why that timeout must
+	// never be zero, and why shutdown never waits on an in-flight fetch.
+	return oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL)
 }

@@ -48,6 +48,13 @@ func newUnresolvedAuth(t *testing.T, cfg config.Config, opts Options) *Auth {
 	if opts.ResolveRetryInterval == 0 {
 		opts.ResolveRetryInterval = 5 * time.Millisecond
 	}
+	if opts.JWKSFetchBurst == 0 {
+		// The JWKS fetch bucket has its own tests (keyset_test.go). Everywhere
+		// else it must not be load-bearing: how many of a test's cases happen
+		// to miss the key cache — a tampered signature does, a wrong `aud`
+		// does not — would otherwise silently decide whether that test passes.
+		opts.JWKSFetchBurst = 1_000
+	}
 	a, err := New(context.Background(), cfg, opts)
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
@@ -282,12 +289,7 @@ func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
 func TestVerificationSucceedsFromCacheWithTheIssuerDown(t *testing.T) {
 	idp := newFakeIDP(t)
 	client, transport := countingClient()
-	// A long floor on on-demand refreshes so nothing can quietly reach the
-	// network on the second request either.
-	a := newTestAuth(t, testConfig(t, idp.url()), Options{
-		HTTPClient:             client,
-		JWKSMinRefreshInterval: time.Hour,
-	})
+	a := newTestAuth(t, testConfig(t, idp.url()), Options{HTTPClient: client})
 	h := testStack(a, idp.url())
 
 	if rec := do(t, h, http.MethodGet, "/api/v1/me", idp.mint(t, idp.claims())); rec.Code != http.StatusOK {
@@ -300,6 +302,7 @@ func TestVerificationSucceedsFromCacheWithTheIssuerDown(t *testing.T) {
 	fresh := idp.mint(t, idp.claims(func(c map[string]any) { c["sub"] = "another-operator" }))
 	idp.stop()
 	attempts := transport.attempts.Load()
+	tokens := a.throttle.tokensLeft()
 
 	rec := do(t, h, http.MethodGet, "/api/v1/me", fresh)
 	if rec.Code != http.StatusOK {
@@ -310,71 +313,16 @@ func TestVerificationSucceedsFromCacheWithTheIssuerDown(t *testing.T) {
 	if got := transport.attempts.Load(); got != attempts {
 		t.Errorf("HTTP attempts = %d, want %d: verification from cache must not touch the IdP", got, attempts)
 	}
-}
-
-// A rotation at the IdP must not need a restart. The unknown key is what
-// triggers the refetch.
-func TestUnknownKeyTriggersRefreshAndPicksUpRotatedKey(t *testing.T) {
-	idp := newFakeIDP(t)
-	// Default floor: the startup fetch must not have spent the on-demand
-	// budget, or a rotation would refuse every operator until it elapsed.
-	a := newTestAuth(t, testConfig(t, idp.url()), Options{})
-	h := testStack(a, idp.url())
-
-	if rec := do(t, h, http.MethodGet, "/api/v1/me", idp.mint(t, idp.claims())); rec.Code != http.StatusOK {
-		t.Fatalf("warm-up status = %d, want 200", rec.Code)
-	}
-
-	idp.useKey("key-b", keyB())
-	rec := do(t, h, http.MethodGet, "/api/v1/me", idp.mint(t, idp.claims()))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status after rotation = %d, want 200 (body %q)", rec.Code, rec.Body.String())
-	}
-	// And the retired key stops working, i.e. the cache was replaced rather
-	// than accumulated.
-	stale := idp.mintWith(t, keyA(), "key-a", idp.claims())
-	if rec := do(t, h, http.MethodGet, "/api/v1/me", stale); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status for the retired key = %d, want 401", rec.Code)
+	// Belt and braces: the fetch throttle sits in FRONT of that transport, so
+	// an unchanged bucket proves the fetch path was not even consulted.
+	if got := a.throttle.tokensLeft(); got != tokens {
+		t.Errorf("fetch tokens = %v, want %v: a cached verification must not reach for the network", got, tokens)
 	}
 }
 
-// The background refresher is the half that makes per-request verification
-// offline: with on-demand refreshes floored out of the way, a rotated key must
-// still be usable — and still usable after the issuer goes away.
-func TestBackgroundRefreshPicksUpRotatedKey(t *testing.T) {
-	idp := newFakeIDP(t)
-	a := newTestAuth(t, testConfig(t, idp.url()), Options{
-		JWKSRefreshInterval: 10 * time.Millisecond,
-		// No request may reach the IdP: if this token verifies, the background
-		// loop is the only thing that could have fetched the new key.
-		JWKSMinRefreshInterval: time.Hour,
-	})
-	h := testStack(a, idp.url())
-
-	if rec := do(t, h, http.MethodGet, "/api/v1/me", idp.mint(t, idp.claims())); rec.Code != http.StatusOK {
-		t.Fatalf("warm-up status = %d, want 200", rec.Code)
-	}
-
-	idp.useKey("key-b", keyB())
-	rotated := idp.mint(t, idp.claims())
-
-	// Wait for two full refresh cycles, so at least one fetch demonstrably
-	// started after the rotation.
-	before := idp.keyFetches.Load()
-	deadline := time.Now().Add(5 * time.Second)
-	for idp.keyFetches.Load() < before+2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("background refresher did not fetch the JWKS (fetches stuck at %d)", idp.keyFetches.Load())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	idp.stop()
-
-	rec := do(t, h, http.MethodGet, "/api/v1/me", rotated)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: the background refresh should have cached the rotated key (body %q)", rec.Code, rec.Body.String())
-	}
-}
+// Rotation, on-demand fetch counts and the throttle live in keyset_test.go:
+// they are properties of the key set, and asserting them needs the fake
+// issuer's fetch counter rather than a status code.
 
 // --- authorization ----------------------------------------------------------
 
@@ -929,8 +877,11 @@ func TestCloseIsIdempotent(t *testing.T) {
 func TestConcurrentVerificationAcrossARotation(t *testing.T) {
 	idp := newFakeIDP(t)
 	a := newTestAuth(t, testConfig(t, idp.url()), Options{
-		JWKSRefreshInterval:    5 * time.Millisecond,
-		JWKSMinRefreshInterval: 0,
+		// Six hard rotations in a row is not a rate the fetch floor is meant
+		// to survive — this test is about the race, so the bucket is opened up
+		// and the throttle gets its own tests (keyset_test.go).
+		JWKSFetchInterval: time.Microsecond,
+		JWKSFetchBurst:    1_000,
 	})
 	h := testStack(a, idp.url())
 
@@ -973,21 +924,35 @@ func TestConcurrentVerificationAcrossARotation(t *testing.T) {
 	}
 }
 
-// Shutdown must not wait on the IdP either. A refresh in flight when the
-// process is asked to stop is cancelled with it; only a request-triggered
-// refresh is detached from its caller (keyset.go).
+// Shutdown must not wait on the IdP either. The only JWKS traffic left is a
+// request-path fetch, and go-oidc runs it detached from cancellation
+// (keyset.go) — so Close must not be waiting on one.
 func TestCloseReturnsPromptlyWhileTheIssuerHangs(t *testing.T) {
 	idp := newFakeIDP(t)
-	a := newTestAuth(t, testConfig(t, idp.url()), Options{JWKSRefreshInterval: 5 * time.Millisecond})
+	a := newTestAuth(t, testConfig(t, idp.url()), Options{})
+	h := testStack(a, idp.url())
 
 	release := idp.hangKeys()
 	defer release()
 
-	before := idp.keyFetches.Load()
+	// One request stuck on the IdP: its token is signed by a key nothing has
+	// cached, so verification reaches for the JWKS and stays there.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rec := do(t, h, http.MethodGet, "/api/v1/me", idp.mintWith(t, keyB(), "never-advertised", idp.claims()))
+		// Whether the fetch is released or times out, the answer is a refusal
+		// — never a 5xx out of a stalled dependency.
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("stalled-fetch request = %d, want 401 (body %q)", rec.Code, rec.Body.String())
+		}
+	}()
+
 	deadline := time.Now().Add(5 * time.Second)
-	for idp.keyFetches.Load() == before {
+	for idp.keyFetches.Load() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("no background refresh arrived to hang")
+			t.Fatal("no JWKS fetch arrived to hang")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -1002,22 +967,30 @@ func TestCloseReturnsPromptlyWhileTheIssuerHangs(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close blocked on a hanging IdP; shutdown must not wait out the fetch timeout")
 	}
+
+	release()
+	wg.Wait()
 }
 
 // A rotation is a thundering herd: every operator's next token is signed by a
 // key this process has not seen, and they arrive at once. All of them must be
-// accepted off the single refresh that the first one triggers — a request that
-// waited for that refresh must not be answered from the stale cache it was
-// waiting to replace.
-func TestConcurrentUnknownKeyRequestsAllSucceedOnOneRefresh(t *testing.T) {
+// accepted off the single fetch the first one triggers — go-oidc's own
+// singleflight, asserted here so a future upstream change that loses it is
+// caught in this repository rather than at the IdP.
+func TestConcurrentUnknownKeyRequestsAllSucceedOnOneFetch(t *testing.T) {
 	idp := newFakeIDP(t)
 	client, transport := countingClient()
+	// A stopped clock, so the bucket cannot refill under the test's own
+	// wall-clock duration and "the herd cost one token" stays an exact claim.
+	clk := newTestClock()
 	a := newTestAuth(t, testConfig(t, idp.url()), Options{
 		HTTPClient: client,
-		// Production-shaped: no background refresh will save this, and the
-		// floor allows exactly one on-demand fetch.
-		JWKSRefreshInterval:    time.Hour,
-		JWKSMinRefreshInterval: 30 * time.Second,
+		Now:        clk.now,
+		// Production-shaped: the bucket holds three, and the herd must cost
+		// one. If the coalescing were lost, sixteen requests would want
+		// sixteen fetches and thirteen of them would be refused.
+		JWKSFetchInterval: defaultJWKSFetchInterval,
+		JWKSFetchBurst:    defaultJWKSFetchBurst,
 	})
 	h := testStack(a, idp.url())
 
@@ -1030,6 +1003,9 @@ func TestConcurrentUnknownKeyRequestsAllSucceedOnOneRefresh(t *testing.T) {
 	for i := range tokens {
 		tokens[i] = idp.mint(t, idp.claims())
 	}
+	// A JWKS that takes a visible moment, so "they arrive at once" is a fact
+	// about the test rather than a hope about the scheduler.
+	idp.delayKeys(150 * time.Millisecond)
 	attemptsBefore := transport.attempts.Load()
 
 	var wg sync.WaitGroup
@@ -1051,9 +1027,11 @@ func TestConcurrentUnknownKeyRequestsAllSucceedOnOneRefresh(t *testing.T) {
 			t.Errorf("request %d = %d, want 200: the rotated key was fetched for the whole herd", i, code)
 		}
 	}
-	// One refresh for all of them: the floor plus the shared fetch is what
-	// keeps a rotation (or a forgery loop) from stampeding the IdP.
 	if got := transport.attempts.Load() - attemptsBefore; got != 1 {
-		t.Errorf("JWKS fetches during the herd = %d, want 1", got)
+		t.Errorf("JWKS fetches during the herd = %d, want 1 (go-oidc coalesces concurrent misses)", got)
+	}
+	if got := a.throttle.tokensLeft(); got != float64(defaultJWKSFetchBurst)-2 {
+		t.Errorf("tokens left = %v, want %v: the herd must cost exactly one",
+			got, float64(defaultJWKSFetchBurst)-2)
 	}
 }

@@ -1,10 +1,13 @@
 package ops
 
 // The dependency-containment rule for R39's OIDC library (docs/42 §5, and the
-// AP3 brief): go-oidc and go-jose exist in this module for ONE reason — the
-// ops listener's admin-API auth — and must not spread. The relay's data plane
-// (transport, hub, wire, the moderation contract package) is a security
-// surface whose dependency set is a property worth asserting, not a habit.
+// AP3 brief): go-oidc is in this module for ONE reason — the ops listener's
+// admin-API auth — and must not spread. go-jose comes in under it (nothing
+// here imports it directly any more, so `go mod tidy` marks it indirect) and
+// is listed too, because a direct import of it would be a hand-rolled JWS
+// verification path by another name. The relay's data plane (transport, hub,
+// wire, the moderation contract package) is a security surface whose
+// dependency set is a property worth asserting, not a habit.
 //
 // A source walk rather than `go list -deps`: it needs no toolchain subprocess,
 // it names the offending FILE when it fails, and it catches the import the
