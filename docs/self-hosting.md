@@ -683,7 +683,8 @@ renews silently and nobody types a password more often.
 
 Other providers: override `oidc.rolesClaim` with the dot-path to wherever that
 provider puts roles (`groups` for a top-level claim, for example). The default
-is Keycloak's client-roles shape with `{clientId}` substituted.
+is Keycloak's client-roles shape with `{audience}` substituted into each
+segment.
 
 **When the IdP is down.** `gawk-admin` does not die and does not hang. It
 starts, retries discovery in the background, and answers authenticated routes

@@ -21,6 +21,13 @@ package ops
 // gawk-admin's (docs/42 §4.8, AP5) — two implementations of "is this token
 // good?" would eventually disagree, invisibly.
 //
+// The authorization half of that answer — which roles a verified token
+// carries — is shared outright, in the public gawk-server/oidcroles package.
+// R39 first shipped it twice, in two placeholder dialects, and only the copy
+// here carried the dotted-audience bug: a mirror hides a defect rather than
+// doubling it. Signature verification stays behind this file because only this
+// file may import go-oidc; oidcroles takes decoded claims and imports nothing.
+//
 // The key set is go-oidc's own oidc.RemoteKeySet. R39 first shipped a bespoke
 // background-refreshed oidc.StaticKeySet here, on the premise that
 // RemoteKeySet could not make per-request verification offline. Re-reading the
@@ -38,7 +45,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -48,6 +54,8 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+
+	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 )
 
 const (
@@ -94,8 +102,9 @@ type AdminAuthOptions struct {
 	// rejects a half-configured pair before we ever get here).
 	Issuer   string
 	Audience string
-	// RolesClaim is a dot-path with "{audience}" substituted; Role is the
-	// value the resolved array must contain.
+	// RolesClaim is a dot-path template with oidcroles.Placeholder
+	// substituted per segment; Role is the value the resolved array must
+	// contain.
 	RolesClaim string
 	Role       string
 
@@ -110,16 +119,23 @@ type AdminAuthOptions struct {
 	// full. Zero means the default (three fetches per minute).
 	JWKSFetchInterval time.Duration
 	JWKSFetchBurst    int
+
+	// primeRetry is the delay before the first key-set priming retry,
+	// doubling to discoveryRetryMax. Unexported on purpose: like the discovery
+	// cadence it is correctness plumbing rather than an operator knob, and it
+	// exists only so a test need not wait out the production backoff.
+	primeRetry time.Duration
 }
 
 // AdminAuth authorizes one request against the configured credentials.
 type AdminAuth struct {
-	token     []byte
-	issuer    string
-	audience  string
-	rolesPath []string
-	role      string
-	log       *slog.Logger
+	token      []byte
+	issuer     string
+	audience   string
+	rolesPath  oidcroles.Path
+	role       string
+	log        *slog.Logger
+	primeRetry time.Duration
 
 	keys     *remoteKeys
 	verifier *oidc.IDTokenVerifier
@@ -129,6 +145,10 @@ type AdminAuth struct {
 	// published, so tests can wait for it without polling. Never waited on by
 	// the request path — until it closes, every JWT is answered 401.
 	resolved chan struct{}
+	// primed closes once the key set holds keys. It is strictly later than
+	// resolved and nothing gates on it: the relay serves, and the JWT path is
+	// live, from the moment resolved closes.
+	primed chan struct{}
 }
 
 // NewAdminAuth builds the authenticator and, when OIDC is configured, starts
@@ -148,13 +168,19 @@ func NewAdminAuth(ctx context.Context, opts AdminAuthOptions) *AdminAuth {
 	if client == nil {
 		client = &http.Client{Timeout: idpRequestTimeout}
 	}
+	primeRetry := opts.primeRetry
+	if primeRetry <= 0 {
+		primeRetry = discoveryRetryMin
+	}
 	a := &AdminAuth{
-		issuer:   opts.Issuer,
-		audience: opts.Audience,
-		role:     opts.Role,
-		log:      log,
-		keys:     &remoteKeys{},
-		resolved: make(chan struct{}),
+		issuer:     opts.Issuer,
+		audience:   opts.Audience,
+		role:       opts.Role,
+		log:        log,
+		primeRetry: primeRetry,
+		keys:       &remoteKeys{},
+		resolved:   make(chan struct{}),
+		primed:     make(chan struct{}),
 	}
 	if opts.Token != "" {
 		a.token = []byte(opts.Token)
@@ -162,8 +188,16 @@ func NewAdminAuth(ctx context.Context, opts AdminAuthOptions) *AdminAuth {
 	if opts.Issuer == "" {
 		return a
 	}
-	claim := strings.ReplaceAll(opts.RolesClaim, "{audience}", opts.Audience)
-	a.rolesPath = strings.Split(claim, ".")
+	rolesPath, err := oidcroles.ParsePath(opts.RolesClaim, opts.Audience)
+	if err != nil {
+		// Fail closed, and loudly. config.ParseFlags already refuses an empty
+		// claim, so reaching here means a path that cannot address anything
+		// (an empty segment); leaving rolesPath nil makes every JWT a 403
+		// rather than letting an unreadable claim mean "no constraint".
+		log.Error("admin oidc roles claim is unusable: every JWT will be refused",
+			"claim", opts.RolesClaim, "err", err)
+	}
+	a.rolesPath = rolesPath
 	// The verifier is built now, before discovery has answered: its issuer,
 	// audience and algorithm allowlist are all configuration, and building it
 	// up front keeps Configured() — and therefore whether the admin routes
@@ -229,39 +263,18 @@ func (a *AdminAuth) authorize(r *http.Request) (int, string) {
 
 // hasRole resolves the configured dot-path in the token's claims and reports
 // whether the required role is present.
+//
+// The walk itself lives in the public oidcroles package, shared with
+// gawk-admin: two implementations of "which roles does this token carry?" are
+// two answers that drift, and R39 shipped exactly that — the divergence is
+// what let the dotted-audience bug exist on one side only. Decoding the claims
+// is this file's job, because only this file may touch go-oidc.
 func (a *AdminAuth) hasRole(tok *oidc.IDToken) (bool, error) {
 	var claims map[string]any
 	if err := tok.Claims(&claims); err != nil {
 		return false, err
 	}
-	var node any = claims
-	for _, seg := range a.rolesPath {
-		m, ok := node.(map[string]any)
-		if !ok {
-			return false, fmt.Errorf("claim path %q: %q is not an object",
-				strings.Join(a.rolesPath, "."), seg)
-		}
-		node, ok = m[seg]
-		if !ok {
-			return false, fmt.Errorf("claim path %q: %q absent",
-				strings.Join(a.rolesPath, "."), seg)
-		}
-	}
-	switch v := node.(type) {
-	case []any:
-		for _, item := range v {
-			if s, ok := item.(string); ok && s == a.role {
-				return true, nil
-			}
-		}
-		return false, nil
-	case string:
-		// Some IdPs render a single role as a bare string.
-		return v == a.role, nil
-	default:
-		return false, fmt.Errorf("claim path %q: not a string or array of strings",
-			strings.Join(a.rolesPath, "."))
-	}
+	return a.rolesPath.Has(claims, a.role)
 }
 
 // remoteKeys is the oidc.KeySet the verifier is built against, holding the
@@ -279,18 +292,82 @@ func (k *remoteKeys) VerifySignature(ctx context.Context, jwt string) ([]byte, e
 	return set.VerifySignature(ctx, jwt)
 }
 
-// run resolves discovery (retrying until ctx ends) and publishes the key set.
-// There is no refresh loop: oidc.RemoteKeySet fetches on a verification miss
-// and its cache never expires, so a periodic refresh would be a request to the
-// IdP from every relay pod, forever, that changes nothing.
+// run resolves discovery (retrying until ctx ends), publishes the key set, and
+// primes it. There is no refresh loop beyond that: oidc.RemoteKeySet fetches on
+// a verification miss and its cache never expires, so a periodic refresh would
+// be a request to the IdP from every relay pod, forever, that changes nothing.
 func (a *AdminAuth) run(ctx context.Context, client *http.Client) {
 	jwksURL := a.resolveJWKSURL(ctx, client)
 	if jwksURL == "" {
 		return // ctx cancelled
 	}
-	a.keys.set.Store(newRemoteKeySet(ctx, jwksURL, client, a.throttle, a.log))
+	keys, fetcher := newRemoteKeySet(ctx, jwksURL, client, a.throttle, a.log)
+	a.keys.set.Store(keys)
 	close(a.resolved)
 	a.log.Info("admin oidc discovery resolved", "issuer", a.issuer, "jwks_url", jwksURL)
+	a.primeKeys(ctx, keys, fetcher)
+}
+
+// primingJWS is a syntactically valid compact JWS that nothing can ever
+// verify: `{"alg":"RS256","kid":"gawk-key-set-priming"}` over `{}`, signed with
+// the ASCII bytes "priming".
+//
+// It exists because oidc.RemoteKeySet exposes no "fetch now": the only way in
+// is a verification whose `kid` misses the cache, which is precisely what this
+// string is. VerifySignature parses it, finds no key, fetches the JWKS — the
+// point of the exercise — then fails the signature check, and the error is
+// discarded. Nothing is ever trusted from it; a priming attempt can warm a
+// cache and cannot authorize anybody.
+const primingJWS = "eyJhbGciOiJSUzI1NiIsImtpZCI6Imdhd2sta2V5LXNldC1wcmltaW5nIn0.e30.cHJpbWluZw"
+
+// primeKeys fetches the key set once, in the background, retrying until it
+// lands or ctx ends.
+//
+// WHY IT IS NOT LAZY. oidc.RemoteKeySet fetches on the first verification that
+// misses its cache, and every pod restarts with that cache empty — so after a
+// rolling deploy every replica needs one IdP round trip at the moment its
+// first operator arrives, which may be hours later and mid-incident. An IdP
+// that is down over that window 401s a still-valid token on every fresh pod,
+// and a mix of warm and cold pods behind one Service flaps. docs/42 §6 makes
+// the IdP availability-critical for the portal and never for enforcement;
+// lazy priming quietly extends that criticality to first-use-per-pod-lifetime.
+// One bounded GET per pod restart is much cheaper than the failure it prevents.
+//
+// WHY IT DOES NOT GATE ANYTHING. It runs after the key set is published, so
+// the JWT path is live — and the relay serving at all is unaffected — from the
+// moment discovery resolves. Startup still cannot depend on the IdP.
+func (a *AdminAuth) primeKeys(ctx context.Context, keys *oidc.RemoteKeySet, fetcher *throttledTransport) {
+	backoff := a.primeRetry
+	for {
+		before := fetcher.fetched.Load()
+		// Throttle-exempt: this fetch neither spends from the bucket a genuine
+		// key rotation draws on nor can be refused by it.
+		fetcher.exempt.Store(true)
+		_, _ = keys.VerifySignature(ctx, primingJWS)
+		// A fetch the IdP actually served is the signal, not the verification
+		// error — that one is non-nil either way, and go-oidc reports "the
+		// fetch failed" and "no key matched" as the same kind of value.
+		if fetcher.fetched.Load() > before {
+			// Coalescing may have carried this attempt on somebody else's
+			// fetch, leaving the exemption unspent; drop it rather than bank a
+			// free fetch forever.
+			fetcher.exempt.Store(false)
+			close(a.primed)
+			a.log.Info("admin oidc key set primed", "issuer", a.issuer)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.log.Warn("admin oidc key set not primed: the first operator after this restart will need the IdP",
+			"issuer", a.issuer, "retry_in", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, discoveryRetryMax)
+	}
 }
 
 // resolveJWKSURL retries OIDC discovery until it succeeds or ctx ends.
@@ -353,10 +430,12 @@ var errJWKSThrottled = errors.New("jwks fetch throttled: too many verification m
 // operator whose token was minted by the new key inside that window retries
 // and is in.
 //
-// This type is a deliberate ~60-line twin of gawk-admin's
-// internal/auth/keyset.go. The two live in separate Go modules with only the
-// moderation contract shared between them (docs/42 D13), and a package
-// existing solely to share a token bucket would cost more than it saves.
+// This type — and primeKeys above, which spends its exemption — is a
+// deliberate twin of gawk-admin's internal/auth/keyset.go and primeKeys. The
+// two live in separate Go modules, and sharing them would mean a package that
+// imports go-oidc and is importable by the whole relay, which is exactly the
+// dependency containment auth_import_test.go exists to hold. oidcroles could
+// be shared precisely because it needs no OIDC library; this cannot.
 type jwksThrottle struct {
 	burst    float64
 	interval time.Duration // time to accrue one token
@@ -428,10 +507,20 @@ type throttledTransport struct {
 	base     http.RoundTripper
 	throttle *jwksThrottle
 	log      *slog.Logger
+
+	// exempt lets exactly one request past the rate floor, and is how startup
+	// priming is "throttle-exempt" (primeKeys). A bool rather than a counter:
+	// an attempt that granted an exemption and then rode somebody else's
+	// in-flight fetch must not leave a second one banked.
+	exempt atomic.Bool
+	// fetched counts JWKS responses the IdP actually served. It is the only
+	// way to tell a landed fetch from a failed one without matching on
+	// go-oidc's error strings — verify() wraps both in an error.
+	fetched atomic.Int64
 }
 
 func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !t.throttle.allow() {
+	if !t.exempt.CompareAndSwap(true, false) && !t.throttle.allow() {
 		// RoundTrip owns the body once it is called, on the error path too.
 		if req.Body != nil {
 			_ = req.Body.Close()
@@ -442,6 +531,9 @@ func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
 		return resp, err
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		t.fetched.Add(1)
 	}
 	resp.Body = cappedBody{Reader: io.LimitReader(resp.Body, maxJWKSBytes), Closer: resp.Body}
 	return resp, nil
@@ -455,13 +547,15 @@ type cappedBody struct {
 	io.Closer
 }
 
-// newRemoteKeySet builds the throttled key set for jwksURL.
+// newRemoteKeySet builds the throttled key set for jwksURL, and returns the
+// transport alongside it — priming needs to grant that transport its exemption
+// and read back whether a fetch landed.
 //
 // base supplies the transport (so an injected client still applies) but not
 // the timeout: a JWKS fetch happens on the REQUEST path here, so it gets the
 // tighter of jwksFetchTimeout and whatever bound the caller set.
 func newRemoteKeySet(ctx context.Context, jwksURL string, base *http.Client,
-	throttle *jwksThrottle, log *slog.Logger) *oidc.RemoteKeySet {
+	throttle *jwksThrottle, log *slog.Logger) (*oidc.RemoteKeySet, *throttledTransport) {
 	timeout := jwksFetchTimeout
 	if base.Timeout > 0 && base.Timeout < timeout {
 		timeout = base.Timeout
@@ -470,13 +564,11 @@ func newRemoteKeySet(ctx context.Context, jwksURL string, base *http.Client,
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	client := &http.Client{
-		Transport: &throttledTransport{base: transport, throttle: throttle, log: log},
-		Timeout:   timeout,
-	}
+	fetcher := &throttledTransport{base: transport, throttle: throttle, log: log}
+	client := &http.Client{Transport: fetcher, Timeout: timeout}
 	// RemoteKeySet reads its HTTP client off this context and deliberately
 	// drops the cancellation (context.WithoutCancel, upstream), so a fetch is
 	// bounded by the client timeout alone — which is why that timeout must
 	// never be zero, and why shutdown never waits on an in-flight fetch.
-	return oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL)
+	return oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL), fetcher
 }

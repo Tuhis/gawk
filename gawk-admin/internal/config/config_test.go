@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 )
 
 // minimal is the smallest environment that boots a serving process. Tests
@@ -52,24 +54,55 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-// The default roles claim is the Keycloak client-roles path with the client ID
+// The default roles claim is the Keycloak client-roles path with the AUDIENCE
 // substituted — the substitution is what makes the default work at all, so it
 // is asserted rather than assumed (docs/42 §4.8).
+//
+// The client ID and the audience are given different values here on purpose:
+// R39 first substituted the client ID on this side and the audience on the
+// relay's, two dialects for one knob against one IdP, and equal values would
+// let that come back unnoticed.
 func TestRolesClaimSubstitution(t *testing.T) {
-	cfg, err := ParseFlags(nil, envFrom(minimal()))
+	env := minimal()
+	env["GAWK_ADMIN_OIDC_CLIENT_ID"] = "gawk-admin-spa"
+	env["GAWK_ADMIN_OIDC_AUDIENCE"] = "gawk-admin-api"
+
+	cfg, err := ParseFlags(nil, envFrom(env))
 	if err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-	if got, want := cfg.RolesClaimPath(), "resource_access.gawk-admin.roles"; got != want {
+	if got, want := cfg.OIDCRolesClaim, oidcroles.DefaultClaim; got != want {
+		t.Errorf("default OIDCRolesClaim = %q, want %q (the shared default)", got, want)
+	}
+	if got, want := cfg.RolesClaimPath(), "resource_access.gawk-admin-api.roles"; got != want {
 		t.Errorf("RolesClaimPath() = %q, want %q", got, want)
 	}
 
-	cfg, err = ParseFlags([]string{"-oidc-roles-claim", "groups"}, envFrom(minimal()))
+	cfg, err = ParseFlags([]string{"-oidc-roles-claim", "groups"}, envFrom(env))
 	if err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
 	if got := cfg.RolesClaimPath(); got != "groups" {
 		t.Errorf("overridden RolesClaimPath() = %q, want groups", got)
+	}
+}
+
+// A dotted audience is an ordinary Keycloak or Entra client ID, and the
+// rendered log line must not be the thing authorization reads: the parse the
+// portal actually uses keeps the audience in one segment (oidcroles).
+func TestRolesClaimPathWithADottedAudience(t *testing.T) {
+	env := minimal()
+	env["GAWK_ADMIN_OIDC_AUDIENCE"] = "gawk.admin"
+	cfg, err := ParseFlags(nil, envFrom(env))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	path, err := oidcroles.ParsePath(cfg.OIDCRolesClaim, cfg.OIDCAudience)
+	if err != nil {
+		t.Fatalf("ParsePath: %v", err)
+	}
+	if len(path) != 3 || path[1] != "gawk.admin" {
+		t.Errorf("parsed path = %v, want the audience in exactly one segment", path)
 	}
 }
 

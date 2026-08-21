@@ -150,6 +150,117 @@ func TestFileSourceToleratesAMissingFile(t *testing.T) {
 	})
 }
 
+// swapIn atomically replaces the ban file, so the poller can never observe
+// the intermediate "file briefly absent" state a remove+create would leave.
+// Every unreadable-file test needs that: an ENOENT sighting, even for one
+// poll tick, is the very branch these tests must not take.
+func swapIn(t *testing.T, path string, mutate func(tmp string)) {
+	t.Helper()
+	tmp := path + ".next"
+	mutate(tmp)
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatalf("rename %s -> %s: %v", tmp, path, err)
+	}
+}
+
+// An UNREADABLE file is an operator mistake in the same class as a malformed
+// one — a chmod slip, a secret-mount rotation window, an NFS/overlay blip —
+// and it must not silently un-ban everyone. Only a true deletion (ENOENT)
+// clears the set. The file source is the only moderation source outside
+// Kubernetes, so this is a production path for non-k8s self-hosts.
+// (PR #280 review.)
+func TestFileSourceKeepsTheBanSetWhenTheFileIsUnreadable(t *testing.T) {
+	// Two different failure shapes, and they take different code paths: a
+	// symlink loop fails the stat as well as the read, while a mode-0 file
+	// stats perfectly and only fails on open.
+	t.Run("stat and read both fail", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "bans.json")
+		write(t, path, `[{"target":{"type":"broadcastId","value":"ABC23Z"}}]`)
+
+		set := moderation.NewSet()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if err := Start(ctx, Options{Source: "file:" + path, Set: set, Log: discardLog, PollInterval: 2 * time.Millisecond}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, ok := set.BannedID("ABC23Z", time.Now()); !ok {
+			t.Fatal("the initial ban was not loaded")
+		}
+
+		// A self-referential symlink: the directory entry is still there —
+		// this is emphatically NOT a deletion — but every open of it fails
+		// with ELOOP. Chosen over chmod because it fails for root too, and
+		// CI containers run as root.
+		swapIn(t, path, func(tmp string) {
+			if err := os.Symlink(path, tmp); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+		})
+
+		// Several poll intervals' worth of chances to get it wrong.
+		time.Sleep(50 * time.Millisecond)
+		if _, ok := set.BannedID("ABC23Z", time.Now()); !ok {
+			t.Fatal("an unreadable ban file cleared the ban set: every ban lifted until the file is readable again")
+		}
+
+		// ...and the source is not frozen: the moment the file is readable
+		// again its contents are adopted.
+		swapIn(t, path, func(tmp string) {
+			write(t, tmp, `[{"target":{"type":"ip","value":"198.51.100.0/24"}}]`)
+		})
+		waitFor(t, "the repaired ban file to be adopted", func() bool {
+			_, ok := set.BannedIP(netip.MustParseAddr("198.51.100.9"), time.Now())
+			return ok
+		})
+		if _, ok := set.BannedID("ABC23Z", time.Now()); ok {
+			t.Error("the repaired file's contents did not replace the stale ban set")
+		}
+	})
+
+	t.Run("read fails", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a mode-0 file regardless of its permissions")
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "bans.json")
+		write(t, path, `[{"target":{"type":"broadcastId","value":"ABC23Z"}}]`)
+
+		set := moderation.NewSet()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if err := Start(ctx, Options{Source: "file:" + path, Set: set, Log: discardLog, PollInterval: 2 * time.Millisecond}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, ok := set.BannedID("ABC23Z", time.Now()); !ok {
+			t.Fatal("the initial ban was not loaded")
+		}
+
+		// The edit that would lift every ban, landing with permissions the
+		// relay cannot read — so the poller sees a changed file it cannot
+		// open. Fail-open here means the empty list wins by accident.
+		swapIn(t, path, func(tmp string) {
+			if err := os.WriteFile(tmp, []byte(`[]`), 0o000); err != nil {
+				t.Fatalf("write %s: %v", tmp, err)
+			}
+		})
+		time.Sleep(50 * time.Millisecond)
+		if _, ok := set.BannedID("ABC23Z", time.Now()); !ok {
+			t.Fatal("an unreadable ban file cleared the ban set")
+		}
+
+		// Fixing the permissions adopts the new (empty) list, which proves
+		// the retry above is a retry and not a freeze.
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		waitFor(t, "the readable ban file to be adopted", func() bool {
+			_, ok := set.BannedID("ABC23Z", time.Now())
+			return !ok
+		})
+	})
+}
+
 // A fat-fingered edit must not silently un-ban everyone.
 func TestFileSourceKeepsPreviousSetOnMalformedJSON(t *testing.T) {
 	dir := t.TempDir()

@@ -107,8 +107,11 @@ Then, in the admin console: create a realm, create a **public** client
 `gawk-admin` with standard flow on and redirect URI `http://localhost:8090/*`
 (add `http://localhost:5173/*` if you use the Vite dev server), give that
 client a **client role** named `operator`, and assign it to your user. The
-default roles-claim path is Keycloak's client-roles shape, so nothing else
-needs configuring.
+default roles-claim path is Keycloak's client-roles shape
+(`resource_access.{audience}.roles`, with `{audience}` taken from
+`-oidc-audience`), so with the client ID and the audience both `gawk-admin`
+below, nothing else needs configuring. Point `-oidc-audience` at a separate
+resource-server client and the `operator` role has to live on *that* client.
 
 Now run it:
 

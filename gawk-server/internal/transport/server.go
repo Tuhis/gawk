@@ -100,18 +100,19 @@ type Server struct {
 	limiter  *ipRateLimiter
 	// resume mints/verifies the /publish/{id} resume tokens (R17 W2).
 	resume *resumeTokens
-	// cluster is the origin-Lease coordinator; nil when -cluster-mode is off.
-	cluster ClusterCoordinator
-	// edges owns this pod's upstream pulls (R17 W4); nil when cluster is.
-	edges *EdgeManager
+	// wiring holds everything SetCluster installs; nil when -cluster-mode is
+	// off. Read it through clusterCoord/edgeManager, never directly.
+	wiring atomic.Pointer[clusterWiring]
 	// metrics carries the R9 connection-outcome counters; nil is safe (all
 	// methods are nil-receiver no-ops) so tests can run the server unwired.
 	metrics *metrics.ServerMetrics
 
 	// bans is the R39 moderation ban set (docs/42 §4.3), fed by
 	// internal/moderationsrc. Nil — and a nil *moderation.Set — is the
-	// -moderation-source=off shape: every check is a cheap miss.
-	bans *moderation.Set
+	// -moderation-source=off shape: every check is a cheap miss. Settable
+	// once, behind an atomic, for the same reason `wiring` is. Read it
+	// through banSet.
+	bans atomic.Pointer[moderation.Set]
 	// now is the clock ban expiry is evaluated against; injectable so tests
 	// can step past an expiry without sleeping.
 	now func() time.Time
@@ -138,6 +139,12 @@ type Server struct {
 	// serving, and the in-process UDP loopback between test client and
 	// server provides no happens-before edge for a plain field write.
 	testHookPostUpgradeSubscribe atomic.Pointer[func(id string)]
+
+	// testHookPostUpgradePublish runs between the publish session's upgrade
+	// and trackPublisher, letting tests land a ban inside the exact window
+	// the pre-upgrade gate cannot see (the R39 TOCTOU). Never stored in
+	// production; atomic for the same reason the hook above is.
+	testHookPostUpgradePublish atomic.Pointer[func(id string)]
 
 	// testHookRateLimitLoopback disables the loopback bypass of the
 	// connection rate limiter, so tests (which dial from 127.0.0.1) can
@@ -196,7 +203,16 @@ func (s *Server) rateLimited(r *http.Request) bool {
 // SetModeration installs the R39 ban set (docs/42 §4.3). Called once at
 // startup from main, before Run; a Server without one enforces nothing,
 // which is exactly -moderation-source=off.
-func (s *Server) SetModeration(bans *moderation.Set) { s.bans = bans }
+//
+// Stored atomically rather than as a plain field: "call before Run" is a
+// contract a caller can violate without any symptom other than a data race
+// on the publish hot path, which is exactly what happened to the cluster
+// wiring in this same milestone (PR #280 review).
+func (s *Server) SetModeration(bans *moderation.Set) { s.bans.Store(bans) }
+
+// banSet returns the ban set, or nil with -moderation-source=off. Every
+// moderation.Set method is nil-receiver-safe, so callers need no guard.
+func (s *Server) banSet() *moderation.Set { return s.bans.Load() }
 
 // remoteIP extracts the peer address from an http.Request's RemoteAddr,
 // canonicalized (zone stripped, v4-mapped-v6 collapsed) so a ban written as
@@ -220,9 +236,11 @@ func remoteIP(remoteAddr string) netip.Addr {
 // broadcasters can say "banned" instead of "auth failed"; a browser sees a
 // generic dial failure, accepted and documented).
 //
-// The ban REASON never appears at Warn — reasons carry operator-private
-// context (docs/42 §4.3). Warn gets the remote and the target type; the
-// reason, the target value and the actor go to Debug.
+// Two things are withheld from Warn here, for two different reasons. The ban
+// REASON carries operator-private context (docs/42 §4.3). The raw broadcast
+// ID is a join capability (docs/42 §5, D8) — for an ID ban it is literally
+// the banned target — so Warn names the broadcast by the same HMAC'd key
+// /statusz uses and the raw ID goes to the Debug line beside the reason.
 func (s *Server) rejectBanned(w http.ResponseWriter, r *http.Request, rec moderation.Record, broadcastID string) {
 	s.metrics.Connection("publish", metrics.OutcomeBanned)
 	attrs := []any{
@@ -232,13 +250,46 @@ func (s *Server) rejectBanned(w http.ResponseWriter, r *http.Request, rec modera
 	if broadcastID != "" {
 		// Only the claim path has one; the mint path is rejected before an ID
 		// exists at all.
-		attrs = append(attrs, "id", broadcastID)
+		attrs = append(attrs, "broadcast_key", s.broadcastKey(broadcastID))
 	}
 	s.log.Warn("publish rejected: banned", attrs...)
 	s.log.Debug("publish ban detail",
-		"remote", r.RemoteAddr, "target_type", string(rec.Target.Type),
+		"id", broadcastID, "remote", r.RemoteAddr, "target_type", string(rec.Target.Type),
 		"target", rec.Target.Value, "ban_reason", rec.Reason, "created_by", rec.CreatedBy)
 	w.WriteHeader(http.StatusUnavailableForLegalReasons)
+}
+
+// bannedPublisher reports whether either handle of a live publisher — its
+// broadcast ID or its source address — is banned right now.
+func (s *Server) bannedPublisher(broadcastID string, peer netip.Addr) (moderation.Record, bool) {
+	now := s.clock()
+	if rec, banned := s.banSet().BannedIP(peer, now); banned {
+		return rec, true
+	}
+	return s.banSet().BannedID(broadcastID, now)
+}
+
+// broadcastKey is the HMAC'd handle a broadcast may be named by at Info+
+// (docs/42 §5, D8): raw IDs are joinable and only ~31^6 strong, so they stay
+// out of aggregated logs. Same key /statusz and the metrics labels use, so an
+// operator can join a log line to both. Empty when the server has no registry
+// (unit fixtures).
+func (s *Server) broadcastKey(broadcastID string) string {
+	if s.registry == nil || broadcastID == "" {
+		return ""
+	}
+	return s.registry.ObfuscateID(broadcastID)
+}
+
+// postUpgradePublishHook runs at the moment the R39 TOCTOU window opens: the
+// WebTransport upgrade is done, so the pre-upgrade ban gate is behind us, and
+// trackPublisher has not run yet, so nothing on this pod can find the session
+// to kill. Tests install a hook here to land a ban inside that window
+// deterministically; production never sets one.
+func (s *Server) postUpgradePublishHook(id string) {
+	if hook := s.testHookPostUpgradePublish.Load(); hook != nil {
+		(*hook)(id)
+	}
 }
 
 // clock returns the time ban expiry is evaluated against.
@@ -510,11 +561,11 @@ func (s *Server) HandleLeaseLost(broadcastID string, _ cluster.Origin) {
 
 	s.registry.CloseInternalSubscribers(broadcastID, uint32(wire.CloseCodeOriginMoved), "origin moved")
 
-	if s.edges != nil && s.registry.ExternalSubscribers(broadcastID) > 0 {
+	if edges := s.edgeManager(); edges != nil && s.registry.ExternalSubscribers(broadcastID) > 0 {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), edgeAttachTimeout)
 			defer cancel()
-			if err := s.edges.EnsureEdge(ctx, broadcastID); err != nil {
+			if err := edges.EnsureEdge(ctx, broadcastID); err != nil {
 				s.log.Warn("self-demote to edge failed", "broadcast_id", broadcastID, "err", err)
 			} else {
 				s.log.Info("demoted to edge after lease loss", "broadcast_id", broadcastID)
@@ -567,17 +618,50 @@ func (s *Server) Ready() bool {
 // TTL wait needed — and viewers landing here for broadcasts we don't host
 // trigger an edge pull from the lease's origin pod. podName is this pod's
 // identity (the self-dial guard). Call before Run.
+//
+// Published as ONE atomic pointer rather than as plain fields (PR #280
+// review): the R39 ban informer calls HandleBanAdded -> terminate() from its
+// own goroutine, and terminate() reads the edge manager. main wires the
+// cluster before it starts the ban source so the two do not overlap, but a
+// plain field write would leave any future overlap as silent memory unsafety
+// instead of a visible bug. Settable once, at startup.
 func (s *Server) SetCluster(c ClusterCoordinator, podName string) {
-	s.cluster = c
-	s.edges = newEdgeManager(s.registry, c,
+	em := newEdgeManager(s.registry, c,
 		newEdgeDialer(s.cfg.InternalServerName, s.cfg.InternalPSK, nil, s.log),
 		podName, s.log)
+	s.wiring.Store(&clusterWiring{coord: c, edges: em})
 	s.onDrain = func() {
-		s.edges.Stop()
+		em.Stop()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		c.ReleaseAll(ctx)
 	}
+}
+
+// clusterWiring is everything SetCluster installs that another goroutine can
+// read. Grouped into one value so the coordinator and the edge manager are
+// published together — a reader that sees one has seen the other.
+type clusterWiring struct {
+	coord ClusterCoordinator
+	edges *EdgeManager
+}
+
+// clusterCoord returns the origin-Lease coordinator, or nil with
+// -cluster-mode off.
+func (s *Server) clusterCoord() ClusterCoordinator {
+	if w := s.wiring.Load(); w != nil {
+		return w.coord
+	}
+	return nil
+}
+
+// edgeManager returns this pod's upstream-pull manager, or nil with
+// -cluster-mode off.
+func (s *Server) edgeManager() *EdgeManager {
+	if w := s.wiring.Load(); w != nil {
+		return w.edges
+	}
+	return nil
 }
 
 // HandleLeaseDeleted is the cluster informer's lease-deletion dispatch
@@ -595,14 +679,14 @@ func (s *Server) HandleLeaseDeleted(broadcastID string) {
 	//
 	// Deliberately BEFORE the edge teardown below, because terminate() stops
 	// the edge pull itself and then tears the hub down with the right code.
-	if rec, banned := s.bans.BannedID(broadcastID, s.clock()); banned {
+	if rec, banned := s.banSet().BannedID(broadcastID, s.clock()); banned {
 		s.log.Debug("lease deletion for a banned broadcast: terminating instead of ending",
 			"id", broadcastID, "target_type", string(rec.Target.Type))
 		s.terminate(broadcastID, "lease-deleted:banned")
 		return
 	}
-	if s.edges != nil {
-		s.edges.OnLeaseDeleted(broadcastID)
+	if edges := s.edgeManager(); edges != nil {
+		edges.OnLeaseDeleted(broadcastID)
 	}
 	s.registry.EndBroadcast(broadcastID)
 }
@@ -635,7 +719,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// Pre-upgrade, immediately after the secret gate and before any hub state
 	// is touched.
 	peer := remoteIP(r.RemoteAddr)
-	if rec, banned := s.bans.BannedIP(peer, s.clock()); banned {
+	if rec, banned := s.banSet().BannedIP(peer, s.clock()); banned {
 		s.rejectBanned(w, r, rec, "")
 		return
 	}
@@ -665,7 +749,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// perfectly valid one. Checking after verification would let a valid
 		// token resurrect a banned broadcast on any pod, including pods that
 		// never had the hub (docs/42 §4.1 step 4).
-		if rec, banned := s.bans.BannedID(normID, s.clock()); banned {
+		if rec, banned := s.banSet().BannedID(normID, s.clock()); banned {
 			s.rejectBanned(w, r, rec, normID)
 			return
 		}
@@ -682,8 +766,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// so the broadcaster's claim below succeeds instead of 409ing
 		// against our own plumbing. The hub and its viewers survive; the
 		// role flips back to origin on the claim.
-		if s.edges != nil {
-			s.edges.StopEdge(normID)
+		if edges := s.edgeManager(); edges != nil {
+			edges.StopEdge(normID)
 		}
 
 		// ErrPublisherActive is NOT a rejection (docs/06 revision
@@ -716,8 +800,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// zombie slot survives a lost lease race. On the takeover path
 		// (pub == nil) this is deferred to after the upgrade, beside the
 		// local depose.
-		if pub != nil && s.cluster != nil {
-			if _, err := s.cluster.Claim(r.Context(), id, true); err != nil {
+		if coord := s.clusterCoord(); pub != nil && coord != nil {
+			if _, err := coord.Claim(r.Context(), id, true); err != nil {
 				pub.Close()
 				s.metrics.Connection("publish", metrics.OutcomeError)
 				s.log.Warn("origin lease claim failed", "id", id, "err", err)
@@ -739,6 +823,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
+		s.postUpgradePublishHook(normID)
 
 		if pub == nil {
 			// Another session holds the slot: depose it now that this
@@ -752,8 +837,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 				sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
 				return
 			}
-			if s.cluster != nil {
-				if _, cerr := s.cluster.Claim(r.Context(), id, true); cerr != nil {
+			if coord := s.clusterCoord(); coord != nil {
+				if _, cerr := coord.Claim(r.Context(), id, true); cerr != nil {
 					pub.Close()
 					s.metrics.Connection("publish", metrics.OutcomeError)
 					s.log.Warn("origin lease claim failed", "id", id, "err", cerr)
@@ -782,6 +867,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden) // no implicit 200 (finding 12)
 			return
 		}
+		// No ID exists yet on this path — which is precisely the shape the
+		// hook is here to reproduce.
+		s.postUpgradePublishHook("")
 
 		id, pub, err = s.registry.StartPublish("")
 		if err != nil {
@@ -801,8 +889,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// (docs/22 Decision 13; the local registry limit above is per-pod).
 		// On rejection the fresh hub is released into grace and GC'd; nobody
 		// ever learned this ID, so nothing can reach it meanwhile.
-		if s.cluster != nil {
-			if _, cerr := s.cluster.Claim(r.Context(), id, false); cerr != nil {
+		if coord := s.clusterCoord(); coord != nil {
+			if _, cerr := coord.Claim(r.Context(), id, false); cerr != nil {
 				pub.Close()
 				s.log.Warn("origin lease create failed for minted broadcast", "id", id, "err", cerr)
 				if errors.Is(cerr, cluster.ErrMaxBroadcasts) {
@@ -819,6 +907,32 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	defer pub.Close()
 	defer s.trackSession(sess)()
 	defer s.trackPublisher(id, sess, peer)()
+
+	// R39 (docs/42 §4.3): close the TOCTOU window between the pre-upgrade
+	// ban gates and the line above. Both gates ran before the WebTransport
+	// upgrade round-trip, and until trackPublisher this session was invisible
+	// to HandleBanAdded — publishersIn had nothing to walk, and on the mint
+	// path no hub existed either — so a ban landing in that window updated
+	// the Set and killed nothing. The k8s source papers over that at the
+	// resync; the file source never re-fires, so the racing publisher would
+	// stream until it disconnected.
+	//
+	// The double check is what makes the window airtight: a source closes
+	// the gate BEFORE actuating (moderationsrc.Sink.apply), and this read
+	// happens after the publisher is in s.publishers, so either that kill
+	// saw this session or this check sees that ban. One trie lookup, once
+	// per publisher session.
+	if rec, banned := s.bannedPublisher(id, peer); banned {
+		s.metrics.Connection("publish", metrics.OutcomeBanned)
+		s.log.Warn("publish closed: banned during the upgrade",
+			"broadcast_key", s.broadcastKey(id), "remote", r.RemoteAddr,
+			"target_type", string(rec.Target.Type))
+		s.log.Debug("publish ban detail", "id", id, "remote", r.RemoteAddr,
+			"target_type", string(rec.Target.Type), "target", rec.Target.Value,
+			"ban_reason", rec.Reason, "created_by", rec.CreatedBy)
+		sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeTerminatedByOperator), terminationReason)
+		return
+	}
 
 	// Bind the session so a later token-bearing claim can depose this
 	// publisher. A false return means a takeover already won while this
@@ -1108,11 +1222,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err := s.registry.CheckSubscribe(id)
-	if errors.Is(err, hub.ErrNotFound) && s.edges != nil {
+	if edges := s.edgeManager(); errors.Is(err, hub.ErrNotFound) && edges != nil {
 		// Cluster mode (R17 W4): we don't host this broadcast, but its
 		// origin may be another pod — demand-create the edge pull, then
 		// re-check (the pull creates the local hub on attach).
-		if edgeErr := s.edges.EnsureEdge(r.Context(), id); edgeErr == nil {
+		if edgeErr := edges.EnsureEdge(r.Context(), id); edgeErr == nil {
 			err = s.registry.CheckSubscribe(id)
 		}
 	}
@@ -1319,7 +1433,8 @@ func (s *Server) handleInternalSubscribe(w http.ResponseWriter, r *http.Request)
 	if s.rejectedDraining(w, "internal") {
 		return
 	}
-	if s.cluster == nil {
+	coord := s.clusterCoord()
+	if coord == nil {
 		s.metrics.Connection("internal", metrics.OutcomeNotFound)
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -1343,7 +1458,7 @@ func (s *Server) handleInternalSubscribe(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	heldGen, held := s.cluster.OriginGeneration(normID)
+	heldGen, held := coord.OriginGeneration(normID)
 	if !held {
 		s.metrics.Connection("internal", metrics.OutcomeNotFound)
 		s.log.Warn("internal subscribe rejected: not origin", "id", normID, "remote", r.RemoteAddr)

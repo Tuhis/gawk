@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/moderationsrc"
+	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -31,9 +32,12 @@ const (
 // Admin-API authorization defaults (R39, docs/42 §4.5). The roles-claim
 // default is Keycloak's client-roles path, with "{audience}" substituted by
 // the configured audience at use time — the same role model the portal uses
-// (docs/42 §4.8), so one IdP role grants both.
+// (docs/42 §4.8), so one IdP role grants both. The string itself lives in
+// oidcroles, which is also what parses it: gawk-admin carries the same
+// default, and a default that could drift between them is half of the bug
+// this package exists to prevent.
 const (
-	DefaultAdminOIDCRolesClaim = "resource_access.{audience}.roles"
+	DefaultAdminOIDCRolesClaim = oidcroles.DefaultClaim
 	DefaultAdminOIDCRole       = "operator"
 )
 
@@ -374,12 +378,33 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	adminOIDCAudience := fs.String("admin-oidc-audience", env("GAWK_ADMIN_OIDC_AUDIENCE", ""),
 		"OIDC audience (client ID) a JWT must carry on /internal/admin/*; must be set together with -admin-oidc-issuer")
 	adminOIDCRolesClaim := fs.String("admin-oidc-roles-claim", env("GAWK_ADMIN_OIDC_ROLES_CLAIM", DefaultAdminOIDCRolesClaim),
-		"dot-path to the roles array inside an admin JWT; {audience} is substituted")
+		"dot-path to the roles array inside an admin JWT; {audience} is substituted into each segment")
 	adminOIDCRole := fs.String("admin-oidc-role", env("GAWK_ADMIN_OIDC_ROLE", DefaultAdminOIDCRole),
 		"role an admin JWT must carry in the roles claim")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+
+	// THE ADMIN-API KNOBS ARE TRIMMED ONCE, HERE, so every later reader —
+	// the validation below and the Config literal at the end — sees the same
+	// string. They did not: the all-or-nothing pair check ran on the raw flag
+	// values while the literal stored trimmed ones, so a stray space or
+	// newline out of a templated Secret (GAWK_ADMIN_OIDC_ISSUER=" ") looked
+	// set to the check and arrived empty in the Config. The result was not the
+	// refusal the check exists to produce but silence: no verifier, no static
+	// token, Configured() false, and /internal/admin/* never registered at
+	// all — a mystery 404 (docs/42 §4.5).
+	//
+	// The token is trimmed for the same reason it is compared trimmed:
+	// AdminAuth.authorize trims the PRESENTED credential before the
+	// constant-time compare, so a configured token carrying whitespace could
+	// never be matched by anybody. It would register the routes and then
+	// refuse every caller, which is the same silent failure wearing a 401.
+	for _, p := range []*string{
+		adminAPIToken, adminOIDCIssuer, adminOIDCAudience, adminOIDCRolesClaim, adminOIDCRole,
+	} {
+		*p = strings.TrimSpace(*p)
 	}
 
 	level, err := parseLogLevel(*logLevel)
@@ -521,10 +546,12 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if *adminOIDCIssuer != "" {
 		// Blanking either of these would leave signature+issuer+audience
 		// checked and AUTHORIZATION off — every token holder an operator.
-		if strings.TrimSpace(*adminOIDCRolesClaim) == "" {
+		// Whitespace counts as blank: these are already trimmed above, so a
+		// value that survives here is one oidcroles can actually address.
+		if *adminOIDCRolesClaim == "" {
 			return Config{}, fmt.Errorf("admin-oidc-roles-claim must not be empty when admin OIDC is configured")
 		}
-		if strings.TrimSpace(*adminOIDCRole) == "" {
+		if *adminOIDCRole == "" {
 			return Config{}, fmt.Errorf("admin-oidc-role must not be empty when admin OIDC is configured")
 		}
 	}
@@ -569,11 +596,13 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		ServerName:            *serverName,
 		ModerationSource:      strings.TrimSpace(*moderationSource),
 
+		// Trimmed once, right after fs.Parse — never again here, or the
+		// validation above and this literal could disagree a second time.
 		AdminAPIToken:       *adminAPIToken,
-		AdminOIDCIssuer:     strings.TrimSpace(*adminOIDCIssuer),
-		AdminOIDCAudience:   strings.TrimSpace(*adminOIDCAudience),
-		AdminOIDCRolesClaim: strings.TrimSpace(*adminOIDCRolesClaim),
-		AdminOIDCRole:       strings.TrimSpace(*adminOIDCRole),
+		AdminOIDCIssuer:     *adminOIDCIssuer,
+		AdminOIDCAudience:   *adminOIDCAudience,
+		AdminOIDCRolesClaim: *adminOIDCRolesClaim,
+		AdminOIDCRole:       *adminOIDCRole,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,

@@ -17,9 +17,9 @@ import (
 )
 
 // testConfig goes through config.ParseFlags rather than building a struct
-// literal, so the DEFAULT roles-claim path (`resource_access.{clientId}.roles`)
-// is the one under test — including the {clientId} substitution, which only
-// happens inside config.RolesClaimPath (docs/42 §4.8).
+// literal, so the DEFAULT roles-claim path (`resource_access.{audience}.roles`)
+// is the one under test — including the {audience} substitution, which happens
+// in oidcroles.ParsePath at auth.New (docs/42 §4.8).
 func testConfig(t *testing.T, issuer string) config.Config {
 	t.Helper()
 	cfg, err := config.ParseFlags([]string{
@@ -63,12 +63,16 @@ func newUnresolvedAuth(t *testing.T, cfg config.Config, opts Options) *Auth {
 	return a
 }
 
-// newTestAuth is newUnresolvedAuth plus the wait, so every test that is not
-// about the resolution lifecycle reads as though startup were synchronous.
+// newTestAuth is newUnresolvedAuth plus both waits, so every test that is not
+// about the startup lifecycle reads as though startup were synchronous and
+// begins from the state a running pod is in: keys cached, bucket untouched.
+// Waiting for priming is also what makes the JWKS fetch counts below exact —
+// an unsynchronised priming fetch would land in the middle of them.
 func newTestAuth(t *testing.T, cfg config.Config, opts Options) *Auth {
 	t.Helper()
 	a := newUnresolvedAuth(t, cfg, opts)
 	waitReady(t, a)
+	waitPrimed(t, a)
 	return a
 }
 
@@ -99,6 +103,15 @@ func waitReady(t *testing.T, a *Auth) {
 			t.Fatalf("auth never became ready: %v", a.ResolveError())
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitPrimed(t *testing.T, a *Auth) {
+	t.Helper()
+	select {
+	case <-a.primed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the key set was never primed against the fake issuer")
 	}
 }
 
@@ -320,6 +333,113 @@ func TestVerificationSucceedsFromCacheWithTheIssuerDown(t *testing.T) {
 	}
 }
 
+// STARTUP PRIMES THE KEY SET (docs/42 §6). Without it every pod comes up with
+// an empty key cache and stays that way until its first operator arrives — so
+// after a rolling deploy the whole fleet needs the IdP again, at whatever hour
+// somebody is paged, and a mix of warm and cold replicas behind one Service
+// flaps 401s mid-incident. One bounded GET per pod restart buys that back.
+func TestStartupPrimesTheKeySet(t *testing.T) {
+	idp := newFakeIDP(t)
+	// Minted before anything else: an operator's access token outlives the
+	// outage below, which is the whole reason the cache must be warm already.
+	token := idp.mint(t, idp.claims())
+	a := newTestAuth(t, testConfig(t, idp.url()), Options{
+		JWKSFetchInterval: defaultJWKSFetchInterval,
+		JWKSFetchBurst:    defaultJWKSFetchBurst,
+	})
+	h := testStack(a, idp.url())
+
+	if got := idp.keyFetches.Load(); got != 1 {
+		t.Fatalf("JWKS fetches after startup = %d, want exactly 1 (one bounded GET per pod restart)", got)
+	}
+	// THROTTLE-EXEMPT: the bucket a genuine rotation draws on is untouched, so
+	// priming can neither be refused by the rate floor nor spend from it.
+	if got := a.throttle.tokensLeft(); got != float64(defaultJWKSFetchBurst) {
+		t.Errorf("fetch tokens after priming = %v, want the full bucket (%d)", got, defaultJWKSFetchBurst)
+	}
+
+	// The failure this exists to prevent: the IdP goes away between the deploy
+	// and the first operator, and that operator is still let in.
+	idp.stop()
+	if rec := do(t, h, http.MethodGet, "/api/v1/me", token); rec.Code != http.StatusOK {
+		t.Fatalf("first request after a restart, IdP down = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+}
+
+// ...AND PRIMING GATES NOTHING. Ready still means "discovery answered": a key
+// set that cannot be fetched yet costs 401s and a background retry, exactly as
+// an unresolved issuer does. Startup must not wait on the IdP twice — a pod
+// that refused to go ready until the JWKS answered would be D16's
+// CrashLoopBackOff by another name.
+func TestPrimingRetriesWithoutBlockingReadiness(t *testing.T) {
+	idp := newFakeIDP(t)
+	idp.downKeys(true)
+	token := idp.mint(t, idp.claims())
+
+	a := newUnresolvedAuth(t, testConfig(t, idp.url()), Options{})
+	h := testStack(a, idp.url())
+
+	// Discovery resolves against a provider whose key set is 503ing, and this
+	// pod goes ready on that alone.
+	waitReady(t, a)
+	select {
+	case <-a.primed:
+		t.Fatal("primed reported success while /keys was 503ing")
+	default:
+	}
+	// A token that cannot be verified yet is a 401 — never a 500, never a hang.
+	if rec := do(t, h, http.MethodGet, "/api/v1/me", token); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status while the key set is down = %d, want 401 (body %q)", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, h, http.MethodGet, "/healthz", ""); rec.Code != http.StatusOK {
+		t.Errorf("/healthz = %d, want 200 while the key set is down", rec.Code)
+	}
+
+	// The key set comes back and the retry lands on its own — no request
+	// needed to trigger it.
+	idp.downKeys(false)
+	waitPrimed(t, a)
+	if rec := do(t, h, http.MethodGet, "/api/v1/me", token); rec.Code != http.StatusOK {
+		t.Errorf("status after priming recovered = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+}
+
+// A DOTTED AUDIENCE still addresses exactly one claim segment. Dots are
+// ordinary in Keycloak and Entra client IDs, and a URL-shaped audience always
+// carries them — so substituting into the roles-claim template BEFORE
+// splitting on "." turns resource_access.{audience}.roles into a four-segment
+// walk that no correctly-minted token can satisfy: every operator 403ed, with
+// the reason visible only at Debug.
+func TestDefaultClaimPathSurvivesADottedAudience(t *testing.T) {
+	const dotted = "gawk.admin"
+	idp := newFakeIDP(t)
+	cfg := testConfig(t, idp.url())
+	cfg.OIDCClientID, cfg.OIDCAudience = dotted, dotted
+	a := newTestAuth(t, cfg, Options{})
+	h := testStack(a, idp.url())
+
+	// resource_access["gawk.admin"].roles — one segment, dot and all.
+	token := idp.mint(t, idp.claims(func(c map[string]any) {
+		c["aud"] = dotted
+		c["resource_access"] = map[string]any{dotted: map[string]any{"roles": []any{testOperator}}}
+	}))
+	if rec := do(t, h, http.MethodGet, "/api/v1/me", token); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a dotted audience must still name ONE claim segment (body %q)",
+			rec.Code, rec.Body.String())
+	}
+
+	// The mirror image, which is what a substitute-then-split implementation
+	// accepts instead: roles nested under resource_access.gawk.admin.roles are
+	// a different claim, and must authorize nobody.
+	split := idp.mint(t, idp.claims(func(c map[string]any) {
+		c["aud"] = dotted
+		c["resource_access"] = map[string]any{"gawk": map[string]any{"admin": map[string]any{"roles": []any{testOperator}}}}
+	}))
+	if rec := do(t, h, http.MethodGet, "/api/v1/me", split); rec.Code != http.StatusForbidden {
+		t.Errorf("roles under the SPLIT path = %d, want 403", rec.Code)
+	}
+}
+
 // Rotation, on-demand fetch counts and the throttle live in keyset_test.go:
 // they are properties of the key set, and asserting them needs the fake
 // issuer's fetch counter rather than a status code.
@@ -388,11 +508,16 @@ func TestUnusableRolesClaimIsForbiddenNeverInternalError(t *testing.T) {
 	}
 }
 
-// The default path only works if {clientId} is substituted — proven by moving
+// The default path only works if {audience} is substituted — proven by moving
 // the roles under a different client and watching authorization fail.
-func TestDefaultClaimPathSubstitutesTheClientID(t *testing.T) {
+//
+// It is the AUDIENCE and not the SPA's client ID: this suite gives the two
+// different values (testAudience vs testClientID) precisely so the distinction
+// is load-bearing rather than a coincidence of the Keycloak recipe, where they
+// are usually the same name.
+func TestDefaultClaimPathSubstitutesTheAudience(t *testing.T) {
 	cfg := testConfig(t, "https://issuer.example.test")
-	if want := "resource_access." + testClientID + ".roles"; cfg.RolesClaimPath() != want {
+	if want := "resource_access." + testAudience + ".roles"; cfg.RolesClaimPath() != want {
 		t.Fatalf("RolesClaimPath() = %q, want %q", cfg.RolesClaimPath(), want)
 	}
 
@@ -400,11 +525,20 @@ func TestDefaultClaimPathSubstitutesTheClientID(t *testing.T) {
 	a := newTestAuth(t, testConfig(t, idp.url()), Options{})
 	h := testStack(a, idp.url())
 
-	underOtherClient := idp.mint(t, idp.claims(func(c map[string]any) {
-		c["resource_access"] = map[string]any{"another-client": map[string]any{"roles": []any{testOperator}}}
-	}))
-	if rec := do(t, h, http.MethodGet, "/api/v1/me", underOtherClient); rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: roles under another client must not authorize", rec.Code)
+	for name, holder := range map[string]string{
+		"another client entirely": "another-client",
+		// The SPA's own client ID: the dialect this replaced would have read
+		// the roles from here, so a token carrying them ONLY here must fail.
+		"the SPA client ID": testClientID,
+	} {
+		t.Run(name, func(t *testing.T) {
+			token := idp.mint(t, idp.claims(func(c map[string]any) {
+				c["resource_access"] = map[string]any{holder: map[string]any{"roles": []any{testOperator}}}
+			}))
+			if rec := do(t, h, http.MethodGet, "/api/v1/me", token); rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403: roles under %q must not authorize", rec.Code, holder)
+			}
+		})
 	}
 }
 
@@ -949,8 +1083,10 @@ func TestCloseReturnsPromptlyWhileTheIssuerHangs(t *testing.T) {
 		}
 	}()
 
+	// Measured against the priming fetch already on the counter, so this waits
+	// for the STALLED one rather than reading a hit that landed at startup.
 	deadline := time.Now().Add(5 * time.Second)
-	for idp.keyFetches.Load() == 0 {
+	for idp.keyFetches.Load() < 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("no JWKS fetch arrived to hang")
 		}
@@ -1030,8 +1166,10 @@ func TestConcurrentUnknownKeyRequestsAllSucceedOnOneFetch(t *testing.T) {
 	if got := transport.attempts.Load() - attemptsBefore; got != 1 {
 		t.Errorf("JWKS fetches during the herd = %d, want 1 (go-oidc coalesces concurrent misses)", got)
 	}
-	if got := a.throttle.tokensLeft(); got != float64(defaultJWKSFetchBurst)-2 {
+	// One token, for the herd's single fetch: the warm-up above was answered
+	// from the cache startup primed, and priming itself spent nothing.
+	if got := a.throttle.tokensLeft(); got != float64(defaultJWKSFetchBurst)-1 {
 		t.Errorf("tokens left = %v, want %v: the herd must cost exactly one",
-			got, float64(defaultJWKSFetchBurst)-2)
+			got, float64(defaultJWKSFetchBurst)-1)
 	}
 }

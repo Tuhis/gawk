@@ -86,11 +86,16 @@ oidc:
   # the same string as clientId.
   audience: ""
   # Dot-path to the roles array inside the JWT. The default is Keycloak's
-  # client-roles shape with {clientId} substituted at parse time; override it
+  # client-roles shape with {audience} substituted into each segment at parse
+  # time — the placeholder is {audience}, NOT {clientId}: it is the only
+  # identifier the relay's twin of this knob also has, and in a Keycloak
+  # access token resource_access.<client>.roles carries the roles of the
+  # resource server the token was minted FOR, which is what aud names. Override
+  # it
   # for providers that put roles elsewhere (e.g. "groups" for a top-level
   # claim). Blank makes the service refuse to start — with no roles claim
   # every valid token would be an operator.
-  rolesClaim: "resource_access.{clientId}.roles"
+  rolesClaim: "resource_access.{audience}.roles"
   # The role every R39 route requires. Grant it in the IdP, where access is
   # managed and audited; there is deliberately no allowlist here (D17).
   operatorRole: operator

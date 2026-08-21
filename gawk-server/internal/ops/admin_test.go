@@ -344,11 +344,12 @@ type fakeIDP struct {
 	// stops the server and still verifies is proving this did not move.
 	keyFetches atomic.Int64
 
-	mu      sync.Mutex
-	handler *oidctest.Server // replaced wholesale on rotation, never mutated
-	signer  *rsa.PrivateKey
-	kid     string
-	delay   time.Duration
+	mu       sync.Mutex
+	handler  *oidctest.Server // replaced wholesale on rotation, never mutated
+	signer   *rsa.PrivateKey
+	kid      string
+	delay    time.Duration
+	keysDown bool // when true, only /keys 503s — discovery still answers
 }
 
 func newFakeIDP(t *testing.T) *fakeIDP {
@@ -364,10 +365,17 @@ func newFakeIDP(t *testing.T) *fakeIDP {
 
 func (f *fakeIDP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	h, delay := f.handler, f.delay
+	h, delay, keysDown := f.handler, f.delay, f.keysDown
 	f.mu.Unlock()
 	if r.URL.Path == "/keys" {
 		f.keyFetches.Add(1)
+		if keysDown {
+			// Discovery answers, the key set does not — the shape a
+			// half-restarted IdP has, and the one that must not stop this
+			// relay from starting.
+			http.Error(w, "key set unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		if delay > 0 {
 			// A JWKS that takes a human-visible moment, so a herd of
 			// concurrent verifications demonstrably overlaps inside one fetch
@@ -402,6 +410,15 @@ func (f *fakeIDP) delayKeys(d time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.delay = d
+}
+
+// downKeys toggles whether /keys 503s. Discovery keeps answering either way,
+// which is the split that separates "the relay started" from "the key set is
+// primed".
+func (f *fakeIDP) downKeys(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keysDown = down
 }
 
 // token mints a JWT with the issuer's CURRENT key. iss/aud/exp default to the
@@ -483,10 +500,10 @@ func (c *testClock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// oidcAuth builds an authenticator against the fake IdP and waits for OIDC
-// discovery, so the JWT path is live by the time any assertion runs. The JWKS
-// itself is fetched lazily, on the first token that needs it.
-func oidcAuth(t *testing.T, f *fakeIDP, extra func(*AdminAuthOptions)) *AdminAuth {
+// newOIDCAuth builds an authenticator against the fake IdP and waits for OIDC
+// discovery, but NOT for the key set to be primed. Only the priming tests want
+// that split; everything else uses oidcAuth.
+func newOIDCAuth(t *testing.T, f *fakeIDP, extra func(*AdminAuthOptions)) *AdminAuth {
 	t.Helper()
 	opts := AdminAuthOptions{
 		Issuer:     f.url,
@@ -499,6 +516,9 @@ func oidcAuth(t *testing.T, f *fakeIDP, extra func(*AdminAuthOptions)) *AdminAut
 		// the key cache — a forged signature does, a wrong `aud` does not —
 		// would otherwise silently decide whether that test passes.
 		JWKSFetchBurst: 1_000,
+		// Priming retries are not an operator knob, so the seam is unexported;
+		// a test must not wait out the production backoff to observe one.
+		primeRetry: 5 * time.Millisecond,
 	}
 	if extra != nil {
 		extra(&opts)
@@ -510,6 +530,26 @@ func oidcAuth(t *testing.T, f *fakeIDP, extra func(*AdminAuthOptions)) *AdminAut
 		t.Fatal("OIDC discovery never resolved against the fake issuer")
 	}
 	return a
+}
+
+// oidcAuth is newOIDCAuth plus the wait for priming, so every test that is not
+// about the startup lifecycle starts from the state a running pod is in: keys
+// cached, bucket untouched. Waiting is what makes the JWKS fetch counts below
+// exact — an unsynchronised priming fetch would land in the middle of them.
+func oidcAuth(t *testing.T, f *fakeIDP, extra func(*AdminAuthOptions)) *AdminAuth {
+	t.Helper()
+	a := newOIDCAuth(t, f, extra)
+	waitPrimed(t, a)
+	return a
+}
+
+func waitPrimed(t *testing.T, a *AdminAuth) {
+	t.Helper()
+	select {
+	case <-a.primed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the key set was never primed against the fake issuer")
+	}
 }
 
 func TestAdminJWTAuthAcceptsAnOperatorToken(t *testing.T) {
@@ -684,8 +724,11 @@ func TestAdminJWTUnverifiableTokensCannotFetchMoreThanTheBucket(t *testing.T) {
 			t.Fatalf("request %d: status = %d, want 401 (body %q)", i, w.Code, w.Body.String())
 		}
 	}
-	if got := idp.keyFetches.Load(); got != int64(defaultJWKSFetchBurst) {
-		t.Errorf("JWKS fetches = %d for %d unverifiable tokens, want exactly the burst (%d)",
+	// The burst, plus the one throttle-exempt fetch startup priming made. The
+	// exemption is a single request per pod, not a hole an attacker can widen:
+	// twenty-five unverifiable tokens still buy exactly three fetches.
+	if got := idp.keyFetches.Load(); got != int64(defaultJWKSFetchBurst)+1 {
+		t.Errorf("JWKS fetches = %d for %d unverifiable tokens, want the burst (%d) plus the priming fetch",
 			got, attempts, defaultJWKSFetchBurst)
 	}
 }
@@ -703,12 +746,13 @@ func TestAdminJWTRotationIsPickedUpOnOneFetch(t *testing.T) {
 	})
 	h, _ := adminHandler(t, config.Config{AdminOIDCIssuer: idp.url, AdminOIDCAudience: testAud}, auth, nil)
 
-	// Warm-up: the lazy first fetch, and so far the only one.
+	// Warm-up: served straight from the cache startup primed, which is so far
+	// the only fetch there has been.
 	if w := get(h, "/internal/admin/broadcasts", idp.goodToken()); w.Code != http.StatusOK {
 		t.Fatalf("warm-up = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
 	if got := idp.keyFetches.Load(); got != 1 {
-		t.Fatalf("JWKS fetches after warm-up = %d, want 1", got)
+		t.Fatalf("JWKS fetches after warm-up = %d, want 1 (priming, and nothing since)", got)
 	}
 
 	idp.useKey("rotated-key", rotationKey())
@@ -718,7 +762,7 @@ func TestAdminJWTRotationIsPickedUpOnOneFetch(t *testing.T) {
 		}
 	}
 	if got := idp.keyFetches.Load(); got != 2 {
-		t.Errorf("JWKS fetches = %d, want 2 (the warm-up and one for the rotation)", got)
+		t.Errorf("JWKS fetches = %d, want 2 (priming and one for the rotation)", got)
 	}
 
 	stale := idp.tokenWith(idp.priv, testKeyID, idp.url, testAud, time.Now().Add(time.Hour), `["operator"]`)
@@ -878,6 +922,76 @@ func TestAdminJWTVerifiesWithTheIssuerStopped(t *testing.T) {
 	}
 }
 
+// STARTUP PRIMES THE KEY SET (docs/42 §6). Without it, every pod comes up with
+// an empty key cache and stays that way until its first operator arrives — so
+// after a rolling deploy the whole fleet needs the IdP again, at whatever hour
+// somebody is paged. One bounded GET per pod restart buys that back.
+func TestAdminJWTPrimesTheKeySetAtStartup(t *testing.T) {
+	idp := newFakeIDP(t)
+	// Mint before anything else: an operator's token outlives the outage that
+	// follows, which is the whole reason the cache has to be warm already.
+	token := idp.goodToken()
+	auth := oidcAuth(t, idp, func(o *AdminAuthOptions) {
+		o.JWKSFetchInterval = defaultJWKSFetchInterval
+		o.JWKSFetchBurst = defaultJWKSFetchBurst
+	})
+
+	if got := idp.keyFetches.Load(); got != 1 {
+		t.Fatalf("JWKS fetches after startup = %d, want exactly 1 (one bounded GET per pod restart)", got)
+	}
+	// THROTTLE-EXEMPT: the bucket a genuine key rotation draws on is still
+	// full, so priming can neither be refused by the floor nor spend from it.
+	if got := auth.throttleTokensLeft(); got != float64(defaultJWKSFetchBurst) {
+		t.Errorf("fetch tokens after priming = %v, want the full bucket (%d)", got, defaultJWKSFetchBurst)
+	}
+
+	// The failure this exists to prevent: the IdP goes away between the deploy
+	// and the first operator, and that operator is still let in.
+	idp.srv.Close()
+	if got, reason := auth.authorize(bearerReq(token)); got != http.StatusOK {
+		t.Fatalf("first request after a restart, IdP down = %d (%s), want 200", got, reason)
+	}
+}
+
+// ...AND PRIMING NEVER GATES STARTUP. Discovery resolving is what makes the
+// JWT path live; a key set that cannot be fetched yet costs 401s and a
+// background retry, exactly as an unresolved issuer does. Ready — here, the
+// relay serving at all — must not wait for the IdP twice.
+func TestAdminJWTPrimingRetriesWithoutBlockingStartup(t *testing.T) {
+	idp := newFakeIDP(t)
+	idp.downKeys(true)
+	token := idp.goodToken()
+
+	// Discovery resolves against a provider whose key set is 503ing; if
+	// priming gated it, this would never return.
+	auth := newOIDCAuth(t, idp, func(o *AdminAuthOptions) { o.Token = adminToken })
+	h, _ := adminHandler(t, config.Config{
+		AdminAPIToken: adminToken, AdminOIDCIssuer: idp.url, AdminOIDCAudience: testAud,
+	}, auth, nil)
+
+	// The relay is serving, the machine credential works, and an unverifiable
+	// JWT is a 401 — never a 500 and never a hang.
+	if w := get(h, "/internal/admin/broadcasts", adminToken); w.Code != http.StatusOK {
+		t.Fatalf("static token while the key set is down = %d, want 200", w.Code)
+	}
+	if w := get(h, "/internal/admin/broadcasts", token); w.Code != http.StatusUnauthorized {
+		t.Fatalf("JWT while the key set is down = %d, want 401", w.Code)
+	}
+	select {
+	case <-auth.primed:
+		t.Fatal("primed reported success while /keys was 503ing")
+	default:
+	}
+
+	// The key set comes back and the retry lands on its own — no request
+	// needed to trigger it.
+	idp.downKeys(false)
+	waitPrimed(t, auth)
+	if w := get(h, "/internal/admin/broadcasts", token); w.Code != http.StatusOK {
+		t.Errorf("JWT after priming recovered = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+}
+
 // THE RELAY STARTS WITHOUT THE IdP (docs/42 §6). Discovery is resolved in the
 // background, so an unreachable provider costs 401s, never a startup failure
 // and never a 500.
@@ -972,6 +1086,35 @@ func TestAdminJWTDefaultClaimPathSubstitutesAudience(t *testing.T) {
 	tok := oidctest.SignIDToken(idp.priv, testKeyID, oidc.RS256, claims)
 	if got, _ := auth.authorize(bearerReq(tok)); got != http.StatusForbidden {
 		t.Errorf("another client's roles = %d, want 403", got)
+	}
+}
+
+// A DOTTED AUDIENCE still addresses exactly one claim segment. Dots are
+// ordinary in Keycloak and Entra client IDs, and a URL-shaped audience always
+// carries them — so substituting {audience} into the template BEFORE splitting
+// on "." would turn resource_access.{audience}.roles into a four-segment walk
+// that no correctly-minted token can satisfy: every operator 403ed, with the
+// reason visible only at Debug.
+func TestAdminJWTDefaultClaimPathSurvivesADottedAudience(t *testing.T) {
+	const dotted = "gawk.admin"
+	idp := newFakeIDP(t)
+	auth := oidcAuth(t, idp, func(o *AdminAuthOptions) { o.Audience = dotted })
+
+	// resource_access["gawk.admin"].roles — one segment, dot and all.
+	good := idp.token(idp.url, dotted, time.Now().Add(time.Hour), `["operator"]`)
+	if got, reason := auth.authorize(bearerReq(good)); got != http.StatusOK {
+		t.Fatalf("authorize = %d (%s), want 200: a dotted audience must still name ONE claim segment", got, reason)
+	}
+
+	// The mirror image, which is what a substitute-then-split implementation
+	// accepts instead: roles nested under resource_access.gawk.admin.roles are
+	// a different claim, and must not authorize anyone.
+	claims := fmt.Sprintf(`{"iss": %q, "aud": %q, "sub": "x", "exp": %s,
+		"resource_access": {"gawk": {"admin": {"roles": ["operator"]}}}}`,
+		idp.url, dotted, strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+	splitPath := oidctest.SignIDToken(idp.priv, testKeyID, oidc.RS256, claims)
+	if got, _ := auth.authorize(bearerReq(splitPath)); got != http.StatusForbidden {
+		t.Errorf("roles under the SPLIT path = %d, want 403", got)
 	}
 }
 

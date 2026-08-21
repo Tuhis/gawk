@@ -276,11 +276,83 @@ func TestPublishBanReasonNeverLoggedAtWarn(t *testing.T) {
 	}
 }
 
+// A raw broadcast ID is a join capability — joinable, and only ~31^6 strong —
+// so R39's moderation lines name a broadcast at Warn by the same per-process
+// HMAC'd key /statusz and the metrics labels use, and keep the raw ID for
+// Debug (docs/42 §5, D8; PR #280 review). Kill cooldowns expire and graced
+// broadcasts persist, so a "terminated" ID is not spent.
+func TestModerationWarnLogsNameBroadcastsByTheirHMACKey(t *testing.T) {
+	newSrv := func(level slog.Level) (*Server, *hub.Registry, *syncBuffer) {
+		buf := &syncBuffer{}
+		log := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level}))
+		r := hub.NewRegistry(discardLog, hub.Options{})
+		srv := New(config.Config{}, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil },
+			log, metrics.NewServerMetrics(prometheus.NewRegistry()))
+		return srv, r, buf
+	}
+
+	// The 451 on the claim path: the banned ID IS the target value.
+	t.Run("publish rejection", func(t *testing.T) {
+		srv, r, buf := newSrv(slog.LevelWarn)
+		srv.SetModeration(banSet(t, idBan(bannedTestID, "fraudulent stream")))
+		srv.handlePublish(httptest.NewRecorder(), connectReq(
+			"https://relay/publish/"+bannedTestID, map[string]string{"id": bannedTestID}))
+
+		out := buf.String()
+		if !strings.Contains(out, "publish rejected: banned") {
+			t.Fatalf("the rejection was not logged at Warn at all:\n%s", out)
+		}
+		if strings.Contains(out, bannedTestID) {
+			t.Errorf("the raw broadcast ID reached a Warn line:\n%s", out)
+		}
+		if want := "broadcast_key=" + r.ObfuscateID(bannedTestID); !strings.Contains(out, want) {
+			t.Errorf("Warn output does not name the broadcast by %s:\n%s", want, out)
+		}
+	})
+
+	// The kill, which is the loudest line moderation writes.
+	t.Run("kill", func(t *testing.T) {
+		srv, r, buf := newSrv(slog.LevelWarn)
+		f := newKillFixture(t, srv, r, "203.0.113.7")
+		srv.HandleBanAdded(idBan(f.id, "fraudulent stream"))
+
+		out := buf.String()
+		if !strings.Contains(out, "broadcast terminated by operator") {
+			t.Fatalf("the termination was not logged at Warn at all:\n%s", out)
+		}
+		if strings.Contains(out, f.id) {
+			t.Errorf("the raw broadcast ID reached a Warn line:\n%s", out)
+		}
+		if want := "broadcast_key=" + r.ObfuscateID(f.id); !strings.Contains(out, want) {
+			t.Errorf("Warn output does not name the broadcast by %s:\n%s", want, out)
+		}
+	})
+
+	// Withheld from the default log, not thrown away: an operator who turns
+	// Debug on still gets the ID to act on.
+	t.Run("debug keeps the raw ID", func(t *testing.T) {
+		srv, r, buf := newSrv(slog.LevelDebug)
+		srv.SetModeration(banSet(t, idBan(bannedTestID, "fraudulent stream")))
+		srv.handlePublish(httptest.NewRecorder(), connectReq(
+			"https://relay/publish/"+bannedTestID, map[string]string{"id": bannedTestID}))
+		f := newKillFixture(t, srv, r, "203.0.113.7")
+		srv.HandleBanAdded(idBan(f.id, "fraudulent stream"))
+
+		out := buf.String()
+		if !strings.Contains(out, bannedTestID) {
+			t.Errorf("the rejected broadcast ID is missing from Debug output:\n%s", out)
+		}
+		if !strings.Contains(out, f.id) {
+			t.Errorf("the terminated broadcast ID is missing from Debug output:\n%s", out)
+		}
+	})
+}
+
 // A relay with no moderation source configured must behave exactly as it did
 // before R39: a nil ban set, and no ban check cost.
 func TestPublishWithoutModerationSourceIsUnchanged(t *testing.T) {
 	srv, sm, _ := newOutcomeServer(t, config.Config{}, hub.Options{})
-	if srv.bans != nil {
+	if srv.banSet() != nil {
 		t.Fatal("a Server with no SetModeration call must carry a nil ban set")
 	}
 	w := httptest.NewRecorder()

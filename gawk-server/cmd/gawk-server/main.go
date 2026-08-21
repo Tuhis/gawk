@@ -120,27 +120,21 @@ func run() error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	srv := transport.New(cfg, r, getCert, log, sm)
-	srv.SetModeration(bans)
-	if err := moderationsrc.Start(runCtx, moderationsrc.Options{
-		Source: cfg.ModerationSource,
-		Set:    bans,
-		Log:    log,
-		// R39 AP3 (docs/42 §4.3): the actuation half. Wired for EVERY source
-		// and independently of -cluster-mode — a single-pod relay kills just
-		// as well as a fleet, and each pod acts on its own event.
-		OnBanAdded: srv.HandleBanAdded,
-	}); err != nil {
-		return err
-	}
-
-	if cfg.ClusterMode {
-		var podName string
-		coord, podName, err = buildCoordinator(cfg, srv.HandleLeaseDeleted, srv.HandleLeaseLost, log)
-		if err != nil {
-			return err
+	// Publishing `coord` — the variable the hub's lease hooks above close
+	// over — is part of the cluster wiring, so it happens here rather than at
+	// the call site: wireSubsystems only guarantees the ORDER, and both
+	// halves have to be inside the ordered step for that to mean anything.
+	buildCoord := func() (transport.ClusterCoordinator, string, error) {
+		c, podName, cerr := buildCoordinator(cfg, srv.HandleLeaseDeleted, srv.HandleLeaseLost, log)
+		if cerr != nil {
+			return nil, "", cerr
 		}
+		coord = c
 		go coord.Run(runCtx)
-		srv.SetCluster(coord, podName)
+		return c, podName, nil
+	}
+	if err := wireSubsystems(runCtx, cfg, srv, bans, log, buildCoord); err != nil {
+		return err
 	}
 
 	// The R18 viewer-count pump (docs/23 Decision 4): one registry-wide
@@ -196,6 +190,61 @@ func run() error {
 // actually running. Extracted from run so it can be asserted in a test:
 // docs/42 §9 AP2 requires the moderation source to be stated here, and the
 // R2 lesson is that a knob nobody can see is a knob nobody notices is inert.
+// wiredServer is the slice of *transport.Server that startup wiring touches.
+// It is an interface for one reason: so the ORDER below can be asserted in a
+// test. The window it guards opens and closes during process startup, which
+// nothing else in the suite can observe.
+type wiredServer interface {
+	SetModeration(*moderation.Set)
+	SetCluster(transport.ClusterCoordinator, string)
+	HandleBanAdded(moderation.Record)
+}
+
+// wireSubsystems installs the optional subsystems on srv in the one order
+// that is safe, and returns once the ban source is running.
+//
+// moderationsrc.Start goes LAST, and that is the entire point of this
+// function existing (PR #280 review). It launches the Ban informer, and a
+// pod cold-starting in a namespace that already holds Ban CRs gets its first
+// Add events within milliseconds. Those reach srv.HandleBanAdded ->
+// terminate(), which reads this pod's edge manager and — through the hub's
+// OnBroadcastExpired hook — the cluster coordinator. Starting the source
+// before SetCluster made that a data race on plain field writes, and left a
+// real hole behind it: a kill actuated in the window tears the broadcast down
+// locally but never deletes its origin Lease, so every other pod in the fleet
+// keeps routing viewers to an origin that is already dead.
+//
+// buildCoord is the seam: it builds AND publishes the coordinator (see run),
+// so "cluster wiring is complete" is one step rather than two.
+func wireSubsystems(
+	ctx context.Context,
+	cfg config.Config,
+	srv wiredServer,
+	bans *moderation.Set,
+	log *slog.Logger,
+	buildCoord func() (transport.ClusterCoordinator, string, error),
+) error {
+	srv.SetModeration(bans)
+
+	if cfg.ClusterMode {
+		coord, podName, err := buildCoord()
+		if err != nil {
+			return err
+		}
+		srv.SetCluster(coord, podName)
+	}
+
+	return moderationsrc.Start(ctx, moderationsrc.Options{
+		Source: cfg.ModerationSource,
+		Set:    bans,
+		Log:    log,
+		// R39 AP3 (docs/42 §4.3): the actuation half. Wired for EVERY source
+		// and independently of -cluster-mode — a single-pod relay kills just
+		// as well as a fleet, and each pod acts on its own event.
+		OnBanAdded: srv.HandleBanAdded,
+	})
+}
+
 func logStartup(log *slog.Logger, cfg config.Config, version string) {
 	log.Info("starting",
 		"version", version,

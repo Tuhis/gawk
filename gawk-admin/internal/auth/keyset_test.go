@@ -154,8 +154,11 @@ func TestUnverifiableTokensCannotFetchMoreThanTheBucketAllows(t *testing.T) {
 		}
 	}
 
-	if got := idp.keyFetches.Load(); got != int64(defaultJWKSFetchBurst) {
-		t.Errorf("JWKS fetches = %d for %d unverifiable tokens, want exactly the burst (%d)",
+	// The burst, plus the one throttle-exempt fetch startup priming made. That
+	// exemption is a single request per pod, not a hole an attacker can widen:
+	// twenty-five unverifiable tokens still buy exactly three fetches.
+	if got := idp.keyFetches.Load(); got != int64(defaultJWKSFetchBurst)+1 {
+		t.Errorf("JWKS fetches = %d for %d unverifiable tokens, want the burst (%d) plus the priming fetch",
 			got, attempts, defaultJWKSFetchBurst)
 	}
 	if got := a.throttle.tokensLeft(); got != 0 {
@@ -176,12 +179,13 @@ func TestRotationIsPickedUpOnOneFetchAndNobodyIs401ed(t *testing.T) {
 	})
 	h := testStack(a, idp.url())
 
-	// Warm-up: the lazy first fetch, which is also the only one so far.
+	// Warm-up: served straight from the cache startup primed, which is so far
+	// the only fetch there has been.
 	if rec := do(t, h, http.MethodGet, "/api/v1/me", idp.mint(t, idp.claims())); rec.Code != http.StatusOK {
 		t.Fatalf("warm-up status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
 	if got := idp.keyFetches.Load(); got != 1 {
-		t.Fatalf("JWKS fetches after warm-up = %d, want 1", got)
+		t.Fatalf("JWKS fetches after warm-up = %d, want 1 (priming, and nothing since)", got)
 	}
 
 	idp.useKey("key-b", keyB())
@@ -193,7 +197,7 @@ func TestRotationIsPickedUpOnOneFetchAndNobodyIs401ed(t *testing.T) {
 		}
 	}
 	if got := idp.keyFetches.Load(); got != 2 {
-		t.Errorf("JWKS fetches = %d, want 2 (the warm-up and one for the rotation)", got)
+		t.Errorf("JWKS fetches = %d, want 2 (priming and one for the rotation)", got)
 	}
 
 	stale := idp.mintWith(t, keyA(), "key-a", idp.claims())

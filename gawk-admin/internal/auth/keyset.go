@@ -30,7 +30,9 @@ package auth
 // unreachable from both ends.
 //
 // What upstream does NOT have is a floor on how often a verification may
-// reach the network. That gap, and only that gap, is what this file fills.
+// reach the network, nor any way to ask it to fetch. This file fills the first
+// gap; auth.go's primeKeys works around the second, using the exemption and
+// the fetch counter this transport exposes.
 
 import (
 	"context"
@@ -39,6 +41,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -79,6 +82,13 @@ var errJWKSThrottled = errors.New("jwks fetch throttled: too many verification m
 // interval: 20 seconds at the defaults (defaultJWKSFetchInterval, burst
 // defaultJWKSFetchBurst = 3 fetches per minute). An operator whose token was
 // minted by the new key inside that window retries and is in.
+//
+// This type — and auth.go's primeKeys, which spends its exemption — is a
+// deliberate twin of gawk-server's internal/ops/auth.go. Sharing them would
+// mean a public package importing go-oidc, importable by the whole relay,
+// which is the dependency containment gawk-server's auth_import_test.go
+// exists to hold. The roles-claim walk moved to gawk-server/oidcroles instead,
+// precisely because it needs no OIDC library at all.
 type jwksThrottle struct {
 	burst    float64
 	interval time.Duration // time to accrue one token
@@ -142,10 +152,20 @@ type throttledTransport struct {
 	base     http.RoundTripper
 	throttle *jwksThrottle
 	log      *slog.Logger
+
+	// exempt lets exactly one request past the rate floor, and is how startup
+	// priming is "throttle-exempt" (auth.go, primeKeys). A bool rather than a
+	// counter: an attempt that granted an exemption and then rode somebody
+	// else's in-flight fetch must not leave a second one banked.
+	exempt atomic.Bool
+	// fetched counts JWKS responses the IdP actually served. It is the only
+	// way to tell a landed fetch from a failed one without matching on
+	// go-oidc's error strings — RemoteKeySet.verify wraps both in an error.
+	fetched atomic.Int64
 }
 
 func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !t.throttle.allow() {
+	if !t.exempt.CompareAndSwap(true, false) && !t.throttle.allow() {
 		// RoundTrip owns the body once it is called, on the error path too.
 		if req.Body != nil {
 			_ = req.Body.Close()
@@ -156,6 +176,9 @@ func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
 		return resp, err
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		t.fetched.Add(1)
 	}
 	resp.Body = cappedBody{Reader: io.LimitReader(resp.Body, maxJWKSBytes), Closer: resp.Body}
 	return resp, nil
@@ -169,13 +192,15 @@ type cappedBody struct {
 	io.Closer
 }
 
-// newRemoteKeySet builds the throttled key set for jwksURL.
+// newRemoteKeySet builds the throttled key set for jwksURL, and returns the
+// transport alongside it — priming needs to grant that transport its exemption
+// and read back whether a fetch landed.
 //
 // base supplies the transport (so an injected client — a test's counting
 // RoundTripper, an operator's proxy — still applies) but not the timeout: a
 // JWKS fetch happens on the REQUEST path here, so it gets the tighter of
 // defaultFetchTimeout and whatever bound the caller set.
-func newRemoteKeySet(ctx context.Context, jwksURL string, base *http.Client, throttle *jwksThrottle, log *slog.Logger) oidc.KeySet {
+func newRemoteKeySet(ctx context.Context, jwksURL string, base *http.Client, throttle *jwksThrottle, log *slog.Logger) (*oidc.RemoteKeySet, *throttledTransport) {
 	timeout := defaultFetchTimeout
 	if base.Timeout > 0 && base.Timeout < timeout {
 		timeout = base.Timeout
@@ -184,13 +209,11 @@ func newRemoteKeySet(ctx context.Context, jwksURL string, base *http.Client, thr
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	client := &http.Client{
-		Transport: &throttledTransport{base: transport, throttle: throttle, log: log},
-		Timeout:   timeout,
-	}
+	fetcher := &throttledTransport{base: transport, throttle: throttle, log: log}
+	client := &http.Client{Transport: fetcher, Timeout: timeout}
 	// RemoteKeySet reads its HTTP client off this context and deliberately
 	// drops the cancellation (context.WithoutCancel, upstream), so a fetch is
 	// bounded by the client timeout alone — which is why that timeout must
 	// never be zero, and why shutdown never waits on an in-flight fetch.
-	return oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL)
+	return oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL), fetcher
 }

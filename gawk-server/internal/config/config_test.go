@@ -589,3 +589,60 @@ func TestAdminAPIKnobs(t *testing.T) {
 		}
 	}
 }
+
+// WHITESPACE IS EMPTY, to the pair check as well as to the Config. The check
+// used to run on the raw flag values while the literal stored trimmed ones, so
+// a stray space or newline out of a templated secret — the usual way a k8s
+// Secret arrives with one — looked set to the check and arrived empty in the
+// Config. The result was not a refusal but SILENCE: no verifier, no static
+// token, Configured() false, and /internal/admin/* never registered at all.
+// A mystery 404 is the one outcome this validation exists to prevent.
+func TestAdminOIDCWhitespaceIsRefusedNotSilentlyDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+	}{
+		{"whitespace issuer, real audience", map[string]string{
+			"GAWK_ADMIN_OIDC_ISSUER":   " ",
+			"GAWK_ADMIN_OIDC_AUDIENCE": "gawk-admin",
+		}},
+		{"newline issuer, real audience", map[string]string{
+			"GAWK_ADMIN_OIDC_ISSUER":   "\n",
+			"GAWK_ADMIN_OIDC_AUDIENCE": "gawk-admin",
+		}},
+		{"real issuer, whitespace audience", map[string]string{
+			"GAWK_ADMIN_OIDC_ISSUER":   "https://idp.example/realms/gawk",
+			"GAWK_ADMIN_OIDC_AUDIENCE": "  ",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseFlags(nil, envMap(tc.env))
+			if err == nil {
+				t.Fatalf("ParseFlags accepted a half-configured pair and produced issuer=%q audience=%q — "+
+					"the admin API would be dark with no explanation",
+					cfg.AdminOIDCIssuer, cfg.AdminOIDCAudience)
+			}
+		})
+	}
+
+	// The same reading, applied consistently: a whitespace-only static token
+	// is not a credential either. authorize() trims the PRESENTED credential
+	// before comparing, so an untrimmed configured one could never be matched
+	// by anybody — it would register the routes and then refuse every caller.
+	cfg, err := ParseFlags([]string{"-admin-api-token", "  "}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.AdminAPIToken != "" {
+		t.Errorf("AdminAPIToken = %q, want empty: a token nothing can present is not a token", cfg.AdminAPIToken)
+	}
+
+	// And trimming must not eat a legitimate value's interior.
+	cfg, err = ParseFlags([]string{"-admin-api-token", "  tok en  "}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.AdminAPIToken != "tok en" {
+		t.Errorf("AdminAPIToken = %q, want %q", cfg.AdminAPIToken, "tok en")
+	}
+}

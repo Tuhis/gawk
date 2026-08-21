@@ -115,14 +115,8 @@ func RunInformer(ctx context.Context, lw cache.ListerWatcher, sink Sink, log *sl
 	_, _ = informer.AddEventHandler(BanEventHandler(sink, log))
 
 	go func() {
-		// The docs/42 §6 residual risk, made loud: a relay that cold-starts
-		// while the API server is unreachable enforces nothing, and must say
-		// so rather than look healthy.
-		syncCtx, cancel := context.WithTimeout(ctx, syncTimeout)
-		defer cancel()
-		if !cache.WaitForCacheSync(syncCtx.Done(), informer.HasSynced) {
-			log.Warn("moderation ban informer has not synced: starting with an EMPTY ban set",
-				"timeout", syncTimeout)
+		if !waitForSync(ctx, informer, log, syncTimeout) {
+			// Only ctx cancellation gets here: the process is going away.
 			return
 		}
 		log.Info("moderation ban informer synced", "bans", len(informer.GetStore().List()))
@@ -150,12 +144,47 @@ func RunInformer(ctx context.Context, lw cache.ListerWatcher, sink Sink, log *sl
 	informer.RunWithContext(ctx)
 }
 
+// waitForSync blocks until the informer's first LIST has landed, and reports
+// false only when ctx is cancelled first.
+//
+// It RETRIES rather than giving up, and that is the whole point. The docs/42
+// §6 residual risk — a relay that cold-starts while the API server is
+// unreachable enforces nothing — is made loud by warning every syncTimeout;
+// but a single attempt that timed out used to end the goroutine outright,
+// which killed replaceFromStore (the initial replace, the periodic drift
+// heal, and the re-actuation pass) for the life of the process. A pod that
+// started 31 seconds too early would then behave differently from every peer
+// forever, with nothing but one Warn to say so.
+func waitForSync(ctx context.Context, informer cache.SharedIndexInformer, log *slog.Logger, syncTimeout time.Duration) bool {
+	for attempt := 1; ; attempt++ {
+		syncCtx, cancel := context.WithTimeout(ctx, syncTimeout)
+		synced := cache.WaitForCacheSync(syncCtx.Done(), informer.HasSynced)
+		cancel()
+		if synced {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		log.Warn("moderation ban informer has not synced: still enforcing an EMPTY ban set",
+			"timeout", syncTimeout, "attempt", attempt)
+	}
+}
+
 // BanEventHandler maps informer events onto Set mutations. Exported so unit
 // tests can drive add/update/delete without an API server.
 func BanEventHandler(sink Sink, log *slog.Logger) cache.ResourceEventHandler {
 	return cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { upsert(sink, log, obj, "add") },
-		UpdateFunc: func(_, obj any) { upsert(sink, log, obj, "update") },
+		AddFunc: func(obj any) { upsert(sink, log, obj, "add") },
+		UpdateFunc: func(old, obj any) {
+			if !upsert(sink, log, obj, "update") {
+				// The edit did not apply, so nothing superseded the old
+				// target: leave it enforced rather than lift a ban on the
+				// strength of a spec we could not read.
+				return
+			}
+			liftSupersededTarget(sink, log, old, obj)
+		},
 		DeleteFunc: func(obj any) {
 			// A watch gap can deliver the last-known state in a tombstone
 			// rather than the object itself.
@@ -177,22 +206,23 @@ func BanEventHandler(sink Sink, log *slog.Logger) cache.ResourceEventHandler {
 	}
 }
 
-func upsert(sink Sink, log *slog.Logger, obj any, why string) {
+// upsert applies one Ban CR and reports whether it took effect.
+func upsert(sink Sink, log *slog.Logger, obj any, why string) bool {
 	ban, err := banFrom(obj)
 	if err != nil {
 		log.Warn("moderation ban CR ignored", "reason", why, "err", err)
-		return
+		return false
 	}
 	rec, err := moderation.RecordFromBan(ban)
 	if err != nil {
 		// An unparseable target is skipped, never widened: a ban nobody can
 		// read must not become a ban on everybody.
 		log.Warn("moderation ban CR ignored", "name", ban.Name, "reason", why, "err", err)
-		return
+		return false
 	}
 	if err := sink.apply(rec); err != nil {
 		log.Warn("moderation ban CR ignored", "name", ban.Name, "reason", why, "err", err)
-		return
+		return false
 	}
 	// The ban reason is operator-private context (docs/42 §4.3) — Debug only,
 	// same rule as the publish-path rejection log.
@@ -200,6 +230,46 @@ func upsert(sink Sink, log *slog.Logger, obj any, why string) {
 		"target_type", string(rec.Target.Type), "expires_at", expiresAtLog(rec))
 	log.Debug("moderation ban detail", "name", ban.Name,
 		"target", rec.Target.Value, "ban_reason", rec.Reason, "created_by", rec.CreatedBy)
+	return true
+}
+
+// liftSupersededTarget removes the target a Ban CR used to carry once an
+// edit moved it somewhere else. Without this, `kubectl edit` of a CIDR
+// enforces BOTH ranges until the next resync (up to ResyncInterval), so
+// publishers in a range the operator explicitly stopped banning keep being
+// 451'd for minutes.
+//
+// The Set is keyed by target with no reference counting, so if a second Ban
+// CR happens to name the same target, this lifts that one too until the
+// resync rebuilds the Set. That is pre-existing behaviour of DeleteFunc
+// (which removes the target of the deleted CR regardless of any other CR
+// naming it), not something introduced here; duplicate CRs for one target
+// are already a shape the design collapses.
+func liftSupersededTarget(sink Sink, log *slog.Logger, oldObj, newObj any) {
+	oldRec, err := recordOf(oldObj)
+	if err != nil {
+		// The previous spec was unreadable, so it never entered the Set.
+		return
+	}
+	newRec, err := recordOf(newObj)
+	if err != nil || oldRec.Target == newRec.Target {
+		return
+	}
+	if err := sink.Set.Remove(oldRec.Target); err != nil {
+		log.Warn("moderation ban target not lifted after an edit", "err", err)
+		return
+	}
+	log.Info("moderation ban target superseded by an edit",
+		"target_type", string(oldRec.Target.Type), "new_target_type", string(newRec.Target.Type))
+}
+
+// recordOf converts an informer object straight to a normalized Record.
+func recordOf(obj any) (moderation.Record, error) {
+	ban, err := banFrom(obj)
+	if err != nil {
+		return moderation.Record{}, err
+	}
+	return moderation.RecordFromBan(ban)
 }
 
 func expiresAtLog(rec moderation.Record) string {

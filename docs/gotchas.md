@@ -1067,13 +1067,27 @@ Add to it when a new gotcha lands in `docs/`.
   unique indexes, `FOR UPDATE SKIP LOCKED`, advisory locks), so the job has to
   assert the tests actually ran, not just that they did not fail.
   ([docs/42](42-admin-moderation-portal.md) AP4/AP8)
-- **A raw broadcast ID is a join capability**, which is why it may appear in
-  exactly three places — the credential-gated relay admin endpoints, the
-  OIDC-gated portal, and Postgres — and never in a webhook payload, `/statusz`
-  or a log line at Info+. Webhooks carry the HMAC'd key and a portal link
-  instead. Ban *reasons*, by contrast, do ride webhooks: they are operator text
-  and the receiver sees them.
+- **A raw broadcast ID is a join capability**, which is why R39 confines it to
+  three places — the credential-gated relay admin endpoints, the OIDC-gated
+  portal, and Postgres. Webhook payloads and `/statusz` carry the per-process
+  HMAC'd key instead (webhooks add a portal link). Ban *reasons*, by contrast,
+  do ride webhooks: they are operator text and the receiver sees them.
   ([docs/42](42-admin-moderation-portal.md) D8)
+- **…but relay logs are NOT a place where broadcast IDs are absent, and
+  `docs/42` §5's "(existing discipline)" parenthetical is wrong about them.**
+  The relay has always logged `broadcast_id` at Info: every publisher,
+  subscriber and internal-edge session attaches it with `slog.With`
+  (`internal/transport/server.go`), so does every hub (`internal/hub/hub.go`,
+  including the "broadcast terminated" line a kill ends at), and lease
+  renew/release failures log it at Warn (`internal/cluster/cluster.go`).
+  R39's own moderation lines were brought into line after review — the kill
+  and the 451 name a broadcast by `broadcast_key`, the same HMAC'd handle
+  `/statusz` uses, and the raw ID moved to the Debug line beside the
+  operator-private ban reason — but the k8s source still logs the Ban CR's
+  *name* at Info, and for an ID ban that name is `ban-id-<the id>` by
+  construction (`moderation.CRName`). So treat "no raw IDs at Info+" as a rule
+  for new code, not as a property the repo has: **do not build anything on the
+  assumption that an aggregated pod log is free of joinable IDs.**
 
 **CI / deployment**
 

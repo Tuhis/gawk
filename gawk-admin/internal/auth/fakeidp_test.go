@@ -63,6 +63,7 @@ type fakeIDP struct {
 	kid      string
 	hangCh   chan struct{} // when non-nil, /keys blocks on it
 	down     bool          // when true, every endpoint 503s
+	keysDown bool          // when true, only /keys 503s — discovery still answers
 	keyDelay time.Duration // when non-zero, /keys sleeps this long
 }
 
@@ -77,7 +78,7 @@ func newFakeIDP(t *testing.T) *fakeIDP {
 
 func (f *fakeIDP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	h, hang, down, delay := f.handler, f.hangCh, f.down, f.keyDelay
+	h, hang, down, delay, keysDown := f.handler, f.hangCh, f.down, f.keyDelay, f.keysDown
 	f.mu.Unlock()
 	if down {
 		// An IdP that is up enough to answer but not to serve — the shape a
@@ -87,6 +88,10 @@ func (f *fakeIDP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/keys" {
 		f.keyFetches.Add(1)
+		if keysDown {
+			http.Error(w, "key set unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		if delay > 0 {
 			// A JWKS that takes a human-visible moment to answer, so a herd of
 			// concurrent verifications demonstrably overlaps inside one fetch
@@ -116,6 +121,15 @@ func (f *fakeIDP) setDown(down bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.down = down
+}
+
+// downKeys toggles whether /keys 503s while discovery keeps answering — the
+// split that separates "this pod resolved and is serving" from "its key set is
+// primed".
+func (f *fakeIDP) downKeys(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keysDown = down
 }
 
 // delayKeys makes every subsequent JWKS request take d.
@@ -163,6 +177,12 @@ func (f *fakeIDP) stop() { f.srv.Close() }
 
 // claims is the shape a Keycloak access token has for this deployment: the
 // operator role at the default client-roles path.
+//
+// The roles sit under testAudience, not testClientID. Those are deliberately
+// different strings here, and the default path addresses the AUDIENCE — the
+// resource server the token was minted for, which is the client whose
+// `resource_access` entry carries this API's roles. The SPA's public client ID
+// is a different thing that holds none.
 func (f *fakeIDP) claims(mutators ...func(map[string]any)) map[string]any {
 	now := time.Now()
 	c := map[string]any{
@@ -173,7 +193,7 @@ func (f *fakeIDP) claims(mutators ...func(map[string]any)) map[string]any {
 		"iat":   now.Add(-time.Minute).Unix(),
 		"exp":   now.Add(time.Hour).Unix(),
 		"resource_access": map[string]any{
-			testClientID: map[string]any{"roles": []any{"offline_access", testOperator}},
+			testAudience: map[string]any{"roles": []any{"offline_access", testOperator}},
 		},
 	}
 	for _, m := range mutators {

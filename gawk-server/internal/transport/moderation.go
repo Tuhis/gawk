@@ -98,8 +98,8 @@ func (s *Server) terminate(broadcastID, why string) {
 	// An edge pod's "publisher" is its own upstream pull: stop it first, or
 	// the re-attach loop would rebuild the hub we are about to delete. Cheap
 	// and synchronous on a pod that has no edge for this ID.
-	if s.edges != nil {
-		s.edges.StopEdge(broadcastID)
+	if edges := s.edgeManager(); edges != nil {
+		edges.StopEdge(broadcastID)
 	}
 
 	s.sessMu.Lock()
@@ -117,6 +117,15 @@ func (s *Server) terminate(broadcastID, why string) {
 		return
 	}
 	s.metrics.Termination()
+	// The raw ID stays out of this line: it is a join capability (docs/42 §5,
+	// D8), a kill cooldown expires, and a graced broadcast outlives its
+	// publisher — so a "terminated" ID is not a spent one, and this is the
+	// line most likely to be shipped to an aggregator. broadcast_key is the
+	// same per-process HMAC /statusz and the metrics labels carry, so an
+	// operator can still join the three together; the ID itself is one Debug
+	// level away for whoever needs to act on it.
 	s.log.Warn("broadcast terminated by operator",
-		"id", broadcastID, "reason", why, "publisher_closed", pub != nil, "hub_removed", removed)
+		"broadcast_key", s.broadcastKey(broadcastID), "reason", why,
+		"publisher_closed", pub != nil, "hub_removed", removed)
+	s.log.Debug("broadcast termination detail", "id", broadcastID, "reason", why)
 }

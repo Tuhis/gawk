@@ -2,14 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/transport"
+	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
 
 // R2 review finding F1: the hardening limits parsed by config.ParseFlags must
@@ -126,3 +134,119 @@ func TestResumeTokenKeyModeMatchesTheSanitizedConfig(t *testing.T) {
 		}
 	}
 }
+
+// R39 (PR #280 review): moderationsrc.Start launches the ban informer, whose
+// very first events can reach srv.HandleBanAdded -> terminate() within
+// milliseconds — and terminate() reads the edge manager and, through the hub
+// hooks, the cluster coordinator. Both must already be wired.
+//
+// The stake is not only the data race. A kill actuated before the coordinator
+// exists tears the broadcast down locally but never deletes its origin Lease,
+// so every other pod in the fleet keeps routing viewers to a dead origin
+// until something else cleans up. A pod that cold-started with Ban CRs
+// already present is exactly the case that hits it.
+//
+// The file source's startup load is synchronous, so a ban in the file
+// actuates inside wireSubsystems — which is what makes the ordering
+// observable at all.
+func TestWiringInstallsTheClusterBeforeTheBanSourceCanActuate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bans.json")
+	if err := os.WriteFile(path, []byte(
+		`[{"target":{"type":"broadcastId","value":"ABC23Z"},"reason":"kill"}]`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	srv := &recordingWiredServer{}
+	cfg := config.Config{ClusterMode: true, ModerationSource: "file:" + path}
+	built := false
+	buildCoord := func() (transport.ClusterCoordinator, string, error) {
+		built = true
+		return nil, "pod-0", nil
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err != nil {
+		t.Fatalf("wireSubsystems: %v", err)
+	}
+	if !built {
+		t.Fatal("the coordinator was never built in cluster mode")
+	}
+
+	want := []string{"set-moderation", "set-cluster", "ban-added"}
+	if got := srv.calls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("wiring order = %v, want %v", got, want)
+	}
+}
+
+// Without -cluster-mode there is no coordinator to build, and the ban source
+// still starts and still actuates: enforcement is not a federation feature
+// (docs/42 §4.3).
+func TestWiringWithoutClusterModeStillStartsTheBanSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bans.json")
+	if err := os.WriteFile(path, []byte(
+		`[{"target":{"type":"broadcastId","value":"ABC23Z"},"reason":"kill"}]`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	srv := &recordingWiredServer{}
+	cfg := config.Config{ModerationSource: "file:" + path}
+	buildCoord := func() (transport.ClusterCoordinator, string, error) {
+		t.Error("the coordinator was built with -cluster-mode off")
+		return nil, "", nil
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err != nil {
+		t.Fatalf("wireSubsystems: %v", err)
+	}
+	want := []string{"set-moderation", "ban-added"}
+	if got := srv.calls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("wiring order = %v, want %v", got, want)
+	}
+}
+
+// A coordinator that cannot be built fails the process, and the ban source is
+// never started against a half-wired server.
+func TestWiringFailsBeforeStartingTheBanSourceWhenTheCoordinatorFails(t *testing.T) {
+	srv := &recordingWiredServer{}
+	cfg := config.Config{ClusterMode: true, ModerationSource: "off"}
+	buildCoord := func() (transport.ClusterCoordinator, string, error) {
+		return nil, "", errors.New("no kubeconfig")
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err == nil {
+		t.Fatal("wireSubsystems returned nil, want the coordinator error")
+	}
+	for _, call := range srv.calls() {
+		if call == "set-cluster" {
+			t.Error("SetCluster ran with a coordinator that failed to build")
+		}
+	}
+}
+
+// recordingWiredServer records the order the wiring touches the server in.
+type recordingWiredServer struct {
+	mu  sync.Mutex
+	seq []string
+}
+
+func (s *recordingWiredServer) record(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seq = append(s.seq, name)
+}
+
+func (s *recordingWiredServer) calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.seq...)
+}
+
+func (s *recordingWiredServer) SetModeration(*moderation.Set) { s.record("set-moderation") }
+func (s *recordingWiredServer) SetCluster(transport.ClusterCoordinator, string) {
+	s.record("set-cluster")
+}
+func (s *recordingWiredServer) HandleBanAdded(moderation.Record) { s.record("ban-added") }

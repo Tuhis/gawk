@@ -278,6 +278,73 @@ func TestInformerSkipsUnparseableBans(t *testing.T) {
 	}
 }
 
+// Editing a Ban CR's spec.target must LIFT the old target, not merely add the
+// new one. Before the fix `kubectl edit` of a CIDR left the previous range
+// enforced until the next resync (up to five minutes), so innocent publishers
+// in the old range kept getting 451. (PR #280 review.)
+func TestInformerUpdateLiftsTheSupersededTarget(t *testing.T) {
+	withListWatchReflector(t)
+	fw := watch.NewFake()
+	lw := &recordingListerWatcher{watcher: fw}
+	set := moderation.NewSet()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// An hour between resyncs, so only UpdateFunc can be what lifts the old
+	// target — the resync heal would otherwise mask the bug.
+	go RunInformer(ctx, lw, Sink{Set: set}, discardLog, time.Second, time.Hour)
+
+	fw.Add(banObject(t, "ban-ip-deadbeef1234",
+		moderation.Target{Type: moderation.TargetIP, Value: "203.0.113.0/24"}, "abuse", nil))
+	waitSet(t, "the original CIDR ban", func() bool {
+		_, ok := set.BannedIP(netip.MustParseAddr("203.0.113.7"), time.Now())
+		return ok
+	})
+
+	// The operator MOVED the ban to another range; they did not widen it to
+	// cover both.
+	fw.Modify(banObject(t, "ban-ip-deadbeef1234",
+		moderation.Target{Type: moderation.TargetIP, Value: "198.51.100.0/24"}, "abuse", nil))
+	waitSet(t, "the edited CIDR ban", func() bool {
+		_, ok := set.BannedIP(netip.MustParseAddr("198.51.100.9"), time.Now())
+		return ok
+	})
+	if _, ok := set.BannedIP(netip.MustParseAddr("203.0.113.7"), time.Now()); ok {
+		t.Error("the superseded CIDR is still enforced — publishers in the old range stay 451'd until the next resync")
+	}
+	if got := set.ActiveCounts(time.Now()); got["ip"] != 1 {
+		t.Errorf("ActiveCounts = %v, want exactly the edited ban", got)
+	}
+
+	// The same for an ID ban, whose old value is otherwise unreachable: no
+	// CR names it any more, so only the update event can lift it.
+	fw.Add(banObject(t, "ban-id-abc23z",
+		moderation.Target{Type: moderation.TargetBroadcastID, Value: "ABC23Z"}, "fraud", nil))
+	waitSet(t, "the original ID ban", func() bool {
+		_, ok := set.BannedID("ABC23Z", time.Now())
+		return ok
+	})
+	fw.Modify(banObject(t, "ban-id-abc23z",
+		moderation.Target{Type: moderation.TargetBroadcastID, Value: "ZZZ23Z"}, "fraud", nil))
+	waitSet(t, "the edited ID ban", func() bool {
+		_, ok := set.BannedID("ZZZ23Z", time.Now())
+		return ok
+	})
+	if _, ok := set.BannedID("ABC23Z", time.Now()); ok {
+		t.Error("the superseded broadcast ID is still banned after the edit")
+	}
+
+	// An edit whose NEW target is unreadable lifts nothing: the direction of
+	// safety is the same one upsert already takes — a ban nobody can parse
+	// is skipped, never widened, and never turned into an accidental unban.
+	fw.Modify(banObject(t, "ban-id-abc23z",
+		moderation.Target{Type: moderation.TargetBroadcastID, Value: "!!!"}, "fat fingers", nil))
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := set.BannedID("ZZZ23Z", time.Now()); !ok {
+		t.Error("an unparseable edit lifted the ban that was in force")
+	}
+}
+
 // A watch gap delivers the last-known state in a tombstone; the delete must
 // still land.
 func TestBanEventHandlerHandlesTombstones(t *testing.T) {
@@ -324,6 +391,99 @@ func TestInformerWarnsWhenItCannotSync(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// A relay that cold-starts during a brief API-server outage must not be
+// permanently different from its peers. Before the fix the resync goroutine
+// returned on the first WaitForCacheSync timeout, so `replaceFromStore` —
+// the initial replace AND the periodic pass that heals a drifted Set and
+// re-fires OnBanAdded — was dead for the life of the process: a pod that
+// started 31 seconds too early behaved differently forever. (PR #280 review.)
+func TestInformerHealsAfterAFailedFirstSync(t *testing.T) {
+	withListWatchReflector(t)
+	buf := &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rec := &recordingListerWatcher{watcher: watch.NewFake()}
+	rec.items = []unstructured.Unstructured{
+		*banObject(t, "ban-id-abc23z",
+			moderation.Target{Type: moderation.TargetBroadcastID, Value: "ABC23Z"}, "existing", nil),
+	}
+	lw := &gatedListerWatcher{recordingListerWatcher: rec, gate: make(chan struct{}), done: ctx.Done()}
+
+	set := moderation.NewSet()
+	var got actuations
+	go RunInformer(ctx, lw, Sink{Set: set, OnAdded: got.add}, log,
+		30*time.Millisecond, 20*time.Millisecond)
+
+	// The API server is unreachable, and the relay says so (docs/42 §6).
+	waitSet(t, "the empty-ban-set warning", func() bool {
+		return strings.Contains(buf.String(), "EMPTY ban set")
+	})
+
+	// ...and then it comes back, well after the first sync attempt gave up.
+	close(lw.gate)
+	waitSet(t, "the listed ban to enforce once the API server returns", func() bool {
+		_, ok := set.BannedID("ABC23Z", time.Now())
+		return ok
+	})
+
+	// The healing pass is what is actually at stake. A Set that drifted — a
+	// delete missed in a watch gap, or the List/Replace clobber window the
+	// implementation admits to — is repaired only by the periodic
+	// store→Set reconcile, and nothing else in the informer removes a ban
+	// the store does not have.
+	if err := set.Upsert(moderation.Record{
+		Target: moderation.Target{Type: moderation.TargetBroadcastID, Value: "ZZZ23Z"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	waitSet(t, "the resync to heal the drifted ban set", func() bool {
+		_, ok := set.BannedID("ZZZ23Z", time.Now())
+		return !ok
+	})
+
+	// The other half of what the resync is for: re-actuating, so a publisher
+	// that raced the admission gate is still killed on a later pass.
+	idTarget := moderation.Target{Type: moderation.TargetBroadcastID, Value: "ABC23Z"}
+	waitSet(t, "the resync to re-actuate the ban", func() bool {
+		n := 0
+		for _, target := range got.targets() {
+			if target == idTarget {
+				n++
+			}
+		}
+		return n > 1
+	})
+}
+
+// gatedListerWatcher stalls LIST and WATCH until its gate is closed: an API
+// server that is unreachable for a while and then returns.
+type gatedListerWatcher struct {
+	*recordingListerWatcher
+	gate chan struct{}
+	done <-chan struct{}
+}
+
+func (g *gatedListerWatcher) List(options metav1.ListOptions) (runtime.Object, error) {
+	select {
+	case <-g.gate:
+	case <-g.done:
+		return nil, context.Canceled
+	}
+	return g.recordingListerWatcher.List(options)
+}
+
+func (g *gatedListerWatcher) Watch(options metav1.ListOptions) (watch.Interface, error) {
+	select {
+	case <-g.gate:
+	case <-g.done:
+		return nil, context.Canceled
+	}
+	return g.recordingListerWatcher.Watch(options)
 }
 
 type stallingListerWatcher struct{ done <-chan struct{} }

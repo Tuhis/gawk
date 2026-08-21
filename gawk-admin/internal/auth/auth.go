@@ -69,6 +69,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
 	"github.com/Tuhis/gawk/gawk-admin/internal/identity"
+	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 )
 
 // Authenticator is the contract internal/api is written against (the package
@@ -152,8 +153,12 @@ type Auth struct {
 	issuer   string
 	clientID string
 	audience string
-	// rolesPath is the configured dot-path, pre-split. See roles.go.
-	rolesPath []string
+	// rolesPath is the configured dot-path, pre-split and with the audience
+	// substituted. The walk lives in gawk-server's public oidcroles package,
+	// shared with the relay's ops listener: R39 first shipped it twice, in two
+	// placeholder dialects, and only one copy carried the dotted-audience bug
+	// — which is how a mirror hides a defect instead of doubling it.
+	rolesPath oidcroles.Path
 
 	client       *http.Client
 	now          func() time.Time
@@ -171,6 +176,11 @@ type Auth struct {
 	verifier   *oidc.IDTokenVerifier
 	resolveErr error
 	failures   int
+
+	// primed closes once the key set holds keys. It is strictly later than the
+	// verifier being published and nothing gates on it: Ready, and every
+	// authenticated route, go live the moment discovery resolves.
+	primed chan struct{}
 
 	cancel    context.CancelFunc
 	done      chan struct{}
@@ -207,7 +217,12 @@ func New(ctx context.Context, cfg config.Config, opts Options) (*Auth, error) {
 	if strings.TrimSpace(cfg.OperatorRole) == "" {
 		return nil, errors.New("auth: operator role must not be empty: with no required role every valid token would be an operator")
 	}
-	rolesPath, err := parseClaimPath(cfg.RolesClaimPath())
+	// Substituted with the AUDIENCE, not the SPA's client ID: the roles that
+	// govern this API are the ones the IdP put under the resource server the
+	// token was minted for, which is what `aud` names (§4.12). The two are the
+	// same string in the reference Keycloak recipe, which is a convenience of
+	// the recipe rather than the model.
+	rolesPath, err := oidcroles.ParsePath(cfg.OIDCRolesClaim, cfg.OIDCAudience)
 	if err != nil {
 		return nil, fmt.Errorf("auth: roles claim path: %w", err)
 	}
@@ -255,6 +270,7 @@ func New(ctx context.Context, cfg config.Config, opts Options) (*Auth, error) {
 		limiter:      newIPLimiter(rate, burst, now),
 		log:          log,
 		csp:          buildCSP(cfg.OIDCIssuer),
+		primed:       make(chan struct{}),
 		cancel:       cancel,
 		done:         make(chan struct{}),
 	}
@@ -267,14 +283,11 @@ func New(ctx context.Context, cfg config.Config, opts Options) (*Auth, error) {
 // answers 401, so cmd/gawk-admin folds this into /readyz alongside the store's
 // own check — an unready pod should not take portal traffic.
 //
-// It never goes back to false. Note what it does NOT claim: the JWKS is
-// fetched lazily, on the first token whose signature no cached key verifies,
-// so a ready pod that has not yet served an authenticated request still needs
-// one round trip to the IdP. From that fetch onwards verification is offline
-// and an IdP outage no longer affects this process (§4.8, §6). Priming the
-// cache at resolve time would buy a narrow window — a pod that went ready and
-// then never saw a request until the IdP was down — at the cost of a fetch
-// every pod makes whether or not anyone authenticates.
+// It never goes back to false, and it deliberately does NOT wait for the key
+// set: startup must not be able to hang on the IdP twice (§6, D16). The key
+// set is instead primed right after resolution, in the background and with
+// retries (primeKeys), so a ready pod can normally verify offline without that
+// ever having been a precondition for going ready.
 func (a *Auth) Ready() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -300,16 +313,25 @@ func (a *Auth) currentVerifier() (*oidc.IDTokenVerifier, bool) {
 	return a.verifier, a.verifier != nil
 }
 
+// keySource bundles the key set with the transport that fetches for it.
+// primeKeys needs both: only the key set can be made to fetch, and only the
+// transport carries the throttle exemption and the fetch counter.
+type keySource struct {
+	keys    *oidc.RemoteKeySet
+	fetcher *throttledTransport
+}
+
 // resolve performs OIDC discovery and publishes the verifier, after which
-// Ready is true forever. It does not touch the JWKS: the key set fetches
-// lazily and caches for the process lifetime (keyset.go).
-func (a *Auth) resolve(ctx context.Context) error {
+// Ready is true forever. It does not itself touch the JWKS — that is primeKeys'
+// job, deliberately after this returns, so readiness never waits on the key
+// set (keyset.go).
+func (a *Auth) resolve(ctx context.Context) (*keySource, error) {
 	// go-oidc verifies that the document's own `issuer` matches the URL we
 	// asked for, which is the check that makes the rest of the validation
 	// meaningful.
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, a.client), a.issuer)
 	if err != nil {
-		return fmt.Errorf("discovery for %q: %w", a.issuer, err)
+		return nil, fmt.Errorf("discovery for %q: %w", a.issuer, err)
 	}
 	// go-oidc exposes neither the issuer it validated nor the jwks_uri as
 	// fields, so read them back off the raw discovery document. Issuer is
@@ -323,16 +345,16 @@ func (a *Auth) resolve(ctx context.Context) error {
 		Algorithms []string `json:"id_token_signing_alg_values_supported"`
 	}
 	if err := provider.Claims(&meta); err != nil {
-		return fmt.Errorf("reading provider metadata: %w", err)
+		return nil, fmt.Errorf("reading provider metadata: %w", err)
 	}
 	if meta.JWKSURL == "" {
-		return fmt.Errorf("provider %q advertises no jwks_uri", a.issuer)
+		return nil, fmt.Errorf("provider %q advertises no jwks_uri", a.issuer)
 	}
 	if meta.Issuer == "" {
 		meta.Issuer = a.issuer
 	}
 
-	keys := newRemoteKeySet(ctx, meta.JWKSURL, a.client, a.throttle, a.log)
+	keys, fetcher := newRemoteKeySet(ctx, meta.JWKSURL, a.client, a.throttle, a.log)
 	verifier := oidc.NewVerifier(meta.Issuer, keys, &oidc.Config{
 		// go-oidc names this ClientID; it is the value compared against the
 		// token's `aud`, which for an access token is the audience the IdP
@@ -356,7 +378,70 @@ func (a *Auth) resolve(ctx context.Context) error {
 	} else {
 		a.log.Info("oidc issuer resolved", "issuer", a.issuer)
 	}
-	return nil
+	return &keySource{keys: keys, fetcher: fetcher}, nil
+}
+
+// primingJWS is a syntactically valid compact JWS that nothing can ever
+// verify: `{"alg":"RS256","kid":"gawk-key-set-priming"}` over `{}`, signed with
+// the ASCII bytes "priming".
+//
+// It exists because oidc.RemoteKeySet exposes no "fetch now": the only way in
+// is a verification whose `kid` misses the cache, which is precisely what this
+// string is. VerifySignature parses it, finds no key, fetches the JWKS — the
+// point of the exercise — then fails the signature check, and the error is
+// discarded. Nothing is ever trusted from it; a priming attempt can warm a
+// cache and cannot authenticate anybody.
+const primingJWS = "eyJhbGciOiJSUzI1NiIsImtpZCI6Imdhd2sta2V5LXNldC1wcmltaW5nIn0.e30.cHJpbWluZw"
+
+// primeKeys fetches the key set once, in the background, retrying until it
+// lands or ctx ends.
+//
+// WHY IT IS NOT LAZY. oidc.RemoteKeySet fetches on the first verification that
+// misses its cache, and every pod restarts with that cache empty — so after a
+// rolling deploy every replica needs one IdP round trip at the moment its
+// first operator arrives, which may be hours later and mid-incident. An IdP
+// that is down across that window 401s a still-valid token on every fresh pod,
+// and a mix of warm and cold replicas behind one Service flaps. docs/42 §6
+// makes the IdP availability-critical for the portal and never for
+// enforcement; lazy priming quietly extends that criticality to
+// first-use-per-pod-lifetime. One bounded GET per pod restart is much cheaper
+// than the failure it prevents.
+//
+// WHY IT GATES NOTHING. It runs after the verifier is published, so Ready and
+// every authenticated route are live from the moment discovery resolves.
+// Startup still cannot depend on the IdP (D16).
+func (a *Auth) primeKeys(ctx context.Context, src *keySource) {
+	backoff := a.resolveRetry
+	for {
+		before := src.fetcher.fetched.Load()
+		// Throttle-exempt: this fetch neither spends from the bucket a genuine
+		// key rotation draws on nor can be refused by it.
+		src.fetcher.exempt.Store(true)
+		_, _ = src.keys.VerifySignature(ctx, primingJWS)
+		// A fetch the IdP actually served is the signal, not the verification
+		// error — that one is non-nil either way, and go-oidc reports "the
+		// fetch failed" and "no key matched" as the same kind of value.
+		if src.fetcher.fetched.Load() > before {
+			// Coalescing may have carried this attempt on somebody else's
+			// fetch, leaving the exemption unspent; drop it rather than bank a
+			// free fetch forever.
+			src.fetcher.exempt.Store(false)
+			close(a.primed)
+			a.log.Info("oidc key set primed", "issuer", a.issuer)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.log.Warn("oidc key set not primed: the first operator after this restart will need the IdP",
+			"issuer", a.issuer, "retryIn", backoff.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(2*backoff, max(resolveRetryMax, a.resolveRetry))
+	}
 }
 
 // noteResolveFailure records why we are still unresolved and says so once,
@@ -387,16 +472,24 @@ func (a *Auth) Close() error {
 	return nil
 }
 
-// run is the single background goroutine: retry discovery until it resolves,
-// and evict limiter buckets throughout — 401s (and therefore failure budgets)
-// exist before resolution as well as after.
+// run is the background worker: retry discovery until it resolves, prime the
+// key set once it has, and evict limiter buckets throughout — 401s (and
+// therefore failure budgets) exist before resolution as well as after.
 //
-// It performs no JWKS traffic at all. R39's background refresher is gone with
-// the bespoke cache: oidc.RemoteKeySet fetches on a verification miss and its
-// cache never expires, so a periodic refresh would be a request to the IdP
-// that changes nothing, on every replica, forever.
+// Its only JWKS traffic is that one priming fetch. R39's background refresher
+// is gone with the bespoke cache: oidc.RemoteKeySet fetches on a verification
+// miss and its cache never expires, so a periodic refresh would be a request
+// to the IdP that changes nothing, on every replica, forever.
 func (a *Auth) run(ctx context.Context) {
-	defer close(a.done)
+	// Priming runs beside this loop rather than inside it, so a slow or
+	// retrying IdP cannot stall the limiter sweep; Close still waits for it,
+	// because a goroutine outliving Close is a leak in every test that makes
+	// one.
+	var priming sync.WaitGroup
+	defer func() {
+		priming.Wait()
+		close(a.done)
+	}()
 
 	sweep := time.NewTicker(limiterSweepInterval)
 	defer sweep.Stop()
@@ -419,7 +512,8 @@ func (a *Auth) run(ctx context.Context) {
 			a.limiter.sweep()
 
 		case <-attemptC:
-			if err := a.resolve(ctx); err != nil {
+			src, err := a.resolve(ctx)
+			if err != nil {
 				if ctx.Err() != nil {
 					return // shutting down, not a real failure
 				}
@@ -428,8 +522,14 @@ func (a *Auth) run(ctx context.Context) {
 				backoff = min(2*backoff, max(resolveRetryMax, a.resolveRetry))
 				continue
 			}
-			// Resolution happens once. From here the only IdP traffic is a
-			// throttled fetch behind a verification miss.
+			// Resolution happens once. From here the only IdP traffic is the
+			// priming fetch and, later, a throttled fetch behind a
+			// verification miss.
+			priming.Add(1)
+			go func() {
+				defer priming.Done()
+				a.primeKeys(ctx, src)
+			}()
 			attempt.Stop()
 			attempt = nil
 		}
@@ -484,11 +584,11 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 		if email, ok := claims["email"].(string); ok {
 			id.Email = email
 		}
-		roles, err := rolesFromClaims(claims, a.rolesPath)
+		roles, err := a.rolesPath.Roles(claims)
 		if err != nil {
 			// Debug only: this is a legitimately authenticated caller whose
 			// token does not carry the claim we were told to read.
-			a.log.Debug("roles claim unusable", "path", strings.Join(a.rolesPath, "."), "err", err)
+			a.log.Debug("roles claim unusable", "path", a.rolesPath.String(), "err", err)
 		}
 		id.Roles = roles
 

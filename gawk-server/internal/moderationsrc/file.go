@@ -33,6 +33,10 @@ type fileSource struct {
 	// missing records that the last load found no file, so a still-absent
 	// file is not re-reported (and re-warned) on every poll tick.
 	missing bool
+	// unreadable records that the last load found a file it could not read.
+	// Same purpose as missing — one warning, not one per tick — but the
+	// opposite outcome: the previous ban set stays in force (see reload).
+	unreadable bool
 }
 
 func startFile(ctx context.Context, path string, opts Options) error {
@@ -78,26 +82,43 @@ func startFile(ctx context.Context, path string, opts Options) error {
 func (f *fileSource) changed() bool {
 	fi, err := os.Stat(f.path)
 	if err != nil {
-		// A file that vanished counts as a change exactly once, so the ban
-		// set is cleared rather than left frozen at its last contents — and
-		// a file that was never there stays quiet.
-		return !f.missing
+		if errors.Is(err, fs.ErrNotExist) {
+			// A file that vanished counts as a change exactly once, so the
+			// ban set is cleared rather than left frozen at its last
+			// contents — and a file that was never there stays quiet.
+			return !f.missing
+		}
+		// Any other stat failure (a symlink loop, an I/O error, a directory
+		// that lost its +x) is the unreadable case: reload once so it is
+		// reported, then stay quiet until it clears.
+		return !f.unreadable
 	}
-	return f.missing || !fi.ModTime().Equal(f.lastMod) || fi.Size() != f.lastSize
+	// While unreadable, retry on every tick: the last good set is still in
+	// force and the point is to adopt the file the moment it can be read.
+	return f.missing || f.unreadable || !fi.ModTime().Equal(f.lastMod) || fi.Size() != f.lastSize
 }
 
 func (f *fileSource) reload(why string) {
 	data, err := os.ReadFile(f.path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			f.log.Warn("moderation ban file absent: enforcing an empty ban set",
-				"path", f.path, "reason", why)
-		} else {
-			f.log.Warn("moderation ban file unreadable: enforcing an empty ban set",
-				"path", f.path, "reason", why, "err", err)
+		if !errors.Is(err, fs.ErrNotExist) {
+			// NOT a deletion: a chmod slip, a secret-mount rotation window,
+			// an NFS/overlay blip. That is the same mistake class as the
+			// malformed-JSON edit below and gets the same answer — keep
+			// enforcing the last good list and retry — rather than lifting
+			// every ban until someone notices the file is unreadable.
+			// Warned once, because changed() retries on every tick.
+			if !f.unreadable {
+				f.log.Warn("moderation ban file unreadable: keeping the previous ban set",
+					"path", f.path, "reason", why, "err", err)
+			}
+			f.unreadable = true
+			return
 		}
+		f.log.Warn("moderation ban file absent: enforcing an empty ban set",
+			"path", f.path, "reason", why)
 		f.sink.Set.Replace(nil)
-		f.missing = true
+		f.missing, f.unreadable = true, false
 		f.lastMod, f.lastSize = time.Time{}, -1
 		return
 	}
@@ -129,7 +150,7 @@ func (f *fileSource) reload(why string) {
 }
 
 func (f *fileSource) markLoaded() {
-	f.missing = false
+	f.missing, f.unreadable = false, false
 	if fi, err := os.Stat(f.path); err == nil {
 		f.lastMod, f.lastSize = fi.ModTime(), fi.Size()
 	}

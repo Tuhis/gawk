@@ -12,6 +12,16 @@ package ops
 // A source walk rather than `go list -deps`: it needs no toolchain subprocess,
 // it names the offending FILE when it fails, and it catches the import the
 // moment it is written rather than once it links.
+//
+// The public oidcroles package is deliberately NOT an exception here. Sharing
+// the roles-claim walk with gawk-admin could have widened this rule — a shared
+// "verify this token" helper would have had to import go-oidc, and would then
+// have pulled the library into a package the whole module (and gawk-admin) can
+// import. It does not: oidcroles takes decoded claims (map[string]any) and
+// knows nothing about JWTs, so the walk is shared while signature verification
+// stays here, behind the one import this test guards. If a future change makes
+// oidcroles reach for go-oidc, this test fails — and that failure is the
+// design question, not a bookkeeping chore.
 
 import (
 	"go/parser"

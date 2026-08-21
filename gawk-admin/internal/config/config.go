@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 )
 
 // Mode is what the process was asked to do. The migrate subcommand shares the
@@ -66,7 +68,7 @@ type Config struct {
 	OIDCIssuer     string
 	OIDCClientID   string
 	OIDCAudience   string
-	OIDCRolesClaim string // dot-path to the roles array; {clientId} is substituted
+	OIDCRolesClaim string // dot-path template to the roles array; oidcroles.Placeholder is substituted per segment
 	OperatorRole   string // the role every R39 route requires
 	FlaggerRole    string // reserved for R40's service identity; unused by any R39 route
 
@@ -85,11 +87,22 @@ type Config struct {
 	LogFormat string // "text" or "json"
 }
 
-// RolesClaimPath returns the roles-claim dot-path with {clientId} substituted.
-// The default is the Keycloak client-roles shape; other providers override the
-// whole path (docs/42 §4.8).
+// RolesClaimPath renders the roles-claim path for the startup log. The default
+// is the Keycloak client-roles shape; other providers override the whole path
+// (docs/42 §4.8).
+//
+// DISPLAY ONLY. Authorization parses the template itself (internal/auth, via
+// oidcroles.ParsePath), because a rendered string cannot express which dots
+// are separators and which came out of the audience. This joins the parsed
+// segments back together so the log agrees with what was parsed, and falls
+// back to the raw template when the configuration is unusable — refusing that
+// belongs to validate() and auth.New, not to a log line.
 func (c Config) RolesClaimPath() string {
-	return strings.ReplaceAll(c.OIDCRolesClaim, "{clientId}", c.OIDCClientID)
+	path, err := oidcroles.ParsePath(c.OIDCRolesClaim, c.OIDCAudience)
+	if err != nil {
+		return c.OIDCRolesClaim
+	}
+	return path.String()
 }
 
 // ParseFlags resolves configuration from args and getenv. args must NOT
@@ -123,8 +136,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"OIDC public client ID used by the portal SPA (required)")
 	audience := fs.String("oidc-audience", env("GAWK_ADMIN_OIDC_AUDIENCE", ""),
 		"audience every accepted JWT must carry (required)")
-	rolesClaim := fs.String("oidc-roles-claim", env("GAWK_ADMIN_OIDC_ROLES_CLAIM", "resource_access.{clientId}.roles"),
-		"dot-path to the roles array in the JWT; {clientId} is substituted")
+	rolesClaim := fs.String("oidc-roles-claim", env("GAWK_ADMIN_OIDC_ROLES_CLAIM", oidcroles.DefaultClaim),
+		"dot-path to the roles array in the JWT; {audience} is substituted into each segment")
 	operatorRole := fs.String("operator-role", env("GAWK_ADMIN_OPERATOR_ROLE", "operator"),
 		"role every R39 route requires")
 	flaggerRole := fs.String("flagger-role", env("GAWK_ADMIN_FLAGGER_ROLE", "flagger"),

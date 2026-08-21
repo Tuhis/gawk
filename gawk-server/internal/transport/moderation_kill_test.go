@@ -6,6 +6,8 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
@@ -225,7 +227,7 @@ func TestHandleBanAddedIsIdempotentAndSafeOnUnknownBroadcasts(t *testing.T) {
 // feature (docs/42 §4.3), and this is the single-pod deployment's whole path.
 func TestHandleBanAddedWorksWithoutClusterMode(t *testing.T) {
 	srv, _, r := newOutcomeServer(t, config.Config{}, hub.Options{})
-	if srv.cluster != nil || srv.edges != nil {
+	if srv.clusterCoord() != nil || srv.edgeManager() != nil {
 		t.Fatal("the fixture is in cluster mode; this test is about the single-pod path")
 	}
 	f := newKillFixture(t, srv, r, "203.0.113.7")
@@ -250,7 +252,7 @@ func TestHandleBanAddedStopsTheEdgePull(t *testing.T) {
 	}
 
 	srv, sm, _ := newOutcomeServerRegistry(t, config.Config{}, h.registry)
-	srv.edges = h.manager
+	srv.wiring.Store(&clusterWiring{edges: h.manager})
 
 	viewer := &edgeConn{}
 	if _, err := h.registry.Subscribe(id, viewer); err != nil {
@@ -341,5 +343,144 @@ func TestLeaseDeletionWithoutABanRespectsTheGCGuard(t *testing.T) {
 	}
 	if _, _, closed := f.sess.info(); closed {
 		t.Error("an unbanned lease deletion closed the publisher session")
+	}
+}
+
+// THE STARTUP-WINDOW HOLE (PR #280 review): the publish-path ban gate runs
+// PRE-upgrade, but a session only becomes killable at trackPublisher, after
+// the WebTransport upgrade round-trip. A ban landing in between updates the
+// Set and then finds nothing to kill — no publisher entry, and on the mint
+// path no hub either. With -moderation-source=k8s the 5-minute resync
+// eventually heals it; with -moderation-source=file nothing re-fires at all,
+// so the publisher who raced the ban streams until it disconnects.
+//
+// The hook lands the ban inside the window in the informer's own order (Set
+// first, then actuate), and asserts that the kill really did find nothing —
+// otherwise the test would be measuring the kill rather than the re-check.
+func TestPublishBanLandingInsideTheUpgradeWindowStillCloses(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		claim bool
+		ban   func(id string) moderation.Record
+	}{
+		// The pure "nothing to kill" shape: no ID has been minted yet, so
+		// the only handle that can catch this publisher is its address —
+		// and publishersIn has nothing to walk.
+		{name: "mint/ip", ban: func(string) moderation.Record { return ipBan("127.0.0.0/8", "abusive host") }},
+		// Same hole on the claim path: the hub exists, but an IP ban only
+		// ever walks tracked publisher sessions, so the kill is a no-op and
+		// the broadcast carries on.
+		{name: "claim/ip", claim: true, ban: func(string) moderation.Record { return ipBan("127.0.0.0/8", "abusive host") }},
+		// The ID handle. Here the kill does find the hub and tears it down,
+		// so the session dies either way — but with the wrong close code
+		// (4004, "superseded", from the BindConn that follows a hub the kill
+		// removed underneath it) instead of the 4006 D6 exists for.
+		{name: "claim/broadcastId", claim: true, ban: func(id string) moderation.Record { return idBan(id, "fraudulent stream") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			port, clientTLS, _, _, srv := startTestServerCfgLogSrv(t, ctx, config.Config{
+				MaxSubscribers:  15,
+				MaxIdleTimeout:  30 * time.Second,
+				KeepAlivePeriod: 10 * time.Second,
+				BroadcastGrace:  5 * time.Minute,
+			}, discardLog)
+
+			bans := moderation.NewSet()
+			srv.SetModeration(bans)
+
+			// A first, unbanned session: it proves the listener is up (so a
+			// dial failure below can only be the kill) and, for the claim
+			// subtest, provides the ID and resume token to come back with.
+			warm, warmID, warmToken := dialPublisherHandshake(t, ctx, port, clientTLS)
+			warm.CloseWithError(0, "")
+
+			url := fmt.Sprintf("https://127.0.0.1:%d/publish", port)
+			if tc.claim {
+				url = fmt.Sprintf("https://127.0.0.1:%d/publish/%s?resume=%s", port, warmID, warmToken)
+			}
+
+			hook := func(id string) {
+				if tc.claim && id != warmID {
+					t.Errorf("the hook saw ID %q on the claim path, want %q", id, warmID)
+				}
+				rec := tc.ban(id)
+				// The source's own order: close the gate, then actuate.
+				if err := bans.Upsert(rec); err != nil {
+					t.Errorf("Upsert: %v", err)
+					return
+				}
+				srv.HandleBanAdded(rec)
+				// The fixture is only interesting if the kill genuinely
+				// missed. It does: trackPublisher has not run yet.
+				if _, ok := srv.PublisherRemote(warmID); ok {
+					t.Error("the publisher was already tracked; this is no longer the TOCTOU window")
+				}
+			}
+			srv.testHookPostUpgradePublish.Store(&hook)
+
+			_, sess, err := dialOnce(t, ctx, url, clientTLS)
+			if err == nil {
+				defer sess.CloseWithError(0, "")
+				acceptCtx, acceptCancel := context.WithTimeout(ctx, 5*time.Second)
+				for {
+					if _, err = sess.AcceptUniStream(acceptCtx); err != nil {
+						break
+					}
+				}
+				acceptCancel()
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal("the publisher that raced the ban is still connected: the kill missed it and nothing re-checked")
+			}
+			var se *webtransport.SessionError
+			if !errors.As(err, &se) {
+				t.Fatalf("publisher session ended with %v, want a WebTransport session close", err)
+			}
+			if se.ErrorCode != webtransport.SessionErrorCode(wire.CloseCodeTerminatedByOperator) {
+				t.Fatalf("close code = %d, want %d (4006)", se.ErrorCode, wire.CloseCodeTerminatedByOperator)
+			}
+		})
+	}
+}
+
+// The other half of the startup-window finding (PR #280 review), and the half
+// the wiring order alone does not express: SetCluster's fields must be
+// SETTABLE-ONCE, not plain fields.
+//
+// The R39 ban informer calls HandleBanAdded -> terminate() from its own
+// goroutine, and terminate() reads the edge manager. main now wires the
+// cluster before starting the source, so the two no longer overlap in
+// production — but a plain field write gives the race detector nothing to
+// synchronise on, so any future caller that reintroduces the overlap would
+// reintroduce silent memory unsafety rather than a visible bug. This pins the
+// contract: the kill path may read the cluster wiring while SetCluster is
+// still running, and see either the old value or the new one, never a torn
+// one. Fails under -race with plain fields.
+func TestSetClusterIsSafeAgainstAConcurrentBanActuation(t *testing.T) {
+	srv, _, r := newOutcomeServer(t, config.Config{}, hub.Options{MaxBroadcasts: 10})
+	fixtures := make([]*killFixture, 0, 8)
+	for range 8 {
+		fixtures = append(fixtures, newKillFixture(t, srv, r, "203.0.113.7"))
+	}
+
+	wired := make(chan struct{})
+	go func() {
+		defer close(wired)
+		srv.SetCluster(&fakeCoordinator{}, "pod-self")
+	}()
+
+	// Actuates against the very fields SetCluster is publishing.
+	for _, f := range fixtures {
+		srv.HandleBanAdded(idBan(f.id, "kill"))
+	}
+	srv.HandleBanAdded(ipBan("203.0.113.0/24", "abusive host"))
+	<-wired
+
+	for i, f := range fixtures {
+		if _, _, closed := f.sess.info(); !closed {
+			t.Errorf("publisher %d survived the ban", i)
+		}
 	}
 }
