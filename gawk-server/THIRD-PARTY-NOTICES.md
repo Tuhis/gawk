@@ -68,9 +68,9 @@ script for what counts as a dependency here and why.
 | `gopkg.in/evanphx/json-patch.v4` | v4.13.0 | `BSD-3-Clause` | Copyright (c) 2014, Evan Phoenix |
 | `gopkg.in/inf.v0` | v0.9.1 | `BSD-3-Clause` | Copyright (c) 2012 Péter Surányi. Portions Copyright (c) 2009 The Go |
 | `gopkg.in/yaml.v3` | v3.0.1 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
-| `k8s.io/api` | v0.36.3 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/apimachinery` | v0.36.3 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/client-go` | v0.36.3 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/api` | v0.36.4 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/apimachinery` | v0.36.4 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/client-go` | v0.36.4 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
 | `k8s.io/klog/v2` | v2.140.0 | `Apache-2.0` | — |
 | `k8s.io/kube-openapi` | v0.0.0-20260317180543-43fb72c5454a | `Apache-2.0` | — |
 | `k8s.io/utils` | v0.0.0-20260210185600-b8788abfbbc2 | `Apache-2.0` | — |
