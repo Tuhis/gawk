@@ -215,6 +215,7 @@ OBSERVERS=8
 SPREAD_WAIT=45
 OBSERVER_PID=""
 OBSERVER_ATTEMPT=0
+declare -A OBSERVER_PODBASE
 start_observers() {
   if [ -n "$OBSERVER_PID" ]; then
     # REPLACE the batch rather than add to it: this only happens when every
@@ -226,6 +227,15 @@ start_observers() {
     wait "$OBSERVER_PID" 2>/dev/null || true
   fi
   OBSERVER_ATTEMPT=$((OBSERVER_ATTEMPT + 1))
+  # Let the relay finish reaping the batch we just SIGTERMed before baselining,
+  # or its dying sessions inflate the number the new batch has to beat. No-op on
+  # the first attempt, where there is nothing to reap.
+  [ -n "$OBSERVER_PID" ] && sleep 3
+  local p
+  for p in "${PODS[@]}"; do
+    OBSERVER_PODBASE[$p]=$(pod_subs "$p")
+  done
+  echo "observers: attempt $OBSERVER_ATTEMPT baseline per pod — $(for p in "${PODS[@]}"; do printf '%s=%s ' "$p" "${OBSERVER_PODBASE[$p]}"; done)"
   "$LOADGEN" -url "$RELAY_URL" -id "$BID" -viewers "$OBSERVERS" -ramp-ms 150 \
     -insecure -duration "$((DEADLINE + SPREAD_WAIT + 60))s" -expect-close-code 4006 \
     > "$OUT/loadgen-4006-$OBSERVER_ATTEMPT.log" 2>&1 &
@@ -242,6 +252,13 @@ start_observers() {
 # earlier tiers left on this broadcast — which is why the wait below is
 # expressed against a BASELINE taken before the observers start rather than
 # against an absolute number.
+pod_subs() { # pod_subs <pod> — subscribers for KEY on one pod, 0 if unreadable
+  local n
+  n=$(statusz "$1" 2>/dev/null | jq -r --arg k "$KEY" '.broadcasts[$k].subscribers // 0' 2>/dev/null)
+  [ -n "$n" ] || n=0
+  printf '%s' "$n"
+}
+
 observers_total() {
   local p n sum=0
   for p in "${PODS[@]}"; do
@@ -281,12 +298,22 @@ observers_up() {
 # and loadgen correctly reports "7 session(s) never connected" — a real failure
 # of the harness, indistinguishable at a glance from the wire regression this
 # step exists to catch.
+# Spread is measured as GROWTH against a per-pod baseline taken at the start of
+# this attempt, not as "the pod has some subscriber". The gauge counts every
+# subscriber of this broadcast, and the background tiers' 12+6 viewers are
+# already spread across both pods by their own earlier assertion — so a
+# ">= 1 per pod" test is satisfied before a single observer connects, and the
+# rare conntrack case this block exists to catch (all 8 observers on one pod)
+# would pass silently with the edge half of the fan-out unobserved.
+#
+# Baselines are re-sampled per attempt, so a background session ending can only
+# delay the pass or trigger the existing re-roll — never strand the wait against
+# a number that has become unreachable, which is what a single fleet-wide
+# baseline did.
 observers_spread() {
   local p spread=0
   for p in "${PODS[@]}"; do
-    statusz "$p" 2>/dev/null \
-      | jq -e --arg k "$KEY" '(.broadcasts[$k].subscribers // 0) >= 1' >/dev/null 2>&1 \
-      && spread=$((spread + 1))
+    [ "$(pod_subs "$p")" -gt "${OBSERVER_PODBASE[$p]:-0}" ] && spread=$((spread + 1))
   done
   [ "$spread" -eq "${#PODS[@]}" ] && observers_up
 }
@@ -303,7 +330,7 @@ while ! observers_spread; do
       end=$((SECONDS + SPREAD_WAIT))
       continue
     fi
-    fail "after $OBSERVER_ATTEMPT attempts the observers are not both spread and up for $KEY (loadgen reports $(grep -oE 'up=[0-9]+/[0-9]+' "$OUT/loadgen-4006-$OBSERVER_ATTEMPT.log" 2>/dev/null | tail -1), want up=$OBSERVERS/$OBSERVERS with >= 1 subscriber on each of ${#PODS[@]} pods; fleet-wide subscribers for $KEY = $(observers_total)) — the 4006 fan-out cannot be observed across the cascade (check for refused dials in $OUT/loadgen-4006-*.log)"
+    fail "after $OBSERVER_ATTEMPT attempts the observers are not both spread and up for $KEY (loadgen reports $(grep -oE 'up=[0-9]+/[0-9]+' "$OUT/loadgen-4006-$OBSERVER_ATTEMPT.log" 2>/dev/null | tail -1), want up=$OBSERVERS/$OBSERVERS with every pod above its attempt baseline; fleet-wide subscribers for $KEY = $(observers_total)) — the 4006 fan-out cannot be observed across the cascade (check for refused dials in $OUT/loadgen-4006-*.log)"
   fi
   sleep 2
 done
