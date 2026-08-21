@@ -237,6 +237,33 @@ start_observers() {
 # assumed. Without this the assertion could pass with every observer on the
 # origin, and the edge half of the fan-out — TerminateBroadcast closing local
 # subscribers on a pod that only ever pulled the broadcast — would go untested.
+# Subscribers for KEY summed across the fleet. Counts every kind the relay
+# reports — including the edge's internal pull session and any viewers the
+# earlier tiers left on this broadcast — which is why the wait below is
+# expressed against a BASELINE taken before the observers start rather than
+# against an absolute number.
+observers_total() {
+  local p n sum=0
+  for p in "${PODS[@]}"; do
+    n=$(statusz "$p" 2>/dev/null | jq -r --arg k "$KEY" '.broadcasts[$k].subscribers // 0' 2>/dev/null)
+    [ -n "$n" ] || n=0
+    sum=$((sum + n))
+  done
+  printf '%s' "$sum"
+}
+
+# Two conditions, and BOTH matter.
+#
+# Spread: at least one observer on every pod, or the edge half of the fan-out —
+# TerminateBroadcast closing local subscribers on a pod that only ever pulled
+# the broadcast — goes untested.
+#
+# Count: every observer actually connected. Waiting only for spread is what run
+# 32499235861 did, and it is satisfied the moment TWO of eight are up: the ban
+# then lands mid-ramp, the remaining six dial a broadcast that no longer exists,
+# and loadgen correctly reports "7 session(s) never connected" — a real failure
+# of the harness, indistinguishable at a glance from the wire regression this
+# step exists to catch.
 observers_spread() {
   local p spread=0
   for p in "${PODS[@]}"; do
@@ -244,9 +271,12 @@ observers_spread() {
       | jq -e --arg k "$KEY" '(.broadcasts[$k].subscribers // 0) >= 1' >/dev/null 2>&1 \
       && spread=$((spread + 1))
   done
-  [ "$spread" -eq "${#PODS[@]}" ]
+  [ "$spread" -eq "${#PODS[@]}" ] && [ "$(observers_total)" -ge "$OBSERVER_TARGET" ]
 }
 
+OBSERVER_BASELINE=$(observers_total)
+OBSERVER_TARGET=$((OBSERVER_BASELINE + OBSERVERS))
+echo "observers: baseline $OBSERVER_BASELINE subscriber(s) for $KEY, waiting for $OBSERVER_TARGET"
 start_observers
 end=$((SECONDS + SPREAD_WAIT))
 while ! observers_spread; do
@@ -259,11 +289,11 @@ while ! observers_spread; do
       end=$((SECONDS + SPREAD_WAIT))
       continue
     fi
-    fail "after $OBSERVER_ATTEMPT attempts no subscriber for $KEY appears on every pod — the 4006 fan-out cannot be observed across the cascade (check for refused dials in $OUT/loadgen-4006-*.log)"
+    fail "after $OBSERVER_ATTEMPT attempts the observers are not both spread and complete for $KEY (now $(observers_total), want >= $OBSERVER_TARGET with >= 1 on each of ${#PODS[@]} pods) — the 4006 fan-out cannot be observed across the cascade (check for refused dials in $OUT/loadgen-4006-*.log)"
   fi
   sleep 2
 done
-echo "PASS: $OBSERVERS observing viewers attached (attempt $OBSERVER_ATTEMPT), subscribers for $KEY present on all ${#PODS[@]} pods"
+echo "PASS: $OBSERVERS observing viewers attached (attempt $OBSERVER_ATTEMPT), $(observers_total) subscriber(s) for $KEY spread across all ${#PODS[@]} pods"
 
 # --------------------------------------------- 4. an ID ban kills, fleet-wide
 ID_BAN="ban-id-$(printf '%s' "$BID" | tr '[:upper:]' '[:lower:]')"

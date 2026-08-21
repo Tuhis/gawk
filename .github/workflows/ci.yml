@@ -237,7 +237,7 @@ jobs:
           # gawk-admin cannot serve without a cluster (docs/42 §4.14), so it
           # carries no probe: `expect_exit_message` asserts it gets all the way
           # to the one failure a cluster-less run must have. See the step.
-          adm='{"context":".","dockerfile":"gawk-admin/deploy/Dockerfile","tag":"gawk-admin:ci","run_args":"-addr :8090 -pg-dsn postgres://ci:ci@127.0.0.1:1/none?sslmode=disable -external-url https://admin.invalid -oidc-issuer https://id.invalid -oidc-client-id ci -oidc-audience ci -relay-scan-target relays.invalid -relay-admin-token ci -namespace ci -log-level warn","expect_exit_message":"kubernetes:"}'
+          adm='{"context":".","dockerfile":"gawk-admin/deploy/Dockerfile","tag":"gawk-admin:ci","run_args":"-addr :8090 -pg-dsn postgres://127.0.0.1:1/none?sslmode=disable -external-url https://admin.invalid -oidc-issuer https://id.invalid -oidc-client-id ci -oidc-audience ci -relay-scan-target relays.invalid -relay-admin-token ci -namespace ci -log-level warn","expect_exit_message":"kubernetes:"}'
           images=""
           add() { images="${images:+$images,}$1"; }
           if [ "$server" = true ]; then add "$relay"; fi
@@ -262,7 +262,21 @@ jobs:
             # this PR cannot test on itself, since editing ci.yml sets all=true.
             images="$relay,$spa,$tel,$adm"
           fi
-          echo "docker_matrix={\"include\":[$images]}" >> "$GITHUB_OUTPUT"
+          # A credential-shaped substring here is not a style problem, it is an
+          # outage: the runner DROPS an output it believes holds a secret
+          # ("Skip output 'docker_matrix' since it may contain secret"), fromJSON
+          # then gets an empty string, and an unloadable matrix is ZERO JOBS —
+          # no logs, no annotation, and a run that fails with every job green.
+          # That is the same shape as the empty-include hazard described above,
+          # and it went unnoticed for a whole branch: `docker` produced no jobs
+          # at all while looking merely absent. A `user:pass@` URL is what
+          # triggered it; assert the class rather than that one instance.
+          matrix_json="{\"include\":[$images]}"
+          if printf '%s' "$matrix_json" | grep -qE '://[^/"[:space:]]*:[^/"[:space:]]*@'; then
+            echo "::error::docker_matrix carries a credentials-in-URL substring; the runner will redact the whole output and the docker matrix will silently produce zero jobs. Use a credential-free placeholder."
+            exit 1
+          fi
+          echo "docker_matrix=$matrix_json" >> "$GITHUB_OUTPUT"
           echo "  docker         {\"include\":[$images]}" >&2
 
   server:
