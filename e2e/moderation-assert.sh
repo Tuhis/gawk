@@ -252,6 +252,23 @@ observers_total() {
   printf '%s' "$sum"
 }
 
+# Our own sessions, from loadgen's own periodic line ("up=K/M", -report 5s):
+# K/M counts exactly the sessions THIS step launched, so it is immune to the
+# background tiers' viewers on this same broadcast coming and going. The
+# fleet-wide gauge cannot do that job: those tiers hold this broadcast under
+# their own -duration ceilings, so a subscriber total sampled once can drop
+# beneath any target derived from it and never recover, failing the tier with
+# a count mismatch that reads exactly like refused observer dials.
+#
+# The LAST line, not any line: sessions that came up and then dropped before
+# the ban would otherwise satisfy a grep over the whole log while leaving the
+# fan-out half-observed.
+observers_up() {
+  local last
+  last=$(grep -oE 'up=[0-9]+/[0-9]+' "$OUT/loadgen-4006-$OBSERVER_ATTEMPT.log" 2>/dev/null | tail -1)
+  [ "$last" = "up=${OBSERVERS}/${OBSERVERS}" ]
+}
+
 # Two conditions, and BOTH matter.
 #
 # Spread: at least one observer on every pod, or the edge half of the fan-out —
@@ -271,12 +288,9 @@ observers_spread() {
       | jq -e --arg k "$KEY" '(.broadcasts[$k].subscribers // 0) >= 1' >/dev/null 2>&1 \
       && spread=$((spread + 1))
   done
-  [ "$spread" -eq "${#PODS[@]}" ] && [ "$(observers_total)" -ge "$OBSERVER_TARGET" ]
+  [ "$spread" -eq "${#PODS[@]}" ] && observers_up
 }
 
-OBSERVER_BASELINE=$(observers_total)
-OBSERVER_TARGET=$((OBSERVER_BASELINE + OBSERVERS))
-echo "observers: baseline $OBSERVER_BASELINE subscriber(s) for $KEY, waiting for $OBSERVER_TARGET"
 start_observers
 end=$((SECONDS + SPREAD_WAIT))
 while ! observers_spread; do
@@ -289,11 +303,11 @@ while ! observers_spread; do
       end=$((SECONDS + SPREAD_WAIT))
       continue
     fi
-    fail "after $OBSERVER_ATTEMPT attempts the observers are not both spread and complete for $KEY (now $(observers_total), want >= $OBSERVER_TARGET with >= 1 on each of ${#PODS[@]} pods) — the 4006 fan-out cannot be observed across the cascade (check for refused dials in $OUT/loadgen-4006-*.log)"
+    fail "after $OBSERVER_ATTEMPT attempts the observers are not both spread and up for $KEY (loadgen reports $(grep -oE 'up=[0-9]+/[0-9]+' "$OUT/loadgen-4006-$OBSERVER_ATTEMPT.log" 2>/dev/null | tail -1), want up=$OBSERVERS/$OBSERVERS with >= 1 subscriber on each of ${#PODS[@]} pods; fleet-wide subscribers for $KEY = $(observers_total)) — the 4006 fan-out cannot be observed across the cascade (check for refused dials in $OUT/loadgen-4006-*.log)"
   fi
   sleep 2
 done
-echo "PASS: $OBSERVERS observing viewers attached (attempt $OBSERVER_ATTEMPT), $(observers_total) subscriber(s) for $KEY spread across all ${#PODS[@]} pods"
+echo "PASS: $OBSERVERS observing viewers up (attempt $OBSERVER_ATTEMPT), spread across all ${#PODS[@]} pods ($(observers_total) total subscriber(s) for $KEY incl. the edge pull and the background tiers)"
 
 # --------------------------------------------- 4. an ID ban kills, fleet-wide
 ID_BAN="ban-id-$(printf '%s' "$BID" | tr '[:upper:]' '[:lower:]')"
