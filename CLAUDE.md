@@ -234,7 +234,8 @@ Re-deriving them costs a cycle and has happened before.
 - **Versioning**: SemVer 2 from conventional commits via release-please
   (monorepo manifest mode, **one combined release PR** — separate PRs conflicted
   on the shared manifest, don't switch back; tags stay per-component:
-  `gawk-server-vX.Y.Z` / `gawk-app-vX.Y.Z`).
+  `gawk-server/vX.Y.Z` / `gawk-app/vX.Y.Z` — `tag-separator: "/"`, so tags
+  cut before that change still carry the older `gawk-telemetry-v1.6.1` shape).
 - **Registry**: GHCR — images `ghcr.io/tuhis/<component>`, charts
   `oci://ghcr.io/tuhis/charts/<component>` (lowercase; packages are public —
   pulls need no credentials).

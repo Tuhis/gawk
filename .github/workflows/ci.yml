@@ -1475,6 +1475,11 @@ jobs:
       # rather than the bare word, because it must not fire on the rendered
       # COMMENT in the migration Job that explains why the hook is allowed to
       # be `pre-install` now that no CNPG Cluster lives in this chart.
+      #
+      # `^kind: Cluster$` is anchored at BOTH ends on purpose: unanchored it
+      # also matches ClusterRole / ClusterRoleBinding / ClusterIssuer, so the
+      # first legitimately cluster-scoped kind added to this chart would fail
+      # the job with the actively misleading CNPG error below.
       - name: the admin chart renders no CloudNativePG object under any values
         run: |
           set -euo pipefail
@@ -1486,9 +1491,9 @@ jobs:
                      --set ingress.host=admin.example.com \
                      --set oidc.issuer=https://id.example.com \
                      --set oidc.clientId=gawk-admin --set oidc.audience=gawk-admin; } )
-          if grep -qiE 'postgresql\.cnpg\.io|^kind: Cluster|cnpg\.io/' <<<"$out"; then
+          if grep -qiE 'postgresql\.cnpg\.io|^kind: Cluster$|cnpg\.io/' <<<"$out"; then
             echo "::error::the admin chart still renders a CloudNativePG object"
-            grep -inE 'postgresql\.cnpg\.io|^kind: Cluster|cnpg\.io/' <<<"$out"
+            grep -inE 'postgresql\.cnpg\.io|^kind: Cluster$|cnpg\.io/' <<<"$out"
             exit 1
           fi
           # ...and the values tree that used to render one stays gone. Helm
@@ -1530,6 +1535,12 @@ jobs:
           grep -q 'GAWK_MODERATION_SOURCE' <<<"$out"
           grep -q 'GAWK_ADMIN_API_TOKEN' <<<"$out"
           grep -q 'POD_NAMESPACE' <<<"$out"
+          # POD_NAME too, and anchored: "POD_NAME" is a substring of
+          # "POD_NAMESPACE", so an unanchored grep would pass with the bug it
+          # is here to catch. Every /internal/admin/* response names the pod
+          # (docs/42 §4.5); unset, a moderation-only install reports `pod: ""`
+          # and the portal's fleet view cannot attribute or dedupe anything.
+          grep -qE 'name: POD_NAME$' <<<"$out"
           # gawk-admin finds relay pods through the headless Service, so
           # moderation alone must render it — it used to require telemetry.
           grep -q 'metrics-headless' <<<"$out"
@@ -1540,6 +1551,38 @@ jobs:
           grep -q 'GAWK_ADMIN_OIDC_AUDIENCE' <<<"$oidc"
           # Ban RBAC must not depend on cluster mode: kills work single-pod too.
           helm template "$chart" --set moderation.enabled=true | grep -q 'resources: \["bans"\]'
+
+      # The admin API rides the ops listener and the per-pod headless Service
+      # is gated on metrics.enabled — so a credential without that listener
+      # renders a complete-looking surface that can never answer, while bans
+      # keep enforcing off the CR informer. That combination is a misdiagnosis
+      # waiting to happen, so the chart refuses it outright.
+      - name: the relay chart refuses an admin API credential with metrics off
+        run: |
+          set -euo pipefail
+          chart=gawk-server/deploy/charts/gawk-server
+          for cred in \
+            "--set moderation.adminApi.token=t" \
+            "--set moderation.adminApi.tokenRef.name=s --set moderation.adminApi.tokenRef.key=token" \
+            "--set moderation.adminApi.oidc.issuer=https://id.example.com --set moderation.adminApi.oidc.audience=gawk-admin" \
+          ; do
+            if out=$(helm template "$chart" --set moderation.enabled=true \
+                       --set metrics.enabled=false $cred 2>&1); then
+              echo "::error::rendered with metrics.enabled=false and $cred — the fail-guard did not fire"
+              exit 1
+            fi
+            grep -q 'metrics.enabled' <<<"$out" || {
+              echo "::error::the guard fired but does not name metrics.enabled: $out"; exit 1; }
+            grep -q 'docs/42' <<<"$out" || {
+              echo "::error::the guard message does not point at docs/42"; exit 1; }
+          done
+          # ...and it stays SCOPED. Bans + `kubectl get bans` with no portal
+          # and no ops listener is a coherent minimal install; failing that
+          # would block it for nothing.
+          helm template "$chart" --set moderation.enabled=true --set metrics.enabled=false > /dev/null
+          # The positive direction too: with metrics on, every credential renders.
+          helm template "$chart" --set moderation.enabled=true --set moderation.adminApi.token=t > /dev/null
+          echo "guard fires for all three credential shapes and only with metrics off"
 
   # R38 (docs/41 LD7): the local development stack, smoke-tested. `docker
   # compose up` is the first thing a new contributor runs, so it is the one

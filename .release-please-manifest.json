@@ -4,5 +4,5 @@
   "gawk-broadcast": "1.11.2",
   "gawk-telemetry": "1.6.2",
   "gawk-broadcast-windows": "1.1.1",
-  "gawk-admin": "0.1.0"
+  "gawk-admin": "0.0.0"
 }

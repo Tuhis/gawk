@@ -47,6 +47,11 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |
 | `-trusted-cidrs` | `GAWK_TRUSTED_CIDRS` | (empty) |
 | `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` (`off` \| `k8s` \| `file:<path>`) |
+| `-admin-api-token` | `GAWK_ADMIN_API_TOKEN` | (empty; with no OIDC issuer either, `/internal/admin/*` is never registered — 404) |
+| `-admin-oidc-issuer` | `GAWK_ADMIN_OIDC_ISSUER` | (empty; must be set together with `-admin-oidc-audience`) |
+| `-admin-oidc-audience` | `GAWK_ADMIN_OIDC_AUDIENCE` | (empty; must be set together with `-admin-oidc-issuer`) |
+| `-admin-oidc-roles-claim` | `GAWK_ADMIN_OIDC_ROLES_CLAIM` | `resource_access.{audience}.roles` (`{audience}` substituted; may not be blank once OIDC is configured) |
+| `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLE` | `operator` (may not be blank once OIDC is configured) |
 
 ## Notes on the non-obvious ones
 
@@ -94,10 +99,40 @@ SIGHUP — the dev/compose lane. A banned publisher is rejected with HTTP
 `gawk_connections_total{route="publish",outcome="banned"}`; ban reasons are
 logged at Debug only.
 
-> Chart plumbing (values, the CRD, RBAC, and the mounted ban file) lands with
-> R39 chunk AP8 — until then this knob is set on the binary or through
-> `GAWK_MODERATION_SOURCE` in the pod spec, which is why it is the one flag
-> in this file the chart does not yet carry.
+The Helm chart carries it as `moderation.source`, gated on
+`moderation.enabled` — which is also what renders the `Ban` CRD, the
+read-only RBAC on `bans` and the pod's `POD_NAME`/`POD_NAMESPACE` identity.
+`file:<path>` through the chart means mounting that file yourself; `k8s` is
+the deployed shape.
+
+**The `-admin-*` flags** gate the relay's read-only admin API —
+`GET /internal/admin/broadcasts` and `GET /internal/admin/config` on the
+**ops listener** (docs/42 §4.5), the machine surface `gawk-admin` uses to
+enumerate a fleet.
+
+*The surface stays dark until a credential exists*: with `-admin-api-token`
+empty **and** no `-admin-oidc-issuer`, those routes are never registered and
+answer 404 rather than 401. Setting either one is what brings them into
+being. The two are alternatives for the same routes — a static bearer token
+for the admin service (deliberately not `-internal-psk`: a different trust
+domain, independently rotatable), or an OIDC JWT verified offline against a
+cached JWKS so a human can use the identity the portal already issued.
+
+Half-configured OIDC is rejected at startup, never silently widened:
+`-admin-oidc-issuer` and `-admin-oidc-audience` must both be set or both be
+empty (issuer-without-audience would mean "accept any audience"), and once
+OIDC is configured neither `-admin-oidc-roles-claim` nor `-admin-oidc-role`
+may be blank (blanking either would turn authorization off). The claim
+default is Keycloak's client-roles path, with `{audience}` substituted by the
+configured audience; override it for an IdP that puts roles elsewhere.
+
+These responses carry **raw broadcast IDs** — the one scoped relaxation of
+the never-expose-raw-IDs invariant (docs/42 D8), acceptable only because the
+ops listener is never routed publicly and the routes are credential-gated.
+`/statusz` is unchanged and still HMAC-only. Chart-side these are
+`moderation.adminApi.token` / `.tokenRef` and `moderation.adminApi.oidc.*`,
+and the chart refuses to render any of them with `metrics.enabled: false` —
+that would switch off the very listener they ride.
 
 **The cluster flags** (`-cluster-mode` and the shared keys/PSK) enable the
 multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod

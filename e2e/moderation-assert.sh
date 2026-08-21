@@ -71,21 +71,67 @@ fi
 
 # Same side-channel cluster-assert.sh uses: the ops listener is TCP and
 # port-forwards fine, while the media port is UDP and does not.
+#
+# SUPERVISED, not fire-and-forget. `kubectl port-forward` binds
+# asynchronously — on a loaded runner that can take well over the 2s a fixed
+# sleep would allow, and the first assertion below would then fail on curl
+# exit 7 for a reason that has nothing to do with moderation. Worse, it EXITS
+# on a broken connection, which is plausible exactly when the kill step tears
+# hubs down: without a restart, every later call against that pod fails for
+# the rest of the run and step 4 burns its whole deadline before FAILing a
+# kill that actually propagated.
+#
+# So: one supervisor per pod that re-dials forever, and a bounded readiness
+# poll against /healthz (always 200 on the ops listener, unlike /readyz which
+# 503s during a drain) before anything is asserted.
 declare -A PORT
+forward() { # forward <pod> <local-port> — runs in the background, re-dials forever
+  local pod=$1 port=$2 kid=
+  # Traps are reset to default in a background subshell, so the supervisor
+  # sets its own: without this the EXIT trap below would orphan the kubectl.
+  trap 'kill "$kid" 2>/dev/null; exit 0' TERM INT
+  while true; do
+    kubectl -n "$NS" port-forward "pod/$pod" "$port:2112" >/dev/null 2>&1 &
+    kid=$!
+    wait "$kid" 2>/dev/null || true
+    sleep 1
+  done
+}
 i=0
 for p in "${PODS[@]}"; do
   PORT[$p]=$((21400 + i))
-  kubectl -n "$NS" port-forward "pod/$p" "${PORT[$p]}:2112" >/dev/null 2>&1 &
+  forward "$p" "${PORT[$p]}" &
   i=$((i + 1))
 done
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
-sleep 2
 
-statusz() { curl -fsS --max-time 5 "http://127.0.0.1:${PORT[$1]}/statusz"; }
-metrics() { curl -fsS --max-time 5 "http://127.0.0.1:${PORT[$1]}/metrics"; }
-admin()   { curl -sS --max-time 5 -o "$2" -w '%{http_code}' \
+# --retry-connrefused covers the restart gap: a request that lands in the
+# second between one kubectl dying and its successor binding is retried rather
+# than reported as a pod that stopped answering. --retry does NOT retry a 4xx,
+# so the deliberate 401 assertion below still sees its 401 on the first try.
+CURL=(curl -sS --max-time 5 --retry 3 --retry-delay 1 --retry-connrefused)
+statusz() { "${CURL[@]}" -f "http://127.0.0.1:${PORT[$1]}/statusz"; }
+metrics() { "${CURL[@]}" -f "http://127.0.0.1:${PORT[$1]}/metrics"; }
+admin()   { "${CURL[@]}" -o "$2" -w '%{http_code}' \
               -H "Authorization: Bearer ${3-$TOKEN}" \
               "http://127.0.0.1:${PORT[$1]}/internal/admin/broadcasts"; }
+
+FORWARD_WAIT=60
+for p in "${PODS[@]}"; do
+  end=$((SECONDS + FORWARD_WAIT))
+  # -s without -S: a not-yet-bound forward is the EXPECTED state here, and one
+  # "Could not connect" line per second is noise, not a diagnostic. The one
+  # attempt that matters — the last — is repeated loudly on the way out.
+  until curl -fs --max-time 3 -o /dev/null "http://127.0.0.1:${PORT[$p]}/healthz"; do
+    if [ "$SECONDS" -ge "$end" ]; then
+      echo "port-forward to $p (127.0.0.1:${PORT[$p]} -> 2112) never answered /healthz within ${FORWARD_WAIT}s" >&2
+      curl -sS --max-time 3 -o /dev/null "http://127.0.0.1:${PORT[$p]}/healthz" >&2 || true
+      exit 1
+    fi
+    sleep 1
+  done
+done
+echo "PASS: ops port-forwards ready on all ${#PODS[@]} pods (/healthz answered)"
 
 # metric_sum <pod> <metric name> [label substring]
 # Sums every sample line for that metric, optionally narrowed to lines
