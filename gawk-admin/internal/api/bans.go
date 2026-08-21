@@ -110,6 +110,8 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.expireLapsed(r.Context(), target)
+
 	created, err := a.opts.Store.CreateBan(r.Context(), store.Ban{
 		Target:            target,
 		Reason:            reason,
@@ -166,24 +168,37 @@ func (a *API) handleDeleteBan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "no such ban")
 		return
 	}
-	removed, err := a.opts.Store.RemoveBan(r.Context(), banID, id.Actor())
+	removed, lifted, err := a.opts.Store.RemoveBan(r.Context(), banID, id.Actor())
 	if err != nil {
 		a.fail(w, r, "remove the ban", err)
 		return
 	}
 
+	// The CR delete runs on EVERY call, including a replay. It is idempotent
+	// (a CR that is already gone is success), it is cheap, and it is what makes
+	// a retry after a 202 mean something: the second click is an operator
+	// asking again for the enforcement object to go away, and the grade below
+	// has to describe the fleet as it is now, not as the first call left it.
 	projErr := a.project(r.Context(), removed)
 	enforcement := enforcementState(projErr)
 
-	a.record(r.Context(), store.Event{
-		Type:        store.EventBanRemoved,
-		OccurredAt:  a.now(),
-		Actor:       id.Actor(),
-		BroadcastID: removed.SourceBroadcastID,
-		Payload: banPayload(removed, removed.Reason,
-			store.SummarizeWithEnforcement(store.EventBanRemoved, removed.Target.Type, "", id.Actor(), enforcement),
-			enforcement),
-	})
+	// The EVENT, by contrast, is once per actual transition. RemoveBan is
+	// idempotent, so recording unconditionally writes a second ban.removed row
+	// and sends a second signed delivery to every enabled webhook — under a
+	// distinct delivery ID, because the event ID differs, so receiver-side
+	// dedup on X-Gawk-Delivery cannot catch it. The audit trail would show the
+	// same ban lifted twice, possibly by two different actors.
+	if lifted {
+		a.record(r.Context(), store.Event{
+			Type:        store.EventBanRemoved,
+			OccurredAt:  a.now(),
+			Actor:       id.Actor(),
+			BroadcastID: removed.SourceBroadcastID,
+			Payload: banPayload(removed, removed.Reason,
+				store.SummarizeWithEnforcement(store.EventBanRemoved, removed.Target.Type, "", id.Actor(), enforcement),
+				enforcement),
+		})
+	}
 	a.afterMutation()
 
 	// The unban's 202 answers WITH the removed ban rather than the clean

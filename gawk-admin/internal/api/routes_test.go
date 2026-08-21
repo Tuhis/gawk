@@ -1,6 +1,9 @@
 package api_test
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -872,6 +875,269 @@ func TestListRelaysIsReadOnlyPerPodView(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		if status, _ := h.raw(method, "/api/v1/relays", map[string]any{"addr": ":9999"}); status != http.StatusNotFound {
 			t.Fatalf("%s /api/v1/relays = %d, want 404: settings are read-only (D10)", method, status)
+		}
+	}
+}
+
+// A kill whose cooldown has lapsed must be re-killable in the time of one API
+// call, with NO janitor sweep in between.
+//
+// Relays evaluate expiresAt against their own clocks (§4.2), so the moment the
+// cooldown passes the broadcaster reclaims and the broadcast is live and
+// unenforced. Answering 409 duplicate_active there tells the operator "already
+// banned" about a broadcast nothing is banning — for up to a minute in the
+// happy case, and for as long as the abuse lasts whenever no replica currently
+// holds the leader Lease.
+func TestReKillAfterTheCooldownLapsesIsNotADuplicate(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)}
+	h := newHarness(t, withClock(clock))
+	h.fleet.set(liveSnapshot("ABC234", "3f9a1c2b4d5e", "203.0.113.7"))
+
+	kill := func(reason string, wantStatus int) wireBan {
+		t.Helper()
+		var out struct {
+			Ban wireBan `json:"ban"`
+		}
+		h.decode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
+			map[string]any{"reason": reason, "cooldownSeconds": 600}, wantStatus, &out)
+		return out.Ban
+	}
+
+	first := kill("terms violation", http.StatusCreated)
+
+	// While the cooldown is live, a second kill still conflicts — the point is
+	// the expiry, not the removal of the guard.
+	clock.advance(5 * time.Minute)
+	if code := h.errorCode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
+		map[string]any{"reason": "again"}, http.StatusConflict); code != api.CodeDuplicateActive {
+		t.Fatalf("a kill inside the cooldown = %q, want %q", code, api.CodeDuplicateActive)
+	}
+
+	// Past the cooldown, with no sweep having run.
+	clock.advance(6 * time.Minute)
+	second := kill("still at it", http.StatusCreated)
+	if second.ID == first.ID {
+		t.Fatalf("the re-kill returned the lapsed ban %s instead of a new one", first.ID)
+	}
+	if second.State != string(store.BanActive) {
+		t.Fatalf("re-kill ban = %+v", second)
+	}
+
+	// The lapsed row was expired inline rather than left squatting the partial
+	// unique index, and the audit trail says it lapsed.
+	var bans struct {
+		Bans []wireBan `json:"bans"`
+	}
+	h.decode(http.MethodGet, "/api/v1/bans?state=all", nil, http.StatusOK, &bans)
+	for _, b := range bans.Bans {
+		if b.ID == first.ID && b.State != string(store.BanExpired) {
+			t.Fatalf("the lapsed ban is still %q", b.State)
+		}
+	}
+	var expired int
+	for _, ev := range h.enq.all() {
+		if ev.Type == store.EventBanExpired {
+			expired++
+		}
+	}
+	if expired != 1 {
+		t.Fatalf("ban.expired emitted %d times for one lapsed cooldown; events: %+v", expired, h.enq.all())
+	}
+}
+
+// Post-commit bookkeeping must survive the client hanging up.
+//
+// The row is the commitment point: once it is written the enforcement has
+// happened. If the operator's browser aborts in the window after that, running
+// the CR projection and the event write on the REQUEST context loses both —
+// and losing the event loses every webhook page with it, permanently, because
+// deliveries are only ever enqueued from the event row. There is no retry: the
+// "a page must reach a human" pipe would drop the action silently.
+func TestAClientAbortAfterTheRowCommitsStillProjectsRecordsAndPages(t *testing.T) {
+	h := newHarness(t)
+	h.fleet.set(liveSnapshot("ABC234", "3f9a1c2b4d5e", "203.0.113.7"))
+
+	// Suspend the handler at the fleet lookup — the last thing a kill does on
+	// the request context, and after CreateBan has committed — and hold it
+	// until the abort has actually been observed server-side.
+	reached := make(chan struct{})
+	h.fleet.setHook(func(ctx context.Context) {
+		close(reached)
+		<-ctx.Done()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body, err := json.Marshal(map[string]any{"reason": "terms violation"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		h.srv.URL+"/api/v1/broadcasts/ABC234/kill", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := h.srv.Client().Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	<-reached
+	cancel()
+	<-done
+
+	// The handler runs on past the abort. Poll, because it is now racing this
+	// goroutine rather than answering it.
+	waitForEvent(t, h, store.EventBroadcastKilled)
+
+	for _, ctxErr := range h.proj.contexts() {
+		if ctxErr != nil {
+			t.Fatalf("the Ban CR was projected on an already-cancelled context (%v): "+
+				"an aborted request leaves the row committed and nothing enforcing it", ctxErr)
+		}
+	}
+	if n := h.proj.count(); n != 1 {
+		t.Fatalf("projections = %d, want 1", n)
+	}
+
+	// The webhook fan-out is the half with no retry path at all.
+	evs := h.enq.all()
+	if len(evs) != 1 || evs[0].Type != store.EventBroadcastKilled {
+		t.Fatalf("enqueued = %+v, want one broadcast.killed", evs)
+	}
+	if evs[0].ID == 0 {
+		t.Fatalf("the dispatcher was offered an unsaved event: %+v", evs[0])
+	}
+}
+
+// waitForEvent polls the audit trail for an event of the given type. It exists
+// for the tests whose handler outlives the request that started it.
+func waitForEvent(t *testing.T, h *harness, typ string) store.Event {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := h.store.ListEvents(context.Background(), 0, 50)
+		if err == nil {
+			for _, e := range events {
+				if e.Type == typ {
+					return e
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no %s event was ever written: the enforcement happened and nothing recorded or paged it", typ)
+	return store.Event{}
+}
+
+// The "is there another page?" test must compare against the limit the STORE
+// applied, not the one the caller asked for.
+//
+// ListEvents clamps to store.MaxEventLimit, so `?limit=1000` over a longer
+// feed comes back with 500 rows and `len(events) == limit` is 500 == 1000:
+// false, no cursor, and the operator exporting an audit trail concludes it
+// ended at 500 events. The remainder is unreachable with that request shape —
+// silently, which on an audit surface is the worst way to lose data.
+func TestEventsFeedPagesPastTheStoreClamp(t *testing.T) {
+	h := newHarness(t)
+
+	const extra = 5
+	if _, err := h.store.Pool().Exec(t.Context(),
+		`INSERT INTO moderation_events (type, occurred_at, actor, payload)
+		 SELECT 'ban.created', now(), 'op@example.com', '{}'::jsonb FROM generate_series(1, $1)`,
+		store.MaxEventLimit+extra); err != nil {
+		t.Fatalf("seed the feed: %v", err)
+	}
+
+	var page struct {
+		Events      []wireEvent `json:"events"`
+		NextAfterID *int64      `json:"nextAfterId"`
+	}
+	h.decode(http.MethodGet, "/api/v1/events?limit=1000", nil, http.StatusOK, &page)
+
+	if len(page.Events) != store.MaxEventLimit {
+		t.Fatalf("page carried %d events, want the store's clamp of %d", len(page.Events), store.MaxEventLimit)
+	}
+	if page.NextAfterID == nil {
+		t.Fatalf("a page truncated to %d of %d events reported no more pages: the rest of the "+
+			"audit trail is unreachable with that request shape", len(page.Events), store.MaxEventLimit+extra)
+	}
+	if *page.NextAfterID != page.Events[len(page.Events)-1].ID {
+		t.Fatalf("nextAfterId = %d, want the last event on the page (%d)",
+			*page.NextAfterID, page.Events[len(page.Events)-1].ID)
+	}
+
+	var rest struct {
+		Events      []wireEvent `json:"events"`
+		NextAfterID *int64      `json:"nextAfterId"`
+	}
+	h.decode(http.MethodGet, "/api/v1/events?limit=1000&afterId="+strconv.FormatInt(*page.NextAfterID, 10),
+		nil, http.StatusOK, &rest)
+	if len(rest.Events) != extra {
+		t.Fatalf("the remainder page carried %d events, want %d", len(rest.Events), extra)
+	}
+	if rest.NextAfterID != nil {
+		t.Fatalf("a short page must end the feed, got cursor %d", *rest.NextAfterID)
+	}
+}
+
+// A double-clicked (or replayed) unban must page every webhook receiver once.
+//
+// RemoveBan is deliberately idempotent — the already-removed branch returns
+// the row unchanged — but recording unconditionally on top of that writes a
+// SECOND ban.removed row and sends a second signed delivery to every enabled
+// webhook, each with its own delivery ID because the event ID differs. Receiver
+// -side dedup on X-Gawk-Delivery cannot catch that, so the on-call phone buzzes
+// twice and the audit trail shows one ban lifted twice, possibly by two actors.
+func TestARepeatedUnbanRecordsAndPagesOnlyOnce(t *testing.T) {
+	h := newHarness(t)
+
+	var ban wireBan
+	h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+		"target": map[string]any{"type": "broadcastId", "value": "ABC234"}, "expiresAt": nil, "reason": "spam",
+	}, http.StatusCreated, &ban)
+
+	h.decode(http.MethodDelete, "/api/v1/bans/"+ban.ID, nil, http.StatusNoContent, nil)
+	// The second call is still a success — DELETE is idempotent — but it must
+	// not restate anything.
+	h.decode(http.MethodDelete, "/api/v1/bans/"+ban.ID, nil, http.StatusNoContent, nil)
+
+	var removals int
+	for _, ev := range h.enq.all() {
+		if ev.Type == store.EventBanRemoved {
+			removals++
+		}
+	}
+	if removals != 1 {
+		t.Fatalf("a repeated unban paged every webhook receiver %d times", removals)
+	}
+
+	events, err := h.store.ListEvents(t.Context(), 0, 50)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	removals = 0
+	for _, ev := range events {
+		if ev.Type == store.EventBanRemoved {
+			removals++
+		}
+	}
+	if removals != 1 {
+		t.Fatalf("the audit trail records the same ban lifted %d times", removals)
+	}
+
+	// A different actor replaying it must not be able to rewrite attribution
+	// either: the row still names whoever actually lifted it.
+	var all struct {
+		Bans []wireBan `json:"bans"`
+	}
+	h.decode(http.MethodGet, "/api/v1/bans?state=all", nil, http.StatusOK, &all)
+	for _, b := range all.Bans {
+		if b.ID == ban.ID && b.RemovedBy != "op@example.com" {
+			t.Fatalf("removedBy = %q after a replayed unban", b.RemovedBy)
 		}
 	}
 }

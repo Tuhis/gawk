@@ -101,21 +101,30 @@ func (s *Store) GetBan(ctx context.Context, id uuid.UUID) (Ban, error) {
 	return b, nil
 }
 
-// ActiveBanForTarget returns the active ban covering an exact target, if any.
+// ActiveBanForTarget returns the ban IN FORCE on an exact target, if any.
 // The target is normalized first, so "203.0.113.7" and "203.0.113.7/32" ask
-// the same question. ErrNotFound when nothing active covers it.
+// the same question. ErrNotFound when nothing in force covers it.
 //
 // This is an EXACT-target lookup, not an evaluation: it answers "is this
 // target already banned by name?" for the 409 paths. Whether a given IP falls
 // inside some broader CIDR ban is moderation.Set's question, on the relay.
+//
+// Expiry is evaluated HERE rather than left to the janitor's sweep, for the
+// same reason Ban.Active does it: a relay stops enforcing the moment expiresAt
+// passes, against its own clock (§4.2), so a row still marked `active` because
+// nothing has swept it yet is not a ban — and reporting one would answer 409
+// duplicate_active for a live, unenforced broadcast the operator is trying to
+// re-kill. That window is up to a minute in the happy case and unbounded when
+// no replica holds the leader Lease.
 func (s *Store) ActiveBanForTarget(ctx context.Context, t moderation.Target) (Ban, error) {
 	rec, err := moderation.Normalize(moderation.Record{Target: t})
 	if err != nil {
 		return Ban{}, err
 	}
 	row := s.pool.QueryRow(ctx, `SELECT `+banColumns+`
-		FROM bans WHERE state = 'active' AND target_type = $1 AND target_value = $2`,
-		string(rec.Target.Type), rec.Target.Value)
+		FROM bans WHERE state = 'active' AND target_type = $1 AND target_value = $2
+			AND (expires_at IS NULL OR expires_at > $3)`,
+		string(rec.Target.Type), rec.Target.Value, s.now().UTC())
 	b, err := scanBan(row)
 	if err != nil {
 		return Ban{}, noRows(err)
@@ -128,26 +137,36 @@ func (s *Store) ActiveBanForTarget(ctx context.Context, t moderation.Target) (Ba
 // Idempotent for an already-removed ban (the row comes back unchanged) because
 // a double-clicked Unban is not an error. An EXPIRED ban is ErrNotActive: the
 // state machine is one-way and there is nothing left to lift.
-func (s *Store) RemoveBan(ctx context.Context, id uuid.UUID, by string) (Ban, error) {
+//
+// The second return says whether this call is the one that MADE the
+// transition. Idempotence is only half an answer for a caller that emits an
+// audit event and a signed webhook delivery per call: without it, a replayed
+// unban writes a second ban.removed row and pages every receiver again under a
+// distinct delivery ID, which receiver-side dedup cannot catch. Anything with
+// a side effect per unban must gate on this, not on the error being nil.
+func (s *Store) RemoveBan(ctx context.Context, id uuid.UUID, by string) (Ban, bool, error) {
 	const q = `UPDATE bans SET state = 'removed', removed_at = $2, removed_by = $3
 		WHERE id = $1 AND state = 'active' RETURNING ` + banColumns
 	row := s.pool.QueryRow(ctx, q, id, s.now().UTC(), by)
 	b, err := scanBan(row)
 	if err == nil {
-		return b, nil
+		return b, true, nil
 	}
 	if !errors.Is(noRows(err), ErrNotFound) {
-		return Ban{}, fmt.Errorf("store: remove ban: %w", err)
+		return Ban{}, false, fmt.Errorf("store: remove ban: %w", err)
 	}
 	// The UPDATE matched nothing: either no such ban, or it was not active.
+	// Whichever it is, this call moved nothing — the statement is the single
+	// point where two replicas racing one unban are decided, so exactly one of
+	// them can be told it made the transition.
 	existing, err := s.GetBan(ctx, id)
 	if err != nil {
-		return Ban{}, err
+		return Ban{}, false, err
 	}
 	if existing.State == BanRemoved {
-		return existing, nil
+		return existing, false, nil
 	}
-	return existing, ErrNotActive
+	return existing, false, ErrNotActive
 }
 
 // ExpireDueBans flips every active ban whose expiry has passed to `expired`
@@ -161,7 +180,37 @@ func (s *Store) ExpireDueBans(ctx context.Context, now time.Time) ([]Ban, error)
 	const q = `UPDATE bans SET state = 'expired'
 		WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= $1
 		RETURNING ` + banColumns
-	rows, err := s.pool.Query(ctx, q, now.UTC())
+	return s.expire(ctx, q, now.UTC())
+}
+
+// ExpireLapsedBansForTarget is that same sweep narrowed to ONE target, so a
+// mutation can clear a lapsed row out of its own way rather than waiting for
+// the janitor.
+//
+// It exists because the two gates disagree by construction: ActiveBanForTarget
+// evaluates expiry the way a relay does, but the partial unique index behind
+// ErrDuplicateActive can only know `state = 'active'` (an index predicate has
+// to be immutable, so it cannot compare against now()). Without this, a kill
+// whose cooldown has lapsed collides with its own predecessor until the next
+// 60 s sweep — and indefinitely whenever no replica holds the leader Lease.
+//
+// Single statement with RETURNING for exactly the reason ExpireDueBans is:
+// whoever gets there first, janitor or handler, is the only one that sees the
+// row, so ban.expired is emitted once.
+func (s *Store) ExpireLapsedBansForTarget(ctx context.Context, t moderation.Target, now time.Time) ([]Ban, error) {
+	rec, err := moderation.Normalize(moderation.Record{Target: t})
+	if err != nil {
+		return nil, err
+	}
+	const q = `UPDATE bans SET state = 'expired'
+		WHERE state = 'active' AND target_type = $1 AND target_value = $2
+			AND expires_at IS NOT NULL AND expires_at <= $3
+		RETURNING ` + banColumns
+	return s.expire(ctx, q, string(rec.Target.Type), rec.Target.Value, now.UTC())
+}
+
+func (s *Store) expire(ctx context.Context, q string, args ...any) ([]Ban, error) {
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: expire bans: %w", err)
 	}

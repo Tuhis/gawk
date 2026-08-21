@@ -315,3 +315,129 @@ func indexOf(haystack, needle string) int {
 	}
 	return -1
 }
+
+// The break-glass CR an operator applied is stamped WHERE IT IS — under the
+// name they chose, which nothing forces to be `ban-id-*`.
+//
+// Stamping through Upsert instead writes a canonical TWIN and leaves the
+// operator's own object un-annotated, which is unreachable in both directions:
+// a portal unban deletes only the canonical name, so every relay keeps
+// enforcing 451, and the next sweep sees an un-annotated CR with no active row
+// and re-adopts it — a fresh active row plus a fresh ban.created event and
+// webhook, once a minute, while the portal says "unbanned".
+func TestReconcileStampsTheOperatorsOwnCRNotATwin(t *testing.T) {
+	ban := &moderation.Ban{
+		TypeMeta:   metav1.TypeMeta{APIVersion: moderation.SchemeGroupVersion.String(), Kind: moderation.Kind},
+		ObjectMeta: metav1.ObjectMeta{Name: "emergency-ban-x", Namespace: testNamespace},
+		Spec: moderation.BanSpec{
+			Target: moderation.Target{Type: moderation.TargetBroadcastID, Value: "ZZZ234"},
+			Reason: "applied with kubectl while gawk-admin was down",
+		},
+	}
+	recs := newFakeRecords()
+	crs, _ := newFakeCRClient(t, ban)
+	var enqueued []store.Event
+	r := newReconciler(t, recs, crs, time.Now, func(_ context.Context, e store.Event) error {
+		enqueued = append(enqueued, e)
+		return nil
+	})
+	ctx := context.Background()
+
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	rows := recs.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("adoption produced %d rows: %+v", len(rows), rows)
+	}
+	adopted := rows[0]
+
+	list, err := crs.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != "emergency-ban-x" {
+		t.Fatalf("adoption wrote a canonical twin instead of stamping the operator's object: %+v", list)
+	}
+	if list[0].BanID != adopted.ID.String() {
+		t.Fatalf("CR %q banId = %q, want %q: an un-annotated object survives every unban and is "+
+			"re-adopted by every sweep", list[0].Name, list[0].BanID, adopted.ID)
+	}
+
+	// A second pass must not adopt it again.
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("second ReconcileOnce: %v", err)
+	}
+	if n := countType(enqueued, store.EventBanCreated); n != 1 {
+		t.Fatalf("ban.created emitted %d times for one break-glass CR", n)
+	}
+	if rows := recs.snapshot(); len(rows) != 1 {
+		t.Fatalf("a second sweep re-adopted the CR: %+v", rows)
+	}
+
+	// The unban: the row leaves `active`, the portal's inline Project deletes
+	// the canonical name, and the sweep must clear whatever is left — the
+	// operator's object included, because it is now annotated as ours.
+	removed := recs.remove(adopted.ID)
+	if err := r.Project(ctx, removed); err != nil {
+		t.Fatalf("Project(removed): %v", err)
+	}
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce after unban: %v", err)
+	}
+	if names := crNames(t, crs); len(names) != 0 {
+		t.Fatalf("after an unban the fleet still enforces %v", names)
+	}
+	if n := countType(enqueued, store.EventBanCreated); n != 1 {
+		t.Fatalf("the audit stream oscillated: ban.created emitted %d times", n)
+	}
+}
+
+// The stamp is retried. A stamp that failed (or was skipped because another
+// replica adopted the target first) leaves an un-annotated CR whose target now
+// HAS an active row — the one case the adoption arm never reaches again,
+// because convergence short-circuits on "still active". Left unstamped it is
+// the same permanent orphan.
+func TestReconcileStampsAnUnannotatedCRWhoseTargetIsAlreadyRecorded(t *testing.T) {
+	ban := &moderation.Ban{
+		TypeMeta:   metav1.TypeMeta{APIVersion: moderation.SchemeGroupVersion.String(), Kind: moderation.Kind},
+		ObjectMeta: metav1.ObjectMeta{Name: "emergency-ban-y", Namespace: testNamespace},
+		Spec: moderation.BanSpec{
+			Target: moderation.Target{Type: moderation.TargetBroadcastID, Value: "YYY234"},
+			Reason: "applied with kubectl",
+		},
+	}
+	recs := newFakeRecords()
+	crs, _ := newFakeCRClient(t, ban)
+	r := newReconciler(t, recs, crs, time.Now, nil)
+	ctx := context.Background()
+
+	// The row already exists — the state a replica that lost the adoption race
+	// (store.ErrDuplicateActive) leaves behind.
+	row := recs.add(store.Ban{Target: moderation.Target{Type: moderation.TargetBroadcastID, Value: "YYY234"},
+		Reason: "applied with kubectl", CreatedBy: kube.AdoptedBy})
+
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	list, err := crs.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, cr := range list {
+		if cr.Name == "emergency-ban-y" && cr.BanID != row.ID.String() {
+			t.Fatalf("CR %q was left un-annotated (banId=%q): no unban can ever reach it",
+				cr.Name, cr.BanID)
+		}
+	}
+}
+
+func countType(evs []store.Event, typ string) int {
+	n := 0
+	for _, e := range evs {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}

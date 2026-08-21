@@ -2,12 +2,15 @@ package kube_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
@@ -262,5 +265,49 @@ func TestTwoReplicasProduceNoDuplicateCRWrites(t *testing.T) {
 	}
 	if len(leaders(a, b)) != 1 {
 		t.Fatalf("leaders = %v, want exactly one", leaders(a, b))
+	}
+}
+
+// Losing the Lease must not end the campaign. client-go's LeaderElector.Run
+// returns FOR GOOD once a renewal misses RenewDeadline — a >10 s API-server
+// blip is enough — so a replica that does not re-enter the election never runs
+// the reconciler/janitor or the webhook dispatcher again. Once every replica
+// has been demoted once, nothing expires a ban and nothing sends a queued
+// webhook delivery, silently, until a pod restarts.
+func TestElectionReEntersAfterLosingTheLease(t *testing.T) {
+	client := k8sfake.NewClientset()
+
+	// A reactor that makes every Lease write fail is an API-server blip: it
+	// breaks renewal (and re-acquisition) without cancelling anyone's context,
+	// which is exactly the production condition — the pod is healthy, the API
+	// server is not.
+	var blip atomic.Bool
+	client.PrependReactor("update", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if blip.Load() {
+			return true, nil, errors.New("apiserver is unavailable")
+		}
+		return false, nil, nil
+	})
+
+	a := newCandidate(t, client, "gawk-admin-a", nil)
+	a.start(t)
+	waitFor(t, "the replica to lead", a.running.Load)
+
+	blip.Store(true)
+	waitFor(t, "the replica to lose the lease", func() bool { return !a.running.Load() })
+	blip.Store(false)
+
+	waitFor(t, "the replica to re-enter the election", func() bool {
+		select {
+		case <-a.done:
+			t.Fatalf("Election.Run returned after a lost lease: this replica has stopped " +
+				"campaigning, so once every replica has been demoted once nobody runs the " +
+				"reconciler/janitor or the webhook dispatcher")
+		default:
+		}
+		return a.leadCount.Load() >= 2
+	})
+	if !a.election.IsLeader() {
+		t.Fatalf("IsLeader() is false after re-acquiring the lease")
 	}
 }

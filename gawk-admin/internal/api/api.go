@@ -55,6 +55,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/identity"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
+	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
 
 // Error codes in the {"error":{"code","message"}} envelope. The SPA branches
@@ -434,7 +435,29 @@ func (a *API) project(ctx context.Context, b store.Ban) error {
 	if a.opts.Projector == nil {
 		return nil
 	}
+	ctx, cancel := postCommit(ctx)
+	defer cancel()
 	return a.opts.Projector.Project(ctx, b)
+}
+
+// postCommitTimeout bounds work that no longer has a client waiting on it.
+const postCommitTimeout = 10 * time.Second
+
+// postCommit detaches a request context for the bookkeeping that follows a
+// committed row.
+//
+// The row is the commitment point: once it is written the enforcement has
+// happened, and the CR projection and the event write are obligations, not
+// parts of the answer. Running them on the request context means an operator's
+// browser aborting in that window takes them with it — and losing the event
+// loses every webhook page permanently, because deliveries are only ever
+// enqueued from the event row. There is no retry for a page that was never
+// created; internal/auth's keyset refresh detaches for the same reason.
+//
+// It keeps a deadline: detached is not unbounded, and a wedged API server must
+// not accumulate handler goroutines.
+func postCommit(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), postCommitTimeout)
 }
 
 // enforcementState grades a projection outcome for the event that records it.
@@ -452,6 +475,54 @@ func enforcementState(projErr error) store.EnforcementState {
 	return store.EnforcementInSync
 }
 
+// expireLapsed clears a lapsed ban out of the way of a new one on the same
+// target, recording the ban.expired the janitor's sweep would have.
+//
+// The two duplicate gates disagree by construction and this reconciles them:
+// ActiveBanForTarget evaluates expiry the way a relay does, but the partial
+// unique index behind ErrDuplicateActive can only know `state = 'active'`. So
+// a kill whose cooldown has lapsed would 409 against its OWN predecessor —
+// until the leader's next 60 s sweep, and indefinitely whenever no replica
+// holds the Lease. Doing it inline makes the re-kill independent of the
+// janitor entirely.
+//
+// Best-effort: a failure here just means CreateBan answers the 409 it would
+// have anyway, so it is logged rather than failing a mutation that has not
+// happened yet. The actor is "system" for the same reason the janitor's is —
+// nobody lifted this ban, its clock ran out.
+func (a *API) expireLapsed(ctx context.Context, target moderation.Target) {
+	lapsed, err := a.opts.Store.ExpireLapsedBansForTarget(ctx, target, a.now())
+	if err != nil {
+		a.log.Warn("expiring a lapsed ban before re-banning its target failed", "err", err)
+		return
+	}
+	for _, b := range lapsed {
+		a.record(ctx, store.Event{
+			Type:        store.EventBanExpired,
+			OccurredAt:  a.now(),
+			Actor:       "system",
+			BroadcastID: sourceBroadcastID(b),
+			Payload: banPayload(b, b.Reason,
+				store.Summarize(store.EventBanExpired, b.Target.Type, "", ""), store.EnforcementInSync),
+		})
+		a.log.Info("lapsed ban expired inline before re-banning its target", "banId", b.ID,
+			"targetType", b.Target.Type)
+	}
+}
+
+// sourceBroadcastID is the event's raw-ID column: the broadcast the ban was
+// taken against. Portal and Postgres only — the dispatcher never copies it
+// into a webhook (D8).
+func sourceBroadcastID(b store.Ban) string {
+	if b.SourceBroadcastID != "" {
+		return b.SourceBroadcastID
+	}
+	if b.Target.Type == moderation.TargetBroadcastID {
+		return b.Target.Value
+	}
+	return ""
+}
+
 func (a *API) kick() {
 	if a.opts.Reconciler != nil {
 		a.opts.Reconciler.Kick()
@@ -461,7 +532,12 @@ func (a *API) kick() {
 // record persists an event and offers it to the dispatcher. Failures are
 // logged, never fatal to the mutation that caused them: the enforcement action
 // has already happened, and losing its notification must not un-happen it.
+//
+// It runs detached from the request (see postCommit): the one caller who must
+// never be able to cancel this is the client whose action it records.
 func (a *API) record(ctx context.Context, ev store.Event) {
+	ctx, cancel := postCommit(ctx)
+	defer cancel()
 	saved, err := a.opts.Store.AppendEvent(ctx, ev)
 	if err != nil {
 		a.log.Error("recording a moderation event failed", "type", ev.Type, "err", err)

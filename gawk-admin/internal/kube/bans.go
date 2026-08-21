@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -58,6 +59,9 @@ type BanClient interface {
 	// Upsert creates or updates the CR named by moderation.CRName(rec.Target),
 	// stamping banID into AnnotationBanID.
 	Upsert(ctx context.Context, rec moderation.Record, banID string) error
+	// Adopt stamps AnnotationBanID onto an EXISTING CR addressed by the name
+	// it was listed under — the operator's name, not the canonical one.
+	Adopt(ctx context.Context, name, banID string) error
 	Delete(ctx context.Context, name string) error
 }
 
@@ -186,6 +190,37 @@ func (c *CRClient) update(ctx context.Context, name string, desired *moderation.
 	}
 	if _, err := c.ri.Update(ctx, obj, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("kube: update ban %s: %w", name, err)
+	}
+	return nil
+}
+
+// Adopt stamps an existing CR as the projection of a `bans` row, addressing it
+// by the name it was LISTED under rather than by moderation.CRName.
+//
+// It is the other half of the break-glass path, and it exists because Upsert
+// deliberately cannot do this: Upsert always addresses the canonical name, so
+// stamping a `kubectl apply`'d Ban through it writes a canonical TWIN and
+// leaves the operator's own object un-annotated. An un-annotated object is
+// unreachable in both directions — a portal unban deletes only the canonical
+// name, so every relay keeps enforcing, and the next reconcile pass sees an
+// un-annotated CR with no active row and adopts it AGAIN, emitting a fresh
+// ban.created event and webhook every sweep.
+//
+// A merge patch, not a read-modify-write: the annotation is the only field
+// this must touch, and nothing here should be able to overwrite an operator's
+// spec by racing them.
+func (c *CRClient) Adopt(ctx context.Context, name, banID string) error {
+	if name == "" || banID == "" {
+		return fmt.Errorf("kube: adopt ban: name and banID are required")
+	}
+	patch := fmt.Appendf(nil, `{"metadata":{"annotations":{%q:%q}}}`, AnnotationBanID, banID)
+	if _, err := c.ri.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		// Gone since the List: there is nothing left to stamp, and the row's
+		// own CR is written by the convergence pass either way.
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("kube: adopt ban %s: %w", name, err)
 	}
 	return nil
 }

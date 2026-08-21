@@ -143,6 +143,8 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.expireLapsed(r.Context(), target)
+
 	expires := a.now().Add(cooldown)
 	created, err := a.opts.Store.CreateBan(r.Context(), store.Ban{
 		Target:            target,

@@ -3,9 +3,11 @@ package relayscan_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -257,5 +259,90 @@ func TestResolveFailureIsAnError(t *testing.T) {
 	})
 	if _, err := sc.Snapshot(context.Background()); err == nil {
 		t.Fatalf("a resolution failure must fail the call: the fleet is unknown, not empty")
+	}
+}
+
+// The coalesced scan must not run on the first caller's request context.
+//
+// Snapshot collapses concurrent misses into one fleet scrape and hands every
+// waiter the same result. If that scrape inherits the INITIATOR's context, one
+// operator closing a tab mid-scan fails it for everybody parked on it: every
+// concurrent /broadcasts answers 503 "the relay fleet could not be enumerated"
+// and a kill's publisher resolution answers 400, with every relay pod up and
+// the other requests perfectly healthy. Worse, nothing is cached, so the next
+// caller pays for the whole fan-out again.
+func TestAnAbortedInitiatorDoesNotPoisonTheCoalescedScan(t *testing.T) {
+	pod := &fakePod{name: "gawk-server-0", version: "1.42.0",
+		broadcasts: []relayscan.Broadcast{bc("ABC234", "3f9a1c2b4d5e", "origin", true, "203.0.113.7", 12, 340)}}
+	addr := pod.start(t)
+
+	var (
+		entered  = make(chan struct{})
+		once     sync.Once
+		release  = make(chan struct{})
+		resolves atomic.Int64
+	)
+	sc, err := relayscan.New(relayscan.Options{
+		CacheTTL: time.Minute,
+		Resolve: func(ctx context.Context) ([]string, error) {
+			resolves.Add(1)
+			once.Do(func() { close(entered) })
+			select {
+			case <-release:
+				return []string{addr}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	type result struct {
+		snap relayscan.Snapshot
+		err  error
+	}
+	aborting, cancel := context.WithCancel(context.Background())
+	initiator := make(chan result, 1)
+	go func() {
+		snap, err := sc.Snapshot(aborting)
+		initiator <- result{snap, err}
+	}()
+	<-entered
+
+	waiter := make(chan result, 1)
+	go func() {
+		snap, err := sc.Snapshot(context.Background())
+		waiter <- result{snap, err}
+	}()
+
+	cancel()
+	close(release)
+
+	got := <-waiter
+	if got.err != nil {
+		t.Fatalf("a healthy request got %v because another caller walked away", got.err)
+	}
+	if got.snap.PodsResolved != 1 || got.snap.PodsAnswered != 1 {
+		t.Fatalf("coverage = %d/%d, want the fleet the scan actually reached",
+			got.snap.PodsAnswered, got.snap.PodsResolved)
+	}
+	if len(got.snap.Broadcasts) != 1 || got.snap.Broadcasts[0].ID != "ABC234" {
+		t.Fatalf("broadcasts = %+v", got.snap.Broadcasts)
+	}
+
+	// The initiator's OWN request failed, which is correct: it asked and left.
+	if first := <-initiator; !errors.Is(first.err, context.Canceled) {
+		t.Fatalf("the aborted caller got %v, want context.Canceled", first.err)
+	}
+
+	// And the scan completed and cached, so the abort cost the fleet nothing.
+	if _, err := sc.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot after the abort: %v", err)
+	}
+	if n := resolves.Load(); n != 1 {
+		t.Fatalf("the fleet was resolved %d times: an aborted caller threw away the scrape "+
+			"every other caller was waiting on", n)
 	}
 }

@@ -154,6 +154,7 @@ type countingBans struct {
 	mu      sync.Mutex
 	upserts int
 	deletes int
+	stamps  int
 	// failList makes the k8s API look unreachable.
 	failList bool
 }
@@ -175,6 +176,13 @@ func (c *countingBans) Upsert(ctx context.Context, rec moderation.Record, banID 
 	return c.inner.Upsert(ctx, rec, banID)
 }
 
+func (c *countingBans) Adopt(ctx context.Context, name, banID string) error {
+	c.mu.Lock()
+	c.stamps++
+	c.mu.Unlock()
+	return c.inner.Adopt(ctx, name, banID)
+}
+
 func (c *countingBans) Delete(ctx context.Context, name string) error {
 	c.mu.Lock()
 	c.deletes++
@@ -186,4 +194,22 @@ func (c *countingBans) counts() (upserts, deletes int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.upserts, c.deletes
+}
+
+// remove is the portal's unban, applied straight to the record store: the row
+// leaves `active` without going near the CR, which is what a test needs to
+// then assert what the next sweep does to the objects left behind.
+func (f *fakeRecords) remove(id uuid.UUID) store.Ban {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.bans {
+		if f.bans[i].ID != id {
+			continue
+		}
+		now := f.now()
+		f.bans[i].State = store.BanRemoved
+		f.bans[i].RemovedAt = &now
+		return f.bans[i]
+	}
+	panic("no such ban")
 }

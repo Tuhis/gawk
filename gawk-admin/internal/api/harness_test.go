@@ -32,12 +32,26 @@ type fakeFleet struct {
 	snap        relayscan.Snapshot
 	err         error
 	invalidated int
+	// hook runs inside Snapshot, with the caller's context. It is how a test
+	// suspends a handler at a known point — the fleet lookup is the last thing
+	// a mutation does on the REQUEST context — and observes what happens after.
+	hook func(context.Context)
 }
 
-func (f *fakeFleet) Snapshot(context.Context) (relayscan.Snapshot, error) {
+func (f *fakeFleet) Snapshot(ctx context.Context) (relayscan.Snapshot, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.snap, f.err
+	hook, snap, err := f.hook, f.snap, f.err
+	f.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
+	return snap, err
+}
+
+func (f *fakeFleet) setHook(hook func(context.Context)) {
+	f.mu.Lock()
+	f.hook = hook
+	f.mu.Unlock()
 }
 
 func (f *fakeFleet) Invalidate() {
@@ -57,16 +71,27 @@ type fakeProjector struct {
 	mu        sync.Mutex
 	projected []store.Ban
 	err       error
+	// ctxErrs is each call's ctx.Err() at entry. A projection is post-commit
+	// work: it must never arrive already cancelled because the operator's
+	// browser hung up.
+	ctxErrs []error
 }
 
-func (p *fakeProjector) Project(_ context.Context, b store.Ban) error {
+func (p *fakeProjector) Project(ctx context.Context, b store.Ban) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.ctxErrs = append(p.ctxErrs, ctx.Err())
 	if p.err != nil {
 		return p.err
 	}
 	p.projected = append(p.projected, b)
 	return nil
+}
+
+func (p *fakeProjector) contexts() []error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]error(nil), p.ctxErrs...)
 }
 
 func (p *fakeProjector) last() (store.Ban, bool) {
@@ -431,5 +456,33 @@ func liveSnapshot(id, key, publisherIP string) relayscan.Snapshot {
 				{Pod: "gawk-server-1", Role: "edge", ViewersLocal: 328},
 			},
 		}},
+	}
+}
+
+// testClock is a manual clock for both halves of a mutation: api.Options.Clock
+// decides a kill's cooldown expiry, and store.Store.Now decides whether a row
+// is still in force. They must move together or the test is measuring the
+// disagreement rather than the behaviour.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+func withClock(c *testClock) harnessOption {
+	return func(o *api.Options, h *harness) {
+		o.Clock = c.Now
+		h.store.Now = c.Now
 	}
 }

@@ -7,8 +7,6 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 )
 
-const defaultEventLimit = 50
-
 // handleListEvents serves the audit/notification feed, newest first, with
 // cursor pagination by event ID (§4.7).
 //
@@ -28,7 +26,7 @@ func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		afterID = parsed
 	}
-	limit := defaultEventLimit
+	limit := store.DefaultEventLimit
 	if raw := q.Get("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed <= 0 {
@@ -37,6 +35,12 @@ func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
+	// Clamp HERE, against the store's own rule, before anything pages by it.
+	// An oversized limit is not an error — it is answered with the biggest
+	// page there is — but the cursor below has to be computed against the
+	// number of rows that were actually asked for, or a full page looks short
+	// and the feed reports an end it has not reached.
+	limit = store.ClampEventLimit(limit)
 
 	events, err := a.opts.Store.ListEvents(r.Context(), afterID, limit)
 	if err != nil {

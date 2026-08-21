@@ -12,11 +12,16 @@ import (
 
 const eventColumns = `id, type, occurred_at, actor, broadcast_key, broadcast_id, payload`
 
-// defaultEventLimit / maxEventLimit bound the audit feed page size. A caller
-// asking for a million rows gets maxEventLimit, not an OOM.
+// DefaultEventLimit / MaxEventLimit bound the audit feed page size. A caller
+// asking for a million rows gets MaxEventLimit, not an OOM.
+//
+// They are EXPORTED because the handler has to page by the same numbers: a
+// cursor decided against the limit the caller asked for, while the rows were
+// cut to the limit applied here, reports "no more pages" on a truncated feed
+// and makes the remainder unreachable. One pair of constants, one clamp rule.
 const (
-	defaultEventLimit = 50
-	maxEventLimit     = 500
+	DefaultEventLimit = 50
+	MaxEventLimit     = 500
 )
 
 // AppendEvent writes one audit/notification event and returns it with its
@@ -42,16 +47,23 @@ func (s *Store) AppendEvent(ctx context.Context, e Event) (Event, error) {
 	return out, nil
 }
 
+// ClampEventLimit is the page-size rule, in one place so a caller computing a
+// pagination cursor and this package cutting the rows cannot disagree.
+func ClampEventLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultEventLimit
+	}
+	if limit > MaxEventLimit {
+		return MaxEventLimit
+	}
+	return limit
+}
+
 // ListEvents returns the feed newest-first. afterID is the cursor: 0 starts at
 // the newest event, otherwise only events strictly OLDER than that ID are
 // returned — "after" in feed order, which is descending ID.
 func (s *Store) ListEvents(ctx context.Context, afterID int64, limit int) ([]Event, error) {
-	if limit <= 0 {
-		limit = defaultEventLimit
-	}
-	if limit > maxEventLimit {
-		limit = maxEventLimit
-	}
+	limit = ClampEventLimit(limit)
 	const q = `SELECT ` + eventColumns + ` FROM moderation_events
 		WHERE ($1 = 0 OR id < $1) ORDER BY id DESC LIMIT $2`
 	rows, err := s.pool.Query(ctx, q, afterID, limit)

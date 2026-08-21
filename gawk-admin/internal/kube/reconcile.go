@@ -204,7 +204,20 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 			r.log.Warn("ban CR could not be read; leaving it untouched", "crName", cr.Name, "err", cr.Err)
 			continue
 		}
-		if _, stillActive := activeByTarget[cr.Record.Target]; stillActive {
+		if row, stillActive := activeByTarget[cr.Record.Target]; stillActive {
+			// Still enforced — but an un-annotated object here is one nothing
+			// will ever clean up: the adoption arm below is unreachable while
+			// the target has an active row, so a stamp that failed (or was
+			// never attempted, because another replica won the adoption race
+			// and returned on ErrDuplicateActive) would leave the CR orphaned
+			// for good. Stamping is the retry.
+			if cr.BanID == "" {
+				if err := r.opts.Bans.Adopt(ctx, cr.Name, row.ID.String()); err != nil {
+					r.log.Warn("stamping an unrecorded ban CR failed", "crName", cr.Name, "err", err)
+					continue
+				}
+				r.log.Info("stamped a ban CR whose target was already recorded", "crName", cr.Name, "banId", row.ID)
+			}
 			continue
 		}
 		if cr.BanID == "" {
@@ -250,10 +263,17 @@ func (r *Reconciler) adopt(ctx context.Context, cr BanObject) {
 	r.log.Info("adopted an operator-applied ban CR", "crName", cr.Name, "banId", created.ID,
 		"targetType", created.Target.Type, "createdBy", created.CreatedBy)
 
-	// Stamp the CR so subsequent passes recognize it as managed. A failure
-	// here is harmless: the row exists, and the next pass simply adopts
-	// nothing (the target now has an active row) and re-stamps.
-	if err := r.opts.Bans.Upsert(ctx, created.Record(), created.ID.String()); err != nil {
+	// Stamp the CR the operator actually applied, BY ITS OWN NAME. Nothing
+	// forces a hand-written Ban to be called `ban-id-*`, and Upsert always
+	// addresses moderation.CRName — so stamping through it would annotate a
+	// canonical twin and leave `emergency-ban-x` un-annotated: invisible to
+	// unban (which deletes only the canonical name) and re-adopted by every
+	// later sweep, one ban.created event and webhook per minute, while the
+	// portal reports the ban lifted.
+	//
+	// A failure here is retried by the convergence pass above on the next
+	// sweep, which is why that pass stamps too.
+	if err := r.opts.Bans.Adopt(ctx, cr.Name, created.ID.String()); err != nil {
 		r.log.Warn("stamping an adopted ban CR failed", "crName", cr.Name, "err", err)
 	}
 

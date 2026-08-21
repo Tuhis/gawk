@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -64,6 +65,12 @@ type Election struct {
 	le     *leaderelection.LeaderElector
 	log    *slog.Logger
 	leader atomic.Bool
+	// leading serializes OnLeading across campaigns. Re-acquiring the Lease
+	// can be near-instant — a blip that outlasts RenewDeadline but leaves us
+	// the recorded holder renews on the first healthy call — so without this
+	// the next campaign could start a second copy of the singleton work while
+	// the demoted one is still unwinding.
+	leading sync.Mutex
 }
 
 // NewElection builds a candidate. Nothing happens until Run.
@@ -108,6 +115,13 @@ func NewElection(opts LeaderOptions) (*Election, error) {
 		Name:            opts.LeaseName,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
+				// Wait out the previous campaign's work before starting this
+				// one's; leadership can have been lost again in the meantime.
+				e.leading.Lock()
+				defer e.leading.Unlock()
+				if ctx.Err() != nil {
+					return
+				}
 				e.leader.Store(true)
 				opts.Log.Info("became gawk-admin leader", "identity", opts.Identity, "lease", opts.LeaseName)
 				defer e.leader.Store(false)
@@ -129,9 +143,32 @@ func NewElection(opts LeaderOptions) (*Election, error) {
 	return e, nil
 }
 
-// Run campaigns until ctx ends. It blocks; a non-leader simply stands by and
-// keeps serving API traffic from the same process (D16).
-func (e *Election) Run(ctx context.Context) { e.le.Run(ctx) }
+// Run campaigns until ctx ends, RE-ENTERING the election every time leadership
+// is lost. It blocks; a non-leader simply stands by and keeps serving API
+// traffic from the same process (D16).
+//
+// The loop is the whole point. client-go's LeaderElector.Run returns for good
+// the moment a renewal misses RenewDeadline — a >10 s API-server blip is
+// enough — and campaigning again is the caller's job. Without it, a replica
+// that has been demoted once never leads again, so once every replica has lost
+// the Lease once NOBODY runs the reconciler/janitor or the webhook dispatcher:
+// bans never flip to expired, crash-orphaned CRs are never healed, and queued
+// deliveries are never sent, silently, until a pod restarts.
+//
+// Re-campaigning rather than exiting the process is deliberate. This replica's
+// API half is stateless and perfectly healthy (D16: every replica serves
+// traffic, only the background work is singleton), so a transient API-server
+// blip must not take a serving pod down — and with it the resolved issuer
+// keyset — over work another replica is probably already doing.
+func (e *Election) Run(ctx context.Context) {
+	for {
+		e.le.Run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		e.log.Info("re-entering the gawk-admin leader election after losing the lease")
+	}
+}
 
 // IsLeader reports whether this replica currently holds the Lease. It is
 // observational — the singleton work is gated by OnLeading's context, never by

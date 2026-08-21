@@ -56,6 +56,13 @@ const DefaultCacheTTL = 2 * time.Second
 // hung scrape must never hold an operator's kill dialog open.
 const DefaultTimeout = 3 * time.Second
 
+// DefaultScanBudget bounds one whole fleet scan. The scan runs detached from
+// the caller that triggered it (see Snapshot), so it needs a deadline of its
+// own rather than borrowing a request's — generous next to DefaultTimeout,
+// because pods are scraped in parallel and this only has to catch resolution
+// and a straggler.
+const DefaultScanBudget = 10 * time.Second
+
 // Broadcast is one broadcast as one pod sees it — the `broadcasts[]` element
 // of gawk.admin.broadcasts.v1.
 type Broadcast struct {
@@ -168,6 +175,8 @@ type Options struct {
 	Log      *slog.Logger
 	Now      func() time.Time
 	CacheTTL time.Duration
+	// ScanBudget bounds one detached fleet scan; 0 means DefaultScanBudget.
+	ScanBudget time.Duration
 }
 
 // Scanner scrapes the fleet on demand, behind a short cache.
@@ -201,6 +210,9 @@ func New(opts Options) (*Scanner, error) {
 	if opts.CacheTTL <= 0 {
 		opts.CacheTTL = DefaultCacheTTL
 	}
+	if opts.ScanBudget <= 0 {
+		opts.ScanBudget = DefaultScanBudget
+	}
 	if opts.Client == nil {
 		opts.Client = &http.Client{Timeout: DefaultTimeout}
 	}
@@ -209,6 +221,16 @@ func New(opts Options) (*Scanner, error) {
 
 // Snapshot returns the fleet view, scraping only when the cached one has aged
 // past the TTL.
+//
+// The scrape itself is DETACHED from whoever triggered it. A scan is shared
+// work — every caller that arrives while it runs is handed the same result —
+// so binding it to the initiator's request would let one operator closing a
+// tab fail it for everybody parked on it: concurrent /broadcasts answering 503
+// "the relay fleet could not be enumerated" and a kill's publisher resolution
+// answering 400, with every relay pod healthy. It would also throw away the
+// fan-out those callers were waiting on, since a failed scan caches nothing.
+// The initiator therefore waits on the shared call exactly as a late caller
+// does, and abandoning the wait abandons only its own request.
 func (s *Scanner) Snapshot(ctx context.Context) (Snapshot, error) {
 	now := s.opts.Now()
 
@@ -218,20 +240,33 @@ func (s *Scanner) Snapshot(ctx context.Context) (Snapshot, error) {
 		s.mu.Unlock()
 		return snap, nil
 	}
-	if call := s.inflight; call != nil {
-		s.mu.Unlock()
-		select {
-		case <-call.done:
-			return call.snap, call.err
-		case <-ctx.Done():
-			return Snapshot{}, ctx.Err()
-		}
+	call := s.inflight
+	if call == nil {
+		call = &scanCall{done: make(chan struct{})}
+		s.inflight = call
+		go s.run(ctx, call, now)
 	}
-	call := &scanCall{done: make(chan struct{})}
-	s.inflight = call
 	s.mu.Unlock()
 
-	call.snap, call.err = s.scan(ctx, now)
+	select {
+	case <-call.done:
+		return call.snap, call.err
+	case <-ctx.Done():
+		return Snapshot{}, ctx.Err()
+	}
+}
+
+// run performs one shared scan and publishes it to everyone waiting on call.
+//
+// It keeps a deadline of its own precisely because it no longer inherits one:
+// a detached scan must not be an unbounded goroutine. Pod scrapes are already
+// bounded by the HTTP client's timeout; this covers resolution and any
+// pathological straggler.
+func (s *Scanner) run(ctx context.Context, call *scanCall, now time.Time) {
+	scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.opts.ScanBudget)
+	defer cancel()
+
+	call.snap, call.err = s.scan(scanCtx, now)
 
 	s.mu.Lock()
 	if call.err == nil {
@@ -241,7 +276,6 @@ func (s *Scanner) Snapshot(ctx context.Context) (Snapshot, error) {
 	s.inflight = nil
 	s.mu.Unlock()
 	close(call.done)
-	return call.snap, call.err
 }
 
 // Invalidate drops the cache. Called after a mutation so the operator's next
