@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import type { EventPage, ModerationEvent, WebhookDelivery } from '../api/types.ts';
@@ -25,8 +25,26 @@ export function EventsView() {
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [exhausted, setExhausted] = useState(false);
 
+  /**
+   * Which first page the accumulated `pages` belong to.
+   *
+   * "Load older" is disabled while it is in flight; **Refresh is not**, and it
+   * is the one that invalidates the other. A refresh replaces `pages` and
+   * resets the cursor, so a page already in flight against the OLD cursor no
+   * longer joins onto anything: appending it would drop every event between
+   * the fresh page's last row and that cursor, and leave the stored cursor
+   * describing a list nobody is looking at. Silently missing rows are the one
+   * failure an audit feed must not have, so a page whose generation has moved
+   * is dropped rather than rendered.
+   *
+   * A ref, not state: it is read by an async continuation that must see the
+   * value at the moment it resolves, not the value its render closed over.
+   */
+  const generation = useRef(0);
+
   const load = useCallback(async (): Promise<EventPage> => {
     const page = await api.events();
+    generation.current++;
     setPages(page.events);
     setCursor(page.nextAfterId ?? undefined);
     setExhausted(page.nextAfterId === null);
@@ -39,16 +57,24 @@ export function EventsView() {
 
   async function loadOlder() {
     if (cursor === undefined) return;
+    const asOf = generation.current;
     setLoadingOlder(true);
     setOlderError(null);
     try {
       const page = await api.events(cursor);
+      if (asOf !== generation.current) return;
       setPages((prev) => [...prev, ...page.events]);
       setCursor(page.nextAfterId ?? undefined);
       setExhausted(page.nextAfterId === null);
     } catch (err) {
+      // A refresh landed first: this page is nobody's business now, and its
+      // failure is not the operator's problem either.
+      if (asOf !== generation.current) return;
       setOlderError(err instanceof Error ? err.message : String(err));
     } finally {
+      // Unconditional: the button belongs to the CURRENT list, and leaving it
+      // disabled because a page the view discarded is still notionally in
+      // flight would strand the feed one page short.
       setLoadingOlder(false);
     }
   }

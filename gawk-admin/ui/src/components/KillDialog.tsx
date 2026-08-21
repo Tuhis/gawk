@@ -31,6 +31,12 @@ const PRESETS: readonly { label: string; seconds: number }[] = [
  *   * **The cooldown is pre-filled from the server's configured default**
  *     (`-kill-cooldown`), not from a constant in the SPA, so a deployment that
  *     tuned it sees its own number here.
+ *   * **The cooldown must be positive**, which is the server's rule
+ *     (`cooldownSeconds <= 0` is a 400) enforced where the operator can still
+ *     do something about it. It is held as the string the operator typed
+ *     rather than as a number: `Number('')` is 0, so clearing the box to type
+ *     a new value used to leave a `0` sitting in it — and, if they hit Kill
+ *     first, a refusal from the API at the final confirm, mid-incident.
  *
  * The confirm button stays ENABLED on an empty reason on purpose: a disabled
  * button explains nothing, and the operator is mid-incident.
@@ -51,16 +57,24 @@ export function KillDialog({
   onConfirm: (draft: KillRequestDraft) => void;
 }) {
   const [reason, setReason] = useState('');
-  const [cooldown, setCooldown] = useState(defaultCooldownSeconds);
+  const [cooldown, setCooldown] = useState(String(defaultCooldownSeconds));
   const [complaint, setComplaint] = useState<string | null>(null);
+
+  // An empty box is NaN here, not 0 — the whole reason the state is a string.
+  const seconds = cooldown.trim() === '' ? Number.NaN : Number(cooldown);
+  const cooldownOk = Number.isFinite(seconds) && seconds > 0;
 
   function submit() {
     if (!reason.trim()) {
       setComplaint('A reason is required — it is what the audit trail and the webhook carry.');
       return;
     }
+    if (!cooldownOk) {
+      setComplaint('The cooldown must be a positive number of seconds.');
+      return;
+    }
     setComplaint(null);
-    onConfirm({ reason: reason.trim(), cooldownSeconds: cooldown });
+    onConfirm({ reason: reason.trim(), cooldownSeconds: seconds });
   }
 
   return (
@@ -86,15 +100,17 @@ export function KillDialog({
           <input
             id="kill-cooldown"
             type="number"
-            min={0}
+            // 1, not 0: the server's floor, so the spinner cannot step to a
+            // value the final confirm would be refused for.
+            min={1}
             value={cooldown}
-            onChange={(e) => setCooldown(Number(e.target.value))}
+            onChange={(e) => setCooldown(e.target.value)}
           />
-          <span className={ui.dim}>= {formatDuration(cooldown * 1000)}</span>
+          <span className={ui.dim}>= {cooldownOk ? formatDuration(seconds * 1000) : '—'}</span>
         </div>
         <div className={ui.row}>
           {PRESETS.map((p) => (
-            <button key={p.seconds} type="button" onClick={() => setCooldown(p.seconds)}>
+            <button key={p.seconds} type="button" onClick={() => setCooldown(String(p.seconds))}>
               {p.label}
             </button>
           ))}

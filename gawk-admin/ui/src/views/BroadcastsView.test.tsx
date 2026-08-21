@@ -138,6 +138,38 @@ describe('the kill dialog (§4.9, AP6)', () => {
     expect(session.calls.some((c) => c.path.includes('/kill'))).toBe(false);
   });
 
+  // Regression (PR #280 review). `Number('')` is 0, and the server 400s on
+  // `cooldownSeconds <= 0` — so clearing the field to type a new value and
+  // hitting Kill produced a refusal from the API, at the final confirm,
+  // mid-incident. The field is a string until it is submitted, so clearing it
+  // shows an empty box rather than a `0` to type in front of.
+  it('refuses a cleared cooldown here rather than letting the server 400 on 0', async () => {
+    const { session } = await openKill();
+    fireEvent.change(screen.getByLabelText('Reason (required)'), {
+      target: { value: 'terms violation' },
+    });
+    const field = screen.getByLabelText('Cooldown (seconds)') as HTMLInputElement;
+    fireEvent.change(field, { target: { value: '' } });
+    expect(field.value).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/cooldown/i);
+    expect(session.calls.some((c) => c.path.includes('/kill'))).toBe(false);
+  });
+
+  it('refuses a zero cooldown, which the server rejects as not positive', async () => {
+    const { session } = await openKill();
+    fireEvent.change(screen.getByLabelText('Reason (required)'), { target: { value: 'spam' } });
+    fireEvent.change(screen.getByLabelText('Cooldown (seconds)'), { target: { value: '0' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/cooldown/i);
+    expect(session.calls.some((c) => c.path.includes('/kill'))).toBe(false);
+    // The spinner's own floor agreed with the server, so 0 is not reachable by
+    // stepping either.
+    expect(screen.getByLabelText('Cooldown (seconds)').getAttribute('min')).toBe('1');
+  });
+
   it('posts the reason and the cooldown once both are given', async () => {
     const { session } = await openKill();
     fireEvent.change(screen.getByLabelText('Reason (required)'), {
@@ -361,6 +393,98 @@ describe('server refusals', () => {
 
   // The clean case still reads as clean: a 201 carries no `enforcement`, so
   // nothing goes amber and the operator gets the plain confirmation.
+  // Regression (PR #280 review). Kill + ban is TWO writes, and the second one
+  // is the fragile one: the ID ban's `afterMutation()` invalidates the
+  // relayscan fleet cache, so the IP ban's server-side `"publisher"` resolve
+  // does a fresh scan that races the kill the ID ban just triggered. If the
+  // publisher is already gone it 400s.
+  //
+  // Retrying used to be impossible: the ID ban now exists, so the first call
+  // 409s and the shared catch aborts before the IP ban is ever attempted.
+  // `BansView` has no create form and the killed broadcast has left the table,
+  // so kubectl was the only remaining route — silently.
+  it('reaches the IP ban on a retry, when the ID ban already landed', async () => {
+    let ipAttempts = 0;
+    let idAttempts = 0;
+    const session = stubSession((path, init) => {
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
+      if (path !== 'api/v1/bans') return json({});
+      const body = JSON.parse(String(init.body)) as { target: { type: string } };
+      if (body.target.type === 'broadcastId') {
+        idAttempts++;
+        return idAttempts === 1
+          ? json({ id: 'ban-id', state: 'active' }, 201)
+          : json(
+              {
+                error: {
+                  code: 'duplicate_active',
+                  message: 'an active ban already covers this target',
+                },
+                ban: { id: 'ban-id', state: 'active' },
+              },
+              409,
+            );
+      }
+      ipAttempts++;
+      return ipAttempts === 1
+        ? json(
+            {
+              error: {
+                code: 'invalid_target',
+                message: "the live publisher's IP could not be resolved",
+              },
+            },
+            400,
+          )
+        : json({ id: 'ban-ip', state: 'active' }, 201);
+    });
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
+    fireEvent.change(screen.getByLabelText('Reason (required)'), {
+      target: { value: 'ban evasion' },
+    });
+    fireEvent.click(screen.getByLabelText(/Also ban the publisher IP/));
+    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
+
+    // First attempt: the ID ban landed, the IP ban did not, and the dialog
+    // stays open with the server's own words.
+    expect(await screen.findByText(/could not be resolved/)).toBeTruthy();
+    expect(idAttempts).toBe(1);
+    expect(ipAttempts).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
+
+    await waitFor(() => expect(ipAttempts).toBe(2));
+    // The confirmation is honest about which half was already in force.
+    expect(await screen.findByText(/was already banned/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Kill and ban' })).toBeNull();
+  });
+
+  it('says a broadcast was already banned rather than showing the 409 as a failure', async () => {
+    const session = stubSession((path) => {
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
+      if (path === 'api/v1/bans') {
+        return json(
+          {
+            error: { code: 'duplicate_active', message: 'an active ban already covers this target' },
+            ban: { id: 'ban-id', state: 'active' },
+          },
+          409,
+        );
+      }
+      return json({});
+    });
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
+    fireEvent.change(screen.getByLabelText('Reason (required)'), { target: { value: 'terms' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Kill and ban' }));
+
+    // The state the operator asked for is the state that exists, so this is
+    // not a red error — but it must not claim this click did it either.
+    expect(await screen.findByText('ABC123 was already banned.')).toBeTruthy();
+    expect(screen.queryByText('Banned ABC123.')).toBeNull();
+  });
+
   it('shows a plain confirmation when the CR was written too (201)', async () => {
     const session = stubSession((path) => {
       if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });

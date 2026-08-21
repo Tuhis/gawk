@@ -1,8 +1,9 @@
 import { useCallback, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
-import { enforcementNotice } from '../api/client.ts';
-import type { Ban, Broadcast, BroadcastBanState } from '../api/types.ts';
+import { ApiError, enforcementNotice } from '../api/client.ts';
+import type { ApiClient } from '../api/client.ts';
+import type { Ban, Broadcast, BroadcastBanState, CreateBanRequest } from '../api/types.ts';
 import { BanDialog } from '../components/BanDialog.tsx';
 import type { BanRequestDraft } from '../components/BanDialog.tsx';
 import { FlaggedPinSlot } from '../components/FlaggedPin.tsx';
@@ -92,7 +93,7 @@ export function BroadcastsView({
       // The ID ban is the action that ends the broadcast: the relay kills every
       // live publisher matching a new Ban (AP3), so this both stops it now and
       // keeps it stopped.
-      const idBan = await api.createBan({
+      const idBan = await ensureBan(api, {
         target: { type: 'broadcastId', value: target.id },
         expiresAt: draft.expiresAt,
         reason: draft.reason,
@@ -100,21 +101,25 @@ export function BroadcastsView({
       });
       // Either write can come back 202 on its own; one unenforced ban is
       // enough to make this amber, so the first notice wins.
-      let pending = notice(target.id, idBan);
+      let pending = notice(target.id, idBan.ban);
+      let ipBan: BanOutcome | null = null;
       if (draft.ip) {
         // The literal "publisher" is §4.7's contract: the server resolves the
         // live publisher's address through relayscan rather than trusting an
         // address this page read seconds ago, and applies the prefix the
         // operator just confirmed.
-        const ipBan = await api.createBan({
+        ipBan = await ensureBan(api, {
           target: { type: 'ip', value: 'publisher', prefixLength: draft.ip.prefixLength },
           expiresAt: draft.expiresAt,
           reason: draft.reason,
           sourceBroadcastId: target.id,
         });
-        pending = pending ?? notice(target.id, ipBan);
+        pending = pending ?? notice(target.id, ipBan.ban);
       }
-      reportSuccess(pending, `Banned ${target.id}${draft.ip ? ' and its publisher IP' : ''}.`);
+      reportSuccess(
+        pending,
+        banSummary(target.id, idBan.existed, ipBan === null ? null : ipBan.existed),
+      );
       setBanning(null);
       reload();
     } catch (err) {
@@ -262,6 +267,57 @@ export function BroadcastsView({
       ) : null}
     </section>
   );
+}
+
+/** What one `POST /bans` left behind: the ban, and whether it predates the click. */
+interface BanOutcome {
+  /** The created ban, or the existing one a `409 duplicate_active` returned. */
+  ban: Ban | null;
+  existed: boolean;
+}
+
+/**
+ * Place a ban, treating `409 duplicate_active` as "already in force".
+ *
+ * Kill + ban is two sequential writes and the second is the fragile one: the
+ * first ban's `afterMutation()` invalidates the relayscan fleet cache, so the
+ * IP ban's server-side `"publisher"` resolve does a *fresh* scan racing the
+ * kill the first ban just triggered — if the publisher has already gone it
+ * 400s. Without this, the retry that failure demands re-sent the ID ban, got a
+ * 409, and aborted before ever reaching the IP ban: `BansView` has no create
+ * form and the killed broadcast has left the table, so the IP ban became
+ * unreachable from the UI entirely.
+ *
+ * A 409 is the one refusal that is not a refusal. It means the target already
+ * carries an active ban — the state the operator is asking for — and it comes
+ * back WITH that ban, so there is nothing to guess. Every other failure still
+ * throws.
+ */
+async function ensureBan(api: ApiClient, req: CreateBanRequest): Promise<BanOutcome> {
+  try {
+    return { ban: await api.createBan(req), existed: false };
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'duplicate_active') {
+      return { ban: err.ban, existed: true };
+    }
+    throw err;
+  }
+}
+
+/**
+ * The confirmation line for a kill + ban.
+ *
+ * It has to stay true when a target was already banned. "Banned ABC123." would
+ * claim this click did something it did not — in a portal whose whole job is
+ * the moderation record — and a red error would claim nothing happened when
+ * the state the operator asked for is the state that exists.
+ */
+function banSummary(id: string, idExisted: boolean, ipExisted: boolean | null): string {
+  if (ipExisted === null) return idExisted ? `${id} was already banned.` : `Banned ${id}.`;
+  if (!idExisted && !ipExisted) return `Banned ${id} and its publisher IP.`;
+  if (idExisted && ipExisted) return `${id} and its publisher IP were already banned.`;
+  if (idExisted) return `Banned ${id}'s publisher IP; ${id} was already banned.`;
+  return `Banned ${id}; its publisher IP was already banned.`;
 }
 
 /**

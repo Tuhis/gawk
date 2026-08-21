@@ -161,6 +161,21 @@ export class AuthSession {
   private meta: ProviderMetadata | null = null;
   private renewTimer: number | null = null;
   private renewInflight: Promise<Tokens | null> | null = null;
+  /**
+   * Which credential era we are in. Bumped whenever the tokens are deliberately
+   * dropped (`logout`, `abandon`), and captured by any request that will
+   * install tokens when it completes.
+   *
+   * A silent renew is a POST that can be in flight for a second or more, and
+   * nothing cancels an in-flight `fetch` here. Without this counter its
+   * completion called `adopt` unconditionally, so a Sign out landing inside
+   * that window re-installed the tokens, flipped the state back to
+   * `authenticated` and re-armed the renewal timer — the portal signing itself
+   * back in, in front of an operator who just signed out. An
+   * `end_session_endpoint` is OPTIONAL in a discovery document, so `logout`
+   * often performs no navigation to paper over it.
+   */
+  private generation = 0;
   private loginInflight: Promise<void> | null = null;
   private state: SessionState = { status: 'idle' };
   private readonly listeners = new Set<() => void>();
@@ -443,22 +458,35 @@ export class AuthSession {
    * is more likely to be looking at the page now than mid-action later.
    */
   private async silentRenew(): Promise<void> {
+    const generation = this.generation;
     const renewed = await this.tryRenew();
     if (renewed) return;
+    // Signed out while this was in flight. "Renewal failed ⇒ go to the IdP" is
+    // right for a revoked grant and exactly wrong here: against a live IdP
+    // session the bounce is invisible, so Sign out would end with the operator
+    // signed back in — the same resurrection as adopting the tokens, one step
+    // further round. There is no credential to recover and nobody asked for
+    // one.
+    if (generation !== this.generation) return;
     this.abandon();
     await this.beginLogin().catch((err) => this.setState('error', message(err)));
   }
 
   /**
-   * Give up on the credential we are holding.
+   * Give up on the credential we are holding — the ONE way tokens are dropped,
+   * used before falling back to the redirect flow and by `logout`.
    *
-   * Always called immediately before falling back to the redirect flow. The
-   * access token may still have a minute of life in it, but renewal has failed
-   * or the server has rejected it twice — continuing to send it would produce a
-   * page that half-works until it abruptly does not. Dropping it makes the
-   * state honest: unauthenticated, and on the way to the IdP.
+   * In the fallback case the access token may still have a minute of life in
+   * it, but renewal has failed or the server has rejected it twice —
+   * continuing to send it would produce a page that half-works until it
+   * abruptly does not. Dropping it makes the state honest: unauthenticated,
+   * and on the way to the IdP.
+   *
+   * The generation bump is what makes that stick against a renewal already in
+   * flight; see the field's comment.
    */
   private abandon() {
+    this.generation++;
     this.tokens = null;
     if (this.renewTimer !== null) this.deps.clearTimer(this.renewTimer);
     this.renewTimer = null;
@@ -479,6 +507,11 @@ export class AuthSession {
     const cfg = this.config;
     if (!cfg) return Promise.resolve(null);
 
+    // The era this refresh belongs to. Anything that drops the tokens while
+    // the POST is in flight moves it on, and the response below is then a
+    // credential for a session that no longer exists.
+    const generation = this.generation;
+
     const run = (async (): Promise<Tokens | null> => {
       try {
         const tokens = await this.tokenRequest(
@@ -489,6 +522,10 @@ export class AuthSession {
             scope: SCOPE,
           }),
         );
+        // Signed out (or given up on) since we asked. The tokens are perfectly
+        // valid and that is exactly why they must be dropped rather than
+        // installed: adopting them here would undo the operator's Sign out.
+        if (generation !== this.generation) return null;
         // A provider that rotates returns a new refresh token; one that does
         // not returns none, and the old one stays valid.
         this.adopt({
@@ -553,9 +590,11 @@ export class AuthSession {
    * server-side session and no cookie to clear (D17).
    */
   async logout(): Promise<void> {
-    this.tokens = null;
-    if (this.renewTimer !== null) this.deps.clearTimer(this.renewTimer);
-    this.renewTimer = null;
+    // Through `abandon`, so a silent renew whose POST is already in flight
+    // finds the generation moved and drops its tokens instead of installing
+    // them. Clearing `this.tokens` alone would leave that response free to
+    // sign the operator straight back in.
+    this.abandon();
     this.clearFlow();
     this.setState('idle');
     const meta = this.meta;

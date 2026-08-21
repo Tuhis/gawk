@@ -60,7 +60,12 @@ interface Recorded {
   init: RequestInit;
 }
 
-type Responder = (init: RequestInit) => Response;
+/**
+ * A queued token-endpoint behaviour. It may return a PROMISE, which is what
+ * lets a test pin a token request in flight and decide when — and whether —
+ * it lands; the logout race below is exactly that shape.
+ */
+type Responder = (init: RequestInit) => Response | Promise<Response>;
 
 function harness(apiHandler?: (url: string, init: RequestInit) => Response) {
   const calls: Recorded[] = [];
@@ -186,6 +191,51 @@ async function until(what: string, predicate: () => boolean, turns = 500): Promi
     await new Promise((resolve) => realSetTimeout(resolve, 0));
   }
   throw new Error(`timed out waiting for ${what}`);
+}
+
+/**
+ * The other half of `until`: run an un-awaited chain out, so that asserting
+ * something did NOT happen means it had every chance to.
+ *
+ * `until` proves something happens; this backs the opposite claim, which is
+ * only worth anything once the chain has actually run. It is used after a
+ * precise sync point rather than instead of one — the budget is slack, not the
+ * argument.
+ */
+async function settle(turns = 50): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+  }
+}
+
+/**
+ * A token response the test holds open until it chooses to deliver it, so a
+ * logout can land strictly inside the renewal's POST.
+ *
+ * `consumed` is the sync point that makes the "nothing happened" assertions
+ * exact rather than merely patient: `bodyUsed` flips the moment
+ * `tokenRequest`'s `res.json()` disturbs the stream, so once it is true the
+ * session is inside the very continuation that decides whether to adopt these
+ * tokens.
+ */
+function pinnedToken(): {
+  responder: Responder;
+  deliver: (body: unknown) => void;
+  consumed: () => boolean;
+} {
+  let resolve!: (res: Response) => void;
+  let delivered: Response | null = null;
+  const pending = new Promise<Response>((r) => {
+    resolve = r;
+  });
+  return {
+    responder: () => pending,
+    deliver: (body: unknown) => {
+      delivered = json(body);
+      resolve(delivered);
+    },
+    consumed: () => delivered !== null && delivered.bodyUsed,
+  };
 }
 
 /**
@@ -512,5 +562,58 @@ describe('logout (§4.8)', () => {
     expect(h.redirects[1].startsWith(END_SESSION)).toBe(true);
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
+  });
+
+  // Regression (PR #280 review). The renewal timer fires on its own schedule,
+  // so "Sign out while a silent renew is in flight" is not a contrived
+  // interleaving — it is one click landing inside a ~1 s window that recurs
+  // every few minutes.
+  //
+  // `tryRenew`'s closure used to call `adopt` unconditionally on the response.
+  // With an IdP whose discovery document carries no `end_session_endpoint`
+  // (it is OPTIONAL, so `logout` performs no navigation and the page stays
+  // put) the operator would watch the portal sign itself back in — on a shared
+  // or incident-response machine, which is the situation Sign out exists for.
+  it('does not let a renewal that was already in flight resurrect the session', async () => {
+    vi.useFakeTimers({ toFake: FAKE_ONLY });
+    const h = harness();
+    const session = await login(h);
+
+    // Hold the renewal's POST open so the logout lands strictly inside it.
+    const pinned = pinnedToken();
+    h.tokenPlan.push(pinned.responder);
+    await vi.advanceTimersByTimeAsync(241_000);
+    await until('the renewal POST to be in flight', () => h.tokenCalls().length === 2);
+    expect(session.accessToken()).toBe('access-1');
+
+    await session.logout();
+    expect(session.accessToken()).toBeNull();
+
+    // The IdP answers the renewal it was already handling. The tokens are
+    // valid; they are simply no longer wanted.
+    pinned.deliver({
+      access_token: 'access-2',
+      refresh_token: 'refresh-2',
+      token_type: 'Bearer',
+      expires_in: 300,
+    });
+    await until('the renewal response to be read', () => pinned.consumed());
+    await settle();
+
+    expect(session.accessToken()).toBeNull();
+    expect(session.getState().status).toBe('idle');
+    // Nothing was re-scheduled, so the resurrection cannot arrive one renewal
+    // later either.
+    expect(vi.getTimerCount()).toBe(0);
+    // The initial login and the end-session bounce, and nothing since. The
+    // other way back in is `silentRenew`'s "renewal failed ⇒ go to the IdP",
+    // which against a live IdP session is an invisible round trip that lands
+    // the operator signed back in.
+    expect(h.redirects).toHaveLength(2);
+    // And the seam every view goes through agrees: there is no session here.
+    await expect(session.authorizedFetch('api/v1/me')).rejects.toBeInstanceOf(AuthRedirect);
+    // The refused token never reached a request.
+    const everything = h.calls.map((c) => h.bearerOf(c) ?? '').join(' ');
+    expect(everything).not.toContain('access-2');
   });
 });
