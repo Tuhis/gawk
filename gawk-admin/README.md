@@ -153,7 +153,17 @@ authorization request is refused before it ever reaches us.
 
 Chart in `deploy/charts/gawk-admin`, image `ghcr.io/tuhis/gawk-admin`, chart at
 `oci://ghcr.io/tuhis/charts/gawk-admin`. Chart version == appVersion == image
-tag, always. The full operator-facing story — the CloudNativePG prerequisite,
-the IdP recipe, why IP bans need `externalTrafficPolicy: Local`, what a portal
-compromise does and does not yield — is in
+tag, always.
+
+**The chart does not create a database.** It takes a connection to one that
+already exists — `postgres.dsn`, or `postgres.dsnSecretRef: {name, key}` — and
+refuses to render with neither. A CloudNativePG cluster is just the Ref form:
+CNPG's generated `<cluster>-app` Secret carries the DSN under `uri`. The
+database has to be up before `helm install`, because the migration Job is a
+`pre-install` hook.
+
+The full operator-facing story — bringing that Postgres (with a
+copy-pasteable CNPG `Cluster` manifest), the IdP recipe, why IP bans need
+`externalTrafficPolicy: Local`, what a portal compromise does and does not
+yield — is in
 [`docs/self-hosting.md`](../docs/self-hosting.md#9-gawk-admin--the-moderation-portal-r39).

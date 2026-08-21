@@ -29,7 +29,7 @@ references are to that state.
 |---|---|---|
 | D1 | **A separate `gawk-admin` service** — the fourth top-level module, with its own chart and image — not an admin listener inside `gawk-server`. | Keeps the relay image and attack surface unchanged; the portal's heavy dependencies (OIDC client, Postgres driver, embedded SPA) never enter the data plane. Gives R40's sampler an obvious neighbour. Cost: a fourth release-please component (accepted). |
 | D2 | **Enforcement state is projected into a `Ban` CRD that relay pods watch; Postgres is `gawk-admin`'s system of record.** The data plane never calls the admin plane at runtime. | The ban check sits on the publish path and must answer from pod-local memory. Watching CRs (the `cluster.go` informer pattern) means enforcement survives `gawk-admin` outages *and* relay cold-starts while admin is down — the k8s API (replicated etcd) is the always-on distribution layer. A poll-the-admin design has a fail-open window on relay cold start; rejected (§7). |
-| D3 | **Postgres via CloudNativePG** is `gawk-admin`'s database (audit trail, kill history, events, webhooks; R40 content flags later). Behind a store interface. | Owner's call over embedded SQLite: a real DB the R40 event stream can grow into, with `psql` tooling — and the shared store every replica of a horizontally-scaled `gawk-admin` reads and writes (D16), which file-on-PVC could never be. CNPG is the operator-grade way to run it; a plain-DSN escape hatch keeps third-party self-hosters unblocked (§4.13). |
+| D3 | **Postgres** is `gawk-admin`'s database (audit trail, kill history, events, webhooks; R40 content flags later). Behind a store interface. | Owner's call over embedded SQLite: a real DB the R40 event stream can grow into, with `psql` tooling — and the shared store every replica of a horizontally-scaled `gawk-admin` reads and writes (D16), which file-on-PVC could never be. CNPG is the operator-grade way to run one, and the chart supports it without templating a line of it: the chart takes a DSN, and CNPG's generated `<cluster>-app` Secret is one (§4.13). |
 | D4 | **Ban handles: broadcast ID and publisher IP (CIDR), each independently timed or permanent.** One target per `Ban` CR. | The resume token is `HMAC(key, broadcastID)` — stateless — so banning the ID *is* banning the token (`internal/transport/resume.go:76-92`). IP is the only handle that spans a re-mint loop. The publish secret is fleet-global and useless as identity (`docs/40` D4). Honest limit, stated in the UI: with no accounts, nothing stronger than ID+IP exists. |
 | D5 | **A plain "kill" is a ban on the ID with a default 10-minute cooldown** (configurable). "Kill + ban" takes explicit durations and optionally the IP. | The broadcaster auto-reclaims with its resume token within seconds, so a kill with no ID ban resurrects before the portal refreshes. The cooldown means the operator is never racing auto-resume while deciding on a real ban. |
 | D6 | **New terminal close code `4006` (`CloseCodeTerminatedByOperator`)**, sent to the publisher *and* to viewers. Terminal everywhere: no reconnect, no auto-resume. | Owner chose viewer-visible transparency over reusing 4000. Costs the full mirror pass (wire.ts, Rust crate, wirecheck, golden vectors) and viewer/broadcaster terminal handling — priced into AP1. |
@@ -119,7 +119,7 @@ references are to that state.
                        │
  ┌─────────────────────┴──────────────────────┐
  │ gawk-admin (replicas ≥ 2, stateless API)   │
- │  portal SPA + /api/v1 (OIDC JWT) ────► Postgres (CNPG) — system of record
+ │  portal SPA + /api/v1 (OIDC JWT) ────► Postgres (external) — system of record
  │  JWKS validation · role check          bans, events, webhooks, deliveries
  │  leader-elected: reconciler/janitor,   │
  │    webhook dispatcher (signed) ◄───────┘
@@ -683,7 +683,7 @@ the chart's values and the startup log.
 | `-oidc-issuer` / `-oidc-client-id` / `-oidc-audience` | *(required)* | The OIDC provider, the SPA's public-client ID, and the audience every accepted JWT must carry. **No client secret exists** — the SPA is a public client with PKCE (§4.8). |
 | `-oidc-roles-claim` | `resource_access.{clientId}.roles` | Dot-path to the roles array in the JWT — the default is the Keycloak client-roles shape, `{clientId}` substituted from `-oidc-client-id`; override for other IdPs. Blank ⇒ refuse to start. |
 | `-operator-role` | `operator` | The role every R39 route requires. Blank ⇒ refuse to start. |
-| `-pg-dsn` | *(required)* | Postgres DSN (chart wires it from the CNPG secret or `postgres.dsnSecretRef`). |
+| `-pg-dsn` | *(required)* | Postgres DSN (chart wires it from `postgres.dsn` or `postgres.dsnSecretRef` — e.g. CNPG's `<cluster>-app`/`uri`). |
 | `-relay-scan-target` | *(required)* | DNS name of the relay headless metrics Service (A-records → pods; the `relayscrape` discovery pattern). |
 | `-relay-ops-port` | `2112` | Ops listener port on relay pods. |
 | `-relay-admin-token` | *(required)* | Bearer for `/internal/admin/*` (must equal the relay's `-admin-api-token`). |
@@ -712,14 +712,24 @@ unchanged):
   set (the role knobs have safe defaults), else `{{ fail }}` with a message
   naming this doc. (Auth is enforced in-process regardless — the guard just
   makes the chart refuse to *route* an unbootable config.)
-- **CNPG**: `postgres.cnpg.enabled` (default `true`) renders a
-  `postgresql.cnpg.io/v1` `Cluster` (`postgres.instances` default **2** —
-  HA is a stated reason for the dedicated DB (D16) — `postgres.storage.size`
-  default `2Gi`) and wires the app secret CNPG generates into `-pg-dsn`.
-  The CNPG **operator is a documented prerequisite** (self-hosting §,
-  install command included), not something this chart installs. Escape
-  hatch: `postgres.cnpg.enabled: false` + `postgres.dsnSecretRef` for
-  bring-your-own-Postgres.
+- **The database is a prerequisite, not part of the release.** The chart
+  renders no database object at all: it takes a *connection*, in the same
+  house `foo` / `fooRef` dual form as every other secret here —
+  `postgres.dsn` (a literal DSN) or `postgres.dsnSecretRef: {name, key}` (a
+  Secret holding one; the Ref wins if both are set). With neither, the chart
+  `{{ fail }}`s naming both forms. Decoupling the stateful store from the
+  stateless service is the point: Postgres outlives every release of
+  `gawk-admin`, `helm uninstall` must never be able to take the audit trail
+  with it, and a `pre-install` hook may depend on a prerequisite where it
+  could never depend on the release's own manifests (§4.15, §11.1).
+  **CloudNativePG is then not a special case** — CNPG publishes
+  `<cluster>-app` for the application user it creates, and that Secret's
+  `uri` key is exactly this DSN, so
+  `postgres.dsnSecretRef: {name: <cluster>-app, key: uri}` is the whole
+  integration. The operator *and* the `Cluster` are the self-hoster's to
+  apply, once, outside the release; the self-hosting doc carries the operator
+  install command and a copy-pasteable two-instance `Cluster` manifest (HA of
+  the moderation plane is a stated reason for the dedicated DB — D16).
 - RBAC: SA + namespaced Role on `bans.gawk.ioio.fi`
   (`get,list,watch,create,update,delete`) **plus
   `coordination.k8s.io/leases` (`get,create,update`)** for leader election,
@@ -975,7 +985,7 @@ Phase D — deployment, docs, closure:
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| AP8 | `gawk-admin` chart (+ CNPG wiring), `gawk-server` chart moderation additions (CRD, RBAC, knobs, headless-Service gate), release-please + CI wiring, docs (self-hosting §, gotchas sync, `docs/README.md` row), manual pass | `helm template` golden tests: fail-guard fires on Ingress-without-issuer/clientId/audience; `replicaCount` defaults to 2 and a PDB renders; the migration hook Job renders with the release's own image tag + hook annotations; CRD carries `resource-policy: keep`; relay Role gains read-only bans access only when `moderation.enabled`; admin Role includes leases for leader election; secrets render via both literal and `Ref` forms (relay token, per-webhook secrets); `notifications.webhooks` renders into `-static-webhooks` with secrets sourced from Secret env vars; CNPG `Cluster` renders with `instances: 2` default when enabled, `dsnSecretRef` path works when not. Migration-lint CI gate (forward-only numbering, merged files immutable) + the previous-release-against-new-schema job (§4.15) exist and gate PRs. release-please manifest builds a `gawk-admin-vX.Y.Z` tag; image + chart publish jobs mirror telemetry's. Self-hosting: CNPG prerequisite + install, IdP setup guidance (Keycloak client-roles recipe for `operator`, 5–15 min access tokens, refresh-token rotation for the public client), `externalTrafficPolicy: Local` requirement for IP bans, webhook receiver guidance (signature + replay window), manual `gawk-admin migrate` break-glass, break-glass `kubectl apply` Ban recipe. **Manual pass on the reference deployment**: kill a real broadcast from a phone via OIDC portal — viewers see "ended by a moderator", broadcaster auto-resume gets 451 and stops, re-mint works after cooldown; IP ban blocks a re-mint; unban restores; webhook lands in ntfy. |
+| AP8 | `gawk-admin` chart (+ its database connection), `gawk-server` chart moderation additions (CRD, RBAC, knobs, headless-Service gate), release-please + CI wiring, docs (self-hosting §, gotchas sync, `docs/README.md` row), manual pass | `helm template` golden tests: fail-guard fires on Ingress-without-issuer/clientId/audience; `replicaCount` defaults to 2 and a PDB renders; the migration hook Job renders with the release's own image tag + hook annotations; CRD carries `resource-policy: keep`; relay Role gains read-only bans access only when `moderation.enabled`; admin Role includes leases for leader election; secrets render via both literal and `Ref` forms (relay token, per-webhook secrets); `notifications.webhooks` renders into `-static-webhooks` with secrets sourced from Secret env vars; the chart refuses to render with neither `postgres.dsn` nor `postgres.dsnSecretRef` set (the message naming both forms, the CNPG `<cluster>-app`/`uri` recipe and this doc); both forms render (literal → `value`, Ref → `valueFrom.secretKeyRef`); no `postgresql.cnpg.io` object renders under any values; the migration Job carries `pre-install,pre-upgrade`. Migration-lint CI gate (forward-only numbering, merged files immutable) + the previous-release-against-new-schema job (§4.15) exist and gate PRs. release-please manifest builds a `gawk-admin-vX.Y.Z` tag; image + chart publish jobs mirror telemetry's. Self-hosting: bring-your-own-Postgres with the ordering rule and a copy-pasteable CNPG `Cluster` manifest, IdP setup guidance (Keycloak client-roles recipe for `operator`, 5–15 min access tokens, refresh-token rotation for the public client), `externalTrafficPolicy: Local` requirement for IP bans, webhook receiver guidance (signature + replay window), manual `gawk-admin migrate` break-glass, break-glass `kubectl apply` Ban recipe. **Manual pass on the reference deployment**: kill a real broadcast from a phone via OIDC portal — viewers see "ended by a moderator", broadcaster auto-resume gets 451 and stops, re-mint works after cooldown; IP ban blocks a re-mint; unban restores; webhook lands in ntfy. |
 
 Dependency order: AP1 → AP2 → AP3 (relay complete); AP4 → AP5 → {AP6, AP7};
 AP8 last. AP1–AP3 are releasable with `moderation.source=file` before
@@ -1014,7 +1024,7 @@ code.
 |---|---|---|---|
 | §4.3, §4.14 | the file ban source reloads on **fsnotify** + SIGHUP | a **stat poll** (mtime + size) + SIGHUP | `internal/tlsutil/reload.go` already solves "notice this file changed" this way, and matching it adds no dependency to the relay module for a dev-lane feature. The observable behaviour — a changed file is picked up without a restart — is unchanged; the latency is one poll interval instead of a kernel event. |
 | §4.8, §6 | an unreachable IdP is discussed only as a *running* failure | **`New` does not fail on an unreachable issuer at all**: discovery retries in the background, authenticated routes answer `401 idp_unavailable` (never 500, and deliberately without spending the caller's rate-limit budget) until it resolves, and `Ready()`/`ResolveError()` feed `/readyz` | A portal that refuses to start because the IdP is briefly down is a portal that is down for longer than the IdP was — and it turns "restart the pods" into a step that can fail for a reason unrelated to the pods. The security posture is identical: no request is ever authorized while the issuer is unresolved. It also lets the CI image smoke get all the way to its one expected failure with neither Postgres nor an IdP present, instead of stopping at the IdP. |
-| §4.13, §4.15 | the migration Job hooks `pre-install`/`pre-upgrade` | `post-install`/`pre-upgrade` | A `pre-install` hook runs **before** the release's own manifests, so with `postgres.cnpg.enabled` (the default) it waits for a Secret Helm will not create until the hook finishes — a deadlock on every first install. `pre-upgrade` is untouched, so everything §4.15 actually guarantees still holds: migrated to completion before the new Deployment rolls, and a failed migration halts the upgrade with the previous pods still serving. On a first install there are no previous pods to protect, and the new ones simply come up NotReady with the "schema too old" log line §4.15 already specifies until the Job lands. Recorded as a gotcha, because the Helm ordering is the surprising half. |
+| §4.13, §4.15 | the migration Job hooks `pre-install`/`pre-upgrade` | `pre-install`/`pre-upgrade` — **deviation withdrawn** | It was briefly implemented as `post-install`/`pre-upgrade`. A `pre-install` hook runs **before** the release's own manifests, so while the chart still rendered its own CNPG `Cluster` the Job waited for a Secret Helm would not create until the Job finished — a deadlock on every first install. The fix landed one level up instead: the chart no longer creates a database, it takes a connection to one that must already exist (§4.13). That makes the database a *prerequisite* rather than a dependency of the release — exactly what a `pre-install` hook is allowed to depend on — so the spec's wording is right as written, and §4.15's guarantee now holds on a **first install** too, not only on upgrades: migrated to completion before the Deployment rolls, and a failed migration halts the release instead of rolling pods that would come up NotReady. The Helm ordering rule that forced the detour is still worth knowing and stays in `docs/gotchas.md`. |
 | §4.13 | — | the relay chart's `moderation.source` is a value (`k8s` default), not just `moderation.enabled` | `-moderation-source` accepts `file:<path>` too (§4.14), and a chart that hardcoded `k8s` would have made the compose-lane source unreachable from a Helm install for no reason. |
 | §9 AP8 | *(the kind `e2e-cluster` scenario is listed under AP3)* | landed in **AP8**, as `e2e/moderation-assert.sh` | It needs the CRD template, the relay Role's `bans` access and a chart value — all deployment files — so building it from AP3 would have collided with the chunk that owns them. What it asserts and what it deliberately does not are in the script's own header. |
 | §9 AP8 | the `docker` job smoke-probes every image's HTTP endpoint | the `gawk-admin` entry carries **no probe**; it asserts the process reaches its documented cluster-less failure | The image genuinely cannot serve without Kubernetes (§4.14). The probe was written before `cmd/gawk-admin/main.go` existed and would have failed on its first CI run. A smoke that asserts something false is worse than one that asserts less. |
@@ -1045,9 +1055,9 @@ Automated, and gating every PR:
   annotations and `args: ["migrate"]`; the admin Role covers Ban CRUD *and*
   leader-election Leases; secrets render through both the literal and the
   `Ref` form; `notifications.webhooks` renders into `-static-webhooks`
-  carrying env var *names* and never a signing key; the CNPG `Cluster` renders
-  with `instances: 2` and `resource-policy: keep`, and the `dsnSecretRef`
-  escape hatch works with CNPG off (and is *required* when it is off); the
+  carrying env var *names* and never a signing key; the chart refuses to render
+  without a database and says how to give it one; both connection forms
+  render; no CloudNativePG object renders under any values; the
   relay chart renders the CRD with `resource-policy: keep`, printer columns and
   **read-only** `bans` RBAC with `clusterMode` off; and — the check in the
   other direction — with `moderation.enabled=false` the relay chart renders
@@ -1100,7 +1110,7 @@ Run it in this order and record the outcome where §11.4 says.
 
 **Setup (once).**
 
-1. Install the CNPG operator if it is not already there, then upgrade the relay
+1. Bring up the Postgres `gawk-admin` will use — the CNPG operator plus a `Cluster`, or a database you already run — then upgrade the relay
    with `moderation.enabled=true` and a fresh `moderation.adminApi.tokenRef`
    Secret, and install `gawk-admin` behind an OIDC-gated Ingress at
    `admin.gawk.ioio.fi`. `docs/self-hosting.md` §9.2 is the runbook.

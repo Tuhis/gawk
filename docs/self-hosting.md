@@ -473,18 +473,96 @@ it is the reason the enforcement object is a CR and not an API call.
 
 ### 9.1 Prerequisites, beyond §2
 
-- **The CloudNativePG operator.** `gawk-admin` keeps its system of record in
-  Postgres, and the chart renders a CNPG `Cluster` by default. **This chart
-  does not install the operator** — operators are cluster-scoped and usually
-  already there:
+- **A Postgres — and it has to exist before you install the chart.**
+  `gawk-admin` keeps its system of record in Postgres (the audit trail, the ban
+  rows, events, webhook deliveries), and every replica reads and writes the
+  same database. **The chart does not create one.** It takes a *connection* to
+  a database you run: the stateful half stays decoupled from the stateless
+  release, and `helm uninstall` can never take the audit trail with it — that
+  trail is the one artifact here that cannot be rebuilt from anything else.
+
+  Give it the connection one of two ways — a literal DSN, or a Secret holding
+  one (the Ref wins if you set both):
+
+  ```yaml
+  postgres:
+    dsn: "postgres://gawk_admin:pw@postgres.db.svc:5432/gawk_admin?sslmode=require"
+  ```
+
+  ```yaml
+  postgres:
+    dsnSecretRef: {name: gawk-admin-pg, key: dsn}   # key defaults to "dsn"
+  ```
+
+  ```sh
+  kubectl -n gawk create secret generic gawk-admin-pg \
+    --from-literal=dsn='postgres://gawk_admin:pw@postgres.db.svc:5432/gawk_admin?sslmode=require'
+  ```
+
+  With neither set the chart **refuses to render**, naming both forms. Already
+  running a Postgres — managed, on a VM, in another namespace? That is the
+  whole integration: create the database and role, hand over the DSN.
+
+  **Order matters.** The migration Job is a `pre-install` hook: it runs, and
+  must succeed, *before* the Deployment rolls. If the database is not there
+  yet, that Job fails, the release does not roll, and the portal is simply not
+  installed — the correct, visible failure rather than pods CrashLooping on a
+  connection that was never going to work. `kubectl -n gawk logs
+  job/gawk-admin-migrate` is where it says so.
+
+- **CloudNativePG, if you want the cluster run for you.** Nothing about
+  `gawk-admin` requires CNPG, but it is the operator-grade way to run Postgres
+  in a cluster and it needs no special support from this chart — its generated
+  Secret *is* the Ref form above. The operator itself is a prerequisite;
+  operators are cluster-scoped and usually already there:
 
   ```sh
   kubectl apply --server-side -f \
     https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.28/releases/cnpg-1.28.0.yaml
   ```
 
-  Already have a Postgres? Set `postgres.cnpg.enabled: false` and
-  `postgres.dsnSecretRef: {name, key}` pointing at a Secret that holds a DSN.
+  Then apply a `Cluster` of your own, once, outside the release. Two instances
+  — a primary and one hot standby — because HA of the moderation plane is a
+  stated reason it has a real database at all, and a single-instance cluster
+  makes routine node maintenance an outage of the thing you reach for during
+  an incident:
+
+  ```yaml
+  apiVersion: postgresql.cnpg.io/v1
+  kind: Cluster
+  metadata:
+    name: gawk-admin-db
+    namespace: gawk
+  spec:
+    instances: 2
+    # Pinned rather than floating: a major-version jump is a migration, not an
+    # upgrade.
+    imageName: ghcr.io/cloudnative-pg/postgresql:18.2
+    bootstrap:
+      initdb:
+        database: gawk_admin
+        owner: gawk_admin
+    storage:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  ```
+
+  CNPG publishes `<cluster>-app` for the application user it creates, and that
+  Secret's `uri` key is a complete connection URI — exactly the DSN the chart
+  wants. So the wiring is one value:
+
+  ```yaml
+  postgres:
+    dsnSecretRef: {name: gawk-admin-db-app, key: uri}
+  ```
+
+  Wait for `kubectl -n gawk get cluster gawk-admin-db` to report a healthy
+  primary before installing the chart, for the ordering reason above.
 
 - **An OIDC provider** — Keycloak, Authelia, authentik, Google, anything
   spec-compliant. [§9.3](#93-the-identity-provider) is the recipe.
@@ -527,6 +605,8 @@ Then the portal:
 ```sh
 helm upgrade --install gawk-admin oci://ghcr.io/tuhis/charts/gawk-admin \
   -n gawk \
+  --set postgres.dsnSecretRef.name=gawk-admin-db-app \
+  --set postgres.dsnSecretRef.key=uri \
   --set externalUrl=https://admin.gawk.example.com \
   --set oidc.issuer=https://id.example.com/realms/gawk \
   --set oidc.clientId=gawk-admin \
@@ -549,16 +629,19 @@ public hostname in front of a service that cannot boot.
 chart's headless metrics Service. If you renamed your relay release, set it to
 match — that Service's A records are how the portal finds pods.
 
-**Migrations run themselves.** The chart ships a hook Job that runs
-`gawk-admin migrate` from the same image the Deployment is about to roll,
-before it rolls. If it fails, the upgrade halts and the old pods keep serving
-against the old schema, which they are guaranteed to be able to do. The manual
-form, for when you need it:
+**Migrations run themselves.** The chart ships a `pre-install`/`pre-upgrade`
+hook Job that runs `gawk-admin migrate` from the same image the Deployment is
+about to roll, before it rolls — on a first install as much as on an upgrade,
+which is possible precisely because the database is a prerequisite of the
+release rather than something the release creates. If it fails, the release
+halts: on an upgrade the old pods keep serving against the old schema (which
+they are guaranteed to be able to do), and on a first install nothing comes up
+at all. The manual form, for when you need it:
 
 ```sh
 kubectl -n gawk run gawk-admin-migrate --rm -it --restart=Never \
   --image=ghcr.io/tuhis/gawk-admin:<the version you are installing> \
-  --env=GAWK_ADMIN_PG_DSN="$(kubectl -n gawk get secret gawk-admin-pg-app \
+  --env=GAWK_ADMIN_PG_DSN="$(kubectl -n gawk get secret gawk-admin-db-app \
         -o jsonpath='{.data.uri}' | base64 -d)" \
   -- migrate
 ```
@@ -753,6 +836,8 @@ Two more things worth naming rather than discovering:
 | Portal answers 401 `idp_unavailable` on every request | The identity provider is unreachable and discovery has not resolved yet — see [§9.3](#93-the-identity-provider). `/readyz` says so too |
 | Portal pods never go Ready | Postgres unreachable, or the schema is older than the binary's minimum — check the migration hook Job's logs |
 | `gawk-admin` renders no Ingress and `helm` refuses the upgrade | `ingress.enabled` without all three of `oidc.issuer` / `oidc.clientId` / `oidc.audience` |
+| `helm` refuses to render `gawk-admin` at all, naming `postgres.dsn` | Neither connection form is set. The chart does not create a database — [§9.1](#91-prerequisites-beyond-2) |
+| `helm install gawk-admin` fails on the `-migrate` Job and nothing rolls | The database is not reachable yet (or does not exist). That is the pre-install hook doing its job; `kubectl -n gawk logs job/gawk-admin-migrate` |
 | An IP ban blocked everybody | `service.externalTrafficPolicy: Cluster` — every publisher shared a node IP. [§9.4](#94-ip-bans-need-externaltrafficpolicy-local) |
 | `kubectl get bans` says the resource type is unknown | The relay chart's `moderation.enabled` is off, so the CRD was never installed |
 | A killed broadcaster came straight back | The kill cooldown elapsed, or the ban was on the ID and they minted a new one — [§9.4](#94-ip-bans-need-externaltrafficpolicy-local) |

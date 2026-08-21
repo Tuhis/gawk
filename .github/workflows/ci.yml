@@ -1249,6 +1249,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.helm == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    env:
+      # Every gawk-admin render needs a database connection, because the chart
+      # REFUSES to render without one (docs/42 §4.13): it does not create a
+      # database, it takes one that already exists. This is the throwaway DSN
+      # the assertions below pass when the database is not what they are
+      # testing — expanded UNQUOTED on purpose, it is two argv words.
+      ADMIN_PG: --set postgres.dsn=postgres://ci:ci@db.invalid:5432/gawk_admin
     steps:
       - uses: actions/checkout@v7
       - run: helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
@@ -1289,11 +1296,11 @@ jobs:
       # for the reason the telemetry check above already states: a golden file
       # would have to be regenerated on every release-please version bump,
       # since the chart version, appVersion and image tag all appear in it.
-      - run: helm lint gawk-admin/deploy/charts/gawk-admin
-      - run: helm template gawk-admin/deploy/charts/gawk-admin > /dev/null
+      - run: helm lint gawk-admin/deploy/charts/gawk-admin $ADMIN_PG
+      - run: helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG > /dev/null
       - name: admin chart renders with the Ingress opt-in taken
         run: |
-          helm template gawk-admin/deploy/charts/gawk-admin \
+          helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
             --set ingress.enabled=true --set ingress.host=admin.example.com \
             --set oidc.issuer=https://id.example.com \
             --set oidc.clientId=gawk-admin --set oidc.audience=gawk-admin > /dev/null
@@ -1306,7 +1313,7 @@ jobs:
         run: |
           set -euo pipefail
           for missing in issuer clientId audience; do
-            args=(--set ingress.enabled=true --set ingress.host=admin.example.com)
+            args=($ADMIN_PG --set ingress.enabled=true --set ingress.host=admin.example.com)
             [ "$missing" = issuer ]   || args+=(--set oidc.issuer=https://id.example.com)
             [ "$missing" = clientId ] || args+=(--set oidc.clientId=gawk-admin)
             [ "$missing" = audience ] || args+=(--set oidc.audience=gawk-admin)
@@ -1326,26 +1333,30 @@ jobs:
       - name: admin chart defaults to 2 replicas with a PodDisruptionBudget
         run: |
           set -euo pipefail
-          out=$(helm template gawk-admin/deploy/charts/gawk-admin)
+          out=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG)
           grep -qE '^  replicas: 2$' <<<"$out"
           grep -q 'kind: PodDisruptionBudget' <<<"$out"
           grep -qE '^  minAvailable: 1$' <<<"$out"
           # ...and NO PDB at one replica, where it would block node maintenance
           # outright — the same rule the relay chart's PDB follows.
-          if helm template gawk-admin/deploy/charts/gawk-admin --set replicaCount=1 \
+          if helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG --set replicaCount=1 \
                | grep -q 'kind: PodDisruptionBudget'; then
             echo "::error::a PDB rendered at replicaCount=1"; exit 1
           fi
 
       # "The schema a release needs travels with the release" (docs/42 §4.15) is
-      # only true if the hook cannot float onto another version's image.
-      - name: the migration hook Job carries THIS release's image tag
+      # only true if the hook cannot float onto another version's image — and
+      # the guarantee only covers a FIRST install if the hook runs at
+      # `pre-install` as well as `pre-upgrade`. It can, now that the chart no
+      # longer creates the database it migrates: a pre-install hook may depend
+      # on a prerequisite, just not on the release's own manifests.
+      - name: the migration hook Job carries THIS release's image tag and pre-install
         run: |
           set -euo pipefail
           chart=gawk-admin/deploy/charts/gawk-admin
           appver=$(grep -E '^appVersion:' "$chart/Chart.yaml" | sed 's/.*"\(.*\)".*/\1/')
-          job=$(helm template "$chart" --show-only templates/migrate-job.yaml)
-          grep -q '"helm.sh/hook": post-install,pre-upgrade' <<<"$job"
+          job=$(helm template "$chart" $ADMIN_PG --show-only templates/migrate-job.yaml)
+          grep -q '"helm.sh/hook": pre-install,pre-upgrade' <<<"$job"
           grep -q '"helm.sh/hook-delete-policy": before-hook-creation' <<<"$job"
           grep -q 'args: \["migrate"\]' <<<"$job"
           jobimg=$(grep -E '^ +image: ' <<<"$job")
@@ -1353,7 +1364,7 @@ jobs:
           if grep -q ':latest' <<<"$jobimg"; then
             echo "::error::the migration Job floats on a tag that is not this release's: $jobimg"; exit 1
           fi
-          depimg=$(helm template "$chart" --show-only templates/deployment.yaml | grep -E '^ +image: ')
+          depimg=$(helm template "$chart" $ADMIN_PG --show-only templates/deployment.yaml | grep -E '^ +image: ')
           [ "$jobimg" = "$depimg" ] || {
             echo "::error::the migration Job and the Deployment disagree on the image:"
             echo "$jobimg"; echo "$depimg"; exit 1; }
@@ -1361,7 +1372,7 @@ jobs:
       - name: the admin Role covers Ban CRUD and leader-election Leases
         run: |
           set -euo pipefail
-          rbac=$(helm template gawk-admin/deploy/charts/gawk-admin --show-only templates/rbac.yaml)
+          rbac=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG --show-only templates/rbac.yaml)
           grep -q 'resources: \["bans"\]' <<<"$rbac"
           grep -q 'apiGroups: \["coordination.k8s.io"\]' <<<"$rbac"
           grep -q 'resources: \["leases"\]' <<<"$rbac"
@@ -1371,10 +1382,10 @@ jobs:
         run: |
           set -euo pipefail
           chart=gawk-admin/deploy/charts/gawk-admin
-          lit=$(helm template "$chart" --set relay.adminToken=literal-token \
+          lit=$(helm template "$chart" $ADMIN_PG --set relay.adminToken=literal-token \
                   --show-only templates/deployment.yaml)
           grep -A1 'name: GAWK_ADMIN_RELAY_ADMIN_TOKEN' <<<"$lit" | grep -q 'value: "literal-token"'
-          ref=$(helm template "$chart" --set relay.adminTokenRef.name=relay-tok \
+          ref=$(helm template "$chart" $ADMIN_PG --set relay.adminTokenRef.name=relay-tok \
                   --set relay.adminTokenRef.key=token --show-only templates/deployment.yaml)
           grep -A4 'name: GAWK_ADMIN_RELAY_ADMIN_TOKEN' <<<"$ref" | grep -q 'name: "relay-tok"'
           grep -A4 'name: GAWK_ADMIN_RELAY_ADMIN_TOKEN' <<<"$ref" | grep -q 'key: "token"'
@@ -1385,7 +1396,7 @@ jobs:
       - name: notifications.webhooks renders into -static-webhooks with secrets from env vars
         run: |
           set -euo pipefail
-          wh=$(helm template gawk-admin/deploy/charts/gawk-admin \
+          wh=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
                 --set 'notifications.webhooks[0].name=ops-pager' \
                 --set 'notifications.webhooks[0].url=https://ntfy.example.com/gawk' \
                 --set 'notifications.webhooks[0].secretRef.name=gawk-admin-webhooks' \
@@ -1404,29 +1415,88 @@ jobs:
           grep -A4 'name: GAWK_ADMIN_WEBHOOK_SECRET_OPS_PAGER' <<<"$wh" | grep -q 'key: "ops"'
           grep -A1 'name: GAWK_ADMIN_WEBHOOK_SECRET_LAB_HOOK' <<<"$wh" | grep -q 'value: "literal-signing-key"'
 
-      - name: CNPG renders 2 instances by default, and the BYO-DSN hatch works
+      # The database is a PREREQUISITE, not part of the release: the chart
+      # takes a connection and never creates one. Refusing to render without
+      # one is what keeps that honest — the alternative is a portal that
+      # installs cleanly and then CrashLoopBackOffs on an empty -pg-dsn.
+      - name: the chart refuses to render without a database
         run: |
           set -euo pipefail
           chart=gawk-admin/deploy/charts/gawk-admin
-          cnpg=$(helm template "$chart" --show-only templates/postgres.yaml)
-          grep -q 'apiVersion: postgresql.cnpg.io/v1' <<<"$cnpg"
-          grep -q 'kind: Cluster' <<<"$cnpg"
-          grep -qE '^  instances: 2$' <<<"$cnpg"
-          grep -qE '^    size: "2Gi"$' <<<"$cnpg"
-          # helm uninstall must never take the audit trail with it.
-          grep -q '"helm.sh/resource-policy": keep' <<<"$cnpg"
           # Assigned, not piped: under `pipefail` a pipeline through a FAILING
           # helm reports helm's status, which would invert this test.
-          if out=$(helm template "$chart" --set postgres.cnpg.enabled=false 2>&1); then
-            echo "::error::postgres.cnpg.enabled=false rendered without postgres.dsnSecretRef"; exit 1
+          if out=$(helm template "$chart" 2>&1); then
+            echo "::error::the chart rendered with neither postgres.dsn nor postgres.dsnSecretRef set"
+            exit 1
           fi
-          grep -q 'dsnSecretRef' <<<"$out"
-          byo=$(helm template "$chart" --set postgres.cnpg.enabled=false \
-                  --set postgres.dsnSecretRef.name=my-pg --set postgres.dsnSecretRef.key=dsn)
-          if grep -q 'kind: Cluster' <<<"$byo"; then
-            echo "::error::a CNPG Cluster rendered with cnpg disabled"; exit 1; fi
-          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$byo" | grep -q 'name: "my-pg"'
-          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$byo" | grep -q 'key: "dsn"'
+          # The message has to be actionable on its own: both forms, the CNPG
+          # recipe that makes "we support CNPG" true without templating it, and
+          # where the reasoning lives.
+          for want in 'postgres.dsn' 'postgres.dsnSecretRef' '-app' 'uri' 'docs/42'; do
+            grep -qF -e "$want" <<<"$out" || {
+              echo "::error::the database fail-guard message does not mention $want"; echo "$out"; exit 1; }
+          done
+          # A dsnSecretRef missing its `name` is the other way to get this
+          # wrong, and it must not fall through to a rendered empty Secret ref.
+          if helm template "$chart" --set postgres.dsnSecretRef.key=uri >/dev/null 2>&1; then
+            echo "::error::postgres.dsnSecretRef rendered without a name"; exit 1
+          fi
+          echo "guard fires and names both forms, the CNPG <cluster>-app/uri recipe and docs/42"
+
+      - name: the DSN renders via both the literal and the Ref form
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          lit=$(helm template "$chart" --set postgres.dsn=postgres://u:p@db/x \
+                  --show-only templates/deployment.yaml)
+          grep -A1 'name: GAWK_ADMIN_PG_DSN' <<<"$lit" | grep -q 'value: "postgres://u:p@db/x"'
+          # The Ref form IS the CloudNativePG integration: CNPG publishes
+          # <cluster>-app with the complete DSN under `uri`.
+          ref=$(helm template "$chart" --set postgres.dsnSecretRef.name=gawk-admin-db-app \
+                  --set postgres.dsnSecretRef.key=uri)
+          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$ref" | grep -q 'name: "gawk-admin-db-app"'
+          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$ref" | grep -q 'key: "uri"'
+          if grep -q 'value: "postgres://' <<<"$ref"; then
+            echo "::error::the Ref form leaked a literal DSN"; exit 1
+          fi
+          # The Deployment and the migration Job must never drift onto
+          # different databases — one helper renders both.
+          job=$(helm template "$chart" --set postgres.dsnSecretRef.name=gawk-admin-db-app \
+                  --set postgres.dsnSecretRef.key=uri --show-only templates/migrate-job.yaml)
+          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$job" | grep -q 'name: "gawk-admin-db-app"'
+
+      # The check in the absence direction, mirroring the moderation-off one
+      # below: the stateful database is decoupled from the stateless release,
+      # so no set of values may make this chart render a CNPG object. A CNPG
+      # Cluster is something the operator applies once, outside the release
+      # (docs/self-hosting.md §9.1 carries the manifest).
+      #
+      # Unlike the telemetry-off check this matches API-object identifiers
+      # rather than the bare word, because it must not fire on the rendered
+      # COMMENT in the migration Job that explains why the hook is allowed to
+      # be `pre-install` now that no CNPG Cluster lives in this chart.
+      - name: the admin chart renders no CloudNativePG object under any values
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          out=$( { helm template "$chart" $ADMIN_PG; \
+                   helm template "$chart" --set postgres.dsnSecretRef.name=gawk-admin-db-app \
+                     --set postgres.dsnSecretRef.key=uri; \
+                   helm template "$chart" $ADMIN_PG --set ingress.enabled=true \
+                     --set ingress.host=admin.example.com \
+                     --set oidc.issuer=https://id.example.com \
+                     --set oidc.clientId=gawk-admin --set oidc.audience=gawk-admin; } )
+          if grep -qiE 'postgresql\.cnpg\.io|^kind: Cluster|cnpg\.io/' <<<"$out"; then
+            echo "::error::the admin chart still renders a CloudNativePG object"
+            grep -inE 'postgresql\.cnpg\.io|^kind: Cluster|cnpg\.io/' <<<"$out"
+            exit 1
+          fi
+          # ...and the values tree that used to render one stays gone. Helm
+          # ignores unknown values keys silently, so nothing else would notice
+          # a `postgres.cnpg` growing back and quietly meaning something again.
+          if grep -qE '^\s*cnpg:' "$chart/values.yaml"; then
+            echo "::error::postgres.cnpg is back in values.yaml"; exit 1
+          fi
 
       # The other direction, mirroring the telemetry-off check above: an
       # install that never enables moderation carries no trace of R39.

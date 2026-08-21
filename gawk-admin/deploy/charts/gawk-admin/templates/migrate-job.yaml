@@ -12,23 +12,26 @@
 # the failure the expand-contract policy exists to make survivable and which
 # there is no reason to invite.
 #
-# HOOKS: `post-install,pre-upgrade`, not `pre-install,pre-upgrade`.
+# HOOKS: `pre-install,pre-upgrade` — §4.13/§4.15 as written, on BOTH paths.
 #
-# This is a deliberate deviation from §4.13's wording, forced by Helm's
-# ordering. A pre-install hook runs BEFORE the release's manifests are applied
-# — including the CloudNativePG Cluster, and therefore before the Secret CNPG
-# generates with the DSN this Job reads. On a first install with
-# postgres.cnpg.enabled (the default) a pre-install migration deadlocks: Helm
-# waits for the Job, the Job's pod waits for a Secret that Helm will not create
-# until the Job finishes.
+# Worth stating why, because this briefly was `post-install`. A pre-install
+# hook runs before the release's own manifests, so it can only read things
+# that already exist outside the release. That used to exclude the database:
+# when the chart rendered a CloudNativePG Cluster, a pre-install migration
+# deadlocked on a first install — Helm waiting for the Job, the Job's pod
+# waiting for the DSN Secret Helm would not create until the Job finished.
 #
-# Nothing §4.15 actually guarantees is lost. That guarantee is about UPGRADES —
-# "migrated to completion before the new Deployment rolls", and "if it fails
-# the upgrade halts and the previous pods keep serving" — and `pre-upgrade`
-# delivers both, unchanged. On a FIRST install there are no previous pods to
-# protect: the new ones simply come up NotReady with a "schema too old" log
-# line until this Job lands, which is the exact behaviour §4.15 specifies for
-# that condition, and they go Ready by themselves afterwards.
+# The chart no longer creates a database. It takes a connection to one that
+# must already exist (postgres.dsn / postgres.dsnSecretRef), which makes the
+# database a PREREQUISITE of the release rather than a dependency inside it —
+# exactly the kind of thing a pre-install hook is allowed to depend on. So
+# §4.15's guarantee now holds on a first install too, not just on upgrades:
+# the schema is migrated to completion BEFORE the Deployment rolls, and a
+# failed migration halts the release instead of rolling pods that would come
+# up NotReady against a schema that is too old.
+#
+# If the database does not exist yet, this Job fails and the release does not
+# roll. That is the correct, visible failure.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -37,7 +40,7 @@ metadata:
     {{- include "gawk-admin.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
   annotations:
-    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook": pre-install,pre-upgrade
     # Ahead of anything a later chart version might hook at the default 0.
     "helm.sh/hook-weight": "-5"
     # before-hook-creation, NOT hook-succeeded: the Job and its pod survive

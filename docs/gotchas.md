@@ -1039,12 +1039,17 @@ Add to it when a new gotcha lands in `docs/`.
   Production is unaffected — a real API server sends the bookmark.
   ([docs/42](42-admin-moderation-portal.md) §4.2)
 - **A Helm `pre-install` hook runs before the chart's own manifests**, so a
-  migration Job cannot read a Secret the same chart creates. With a CNPG
-  `Cluster` in the chart, a `pre-install` migration deadlocks on a first
-  install: Helm waits for the Job, the Job's pod waits for a Secret Helm will
-  not create until the Job finishes. `post-install,pre-upgrade` keeps
-  everything the upgrade guarantee needs and drops the deadlock.
-  ([docs/42](42-admin-moderation-portal.md) §4.15)
+  migration Job cannot read a Secret the same chart creates. A chart that
+  rendered its own CloudNativePG `Cluster` therefore deadlocked on every first
+  install: Helm waiting for the Job, the Job's pod waiting for the DSN Secret
+  Helm would not create until the Job finished. Moving the hook to
+  `post-install` dodges it, but the real fix is upstream of Helm — **don't put
+  the stateful database inside the stateless chart**. `gawk-admin` takes a
+  connection to a Postgres that already exists (`postgres.dsn` /
+  `postgres.dsnSecretRef`), which makes the database a *prerequisite* rather
+  than a dependency of the release, and `pre-install` legal again: the schema
+  is migrated before the Deployment rolls on a first install too, not only on
+  upgrades. ([docs/42](42-admin-moderation-portal.md) §4.15)
 - **Helm never upgrades a chart's `crds/` directory** — it installs those once
   and then leaves them alone forever, so a schema change in a later release
   silently does not apply. Ship CRDs from `templates/` (with
@@ -1053,8 +1058,9 @@ Add to it when a new gotcha lands in `docs/`.
   ([docs/42](42-admin-moderation-portal.md) D14)
 - **CloudNativePG's generated application Secret is `<cluster-name>-app`**, and
   its `uri` key is a complete connection URI. That naming is the operator's
-  contract, not a choice the chart makes — derive it, do not ask the operator
-  to restate it.
+  contract, not a choice any chart makes — which is what lets a chart support
+  CNPG without templating a line of it: `dsnSecretRef: {name: <cluster>-app,
+  key: uri}` is the entire integration.
 - **Postgres-backed Go tests that `t.Skip` without a DSN report as PASSES**, so
   a CI job that forgets to set the environment variable is green and proves
   nothing. The database is where the interesting invariants live (partial

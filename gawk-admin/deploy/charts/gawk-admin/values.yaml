@@ -4,8 +4,9 @@
 #   * the relay chart's  moderation.enabled=true  (installs the Ban CRD, gives
 #     relay pods read-only watch access to it, and sets the relay's
 #     -admin-api-token to the SAME value as relayAdminToken below)
-#   * a CloudNativePG operator already running in the cluster (docs/42 D3), or
-#     postgres.cnpg.enabled=false plus your own DSN in a Secret.
+#   * a Postgres that ALREADY EXISTS, reachable from the cluster, named by
+#     postgres.dsn or postgres.dsnSecretRef (docs/42 D3). This chart does not
+#     create a database — see the `postgres:` block below.
 #
 # Two things are NOT optional, because the service refuses to start without
 # them (and that refusal is the design — docs/42 D7: a portal that comes up
@@ -156,47 +157,53 @@ config:
 notifications:
   webhooks: []
 
-# The database (docs/42 D3). CloudNativePG by default: it is the operator-grade
-# way to run Postgres, and gawk-admin needs a SHARED store precisely because it
-# scales horizontally (D16) — pod-local state could never back two replicas.
+# The database (docs/42 D3) — REQUIRED, and NOT created by this chart.
 #
-# The CNPG OPERATOR IS A PREREQUISITE, not something this chart installs:
-#   kubectl apply --server-side -f \
-#     https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.28/releases/cnpg-1.28.0.yaml
+# gawk-admin needs a shared store precisely because it scales horizontally
+# (D16): pod-local state could never back two replicas. That store is stateful
+# and outlives every release of this stateless service, so the chart takes a
+# CONNECTION to a database that already exists rather than templating one. Two
+# consequences worth knowing before you install:
 #
-# Bring-your-own-Postgres: set cnpg.enabled=false and point dsnSecretRef at a
-# Secret holding a libpq DSN or postgres:// URL.
+#   * The database must exist BEFORE `helm install`. The migration hook Job
+#     runs at pre-install and connects to it; with nothing there the Job fails,
+#     the release does not roll, and you get a visible error instead of a
+#     half-installed portal.
+#   * `helm uninstall` cannot take the audit trail with it. The record of who
+#     killed what and why is the one artifact here that cannot be rebuilt from
+#     anything else.
+#
+# Set exactly one of the two forms below (the same foo / fooRef dual pattern
+# the rest of the repo uses for secrets; the Ref wins if you set both):
 postgres:
-  cnpg:
-    enabled: true
-    # The CNPG operand image. Pinned rather than floating: a major-version jump
-    # is a migration, not an upgrade.
-    imageName: ghcr.io/cloudnative-pg/postgresql:18.2
-  # Two instances: a primary and one hot standby. HA of the moderation plane is
-  # a stated reason the system of record is a real database (D16), and a
-  # single-instance cluster would make node maintenance an outage of it.
-  instances: 2
-  storage:
-    size: 2Gi
-    storageClass: ""
-  database: gawk_admin
-  owner: gawk_admin
-  resources:
-    requests:
-      cpu: 50m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
-  # Used ONLY when cnpg.enabled is false. The key must hold a complete DSN.
+  # A literal DSN — libpq keyword form or a postgres:// URL. Convenient for a
+  # throwaway environment; it lands in the rendered manifest and therefore in
+  # every GitOps diff, so prefer dsnSecretRef anywhere the password matters.
+  #   dsn: "postgres://gawk_admin:pw@postgres.db.svc:5432/gawk_admin?sslmode=require"
+  dsn: ""
+  # ...or a Secret holding one. `key` defaults to "dsn".
   #   kubectl -n gawk create secret generic gawk-admin-pg \
   #     --from-literal=dsn='postgres://user:pw@host:5432/gawk_admin?sslmode=require'
+  #   dsnSecretRef: {name: gawk-admin-pg, key: dsn}
+  #
+  # CLOUDNATIVEPG is just this form. CNPG generates a <cluster>-app Secret for
+  # its application user, and that Secret's `uri` key is exactly the DSN this
+  # chart wants — so a CNPG Cluster named gawk-admin-db needs no other wiring
+  # than:
+  #   dsnSecretRef: {name: gawk-admin-db-app, key: uri}
+  # Apply the Cluster (and the CNPG operator) yourself, once, outside this
+  # release: docs/self-hosting.md §9.1 carries a copy-pasteable manifest
+  # matching what this chart used to render.
   dsnSecretRef: {}
 
 # The migration step (docs/42 D18/§4.15). A Helm pre-install/pre-upgrade hook
 # Job running `gawk-admin migrate` from THIS release's image, to completion,
-# before the Deployment rolls. If it fails the upgrade halts and the previous
-# pods keep serving against the pre-migration schema — which the expand-contract
-# policy guarantees they can.
+# before the Deployment rolls — on a first install as much as on an upgrade,
+# which is only possible because the database above is a prerequisite of the
+# release rather than something the release creates. If it fails, the release
+# halts: on an upgrade the previous pods keep serving against the pre-migration
+# schema (which the expand-contract policy guarantees they can), and on a first
+# install nothing rolls at all.
 #
 # Turning it off is a break-glass posture, not a supported one: the serving
 # process never runs DDL, so nothing else will apply the schema. Run

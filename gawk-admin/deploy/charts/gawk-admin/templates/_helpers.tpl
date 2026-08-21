@@ -38,39 +38,43 @@ pods about to serve it.
 {{- end }}
 
 {{/*
-The CNPG Cluster's name, and the Secret CNPG generates for its application
-user. The `-app` suffix is CNPG's own convention (it creates
-<cluster>-app holding uri/username/password/dbname), so this is a read of the
-operator's contract, not a name we choose.
-*/}}
-{{- define "gawk-admin.pgClusterName" -}}
-{{ include "gawk-admin.fullname" . }}-pg
-{{- end }}
+GAWK_ADMIN_PG_DSN — the connection to a database this chart does NOT create.
 
-{{- define "gawk-admin.pgSecretName" -}}
-{{ include "gawk-admin.pgClusterName" . }}-app
-{{- end }}
+The database is a PREREQUISITE of the release, not a part of it: gawk-admin is
+stateless and horizontally scaled (D16), Postgres is stateful and outlives
+every one of its releases, and `helm uninstall` must never be able to take the
+audit trail with it. So the chart takes a connection, in the house `foo` /
+`fooRef` dual form (gawk-server's internalPsk/internalPskRef precedent):
 
-{{/*
-GAWK_ADMIN_PG_DSN, wired either from the Secret CNPG generated or from the
-operator's own dsnSecretRef. Shared by the Deployment and the migrate Job so
-the two can never drift onto different databases.
+  postgres.dsn                   a literal DSN, and
+  postgres.dsnSecretRef {name,key}  a Secret holding one — Ref wins if both.
+
+CloudNativePG is then not a special case at all, just the ordinary Ref form:
+CNPG generates <cluster>-app for its application user and that Secret's `uri`
+key IS this DSN, so `dsnSecretRef: {name: gawk-admin-db-app, key: uri}` is the
+entire integration. (`<cluster>-app`/`uri` is the operator's own contract, not
+a name anybody here chooses.)
+
+Shared by the Deployment and the migrate Job so the two can never drift onto
+different databases.
 */}}
 {{- define "gawk-admin.pgDsnEnv" -}}
+{{- $ref := .Values.postgres.dsnSecretRef | default dict -}}
+{{- if and $ref (not $ref.name) -}}
+{{- fail "postgres.dsnSecretRef needs a `name`: it is {name, key} naming a Secret that holds the Postgres DSN (docs/42 §4.13)" -}}
+{{- end -}}
+{{- if $ref.name -}}
 - name: GAWK_ADMIN_PG_DSN
   valueFrom:
     secretKeyRef:
-      {{- if .Values.postgres.cnpg.enabled }}
-      name: {{ include "gawk-admin.pgSecretName" . | quote }}
-      # CNPG writes a complete connection URI under `uri`.
-      key: uri
-      {{- else }}
-      {{- if not .Values.postgres.dsnSecretRef.name }}
-      {{- fail "postgres.cnpg.enabled=false requires postgres.dsnSecretRef: {name, key} naming a Secret that holds a Postgres DSN (docs/42 §4.13)" }}
-      {{- end }}
-      name: {{ .Values.postgres.dsnSecretRef.name | quote }}
-      key: {{ .Values.postgres.dsnSecretRef.key | default "dsn" | quote }}
-      {{- end }}
+      name: {{ $ref.name | quote }}
+      key: {{ $ref.key | default "dsn" | quote }}
+{{- else if .Values.postgres.dsn -}}
+- name: GAWK_ADMIN_PG_DSN
+  value: {{ .Values.postgres.dsn | quote }}
+{{- else -}}
+{{- fail "gawk-admin needs a Postgres it does not create: set postgres.dsn (a literal DSN) or postgres.dsnSecretRef {name, key} (a Secret holding one). The database is a prerequisite of this release, not part of it, and it must exist BEFORE `helm install` — the pre-install migration hook Job connects to it. For a CloudNativePG cluster named gawk-admin-db, CNPG's generated Secret gawk-admin-db-app carries the DSN under `uri`: postgres.dsnSecretRef: {name: gawk-admin-db-app, key: uri}. See docs/42 §4.13 and docs/self-hosting.md §9.1." -}}
+{{- end -}}
 {{- end }}
 
 {{/*
