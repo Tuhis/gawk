@@ -648,6 +648,21 @@ X-Gawk-Signature: sha256=<hex HMAC-SHA256(that webhook's secret, timestamp + "."
   "portalUrl": "https://admin.example.com/#/broadcasts" }
 ```
 
+…and the same kill recorded when its `Ban` CR write did not land — §4.7's
+`202 Accepted`, delivered rather than answered:
+
+```
+{ "schema": "gawk.moderation-event.v1",
+  "type": "broadcast.killed",
+  "occurredAt": "2026-08-20T15:04:05Z",
+  "actor": "juho@example.com",
+  "broadcastKey": "3f9a1c2b4d5e",
+  "reason": "terms violation",
+  "portalUrl": "https://admin.example.com/#/broadcasts",
+  "summary": "a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com — NOT enforced yet, the broadcast is still live",
+  "enforcement": "pending" }
+```
+
 - **No raw broadcast ID and no IP address ever appears in a payload** (D8) —
   the receiver gets the HMAC'd key and a portal link; acting requires
   logging in.
@@ -659,7 +674,20 @@ X-Gawk-Signature: sha256=<hex HMAC-SHA256(that webhook's secret, timestamp + "."
   inherits this pipe.
 - Plain-text-friendly receivers (ntfy): the payload also carries a
   `"summary"` field — one human sentence — so a dumb webhook-to-push bridge
-  needs no templating.
+  needs no templating. It is graded on enforcement like the rest of the body:
+  a pending kill says a kill was *recorded* rather than that a broadcast was
+  terminated, and a pending unban says the target is **still banned**.
+  `store.Summarize` is the single source of that sentence, in both grades.
+- **`"enforcement": "pending"` when the record is ahead of what the relays
+  enforce.** An event is a statement of something that happened, and a ban is
+  two writes in two systems (§4.7): when the row landed and the `Ban` CR did
+  not, the delivery says so instead of announcing an enforcement that has not
+  started. The field is **absent** whenever the two agree — which is why
+  adding it does not rev `schema`: a receiver that never looks for it keeps
+  parsing byte-identical bodies. Its vocabulary is closed (`pending` is the
+  only value it can ever hold), so unlike `reason` and `summary` it carries no
+  operator- or producer-supplied text, and D8 stays structural rather than
+  becoming a per-value review.
 
 ### 4.11 Content-flag extension point (R40 — designed now, built in R40)
 

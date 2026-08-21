@@ -139,6 +139,39 @@ const (
 const (
 	PayloadReason  = "reason"
 	PayloadSummary = "summary"
+	// PayloadEnforcement carries the EnforcementState the producer graded the
+	// event with. It is webhook-safe by CONSTRUCTION rather than by review:
+	// its vocabulary is closed (see Event.EnforcementState), so unlike the
+	// other two it cannot be turned into a channel for free text — a producer
+	// that wrote a raw ID under this key would find it dropped, not forwarded.
+	PayloadEnforcement = "enforcement"
+)
+
+// EnforcementState says whether the Kubernetes object that actually ENFORCES
+// an event was in step with the record when the event was written.
+//
+// A ban is two writes in two systems that cannot share a transaction (the row
+// and the Ban CR), so an event is not automatically a true statement about
+// enforcement: a recorded-but-unprojected kill has not killed anything yet.
+// Events therefore carry which of the two they are, and both the webhook
+// payload and Summarize's sentence are graded on it.
+//
+// `InSync`/`Pending` rather than `enforced`/`not enforced` because the state
+// has to read correctly in BOTH directions — a pending create is recorded and
+// NOT enforced; a pending removal is lifted in the record while the target is
+// STILL enforced. The same reason internal/api's wire field is named `inSync`.
+type EnforcementState string
+
+const (
+	// EnforcementInSync is the ordinary case: record and enforcement agree.
+	// It is the EMPTY string so that "there is nothing to say" is the zero
+	// value — a payload key that is simply absent, exactly as internal/api's
+	// 201 carries no `enforcement` object.
+	EnforcementInSync EnforcementState = ""
+	// EnforcementPending: the row is committed and the CR write did not land.
+	// The reconciler heals it; until then the record is ahead of (create) or
+	// behind (removal) what the relays enforce.
+	EnforcementPending EnforcementState = "pending"
 )
 
 // Event is one row of moderation_events — the audit trail and the source every
@@ -157,6 +190,20 @@ type Event struct {
 	// Payload is free-form context. See the PayloadReason/PayloadSummary
 	// comment above before forwarding any of it anywhere.
 	Payload json.RawMessage
+}
+
+// EnforcementState reports how the producer graded this event's enforcement.
+//
+// The vocabulary is CLOSED here, on the read side: anything that is not the
+// one recognized value reads as EnforcementInSync. That is what makes
+// PayloadEnforcement safe to forward to a webhook without a per-value review —
+// the accessor can only ever return one of two constants, so no producer's
+// free text (or raw broadcast ID) can ride the field out of the deployment.
+func (e Event) EnforcementState() EnforcementState {
+	if e.PayloadString(PayloadEnforcement) == string(EnforcementPending) {
+		return EnforcementPending
+	}
+	return EnforcementInSync
 }
 
 // PayloadString returns a top-level string field of the payload, or "".

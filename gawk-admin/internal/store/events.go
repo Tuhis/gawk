@@ -100,32 +100,82 @@ func scanEvent(row pgx.Row) (Event, error) {
 }
 
 // Summarize is the one human sentence a webhook receiver can render without
-// templating (docs/42 §4.10's `summary` field).
+// templating (docs/42 §4.10's `summary` field), for an event whose enforcement
+// object is in step with the record.
 //
 // It is a SECURITY-relevant helper, not a formatting convenience: `summary` is
-// one of the two payload fields AP7 copies into a webhook body, so it must
-// never name a raw broadcast ID or an IP address (D8). It therefore takes the
+// one of the payload fields AP7 copies into a webhook body, so it must never
+// name a raw broadcast ID or an IP address (D8). It therefore takes the
 // HMAC'd broadcast key — never the ID — and says only what KIND of target a
 // ban covers, never its value.
+//
+// Every producer that does NOT project a CR inline is in-sync by construction,
+// which is why this shorter form exists rather than making every caller say
+// so: internal/kube's adoption path records a ban whose CR is the very object
+// it adopted, and its expiry path records a ban the relays have already
+// stopped enforcing against their own clocks (§4.2). internal/api, the one
+// producer that writes a row and a CR in the same request, uses
+// SummarizeWithEnforcement and grades on which of the two landed.
 func Summarize(eventType string, targetType moderation.TargetType, broadcastKey, actor string) string {
+	return SummarizeWithEnforcement(eventType, targetType, broadcastKey, actor, EnforcementInSync)
+}
+
+// SummarizeWithEnforcement is that same one sentence, graded on whether the
+// enforcement object that MAKES the event true has been written yet.
+//
+// This is the whole reason the grading reaches the summary at all: an event is
+// a statement of something that happened, and "a broadcast was terminated" is
+// not a true statement when nothing has been terminated. `summary` is the part
+// a dumb webhook-to-push bridge shows on a phone with no templating, so it is
+// the part that must not overstate — a pending kill says the kill was
+// RECORDED, and a pending removal says the target is STILL banned.
+//
+// It is the single source of the sentence in both grades; Summarize delegates
+// here rather than growing a second copy, because two summarisers is exactly
+// how a pending sentence and an in-sync one drift apart.
+func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType, broadcastKey, actor string, enforcement EnforcementState) string {
 	what := "broadcast"
 	if targetType == moderation.TargetIP {
 		what = "publisher IP"
 	}
+	who := actorOrOperator(actor)
+	pending := enforcement == EnforcementPending
 	switch eventType {
 	case EventBroadcastKilled:
 		subject := "a broadcast"
 		if broadcastKey != "" {
 			subject = "broadcast " + broadcastKey
 		}
-		return subject + " was terminated by " + actorOrOperator(actor)
+		if pending {
+			// The verb moves from "was terminated" to "a kill … was recorded"
+			// on purpose: the recording is the only part that happened.
+			return "a kill of " + subject + " was recorded by " + who +
+				" — NOT enforced yet, the broadcast is still live"
+		}
+		return subject + " was terminated by " + who
 	case EventBanCreated:
-		return "a " + what + " ban was created by " + actorOrOperator(actor)
+		if pending {
+			return "a " + what + " ban was recorded by " + who + " — NOT enforced yet"
+		}
+		return "a " + what + " ban was created by " + who
 	case EventBanExpired:
+		if pending {
+			return "a " + what + " ban expired in the record — the target is STILL banned"
+		}
 		return "a " + what + " ban expired"
 	case EventBanRemoved:
-		return "a " + what + " ban was lifted by " + actorOrOperator(actor)
+		if pending {
+			return "a " + what + " ban was lifted in the record by " + who +
+				" — the target is STILL banned"
+		}
+		return "a " + what + " ban was lifted by " + who
 	default:
+		// An unknown type gets a DIRECTION-FREE qualifier: with no idea
+		// whether the event asserts a ban or its lifting, "not enforced yet"
+		// could be the backwards half. Saying less is the safe failure.
+		if pending {
+			return eventType + " — enforcement pending"
+		}
 		return eventType
 	}
 }

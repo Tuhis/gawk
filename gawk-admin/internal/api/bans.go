@@ -128,6 +128,7 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 		key = a.broadcastKey(r, source)
 	}
 	projErr := a.project(r.Context(), created)
+	enforcement := enforcementState(projErr)
 
 	a.record(r.Context(), store.Event{
 		Type:         store.EventBanCreated,
@@ -136,7 +137,8 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 		BroadcastKey: key,
 		BroadcastID:  source,
 		Payload: banPayload(created, reason,
-			store.Summarize(store.EventBanCreated, target.Type, key, id.Actor())),
+			store.SummarizeWithEnforcement(store.EventBanCreated, target.Type, key, id.Actor(), enforcement),
+			enforcement),
 	})
 	a.afterMutation()
 
@@ -171,13 +173,16 @@ func (a *API) handleDeleteBan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projErr := a.project(r.Context(), removed)
+	enforcement := enforcementState(projErr)
+
 	a.record(r.Context(), store.Event{
 		Type:        store.EventBanRemoved,
 		OccurredAt:  a.now(),
 		Actor:       id.Actor(),
 		BroadcastID: removed.SourceBroadcastID,
 		Payload: banPayload(removed, removed.Reason,
-			store.Summarize(store.EventBanRemoved, removed.Target.Type, "", id.Actor())),
+			store.SummarizeWithEnforcement(store.EventBanRemoved, removed.Target.Type, "", id.Actor(), enforcement),
+			enforcement),
 	})
 	a.afterMutation()
 
@@ -353,8 +358,9 @@ func requireReason(w http.ResponseWriter, reason string) (string, bool) {
 
 // banPayload is portal-visible event context. It may carry the target —
 // including an IP CIDR — because the payload lives in Postgres and the portal;
-// only store.PayloadReason and store.PayloadSummary ever reach a webhook (D8).
-func banPayload(b store.Ban, reason, summary string) json.RawMessage {
+// only the keys store declares webhook-safe — store.PayloadReason,
+// store.PayloadSummary and store.PayloadEnforcement — ever reach a webhook (D8).
+func banPayload(b store.Ban, reason, summary string, enforcement store.EnforcementState) json.RawMessage {
 	payload := map[string]any{
 		store.PayloadSummary: summary,
 		"target":             b.Target,
@@ -362,6 +368,10 @@ func banPayload(b store.Ban, reason, summary string) json.RawMessage {
 	}
 	if reason != "" {
 		payload[store.PayloadReason] = reason
+	}
+	// Only when there is something to say — see killPayload.
+	if enforcement != store.EnforcementInSync {
+		payload[store.PayloadEnforcement] = string(enforcement)
 	}
 	if b.ExpiresAt != nil {
 		payload["expiresAt"] = b.ExpiresAt.UTC().Format(time.RFC3339)

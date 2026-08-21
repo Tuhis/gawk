@@ -161,6 +161,7 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 	// webhook may carry (D8).
 	key := a.broadcastKey(r, normID)
 	projErr := a.project(r.Context(), created)
+	enforcement := enforcementState(projErr)
 
 	a.record(r.Context(), store.Event{
 		Type:         store.EventBroadcastKilled,
@@ -169,8 +170,8 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 		BroadcastKey: key,
 		BroadcastID:  normID,
 		Payload: killPayload(reason,
-			store.Summarize(store.EventBroadcastKilled, target.Type, key, id.Actor()),
-			int(cooldown.Seconds()), created.ID.String()),
+			store.SummarizeWithEnforcement(store.EventBroadcastKilled, target.Type, key, id.Actor(), enforcement),
+			int(cooldown.Seconds()), created.ID.String(), enforcement),
 	})
 	a.afterMutation()
 
@@ -215,13 +216,20 @@ func (a *API) afterMutation() {
 	a.kick()
 }
 
-func killPayload(reason, summary string, cooldownSeconds int, banID string) json.RawMessage {
-	raw, err := json.Marshal(map[string]any{
+func killPayload(reason, summary string, cooldownSeconds int, banID string, enforcement store.EnforcementState) json.RawMessage {
+	payload := map[string]any{
 		store.PayloadReason:  reason,
 		store.PayloadSummary: summary,
 		"cooldownSeconds":    cooldownSeconds,
 		"banId":              banID,
-	})
+	}
+	// Written only when there is something to say, so an in-sync event's
+	// payload — and the webhook body derived from it — stays exactly what it
+	// has always been (§4.10: absence means record and enforcement agree).
+	if enforcement != store.EnforcementInSync {
+		payload[store.PayloadEnforcement] = string(enforcement)
+	}
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		return json.RawMessage(`{}`)
 	}

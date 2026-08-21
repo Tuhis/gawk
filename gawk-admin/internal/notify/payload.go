@@ -79,23 +79,51 @@ type Payload struct {
 	// needs no templating (§4.10). Never omitempty: a receiver that renders
 	// only `summary` must never receive a body without it.
 	Summary string `json:"summary"`
+	// Enforcement is "pending" when the Kubernetes object that would MAKE this
+	// event true had not been written when it was recorded — and is absent
+	// otherwise. An event is a statement of something that happened, so a
+	// delivery announcing a kill the relays were never told about has to say
+	// so; `summary` already reads as pending, and this is the machine-readable
+	// half of the same fact.
+	//
+	// A bare string from a CLOSED vocabulary (store.EnforcementState), not an
+	// object mirroring the HTTP API's {inSync, detail}:
+	//
+	//   - Absence means in sync, exactly as it does on the HTTP ban body. That
+	//     keeps every existing receiver's bytes unchanged and makes this an
+	//     additive field — which is why the schema string does not move.
+	//   - `detail` is portal copy ("the reconciler retries within a minute, so
+	//     do not re-submit") addressed to the operator holding the mutation's
+	//     response. A push notification's human half is `summary`; shipping a
+	//     second sentence would give a dumb bridge two competing texts.
+	//   - A closed scalar vocabulary cannot carry a raw ID or an address the
+	//     way a free-form string or a nested object could, so D8 stays
+	//     structural rather than becoming a per-field review (see
+	//     store.Event.EnforcementState).
+	Enforcement string `json:"enforcement,omitempty"`
 }
 
 // buildPayload projects a persisted event onto the wire shape.
 //
 // It copies exactly four things out of the event — type, time, actor and the
-// HMAC'd key — plus the two payload keys store declares webhook-safe
-// (store.PayloadReason, store.PayloadSummary). Everything else in the event's
-// jsonb is portal-only: it may hold raw IDs, addresses and CIDRs.
+// HMAC'd key — plus the three payload keys store declares webhook-safe
+// (store.PayloadReason, store.PayloadSummary, store.PayloadEnforcement).
+// Everything else in the event's jsonb is portal-only: it may hold raw IDs,
+// addresses and CIDRs.
 func buildPayload(ev store.Event, externalURL string) Payload {
+	// Read through the accessor, never as a raw string: it is what closes the
+	// vocabulary, so this field can only ever be "" or "pending" whatever a
+	// producer wrote into the payload.
+	enforcement := ev.EnforcementState()
 	summary := ev.PayloadString(store.PayloadSummary)
 	if summary == "" {
 		// Every event written by internal/api and internal/kube carries a
 		// summary already. This fallback exists so an event from some future
 		// producer still satisfies "summary present on every payload" — and it
-		// calls the ONE summariser (store.Summarize) rather than growing a
-		// second one that could drift into naming a raw ID.
-		summary = store.Summarize(ev.Type, "", ev.BroadcastKey, ev.Actor)
+		// calls the ONE summariser (store.SummarizeWithEnforcement) rather
+		// than growing a second one that could drift into naming a raw ID, or
+		// into claiming an enforcement that has not started.
+		summary = store.SummarizeWithEnforcement(ev.Type, "", ev.BroadcastKey, ev.Actor, enforcement)
 	}
 	p := Payload{
 		Schema:       PayloadSchema,
@@ -105,6 +133,7 @@ func buildPayload(ev store.Event, externalURL string) Payload {
 		BroadcastKey: ev.BroadcastKey,
 		Reason:       ev.PayloadString(store.PayloadReason),
 		Summary:      summary,
+		Enforcement:  string(enforcement),
 	}
 	if externalURL != "" {
 		p.PortalURL = externalURL + portalPath

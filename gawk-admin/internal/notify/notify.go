@@ -10,8 +10,10 @@
 //     (ntfy/Slack/Matrix) and a raw broadcast ID is a join capability. The
 //     receiver gets the HMAC'd key and a portal link; acting requires logging
 //     in. The mechanism is structural — Payload has no field to put either in,
-//     and only store.PayloadReason/store.PayloadSummary are copied out of an
-//     event's jsonb.
+//     and only the payload keys store declares webhook-safe
+//     (store.PayloadReason, store.PayloadSummary, store.PayloadEnforcement)
+//     are copied out of an event's jsonb; the third of those is read through
+//     an accessor with a closed vocabulary, so it cannot carry free text.
 //   - **The dispatcher is leader-only, and correctness does not depend on
 //     that.** Run is started from kube.Election.OnLeading (D16), but claims go
 //     through FOR UPDATE SKIP LOCKED, so two dispatchers overlapping across a

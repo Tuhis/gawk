@@ -330,6 +330,127 @@ func TestListAndReadRoutesNeverCarryEnforcement(t *testing.T) {
 	}
 }
 
+// The 202's verdict must reach the EVENT, not just the HTTP response.
+//
+// The webhook is derived from the event, and it is what the operator reads on
+// a phone — away from the portal that showed them the 202. An event announcing
+// a kill the relays were never told about is not a statement of something that
+// happened, so the grade rides in the payload (machine-readable) and in the
+// summary (the sentence a dumb ntfy bridge renders).
+func TestAPendingMutationRecordsThePendingStateOnItsEvent(t *testing.T) {
+	h := newHarness(t, withProjectorError(errors.New("kubernetes API is unreachable")))
+	h.fleet.set(liveSnapshot("ABC234", "3f9a1c2b4d5e", "203.0.113.7"))
+
+	h.decode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
+		map[string]any{"reason": "spam"}, http.StatusAccepted, nil)
+	h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+		"target": map[string]any{"type": "ip", "value": "203.0.113.7", "prefixLength": 32},
+		"reason": "repeat offender", "expiresAt": nil,
+	}, http.StatusAccepted, nil)
+
+	events := h.enq.all()
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want the kill and the ban", events)
+	}
+	for _, tc := range []struct {
+		what       string
+		ev         store.Event
+		wantType   string
+		mustNotSay string
+	}{
+		{what: "kill", ev: events[0], wantType: store.EventBroadcastKilled, mustNotSay: "was terminated"},
+		{what: "ban", ev: events[1], wantType: store.EventBanCreated, mustNotSay: "was created"},
+	} {
+		if tc.ev.Type != tc.wantType {
+			t.Fatalf("%s event type = %q, want %q", tc.what, tc.ev.Type, tc.wantType)
+		}
+		if got := tc.ev.EnforcementState(); got != store.EnforcementPending {
+			t.Errorf("%s event enforcement = %q, want %q; the webhook would announce an enforcement that has not started",
+				tc.what, got, store.EnforcementPending)
+		}
+		summary := tc.ev.PayloadString(store.PayloadSummary)
+		if !strings.Contains(summary, "NOT enforced yet") {
+			t.Errorf("%s summary %q must say the action is not enforced yet", tc.what, summary)
+		}
+		if strings.Contains(summary, tc.mustNotSay) {
+			t.Errorf("%s summary %q claims %q, which has not happened", tc.what, summary, tc.mustNotSay)
+		}
+		if strings.Contains(summary, "ABC234") || strings.Contains(summary, "203.0.113.7") {
+			t.Errorf("%s summary %q names a raw ID or an address (D8)", tc.what, summary)
+		}
+	}
+}
+
+// The unban half, and the direction an operator is most likely to misread: the
+// row says removed while the CR — the only thing that enforces — is still
+// there. The event must not read as a completed lifting.
+func TestAPendingUnbanRecordsThatTheTargetIsStillBanned(t *testing.T) {
+	h := newHarness(t)
+
+	var ban wireBan
+	h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+		"target": map[string]any{"type": "broadcastId", "value": "ABC234"}, "expiresAt": nil, "reason": "keep",
+	}, http.StatusCreated, &ban)
+	h.proj.breakFrom(errors.New("kubernetes API is unreachable"))
+	h.decode(http.MethodDelete, "/api/v1/bans/"+ban.ID, nil, http.StatusAccepted, nil)
+
+	events := h.enq.all()
+	if len(events) != 2 || events[1].Type != store.EventBanRemoved {
+		t.Fatalf("events = %+v", events)
+	}
+	// The clean create that preceded it is untouched: only the mutation whose
+	// CR write failed carries a grade.
+	if got := events[0].EnforcementState(); got != store.EnforcementInSync {
+		t.Errorf("the clean create was graded %q", got)
+	}
+	removed := events[1]
+	if got := removed.EnforcementState(); got != store.EnforcementPending {
+		t.Errorf("the unban event enforcement = %q, want %q", got, store.EnforcementPending)
+	}
+	summary := removed.PayloadString(store.PayloadSummary)
+	if !strings.Contains(summary, "STILL banned") {
+		t.Errorf("the unban summary %q must say the target is still banned — %q reads as backwards", summary, "not enforced yet")
+	}
+	if strings.Contains(summary, "was lifted by") {
+		t.Errorf("the unban summary %q reads as a completed lifting", summary)
+	}
+}
+
+// The other direction: a mutation whose CR landed records nothing extra. The
+// event's payload — and so the webhook body built from it — stays exactly what
+// it has always been, which is what makes the new key additive.
+func TestAnInSyncMutationRecordsNoEnforcementState(t *testing.T) {
+	h := newHarness(t)
+	h.fleet.set(liveSnapshot("ABC234", "3f9a1c2b4d5e", "203.0.113.7"))
+
+	h.decode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
+		map[string]any{"reason": "spam"}, http.StatusCreated, nil)
+	var ban wireBan
+	h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+		"target": map[string]any{"type": "broadcastId", "value": "BBB234"}, "expiresAt": nil, "reason": "x",
+	}, http.StatusCreated, &ban)
+	h.decode(http.MethodDelete, "/api/v1/bans/"+ban.ID, nil, http.StatusNoContent, nil)
+
+	events := h.enq.all()
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want kill, create, remove", events)
+	}
+	wantSays := []string{"was terminated", "was created", "was lifted by"}
+	for i, ev := range events {
+		if got := ev.EnforcementState(); got != store.EnforcementInSync {
+			t.Errorf("event %d (%s) was graded %q despite a CR that landed", i, ev.Type, got)
+		}
+		// Not merely "reads as in sync": the key is ABSENT, because absence is
+		// the signal a receiver has always parsed.
+		if strings.Contains(string(ev.Payload), store.PayloadEnforcement) {
+			t.Errorf("event %d (%s) grew an enforcement key: %s", i, ev.Type, ev.Payload)
+		}
+		if summary := ev.PayloadString(store.PayloadSummary); !strings.Contains(summary, wantSays[i]) {
+			t.Errorf("event %d (%s) summary = %q, want the plain wording %q", i, ev.Type, summary, wantSays[i])
+		}
+	}
+}
+
 // --- POST /bans -------------------------------------------------------
 
 // The §4.9 contract: the literal "publisher" resolves through relayscan and

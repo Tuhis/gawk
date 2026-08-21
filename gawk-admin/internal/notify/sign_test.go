@@ -27,6 +27,23 @@ const goldenBody = `{"schema":"gawk.moderation-event.v1","type":"broadcast.kille
 	`"portalUrl":"https://admin.example.com/#/broadcasts",` +
 	`"summary":"broadcast 3f9a1c2b4d5e was terminated by juho@example.com"}`
 
+// goldenPendingBody is the SAME kill, recorded when its Ban CR write did not
+// land: the delivery that must not claim a termination that has not happened.
+//
+// It is the second golden because a pending body is a wire shape too — an
+// existing receiver's signature check has to hold over it, and the field a
+// receiver branches on (`enforcement`) and the sentence it renders (`summary`)
+// are both pinned here byte-for-byte. Note what is unchanged: everything the
+// in-sync body carries, in the same order, with one field appended. That is
+// what makes this additive rather than a schema revision.
+const goldenPendingBody = `{"schema":"gawk.moderation-event.v1","type":"broadcast.killed",` +
+	`"occurredAt":"2026-08-20T15:04:05Z","actor":"juho@example.com",` +
+	`"broadcastKey":"3f9a1c2b4d5e","reason":"terms violation",` +
+	`"portalUrl":"https://admin.example.com/#/broadcasts",` +
+	`"summary":"a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com` +
+	` — NOT enforced yet, the broadcast is still live",` +
+	`"enforcement":"pending"}`
+
 const goldenTimestamp int64 = 1755702245
 
 // goldenEvent is the event goldenBody is rendered from. Its payload carries
@@ -46,6 +63,19 @@ func goldenEvent() store.Event {
 	}
 }
 
+// goldenPendingEvent is goldenEvent's kill as internal/api records it when the
+// CR projection failed: the same event, graded pending, with the summary the
+// one summariser produces for that grade.
+func goldenPendingEvent() store.Event {
+	ev := goldenEvent()
+	ev.Payload = json.RawMessage(`{"reason":"terms violation",` +
+		`"summary":"a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com` +
+		` — NOT enforced yet, the broadcast is still live",` +
+		`"enforcement":"pending",` +
+		`"banId":"11111111-2222-3333-4444-555555555555","cooldownSeconds":600}`)
+	return ev
+}
+
 func TestGoldenPayloadBytes(t *testing.T) {
 	body, err := marshal(buildPayload(goldenEvent(), "https://admin.example.com"))
 	if err != nil {
@@ -53,6 +83,19 @@ func TestGoldenPayloadBytes(t *testing.T) {
 	}
 	if string(body) != goldenBody {
 		t.Fatalf("payload bytes changed; every receiver's signature check depends on them\n got: %s\nwant: %s", body, goldenBody)
+	}
+}
+
+// The pending body is a golden too, and the in-sync one above is unchanged by
+// its existence — together they are the backward-compatibility claim that let
+// `enforcement` be added without revving PayloadSchema.
+func TestGoldenPendingPayloadBytes(t *testing.T) {
+	body, err := marshal(buildPayload(goldenPendingEvent(), "https://admin.example.com"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(body) != goldenPendingBody {
+		t.Fatalf("pending payload bytes changed\n got: %s\nwant: %s", body, goldenPendingBody)
 	}
 }
 
@@ -94,6 +137,19 @@ func TestSignatureVectors(t *testing.T) {
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
 			want:      "bc0ce6d53b3fe7af8c7c5ae19df24ecc6c83627341c730fe775095e3b1b4e43a",
+		},
+		{
+			// The pending delivery signs like any other: the enforcement
+			// grade is inside the signed material, so a receiver cannot be
+			// handed a "pending" body with a signature computed over the
+			// in-sync one. Computed in Python's hmac/hashlib over the UTF-8
+			// bytes (the summary's em dash is multi-byte), never by calling
+			// Sign.
+			name:      "the §4.10 payload, enforcement pending",
+			secret:    "gawk-webhook-secret",
+			timestamp: goldenTimestamp,
+			body:      goldenPendingBody,
+			want:      "0d077f50b0bfa59e556f6a9fd59d760c29d674f7bfe8341a05fc10d6b402245a",
 		},
 		{
 			name:      "minimal",

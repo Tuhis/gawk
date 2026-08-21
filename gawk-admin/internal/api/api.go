@@ -27,6 +27,12 @@
 //	row written, CR failed    → 202 Accepted, body = the ban with enforcement.inSync:false
 //	row not written           → 5xx (503 when Postgres is unreachable, 500 otherwise)
 //
+// The verdict does not stop at the response. Every handler projects BEFORE it
+// records, so the same grade rides into the event's payload and its summary
+// (store.EnforcementState) and out to the webhook: an operator whose phone
+// says "banned" while the relay is not enforcing would be reading the same lie
+// a 201 would have told, only further from the portal that could correct it.
+//
 // The middle row is a SUCCESS: the record is durable and the reconciler —
 // precisely RFC 9110 §15.3.3's "another process or server" — finishes the job
 // within a minute. R39 answered 502 there, which was wrong twice over: nothing
@@ -429,6 +435,21 @@ func (a *API) project(ctx context.Context, b store.Ban) error {
 		return nil
 	}
 	return a.opts.Projector.Project(ctx, b)
+}
+
+// enforcementState grades a projection outcome for the event that records it.
+//
+// The same verdict that decides 201-vs-202 rides into the event's payload and
+// into its summary, so the webhook says what the HTTP response says. A webhook
+// is a statement that something happened; "broadcast X was terminated" while
+// the relay is not enforcing anything is the same lie a 201 would have been —
+// and it is the one the operator reads on a phone, away from the portal that
+// would have shown them the 202.
+func enforcementState(projErr error) store.EnforcementState {
+	if projErr != nil {
+		return store.EnforcementPending
+	}
+	return store.EnforcementInSync
 }
 
 func (a *API) kick() {

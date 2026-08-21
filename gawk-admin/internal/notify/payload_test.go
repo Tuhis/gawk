@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
+
+	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
 
 // allowedPayloadKeys is the complete set of keys a webhook body may carry
@@ -32,6 +34,14 @@ var allowedPayloadKeys = map[string]bool{
 	"reason":       true,
 	"portalUrl":    true,
 	"summary":      true,
+	// enforcement: the deliberate edit that admitted the third webhook-safe
+	// payload key. It is reviewable BECAUSE it is a closed vocabulary — the
+	// only value that can appear is store.EnforcementPending, so unlike
+	// `reason` and `summary` there is no operator- or producer-supplied text
+	// behind it that could name a broadcast or an address (see
+	// store.Event.EnforcementState, and the poison planted under the same key
+	// in poisonedEvent below).
+	"enforcement": true,
 }
 
 // The values a payload must never contain. Each is planted somewhere an event
@@ -55,14 +65,19 @@ func poisonedEvent(eventType string) store.Event {
 		store.PayloadReason: "terms violation", // operator text: deliberately NOT poisoned, see below
 		store.PayloadSummary: "a broadcast ban was created by " +
 			"juho@example.com",
-		"target":            map[string]any{"type": "ip", "value": poisonCIDR},
-		"banId":             "11111111-2222-3333-4444-555555555555",
-		"sourceBroadcastId": poisonRawID,
-		"publisherIp":       poisonRawIPv4,
-		"peer":              poisonRawIPv6,
-		"v6Target":          poisonIPv6CIDR,
-		"operatorNote":      poisonOperatorNote,
-		"cooldownSeconds":   600,
+		"target": map[string]any{"type": "ip", "value": poisonCIDR},
+		// The third webhook-safe key, poisoned: `enforcement` is copied out of
+		// the jsonb like the other two, so it gets the same treatment. It
+		// survives that only because its vocabulary is closed — a value that
+		// is not exactly "pending" is dropped rather than forwarded.
+		store.PayloadEnforcement: poisonRawID,
+		"banId":                  "11111111-2222-3333-4444-555555555555",
+		"sourceBroadcastId":      poisonRawID,
+		"publisherIp":            poisonRawIPv4,
+		"peer":                   poisonRawIPv6,
+		"v6Target":               poisonIPv6CIDR,
+		"operatorNote":           poisonOperatorNote,
+		"cooldownSeconds":        600,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -139,6 +154,130 @@ func TestSummaryPresentWithoutOneInThePayload(t *testing.T) {
 			}
 			if strings.Contains(p.Summary, poisonRawID) {
 				t.Fatalf("the fallback summary names the raw broadcast ID: %q", p.Summary)
+			}
+		})
+	}
+}
+
+// gradedEvent is one moderation event as internal/api records it: the summary
+// its handler asked store for, and the enforcement key only when the CR write
+// did not land.
+func gradedEvent(eventType string, target moderation.TargetType, key string, enforcement store.EnforcementState) store.Event {
+	payload := map[string]any{
+		store.PayloadReason: "terms violation",
+		store.PayloadSummary: store.SummarizeWithEnforcement(
+			eventType, target, key, "juho@example.com", enforcement),
+		"banId":             "11111111-2222-3333-4444-555555555555",
+		"sourceBroadcastId": poisonRawID, // portal-only, as always
+	}
+	if enforcement != store.EnforcementInSync {
+		payload[store.PayloadEnforcement] = string(enforcement)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return store.Event{
+		ID:           42,
+		Type:         eventType,
+		OccurredAt:   time.Date(2026, 8, 20, 15, 4, 5, 0, time.UTC),
+		Actor:        "juho@example.com",
+		BroadcastKey: key,
+		BroadcastID:  poisonRawID,
+		Payload:      raw,
+	}
+}
+
+// A webhook is a statement that something happened. When the Ban CR write did
+// not land, what happened is a RECORD — so the delivery has to carry the
+// pending grade and a sentence that does not claim the enforcement.
+//
+// The in-sync half of each case is the backward-compatibility claim: absence of
+// the key is what an existing receiver has always seen, so it must stay absent
+// down to the substring (§4.10, and why PayloadSchema does not move).
+func TestPendingEnforcementCrossesIntoTheDelivery(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventType string
+		target    moderation.TargetType
+		key       string
+		// mustSay is the load-bearing half of the pending sentence: the word
+		// an operator reading a push notification acts on.
+		mustSay string
+		// mustNotSay is the claim the in-sync sentence makes and the pending
+		// one may not.
+		mustNotSay string
+	}{
+		{
+			name:       "a kill whose CR never landed",
+			eventType:  store.EventBroadcastKilled,
+			target:     moderation.TargetBroadcastID,
+			key:        "3f9a1c2b4d5e",
+			mustSay:    "NOT enforced yet",
+			mustNotSay: "was terminated",
+		},
+		{
+			name:       "a ban whose CR never landed",
+			eventType:  store.EventBanCreated,
+			target:     moderation.TargetIP,
+			mustSay:    "NOT enforced yet",
+			mustNotSay: "was created",
+		},
+		{
+			// The direction that matters most on a phone: the operator lifted
+			// a ban and the target is still banned.
+			name:       "an unban whose CR delete never landed",
+			eventType:  store.EventBanRemoved,
+			target:     moderation.TargetBroadcastID,
+			mustSay:    "STILL banned",
+			mustNotSay: "was lifted by",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pending, err := marshal(buildPayload(
+				gradedEvent(tc.eventType, tc.target, tc.key, store.EnforcementPending), "https://admin.example.com"))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(pending, &m); err != nil {
+				t.Fatalf("payload is not JSON: %v", err)
+			}
+			if m["enforcement"] != string(store.EnforcementPending) {
+				t.Errorf("enforcement = %v, want %q; the receiver cannot tell a recorded action from an enforced one\n%s",
+					m["enforcement"], store.EnforcementPending, pending)
+			}
+			for k := range m {
+				if !allowedPayloadKeys[k] {
+					t.Errorf("payload carries key %q, which is not in the §4.10 contract", k)
+				}
+			}
+			summary, _ := m["summary"].(string)
+			if !strings.Contains(summary, tc.mustSay) {
+				t.Errorf("summary %q does not say %q — it is the one sentence ntfy renders", summary, tc.mustSay)
+			}
+			if strings.Contains(summary, tc.mustNotSay) {
+				t.Errorf("summary %q claims %q, which has not happened", summary, tc.mustNotSay)
+			}
+
+			// The same event, in sync: byte-for-byte what a receiver has
+			// always been sent, with no trace of the new key.
+			inSync, err := marshal(buildPayload(
+				gradedEvent(tc.eventType, tc.target, tc.key, store.EnforcementInSync), "https://admin.example.com"))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(inSync), "enforcement") {
+				t.Errorf("an in-sync delivery grew an enforcement key: %s", inSync)
+			}
+			var clean map[string]any
+			if err := json.Unmarshal(inSync, &clean); err != nil {
+				t.Fatalf("payload is not JSON: %v", err)
+			}
+			if got, _ := clean["summary"].(string); !strings.Contains(got, tc.mustNotSay) {
+				t.Errorf("the in-sync summary %q lost its plain wording", got)
 			}
 		})
 	}
