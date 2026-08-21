@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
+import { enforcementNotice } from '../api/client.ts';
 import type { Ban } from '../api/types.ts';
 import { expiresIn, formatInstant } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';
@@ -14,6 +15,11 @@ import ui from '../styles/ui.module.css';
  * ban is still enforced, so a row that vanished from this table on a click
  * would be a lie about what the fleet is doing. Reload and show what the server
  * says.
+ *
+ * That half-done case is a `202 Accepted` carrying the removed ban and its
+ * `enforcement` sentence, and it is the one an operator is most likely to
+ * misread — the row now says `removed` while the target is STILL banned. It
+ * gets an amber notice of its own rather than the silence a clean `204` earns.
  */
 export function BansView() {
   const api = useApi();
@@ -22,6 +28,7 @@ export function BansView() {
   const { data, loadedAt, error, loading, reload } = useLoader<Ban[]>(load);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
 
   const bans = data ?? [];
   // Countdowns run from the fetch that produced these rows, not from render
@@ -32,7 +39,11 @@ export function BansView() {
     setBusyId(ban.id);
     setActionError(null);
     try {
-      await api.unban(ban.id);
+      // null on a clean 204; the removed ban on a 202, whose `enforcement`
+      // says the CR is still there and the target therefore still banned.
+      const removed = await api.unban(ban.id);
+      const detail = enforcementNotice(removed);
+      setWarning(detail === null ? null : `${ban.target.value} — ${detail}`);
       reload();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -75,6 +86,11 @@ export function BansView() {
       {actionError ? (
         <p className={ui.error} role="alert">
           {actionError}
+        </p>
+      ) : null}
+      {warning ? (
+        <p className={ui.warning} role="alert">
+          {warning}
         </p>
       ) : null}
 

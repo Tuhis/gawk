@@ -42,6 +42,26 @@ export interface BanTarget {
   prefixLength?: number;
 }
 
+/**
+ * Whether the Kubernetes enforcement object currently MATCHES this record.
+ *
+ * Present only on a mutation's own response, and only on the `202 Accepted`
+ * that says the two disagree: the `bans` row is committed, its `Ban` CR write
+ * is not, and the reconciler will close the gap within a minute. List and read
+ * routes never carry it — a stored row has no in-flight projection to report
+ * on — so `enforcement === undefined` is the ordinary case and means there is
+ * nothing to say.
+ *
+ * `inSync` and not `enforced` because it has to read correctly in BOTH
+ * directions. A pending create means recorded and NOT yet enforced; a pending
+ * unban means lifted in the record and STILL enforced. `detail` is the
+ * server's own sentence for the case at hand, and the UI renders it verbatim.
+ */
+export interface BanEnforcement {
+  inSync: boolean;
+  detail?: string;
+}
+
 export interface Ban {
   id: string;
   target: BanTarget;
@@ -55,6 +75,8 @@ export interface Ban {
   removedBy?: string | null;
   sourceBroadcastId?: string | null;
   crName?: string;
+  /** Only on a `202` mutation response; see BanEnforcement. */
+  enforcement?: BanEnforcement;
 }
 
 export interface BroadcastPod {
@@ -174,7 +196,12 @@ export interface WebhookTestResult {
 /**
  * Every `error.code` `internal/api` emits. A union rather than a bare string so
  * a view that branches on one cannot quietly branch on a code that does not
- * exist — `source_immutable` and `projection_failed` both drive real UI.
+ * exist — `source_immutable` drives real UI, and `duplicate_active` is the one
+ * refusal that comes back with a `ban` attached.
+ *
+ * There is deliberately no `projection_failed` here any more. A ban row that
+ * committed without its CR is a `202 Accepted` carrying `enforcement`, not an
+ * error at all — see BanEnforcement.
  */
 export type ApiErrorCode =
   | 'bad_request'
@@ -184,7 +211,6 @@ export type ApiErrorCode =
   | 'source_immutable'
   | 'invalid_target'
   | 'ban_not_active'
-  | 'projection_failed'
   | 'unavailable'
   | 'internal';
 

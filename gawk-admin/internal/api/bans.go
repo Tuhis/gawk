@@ -140,16 +140,11 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 	})
 	a.afterMutation()
 
+	// 202 Accepted: the record is durable, the reconciler completes it. See
+	// handleKill for why this is a success and not a 5xx.
 	if projErr != nil {
 		a.log.Error("projecting the ban to a Ban CR failed", "banId", created.ID, "err", projErr)
-		writeJSON(w, http.StatusBadGateway, struct {
-			Error errorBody `json:"error"`
-			Ban   banJSON   `json:"ban"`
-		}{
-			Error: errorBody{Code: CodeProjectionFail,
-				Message: "the ban is recorded but its enforcement object could not be written; the reconciler will retry within a minute"},
-			Ban: renderBan(created),
-		})
+		writeJSON(w, http.StatusAccepted, renderPendingBan(created, DetailBanPending))
 		return
 	}
 	a.log.Info("ban created", "banId", created.ID, "targetType", created.Target.Type, "actor", id.Actor())
@@ -186,10 +181,13 @@ func (a *API) handleDeleteBan(w http.ResponseWriter, r *http.Request) {
 	})
 	a.afterMutation()
 
+	// The unban's 202 answers WITH the removed ban rather than the clean
+	// 204's empty body: this is the direction the operator is most likely to
+	// misread — the row now says `removed` while the target is still banned —
+	// so the response carries both the row and the sentence that says so.
 	if projErr != nil {
 		a.log.Error("deleting the ban's CR failed", "banId", removed.ID, "err", projErr)
-		writeError(w, http.StatusBadGateway, CodeProjectionFail,
-			"the ban is lifted in the record store but its enforcement object could not be deleted; the reconciler will retry within a minute")
+		writeJSON(w, http.StatusAccepted, renderPendingBan(removed, DetailUnbanPending))
 		return
 	}
 	a.log.Info("ban removed", "banId", removed.ID, "targetType", removed.Target.Type, "actor", id.Actor())

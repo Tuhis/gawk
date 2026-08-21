@@ -24,6 +24,30 @@ type banTargetJSON struct {
 	Value string                `json:"value"`
 }
 
+// enforcementJSON reports whether the Kubernetes enforcement object currently
+// MATCHES this record. It rides only on a mutation's own response, and only
+// when the two disagree — a 202 (see the three handlers). List and read routes
+// never carry it: a stored row has no in-flight projection to report on, and
+// the reconciler, not this field, is what makes them agree again.
+//
+// `inSync` rather than `enforced` because the field has to read correctly in
+// BOTH directions. A pending create means the ban is recorded and NOT yet
+// enforced; a pending unban means the record is lifted and the target is STILL
+// enforced. "enforced: false" would be a lie about the second one.
+type enforcementJSON struct {
+	InSync bool   `json:"inSync"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// The two sentences a 202 explains itself with. They are constants because the
+// SPA renders them verbatim — this is operator-facing copy, not log text.
+const (
+	// DetailBanPending is a ban row that exists with no CR behind it yet.
+	DetailBanPending = "The ban is recorded but NOT enforced yet — its Kubernetes enforcement object could not be written; the reconciler retries within a minute, so do not re-submit."
+	// DetailUnbanPending is the mirror: the row says removed, the CR does not.
+	DetailUnbanPending = "The ban is lifted in the record but the target is STILL banned — its Kubernetes enforcement object could not be deleted; the reconciler retries within a minute, so do not re-submit."
+)
+
 type banJSON struct {
 	ID     string         `json:"id"`
 	Target banTargetJSON  `json:"target"`
@@ -40,6 +64,10 @@ type banJSON struct {
 	RemovedBy         string  `json:"removedBy,omitempty"`
 	SourceBroadcastID string  `json:"sourceBroadcastId,omitempty"`
 	CRName            string  `json:"crName,omitempty"`
+	// Enforcement is set ONLY by renderPendingBan, so a 201/204 and every
+	// list/read response stay byte-identical to what they have always been.
+	// Its presence is the whole signal: absent means there is nothing to say.
+	Enforcement *enforcementJSON `json:"enforcement,omitempty"`
 }
 
 func renderBan(b store.Ban) banJSON {
@@ -62,6 +90,19 @@ func renderBan(b store.Ban) banJSON {
 		s := b.RemovedAt.UTC().Format(time.RFC3339)
 		out.RemovedAt = &s
 	}
+	return out
+}
+
+// renderPendingBan is the 202 body: the committed row, plus one sentence
+// saying which way the Kubernetes side is out of step with it.
+//
+// The ban itself is here because a client that just created something needs
+// its ID regardless of whether enforcement caught up — and because a 202 that
+// answered with only a message would leave the operator no handle on the row
+// they must NOT re-submit.
+func renderPendingBan(b store.Ban, detail string) banJSON {
+	out := renderBan(b)
+	out.Enforcement = &enforcementJSON{InSync: false, Detail: detail}
 	return out
 }
 

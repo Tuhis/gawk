@@ -17,8 +17,23 @@
 //     copies only the named webhook-safe payload keys.
 //   - **Postgres is the commitment point.** A mutation that has written its
 //     `bans` row has happened; the Ban CR is a projection the reconciler heals.
-//     Handlers therefore write the row, project the CR inline, and report a
-//     projection failure honestly rather than pretending either way.
+//     Handlers therefore write the row, project the CR inline, and grade the
+//     result on which of the two writes landed — see the status matrix below.
+//
+// A ban is two writes in two systems that cannot share a transaction, so a
+// mutation has three outcomes, not two:
+//
+//	row written, CR projected → 201 Created (kill, create) · 204 No Content (unban)
+//	row written, CR failed    → 202 Accepted, body = the ban with enforcement.inSync:false
+//	row not written           → 5xx (503 when Postgres is unreachable, 500 otherwise)
+//
+// The middle row is a SUCCESS: the record is durable and the reconciler —
+// precisely RFC 9110 §15.3.3's "another process or server" — finishes the job
+// within a minute. R39 answered 502 there, which was wrong twice over: nothing
+// acted as a gateway, and calling a committed ban a failure invites a
+// re-submit that now 409s against the row that does exist. The last row is the
+// one where nothing happened at all: no CR is written, no event is emitted,
+// and no ban comes back.
 package api
 
 import (
@@ -46,7 +61,6 @@ const (
 	CodeSourceImmutable = "source_immutable"
 	CodeInternal        = "internal"
 	CodeUnavailable     = "unavailable"
-	CodeProjectionFail  = "projection_failed"
 	CodeInvalidTarget   = "invalid_target"
 	CodeNotActive       = "ban_not_active"
 )
@@ -407,9 +421,9 @@ func (a *API) fail(w http.ResponseWriter, r *http.Request, what string, err erro
 
 // project writes the ban's CR inline and reports whether it succeeded. A
 // failure is NOT hidden: the row is committed and the reconciler will heal the
-// CR within its sweep, but the operator is told, because "the kill worked"
-// when the enforcement object was never written is the one lie this surface
-// must not tell.
+// CR within its sweep, but the operator is told — through a 202 and its
+// `enforcement` object — because "the kill worked" when the enforcement object
+// was never written is the one lie this surface must not tell.
 func (a *API) project(ctx context.Context, b store.Ban) error {
 	if a.opts.Projector == nil {
 		return nil

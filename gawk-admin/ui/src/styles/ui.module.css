@@ -171,9 +171,14 @@
   flex-wrap: wrap;
 }
 
+/* Amber, not red: `.error` is for a request that failed. Everything wearing
+   `.warning` is a caution attached to something that WORKED — the shared-IP
+   check in the ban dialog, and the 202 "recorded but not yet enforced" notice.
+   Painting a 2xx response in the failure colour is the exact misreading 202
+   exists to prevent. */
 .warning {
-  border: 1px solid var(--bad);
-  background: var(--bad-bg);
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
   border-radius: var(--r-sm);
   padding: var(--sp-2);
   margin-bottom: var(--sp-3);

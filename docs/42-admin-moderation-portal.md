@@ -498,14 +498,36 @@ All under `/api/v1`, JSON, authenticated by the OIDC JWT on every request
 (§4.8) — no cookies exist, so there is no CSRF machinery to get wrong.
 Errors are `{ "error": { "code": "string", "message": "human text" } }`.
 
+A ban is **two writes in two systems that cannot share a transaction**: the
+Postgres row (the record) and the `Ban` CR (the object relays watch, and the
+only thing that actually enforces). Every mutation therefore has three
+outcomes, not two, and grades itself on which of the two writes landed:
+
+| Outcome | Answer |
+|---|---|
+| row written **and** CR projected | `201 Created` (kill, create ban) · `204 No Content` (unban) |
+| row written, CR projection failed | `202 Accepted`, body = the ban, carrying `enforcement: {inSync: false, detail}` |
+| row write failed | `503` when Postgres is unreachable, `500` otherwise — nothing is recorded, no CR is written, no event is emitted, no ban comes back |
+
+`202` is a **success**. The record is durable and the reconciler — precisely
+RFC 9110 §15.3.3's "another process or server" — closes the gap on its next
+sweep. The body carries the ban because a client that just created something
+needs its ID regardless, and because the one thing it must not do is
+re-submit: a retry now `409`s against the row that does exist. `enforcement`
+rides only on that response — list and read routes never carry it, because a
+stored row has no in-flight projection to report on. It is `inSync` and not
+`enforced` because it has to read correctly in **both** directions: a pending
+create is recorded and *not yet enforced*, while a pending unban is lifted in
+the record and the target is *still banned*.
+
 | Route | Semantics |
 |---|---|
 | `GET /api/v1/me` | `{email, subject, roles}` from the validated JWT — the SPA's authorization probe (valid token without the `operator` role → 403; missing/expired token → 401 → the SPA refreshes or re-runs the OIDC flow). |
 | `GET /api/v1/broadcasts` | Fleet aggregation from `relayscan` (≤2 s cache): per broadcast `{id, key, publisherActive, publisherRemoteIp, startedAt, viewersGlobal, pods: [{pod, role, viewersLocal}], links: {watch, telemetry}, banState}`. `watch` = `<appBaseUrl>/#/view/<id>`; `telemetry` = `<telemetryBaseUrl>/#/broadcast/<key>` (omitted when the base URL is unconfigured). |
-| `POST /api/v1/broadcasts/{id}/kill` | Body `{reason (required, non-empty), cooldownSeconds?}` (default from `-kill-cooldown`, 600). Creates the cooldown ban, emits `broadcast.killed`, webhook. `201 {ban}`. Idempotent-ish: an existing active ID ban → `409` with that ban. |
-| `POST /api/v1/bans` | Body `{target: {type, value}, expiresAt: RFC3339 \| null, reason (required), sourceBroadcastId?}`. `value` for `type: "ip"` may be the literal `"publisher"` together with `sourceBroadcastId` — the server resolves the live publisher's IP via relayscan and applies the operator-confirmed prefix (§4.9). `201 {ban}`; duplicate active target → `409`. |
+| `POST /api/v1/broadcasts/{id}/kill` | Body `{reason (required, non-empty), cooldownSeconds?}` (default from `-kill-cooldown`, 600). Creates the cooldown ban, emits `broadcast.killed`, webhook. `201 {ban}`, or `202 {ban}` in the same envelope when the row committed and the CR did not. Idempotent-ish: an existing active ID ban → `409` with that ban. |
+| `POST /api/v1/bans` | Body `{target: {type, value}, expiresAt: RFC3339 \| null, reason (required), sourceBroadcastId?}`. `value` for `type: "ip"` may be the literal `"publisher"` together with `sourceBroadcastId` — the server resolves the live publisher's IP via relayscan and applies the operator-confirmed prefix (§4.9). `201` with the bare ban, or `202` with the bare ban when only the CR write failed; duplicate active target → `409`. |
 | `GET /api/v1/bans?state=active\|all` | Ban rows, newest first. |
-| `DELETE /api/v1/bans/{id}` | Unban: `state = removed`, CR deleted, `ban.removed` event. `204`. |
+| `DELETE /api/v1/bans/{id}` | Unban: `state = removed`, CR deleted, `ban.removed` event. `204` with no body when both landed. `202` **with the removed ban** when the row moved and the CR delete did not — the one case where the record reads `removed` while the target is still banned, so it answers with something to say rather than an empty success. |
 | `GET /api/v1/events?afterId=&limit=` | The audit/notification feed (cursor pagination by `id`). |
 | `GET /api/v1/relays` | Per-pod `{pod, reachable, version, config}` from `/internal/admin/config` — the read-only settings view (D10). |
 | `GET /api/v1/webhooks` | Merged list, chart-defined + UI-created: `{id?, name, url, enabled, source: "config" \| "ui"}`. **Secrets are never returned**, for either source. |
@@ -1027,6 +1049,7 @@ code.
 | §4.13, §4.15 | the migration Job hooks `pre-install`/`pre-upgrade` | `pre-install`/`pre-upgrade` — **deviation withdrawn** | It was briefly implemented as `post-install`/`pre-upgrade`. A `pre-install` hook runs **before** the release's own manifests, so while the chart still rendered its own CNPG `Cluster` the Job waited for a Secret Helm would not create until the Job finished — a deadlock on every first install. The fix landed one level up instead: the chart no longer creates a database, it takes a connection to one that must already exist (§4.13). That makes the database a *prerequisite* rather than a dependency of the release — exactly what a `pre-install` hook is allowed to depend on — so the spec's wording is right as written, and §4.15's guarantee now holds on a **first install** too, not only on upgrades: migrated to completion before the Deployment rolls, and a failed migration halts the release instead of rolling pods that would come up NotReady. The Helm ordering rule that forced the detour is still worth knowing and stays in `docs/gotchas.md`. |
 | §4.13 | — | the relay chart's `moderation.source` is a value (`k8s` default), not just `moderation.enabled` | `-moderation-source` accepts `file:<path>` too (§4.14), and a chart that hardcoded `k8s` would have made the compose-lane source unreachable from a Helm install for no reason. |
 | §9 AP8 | *(the kind `e2e-cluster` scenario is listed under AP3)* | landed in **AP8**, as `e2e/moderation-assert.sh` | It needs the CRD template, the relay Role's `bans` access and a chart value — all deployment files — so building it from AP3 would have collided with the chunk that owns them. What it asserts and what it deliberately does not are in the script's own header. |
+| §4.7 | the kill / create-ban / unban rows name only `201`, `204` and `409` — the table has **no partial-failure case** | a third outcome: `202 Accepted`, body = the ban with `enforcement: {inSync: false, detail}` | A ban is two writes in two systems with no shared transaction, so "row committed, `Ban` CR not written" is a real state the table never assigns a code to. It is not a failure — the record is durable and the reconciler heals the CR within a minute — and it is not a plain `201` either, because nothing is enforced yet. `202` is what RFC 9110 §15.3.3 defines for exactly this shape. Being a *success* matters more than the number: it is what stops a client reporting "nothing happened" and inviting a re-submit that now `409`s against the row that does exist. `enforcement` is `inSync` rather than `enforced` so the field reads correctly in both directions, and it appears only on that response, leaving every `201`/`204` and every list/read byte-identical. An earlier implementation answered `502 Bad Gateway` here; nothing acted as a gateway, and the owner overruled it. |
 | §9 AP8 | the `docker` job smoke-probes every image's HTTP endpoint | the `gawk-admin` entry carries **no probe**; it asserts the process reaches its documented cluster-less failure | The image genuinely cannot serve without Kubernetes (§4.14). The probe was written before `cmd/gawk-admin/main.go` existed and would have failed on its first CI run. A smoke that asserts something false is worse than one that asserts less. |
 | §4.14 | the local lane is "kind or envtest" | `main.go` also falls back to the ordinary kubeconfig loading rules when in-cluster config is absent | That fallback is what makes "run it against kind" work without pretending to be a pod. Deliberately **not** a knob: `KUBECONFIG` is the conventional mechanism, and a flag would have to reach the chart to satisfy the carry-all-limits rule for something a pod would never set. A missing API server stays fatal — unlike the IdP, there is nowhere to write a Ban CR, and a kill button that records a row nothing enforces is worse than a refusal to start. |
 | §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |

@@ -174,16 +174,13 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 	})
 	a.afterMutation()
 
+	// 202, not an error: the row is committed and durable, and the reconciler
+	// is exactly the "other process" RFC 9110 §15.3.3 defines 202 for. The
+	// body keeps kill's `{ban}` envelope so a client parses one shape either
+	// way; `enforcement` is what tells it enforcement has not started.
 	if projErr != nil {
 		a.log.Error("projecting the kill ban to a Ban CR failed", "banId", created.ID, "err", projErr)
-		writeJSON(w, http.StatusBadGateway, struct {
-			Error errorBody `json:"error"`
-			Ban   banJSON   `json:"ban"`
-		}{
-			Error: errorBody{Code: CodeProjectionFail,
-				Message: "the ban is recorded but its enforcement object could not be written; the reconciler will retry within a minute"},
-			Ban: renderBan(created),
-		})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ban": renderPendingBan(created, DetailBanPending)})
 		return
 	}
 	// Ban reasons are operator-private context: Debug only (docs/42 §5).

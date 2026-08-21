@@ -152,12 +152,85 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 
 // Postgres down: mutations answer 503 (§6), not 500 — the operator should
 // retry, and enforcement of existing bans is unaffected either way.
+//
+// This is the bottom row of the status matrix, and 202 exists precisely so it
+// stays distinguishable from it: NOTHING was recorded here, so nothing may be
+// projected, nothing may be emitted, and no ban may come back. A 202 says "the
+// record is durable"; a client that got one of these instead would be told the
+// opposite of the truth.
 func TestMutationsReport503WhenPostgresIsDown(t *testing.T) {
 	h := newHarnessWithoutPostgres(t)
-	code := h.errorCode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
-		map[string]any{"reason": "terms violation"}, http.StatusServiceUnavailable)
-	if code != api.CodeUnavailable {
-		t.Fatalf("error code = %q, want %q", code, api.CodeUnavailable)
+
+	cases := []struct {
+		name, method, path string
+		body               any
+	}{
+		{"kill", http.MethodPost, "/api/v1/broadcasts/ABC234/kill", map[string]any{"reason": "terms violation"}},
+		{"create ban", http.MethodPost, "/api/v1/bans", map[string]any{
+			"target": map[string]any{"type": "broadcastId", "value": "ABC234"}, "expiresAt": nil, "reason": "x"}},
+		{"unban", http.MethodDelete, "/api/v1/bans/f2a6b2f4-0d5f-4a2f-9a1a-4a3b7c8d9e01", nil},
+	}
+	for _, c := range cases {
+		status, body := h.raw(c.method, c.path, c.body)
+		if status != http.StatusServiceUnavailable {
+			t.Fatalf("%s = %d, want 503; body: %s", c.name, status, body)
+		}
+		if !strings.Contains(body, api.CodeUnavailable) {
+			t.Fatalf("%s body = %s, want code %q", c.name, body, api.CodeUnavailable)
+		}
+		if strings.Contains(body, `"ban"`) || strings.Contains(body, `"id"`) {
+			t.Fatalf("%s returned a ban on a write that never happened: %s", c.name, body)
+		}
+	}
+	assertNothingHappened(t, h)
+}
+
+// The other 5xx: Postgres is reachable, the row write itself fails. 500, and
+// the same all-or-nothing guarantee — a CHECK the INSERT cannot satisfy leaves
+// reads working, so the handler gets past its duplicate lookup and fails
+// exactly where a real constraint violation or a full disk would.
+func TestARowWriteFailureIs500AndRecordsNothing(t *testing.T) {
+	h := newHarness(t)
+	h.fleet.set(liveSnapshot("ABC234", "key", "203.0.113.7"))
+
+	if _, err := h.store.Pool().Exec(t.Context(),
+		`ALTER TABLE bans ADD CONSTRAINT refuse_every_insert CHECK (false) NOT VALID`); err != nil {
+		t.Fatalf("block inserts: %v", err)
+	}
+
+	for _, c := range []struct {
+		name, path string
+		body       any
+	}{
+		{"kill", "/api/v1/broadcasts/ABC234/kill", map[string]any{"reason": "terms violation"}},
+		{"create ban", "/api/v1/bans", map[string]any{
+			"target": map[string]any{"type": "broadcastId", "value": "BBB234"}, "expiresAt": nil, "reason": "x"}},
+	} {
+		status, body := h.raw(http.MethodPost, c.path, c.body)
+		if status != http.StatusInternalServerError {
+			t.Fatalf("%s = %d, want 500; body: %s", c.name, status, body)
+		}
+		if !strings.Contains(body, api.CodeInternal) {
+			t.Fatalf("%s body = %s, want code %q", c.name, body, api.CodeInternal)
+		}
+		if strings.Contains(body, `"ban"`) || strings.Contains(body, `"id"`) {
+			t.Fatalf("%s returned a ban on a write that never happened: %s", c.name, body)
+		}
+	}
+	assertNothingHappened(t, h)
+}
+
+// assertNothingHappened is the guarantee both 5xx tests exist for: a failed
+// row write projects no CR and emits no event. It is structural — every
+// handler returns from a.fail before it reaches either — and this is what
+// keeps it structural.
+func assertNothingHappened(t *testing.T, h *harness) {
+	t.Helper()
+	if n := h.proj.count(); n != 0 {
+		t.Fatalf("%d CR(s) projected for a mutation whose row was never written", n)
+	}
+	if evs := h.enq.all(); len(evs) != 0 {
+		t.Fatalf("events emitted for a mutation whose row was never written: %+v", evs)
 	}
 }
 

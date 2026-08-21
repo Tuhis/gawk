@@ -110,6 +110,54 @@ describe('unban round-trips (AP6)', () => {
     expect(await screen.findByText(/No active bans/)).toBeTruthy();
   });
 
+  // The unban's own middle state, and the direction that is easiest to read
+  // backwards: the row says `removed` while the CR — the only thing that
+  // actually enforces — is still there, so the target is STILL banned. The
+  // server answers 202 with the removed ban, not 204, and says so.
+  it('warns that the target is still banned when the CR delete failed (202)', async () => {
+    const removed = {
+      ...activeBan(),
+      state: 'removed' as const,
+      enforcement: {
+        inSync: false,
+        detail:
+          'The ban is lifted in the record but the target is STILL banned — its Kubernetes enforcement object could not be deleted; the reconciler retries within a minute, so do not re-submit.',
+      },
+    };
+    const session = stubSession((path, init) => {
+      if (init.method === 'DELETE') return json(removed, 202);
+      if (path.startsWith('api/v1/bans')) return json({ bans: [activeBan()] });
+      return json({});
+    });
+    renderWithSession(<BansView />, session);
+    fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+
+    const note = await screen.findByRole('alert');
+    expect(note.textContent).toMatch(/STILL banned/);
+    expect(note.textContent).toMatch(/do not re-submit/i);
+    // Named by target, so it is clear which row it is about.
+    expect(note.textContent).toMatch(/ABC123/);
+    // A 202 is a success, so it is not shown as a refusal.
+    expect(note.className).not.toMatch(/error/);
+  });
+
+  // A clean 204 says nothing extra — the amber notice must not be sticky UI
+  // that appears on every unban.
+  it('says nothing extra when the unban was fully applied (204)', async () => {
+    const session = stubSession((path, init) => {
+      if (init.method === 'DELETE') return new Response(null, { status: 204 });
+      if (path.startsWith('api/v1/bans')) return json({ bans: [activeBan()] });
+      return json({});
+    });
+    renderWithSession(<BansView />, session);
+    fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+
+    await waitFor(() => {
+      expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(true);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('shows the server’s refusal and keeps the row', async () => {
     const session = stubSession((path, init) => {
       if (init.method === 'DELETE') {

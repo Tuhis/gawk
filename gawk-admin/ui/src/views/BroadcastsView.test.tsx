@@ -304,23 +304,26 @@ describe('server refusals', () => {
     expect(await screen.findByText(/an active ban already covers ABC123/)).toBeTruthy();
   });
 
-  // 502 projection_failed is the awkward middle state and the one most likely
-  // to be mishandled: the Postgres row IS committed, only the Ban CR write
-  // failed. Treating it as a failure invites a retry that will now 409 against
-  // the row that does exist; treating it as success claims an enforcement that
-  // has not started.
-  it('reports a ban that was recorded but not yet enforced (502 projection_failed)', async () => {
+  // 202 Accepted is the awkward middle state and the one most likely to be
+  // mishandled: the Postgres row IS committed, only the Ban CR write failed.
+  // It arrives on a SUCCESS response, so nothing throws — the view has to
+  // notice `enforcement.inSync: false` and go amber. Treating it as a failure
+  // invites a retry that will now 409 against the row that does exist;
+  // treating it as a plain success claims an enforcement that has not started.
+  const PENDING_BAN = {
+    id: 'committed',
+    state: 'active',
+    enforcement: {
+      inSync: false,
+      detail:
+        'The ban is recorded but NOT enforced yet — its Kubernetes enforcement object could not be written; the reconciler retries within a minute, so do not re-submit.',
+    },
+  };
+
+  it('reports a ban that was recorded but not yet enforced (202)', async () => {
     const session = stubSession((path) => {
       if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
-      if (path === 'api/v1/bans') {
-        return json(
-          {
-            error: { code: 'projection_failed', message: 'could not write the Ban CR' },
-            ban: { id: 'committed', state: 'active' },
-          },
-          502,
-        );
-      }
+      if (path === 'api/v1/bans') return json(PENDING_BAN, 202);
       return json({});
     });
     renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
@@ -333,23 +336,18 @@ describe('server refusals', () => {
     const note = await screen.findByRole('alert');
     expect(note.textContent).toMatch(/recorded/i);
     expect(note.textContent).toMatch(/NOT enforced yet/);
-    expect(note.textContent).toMatch(/Do not re-submit/);
-    // Not reported as a plain failure, and the dialog is done with.
+    expect(note.textContent).toMatch(/do not re-submit/i);
+    // Which broadcast, and no green "Banned ABC123." claiming it is done.
+    expect(note.textContent).toMatch(/ABC123/);
+    expect(screen.queryByText('Banned ABC123.')).toBeNull();
+    // The dialog is done with: there is nothing to retry.
     expect(screen.queryByRole('button', { name: 'Kill and ban' })).toBeNull();
   });
 
   it('does the same for a plain kill that could not be projected', async () => {
     const session = stubSession((path) => {
       if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
-      if (path.endsWith('/kill')) {
-        return json(
-          {
-            error: { code: 'projection_failed', message: 'could not write the Ban CR' },
-            ban: { id: 'committed', state: 'active' },
-          },
-          502,
-        );
-      }
+      if (path.endsWith('/kill')) return json({ ban: PENDING_BAN }, 202);
       return json({});
     });
     renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
@@ -358,5 +356,23 @@ describe('server refusals', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/NOT enforced yet/);
+    expect(screen.queryByText('Killed ABC123.')).toBeNull();
+  });
+
+  // The clean case still reads as clean: a 201 carries no `enforcement`, so
+  // nothing goes amber and the operator gets the plain confirmation.
+  it('shows a plain confirmation when the CR was written too (201)', async () => {
+    const session = stubSession((path) => {
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
+      if (path.endsWith('/kill')) return json({ ban: { id: 'b1', state: 'active' } }, 201);
+      return json({});
+    });
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    fireEvent.click(await screen.findByRole('button', { name: 'Kill' }));
+    fireEvent.change(screen.getByLabelText('Reason (required)'), { target: { value: 'spam' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
+
+    expect(await screen.findByText('Killed ABC123.')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

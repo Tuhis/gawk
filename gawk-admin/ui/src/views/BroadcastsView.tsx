@@ -1,8 +1,8 @@
 import { useCallback, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
-import { ApiError } from '../api/client.ts';
-import type { Broadcast, BroadcastBanState } from '../api/types.ts';
+import { enforcementNotice } from '../api/client.ts';
+import type { Ban, Broadcast, BroadcastBanState } from '../api/types.ts';
 import { BanDialog } from '../components/BanDialog.tsx';
 import type { BanRequestDraft } from '../components/BanDialog.tsx';
 import { FlaggedPinSlot } from '../components/FlaggedPin.tsx';
@@ -50,26 +50,33 @@ export function BroadcastsView({
   // whenever React re-rendered them (see `useLoader`'s `loadedAt`).
   const now = loadedAt;
 
+  /**
+   * Report a mutation that succeeded, in one of its two flavours.
+   *
+   * `pending` is the server's `202` sentence: the ban row is committed and its
+   * relay-side enforcement object is not written yet. That is neither the
+   * green "done" nor the red "failed" — calling it either would mislead, so it
+   * gets the amber notice and the success line is suppressed.
+   */
+  function reportSuccess(pending: string | null, done: string) {
+    setNote(pending ? null : done);
+    setWarning(pending);
+  }
+
   async function confirmKill(draft: KillRequestDraft) {
     if (!killing) return;
+    const target = killing;
     setBusy(true);
     setActionError(null);
     try {
-      await api.kill(killing.id, {
+      const { ban } = await api.kill(target.id, {
         reason: draft.reason,
         cooldownSeconds: draft.cooldownSeconds,
       });
-      setNote(`Killed ${killing.id}.`);
-      setWarning(null);
+      reportSuccess(notice(target.id, ban), `Killed ${target.id}.`);
       setKilling(null);
       reload();
     } catch (err) {
-      if (notEnforcedYet(err)) {
-        setWarning(unenforcedMessage(killing.id));
-        setKilling(null);
-        reload();
-        return;
-      }
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -85,35 +92,32 @@ export function BroadcastsView({
       // The ID ban is the action that ends the broadcast: the relay kills every
       // live publisher matching a new Ban (AP3), so this both stops it now and
       // keeps it stopped.
-      await api.createBan({
+      const idBan = await api.createBan({
         target: { type: 'broadcastId', value: target.id },
         expiresAt: draft.expiresAt,
         reason: draft.reason,
         sourceBroadcastId: target.id,
       });
+      // Either write can come back 202 on its own; one unenforced ban is
+      // enough to make this amber, so the first notice wins.
+      let pending = notice(target.id, idBan);
       if (draft.ip) {
         // The literal "publisher" is §4.7's contract: the server resolves the
         // live publisher's address through relayscan rather than trusting an
         // address this page read seconds ago, and applies the prefix the
         // operator just confirmed.
-        await api.createBan({
+        const ipBan = await api.createBan({
           target: { type: 'ip', value: 'publisher', prefixLength: draft.ip.prefixLength },
           expiresAt: draft.expiresAt,
           reason: draft.reason,
           sourceBroadcastId: target.id,
         });
+        pending = pending ?? notice(target.id, ipBan);
       }
-      setNote(`Banned ${target.id}${draft.ip ? ' and its publisher IP' : ''}.`);
-      setWarning(null);
+      reportSuccess(pending, `Banned ${target.id}${draft.ip ? ' and its publisher IP' : ''}.`);
       setBanning(null);
       reload();
     } catch (err) {
-      if (notEnforcedYet(err)) {
-        setWarning(unenforcedMessage(target.id));
-        setBanning(null);
-        reload();
-        return;
-      }
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -261,25 +265,20 @@ export function BroadcastsView({
 }
 
 /**
- * A ban write that was RECORDED but is not yet ENFORCED (`502
- * projection_failed`).
+ * A ban that was RECORDED but is not yet ENFORCED — the server's `202
+ * Accepted`, not an error.
  *
  * The Postgres row is committed; only the projection to a Ban CR failed, and
- * the reconciler will heal it. So this is neither a success nor a failure, and
- * calling it either would mislead: "failed" invites a retry that will now 409
- * against the row that does exist, and "done" claims an enforcement that has
- * not started.
+ * the reconciler will heal it. So this is neither a plain success nor a
+ * failure, and calling it either would mislead: "failed" invites a retry that
+ * will now 409 against the row that does exist, and "done" claims an
+ * enforcement that has not started. The sentence is the server's — it is the
+ * side that knows which way the two are out of step — prefixed with the
+ * broadcast so the operator knows which row it is about.
  */
-function notEnforcedYet(err: unknown): boolean {
-  return err instanceof ApiError && err.code === 'projection_failed';
-}
-
-function unenforcedMessage(id: string): string {
-  return (
-    `Ban recorded for ${id}, but it is NOT enforced yet — the relay-side object ` +
-    `could not be written. The reconciler retries automatically; the broadcast ` +
-    `stays live until it succeeds. Do not re-submit.`
-  );
+function notice(id: string, ban: Ban | null | undefined): string | null {
+  const detail = enforcementNotice(ban);
+  return detail === null ? null : `${id} — ${detail} The broadcast stays live until it succeeds.`;
 }
 
 /**

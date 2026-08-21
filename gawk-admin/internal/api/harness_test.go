@@ -78,6 +78,20 @@ func (p *fakeProjector) last() (store.Ban, bool) {
 	return p.projected[len(p.projected)-1], true
 }
 
+func (p *fakeProjector) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.projected)
+}
+
+// breakFrom makes every SUBSEQUENT Project fail. It is how the unban tests get
+// a ban that exists with a CR behind it and then lose only the delete.
+func (p *fakeProjector) breakFrom(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.err = err
+}
+
 // recordingEnqueuer captures what the API offered to AP7's dispatcher.
 type recordingEnqueuer struct {
 	mu     sync.Mutex
@@ -362,6 +376,15 @@ type wireBan struct {
 	RemovedBy         string  `json:"removedBy"`
 	SourceBroadcastID string  `json:"sourceBroadcastId"`
 	CRName            string  `json:"crName"`
+	// Enforcement rides only on a 202 — the mutation whose row landed and
+	// whose CR did not. A pointer so "absent" and "present and false" are
+	// distinguishable, which is the whole assertion on a 201.
+	Enforcement *wireEnforcement `json:"enforcement"`
+}
+
+type wireEnforcement struct {
+	InSync bool   `json:"inSync"`
+	Detail string `json:"detail"`
 }
 
 type wireEvent struct {

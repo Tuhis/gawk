@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { ApiClient, ApiError } from './client.ts';
+import { ApiClient, ApiError, enforcementNotice } from './client.ts';
+import type { Ban } from './types.ts';
 import { json, stubSession } from '../testing/harness.tsx';
 
 // The wire contract `internal/api` (AP4) actually serves, asserted rather than
@@ -57,9 +58,56 @@ describe('single objects are bare — except kill', () => {
   });
 
   it('unban is a 204 with no body to parse', async () => {
+    // `res.json()` on an empty body throws, so the 204 must not be parsed at
+    // all — null, not undefined-from-a-swallowed-error.
     const { api, session } = client(() => new Response(null, { status: 204 }));
-    await expect(api.unban('b1')).resolves.toBeUndefined();
+    await expect(api.unban('b1')).resolves.toBeNull();
     expect(session.calls[0].init.method).toBe('DELETE');
+  });
+});
+
+// The middle outcome: the `bans` row is committed, its Ban CR is not. That is
+// a SUCCESS — the record is durable and the reconciler finishes within a
+// minute — so the client must resolve, not reject, and must hand the caller
+// the ban so it has the id it must NOT re-submit.
+describe('202 Accepted: recorded, not yet in sync', () => {
+  const pending = {
+    id: 'committed',
+    state: 'active',
+    enforcement: { inSync: false, detail: 'recorded but NOT enforced yet' },
+  };
+
+  it('kill resolves with the ban under "ban"', async () => {
+    const { api } = client(() => json({ ban: pending }, 202));
+    await expect(api.kill('ABC123', { reason: 'terms' })).resolves.toEqual({ ban: pending });
+  });
+
+  it('createBan resolves with the bare ban', async () => {
+    const { api } = client(() => json(pending, 202));
+    await expect(
+      api.createBan({ target: { type: 'broadcastId', value: 'A' }, expiresAt: null, reason: 'x' }),
+    ).resolves.toEqual(pending);
+  });
+
+  it('unban resolves with the removed ban, unlike its 204', async () => {
+    const removed = {
+      ...pending,
+      state: 'removed',
+      enforcement: { inSync: false, detail: 'lifted in the record, STILL banned' },
+    };
+    const { api } = client(() => json(removed, 202));
+    await expect(api.unban('b1')).resolves.toEqual(removed);
+  });
+
+  it('enforcementNotice reads only an out-of-sync ban', async () => {
+    expect(enforcementNotice(pending as Ban)).toBe('recorded but NOT enforced yet');
+    // A 201/204 ban and every list row carry no `enforcement` at all.
+    expect(enforcementNotice({ id: 'x' } as Ban)).toBeNull();
+    expect(enforcementNotice({ id: 'x', enforcement: { inSync: true } } as Ban)).toBeNull();
+    expect(enforcementNotice(null)).toBeNull();
+    // A detail-less 202 still has to say something.
+    const bare = { id: 'x', enforcement: { inSync: false } } as Ban;
+    expect(enforcementNotice(bare)).toMatch(/do not re-submit/i);
   });
 });
 
@@ -100,19 +148,6 @@ describe('the refusal envelope', () => {
       .catch((e: unknown) => e as ApiError);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).code).toBe('duplicate_active');
-    expect((err as ApiError).ban).toEqual(ban);
-  });
-
-  it('carries the ban on 502 projection_failed — the row IS committed', async () => {
-    const ban = { id: 'committed', state: 'active' };
-    const { api } = client(() =>
-      json({ error: { code: 'projection_failed', message: 'could not write the CR' }, ban }, 502),
-    );
-    const err = await api
-      .createBan({ target: { type: 'broadcastId', value: 'A' }, expiresAt: null, reason: 'x' })
-      .catch((e: unknown) => e as ApiError);
-    expect((err as ApiError).status).toBe(502);
-    expect((err as ApiError).code).toBe('projection_failed');
     expect((err as ApiError).ban).toEqual(ban);
   });
 

@@ -29,14 +29,17 @@ import type {
  * An error carrying the API's own words: `{"error": {code, message}}` (§4.7).
  * `code` is what the UI branches on, `message` is what it shows.
  *
- * `ban` is the part that is easy to miss. Two refusals are *about* a specific
- * ban and return it alongside the error:
+ * `ban` is the part that is easy to miss: `409 duplicate_active` is *about* a
+ * specific ban — the one already in force on that target — and returns it
+ * alongside the error, so a caller can show what is already there rather than
+ * a bare conflict.
  *
- *   * `409 duplicate_active` — the ban already in force on that target.
- *   * `502 projection_failed` — the ban row WAS committed; only the projection
- *     to a Ban CR failed, so the record exists and the reconciler will heal it,
- *     but enforcement is not live yet. A caller that treated this as a plain
- *     failure would tell the operator nothing happened, which is false.
+ * A ban whose row committed but whose `Ban` CR did not is NOT here. It is a
+ * `202 Accepted` with the ban in the body and `enforcement.inSync: false` on
+ * it — a success, because the record is durable and the reconciler finishes
+ * the job. Treating it as an error told the operator nothing had happened,
+ * which was false, and invited a retry that now 409s against the row that does
+ * exist.
  */
 export class ApiError extends Error {
   // Plain fields rather than constructor parameter properties:
@@ -54,6 +57,24 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The sentence to show when a mutation came back `202 Accepted` — the record
+ * landed, the Kubernetes enforcement object did not (yet).
+ *
+ * Returns the server's own `detail` (it knows which direction is out of step:
+ * a pending ban is not enforced, a pending unban is still enforced), or null
+ * when there is nothing to report. Absent `enforcement` is the ordinary case:
+ * a `201`/`204` and every list row carry none.
+ */
+export function enforcementNotice(ban: Ban | null | undefined): string | null {
+  if (!ban?.enforcement || ban.enforcement.inSync) return null;
+  return (
+    ban.enforcement.detail ??
+    'This was recorded, but the relay-side enforcement object is not in step with it yet. ' +
+      'The reconciler retries automatically; do not re-submit.'
+  );
+}
+
 const BASE = 'api/v1/';
 
 export class ApiClient {
@@ -63,6 +84,9 @@ export class ApiClient {
     this.session = session;
   }
 
+  // `res.ok` is 2xx, so a 202 is a success here exactly like a 201 — the
+  // caller reads `enforcement` to learn the difference. Only a non-2xx becomes
+  // an ApiError.
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const res = await this.session.authorizedFetch(BASE + path, init);
     if (res.ok) return res;
@@ -94,7 +118,11 @@ export class ApiClient {
     return (await this.json<{ broadcasts: Broadcast[] }>('broadcasts')).broadcasts ?? [];
   }
 
-  /** The one single-object route that is enveloped: `201 {"ban": {...}}`. */
+  /**
+   * The one single-object route that is enveloped: `201 {"ban": {...}}` — and
+   * `202 {"ban": {...}}` in the same shape when the row landed and the CR did
+   * not, so there is one body to parse either way.
+   */
   kill(id: string, req: KillRequest): Promise<KillResponse> {
     return this.post<KillResponse>(`broadcasts/${encodeURIComponent(id)}/kill`, req);
   }
@@ -103,13 +131,21 @@ export class ApiClient {
     return (await this.json<{ bans: Ban[] }>(`bans?state=${state}`)).bans ?? [];
   }
 
+  /** `201` or `202`, both bare `Ban`; check `enforcementNotice` on the result. */
   createBan(req: CreateBanRequest): Promise<Ban> {
     return this.post<Ban>('bans', req);
   }
 
-  async unban(id: string): Promise<void> {
-    // 204, no body to read.
-    await this.request(`bans/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  /**
+   * Unban. `204` is the clean case and has NO body — parsing one would throw
+   * on an empty response — so it resolves to null. `202` means the row says
+   * `removed` while the CR delete failed and the target is still banned; that
+   * one answers WITH the removed ban, which the caller shows.
+   */
+  async unban(id: string): Promise<Ban | null> {
+    const res = await this.request(`bans/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (res.status === 204) return null;
+    return (await res.json()) as Ban;
   }
 
   /**

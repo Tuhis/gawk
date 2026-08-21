@@ -239,29 +239,94 @@ func TestKillConflictsWithAnExistingActiveBan(t *testing.T) {
 	}
 }
 
-// A CR write that fails must not be reported as a clean success: the row is
-// committed and the reconciler will heal it, and the operator is told so.
-func TestKillReportsAProjectionFailureHonestly(t *testing.T) {
+// A CR write that fails is neither a clean success nor an error: the row is
+// committed, the reconciler will heal it, and 202 Accepted is what says so.
+//
+// It is NOT a 5xx (nothing failed that the operator can retry — a retry would
+// 409 against the row that now exists) and it is NOT a 502 (nothing acted as a
+// gateway). The `enforcement` object is what carries the difference from a
+// 201, and the body keeps kill's `{ban}` envelope either way.
+func TestKillProjectionFailureIsAccepted(t *testing.T) {
 	h := newHarness(t, withProjectorError(errors.New("kubernetes API is unreachable")))
 	h.fleet.set(liveSnapshot("ABC234", "key", "203.0.113.7"))
 
 	var out struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
 		Ban wireBan `json:"ban"`
 	}
 	h.decode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
-		map[string]any{"reason": "spam"}, http.StatusBadGateway, &out)
-	if out.Error.Code != api.CodeProjectionFail {
-		t.Fatalf("code = %q, want %q", out.Error.Code, api.CodeProjectionFail)
-	}
+		map[string]any{"reason": "spam"}, http.StatusAccepted, &out)
 	if out.Ban.ID == "" {
-		t.Fatalf("the response must still carry the recorded ban")
+		t.Fatalf("the 202 must still carry the recorded ban — a client needs its ID")
+	}
+	if out.Ban.Enforcement == nil || out.Ban.Enforcement.InSync {
+		t.Fatalf("enforcement = %+v, want inSync:false", out.Ban.Enforcement)
+	}
+	if out.Ban.Enforcement.Detail != api.DetailBanPending {
+		t.Fatalf("detail = %q", out.Ban.Enforcement.Detail)
 	}
 	bans, err := h.store.ListBans(t.Context(), store.FilterActive)
 	if err != nil || len(bans) != 1 {
 		t.Fatalf("the ban row must be committed regardless: %d rows (err=%v)", len(bans), err)
+	}
+	// The event is recorded too: the kill happened, whatever the CR did.
+	if got := len(h.enq.all()); got != 1 {
+		t.Fatalf("events = %d, want 1", got)
+	}
+}
+
+// A 201 carries NO enforcement object. Absence is the signal that record and
+// enforcement agree, so a 201 that grew one would make every client that reads
+// `enforcement.inSync` have to distinguish two shapes of success.
+func TestASuccessfulMutationCarriesNoEnforcement(t *testing.T) {
+	h := newHarness(t)
+	h.fleet.set(liveSnapshot("ABC234", "key", "203.0.113.7"))
+
+	var killed struct {
+		Ban wireBan `json:"ban"`
+	}
+	h.decode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
+		map[string]any{"reason": "spam"}, http.StatusCreated, &killed)
+	if killed.Ban.Enforcement != nil {
+		t.Fatalf("kill 201 carried enforcement: %+v", killed.Ban.Enforcement)
+	}
+
+	var created wireBan
+	h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+		"target": map[string]any{"type": "broadcastId", "value": "BBB234"}, "expiresAt": nil, "reason": "x",
+	}, http.StatusCreated, &created)
+	if created.Enforcement != nil {
+		t.Fatalf("create 201 carried enforcement: %+v", created.Enforcement)
+	}
+
+	// And a clean unban is still an empty 204.
+	status, body := h.raw(http.MethodDelete, "/api/v1/bans/"+created.ID, nil)
+	if status != http.StatusNoContent || strings.TrimSpace(body) != "" {
+		t.Fatalf("clean unban = %d %q, want 204 with no body", status, body)
+	}
+}
+
+// The read surface must stay byte-identical: `enforcement` reports on ONE
+// in-flight mutation, and a stored row has none. A list that grew the key
+// would be claiming something about every row it returns.
+func TestListAndReadRoutesNeverCarryEnforcement(t *testing.T) {
+	h := newHarness(t, withProjectorError(errors.New("kubernetes API is unreachable")))
+	h.fleet.set(liveSnapshot("ABC234", "key", "203.0.113.7"))
+
+	// A ban created through the failing projector: its row is committed and
+	// its CR is not, which is the state most likely to leak into a read.
+	h.decode(http.MethodPost, "/api/v1/broadcasts/ABC234/kill",
+		map[string]any{"reason": "spam"}, http.StatusAccepted, nil)
+
+	for _, path := range []string{"/api/v1/bans?state=active", "/api/v1/bans?state=all", "/api/v1/broadcasts"} {
+		_, body := h.raw(http.MethodGet, path, nil)
+		if strings.Contains(body, "enforcement") {
+			t.Fatalf("GET %s leaked an enforcement key: %s", path, body)
+		}
+	}
+	// Nor does the 409, whose ban is a read of an existing row.
+	_, conflict := h.raw(http.MethodPost, "/api/v1/broadcasts/ABC234/kill", map[string]any{"reason": "again"})
+	if strings.Contains(conflict, "enforcement") {
+		t.Fatalf("the 409 body leaked an enforcement key: %s", conflict)
 	}
 }
 
@@ -446,6 +511,35 @@ func TestCreateBanAcceptsAnExplicitExpiry(t *testing.T) {
 	}
 }
 
+// The create path's 202: bare ban (not the kill's envelope), carrying the
+// enforcement object that says the record is ahead of the CR.
+func TestCreateBanProjectionFailureIsAccepted(t *testing.T) {
+	h := newHarness(t, withProjectorError(errors.New("kubernetes API is unreachable")))
+
+	var ban wireBan
+	h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+		"target":    map[string]any{"type": "ip", "value": "203.0.113.7", "prefixLength": 32},
+		"expiresAt": nil, "reason": "repeat offender",
+	}, http.StatusAccepted, &ban)
+
+	if ban.ID == "" || ban.Target.Value != "203.0.113.7/32" {
+		t.Fatalf("the 202 must carry the recorded ban: %+v", ban)
+	}
+	if ban.Enforcement == nil || ban.Enforcement.InSync || ban.Enforcement.Detail != api.DetailBanPending {
+		t.Fatalf("enforcement = %+v", ban.Enforcement)
+	}
+	// The detail is the operator's instruction, and "do not re-submit" is the
+	// load-bearing half: a retry now 409s against the row that exists.
+	if !strings.Contains(ban.Enforcement.Detail, "NOT enforced yet") ||
+		!strings.Contains(ban.Enforcement.Detail, "do not re-submit") {
+		t.Fatalf("the create detail must say what happened and what not to do: %q", ban.Enforcement.Detail)
+	}
+	bans, err := h.store.ListBans(t.Context(), store.FilterActive)
+	if err != nil || len(bans) != 1 {
+		t.Fatalf("the ban row must be committed regardless: %d rows (err=%v)", len(bans), err)
+	}
+}
+
 // --- GET /bans, DELETE /bans/{id} -------------------------------------
 
 func TestListBansFiltersAndUnbanRoundTrip(t *testing.T) {
@@ -500,6 +594,50 @@ func TestListBansFiltersAndUnbanRoundTrip(t *testing.T) {
 	}
 	if code := h.errorCode(http.MethodDelete, "/api/v1/bans/not-a-uuid", nil, http.StatusNotFound); code != api.CodeNotFound {
 		t.Fatalf("malformed ban id code = %q", code)
+	}
+}
+
+// The unban half of 202, and the direction an operator is most likely to
+// misread: the row says `removed` while the CR — the only thing that actually
+// enforces — is still there, so the target is STILL banned.
+//
+// The clean unban answers 204 with no body; this one answers 202 WITH the
+// removed ban, because there is something to say and something to say it about.
+func TestUnbanProjectionFailureIsAccepted(t *testing.T) {
+	h := newHarness(t)
+
+	// Created cleanly: the CR exists, so only its DELETE is lost.
+	var ban wireBan
+	h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+		"target": map[string]any{"type": "broadcastId", "value": "ABC234"}, "expiresAt": nil, "reason": "keep",
+	}, http.StatusCreated, &ban)
+	if h.proj.count() != 1 {
+		t.Fatalf("setup: the create must have projected a CR (%d)", h.proj.count())
+	}
+	h.proj.breakFrom(errors.New("kubernetes API is unreachable"))
+
+	var out wireBan
+	h.decode(http.MethodDelete, "/api/v1/bans/"+ban.ID, nil, http.StatusAccepted, &out)
+	if out.ID != ban.ID || out.State != string(store.BanRemoved) {
+		t.Fatalf("the 202 must carry the removed ban: %+v", out)
+	}
+	if out.Enforcement == nil || out.Enforcement.InSync || out.Enforcement.Detail != api.DetailUnbanPending {
+		t.Fatalf("enforcement = %+v", out.Enforcement)
+	}
+	// The copy has to say the target is still banned. "Unbanned, but not
+	// enforced" would read as "not banned yet", which is backwards.
+	if !strings.Contains(out.Enforcement.Detail, "STILL banned") {
+		t.Fatalf("the unban detail must say the target is still banned: %q", out.Enforcement.Detail)
+	}
+
+	// The row moved regardless, and the removal event was recorded.
+	all, err := h.store.ListBans(t.Context(), store.FilterAll)
+	if err != nil || len(all) != 1 || all[0].State != store.BanRemoved {
+		t.Fatalf("bans = %+v (err=%v)", all, err)
+	}
+	events := h.enq.all()
+	if len(events) != 2 || events[1].Type != store.EventBanRemoved {
+		t.Fatalf("events = %+v", events)
 	}
 }
 
