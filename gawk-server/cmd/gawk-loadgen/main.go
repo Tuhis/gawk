@@ -9,15 +9,24 @@
 // Example:
 //
 //	gawk-loadgen -url https://gawk-relay.example.com:4433 -id K7XQ2M -viewers 200 -duration 60s
+//
+// With -expect-close-code it is additionally an OBSERVER of why its sessions
+// ended (R39, docs/42 §11.2): the E2E tiers could previously prove that a
+// broadcast disappeared, never that the relay told its viewers *why*. Without
+// the flag nothing about the run changes — same dials, same stdout, same exit
+// code.
 package main
 
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -28,6 +37,21 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
+
+// closeExpectOff is the -expect-close-code value that disables the check.
+// -1 rather than 0 because 0 is a legal WebTransport application close code —
+// it is what a clean client-side close sends — so 0 cannot mean "off".
+const closeExpectOff = -1
+
+// closeSettle bounds the wait for a close capsule to land on the session
+// after a read noticed it going away.
+//
+// The read that errored is not the authority: ReceiveDatagram's stream-end
+// error races the close-capsule parse (the Go twin of the JS wt.closed settle
+// race — internal/transport/drain_test.go reads codes off AcceptUniStream for
+// exactly this reason). The session's context is the authority, so give it a
+// bounded moment before concluding anything.
+const closeSettle = 2 * time.Second
 
 type totals struct {
 	sessionsUp   atomic.Int64
@@ -44,6 +68,36 @@ type totals struct {
 	frameGaps      atomic.Uint64
 	bytesDatagrams atomic.Uint64
 	bytesKeyframes atomic.Uint64
+
+	// How each session ended. Populated only under -expect-close-code, and
+	// read only by the exit assertion. A map behind a mutex rather than
+	// atomics because the useful failure message is "closed with 4000, want
+	// 4006" — naming the code we got instead is the whole point of the flag.
+	closeMu      sync.Mutex
+	closeCodes   map[uint32]int // application close codes the peer sent
+	closeNoCode  int            // ended, but with no application close code
+	closeStillUp int            // still open when the run ended
+}
+
+func (t *totals) recordCode(code uint32) {
+	t.closeMu.Lock()
+	defer t.closeMu.Unlock()
+	if t.closeCodes == nil {
+		t.closeCodes = make(map[uint32]int)
+	}
+	t.closeCodes[code]++
+}
+
+func (t *totals) recordNoCode() {
+	t.closeMu.Lock()
+	defer t.closeMu.Unlock()
+	t.closeNoCode++
+}
+
+func (t *totals) recordStillOpen() {
+	t.closeMu.Lock()
+	defer t.closeMu.Unlock()
+	t.closeStillUp++
 }
 
 func main() {
@@ -56,11 +110,19 @@ func main() {
 	delivery := flag.String("delivery", "", "delivery mode: \"\" (datagrams), \"reliable\" (R19 carriers), or \"deep\" (R21 DVR ring)")
 	bufferMs := flag.Int("buffer-ms", 3000, "playout buffer to declare with -delivery=deep (R21)")
 	report := flag.Duration("report", 5*time.Second, "aggregate report interval")
+	expectClose := flag.Int("expect-close-code", closeExpectOff,
+		"assert every viewer session was closed by the relay with this WebTransport application close code (e.g. 4006 for an operator kill) and exit 1 with a diagnosis otherwise; -1 disables the check")
 	flag.Parse()
 	if *id == "" {
 		fmt.Fprintln(os.Stderr, "gawk-loadgen: -id is required")
 		os.Exit(2)
 	}
+	if *expectClose < closeExpectOff || int64(*expectClose) > math.MaxUint32 {
+		fmt.Fprintf(os.Stderr, "gawk-loadgen: -expect-close-code %d is out of range (-1 to disable, or 0..%d)\n",
+			*expectClose, uint32(math.MaxUint32))
+		os.Exit(2)
+	}
+	observe := *expectClose != closeExpectOff
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -88,7 +150,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runViewer(ctx, subscribeURL, *insecure, &t)
+			runViewer(ctx, subscribeURL, *insecure, observe, &t)
 		}()
 		select {
 		case <-ctx.Done():
@@ -103,6 +165,7 @@ func main() {
 	var lastFrames, lastKf, lastBytes uint64
 	tick := time.NewTicker(*report)
 	defer tick.Stop()
+loop:
 	for {
 		select {
 		case <-tick.C:
@@ -116,14 +179,123 @@ func main() {
 				t.frameGaps.Load(), float64(bytes-lastBytes)*8/1e6/secs)
 			lastFrames, lastKf, lastBytes = frames, kf, bytes
 		case <-done:
-			printSummary(&t, *viewers, time.Since(start))
-			return
+			break loop
 		case <-ctx.Done():
 			<-done
-			printSummary(&t, *viewers, time.Since(start))
-			return
+			break loop
 		}
 	}
+	elapsed := time.Since(start)
+	printSummary(&t, *viewers, elapsed)
+	if observe && !assertCloseCode(&t, uint32(*expectClose), *viewers, elapsed) {
+		os.Exit(1)
+	}
+}
+
+// assertCloseCode reports the -expect-close-code verdict and returns whether
+// it passed.
+//
+// The verdict goes to STDERR, never stdout: stdout is loadgen's data output
+// and stays byte-for-byte what it is without the flag, so a harness can add
+// the assertion to an existing invocation without disturbing anything that
+// parses the report.
+//
+// The four ways to fail read differently on purpose, because they mean
+// different things: a wrong code is a relay behaviour bug; no code at all is a
+// transport death (idle timeout, pod crash, a UDP path that went away) that
+// never carried an operator's intent; a session still open at the end means
+// whatever should have closed it never reached this viewer; and a dial that
+// never connected is a viewer that was never there to be closed — which would
+// otherwise pass vacuously.
+func assertCloseCode(t *totals, want uint32, viewers int, elapsed time.Duration) bool {
+	t.closeMu.Lock()
+	defer t.closeMu.Unlock()
+
+	got := t.closeCodes[want]
+	var problems []string
+	for code, n := range t.closeCodes {
+		if code != want {
+			problems = append(problems,
+				fmt.Sprintf("%d session(s) closed with code %d, want %d", n, code, want))
+		}
+	}
+	// Map iteration order is random; a diagnostic that reorders itself
+	// between runs is a diagnostic nobody trusts.
+	sort.Strings(problems)
+	if t.closeNoCode > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%d session(s) ended with NO application close code — a transport death (idle timeout, crash, path loss), not a close the relay chose",
+			t.closeNoCode))
+	}
+	if t.closeStillUp > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%d session(s) were STILL OPEN when the run ended after %.1fs — nothing closed them",
+			t.closeStillUp, elapsed.Seconds()))
+	}
+	if n := t.dialErrors.Load(); n > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%d session(s) never connected (dial failed), so they were never closed by anything", n))
+	}
+
+	if viewers > 0 && got == viewers && len(problems) == 0 {
+		fmt.Fprintf(os.Stderr, "gawk-loadgen: PASS -expect-close-code %d: all %d session(s) were closed by the relay with %d\n",
+			want, viewers, want)
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "gawk-loadgen: FAIL -expect-close-code %d: %d of %d session(s) closed with %d\n",
+		want, got, viewers, want)
+	for _, p := range problems {
+		fmt.Fprintln(os.Stderr, "  -", p)
+	}
+	return false
+}
+
+// sessionCloseCode reads the application close code the peer sent, if it sent
+// one at all.
+//
+// Only valid once the session has ended, and that precondition is what makes
+// it sound rather than a hack — it is the same idiom gawk-broadcast's engine
+// uses (gawk-broadcast/internal/engine/resume.go): webtransport-go discards
+// the cause when it cancels the session's context, but it keeps the close
+// error, and a closed Session hands it back from OpenUniStream *before*
+// touching the connection. On a dead session this therefore opens nothing.
+//
+// ok=false is the ordinary abrupt death — idle timeout, stateless reset, the
+// path simply going away — which carries no application code by definition.
+func sessionCloseCode(sess *webtransport.Session) (uint32, bool) {
+	_, err := sess.OpenUniStream()
+	var se *webtransport.SessionError
+	if errors.As(err, &se) {
+		return uint32(se.ErrorCode), true
+	}
+	return 0, false
+}
+
+// observeClose records why one viewer session ended. Called once per session
+// that was actually established, and only under -expect-close-code — the
+// settle wait below is a real (if small) change in when a viewer goroutine
+// returns, and the no-flag path must stay exactly as it was.
+func observeClose(runCtx context.Context, sess *webtransport.Session, t *totals) {
+	// Wait for the close capsule only when the session plausibly died: if the
+	// run's own deadline expired against a healthy session there is nothing
+	// to wait for, and "still open" is the answer.
+	if runCtx.Err() == nil || sess.Context().Err() != nil {
+		wait, cancel := context.WithTimeout(context.Background(), closeSettle)
+		defer cancel()
+		select {
+		case <-sess.Context().Done():
+		case <-wait.Done():
+		}
+	}
+	if sess.Context().Err() == nil {
+		t.recordStillOpen()
+		return
+	}
+	if code, ok := sessionCloseCode(sess); ok {
+		t.recordCode(code)
+		return
+	}
+	t.recordNoCode()
 }
 
 func printSummary(t *totals, viewers int, elapsed time.Duration) {
@@ -137,7 +309,7 @@ func printSummary(t *totals, viewers int, elapsed time.Duration) {
 	fmt.Printf("bytes received:    %d (%.1f Mbps aggregate)\n", total, float64(total)*8/1e6/elapsed.Seconds())
 }
 
-func runViewer(ctx context.Context, subscribeURL string, insecure bool, t *totals) {
+func runViewer(ctx context.Context, subscribeURL string, insecure, observe bool, t *totals) {
 	d := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
 		QUICConfig: &quic.Config{
@@ -156,6 +328,11 @@ func runViewer(ctx context.Context, subscribeURL string, insecure bool, t *total
 	t.sessionsUp.Add(1)
 	defer t.sessionsUp.Add(-1)
 	defer sess.CloseWithError(0, "loadgen done")
+	// Deferred AFTER our own close, so it runs BEFORE it (LIFO): reading the
+	// close code has to happen while the only close on record is the peer's.
+	if observe {
+		defer observeClose(ctx, sess, t)
+	}
 
 	// Keyframe streams: read each fully (that is the load — the relay's
 	// store-and-forward write completes only if we consume it).

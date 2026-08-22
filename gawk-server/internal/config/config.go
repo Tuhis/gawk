@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/moderationsrc"
+	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -25,6 +27,18 @@ import (
 const (
 	MinTelemetryReportInterval = 500 * time.Millisecond
 	MaxTelemetryReportInterval = 60 * time.Second
+)
+
+// Admin-API authorization defaults (R39, docs/42 §4.5). The roles-claim
+// default is Keycloak's client-roles path, with "{audience}" substituted by
+// the configured audience at use time — the same role model the portal uses
+// (docs/42 §4.8), so one IdP role grants both. The string itself lives in
+// oidcroles, which is also what parses it: gawk-admin carries the same
+// default, and a default that could drift between them is half of the bug
+// this package exists to prevent.
+const (
+	DefaultAdminOIDCRolesClaim = oidcroles.DefaultClaim
+	DefaultAdminOIDCRole       = "operator"
 )
 
 // Config is the fully-resolved server configuration.
@@ -198,6 +212,51 @@ type Config struct {
 	// width cap and burst target are constants, not knobs (docs/35 §11).
 	StripedDelivery bool
 
+	// ModerationSource selects the R39 ban source (docs/42 §4.3), kept
+	// verbatim so the startup log states exactly what the operator asked
+	// for. One of:
+	//
+	//	off            (default) nothing is constructed; the ban set stays
+	//	               empty and every publish-path check is a cheap miss —
+	//	               byte-identical to a relay predating R39.
+	//	k8s            informer on Ban CRs in POD_NAMESPACE. Independent of
+	//	               ClusterMode: enforcement is not a federation feature.
+	//	file:<path>    JSON array of moderation.Records, reloaded on change
+	//	               and on SIGHUP — the dev/compose lane (docs/42 §4.14).
+	//
+	// Parsed (and rejected) at startup by internal/moderationsrc.Parse, the
+	// same parser the source itself uses.
+	ModerationSource string
+
+	// AdminAPIToken is the static bearer credential for the R39 relay admin
+	// API on the ops listener (docs/42 §4.5) — the machine path gawk-admin
+	// uses. Deliberately NOT InternalPSK (docs/42 §5): different trust domain
+	// (admin service vs. peer pods), independent rotation, and the PSK travels
+	// in URLs on the media path where this token travels in a header.
+	// Compared in constant time. Never logged.
+	AdminAPIToken string
+
+	// AdminOIDCIssuer / AdminOIDCAudience are the alternative credential for
+	// the same routes: an OIDC JWT with this issuer and audience, verified
+	// offline against a background-refreshed JWKS. Both set or both empty —
+	// a half-configured pair is rejected at parse, because "issuer set,
+	// audience empty" would otherwise mean "accept any audience", which is
+	// the failure mode nobody notices.
+	//
+	// When BOTH this and AdminAPIToken are empty the admin routes are not
+	// registered at all: the surface stays dark (404), not merely locked.
+	AdminOIDCIssuer   string
+	AdminOIDCAudience string
+
+	// AdminOIDCRolesClaim is the dot-path to the token's roles array.
+	// Defaults to the Keycloak client-roles path
+	// "resource_access.{audience}.roles"; "{audience}" is substituted with
+	// AdminOIDCAudience. AdminOIDCRole is the role a token must carry
+	// (default "operator"). Neither may be empty while OIDC is configured —
+	// blanking either would turn authorization off silently.
+	AdminOIDCRolesClaim string
+	AdminOIDCRole       string
+
 	// The effective QUIC idle timeout is the minimum of both endpoints'
 	// advertised values (browsers advertise ~30s), so raising this alone
 	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
@@ -310,9 +369,42 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"absolute https URL of this fleet's telemetry ingest, advertised to clients in-band (R37 wire 0x12); empty advertises nothing")
 	serverName := fs.String("server-name", env("GAWK_SERVER_NAME", ""),
 		"operator display name advertised to server pickers over /echo (R37 wire 0x11); empty leaves the relay unnamed")
+	moderationSource := fs.String("moderation-source", env("GAWK_MODERATION_SOURCE", "off"),
+		"R39 ban source: off | k8s (Ban CRs in POD_NAMESPACE) | file:<path> (JSON array, reloaded on change and SIGHUP)")
+	adminAPIToken := fs.String("admin-api-token", env("GAWK_ADMIN_API_TOKEN", ""),
+		"static bearer token for the R39 admin API on the ops listener (/internal/admin/*); empty and no OIDC issuer leaves those routes unregistered (404)")
+	adminOIDCIssuer := fs.String("admin-oidc-issuer", env("GAWK_ADMIN_OIDC_ISSUER", ""),
+		"OIDC issuer URL whose JWTs are accepted on /internal/admin/*; must be set together with -admin-oidc-audience")
+	adminOIDCAudience := fs.String("admin-oidc-audience", env("GAWK_ADMIN_OIDC_AUDIENCE", ""),
+		"OIDC audience (client ID) a JWT must carry on /internal/admin/*; must be set together with -admin-oidc-issuer")
+	adminOIDCRolesClaim := fs.String("admin-oidc-roles-claim", env("GAWK_ADMIN_OIDC_ROLES_CLAIM", DefaultAdminOIDCRolesClaim),
+		"dot-path to the roles array inside an admin JWT; {audience} is substituted into each segment")
+	adminOIDCRole := fs.String("admin-oidc-role", env("GAWK_ADMIN_OIDC_ROLE", DefaultAdminOIDCRole),
+		"role an admin JWT must carry in the roles claim")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+
+	// THE ADMIN-API KNOBS ARE TRIMMED ONCE, HERE, so every later reader —
+	// the validation below and the Config literal at the end — sees the same
+	// string. They did not: the all-or-nothing pair check ran on the raw flag
+	// values while the literal stored trimmed ones, so a stray space or
+	// newline out of a templated Secret (GAWK_ADMIN_OIDC_ISSUER=" ") looked
+	// set to the check and arrived empty in the Config. The result was not the
+	// refusal the check exists to produce but silence: no verifier, no static
+	// token, Configured() false, and /internal/admin/* never registered at
+	// all — a mystery 404 (docs/42 §4.5).
+	//
+	// The token is trimmed for the same reason it is compared trimmed:
+	// AdminAuth.authorize trims the PRESENTED credential before the
+	// constant-time compare, so a configured token carrying whitespace could
+	// never be matched by anybody. It would register the routes and then
+	// refuse every caller, which is the same silent failure wearing a 401.
+	for _, p := range []*string{
+		adminAPIToken, adminOIDCIssuer, adminOIDCAudience, adminOIDCRolesClaim, adminOIDCRole,
+	} {
+		*p = strings.TrimSpace(*p)
 	}
 
 	level, err := parseLogLevel(*logLevel)
@@ -439,6 +531,30 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid telemetry-advertise-url %q: %w", *telemetryAdvertiseURL, err)
 		}
 	}
+	// R39 (docs/42 §4.3): validated with the very parser the source uses, so
+	// a value that starts the process is a value the source can honour.
+	if _, _, err := moderationsrc.Parse(*moderationSource); err != nil {
+		return Config{}, err
+	}
+	// R39 AP3 (docs/42 §4.5): the OIDC pair is all-or-nothing. An issuer with
+	// no audience would verify signatures and then accept a token minted for
+	// ANY client of that IdP; an audience with no issuer is inert. Both are
+	// silent failures, so neither starts.
+	if (*adminOIDCIssuer == "") != (*adminOIDCAudience == "") {
+		return Config{}, fmt.Errorf("admin-oidc-issuer and admin-oidc-audience must be set together")
+	}
+	if *adminOIDCIssuer != "" {
+		// Blanking either of these would leave signature+issuer+audience
+		// checked and AUTHORIZATION off — every token holder an operator.
+		// Whitespace counts as blank: these are already trimmed above, so a
+		// value that survives here is one oidcroles can actually address.
+		if *adminOIDCRolesClaim == "" {
+			return Config{}, fmt.Errorf("admin-oidc-roles-claim must not be empty when admin OIDC is configured")
+		}
+		if *adminOIDCRole == "" {
+			return Config{}, fmt.Errorf("admin-oidc-role must not be empty when admin OIDC is configured")
+		}
+	}
 	if *serverName != "" {
 		// Same source of truth for the name limits ("x" stands in for the
 		// version, which main stamps later).
@@ -478,6 +594,15 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 		TelemetryAdvertiseURL: *telemetryAdvertiseURL,
 		ServerName:            *serverName,
+		ModerationSource:      strings.TrimSpace(*moderationSource),
+
+		// Trimmed once, right after fs.Parse — never again here, or the
+		// validation above and this literal could disagree a second time.
+		AdminAPIToken:       *adminAPIToken,
+		AdminOIDCIssuer:     *adminOIDCIssuer,
+		AdminOIDCAudience:   *adminOIDCAudience,
+		AdminOIDCRolesClaim: *adminOIDCRolesClaim,
+		AdminOIDCRole:       *adminOIDCRole,
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,

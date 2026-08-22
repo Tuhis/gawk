@@ -14,12 +14,17 @@ import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer
 import type { DecodedAudioChunk } from './audio-decode';
 import type { ReleasedFrame } from './reorder-buffer';
 import {
-  CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
   type DecoderConfigMessage,
   type TelemetryHelloMessage,
 } from './wire';
 import type { DecodedFrame } from '../media/decoder';
-import { RECONNECT_MAX_ATTEMPTS, reconnectDelayMs, type ReconnectInfo } from './reconnect';
+import {
+  RECONNECT_MAX_ATTEMPTS,
+  isTerminalViewerClose,
+  reconnectDelayMs,
+  type ReconnectInfo,
+} from './reconnect';
 
 // The reconnect policy lives in reconnect.ts (shared with the broadcaster's
 // auto-resume since R17 W2); re-exported so existing importers keep working.
@@ -41,6 +46,16 @@ export {
 //   retrying would fail identically.
 export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable';
 
+// Why the session ended for good — carried to the UI so the end card can say
+// something true rather than one string for every ending. Typed rather than
+// passing the raw close code because the screen must not re-derive wire
+// semantics ("Shared constants have exactly one definition per language").
+// - 'normal': the user stopped, or the relay ended the broadcast (4000).
+// - 'moderated': close code 4006 — the operator terminated this broadcast
+//   (R39, docs/42 §4.4). Telling the viewer is the whole reason 4006 exists
+//   as a code of its own instead of reusing 4000.
+export type ViewerEndReason = 'normal' | 'moderated';
+
 export interface ViewerSessionCallbacks {
   onDecodedFrame: (decoded: DecodedFrame) => void;
   onConfig: (config: DecoderConfigMessage) => void;
@@ -52,8 +67,9 @@ export interface ViewerSessionCallbacks {
   // Fatal: the initial connect failed (rethrown from start() too) or the
   // reconnect budget is exhausted.
   onError: (err: Error) => void;
-  // The session is over for good: user stop, or after a fatal error.
-  onEnded: () => void;
+  // The session is over for good: user stop, or after a fatal error. The
+  // reason drives the end-card copy; every call site decides it explicitly.
+  onEnded: (reason: ViewerEndReason) => void;
   // R15 (docs/20): decoded audio, and the sink-reset signal. Forwarded
   // verbatim from each pipeline attempt — a reconnect builds a fresh
   // pipeline, and the new one's first packets need a re-anchored sink.
@@ -144,7 +160,7 @@ export class ViewerSession {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
-      this.cb.onEnded();
+      this.cb.onEnded('normal');
       return;
     }
     if (this.starting) {
@@ -155,8 +171,15 @@ export class ViewerSession {
       // Fires the inner onEnded, which we forward.
       await this.pipeline.stop();
     } else {
-      this.cb.onEnded();
+      this.cb.onEnded('normal');
     }
+  }
+
+  // The end reason for whatever close code ended the last attempt. Only 4006
+  // is distinguishable to a viewer; every other terminal ending reads the same
+  // ("the stream is over") whether the broadcaster stopped or the relay did.
+  private endReason(): ViewerEndReason {
+    return this.lastCloseCode === CLOSE_CODE_TERMINATED_BY_OPERATOR ? 'moderated' : 'normal';
   }
 
   private buildPipeline(): PipelineHandle {
@@ -194,13 +217,15 @@ export class ViewerSession {
   private handlePipelineEnded(): void {
     this.pipeline = null;
     if (this.stopped) {
-      this.cb.onEnded();
+      this.cb.onEnded(this.endReason());
       return;
     }
-    if (this.lastCloseCode === CLOSE_CODE_BROADCAST_ENDED) {
-      log.info('Broadcast ended cleanly by server (code 4000). Stopping.');
+    // 4000 (broadcast ended) and 4006 (terminated by the operator) both mean
+    // stay down — see isTerminalViewerClose (R39, docs/42 §4.4).
+    if (isTerminalViewerClose(this.lastCloseCode)) {
+      log.info(`Broadcast ended by server (code ${this.lastCloseCode}). Stopping.`);
       this.stopped = true;
-      this.cb.onEnded();
+      this.cb.onEnded(this.endReason());
       return;
     }
     if (this.lastFatal) {
@@ -211,7 +236,7 @@ export class ViewerSession {
       const err = new Error(this.lastReason) as Error & { fatal?: boolean };
       err.fatal = true;
       this.cb.onError(err);
-      this.cb.onEnded();
+      this.cb.onEnded('normal');
       return;
     }
     this.scheduleReconnect();
@@ -259,10 +284,10 @@ export class ViewerSession {
       } else {
         this.lastCloseCode = null;
       }
-      if (this.lastCloseCode === CLOSE_CODE_BROADCAST_ENDED) {
-        log.info('Broadcast ended cleanly by server during reconnect (code 4000).');
+      if (isTerminalViewerClose(this.lastCloseCode)) {
+        log.info(`Broadcast ended by server during reconnect (code ${this.lastCloseCode}).`);
         this.stopped = true;
-        this.cb.onEnded();
+        this.cb.onEnded(this.endReason());
         return;
       }
       if (!this.stopped) this.scheduleReconnect();

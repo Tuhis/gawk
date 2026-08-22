@@ -41,7 +41,7 @@ import { useWakeLock } from '../../lib/useWakeLock';
 import { fmtWatching } from '../../lib/format';
 import { buildViewLink } from '../../lib/shareLink';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
-import type { ViewerErrorKind } from '../../transport/viewer-session';
+import type { ViewerEndReason, ViewerErrorKind } from '../../transport/viewer-session';
 import type { PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
 import { HOME } from '../../routing';
@@ -198,6 +198,23 @@ function errorCardCopy(
   }
 }
 
+// End-card copy. A moderator kill (close code 4006) is deliberately NOT the
+// generic ending: R39 allocated its own code so viewers of a broadcast the
+// operator took down are told that, rather than being left to assume the
+// streamer stopped (docs/42 D6, §4.4). No retry affordance either — the ID is
+// banned for at least the kill cooldown.
+function endCardCopy(reason: ViewerEndReason): { title: string; body: string } {
+  switch (reason) {
+    case 'moderated':
+      return {
+        title: 'Broadcast ended by a moderator',
+        body: 'This broadcast was ended by a moderator.',
+      };
+    case 'normal':
+      return { title: 'Broadcast ended', body: 'The stream is over.' };
+  }
+}
+
 const STATUS_LABEL: Record<ViewerStatus, string> = {
   connecting: 'connecting',
   watching: 'live',
@@ -350,6 +367,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     codec,
     errorKind,
     errorFatal,
+    endReason,
     retryNote,
     telemetrySessionId,
     presentation,
@@ -686,6 +704,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // ('ended' while 'connecting') — read it as the stream being unreachable.
   const errorCopy =
     status === 'error' ? errorCardCopy(errorKind ?? 'unreachable', broadcastId, codec) : null;
+  const endCopy = status === 'ended' ? endCardCopy(endReason) : null;
 
   // Keep the display awake while a stream is on screen. The viewer paints a
   // canvas, never a playing <video>, so nothing tells the OS that anything is
@@ -828,10 +847,10 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
                 <p className={styles.cardText}>Connecting to {broadcastId}…</p>
               </>
             )}
-            {status === 'ended' && (
+            {status === 'ended' && endCopy && (
               <>
-                <h2 className={styles.cardTitle}>Broadcast ended</h2>
-                <p className={styles.cardText}>The stream is over.</p>
+                <h2 className={styles.cardTitle}>{endCopy.title}</h2>
+                <p className={styles.cardText}>{endCopy.body}</p>
                 <Button onClick={leave}>Back to home</Button>
               </>
             )}

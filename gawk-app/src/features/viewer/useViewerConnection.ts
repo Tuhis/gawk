@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import {
   RECONNECT_MAX_ATTEMPTS,
   ViewerSession,
+  type ViewerEndReason,
   type ViewerErrorKind,
 } from '../../transport/viewer-session';
 import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
@@ -92,6 +93,9 @@ export interface ViewerConnectionState {
   // meaningless).
   errorKind: ViewerErrorKind | null;
   errorFatal: boolean;
+  // R39: 'moderated' when close code 4006 ended the broadcast (docs/42 §4.4).
+  // Only meaningful while `status` is 'ended'.
+  endReason: ViewerEndReason;
   retryNote: string | null;
   // R28: the id this viewer reports under, once a hello has enabled collection
   // — the join key between what the operator sees on the telemetry dashboard
@@ -179,6 +183,9 @@ export function useViewerConnection(
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<ViewerErrorKind | null>(null);
   const [errorFatal, setErrorFatal] = useState(false);
+  // R39 (docs/42 §4.4): why the session ended, so the end card can say
+  // "a moderator ended this" instead of the generic "the stream is over".
+  const [endReason, setEndReason] = useState<ViewerEndReason>('normal');
   const [retryNote, setRetryNote] = useState<string | null>(null);
   // R22: the MSE capability verdict, computed on the main thread from the
   // negotiated codec (the codec event re-computes it, so a mid-view codec
@@ -515,6 +522,7 @@ export function useViewerConnection(
         break;
       case 'ended':
         setRetryNote(null);
+        setEndReason(ev.reason);
         // A clean end is the one moment the service can finalize this session
         // without waiting out an idle timeout — so it is a final flush, not
         // just an event.
@@ -712,8 +720,8 @@ export function useViewerConnection(
           }
           void session.stop();
         },
-        onEnded: () => {
-          if (active) applyEvent({ type: 'ended' });
+        onEnded: (reason) => {
+          if (active) applyEvent({ type: 'ended', reason });
         },
         // R15: the main-thread pipeline decodes audio in place and feeds the
         // same sink — no worker crossing on this path.
@@ -775,6 +783,7 @@ export function useViewerConnection(
     error,
     errorKind,
     errorFatal,
+    endReason,
     retryNote,
     telemetrySessionId,
     presentation: {

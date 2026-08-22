@@ -37,7 +37,13 @@ func StatuszHandler(r *hub.Registry, log *slog.Logger) http.HandlerFunc {
 // always ready. /readyz is the kubelet readiness target and matters for
 // scale-down/HPA hygiene; rollout correctness comes from the active drain,
 // not from readiness (docs/22 Decision 2).
-func Handler(r *hub.Registry, g prometheus.Gatherer, log *slog.Logger, ready func() bool) http.Handler {
+//
+// admin adds the R39 credential-gated /internal/admin/* routes (docs/42
+// §4.5). Nil — or an admin with no credential configured — registers nothing,
+// so those paths 404 exactly as they did before R39. Everything else on this
+// mux is unauthenticated and unchanged: /statusz in particular stays
+// HMAC-only and byte-identical.
+func Handler(r *hub.Registry, g prometheus.Gatherer, log *slog.Logger, ready func() bool, admin *AdminOptions) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok"))
@@ -51,6 +57,12 @@ func Handler(r *hub.Registry, g prometheus.Gatherer, log *slog.Logger, ready fun
 	})
 	mux.HandleFunc("GET /statusz", StatuszHandler(r, log))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(g, promhttp.HandlerOpts{}))
+	if registerAdmin(mux, admin) {
+		log.Info("relay admin API enabled on the ops listener",
+			"routes", "/internal/admin/broadcasts,/internal/admin/config",
+			"static_token", admin.Auth.token != nil,
+			"oidc_issuer", admin.Config.AdminOIDCIssuer)
+	}
 	return mux
 }
 

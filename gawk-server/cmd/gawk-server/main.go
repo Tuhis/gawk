@@ -23,9 +23,11 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/moderationsrc"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
+	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
 
 // Stamped at build time via -ldflags "-X main.version=..." (see
@@ -61,41 +63,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Info("starting",
-		"version", version,
-		"addr", cfg.Addr,
-		"dev_cert", cfg.DevCert,
-		"max_subscribers", cfg.MaxSubscribers,
-		"max_broadcasts", cfg.MaxBroadcasts,
-		"max_total_subscribers", cfg.MaxTotalSubscribers,
-		"publish_secret_set", cfg.PublishSecret != "",
-		"conn_rate_limit", cfg.ConnRateLimit,
-		"conn_burst_limit", cfg.ConnBurstLimit,
-		"max_bandwidth_bytes", cfg.MaxBandwidthBytes,
-		"max_keyframe_bytes", cfg.MaxKeyframeBytes,
-		"keyframe_write_timeout", cfg.KeyframeWriteTimeout,
-		"dvr_window", cfg.DVRWindow,
-		"dvr_max_bytes", cfg.DVRMaxBytes,
-		"dvr_max_catchup", cfg.DVRMaxCatchup,
-		"dvr_audio", cfg.DVRAudio,
-		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
-		"parity_default", cfg.ParityDefault,
-		"striped_delivery", cfg.StripedDelivery,
-		"max_idle_timeout", cfg.MaxIdleTimeout,
-		"keepalive_period", cfg.KeepAlivePeriod,
-		"broadcast_grace", cfg.BroadcastGrace,
-		"metrics_addr", cfg.MetricsAddr,
-		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
-		"resume_token_key_mode", resumeTokenKeyMode(cfg),
-		// R28: the key's presence is the feature switch, so logging whether it
-		// is set is how an operator confirms a fleet is collecting at all —
-		// the key itself is never logged.
-		"telemetry_enabled", len(cfg.TelemetryKey) > 0,
-		"telemetry_report_interval", cfg.TelemetryReportInterval,
-		"telemetry_advertise_url", cfg.TelemetryAdvertiseURL,
-		"server_name", cfg.ServerName,
-		"cluster_mode", cfg.ClusterMode,
-	)
+	logStartup(log, cfg, version)
 
 	getCert, err := certSource(cfg, log)
 	if err != nil {
@@ -140,20 +108,33 @@ func run() error {
 	promReg.MustRegister(metrics.NewRegistryCollector(r))
 	sm := metrics.NewServerMetrics(promReg)
 
+	// R39 moderation (docs/42 §4.3). The set is always constructed and always
+	// scraped — with -moderation-source=off nothing feeds it, every publish
+	// check is a cheap miss, and gawk_moderation_bans_active reads zero,
+	// which is how an operator tells "no bans" from "no moderation".
+	bans := moderation.NewSet()
+	promReg.MustRegister(metrics.NewModerationCollector(bans))
+
 	// The WebTransport (UDP) server and the ops (TCP) listener run together;
 	// either one failing tears the other down.
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	srv := transport.New(cfg, r, getCert, log, sm)
-
-	if cfg.ClusterMode {
-		var podName string
-		coord, podName, err = buildCoordinator(cfg, srv.HandleLeaseDeleted, srv.HandleLeaseLost, log)
-		if err != nil {
-			return err
+	// Publishing `coord` — the variable the hub's lease hooks above close
+	// over — is part of the cluster wiring, so it happens here rather than at
+	// the call site: wireSubsystems only guarantees the ORDER, and both
+	// halves have to be inside the ordered step for that to mean anything.
+	buildCoord := func() (transport.ClusterCoordinator, string, error) {
+		c, podName, cerr := buildCoordinator(cfg, srv.HandleLeaseDeleted, srv.HandleLeaseLost, log)
+		if cerr != nil {
+			return nil, "", cerr
 		}
+		coord = c
 		go coord.Run(runCtx)
-		srv.SetCluster(coord, podName)
+		return c, podName, nil
+	}
+	if err := wireSubsystems(runCtx, cfg, srv, bans, log, buildCoord); err != nil {
+		return err
 	}
 
 	// The R18 viewer-count pump (docs/23 Decision 4): one registry-wide
@@ -161,9 +142,34 @@ func run() error {
 	// tests drive PumpViewerCounts ticks directly.
 	go r.RunViewerCountPump(runCtx)
 
+	// R39 AP3 (docs/42 §4.5): the credential-gated admin API on the ops
+	// listener. NewAdminAuth never blocks and never fails on an unreachable
+	// IdP — discovery is retried in the background — so the relay starts
+	// whether or not the identity provider is up. With neither credential
+	// configured, Handler registers no admin route at all (404).
+	adminAuth := ops.NewAdminAuth(runCtx, ops.AdminAuthOptions{
+		Token:      cfg.AdminAPIToken,
+		Issuer:     cfg.AdminOIDCIssuer,
+		Audience:   cfg.AdminOIDCAudience,
+		RolesClaim: cfg.AdminOIDCRolesClaim,
+		Role:       cfg.AdminOIDCRole,
+		Log:        log,
+	})
+	adminOpts := &ops.AdminOptions{
+		Registry:        r,
+		Config:          cfg,
+		Pod:             os.Getenv("POD_NAME"),
+		Version:         version,
+		PublisherRemote: srv.PublisherRemote,
+		Auth:            adminAuth,
+		Log:             log,
+	}
+
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(runCtx) }()
-	go func() { errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, promReg, log, srv.Ready), log) }()
+	go func() {
+		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, promReg, log, srv.Ready, adminOpts), log)
+	}()
 
 	var firstErr error
 	for range 2 {
@@ -178,6 +184,114 @@ func run() error {
 
 	log.Info("shutting down")
 	return nil
+}
+
+// logStartup emits the one line an operator reads to confirm what this pod is
+// actually running. Extracted from run so it can be asserted in a test:
+// docs/42 §9 AP2 requires the moderation source to be stated here, and the
+// R2 lesson is that a knob nobody can see is a knob nobody notices is inert.
+// wiredServer is the slice of *transport.Server that startup wiring touches.
+// It is an interface for one reason: so the ORDER below can be asserted in a
+// test. The window it guards opens and closes during process startup, which
+// nothing else in the suite can observe.
+type wiredServer interface {
+	SetModeration(*moderation.Set)
+	SetCluster(transport.ClusterCoordinator, string)
+	HandleBanAdded(moderation.Record)
+}
+
+// wireSubsystems installs the optional subsystems on srv in the one order
+// that is safe, and returns once the ban source is running.
+//
+// moderationsrc.Start goes LAST, and that is the entire point of this
+// function existing (PR #280 review). It launches the Ban informer, and a
+// pod cold-starting in a namespace that already holds Ban CRs gets its first
+// Add events within milliseconds. Those reach srv.HandleBanAdded ->
+// terminate(), which reads this pod's edge manager and — through the hub's
+// OnBroadcastExpired hook — the cluster coordinator. Starting the source
+// before SetCluster made that a data race on plain field writes, and left a
+// real hole behind it: a kill actuated in the window tears the broadcast down
+// locally but never deletes its origin Lease, so every other pod in the fleet
+// keeps routing viewers to an origin that is already dead.
+//
+// buildCoord is the seam: it builds AND publishes the coordinator (see run),
+// so "cluster wiring is complete" is one step rather than two.
+func wireSubsystems(
+	ctx context.Context,
+	cfg config.Config,
+	srv wiredServer,
+	bans *moderation.Set,
+	log *slog.Logger,
+	buildCoord func() (transport.ClusterCoordinator, string, error),
+) error {
+	srv.SetModeration(bans)
+
+	if cfg.ClusterMode {
+		coord, podName, err := buildCoord()
+		if err != nil {
+			return err
+		}
+		srv.SetCluster(coord, podName)
+	}
+
+	return moderationsrc.Start(ctx, moderationsrc.Options{
+		Source: cfg.ModerationSource,
+		Set:    bans,
+		Log:    log,
+		// R39 AP3 (docs/42 §4.3): the actuation half. Wired for EVERY source
+		// and independently of -cluster-mode — a single-pod relay kills just
+		// as well as a fleet, and each pod acts on its own event.
+		OnBanAdded: srv.HandleBanAdded,
+	})
+}
+
+func logStartup(log *slog.Logger, cfg config.Config, version string) {
+	log.Info("starting",
+		"version", version,
+		"addr", cfg.Addr,
+		"dev_cert", cfg.DevCert,
+		"max_subscribers", cfg.MaxSubscribers,
+		"max_broadcasts", cfg.MaxBroadcasts,
+		"max_total_subscribers", cfg.MaxTotalSubscribers,
+		"publish_secret_set", cfg.PublishSecret != "",
+		"conn_rate_limit", cfg.ConnRateLimit,
+		"conn_burst_limit", cfg.ConnBurstLimit,
+		"max_bandwidth_bytes", cfg.MaxBandwidthBytes,
+		"max_keyframe_bytes", cfg.MaxKeyframeBytes,
+		"keyframe_write_timeout", cfg.KeyframeWriteTimeout,
+		"dvr_window", cfg.DVRWindow,
+		"dvr_max_bytes", cfg.DVRMaxBytes,
+		"dvr_max_catchup", cfg.DVRMaxCatchup,
+		"dvr_audio", cfg.DVRAudio,
+		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
+		"parity_default", cfg.ParityDefault,
+		"striped_delivery", cfg.StripedDelivery,
+		"max_idle_timeout", cfg.MaxIdleTimeout,
+		"keepalive_period", cfg.KeepAlivePeriod,
+		"broadcast_grace", cfg.BroadcastGrace,
+		"metrics_addr", cfg.MetricsAddr,
+		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
+		"resume_token_key_mode", resumeTokenKeyMode(cfg),
+		// R28: the key's presence is the feature switch, so logging whether it
+		// is set is how an operator confirms a fleet is collecting at all —
+		// the key itself is never logged.
+		"telemetry_enabled", len(cfg.TelemetryKey) > 0,
+		"telemetry_report_interval", cfg.TelemetryReportInterval,
+		"telemetry_advertise_url", cfg.TelemetryAdvertiseURL,
+		"server_name", cfg.ServerName,
+		"cluster_mode", cfg.ClusterMode,
+		// R39 (docs/42 §4.3): the operator's confirmation surface for which
+		// ban source this pod is actually enforcing from, and which
+		// credentials open the admin API. The token itself is never logged —
+		// only whether one is set, which is what decides 404 vs. 401.
+		"moderation_source", cfg.ModerationSource,
+		"admin_api_token_set", cfg.AdminAPIToken != "",
+		"admin_oidc_issuer", cfg.AdminOIDCIssuer,
+		"admin_oidc_audience", cfg.AdminOIDCAudience,
+		"admin_oidc_roles_claim", cfg.AdminOIDCRolesClaim,
+		"admin_oidc_role", cfg.AdminOIDCRole,
+		"admin_api_enabled", cfg.AdminAPIToken != "" || cfg.AdminOIDCIssuer != "",
+	)
 }
 
 // registryOptions maps the parsed config onto hub.Options. Every limit knob
@@ -252,21 +366,13 @@ func buildCoordinator(cfg config.Config, onLeaseDeleted func(string), onLeaseLos
 
 // resumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
 // logged so a fleet misconfiguration (per-process keys on multiple pods,
-// which silently breaks cross-pod resume) is visible at startup. Order
-// mirrors newResumeTokens: the explicit key wins over the publish-secret
-// derivation (PR #47 security review — a secret-derived key is computable
-// by every broadcaster holding the secret; "explicit-key" is the mode that
-// actually closes the graced-ID hijack between broadcasters).
-func resumeTokenKeyMode(cfg config.Config) string {
-	switch {
-	case len(cfg.ResumeTokenKey) > 0:
-		return "explicit-key"
-	case cfg.PublishSecret != "":
-		return "derived-from-publish-secret"
-	default:
-		return "per-process-random"
-	}
-}
+// which silently breaks cross-pod resume) is visible at startup.
+//
+// One definition, in config, since R39: GET /internal/admin/config reports
+// the same mode (docs/42 §4.5 — "the resume key also says which mode,
+// echoing the startup log"), and two copies of a three-way switch is exactly
+// the drift CODE-REVIEW.md's shared-constants rule exists to stop.
+func resumeTokenKeyMode(cfg config.Config) string { return cfg.ResumeTokenKeyMode() }
 
 // certSource returns the per-handshake certificate callback: an ephemeral
 // in-memory dev cert (hashes logged for the browser side), a *persisted* dev

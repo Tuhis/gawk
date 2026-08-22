@@ -9,14 +9,14 @@ script for what counts as a dependency here and why.
 
 **Scope:** `go list -deps ./...` in `gawk-server/`.
 
-## Summary — 50 packages
+## Summary — 52 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `Apache-2.0` | 14 |
+| `Apache-2.0` | 15 |
 | `BSD-3-Clause` | 13 |
 | `MIT` | 11 |
-| `Apache-2.0 OR UNKNOWN` | 5 |
+| `Apache-2.0 OR UNKNOWN` | 6 |
 | `Apache-2.0 OR MIT OR Apache-2.0` | 2 |
 | `Apache-2.0 OR BSD-3-Clause` | 1 |
 | `Apache-2.0 OR MIT` | 1 |
@@ -30,10 +30,12 @@ script for what counts as a dependency here and why.
 |---|---|---|---|
 | `github.com/beorn7/perks` | v1.0.1 | `MIT` | Copyright (C) 2013 Blake Mizerany |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | `MIT` | Copyright (c) 2016 Caleb Spare |
+| `github.com/coreos/go-oidc/v3` | v3.20.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 CoreOS, Inc |
 | `github.com/davecgh/go-spew` | v1.1.2-0.20180830191138-d8f796af33cc | `ISC` | Copyright (c) 2012-2016 Dave Collins <dave@davec.name> |
 | `github.com/dunglas/httpsfv` | v1.1.0 | `BSD-3-Clause` | Copyright (c) 2020 Kévin Dunglas. All rights reserved |
 | `github.com/emicklei/go-restful/v3` | v3.13.0 | `MIT` | Copyright (c) 2012,2013 Ernest Micklei |
 | `github.com/fxamacker/cbor/v2` | v2.9.0 | `MIT` | Copyright (c) 2019-present Faye Amacker |
+| `github.com/go-jose/go-jose/v4` | v4.1.4 | `Apache-2.0` | Copyright 2014 Square Inc |
 | `github.com/go-logr/logr` | v1.4.3 | `Apache-2.0` | — |
 | `github.com/go-openapi/jsonpointer` | v0.21.0 | `Apache-2.0` | — |
 | `github.com/go-openapi/jsonreference` | v0.20.2 | `Apache-2.0` | — |
@@ -86,9 +88,9 @@ their copyright line are shown once, with every holder listed in the table
 above — that line is the part the license requires be retained, and the
 boilerplate around it is identical by construction.
 
-### 1. Apache-2.0 — 15 packages
+### 1. Apache-2.0 — 16 packages
 
-Applies to: `github.com/go-openapi/jsonpointer`, `github.com/go-openapi/jsonreference`, `github.com/go-openapi/swag`, `github.com/google/gnostic-models`, `github.com/modern-go/concurrent`, `github.com/modern-go/reflect2`, `github.com/prometheus/client_golang`, `github.com/prometheus/client_model`, `github.com/prometheus/common`, `github.com/prometheus/procfs`, `k8s.io/api`, `k8s.io/apimachinery` — and 3 more
+Applies to: `github.com/go-jose/go-jose/v4`, `github.com/go-openapi/jsonpointer`, `github.com/go-openapi/jsonreference`, `github.com/go-openapi/swag`, `github.com/google/gnostic-models`, `github.com/modern-go/concurrent`, `github.com/modern-go/reflect2`, `github.com/prometheus/client_golang`, `github.com/prometheus/client_model`, `github.com/prometheus/common`, `github.com/prometheus/procfs`, `k8s.io/api` — and 4 more
 
 ```
 Apache License
@@ -294,9 +296,9 @@ Apache License
    limitations under the License.
 ```
 
-### 2. Apache-2.0 — 4 packages
+### 2. Apache-2.0 — 5 packages
 
-Applies to: `github.com/go-logr/logr`, `go.yaml.in/yaml/v2`, `sigs.k8s.io/randfill`, `sigs.k8s.io/structured-merge-diff/v6`
+Applies to: `github.com/coreos/go-oidc/v3`, `github.com/go-logr/logr`, `go.yaml.in/yaml/v2`, `sigs.k8s.io/randfill`, `sigs.k8s.io/structured-merge-diff/v6`
 
 ```
 Apache License
@@ -1646,6 +1648,18 @@ SOFTWARE.
 
 ### 18. UNKNOWN — 1 package
 
+Applies to: `github.com/coreos/go-oidc/v3`
+
+```
+CoreOS Project
+Copyright 2014 CoreOS, Inc
+
+This product includes software developed at CoreOS, Inc.
+(http://www.coreos.com/).
+```
+
+### 19. UNKNOWN — 1 package
+
 Applies to: `github.com/prometheus/client_golang`
 
 ```
@@ -1669,7 +1683,7 @@ Copyright 2010 The Go Authors
 See source code for license details.
 ```
 
-### 19. UNKNOWN — 1 package
+### 20. UNKNOWN — 1 package
 
 Applies to: `github.com/prometheus/client_model`
 
@@ -1681,7 +1695,7 @@ This product includes software developed at
 SoundCloud Ltd. (http://soundcloud.com/).
 ```
 
-### 20. UNKNOWN — 1 package
+### 21. UNKNOWN — 1 package
 
 Applies to: `github.com/prometheus/common`
 
@@ -1693,7 +1707,7 @@ This product includes software developed at
 SoundCloud Ltd. (http://soundcloud.com/).
 ```
 
-### 21. UNKNOWN — 1 package
+### 22. UNKNOWN — 1 package
 
 Applies to: `github.com/prometheus/procfs`
 
@@ -1707,7 +1721,7 @@ This product includes software developed at
 SoundCloud Ltd. (http://soundcloud.com/).
 ```
 
-### 22. UNKNOWN — 1 package
+### 23. UNKNOWN — 1 package
 
 Applies to: `sigs.k8s.io/randfill`
 

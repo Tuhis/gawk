@@ -69,6 +69,12 @@ func (e *StartError) Message() string {
 		return "Someone is already publishing to that broadcast code. Start a new broadcast to get a fresh code."
 	case http.StatusTooManyRequests:
 		return "The relay is at capacity (too many broadcasts, or too many connection attempts). Try again in a moment."
+	case http.StatusUnavailableForLegalReasons:
+		// R39 (docs/42 D15): the ban gate answers pre-upgrade, so there is no
+		// close code to carry the reason — the status is the whole message.
+		// The browser broadcaster cannot read it at all, which is exactly why
+		// spelling it out here is worth doing.
+		return "This broadcast ID or your address is banned by the relay operator. Contact the operator if you think this is a mistake."
 	}
 	if e.Phase == PhaseConnect {
 		return fmt.Sprintf("Could not reach the relay: %v", e.Err)

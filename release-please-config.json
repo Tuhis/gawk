@@ -58,6 +58,17 @@
           "path": "deploy/charts/gawk-telemetry/Chart.yaml"
         }
       ]
+    },
+    "gawk-admin": {
+      "release-type": "go",
+      "component": "gawk-admin",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/charts/gawk-admin/Chart.yaml"
+        }
+      ]
     }
   }
 }

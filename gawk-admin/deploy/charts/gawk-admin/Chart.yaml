@@ -1,0 +1,18 @@
+apiVersion: v2
+name: gawk-admin
+description: Moderation portal for a gawk relay fleet (R39) — fleet-wide kill, durable ID/IP bans projected into Ban CRs, an OIDC-gated operator SPA and signed webhook notifications.
+type: application
+# Both fields are bumped by release-please; the image tag defaults to
+# appVersion, so chart version == image version always holds — and the
+# migration hook Job derives its tag from the SAME expression, so the schema
+# that runs is always the one this release carries (docs/42 §4.15).
+#
+# 0.0.0 is the UNRELEASED seed, matching .release-please-manifest.json: no
+# gawk-admin tag, image or chart exists yet, and release-please diffs from the
+# tag its manifest names. Seeding either file at 0.1.0 would claim a release
+# that never happened — the first real one would then ship as 0.1.1/0.2.0
+# while this file still baked in a 0.1.0 that GHCR never carries. The first
+# release PR rewrites both lines to 0.1.0, and from then on this file tracks
+# what is actually published.
+version: 0.0.0 # x-release-please-version
+appVersion: "0.0.0" # x-release-please-version

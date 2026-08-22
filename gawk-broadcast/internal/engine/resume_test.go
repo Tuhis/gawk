@@ -284,13 +284,21 @@ func TestCaptureEndTearsDownTheRelaySession(t *testing.T) {
 // "Newest publisher wins" only converges because the deposed one stays down.
 // An engine that auto-resumed here would reclaim the code straight back and
 // the two broadcasters would depose each other forever.
+//
+// 4006 (R39, docs/42 §4.4) joins the same set for a different reason: the
+// operator killed the broadcast and banned the ID for at least the kill
+// cooldown, so a reclaim can only ever collect a 451. Each code must also
+// surface a sentence saying which of these happened — "the relay closed this
+// session (code 4006)" would tell the broadcaster nothing.
 func TestSupersededPublisherDoesNotResume(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		code uint32
+		name    string
+		code    uint32
+		wantMsg string
 	}{
-		{"superseded", wire.CloseCodePublisherSuperseded},
-		{"broadcast ended", wire.CloseCodeBroadcastEnded},
+		{"superseded", wire.CloseCodePublisherSuperseded, "superseded"},
+		{"broadcast ended", wire.CloseCodeBroadcastEnded, "the relay ended this broadcast"},
+		{"terminated by operator", wire.CloseCodeTerminatedByOperator, "terminated by the server operator"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			first := newFakeSession()
@@ -301,8 +309,12 @@ func TestSupersededPublisherDoesNotResume(t *testing.T) {
 			}}
 
 			ended := make(chan struct{}, 4)
+			failed := make(chan error, 4)
 			s := New(Config{RelayURL: "https://relay.example", BroadcastID: "K7M2QP"},
-				Callbacks{OnEnded: func() { ended <- struct{}{} }},
+				Callbacks{
+					OnEnded: func() { ended <- struct{}{} },
+					OnError: func(err error) { failed <- err },
+				},
 				resumeOpts(d, media))
 			if err := s.Start(context.Background()); err != nil {
 				t.Fatal(err)
@@ -318,7 +330,68 @@ func TestSupersededPublisherDoesNotResume(t *testing.T) {
 			if !media.wasStopped() {
 				t.Error("capture kept running after a terminal close code")
 			}
+			select {
+			case err := <-failed:
+				if !strings.Contains(err.Error(), tc.wantMsg) {
+					t.Errorf("OnError = %q, want it to mention %q", err, tc.wantMsg)
+				}
+			default:
+				t.Error("a terminal close code reported no error, so the shell cannot say why")
+			}
 		})
+	}
+}
+
+// R39 (docs/42 D15 + §4.4): a ban is enforced pre-upgrade, so a reclaim gets
+// an HTTP 451 with no close code to carry the reason. The native broadcasters
+// can read that status where the browser cannot, and must both stop at once
+// (the cap on repeated 403/451 is one attempt — see resumeTerminal) and say
+// "banned" rather than "could not reach the relay".
+func TestBannedReclaimStopsWithABannedMessage(t *testing.T) {
+	first := newFakeSession()
+	media := newFakeMedia()
+	d := &recordingDialer{results: []dialResult{
+		{first, http.StatusOK, nil},
+		{nil, http.StatusUnavailableForLegalReasons, errors.New("received status")},
+		{newFakeSession(), http.StatusOK, nil}, // available, and must go unused
+	}}
+
+	ended := make(chan struct{}, 4)
+	failed := make(chan error, 4)
+	s := New(Config{RelayURL: "https://relay.example", BroadcastID: "K7M2QP"},
+		Callbacks{
+			OnEnded: func() { ended <- struct{}{} },
+			OnError: func(err error) { failed <- err },
+		},
+		resumeOpts(d, media))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	first.cancel() // an abrupt death: exactly the case auto-resume exists for
+	waitSignal(t, ended, 5*time.Second, "OnEnded after a banned reclaim")
+
+	if calls := len(d.dialedURLs()); calls != 2 {
+		t.Errorf("dialed %d times, want 2 (the original plus ONE 451 reclaim)", calls)
+	}
+	if !media.wasStopped() {
+		t.Error("capture kept running after the relay banned this broadcast")
+	}
+	select {
+	case err := <-failed:
+		se, ok := AsStartError(err)
+		if !ok {
+			t.Fatalf("OnError = %v, want a wrapped *StartError", err)
+		}
+		if se.Status != http.StatusUnavailableForLegalReasons {
+			t.Errorf("status = %d, want 451", se.Status)
+		}
+		if msg := se.Message(); !strings.Contains(strings.ToLower(msg), "banned") {
+			t.Errorf("Message() = %q, want it to say the broadcast is banned", msg)
+		}
+	default:
+		t.Error("a banned reclaim reported no error, so the shell cannot say why")
 	}
 }
 

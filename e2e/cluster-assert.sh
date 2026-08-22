@@ -23,17 +23,57 @@ if [ "${#PODS[@]}" -ne 2 ]; then
   exit 1
 fi
 
+# The same supervised-forward pattern moderation-assert.sh uses, and for the
+# same two reasons. A fixed `sleep 2` is a guess: on a loaded runner
+# `kubectl port-forward` can take longer than that to bind, and the first
+# assertion then fails against curl exit 7 rather than against anything the
+# relay did. And `kubectl port-forward` EXITS on its first broken connection —
+# plausible here, since this script watches pods hand broadcasts around — after
+# which every later call on that pod fails for the rest of the run.
 declare -A PORT
+forward() { # forward <pod> <local-port> — runs in the background, re-dials forever
+  local pod=$1 port=$2 kid=
+  # Traps reset to default in a background subshell, so the supervisor needs
+  # its own: without it the EXIT trap below orphans the kubectl.
+  trap 'kill "$kid" 2>/dev/null; exit 0' TERM INT
+  while true; do
+    kubectl -n "$NS" port-forward "pod/$pod" "$port:2112" >/dev/null 2>&1 &
+    kid=$!
+    wait "$kid" 2>/dev/null || true
+    sleep 1
+  done
+}
 i=0
 for p in "${PODS[@]}"; do
   PORT[$p]=$((21200 + i))
-  kubectl -n "$NS" port-forward "pod/$p" "${PORT[$p]}:2112" >/dev/null 2>&1 &
+  forward "$p" "${PORT[$p]}" &
   i=$((i + 1))
 done
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
-sleep 2
 
-statusz() { curl -fsS --max-time 5 "http://127.0.0.1:${PORT[$1]}/statusz"; }
+# --retry-connrefused covers the restart gap: a request landing in the second
+# between one kubectl dying and its successor binding is retried rather than
+# reported as a pod that stopped answering.
+statusz() { curl -fsS --max-time 5 --retry 3 --retry-delay 1 --retry-connrefused "http://127.0.0.1:${PORT[$1]}/statusz"; }
+
+# /healthz, not /readyz: the latter 503s while a pod drains, which is a state
+# this script deliberately provokes.
+FORWARD_WAIT=60
+for p in "${PODS[@]}"; do
+  end=$((SECONDS + FORWARD_WAIT))
+  # -s without -S: a not-yet-bound forward is the expected state here, so one
+  # "Could not connect" per second is noise. The attempt that matters — the
+  # last — is repeated loudly on the way out.
+  until curl -fs --max-time 3 -o /dev/null "http://127.0.0.1:${PORT[$p]}/healthz"; do
+    if [ "$SECONDS" -ge "$end" ]; then
+      echo "port-forward to $p (127.0.0.1:${PORT[$p]} -> 2112) never answered /healthz within ${FORWARD_WAIT}s" >&2
+      curl -sS --max-time 3 -o /dev/null "http://127.0.0.1:${PORT[$p]}/healthz" >&2 || true
+      exit 1
+    fi
+    sleep 1
+  done
+done
+echo "PASS: ops port-forwards ready on all ${#PODS[@]} pods (/healthz answered)"
 
 # The conntrack spread is probabilistic per 5-tuple; poll until the split
 # shows or the deadline passes. jq -e exits non-zero on false, so each check

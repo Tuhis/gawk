@@ -158,7 +158,19 @@ TLS secret, `helm install` with replicas=2 + clusterMode + NodePort 30443 +
 throwaway fleet secrets + `SSL_CERT_FILE=/tls/tls.crt` (edge pods verify
 their internal dials against the mounted self-signed cert — the edge dialer
 never skips verification), then pubsim + `gawk-loadgen -viewers 12` +
-`node run.mjs --external` + `./cluster-assert.sh gawk-e2e`.
+`node run.mjs --external` + `./cluster-assert.sh gawk-e2e` +
+`./moderation-assert.sh gawk-e2e <id> <admin-token>`.
+
+The moderation step runs **last** on purpose: it kills the broadcast every
+step before it depends on, and then bans the publisher's IP. It is also the
+only place the harness observes *why* sessions ended — `gawk-loadgen
+-expect-close-code 4006` reads the application close code off the session
+itself (so 4000, a code-less transport death, and a session nothing closed all
+fail differently), and `gawk-pubsim` prints `GAWK_PUBSIM_DIAL_STATUS=<n>` and
+exits 3 when a dial is refused with an HTTP status, which is what makes
+docs/42 D15's "451 so a native broadcaster can say *banned*" testable rather
+than merely intended. Both are diagnostics: without the flag loadgen behaves
+exactly as before, and pubsim's extra line only appears on a refused dial.
 
 ## Env knobs
 

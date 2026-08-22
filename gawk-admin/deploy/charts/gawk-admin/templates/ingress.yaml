@@ -1,0 +1,63 @@
+{{- if .Values.ingress.enabled }}
+{{- /*
+The fail-guard (docs/42 §4.13), adapted from gawk-telemetry's ingress.yaml.
+
+Authentication is enforced IN-PROCESS regardless of this check — the binary
+refuses to start without the OIDC knobs (config.validate). What the guard buys
+is that the chart will not ROUTE a configuration that cannot boot: without it,
+`ingress.enabled=true` with an unconfigured issuer publishes a public hostname
+in front of a CrashLoopBackOff, which is a worse failure than a refused render
+because it is a public one.
+
+This is also the exact shape of mistake that makes an internet-exposed admin
+surface dangerous, so it is worth being loud about at template time. The role
+knobs are deliberately NOT required here: they have safe non-empty defaults,
+and the binary refuses to start if either is blanked.
+*/ -}}
+{{- $missing := list -}}
+{{- if not .Values.oidc.issuer }}{{ $missing = append $missing "oidc.issuer" }}{{ end -}}
+{{- if not .Values.oidc.clientId }}{{ $missing = append $missing "oidc.clientId" }}{{ end -}}
+{{- if not .Values.oidc.audience }}{{ $missing = append $missing "oidc.audience" }}{{ end -}}
+{{- if $missing -}}
+{{- fail (printf "ingress.enabled requires %s: the portal is an internet-exposable admin surface whose ONLY auth boundary is OIDC (docs/42 D7, §4.13). Set them, or reach the portal with `kubectl port-forward` instead." (join ", " $missing)) -}}
+{{- end -}}
+{{- if not .Values.ingress.host }}
+{{- fail "ingress.enabled requires ingress.host" }}
+{{- end }}
+# The portal, routed. This is the first internet-exposed admin surface in the
+# stack and D7 is its charter: OIDC — not network placement — is the boundary
+# here, because a paged operator must be able to judge and kill a broadcast
+# from a phone.
+#
+# Read docs/self-hosting.md §gawk-admin before enabling this: what a portal
+# compromise yields is written down there, and it is not nothing.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gawk-admin.fullname" . }}
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gawk-admin.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

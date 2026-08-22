@@ -53,9 +53,16 @@ import {
   packetizeStreamKeyframe,
 } from './packetizer';
 import { CAP_PARITY_CHUNKS, parseRelayCapabilities } from './parity';
-import { RECONNECT_MAX_ATTEMPTS, reconnectDelayMs, type ReconnectInfo } from './reconnect';
+import {
+  RECONNECT_MAX_ATTEMPTS,
+  isTerminalPublisherClose,
+  reconnectDelayMs,
+  type ReconnectInfo,
+} from './reconnect';
 import { CLOCK_MAPPING_INTERVAL_MS, TimeSyncClient } from './time-sync';
 import {
+  CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
   encodeClockMapping,
   nextFrameId,
   parseBroadcastAnnounce,
@@ -348,6 +355,21 @@ export class BroadcastStartError extends Error {
     this.name = 'BroadcastStartError';
     this.phase = phase;
     this.cause = cause;
+  }
+}
+
+// The sentence a broadcaster sees when the relay ends its publisher session
+// for good. Deliberately parallel to the natives' closeCodeError (Go) and
+// close_code_message (Rust): the same close code must read the same on all
+// three broadcasters, because it is one product and one support conversation.
+function terminalPublisherMessage(code: number): string {
+  switch (code) {
+    case CLOSE_CODE_PUBLISHER_SUPERSEDED:
+      return 'Another broadcaster took over this code — this session has been superseded.';
+    case CLOSE_CODE_TERMINATED_BY_OPERATOR:
+      return 'This broadcast was terminated by the server operator.';
+    default:
+      return 'The relay ended this broadcast.';
   }
 }
 
@@ -1296,6 +1318,18 @@ export class BroadcastPipeline {
   // or the announce/token never landed) fails as before.
   private handleSessionGone(gen: number, err: Error | null, closeCode: number | null): void {
     if (this.stopping || gen !== this.connGeneration) return;
+    // Terminal codes are checked BEFORE the resume branch: they are the cases
+    // in which coming back is the wrong thing to do, not merely futile. 4004
+    // only converges because the deposed session stays down, and 4006 means
+    // the operator killed this broadcast and banned the ID for at least the
+    // cooldown (R39, docs/42 §4.4) — every reclaim would collect a 451 whose
+    // status the browser cannot even read (docs/42 D15), so the honest end is
+    // here, with a sentence saying what happened.
+    if (isTerminalPublisherClose(closeCode)) {
+      log.info(`Relay ended this publisher session (code ${closeCode}). Not resuming.`);
+      this.fail(new Error(terminalPublisherMessage(closeCode)));
+      return;
+    }
     if (this.media && this.broadcastId && this.resumeToken) {
       this.teardownTransport();
       this.scheduleResumeAttempt(closeCode, err?.message ?? 'session closed by server');

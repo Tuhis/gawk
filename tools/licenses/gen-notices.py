@@ -488,6 +488,31 @@ COMPONENTS = {
         sources="`package-lock.json` entries without `dev: true`.",
         collect=lambda: collect_npm("gawk-telemetry/ui"),
     ),
+    "admin": dict(
+        path="gawk-admin",
+        blurb=(
+            "The moderation portal service (`gawk-admin`). Its dependency set is\n"
+            "wider than the relay's and deliberately so — an OIDC/JWT verifier, a\n"
+            "Postgres driver, a Kubernetes client and a migration runner all live\n"
+            "in the admin plane specifically so they never enter the data plane\n"
+            "(docs/42 D1). The single binary also carries the `migrate`\n"
+            "subcommand, so nothing here is conditional on a build tag. The\n"
+            "embedded portal UI is covered by `ui/THIRD-PARTY-NOTICES.md`."
+        ),
+        sources="`go list -deps ./...` in `gawk-admin/`.",
+        collect=lambda: collect_go("gawk-admin"),
+    ),
+    "admin-ui": dict(
+        path="gawk-admin/ui",
+        blurb=(
+            "The moderation portal SPA, embedded into the `gawk-admin` binary.\n"
+            "Build-time-only packages are excluded, as for `gawk-app`. The OIDC\n"
+            "public-client flow is hand-rolled against WebCrypto (docs/42 §4.8),\n"
+            "so no OIDC library appears here."
+        ),
+        sources="`package-lock.json` entries without `dev: true`.",
+        collect=lambda: collect_npm("gawk-admin/ui"),
+    ),
     "windows": dict(
         path="gawk-broadcast-windows",
         blurb=(
@@ -570,13 +595,14 @@ def check() -> int:
         ("gawk-server", ""),
         ("gawk-broadcast", ""),
         ("gawk-telemetry", "duckdb"),
+        ("gawk-admin", ""),
     ):
         for pkg in collect_go(module, tags):
             checked += 1
             if not expression_allowed(pkg.spdx):
                 failures.append(f"{module}: {pkg.name}@{pkg.version} is {pkg.spdx}")
 
-    for project in ("gawk-app", "gawk-telemetry/ui"):
+    for project in ("gawk-app", "gawk-telemetry/ui", "gawk-admin/ui"):
         lock = json.loads(
             (REPO / project / "package-lock.json").read_text(encoding="utf-8")
         )

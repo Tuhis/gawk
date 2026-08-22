@@ -28,7 +28,7 @@ func testHandlerReady(t *testing.T, ready func() bool) (http.Handler, *hub.Regis
 	r := hub.NewRegistry(discardLog, hub.Options{})
 	promReg := metrics.NewBaseRegistry("test-version")
 	promReg.MustRegister(metrics.NewRegistryCollector(r))
-	return Handler(r, promReg, discardLog, ready), r
+	return Handler(r, promReg, discardLog, ready, nil), r
 }
 
 func TestHandlerServesAllRoutes(t *testing.T) {

@@ -1,8 +1,9 @@
 # Release automation: release-please maintains ONE combined release PR
-# covering every component (gawk-server, gawk-app, gawk-broadcast),
-# computing each one's next SemVer from conventional commits; merging it
-# tags per component (e.g. gawk-server-v0.5.0) and the publish jobs below
-# push the docker image and OCI Helm chart to GHCR with matching versions.
+# covering every component (gawk-server, gawk-app, gawk-broadcast,
+# gawk-broadcast-windows, gawk-telemetry, gawk-admin), computing each one's
+# next SemVer from conventional commits; merging it tags per component (e.g.
+# gawk-server/v0.5.0 — tag-separator "/") and the publish jobs below push the
+# docker image and OCI Helm chart to GHCR with matching versions.
 #
 # gawk-broadcast and gawk-broadcast-windows have NO publish job here on
 # purpose (R14 Decision 2, docs/19): they are native binaries you run on your
@@ -47,6 +48,8 @@ jobs:
       app_version: ${{ steps.rp.outputs['gawk-app--version'] }}
       telemetry_release: ${{ steps.rp.outputs['gawk-telemetry--release_created'] }}
       telemetry_version: ${{ steps.rp.outputs['gawk-telemetry--version'] }}
+      admin_release: ${{ steps.rp.outputs['gawk-admin--release_created'] }}
+      admin_version: ${{ steps.rp.outputs['gawk-admin--version'] }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: rp
@@ -167,3 +170,49 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm package gawk-telemetry/deploy/charts/gawk-telemetry --version "$VERSION" --app-version "$VERSION"
           helm push "gawk-telemetry-$VERSION.tgz" oci://ghcr.io/tuhis/charts
+
+  # R39 (docs/42 D1). The sixth release-please component, and the FOURTH
+  # cluster-side publish: image + OCI chart, versions in lockstep, exactly like
+  # the three above. Its chart is default-nothing — installing gawk-admin is a
+  # deliberate act, and the relay chart's moderation.enabled is a separate one —
+  # so releasing it changes nothing for a deployment that never installs it.
+  #
+  # ONE IMAGE, TWO MODES: the chart's migration hook Job runs `gawk-admin
+  # migrate` from this exact tag. That is what makes "the schema a release needs
+  # travels with the release" (docs/42 §4.15) a property of the build rather
+  # than a note in a runbook.
+  publish-admin:
+    needs: release-please
+    if: needs.release-please.outputs.admin_release == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.admin_version }}
+    steps:
+      - uses: actions/checkout@v7
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          # The REPO ROOT, not the module dir: gawk-admin consumes
+          # gawk-server/moderation through a local `replace` (docs/42 D13).
+          context: .
+          file: gawk-admin/deploy/Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: |
+            ghcr.io/tuhis/gawk-admin:${{ env.VERSION }}
+            ghcr.io/tuhis/gawk-admin:latest
+      - name: Push Helm chart
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package gawk-admin/deploy/charts/gawk-admin --version "$VERSION" --app-version "$VERSION"
+          helm push "gawk-admin-$VERSION.tgz" oci://ghcr.io/tuhis/charts

@@ -1,0 +1,16 @@
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
+# minAvailable 1: a node drain can never take the whole moderation plane.
+# Rendered only at replicaCount >= 2 — at 1 replica a PDB would block node
+# maintenance outright, the same reasoning the relay chart's PDB carries.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gawk-admin.fullname" . }}
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "gawk-admin.selectorLabels" . | nindent 6 }}
+{{- end }}

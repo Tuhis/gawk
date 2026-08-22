@@ -1,14 +1,23 @@
-{{- if .Values.config.clusterMode }}
-# R17 W3 (docs/22 Decision 8): the per-broadcast origin registry is a set of
-# Kubernetes Leases (gawk-bc-<id>) in this namespace. The relay needs exactly
-# the Lease verbs — nothing else — so the Role stays minimal on purpose.
+{{- if or .Values.config.clusterMode .Values.moderation.enabled }}
+# The relay's Kubernetes identity. Two independent features want it, and either
+# one alone is enough to need it:
+#
+#  * R17 W3 (docs/22 Decision 8) — cluster mode's per-broadcast origin registry
+#    is a set of Leases (gawk-bc-<id>) in this namespace.
+#  * R39 (docs/42 D2) — moderation watches Ban CRs, which is deliberately
+#    INDEPENDENT of cluster mode: kills and bans work on a single-pod install
+#    too, and gating the RBAC on clusterMode would have made that silently
+#    untrue.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "gawk-server.fullname" . }}
   labels:
     {{- include "gawk-server.labels" . | nindent 4 }}
+{{- if .Values.config.clusterMode }}
 ---
+# R17 W3: the relay needs exactly the Lease verbs — nothing else — so the Role
+# stays minimal on purpose.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -34,4 +43,40 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "gawk-server.fullname" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if and .Values.moderation.enabled (eq .Values.moderation.source "k8s") }}
+---
+# R39 (docs/42 D2): READ-ONLY on Bans. The relay never writes one — enforcement
+# has a single write path, and it is gawk-admin's projection of its Postgres
+# system of record. A relay that could write bans would be a second enforcement
+# authority that eventually disagrees with the first.
+#
+# Rendered whenever moderation.source is "k8s", with or without clusterMode:
+# the Ban informer is independent of federation (docs/42 §4.3).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-bans
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["bans"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-bans
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gawk-server.fullname" . }}-bans
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gawk-server.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- end }}

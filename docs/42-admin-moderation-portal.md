@@ -1,6 +1,6 @@
 # R39 — Admin portal for moderation (docs/42)
 
-**Status**: designed 2026-08-20, not started. Chunks AP1–AP8.
+**Status**: designed 2026-08-20; **AP1–AP8 implemented 2026-08-20**. One item outstanding and it is the milestone-closing one — the manual pass on the reference deployment (§11.3), which needs a real cluster, a real identity provider and a live broadcast. Implementation record: §11.
 
 ---
 
@@ -29,7 +29,7 @@ references are to that state.
 |---|---|---|
 | D1 | **A separate `gawk-admin` service** — the fourth top-level module, with its own chart and image — not an admin listener inside `gawk-server`. | Keeps the relay image and attack surface unchanged; the portal's heavy dependencies (OIDC client, Postgres driver, embedded SPA) never enter the data plane. Gives R40's sampler an obvious neighbour. Cost: a fourth release-please component (accepted). |
 | D2 | **Enforcement state is projected into a `Ban` CRD that relay pods watch; Postgres is `gawk-admin`'s system of record.** The data plane never calls the admin plane at runtime. | The ban check sits on the publish path and must answer from pod-local memory. Watching CRs (the `cluster.go` informer pattern) means enforcement survives `gawk-admin` outages *and* relay cold-starts while admin is down — the k8s API (replicated etcd) is the always-on distribution layer. A poll-the-admin design has a fail-open window on relay cold start; rejected (§7). |
-| D3 | **Postgres via CloudNativePG** is `gawk-admin`'s database (audit trail, kill history, events, webhooks; R40 content flags later). Behind a store interface. | Owner's call over embedded SQLite: a real DB the R40 event stream can grow into, with `psql` tooling — and the shared store every replica of a horizontally-scaled `gawk-admin` reads and writes (D16), which file-on-PVC could never be. CNPG is the operator-grade way to run it; a plain-DSN escape hatch keeps third-party self-hosters unblocked (§4.13). |
+| D3 | **Postgres** is `gawk-admin`'s database (audit trail, kill history, events, webhooks; R40 content flags later). Behind a store interface. | Owner's call over embedded SQLite: a real DB the R40 event stream can grow into, with `psql` tooling — and the shared store every replica of a horizontally-scaled `gawk-admin` reads and writes (D16), which file-on-PVC could never be. CNPG is the operator-grade way to run one, and the chart supports it without templating a line of it: the chart takes a DSN, and CNPG's generated `<cluster>-app` Secret is one (§4.13). |
 | D4 | **Ban handles: broadcast ID and publisher IP (CIDR), each independently timed or permanent.** One target per `Ban` CR. | The resume token is `HMAC(key, broadcastID)` — stateless — so banning the ID *is* banning the token (`internal/transport/resume.go:76-92`). IP is the only handle that spans a re-mint loop. The publish secret is fleet-global and useless as identity (`docs/40` D4). Honest limit, stated in the UI: with no accounts, nothing stronger than ID+IP exists. |
 | D5 | **A plain "kill" is a ban on the ID with a default 10-minute cooldown** (configurable). "Kill + ban" takes explicit durations and optionally the IP. | The broadcaster auto-reclaims with its resume token within seconds, so a kill with no ID ban resurrects before the portal refreshes. The cooldown means the operator is never racing auto-resume while deciding on a real ban. |
 | D6 | **New terminal close code `4006` (`CloseCodeTerminatedByOperator`)**, sent to the publisher *and* to viewers. Terminal everywhere: no reconnect, no auto-resume. | Owner chose viewer-visible transparency over reusing 4000. Costs the full mirror pass (wire.ts, Rust crate, wirecheck, golden vectors) and viewer/broadcaster terminal handling — priced into AP1. |
@@ -119,7 +119,7 @@ references are to that state.
                        │
  ┌─────────────────────┴──────────────────────┐
  │ gawk-admin (replicas ≥ 2, stateless API)   │
- │  portal SPA + /api/v1 (OIDC JWT) ────► Postgres (CNPG) — system of record
+ │  portal SPA + /api/v1 (OIDC JWT) ────► Postgres (external) — system of record
  │  JWKS validation · role check          bans, events, webhooks, deliveries
  │  leader-elected: reconciler/janitor,   │
  │    webhook dispatcher (signed) ◄───────┘
@@ -195,6 +195,19 @@ spec:
   when it cannot reach Postgres; when it can, it adopts unknown CRs into
   Postgres as `createdBy: kubectl` rows rather than deleting them).
 - **No status subresource** in v1alpha1 — relays only read.
+- **`v1alpha1` `BanSpec` is additive-only** (the D18 expand–contract shape,
+  written down before the first divergence instead of after): a new spec field
+  must be optional with an absent-means-previous-behaviour default, and a new
+  `target.type` value means a new CRD *version*, never a widened enum. The
+  rule exists because the schema is owned by the **relay** chart while the
+  writer is `gawk-admin`, and the two deployables routinely run different
+  releases: a structural CRD silently **prunes** a spec field an older
+  installed schema does not know, and enum-rejects a new `target.type` —
+  fail-closed, surfacing as a permanent `202`/`enforcement: pending` with a
+  reconciler Warn every minute. The upgrade ordering this implies — relay
+  chart (the schema) before `gawk-admin` (the writer) — is documented in
+  `docs/self-hosting.md` §9; the release-coupling rule for the shared Go
+  packages is in `CONTRIBUTING.md`.
 
 **The `gawk-server/moderation` package (D13)** is the single source of truth
 for semantics, used by both sides:
@@ -245,7 +258,7 @@ added at `main.go:64-96` — the operator's confirmation surface):
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` | `off` \| `k8s` \| `file:<path>`. `k8s`: informer on Ban CRs in `POD_NAMESPACE` (in-cluster config; independent of `-cluster-mode`). `file`: JSON array of records, reloaded on fsnotify + SIGHUP — the dev/compose lane (§4.14). |
+| `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` | `off` \| `k8s` \| `file:<path>`. `k8s`: informer on Ban CRs in `POD_NAMESPACE` (in-cluster config; independent of `-cluster-mode`). `file`: JSON array of records, reloaded on a **stat poll** (mtime+size) and on SIGHUP — the dev/compose lane (§4.14). *(Implementation deviation, §11.1: stat-polling rather than fsnotify, following `internal/tlsutil/reload.go` — no new dependency.)* |
 | `-admin-api-token` | `GAWK_ADMIN_API_TOKEN` | `""` | Static bearer token for `/internal/admin/*` on the ops listener (the machine credential `gawk-admin` uses). |
 | `-admin-oidc-issuer` / `-admin-oidc-audience` | `GAWK_ADMIN_OIDC_ISSUER` / `GAWK_ADMIN_OIDC_AUDIENCE` | `""` | Alternative credential for the same routes: accept OIDC JWTs with this issuer + audience, verified offline against a cached JWKS (§4.5). Both set or both empty. **When neither the token nor the issuer is configured, the routes return 404** — the surface stays dark, not merely locked. |
 | `-admin-oidc-roles-claim` / `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLES_CLAIM` / `GAWK_ADMIN_OIDC_ROLE` | see §4.5 | Roles-claim dot-path (default `resource_access.{audience}.roles`) and the role a JWT must carry (default `operator`). |
@@ -409,7 +422,7 @@ gawk-admin/
   internal/auth/                # JWT validation (cached JWKS), role-claim authorization
   internal/api/                 # /api/v1 handlers
   internal/notify/              # webhook signer + retry queue (dispatcher runs on the leader)
-  internal/dashboard/           # go:embed dist (telemetry pattern incl. notBuilt page)
+  internal/portal/              # go:embed dist (telemetry pattern incl. notBuilt page)
   ui/                           # Vite + React + TS + CSS modules SPA
   deploy/                       # Dockerfile + chart
   go.mod                        # replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
@@ -498,14 +511,36 @@ All under `/api/v1`, JSON, authenticated by the OIDC JWT on every request
 (§4.8) — no cookies exist, so there is no CSRF machinery to get wrong.
 Errors are `{ "error": { "code": "string", "message": "human text" } }`.
 
+A ban is **two writes in two systems that cannot share a transaction**: the
+Postgres row (the record) and the `Ban` CR (the object relays watch, and the
+only thing that actually enforces). Every mutation therefore has three
+outcomes, not two, and grades itself on which of the two writes landed:
+
+| Outcome | Answer |
+|---|---|
+| row written **and** CR projected | `201 Created` (kill, create ban) · `204 No Content` (unban) |
+| row written, CR projection failed | `202 Accepted`, body = the ban, carrying `enforcement: {inSync: false, detail}` |
+| row write failed | `503` when Postgres is unreachable, `500` otherwise — nothing is recorded, no CR is written, no event is emitted, no ban comes back |
+
+`202` is a **success**. The record is durable and the reconciler — precisely
+RFC 9110 §15.3.3's "another process or server" — closes the gap on its next
+sweep. The body carries the ban because a client that just created something
+needs its ID regardless, and because the one thing it must not do is
+re-submit: a retry now `409`s against the row that does exist. `enforcement`
+rides only on that response — list and read routes never carry it, because a
+stored row has no in-flight projection to report on. It is `inSync` and not
+`enforced` because it has to read correctly in **both** directions: a pending
+create is recorded and *not yet enforced*, while a pending unban is lifted in
+the record and the target is *still banned*.
+
 | Route | Semantics |
 |---|---|
 | `GET /api/v1/me` | `{email, subject, roles}` from the validated JWT — the SPA's authorization probe (valid token without the `operator` role → 403; missing/expired token → 401 → the SPA refreshes or re-runs the OIDC flow). |
 | `GET /api/v1/broadcasts` | Fleet aggregation from `relayscan` (≤2 s cache): per broadcast `{id, key, publisherActive, publisherRemoteIp, startedAt, viewersGlobal, pods: [{pod, role, viewersLocal}], links: {watch, telemetry}, banState}`. `watch` = `<appBaseUrl>/#/view/<id>`; `telemetry` = `<telemetryBaseUrl>/#/broadcast/<key>` (omitted when the base URL is unconfigured). |
-| `POST /api/v1/broadcasts/{id}/kill` | Body `{reason (required, non-empty), cooldownSeconds?}` (default from `-kill-cooldown`, 600). Creates the cooldown ban, emits `broadcast.killed`, webhook. `201 {ban}`. Idempotent-ish: an existing active ID ban → `409` with that ban. |
-| `POST /api/v1/bans` | Body `{target: {type, value}, expiresAt: RFC3339 \| null, reason (required), sourceBroadcastId?}`. `value` for `type: "ip"` may be the literal `"publisher"` together with `sourceBroadcastId` — the server resolves the live publisher's IP via relayscan and applies the operator-confirmed prefix (§4.9). `201 {ban}`; duplicate active target → `409`. |
+| `POST /api/v1/broadcasts/{id}/kill` | Body `{reason (required, non-empty), cooldownSeconds?}` (default from `-kill-cooldown`, 600). Creates the cooldown ban, emits `broadcast.killed`, webhook. `201 {ban}`, or `202 {ban}` in the same envelope when the row committed and the CR did not. Idempotent-ish: an existing active ID ban → `409` with that ban. |
+| `POST /api/v1/bans` | Body `{target: {type, value}, expiresAt: RFC3339 \| null, reason (required), sourceBroadcastId?}`. `value` for `type: "ip"` may be the literal `"publisher"` together with `sourceBroadcastId` — the server resolves the live publisher's IP via relayscan and applies the operator-confirmed prefix (§4.9). `201` with the bare ban, or `202` with the bare ban when only the CR write failed; duplicate active target → `409`. |
 | `GET /api/v1/bans?state=active\|all` | Ban rows, newest first. |
-| `DELETE /api/v1/bans/{id}` | Unban: `state = removed`, CR deleted, `ban.removed` event. `204`. |
+| `DELETE /api/v1/bans/{id}` | Unban: `state = removed`, CR deleted, `ban.removed` event. `204` with no body when both landed. `202` **with the removed ban** when the row moved and the CR delete did not — the one case where the record reads `removed` while the target is still banned, so it answers with something to say rather than an empty success. |
 | `GET /api/v1/events?afterId=&limit=` | The audit/notification feed (cursor pagination by `id`). |
 | `GET /api/v1/relays` | Per-pod `{pod, reachable, version, config}` from `/internal/admin/config` — the read-only settings view (D10). |
 | `GET /api/v1/webhooks` | Merged list, chart-defined + UI-created: `{id?, name, url, enabled, source: "config" \| "ui"}`. **Secrets are never returned**, for either source. |
@@ -521,9 +556,9 @@ works — the issuer is a knob (Keycloak/Authelia/authentik/Google).
 - **The SPA is an OIDC public client**: authorization-code flow with PKCE,
   `state` and `nonce` — **no client secret exists anywhere in the system**.
   It bootstraps from unauthenticated `GET /auth/config` →
-  `{issuer, clientId, audience}`, runs the redirect flow with a *bundled*
-  OIDC client library (bundled into the SPA — the embedded-assets rule
-  stands), and keeps tokens **in memory only** (never `localStorage`).
+  `{issuer, clientId, audience}`, runs a redirect flow **hand-rolled against
+  WebCrypto** (`ui/src/auth/` — no OIDC client library; §11.1 records why),
+  and keeps tokens **in memory only** (never `localStorage`).
 - **Short-lived access tokens, kept alive by refresh tokens.** The SPA
   uses ordinary session-bound refresh tokens (not `offline_access` ones),
   with rotation enabled at the IdP for public clients, and silently renews
@@ -541,8 +576,9 @@ works — the issuer is a knob (Keycloak/Authelia/authentik/Google).
 - **Authorization is roles carried in the token, managed in the IdP** —
   never a config-file identity list. The backend reads a string-array claim
   at the dot-path `-oidc-roles-claim`, whose default is the **Keycloak
-  client-roles** shape `resource_access.{clientId}.roles` (`{clientId}`
-  substituted from `-oidc-client-id`; override the path for other IdPs).
+  client-roles** shape `resource_access.{audience}.roles` (`{audience}`
+  substituted from `-oidc-audience` into each segment, which is what lets an
+  audience containing a dot work at all; override the path for other IdPs).
   Every R39 route requires the **`operator`** role (`-operator-role`,
   default `operator`); **`flagger`** is reserved for R40's service identity
   (§4.11). A valid token without the required role → 403. Granting or
@@ -623,7 +659,27 @@ X-Gawk-Signature: sha256=<hex HMAC-SHA256(that webhook's secret, timestamp + "."
   "actor": "juho@example.com",
   "broadcastKey": "3f9a1c2b4d5e",
   "reason": "terms violation",
-  "portalUrl": "https://admin.example.com/#/broadcasts" }
+  "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e" }
+```
+
+An event that names a broadcast appends `?key=<broadcastKey>` to `portalUrl` —
+still the HMAC'd key, never the raw ID (D8) — which the portal reads as a
+pre-filled filter, so the paged operator lands on the offending row instead of
+matching a 12-hex key against a fleet-sized table by eye.
+
+…and the same kill recorded when its `Ban` CR write did not land — §4.7's
+`202 Accepted`, delivered rather than answered:
+
+```
+{ "schema": "gawk.moderation-event.v1",
+  "type": "broadcast.killed",
+  "occurredAt": "2026-08-20T15:04:05Z",
+  "actor": "juho@example.com",
+  "broadcastKey": "3f9a1c2b4d5e",
+  "reason": "terms violation",
+  "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",
+  "summary": "a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com — NOT enforced yet, the broadcast is still live",
+  "enforcement": "pending" }
 ```
 
 - **No raw broadcast ID and no IP address ever appears in a payload** (D8) —
@@ -637,7 +693,20 @@ X-Gawk-Signature: sha256=<hex HMAC-SHA256(that webhook's secret, timestamp + "."
   inherits this pipe.
 - Plain-text-friendly receivers (ntfy): the payload also carries a
   `"summary"` field — one human sentence — so a dumb webhook-to-push bridge
-  needs no templating.
+  needs no templating. It is graded on enforcement like the rest of the body:
+  a pending kill says a kill was *recorded* rather than that a broadcast was
+  terminated, and a pending unban says the target is **still banned**.
+  `store.Summarize` is the single source of that sentence, in both grades.
+- **`"enforcement": "pending"` when the record is ahead of what the relays
+  enforce.** An event is a statement of something that happened, and a ban is
+  two writes in two systems (§4.7): when the row landed and the `Ban` CR did
+  not, the delivery says so instead of announcing an enforcement that has not
+  started. The field is **absent** whenever the two agree — which is why
+  adding it does not rev `schema`: a receiver that never looks for it keeps
+  parsing byte-identical bodies. Its vocabulary is closed (`pending` is the
+  only value it can ever hold), so unlike `reason` and `summary` it carries no
+  operator- or producer-supplied text, and D8 stays structural rather than
+  becoming a per-value review.
 
 ### 4.11 Content-flag extension point (R40 — designed now, built in R40)
 
@@ -681,9 +750,9 @@ the chart's values and the startup log.
 | `-addr` | `:8090` | The single HTTP listener. |
 | `-external-url` | *(required)* | Portal base URL — the OIDC redirect base and the `portalUrl` in webhook payloads. |
 | `-oidc-issuer` / `-oidc-client-id` / `-oidc-audience` | *(required)* | The OIDC provider, the SPA's public-client ID, and the audience every accepted JWT must carry. **No client secret exists** — the SPA is a public client with PKCE (§4.8). |
-| `-oidc-roles-claim` | `resource_access.{clientId}.roles` | Dot-path to the roles array in the JWT — the default is the Keycloak client-roles shape, `{clientId}` substituted from `-oidc-client-id`; override for other IdPs. Blank ⇒ refuse to start. |
+| `-oidc-roles-claim` | `resource_access.{audience}.roles` | Dot-path to the roles array in the JWT — the default is the Keycloak client-roles shape, `{audience}` substituted into each segment; override for other IdPs. Blank ⇒ refuse to start. The placeholder is `{audience}`, shared with the relay's twin knob (§4.5) so one string means one thing. |
 | `-operator-role` | `operator` | The role every R39 route requires. Blank ⇒ refuse to start. |
-| `-pg-dsn` | *(required)* | Postgres DSN (chart wires it from the CNPG secret or `postgres.dsnSecretRef`). |
+| `-pg-dsn` | *(required)* | Postgres DSN (chart wires it from `postgres.dsn` or `postgres.dsnSecretRef` — e.g. CNPG's `<cluster>-app`/`uri`). |
 | `-relay-scan-target` | *(required)* | DNS name of the relay headless metrics Service (A-records → pods; the `relayscrape` discovery pattern). |
 | `-relay-ops-port` | `2112` | Ops listener port on relay pods. |
 | `-relay-admin-token` | *(required)* | Bearer for `/internal/admin/*` (must equal the relay's `-admin-api-token`). |
@@ -712,14 +781,24 @@ unchanged):
   set (the role knobs have safe defaults), else `{{ fail }}` with a message
   naming this doc. (Auth is enforced in-process regardless — the guard just
   makes the chart refuse to *route* an unbootable config.)
-- **CNPG**: `postgres.cnpg.enabled` (default `true`) renders a
-  `postgresql.cnpg.io/v1` `Cluster` (`postgres.instances` default **2** —
-  HA is a stated reason for the dedicated DB (D16) — `postgres.storage.size`
-  default `2Gi`) and wires the app secret CNPG generates into `-pg-dsn`.
-  The CNPG **operator is a documented prerequisite** (self-hosting §,
-  install command included), not something this chart installs. Escape
-  hatch: `postgres.cnpg.enabled: false` + `postgres.dsnSecretRef` for
-  bring-your-own-Postgres.
+- **The database is a prerequisite, not part of the release.** The chart
+  renders no database object at all: it takes a *connection*, in the same
+  house `foo` / `fooRef` dual form as every other secret here —
+  `postgres.dsn` (a literal DSN) or `postgres.dsnSecretRef: {name, key}` (a
+  Secret holding one; the Ref wins if both are set). With neither, the chart
+  `{{ fail }}`s naming both forms. Decoupling the stateful store from the
+  stateless service is the point: Postgres outlives every release of
+  `gawk-admin`, `helm uninstall` must never be able to take the audit trail
+  with it, and a `pre-install` hook may depend on a prerequisite where it
+  could never depend on the release's own manifests (§4.15, §11.1).
+  **CloudNativePG is then not a special case** — CNPG publishes
+  `<cluster>-app` for the application user it creates, and that Secret's
+  `uri` key is exactly this DSN, so
+  `postgres.dsnSecretRef: {name: <cluster>-app, key: uri}` is the whole
+  integration. The operator *and* the `Cluster` are the self-hoster's to
+  apply, once, outside the release; the self-hosting doc carries the operator
+  install command and a copy-pasteable two-instance `Cluster` manifest (HA of
+  the moderation plane is a stated reason for the dedicated DB — D16).
 - RBAC: SA + namespaced Role on `bans.gawk.ioio.fi`
   (`get,list,watch,create,update,delete`) **plus
   `coordination.k8s.io/leases` (`get,create,update`)** for leader election,
@@ -749,7 +828,7 @@ admin URL.
 ### 4.14 Dev and non-Kubernetes story
 
 - **Relay enforcement** develops and tests without k8s:
-  `-moderation-source=file:bans.json` (fsnotify + SIGHUP reload) slots into
+  `-moderation-source=file:bans.json` (stat-poll + SIGHUP reload, §11.1) slots into
   the R38 compose lane; unit tests drive `moderation.Set` directly.
 - **`gawk-admin`** requires Kubernetes (CRs) and Postgres by design. Local
   lane: `kind` (the `e2e` tier already exists) or envtest for the
@@ -768,7 +847,8 @@ what hurts. They apply to every future `gawk-admin` migration (and to R40's).
 **Mechanics.**
 
 - Migrations are **versioned, forward-only SQL files** —
-  `migrations/NNNN_short_description.sql`, monotonically numbered, append
+  `migrations/NNNN_short_description.up.sql` (golang-migrate's suffix, which
+  the CI lint enforces), monotonically numbered, append
   only: a merged migration is immutable (fix mistakes with the next number,
   never by editing history). Plain SQL because it is reviewable in a diff
   by anyone and runs under any tooling; the runner is the `golang-migrate`
@@ -962,7 +1042,7 @@ Phase B — `gawk-admin` core:
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
 | AP4 | Module scaffold, Postgres store + `migrate` subcommand (§4.15), leader election, kube reconciler/janitor, relayscan, `/api/v1` (broadcasts, kill, bans, events, relays, webhooks CRUD) | `migrate`: idempotent + advisory-locked (parallel-run test); the serving process **refuses to serve on a too-old schema** (readyz false + log line, tested) and never runs migrations itself (asserted: no DDL from the server path). Store: one-active-ban-per-target enforced (409 surfaced), state transitions active→expired/removed only. **Leader election (envtest): reconciler + dispatcher run on exactly one of two live replicas; killing the leader moves them within the lease TTL; two replicas against one Postgres produce no duplicate CR writes or double-sends.** Reconciler: row⇄CR convergence both directions; unknown CR **adopted**, never deleted; Postgres-unreachable ⇒ no CR GC; expiry flips state + deletes CR + emits `ban.expired`. Relayscan: A-record fan-out, per-pod failure degrades that pod to `reachable: false` without failing the aggregate; ≤2 s cache. API contract tests per route incl. `kill` 409-on-active-ban, `bans` target `"publisher"` IP resolution, cursor pagination on events, webhooks CRUD with config-sourced merge + `409 source_immutable` on any write to a chart-defined webhook, secrets absent from every webhook response. `readyz` false without Postgres. |
-| AP5 | JWT authentication + role authorization (D17) + `/auth/config` + security headers | Against a fake issuer: valid JWT accepted; tampered signature, wrong `iss`, wrong `aud`, expired, and `nbf`-in-future each → 401; validation succeeds from cached JWKS with the issuer down; JWKS refresh picks up a rotated key. **Roles**: token with the `operator` role in the default Keycloak client-roles path passes; valid token without it → 403 on every route; `{clientId}` substitution in the default claim path tested; an overridden `-oidc-roles-claim` dot-path resolved correctly (incl. a top-level claim); missing/malformed claim → 403, never 500; blanked roles-claim path or empty `-operator-role` refuses to start; **a token minted after role removal at the IdP 403s — the refresh horizon is the revocation horizon (asserted in the flow test)**. `/auth/config` serves `{issuer, clientId, audience}` unauthenticated and nothing else. **`Set-Cookie` appears on no response** (middleware test); CSP incl. `connect-src` issuer origin /`nosniff`/`frame-ancestors` on every response; invalid-credential responses rate-limited per IP. |
+| AP5 | JWT authentication + role authorization (D17) + `/auth/config` + security headers | Against a fake issuer: valid JWT accepted; tampered signature, wrong `iss`, wrong `aud`, expired, and `nbf`-in-future each → 401; validation succeeds from cached JWKS with the issuer down; JWKS refresh picks up a rotated key. **Roles**: token with the `operator` role in the default Keycloak client-roles path passes; valid token without it → 403 on every route; `{audience}` substitution in the default claim path tested, including an audience that itself contains a dot; an overridden `-oidc-roles-claim` dot-path resolved correctly (incl. a top-level claim); missing/malformed claim → 403, never 500; blanked roles-claim path or empty `-operator-role` refuses to start; **a token minted after role removal at the IdP 403s — the refresh horizon is the revocation horizon (asserted in the flow test)**. `/auth/config` serves `{issuer, clientId, audience}` unauthenticated and nothing else. **`Set-Cookie` appears on no response** (middleware test); CSP incl. `connect-src` issuer origin /`nosniff`/`frame-ancestors` on every response; invalid-credential responses rate-limited per IP. |
 
 Phase C — portal surface:
 
@@ -975,7 +1055,7 @@ Phase D — deployment, docs, closure:
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| AP8 | `gawk-admin` chart (+ CNPG wiring), `gawk-server` chart moderation additions (CRD, RBAC, knobs, headless-Service gate), release-please + CI wiring, docs (self-hosting §, gotchas sync, `docs/README.md` row), manual pass | `helm template` golden tests: fail-guard fires on Ingress-without-issuer/clientId/audience; `replicaCount` defaults to 2 and a PDB renders; the migration hook Job renders with the release's own image tag + hook annotations; CRD carries `resource-policy: keep`; relay Role gains read-only bans access only when `moderation.enabled`; admin Role includes leases for leader election; secrets render via both literal and `Ref` forms (relay token, per-webhook secrets); `notifications.webhooks` renders into `-static-webhooks` with secrets sourced from Secret env vars; CNPG `Cluster` renders with `instances: 2` default when enabled, `dsnSecretRef` path works when not. Migration-lint CI gate (forward-only numbering, merged files immutable) + the previous-release-against-new-schema job (§4.15) exist and gate PRs. release-please manifest builds a `gawk-admin-vX.Y.Z` tag; image + chart publish jobs mirror telemetry's. Self-hosting: CNPG prerequisite + install, IdP setup guidance (Keycloak client-roles recipe for `operator`, 5–15 min access tokens, refresh-token rotation for the public client), `externalTrafficPolicy: Local` requirement for IP bans, webhook receiver guidance (signature + replay window), manual `gawk-admin migrate` break-glass, break-glass `kubectl apply` Ban recipe. **Manual pass on the reference deployment**: kill a real broadcast from a phone via OIDC portal — viewers see "ended by a moderator", broadcaster auto-resume gets 451 and stops, re-mint works after cooldown; IP ban blocks a re-mint; unban restores; webhook lands in ntfy. |
+| AP8 | `gawk-admin` chart (+ its database connection), `gawk-server` chart moderation additions (CRD, RBAC, knobs, headless-Service gate), release-please + CI wiring, docs (self-hosting §, gotchas sync, `docs/README.md` row), manual pass | `helm template` golden tests: fail-guard fires on Ingress-without-issuer/clientId/audience; `replicaCount` defaults to 2 and a PDB renders; the migration hook Job renders with the release's own image tag + hook annotations; CRD carries `resource-policy: keep`; relay Role gains read-only bans access only when `moderation.enabled`; admin Role includes leases for leader election; secrets render via both literal and `Ref` forms (relay token, per-webhook secrets); `notifications.webhooks` renders into `-static-webhooks` with secrets sourced from Secret env vars; the chart refuses to render with neither `postgres.dsn` nor `postgres.dsnSecretRef` set (the message naming both forms, the CNPG `<cluster>-app`/`uri` recipe and this doc); both forms render (literal → `value`, Ref → `valueFrom.secretKeyRef`); no `postgresql.cnpg.io` object renders under any values; the migration Job carries `pre-install,pre-upgrade`. Migration-lint CI gate (forward-only numbering, merged files immutable) + the previous-release-against-new-schema job (§4.15) exist and gate PRs. release-please manifest builds a `gawk-admin-vX.Y.Z` tag; image + chart publish jobs mirror telemetry's. Self-hosting: bring-your-own-Postgres with the ordering rule and a copy-pasteable CNPG `Cluster` manifest, IdP setup guidance (Keycloak client-roles recipe for `operator`, 5–15 min access tokens, refresh-token rotation for the public client), `externalTrafficPolicy: Local` requirement for IP bans, webhook receiver guidance (signature + replay window), manual `gawk-admin migrate` break-glass, break-glass `kubectl apply` Ban recipe. **Manual pass on the reference deployment**: kill a real broadcast from a phone via OIDC portal — viewers see "ended by a moderator", broadcaster auto-resume gets 451 and stops, re-mint works after cooldown; IP ban blocks a re-mint; unban restores; webhook lands in ntfy. |
 
 Dependency order: AP1 → AP2 → AP3 (relay complete); AP4 → AP5 → {AP6, AP7};
 AP8 last. AP1–AP3 are releasable with `moderation.source=file` before
@@ -993,3 +1073,202 @@ sees it end with the moderator message, the broadcaster cannot return with
 its resume token or a fresh mint from the same IP, `kubectl get bans` shows
 the enforcement object, and the whole exchange left an audit trail in
 Postgres. Glass stays intact for every other broadcast on the fleet.
+
+---
+
+## 11. Implementation status (2026-08-20)
+
+All eight chunks landed on the same day the design did. This section is the
+record of what the design could not have known: §11.1 lists every deviation
+from §4 with its reason, §11.2 says what is verified and by what, §11.3 is the
+one pass that is still manual — **and it is the milestone-closing one** — and
+§11.4 says where to record its outcome.
+
+Per-chunk verification is not restated here: each chunk's acceptance-criteria
+cell in §9 is its contract, and the tests that discharge it live next to the
+code.
+
+### 11.1 Deviations from §4, and why
+
+| § | Specified | Implemented | Why |
+|---|---|---|---|
+| §4.3, §4.14 | the file ban source reloads on **fsnotify** + SIGHUP | a **stat poll** (mtime + size) + SIGHUP | `internal/tlsutil/reload.go` already solves "notice this file changed" this way, and matching it adds no dependency to the relay module for a dev-lane feature. The observable behaviour — a changed file is picked up without a restart — is unchanged; the latency is one poll interval instead of a kernel event. |
+| §4.8, §6 | an unreachable IdP is discussed only as a *running* failure | **`New` does not fail on an unreachable issuer at all**: discovery retries in the background, authenticated routes answer `401 idp_unavailable` (never 500, and deliberately without spending the caller's rate-limit budget) until it resolves, and `Ready()`/`ResolveError()` feed `/readyz` | A portal that refuses to start because the IdP is briefly down is a portal that is down for longer than the IdP was — and it turns "restart the pods" into a step that can fail for a reason unrelated to the pods. The security posture is identical: no request is ever authorized while the issuer is unresolved. It also lets the CI image smoke get all the way to its one expected failure with neither Postgres nor an IdP present, instead of stopping at the IdP. |
+| §4.13, §4.15 | the migration Job hooks `pre-install`/`pre-upgrade` | `pre-install`/`pre-upgrade` — **deviation withdrawn** | It was briefly implemented as `post-install`/`pre-upgrade`. A `pre-install` hook runs **before** the release's own manifests, so while the chart still rendered its own CNPG `Cluster` the Job waited for a Secret Helm would not create until the Job finished — a deadlock on every first install. The fix landed one level up instead: the chart no longer creates a database, it takes a connection to one that must already exist (§4.13). That makes the database a *prerequisite* rather than a dependency of the release — exactly what a `pre-install` hook is allowed to depend on — so the spec's wording is right as written, and §4.15's guarantee now holds on a **first install** too, not only on upgrades: migrated to completion before the Deployment rolls, and a failed migration halts the release instead of rolling pods that would come up NotReady. The Helm ordering rule that forced the detour is still worth knowing and stays in `docs/gotchas.md`. |
+| §4.13 | — | the relay chart's `moderation.source` is a value (`k8s` default), not just `moderation.enabled` | `-moderation-source` accepts `file:<path>` too (§4.14), and a chart that hardcoded `k8s` would have made the compose-lane source unreachable from a Helm install for no reason. |
+| §9 AP8 | *(the kind `e2e-cluster` scenario is listed under AP3)* | landed in **AP8**, as `e2e/moderation-assert.sh` | It needs the CRD template, the relay Role's `bans` access and a chart value — all deployment files — so building it from AP3 would have collided with the chunk that owns them. What it asserts and what it deliberately does not are in the script's own header. |
+| §4.7 | the kill / create-ban / unban rows name only `201`, `204` and `409` — the table has **no partial-failure case** | a third outcome: `202 Accepted`, body = the ban with `enforcement: {inSync: false, detail}` | A ban is two writes in two systems with no shared transaction, so "row committed, `Ban` CR not written" is a real state the table never assigns a code to. It is not a failure — the record is durable and the reconciler heals the CR within a minute — and it is not a plain `201` either, because nothing is enforced yet. `202` is what RFC 9110 §15.3.3 defines for exactly this shape. Being a *success* matters more than the number: it is what stops a client reporting "nothing happened" and inviting a re-submit that now `409`s against the row that does exist. `enforcement` is `inSync` rather than `enforced` so the field reads correctly in both directions, and it appears only on that response, leaving every `201`/`204` and every list/read byte-identical. An earlier implementation answered `502 Bad Gateway` here; nothing acted as a gateway, and the owner overruled it. |
+| §4.5, §4.8 | the JWKS is **cached and background-refreshed**; per-request verification is offline | **`oidc.RemoteKeySet`** on both sides — cached, fetched lazily on a verification miss, **no background refresher** — behind a **token-bucket floor on the fetch itself** (3/minute, burst 3), plus one **throttle-exempt priming fetch** once discovery resolves | R39 first shipped two hand-rolled caches to avoid `RemoteKeySet` fetching inline on an unknown `kid`. Reading upstream showed the premise was mostly wrong: `keysFromCache()` has **no expiry check**, so a cached key verifies forever and an IdP outage cannot break it — the offline guarantee this section actually asks for — and `keysFromRemote()` already coalesces concurrent misses. Two re-implementations of that bought nothing and cost one real bug: a generation-snapshot race in the portal's own coalescing that would have 401'd every operator through a key rotation. What upstream genuinely lacks is a **rate floor** — `verify()` fetches on *any* miss, including a known `kid` with a forged signature — so the floor sits on the HTTP transport rather than on the token's `kid`, where a wrapper would have left the commonest abuse paths unthrottled. An exhausted bucket is a **401**, never a 5xx. Priming replaces the background refresher's one useful property: without it a rolling deploy leaves every replica one IdP round trip from its first verification, so an outage between the deploy and the first operator 401s them from every fresh pod. `Ready()` still means "discovery answered", not "keys cached". |
+| §4.5, §4.8 | the roles-claim dot-path is implemented per side, and the placeholder is spelled `{audience}` on the relay but `{clientId}` in the portal | one public **`gawk-server/oidcroles`**, imported by both; the placeholder is `{audience}` everywhere, and the spec text above is corrected rather than deviated from | The duplication is *why* the dotted-audience bug (an audience containing a dot shattering the path and 403ing every valid token) existed on one side only — the two copies had drifted to different tolerances for a bare-string claim and a mixed array, i.e. two different answers to "is this token authorized". `{audience}` won because it is the only identifier both callers have, and because in a Keycloak access token `resource_access.<client>.roles` carries the roles of the resource server the token was minted *for*, which is what `aud` names. The package takes decoded claims rather than an `*oidc.IDToken` **specifically so it imports no OIDC library**, which is what keeps the relay's containment test meaningful. |
+| §9 AP8 | the `docker` job smoke-probes every image's HTTP endpoint | the `gawk-admin` entry carries **no probe**; it asserts the process reaches its documented cluster-less failure | The image genuinely cannot serve without Kubernetes (§4.14). The probe was written before `cmd/gawk-admin/main.go` existed and would have failed on its first CI run. A smoke that asserts something false is worse than one that asserts less. |
+| §4.14 | the local lane is "kind or envtest" | `main.go` also falls back to the ordinary kubeconfig loading rules when in-cluster config is absent | That fallback is what makes "run it against kind" work without pretending to be a pod. Deliberately **not** a knob: `KUBECONFIG` is the conventional mechanism, and a flag would have to reach the chart to satisfy the carry-all-limits rule for something a pod would never set. A missing API server stays fatal — unlike the IdP, there is nowhere to write a Ban CR, and a kill button that records a row nothing enforces is worse than a refusal to start. |
+| §4.8 | the SPA runs the redirect flow with a *bundled* OIDC client library | the whole public-client flow (code+PKCE, `state`/`nonce`, token endpoint, silent renew) is **hand-rolled over WebCrypto** in `ui/src/auth/` — the SPA's runtime dependencies are exactly `react` and `react-dom`, and the §4.8 text is corrected in place | The candidate libraries carry their own storage and iframe machinery, most of it for flows this SPA forbids (persistent tokens, silent-auth iframes), and auditing what a library does *not* do proved harder than owning the ~700 lines it actually needs — which the suite tests directly (PKCE vectors, `state`/`nonce` round-trips, renewal). The trade is recorded here because it is security-critical: a CVE search for this portal's OIDC path must target `ui/src/auth/`, not a dependency list — `THIRD-PARTY-NOTICES.md` says the same. |
+| §9 AP2, AP4 | the k8s ban source and leader election are verified with **envtest** (a real kube-apiserver + etcd) | **client-go fakes throughout**: a fake dynamic client / ListerWatcher for the informer-drives-`Set` tests, `k8sfake.Clientset` for leader election, `dynamicfake` for the reconciler and `CRClient` | The tests were written where the code was written, on a machine without envtest binaries, and the fakes prove the logic is *called* correctly — which covers most of what AP2/AP4 ask. What they cannot prove is recorded in §11.2's "not covered" list: Lease CAS actually contended under real etcd, the chart's CRD schema accepting the reconciler's real payload, and RBAC verb coverage. Standing follow-up: an envtest-backed CI job (the runners can fetch envtest binaries the same way they fetch kind images), or extending the kind tier to install `gawk-admin` and drive one kill through the API — either discharges the first two directly. |
+| §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |
+
+### 11.2 What is verified, and by what
+
+Automated, and gating every PR:
+
+- **The four modules' own suites.** `admin` (with a Postgres service container,
+  and a step that fails if the database-backed tests *skipped* — a suite that
+  silently skips is worse than one that fails), `admin-ui`, `server`, `app`,
+  and the wire mirrors in all four languages.
+- **`admin-migrations`** — the §4.15 migration-lint gate: forward-only
+  numbering from `0001` with no gaps, no `.down.sql` anywhere, and no
+  already-merged `.sql` file modified, renamed or deleted relative to the merge
+  base.
+- **`admin-schema-compat`** — the §4.15 MUST, executable: the *previous
+  release's* store tests run against *this branch's* migrations. Until the
+  first `gawk-admin-vX.Y.Z` tag exists it is a documented no-op that says so in
+  its own log; it starts enforcing on the first run after that release with no
+  further wiring.
+- **The `helm` job's R39 assertions** — the fail-guard fires (and names the
+  missing knob and this doc) for each of the three OIDC values; `replicaCount`
+  defaults to 2 with a PDB, and no PDB at 1; the migration hook Job carries
+  this release's own image tag, identical to the Deployment's, with the hook
+  annotations and `args: ["migrate"]`; the admin Role covers Ban CRUD *and*
+  leader-election Leases; secrets render through both the literal and the
+  `Ref` form; `notifications.webhooks` renders into `-static-webhooks`
+  carrying env var *names* and never a signing key; the chart refuses to render
+  without a database and says how to give it one; both connection forms
+  render; no CloudNativePG object renders under any values; the
+  relay chart renders the CRD with `resource-policy: keep`, printer columns and
+  **read-only** `bans` RBAC with `clusterMode` off; and — the check in the
+  other direction — with `moderation.enabled=false` the relay chart renders
+  nothing moderation-related at all.
+- **The `docker` job** builds the `gawk-admin` image from the repo root and
+  then RUNS it, pointed at a database that does not exist and an issuer that
+  does not resolve. It cannot assert that `/healthz` answers — `gawk-admin`
+  requires Kubernetes by design (§4.14) and exits without it — so it asserts
+  the failure instead: reaching `kubernetes:` proves the binary linked, the
+  entrypoint is right, every flag parsed, and the Postgres and OIDC
+  construction ahead of it were wired. Building an image is not evidence that
+  it starts (R31 taught this the expensive way), and asserting a `/healthz`
+  this image cannot serve would have been worse than asserting nothing.
+- **The kind `e2e-cluster` tier** — note it does **not** run on an ordinary
+  feature PR: it is gated to release-please PRs and `workflow_dispatch`
+  (docs/25 Decision 1, unchanged by R39), so the first automated run of the
+  moderation scenario is the release PR, or a dispatch on demand. It applies a real `Ban` CR to a two-pod fleet
+  and asserts the fleet-wide kill from outside every process: the broadcast's
+  key leaves **both** pods' `/statusz`, `gawk_moderation_terminations_total`
+  reaches ≥1 on **each** pod, an IP ban makes a fresh publish fail and
+  increments `gawk_connections_total{route="publish",outcome="banned"}`, and
+  deleting both bans returns every pod's `gawk_moderation_bans_active` to zero
+  and lets a fresh mint through. It also proves the admin API answers on the
+  ops listener with the token, 401s without it, and that its raw-ID → HMAC-key
+  mapping agrees with `/statusz`. It also observes the two things nothing in
+  the harness could see before. Synthetic viewers attach through
+  `gawk-loadgen -expect-close-code 4006` before the kill, and the script waits
+  until **both** pods are serving some of them — so what it asserts is that
+  4006 crossed the *cascade*, read off the session itself rather than scraped
+  from `kubectl logs`, which would have proved the log line and not the wire.
+  A 4000, a transport death carrying no application code at all, and a session
+  nothing ever closed each fail differently, because they are different
+  diagnoses. And the IP-ban step asserts the *status*, not merely the failure:
+  `gawk-pubsim` prints `GAWK_PUBSIM_DIAL_STATUS=451` and exits 3. That is the
+  only automated evidence for the property D15 exists for — a browser sees an
+  opaque dial failure, so "451 lets a native broadcaster say *banned* instead
+  of *auth failed*" is a claim only a native client can make, and until now
+  nothing made it.
+
+**Not covered by anything automated**, and named rather than glossed:
+
+- **That either of the two assertions above gates a feature PR.** They live in
+  the kind tier, so a regression in the 4006 fan-out or in the readable 451
+  reaches `main` and is caught by the release PR or a dispatch, not by the PR
+  that caused it. What does gate every PR is the layer underneath: AP1's
+  per-client and per-role 4006 tests, AP3's `TerminateBroadcast` fan-out, and
+  `internal/engine`'s 451 rendering.
+- **The 4006-vs-4000 ordering on an edge pod, in the residual case.** The
+  origin's kill deletes the cluster Lease, and a pod that saw the lease
+  deletion before its own Ban event would once have expired the hub through
+  the ordinary path and closed its viewers with 4000. `HandleLeaseDeleted` now
+  consults the ban set, so the arrival order no longer decides the message —
+  but it consults `BannedID` only, so a lease deletion racing an **IP-only**
+  ban still takes the 4000 path. Every portal kill creates an ID ban, so the
+  covered case is the one that matters; the gap is reachable only from a
+  break-glass `kubectl` IP ban with no accompanying ID ban, is
+  presentation-only, and is arguably unknowable from an edge that holds no
+  publisher entry to map the address onto.
+- **The Kubernetes seam beyond what fakes can enforce** (the §11.1 envtest
+  deviation): Lease optimistic concurrency under a real etcd — the fake's
+  object tracker enforces no resourceVersion conflicts, so mutual exclusion
+  rests on client-go's election logic being *called* correctly, never on Lease
+  CAS being *contended*; the chart's CRD OpenAPI schema accepting the
+  reconciler's actual CR payload — the kind tier applies hand-written Ban YAML
+  and never installs `gawk-admin`, so no real API server has validated a
+  `CRClient` write anywhere automated; and RBAC verb coverage. These are where
+  R39's two worst silent failure classes live (a schema-rejected reconciler
+  stops projecting every ban while the fleet enforces stale state; a double
+  leader double-sends webhooks), so the gap is named here until the envtest CI
+  job or a kind-tier `gawk-admin` install closes it.
+- **Ban history at scale**: `GET /api/v1/bans?state=all` is unbounded and the
+  portal renders the whole history, filtered client-side. Events got cursor
+  pagination for exactly this monotonic-growth shape; ban history needs the
+  same before R40's auto-kills accelerate it (a follow-up, noted rather than
+  wished away — the rows are UUID-keyed, so the cursor design is not a copy of
+  the events one).
+- **Everything in §11.3.**
+
+### 11.3 Still manual — the milestone-closing pass, step by step
+
+**This is the verification §10 describes, and nothing else can stand in for
+it.** It needs the reference deployment, a real identity provider, a real
+broadcast and a phone — none of which a CI job or a working session can supply.
+It is not a known defect; it is the last mile.
+
+Run it in this order and record the outcome where §11.4 says.
+
+**Setup (once).**
+
+1. Bring up the Postgres `gawk-admin` will use — the CNPG operator plus a `Cluster`, or a database you already run — then upgrade the relay
+   with `moderation.enabled=true` and a fresh `moderation.adminApi.tokenRef`
+   Secret, and install `gawk-admin` behind an OIDC-gated Ingress at
+   `admin.gawk.ioio.fi`. `docs/self-hosting.md` §9.2 is the runbook.
+2. In the IdP: a public client with PKCE, a **client role `operator`** assigned
+   to your own account, an access-token lifespan of **5–15 minutes**, and
+   refresh-token rotation on. §9.3.
+3. Confirm the relay's Service is `externalTrafficPolicy: Local` **before**
+   step 8 — otherwise every publisher shares a node IP and the IP-ban step is
+   a fleet-wide outage rather than a test. §9.4.
+4. Point one chart-defined webhook at an ntfy topic on your phone.
+
+**The pass.**
+
+5. Start a real broadcast (native broadcaster or the web app). Open the portal
+   **on the phone**, through the OIDC redirect flow, and confirm: the broadcast
+   is listed, the watch deep link opens it in the viewer, and the telemetry
+   deep link resolves to the same broadcast.
+6. **Kill it, with a reason.** Expected, all four: every viewer's player ends
+   with *"This broadcast was ended by a moderator"* (distinct from "broadcast
+   ended"); the broadcaster stops and does **not** auto-resume; the
+   broadcaster's own reclaim attempt is refused (the natives should say
+   *banned*, a browser broadcaster sees a generic dial failure — D15, expected);
+   and the ntfy notification arrives on the phone carrying **no raw broadcast
+   ID and no IP**.
+7. `kubectl -n production get bans` shows the cooldown ban with its printer
+   columns. Wait out the cooldown (or shorten it) and confirm a **re-mint
+   succeeds**.
+8. **Ban the publisher's IP** from the portal, using the resolved-IP checkbox.
+   Confirm a fresh mint from that address is refused, and that a broadcaster on
+   a *different* address is unaffected.
+9. **Unban** from the portal. Confirm publishing works again, and that
+   `kubectl get bans` is empty.
+10. Read the events view: every action above appears, with actor, reason and
+    timestamp, and the webhook deliveries are visible against each event.
+11. Sanity-check the revocation horizon: remove the `operator` client role from
+    your account in the IdP and confirm the portal 403s **at the next token
+    refresh** — that horizon *is* the access-token lifetime (D17), and seeing it
+    once is worth more than the paragraph that says so.
+
+**If a step fails**, the finding belongs in §11.2's "not covered" list or in
+`BUGS.md`, and — if it turns out to be a browser or Kubernetes behaviour rather
+than a gawk one — in `docs/gotchas.md`.
+
+### 11.4 Where to record the outcome
+
+When the pass completes, add what was observed to §11.2 (client, device, IdP,
+and anything that behaved differently from the expectation above), strike §11.3,
+and move the `ROADMAP.md` R39 row from 🔧 to ✅ — that pass is the only thing
+still holding it.

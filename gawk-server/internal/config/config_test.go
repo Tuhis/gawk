@@ -48,6 +48,16 @@ func TestDefaults(t *testing.T) {
 		// R28: telemetry is off by default (no key), but the cadence it would
 		// ask for still has a default so enabling it is one value, not two.
 		TelemetryReportInterval: 2 * time.Second,
+		// R39 (docs/42 §4.3): moderation is off unless an operator names a
+		// source, so a relay predating R39 and a relay with the flag unset
+		// behave identically.
+		ModerationSource: "off",
+		// R39 AP3 (docs/42 §4.5): the admin API's AUTHORIZATION policy has
+		// defaults; its CREDENTIALS do not. With no token and no issuer the
+		// routes are never registered, so these two carry a usable role
+		// policy that only matters once an operator supplies a credential.
+		AdminOIDCRolesClaim: DefaultAdminOIDCRolesClaim,
+		AdminOIDCRole:       DefaultAdminOIDCRole,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -449,5 +459,190 @@ func TestTelemetryReportInterval(t *testing.T) {
 		if _, err := ParseFlags([]string{"-telemetry-report-interval", bad}, noEnv); err == nil {
 			t.Errorf("ParseFlags accepted out-of-range telemetry-report-interval %q", bad)
 		}
+	}
+}
+
+// R39 AP2 (docs/42 §4.3, §9): -moderation-source parses all three forms,
+// honours the env fallback and the flag-over-env precedence, and rejects
+// anything else at startup rather than silently enforcing nothing.
+func TestModerationSource(t *testing.T) {
+	valid := []struct {
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{nil, nil, "off"},
+		{[]string{"-moderation-source", "off"}, nil, "off"},
+		{[]string{"-moderation-source", "k8s"}, nil, "k8s"},
+		{[]string{"-moderation-source", "file:/etc/gawk/bans.json"}, nil, "file:/etc/gawk/bans.json"},
+		// Env fallback.
+		{nil, map[string]string{"GAWK_MODERATION_SOURCE": "k8s"}, "k8s"},
+		{nil, map[string]string{"GAWK_MODERATION_SOURCE": "file:/tmp/bans.json"}, "file:/tmp/bans.json"},
+		// Flag wins over env.
+		{[]string{"-moderation-source", "off"}, map[string]string{"GAWK_MODERATION_SOURCE": "k8s"}, "off"},
+		// Surrounding whitespace is trimmed, not rejected.
+		{[]string{"-moderation-source", "  k8s  "}, nil, "k8s"},
+	}
+	for _, tt := range valid {
+		getenv := noEnv
+		if tt.env != nil {
+			getenv = envMap(tt.env)
+		}
+		cfg, err := ParseFlags(tt.args, getenv)
+		if err != nil {
+			t.Errorf("ParseFlags(%v, %v): %v", tt.args, tt.env, err)
+			continue
+		}
+		if cfg.ModerationSource != tt.want {
+			t.Errorf("ParseFlags(%v, %v).ModerationSource = %q, want %q",
+				tt.args, tt.env, cfg.ModerationSource, tt.want)
+		}
+	}
+
+	invalid := []string{
+		"postgres",    // not a known kind
+		"file",        // missing the colon and the path
+		"file:",       // missing the path
+		"file:   ",    // whitespace-only path
+		"k8s:default", // k8s takes no argument
+		"off:",
+	}
+	for _, v := range invalid {
+		if _, err := ParseFlags([]string{"-moderation-source", v}, noEnv); err == nil {
+			t.Errorf("ParseFlags(-moderation-source %q) succeeded, want an error", v)
+		}
+	}
+}
+
+// R39 AP3 (docs/42 §4.3 table, §9): the admin-API knobs parse from flag and
+// env with flag-over-env precedence, carry working defaults for the
+// authorization policy, and reject the two shapes that fail SILENTLY.
+func TestAdminAPIKnobs(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"-admin-api-token", "tok",
+		"-admin-oidc-issuer", "https://idp.example/realms/gawk",
+		"-admin-oidc-audience", "gawk-admin",
+		"-admin-oidc-roles-claim", "realm_access.roles",
+		"-admin-oidc-role", "moderator",
+	}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.AdminAPIToken != "tok" || cfg.AdminOIDCIssuer != "https://idp.example/realms/gawk" ||
+		cfg.AdminOIDCAudience != "gawk-admin" || cfg.AdminOIDCRolesClaim != "realm_access.roles" ||
+		cfg.AdminOIDCRole != "moderator" {
+		t.Errorf("flags not carried through: %+v", cfg)
+	}
+
+	// Env fallback for every one of them.
+	cfg, err = ParseFlags(nil, envMap(map[string]string{
+		"GAWK_ADMIN_API_TOKEN":        "env-tok",
+		"GAWK_ADMIN_OIDC_ISSUER":      "https://idp.example/env",
+		"GAWK_ADMIN_OIDC_AUDIENCE":    "env-aud",
+		"GAWK_ADMIN_OIDC_ROLES_CLAIM": "groups",
+		"GAWK_ADMIN_OIDC_ROLE":        "env-role",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags(env): %v", err)
+	}
+	if cfg.AdminAPIToken != "env-tok" || cfg.AdminOIDCIssuer != "https://idp.example/env" ||
+		cfg.AdminOIDCAudience != "env-aud" || cfg.AdminOIDCRolesClaim != "groups" ||
+		cfg.AdminOIDCRole != "env-role" {
+		t.Errorf("env fallback not honoured: %+v", cfg)
+	}
+
+	// Flag wins over env.
+	cfg, err = ParseFlags([]string{"-admin-api-token", "flag-tok"},
+		envMap(map[string]string{"GAWK_ADMIN_API_TOKEN": "env-tok"}))
+	if err != nil {
+		t.Fatalf("ParseFlags(flag over env): %v", err)
+	}
+	if cfg.AdminAPIToken != "flag-tok" {
+		t.Errorf("AdminAPIToken = %q, want the flag to win", cfg.AdminAPIToken)
+	}
+
+	// A token alone needs no OIDC configuration at all — that is the machine
+	// path gawk-admin uses.
+	if _, err := ParseFlags([]string{"-admin-api-token", "tok"}, noEnv); err != nil {
+		t.Errorf("a token-only admin API was rejected: %v", err)
+	}
+
+	// The two silent failures. A half-configured pair would either accept
+	// tokens minted for ANY client of the IdP (issuer without audience) or do
+	// nothing at all (audience without issuer); a blanked role policy would
+	// leave authentication on and AUTHORIZATION off.
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"issuer without audience", []string{"-admin-oidc-issuer", "https://idp.example"}},
+		{"audience without issuer", []string{"-admin-oidc-audience", "gawk-admin"}},
+		{"blanked roles claim", []string{
+			"-admin-oidc-issuer", "https://idp.example", "-admin-oidc-audience", "a",
+			"-admin-oidc-roles-claim", "  "}},
+		{"blanked role", []string{
+			"-admin-oidc-issuer", "https://idp.example", "-admin-oidc-audience", "a",
+			"-admin-oidc-role", ""}},
+	} {
+		if _, err := ParseFlags(tc.args, noEnv); err == nil {
+			t.Errorf("ParseFlags accepted %s", tc.name)
+		}
+	}
+}
+
+// WHITESPACE IS EMPTY, to the pair check as well as to the Config. The check
+// used to run on the raw flag values while the literal stored trimmed ones, so
+// a stray space or newline out of a templated secret — the usual way a k8s
+// Secret arrives with one — looked set to the check and arrived empty in the
+// Config. The result was not a refusal but SILENCE: no verifier, no static
+// token, Configured() false, and /internal/admin/* never registered at all.
+// A mystery 404 is the one outcome this validation exists to prevent.
+func TestAdminOIDCWhitespaceIsRefusedNotSilentlyDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+	}{
+		{"whitespace issuer, real audience", map[string]string{
+			"GAWK_ADMIN_OIDC_ISSUER":   " ",
+			"GAWK_ADMIN_OIDC_AUDIENCE": "gawk-admin",
+		}},
+		{"newline issuer, real audience", map[string]string{
+			"GAWK_ADMIN_OIDC_ISSUER":   "\n",
+			"GAWK_ADMIN_OIDC_AUDIENCE": "gawk-admin",
+		}},
+		{"real issuer, whitespace audience", map[string]string{
+			"GAWK_ADMIN_OIDC_ISSUER":   "https://idp.example/realms/gawk",
+			"GAWK_ADMIN_OIDC_AUDIENCE": "  ",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseFlags(nil, envMap(tc.env))
+			if err == nil {
+				t.Fatalf("ParseFlags accepted a half-configured pair and produced issuer=%q audience=%q — "+
+					"the admin API would be dark with no explanation",
+					cfg.AdminOIDCIssuer, cfg.AdminOIDCAudience)
+			}
+		})
+	}
+
+	// The same reading, applied consistently: a whitespace-only static token
+	// is not a credential either. authorize() trims the PRESENTED credential
+	// before comparing, so an untrimmed configured one could never be matched
+	// by anybody — it would register the routes and then refuse every caller.
+	cfg, err := ParseFlags([]string{"-admin-api-token", "  "}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.AdminAPIToken != "" {
+		t.Errorf("AdminAPIToken = %q, want empty: a token nothing can present is not a token", cfg.AdminAPIToken)
+	}
+
+	// And trimming must not eat a legitimate value's interior.
+	cfg, err = ParseFlags([]string{"-admin-api-token", "  tok en  "}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.AdminAPIToken != "tok en" {
+		t.Errorf("AdminAPIToken = %q, want %q", cfg.AdminAPIToken, "tok en")
 	}
 }

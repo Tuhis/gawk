@@ -2,9 +2,49 @@
 // viewer's ViewerSession and the broadcaster's auto-resume, so both clients
 // react to a relay drain or an abrupt pod death identically.
 
-import { CLOSE_CODE_SERVER_DRAINING } from './wire';
+import {
+  CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_SERVER_DRAINING,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
+} from './wire';
 
 export const RECONNECT_MAX_ATTEMPTS = 10;
+
+// Close codes after which a VIEWER must stay down. Retrying one of these is
+// not merely wasted — 4006 means the broadcast was killed and its ID banned
+// (R39, docs/42 §4.4), so a reconnect loop would hammer the relay's ban gate
+// for the whole cooldown. A named set rather than an inline `||` because
+// viewer-session.ts has to make the same judgement in two places, and the two
+// drifting apart is exactly how a kill turns into a reconnect storm.
+const TERMINAL_VIEWER_CLOSE_CODES: ReadonlySet<number> = new Set([
+  CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
+]);
+
+// Close codes after which a PUBLISHER must not auto-resume. 4004 is a relay
+// invariant rather than a preference — "newest publisher wins" only converges
+// because the deposed session does not come back (wire.ts) — and 4006 is the
+// operator's kill: the ID is banned for at least the cooldown, so a reclaim
+// would only collect a 451 the browser cannot even read (docs/42 D15). Kept
+// byte-identical to the natives' terminalForPublisher /
+// terminal_for_publisher so all three broadcasters give up together.
+const TERMINAL_PUBLISHER_CLOSE_CODES: ReadonlySet<number> = new Set([
+  CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
+]);
+
+// An abrupt drop (null/undefined close code) is never terminal — that is the
+// case reconnect exists for. Both are type predicates so a caller that needs
+// the code afterwards (to render its sentence) doesn't have to re-assert it.
+export function isTerminalViewerClose(code: number | null | undefined): code is number {
+  return code != null && TERMINAL_VIEWER_CLOSE_CODES.has(code);
+}
+
+export function isTerminalPublisherClose(code: number | null | undefined): code is number {
+  return code != null && TERMINAL_PUBLISHER_CLOSE_CODES.has(code);
+}
 
 // The first retry after an *abrupt* session death (no close code — a crashed
 // pod, a stateless reset, a flushed conntrack path). Fast because the
@@ -22,6 +62,10 @@ export const ABRUPT_DROP_RETRY_DELAY_MS = 250;
 // session died is fast — attempt 2+ follows the ladder unchanged, and coded
 // non-drain closes (4001 eviction, 429/500) keep the 1 s ladder from the
 // start. closeCode is null/undefined for abrupt drops.
+//
+// Terminal codes never reach here: callers ask isTerminalViewerClose /
+// isTerminalPublisherClose first and stop. There is deliberately no "never"
+// return value — a delay of Infinity would still schedule a timer.
 export function reconnectDelayMs(attempt: number, closeCode?: number | null): number {
   if (attempt === 1) {
     if (closeCode === CLOSE_CODE_SERVER_DRAINING) return 0;
