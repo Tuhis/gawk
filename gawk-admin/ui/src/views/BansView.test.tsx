@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { BansView } from './BansView.tsx';
@@ -84,7 +84,35 @@ describe('the ban list (§4.9)', () => {
   });
 });
 
+/**
+ * The two-step unban: the row button opens the confirm dialog, the dialog's
+ * own Unban performs it. A single mis-tap lifting a ban fleet-wide — on the
+ * portal whose gating manual pass runs from a phone — is exactly what the
+ * dialog exists to prevent.
+ */
+async function unbanThroughConfirm() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Unban' }));
+}
+
 describe('unban round-trips (AP6)', () => {
+  it('does NOT delete on the row tap alone — the dialog confirms it', async () => {
+    const session = stubSession((path) =>
+      path.startsWith('api/v1/bans') ? json({ bans: [activeBan()] }) : json({}),
+    );
+    renderWithSession(<BansView />, session);
+    fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+
+    await screen.findByRole('dialog');
+    expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(false);
+
+    // Cancel walks away without a round trip.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(false);
+  });
+
   it('DELETEs the ban and re-reads the list rather than editing it locally', async () => {
     // The row is not removed optimistically on purpose: DELETE flips the row to
     // `removed` AND deletes the Ban CR, so a row that vanished on a click would
@@ -100,7 +128,7 @@ describe('unban round-trips (AP6)', () => {
     });
     renderWithSession(<BansView />, session);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+    await unbanThroughConfirm();
 
     await waitFor(() => expect(screen.queryByText('ABC123')).toBeNull());
     const paths = session.calls.map((c) => c.path);
@@ -130,7 +158,7 @@ describe('unban round-trips (AP6)', () => {
       return json({});
     });
     renderWithSession(<BansView />, session);
-    fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+    await unbanThroughConfirm();
 
     const note = await screen.findByRole('alert');
     expect(note.textContent).toMatch(/STILL banned/);
@@ -150,7 +178,7 @@ describe('unban round-trips (AP6)', () => {
       return json({});
     });
     renderWithSession(<BansView />, session);
-    fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+    await unbanThroughConfirm();
 
     await waitFor(() => {
       expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(true);
@@ -167,9 +195,10 @@ describe('unban round-trips (AP6)', () => {
       return json({});
     });
     renderWithSession(<BansView />, session);
-    fireEvent.click(await screen.findByRole('button', { name: 'Unban' }));
+    await unbanThroughConfirm();
 
+    // The refusal renders inside the still-open dialog, and the row survives.
     expect(await screen.findByText('no such ban')).toBeTruthy();
-    expect(screen.getByText('ABC123')).toBeTruthy();
+    expect(screen.getAllByText('ABC123').length).toBeGreaterThan(0);
   });
 });

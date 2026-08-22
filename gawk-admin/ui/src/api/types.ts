@@ -112,6 +112,23 @@ export interface BroadcastBanState {
   ban: Ban | null;
 }
 
+/**
+ * `GET /api/v1/broadcasts` — the rows plus the scan's coverage.
+ *
+ * Relayscan treats a pod-level scrape failure as data, not an error, so the
+ * list can be silently short — or empty — while relay pods are carrying live
+ * broadcasts it could not see. `podsAnswered < podsResolved` is how the view
+ * knows to say so instead of rendering a reassuring "nothing is broadcasting"
+ * (the same honesty rule `banState: null` enforces on the Postgres axis).
+ */
+export interface BroadcastsPage {
+  broadcasts: Broadcast[];
+  /** Relay pods the headless-Service lookup resolved. */
+  podsResolved: number;
+  /** Of those, how many answered the broadcasts scrape. */
+  podsAnswered: number;
+}
+
 export interface Broadcast {
   /** Raw, joinable. Portal-only: never in a webhook payload or a log (D8). */
   id: string;

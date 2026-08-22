@@ -2,8 +2,8 @@
 # covering every component (gawk-server, gawk-app, gawk-broadcast,
 # gawk-broadcast-windows, gawk-telemetry, gawk-admin), computing each one's
 # next SemVer from conventional commits; merging it tags per component (e.g.
-# gawk-server-v0.5.0) and the publish jobs below push the docker image and OCI
-# Helm chart to GHCR with matching versions.
+# gawk-server/v0.5.0 — tag-separator "/") and the publish jobs below push the
+# docker image and OCI Helm chart to GHCR with matching versions.
 #
 # gawk-broadcast and gawk-broadcast-windows have NO publish job here on
 # purpose (R14 Decision 2, docs/19): they are native binaries you run on your
@@ -171,7 +171,7 @@ jobs:
           helm package gawk-telemetry/deploy/charts/gawk-telemetry --version "$VERSION" --app-version "$VERSION"
           helm push "gawk-telemetry-$VERSION.tgz" oci://ghcr.io/tuhis/charts
 
-  # R39 (docs/42 D1). The FOURTH release-please component, and the fourth
+  # R39 (docs/42 D1). The sixth release-please component, and the FOURTH
   # cluster-side publish: image + OCI chart, versions in lockstep, exactly like
   # the three above. Its chart is default-nothing — installing gawk-admin is a
   # deliberate act, and the relay chart's moderation.enabled is a separate one —

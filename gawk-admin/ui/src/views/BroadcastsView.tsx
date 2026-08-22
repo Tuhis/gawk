@@ -3,7 +3,8 @@ import { useCallback, useState } from 'react';
 import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError, enforcementNotice } from '../api/client.ts';
 import type { ApiClient } from '../api/client.ts';
-import type { Ban, Broadcast, BroadcastBanState, CreateBanRequest } from '../api/types.ts';
+import type { Ban, Broadcast, BroadcastBanState, BroadcastsPage, CreateBanRequest } from '../api/types.ts';
+import { AuthRedirect } from '../auth/session.ts';
 import { BanDialog } from '../components/BanDialog.tsx';
 import type { BanRequestDraft } from '../components/BanDialog.tsx';
 import { FlaggedPinSlot } from '../components/FlaggedPin.tsx';
@@ -37,7 +38,7 @@ export function BroadcastsView({
 }) {
   const api = useApi();
   const load = useCallback(() => api.broadcasts(), [api]);
-  const { data, loadedAt, error, loading, reload } = useLoader<Broadcast[]>(load, refreshMs);
+  const { data, loadedAt, error, loading, reload } = useLoader<BroadcastsPage>(load, refreshMs);
 
   const [killing, setKilling] = useState<Broadcast | null>(null);
   const [banning, setBanning] = useState<Broadcast | null>(null);
@@ -46,10 +47,15 @@ export function BroadcastsView({
   const [note, setNote] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
-  const broadcasts = data ?? [];
+  const broadcasts = data?.broadcasts ?? [];
   // Uptime is measured from the fetch that produced these rows, not from
   // whenever React re-rendered them (see `useLoader`'s `loadedAt`).
   const now = loadedAt;
+  // Partial coverage must be VISIBLE: relayscan degrades an unreachable pod
+  // into missing rows rather than an error, and this is the page an operator
+  // trusts mid-incident — absence of knowledge must never read as knowledge
+  // of absence (the rule BanCell's "unknown" already enforces).
+  const partial = data !== null && data.podsAnswered < data.podsResolved;
 
   /**
    * Report a mutation that succeeded, in one of its two flavours.
@@ -78,6 +84,10 @@ export function BroadcastsView({
       setKilling(null);
       reload();
     } catch (err) {
+      // "This page is going away", not an error to render (session.ts): the
+      // kill did NOT run, and flashing red under a full-page IdP redirect
+      // would be the last thing the operator half-reads.
+      if (err instanceof AuthRedirect) return;
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -142,7 +152,10 @@ export function BroadcastsView({
       setBanning(null);
       reload();
     } catch (err) {
-      // Neither write throws — `attemptBan` answers with an outcome either way
+      // The one throw `attemptBan` lets through: the session has started a
+      // full-page IdP redirect, so this page is going away (session.ts).
+      if (err instanceof AuthRedirect) return;
+      // Otherwise neither write throws — `attemptBan` answers with an outcome
       // — but a handler that can fail silently is worse than one line of belt.
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -165,6 +178,12 @@ export function BroadcastsView({
       </div>
 
       {error ? <p className={ui.error}>{error}</p> : null}
+      {partial && data !== null ? (
+        <p className={ui.warning} role="alert">
+          {data.podsAnswered} of {data.podsResolved} relay pods answered; this list may be
+          incomplete. The Relays view names the unreachable pods.
+        </p>
+      ) : null}
       {note ? <p className={ui.ok}>{note}</p> : null}
       {warning ? (
         <p className={ui.warning} role="alert">
@@ -221,7 +240,7 @@ export function BroadcastsView({
                   )}
                 </td>
                 <td>
-                  <BanCell state={b.banState} />
+                  <BanCell state={b.banState} publisherActive={b.publisherActive} now={now} />
                 </td>
                 <td>
                   <div className={ui.actions}>
@@ -255,7 +274,10 @@ export function BroadcastsView({
         </table>
       </div>
 
-      {!loading && broadcasts.length === 0 && !error ? (
+      {/* The reassuring empty state is earned only by FULL coverage: with pods
+          unanswered, "nothing is broadcasting" is exactly the claim we cannot
+          make, and the amber line above is already saying why. */}
+      {!loading && broadcasts.length === 0 && !error && !partial ? (
         <p className={ui.dim}>Nothing is broadcasting right now.</p>
       ) : null}
 
@@ -314,6 +336,10 @@ async function attemptBan(api: ApiClient, req: CreateBanRequest): Promise<BanAtt
   try {
     return { ok: true, ban: await api.createBan(req), existed: false };
   } catch (err) {
+    // Not an outcome: the session is mid-redirect to the IdP and nothing more
+    // will run. Rendering it as a failed half would tell the operator a lie
+    // on the way out of the page.
+    if (err instanceof AuthRedirect) throw err;
     if (err instanceof ApiError && err.code === 'duplicate_active') {
       return { ok: true, ban: err.ban, existed: true };
     }
@@ -385,7 +411,15 @@ function notice(id: string, ban: Ban | null | undefined): string | null {
 }
 
 /**
- * Three states, not two.
+ * How long a banned broadcast may keep visibly publishing before the cell says
+ * the quiet part out loud. Three refresh cycles: enough for the relay's ban
+ * informer and a kill to actuate and for the table to catch up, short enough
+ * that a stuck projection is named while the operator is still looking.
+ */
+const ENFORCEMENT_LAG_MS = 15_000;
+
+/**
+ * Three states, not two — and the third has a divergent flavour.
  *
  * `banState: null` means AP4 could not reach Postgres and degraded this read
  * instead of failing it, so an operator can still see the fleet during a
@@ -393,8 +427,23 @@ function notice(id: string, ban: Ban | null | undefined): string | null {
  * not known. Rendering that as "—" would assert the broadcast is clean, which
  * is the one claim we cannot make — and is exactly the confusion the null
  * exists to prevent.
+ *
+ * A banned row whose publisher is STILL live well after the ban was created is
+ * the record-vs-enforcement divergence docs/42 worked hardest on — a Ban CR
+ * that never landed, healing (or stuck) in the reconciler. The 202's amber
+ * notice is ephemeral component state; this cell is the durable place the
+ * contradiction the table is already displaying gets named, for whoever looks
+ * later.
  */
-function BanCell({ state }: { state: BroadcastBanState | null }) {
+function BanCell({
+  state,
+  publisherActive,
+  now,
+}: {
+  state: BroadcastBanState | null;
+  publisherActive: boolean;
+  now: number;
+}) {
   if (state === null) {
     return (
       <span className={ui.badgeWarn} title="the ban store was unreachable for this read">
@@ -403,6 +452,17 @@ function BanCell({ state }: { state: BroadcastBanState | null }) {
     );
   }
   if (!state.banned) return <span className={ui.dim}>—</span>;
+  const created = state.ban ? Date.parse(state.ban.createdAt) : Number.NaN;
+  if (publisherActive && Number.isFinite(created) && now - created > ENFORCEMENT_LAG_MS) {
+    return (
+      <span
+        className={ui.badgeWarn}
+        title="This broadcast is banned but its publisher is still live — the enforcement object may not have landed. The Events and Relays views have the story."
+      >
+        banned — not enforced yet?
+      </span>
+    );
+  }
   return <span className={ui.badgeBad}>banned</span>;
 }
 

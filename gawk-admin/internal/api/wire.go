@@ -308,13 +308,17 @@ func renderBroadcast(agg relayscan.Aggregate, cfg linkConfig, banState *banState
 	for _, p := range agg.Pods {
 		pods = append(pods, podPlacementJSON{Pod: p.Pod, Role: p.Role, ViewersLocal: p.ViewersLocal})
 	}
+	startedAt := ""
+	if !agg.StartedAt.IsZero() {
+		startedAt = agg.StartedAt.UTC().Format(time.RFC3339)
+	}
 	return broadcastJSON{
 		ID:                agg.ID,
 		Key:               agg.Key,
 		PublisherActive:   agg.PublisherActive,
 		PublisherRemoteIP: agg.PublisherRemoteIP,
-		StartedAt:         agg.StartedAt,
-		ViewersGlobal:     agg.ViewersGlobal,
+		StartedAt:         startedAt,
+		ViewersGlobal:     int(agg.ViewersGlobal),
 		Pods:              pods,
 		Links:             linksFor(cfg.app, cfg.telemetry, agg.ID, agg.Key),
 		BanState:          banState,

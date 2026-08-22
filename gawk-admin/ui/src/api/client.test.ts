@@ -19,7 +19,6 @@ function client(handler: (path: string, init: RequestInit) => Response) {
 describe('list routes are KEYED envelopes', () => {
   const cases: { name: string; path: string; key: string; call: (a: ApiClient) => Promise<unknown[]> }[] =
     [
-      { name: 'broadcasts', path: 'api/v1/broadcasts', key: 'broadcasts', call: (a) => a.broadcasts() },
       { name: 'bans', path: 'api/v1/bans?state=active', key: 'bans', call: (a) => a.bans('active') },
       { name: 'relays', path: 'api/v1/relays', key: 'relays', call: (a) => a.relays() },
       { name: 'webhooks', path: 'api/v1/webhooks', key: 'webhooks', call: (a) => a.webhooks() },
@@ -39,6 +38,31 @@ describe('list routes are KEYED envelopes', () => {
       await expect(c.call(api)).resolves.toEqual([]);
     });
   }
+
+  // Broadcasts keeps its whole envelope: the coverage counters are what let
+  // the view distinguish a quiet fleet from an unreachable one.
+  it('reads broadcasts WITH the scan-coverage counters', async () => {
+    const { api, session } = client(() =>
+      json({ broadcasts: [{ marker: 'broadcasts' }], podsResolved: 3, podsAnswered: 2 }),
+    );
+    await expect(api.broadcasts()).resolves.toEqual({
+      broadcasts: [{ marker: 'broadcasts' }],
+      podsResolved: 3,
+      podsAnswered: 2,
+    });
+    expect(session.calls[0].path).toBe('api/v1/broadcasts');
+  });
+
+  it('treats a missing broadcasts list and counters as empty full coverage, not a crash', async () => {
+    // A degraded read — or an older binary that predates the counters — can
+    // answer with no rows and no coverage; 0/0 flags nothing.
+    const { api } = client(() => json({}));
+    await expect(api.broadcasts()).resolves.toEqual({
+      broadcasts: [],
+      podsResolved: 0,
+      podsAnswered: 0,
+    });
+  });
 });
 
 describe('single objects are bare — except kill', () => {

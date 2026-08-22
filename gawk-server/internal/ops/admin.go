@@ -21,16 +21,16 @@ import (
 	"net/http"
 	"net/netip"
 
+	"github.com/Tuhis/gawk/gawk-server/adminapi"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 )
 
-// Schema names. Versioned strings, not implied by the route, so a consumer
-// pins the shape it parses (docs/42 §4.5) — the same discipline the telemetry
-// ingest uses.
+// Schema names, from the shared contract package both this handler and
+// gawk-admin's relayscan compile against (docs/42 §4.5).
 const (
-	SchemaAdminBroadcasts = "gawk.admin.broadcasts.v1"
-	SchemaAdminConfig     = "gawk.admin.config.v1"
+	SchemaAdminBroadcasts = adminapi.SchemaBroadcasts
+	SchemaAdminConfig     = adminapi.SchemaConfig
 )
 
 // AdminOptions wires the admin routes. A nil *AdminOptions — or one whose
@@ -53,12 +53,6 @@ type AdminOptions struct {
 	// Auth gates both routes.
 	Auth *AdminAuth
 	Log  *slog.Logger
-}
-
-type adminBroadcastsResponse struct {
-	Schema     string               `json:"schema"`
-	Pod        string               `json:"pod"`
-	Broadcasts []hub.AdminBroadcast `json:"broadcasts"`
 }
 
 type adminConfigResponse struct {
@@ -88,7 +82,7 @@ func registerAdmin(mux *http.ServeMux, opts *AdminOptions) bool {
 					}
 				}
 			}
-			writeAdminJSON(w, log, adminBroadcastsResponse{
+			writeAdminJSON(w, log, adminapi.BroadcastsResponse{
 				Schema: SchemaAdminBroadcasts, Pod: opts.Pod, Broadcasts: rows,
 			})
 		})))

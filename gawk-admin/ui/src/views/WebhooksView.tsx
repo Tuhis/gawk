@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import type { Webhook, WebhookTestResult } from '../api/types.ts';
+import { AuthRedirect } from '../auth/session.ts';
+import { Dialog } from '../components/Dialog.tsx';
 import { useLoader } from '../lib/useLoader.ts';
 import ui from '../styles/ui.module.css';
 
@@ -33,6 +35,10 @@ export function WebhooksView() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [tested, setTested] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  // Delete is confirmed through the modal: it silently removes a paging
+  // channel — the pipe the "a flag must reach a human" posture rides on — and
+  // re-creating one needs the signing secret, which this UI never shows.
+  const [deleting, setDeleting] = useState<Webhook | null>(null);
 
   async function sendTest(w: Webhook) {
     setBusy(w.name);
@@ -46,6 +52,8 @@ export function WebhooksView() {
           : `failed: ${result.error ?? `HTTP ${result.status ?? '?'}`}`,
       }));
     } catch (err) {
+      // Mid-redirect to the IdP: the page is going away (session.ts).
+      if (err instanceof AuthRedirect) return;
       setTested((prev) => ({
         ...prev,
         [w.name]: `failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -61,8 +69,12 @@ export function WebhooksView() {
     setActionError(null);
     try {
       await api.deleteWebhook(w.id);
+      setDeleting(null);
       reload();
     } catch (err) {
+      // Mid-redirect to the IdP: the delete did not run and the page is going
+      // away (session.ts) — nothing to render.
+      if (err instanceof AuthRedirect) return;
       // A `409 source_immutable` lands here if the server ever disagrees with
       // this page about a row's source. Surface its words rather than ours.
       setActionError(err instanceof Error ? err.message : String(err));
@@ -83,7 +95,8 @@ export function WebhooksView() {
       </div>
 
       {error ? <p className={ui.error}>{error}</p> : null}
-      {actionError ? (
+      {/* While the delete confirm is open it renders the error itself. */}
+      {actionError && !deleting ? (
         <p className={ui.error} role="alert">
           {actionError}
         </p>
@@ -160,7 +173,10 @@ export function WebhooksView() {
                             ? 'Defined in the chart values; immutable in the portal (docs/42 D9)'
                             : undefined
                         }
-                        onClick={() => void remove(w)}
+                        onClick={() => {
+                          setActionError(null);
+                          setDeleting(w);
+                        }}
                       >
                         Delete
                       </button>
@@ -187,6 +203,38 @@ export function WebhooksView() {
         <p className={ui.dim}>
           No webhooks. Events still land in the feed — a webhook only adds a push.
         </p>
+      ) : null}
+
+      {deleting ? (
+        <Dialog
+          title={`Delete webhook ${deleting.name}`}
+          busy={busy !== null}
+          onCancel={() => setDeleting(null)}
+        >
+          <p className={ui.sub}>
+            Removes this delivery channel: events keep landing in the feed, but nothing pushes
+            them to <code className={ui.mono}>{deleting.url}</code> any more. Re-creating it
+            needs the signing secret, which the portal never shows.
+          </p>
+          {actionError ? (
+            <p className={ui.error} role="alert">
+              {actionError}
+            </p>
+          ) : null}
+          <div className={ui.actions}>
+            <button
+              type="button"
+              className={ui.danger}
+              disabled={busy !== null}
+              onClick={() => void remove(deleting)}
+            >
+              Delete
+            </button>
+            <button type="button" disabled={busy !== null} onClick={() => setDeleting(null)}>
+              Cancel
+            </button>
+          </div>
+        </Dialog>
       ) : null}
 
       {editing ? (
@@ -237,6 +285,9 @@ function WebhookEditor({
       else await api.createWebhook(body);
       onSaved();
     } catch (err) {
+      // Mid-redirect to the IdP: the save did not run and the page is going
+      // away (session.ts) — nothing to render.
+      if (err instanceof AuthRedirect) return;
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);

@@ -38,14 +38,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-server/adminapi"
 )
 
 // Response schema identifiers from docs/42 §4.5. They are checked rather than
 // assumed: a relay from a future release that renames the shape should degrade
 // to "unreachable-ish" rather than be silently misread.
 const (
-	SchemaBroadcasts = "gawk.admin.broadcasts.v1"
-	SchemaConfig     = "gawk.admin.config.v1"
+	SchemaBroadcasts = adminapi.SchemaBroadcasts
+	SchemaConfig     = adminapi.SchemaConfig
 )
 
 // DefaultCacheTTL is the aggregate cache window (§4.7: "≤2 s cache").
@@ -64,31 +66,13 @@ const DefaultTimeout = 3 * time.Second
 const DefaultScanBudget = 10 * time.Second
 
 // Broadcast is one broadcast as one pod sees it — the `broadcasts[]` element
-// of gawk.admin.broadcasts.v1.
-type Broadcast struct {
-	// ID is the RAW broadcast ID (D8: permitted on this credential-gated
-	// surface, the portal, and Postgres — nowhere else).
-	ID string `json:"id"`
-	// Key is Registry.ObfuscateID(ID): the HMAC'd form, safe to export, and
-	// what the telemetry UI keys its broadcast view by.
-	Key                   string `json:"key"`
-	Role                  string `json:"role"`
-	PublisherActive       bool   `json:"publisherActive"`
-	PublisherRemoteIP     string `json:"publisherRemoteIp"`
-	PublisherSessionID    string `json:"publisherSessionId"`
-	StartedAt             string `json:"startedAt"`
-	ViewersLocal          int    `json:"viewersLocal"`
-	ViewersGlobal         int    `json:"viewersGlobal"`
-	GraceRemainingSeconds int    `json:"graceRemainingSeconds"`
-	DVRBytes              int64  `json:"dvrBytes"`
-}
+// of gawk.admin.broadcasts.v1. An alias for the relay's own response type, so
+// the two sides of the contract cannot drift ("reuse it; never mirror it"):
+// this is the same struct `internal/hub` fills in.
+type Broadcast = adminapi.Broadcast
 
-// BroadcastsResponse is GET /internal/admin/broadcasts.
-type BroadcastsResponse struct {
-	Schema     string      `json:"schema"`
-	Pod        string      `json:"pod"`
-	Broadcasts []Broadcast `json:"broadcasts"`
-}
+// BroadcastsResponse is GET /internal/admin/broadcasts — the relay's own type.
+type BroadcastsResponse = adminapi.BroadcastsResponse
 
 // ConfigResponse is GET /internal/admin/config. Config is decoded
 // structurally: the relay's sanitized config is a map of knob names to values
@@ -133,8 +117,8 @@ type Aggregate struct {
 	Key               string
 	PublisherActive   bool
 	PublisherRemoteIP string
-	StartedAt         string
-	ViewersGlobal     int
+	StartedAt         time.Time
+	ViewersGlobal     uint32
 	Pods              []Placement
 }
 

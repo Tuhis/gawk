@@ -81,7 +81,16 @@ func (a *API) handleListBroadcasts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, renderBroadcast(agg, cfg, state))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"broadcasts": out})
+	// The coverage counters ride along so partial coverage is VISIBLE: relayscan
+	// treats a pod-level scrape failure as data rather than an error, and
+	// without these an empty answer from an unreachable fleet would render as a
+	// reassuring "nothing is broadcasting" (the same honesty rule banState's
+	// null already enforces on the Postgres axis).
+	writeJSON(w, http.StatusOK, map[string]any{
+		"broadcasts":   out,
+		"podsResolved": snap.PodsResolved,
+		"podsAnswered": snap.PodsAnswered,
+	})
 }
 
 type killRequest struct {

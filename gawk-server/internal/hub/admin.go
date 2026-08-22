@@ -12,45 +12,15 @@ package hub
 import (
 	"sort"
 	"time"
+
+	"github.com/Tuhis/gawk/gawk-server/adminapi"
 )
 
-// AdminBroadcast is one row of GET /internal/admin/broadcasts. The json tags
-// ARE the gawk.admin.broadcasts.v1 schema's per-broadcast object.
-type AdminBroadcast struct {
-	// ID is the RAW, joinable broadcast ID — the scoped relaxation of the
-	// never-expose-raw-IDs invariant (docs/42 D8). The operator needs it to
-	// join and judge a stream before killing it.
-	ID string `json:"id"`
-	// Key is ObfuscateID(ID): the same HMAC'd handle /statusz, the metrics
-	// broadcast label and the telemetry UI's #/broadcast/<key> route use, so
-	// the portal deep-links into telemetry without ever holding -stats-key.
-	Key string `json:"key"`
-	// Role is "origin" or "edge" (R17), the same vocabulary as /statusz.
-	Role            string `json:"role"`
-	PublisherActive bool   `json:"publisherActive"`
-	// PublisherRemoteIP is filled in by the ops layer from the transport's
-	// live-publisher bookkeeping; the hub has no view of session addresses.
-	// Empty when there is no live publisher (or its address was unparseable).
-	PublisherRemoteIP string `json:"publisherRemoteIp,omitempty"`
-	// PublisherSessionID is the R28 telemetry session handle, omitted when
-	// telemetry is off — the join into the broadcaster's own reports.
-	PublisherSessionID string `json:"publisherSessionId,omitempty"`
-	// StartedAt is when this pod registered the hub, not when the current
-	// publisher session began: a broadcast that survived a reclaim keeps its
-	// age.
-	StartedAt time.Time `json:"startedAt"`
-	// ViewersLocal counts WATCHING HUMANS on this pod: internal edge sessions
-	// and R30 stripe legs are excluded, so one viewer with three legs is one
-	// number here — the same rule ViewersGlobal follows (docs/35 §5.8).
-	ViewersLocal int `json:"viewersLocal"`
-	// ViewersGlobal is the fleet-wide count this pod computes as origin; 0 on
-	// edge hubs, which receive the number from upstream (docs/23 Decision 9).
-	ViewersGlobal         uint32 `json:"viewersGlobal"`
-	GraceRemainingSeconds int    `json:"graceRemainingSeconds"`
-	// DVRBytes is what this broadcast's R21 ring currently retains, 0 when no
-	// ring was ever allocated.
-	DVRBytes int `json:"dvrBytes"`
-}
+// AdminBroadcast is one row of GET /internal/admin/broadcasts. An alias, not a
+// copy: the struct lives in the public `adminapi` package so gawk-admin's
+// relayscan parses the exact type this file fills in ("reuse it; never mirror
+// it").
+type AdminBroadcast = adminapi.Broadcast
 
 // AdminStats snapshots every broadcast this pod hosts, sorted by raw ID so
 // the response is stable across scrapes (a portal diffing two polls should

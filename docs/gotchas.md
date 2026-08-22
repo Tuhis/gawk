@@ -1038,6 +1038,14 @@ Add to it when a new gotcha lands in `docs/`.
   `clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)`.
   Production is unaffected — a real API server sends the bookmark.
   ([docs/42](42-admin-moderation-portal.md) §4.2)
+- **client-go's `LeaderElector.Run` returns for good on leadership loss** — it
+  never re-campaigns, despite its own "until the context is cancelled"
+  framing. A bare `go elector.Run(ctx)` therefore means a replica demoted once
+  (one >RenewDeadline API-server blip is enough) never leads again, and the
+  failure is the worst kind: every pod Ready and serving while the singleton
+  background work (reconciler, janitor, webhook dispatcher) has silently
+  stopped fleet-wide. Wrap it in a re-campaign loop, or treat return as fatal
+  so the pod restarts; see `gawk-admin/internal/kube/leader.go`.
 - **A Helm `pre-install` hook runs before the chart's own manifests**, so a
   migration Job cannot read a Secret the same chart creates. A chart that
   rendered its own CloudNativePG `Cluster` therefore deadlocked on every first

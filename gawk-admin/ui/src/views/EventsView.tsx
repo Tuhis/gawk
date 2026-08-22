@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import type { EventPage, ModerationEvent, WebhookDelivery } from '../api/types.ts';
+import { AuthRedirect } from '../auth/session.ts';
 import { formatInstant } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';
 import ui from '../styles/ui.module.css';
@@ -67,6 +68,8 @@ export function EventsView() {
       setCursor(page.nextAfterId ?? undefined);
       setExhausted(page.nextAfterId === null);
     } catch (err) {
+      // Mid-redirect to the IdP: the page is going away (session.ts).
+      if (err instanceof AuthRedirect) return;
       // A refresh landed first: this page is nobody's business now, and its
       // failure is not the operator's problem either.
       if (asOf !== generation.current) return;

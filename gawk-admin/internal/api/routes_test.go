@@ -25,11 +25,18 @@ func TestListBroadcastsJoinsFleetBanStateAndLinks(t *testing.T) {
 	h.fleet.set(liveSnapshot("ABC234", "3f9a1c2b4d5e", "203.0.113.7"))
 
 	var body struct {
-		Broadcasts []wireBroadcast `json:"broadcasts"`
+		Broadcasts   []wireBroadcast `json:"broadcasts"`
+		PodsResolved int             `json:"podsResolved"`
+		PodsAnswered int             `json:"podsAnswered"`
 	}
 	h.decode(http.MethodGet, "/api/v1/broadcasts", nil, http.StatusOK, &body)
 	if len(body.Broadcasts) != 1 {
 		t.Fatalf("broadcasts = %+v", body.Broadcasts)
+	}
+	// Coverage rides the envelope so a partial scan is visible to the UI: an
+	// empty list from an unreachable fleet must not read as a quiet fleet.
+	if body.PodsResolved != 2 || body.PodsAnswered != 2 {
+		t.Fatalf("coverage = %d/%d, want 2/2", body.PodsAnswered, body.PodsResolved)
 	}
 	b := body.Broadcasts[0]
 	if b.ID != "ABC234" || b.Key != "3f9a1c2b4d5e" || !b.PublisherActive || b.ViewersGlobal != 340 {

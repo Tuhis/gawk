@@ -543,9 +543,9 @@ works — the issuer is a knob (Keycloak/Authelia/authentik/Google).
 - **The SPA is an OIDC public client**: authorization-code flow with PKCE,
   `state` and `nonce` — **no client secret exists anywhere in the system**.
   It bootstraps from unauthenticated `GET /auth/config` →
-  `{issuer, clientId, audience}`, runs the redirect flow with a *bundled*
-  OIDC client library (bundled into the SPA — the embedded-assets rule
-  stands), and keeps tokens **in memory only** (never `localStorage`).
+  `{issuer, clientId, audience}`, runs a redirect flow **hand-rolled against
+  WebCrypto** (`ui/src/auth/` — no OIDC client library; §11.1 records why),
+  and keeps tokens **in memory only** (never `localStorage`).
 - **Short-lived access tokens, kept alive by refresh tokens.** The SPA
   uses ordinary session-bound refresh tokens (not `offline_access` ones),
   with rotation enabled at the IdP for public clients, and silently renews
@@ -829,7 +829,8 @@ what hurts. They apply to every future `gawk-admin` migration (and to R40's).
 **Mechanics.**
 
 - Migrations are **versioned, forward-only SQL files** —
-  `migrations/NNNN_short_description.sql`, monotonically numbered, append
+  `migrations/NNNN_short_description.up.sql` (golang-migrate's suffix, which
+  the CI lint enforces), monotonically numbered, append
   only: a merged migration is immutable (fix mistakes with the next number,
   never by editing history). Plain SQL because it is reviewable in a diff
   by anyone and runs under any tooling; the runner is the `golang-migrate`
@@ -1083,6 +1084,7 @@ code.
 | §4.5, §4.8 | the roles-claim dot-path is implemented per side, and the placeholder is spelled `{audience}` on the relay but `{clientId}` in the portal | one public **`gawk-server/oidcroles`**, imported by both; the placeholder is `{audience}` everywhere, and the spec text above is corrected rather than deviated from | The duplication is *why* the dotted-audience bug (an audience containing a dot shattering the path and 403ing every valid token) existed on one side only — the two copies had drifted to different tolerances for a bare-string claim and a mixed array, i.e. two different answers to "is this token authorized". `{audience}` won because it is the only identifier both callers have, and because in a Keycloak access token `resource_access.<client>.roles` carries the roles of the resource server the token was minted *for*, which is what `aud` names. The package takes decoded claims rather than an `*oidc.IDToken` **specifically so it imports no OIDC library**, which is what keeps the relay's containment test meaningful. |
 | §9 AP8 | the `docker` job smoke-probes every image's HTTP endpoint | the `gawk-admin` entry carries **no probe**; it asserts the process reaches its documented cluster-less failure | The image genuinely cannot serve without Kubernetes (§4.14). The probe was written before `cmd/gawk-admin/main.go` existed and would have failed on its first CI run. A smoke that asserts something false is worse than one that asserts less. |
 | §4.14 | the local lane is "kind or envtest" | `main.go` also falls back to the ordinary kubeconfig loading rules when in-cluster config is absent | That fallback is what makes "run it against kind" work without pretending to be a pod. Deliberately **not** a knob: `KUBECONFIG` is the conventional mechanism, and a flag would have to reach the chart to satisfy the carry-all-limits rule for something a pod would never set. A missing API server stays fatal — unlike the IdP, there is nowhere to write a Ban CR, and a kill button that records a row nothing enforces is worse than a refusal to start. |
+| §4.8 | the SPA runs the redirect flow with a *bundled* OIDC client library | the whole public-client flow (code+PKCE, `state`/`nonce`, token endpoint, silent renew) is **hand-rolled over WebCrypto** in `ui/src/auth/` — the SPA's runtime dependencies are exactly `react` and `react-dom`, and the §4.8 text is corrected in place | The candidate libraries carry their own storage and iframe machinery, most of it for flows this SPA forbids (persistent tokens, silent-auth iframes), and auditing what a library does *not* do proved harder than owning the ~700 lines it actually needs — which the suite tests directly (PKCE vectors, `state`/`nonce` round-trips, renewal). The trade is recorded here because it is security-critical: a CVE search for this portal's OIDC path must target `ui/src/auth/`, not a dependency list — `THIRD-PARTY-NOTICES.md` says the same. |
 | §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |
 
 ### 11.2 What is verified, and by what

@@ -81,6 +81,76 @@ describe('the fleet table', () => {
   });
 });
 
+// Relayscan degrades an unreachable pod into missing rows rather than an
+// error, so the envelope's coverage counters are the only way this page can
+// tell a quiet fleet from one it could not see (PR #280 review).
+describe('scan coverage', () => {
+  function mountWithCoverage(broadcasts: Broadcast[], podsResolved: number, podsAnswered: number) {
+    const session = stubSession((path) =>
+      path === 'api/v1/broadcasts' ? json({ broadcasts, podsResolved, podsAnswered }) : json({}),
+    );
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+  }
+
+  it('flags partial coverage instead of rendering a reassuring empty state', async () => {
+    mountWithCoverage([], 3, 1);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/1 of 3 relay pods answered/);
+    expect(alert.textContent).toMatch(/may be incomplete/);
+    // "Nothing is broadcasting" is exactly the claim partial coverage forbids.
+    expect(screen.queryByText(/Nothing is broadcasting/)).toBeNull();
+  });
+
+  it('flags partial coverage above a non-empty (possibly short) list too', async () => {
+    mountWithCoverage([broadcast()], 3, 2);
+    await screen.findByText('ABC123');
+    expect(screen.getByRole('alert').textContent).toMatch(/2 of 3 relay pods answered/);
+  });
+
+  it('earns the quiet-fleet line only with full coverage', async () => {
+    mountWithCoverage([], 3, 3);
+    expect(await screen.findByText(/Nothing is broadcasting/)).toBeTruthy();
+    expect(screen.queryByText(/relay pods answered/)).toBeNull();
+  });
+});
+
+// A banned row whose publisher is STILL live well after the ban was created is
+// the record-vs-enforcement divergence the 202's ephemeral amber notice cannot
+// carry past a navigation — the cell itself has to name it (PR #280 review).
+describe('the ban cell’s divergence flavour', () => {
+  function bannedState(createdMsAgo: number) {
+    return {
+      banned: true,
+      ban: {
+        id: 'ban-1',
+        target: { type: 'broadcastId' as const, value: 'ABC123' },
+        state: 'active' as const,
+        reason: 'terms',
+        createdAt: new Date(Date.now() - createdMsAgo).toISOString(),
+        createdBy: 'op',
+        expiresAt: null,
+      },
+    };
+  }
+
+  it('marks a long-banned but still-publishing broadcast as possibly unenforced', async () => {
+    mount([broadcast({ publisherActive: true, banState: bannedState(60_000) })]);
+    expect(await screen.findByText('banned — not enforced yet?')).toBeTruthy();
+  });
+
+  it('gives a fresh ban time to actuate before casting doubt', async () => {
+    mount([broadcast({ publisherActive: true, banState: bannedState(1_000) })]);
+    expect(await screen.findByText('banned')).toBeTruthy();
+    expect(screen.queryByText(/not enforced/)).toBeNull();
+  });
+
+  it('reads a banned, publisher-away row as plainly banned', async () => {
+    mount([broadcast({ publisherActive: false, banState: bannedState(60_000) })]);
+    expect(await screen.findByText('banned')).toBeTruthy();
+    expect(screen.queryByText(/not enforced/)).toBeNull();
+  });
+});
+
 describe('deep links (§4.12, AP6)', () => {
   it('renders watch and telemetry links exactly as the server sent them', async () => {
     mount([

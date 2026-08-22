@@ -3,6 +3,8 @@ import { useCallback, useState } from 'react';
 import { useApi } from '../auth/AuthContext.tsx';
 import { enforcementNotice } from '../api/client.ts';
 import type { Ban } from '../api/types.ts';
+import { AuthRedirect } from '../auth/session.ts';
+import { Dialog } from '../components/Dialog.tsx';
 import { expiresIn, formatInstant } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';
 import ui from '../styles/ui.module.css';
@@ -29,6 +31,11 @@ export function BansView() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  // Unban is confirmed through the same modal the destructive actions use: it
+  // lifts a ban fleet-wide within seconds, and for a target that is no longer
+  // live the only way back from a mis-tap is kubectl — this portal's gating
+  // manual pass is run from a phone (docs/42 §10).
+  const [confirming, setConfirming] = useState<Ban | null>(null);
 
   const bans = data ?? [];
   // Countdowns run from the fetch that produced these rows, not from render
@@ -44,8 +51,12 @@ export function BansView() {
       const removed = await api.unban(ban.id);
       const detail = enforcementNotice(removed);
       setWarning(detail === null ? null : `${ban.target.value} — ${detail}`);
+      setConfirming(null);
       reload();
     } catch (err) {
+      // The session has started a full-page IdP redirect (session.ts): the
+      // unban did not run, and the page is going away — nothing to render.
+      if (err instanceof AuthRedirect) return;
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyId(null);
@@ -83,7 +94,8 @@ export function BansView() {
       </div>
 
       {error ? <p className={ui.error}>{error}</p> : null}
-      {actionError ? (
+      {/* While the confirm dialog is open it renders the error itself. */}
+      {actionError && !confirming ? (
         <p className={ui.error} role="alert">
           {actionError}
         </p>
@@ -132,7 +144,10 @@ export function BansView() {
                     <button
                       type="button"
                       disabled={busyId === b.id}
-                      onClick={() => void unban(b)}
+                      onClick={() => {
+                        setActionError(null);
+                        setConfirming(b);
+                      }}
                     >
                       Unban
                     </button>
@@ -146,6 +161,38 @@ export function BansView() {
 
       {!loading && bans.length === 0 && !error ? (
         <p className={ui.dim}>No {filter === 'active' ? 'active ' : ''}bans.</p>
+      ) : null}
+
+      {confirming ? (
+        <Dialog
+          title={`Unban ${confirming.target.value}`}
+          busy={busyId !== null}
+          onCancel={() => setConfirming(null)}
+        >
+          <p className={ui.sub}>
+            Lifts the {confirming.target.type === 'ip' ? 'IP ban' : 'ban'} on{' '}
+            <code className={ui.mono}>{confirming.target.value}</code> fleet-wide within seconds.
+            Re-banning a target that is no longer live cannot be done from the portal.
+          </p>
+          {actionError ? (
+            <p className={ui.error} role="alert">
+              {actionError}
+            </p>
+          ) : null}
+          <div className={ui.actions}>
+            <button
+              type="button"
+              className={ui.danger}
+              disabled={busyId !== null}
+              onClick={() => void unban(confirming)}
+            >
+              Unban
+            </button>
+            <button type="button" disabled={busyId !== null} onClick={() => setConfirming(null)}>
+              Cancel
+            </button>
+          </div>
+        </Dialog>
       ) : null}
     </section>
   );

@@ -72,7 +72,8 @@ func (p *fakePod) start(t *testing.T) string {
 func bc(id, key, role string, active bool, ip string, local, global int) relayscan.Broadcast {
 	return relayscan.Broadcast{
 		ID: id, Key: key, Role: role, PublisherActive: active, PublisherRemoteIP: ip,
-		StartedAt: "2026-08-20T14:00:11Z", ViewersLocal: local, ViewersGlobal: global,
+		StartedAt:    time.Date(2026, 8, 20, 14, 0, 11, 0, time.UTC),
+		ViewersLocal: local, ViewersGlobal: uint32(global),
 	}
 }
 

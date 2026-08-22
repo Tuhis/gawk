@@ -74,7 +74,7 @@ export function BanDialog({
   }
 
   return (
-    <Dialog title={`Kill and ban ${broadcast.id}`} onCancel={onCancel}>
+    <Dialog title={`Kill and ban ${broadcast.id}`} busy={busy} onCancel={onCancel}>
       <p className={ui.sub}>
         Ends the broadcast now and refuses this ID for the chosen duration. The broadcaster's
         resume token will not bring it back.

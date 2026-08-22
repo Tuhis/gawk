@@ -88,6 +88,10 @@ func TestSetLongestPrefixMatch(t *testing.T) {
 	mustUpsert(t, s, rec(TargetIP, "2001:db8::/32", "v6slash32"))
 	mustUpsert(t, s, rec(TargetIP, "2001:db8:1::/48", "v6slash48"))
 	mustUpsert(t, s, rec(TargetIP, "::/0", "v6default"))
+	// The whole-internet kill switch is a legal target (ParsePrefix accepts it
+	// and even manufactures it from ::ffff:0.0.0.0/96), and /0 sits at the
+	// trie's root — the classic restructuring-defect site.
+	mustUpsert(t, s, rec(TargetIP, "0.0.0.0/0", "v4default"))
 
 	tests := []struct {
 		addr string
@@ -96,12 +100,14 @@ func TestSetLongestPrefixMatch(t *testing.T) {
 		{"203.0.113.7", "slash32"},
 		{"203.0.113.8", "slash24"},
 		{"203.0.200.1", "slash8"},
-		{"204.0.113.7", ""},
+		{"204.0.113.7", "v4default"}, // nothing narrower — the /0 catches it
 		{"198.51.100.5", "other23"},
 		{"198.51.101.5", "other23"}, // /23 spans two /24s
-		{"198.51.102.5", ""},
+		{"198.51.102.5", "v4default"},
 		{"2001:db8:1::5", "v6slash48"},
 		{"2001:db8:2::5", "v6slash32"},
+		// The /0s stay family-scoped: a v6 address falls through to ::/0, never
+		// to 0.0.0.0/0, and vice versa.
 		{"2001:dead::1", "v6default"},
 	}
 	for _, tt := range tests {
@@ -254,11 +260,14 @@ func TestSetLPMMatchesLinearReference(t *testing.T) {
 		ref := map[netip.Prefix]Record{} // last write wins, same as the trie
 
 		// Bias towards a shared /8 and a shared /32-v6 so prefixes actually
-		// overlap and nest instead of being uniformly disjoint.
+		// overlap and nest instead of being uniformly disjoint. Bit counts run
+		// all the way down to /0: the root/near-root path of a path-compressed
+		// trie is exactly where insert/delete/glue bugs live, and 0.0.0.0/0 is
+		// a legal production target (the whole-internet kill switch).
 		gen := func() netip.Prefix {
 			if rng.Intn(2) == 0 {
 				b := [4]byte{203, byte(rng.Intn(4)), byte(rng.Intn(8)), byte(rng.Intn(256))}
-				return netip.PrefixFrom(netip.AddrFrom4(b), 8+rng.Intn(25)).Masked()
+				return netip.PrefixFrom(netip.AddrFrom4(b), rng.Intn(33)).Masked()
 			}
 			var b [16]byte
 			b[0], b[1] = 0x20, 0x01
@@ -268,7 +277,7 @@ func TestSetLPMMatchesLinearReference(t *testing.T) {
 					b[i] = byte(rng.Intn(256))
 				}
 			}
-			return netip.PrefixFrom(netip.AddrFrom16(b), 16+rng.Intn(113)).Masked()
+			return netip.PrefixFrom(netip.AddrFrom16(b), rng.Intn(129)).Masked()
 		}
 
 		for op := 0; op < 120; op++ {
@@ -316,6 +325,11 @@ func TestSetLPMMatchesLinearReference(t *testing.T) {
 			var addr netip.Addr
 			if rng.Intn(2) == 0 {
 				addr = netip.AddrFrom4([4]byte{203, byte(rng.Intn(4)), byte(rng.Intn(8)), byte(rng.Intn(256))})
+				if rng.Intn(4) == 0 {
+					// Probe the v4-mapped form too, so CanonicalAddr's collapse
+					// is property-exercised rather than only unit-pinned.
+					addr = netip.AddrFrom16(addr.As16())
+				}
 			} else {
 				var b [16]byte
 				b[0], b[1], b[2], b[3] = 0x20, 0x01, 0x0d, 0xb8

@@ -3,7 +3,7 @@
 # Install it together with:
 #   * the relay chart's  moderation.enabled=true  (installs the Ban CRD, gives
 #     relay pods read-only watch access to it, and sets the relay's
-#     -admin-api-token to the SAME value as relayAdminToken below)
+#     -admin-api-token to the SAME value as relay.adminToken below)
 #   * a Postgres that ALREADY EXISTS, reachable from the cluster, named by
 #     postgres.dsn or postgres.dsnSecretRef (docs/42 D3). This chart does not
 #     create a database — see the `postgres:` block below.
@@ -14,7 +14,7 @@
 # have):
 #   * externalUrl
 #   * oidc.issuer / oidc.clientId / oidc.audience
-#   * relayAdminToken
+#   * relay.adminToken (or relay.adminTokenRef)
 # The chart renders them empty by default so a `helm template` works; the pod
 # will CrashLoopBackOff with a named flag until they are set.
 
@@ -77,6 +77,11 @@ ingress:
 # OIDC (docs/42 §4.8, D17). Any spec-compliant provider works; the SPA is a
 # PUBLIC client (authorization code + PKCE) and there is no client secret
 # anywhere in this chart, by design.
+#
+# Half of the revocation model lives at the PROVIDER and cannot be rendered
+# here: short access tokens (5-15 minutes — token lifetime bounds revocation),
+# refresh-token rotation for public clients, and granting the operator role.
+# That IdP-side half is docs/self-hosting.md §9.3.
 oidc:
   # e.g. "https://id.example.com/realms/gawk"
   issuer: ""

@@ -78,7 +78,7 @@ export function KillDialog({
   }
 
   return (
-    <Dialog title={`Kill broadcast ${broadcast.id}`} onCancel={onCancel}>
+    <Dialog title={`Kill broadcast ${broadcast.id}`} busy={busy} onCancel={onCancel}>
       <p className={ui.sub}>
         Every viewer sees the stream end with the moderator message, and the broadcaster cannot
         reclaim this ID until the cooldown expires.

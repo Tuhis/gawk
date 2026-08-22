@@ -450,7 +450,7 @@ func liveSnapshot(id, key, publisherIP string) relayscan.Snapshot {
 		},
 		Broadcasts: []relayscan.Aggregate{{
 			ID: id, Key: key, PublisherActive: true, PublisherRemoteIP: publisherIP,
-			StartedAt: "2026-08-20T14:00:11Z", ViewersGlobal: 340,
+			StartedAt: time.Date(2026, 8, 20, 14, 0, 11, 0, time.UTC), ViewersGlobal: 340,
 			Pods: []relayscan.Placement{
 				{Pod: "gawk-server-0", Role: "origin", ViewersLocal: 12},
 				{Pod: "gawk-server-1", Role: "edge", ViewersLocal: 328},

@@ -471,6 +471,15 @@ from `Ban` custom resources **whether or not `gawk-admin` is running**. A
 `kubectl apply` of one enforces on its own. That is the break-glass path, and
 it is the reason the enforcement object is a CR and not an API call.
 
+Without `gawk-admin` you manage bans by hand: `kubectl apply`/`delete` of
+`Ban` objects ([§9.6](#96-break-glass-banning-with-kubectl)), or — for a relay
+running outside Kubernetes, or if you would rather mount a file than install
+the CRD — the relay's **file source** (`moderation.source:
+"file:/path/to/bans.json"` in the chart, `-moderation-source=file:<path>` on
+the binary): a JSON ban list, reloaded on change and on SIGHUP. What you give
+up either way is the portal — the fleet list, the one-click kill, the audit
+trail and the webhooks.
+
 ### 9.1 Prerequisites, beyond §2
 
 - **A Postgres — and it has to exist before you install the chart.**

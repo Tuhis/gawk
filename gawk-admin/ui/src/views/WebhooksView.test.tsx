@@ -176,12 +176,29 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
     });
   });
 
+  it('does NOT delete on the row tap alone — the dialog confirms it', async () => {
+    // Deleting silently removes a paging channel and re-creating it needs the
+    // signing secret the UI never shows, so one tap must not be enough.
+    const session = mount([FROM_PORTAL], () => json({}));
+    await screen.findByText('discord');
+    fireEvent.click(within(rowFor('discord')).getByRole('button', { name: 'Delete' }));
+
+    await screen.findByRole('dialog');
+    expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(false);
+  });
+
   it('deletes one', async () => {
     const session = mount([FROM_PORTAL], (_path, init) =>
       init.method === 'DELETE' ? new Response(null, { status: 204 }) : json({}),
     );
     await screen.findByText('discord');
     fireEvent.click(within(rowFor('discord')).getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => {
       expect(
         session.calls.some(
@@ -210,6 +227,8 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
     );
     await screen.findByText('ntfy-oncall');
     fireEvent.click(within(rowFor('ntfy-oncall')).getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText(/defined in the chart values/)).toBeTruthy();
     expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(true);
   });

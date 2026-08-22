@@ -13,7 +13,7 @@ import type { AuthSession } from '../auth/session.ts';
 import type {
   ApiErrorCode,
   Ban,
-  Broadcast,
+  BroadcastsPage,
   CreateBanRequest,
   CreateWebhookRequest,
   EventPage,
@@ -114,8 +114,18 @@ export class ApiClient {
   // Every list route answers with a keyed envelope, so each of these reads its
   // one key. `?? []` covers a null/absent list on an otherwise valid response
   // (a degraded read), never a differently-shaped one.
-  async broadcasts(): Promise<Broadcast[]> {
-    return (await this.json<{ broadcasts: Broadcast[] }>('broadcasts')).broadcasts ?? [];
+  //
+  // Broadcasts keeps its whole envelope: the coverage counters are what let
+  // the view distinguish a quiet fleet from an unreachable one. Absent
+  // counters (an older binary) default to "full coverage" — 0/0 — so nothing
+  // is flagged on a response that carries no coverage to report.
+  async broadcasts(): Promise<BroadcastsPage> {
+    const page = await this.json<Partial<BroadcastsPage>>('broadcasts');
+    return {
+      broadcasts: page.broadcasts ?? [],
+      podsResolved: page.podsResolved ?? 0,
+      podsAnswered: page.podsAnswered ?? 0,
+    };
   }
 
   /**
