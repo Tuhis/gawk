@@ -190,6 +190,17 @@ func seedEvent(t *testing.T, st *store.Store, ev store.Event) store.Event {
 	return saved
 }
 
+// mustRecord records one event through the dispatcher — the production path:
+// event and fan-out in one transaction — failing the test if it cannot.
+func mustRecord(t *testing.T, d *Dispatcher, ev store.Event) store.Event {
+	t.Helper()
+	saved, err := d.Record(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("record event: %v", err)
+	}
+	return saved
+}
+
 // newStore is storetest.New, named locally so every Postgres-backed test in
 // this file reads the same way and skips identically without the DSN.
 func newStore(t *testing.T) *store.Store { return storetest.New(t) }

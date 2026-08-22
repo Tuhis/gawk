@@ -99,7 +99,12 @@ function Portal() {
       <main className={styles.main}>
         {error ? <p className={styles.error}>{error}</p> : null}
         {probeSettled ? (
-          <Routed view={route.view} path={route.path} cooldownSeconds={cooldown} />
+          <Routed
+            view={route.view}
+            path={route.path}
+            filterKey={route.key}
+            cooldownSeconds={cooldown}
+          />
         ) : (
           <p className={styles.dim}>Loading…</p>
         )}
@@ -111,15 +116,19 @@ function Portal() {
 function Routed({
   view,
   path,
+  filterKey,
   cooldownSeconds,
 }: {
   view: ViewName;
   path: string;
+  filterKey: string;
   cooldownSeconds: number;
 }) {
   switch (view) {
     case 'broadcasts':
-      return <BroadcastsView killCooldownSeconds={cooldownSeconds} />;
+      return (
+        <BroadcastsView killCooldownSeconds={cooldownSeconds} initialFilter={filterKey} />
+      );
     case 'bans':
       return <BansView />;
     case 'events':

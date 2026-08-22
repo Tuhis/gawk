@@ -63,12 +63,8 @@ func TestFanOutAcrossBothSourcesEachWithItsOwnSecret(t *testing.T) {
 	mustCreateWebhook(t, st, "ui-parked", rec.url("/ui-parked"), "ui-parked-secret", false)
 
 	const rawID = "ZXQ7K2"
-	ev := seedEvent(t, st, killEvent(rawID))
 	d := newDispatcher(t, st, cfg, nil)
-
-	if err := d.Enqueue(ctx, ev); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	ev := mustRecord(t, d, killEvent(rawID))
 
 	rows := deliveriesFor(t, st, ev.ID)
 	if len(rows) != 2 {
@@ -160,25 +156,23 @@ func TestFanOutAcrossBothSourcesEachWithItsOwnSecret(t *testing.T) {
 	}
 }
 
-// TestEnqueueIsIdempotent: offering one event twice (a retried Enqueue after a
-// crash between AppendEvent and the queue write) must not double-send.
-func TestEnqueueIsIdempotent(t *testing.T) {
+// TestRecordQueuesExactlyOnce: one Record call is one transaction — the event
+// and exactly one delivery row per enabled webhook, delivered exactly once.
+// (The retried-enqueue-after-a-crash case this test used to pin no longer
+// exists as a code path: the crash window between the event append and the
+// queue write is what Record's single transaction closed.)
+func TestRecordQueuesExactlyOnce(t *testing.T) {
 	ctx := t.Context()
 	st := newStore(t)
 	rec := newReceiver(t)
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
 		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "secret"},
 	}}
-	ev := seedEvent(t, st, killEvent("ZXQ7K2"))
 	d := newDispatcher(t, st, cfg, nil)
 
-	for range 3 {
-		if err := d.Enqueue(ctx, ev); err != nil {
-			t.Fatalf("Enqueue: %v", err)
-		}
-	}
+	ev := mustRecord(t, d, killEvent("ZXQ7K2"))
 	if rows := deliveriesFor(t, st, ev.ID); len(rows) != 1 {
-		t.Fatalf("three enqueues produced %d delivery rows, want 1", len(rows))
+		t.Fatalf("one Record produced %d delivery rows, want 1", len(rows))
 	}
 	if _, err := d.DispatchOnce(ctx); err != nil {
 		t.Fatalf("DispatchOnce: %v", err)
@@ -195,10 +189,7 @@ func TestZeroWebhooksStillRecordsTheEvent(t *testing.T) {
 	st := newStore(t)
 	d := newDispatcher(t, st, config.Config{ExternalURL: "https://admin.example.com"}, nil)
 
-	ev := seedEvent(t, st, killEvent("ZXQ7K2"))
-	if err := d.Enqueue(ctx, ev); err != nil {
-		t.Fatalf("Enqueue with no webhooks configured: %v", err)
-	}
+	ev := mustRecord(t, d, killEvent("ZXQ7K2"))
 	if rows := deliveriesFor(t, st, ev.ID); len(rows) != 0 {
 		t.Fatalf("queued %d deliveries with no webhooks configured", len(rows))
 	}
@@ -237,10 +228,7 @@ func TestRetryScheduleAndTerminalFailure(t *testing.T) {
 	}}
 	d := newDispatcher(t, st, cfg, func(o *Options) { o.Now = clk.Now })
 
-	ev := seedEvent(t, st, killEvent("ZXQ7K2"))
-	if err := d.Enqueue(ctx, ev); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	ev := mustRecord(t, d, killEvent("ZXQ7K2"))
 
 	wantDelays := []time.Duration{5 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute}
 	for attempt, delay := range wantDelays {
@@ -326,11 +314,8 @@ func TestEventsViewRendersDeliveryState(t *testing.T) {
 	}
 	mustCreateWebhook(t, st, "ui-broken", bad.url("/broken"), "ui-secret", true)
 
-	ev := seedEvent(t, st, killEvent("ZXQ7K2"))
 	d := newDispatcher(t, st, cfg, nil)
-	if err := d.Enqueue(ctx, ev); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	_ = mustRecord(t, d, killEvent("ZXQ7K2"))
 	if _, err := d.DispatchOnce(ctx); err != nil {
 		t.Fatalf("DispatchOnce: %v", err)
 	}
@@ -404,11 +389,8 @@ func TestDeletedOrDisabledWebhookEndsDeliveryTerminally(t *testing.T) {
 	}}
 	mustCreateWebhook(t, st, "ui-slack", rec.url("/ui-slack"), "ui-secret", true)
 
-	ev := seedEvent(t, st, killEvent("ZXQ7K2"))
 	d := newDispatcher(t, st, cfg, nil)
-	if err := d.Enqueue(ctx, ev); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	ev := mustRecord(t, d, killEvent("ZXQ7K2"))
 
 	// The UI webhook is deleted, and the chart-defined one is parked, between
 	// the enqueue and the dispatch.
@@ -731,10 +713,7 @@ func TestRunDeliversOnKickAndStopsWithItsContext(t *testing.T) {
 		d.Run(ctx)
 	}()
 
-	ev := seedEvent(t, st, killEvent("ZXQ7K2"))
-	if err := d.Enqueue(ctx, ev); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	_ = mustRecord(t, d, killEvent("ZXQ7K2"))
 
 	deadline := time.After(10 * time.Second)
 	for rec.count() == 0 {

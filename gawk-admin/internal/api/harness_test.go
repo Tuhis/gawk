@@ -117,20 +117,27 @@ func (p *fakeProjector) breakFrom(err error) {
 	p.err = err
 }
 
-// recordingEnqueuer captures what the API offered to AP7's dispatcher.
-type recordingEnqueuer struct {
+// recordingRecorder captures what the API offered to AP7's dispatcher, while
+// still persisting the event the way the real Recorder does — the routes read
+// the feed back through the same store.
+type recordingRecorder struct {
+	store  *store.Store
 	mu     sync.Mutex
 	events []store.Event
 }
 
-func (e *recordingEnqueuer) Enqueue(_ context.Context, ev store.Event) error {
+func (e *recordingRecorder) Record(ctx context.Context, ev store.Event) (store.Event, error) {
+	saved, err := e.store.AppendEvent(ctx, ev)
+	if err != nil {
+		return store.Event{}, err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.events = append(e.events, ev)
-	return nil
+	e.events = append(e.events, saved)
+	return saved, nil
 }
 
-func (e *recordingEnqueuer) all() []store.Event {
+func (e *recordingRecorder) all() []store.Event {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append([]store.Event(nil), e.events...)
@@ -176,7 +183,7 @@ type harness struct {
 	store *store.Store
 	fleet *fakeFleet
 	proj  *fakeProjector
-	enq   *recordingEnqueuer
+	enq   *recordingRecorder
 	test  *stubTester
 	kicks *kickCounter
 	logs  *bytes.Buffer
@@ -224,7 +231,7 @@ func buildHarness(t *testing.T, s *store.Store, opts ...harnessOption) *harness 
 		store: s,
 		fleet: &fakeFleet{},
 		proj:  &fakeProjector{},
-		enq:   &recordingEnqueuer{},
+		enq:   &recordingRecorder{store: s},
 		test:  &stubTester{result: api.TestResult{OK: true, Status: 200, DeliveryID: "d-1"}},
 		kicks: &kickCounter{},
 		logs:  &bytes.Buffer{},
@@ -237,7 +244,7 @@ func buildHarness(t *testing.T, s *store.Store, opts ...harnessOption) *harness 
 		Projector:  h.proj,
 		Reconciler: h.kicks,
 		Fleet:      h.fleet,
-		Enqueuer:   h.enq,
+		Recorder:   h.enq,
 		Tester:     h.test,
 		Config: config.Config{
 			OperatorRole:     "operator",

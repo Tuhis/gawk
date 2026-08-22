@@ -74,6 +74,30 @@ describe('the ban list (§4.9)', () => {
     });
   });
 
+  it('filters by target, source broadcast or actor (PR #280 round-2 review)', async () => {
+    const bans = [
+      activeBan(),
+      { ...activeBan(), id: 'ban-9', target: { type: 'ip' as const, value: '203.0.113.0/24' }, sourceBroadcastId: 'ZZZ999' },
+    ];
+    const session = stubSession((path) =>
+      path.startsWith('api/v1/bans') ? json({ bans }) : json({}),
+    );
+    renderWithSession(<BansView />, session);
+    await screen.findByText('ABC123');
+    const box = screen.getByLabelText('Filter bans');
+
+    fireEvent.change(box, { target: { value: '203.0.113' } });
+    expect(screen.queryByText('ABC123')).toBeNull();
+    expect(screen.getByText('203.0.113.0/24')).toBeTruthy();
+
+    // The source broadcast finds an IP ban whose target is a CIDR.
+    fireEvent.change(box, { target: { value: 'zzz999' } });
+    expect(screen.getByText('203.0.113.0/24')).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: 'nomatch' } });
+    expect(screen.getByText(/Nothing matches/)).toBeTruthy();
+  });
+
   it('offers Unban only on an active ban', async () => {
     const session = stubSession((path) =>
       path.startsWith('api/v1/bans') ? json({ bans: [removedBan()] }) : json({}),

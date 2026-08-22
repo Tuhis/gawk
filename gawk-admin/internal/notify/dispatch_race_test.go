@@ -90,11 +90,8 @@ func TestTwoDispatchersNeverDoubleSend(t *testing.T) {
 	wantDeliveries := events * 3 // three enabled webhooks
 	eventIDs := make([]int64, 0, events)
 	for range events {
-		ev := seedEvent(t, stA, killEvent("ZXQ7K2"))
+		ev := mustRecord(t, dA, killEvent("ZXQ7K2"))
 		eventIDs = append(eventIDs, ev.ID)
-		if err := dA.Enqueue(ctx, ev); err != nil {
-			t.Fatalf("Enqueue: %v", err)
-		}
 	}
 
 	var wg sync.WaitGroup

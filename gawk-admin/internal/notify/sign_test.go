@@ -24,7 +24,7 @@ import (
 const goldenBody = `{"schema":"gawk.moderation-event.v1","type":"broadcast.killed",` +
 	`"occurredAt":"2026-08-20T15:04:05Z","actor":"juho@example.com",` +
 	`"broadcastKey":"3f9a1c2b4d5e","reason":"terms violation",` +
-	`"portalUrl":"https://admin.example.com/#/broadcasts",` +
+	`"portalUrl":"https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",` +
 	`"summary":"broadcast 3f9a1c2b4d5e was terminated by juho@example.com"}`
 
 // goldenPendingBody is the SAME kill, recorded when its Ban CR write did not
@@ -39,7 +39,7 @@ const goldenBody = `{"schema":"gawk.moderation-event.v1","type":"broadcast.kille
 const goldenPendingBody = `{"schema":"gawk.moderation-event.v1","type":"broadcast.killed",` +
 	`"occurredAt":"2026-08-20T15:04:05Z","actor":"juho@example.com",` +
 	`"broadcastKey":"3f9a1c2b4d5e","reason":"terms violation",` +
-	`"portalUrl":"https://admin.example.com/#/broadcasts",` +
+	`"portalUrl":"https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",` +
 	`"summary":"a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com` +
 	` — NOT enforced yet, the broadcast is still live",` +
 	`"enforcement":"pending"}`
@@ -117,7 +117,7 @@ func TestSignatureVectors(t *testing.T) {
 			secret:    "gawk-webhook-secret",
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
-			want:      "a652f1aeb9817368c59eb029410fec66be136673607b3c6a4e428039022bdd93",
+			want:      "a29f6bb3090c782d7ceaa1b5e1738fb6d7073936eeccea577400d22af2b364ff",
 		},
 		{
 			// Same secret, same body, ONE SECOND later: a completely
@@ -127,7 +127,7 @@ func TestSignatureVectors(t *testing.T) {
 			secret:    "gawk-webhook-secret",
 			timestamp: goldenTimestamp + 1,
 			body:      goldenBody,
-			want:      "b09b7d38bd501c0562087c9ea6b654789e993624214fc119f4a01a3932c0ae2d",
+			want:      "747b7ee4228d8105beac7517d2aedcf60f909e58eb3615edd1841674bea7e81b",
 		},
 		{
 			// Same timestamp, same body, another webhook's key: each webhook
@@ -136,7 +136,7 @@ func TestSignatureVectors(t *testing.T) {
 			secret:    "a-different-secret",
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
-			want:      "bc0ce6d53b3fe7af8c7c5ae19df24ecc6c83627341c730fe775095e3b1b4e43a",
+			want:      "a9f00957c3369db1c04a5ea0b57892631120d8dbe5bcb822485cdc4d2c3bdeb8",
 		},
 		{
 			// The pending delivery signs like any other: the enforcement
@@ -149,7 +149,7 @@ func TestSignatureVectors(t *testing.T) {
 			secret:    "gawk-webhook-secret",
 			timestamp: goldenTimestamp,
 			body:      goldenPendingBody,
-			want:      "0d077f50b0bfa59e556f6a9fd59d760c29d674f7bfe8341a05fc10d6b402245a",
+			want:      "70234bab7a43c475595611badd979141d3449da3f9e8e480dc578378e27fad83",
 		},
 		{
 			name:      "minimal",

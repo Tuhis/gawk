@@ -114,7 +114,7 @@ func run(args []string, getenv func(string) string) error {
 		return err
 	}
 
-	// The dispatcher is constructed on every replica because Enqueue runs
+	// The dispatcher is constructed on every replica because Record runs
 	// inline on whichever one served the mutation; only its send LOOP is
 	// singleton work, started from the leadership callback below.
 	dispatcher, err := notify.New(notify.Options{Store: st, Config: cfg, Log: log})
@@ -126,7 +126,7 @@ func run(args []string, getenv func(string) string) error {
 		Records: st,
 		Bans:    bans,
 		Log:     log,
-		Enqueue: dispatcher.Enqueue,
+		Record:  dispatcher.Record,
 	})
 	if err != nil {
 		return err
@@ -149,7 +149,7 @@ func run(args []string, getenv func(string) string) error {
 		Config:      cfg,
 		Authn:       authn.Middleware,
 		RequireRole: authn.RequireRole,
-		Enqueuer:    dispatcher,
+		Recorder:    dispatcher,
 		Tester:      dispatcher,
 		// Readiness is the AND of "the schema is one we can serve" and "we can
 		// authenticate somebody". A portal that is up but cannot validate a

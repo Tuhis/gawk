@@ -132,7 +132,7 @@ type Options struct {
 
 // Dispatcher fans events out to webhooks and drains the delivery queue.
 //
-// It implements api.Enqueuer and api.Tester; main.go hands the same value to
+// It implements api.Recorder and api.Tester; main.go hands the same value to
 // both fields of api.Options and runs Run from kube.Election.OnLeading.
 type Dispatcher struct {
 	opts   Options
@@ -144,7 +144,7 @@ type Dispatcher struct {
 // The two seams internal/api declares. Asserted here so a signature drift
 // breaks this package's build rather than main.go's wiring.
 var (
-	_ api.Enqueuer = (*Dispatcher)(nil)
+	_ api.Recorder = (*Dispatcher)(nil)
 	_ api.Tester   = (*Dispatcher)(nil)
 )
 
@@ -185,30 +185,45 @@ func New(opts Options) (*Dispatcher, error) {
 
 func (d *Dispatcher) now() time.Time { return d.opts.Now() }
 
-// Enqueue queues one pending delivery per ENABLED webhook, merged across both
-// sources (docs/42 D9). It satisfies api.Enqueuer.
+// Record persists one event AND queues one pending delivery per ENABLED
+// webhook, merged across both sources (docs/42 D9), in a single Postgres
+// transaction. It satisfies api.Recorder.
 //
-// Zero configured webhooks is explicitly fine (§4.10): the event is already in
-// Postgres and the portal feed, so this returns without queueing anything
-// rather than treating "nobody to notify" as an error.
+// One transaction on purpose (PR #280 round-2 review): as two calls, a crash
+// or transient error between the event append and the delivery enqueue lost
+// that event's fan-out forever — deliveries are only ever enqueued from this
+// path, and §4.10's "a failed delivery must be seen" inherits it. The store
+// reads the enabled UI-created set inside the same transaction; this side
+// contributes only the chart-defined names, which are not rows there.
+//
+// Zero configured webhooks is explicitly fine (§4.10): the event still lands
+// in Postgres and the portal feed, with nothing queued.
 //
 // Called on whichever replica served the mutation — not only the leader — so
 // an event is queued the moment it is recorded even if the leader is mid
 // handover. The Kick that follows wakes a loop only where one is running.
-func (d *Dispatcher) Enqueue(ctx context.Context, ev store.Event) error {
-	names, err := d.enabledNames(ctx)
+func (d *Dispatcher) Record(ctx context.Context, ev store.Event) (store.Event, error) {
+	saved, err := d.opts.Store.AppendEventAndEnqueue(ctx, ev, d.configNames())
 	if err != nil {
-		return err
+		return store.Event{}, err
 	}
-	if len(names) == 0 {
-		return nil
-	}
-	if err := d.opts.Store.EnqueueDeliveries(ctx, ev.ID, names); err != nil {
-		return err
-	}
-	d.log.Debug("webhook deliveries enqueued", "eventId", ev.ID, "type", ev.Type, "webhooks", len(names))
+	d.log.Debug("moderation event recorded", "eventId", saved.ID, "type", saved.Type)
 	d.Kick()
-	return nil
+	return saved, nil
+}
+
+// configNames lists the enabled CHART-defined webhook names — the half of the
+// D9 merge the store cannot see, because config webhooks are never rows. The
+// UI-created half, and the config-wins collision rule, live in the store's
+// transaction; resolve() applies the same precedence again at send time.
+func (d *Dispatcher) configNames() []string {
+	var names []string
+	for _, h := range d.opts.Config.StaticWebhooks {
+		if h.IsEnabled() {
+			names = append(names, h.Name)
+		}
+	}
+	return names
 }
 
 // Kick asks the local loop for an immediate pass. Non-blocking and coalescing,
@@ -409,45 +424,6 @@ func retryDelay(attempts int) (time.Duration, bool) {
 // a receiver can deduplicate.
 func DeliveryID(rowID int64) string {
 	return uuid.NewSHA1(deliveryNamespace, []byte(strconv.FormatInt(rowID, 10))).String()
-}
-
-// enabledNames lists every enabled webhook name across both sources.
-//
-// Names are unique across the two sources (§4.6, enforced by internal/api,
-// which cannot see chart-defined names from the database). Config wins a
-// collision here so a name that somehow exists in both cannot fan out twice —
-// the delivery row is keyed by name, and two sources for one name would mean
-// one delivery signed with an arbitrary one of two secrets.
-func (d *Dispatcher) enabledNames(ctx context.Context) ([]string, error) {
-	seen := make(map[string]struct{})
-	var names []string
-	for _, h := range d.opts.Config.StaticWebhooks {
-		if !h.IsEnabled() {
-			continue
-		}
-		if _, dup := seen[h.Name]; dup {
-			continue
-		}
-		seen[h.Name] = struct{}{}
-		names = append(names, h.Name)
-	}
-	rows, err := d.opts.Store.ListWebhooks(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, h := range rows {
-		if !h.Enabled {
-			continue
-		}
-		if _, dup := seen[h.Name]; dup {
-			d.log.Warn("a UI-created webhook shares its name with a chart-defined one; the chart-defined webhook wins",
-				"webhook", h.Name)
-			continue
-		}
-		seen[h.Name] = struct{}{}
-		names = append(names, h.Name)
-	}
-	return names, nil
 }
 
 // resolve turns a webhook name into its URL and signing secret, looking in the

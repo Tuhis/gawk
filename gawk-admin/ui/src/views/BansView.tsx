@@ -25,9 +25,13 @@ import ui from '../styles/ui.module.css';
  */
 export function BansView() {
   const api = useApi();
-  const [filter, setFilter] = useState<'active' | 'all'>('active');
-  const load = useCallback(() => api.bans(filter), [api, filter]);
+  const [stateFilter, setStateFilter] = useState<'active' | 'all'>('active');
+  const load = useCallback(() => api.bans(stateFilter), [api, stateFilter]);
   const { data, loadedAt, error, loading, reload } = useLoader<Ban[]>(load);
+  // A client-side filter matching the target, the source broadcast and the
+  // actor: ban history grows monotonically (every kill adds a row), so the
+  // scan-a-table-by-eye problem arrives here even sooner than on Broadcasts.
+  const [filter, setFilter] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -37,7 +41,16 @@ export function BansView() {
   // manual pass is run from a phone (docs/42 §10).
   const [confirming, setConfirming] = useState<Ban | null>(null);
 
-  const bans = data ?? [];
+  const all = data ?? [];
+  const needle = filter.trim().toLowerCase();
+  const bans = needle
+    ? all.filter(
+        (b) =>
+          b.target.value.toLowerCase().includes(needle) ||
+          (b.sourceBroadcastId ?? '').toLowerCase().includes(needle) ||
+          b.createdBy.toLowerCase().includes(needle),
+      )
+    : all;
   // Countdowns run from the fetch that produced these rows, not from render
   // time (see `useLoader`'s `loadedAt`).
   const now = loadedAt;
@@ -72,8 +85,8 @@ export function BansView() {
             <input
               type="radio"
               name="ban-filter"
-              checked={filter === 'active'}
-              onChange={() => setFilter('active')}
+              checked={stateFilter === 'active'}
+              onChange={() => setStateFilter('active')}
             />
             Active
           </label>
@@ -81,13 +94,20 @@ export function BansView() {
             <input
               type="radio"
               name="ban-filter"
-              checked={filter === 'all'}
-              onChange={() => setFilter('all')}
+              checked={stateFilter === 'all'}
+              onChange={() => setStateFilter('all')}
             />
             All
           </label>
         </div>
         <span className={ui.spacer} />
+        <input
+          type="search"
+          aria-label="Filter bans"
+          placeholder="Filter by target, broadcast or actor"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
         <button type="button" onClick={reload}>
           Refresh
         </button>
@@ -160,7 +180,14 @@ export function BansView() {
       </div>
 
       {!loading && bans.length === 0 && !error ? (
-        <p className={ui.dim}>No {filter === 'active' ? 'active ' : ''}bans.</p>
+        needle ? (
+          <p className={ui.dim}>
+            Nothing matches “{filter.trim()}” ({all.length} {stateFilter === 'active' ? 'active ' : ''}
+            bans).
+          </p>
+        ) : (
+          <p className={ui.dim}>No {stateFilter === 'active' ? 'active ' : ''}bans.</p>
+        )
       ) : null}
 
       {confirming ? (

@@ -14,10 +14,10 @@ import (
 )
 
 func newReconciler(t *testing.T, recs kube.Records, bans kube.BanClient, now func() time.Time,
-	enqueue func(context.Context, store.Event) error) *kube.Reconciler {
+	record func(context.Context, store.Event) (store.Event, error)) *kube.Reconciler {
 	t.Helper()
 	r, err := kube.NewReconciler(kube.ReconcilerOptions{
-		Records: recs, Bans: bans, Now: now, Enqueue: enqueue,
+		Records: recs, Bans: bans, Now: now, Record: record,
 	})
 	if err != nil {
 		t.Fatalf("NewReconciler: %v", err)
@@ -86,9 +86,10 @@ func TestReconcileAdoptsUnknownCRNeverDeletesIt(t *testing.T) {
 	recs := newFakeRecords()
 	crs, _ := newFakeCRClient(t, ban)
 	var enqueued []store.Event
-	r := newReconciler(t, recs, crs, time.Now, func(_ context.Context, e store.Event) error {
-		enqueued = append(enqueued, e)
-		return nil
+	r := newReconciler(t, recs, crs, time.Now, func(ctx context.Context, e store.Event) (store.Event, error) {
+		saved, err := recs.AppendEvent(ctx, e)
+		enqueued = append(enqueued, saved)
+		return saved, err
 	})
 
 	if err := r.ReconcileOnce(context.Background()); err != nil {
@@ -138,9 +139,10 @@ func TestReconcileExpiresBanAndDeletesCR(t *testing.T) {
 	recs.now = clock
 	crs, _ := newFakeCRClient(t)
 	var enqueued []store.Event
-	r := newReconciler(t, recs, crs, clock, func(_ context.Context, e store.Event) error {
-		enqueued = append(enqueued, e)
-		return nil
+	r := newReconciler(t, recs, crs, clock, func(ctx context.Context, e store.Event) (store.Event, error) {
+		saved, err := recs.AppendEvent(ctx, e)
+		enqueued = append(enqueued, saved)
+		return saved, err
 	})
 
 	expiry := now.Add(10 * time.Minute)
@@ -337,9 +339,10 @@ func TestReconcileStampsTheOperatorsOwnCRNotATwin(t *testing.T) {
 	recs := newFakeRecords()
 	crs, _ := newFakeCRClient(t, ban)
 	var enqueued []store.Event
-	r := newReconciler(t, recs, crs, time.Now, func(_ context.Context, e store.Event) error {
-		enqueued = append(enqueued, e)
-		return nil
+	r := newReconciler(t, recs, crs, time.Now, func(ctx context.Context, e store.Event) (store.Event, error) {
+		saved, err := recs.AppendEvent(ctx, e)
+		enqueued = append(enqueued, saved)
+		return saved, err
 	})
 	ctx := context.Background()
 

@@ -28,17 +28,25 @@ const REFRESH_MS = 5_000;
  */
 export function BroadcastsView({
   killCooldownSeconds,
+  // The pre-filled filter from the route's `?key=` — how a webhook push's
+  // portalUrl lands the operator on the offending row (§4.10).
+  initialFilter = '',
   // The poll is a prop so it can be switched off (0). Production always uses
   // the default; a test that left a 5 s interval running would fire refetches
   // and out-of-act state updates in the middle of its own assertions.
   refreshMs = REFRESH_MS,
 }: {
   killCooldownSeconds: number;
+  initialFilter?: string;
   refreshMs?: number;
 }) {
   const api = useApi();
   const load = useCallback(() => api.broadcasts(), [api]);
   const { data, loadedAt, error, loading, reload } = useLoader<BroadcastsPage>(load, refreshMs);
+
+  // A client-side filter: at "hundreds of concurrent broadcasts" a paged
+  // operator must not scan a fleet-sized table by eye mid-incident.
+  const [filter, setFilter] = useState(initialFilter);
 
   const [killing, setKilling] = useState<Broadcast | null>(null);
   const [banning, setBanning] = useState<Broadcast | null>(null);
@@ -47,7 +55,16 @@ export function BroadcastsView({
   const [note, setNote] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
-  const broadcasts = data?.broadcasts ?? [];
+  const all = data?.broadcasts ?? [];
+  const needle = filter.trim().toLowerCase();
+  const broadcasts = needle
+    ? all.filter(
+        (b) =>
+          b.id.toLowerCase().includes(needle) ||
+          b.key.toLowerCase().includes(needle) ||
+          (b.publisherRemoteIp ?? '').toLowerCase().includes(needle),
+      )
+    : all;
   // Uptime is measured from the fetch that produced these rows, not from
   // whenever React re-rendered them (see `useLoader`'s `loadedAt`).
   const now = loadedAt;
@@ -168,10 +185,17 @@ export function BroadcastsView({
       <div className={ui.head}>
         <h1>Broadcasts</h1>
         <span className={ui.sub}>
-          {broadcasts.length} live
+          {needle ? `${broadcasts.length} of ${all.length} live` : `${all.length} live`}
           {refreshMs ? ` · refreshing every ${refreshMs / 1000}s` : ''}
         </span>
         <span className={ui.spacer} />
+        <input
+          type="search"
+          aria-label="Filter broadcasts"
+          placeholder="Filter by id, key or IP"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
         <button type="button" onClick={reload}>
           Refresh
         </button>
@@ -276,9 +300,16 @@ export function BroadcastsView({
 
       {/* The reassuring empty state is earned only by FULL coverage: with pods
           unanswered, "nothing is broadcasting" is exactly the claim we cannot
-          make, and the amber line above is already saying why. */}
+          make, and the amber line above is already saying why. A filter that
+          matched nothing is its own message — the fleet may be busy. */}
       {!loading && broadcasts.length === 0 && !error && !partial ? (
-        <p className={ui.dim}>Nothing is broadcasting right now.</p>
+        needle ? (
+          <p className={ui.dim}>
+            Nothing matches “{filter.trim()}” ({all.length} live).
+          </p>
+        ) : (
+          <p className={ui.dim}>Nothing is broadcasting right now.</p>
+        )
       ) : null}
 
       {killing ? (
@@ -298,7 +329,9 @@ export function BroadcastsView({
       {banning ? (
         <BanDialog
           broadcast={banning}
-          broadcasts={broadcasts}
+          // The WHOLE fleet, not the filtered rows: the shared-IP verdict is a
+          // statement about every live publisher, whatever the filter shows.
+          broadcasts={all}
           busy={busy}
           error={actionError}
           onCancel={() => {

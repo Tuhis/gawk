@@ -19,20 +19,28 @@ export interface Route {
   view: ViewName;
   /** The raw hash path, for naming an unknown route rather than swallowing it. */
   path: string;
+  /**
+   * `?key=<broadcastKey>` — the pre-filled filter a webhook payload's
+   * `portalUrl` carries (§4.10), so a paged operator lands on the offending
+   * row rather than matching a 12-hex key against a fleet by eye. The HMAC'd
+   * key, never a raw ID (D8). Empty when the hash carries none.
+   */
+  key: string;
 }
 
 const VIEWS: readonly ViewName[] = ['broadcasts', 'bans', 'events', 'relays', 'webhooks'];
 
 export function parseHash(hash: string): Route {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;
-  const [pathPart = ''] = raw.split('?');
+  const [pathPart = '', queryPart = ''] = raw.split('?');
+  const key = new URLSearchParams(queryPart).get('key') ?? '';
   const segments = pathPart.split('/').filter(Boolean);
-  if (segments.length === 0) return { view: 'broadcasts', path: pathPart };
+  if (segments.length === 0) return { view: 'broadcasts', path: pathPart, key };
   const head = segments[0] as ViewName;
-  if (VIEWS.includes(head)) return { view: head, path: pathPart };
+  if (VIEWS.includes(head)) return { view: head, path: pathPart, key };
   // Named, not silently redirected: a link that lands nowhere should say so
   // rather than look like it worked.
-  return { view: 'not-found', path: pathPart };
+  return { view: 'not-found', path: pathPart, key };
 }
 
 export function href(view: ViewName): string {

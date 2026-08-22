@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -50,7 +51,22 @@ const testSummary = "test notification from the gawk-admin portal: this webhook 
 // example, and `ui/src/router/router.ts`, which pins `#/broadcasts` as the
 // default route precisely so a cold click from a push notification lands
 // somewhere real).
+//
+// An event that names a broadcast appends `?key=<broadcastKey>` — the HMAC'd
+// key, never the raw ID (D8) — which the portal reads as a pre-filled filter,
+// so a paged operator lands ON the offending row instead of visually matching
+// a 12-hex key against a fleet-sized table.
 const portalPath = "/#/broadcasts"
+
+func portalURL(externalURL, broadcastKey string) string {
+	if externalURL == "" {
+		return ""
+	}
+	if broadcastKey == "" {
+		return externalURL + portalPath
+	}
+	return externalURL + portalPath + "?key=" + url.QueryEscape(broadcastKey)
+}
 
 // Payload is the webhook body (docs/42 §4.10).
 //
@@ -135,9 +151,7 @@ func buildPayload(ev store.Event, externalURL string) Payload {
 		Summary:      summary,
 		Enforcement:  string(enforcement),
 	}
-	if externalURL != "" {
-		p.PortalURL = externalURL + portalPath
-	}
+	p.PortalURL = portalURL(externalURL, ev.BroadcastKey)
 	return p
 }
 
@@ -150,9 +164,7 @@ func testPayload(now time.Time, externalURL string) Payload {
 		Actor:      "gawk-admin",
 		Summary:    testSummary,
 	}
-	if externalURL != "" {
-		p.PortalURL = externalURL + portalPath
-	}
+	p.PortalURL = portalURL(externalURL, "")
 	return p
 }
 

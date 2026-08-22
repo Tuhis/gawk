@@ -47,6 +47,92 @@ func (s *Store) AppendEvent(ctx context.Context, e Event) (Event, error) {
 	return out, nil
 }
 
+// AppendEventAndEnqueue writes one event AND its per-webhook delivery rows in
+// a single transaction.
+//
+// It exists to close the AppendEvent → EnqueueDeliveries window: the two
+// writes land in the same Postgres, and separately they left a gap in which a
+// crash — or a transient error on the second call, which had no retry, since
+// deliveries are only ever enqueued from the recording path — lost that one
+// event's webhook fan-out while the event claimed to be recorded. §4.10's "a
+// failed delivery must be seen" (and R40's "a flag must reach a human")
+// inherit this pipe, so the two writes commit together or not at all.
+//
+// configNames are the enabled CHART-defined webhooks, which are not rows here;
+// the enabled UI-created set is read INSIDE the transaction so a concurrent
+// webhook edit cannot split the decision from the write. A UI name shadowed by
+// a config name yields one delivery row (the queue is keyed by name), which
+// the dispatcher's resolve() signs with the config secret — the same
+// config-wins rule notify applies at send time (docs/42 D9).
+func (s *Store) AppendEventAndEnqueue(ctx context.Context, e Event, configNames []string) (Event, error) {
+	if e.OccurredAt.IsZero() {
+		e.OccurredAt = s.now()
+	}
+	e.OccurredAt = e.OccurredAt.UTC()
+	payload := e.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, fmt.Errorf("store: append event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const q = `INSERT INTO moderation_events (type, occurred_at, actor, broadcast_key, broadcast_id, payload)
+		VALUES ($1,$2,$3,$4,$5,$6) RETURNING ` + eventColumns
+	out, err := scanEvent(tx.QueryRow(ctx, q, e.Type, e.OccurredAt, e.Actor,
+		nullString(e.BroadcastKey), nullString(e.BroadcastID), []byte(payload)))
+	if err != nil {
+		return Event{}, fmt.Errorf("store: append event: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(configNames))
+	names := make([]string, 0, len(configNames))
+	for _, n := range configNames {
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	rows, err := tx.Query(ctx, `SELECT name FROM webhooks WHERE enabled = true`)
+	if err != nil {
+		return Event{}, fmt.Errorf("store: append event: list webhooks: %w", err)
+	}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return Event{}, fmt.Errorf("store: append event: list webhooks: %w", err)
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return Event{}, fmt.Errorf("store: append event: list webhooks: %w", err)
+	}
+
+	now := s.now().UTC()
+	for _, name := range names {
+		if _, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries (event_id, webhook_name, state, attempts, next_attempt_at)
+			VALUES ($1,$2,'pending',0,$3) ON CONFLICT (event_id, webhook_name) DO NOTHING`,
+			out.ID, name, now); err != nil {
+			return Event{}, fmt.Errorf("store: append event: enqueue deliveries: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, fmt.Errorf("store: append event: %w", err)
+	}
+	return out, nil
+}
+
 // ClampEventLimit is the page-size rule, in one place so a caller computing a
 // pagination cursor and this package cutting the rows cannot disagree.
 func ClampEventLimit(limit int) int {

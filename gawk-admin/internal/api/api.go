@@ -96,14 +96,17 @@ type Fleet interface {
 	Invalidate()
 }
 
-// Enqueuer hands a persisted event to the webhook dispatcher (AP7).
+// Recorder persists a moderation event together with its webhook fan-out
+// (AP7) — one transaction, so a crash cannot record an event whose deliveries
+// were never queued (the AppendEvent → EnqueueDeliveries window, PR #280
+// round-2 review).
 //
 // The dispatcher — not this package — decides WHICH webhooks an event fans out
-// to and writes the delivery rows: it is the component that knows both the
-// config-sourced and UI-created sets and holds the signing secrets. Handlers
-// only guarantee that every event they persist is offered exactly once.
-type Enqueuer interface {
-	Enqueue(ctx context.Context, ev store.Event) error
+// to: it is the component that knows both the config-sourced and UI-created
+// sets and holds the signing secrets. Handlers only guarantee that every event
+// they produce is offered exactly once.
+type Recorder interface {
+	Record(ctx context.Context, ev store.Event) (store.Event, error)
 }
 
 // TestResult is the outcome of POST /webhooks/{name}/test.
@@ -151,9 +154,9 @@ type Options struct {
 	// carries role. Supplied by internal/auth.
 	RequireRole func(role string) func(http.Handler) http.Handler
 
-	// Enqueuer and Tester are AP7's dispatcher. Both have safe defaults so
+	// Recorder and Tester are AP7's dispatcher. Both have safe defaults so
 	// this package is testable without internal/notify.
-	Enqueuer Enqueuer
+	Recorder Recorder
 	Tester   Tester
 
 	// ReadyChecks run alongside the Postgres check in /readyz.
@@ -188,8 +191,8 @@ func New(opts Options) (*API, error) {
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	if opts.Enqueuer == nil {
-		opts.Enqueuer = noopEnqueuer{}
+	if opts.Recorder == nil {
+		opts.Recorder = appendOnlyRecorder{opts.Store}
 	}
 	if opts.Tester == nil {
 		opts.Tester = unavailableTester{}
@@ -529,30 +532,32 @@ func (a *API) kick() {
 	}
 }
 
-// record persists an event and offers it to the dispatcher. Failures are
-// logged, never fatal to the mutation that caused them: the enforcement action
-// has already happened, and losing its notification must not un-happen it.
+// record persists an event and its webhook fan-out — one Recorder call, one
+// transaction. A failure is logged, never fatal to the mutation that caused
+// it: the enforcement action has already happened, and losing its
+// notification must not un-happen it. What can no longer happen is the HALF
+// failure — an event recorded whose fan-out silently never queued.
 //
 // It runs detached from the request (see postCommit): the one caller who must
 // never be able to cancel this is the client whose action it records.
 func (a *API) record(ctx context.Context, ev store.Event) {
 	ctx, cancel := postCommit(ctx)
 	defer cancel()
-	saved, err := a.opts.Store.AppendEvent(ctx, ev)
-	if err != nil {
+	if _, err := a.opts.Recorder.Record(ctx, ev); err != nil {
 		a.log.Error("recording a moderation event failed", "type", ev.Type, "err", err)
-		return
-	}
-	if err := a.opts.Enqueuer.Enqueue(ctx, saved); err != nil {
-		a.log.Warn("enqueueing webhook deliveries failed", "eventId", saved.ID, "err", err)
 	}
 }
 
-type noopEnqueuer struct{}
+// appendOnlyRecorder is the no-dispatcher default: the event lands in Postgres
+// and the portal feed with no fan-out queued. Deliberately NOT
+// AppendEventAndEnqueue — with no dispatcher running, queued rows would sit
+// "pending" in the feed forever, claiming a page is on its way that nothing
+// will ever send.
+type appendOnlyRecorder struct{ store *store.Store }
 
-// Enqueue drops the event. Zero configured webhooks is explicitly fine
-// (docs/42 §4.10): events always land in Postgres and the portal feed.
-func (noopEnqueuer) Enqueue(context.Context, store.Event) error { return nil }
+func (r appendOnlyRecorder) Record(ctx context.Context, ev store.Event) (store.Event, error) {
+	return r.store.AppendEvent(ctx, ev)
+}
 
 type unavailableTester struct{}
 

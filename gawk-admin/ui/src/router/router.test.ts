@@ -10,11 +10,18 @@ describe('portal routes (§4.9)', () => {
   });
 
   it('resolves the route every webhook payload points at', () => {
-    // `portalUrl` in a webhook is `<external-url>/#/broadcasts` (§4.10). It is
-    // followed from a phone, cold, before the operator is even signed in — so
-    // this exact shape has to resolve.
-    const payloadUrl = 'https://admin.example.com/#/broadcasts';
-    expect(parseHash(payloadUrl.slice(payloadUrl.indexOf('#'))).view).toBe('broadcasts');
+    // `portalUrl` in a webhook is `<external-url>/#/broadcasts?key=<key>`
+    // (§4.10). It is followed from a phone, cold, before the operator is even
+    // signed in — so this exact shape has to resolve, key included.
+    const payloadUrl = 'https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e';
+    const route = parseHash(payloadUrl.slice(payloadUrl.indexOf('#')));
+    expect(route.view).toBe('broadcasts');
+    expect(route.key).toBe('3f9a1c2b4d5e');
+  });
+
+  it('reads an empty key from a hash carrying none', () => {
+    expect(parseHash('#/broadcasts').key).toBe('');
+    expect(parseHash('#/bans?state=all').key).toBe('');
   });
 
   it('resolves every view', () => {

@@ -40,11 +40,12 @@ type ReconcilerOptions struct {
 	Now func() time.Time
 	// Interval is the sweep period; 0 means DefaultInterval.
 	Interval time.Duration
-	// Enqueue hands a persisted event to the webhook dispatcher (AP7). nil
-	// means no notification fan-out — events still land in Postgres and the
-	// portal feed, which docs/42 §4.10 explicitly allows ("zero configured
-	// webhooks is fine").
-	Enqueue func(ctx context.Context, ev store.Event) error
+	// Record persists an event together with its webhook fan-out in one
+	// transaction (AP7, the dispatcher's Record). nil means no notification
+	// fan-out — events then land via Records.AppendEvent alone, in Postgres
+	// and the portal feed, which docs/42 §4.10 explicitly allows ("zero
+	// configured webhooks is fine").
+	Record func(ctx context.Context, ev store.Event) (store.Event, error)
 }
 
 // Reconciler converges the `bans` table and the Ban CRs in both directions.
@@ -303,16 +304,15 @@ func (r *Reconciler) emitExpired(ctx context.Context, b store.Ban) {
 }
 
 func (r *Reconciler) record(ctx context.Context, ev store.Event) {
-	saved, err := r.opts.Records.AppendEvent(ctx, ev)
-	if err != nil {
+	// One call, one transaction: the event and its fan-out commit together, so
+	// a crash here cannot record an adoption or expiry whose page was never
+	// queued (the AppendEvent → EnqueueDeliveries window).
+	rec := r.opts.Record
+	if rec == nil {
+		rec = r.opts.Records.AppendEvent
+	}
+	if _, err := rec(ctx, ev); err != nil {
 		r.log.Warn("recording a moderation event failed", "type", ev.Type, "err", err)
-		return
-	}
-	if r.opts.Enqueue == nil {
-		return
-	}
-	if err := r.opts.Enqueue(ctx, saved); err != nil {
-		r.log.Warn("enqueueing webhook deliveries failed", "eventId", saved.ID, "err", err)
 	}
 }
 

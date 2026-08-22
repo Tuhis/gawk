@@ -81,6 +81,58 @@ describe('the fleet table', () => {
   });
 });
 
+// Findability at fleet scale (PR #280 round-2 review): at "hundreds of
+// concurrent broadcasts" the paged-operator flow must not degrade to matching
+// a 12-hex key against a table by eye.
+describe('the filter', () => {
+  const fleet = [
+    broadcast({ id: 'AAA111', key: 'aaaa11112222', publisherRemoteIp: '203.0.113.1' }),
+    broadcast({ id: 'BBB222', key: 'bbbb33334444', publisherRemoteIp: '198.51.100.9' }),
+  ];
+
+  it('narrows by id, key or publisher IP, case-insensitively', async () => {
+    mount(fleet);
+    await screen.findByText('AAA111');
+    const box = screen.getByLabelText('Filter broadcasts');
+
+    fireEvent.change(box, { target: { value: 'bbb2' } });
+    expect(screen.queryByText('AAA111')).toBeNull();
+    expect(screen.getByText('BBB222')).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: 'aaaa1111' } });
+    expect(screen.getByText('AAA111')).toBeTruthy();
+    expect(screen.queryByText('BBB222')).toBeNull();
+
+    fireEvent.change(box, { target: { value: '198.51.100.9' } });
+    expect(screen.getByText('BBB222')).toBeTruthy();
+  });
+
+  it('pre-fills from the route key a webhook portalUrl carries (§4.10)', async () => {
+    const session = stubSession((path) =>
+      path === 'api/v1/broadcasts' ? json({ broadcasts: fleet }) : json({}),
+    );
+    renderWithSession(
+      <BroadcastsView killCooldownSeconds={600} refreshMs={0} initialFilter="bbbb33334444" />,
+      session,
+    );
+    expect(await screen.findByText('BBB222')).toBeTruthy();
+    expect(screen.queryByText('AAA111')).toBeNull();
+    expect((screen.getByLabelText('Filter broadcasts') as HTMLInputElement).value).toBe(
+      'bbbb33334444',
+    );
+  });
+
+  it('says the filter matched nothing rather than "nothing is broadcasting"', async () => {
+    mount(fleet);
+    await screen.findByText('AAA111');
+    fireEvent.change(screen.getByLabelText('Filter broadcasts'), {
+      target: { value: 'zzz' },
+    });
+    expect(screen.getByText(/Nothing matches/)).toBeTruthy();
+    expect(screen.queryByText(/Nothing is broadcasting/)).toBeNull();
+  });
+});
+
 // Relayscan degrades an unreachable pod into missing rows rather than an
 // error, so the envelope's coverage counters are the only way this page can
 // tell a quiet fleet from one it could not see (PR #280 review).

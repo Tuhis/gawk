@@ -587,7 +587,12 @@ oci://ghcr.io/tuhis/charts/gawk-admin       ghcr.io/tuhis/gawk-admin
 ### 9.2 Install
 
 Two halves. **Turn the relay's side on first** — it is what installs the `Ban`
-CRD, and `gawk-admin` writes into it:
+CRD, and `gawk-admin` writes into it. The ordering is an **upgrade** rule too,
+not only an install one: upgrade the `gawk-server` chart before `gawk-admin`,
+the same schema-before-writer discipline the migration hook enforces for
+Postgres — a newer portal writing against an older installed CRD has its new
+spec fields silently pruned (docs/42 §4.2 carries the CRD's additive-only
+compatibility rule).
 
 ```sh
 helm upgrade --install gawk-server oci://ghcr.io/tuhis/charts/gawk-server \

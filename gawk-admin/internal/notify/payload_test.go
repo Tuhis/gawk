@@ -133,8 +133,10 @@ func TestNoRawIDOrIPInAnyPayload(t *testing.T) {
 			if m["schema"] != PayloadSchema {
 				t.Errorf("schema = %v, want %q", m["schema"], PayloadSchema)
 			}
-			if m["portalUrl"] != "https://admin.example.com/#/broadcasts" {
-				t.Errorf("portalUrl = %v, want the portal deep link", m["portalUrl"])
+			// The deep link filters by the HMAC'd key — still no raw ID (D8):
+			// the poisons check above runs over the URL too.
+			if m["portalUrl"] != "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e" {
+				t.Errorf("portalUrl = %v, want the key-filtered portal deep link", m["portalUrl"])
 			}
 		})
 	}

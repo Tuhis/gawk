@@ -195,6 +195,19 @@ spec:
   when it cannot reach Postgres; when it can, it adopts unknown CRs into
   Postgres as `createdBy: kubectl` rows rather than deleting them).
 - **No status subresource** in v1alpha1 — relays only read.
+- **`v1alpha1` `BanSpec` is additive-only** (the D18 expand–contract shape,
+  written down before the first divergence instead of after): a new spec field
+  must be optional with an absent-means-previous-behaviour default, and a new
+  `target.type` value means a new CRD *version*, never a widened enum. The
+  rule exists because the schema is owned by the **relay** chart while the
+  writer is `gawk-admin`, and the two deployables routinely run different
+  releases: a structural CRD silently **prunes** a spec field an older
+  installed schema does not know, and enum-rejects a new `target.type` —
+  fail-closed, surfacing as a permanent `202`/`enforcement: pending` with a
+  reconciler Warn every minute. The upgrade ordering this implies — relay
+  chart (the schema) before `gawk-admin` (the writer) — is documented in
+  `docs/self-hosting.md` §9; the release-coupling rule for the shared Go
+  packages is in `CONTRIBUTING.md`.
 
 **The `gawk-server/moderation` package (D13)** is the single source of truth
 for semantics, used by both sides:
@@ -646,8 +659,13 @@ X-Gawk-Signature: sha256=<hex HMAC-SHA256(that webhook's secret, timestamp + "."
   "actor": "juho@example.com",
   "broadcastKey": "3f9a1c2b4d5e",
   "reason": "terms violation",
-  "portalUrl": "https://admin.example.com/#/broadcasts" }
+  "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e" }
 ```
+
+An event that names a broadcast appends `?key=<broadcastKey>` to `portalUrl` —
+still the HMAC'd key, never the raw ID (D8) — which the portal reads as a
+pre-filled filter, so the paged operator lands on the offending row instead of
+matching a 12-hex key against a fleet-sized table by eye.
 
 …and the same kill recorded when its `Ban` CR write did not land — §4.7's
 `202 Accepted`, delivered rather than answered:
@@ -659,7 +677,7 @@ X-Gawk-Signature: sha256=<hex HMAC-SHA256(that webhook's secret, timestamp + "."
   "actor": "juho@example.com",
   "broadcastKey": "3f9a1c2b4d5e",
   "reason": "terms violation",
-  "portalUrl": "https://admin.example.com/#/broadcasts",
+  "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",
   "summary": "a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com — NOT enforced yet, the broadcast is still live",
   "enforcement": "pending" }
 ```
@@ -1085,6 +1103,7 @@ code.
 | §9 AP8 | the `docker` job smoke-probes every image's HTTP endpoint | the `gawk-admin` entry carries **no probe**; it asserts the process reaches its documented cluster-less failure | The image genuinely cannot serve without Kubernetes (§4.14). The probe was written before `cmd/gawk-admin/main.go` existed and would have failed on its first CI run. A smoke that asserts something false is worse than one that asserts less. |
 | §4.14 | the local lane is "kind or envtest" | `main.go` also falls back to the ordinary kubeconfig loading rules when in-cluster config is absent | That fallback is what makes "run it against kind" work without pretending to be a pod. Deliberately **not** a knob: `KUBECONFIG` is the conventional mechanism, and a flag would have to reach the chart to satisfy the carry-all-limits rule for something a pod would never set. A missing API server stays fatal — unlike the IdP, there is nowhere to write a Ban CR, and a kill button that records a row nothing enforces is worse than a refusal to start. |
 | §4.8 | the SPA runs the redirect flow with a *bundled* OIDC client library | the whole public-client flow (code+PKCE, `state`/`nonce`, token endpoint, silent renew) is **hand-rolled over WebCrypto** in `ui/src/auth/` — the SPA's runtime dependencies are exactly `react` and `react-dom`, and the §4.8 text is corrected in place | The candidate libraries carry their own storage and iframe machinery, most of it for flows this SPA forbids (persistent tokens, silent-auth iframes), and auditing what a library does *not* do proved harder than owning the ~700 lines it actually needs — which the suite tests directly (PKCE vectors, `state`/`nonce` round-trips, renewal). The trade is recorded here because it is security-critical: a CVE search for this portal's OIDC path must target `ui/src/auth/`, not a dependency list — `THIRD-PARTY-NOTICES.md` says the same. |
+| §9 AP2, AP4 | the k8s ban source and leader election are verified with **envtest** (a real kube-apiserver + etcd) | **client-go fakes throughout**: a fake dynamic client / ListerWatcher for the informer-drives-`Set` tests, `k8sfake.Clientset` for leader election, `dynamicfake` for the reconciler and `CRClient` | The tests were written where the code was written, on a machine without envtest binaries, and the fakes prove the logic is *called* correctly — which covers most of what AP2/AP4 ask. What they cannot prove is recorded in §11.2's "not covered" list: Lease CAS actually contended under real etcd, the chart's CRD schema accepting the reconciler's real payload, and RBAC verb coverage. Standing follow-up: an envtest-backed CI job (the runners can fetch envtest binaries the same way they fetch kind images), or extending the kind tier to install `gawk-admin` and drive one kill through the API — either discharges the first two directly. |
 | §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |
 
 ### 11.2 What is verified, and by what
@@ -1172,6 +1191,24 @@ Automated, and gating every PR:
   break-glass `kubectl` IP ban with no accompanying ID ban, is
   presentation-only, and is arguably unknowable from an edge that holds no
   publisher entry to map the address onto.
+- **The Kubernetes seam beyond what fakes can enforce** (the §11.1 envtest
+  deviation): Lease optimistic concurrency under a real etcd — the fake's
+  object tracker enforces no resourceVersion conflicts, so mutual exclusion
+  rests on client-go's election logic being *called* correctly, never on Lease
+  CAS being *contended*; the chart's CRD OpenAPI schema accepting the
+  reconciler's actual CR payload — the kind tier applies hand-written Ban YAML
+  and never installs `gawk-admin`, so no real API server has validated a
+  `CRClient` write anywhere automated; and RBAC verb coverage. These are where
+  R39's two worst silent failure classes live (a schema-rejected reconciler
+  stops projecting every ban while the fleet enforces stale state; a double
+  leader double-sends webhooks), so the gap is named here until the envtest CI
+  job or a kind-tier `gawk-admin` install closes it.
+- **Ban history at scale**: `GET /api/v1/bans?state=all` is unbounded and the
+  portal renders the whole history, filtered client-side. Events got cursor
+  pagination for exactly this monotonic-growth shape; ban history needs the
+  same before R40's auto-kills accelerate it (a follow-up, noted rather than
+  wished away — the rows are UUID-keyed, so the cursor design is not a copy of
+  the events one).
 - **Everything in §11.3.**
 
 ### 11.3 Still manual — the milestone-closing pass, step by step
