@@ -208,7 +208,7 @@ script for what counts as a dependency here and why.
 | `linked-hash-map` | 0.5.6 | `MIT/Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `linked_hash_set` | 0.1.6 | `Apache-2.0` | — |
 | `litemap` | 0.8.2 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `log` | 0.4.33 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
+| `log` | 0.4.34 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `loop9` | 0.1.5 | `MIT` | — |
 | `lru-slab` | 0.1.2 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) 2024 The lru-slab Developers |
 | `lyon_algorithms` | 1.0.20 | `MIT OR Apache-2.0` | — |
