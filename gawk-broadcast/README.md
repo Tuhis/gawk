@@ -50,9 +50,11 @@ Note the slash: tags are `gawk-broadcast/vX.Y.Z` from v1.11.2 onward, and
 `gawk-server/wire` — the package this module and both other clients import
 rather than mirror — cannot be resolved by `go get` at a version at all.
 
-The tarball holds both binaries, `INSTALL.md` and `BUILD-INFO.txt`, with a
-`SHA256SUMS` asset beside it (the binaries are unsigned, so the checksum is
-the integrity check). Every green CI run also uploads an artifact
+The tarball holds all three binaries — the GUI, the CLI and the
+`gawk-pw-helper` those two spawn for per-application audio, so keep it
+beside them — plus `INSTALL.md` and `BUILD-INFO.txt`, with a `SHA256SUMS`
+asset beside it (the binaries are unsigned, so the checksum is the
+integrity check). Every green CI run also uploads an artifact
 (`gawk-broadcast-linux-amd64-<sha>`) for testing unreleased builds —
 [`INSTALL.md`](INSTALL.md) is written for a tester with a binary and no
 context.
@@ -158,11 +160,11 @@ sharp edges: **[`docs/troubleshooting.md`](docs/troubleshooting.md)**.
 ## Build
 
 ```sh
-# Go, plus Gio's Linux headers (Debian/Ubuntu) — GUI only; the CLI and
-# engine need none of them:
+# Go, plus Gio's Linux headers (GUI only) and libpipewire's (gawk-pw-helper
+# only, which cgo-links it) — the CLI and engine need neither:
 sudo apt install gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
   libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev \
-  libxcursor-dev libvulkan-dev
+  libxcursor-dev libvulkan-dev libpipewire-0.3-dev
 
 go build ./cmd/...
 ```
@@ -170,7 +172,7 @@ go build ./cmd/...
 ## Test
 
 ```sh
-go test ./...                     # needs the Gio headers (builds every package)
+go test ./...                     # needs both header sets (builds every package)
 go test ./internal/...            # engine only; no headers needed
 go test -short ./internal/...     # skips the tests that build and run the real relay
 ```
