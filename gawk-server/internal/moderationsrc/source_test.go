@@ -2,6 +2,7 @@ package moderationsrc
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -72,22 +73,27 @@ func TestStartRejectsBadInput(t *testing.T) {
 	}
 }
 
-// The k8s source needs a namespace and an in-cluster config; failing to
-// construct it is a STARTUP error, so a misconfigured relay never comes up
-// quietly enforcing nothing. (Losing contact with an already-built informer
-// is a different thing entirely — that one only warns, docs/42 §6.)
-func TestStartK8sOutsideAClusterFailsStartup(t *testing.T) {
+// The k8s source needs a namespace and Kubernetes CREDENTIALS — in-cluster,
+// or the kubeconfig fallback (docs/41 §4.8, the compose lane); with neither,
+// failing to construct it is a STARTUP error, so a misconfigured relay never
+// comes up quietly enforcing nothing. (Losing contact with an already-built
+// informer is a different thing entirely — that one only warns, docs/42 §6.)
+func TestStartK8sWithNoCredentialsFailsStartup(t *testing.T) {
 	// Blanked explicitly: gawk's own CI runners are pods, where these would
-	// otherwise be set and rest.InClusterConfig would succeed.
+	// otherwise be set and rest.InClusterConfig would succeed. KUBECONFIG
+	// points at nothing so the fallback cannot pick up the DEVELOPER'S real
+	// ~/.kube/config — on a machine that has one, Start succeeding is the
+	// feature, not the failure this test pins.
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")
 	t.Setenv("POD_NAMESPACE", "")
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "absent"))
 
 	ctx := context.Background()
 	err := Start(ctx, Options{Source: "k8s", Namespace: "production",
 		Set: moderation.NewSet(), Log: discardLog})
 	if err == nil {
-		t.Fatal("Start(k8s) succeeded outside a cluster")
+		t.Fatal("Start(k8s) succeeded with neither in-cluster config nor a kubeconfig")
 	}
 
 	// ...and with no namespace to watch, the failure names that instead.

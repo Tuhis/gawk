@@ -92,9 +92,11 @@ default — constructs nothing: the ban set stays empty, every publish-path
 check is a cheap miss, and the relay behaves exactly as it did before R39.
 `k8s` watches `Ban` custom resources in `POD_NAMESPACE` and is *independent
 of `-cluster-mode`* (enforcement is not a federation feature); it needs the
-CRD installed and read-only RBAC on `bans`. `file:<path>` reads a JSON array
-of ban records and reloads it when the file changes or the process gets
-SIGHUP — the dev/compose lane. A banned publisher is rejected with HTTP
+CRD installed and read-only RBAC on `bans`, and resolves credentials
+in-cluster first, then by the ordinary kubeconfig rules (`KUBECONFIG`) — the
+out-of-pod fallback the docs/41 compose lane relies on. `file:<path>` reads a
+JSON array of ban records and reloads it when the file changes or the process
+gets SIGHUP — the no-Kubernetes lane (docs/self-hosting.md §9). A banned publisher is rejected with HTTP
 **451** before the WebTransport upgrade, counted as
 `gawk_connections_total{route="publish",outcome="banned"}`; ban reasons are
 logged at Debug only.

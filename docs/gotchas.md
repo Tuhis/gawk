@@ -1038,6 +1038,21 @@ Add to it when a new gotcha lands in `docs/`.
   `clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)`.
   Production is unaffected — a real API server sends the bookmark.
   ([docs/42](42-admin-moderation-portal.md) §4.2)
+- **A same-origin dev IdP's issuer must use the CONTAINER's listen port, not
+  just the published one.** The compose portal lane's issuer is
+  `http://localhost:8088/idp`, and gawk-admin fetches it from INSIDE its own
+  container — where `localhost:8088` is its own loopback, so the /idp proxy
+  loop only closes if the container LISTENS on 8088 too. Publishing
+  `8088:8090` produced a portal that served fine while `/readyz` said
+  `connection refused` on its own issuer forever. The compose file pins
+  container port == published port == the ADMIN_URL port, with a comment
+  saying the equality is load-bearing.
+- **Two dev-stack image traps, one `up` apart** (2026-08-27): the
+  `postgres:18` image refuses the classic `/var/lib/postgresql/data` mount
+  point (mount `/var/lib/postgresql` — docker-library/postgres#37), and
+  `rancher/kine` runs as `nobody`, so a named volume mounted anywhere but the
+  image's own declared `/db` directory is root-owned and unwritable ("unable
+  to open database file").
 - **go-oidc's `RemoteKeySet` unblocks waiters before clearing its in-flight
   fetch entry**, so a verification arriving just after a FAILED fetch can join
   that stale in-flight and inherit its error — a spurious 401 that spends no

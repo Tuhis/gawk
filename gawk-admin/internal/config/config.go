@@ -83,6 +83,15 @@ type Config struct {
 	AppBaseURL       string // watch deep links; empty hides them
 	TelemetryBaseURL string // telemetry deep links; empty hides them
 
+	// DevOIDCProxy, when non-empty, mounts a reverse proxy at /idp/ towards
+	// this base URL — the docs/41 compose lane's answer to the OIDC
+	// frontend/backchannel split: with the issuer set to <externalUrl>/idp,
+	// ONE URL reaches the dev IdP from the developer's browser (the published
+	// port) and from this container (its own listener). DEV ONLY, the
+	// GAWK_DEV_CERT precedent: it is deliberately not a chart value, and
+	// serving it logs a warning at startup.
+	DevOIDCProxy string
+
 	LogLevel  slog.Level
 	LogFormat string // "text" or "json"
 }
@@ -161,6 +170,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"telemetry UI base URL for deep links; empty hides them")
 	logLevel := fs.String("log-level", env("GAWK_ADMIN_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logFormat := fs.String("log-format", env("GAWK_ADMIN_LOG_FORMAT", "text"), "log format: text|json")
+	devOIDCProxy := fs.String("dev-oidc-proxy", env("GAWK_ADMIN_DEV_OIDC_PROXY", ""),
+		"DEV ONLY: reverse-proxy /idp/ to this base URL so one issuer URL works in the browser and in the container (docs/41)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -182,6 +193,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		Namespace:        *namespace,
 		AppBaseURL:       strings.TrimRight(*appBaseURL, "/"),
 		TelemetryBaseURL: strings.TrimRight(*telemetryBaseURL, "/"),
+		DevOIDCProxy:     strings.TrimRight(strings.TrimSpace(*devOIDCProxy), "/"),
 		LogFormat:        *logFormat,
 	}
 

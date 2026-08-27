@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
@@ -29,9 +30,9 @@ func startK8s(ctx context.Context, opts Options) error {
 	if namespace == "" {
 		return fmt.Errorf("moderation source k8s requires POD_NAMESPACE (downward API)")
 	}
-	restCfg, err := rest.InClusterConfig()
+	restCfg, err := restConfig()
 	if err != nil {
-		return fmt.Errorf("moderation source k8s requires in-cluster kubernetes config: %w", err)
+		return fmt.Errorf("moderation source k8s requires kubernetes credentials: %w", err)
 	}
 	client, err := dynamic.NewForConfig(restCfg)
 	if err != nil {
@@ -42,6 +43,27 @@ func startK8s(ctx context.Context, opts Options) error {
 	opts.Log.Info("moderation k8s source started", "namespace", namespace,
 		"resource", moderation.GroupVersionResource.String())
 	return nil
+}
+
+// restConfig resolves Kubernetes credentials: in-cluster first, then the
+// ordinary kubeconfig loading rules (KUBECONFIG, then ~/.kube/config) — the
+// same fallback, for the same reason, as gawk-admin's cmd/gawk-admin
+// restConfig. In a pod nothing changes: the in-cluster path wins. Outside one
+// — the docs/41 compose lane, whose kube-apiserver has no kubelet and
+// therefore no pods — KUBECONFIG is how the relay reaches the Ban CRs the
+// portal writes. Deliberately NOT a flag: the environment variable is the
+// conventional mechanism, and a flag would have to be plumbed through the
+// chart (the registryOptions rule) for something a pod would never set.
+func restConfig() (*rest.Config, error) {
+	if cfg, err := rest.InClusterConfig(); err == nil {
+		return cfg, nil
+	}
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("no in-cluster config and no usable kubeconfig: %w", err)
+	}
+	return cfg, nil
 }
 
 // BanListerWatcher lists and watches every Ban in a namespace.

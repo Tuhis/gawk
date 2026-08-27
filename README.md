@@ -120,6 +120,12 @@ Open `http://localhost:8080/#/broadcast`, click **Start a stream** and pick a
 screen — you get a 6-character code. Open the join link in another tab, or in
 a fresh incognito window, and it connects. No Chrome flags needed.
 
+The moderation portal is part of the same `up`: open `http://localhost:8088`,
+click sign in, and you land back authenticated — the stack runs a test-only
+identity provider that approves everyone as `operator`. Kills and bans made
+there enforce through the same Ban-CR pipe a real deployment uses (a minimal
+dev control plane ships in the stack; `docs/41` has the details).
+
 Under the hood, the relay generates a self-signed certificate into `certs/`
 and keeps it across restarts, and the stack renders that certificate's hash
 into the frontend's `/config.js`. Because the hash arrives through

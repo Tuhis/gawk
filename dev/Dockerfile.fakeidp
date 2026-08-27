@@ -7,7 +7,7 @@
 # Repo-root context, same reason as gawk-admin/deploy/Dockerfile: the module
 # consumes gawk-server through a local `replace`.
 #
-#   docker build -f e2e/Dockerfile.fakeidp -t gawk-fakeidp:e2e .
+#   docker build -f dev/Dockerfile.fakeidp -t gawk-fakeidp:e2e .
 FROM golang:1.26-trixie AS build
 WORKDIR /src
 COPY gawk-server/ ./gawk-server/

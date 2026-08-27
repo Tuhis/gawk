@@ -258,7 +258,7 @@ added at `main.go:64-96` — the operator's confirmation surface):
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` | `off` \| `k8s` \| `file:<path>`. `k8s`: informer on Ban CRs in `POD_NAMESPACE` (in-cluster config; independent of `-cluster-mode`). `file`: JSON array of records, reloaded on a **stat poll** (mtime+size) and on SIGHUP — the dev/compose lane (§4.14). *(Implementation deviation, §11.1: stat-polling rather than fsnotify, following `internal/tlsutil/reload.go` — no new dependency.)* |
+| `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` | `off` \| `k8s` \| `file:<path>`. `k8s`: informer on Ban CRs in `POD_NAMESPACE` (in-cluster config, falling back to the ordinary kubeconfig rules outside a pod — the docs/41 §4.8 compose lane; independent of `-cluster-mode`). `file`: JSON array of records, reloaded on a **stat poll** (mtime+size) and on SIGHUP — the no-Kubernetes lane (§4.14, docs/self-hosting.md §9). *(Implementation deviation, §11.1: stat-polling rather than fsnotify, following `internal/tlsutil/reload.go` — no new dependency.)* |
 | `-admin-api-token` | `GAWK_ADMIN_API_TOKEN` | `""` | Static bearer token for `/internal/admin/*` on the ops listener (the machine credential `gawk-admin` uses). |
 | `-admin-oidc-issuer` / `-admin-oidc-audience` | `GAWK_ADMIN_OIDC_ISSUER` / `GAWK_ADMIN_OIDC_AUDIENCE` | `""` | Alternative credential for the same routes: accept OIDC JWTs with this issuer + audience, verified offline against a cached JWKS (§4.5). Both set or both empty. **When neither the token nor the issuer is configured, the routes return 404** — the surface stays dark, not merely locked. |
 | `-admin-oidc-roles-claim` / `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLES_CLAIM` / `GAWK_ADMIN_OIDC_ROLE` | see §4.5 | Roles-claim dot-path (default `resource_access.{audience}.roles`) and the role a JWT must carry (default `operator`). |
@@ -827,14 +827,22 @@ admin URL.
 
 ### 4.14 Dev and non-Kubernetes story
 
-- **Relay enforcement** develops and tests without k8s:
-  `-moderation-source=file:bans.json` (stat-poll + SIGHUP reload, §11.1) slots into
-  the R38 compose lane; unit tests drive `moderation.Set` directly.
+*(Revised 2026-08-27 — the compose lane grew a real control plane, docs/41
+§4.8, which supersedes the "file source is the compose lane" reading below.)*
+
+- **The compose lane runs the REAL pipe**: `docker compose up` includes the
+  portal, a minimal kube-apiserver (kine-backed, no kubelet) holding the Ban
+  CRs, and the relay on `-moderation-source=k8s` through its kubeconfig
+  fallback — a portal kill enforces exactly as in a deployment. docs/41 §4.8
+  owns that lane.
+- **Relay enforcement without ANY Kubernetes** stays first-class:
+  `-moderation-source=file:bans.json` (stat-poll + SIGHUP reload, §11.1) —
+  the self-hoster's no-cluster lane (docs/self-hosting.md §9); unit tests
+  drive `moderation.Set` directly.
 - **`gawk-admin`** requires Kubernetes (CRs) and Postgres by design. Local
-  lane: `kind` (the `e2e` tier already exists) or envtest for the
-  reconciler; plain `docker run postgres` for the store; OIDC against a
-  local Keycloak/dex or a fake-issuer test double (go-oidc supports issuer
-  override in tests).
+  lanes, strongest first: the compose lane above; `kind` (the `e2e` tier);
+  envtest for the reconciler. OIDC locally is `cmd/gawk-fakeidp` (TEST ONLY),
+  or a real Keycloak/dex.
 - The kill path's automated end-to-end home is the **kind `e2e-cluster`
   tier**: two relay pods, a broadcast on pod A edge-pulled by pod B, a Ban
   CR applied → both pods drop it with 4006 and a reclaim gets 451.
@@ -1104,7 +1112,8 @@ code.
 | §4.14 | the local lane is "kind or envtest" | `main.go` also falls back to the ordinary kubeconfig loading rules when in-cluster config is absent | That fallback is what makes "run it against kind" work without pretending to be a pod. Deliberately **not** a knob: `KUBECONFIG` is the conventional mechanism, and a flag would have to reach the chart to satisfy the carry-all-limits rule for something a pod would never set. A missing API server stays fatal — unlike the IdP, there is nowhere to write a Ban CR, and a kill button that records a row nothing enforces is worse than a refusal to start. |
 | §4.8 | the SPA runs the redirect flow with a *bundled* OIDC client library | the whole public-client flow (code+PKCE, `state`/`nonce`, token endpoint, silent renew) is **hand-rolled over WebCrypto** in `ui/src/auth/` — the SPA's runtime dependencies are exactly `react` and `react-dom`, and the §4.8 text is corrected in place | The candidate libraries carry their own storage and iframe machinery, most of it for flows this SPA forbids (persistent tokens, silent-auth iframes), and auditing what a library does *not* do proved harder than owning the ~700 lines it actually needs — which the suite tests directly (PKCE vectors, `state`/`nonce` round-trips, renewal). The trade is recorded here because it is security-critical: a CVE search for this portal's OIDC path must target `ui/src/auth/`, not a dependency list — `THIRD-PARTY-NOTICES.md` says the same. |
 | D13, §4.5 | `gawk-server/moderation` is *the* shared public package; §4.5's admin responses are described only by their schema strings | a **third public package, `gawk-server/adminapi`**, holds the `/internal/admin/*` broadcasts response types; `hub.AdminBroadcast` and relayscan's `Broadcast` are type aliases of it | The review found relayscan hand-mirroring the eleven-tag struct against the "reuse it; never mirror it" rule; sharing the type is D13's own reasoning applied to the second relay↔admin contract (as `oidcroles` was to the third). The config response deliberately stays structural — a map of knob names — so it is *not* in the package: pinning the knob set would break on every new relay flag. The schema-string check remains as the cross-version tripwire. CLAUDE.md's gawk-admin bullet and CONTRIBUTING.md's release-coupling rule both name the package. |
-| §9 AP2, AP4 | the k8s ban source and leader election are verified with **envtest** (a real kube-apiserver + etcd) | **fakes for the logic, plus two real tiers for what fakes cannot enforce**: the client-go-fake tests stay (they run everywhere and pin the *calling* logic); `internal/kube/envtest_test.go` runs a real apiserver+etcd on every PR — Lease CAS actually contended between two elections, and the chart's own CRD template (directive lines stripped, schema byte-identical) accepting the reconciler's real `Upsert` payload while enum-rejecting an unknown `target.type`; and the kind tier installs `gawk-admin` itself (`e2e/admin-assert.sh`) and drives a kill/adopt/unban through the portal API, which is what covers the chart's actual **RBAC** — an authorizer only exists there. | envtest binaries come from `setup-envtest` in the `admin` job (the tests skip without `KUBEBUILDER_ASSETS`, and the job's RAN guard fails on that skip); the kind tier's IdP is `cmd/gawk-fakeidp` — a TEST-ONLY issuer built into a throwaway image (`e2e/Dockerfile.fakeidp`), never part of the published gawk-admin image, which builds only `cmd/gawk-admin`. |
+| §4.8 | — | gawk-admin grew a DEV-ONLY flag, `-dev-oidc-proxy` (`GAWK_ADMIN_DEV_OIDC_PROXY`): when set, `/idp/*` reverse-proxies to the named base URL and startup logs a Warn | The docs/41 §4.8 compose lane's answer to the OIDC frontend/backchannel split: the SPA fetches discovery from the BROWSER while this process fetches the same issuer URL from its container, so the issuer becomes `<externalUrl>/idp` — one URL, valid in both worlds. The GAWK_DEV_CERT precedent: compiled into the production binary, deliberately absent from the chart, inert unless explicitly set. |
+| §9 AP2, AP4 | the k8s ban source and leader election are verified with **envtest** (a real kube-apiserver + etcd) | **fakes for the logic, plus two real tiers for what fakes cannot enforce**: the client-go-fake tests stay (they run everywhere and pin the *calling* logic); `internal/kube/envtest_test.go` runs a real apiserver+etcd on every PR — Lease CAS actually contended between two elections, and the chart's own CRD template (directive lines stripped, schema byte-identical) accepting the reconciler's real `Upsert` payload while enum-rejecting an unknown `target.type`; and the kind tier installs `gawk-admin` itself (`e2e/admin-assert.sh`) and drives a kill/adopt/unban through the portal API, which is what covers the chart's actual **RBAC** — an authorizer only exists there. | envtest binaries come from `setup-envtest` in the `admin` job (the tests skip without `KUBEBUILDER_ASSETS`, and the job's RAN guard fails on that skip); the kind tier's IdP is `cmd/gawk-fakeidp` — a TEST-ONLY issuer built into a throwaway image (`dev/Dockerfile.fakeidp`), never part of the published gawk-admin image, which builds only `cmd/gawk-admin`. |
 | §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |
 
 ### 11.2 What is verified, and by what

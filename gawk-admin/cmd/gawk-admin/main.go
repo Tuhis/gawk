@@ -28,8 +28,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -186,6 +189,18 @@ func run(args []string, getenv func(string) string) error {
 	// the browser to, and it carries nothing but that (§4.8). No client secret
 	// exists anywhere in this system.
 	mux.Handle("GET /auth/config", authn.ConfigHandler())
+	if cfg.DevOIDCProxy != "" {
+		proxy, err := newDevOIDCProxy(cfg.DevOIDCProxy)
+		if err != nil {
+			return fmt.Errorf("dev-oidc-proxy: %w", err)
+		}
+		mux.Handle("/idp/", proxy)
+		// Warn, not Info: this route must never exist outside the docs/41 dev
+		// stack, and a deployment that somehow set it should say so on every
+		// startup, loudly.
+		log.Warn("DEV-ONLY OIDC proxy is serving /idp/ — for the docs/41 compose lane, never for a deployment",
+			"target", cfg.DevOIDCProxy)
+	}
 	mux.Handle("/", pages)
 
 	// The security headers wrap EVERYTHING, including 404s and the SPA itself:
@@ -274,6 +289,31 @@ func restConfig() (*rest.Config, error) {
 // chart supplies through the downward API; the fallback keeps a laptop run
 // from electing itself under an empty identity, which the election library
 // rejects outright.
+// newDevOIDCProxy reverse-proxies /idp/* to the dev IdP (config.DevOIDCProxy).
+//
+// It exists for exactly one URL problem: the SPA fetches the issuer's
+// discovery document FROM THE BROWSER and this process fetches the same URL
+// from inside its container, so the issuer must resolve in both worlds. With
+// the issuer at <externalUrl>/idp, the browser reaches it through the
+// published port and this process through its own listener — the Keycloak
+// frontend/backchannel split, answered with one path instead of two knobs.
+// Dev only (docs/41); the flag is deliberately absent from the chart.
+func newDevOIDCProxy(target string) (http.Handler, error) {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("not a base URL: %q", target)
+	}
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(u)
+			pr.Out.URL.Path = strings.TrimPrefix(pr.In.URL.Path, "/idp")
+			if pr.Out.URL.Path == "" {
+				pr.Out.URL.Path = "/"
+			}
+		},
+	}, nil
+}
+
 func podIdentity(getenv func(string) string) string {
 	if name := getenv("POD_NAME"); name != "" {
 		return name

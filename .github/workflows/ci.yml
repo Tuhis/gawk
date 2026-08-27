@@ -203,7 +203,9 @@ jobs:
           # certificate path, the frontend's runtime config, both images and
           # the dev/ scripts — so a change to any of them can break the one
           # command a new contributor runs first.
-          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/)')
+          # gawk-admin joined the default lane with the R39 portal (docs/41
+          # §4.8), so its changes exercise the stack too.
+          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/)')
 
           # The docker matrix, filtered to the images whose inputs moved. It is
           # built HERE rather than declared in the `docker` job because a static
@@ -1649,7 +1651,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
-          cache-dependency-path: gawk-server/go.sum
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-broadcast/go.sum
       # See the server job — the probe below is QUIC over loopback.
       - name: Ensure UDP buffer limits for quic-go
         run: |
@@ -1708,6 +1712,74 @@ jobs:
             -url https://127.0.0.1:4433/echo \
             -origin http://localhost:8080 \
             -count 3 -timeout 5s
+
+      # R39 (docs/41 §4.8): the portal lane, end to end — readiness, the whole
+      # SPA auth chain server-side (config → discovery-through-the-proxy →
+      # PKCE authorize → token exchange → /me), the developer's break-glass
+      # kubeconfig, and one kill through the REAL Ban-CR pipe: publish, kill
+      # via the portal API (201, not 202 — a 202 here means the CR write
+      # failed), the CR on the dev control plane, and the relay actually
+      # dropping the broadcast.
+      - name: The moderation portal authenticates and kills through the CR pipe
+        run: |
+          set -euo pipefail
+          for i in $(seq 30); do curl -fsS http://127.0.0.1:8088/readyz >/dev/null && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8088/readyz
+
+          # The browser's legs, in the SPA's order (session.ts), via curl.
+          curl -fsS http://127.0.0.1:8088/auth/config | grep -q '"issuer":"http://localhost:8088/idp"'
+          curl -fsS http://127.0.0.1:8088/idp/.well-known/openid-configuration \
+            | grep -q '"authorization_endpoint":"http://localhost:8088/idp/authorize"'
+          verifier="ci-walk-$RANDOM$RANDOM"
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          loc=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+            "http://127.0.0.1:8088/idp/authorize?response_type=code&client_id=gawk-admin-spa&redirect_uri=http://localhost:8088/&scope=openid&state=s1&nonce=n1&code_challenge=$challenge&code_challenge_method=S256")
+          code=$(printf '%s' "$loc" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+          TOKEN=$(curl -fsS -X POST http://127.0.0.1:8088/idp/token \
+            --data-urlencode grant_type=authorization_code --data-urlencode "code=$code" \
+            --data-urlencode redirect_uri=http://localhost:8088/ \
+            --data-urlencode client_id=gawk-admin-spa \
+            --data-urlencode "code_verifier=$verifier" | jq -r .access_token)
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088/api/v1/me)" = 401 ]
+          curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/v1/me | grep -q '"operator"'
+
+          # The developer's break-glass surface answers with the generated
+          # credential — the CRD is installed and listable.
+          KTOKEN=$(sed -n 's/.*token: \([0-9a-f]*\).*/\1/p' dev/generated/kubeconfig)
+          curl -fsSk -H "Authorization: Bearer $KTOKEN" \
+            https://127.0.0.1:6445/apis/gawk.ioio.fi/v1alpha1/namespaces/gawk/bans >/dev/null
+
+          # One kill through the pipe.
+          (cd gawk-broadcast && go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 180s \
+            > ../dev-pubsim.out 2>&1 &)
+          for i in $(seq 60); do grep -q GAWK_PUBSIM_ID dev-pubsim.out 2>/dev/null && break; sleep 1; done
+          BID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' dev-pubsim.out | cut -d= -f2)
+          [ -n "$BID" ] || { cat dev-pubsim.out; exit 1; }
+          for i in $(seq 30); do
+            curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/v1/broadcasts \
+              | grep -q "\"$BID\"" && break
+            sleep 1
+          done
+          resp=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' -X POST \
+            -d '{"reason":"dev-stack CI kill","cooldownSeconds":60}' \
+            "http://127.0.0.1:8088/api/v1/broadcasts/$BID/kill")
+          [ "$(tail -n1 <<<"$resp")" = 201 ] || { echo "kill: $resp"; exit 1; }
+          lower=$(printf '%s' "$BID" | tr 'A-Z' 'a-z')
+          curl -fsSk -H "Authorization: Bearer $KTOKEN" \
+            "https://127.0.0.1:6445/apis/gawk.ioio.fi/v1alpha1/namespaces/gawk/bans/ban-id-$lower" >/dev/null
+          # The relay ACTED: the broadcast leaves the fleet view (a successful
+          # read without the id — a failed read must not count).
+          gone=0
+          for i in $(seq 60); do
+            body=$(curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/v1/broadcasts) || { sleep 1; continue; }
+            grep -q "\"$BID\"" <<<"$body" || { gone=1; break; }
+            sleep 1
+          done
+          [ "$gone" = 1 ] || { echo "::error::the kill never actuated on the relay"; exit 1; }
+          # And the native publisher was told WHY (D15's readable close).
+          grep -q 'terminated by the server operator' dev-pubsim.out
+          echo "portal lane: every property held"
 
       - name: The certificate survives a restart (the re-paste loop, gone)
         run: |
@@ -2075,7 +2147,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: e2e/Dockerfile.fakeidp
+          file: dev/Dockerfile.fakeidp
           push: false
           load: true
           tags: gawk-fakeidp:e2e

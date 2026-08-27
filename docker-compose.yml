@@ -6,11 +6,14 @@
 # to have — pod draining, probes, cluster mode, certificate renewal, capacity
 # limits. Read docs/self-hosting.md before deploying anything.
 #
-#   docker compose up                 the default lane: relay + app, a
-#                                     self-signed certificate generated once
-#                                     and persisted, its hash injected into
-#                                     the frontend. No prerequisites but
-#                                     Docker; open http://localhost:8080
+#   docker compose up                 the default lane: relay + app + the R39
+#                                     moderation portal, a self-signed
+#                                     certificate generated once and
+#                                     persisted, its hash injected into the
+#                                     frontend. No prerequisites but Docker;
+#                                     open http://localhost:8080 (the app) and
+#                                     http://localhost:8088 (the portal — the
+#                                     sign-in auto-approves, see fakeidp)
 #   ./dev/certs.sh                    pick a different certificate lane
 #                                     (ACME on your own domain)
 #   docker compose --profile sim up   add a synthetic broadcaster
@@ -49,6 +52,7 @@ services:
       - "127.0.0.1:2112:2112"
     volumes:
       - ./certs:/certs
+      - kube-pki:/kube:ro
     environment:
       GAWK_CERT_FILE: /certs/cert.pem
       GAWK_KEY_FILE: /certs/key.pem
@@ -71,6 +75,19 @@ services:
       # is ever collected. The `telemetry` profile needs this set on both
       # sides — see .env.example.
       GAWK_TELEMETRY_KEY: "${GAWK_TELEMETRY_KEY-}"
+      # R39 moderation, the REAL path (docs/41 §4.8): the relay watches Ban
+      # CRs on the dev control plane below — the same enforcement pipe as a
+      # deployment, not the file-source stand-in — so a portal kill here
+      # behaves like a portal kill anywhere. KUBECONFIG is the relay's
+      # documented out-of-cluster fallback (internal/moderationsrc).
+      GAWK_MODERATION_SOURCE: k8s
+      POD_NAMESPACE: gawk
+      POD_NAME: relay-dev
+      KUBECONFIG: /kube/kubeconfig
+      # The machine credential for /internal/admin/* — gawk-admin's side of
+      # it is GAWK_ADMIN_RELAY_ADMIN_TOKEN below, same value. A fixed default
+      # is fine where both listeners are loopback-published dev surfaces.
+      GAWK_ADMIN_API_TOKEN: "${RELAY_ADMIN_TOKEN:-gawk-dev-admin-token}"
     healthcheck:
       # Exec form is mandatory — the relay image is distroless and has no
       # shell. No -cert-hash (empty skips verification) and no -origin (the
@@ -80,6 +97,12 @@ services:
       timeout: 5s
       retries: 12
       start_period: 5s
+    depends_on:
+      # The k8s moderation source is fatal without credentials and a CRD to
+      # watch, so the control plane seeds first. This is the one ordering the
+      # default lane gained with R39 (docs/41 §4.8) — a few seconds at `up`.
+      kube-bootstrap:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # Renders dev/generated/config.js — the same /config.js mechanism the
@@ -124,6 +147,167 @@ services:
     depends_on:
       config-gen:
         condition: service_completed_successfully
+
+  # ── The R39 moderation portal (docs/41 §4.8) ──────────────────────────────
+  # Default-on, because the simplest getting-started experience includes the
+  # whole product. Five services stand in for what a cluster provides: a
+  # MINIMAL control plane (kine + kube-apiserver — no kubelet, no scheduler:
+  # nothing here schedules pods, the API server exists to hold Ban CRs and a
+  # Lease), a throwaway Postgres, and a TEST-ONLY IdP. Authorization is
+  # AlwaysAllow on purpose — RBAC is the kind tier's job (e2e/admin-assert.sh
+  # proves it against a real authorizer); this lane exists for the loop, not
+  # the audit.
+
+  # etcd's API over SQLite — the datastore the apiserver expects, at a
+  # fraction of etcd's footprint and none of its fsync churn.
+  kine:
+    image: rancher/kine:v0.13.5
+    command:
+      - "--endpoint=sqlite:///db/state.db?_journal=WAL&cache=shared"
+      - "--listen-address=0.0.0.0:2379"
+    volumes:
+      # /db, the image's own declared volume dir: kine runs as `nobody`, and a
+      # fresh named volume inherits the IMAGE's ownership only for a directory
+      # the image declares — anywhere else it is root-owned and unwritable.
+      - kine-data:/db
+    restart: unless-stopped
+
+  # SA signing keys, the static token, and the two kubeconfigs (container
+  # and host). Idempotent: credentials persist in the kube-pki volume.
+  kube-gen:
+    image: alpine/openssl:3.5.1
+    entrypoint: ["/bin/sh", "/dev-scripts/kube-gen.sh"]
+    environment:
+      KUBE_API_PORT: "${KUBE_API_PORT:-6445}"
+    volumes:
+      - kube-pki:/kube
+      - ./dev:/dev-scripts:ro
+      - ./dev/generated:/out
+
+  # The API server itself. It self-signs its serving certificate into the
+  # volume (no --tls-cert-file given); clients skip verification, which is
+  # exactly as much TLS as a loopback dev control plane deserves.
+  kube-apiserver:
+    image: registry.k8s.io/kube-apiserver:v1.34.1
+    command:
+      - kube-apiserver
+      - --etcd-servers=http://kine:2379
+      - --service-cluster-ip-range=10.96.0.0/16
+      - --service-account-issuer=https://kubernetes.default.svc
+      - --service-account-key-file=/kube/sa.pub
+      - --service-account-signing-key-file=/kube/sa.key
+      - --token-auth-file=/kube/token.csv
+      - --authorization-mode=AlwaysAllow
+      - --cert-dir=/kube/self-signed
+    ports:
+      # Loopback only, NEVER ${BIND_ADDR} (the D14 rule, and this one holds
+      # cluster-admin for anyone who can connect). 6445 rather than 6443 so a
+      # real local cluster (kind, Rancher Desktop) never collides.
+      - "127.0.0.1:${KUBE_API_PORT:-6445}:6443"
+    volumes:
+      - kube-pki:/kube
+    depends_on:
+      kube-gen:
+        condition: service_completed_successfully
+      kine:
+        condition: service_started
+    restart: unless-stopped
+
+  # Namespace + the Ban CRD — the chart's own template, directive lines
+  # stripped (the envtest trick), so the schema can never drift from the one
+  # deployments install.
+  kube-bootstrap:
+    image: alpine/k8s:1.34.1
+    entrypoint: ["/bin/sh", "/dev-scripts/kube-bootstrap.sh"]
+    volumes:
+      - kube-pki:/kube:ro
+      - ./dev:/dev-scripts:ro
+      - ./gawk-server/deploy/charts/gawk-server/templates/crd-ban.yaml:/bootstrap/crd-ban.yaml:ro
+    depends_on:
+      kube-apiserver:
+        condition: service_started
+
+  # The portal's system of record (docs/42 D3: the chart never creates one, a
+  # database is a PREREQUISITE — here the stack is the operator, so it brings
+  # its own).
+  admin-pg:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: gawk
+      POSTGRES_PASSWORD: gawk
+      POSTGRES_DB: gawkadmin
+    volumes:
+      # /var/lib/postgresql, NOT .../data: the postgres:18 image refuses the
+      # old data-subdirectory mount point (docker-library/postgres#37).
+      - admin-pg-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "gawk", "-d", "gawkadmin"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # TEST-ONLY OIDC issuer: auto-approves every sign-in as one fixed operator.
+  # Reached ONLY through gawk-admin's /idp dev proxy — its issuer URL is the
+  # portal's own origin, which is what makes one URL valid in the browser and
+  # in the containers (the -dev-oidc-proxy comment in cmd/gawk-admin).
+  fakeidp:
+    build:
+      # Repo root: gawk-admin consumes gawk-server through a local replace.
+      context: .
+      dockerfile: dev/Dockerfile.fakeidp
+    command: ["-addr", ":8080", "-issuer", "${ADMIN_URL:-http://localhost:8088}/idp"]
+    restart: unless-stopped
+
+  # The schema step, exactly as the chart's hook Job runs it: `migrate` from
+  # the SAME image the portal is about to run, before it runs (docs/42 §4.15).
+  admin-migrate:
+    build: &admin-build
+      context: .
+      dockerfile: gawk-admin/deploy/Dockerfile
+    command: ["migrate"]
+    environment:
+      GAWK_ADMIN_PG_DSN: "postgres://gawk:gawk@admin-pg:5432/gawkadmin?sslmode=disable"
+    depends_on:
+      admin-pg:
+        condition: service_healthy
+
+  # The portal. Sign-in bounces through /idp (the fake IdP) and lands back
+  # authenticated as `operator` — no account, no password, TEST ONLY.
+  admin:
+    build: *admin-build
+    ports:
+      # Container port == published port == the port in ADMIN_URL, and that
+      # equality is load-bearing: the issuer is ADMIN_URL/idp, and gawk-admin
+      # fetches it FROM INSIDE THE CONTAINER — where localhost:${ADMIN_PORT}
+      # must reach its own listener for the /idp proxy loop to close.
+      - "${BIND_ADDR:-127.0.0.1}:${ADMIN_PORT:-8088}:${ADMIN_PORT:-8088}"
+    environment:
+      GAWK_ADMIN_ADDR: ":${ADMIN_PORT:-8088}"
+      GAWK_ADMIN_EXTERNAL_URL: "${ADMIN_URL:-http://localhost:8088}"
+      GAWK_ADMIN_OIDC_ISSUER: "${ADMIN_URL:-http://localhost:8088}/idp"
+      GAWK_ADMIN_OIDC_CLIENT_ID: gawk-admin-spa
+      GAWK_ADMIN_OIDC_AUDIENCE: gawk-admin
+      GAWK_ADMIN_PG_DSN: "postgres://gawk:gawk@admin-pg:5432/gawkadmin?sslmode=disable"
+      # Compose DNS: `relay` resolves to the one relay container — the same
+      # discovery relayscan does against the headless Service, fleet of one.
+      GAWK_ADMIN_RELAY_SCAN_TARGET: relay
+      GAWK_ADMIN_RELAY_ADMIN_TOKEN: "${RELAY_ADMIN_TOKEN:-gawk-dev-admin-token}"
+      GAWK_ADMIN_NAMESPACE: gawk
+      GAWK_ADMIN_DEV_OIDC_PROXY: "http://fakeidp:8080"
+      GAWK_ADMIN_APP_BASE_URL: "${APP_ORIGIN:-http://localhost:8080}"
+      GAWK_ADMIN_LOG_LEVEL: "${LOG_LEVEL:-info}"
+      KUBECONFIG: /kube/kubeconfig
+    volumes:
+      - kube-pki:/kube:ro
+    depends_on:
+      admin-migrate:
+        condition: service_completed_successfully
+      kube-bootstrap:
+        condition: service_completed_successfully
+      fakeidp:
+        condition: service_started
+    restart: unless-stopped
 
   # ── Optional profiles (docs/41 D11) ───────────────────────────────────────
   # Each answers one specific question and costs nothing when unused, which is
@@ -242,3 +426,9 @@ volumes:
   # the host reads it, and it is the one piece of stack state a developer is
   # likely to want to throw away wholesale (`docker compose down -v`).
   telemetry-data:
+  # The R39 lane's state (docs/41 §4.8), all named for the same reason:
+  # the control plane's credentials + self-signed cert, its object store
+  # (the Ban CRs live here), and the portal's Postgres.
+  kube-pki:
+  kine-data:
+  admin-pg-data:
