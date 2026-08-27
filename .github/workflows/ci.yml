@@ -1750,7 +1750,10 @@ jobs:
             https://127.0.0.1:6445/apis/gawk.ioio.fi/v1alpha1/namespaces/gawk/bans >/dev/null
 
           # One kill through the pipe.
-          (cd gawk-broadcast && go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 180s \
+          # CGO_ENABLED=0, exactly as the e2e job builds pubsim: the module's
+          # OTHER binaries link libpipewire, and the runner has no such dev
+          # headers — pubsim itself is pure Go.
+          (cd gawk-broadcast && CGO_ENABLED=0 go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 180s \
             > ../dev-pubsim.out 2>&1 &)
           for i in $(seq 60); do grep -q GAWK_PUBSIM_ID dev-pubsim.out 2>/dev/null && break; sleep 1; done
           BID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' dev-pubsim.out | cut -d= -f2)
