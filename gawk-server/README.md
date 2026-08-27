@@ -50,12 +50,22 @@ go test -race ./...
 ## Run
 
 ```sh
-# Local dev (ephemeral in-memory cert; hashes for Chrome are logged at startup):
+# Local dev, throwaway (ephemeral in-memory cert; hashes for Chrome are
+# logged at startup, and are different on every start):
 go run ./cmd/gawk-server -dev-cert
+
+# Local dev, persisted — generate the pair into these paths if absent, load
+# them if not. The hash survives restarts, so a join link keeps working:
+go run ./cmd/gawk-server -dev-cert -cert-file ../certs/cert.pem -key-file ../certs/key.pem
 
 # Production (cert-manager-provisioned files, reloaded automatically on renewal):
 go run ./cmd/gawk-server -cert-file /tls/tls.crt -key-file /tls/tls.key
 ```
+
+The middle form is what the dev stack runs and what relay work on the host
+should use — it presents the same pair the containerised relay does, so the
+browser side needs no reconfiguration when you switch between the two. Full
+truth table: [`../docs/41`](../docs/41-local-dev-stack.md) §4.2.1.
 
 Verify connectivity from the CLI (`-cert-hash` is logged by the server at
 startup; a real CA-issued cert needs no `-cert-hash`):

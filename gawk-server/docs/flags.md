@@ -60,6 +60,15 @@ broadcaster is away: QUIC PINGs reset both endpoints' idle timers. Raising
 `-max-idle-timeout` alone does not help — the effective idle timeout is the
 minimum of both endpoints' advertised values, and browsers advertise ~30 s.
 
+**`-dev-cert` alone is ephemeral; with `-cert-file`/`-key-file` it
+persists.** Alone it generates a fresh in-memory certificate on every start,
+which invalidates the hash any browser was already given. Combined, it means
+"generate into these paths if absent, otherwise load them", and the pair is
+then watched by the same reloader production uses — so a restart keeps the
+hash and a join link keeps working. `-key-file` is required with that
+combination. Truth table:
+[`docs/41`](../../docs/41-local-dev-stack.md) §4.2.1.
+
 **`-metrics-addr` takes the literal value `off` to disable** (not the empty
 string: an empty environment variable reads as unset and silently falls
 back to the default — the Helm chart passes `off` when
