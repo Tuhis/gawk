@@ -1849,7 +1849,11 @@ jobs:
     # RUNNER_LABEL_DISK; every other one takes RUNNER_LABEL. See ioio repo:
     # clusters/baremetal/actions-runners/gawk-e2e.yaml.
     runs-on: ${{ vars.RUNNER_LABEL_DISK || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # 25, up from 15: the R39 portal tier added two uncached image builds
+    # (gawk-admin's npm+Go multi-stage, the fake IdP) plus a second helm
+    # install and assert pass, and the first dispatch after that change hit
+    # the old ceiling with every step green — cancelled mid-install at 15:29.
+    timeout-minutes: 25
     # No job-level concurrency, and no `changes` gate either: this runs on
     # release-please PRs and on dispatch only, and both want the cluster tier
     # whatever the diff looks like. The workflow-level group supersedes a
