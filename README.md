@@ -52,7 +52,7 @@ but nothing reaches it until that is resolved.
 |---|---|
 | **Run it yourself** | [`docs/self-hosting.md`](docs/self-hosting.md) — DNS, TLS, single-node and cluster mode |
 | **Local dev in 5 minutes** | [Quickstart](#quickstart-local-dev) below |
-| **How it works** | [below](#architecture), then [`docs/`](docs/README.md) — 41 design docs, one per milestone |
+| **How it works** | [below](#architecture), then [`docs/`](docs/README.md) — one design doc per milestone |
 | **What's built, what's next** | [`ROADMAP.md`](ROADMAP.md) |
 | **Known bugs** | [`BUGS.md`](BUGS.md) |
 | **Gotchas** | [`docs/gotchas.md`](docs/gotchas.md) |
@@ -87,11 +87,10 @@ Every relay pod serves any viewer: the load balancer lands a connection
 wherever, and a pod that isn't the broadcast's origin pulls the stream
 from the pod that is ("edge pull").
 
-The pipeline in one breath: capture → WebCodecs `VideoEncoder` → chunk into
-≤ 1200-byte datagrams → relay fans out → reassemble → `VideoDecoder` →
-canvas.
+The pipeline: capture → WebCodecs `VideoEncoder` → chunk into ≤ 1200-byte
+datagrams → relay fans out → reassemble → `VideoDecoder` → canvas.
 
-Design points worth knowing up front:
+A few design points:
 
 - **Transport is QUIC datagrams, not streams.** A lost chunk means a
   dropped frame, never stalled playback. Keyframes ride reliable streams.
@@ -109,7 +108,7 @@ Design points worth knowing up front:
 
 ## Quickstart (local dev)
 
-Prerequisites: Docker, and a Chromium-based browser. That is the whole list.
+Prerequisites: Docker and a Chromium-based browser.
 
 ```sh
 git clone https://github.com/Tuhis/gawk && cd gawk
@@ -118,17 +117,16 @@ docker compose up
 
 Open `http://localhost:8080/#/broadcast`, click **Start a stream** and pick a
 screen — you get a 6-character code. Open the join link in another tab, or in
-a fresh incognito window, and it connects. Nothing to paste, no Chrome flags.
+a fresh incognito window, and it connects. No Chrome flags needed.
 
-What happened: the relay generated a self-signed certificate into `certs/`
-and **kept** it, and the stack rendered that certificate's hash into the
-frontend's `/config.js`. Neither changes when you restart, so a join link
-keeps working — and because the hash arrives through configuration rather
-than through the broadcaster page's `localStorage`, the chrome-free
-`#/view/<code>` route works in a fresh profile and in incognito too.
+Under the hood, the relay generates a self-signed certificate into `certs/`
+and keeps it across restarts, and the stack renders that certificate's hash
+into the frontend's `/config.js`. Because the hash arrives through
+configuration rather than the broadcaster page's `localStorage`, join links
+survive restarts and work in incognito and fresh profiles.
 
-The stack is a **development and evaluation tool, never a deployment path** —
-[Helm](#run-your-own) is the only supported way to run gawk for real.
+The compose stack is for development and evaluation only; use
+[Helm](#run-your-own) for a real deployment.
 
 ### Choosing a certificate
 
@@ -139,7 +137,7 @@ writes the `.env` that goes with it.
 | Level | Prerequisite | What it adds |
 |---|---|---|
 | **devcert** (default) | Docker | This machine, in **Chrome or Firefox**. Works offline, no prompts, no accounts. |
-| **acme** | a domain you control | A publicly trusted certificate on your own name, so a **phone or a second laptop joins with nothing installed**. It is also a rehearsal of the DNS-01 issuance [`docs/self-hosting.md`](docs/self-hosting.md) asks of you. |
+| **acme** | a domain you control | A publicly trusted certificate on your own name, so a **phone or a second laptop joins with nothing installed**. Also a useful rehearsal for the DNS-01 issuance that [`docs/self-hosting.md`](docs/self-hosting.md) requires. |
 
 There is deliberately no "install a local CA" level. `mkcert` and friends
 produce a certificate your *browser chrome* trusts, but no browser will open a
@@ -147,10 +145,9 @@ produce a certificate your *browser chrome* trusts, but no browser will open a
 and the stream would not. The default level's `serverCertificateHashes` path is
 what both engines accept locally ([`docs/41`](docs/41-local-dev-stack.md) §6).
 
-The ACME level uses DNS-01, and the wizard leads with the thing that stops
-people trying it: **DNS-01 proves control of the name, not reachability of the
-host.** The A records you add point at `127.0.0.1`; nothing about your machine
-is exposed.
+The ACME level uses DNS-01. Worth knowing before you dismiss it: DNS-01
+proves control of the name, not reachability of the host. The A records you
+add point at `127.0.0.1`; nothing about your machine is exposed.
 
 To reach the stack from another device on your LAN, run `./dev/certs.sh` and
 give it your LAN address when it asks — it widens `BIND_ADDR` and puts the
@@ -159,8 +156,8 @@ either way.
 
 ### The inner loop
 
-The stack does not replace your editor loop. Relay work stays a host binary,
-now pointed at the same persisted certificate:
+The stack doesn't replace your editor loop. For relay work, run the server
+as a host binary against the same persisted certificate:
 
 ```sh
 cd gawk-server
@@ -178,8 +175,7 @@ Frontend work — Vite with HMR, against the same relay:
 docker compose --profile app-dev up --scale app=0     # http://localhost:5173
 ```
 
-Three optional profiles, each answering one question and costing nothing when
-unused:
+There are three optional compose profiles:
 
 | Profile | For |
 |---|---|
@@ -232,22 +228,13 @@ mode, verification, and upgrades.
 | [`gawk-broadcast-windows/`](gawk-broadcast-windows/) | Native **Windows** broadcaster (Rust) — Windows.Graphics.Capture + Media Foundation, single static EXE. |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
-| [`docs/`](docs/README.md) | 41 numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria. |
+| [`docs/`](docs/README.md) | Numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria. |
 | [`tools/`](tools/) | Repo tooling (third-party license notice generation). |
-
-## Project status
-
-The relay and web app run a real deployment daily and are the most
-exercised parts. Some later milestones are implemented with automated gates
-green but a manual on-hardware pass still outstanding —
-[`ROADMAP.md`](ROADMAP.md) marks each one, and [`BUGS.md`](BUGS.md) lists
-confirmed open defects rather than hiding them.
 
 ## Gotchas
 
-The full list — each entry of which cost real debugging time — lives in
-**[`docs/gotchas.md`](docs/gotchas.md)**. The ones most likely to catch you
-first:
+The full list lives in **[`docs/gotchas.md`](docs/gotchas.md)**; every entry
+there cost real debugging time. The ones most likely to catch you first:
 
 - **`go test -race` needs `CGO_ENABLED=1`**; many environments default to `0`.
 - **Browser hardware encode does not exist on Linux.** That is why the
@@ -265,8 +252,8 @@ first:
 
 ## Design docs
 
-Forty-one numbered docs, one per milestone, each recording the decisions, the
-alternatives that were rejected and why, and explicit acceptance criteria.
+Each milestone has a numbered design doc recording the decisions made, the
+alternatives rejected and why, and acceptance criteria.
 [**`docs/README.md`**](docs/README.md) is the index; start with
 [`docs/03`](docs/03-single-client-e2e.md) (the end-to-end path),
 [`docs/12`](docs/12-worker-and-reliable-keyframes.md) (reliable keyframes),

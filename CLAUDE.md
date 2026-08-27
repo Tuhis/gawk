@@ -193,6 +193,13 @@ Re-deriving them costs a cycle and has happened before.
   first run for everyone. (`docs/40`)
 
 ## Conventions
+- **README.md is marketing for humans browsing the repo** (decided
+  2026-08-27). Keep it that way: no project-status/process-tracking sections
+  (that lives in `ROADMAP.md`/`BUGS.md` — link, don't inline), no hardcoded
+  counts that drift (e.g. "41 design docs"), and a plain, matter-of-fact
+  tone — no narrated flourishes ("That is the whole list.", "in one breath",
+  "What happened:"), no over-bolded proclamations. Write like a maintainer,
+  not a pitch deck.
 - **Every design doc must define explicit acceptance criteria** for its
   milestones and chunks (a per-chunk criteria table à la
   `docs/implementation-tasks.md`, or a goal → verified-by table à la `docs/07`).
