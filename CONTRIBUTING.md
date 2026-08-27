@@ -119,9 +119,12 @@ package until some unrelated admin change ships, and a semantic drift there
 (`Normalize`, `CRName`, the admin JSON) fails quietly. CI already treats "a
 relay change IS an admin change" (the admin gates run on any `gawk-server/`
 change); mirror that when you commit: a semantic change to any of those
-surfaces carries a `gawk-admin`-scoped commit (a `fix(r39): …` touching
-`gawk-admin/` is enough) in the same PR, so release-please cuts both
-components together. The `Ban` CRD has its own compatibility rule
+surfaces carries a commit **touching `gawk-admin/`** in the same PR, so
+release-please attributes the change to both components. Note the split under
+squash merge: the *files* the PR touches decide which components release, but
+the releasable **type** of the resulting commit comes from the **PR title**
+(that title becomes the commit on `main`) — so the PR title's type must be
+one that releases (`feat`/`fix`), or the touched paths bump nothing. The `Ban` CRD has its own compatibility rule
 (additive-only, docs/42 §4.2) and upgrade ordering (relay chart first,
 docs/self-hosting.md §9).
 

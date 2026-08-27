@@ -69,7 +69,12 @@ export function Dialog({
       const last = focusables[focusables.length - 1];
       const active = document.activeElement;
       if (e.shiftKey) {
-        if (active === first || !el.contains(active)) {
+        // `active === el` matters: the box itself holds focus when the dialog
+        // opens, `contains` is inclusive, and the browser's default BACKWARD
+        // navigation from there walks into the background — the forward
+        // default enters the box's own first descendant, so only this branch
+        // needs the case.
+        if (active === first || active === el || !el.contains(active)) {
           e.preventDefault();
           last.focus();
         }

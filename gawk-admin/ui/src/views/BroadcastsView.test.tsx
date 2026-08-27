@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { BroadcastsView } from './BroadcastsView.tsx';
 import type { Broadcast } from '../api/types.ts';
+import { AuthProvider } from '../auth/AuthContext.tsx';
+import { AuthRedirect } from '../auth/session.ts';
 import { bodyOf, json, renderWithSession, stubSession } from '../testing/harness.tsx';
 
 afterEach(cleanup);
@@ -131,6 +133,40 @@ describe('the filter', () => {
     expect(screen.getByText(/Nothing matches/)).toBeTruthy();
     expect(screen.queryByText(/Nothing is broadcasting/)).toBeNull();
   });
+
+  it('re-asserts a NEW route key on a warm navigation, and an empty one never clobbers', async () => {
+    // The tab is already on #/broadcasts when a second push's ?key=… link is
+    // followed: only the prop changes, so mount-time state alone would
+    // silently no-op while the URL shows the key.
+    const session = stubSession((path) =>
+      path === 'api/v1/broadcasts' ? json({ broadcasts: fleet }) : json({}),
+    );
+    const view = renderWithSession(
+      <BroadcastsView killCooldownSeconds={600} refreshMs={0} initialFilter="" />,
+      session,
+    );
+    await screen.findByText('AAA111');
+
+    view.rerender(
+      <AuthProvider session={session}>
+        <BroadcastsView killCooldownSeconds={600} refreshMs={0} initialFilter="bbbb33334444" />
+      </AuthProvider>,
+    );
+    expect((screen.getByLabelText('Filter broadcasts') as HTMLInputElement).value).toBe(
+      'bbbb33334444',
+    );
+    expect(screen.queryByText('AAA111')).toBeNull();
+
+    // Ordinary in-app navigation carries no key; the typed/applied filter stays.
+    view.rerender(
+      <AuthProvider session={session}>
+        <BroadcastsView killCooldownSeconds={600} refreshMs={0} initialFilter="" />
+      </AuthProvider>,
+    );
+    expect((screen.getByLabelText('Filter broadcasts') as HTMLInputElement).value).toBe(
+      'bbbb33334444',
+    );
+  });
 });
 
 // Relayscan degrades an unreachable pod into missing rows rather than an
@@ -163,6 +199,19 @@ describe('scan coverage', () => {
     mountWithCoverage([], 3, 3);
     expect(await screen.findByText(/Nothing is broadcasting/)).toBeTruthy();
     expect(screen.queryByText(/relay pods answered/)).toBeNull();
+  });
+
+  it('keeps the partial-coverage banner up while a filter is active — even one matching nothing', async () => {
+    mountWithCoverage([broadcast({ id: 'AAA111' })], 3, 2);
+    await screen.findByText('AAA111');
+    fireEvent.change(screen.getByLabelText('Filter broadcasts'), { target: { value: 'zzz' } });
+
+    // The banner is about the SCAN, not the rows on screen: filtering cannot
+    // make unreachable pods reachable.
+    expect(screen.getByText(/2 of 3 relay pods answered/)).toBeTruthy();
+    // And a no-match under partial coverage earns no reassuring line either.
+    expect(screen.queryByText(/Nothing matches/)).toBeNull();
+    expect(screen.queryByText(/Nothing is broadcasting/)).toBeNull();
   });
 });
 
@@ -424,6 +473,27 @@ describe('the shared-IP warning (§4.9, §5)', () => {
     expect(alert.textContent).toMatch(/every broadcast on the fleet/);
   });
 
+  it('judges the WHOLE fleet even when the filter is hiding a sharer', async () => {
+    // The verdict is a statement about every live publisher; a filter narrows
+    // what is on screen, never what the ban would hit.
+    const fleet = [
+      broadcast({ id: 'AAA111', publisherRemoteIp: shared }),
+      broadcast({ id: 'BBB222', publisherRemoteIp: shared }),
+      broadcast({ id: 'CCC333', publisherRemoteIp: '203.0.113.7' }),
+    ];
+    const session = stubSession((path) =>
+      path === 'api/v1/broadcasts' ? json({ broadcasts: fleet }) : json({}),
+    );
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    await screen.findByText('AAA111');
+    // Narrow to one sharer; the other leaves the table.
+    fireEvent.change(screen.getByLabelText('Filter broadcasts'), { target: { value: 'AAA111' } });
+    expect(screen.queryByText('BBB222')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kill + ban' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/2 of 3 live broadcasts/);
+  });
+
   it('stays quiet when publishers have distinct addresses', async () => {
     const fleet = [
       broadcast({ id: 'AAA111', publisherRemoteIp: '203.0.113.1' }),
@@ -436,6 +506,32 @@ describe('the shared-IP warning (§4.9, §5)', () => {
     renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
     fireEvent.click((await screen.findAllByRole('button', { name: 'Kill + ban' }))[0]);
     expect(screen.queryByText(/externalTrafficPolicy/)).toBeNull();
+  });
+});
+
+// The mutation-path AuthRedirect contract (session.ts: "this page is going
+// away", not an error to render). Eight hand-copied guards exist across the
+// views; this pins the flagship one at the view level, where a refactor that
+// dropped the guard would flash "redirecting to the identity provider" in red
+// under the kill dialog and then lose the kill.
+describe('a mid-mutation IdP redirect', () => {
+  it('renders NO error when the kill throws AuthRedirect', async () => {
+    const session = stubSession((path) => {
+      if (path === 'api/v1/broadcasts') return json({ broadcasts: [broadcast()] });
+      if (path.endsWith('/kill')) throw new AuthRedirect();
+      return json({});
+    });
+    renderWithSession(<BroadcastsView killCooldownSeconds={600} refreshMs={0} />, session);
+    fireEvent.click(await screen.findByRole('button', { name: 'Kill' }));
+    fireEvent.change(screen.getByLabelText('Reason (required)'), { target: { value: 'spam' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
+
+    await waitFor(() => {
+      expect(session.calls.some((c) => c.path.endsWith('/kill'))).toBe(true);
+    });
+    // The redirect means the page is going away: nothing red, nothing green.
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/redirecting to the identity provider/)).toBeNull();
   });
 });
 

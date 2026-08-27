@@ -1039,8 +1039,9 @@ Add to it when a new gotcha lands in `docs/`.
   Production is unaffected — a real API server sends the bookmark.
   ([docs/42](42-admin-moderation-portal.md) §4.2)
 - **client-go's `LeaderElector.Run` returns for good on leadership loss** — it
-  never re-campaigns, despite its own "until the context is cancelled"
-  framing. A bare `go elector.Run(ctx)` therefore means a replica demoted once
+  never re-campaigns: its godoc does note the stopped-holding-the-lease
+  return, but nothing warns that campaigning again is the caller's job. A
+  bare `go elector.Run(ctx)` therefore means a replica demoted once
   (one >RenewDeadline API-server blip is enough) never leads again, and the
   failure is the worst kind: every pod Ready and serving while the singleton
   background work (reconciler, janitor, webhook dispatcher) has silently

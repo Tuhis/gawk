@@ -35,8 +35,9 @@ func TestListBroadcastsJoinsFleetBanStateAndLinks(t *testing.T) {
 	}
 	// Coverage rides the envelope so a partial scan is visible to the UI: an
 	// empty list from an unreachable fleet must not read as a quiet fleet.
-	if body.PodsResolved != 2 || body.PodsAnswered != 2 {
-		t.Fatalf("coverage = %d/%d, want 2/2", body.PodsAnswered, body.PodsResolved)
+	// The fixture is asymmetric (see liveSnapshot) so swapped keys fail here.
+	if body.PodsResolved != 3 || body.PodsAnswered != 2 {
+		t.Fatalf("coverage = %d/%d, want 2/3", body.PodsAnswered, body.PodsResolved)
 	}
 	b := body.Broadcasts[0]
 	if b.ID != "ABC234" || b.Key != "3f9a1c2b4d5e" || !b.PublisherActive || b.ViewersGlobal != 340 {
@@ -780,20 +781,28 @@ func TestEventsCursorPaginationAndDeliveryVisibility(t *testing.T) {
 
 	var ids []int64
 	for i := range 5 {
-		ev, err := h.store.AppendEvent(ctx, store.Event{
+		seed := store.Event{
 			Type: store.EventBanCreated, Actor: "op@example.com",
 			BroadcastKey: "3f9a1c2b4d5e", BroadcastID: "ABC234",
 			OccurredAt: time.Now().Add(time.Duration(i) * time.Second),
 			Payload:    []byte(`{"reason":"spam","summary":"a broadcast ban was created by op@example.com"}`),
-		})
+		}
+		// The newest event gets a delivery — enqueued the only way delivery
+		// rows exist, in the event's own transaction — because a failed
+		// delivery MUST be visible (§4.10).
+		var (
+			ev  store.Event
+			err error
+		)
+		if i == 4 {
+			ev, err = h.store.AppendEventAndEnqueue(ctx, seed, []string{"ntfy"})
+		} else {
+			ev, err = h.store.AppendEvent(ctx, seed)
+		}
 		if err != nil {
-			t.Fatalf("AppendEvent: %v", err)
+			t.Fatalf("append event %d: %v", i, err)
 		}
 		ids = append(ids, ev.ID)
-	}
-	// A failed delivery on the newest event: it MUST be visible (§4.10).
-	if err := h.store.EnqueueDeliveries(ctx, ids[4], []string{"ntfy"}); err != nil {
-		t.Fatalf("EnqueueDeliveries: %v", err)
 	}
 	claimed, err := h.store.ClaimDueDeliveries(ctx, time.Now(), 10)
 	if err != nil || len(claimed) != 1 {

@@ -24,10 +24,14 @@
 //     last_error, because R40's "a flag must reach a human" posture inherits
 //     this pipe, and a page that silently never arrived is the failure this
 //     surface exists to prevent.
-//   - **Enqueue owns the fan-out.** internal/api guarantees only that each
-//     persisted event is offered exactly once; this package is the one that
-//     knows both webhook sources (chart-defined config and UI-created rows)
-//     and holds the signing secrets.
+//   - **Record owns the fan-out decision; the store commits it.** internal/api
+//     and the reconciler guarantee only that each event is offered exactly
+//     once; this package is the one that knows both webhook sources
+//     (chart-defined config and UI-created rows) and holds the signing
+//     secrets. The delivery rows themselves are written by
+//     store.AppendEventAndEnqueue in the SAME transaction as the event —
+//     there is deliberately no way to append an event and enqueue its
+//     deliveries as two separate writes.
 package notify
 
 import (

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError, enforcementNotice } from '../api/client.ts';
@@ -47,6 +47,13 @@ export function BroadcastsView({
   // A client-side filter: at "hundreds of concurrent broadcasts" a paged
   // operator must not scan a fleet-sized table by eye mid-incident.
   const [filter, setFilter] = useState(initialFilter);
+  // A WARM navigation must land like a cold one: with the tab already on
+  // #/broadcasts, following a second push's ?key=… link changes only the
+  // prop, so the route key re-asserts itself whenever it changes to a value.
+  // An empty key (ordinary in-app navigation) never clobbers a typed filter.
+  useEffect(() => {
+    if (initialFilter) setFilter(initialFilter);
+  }, [initialFilter]);
 
   const [killing, setKilling] = useState<Broadcast | null>(null);
   const [banning, setBanning] = useState<Broadcast | null>(null);

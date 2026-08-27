@@ -445,10 +445,15 @@ type wireWebhook struct {
 }
 
 // liveSnapshot builds a one-broadcast, two-pod fleet view.
+//
+// Coverage is deliberately ASYMMETRIC (3 resolved, 2 answered — one resolved
+// pod never scraped): a handler that swapped the two keys, or wrote one value
+// into both, passes any symmetric fixture, so each key's provenance is only
+// checkable when the numbers differ.
 func liveSnapshot(id, key, publisherIP string) relayscan.Snapshot {
 	return relayscan.Snapshot{
 		At:           time.Now(),
-		PodsResolved: 2,
+		PodsResolved: 3,
 		PodsAnswered: 2,
 		Pods: []relayscan.Pod{
 			{Name: "gawk-server-0", Addr: "10.42.0.7:2112", Reachable: true, Version: "1.42.0",

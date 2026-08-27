@@ -57,6 +57,28 @@ describe('the modal shell', () => {
     expect(document.activeElement).toBe(last);
   });
 
+  it('traps shift+Tab as the VERY FIRST keystroke, while the box itself holds focus', () => {
+    // The state every dialog opens in: focus on the box (tabIndex -1), which
+    // `contains` includes — so without an explicit case the shift branch hits
+    // neither guard and the browser's default backward navigation walks into
+    // the background table. jsdom does not implement the default action, so
+    // the assertable half is that the handler claims the key and wraps.
+    render(
+      <div>
+        <button type="button">background</button>
+        <Dialog title="Kill broadcast" onCancel={() => undefined}>
+          <button type="button">first</button>
+          <button type="button">last</button>
+        </Dialog>
+      </div>,
+    );
+    // Mount focused the box itself.
+    expect((document.activeElement as HTMLElement).getAttribute('role')).toBe('dialog');
+    const claimed = !fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(claimed).toBe(true); // preventDefault fired — the browser default never runs
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'last' }));
+  });
+
   it('pulls focus back into the box when it has escaped', () => {
     render(
       <div>

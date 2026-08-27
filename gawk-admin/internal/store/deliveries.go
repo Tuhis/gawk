@@ -20,27 +20,12 @@ const deliveryColumns = `id, event_id, webhook_name, state, attempts, next_attem
 // one delayed notification, not a lost one.
 const ClaimLease = 5 * time.Minute
 
-// EnqueueDeliveries queues one pending delivery per webhook name for an event.
-//
-// Idempotent: the (event_id, webhook_name) unique index plus ON CONFLICT DO
-// NOTHING means a retried enqueue — after a crash between AppendEvent and this
-// call — adds nothing the first attempt already created.
-func (s *Store) EnqueueDeliveries(ctx context.Context, eventID int64, webhookNames []string) error {
-	if len(webhookNames) == 0 {
-		return nil
-	}
-	now := s.now().UTC()
-	batch := &pgx.Batch{}
-	for _, name := range webhookNames {
-		batch.Queue(`INSERT INTO webhook_deliveries (event_id, webhook_name, state, attempts, next_attempt_at)
-			VALUES ($1,$2,'pending',0,$3) ON CONFLICT (event_id, webhook_name) DO NOTHING`,
-			eventID, name, now)
-	}
-	if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
-		return fmt.Errorf("store: enqueue deliveries: %w", err)
-	}
-	return nil
-}
+// Delivery rows are created ONLY by AppendEventAndEnqueue (events.go), in the
+// same transaction as their event. There is deliberately no standalone
+// enqueue method: a separate one existed, its doc comment recommended the
+// append-then-enqueue pattern, and that pattern's crash window is exactly
+// what the transaction closed (PR #280 round-2 review) — an API shaped like
+// the bug is an invitation to reintroduce it.
 
 // ClaimDueDeliveries takes up to limit due deliveries for this dispatcher.
 //

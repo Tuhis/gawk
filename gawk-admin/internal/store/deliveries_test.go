@@ -13,23 +13,18 @@ func TestDeliveryQueueLifecycle(t *testing.T) {
 	s := storetest.New(t)
 	ctx := t.Context()
 
-	ev, err := s.AppendEvent(ctx, store.Event{Type: store.EventBroadcastKilled, Actor: "op"})
+	ev, err := s.AppendEventAndEnqueue(ctx,
+		store.Event{Type: store.EventBroadcastKilled, Actor: "op"},
+		[]string{"ntfy", "slack", "ntfy"}) // the duplicate name yields ONE row
 	if err != nil {
-		t.Fatalf("AppendEvent: %v", err)
-	}
-	if err := s.EnqueueDeliveries(ctx, ev.ID, []string{"ntfy", "slack"}); err != nil {
-		t.Fatalf("EnqueueDeliveries: %v", err)
-	}
-	// Idempotent: a retried enqueue adds nothing.
-	if err := s.EnqueueDeliveries(ctx, ev.ID, []string{"ntfy", "slack"}); err != nil {
-		t.Fatalf("EnqueueDeliveries (retry): %v", err)
+		t.Fatalf("AppendEventAndEnqueue: %v", err)
 	}
 	byEvent, err := s.ListDeliveriesForEvents(ctx, []int64{ev.ID})
 	if err != nil {
 		t.Fatalf("ListDeliveriesForEvents: %v", err)
 	}
 	if len(byEvent[ev.ID]) != 2 {
-		t.Fatalf("a repeated enqueue produced %d deliveries, want 2", len(byEvent[ev.ID]))
+		t.Fatalf("enqueue produced %d deliveries, want 2", len(byEvent[ev.ID]))
 	}
 
 	now := time.Now()
@@ -98,13 +93,10 @@ func TestClaimDueDeliveriesNeverDoubleClaims(t *testing.T) {
 	s := storetest.New(t)
 	ctx := t.Context()
 
-	ev, err := s.AppendEvent(ctx, store.Event{Type: store.EventBanCreated, Actor: "op"})
-	if err != nil {
-		t.Fatalf("AppendEvent: %v", err)
-	}
 	names := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
-	if err := s.EnqueueDeliveries(ctx, ev.ID, names); err != nil {
-		t.Fatalf("EnqueueDeliveries: %v", err)
+	if _, err := s.AppendEventAndEnqueue(ctx,
+		store.Event{Type: store.EventBanCreated, Actor: "op"}, names); err != nil {
+		t.Fatalf("AppendEventAndEnqueue: %v", err)
 	}
 
 	now := time.Now()
@@ -191,6 +183,33 @@ func TestAppendEventAndEnqueueIsOneWrite(t *testing.T) {
 	// and never the disabled one.
 	if len(names) != 2 || !names["ntfy-oncall"] || !names["ui-on"] || names["ui-off"] {
 		t.Fatalf("fan-out = %v, want exactly {ntfy-oncall, ui-on}", names)
+	}
+}
+
+// The single-transaction property ITSELF, not just a successful call's end
+// state (PR #280 round-3 review): a delivery INSERT that fails after the
+// event INSERT succeeded must take the event down with it. A NUL byte in a
+// webhook name makes the delivery INSERT fail deterministically (Postgres
+// 22021, invalid byte sequence), so the rollback is directly observable — a
+// reimplementation that committed the event in its own transaction leaves an
+// event row behind here and fails.
+func TestAppendEventAndEnqueueRollsBackTheEventOnAFailedEnqueue(t *testing.T) {
+	s := storetest.New(t)
+	ctx := t.Context()
+
+	_, err := s.AppendEventAndEnqueue(ctx,
+		store.Event{Type: store.EventBroadcastKilled, Actor: "op"},
+		[]string{"bad\x00name"})
+	if err == nil {
+		t.Fatal("AppendEventAndEnqueue with an unstorable webhook name did not error")
+	}
+
+	evs, err := s.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(evs) != 0 {
+		t.Fatalf("the failed call left %d event row(s) behind: %+v", len(evs), evs)
 	}
 }
 
