@@ -58,8 +58,6 @@
 
 .main {
   padding: var(--sp-4);
-  max-width: 1600px;
-  width: 100%;
 }
 
 .centred {
