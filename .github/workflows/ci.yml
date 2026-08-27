@@ -893,6 +893,16 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
+      # The envtest tier (docs/42 §11.1): a real kube-apiserver + etcd for the
+      # two properties the client-go fakes cannot enforce — Lease CAS actually
+      # contended, and the relay chart's CRD schema accepting the reconciler's
+      # real payload. setup-envtest downloads the binaries; the tests skip
+      # without KUBEBUILDER_ASSETS, and the RAN guard below catches that skip
+      # the same way it catches a lost DSN.
+      - name: install envtest binaries
+        run: |
+          set -euo pipefail
+          echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 use -p path)" >> "$GITHUB_ENV"
       - run: go test -race ./...
         env:
           CGO_ENABLED: "1"
@@ -900,14 +910,19 @@ jobs:
       # a DSN that never reached the suite — a renamed service, a changed port,
       # an `env:` block that moved under the wrong key — would look exactly like
       # success. Re-run the database-backed packages verbosely and fail on the
-      # skip message itself.
-      - name: the Postgres-backed tests actually RAN
+      # skip message itself. The kube package rides along for the same reason:
+      # its envtest tests skip without KUBEBUILDER_ASSETS.
+      - name: the Postgres-backed and envtest-backed tests actually RAN
         run: |
           set -euo pipefail
-          out=$(go test -count=1 -v ./internal/store/... 2>&1) || { echo "$out"; exit 1; }
+          out=$(go test -count=1 -v ./internal/store/... ./internal/kube/... 2>&1) || { echo "$out"; exit 1; }
           echo "$out" | tail -40
           if grep -q "GAWK_ADMIN_TEST_DSN is not set" <<<"$out"; then
             echo "::error::the store tests SKIPPED — GAWK_ADMIN_TEST_DSN did not reach them, so this job proved nothing"
+            exit 1
+          fi
+          if grep -q "KUBEBUILDER_ASSETS is not set" <<<"$out"; then
+            echo "::error::the envtest tests SKIPPED — KUBEBUILDER_ASSETS did not reach them, so the Lease/CRD tier proved nothing"
             exit 1
           fi
 
@@ -2028,6 +2043,55 @@ jobs:
       # earlier would take the origin/edge split out from under cluster-assert.
       - name: Assert the fleet-wide kill, 451 enforcement and unban (R39)
         run: ./e2e/moderation-assert.sh gawk-e2e "$BROADCAST_ID" "$ADMIN_API_TOKEN" 90
+      # R39 (docs/42 §11.1's kind-tier row): the PORTAL half of the tier —
+      # gawk-admin installed for real (waited install, so the migrate hook and
+      # /readyz gate genuinely converge), a throwaway Postgres, a TEST-ONLY
+      # OIDC issuer, and one kill driven through the portal's own API. This is
+      # the layer that covers the chart's actual RBAC: envtest proves Lease
+      # CAS and the CRD schema on every PR, but an authorizer only exists
+      # here. It runs AFTER moderation-assert on purpose — that script's
+      # charter is that the break-glass surface works with gawk-admin NOT
+      # installed.
+      - name: Build the gawk-admin image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-admin/deploy/Dockerfile
+          push: false
+          load: true
+          tags: gawk-admin:e2e
+      - name: Build the fake-IdP image (TEST ONLY, never published)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: e2e/Dockerfile.fakeidp
+          push: false
+          load: true
+          tags: gawk-fakeidp:e2e
+      - name: Install gawk-admin with its Postgres and the fake IdP
+        run: |
+          kind load docker-image gawk-admin:e2e gawk-fakeidp:e2e
+          kubectl -n gawk-e2e apply -f e2e/admin-fixtures.yaml
+          kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-admin-pg --timeout=120s
+          kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-fakeidp --timeout=120s
+          # Release name == chart name, so the Service is plain `gawk-admin`
+          # (the name admin-assert.sh forwards to). scanTarget names the RELAY
+          # release's headless metrics Service. replicaCount stays the chart's
+          # default 2, which makes the Lease election real on this tier too.
+          helm install gawk-admin gawk-admin/deploy/charts/gawk-admin -n gawk-e2e \
+            --set image.repository=gawk-admin \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --set externalUrl=http://127.0.0.1:18090 \
+            --set oidc.issuer=http://gawk-fakeidp:8080 \
+            --set oidc.clientId=gawk-admin-spa \
+            --set oidc.audience=gawk-admin \
+            --set postgres.dsn='postgres://gawk:gawk@gawk-admin-pg:5432/gawkadmin?sslmode=disable' \
+            --set relay.scanTarget=relay-gawk-server-metrics-headless \
+            --set relay.adminToken="$ADMIN_API_TOKEN" \
+            --wait --timeout 180s
+      - name: Drive a kill through the portal API (R39 — real RBAC)
+        run: ./e2e/admin-assert.sh gawk-e2e 120
       - name: Export cluster state on failure
         if: failure()
         run: |
@@ -2035,6 +2099,8 @@ jobs:
           kubectl -n gawk-e2e get pods -o wide > e2e/out/pods.txt 2>&1 || true
           kubectl -n gawk-e2e describe pods > e2e/out/describe.txt 2>&1 || true
           kubectl -n gawk-e2e get leases -o yaml > e2e/out/leases.yaml 2>&1 || true
+          kubectl -n gawk-e2e logs -l app.kubernetes.io/name=gawk-admin --tail=-1 --prefix > e2e/out/gawk-admin.log 2>&1 || true
+          kubectl -n gawk-e2e logs jobs/gawk-admin-migrate > e2e/out/gawk-admin-migrate.log 2>&1 || true
           kind export logs e2e/out/kind-logs || true
       - uses: actions/upload-artifact@v7
         if: failure()

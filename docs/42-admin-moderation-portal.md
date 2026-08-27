@@ -1104,7 +1104,7 @@ code.
 | §4.14 | the local lane is "kind or envtest" | `main.go` also falls back to the ordinary kubeconfig loading rules when in-cluster config is absent | That fallback is what makes "run it against kind" work without pretending to be a pod. Deliberately **not** a knob: `KUBECONFIG` is the conventional mechanism, and a flag would have to reach the chart to satisfy the carry-all-limits rule for something a pod would never set. A missing API server stays fatal — unlike the IdP, there is nowhere to write a Ban CR, and a kill button that records a row nothing enforces is worse than a refusal to start. |
 | §4.8 | the SPA runs the redirect flow with a *bundled* OIDC client library | the whole public-client flow (code+PKCE, `state`/`nonce`, token endpoint, silent renew) is **hand-rolled over WebCrypto** in `ui/src/auth/` — the SPA's runtime dependencies are exactly `react` and `react-dom`, and the §4.8 text is corrected in place | The candidate libraries carry their own storage and iframe machinery, most of it for flows this SPA forbids (persistent tokens, silent-auth iframes), and auditing what a library does *not* do proved harder than owning the ~700 lines it actually needs — which the suite tests directly (PKCE vectors, `state`/`nonce` round-trips, renewal). The trade is recorded here because it is security-critical: a CVE search for this portal's OIDC path must target `ui/src/auth/`, not a dependency list — `THIRD-PARTY-NOTICES.md` says the same. |
 | D13, §4.5 | `gawk-server/moderation` is *the* shared public package; §4.5's admin responses are described only by their schema strings | a **third public package, `gawk-server/adminapi`**, holds the `/internal/admin/*` broadcasts response types; `hub.AdminBroadcast` and relayscan's `Broadcast` are type aliases of it | The review found relayscan hand-mirroring the eleven-tag struct against the "reuse it; never mirror it" rule; sharing the type is D13's own reasoning applied to the second relay↔admin contract (as `oidcroles` was to the third). The config response deliberately stays structural — a map of knob names — so it is *not* in the package: pinning the knob set would break on every new relay flag. The schema-string check remains as the cross-version tripwire. CLAUDE.md's gawk-admin bullet and CONTRIBUTING.md's release-coupling rule both name the package. |
-| §9 AP2, AP4 | the k8s ban source and leader election are verified with **envtest** (a real kube-apiserver + etcd) | **client-go fakes throughout**: a fake dynamic client / ListerWatcher for the informer-drives-`Set` tests, `k8sfake.Clientset` for leader election, `dynamicfake` for the reconciler and `CRClient` | The tests were written where the code was written, on a machine without envtest binaries, and the fakes prove the logic is *called* correctly — which covers most of what AP2/AP4 ask. What they cannot prove is recorded in §11.2's "not covered" list: Lease CAS actually contended under real etcd, the chart's CRD schema accepting the reconciler's real payload, and RBAC verb coverage. Standing follow-up: an envtest-backed CI job (the runners can fetch envtest binaries the same way they fetch kind images), or extending the kind tier to install `gawk-admin` and drive one kill through the API — either discharges the first two directly. |
+| §9 AP2, AP4 | the k8s ban source and leader election are verified with **envtest** (a real kube-apiserver + etcd) | **fakes for the logic, plus two real tiers for what fakes cannot enforce**: the client-go-fake tests stay (they run everywhere and pin the *calling* logic); `internal/kube/envtest_test.go` runs a real apiserver+etcd on every PR — Lease CAS actually contended between two elections, and the chart's own CRD template (directive lines stripped, schema byte-identical) accepting the reconciler's real `Upsert` payload while enum-rejecting an unknown `target.type`; and the kind tier installs `gawk-admin` itself (`e2e/admin-assert.sh`) and drives a kill/adopt/unban through the portal API, which is what covers the chart's actual **RBAC** — an authorizer only exists there. | envtest binaries come from `setup-envtest` in the `admin` job (the tests skip without `KUBEBUILDER_ASSETS`, and the job's RAN guard fails on that skip); the kind tier's IdP is `cmd/gawk-fakeidp` — a TEST-ONLY issuer built into a throwaway image (`e2e/Dockerfile.fakeidp`), never part of the published gawk-admin image, which builds only `cmd/gawk-admin`. |
 | §9 AP8 | "`helm template` **golden tests**" | shell assertions inside CI's `helm` job | The repository's existing idiom, and for the stated reason: a golden render has to be regenerated on every release-please version bump, because the chart version, appVersion and image tag all appear in it. The assertions are stronger than a diff anyway — several of them assert that something is *absent*. |
 
 ### 11.2 What is verified, and by what
@@ -1192,18 +1192,13 @@ Automated, and gating every PR:
   break-glass `kubectl` IP ban with no accompanying ID ban, is
   presentation-only, and is arguably unknowable from an edge that holds no
   publisher entry to map the address onto.
-- **The Kubernetes seam beyond what fakes can enforce** (the §11.1 envtest
-  deviation): Lease optimistic concurrency under a real etcd — the fake's
-  object tracker enforces no resourceVersion conflicts, so mutual exclusion
-  rests on client-go's election logic being *called* correctly, never on Lease
-  CAS being *contended*; the chart's CRD OpenAPI schema accepting the
-  reconciler's actual CR payload — the kind tier applies hand-written Ban YAML
-  and never installs `gawk-admin`, so no real API server has validated a
-  `CRClient` write anywhere automated; and RBAC verb coverage. These are where
-  R39's two worst silent failure classes live (a schema-rejected reconciler
-  stops projecting every ban while the fleet enforces stale state; a double
-  leader double-sends webhooks), so the gap is named here until the envtest CI
-  job or a kind-tier `gawk-admin` install closes it.
+- **The portal tier's every-PR gating.** The Kubernetes-seam gaps this list
+  used to name are closed — Lease CAS and CRD payload acceptance by the
+  envtest tests on every PR, RBAC by the kind tier's `gawk-admin` install and
+  scripted portal kill (`e2e/admin-assert.sh`; §11.1's envtest row has the
+  map) — but the RBAC half shares the kind tier's gating: it runs on release
+  PRs and dispatch, so a Role regression reaches `main` before it is caught,
+  exactly like the 4006/451 assertions above.
 - **Everything in §11.3.**
 
 ### 11.3 Still manual — the milestone-closing pass, step by step
