@@ -11,6 +11,11 @@ import (
 // path cannot be exercised here — it needs the serviceaccount mount — but the
 // fallback's two outcomes can.
 func TestRestConfigFallsBackToKubeconfig(t *testing.T) {
+	// Blanked explicitly, the source_test precedent: gawk's own CI runners
+	// are pods, where the in-cluster path would win and the fallback under
+	// test would never run.
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kubeconfig")
 	const kubeconfig = `apiVersion: v1
@@ -46,7 +51,10 @@ users:
 }
 
 func TestRestConfigFailsPlainlyWithNeitherSource(t *testing.T) {
-	// An empty dir: no in-cluster mount, and a KUBECONFIG naming nothing.
+	// No in-cluster env (the CI runners are pods — see above), and a
+	// KUBECONFIG naming nothing.
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
 	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "absent"))
 	if _, err := restConfig(); err == nil {
 		t.Fatal("restConfig succeeded with neither in-cluster config nor a kubeconfig")

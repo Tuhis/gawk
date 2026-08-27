@@ -9,12 +9,12 @@ script for what counts as a dependency here and why.
 
 **Scope:** `go list -deps ./...` in `gawk-server/`.
 
-## Summary — 52 packages
+## Summary — 53 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `Apache-2.0` | 15 |
-| `BSD-3-Clause` | 13 |
+| `BSD-3-Clause` | 14 |
 | `MIT` | 11 |
 | `Apache-2.0 OR UNKNOWN` | 6 |
 | `Apache-2.0 OR MIT OR Apache-2.0` | 2 |
@@ -56,6 +56,7 @@ script for what counts as a dependency here and why.
 | `github.com/quic-go/qpack` | v0.6.0 | `MIT` | Copyright 2019 Marten Seemann |
 | `github.com/quic-go/quic-go` | v0.61.0 | `MIT` | Copyright (c) 2016 the quic-go authors & Google, Inc |
 | `github.com/quic-go/webtransport-go` | v0.12.0 | `MIT` | Copyright 2022 Marten Seemann |
+| `github.com/spf13/pflag` | v1.0.9 | `BSD-3-Clause` | Copyright (c) 2012 Alex Ogier. All rights reserved<br>Copyright (c) 2012 The Go Authors. All rights reserved |
 | `github.com/x448/float16` | v0.8.4 | `MIT` | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker |
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
 | `go.yaml.in/yaml/v3` | v3.0.4 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
@@ -1404,9 +1405,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 10. BSD-3-Clause — 3 packages
+### 10. BSD-3-Clause — 4 packages
 
-Applies to: `github.com/dunglas/httpsfv`, `github.com/google/uuid`, `google.golang.org/protobuf`
+Applies to: `github.com/dunglas/httpsfv`, `github.com/google/uuid`, `github.com/spf13/pflag`, `google.golang.org/protobuf`
 
 ```
 Copyright (c) 2020 Kévin Dunglas. All rights reserved.
