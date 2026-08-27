@@ -50,11 +50,10 @@ Note the slash: tags are `gawk-broadcast/vX.Y.Z` from v1.11.2 onward, and
 `gawk-server/wire` — the package this module and both other clients import
 rather than mirror — cannot be resolved by `go get` at a version at all.
 
-The tarball holds all three binaries — the GUI, the CLI and the
-`gawk-pw-helper` those two spawn for per-application audio, so keep it
-beside them — plus `INSTALL.md` and `BUILD-INFO.txt`, with a `SHA256SUMS`
-asset beside it (the binaries are unsigned, so the checksum is the
-integrity check). Every green CI run also uploads an artifact
+The tarball holds the GUI, the CLI and the `gawk-pw-helper` those two spawn
+for per-application audio — keep it beside them — plus `INSTALL.md` and
+`BUILD-INFO.txt`, with a `SHA256SUMS` asset beside it (the binaries are
+unsigned, so the checksum is the integrity check). Every green CI run also uploads an artifact
 (`gawk-broadcast-linux-amd64-<sha>`) for testing unreleased builds —
 [`INSTALL.md`](INSTALL.md) is written for a tester with a binary and no
 context.
