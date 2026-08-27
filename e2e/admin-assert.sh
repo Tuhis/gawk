@@ -134,7 +134,7 @@ CR_NAME=$(jq -r .ban.crName <<<"$body")
 
 kubectl -n "$NS" get ban "$CR_NAME" >/dev/null \
   || fail "the kill answered 201 but its Ban CR $CR_NAME does not exist"
-anno=$(kubectl -n "$NS" get ban "$CR_NAME" -o jsonpath='{.metadata.annotations.gawk\.ioio\.fi/ban-id}')
+anno=$(kubectl -n "$NS" get ban "$CR_NAME" -o jsonpath="{.metadata.annotations['gawk\.ioio\.fi/ban-id']}")
 [ "$anno" = "$BAN_ID" ] || fail "CR $CR_NAME carries ban-id annotation '$anno', want $BAN_ID"
 echo "PASS: kill answered 201 and the real API server accepted CR $CR_NAME (create through the chart's Role)"
 
@@ -177,7 +177,7 @@ BAN
 adopted=false
 for _ in $(seq "$DEADLINE"); do
   a=$(kubectl -n "$NS" get ban e2e-breakglass-ban \
-    -o jsonpath='{.metadata.annotations.gawk\.ioio\.fi/ban-id}' 2>/dev/null || true)
+    -o jsonpath="{.metadata.annotations['gawk\.ioio\.fi/ban-id']}" 2>/dev/null || true)
   if [ -n "$a" ]; then
     adopted=true
     ADOPTED_ID=$a

@@ -1403,6 +1403,13 @@ jobs:
           set -euo pipefail
           rbac=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG --show-only templates/rbac.yaml)
           grep -q 'resources: \["bans"\]' <<<"$rbac"
+          # The FULL verb list, patch included: the reconciler's Adopt is a
+          # merge patch, and its absence was invisible to every fake — the kind
+          # tier caught the reconciler Warn-looping "cannot patch resource
+          # bans" while the sweep projected a canonical twin of the CR it could
+          # not stamp. This pins the list on every PR; the kind tier proves it
+          # against a real authorizer on release PRs.
+          grep -q 'verbs: \["get", "list", "watch", "create", "update", "patch", "delete"\]' <<<"$rbac"
           grep -q 'apiGroups: \["coordination.k8s.io"\]' <<<"$rbac"
           grep -q 'resources: \["leases"\]' <<<"$rbac"
           grep -q 'verbs: \["get", "create", "update"\]' <<<"$rbac"
