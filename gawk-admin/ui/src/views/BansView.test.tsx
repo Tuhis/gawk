@@ -66,11 +66,11 @@ describe('the ban list (§4.9)', () => {
     );
     renderWithSession(<BansView />, session);
     await screen.findByText('ABC123');
-    expect(session.calls[0].path).toBe('api/v1/bans?state=active');
+    expect(session.calls[0].path).toBe('api/v1/bans?state=active&limit=50');
 
     fireEvent.click(screen.getByLabelText('All'));
     await waitFor(() => {
-      expect(session.calls.some((c) => c.path === 'api/v1/bans?state=all')).toBe(true);
+      expect(session.calls.some((c) => c.path === 'api/v1/bans?state=all&limit=50')).toBe(true);
     });
   });
 
@@ -96,6 +96,37 @@ describe('the ban list (§4.9)', () => {
 
     fireEvent.change(box, { target: { value: 'nomatch' } });
     expect(screen.getByText(/Nothing matches/)).toBeTruthy();
+  });
+
+  it('pages history with Load older, and never offers it on the active set', async () => {
+    const older = { ...activeBan(), id: 'ban-old', target: { type: 'broadcastId' as const, value: 'OLD999' }, state: 'expired' as const };
+    const cursor = { createdAt: '2026-08-27T12:00:00.000001Z', id: 'ban-1' };
+    const session = stubSession((path) => {
+      if (path.startsWith('api/v1/bans?state=all&limit=50&afterCreatedAt=')) {
+        // The last page: cursor null = exhausted, and the button leaves.
+        return json({ bans: [older], nextAfter: null });
+      }
+      if (path.startsWith('api/v1/bans?state=all')) {
+        return json({ bans: [activeBan()], nextAfter: cursor });
+      }
+      // Active: the whole set, nextAfter pinned null by the server.
+      return json({ bans: [activeBan()], nextAfter: null });
+    });
+    renderWithSession(<BansView />, session);
+    await screen.findByText('ABC123');
+    // The active set is never paged.
+    expect(screen.queryByRole('button', { name: 'Load older' })).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('All'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older' }));
+
+    expect(await screen.findByText('OLD999')).toBeTruthy();
+    expect(screen.getByText('ABC123')).toBeTruthy(); // pages accumulate
+    const olderCall = session.calls.find((c) => c.path.includes('afterCreatedAt='));
+    expect(olderCall?.path).toContain('afterId=ban-1');
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Load older' })).toBeNull(),
+    );
   });
 
   it('offers Unban only on an active ban', async () => {

@@ -62,6 +62,68 @@ func (s *Store) CreateBan(ctx context.Context, b Ban) (Ban, error) {
 	return out, nil
 }
 
+// DefaultBanHistoryLimit / MaxBanHistoryLimit bound one page of the ban
+// history. EXPORTED for the same reason as the event limits: the API handler
+// pages by the same numbers, and a cursor decided against an unclamped limit
+// while the rows were cut to the clamped one reports "no more pages" on a
+// truncated feed.
+const (
+	DefaultBanHistoryLimit = 50
+	MaxBanHistoryLimit     = 500
+)
+
+// ClampBanHistoryLimit is the page-size rule, in one place.
+func ClampBanHistoryLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultBanHistoryLimit
+	}
+	if limit > MaxBanHistoryLimit {
+		return MaxBanHistoryLimit
+	}
+	return limit
+}
+
+// BanCursor addresses a position in the newest-first ban history.
+//
+// COMPOSITE on purpose (docs/42 §11.2): ban rows are UUID-keyed, so unlike
+// the events feed there is no serial to page by — a timestamp alone is not
+// unique (kill+ban writes two rows in one clock tick) and a UUID alone does
+// not order. The pair does both.
+type BanCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
+// ListBanHistory pages the WHOLE ban history (every state) newest first,
+// returning rows strictly older than the cursor; a nil cursor starts at the
+// newest. History grows monotonically — every kill adds a row forever — which
+// is why it pages while the active list does not (the janitor bounds that
+// one).
+func (s *Store) ListBanHistory(ctx context.Context, after *BanCursor, limit int) ([]Ban, error) {
+	limit = ClampBanHistoryLimit(limit)
+	const q = `SELECT ` + banColumns + ` FROM bans
+		WHERE $1::timestamptz IS NULL OR (created_at, id) < ($1, $2)
+		ORDER BY created_at DESC, id DESC LIMIT $3`
+	var at, id any
+	if after != nil {
+		at, id = after.CreatedAt.UTC(), after.ID
+	}
+	rows, err := s.pool.Query(ctx, q, at, id, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list ban history: %w", err)
+	}
+	defer rows.Close()
+	out := []Ban{}
+	for rows.Next() {
+		b, err := scanBan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list ban history: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // ListBans returns bans newest first. state is FilterActive or FilterAll;
 // anything else is rejected rather than silently widened — "?state=activee"
 // must not quietly list removed bans to the portal.

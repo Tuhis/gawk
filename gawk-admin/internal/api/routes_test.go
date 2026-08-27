@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -726,6 +727,82 @@ func TestListBansFiltersAndUnbanRoundTrip(t *testing.T) {
 	}
 	if code := h.errorCode(http.MethodDelete, "/api/v1/bans/not-a-uuid", nil, http.StatusNotFound); code != api.CodeNotFound {
 		t.Fatalf("malformed ban id code = %q", code)
+	}
+}
+
+// Ban HISTORY pages by the composite (afterCreatedAt, afterId) cursor
+// (docs/42 §11.2): history grows monotonically, so `state=all` must never be
+// an unbounded read — while `state=active` stays the whole (janitor-bounded)
+// set with `nextAfter` pinned null.
+func TestListBanHistoryPaginates(t *testing.T) {
+	h := newHarness(t)
+
+	for _, id := range []string{"AAA234", "BBB234", "CCC234", "DDD234", "EEE234"} {
+		h.decode(http.MethodPost, "/api/v1/bans", map[string]any{
+			"target": map[string]any{"type": "broadcastId", "value": id}, "expiresAt": nil, "reason": "r",
+		}, http.StatusCreated, nil)
+	}
+
+	type page struct {
+		Bans      []wireBan `json:"bans"`
+		NextAfter *struct {
+			CreatedAt string `json:"createdAt"`
+			ID        string `json:"id"`
+		} `json:"nextAfter"`
+	}
+
+	var p1 page
+	h.decode(http.MethodGet, "/api/v1/bans?state=all&limit=2", nil, http.StatusOK, &p1)
+	if len(p1.Bans) != 2 || p1.NextAfter == nil {
+		t.Fatalf("page 1 = %d rows, nextAfter %v", len(p1.Bans), p1.NextAfter)
+	}
+
+	seen := map[string]bool{p1.Bans[0].ID: true, p1.Bans[1].ID: true}
+	cursor := p1.NextAfter
+	total := 2
+	for cursor != nil {
+		var p page
+		h.decode(http.MethodGet,
+			"/api/v1/bans?state=all&limit=2&afterCreatedAt="+url.QueryEscape(cursor.CreatedAt)+
+				"&afterId="+cursor.ID, nil, http.StatusOK, &p)
+		for _, b := range p.Bans {
+			if seen[b.ID] {
+				t.Fatalf("ban %s appeared on two pages — the cursor overlaps", b.ID)
+			}
+			seen[b.ID] = true
+			total++
+		}
+		cursor = p.NextAfter
+	}
+	if total != 5 {
+		t.Fatalf("paging visited %d bans, want 5", total)
+	}
+
+	// limit > the store's clamp must not fake an exhausted feed: the cursor is
+	// computed against the limit that actually cut the rows (the events feed's
+	// clamp lesson). With 5 rows and limit=1000 the single page IS complete,
+	// so this asserts shape, and the store test asserts the clamp constant.
+	var whole page
+	h.decode(http.MethodGet, "/api/v1/bans?state=all&limit=1000000", nil, http.StatusOK, &whole)
+	if len(whole.Bans) != 5 || whole.NextAfter != nil {
+		t.Fatalf("unclamped-limit page = %d rows, nextAfter %v", len(whole.Bans), whole.NextAfter)
+	}
+
+	// The active set is a SET: never paged, nextAfter pinned null.
+	var active page
+	h.decode(http.MethodGet, "/api/v1/bans?state=active&limit=2", nil, http.StatusOK, &active)
+	if len(active.Bans) != 5 || active.NextAfter != nil {
+		t.Fatalf("active = %d rows, nextAfter %v", len(active.Bans), active.NextAfter)
+	}
+
+	// A half cursor is a 400, not a silent restart from the newest page.
+	if code := h.errorCode(http.MethodGet, "/api/v1/bans?state=all&afterId="+p1.Bans[0].ID,
+		nil, http.StatusBadRequest); code != api.CodeBadRequest {
+		t.Fatalf("half-cursor code = %q", code)
+	}
+	if code := h.errorCode(http.MethodGet, "/api/v1/bans?state=all&afterCreatedAt=notatime&afterId="+p1.Bans[0].ID,
+		nil, http.StatusBadRequest); code != api.CodeBadRequest {
+		t.Fatalf("bad-timestamp code = %q", code)
 	}
 }
 

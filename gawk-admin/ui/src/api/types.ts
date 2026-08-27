@@ -79,6 +79,28 @@ export interface Ban {
   enforcement?: BanEnforcement;
 }
 
+/**
+ * The composite history cursor (docs/42 §11.2): ban rows are UUID-keyed, so a
+ * timestamp alone is not unique and a UUID alone does not order — the pair
+ * does both. Opaque to the UI: it round-trips the server's own values.
+ */
+export interface BanCursor {
+  createdAt: string;
+  id: string;
+}
+
+/**
+ * `GET /api/v1/bans` — the rows plus the history cursor.
+ *
+ * `nextAfter` mirrors the events feed's contract: the key is always present,
+ * non-null only when a `state=all` page came back full. The active set is a
+ * SET (janitor-bounded), never paged, so its `nextAfter` is always null.
+ */
+export interface BanPage {
+  bans: Ban[];
+  nextAfter: BanCursor | null;
+}
+
 export interface BroadcastPod {
   pod: string;
   role: string;

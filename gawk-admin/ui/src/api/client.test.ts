@@ -19,7 +19,6 @@ function client(handler: (path: string, init: RequestInit) => Response) {
 describe('list routes are KEYED envelopes', () => {
   const cases: { name: string; path: string; key: string; call: (a: ApiClient) => Promise<unknown[]> }[] =
     [
-      { name: 'bans', path: 'api/v1/bans?state=active', key: 'bans', call: (a) => a.bans('active') },
       { name: 'relays', path: 'api/v1/relays', key: 'relays', call: (a) => a.relays() },
       { name: 'webhooks', path: 'api/v1/webhooks', key: 'webhooks', call: (a) => a.webhooks() },
     ];
@@ -51,6 +50,31 @@ describe('list routes are KEYED envelopes', () => {
       podsAnswered: 2,
     });
     expect(session.calls[0].path).toBe('api/v1/broadcasts');
+  });
+
+  // Bans keep their whole envelope too: `nextAfter` is the history cursor.
+  it('reads bans WITH the history cursor, and round-trips it', async () => {
+    const { api, session } = client(() =>
+      json({
+        bans: [{ marker: 'bans' }],
+        nextAfter: { createdAt: '2026-08-27T12:00:00.000001Z', id: 'ban-1' },
+      }),
+    );
+    const page = await api.bans('all');
+    expect(page.bans).toEqual([{ marker: 'bans' }]);
+    expect(page.nextAfter).toEqual({ createdAt: '2026-08-27T12:00:00.000001Z', id: 'ban-1' });
+    expect(session.calls[0].path).toBe('api/v1/bans?state=all&limit=50');
+
+    // The cursor goes back as the two query halves the server issued.
+    await api.bans('all', page.nextAfter!);
+    expect(session.calls[1].path).toBe(
+      'api/v1/bans?state=all&limit=50&afterCreatedAt=2026-08-27T12%3A00%3A00.000001Z&afterId=ban-1',
+    );
+  });
+
+  it('treats a missing bans list and cursor as an exhausted empty page', async () => {
+    const { api } = client(() => json({}));
+    await expect(api.bans('active')).resolves.toEqual({ bans: [], nextAfter: null });
   });
 
   it('treats a missing broadcasts list and counters as empty full coverage, not a crash', async () => {

@@ -539,7 +539,7 @@ the record and the target is *still banned*.
 | `GET /api/v1/broadcasts` | Fleet aggregation from `relayscan` (≤2 s cache): per broadcast `{id, key, publisherActive, publisherRemoteIp, startedAt, viewersGlobal, pods: [{pod, role, viewersLocal}], links: {watch, telemetry}, banState}`. `watch` = `<appBaseUrl>/#/view/<id>`; `telemetry` = `<telemetryBaseUrl>/#/broadcast/<key>` (omitted when the base URL is unconfigured). |
 | `POST /api/v1/broadcasts/{id}/kill` | Body `{reason (required, non-empty), cooldownSeconds?}` (default from `-kill-cooldown`, 600). Creates the cooldown ban, emits `broadcast.killed`, webhook. `201 {ban}`, or `202 {ban}` in the same envelope when the row committed and the CR did not. Idempotent-ish: an existing active ID ban → `409` with that ban. |
 | `POST /api/v1/bans` | Body `{target: {type, value}, expiresAt: RFC3339 \| null, reason (required), sourceBroadcastId?}`. `value` for `type: "ip"` may be the literal `"publisher"` together with `sourceBroadcastId` — the server resolves the live publisher's IP via relayscan and applies the operator-confirmed prefix (§4.9). `201` with the bare ban, or `202` with the bare ban when only the CR write failed; duplicate active target → `409`. |
-| `GET /api/v1/bans?state=active\|all` | Ban rows, newest first. |
+| `GET /api/v1/bans?state=active\|all` | Ban rows, newest first, as `{"bans": [...], "nextAfter": ...}`. `state=active` is the whole (janitor-bounded) set, `nextAfter` always null. `state=all` is history and PAGES by the composite cursor — `limit` (clamped to 500) plus `afterCreatedAt`+`afterId`, both-or-neither (a half cursor is a 400); `nextAfter` echoes the pair to pass next, null when exhausted. Composite because ban rows are UUID-keyed: a timestamp alone is not unique, a UUID alone does not order. |
 | `DELETE /api/v1/bans/{id}` | Unban: `state = removed`, CR deleted, `ban.removed` event. `204` with no body when both landed. `202` **with the removed ban** when the row moved and the CR delete did not — the one case where the record reads `removed` while the target is still banned, so it answers with something to say rather than an empty success. |
 | `GET /api/v1/events?afterId=&limit=` | The audit/notification feed (cursor pagination by `id`). |
 | `GET /api/v1/relays` | Per-pod `{pod, reachable, version, config}` from `/internal/admin/config` — the read-only settings view (D10). |
@@ -1204,15 +1204,6 @@ Automated, and gating every PR:
   stops projecting every ban while the fleet enforces stale state; a double
   leader double-sends webhooks), so the gap is named here until the envtest CI
   job or a kind-tier `gawk-admin` install closes it.
-- **Ban history at scale**: `GET /api/v1/bans?state=all` is unbounded and the
-  portal renders the whole history, filtered client-side. Events got cursor
-  pagination for exactly this monotonic-growth shape; ban history needs the
-  same before R40's auto-kills accelerate it (a follow-up, noted rather than
-  wished away — the rows are UUID-keyed, so the cursor design is not a copy of
-  the events one: page by the composite `(created_at, id)` — `WHERE
-  (created_at, id) < ($cursorCreatedAt, $cursorId) ORDER BY created_at DESC,
-  id DESC LIMIT n` — with the cursor being the last row's pair, since a
-  timestamp alone is not unique and a UUID alone does not order).
 - **Everything in §11.3.**
 
 ### 11.3 Still manual — the milestone-closing pass, step by step

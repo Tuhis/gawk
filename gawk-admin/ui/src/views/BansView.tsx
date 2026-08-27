@@ -1,8 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import { enforcementNotice } from '../api/client.ts';
-import type { Ban } from '../api/types.ts';
+import type { Ban, BanCursor, BanPage } from '../api/types.ts';
 import { AuthRedirect } from '../auth/session.ts';
 import { Dialog } from '../components/Dialog.tsx';
 import { expiresIn, formatInstant } from '../lib/format.ts';
@@ -26,8 +26,52 @@ import ui from '../styles/ui.module.css';
 export function BansView() {
   const api = useApi();
   const [stateFilter, setStateFilter] = useState<'active' | 'all'>('active');
-  const load = useCallback(() => api.bans(stateFilter), [api, stateFilter]);
-  const { data, loadedAt, error, loading, reload } = useLoader<Ban[]>(load);
+  // History accumulates pages (the events-view shape): `state=all` grows
+  // monotonically, so it arrives cursor-paged rather than as one unbounded
+  // read; the active set always exhausts in its first page.
+  const [rows, setRows] = useState<Ban[]>([]);
+  const [cursor, setCursor] = useState<BanCursor | undefined>(undefined);
+  const [exhausted, setExhausted] = useState(true);
+  /**
+   * A ref, not state: it is read by an async continuation that must see the
+   * value at the moment it resolves, not the value its render closed over.
+   */
+  const generation = useRef(0);
+
+  const load = useCallback(async (): Promise<BanPage> => {
+    const page = await api.bans(stateFilter);
+    generation.current++;
+    setRows(page.bans);
+    setCursor(page.nextAfter ?? undefined);
+    setExhausted(page.nextAfter === null);
+    return page;
+  }, [api, stateFilter]);
+  const { loadedAt, error, loading, reload } = useLoader<BanPage>(load);
+
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string | null>(null);
+
+  async function loadOlder() {
+    if (cursor === undefined) return;
+    const asOf = generation.current;
+    setLoadingOlder(true);
+    setOlderError(null);
+    try {
+      const page = await api.bans(stateFilter, cursor);
+      if (asOf !== generation.current) return;
+      setRows((prev) => [...prev, ...page.bans]);
+      setCursor(page.nextAfter ?? undefined);
+      setExhausted(page.nextAfter === null);
+    } catch (err) {
+      // Mid-redirect to the IdP: the page is going away (session.ts).
+      if (err instanceof AuthRedirect) return;
+      // A refresh landed first: this page is nobody's business now.
+      if (asOf !== generation.current) return;
+      setOlderError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
   // A client-side filter matching the target, the source broadcast and the
   // actor: ban history grows monotonically (every kill adds a row), so the
   // scan-a-table-by-eye problem arrives here even sooner than on Broadcasts.
@@ -41,7 +85,7 @@ export function BansView() {
   // manual pass is run from a phone (docs/42 §10).
   const [confirming, setConfirming] = useState<Ban | null>(null);
 
-  const all = data ?? [];
+  const all = rows;
   const needle = filter.trim().toLowerCase();
   const bans = needle
     ? all.filter(
@@ -183,11 +227,18 @@ export function BansView() {
         needle ? (
           <p className={ui.dim}>
             Nothing matches “{filter.trim()}” ({all.length} {stateFilter === 'active' ? 'active ' : ''}
-            bans).
+            bans loaded{exhausted ? '' : ' so far'}).
           </p>
         ) : (
           <p className={ui.dim}>No {stateFilter === 'active' ? 'active ' : ''}bans.</p>
         )
+      ) : null}
+
+      {olderError ? <p className={ui.error}>{olderError}</p> : null}
+      {all.length > 0 && !exhausted ? (
+        <button type="button" disabled={loadingOlder} onClick={() => void loadOlder()}>
+          Load older
+        </button>
       ) : null}
 
       {confirming ? (

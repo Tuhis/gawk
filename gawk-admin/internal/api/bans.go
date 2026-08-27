@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,21 +42,93 @@ type createBanRequest struct {
 	SourceBroadcastID string  `json:"sourceBroadcastId,omitempty"`
 }
 
+// handleListBans serves the ban list in two shapes behind one envelope.
+//
+// `state=active` is the WHOLE active set, unpaged: it is bounded (the janitor
+// expires rows off it) and callers reason over it as a set. `state=all` is
+// history, which grows monotonically — every kill adds a row forever — so it
+// pages by the composite `(afterCreatedAt, afterId)` cursor (docs/42 §11.2:
+// ban rows are UUID-keyed, so a timestamp alone is not unique and a UUID
+// alone does not order). Both answer `{"bans": [...], "nextAfter": ...}`;
+// `nextAfter` is null when the feed is exhausted — always, for the active
+// set — mirroring the events cursor's key-always-present contract.
 func (a *API) handleListBans(w http.ResponseWriter, r *http.Request) {
-	state := r.URL.Query().Get("state")
+	q := r.URL.Query()
+	state := q.Get("state")
 	if state == "" {
 		state = store.FilterActive
 	}
-	if state != store.FilterActive && state != store.FilterAll {
+	switch state {
+	case store.FilterActive:
+		bans, err := a.opts.Store.ListBans(r.Context(), state)
+		if err != nil {
+			a.fail(w, r, "list bans", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"bans": renderBans(bans), "nextAfter": nil})
+	case store.FilterAll:
+		// The limit is clamped HERE with the store's own rule, so the cursor
+		// below is computed against the limit that actually cut the rows —
+		// the events feed's clamp lesson, applied before it repeats.
+		limit := store.ClampBanHistoryLimit(intParam(q.Get("limit")))
+		after, ok := banCursorParam(w, q.Get("afterCreatedAt"), q.Get("afterId"))
+		if !ok {
+			return
+		}
+		bans, err := a.opts.Store.ListBanHistory(r.Context(), after, limit)
+		if err != nil {
+			a.fail(w, r, "list ban history", err)
+			return
+		}
+		var next any
+		if len(bans) == limit && limit > 0 {
+			last := bans[len(bans)-1]
+			next = map[string]string{
+				// RFC3339Nano keeps the microseconds Postgres stores; a
+				// seconds-precision cursor would skip same-second siblings.
+				"createdAt": last.CreatedAt.UTC().Format(time.RFC3339Nano),
+				"id":        last.ID.String(),
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"bans": renderBans(bans), "nextAfter": next})
+	default:
 		writeError(w, http.StatusBadRequest, CodeBadRequest, `state must be "active" or "all"`)
-		return
 	}
-	bans, err := a.opts.Store.ListBans(r.Context(), state)
+}
+
+// banCursorParam parses the two-halves-or-nothing history cursor. A half
+// cursor is a 400, not a silent restart from the newest page — a client that
+// dropped one key would otherwise loop the first page forever.
+func banCursorParam(w http.ResponseWriter, createdAt, id string) (*store.BanCursor, bool) {
+	if createdAt == "" && id == "" {
+		return nil, true
+	}
+	if createdAt == "" || id == "" {
+		writeError(w, http.StatusBadRequest, CodeBadRequest,
+			"afterCreatedAt and afterId must be given together")
+		return nil, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
-		a.fail(w, r, "list bans", err)
-		return
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "afterCreatedAt is not an RFC 3339 timestamp")
+		return nil, false
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"bans": renderBans(bans)})
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "afterId is not a ban ID")
+		return nil, false
+	}
+	return &store.BanCursor{CreatedAt: at, ID: uid}, true
+}
+
+// intParam parses a positive integer query value; anything else is 0, which
+// the clamp turns into the default.
+func intParam(v string) int {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {

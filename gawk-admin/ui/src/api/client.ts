@@ -13,6 +13,8 @@ import type { AuthSession } from '../auth/session.ts';
 import type {
   ApiErrorCode,
   Ban,
+  BanCursor,
+  BanPage,
   BroadcastsPage,
   CreateBanRequest,
   CreateWebhookRequest,
@@ -137,8 +139,19 @@ export class ApiClient {
     return this.post<KillResponse>(`broadcasts/${encodeURIComponent(id)}/kill`, req);
   }
 
-  async bans(state: 'active' | 'all'): Promise<Ban[]> {
-    return (await this.json<{ bans: Ban[] }>(`bans?state=${state}`)).bans ?? [];
+  /**
+   * A page of bans. `state=active` is the whole set and always exhausts;
+   * `state=all` is history, paged by the composite cursor — pass the previous
+   * page's `nextAfter` to continue, and a null one means the feed ended.
+   */
+  async bans(state: 'active' | 'all', after?: BanCursor, limit = 50): Promise<BanPage> {
+    const qs = new URLSearchParams({ state, limit: String(limit) });
+    if (after) {
+      qs.set('afterCreatedAt', after.createdAt);
+      qs.set('afterId', after.id);
+    }
+    const page = await this.json<Partial<BanPage>>(`bans?${qs.toString()}`);
+    return { bans: page.bans ?? [], nextAfter: page.nextAfter ?? null };
   }
 
   /** `201` or `202`, both bare `Ban`; check `enforcementNotice` on the result. */

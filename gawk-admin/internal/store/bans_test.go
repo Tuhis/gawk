@@ -287,3 +287,78 @@ func TestRemoveBanReportsWhetherItTransitioned(t *testing.T) {
 		t.Fatalf("the replay rewrote the removal: %+v", again)
 	}
 }
+
+// The history feed pages by the composite (created_at, id) cursor — a
+// timestamp alone is not unique (kill+ban writes two rows in one clock tick)
+// and a UUID alone does not order (docs/42 §11.2, PR #280 round-2 review).
+func TestListBanHistoryPagesByCompositeCursor(t *testing.T) {
+	s := storetest.New(t)
+	ctx := t.Context()
+
+	// Seven bans across three timestamps: 3 + 3 + 1, so ties are the rule
+	// rather than the exception and a page boundary lands inside a tie.
+	base := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	values := []string{"AAA222", "BBB333", "CCC444", "DDD555", "EEE666", "FFF777", "GGG888"}
+	for i, v := range values {
+		mustCreate(t, s, store.Ban{
+			Target: idTarget(v), CreatedBy: "op",
+			CreatedAt: base.Add(time.Duration(i/3) * time.Minute),
+		})
+	}
+
+	var (
+		seen  = map[uuid.UUID]int{}
+		after *store.BanCursor
+		pages int
+	)
+	for {
+		page, err := s.ListBanHistory(ctx, after, 3)
+		if err != nil {
+			t.Fatalf("ListBanHistory(page %d): %v", pages, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		pages++
+		for i, b := range page {
+			seen[b.ID]++
+			// Newest first within the page.
+			if i > 0 && b.CreatedAt.After(page[i-1].CreatedAt) {
+				t.Fatalf("page %d not newest-first: %v after %v", pages, b.CreatedAt, page[i-1].CreatedAt)
+			}
+		}
+		last := page[len(page)-1]
+		after = &store.BanCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+		if len(page) < 3 {
+			// A short page is the end; the next call must be empty.
+			if rest, err := s.ListBanHistory(ctx, after, 3); err != nil || len(rest) != 0 {
+				t.Fatalf("page after a short page = %d rows (err=%v)", len(rest), err)
+			}
+			break
+		}
+	}
+
+	if len(seen) != len(values) {
+		t.Fatalf("paging visited %d distinct bans, want %d", len(seen), len(values))
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("ban %s appeared %d times across pages — the cursor overlaps or skips", id, n)
+		}
+	}
+	if pages != 3 {
+		t.Fatalf("7 rows at limit 3 took %d pages, want 3", pages)
+	}
+}
+
+func TestListBanHistoryClampsTheLimit(t *testing.T) {
+	if got := store.ClampBanHistoryLimit(0); got != store.DefaultBanHistoryLimit {
+		t.Fatalf("ClampBanHistoryLimit(0) = %d", got)
+	}
+	if got := store.ClampBanHistoryLimit(1_000_000); got != store.MaxBanHistoryLimit {
+		t.Fatalf("ClampBanHistoryLimit(1e6) = %d", got)
+	}
+	if got := store.ClampBanHistoryLimit(7); got != 7 {
+		t.Fatalf("ClampBanHistoryLimit(7) = %d", got)
+	}
+}
