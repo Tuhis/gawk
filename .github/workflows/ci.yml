@@ -2086,8 +2086,17 @@ jobs:
           # runners cannot reach docker.io directly — the first run proved it
           # with ImagePullBackOff ("lookup registry-1.docker.io ... server
           # misbehaving") on the pod, while the host pull goes via the mirror.
+          #
+          # Loaded through ctr with an explicit platform, NOT `kind load`: the
+          # pulled image is a multi-arch index whose non-amd64 blobs `docker
+          # save` does not include, and kind's `--all-platforms` import dies
+          # on the missing digests ("content digest ... not found", run
+          # 33064724042) — taking the two locally BUILT (single-platform)
+          # images down with it when loaded in the same call.
           docker pull postgres:18-alpine
-          kind load docker-image gawk-admin:e2e gawk-fakeidp:e2e postgres:18-alpine
+          kind load docker-image gawk-admin:e2e gawk-fakeidp:e2e
+          docker save postgres:18-alpine | docker exec --privileged -i kind-control-plane \
+            ctr --namespace=k8s.io images import --platform linux/amd64 --snapshotter=overlayfs -
           kubectl -n gawk-e2e apply -f e2e/admin-fixtures.yaml
           kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-admin-pg --timeout=120s
           kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-fakeidp --timeout=120s

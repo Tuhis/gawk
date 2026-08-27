@@ -1038,6 +1038,14 @@ Add to it when a new gotcha lands in `docs/`.
   `clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)`.
   Production is unaffected — a real API server sends the bookmark.
   ([docs/42](42-admin-moderation-portal.md) §4.2)
+- **go-oidc's `RemoteKeySet` unblocks waiters before clearing its in-flight
+  fetch entry**, so a verification arriving just after a FAILED fetch can join
+  that stale in-flight and inherit its error — a spurious 401 that spends no
+  rate-limit token and touches no network — instead of starting a fresh
+  fetch. Production shrugs (the client's retry gets a clean fetch); a test
+  asserting "the refilled token buys the next verification" flakes on loaded
+  runners. `keyset_test.go`'s rotation-under-attack test documents and
+  absorbs the window with a bounded retry.
 - **client-go's `LeaderElector.Run` returns for good on leadership loss** — it
   never re-campaigns: its godoc does note the stopped-holding-the-lease
   return, but nothing warns that campaigning again is the caller's job. A

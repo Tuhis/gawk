@@ -248,8 +248,26 @@ func TestRotationDuringAnAttackWaitsExactlyOneRefillInterval(t *testing.T) {
 		t.Fatalf("status before the refill = %d, want 401", rec.Code)
 	}
 	// ...and in, on one fetch, once it has elapsed.
+	//
+	// Retried briefly, and the retry is load-bearing knowledge, not a shrug:
+	// go-oidc's RemoteKeySet clears its in-flight fetch entry from a goroutine
+	// AFTER unblocking the waiters, so on a loaded runner this verify can
+	// still JOIN the previous throttled fetch's failed in-flight — a 401 that
+	// spends no token and touches no network — instead of starting the fetch
+	// the refilled token pays for. (Two CI runners under the e2e tier hit
+	// exactly this, at 0.1s per failure; the fake clock plays no part.) A
+	// joined failure consumes nothing, so retrying preserves both properties
+	// asserted here: the eventual 200, and exactly ONE fetch for the refill.
 	clk.advance(time.Second)
-	if rec := do(t, h, http.MethodGet, "/api/v1/me", rotated); rec.Code != http.StatusOK {
+	rec := do(t, h, http.MethodGet, "/api/v1/me", rotated)
+	for range 50 {
+		if rec.Code == http.StatusOK {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+		rec = do(t, h, http.MethodGet, "/api/v1/me", rotated)
+	}
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status after %v = %d, want 200 (body %q)",
 			defaultJWKSFetchInterval, rec.Code, rec.Body.String())
 	}
