@@ -2074,7 +2074,13 @@ jobs:
           tags: gawk-fakeidp:e2e
       - name: Install gawk-admin with its Postgres and the fake IdP
         run: |
-          kind load docker-image gawk-admin:e2e gawk-fakeidp:e2e
+          # Postgres is pulled on the HOST and loaded, like every other image
+          # here: kind's inner containerd has no registry mirror and these
+          # runners cannot reach docker.io directly — the first run proved it
+          # with ImagePullBackOff ("lookup registry-1.docker.io ... server
+          # misbehaving") on the pod, while the host pull goes via the mirror.
+          docker pull postgres:18-alpine
+          kind load docker-image gawk-admin:e2e gawk-fakeidp:e2e postgres:18-alpine
           kubectl -n gawk-e2e apply -f e2e/admin-fixtures.yaml
           kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-admin-pg --timeout=120s
           kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-fakeidp --timeout=120s
