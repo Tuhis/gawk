@@ -138,19 +138,27 @@ anno=$(kubectl -n "$NS" get ban "$CR_NAME" -o jsonpath='{.metadata.annotations.g
 [ "$anno" = "$BAN_ID" ] || fail "CR $CR_NAME carries ban-id annotation '$anno', want $BAN_ID"
 echo "PASS: kill answered 201 and the real API server accepted CR $CR_NAME (create through the chart's Role)"
 
-# The relay side actuates: the publisher session dies. pubsim was started
-# with a 300 s duration, so an exit within the deadline is the kill, not the
-# clock.
-killed=false
+# The relay side actuates: the broadcast leaves the fleet view. The list is
+# relayscan against the pods' own AdminStats, so absence here is the hubs
+# actually gone — and the cooldown ban keeps the publisher's auto-reclaim
+# from resurrecting it inside the window. (Asserted through the portal, not
+# on the pubsim process: what the publisher BINARY does after a kill is the
+# moderation-assert tier's business.)
+# A failed READ must not read as an absent broadcast: only a successful
+# response that does not carry the id counts.
+gone=false
 for _ in $(seq "$DEADLINE"); do
-  if ! kill -0 "$PUBSIM_PID" 2>/dev/null; then
-    killed=true
-    break
+  if body=$("${CURL[@]}" -f "${AUTH[@]}" "http://127.0.0.1:$ADMIN_PORT/api/v1/broadcasts" 2>/dev/null); then
+    if ! jq -e --arg id "$BID" '.broadcasts[] | select(.id == $id)' <<<"$body" >/dev/null 2>&1; then
+      gone=true
+      break
+    fi
   fi
   sleep 1
 done
-$killed || fail "the publisher session outlived the portal kill"
-echo "PASS: the publisher session ended after the portal kill"
+$gone || fail "broadcast $BID is still in the fleet view after the portal kill"
+kill "$PUBSIM_PID" 2>/dev/null || true
+echo "PASS: the kill actuated — $BID left the fleet view and stays out"
 
 # ----------------------------------------- 5. break-glass adoption, via patch
 kubectl -n "$NS" apply -f - <<BAN
