@@ -540,6 +540,68 @@ implementer has them.
   future bump drops it, pin `alpine/openssl` instead. The hash computation is
   the only thing `config-gen` needs.
 
+### 4.8 The moderation-portal lane (added 2026-08-27, owner decision)
+
+The default `up` includes the R39 moderation portal — the owner's call, and a
+deliberate revision of D11's smallest-default reading: **the new developer's
+first `docker compose up` must show the whole product**, portal included, with
+nothing to opt into. RBAC is knowingly NOT honoured here (`AlwaysAllow`); the
+kind tier (`e2e/admin-assert.sh`) is where RBAC is proven against a real
+authorizer, and this lane exists for the loop, not the audit.
+
+Eight services stand in for what a cluster provides. The portal itself is the
+unmodified image; everything around it is a minimal control plane, not a
+Kubernetes distribution:
+
+| Service | What and why |
+|---|---|
+| `kine` | etcd's API over SQLite (`rancher/kine`) — the apiserver's datastore at a fraction of etcd's footprint and none of its fsync churn. |
+| `kube-gen` | One-shot: SA signing keypair, a static bearer token (`system:masters` under AlwaysAllow), the container kubeconfig, and `dev/generated/kubeconfig` for the developer. Idempotent — credentials persist in the `kube-pki` volume. |
+| `kube-apiserver` | `registry.k8s.io/kube-apiserver`, alone: **no kubelet, no scheduler, no controller-manager** — nothing here schedules pods; the API server exists to hold Ban CRs and the leader Lease. It self-signs its serving cert; clients skip verification. Published on `127.0.0.1:${KUBE_API_PORT:-6445}` ONLY — the D14 rule with more teeth, since the token is cluster-admin. |
+| `kube-bootstrap` | One-shot: namespace + the Ban CRD, applied from the relay **chart's own template** with its directive lines stripped (the envtest trick), so the schema can never drift from what deployments install. |
+| `admin-pg` | The portal's Postgres — the prerequisite the chart refuses to create (docs/42 D3), supplied here because the stack is its own operator. |
+| `fakeidp` | `cmd/gawk-fakeidp` (TEST ONLY — auto-approves every sign-in as one fixed `operator`): discovery, JWKS, a real code+PKCE flow, refresh rotation, and `/mint` for scripts. Built by `dev/Dockerfile.fakeidp`, never part of the published gawk-admin image. |
+| `admin-migrate` | `gawk-admin migrate` from the same image the portal runs — the chart's hook Job, translated (docs/42 §4.15). |
+| `admin` | The portal, at `http://localhost:${ADMIN_PORT:-8088}`. |
+
+Three mechanisms are load-bearing:
+
+- **The relay enforces through the REAL pipe.** `GAWK_MODERATION_SOURCE=k8s`
+  plus the relay's kubeconfig fallback (`internal/moderationsrc`, mirroring
+  gawk-admin's): a portal kill writes a Ban CR, the relay's informer sees it,
+  451/4006 happen exactly as in a deployment. The file source remains the
+  no-Kubernetes lane for self-hosters (docs/self-hosting.md §9), not this
+  stack's.
+- **One issuer URL for two worlds.** The SPA fetches OIDC discovery from the
+  BROWSER and gawk-admin fetches the same URL from its container, so the
+  issuer is the portal's own origin: `${ADMIN_URL}/idp`, served by
+  gawk-admin's dev-only `/idp/` reverse proxy (`-dev-oidc-proxy`, the
+  GAWK_DEV_CERT precedent — deliberately absent from the chart). The browser
+  reaches it through the published port, the portal process through its own
+  listener; the Keycloak frontend/backchannel split, answered with one path.
+- **Break-glass parity.** `kubectl --kubeconfig dev/generated/kubeconfig get
+  bans` works against the dev control plane — the docs/42 §9.6 emergency
+  surface, practisable locally, adoption and all.
+
+On a LAN (`BIND_ADDR`): the portal follows it, and `ADMIN_URL` must then name
+the LAN address (it is both the page origin and the issuer base) — same rule
+as `APP_ORIGIN`. The apiserver never follows it.
+
+Cost, measured intent: ~450–650 MB RSS for the whole lane (kine+apiserver
+~300–450 MB, Postgres ~70 MB, portal+IdP small), near-zero idle CPU — the
+price of skipping k3s and its kubelet.
+
+**Acceptance criteria (the §8 convention), all discharged 2026-08-27:**
+
+| # | Criterion | Verified by |
+|---|---|---|
+| P1 | A bare `docker compose up` on a fresh clone brings up the portal; `/readyz` answers 200 (schema migrated, OIDC discovery resolved) | the `dev-stack` CI job's portal step (`up --wait` + `/readyz`), on every stack-touching PR |
+| P2 | The sign-in chain round-trips exactly as the SPA drives it (session.ts): `/auth/config` → discovery through the `/idp` proxy → PKCE authorize → token exchange → `/api/v1/me` as `operator`, plus silent renew with rotation | the same CI step walks every leg server-side; the SPA's own suite covers the client half. (A human click-through is one browser visit — the implementing session verified the full walk against the live stack.) |
+| P3 | A portal kill on a live broadcast enforces through the CR pipe: **201** (a 202 here IS a failure), the CR on the dev control plane, the broadcast leaves the fleet view, and the native publisher prints the D15 "terminated by the server operator" line | the `dev-stack` CI job (pubsim publish → API kill → CR + actuation asserts) |
+| P4 | The break-glass surface works: the generated kubeconfig's credential lists/gets Ban CRs, and a hand-applied Ban is adopted (stamped + visible in the portal's ban list) | list/get: the CI step; adoption: verified live in the implementing session (a 60 s sweep makes it a poor CI assert; the kind tier owns it under real RBAC) |
+| P5 | The apiserver port and ops port stay loopback literals; `dev/generated/kubeconfig` is gitignored; the default service set is exact | `dev/stack_test.sh` |
+| P6 | The pre-R39 subset still works: `docker compose up relay config-gen app` remains valid (it pulls in only the control plane the relay's k8s source needs) | compose dependency graph; exercised implicitly by the CI job's full `up` |
+
 ## 5. Security considerations
 
 - **`certs/`, `dev/generated/*` and `.env` are gitignored, and the wizard

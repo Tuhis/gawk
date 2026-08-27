@@ -98,7 +98,8 @@ pub enum StartPhase {
 
 /// A failed start, carrying the HTTP status of a refused CONNECT when there
 /// was one (401 wrong secret / 403 token refused / 404 unknown / 409 held /
-/// 429 relay full; 0 = the dial never got an HTTP answer).
+/// 429 relay full / 451 banned by the operator, R39 docs/42 D15; 0 = the dial
+/// never got an HTTP answer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartError {
     pub phase: StartPhase,

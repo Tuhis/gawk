@@ -1,0 +1,147 @@
+/*
+  gawk-admin portal — design tokens.
+
+  A moderation console, not a product surface: no shared tokens with gawk-app,
+  no component library, and deliberately quiet. Colour carries exactly two
+  things, and neither is ever encoded by hue alone —
+
+    * Danger   -> red, and always beside the word ("kill", "banned", "failed").
+    * Liveness -> contrast. A live broadcast is at full contrast, an ended or
+                  away one is recessed, so an active row cannot be mistaken for
+                  a historical one at a glance.
+
+  Everything else is greyscale, because the one thing an operator must never do
+  is act on the wrong row.
+
+  System fonts only: the CSP is `default-src 'self'` and the embedded-assets
+  rule forbids a webfont outright (docs/42 §4.8).
+*/
+
+:root {
+  color-scheme: dark light;
+
+  --bg: #0b0c0e;
+  --bg-raised: #131519;
+  --panel: #16181d;
+  --panel-hover: #1b1e24;
+  --line: #262a32;
+  --line-strong: #333846;
+
+  --text: #e9eaee;
+  --text-dim: #9aa0ab;
+  --text-dimmer: #6b7280;
+
+  --ok: #3fb950;
+  --warn: #e3a83c;
+  --bad: #e5534b;
+  --accent: #58a6ff;
+
+  --ok-bg: rgba(63, 185, 80, 0.12);
+  --warn-bg: rgba(227, 168, 60, 0.12);
+  --bad-bg: rgba(229, 83, 75, 0.12);
+
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-6: 1.5rem;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f8fa;
+    --bg-raised: #fff;
+    --panel: #fff;
+    --panel-hover: #f2f4f7;
+    --line: #e3e6ec;
+    --line-strong: #cdd2dc;
+
+    --text: #14161a;
+    --text-dim: #5a616e;
+    --text-dimmer: #878e9b;
+
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --bad: #cf222e;
+    --accent: #0969da;
+
+    --shadow: 0 1px 2px rgba(16, 22, 26, 0.1), 0 4px 12px rgba(16, 22, 26, 0.08);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+a {
+  color: var(--accent);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-3);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--panel-hover);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input,
+select,
+textarea {
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+code,
+.mono {
+  font-family: var(--mono);
+}

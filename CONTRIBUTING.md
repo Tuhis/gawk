@@ -108,6 +108,26 @@ generated, because a shared fixture could be edited once and stay green
 everywhere. A new wire type or close code lands in all four in one PR, or it
 does not land.
 
+**A relay↔admin contract change is a `gawk-admin` change — at release time,
+not only at test time.** `gawk-admin` compiles the relay's public packages in
+through the repo-root `replace`, but release-please attributes commits **by
+path**: a change under `gawk-server/moderation/`, `gawk-server/oidcroles/` or
+`gawk-server/adminapi/` (or to the `/internal/admin/*` response shapes those
+types define) ships in the next *relay* release and never cuts a `gawk-admin`
+one — so the **deployed** pair runs two different builds of the "shared"
+package until some unrelated admin change ships, and a semantic drift there
+(`Normalize`, `CRName`, the admin JSON) fails quietly. CI already treats "a
+relay change IS an admin change" (the admin gates run on any `gawk-server/`
+change); mirror that when you commit: a semantic change to any of those
+surfaces carries a commit **touching `gawk-admin/`** in the same PR, so
+release-please attributes the change to both components. Note the split under
+squash merge: the *files* the PR touches decide which components release, but
+the releasable **type** of the resulting commit comes from the **PR title**
+(that title becomes the commit on `main`) — so the PR title's type must be
+one that releases (`feat`/`fix`), or the touched paths bump nothing. The `Ban` CRD has its own compatibility rule
+(additive-only, docs/42 §4.2) and upgrade ordering (relay chart first,
+docs/self-hosting.md §9).
+
 ## Running the gates before you push
 
 CI runs these on every PR; running them locally first is much faster than
@@ -119,12 +139,16 @@ cd gawk-broadcast         && go vet ./... && CGO_ENABLED=1 go test -race ./...
 cd gawk-telemetry         && go vet ./... && go test ./...   # plus -tags duckdb
 cd gawk-app               && npm ci && npm run lint && npm test && npm run build
 cd gawk-telemetry/ui      && npm ci && npm run lint && npm test && npm run build
+cd gawk-admin             && go vet ./... && go test ./...   # Postgres-backed
+                                                             # tests SKIP unless
+                                                             # GAWK_ADMIN_TEST_DSN is set
+cd gawk-admin/ui          && npm ci && npm run lint && npm test && npm run build
 cd gawk-broadcast-windows && cargo test --workspace && \
                              cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
 Every Go module must also be `go mod tidy`-clean — the `tidy` job checks all
-three independently, because a bump in one module can leave another (which
+four independently, because a bump in one module can leave another (which
 reaches it through a local `replace`) with a stale graph.
 
 The native Windows broadcaster cross-compiles from Linux with

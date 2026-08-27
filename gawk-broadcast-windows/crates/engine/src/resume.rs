@@ -26,10 +26,17 @@ pub const RESUME_WINDOW: Duration = Duration::from_secs(5 * 60);
 /// preference: "newest publisher wins" only converges because the deposed
 /// client does not come back — two auto-resuming engines would depose each
 /// other forever.
+///
+/// 4006 (R39, docs/42 §4.4) is terminal for a different reason: the operator
+/// killed this broadcast and the ID is banned for at least the kill cooldown,
+/// so every reclaim would collect a 451. Resuming would spend the whole
+/// RESUME_WINDOW hammering a gate designed to refuse it.
 pub fn terminal_for_publisher(code: u32) -> bool {
     matches!(
         code,
-        gawk_wire::CLOSE_CODE_BROADCAST_ENDED | gawk_wire::CLOSE_CODE_PUBLISHER_SUPERSEDED
+        gawk_wire::CLOSE_CODE_BROADCAST_ENDED
+            | gawk_wire::CLOSE_CODE_PUBLISHER_SUPERSEDED
+            | gawk_wire::CLOSE_CODE_TERMINATED_BY_OPERATOR
     )
 }
 
@@ -40,6 +47,9 @@ pub fn close_code_message(code: u32) -> String {
             "another broadcaster took over this code — this session has been superseded".into()
         }
         gawk_wire::CLOSE_CODE_BROADCAST_ENDED => "the relay ended this broadcast".into(),
+        gawk_wire::CLOSE_CODE_TERMINATED_BY_OPERATOR => {
+            "this broadcast was terminated by the server operator".into()
+        }
         other => format!("the relay closed this session (code {other})"),
     }
 }
@@ -49,6 +59,14 @@ pub fn close_code_message(code: u32) -> String {
 /// status 0 — is worth another attempt. These are the statuses the relay's
 /// handlePublish actually returns; keep in step with
 /// gawk-server/internal/transport/server.go.
+///
+/// This IS the auto-resume retry cap docs/42 §4.4 asks for on repeated
+/// 403/451: the cap is one. Both are verdicts about *this* broadcaster rather
+/// than transient relay conditions, so counting to a larger number before
+/// believing them would only mean more dials against a gate whose whole job is
+/// to refuse them. Reading the status at all is the native broadcasters'
+/// advantage over the browser (D15) — spending it on a retry budget would
+/// waste it.
 pub fn resume_terminal(status: u16) -> bool {
     matches!(
         status,
@@ -56,6 +74,7 @@ pub fn resume_terminal(status: u16) -> bool {
         | 403 // the resume token was refused
         | 404 // the grace expired: this broadcast is gone
         | 409 // someone else holds the code
+        | 451 // R39: banned by the relay operator (docs/42 D15)
     )
 }
 
@@ -91,9 +110,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_close_codes_are_exactly_4000_and_4004() {
+    fn terminal_close_codes_are_exactly_4000_4004_and_4006() {
         assert!(terminal_for_publisher(4000));
         assert!(terminal_for_publisher(4004));
+        // R39 (docs/42 §4.4): an operator kill. Resuming would only collect
+        // 451s for the whole kill cooldown.
+        assert!(terminal_for_publisher(
+            gawk_wire::CLOSE_CODE_TERMINATED_BY_OPERATOR
+        ));
         // 4002 (drain) is the case auto-resume EXISTS for; 4001/4003 are not
         // publisher-terminal either.
         for code in [4001, 4002, 4003, 4005, 0] {
@@ -102,8 +126,23 @@ mod tests {
     }
 
     #[test]
+    fn terminal_closes_render_their_own_sentence() {
+        assert!(close_code_message(4004).contains("superseded"));
+        assert!(close_code_message(4000).contains("ended this broadcast"));
+        assert!(
+            close_code_message(gawk_wire::CLOSE_CODE_TERMINATED_BY_OPERATOR)
+                .contains("terminated by the server operator")
+        );
+        // Anything else still reads as a sentence, not a bare number.
+        assert!(close_code_message(4242).contains("code 4242"));
+    }
+
+    #[test]
     fn terminal_statuses_match_the_relay_handler() {
-        for status in [401, 403, 404, 409] {
+        // 451 is R39's ban rejection (docs/42 D15). It is terminal on the
+        // FIRST sighting: that is the "cap auto-resume retries on repeated
+        // 403/451" requirement, at its tightest.
+        for status in [401, 403, 404, 409, 451] {
             assert!(resume_terminal(status), "{status}");
         }
         // Status 0 is a bare transport failure — always worth retrying; 429

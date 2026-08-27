@@ -675,6 +675,13 @@ type broadcastHub struct {
 	// pod-independent, no per-hop rewrite).
 	cachedViewerCount []byte
 
+	// startedAt is when this hub was registered — the age an operator reads
+	// off GET /internal/admin/broadcasts (R39 AP3, docs/42 §4.5). Hub
+	// creation, not publisher claim: the hub outlives a publisher's grace and
+	// survives a reclaim, so it is the lifetime of the BROADCAST rather than
+	// of one session. Never exposed on /statusz.
+	startedAt time.Time
+
 	// dvr is this broadcast's R21 window, nil until a DVR subscriber joins
 	// (docs/26 Decision 11) and shared by every one of them.
 	dvr *DVRRing
@@ -1054,10 +1061,11 @@ func (r *Registry) ViewerSubscribers(id string) int {
 // newHubLocked creates and registers an empty hub. Caller holds r.mu.
 func (r *Registry) newHubLocked(id string) *broadcastHub {
 	b := &broadcastHub{
-		registry: r,
-		id:       id,
-		log:      r.log.With("broadcast_id", id),
-		subs:     make(map[*Subscriber]struct{}),
+		registry:  r,
+		id:        id,
+		log:       r.log.With("broadcast_id", id),
+		subs:      make(map[*Subscriber]struct{}),
+		startedAt: time.Now(),
 	}
 	r.hubs[id] = b
 	return b
@@ -1837,19 +1845,74 @@ func (r *Registry) ExpireEdgeIfViewerless(id string) bool {
 	return !exists
 }
 
+// TerminateBroadcast force-expires a broadcast the operator has banned (R39
+// AP3, docs/42 §4.3) — the ONLY entry point that may kill a LIVE broadcast,
+// and the only one that closes subscribers with something other than 4000.
+//
+// It differs from every other expiry path in exactly one way: it ignores the
+// publisherActive guard. That guard exists so a racing GC janitor can never
+// kill a live broadcast, and it stays intact for EndBroadcast /
+// ExpireEdgeIfViewerless / the grace timer — an admin kill is a deliberate
+// operator act, not a race. Everything else (the publisher depose, the
+// counter fold, the prime and DVR purges, the grace-timer stop, the
+// OnBroadcastExpired hook that deletes the cluster Lease) is the shared
+// expiry body, deliberately not duplicated: docs/35 finding 3 is what a
+// second, drifted copy of the fold costs.
+//
+// It closes, with code, every session the hub knows: the publisher (through
+// the handle BindConn bound, deposed exactly as TakeOverPublish deposes one)
+// and every subscriber — viewers, internal edge sessions and R30 stripe legs
+// alike. The transport closes its own publisher session too (docs/42 §4.3);
+// the two are idempotent and belt-and-braces on purpose, because an EDGE
+// hub”'s publisher is an upstream pull the transport”'s session map has never
+// heard of.
+//
+// Idempotent: terminating a broadcast this pod doesn't have is a no-op that
+// returns false, which is what makes it safe to run on every pod of a fleet
+// from one informer event.
+func (r *Registry) TerminateBroadcast(id string, code uint32, reason string) bool {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return false
+	}
+	return r.removeBroadcast(normID, func(*broadcastHub) bool { return true },
+		true, code, reason)
+}
+
 // expireBroadcast removes the hub (when it exists, has no active publisher,
 // and passes ok), folds its counters, closes its subscribers with the
 // terminal code, and fires OnBroadcastExpired. Returns whether the hub was
 // actually removed.
 func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool {
+	return r.removeBroadcast(id, ok, false, uint32(wire.CloseCodeBroadcastEnded), "broadcast ended")
+}
+
+// removeBroadcast is the shared body of every hub removal. force skips the
+// publisherActive guard (admin kill only — see TerminateBroadcast); code and
+// reason are what every subscriber's session is closed with.
+func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force bool, code uint32, reason string) bool {
 	r.mu.Lock()
 	b, exists := r.hubs[id]
-	if !exists || b.publisherActive || !ok(b) {
+	if !exists || (!force && b.publisherActive) || !ok(b) {
 		r.mu.Unlock()
 		return false
 	}
 
 	delete(r.hubs, id)
+
+	// Depose a live publisher, exactly as TakeOverPublish does. Only the
+	// force path can reach a live one (the guard above rejects the others),
+	// and marking it closed here is what stops its deferred Close from
+	// arming a grace timer on a hub that no longer exists, or stamping a
+	// grace deadline on a Lease this expiry is about to delete.
+	var deposed SessionCloser
+	if old := b.publisher; b.publisherActive && old != nil {
+		old.closed = true
+		deposed = old.conn
+	}
+	b.publisherActive = false
+	b.publisherSessionID = ""
+	b.publisher = nil
 
 	r.totalFramesRelayed += b.framesRelayed
 	r.totalDatagramsRelayed += b.datagramsRelayed
@@ -1891,6 +1954,23 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool 
 		b.graceTimer.Stop()
 		b.graceTimer = nil
 	}
+	b.graceStart = time.Time{}
+
+	// Purge everything that could replay this broadcast's media after the hub
+	// is gone. Dropping the hub already unreaches all of it from the registry,
+	// but a live publisher's ingest goroutine still holds b (only
+	// TerminateBroadcast can remove a hub out from under one) and DVR cursors
+	// still hold the ring — and docs/26 D11's ring is precisely a structure
+	// that replays banned content to a subscriber who has not yet been closed.
+	// Explicit, under the lock, before anyone is closed.
+	b.cachedKeyframe = nil
+	b.cachedKeyframeID = 0
+	b.cachedKeyframeHasConfig = false
+	b.cachedClockMapping = nil
+	b.cachedAudioConfig = nil
+	b.cachedViewerCount = nil
+	b.dvr = nil
+	b.dvrAudio = nil
 
 	var subs []*Subscriber
 	for s := range b.subs {
@@ -1903,10 +1983,25 @@ func (r *Registry) expireBroadcast(id string, ok func(*broadcastHub) bool) bool 
 	edge := b.edge
 	r.mu.Unlock()
 
-	r.log.Info("broadcast expired and garbage collected", "broadcast_id", id, "subscribers", len(subs))
+	msg := "broadcast expired and garbage collected"
+	if force {
+		msg = "broadcast terminated"
+	}
+	r.log.Info(msg, "broadcast_id", id,
+		"subscribers", len(subs), "publisher_closed", deposed != nil, "close_code", code)
 
+	// The publisher first: it is the source, and closing it before the
+	// subscribers stops new media arriving mid-teardown. Outside the lock,
+	// like every other session close in this package.
+	if deposed != nil {
+		_ = deposed.CloseWithError(code, reason)
+	}
+
+	// Then EVERY subscriber kind: viewers, internal edge sessions (so
+	// downstream pods tear down too) and R30 stripe legs. One loop, one code
+	// — a second copy for a second code is how the two drift.
 	for _, s := range subs {
-		_ = s.sender.CloseWithError(uint32(wire.CloseCodeBroadcastEnded), "broadcast ended")
+		_ = s.sender.CloseWithError(code, reason)
 		s.Close()
 	}
 

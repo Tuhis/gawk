@@ -279,6 +279,38 @@ func TestWireConstants(t *testing.T) {
 	}
 }
 
+// The WebTransport application close codes, restated from this side exactly
+// like the golden vectors above.
+//
+// These are not decoration for this module: the engine's resume supervisor
+// splits them into terminal and resumable (internal/engine/resume.go), so a
+// silently renumbered code would not fail a build — it would make this
+// broadcaster auto-resume into a broadcast the relay meant to end, or give up
+// on one it meant to keep. Renumbering is never the right fix; allocate the
+// next code in gawk-server/wire/wire.go and mirror it into all four
+// implementations.
+func TestCloseCodeParity(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"CloseCodeBroadcastEnded", wire.CloseCodeBroadcastEnded, 4000},
+		{"CloseCodeSubscriberUnresponsive", wire.CloseCodeSubscriberUnresponsive, 4001},
+		{"CloseCodeServerDraining", wire.CloseCodeServerDraining, 4002},
+		{"CloseCodeOriginMoved", wire.CloseCodeOriginMoved, 4003},
+		{"CloseCodePublisherSuperseded", wire.CloseCodePublisherSuperseded, 4004},
+		{"CloseCodeStripeLegOrphaned", wire.CloseCodeStripeLegOrphaned, 4005},
+		// R39 (docs/42 §4.4): the operator terminated the broadcast. Terminal
+		// for this publisher — see terminalForPublisher in the engine.
+		{"CloseCodeTerminatedByOperator", wire.CloseCodeTerminatedByOperator, 4006},
+	} {
+		if c.got != c.want {
+			t.Errorf("wire.%s = %d, want %d — close codes are wire-visible; update the relay, both broadcasters and the viewer together", c.name, c.got, c.want)
+		}
+	}
+}
+
 // The empty-extradata DecoderConfig is the native broadcaster's whole interop
 // story (docs/19): it emits raw Annex-B, so it never builds an avcC record and
 // the viewer's isAnnexB sniff routes around its extradata correction. If the

@@ -13,7 +13,7 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
     onConfig: (c: { codec: string; extradata: Uint8Array }) => void;
     onStats: (s: unknown) => void;
     onError: (e: Error) => void;
-    onEnded: () => void;
+    onEnded: (reason: 'normal' | 'moderated') => void;
     // R15: the audio crossing (optional — a session consumer without audio
     // never sets them).
     onAudioChunk?: (chunk: {
@@ -53,7 +53,7 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
       if (sessionState.failStartWith) throw sessionState.failStartWith;
     }
     async stop(): Promise<void> {
-      this.cbs.onEnded();
+      this.cbs.onEnded('normal');
     }
   }
   const sessions: FakeViewerSession[] = [];
@@ -130,8 +130,21 @@ describe('ViewerScreen states', () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     act(() => sessions[0].cbs.onConnected());
-    act(() => sessions[0].cbs.onEnded());
+    act(() => sessions[0].cbs.onEnded('normal'));
     expect(screen.getByText('Broadcast ended')).toBeTruthy();
+    expect(screen.getByText('The stream is over.')).toBeTruthy();
+  });
+
+  // R39 (docs/42 D6, §4.4): a moderator kill (close code 4006) must NOT read
+  // as an ordinary ending — telling viewers what happened is the entire reason
+  // 4006 was allocated instead of reusing 4000.
+  it('shows a distinct end card when a moderator ended the broadcast', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    act(() => sessions[0].cbs.onEnded('moderated'));
+    expect(screen.getByText('This broadcast was ended by a moderator.')).toBeTruthy();
+    expect(screen.queryByText('The stream is over.')).toBeNull();
   });
 
   // Error-card copy is keyed on the structured kind, never the raw transport
@@ -1202,7 +1215,7 @@ describe('ViewerScreen screen wake lock', () => {
     await waitFor(() => expect(locks).toHaveLength(1));
     expect(locks[0].released).toBe(false);
 
-    await act(async () => sessions[0].cbs.onEnded());
+    await act(async () => sessions[0].cbs.onEnded('normal'));
     await waitFor(() => expect(locks[0].released).toBe(true));
   });
 

@@ -143,6 +143,9 @@ func TestStartConnectPhaseCarriesStatus(t *testing.T) {
 		{http.StatusNotFound, "no longer exists"},
 		{http.StatusConflict, "already publishing"},
 		{http.StatusTooManyRequests, "capacity"},
+		// R39 (docs/42 D15): the ban gate answers 451 pre-upgrade, on a mint
+		// (IP ban) as well as a reclaim (ID ban).
+		{http.StatusUnavailableForLegalReasons, "banned"},
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			s := New(Config{RelayURL: "https://relay.example"}, Callbacks{}, Options{

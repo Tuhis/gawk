@@ -57,7 +57,7 @@ feature set exists).
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
 | R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
 | R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, **LD1–LD7 implemented 2026-08-17** — `docker compose up` gives a working broadcast with nothing to copy-paste; the relay's dev certificate now persists (`-dev-cert` + `-cert-file`), its hash reaches the frontend through `/config.js` so the chrome-free viewer route works in a fresh profile, and `dev/certs.sh` switches between the self-signed and ACME lanes. Profiles for a synthetic broadcaster, telemetry and Vite HMR; a `dev-stack` CI job that round-trips a datagram through the published port. The **Firefox pass is done** — it joins the default lane unchanged, which is why the mkcert lane was withdrawn (no browser does WebTransport over a locally-installed CA, [docs/41](docs/41-local-dev-stack.md) §6). **Remaining: lane C's live issuance** ([docs/41](docs/41-local-dev-stack.md) §10) |
-| R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | 🔧 designed 2026-08-20, not started (AP1–AP8) ([docs/42](docs/42-admin-moderation-portal.md)) |
+| R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | 🔧 designed 2026-08-20, **AP1–AP8 implemented 2026-08-20** — a fleet-wide kill that actually reaches every pod (`Ban` CRs the relays watch, close code 4006 terminal in all four wire mirrors, HTTP 451 on the publish path), durable ID/IP bans with longest-prefix CIDR matching, and **`gawk-admin`**: the fourth top-level module and fourth deployable — an OIDC-gated operator SPA over Postgres (the chart takes a connection to a database it does not create), horizontally scaled from v1 with leader-elected background work, signed multi-webhook notifications, and forward-only migrations applied by a Helm hook Job under an expand–contract policy CI enforces. Deliberately deviating from the sketch below, the portal is **internet-exposable behind OIDC** rather than internal-only, so a paged operator can judge and kill from a phone. Verified by the four modules' suites, `helm` render assertions, an image smoke run and a kind two-pod tier that applies a real `Ban` and watches both pods drop the broadcast. **Remaining: the manual pass on the reference deployment** — kill a real broadcast from a phone, end to end ([docs/42](docs/42-admin-moderation-portal.md) §11.3) |
 | R40 | [Automatic content flagging (NSFW keyframe screening)](#r40--automatic-content-flagging-nsfw-keyframe-screening) | 💡 proposed 2026-08-19, not started — no design doc yet; **depends on R39** (needs its kill/ban actuator) |
 
 ---
@@ -3416,14 +3416,28 @@ live-config mutation beyond the narrow, explicitly-listed knobs if the
 dynamic-settings idea survives design at all.
 
 **Status**: designed 2026-08-20 ([docs/42](docs/42-admin-moderation-portal.md),
-chunks AP1–AP8), not started. The design answers the questions above: bans
-attach to broadcast ID + publisher IP (CIDR), each timed or permanent, with
-plain "kill" = a 10-minute ID cooldown; enforcement is a `Ban` CRD relay pods
-watch (Postgres/CNPG in a new `gawk-admin` service is the system of record);
-the raw-ID invariant relaxes only on authenticated admin surfaces; close code
-4006 is terminal for viewers and publisher; and — deviating deliberately from
-the sketch above — the portal is internet-exposable behind full OIDC rather
-than internal-only, so a paged operator can act from a phone.
+chunks AP1–AP8); **AP1–AP8 implemented 2026-08-20**. The design answered the
+questions above: bans attach to broadcast ID + publisher IP (CIDR), each timed
+or permanent, with plain "kill" = a 10-minute ID cooldown; enforcement is a
+`Ban` CRD relay pods watch (Postgres in a new `gawk-admin` service is the
+system of record); the raw-ID invariant relaxes only on authenticated admin
+surfaces; close code 4006 is terminal for viewers and publisher; and —
+deviating deliberately from the sketch above — the portal is
+internet-exposable behind full OIDC rather than internal-only, so a paged
+operator can act from a phone. The dynamic-settings idea survived design only
+as a **read-only** effective-config view (docs/42 D10): GitOps stays the sole
+mutation channel.
+
+`gawk-admin` is the fourth top-level module and the fourth deployable —
+image, chart and release-please component, in the same one-combined-release-PR
+model as the rest. Deviations found during implementation, and what each is
+verified by, are in [docs/42](docs/42-admin-moderation-portal.md) §11.1–§11.2.
+
+**Remaining**: the milestone-closing manual pass on the reference deployment —
+kill a real broadcast from a phone through the OIDC portal and watch every
+consequence land ([docs/42](docs/42-admin-moderation-portal.md) §11.3). It
+needs a real cluster, a real identity provider and a live broadcast, so it is
+owner-pending; nothing else holds this row.
 
 ---
 

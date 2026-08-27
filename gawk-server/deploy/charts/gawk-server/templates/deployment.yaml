@@ -12,6 +12,27 @@ spec:
   {{- if and (gt (int .Values.replicas) 1) (not .Values.config.clusterMode) }}
   {{- fail "replicas > 1 requires config.clusterMode: true (see docs/22-relay-scale-out.md)" }}
   {{- end }}
+  {{- /*
+  R39 (docs/42 §4.5): the relay admin API rides the OPS listener, so a
+  credential for it is meaningless without one. With metrics.enabled=false
+  this chart renders GAWK_METRICS_ADDR: "off" (below), the listener never
+  starts, and service-metrics-headless.yaml's gate suppresses the per-pod
+  Service too — so gawk-admin resolves zero pods AND could not reach them
+  anyway. Ban enforcement keeps working off the CR informer, which is exactly
+  what makes the result hard to diagnose: bans bite, but the portal shows an
+  empty fleet and every kill dialog is dead. Refuse to render it.
+
+  Scoped to a CONFIGURED admin API, not to moderation.enabled: bans plus
+  `kubectl get bans` with no portal and no ops listener is a coherent minimal
+  install, and nothing about it is broken.
+
+  A template comment, not a YAML one: this text mentions moderation, and the
+  "moderation off renders nothing moderation-related" CI check reads the
+  RENDERED output of a default install.
+  */}}
+  {{- if and .Values.moderation.enabled (not .Values.metrics.enabled) (or .Values.moderation.adminApi.token .Values.moderation.adminApi.tokenRef .Values.moderation.adminApi.oidc.issuer) }}
+  {{- fail "moderation.adminApi (token/tokenRef/oidc.issuer) requires metrics.enabled: true — the relay admin API and its per-pod headless Service both ride the ops listener (see docs/42-admin-moderation-portal.md §4.5)" }}
+  {{- end }}
   replicas: {{ .Values.replicas }}
   # RollingUpdate with surge 1 / unavailable 0: pods drain one at a time and
   # a reconnecting client always has a ready pod to land on. At replicas: 1
@@ -35,7 +56,9 @@ spec:
       # with 4002 inside ~1.25s and exits — 10s is generous headroom, and a
       # hung pod must not linger into the next rollout step.
       terminationGracePeriodSeconds: 10
-      {{- if .Values.config.clusterMode }}
+      {{- if or .Values.config.clusterMode .Values.moderation.enabled }}
+      # Cluster mode wants Lease verbs; moderation wants read-only Bans. Either
+      # alone needs the identity — see rbac.yaml.
       serviceAccountName: {{ include "gawk-server.fullname" . }}
       {{- end }}
       {{- with .Values.imagePullSecrets }}
@@ -124,14 +147,23 @@ spec:
               {{- end }}
             - name: GAWK_INTERNAL_SERVER_NAME
               value: {{ .Values.config.internalServerName | default (first .Values.certificate.dnsNames) | quote }}
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
             - name: POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- end }}
+            {{- if or .Values.config.clusterMode .Values.moderation.enabled }}
+            # This pod's identity and the namespace its Leases and Ban CRs
+            # live in. Wanted by cluster mode (R17 W3: the Lease holder name)
+            # and, independently, by moderation (R39) — the informer reads the
+            # namespace, and every /internal/admin/* response names this pod so
+            # gawk-admin's fleet view can attribute what it merges (docs/42
+            # §4.5). Neither is gated on the other: a moderation-only install
+            # that left POD_NAME unset would report `pod: ""` everywhere.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -215,6 +247,47 @@ spec:
             # the FRONTEND ingress (ingest rides it), not this relay.
             - name: GAWK_TELEMETRY_ADVERTISE_URL
               value: {{ .Values.telemetry.advertiseUrl | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.moderation.enabled }}
+            # R39 (docs/42 §4.3): where this pod reads enforcement from.
+            # "k8s" watches Ban CRs in POD_NAMESPACE — independent of cluster
+            # mode, so kills and bans work on a single-pod install too.
+            - name: GAWK_MODERATION_SOURCE
+              value: {{ .Values.moderation.source | quote }}
+            {{- if or .Values.moderation.adminApi.tokenRef .Values.moderation.adminApi.token }}
+            # The static bearer credential for /internal/admin/* on the ops
+            # listener — the machine path gawk-admin uses to enumerate the
+            # fleet. Its own token, deliberately NOT the internal PSK: a
+            # different trust domain, independently rotatable (docs/42 §5).
+            # With neither this nor an OIDC issuer set, those routes 404.
+            - name: GAWK_ADMIN_API_TOKEN
+              {{- if .Values.moderation.adminApi.tokenRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.moderation.adminApi.tokenRef.name | quote }}
+                  key: {{ .Values.moderation.adminApi.tokenRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.moderation.adminApi.token | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.moderation.adminApi.oidc.issuer }}
+            # The alternative credential for the same routes: an OIDC JWT,
+            # verified offline against a cached JWKS. It lets a human (or a
+            # JWT-holding tool) reach them with the same identity the portal
+            # uses, and lets the IdP govern who may read raw broadcast IDs.
+            - name: GAWK_ADMIN_OIDC_ISSUER
+              value: {{ .Values.moderation.adminApi.oidc.issuer | quote }}
+            - name: GAWK_ADMIN_OIDC_AUDIENCE
+              value: {{ .Values.moderation.adminApi.oidc.audience | quote }}
+            {{- with .Values.moderation.adminApi.oidc.rolesClaim }}
+            - name: GAWK_ADMIN_OIDC_ROLES_CLAIM
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.moderation.adminApi.oidc.role }}
+            - name: GAWK_ADMIN_OIDC_ROLE
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if .Values.config.serverName }}

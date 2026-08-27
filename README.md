@@ -9,6 +9,7 @@
 [![Linux broadcaster](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-broadcast%2Fv*&label=broadcast-linux)](https://github.com/Tuhis/gawk/releases)
 [![Windows broadcaster](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-broadcast-windows*&label=broadcast-windows)](https://github.com/Tuhis/gawk/releases)
 [![Telemetry](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-telemetry*&label=telemetry)](https://github.com/Tuhis/gawk/releases)
+[![Admin](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-admin*&label=admin)](https://github.com/Tuhis/gawk/releases)
 
 Self-hosted, low-latency live game streaming for the browser. A broadcaster
 shares their screen; viewers join with a 6-character code and watch at
@@ -119,6 +120,12 @@ Open `http://localhost:8080/#/broadcast`, click **Start a stream** and pick a
 screen — you get a 6-character code. Open the join link in another tab, or in
 a fresh incognito window, and it connects. No Chrome flags needed.
 
+The moderation portal is part of the same `up`: open `http://localhost:8088`,
+click sign in, and you land back authenticated — the stack runs a test-only
+identity provider that approves everyone as `operator`. Kills and bans made
+there enforce through the same Ban-CR pipe a real deployment uses (a minimal
+dev control plane ships in the stack; `docs/41` has the details).
+
 Under the hood, the relay generates a self-signed certificate into `certs/`
 and keeps it across restarts, and the stack renders that certificate's hash
 into the frontend's `/config.js`. Because the hash arrives through
@@ -227,6 +234,7 @@ mode, verification, and upgrades.
 | [`gawk-broadcast/`](gawk-broadcast/) | Native **Linux** broadcaster (Go) — GUI + CLI, GPU encode via the XDG portal + GStreamer. A binary you run, not a deployed component. |
 | [`gawk-broadcast-windows/`](gawk-broadcast-windows/) | Native **Windows** broadcaster (Rust) — Windows.Graphics.Capture + Media Foundation, single static EXE. |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
+| [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
 | [`docs/`](docs/README.md) | Numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria. |
 | [`tools/`](tools/) | Repo tooling (third-party license notice generation). |
@@ -280,7 +288,9 @@ actually linked into that artifact:
 [Linux broadcaster](gawk-broadcast/THIRD-PARTY-NOTICES.md) ·
 [Windows broadcaster](gawk-broadcast-windows/THIRD-PARTY-NOTICES.md) ·
 [telemetry](gawk-telemetry/THIRD-PARTY-NOTICES.md) ·
-[telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md).
+[telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md) ·
+[admin](gawk-admin/THIRD-PARTY-NOTICES.md) ·
+[admin UI](gawk-admin/ui/THIRD-PARTY-NOTICES.md).
 Regenerate with `python3 tools/licenses/gen-notices.py`; CI gates every
 dependency against a permissive allowlist. The one non-standard entry: the
 Windows broadcaster's GUI uses **Slint** under its Royalty-free Desktop

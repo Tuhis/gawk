@@ -114,7 +114,7 @@ func startClusteredPod(t *testing.T, ctx context.Context, cs *fake.Clientset, po
 	srv.SetCluster(coord, podName)
 	// The production dialer trusts the system roots; the test fleet's cert is
 	// self-signed, so re-point the dialer at the shared pool.
-	srv.edges.dial = newEdgeDialer(cfg.InternalServerName, cfg.InternalPSK, pool, discardLog)
+	srv.edgeManager().dial = newEdgeDialer(cfg.InternalServerName, cfg.InternalPSK, pool, discardLog)
 
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()

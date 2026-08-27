@@ -19,7 +19,12 @@ import type { TelemetryHelloMessage } from './wire';
 import type { ReleasedFrame } from './reorder-buffer';
 import { ViewerPipeline } from './viewer';
 import type { ViewerStats } from './viewer';
-import { ViewerSession, type ViewerErrorKind, type ViewerSessionCallbacks } from './viewer-session';
+import {
+  ViewerSession,
+  type ViewerEndReason,
+  type ViewerErrorKind,
+  type ViewerSessionCallbacks,
+} from './viewer-session';
 import { LocalViewerTransport, type ViewerTransportFactory } from './viewer-transport';
 
 // Main thread → worker.
@@ -73,7 +78,9 @@ export type ViewerWorkerEvent =
   | { type: 'stats'; stats: ViewerStats }
   // `message` is console-only detail; the screen renders copy keyed on `kind`.
   | { type: 'error'; message: string; fatal: boolean; kind: ViewerErrorKind }
-  | { type: 'ended' }
+  // R39 (docs/42 §4.4): `reason` distinguishes a moderator kill (close code
+  // 4006) from any other clean ending, so the screen can say which happened.
+  | { type: 'ended'; reason: ViewerEndReason }
   // R22 (gated devices only, after 'arm'): one fMP4 segment from the worker
   // muxer, buffer transferred. Init segments carry the authoritative mime
   // (codec derived from the bitstream); media segments carry the keyframe
@@ -221,10 +228,10 @@ export class ViewerWorkerCore {
         // not fire onEnded on its own).
         void session.stop();
       },
-      onEnded: () => {
+      onEnded: (reason) => {
         if (!current()) return;
         this.session = null;
-        this.host.post({ type: 'ended' });
+        this.host.post({ type: 'ended', reason });
       },
       // R15 (docs/20 Decision 7): decoded PCM crosses to the main thread,
       // channel buffers transferred.

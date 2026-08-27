@@ -108,6 +108,10 @@ pub const CLOSE_CODE_PUBLISHER_SUPERSEDED: u32 = 4004;
 /// Viewer stripe legs only (docs/35 §14); never sent to a publisher like
 /// this one. Non-terminal: the relay reaped an orphaned R30 stripe leg.
 pub const CLOSE_CODE_STRIPE_LEG_ORPHANED: u32 = 4005;
+/// Terminal in every role (R39, docs/42 §4.4): the operator terminated this
+/// broadcast. A publisher like this one must NOT auto-resume — the ID is
+/// banned for at least the kill cooldown, so a reclaim only collects a 451.
+pub const CLOSE_CODE_TERMINATED_BY_OPERATOR: u32 = 4006;
 
 /// The broadcast ID alphabet (gawk-server/internal/broadcastid): 31 symbols,
 /// no `0 O 1 I L`. IDs are 6 chars; announce parsing validates against this.

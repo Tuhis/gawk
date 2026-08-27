@@ -1027,7 +1027,107 @@ Add to it when a new gotcha lands in `docs/`.
   forwarded mapping would corrupt viewers' capture→render latency by that
   epoch difference. ([docs/22](22-relay-scale-out.md))
 
+**Moderation and the admin portal (R39)**
+
+- **client-go ≥ 1.35 defaults the `WatchListClient` feature gate ON, which
+  makes a `SharedIndexInformer` fed by a `watch.FakeWatcher` never sync and
+  never call `List`.** The reflector opens a streaming watch-list and waits
+  forever for an `initial-events-end` bookmark the fake never sends. It fails
+  as a silent 5-second timeout with **nothing logged below klog `-v=3`**, so
+  the informer simply appears to do nothing. Fix in informer tests:
+  `clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)`.
+  Production is unaffected — a real API server sends the bookmark.
+  ([docs/42](42-admin-moderation-portal.md) §4.2)
+- **A same-origin dev IdP's issuer must use the CONTAINER's listen port, not
+  just the published one.** The compose portal lane's issuer is
+  `http://localhost:8088/idp`, and gawk-admin fetches it from INSIDE its own
+  container — where `localhost:8088` is its own loopback, so the /idp proxy
+  loop only closes if the container LISTENS on 8088 too. Publishing
+  `8088:8090` produced a portal that served fine while `/readyz` said
+  `connection refused` on its own issuer forever. The compose file pins
+  container port == published port == the ADMIN_URL port, with a comment
+  saying the equality is load-bearing.
+- **Two dev-stack image traps, one `up` apart** (2026-08-27): the
+  `postgres:18` image refuses the classic `/var/lib/postgresql/data` mount
+  point (mount `/var/lib/postgresql` — docker-library/postgres#37), and
+  `rancher/kine` runs as `nobody`, so a named volume mounted anywhere but the
+  image's own declared `/db` directory is root-owned and unwritable ("unable
+  to open database file").
+- **go-oidc's `RemoteKeySet` unblocks waiters before clearing its in-flight
+  fetch entry**, so a verification arriving just after a FAILED fetch can join
+  that stale in-flight and inherit its error — a spurious 401 that spends no
+  rate-limit token and touches no network — instead of starting a fresh
+  fetch. Production shrugs (the client's retry gets a clean fetch); a test
+  asserting "the refilled token buys the next verification" flakes on loaded
+  runners. `keyset_test.go`'s rotation-under-attack test documents and
+  absorbs the window with a bounded retry.
+- **client-go's `LeaderElector.Run` returns for good on leadership loss** — it
+  never re-campaigns: its godoc does note the stopped-holding-the-lease
+  return, but nothing warns that campaigning again is the caller's job. A
+  bare `go elector.Run(ctx)` therefore means a replica demoted once
+  (one >RenewDeadline API-server blip is enough) never leads again, and the
+  failure is the worst kind: every pod Ready and serving while the singleton
+  background work (reconciler, janitor, webhook dispatcher) has silently
+  stopped fleet-wide. Wrap it in a re-campaign loop, or treat return as fatal
+  so the pod restarts; see `gawk-admin/internal/kube/leader.go`.
+- **A Helm `pre-install` hook runs before the chart's own manifests**, so a
+  migration Job cannot read a Secret the same chart creates. A chart that
+  rendered its own CloudNativePG `Cluster` therefore deadlocked on every first
+  install: Helm waiting for the Job, the Job's pod waiting for the DSN Secret
+  Helm would not create until the Job finished. Moving the hook to
+  `post-install` dodges it, but the real fix is upstream of Helm — **don't put
+  the stateful database inside the stateless chart**. `gawk-admin` takes a
+  connection to a Postgres that already exists (`postgres.dsn` /
+  `postgres.dsnSecretRef`), which makes the database a *prerequisite* rather
+  than a dependency of the release, and `pre-install` legal again: the schema
+  is migrated before the Deployment rolls on a first install too, not only on
+  upgrades. ([docs/42](42-admin-moderation-portal.md) §4.15)
+- **Helm never upgrades a chart's `crds/` directory** — it installs those once
+  and then leaves them alone forever, so a schema change in a later release
+  silently does not apply. Ship CRDs from `templates/` (with
+  `helm.sh/resource-policy: keep`, so uninstall does not cascade-delete every
+  live custom resource) when the schema is expected to evolve.
+  ([docs/42](42-admin-moderation-portal.md) D14)
+- **CloudNativePG's generated application Secret is `<cluster-name>-app`**, and
+  its `uri` key is a complete connection URI. That naming is the operator's
+  contract, not a choice any chart makes — which is what lets a chart support
+  CNPG without templating a line of it: `dsnSecretRef: {name: <cluster>-app,
+  key: uri}` is the entire integration.
+- **Postgres-backed Go tests that `t.Skip` without a DSN report as PASSES**, so
+  a CI job that forgets to set the environment variable is green and proves
+  nothing. The database is where the interesting invariants live (partial
+  unique indexes, `FOR UPDATE SKIP LOCKED`, advisory locks), so the job has to
+  assert the tests actually ran, not just that they did not fail.
+  ([docs/42](42-admin-moderation-portal.md) AP4/AP8)
+- **A raw broadcast ID is a join capability**, which is why R39 confines it to
+  three places — the credential-gated relay admin endpoints, the OIDC-gated
+  portal, and Postgres. Webhook payloads and `/statusz` carry the per-process
+  HMAC'd key instead (webhooks add a portal link). Ban *reasons*, by contrast,
+  do ride webhooks: they are operator text and the receiver sees them.
+  ([docs/42](42-admin-moderation-portal.md) D8)
+- **…but relay logs are NOT a place where broadcast IDs are absent, and
+  `docs/42` §5's "(existing discipline)" parenthetical is wrong about them.**
+  The relay has always logged `broadcast_id` at Info: every publisher,
+  subscriber and internal-edge session attaches it with `slog.With`
+  (`internal/transport/server.go`), so does every hub (`internal/hub/hub.go`,
+  including the "broadcast terminated" line a kill ends at), and lease
+  renew/release failures log it at Warn (`internal/cluster/cluster.go`).
+  R39's own moderation lines were brought into line after review — the kill
+  and the 451 name a broadcast by `broadcast_key`, the same HMAC'd handle
+  `/statusz` uses, and the raw ID moved to the Debug line beside the
+  operator-private ban reason — but the k8s source still logs the Ban CR's
+  *name* at Info, and for an ID ban that name is `ban-id-<the id>` by
+  construction (`moderation.CRName`). So treat "no raw IDs at Info+" as a rule
+  for new code, not as a property the repo has: **do not build anything on the
+  assumption that an aggregated pod log is free of joinable IDs.**
+
 **CI / deployment**
+
+- **`cmd | grep -q` inverts a "this must fail" test under `set -o pipefail`**
+  (which is GitHub Actions' default shell): the pipeline reports the *failing*
+  command's status, so `if helm template … | grep -q 'expected error'` takes
+  the else branch even when the message matched. Assign the output first
+  (`if out=$(cmd 2>&1); then …`), then grep the variable.
 
 - **Tags created with `GITHUB_TOKEN` don't trigger workflows** — publish
   jobs must chain off release-please outputs in the same workflow, never

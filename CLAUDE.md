@@ -125,6 +125,18 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   **is** the security posture: ingest is public (same-origin path on the
   frontend Ingress), while the dashboard/read API/MCP sit on a listener that is
   never routed publicly. Keep it that way.
+- `gawk-admin` — optional moderation portal (R39); the **fourth** top-level Go
+  module and fourth deployable, **default off everywhere**. It `replace`s
+  `gawk-server` for its public packages — `moderation` (D13), `oidcroles` and
+  `adminapi` (the `/internal/admin/*` response types; same reason `wire` is
+  public: reuse, never mirror) — so its **image builds from the repo root**.
+  A semantic change to any of those packages needs a `gawk-admin`-scoped
+  commit in the same PR (`CONTRIBUTING.md` has the release-coupling rule). Two prohibitions travel
+  with it: the relay's `/internal/admin/*` routes may carry **raw broadcast IDs
+  and publisher IPs** and must never be routed publicly, and **webhook payloads
+  must never carry either** — they carry the HMAC'd key and a portal link
+  (`docs/42` D8). Its migrations are forward-only and **a merged migration file
+  is immutable**; CI enforces both (`docs/42` §4.15).
 - `docs/` — per-milestone design notes. Each component has `deploy/`
   (Dockerfile + Helm chart); `.github/workflows/` holds CI + release automation.
 
@@ -232,7 +244,8 @@ Re-deriving them costs a cycle and has happened before.
 - **Versioning**: SemVer 2 from conventional commits via release-please
   (monorepo manifest mode, **one combined release PR** — separate PRs conflicted
   on the shared manifest, don't switch back; tags stay per-component:
-  `gawk-server-vX.Y.Z` / `gawk-app-vX.Y.Z`).
+  `gawk-server/vX.Y.Z` / `gawk-app/vX.Y.Z` — `tag-separator: "/"`, so tags
+  cut before that change still carry the older `gawk-telemetry-v1.6.1` shape).
 - **Registry**: GHCR — images `ghcr.io/tuhis/<component>`, charts
   `oci://ghcr.io/tuhis/charts/<component>` (lowercase; packages are public —
   pulls need no credentials).

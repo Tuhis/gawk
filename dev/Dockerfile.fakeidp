@@ -1,0 +1,21 @@
+# TEST-ONLY image for the kind e2e tier: gawk-fakeidp, the throwaway OIDC
+# issuer gawk-admin authenticates against for the scripted portal kill
+# (docs/42 §11.1's kind-tier row). Built and loaded by ci.yml's e2e-cluster
+# job only — it is never published, and must never be: the binary signs an
+# operator token for anyone who asks.
+#
+# Repo-root context, same reason as gawk-admin/deploy/Dockerfile: the module
+# consumes gawk-server through a local `replace`.
+#
+#   docker build -f dev/Dockerfile.fakeidp -t gawk-fakeidp:e2e .
+FROM golang:1.26-trixie AS build
+WORKDIR /src
+COPY gawk-server/ ./gawk-server/
+COPY gawk-admin/ ./gawk-admin/
+WORKDIR /src/gawk-admin
+RUN go mod download
+RUN CGO_ENABLED=0 go build -trimpath -o /out/gawk-fakeidp ./cmd/gawk-fakeidp
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/gawk-fakeidp /gawk-fakeidp
+ENTRYPOINT ["/gawk-fakeidp"]

@@ -1476,11 +1476,16 @@ func TestObfuscatedStatsKeysArePerRegistry(t *testing.T) {
 	r1 := NewRegistry(discardLog, Options{})
 	r2 := NewRegistry(discardLog, Options{})
 	const id = "ABCDEF"
-	if r1.ObfuscateID(id) == r2.ObfuscateID(id) {
-		t.Errorf("ObfuscateID(%q) identical across registries (%q): keying is offline-computable", id, r1.ObfuscateID(id))
+	key1, key2 := r1.ObfuscateID(id), r2.ObfuscateID(id)
+	if key1 == key2 {
+		t.Errorf("ObfuscateID(%q) identical across registries (%q): keying is offline-computable", id, key1)
 	}
-	if r1.ObfuscateID(id) != r1.ObfuscateID(id) {
-		t.Error("ObfuscateID not stable within a registry")
+	// Stability within one registry. Compared through a VARIABLE, not two
+	// inline calls: `f(x) != f(x)` is an assertion staticcheck reads as
+	// vacuous (SA4000), and a reader has to squint to tell whether it ever
+	// checks anything.
+	if again := r1.ObfuscateID(id); again != key1 {
+		t.Errorf("ObfuscateID not stable within a registry: %q then %q", key1, again)
 	}
 
 	mintedID, p, err := r1.StartPublish("")
@@ -2558,8 +2563,21 @@ func TestCarrierBandwidthCapDropsRecords(t *testing.T) {
 
 	d1 := chunkDgram(t, false, 1, 0, 1, "d1")
 	p.HandleDatagram(d1)
-	waitFor(t, 5*time.Second, func() bool { return sub.Dropped() == 1 }, "over-cap record dropped")
+	// Wait on the counter this test ASSERTS, not on the subscriber's own drop
+	// count. They are incremented by different goroutines with no ordering
+	// between them: the subscriber's bumps on the drain goroutine's own path,
+	// while countBandwidthDrop takes r.mu separately (hub.go). Waiting for
+	// sub.Dropped() therefore proves the drop happened but says nothing about
+	// whether the hub-level counters have been credited yet — on a loaded
+	// machine the assertions below can run first and read a zero-valued Stats,
+	// which is what CI run 32497862767 hit.
+	waitFor(t, 5*time.Second, func() bool {
+		return r.Stats().Broadcasts[r.ObfuscateID(id)].BandwidthDroppedDatagrams == 1
+	}, "over-cap record dropped and credited to the broadcast")
 
+	if got := sub.Dropped(); got != 1 {
+		t.Errorf("subscriber Dropped = %d, want 1", got)
+	}
 	if n := len(f.carrierStreams()); n != 0 {
 		t.Errorf("carrier streams = %d, want 0 (drop happens before any open)", n)
 	}

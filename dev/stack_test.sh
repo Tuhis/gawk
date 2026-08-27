@@ -53,6 +53,20 @@ else
     ok "the ops port does not follow BIND_ADDR"
 fi
 
+# The same D14 rule for the dev control plane, with more teeth: its static
+# token is cluster-admin under AlwaysAllow, so the apiserver port must stay
+# a loopback literal whatever BIND_ADDR says.
+if grep -qE '^\s*-\s*"127\.0\.0\.1:\$\{KUBE_API_PORT:-6445\}:6443"' "$COMPOSE"; then
+    ok "the dev apiserver is published on 127.0.0.1 only (§4.8)"
+else
+    fail "the dev apiserver mapping is not the literal 127.0.0.1:\${KUBE_API_PORT:-6445}:6443"
+fi
+if grep -E '6443' "$COMPOSE" | grep -q 'BIND_ADDR'; then
+    fail "the dev apiserver mapping interpolates BIND_ADDR — it holds cluster-admin for anyone who connects"
+else
+    ok "the dev apiserver does not follow BIND_ADDR"
+fi
+
 # D12: the boundary is stated in the artifact, because the moment a compose
 # file looks deployable somebody deploys it.
 if grep -qi 'NOT A DEPLOYMENT PATH' "$COMPOSE"; then
@@ -70,13 +84,17 @@ fi
 
 echo "profiles"
 
-# The default `up` is relay + app + config-gen only: a default that starts
-# five containers is a default people stop running (D11).
+# The default `up` is the whole product, moderation portal included — an
+# owner decision (2026-08-27, docs/41 §4.8) that supersedes the original
+# smallest-default reading of D11: the new developer's first `up` must not
+# need a profile to see everything. Still ASSERTED as an exact set, so a
+# service cannot join or leave the default lane unnoticed.
 default_services=$(dc config --services 2>/dev/null | sort | tr '\n' ' ')
-if [ "$default_services" = "app config-gen relay " ]; then
-    ok "a bare \`up\` starts exactly relay, config-gen and app"
+want="admin admin-migrate admin-pg app config-gen fakeidp kine kube-apiserver kube-bootstrap kube-gen relay "
+if [ "$default_services" = "$want" ]; then
+    ok "a bare \`up\` starts exactly the documented default set (§4.8)"
 else
-    fail "a bare \`up\` starts: $default_services"
+    fail "a bare \`up\` starts: $default_services(want: $want)"
 fi
 
 for p in sim telemetry app-dev tls; do
@@ -129,7 +147,9 @@ echo "gitignore"
 
 # §5: a private key in a public repository is not a mistake with a warning
 # attached — CAs must revoke keys reported as compromised within 24 hours.
-for p in certs/cert.pem certs/key.pem dev/generated/config.js .env; do
+# dev/generated/kubeconfig carries the control plane's static token: dev-only
+# and loopback-scoped, but a credential is a credential.
+for p in certs/cert.pem certs/key.pem dev/generated/config.js dev/generated/kubeconfig .env; do
     if git check-ignore -q "$p"; then ok "$p is gitignored"; else fail "$p is NOT gitignored"; fi
 done
 for p in certs/.gitkeep dev/generated/.gitkeep; do

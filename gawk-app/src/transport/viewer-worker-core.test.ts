@@ -177,8 +177,8 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     const { host, events } = fakeHost(sink);
     const { factory, sessions } = fakeFactory();
     new ViewerWorkerCore(host, factory).start(startParams);
-    sessions[0].cbs.onEnded();
-    expect(events).toContainEqual({ type: 'ended' });
+    sessions[0].cbs.onEnded('normal');
+    expect(events).toContainEqual({ type: 'ended', reason: 'normal' });
   });
 
   it('ignores a superseded session’s late callbacks (generation guard)', () => {
@@ -194,7 +194,7 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     const second = sessions[1];
 
     // The old session's async teardown finally fires onEnded — must be ignored.
-    first.cbs.onEnded();
+    first.cbs.onEnded('normal');
     first.cbs.onConnected();
     expect(events).toEqual([]);
 

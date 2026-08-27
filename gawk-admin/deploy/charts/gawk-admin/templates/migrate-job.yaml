@@ -1,0 +1,95 @@
+{{- if .Values.migrations.enabled }}
+# The migration step (docs/42 D18 / §4.15): versioned forward-only SQL, applied
+# by a dedicated Job running `gawk-admin migrate` from THIS release's image,
+# to completion, before the new Deployment rolls. The serving process never
+# runs DDL — it only reads the schema version and refuses to serve (readyz
+# false) if the schema is older than its minimum.
+#
+# The image tag is `include "gawk-admin.image"`, the SAME expression the
+# Deployment uses. That is the mechanism behind "the schema a release needs
+# travels with the release": a hook floating on :latest could migrate a
+# database a version ahead of the pods about to serve it, which is precisely
+# the failure the expand-contract policy exists to make survivable and which
+# there is no reason to invite.
+#
+# HOOKS: `pre-install,pre-upgrade` — §4.13/§4.15 as written, on BOTH paths.
+#
+# Worth stating why, because this briefly was `post-install`. A pre-install
+# hook runs before the release's own manifests, so it can only read things
+# that already exist outside the release. That used to exclude the database:
+# when the chart rendered a CloudNativePG Cluster, a pre-install migration
+# deadlocked on a first install — Helm waiting for the Job, the Job's pod
+# waiting for the DSN Secret Helm would not create until the Job finished.
+#
+# The chart no longer creates a database. It takes a connection to one that
+# must already exist (postgres.dsn / postgres.dsnSecretRef), which makes the
+# database a PREREQUISITE of the release rather than a dependency inside it —
+# exactly the kind of thing a pre-install hook is allowed to depend on. So
+# §4.15's guarantee now holds on a first install too, not just on upgrades:
+# the schema is migrated to completion BEFORE the Deployment rolls, and a
+# failed migration halts the release instead of rolling pods that would come
+# up NotReady against a schema that is too old.
+#
+# If the database does not exist yet, this Job fails and the release does not
+# roll. That is the correct, visible failure.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "gawk-admin.fullname" . }}-migrate
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    # Ahead of anything a later chart version might hook at the default 0.
+    "helm.sh/hook-weight": "-5"
+    # before-hook-creation, NOT hook-succeeded: the Job and its pod survive
+    # until the next release replaces them, which is what leaves `kubectl logs`
+    # readable after a FAILED upgrade — the one moment anybody wants them.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "gawk-admin.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      # No ServiceAccount and no token: this Job talks to Postgres and nothing
+      # else. It has no business holding Ban CRUD rights, and on a pre-install
+      # run the chart's own ServiceAccount would not exist yet anyway.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: "{{ include "gawk-admin.image" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # ENTRYPOINT is /gawk-admin; `args` selects the subcommand. Not
+          # `command` with a shell — this is a distroless image and there is
+          # no shell in it.
+          args: ["migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          env:
+            # The migrate mode needs the database and nothing else — config
+            # validation is mode-aware precisely so this Job does not carry
+            # OIDC configuration it has no use for.
+            {{- include "gawk-admin.pgDsnEnv" . | nindent 12 }}
+            - name: GAWK_ADMIN_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: GAWK_ADMIN_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+{{- end }}

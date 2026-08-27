@@ -109,6 +109,14 @@ func TestLeaseNameIsValidDNS1123AndRoundTrips(t *testing.T) {
 	}
 }
 
+// Deadlines here are 15 s, not the 5 s they once were: these waits sit on an
+// informer round-trip (fake watch → reflector → DeltaFIFO → handler), and the
+// -race CI job runs every package concurrently — transport's QUIC minute
+// included — so multi-second goroutine starvation is real. TestInformerCallbacks
+// hit the old 5 s on OnLeaseDeleted with the event merely delayed, not lost
+// (run 33087092522, on a CSS-only commit). gawk-admin's kube tests settled on
+// 15 s for the same reason. A wait that PASSES still returns in milliseconds;
+// the deadline only prices the failure.
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -197,7 +205,7 @@ func TestForceTakeBeatsLiveHolderAndLoserNotices(t *testing.T) {
 	}
 
 	// A's renew loop (20 ms interval) discovers the loss.
-	waitFor(t, 5*time.Second, func() bool { return lostID.Load() != nil }, "OnLeaseLost")
+	waitFor(t, 15*time.Second, func() bool { return lostID.Load() != nil }, "OnLeaseLost")
 	if got := lostID.Load().(string); got != "K7XQ2M→pod-b" {
 		t.Errorf("OnLeaseLost = %q, want K7XQ2M→pod-b", got)
 	}
@@ -289,7 +297,7 @@ func TestRenewCadenceAndGraceStopsRenewals(t *testing.T) {
 		t.Fatalf("Claim: %v", err)
 	}
 	start := time.Now()
-	waitFor(t, 5*time.Second, func() bool { return countRenews() >= 3 }, "three renewals")
+	waitFor(t, 15*time.Second, func() bool { return countRenews() >= 3 }, "three renewals")
 	elapsed := time.Since(start)
 	// ≤ 1 renew per RenewInterval (20 ms), with slack for scheduling.
 	if maxAllowed := int(elapsed/(20*time.Millisecond)) + 2; countRenews() > maxAllowed {
@@ -439,7 +447,7 @@ func TestInformerCallbacks(t *testing.T) {
 	}
 
 	// Simulate a force-take by another pod writing the lease directly.
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, 15*time.Second, func() bool {
 		lease, err := cs.CoordinationV1().Leases("gawk").Get(ctx, "gawk-bc-k7xq2m", metav1.GetOptions{})
 		if err != nil {
 			return false
@@ -451,7 +459,7 @@ func TestInformerCallbacks(t *testing.T) {
 		_, err = cs.CoordinationV1().Leases("gawk").Update(ctx, updated, metav1.UpdateOptions{})
 		return err == nil
 	}, "force-take write")
-	waitFor(t, 5*time.Second, func() bool { return lost.Load() != nil }, "OnLeaseLost via informer")
+	waitFor(t, 15*time.Second, func() bool { return lost.Load() != nil }, "OnLeaseLost via informer")
 	if got := lost.Load().(string); got != "K7XQ2M→pod-b" {
 		t.Errorf("OnLeaseLost = %q, want K7XQ2M→pod-b", got)
 	}
@@ -460,7 +468,7 @@ func TestInformerCallbacks(t *testing.T) {
 	if err := cs.CoordinationV1().Leases("gawk").Delete(ctx, "gawk-bc-k7xq2m", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return deleted.Load() != nil }, "OnLeaseDeleted")
+	waitFor(t, 15*time.Second, func() bool { return deleted.Load() != nil }, "OnLeaseDeleted")
 	if got := deleted.Load().(string); got != "K7XQ2M" {
 		t.Errorf("OnLeaseDeleted = %q, want K7XQ2M", got)
 	}

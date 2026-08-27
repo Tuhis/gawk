@@ -1,0 +1,63 @@
+{{- if .Values.serviceAccount.create }}
+# gawk-admin's cluster permissions, in full. Two resources, namespaced, and
+# nothing else — which is the answer to "what does a portal compromise yield?"
+# (docs/42 §5): Ban CRUD and a leader Lease. No Secrets, no Pods, no exec.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gawk-admin.serviceAccountName" . }}
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gawk-admin.fullname" . }}
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+rules:
+  # The write side of the projection (docs/42 D2): Postgres is the system of
+  # record, Ban CRs are how enforcement reaches relay pods. gawk-admin is the
+  # only writer — the relay's own Role is get/list/watch and nothing more.
+  #
+  # `patch` is what the reconciler's Adopt uses to stamp the ban-id annotation
+  # onto a break-glass `kubectl apply`'d CR (CRClient.Adopt is a merge patch,
+  # deliberately touching nothing but the annotation). It was missing until the
+  # kind tier ran the adoption path under a real authorizer: the reconciler
+  # Warn-looped "cannot patch resource bans" once a minute while the sweep,
+  # unable to mark the original adopted, also projected its canonical twin —
+  # the exact resurrection scenario the adoption path exists to prevent.
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["bans"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Leader election (docs/42 D16). Singleton background work — the
+  # reconciler/janitor and the webhook dispatcher — runs on exactly one replica,
+  # elected through a Lease. Without these verbs a two-replica install would
+  # either double-reconcile or (with client-go's default behaviour) fail to
+  # start the leader loop at all.
+  #
+  # `list`/`watch` are deliberately absent: leaderelection only ever get/creates
+  # /updates the ONE lease it is named after.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gawk-admin.fullname" . }}
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gawk-admin.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gawk-admin.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

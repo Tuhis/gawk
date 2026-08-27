@@ -192,9 +192,17 @@ func sessionCloseCode(relay RelaySession) (uint32, bool) {
 // auto-resumed would depose each other forever, each reclaim killing the other
 // broadcaster's stream — wire.go says so where the code is defined, and
 // TestReclaimSupersedesAgainstRealRelay is what catches a regression.
+//
+// CloseCodeTerminatedByOperator (R39, docs/42 §4.4) is terminal for a
+// different reason: the operator killed this broadcast and the ID is banned
+// for at least the kill cooldown, so every reclaim would answer 451 (§4.1
+// step 4). Resuming would spend the whole resume window hammering a gate that
+// is designed to say no.
 func terminalForPublisher(code uint32) bool {
 	switch code {
-	case wire.CloseCodeBroadcastEnded, wire.CloseCodePublisherSuperseded:
+	case wire.CloseCodeBroadcastEnded,
+		wire.CloseCodePublisherSuperseded,
+		wire.CloseCodeTerminatedByOperator:
 		return true
 	}
 	return false
@@ -206,6 +214,8 @@ func closeCodeError(code uint32) error {
 		return errors.New("another broadcaster took over this code — this session has been superseded")
 	case wire.CloseCodeBroadcastEnded:
 		return errors.New("the relay ended this broadcast")
+	case wire.CloseCodeTerminatedByOperator:
+		return errors.New("this broadcast was terminated by the server operator")
 	}
 	return fmt.Errorf("the relay closed this session (code %d)", code)
 }
@@ -217,12 +227,22 @@ func closeCodeError(code uint32) error {
 // These are the statuses handlePublish actually returns; keep this in step
 // with gawk-server/internal/transport/server.go, exactly as StartError.Message
 // already is.
+//
+// This IS the auto-resume retry cap docs/42 §4.4 asks for on repeated 403/451:
+// the cap is one. A 403 (token refused) and a 451 (banned, R39 D15) are both
+// verdicts about *this* broadcaster rather than transient relay conditions, so
+// counting to some larger number before believing them would only mean more
+// dials against a gate whose whole job is to refuse them. Being able to read
+// the status at all is the native broadcasters' advantage over the browser,
+// which sees an opaque dial failure (D15) — spending it on a retry budget
+// would waste it.
 func resumeTerminal(status int) bool {
 	switch status {
 	case http.StatusUnauthorized, // the publish secret is wrong
-		http.StatusForbidden, // the resume token was refused
-		http.StatusNotFound,  // the grace expired: this broadcast is gone
-		http.StatusConflict:  // someone else holds the code
+		http.StatusForbidden,                  // the resume token was refused
+		http.StatusNotFound,                   // the grace expired: this broadcast is gone
+		http.StatusConflict,                   // someone else holds the code
+		http.StatusUnavailableForLegalReasons: // R39: banned by the operator
 		return true
 	}
 	return false

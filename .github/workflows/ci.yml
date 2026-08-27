@@ -97,6 +97,8 @@ jobs:
       app: ${{ steps.filter.outputs.app }}
       telemetry: ${{ steps.filter.outputs.telemetry }}
       telemetry_ui: ${{ steps.filter.outputs.telemetry_ui }}
+      admin: ${{ steps.filter.outputs.admin }}
+      admin_ui: ${{ steps.filter.outputs.admin_ui }}
       tidy: ${{ steps.filter.outputs.tidy }}
       licenses: ${{ steps.filter.outputs.licenses }}
       notices: ${{ steps.filter.outputs.notices }}
@@ -175,6 +177,16 @@ jobs:
           # The off-origin assertion lives in internal/dashboard but can only run
           # against a built bundle, which is why it is in the UI job.
           telemetry_ui=$(decide telemetry_ui '^gawk-telemetry/(ui|internal/dashboard)/')
+          # R39 (docs/42 D13): gawk-admin `replace`s gawk-server too — it
+          # imports gawk-server/moderation so the relay and the admin plane
+          # cannot disagree on normalization, target matching or expiry. Same
+          # reasoning already written above for broadcast and telemetry: a
+          # relay change IS an admin change.
+          admin=$(decide        admin        '^(gawk-admin|gawk-server)/')
+          # Mirrors telemetry_ui: the no-external-assets assertion lives in
+          # internal/portal but can only run against a built bundle, so it is
+          # in the UI job.
+          admin_ui=$(decide     admin_ui     '^gawk-admin/(ui|internal/portal)/')
           # `go mod tidy` resolves the import graph, so any .go file can untidy a
           # module — not just a manifest.
           tidy=$(decide         tidy         '(^|/)go\.(mod|sum)$|\.go$')
@@ -191,7 +203,9 @@ jobs:
           # certificate path, the frontend's runtime config, both images and
           # the dev/ scripts — so a change to any of them can break the one
           # command a new contributor runs first.
-          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/)')
+          # gawk-admin joined the default lane with the R39 portal (docs/41
+          # §4.8), so its changes exercise the stack too.
+          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/)')
 
           # The docker matrix, filtered to the images whose inputs moved. It is
           # built HERE rather than declared in the `docker` job because a static
@@ -212,11 +226,26 @@ jobs:
           # R31: this is the ONLY cgo image, and `read_port` is what asks it
           # whether the DuckDB engine actually opened.
           tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","tag":"gawk-telemetry:ci","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081}'
+          # R39: repo-root context again, and for the same reason as telemetry
+          # — gawk-admin reaches gawk-server/moderation through a local
+          # `replace` (docs/42 D13).
+          #
+          # The smoke run deliberately points at a database that does not exist
+          # and an issuer that does not resolve. That is the assertion, not a
+          # shortcut: /healthz is "the process is up" and must answer without
+          # either, while /readyz is the one that requires Postgres and a
+          # resolved JWKS. An image that cannot start without its dependencies
+          # is an image that cannot report why it cannot start.
+          # gawk-admin cannot serve without a cluster (docs/42 §4.14), so it
+          # carries no probe: `expect_exit_message` asserts it gets all the way
+          # to the one failure a cluster-less run must have. See the step.
+          adm='{"context":".","dockerfile":"gawk-admin/deploy/Dockerfile","tag":"gawk-admin:ci","run_args":"-addr :8090 -pg-dsn postgres://127.0.0.1:1/none?sslmode=disable -external-url https://admin.invalid -oidc-issuer https://id.invalid -oidc-client-id ci -oidc-audience ci -relay-scan-target relays.invalid -relay-admin-token ci -namespace ci -log-level warn","expect_exit_message":"kubernetes:"}'
           images=""
           add() { images="${images:+$images,}$1"; }
           if [ "$server" = true ]; then add "$relay"; fi
           if [ "$app" = true ]; then add "$spa"; fi
           if [ "$telemetry" = true ]; then add "$tel"; fi
+          if [ "$admin" = true ]; then add "$adm"; fi
 
           if [ -n "$images" ]; then
             echo "docker_any=true" >> "$GITHUB_OUTPUT"
@@ -233,9 +262,23 @@ jobs:
             # that if the gate ever fails open, CI does what it did before this
             # change instead of refusing to start — the safe direction, and one
             # this PR cannot test on itself, since editing ci.yml sets all=true.
-            images="$relay,$spa,$tel"
+            images="$relay,$spa,$tel,$adm"
           fi
-          echo "docker_matrix={\"include\":[$images]}" >> "$GITHUB_OUTPUT"
+          # A credential-shaped substring here is not a style problem, it is an
+          # outage: the runner DROPS an output it believes holds a secret
+          # ("Skip output 'docker_matrix' since it may contain secret"), fromJSON
+          # then gets an empty string, and an unloadable matrix is ZERO JOBS —
+          # no logs, no annotation, and a run that fails with every job green.
+          # That is the same shape as the empty-include hazard described above,
+          # and it went unnoticed for a whole branch: `docker` produced no jobs
+          # at all while looking merely absent. A `user:pass@` URL is what
+          # triggered it; assert the class rather than that one instance.
+          matrix_json="{\"include\":[$images]}"
+          if printf '%s' "$matrix_json" | grep -qE '://[^/"[:space:]]*:[^/"[:space:]]*@'; then
+            echo "::error::docker_matrix carries a credentials-in-URL substring; the runner will redact the whole output and the docker matrix will silently produce zero jobs. Use a credential-free placeholder."
+            exit 1
+          fi
+          echo "docker_matrix=$matrix_json" >> "$GITHUB_OUTPUT"
           echo "  docker         {\"include\":[$images]}" >&2
 
   server:
@@ -801,6 +844,292 @@ jobs:
         working-directory: gawk-telemetry
         run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
 
+  # R39 (docs/42): the moderation service. Its own job for the same reason
+  # gawk-broadcast and gawk-telemetry have theirs — it is a separate Go module,
+  # the fourth one.
+  #
+  # THE SERVICE CONTAINER IS THE POINT. The store, migration, kube-reconciler
+  # and API tests all take a real Postgres through `internal/store/storetest`,
+  # and that helper SKIPS with a message when GAWK_ADMIN_TEST_DSN is unset —
+  # which is right for a laptop and catastrophic for CI. A job that ran this
+  # suite without a database would report green while exercising none of the
+  # invariants that actually live in the database: the partial unique index
+  # behind "one active ban per target", the FOR UPDATE SKIP LOCKED delivery
+  # claim that keeps two dispatchers from double-sending, and the migration
+  # runner's advisory lock. The last step below is what makes the skip
+  # impossible to ignore.
+  admin:
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: gawk
+          POSTGRES_PASSWORD: gawk
+          POSTGRES_DB: gawkadmin
+        ports:
+          - 5432:5432
+        # Without a health check the first test connects before initdb has
+        # finished and the whole suite fails on a connection refused that has
+        # nothing to do with the code.
+        options: >-
+          --health-cmd "pg_isready -U gawk -d gawkadmin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: gawk-admin
+    env:
+      # storetest.FreshDSN creates a throwaway database per test off this one,
+      # so the DSN names the maintenance database, not a per-test one.
+      GAWK_ADMIN_TEST_DSN: postgres://gawk:gawk@127.0.0.1:5432/gawkadmin?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-admin/go.mod
+          cache-dependency-path: gawk-admin/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      # The envtest tier (docs/42 §11.1): a real kube-apiserver + etcd for the
+      # two properties the client-go fakes cannot enforce — Lease CAS actually
+      # contended, and the relay chart's CRD schema accepting the reconciler's
+      # real payload. setup-envtest downloads the binaries; the tests skip
+      # without KUBEBUILDER_ASSETS, and the RAN guard below catches that skip
+      # the same way it catches a lost DSN.
+      - name: install envtest binaries
+        run: |
+          set -euo pipefail
+          echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 use -p path)" >> "$GITHUB_ENV"
+      - run: go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+      # The guard on the guard. `go test` reports a skipped test as a pass, so
+      # a DSN that never reached the suite — a renamed service, a changed port,
+      # an `env:` block that moved under the wrong key — would look exactly like
+      # success. Re-run the database-backed packages verbosely and fail on the
+      # skip message itself. The kube package rides along for the same reason:
+      # its envtest tests skip without KUBEBUILDER_ASSETS.
+      - name: the Postgres-backed and envtest-backed tests actually RAN
+        run: |
+          set -euo pipefail
+          out=$(go test -count=1 -v ./internal/store/... ./internal/kube/... 2>&1) || { echo "$out"; exit 1; }
+          echo "$out" | tail -40
+          if grep -q "GAWK_ADMIN_TEST_DSN is not set" <<<"$out"; then
+            echo "::error::the store tests SKIPPED — GAWK_ADMIN_TEST_DSN did not reach them, so this job proved nothing"
+            exit 1
+          fi
+          if grep -q "KUBEBUILDER_ASSETS is not set" <<<"$out"; then
+            echo "::error::the envtest tests SKIPPED — KUBEBUILDER_ASSETS did not reach them, so the Lease/CRD tier proved nothing"
+            exit 1
+          fi
+
+  # The moderation portal SPA (gawk-admin/ui). Its own job, mirroring
+  # `telemetry-ui`: a TypeScript build is not a Go build, and coupling them
+  # would make a lint failure look like a service failure.
+  admin-ui:
+    needs: changes
+    if: needs.changes.outputs.admin_ui == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: gawk-admin/ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gawk-admin/ui/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      # `npm run build` is the only real typecheck: the root tsconfig is
+      # solution-style, so a bare `tsc --noEmit` passes vacuously, and vitest
+      # strips types rather than checking them.
+      - run: npm run build
+      # For this SPA the no-external-assets rule is a SECURITY property, not an
+      # offline nicety: the portal's CSP is `default-src 'self'; connect-src
+      # 'self' <issuer origin>` (docs/42 §4.8), so a CDN script tag or a webfont
+      # would be blocked at runtime and the page would simply fail to render for
+      # the operator who is, at that moment, trying to end a broadcast from a
+      # phone. Asserted against what actually ships, which is why it runs HERE:
+      # the `admin` job does not build the bundle, so these tests skip there.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-admin/go.mod
+          cache-dependency-path: gawk-admin/go.sum
+      - name: the built portal fetches nothing off-origin
+        working-directory: gawk-admin
+        run: >-
+          go test ./internal/portal/
+          -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage|TestNoIdentityProviderIsCompiledIn|TestNoCookieIsEverSet'
+
+  # docs/42 §4.15's first CI gate: MIGRATION LINT.
+  #
+  # Two rules, both cheap to check and expensive to discover the hard way:
+  #
+  #   1. FORWARD-ONLY NUMBERING. Files are NNNN_description.up.sql, numbered
+  #      from 0001 with no gaps and no duplicates. A duplicate number is two
+  #      migrations racing for one version row; a gap usually means a rebase ate
+  #      one. No .down.sql may exist at all — rollback is redeploying the
+  #      previous application version, which the expand-contract policy
+  #      guarantees works, and a down migration is an invitation to discover
+  #      otherwise during an incident.
+  #
+  #   2. A MERGED MIGRATION IS IMMUTABLE. Editing one that has already shipped
+  #      changes the schema of every database that has NOT applied it while
+  #      leaving every database that HAS silently different — and golang-migrate
+  #      cannot tell, because the version number did not move. Fix mistakes with
+  #      the next number. Checked against the merge base, so the rule binds the
+  #      diff rather than the file's age.
+  #
+  # This gate is written to work before any migration exists (an empty
+  # directory passes) so it can land with the chart rather than after it.
+  admin-migrations:
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The merge base is not visible from a shallow clone.
+          fetch-depth: 0
+      - name: forward-only numbering
+        run: |
+          set -euo pipefail
+          dir=gawk-admin/migrations
+          if [ ! -d "$dir" ]; then
+            echo "no $dir yet — nothing to lint"
+            exit 0
+          fi
+          if ls "$dir"/*.down.sql >/dev/null 2>&1; then
+            echo "::error::down migrations are not written in this repository (docs/42 §4.15): rollback is redeploying the previous app version"
+            exit 1
+          fi
+          expected=1
+          found=0
+          for f in $(ls "$dir" | grep -E '\.sql$' | sort); do
+            found=$((found + 1))
+            if ! printf '%s' "$f" | grep -qE '^[0-9]{4}_[a-z0-9_]+\.up\.sql$'; then
+              echo "::error::$dir/$f does not match NNNN_snake_case_description.up.sql"
+              exit 1
+            fi
+            n=$(printf '%s' "$f" | cut -c1-4 | sed 's/^0*//')
+            n=${n:-0}
+            if [ "$n" -ne "$expected" ]; then
+              echo "::error::$dir/$f is numbered $n but $expected was expected — migrations are numbered from 0001 with no gaps and no duplicates"
+              exit 1
+            fi
+            expected=$((expected + 1))
+          done
+          echo "$found migration(s), numbered 0001..$((expected - 1))"
+      - name: a merged migration is immutable
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request) base="${{ github.event.pull_request.base.sha }}" ;;
+            push)         base="${{ github.event.before }}" ;;
+            *)            base="" ;;
+          esac
+          if [ -z "$base" ] \
+            || [ "$base" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "no usable base commit — the immutability half of this gate cannot run"
+            exit 0
+          fi
+          # M(odified), D(eleted), R(enamed) against the merge base. Additions
+          # are the only legal change to this directory's .sql files.
+          touched=$(git diff --name-status --diff-filter=MDR "${base}...HEAD" -- 'gawk-admin/migrations/*.sql' || true)
+          if [ -n "$touched" ]; then
+            echo "$touched"
+            echo "::error::a merged migration was modified, renamed or deleted. Migrations are immutable once they land (docs/42 §4.15) — fix it with the NEXT number instead."
+            exit 1
+          fi
+          echo "no already-merged migration was touched"
+
+  # docs/42 §4.15's second CI gate, and the executable form of its MUST:
+  # THE PREVIOUS RELEASE MUST STILL WORK AGAINST THE MIGRATED SCHEMA.
+  #
+  # Expand-contract is a policy until something runs it. What runs it is this:
+  # take the previous gawk-admin release's tree, give it THIS branch's
+  # migrations, and run its store tests. If a migration renamed a column,
+  # tightened a constraint or dropped something the old code still reads, the
+  # old tests fail here — before the release, not during the rollback that was
+  # supposed to be "redeploy the previous version".
+  #
+  # ON THE FIRST RELEASE THERE IS NO PREVIOUS TAG, and this job is then a
+  # DOCUMENTED NO-OP: it says so in its own log and exits 0. That is deliberate.
+  # The mechanism has to exist and be wired before the first release, because
+  # the first release is exactly when nobody would remember to add it — and the
+  # run after that one finds a tag and starts biting with no further work.
+  admin-schema-compat:
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: gawk
+          POSTGRES_PASSWORD: gawk
+          POSTGRES_DB: gawkadmin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gawk -d gawkadmin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      GAWK_ADMIN_TEST_DSN: postgres://gawk:gawk@127.0.0.1:5432/gawkadmin?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags are how the previous release is found.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-admin/go.mod
+          cache-dependency-path: gawk-admin/go.sum
+      - name: the previous release's store tests, against THIS branch's schema
+        run: |
+          set -euo pipefail
+          # release-please tagged with a dash before the tag-separator was set
+          # to "/", so both spellings have to be considered.
+          prev=$( { git tag -l 'gawk-admin/v*'; git tag -l 'gawk-admin-v*'; } \
+                    | sed 's#^gawk-admin[-/]v##' \
+                    | sort -V | tail -1 )
+          if [ -z "$prev" ]; then
+            echo "No gawk-admin release exists yet, so there is no previous release to hold the schema to."
+            echo "This gate is a deliberate no-op until the first gawk-admin-vX.Y.Z tag exists (docs/42 §4.15);"
+            echo "it starts enforcing on the very next run after that release, with no further wiring."
+            exit 0
+          fi
+          tag=$(git tag -l "gawk-admin/v$prev" | head -1)
+          [ -n "$tag" ] || tag="gawk-admin-v$prev"
+          echo "Previous release: $tag"
+
+          old="$RUNNER_TEMP/prev"
+          mkdir -p "$old"
+          # `git archive`, not a worktree: this only needs the files, and it
+          # leaves no worktree metadata behind in the checkout CI reuses.
+          git archive "$tag" | tar -x -C "$old"
+
+          # THE SUBSTITUTION THAT MAKES THIS A TEST: the OLD code, the NEW
+          # schema. Every other file stays at the old release, including its
+          # own go.mod and its `replace` onto that release's gawk-server.
+          rm -f "$old"/gawk-admin/migrations/*.sql
+          cp gawk-admin/migrations/*.sql "$old"/gawk-admin/migrations/
+          ls -1 "$old"/gawk-admin/migrations/
+
+          cd "$old/gawk-admin"
+          go test -count=1 ./internal/store/...
+
   tidy:
     needs: changes
     if: needs.changes.outputs.tidy == 'true'
@@ -826,7 +1155,7 @@ jobs:
           cache: false
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-broadcast gawk-telemetry; do
+          for mod in gawk-server gawk-broadcast gawk-telemetry gawk-admin; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -951,6 +1280,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.helm == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    env:
+      # Every gawk-admin render needs a database connection, because the chart
+      # REFUSES to render without one (docs/42 §4.13): it does not create a
+      # database, it takes one that already exists. This is the throwaway DSN
+      # the assertions below pass when the database is not what they are
+      # testing — expanded UNQUOTED on purpose, it is two argv words.
+      ADMIN_PG: --set postgres.dsn=postgres://ci:ci@db.invalid:5432/gawk_admin
     steps:
       - uses: actions/checkout@v7
       - run: helm lint gawk-server/deploy/charts/gawk-server gawk-app/deploy/charts/gawk-app
@@ -984,6 +1320,308 @@ jobs:
           echo "$out" | grep -q GAWK_TELEMETRY_KEY
           echo "$out" | grep -q metrics-headless
 
+      # ---- R39 (docs/42 §4.13, AP8) --------------------------------------
+      #
+      # These assertions are the chunk's acceptance criteria, executable. They
+      # are shell checks inside this job rather than golden renders on purpose,
+      # for the reason the telemetry check above already states: a golden file
+      # would have to be regenerated on every release-please version bump,
+      # since the chart version, appVersion and image tag all appear in it.
+      - run: helm lint gawk-admin/deploy/charts/gawk-admin $ADMIN_PG
+      - run: helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG > /dev/null
+      - name: admin chart renders with the Ingress opt-in taken
+        run: |
+          helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
+            --set ingress.enabled=true --set ingress.host=admin.example.com \
+            --set oidc.issuer=https://id.example.com \
+            --set oidc.clientId=gawk-admin --set oidc.audience=gawk-admin > /dev/null
+
+      # The chart must refuse to ROUTE a portal that cannot authenticate. The
+      # binary enforces auth regardless — what this stops is publishing a public
+      # hostname in front of a CrashLoopBackOff, which is a worse failure than a
+      # refused render because it is a public one.
+      - name: the Ingress fail-guard fires without each OIDC knob
+        run: |
+          set -euo pipefail
+          for missing in issuer clientId audience; do
+            args=($ADMIN_PG --set ingress.enabled=true --set ingress.host=admin.example.com)
+            [ "$missing" = issuer ]   || args+=(--set oidc.issuer=https://id.example.com)
+            [ "$missing" = clientId ] || args+=(--set oidc.clientId=gawk-admin)
+            [ "$missing" = audience ] || args+=(--set oidc.audience=gawk-admin)
+            if out=$(helm template gawk-admin/deploy/charts/gawk-admin "${args[@]}" 2>&1); then
+              echo "::error::ingress.enabled rendered with oidc.$missing unset — the fail-guard did not fire"
+              exit 1
+            fi
+            grep -q "oidc.$missing" <<<"$out" || {
+              echo "::error::the fail-guard fired but did not name oidc.$missing"; echo "$out"; exit 1; }
+            grep -q "docs/42" <<<"$out" || {
+              echo "::error::the fail-guard message does not point at docs/42"; exit 1; }
+          done
+          echo "guard names the missing knob and docs/42 in all three cases"
+
+      # HA of the moderation plane is a chart property (docs/42 D16), not a
+      # later migration.
+      - name: admin chart defaults to 2 replicas with a PodDisruptionBudget
+        run: |
+          set -euo pipefail
+          out=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG)
+          grep -qE '^  replicas: 2$' <<<"$out"
+          grep -q 'kind: PodDisruptionBudget' <<<"$out"
+          grep -qE '^  minAvailable: 1$' <<<"$out"
+          # ...and NO PDB at one replica, where it would block node maintenance
+          # outright — the same rule the relay chart's PDB follows.
+          if helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG --set replicaCount=1 \
+               | grep -q 'kind: PodDisruptionBudget'; then
+            echo "::error::a PDB rendered at replicaCount=1"; exit 1
+          fi
+
+      # "The schema a release needs travels with the release" (docs/42 §4.15) is
+      # only true if the hook cannot float onto another version's image — and
+      # the guarantee only covers a FIRST install if the hook runs at
+      # `pre-install` as well as `pre-upgrade`. It can, now that the chart no
+      # longer creates the database it migrates: a pre-install hook may depend
+      # on a prerequisite, just not on the release's own manifests.
+      - name: the migration hook Job carries THIS release's image tag and pre-install
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          appver=$(grep -E '^appVersion:' "$chart/Chart.yaml" | sed 's/.*"\(.*\)".*/\1/')
+          job=$(helm template "$chart" $ADMIN_PG --show-only templates/migrate-job.yaml)
+          grep -q '"helm.sh/hook": pre-install,pre-upgrade' <<<"$job"
+          grep -q '"helm.sh/hook-delete-policy": before-hook-creation' <<<"$job"
+          grep -q 'args: \["migrate"\]' <<<"$job"
+          jobimg=$(grep -E '^ +image: ' <<<"$job")
+          grep -q "ghcr.io/tuhis/gawk-admin:${appver}" <<<"$jobimg"
+          if grep -q ':latest' <<<"$jobimg"; then
+            echo "::error::the migration Job floats on a tag that is not this release's: $jobimg"; exit 1
+          fi
+          depimg=$(helm template "$chart" $ADMIN_PG --show-only templates/deployment.yaml | grep -E '^ +image: ')
+          [ "$jobimg" = "$depimg" ] || {
+            echo "::error::the migration Job and the Deployment disagree on the image:"
+            echo "$jobimg"; echo "$depimg"; exit 1; }
+
+      - name: the admin Role covers Ban CRUD and leader-election Leases
+        run: |
+          set -euo pipefail
+          rbac=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG --show-only templates/rbac.yaml)
+          grep -q 'resources: \["bans"\]' <<<"$rbac"
+          # The FULL verb list, patch included: the reconciler's Adopt is a
+          # merge patch, and its absence was invisible to every fake — the kind
+          # tier caught the reconciler Warn-looping "cannot patch resource
+          # bans" while the sweep projected a canonical twin of the CR it could
+          # not stamp. This pins the list on every PR; the kind tier proves it
+          # against a real authorizer on release PRs.
+          grep -q 'verbs: \["get", "list", "watch", "create", "update", "patch", "delete"\]' <<<"$rbac"
+          grep -q 'apiGroups: \["coordination.k8s.io"\]' <<<"$rbac"
+          grep -q 'resources: \["leases"\]' <<<"$rbac"
+          grep -q 'verbs: \["get", "create", "update"\]' <<<"$rbac"
+
+      - name: admin secrets render via both the literal and the Ref form
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          lit=$(helm template "$chart" $ADMIN_PG --set relay.adminToken=literal-token \
+                  --show-only templates/deployment.yaml)
+          grep -A1 'name: GAWK_ADMIN_RELAY_ADMIN_TOKEN' <<<"$lit" | grep -q 'value: "literal-token"'
+          ref=$(helm template "$chart" $ADMIN_PG --set relay.adminTokenRef.name=relay-tok \
+                  --set relay.adminTokenRef.key=token --show-only templates/deployment.yaml)
+          grep -A4 'name: GAWK_ADMIN_RELAY_ADMIN_TOKEN' <<<"$ref" | grep -q 'name: "relay-tok"'
+          grep -A4 'name: GAWK_ADMIN_RELAY_ADMIN_TOKEN' <<<"$ref" | grep -q 'key: "token"'
+          if grep -q 'literal-token' <<<"$ref"; then echo "::error::the Ref form leaked a literal"; exit 1; fi
+
+      # A signing key in a values file is a signing key in every GitOps diff.
+      # The knob carries the env var's NAME; the key comes from a Secret.
+      - name: notifications.webhooks renders into -static-webhooks with secrets from env vars
+        run: |
+          set -euo pipefail
+          wh=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
+                --set 'notifications.webhooks[0].name=ops-pager' \
+                --set 'notifications.webhooks[0].url=https://ntfy.example.com/gawk' \
+                --set 'notifications.webhooks[0].secretRef.name=gawk-admin-webhooks' \
+                --set 'notifications.webhooks[0].secretRef.key=ops' \
+                --set 'notifications.webhooks[1].name=lab hook' \
+                --set 'notifications.webhooks[1].url=https://example.invalid/h' \
+                --set 'notifications.webhooks[1].secret=literal-signing-key' \
+                --show-only templates/deployment.yaml)
+          json=$(grep 'name: GAWK_ADMIN_STATIC_WEBHOOKS' -A1 <<<"$wh" | tail -1 | sed 's/^ *value: //')
+          grep -q 'GAWK_ADMIN_WEBHOOK_SECRET_OPS_PAGER' <<<"$json"
+          grep -q 'GAWK_ADMIN_WEBHOOK_SECRET_LAB_HOOK' <<<"$json"
+          if grep -qE 'literal-signing-key|"secret"' <<<"$json"; then
+            echo "::error::a signing key (or a secret field) reached the -static-webhooks knob"; exit 1
+          fi
+          grep -A4 'name: GAWK_ADMIN_WEBHOOK_SECRET_OPS_PAGER' <<<"$wh" | grep -q 'name: "gawk-admin-webhooks"'
+          grep -A4 'name: GAWK_ADMIN_WEBHOOK_SECRET_OPS_PAGER' <<<"$wh" | grep -q 'key: "ops"'
+          grep -A1 'name: GAWK_ADMIN_WEBHOOK_SECRET_LAB_HOOK' <<<"$wh" | grep -q 'value: "literal-signing-key"'
+
+      # The database is a PREREQUISITE, not part of the release: the chart
+      # takes a connection and never creates one. Refusing to render without
+      # one is what keeps that honest — the alternative is a portal that
+      # installs cleanly and then CrashLoopBackOffs on an empty -pg-dsn.
+      - name: the chart refuses to render without a database
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          # Assigned, not piped: under `pipefail` a pipeline through a FAILING
+          # helm reports helm's status, which would invert this test.
+          if out=$(helm template "$chart" 2>&1); then
+            echo "::error::the chart rendered with neither postgres.dsn nor postgres.dsnSecretRef set"
+            exit 1
+          fi
+          # The message has to be actionable on its own: both forms, the CNPG
+          # recipe that makes "we support CNPG" true without templating it, and
+          # where the reasoning lives.
+          for want in 'postgres.dsn' 'postgres.dsnSecretRef' '-app' 'uri' 'docs/42'; do
+            grep -qF -e "$want" <<<"$out" || {
+              echo "::error::the database fail-guard message does not mention $want"; echo "$out"; exit 1; }
+          done
+          # A dsnSecretRef missing its `name` is the other way to get this
+          # wrong, and it must not fall through to a rendered empty Secret ref.
+          if helm template "$chart" --set postgres.dsnSecretRef.key=uri >/dev/null 2>&1; then
+            echo "::error::postgres.dsnSecretRef rendered without a name"; exit 1
+          fi
+          echo "guard fires and names both forms, the CNPG <cluster>-app/uri recipe and docs/42"
+
+      - name: the DSN renders via both the literal and the Ref form
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          lit=$(helm template "$chart" --set postgres.dsn=postgres://u:p@db/x \
+                  --show-only templates/deployment.yaml)
+          grep -A1 'name: GAWK_ADMIN_PG_DSN' <<<"$lit" | grep -q 'value: "postgres://u:p@db/x"'
+          # The Ref form IS the CloudNativePG integration: CNPG publishes
+          # <cluster>-app with the complete DSN under `uri`.
+          ref=$(helm template "$chart" --set postgres.dsnSecretRef.name=gawk-admin-db-app \
+                  --set postgres.dsnSecretRef.key=uri)
+          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$ref" | grep -q 'name: "gawk-admin-db-app"'
+          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$ref" | grep -q 'key: "uri"'
+          if grep -q 'value: "postgres://' <<<"$ref"; then
+            echo "::error::the Ref form leaked a literal DSN"; exit 1
+          fi
+          # The Deployment and the migration Job must never drift onto
+          # different databases — one helper renders both.
+          job=$(helm template "$chart" --set postgres.dsnSecretRef.name=gawk-admin-db-app \
+                  --set postgres.dsnSecretRef.key=uri --show-only templates/migrate-job.yaml)
+          grep -A4 'name: GAWK_ADMIN_PG_DSN' <<<"$job" | grep -q 'name: "gawk-admin-db-app"'
+
+      # The check in the absence direction, mirroring the moderation-off one
+      # below: the stateful database is decoupled from the stateless release,
+      # so no set of values may make this chart render a CNPG object. A CNPG
+      # Cluster is something the operator applies once, outside the release
+      # (docs/self-hosting.md §9.1 carries the manifest).
+      #
+      # Unlike the telemetry-off check this matches API-object identifiers
+      # rather than the bare word, because it must not fire on the rendered
+      # COMMENT in the migration Job that explains why the hook is allowed to
+      # be `pre-install` now that no CNPG Cluster lives in this chart.
+      #
+      # `^kind: Cluster$` is anchored at BOTH ends on purpose: unanchored it
+      # also matches ClusterRole / ClusterRoleBinding / ClusterIssuer, so the
+      # first legitimately cluster-scoped kind added to this chart would fail
+      # the job with the actively misleading CNPG error below.
+      - name: the admin chart renders no CloudNativePG object under any values
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          out=$( { helm template "$chart" $ADMIN_PG; \
+                   helm template "$chart" --set postgres.dsnSecretRef.name=gawk-admin-db-app \
+                     --set postgres.dsnSecretRef.key=uri; \
+                   helm template "$chart" $ADMIN_PG --set ingress.enabled=true \
+                     --set ingress.host=admin.example.com \
+                     --set oidc.issuer=https://id.example.com \
+                     --set oidc.clientId=gawk-admin --set oidc.audience=gawk-admin; } )
+          if grep -qiE 'postgresql\.cnpg\.io|^kind: Cluster$|cnpg\.io/' <<<"$out"; then
+            echo "::error::the admin chart still renders a CloudNativePG object"
+            grep -inE 'postgresql\.cnpg\.io|^kind: Cluster$|cnpg\.io/' <<<"$out"
+            exit 1
+          fi
+          # ...and the values tree that used to render one stays gone. Helm
+          # ignores unknown values keys silently, so nothing else would notice
+          # a `postgres.cnpg` growing back and quietly meaning something again.
+          if grep -qE '^\s*cnpg:' "$chart/values.yaml"; then
+            echo "::error::postgres.cnpg is back in values.yaml"; exit 1
+          fi
+
+      # The other direction, mirroring the telemetry-off check above: an
+      # install that never enables moderation carries no trace of R39.
+      - name: relay chart with moderation off renders nothing moderation-related
+        run: |
+          set -euo pipefail
+          out=$(helm template gawk-server/deploy/charts/gawk-server)
+          if grep -qiE 'moderation|gawk\.ioio\.fi|bans|kind: Ban' <<<"$out"; then
+            echo "::error::moderation.enabled=false still renders moderation content"
+            grep -inE 'moderation|gawk\.ioio\.fi|bans|kind: Ban' <<<"$out"
+            exit 1
+          fi
+
+      - name: relay chart with moderation on renders the CRD, read-only RBAC and the knobs
+        run: |
+          set -euo pipefail
+          chart=gawk-server/deploy/charts/gawk-server
+          out=$(helm template "$chart" --set moderation.enabled=true --set moderation.adminApi.token=t)
+          grep -q 'kind: CustomResourceDefinition' <<<"$out"
+          grep -q 'name: bans.gawk.ioio.fi' <<<"$out"
+          # keep: uninstalling the relay chart must never delete live bans.
+          grep -q '"helm.sh/resource-policy": keep' <<<"$out"
+          # `kubectl get bans` is a real emergency surface (docs/42 §4.2).
+          for col in Type Value Expires Age; do grep -q "name: $col" <<<"$out"; done
+          # READ-ONLY. A relay that could write bans would be a second
+          # enforcement authority that eventually disagrees with the first.
+          grep -A3 'resources: \["bans"\]' <<<"$out" | grep -q 'verbs: \["get", "list", "watch"\]'
+          if grep -A3 'resources: \["bans"\]' <<<"$out" | grep -qE '"(create|update|patch|delete)"'; then
+            echo "::error::the relay Role can WRITE bans"; exit 1
+          fi
+          grep -q 'GAWK_MODERATION_SOURCE' <<<"$out"
+          grep -q 'GAWK_ADMIN_API_TOKEN' <<<"$out"
+          grep -q 'POD_NAMESPACE' <<<"$out"
+          # POD_NAME too, and anchored: "POD_NAME" is a substring of
+          # "POD_NAMESPACE", so an unanchored grep would pass with the bug it
+          # is here to catch. Every /internal/admin/* response names the pod
+          # (docs/42 §4.5); unset, a moderation-only install reports `pod: ""`
+          # and the portal's fleet view cannot attribute or dedupe anything.
+          grep -qE 'name: POD_NAME$' <<<"$out"
+          # gawk-admin finds relay pods through the headless Service, so
+          # moderation alone must render it — it used to require telemetry.
+          grep -q 'metrics-headless' <<<"$out"
+          oidc=$(helm template "$chart" --set moderation.enabled=true \
+                  --set moderation.adminApi.oidc.issuer=https://id.example.com \
+                  --set moderation.adminApi.oidc.audience=gawk-admin)
+          grep -q 'GAWK_ADMIN_OIDC_ISSUER' <<<"$oidc"
+          grep -q 'GAWK_ADMIN_OIDC_AUDIENCE' <<<"$oidc"
+          # Ban RBAC must not depend on cluster mode: kills work single-pod too.
+          helm template "$chart" --set moderation.enabled=true | grep -q 'resources: \["bans"\]'
+
+      # The admin API rides the ops listener and the per-pod headless Service
+      # is gated on metrics.enabled — so a credential without that listener
+      # renders a complete-looking surface that can never answer, while bans
+      # keep enforcing off the CR informer. That combination is a misdiagnosis
+      # waiting to happen, so the chart refuses it outright.
+      - name: the relay chart refuses an admin API credential with metrics off
+        run: |
+          set -euo pipefail
+          chart=gawk-server/deploy/charts/gawk-server
+          for cred in \
+            "--set moderation.adminApi.token=t" \
+            "--set moderation.adminApi.tokenRef.name=s --set moderation.adminApi.tokenRef.key=token" \
+            "--set moderation.adminApi.oidc.issuer=https://id.example.com --set moderation.adminApi.oidc.audience=gawk-admin" \
+          ; do
+            if out=$(helm template "$chart" --set moderation.enabled=true \
+                       --set metrics.enabled=false $cred 2>&1); then
+              echo "::error::rendered with metrics.enabled=false and $cred — the fail-guard did not fire"
+              exit 1
+            fi
+            grep -q 'metrics.enabled' <<<"$out" || {
+              echo "::error::the guard fired but does not name metrics.enabled: $out"; exit 1; }
+            grep -q 'docs/42' <<<"$out" || {
+              echo "::error::the guard message does not point at docs/42"; exit 1; }
+          done
+          # ...and it stays SCOPED. Bans + `kubectl get bans` with no portal
+          # and no ops listener is a coherent minimal install; failing that
+          # would block it for nothing.
+          helm template "$chart" --set moderation.enabled=true --set metrics.enabled=false > /dev/null
+          # The positive direction too: with metrics on, every credential renders.
+          helm template "$chart" --set moderation.enabled=true --set moderation.adminApi.token=t > /dev/null
+          echo "guard fires for all three credential shapes and only with metrics off"
+
   # R38 (docs/41 LD7): the local development stack, smoke-tested. `docker
   # compose up` is the first thing a new contributor runs, so it is the one
   # command that must never be broken on main — and it is assembled from parts
@@ -999,6 +1637,11 @@ jobs:
   dev-stack:
     needs: changes
     if: needs.changes.outputs.dev_stack == 'true'
+    # Stays on the DEFAULT pool by owner decision: when the portal lane
+    # (docs/41 §4.8) outgrew the runners' RAM-backed /var/lib/docker (ENOSPC
+    # on the first run), the fix was sizing the dind tmpfs in the ioio repo's
+    # runner spec (clusters/baremetal/actions-runners/gawk.yaml), not moving
+    # this job to the disk pool.
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
@@ -1013,7 +1656,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
-          cache-dependency-path: gawk-server/go.sum
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-broadcast/go.sum
       # See the server job — the probe below is QUIC over loopback.
       - name: Ensure UDP buffer limits for quic-go
         run: |
@@ -1072,6 +1717,77 @@ jobs:
             -url https://127.0.0.1:4433/echo \
             -origin http://localhost:8080 \
             -count 3 -timeout 5s
+
+      # R39 (docs/41 §4.8): the portal lane, end to end — readiness, the whole
+      # SPA auth chain server-side (config → discovery-through-the-proxy →
+      # PKCE authorize → token exchange → /me), the developer's break-glass
+      # kubeconfig, and one kill through the REAL Ban-CR pipe: publish, kill
+      # via the portal API (201, not 202 — a 202 here means the CR write
+      # failed), the CR on the dev control plane, and the relay actually
+      # dropping the broadcast.
+      - name: The moderation portal authenticates and kills through the CR pipe
+        run: |
+          set -euo pipefail
+          for i in $(seq 30); do curl -fsS http://127.0.0.1:8088/readyz >/dev/null && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8088/readyz
+
+          # The browser's legs, in the SPA's order (session.ts), via curl.
+          curl -fsS http://127.0.0.1:8088/auth/config | grep -q '"issuer":"http://localhost:8088/idp"'
+          curl -fsS http://127.0.0.1:8088/idp/.well-known/openid-configuration \
+            | grep -q '"authorization_endpoint":"http://localhost:8088/idp/authorize"'
+          verifier="ci-walk-$RANDOM$RANDOM"
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          loc=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+            "http://127.0.0.1:8088/idp/authorize?response_type=code&client_id=gawk-admin-spa&redirect_uri=http://localhost:8088/&scope=openid&state=s1&nonce=n1&code_challenge=$challenge&code_challenge_method=S256")
+          code=$(printf '%s' "$loc" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+          TOKEN=$(curl -fsS -X POST http://127.0.0.1:8088/idp/token \
+            --data-urlencode grant_type=authorization_code --data-urlencode "code=$code" \
+            --data-urlencode redirect_uri=http://localhost:8088/ \
+            --data-urlencode client_id=gawk-admin-spa \
+            --data-urlencode "code_verifier=$verifier" | jq -r .access_token)
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088/api/v1/me)" = 401 ]
+          curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/v1/me | grep -q '"operator"'
+
+          # The developer's break-glass surface answers with the generated
+          # credential — the CRD is installed and listable.
+          KTOKEN=$(sed -n 's/.*token: \([0-9a-f]*\).*/\1/p' dev/generated/kubeconfig)
+          curl -fsSk -H "Authorization: Bearer $KTOKEN" \
+            https://127.0.0.1:6445/apis/gawk.ioio.fi/v1alpha1/namespaces/gawk/bans >/dev/null
+
+          # One kill through the pipe.
+          # CGO_ENABLED=0, exactly as the e2e job builds pubsim: the module's
+          # OTHER binaries link libpipewire, and the runner has no such dev
+          # headers — pubsim itself is pure Go.
+          (cd gawk-broadcast && CGO_ENABLED=0 go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 180s \
+            > ../dev-pubsim.out 2>&1 &)
+          for i in $(seq 60); do grep -q GAWK_PUBSIM_ID dev-pubsim.out 2>/dev/null && break; sleep 1; done
+          BID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' dev-pubsim.out | cut -d= -f2)
+          [ -n "$BID" ] || { cat dev-pubsim.out; exit 1; }
+          for i in $(seq 30); do
+            curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/v1/broadcasts \
+              | grep -q "\"$BID\"" && break
+            sleep 1
+          done
+          resp=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' -X POST \
+            -d '{"reason":"dev-stack CI kill","cooldownSeconds":60}' \
+            "http://127.0.0.1:8088/api/v1/broadcasts/$BID/kill")
+          [ "$(tail -n1 <<<"$resp")" = 201 ] || { echo "kill: $resp"; exit 1; }
+          lower=$(printf '%s' "$BID" | tr 'A-Z' 'a-z')
+          curl -fsSk -H "Authorization: Bearer $KTOKEN" \
+            "https://127.0.0.1:6445/apis/gawk.ioio.fi/v1alpha1/namespaces/gawk/bans/ban-id-$lower" >/dev/null
+          # The relay ACTED: the broadcast leaves the fleet view (a successful
+          # read without the id — a failed read must not count).
+          gone=0
+          for i in $(seq 60); do
+            body=$(curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/v1/broadcasts) || { sleep 1; continue; }
+            grep -q "\"$BID\"" <<<"$body" || { gone=1; break; }
+            sleep 1
+          done
+          [ "$gone" = 1 ] || { echo "::error::the kill never actuated on the relay"; exit 1; }
+          # And the native publisher was told WHY (D15's readable close).
+          grep -q 'terminated by the server operator' dev-pubsim.out
+          echo "portal lane: every property held"
 
       - name: The certificate survives a restart (the re-paste loop, gone)
         run: |
@@ -1220,7 +1936,11 @@ jobs:
     # RUNNER_LABEL_DISK; every other one takes RUNNER_LABEL. See ioio repo:
     # clusters/baremetal/actions-runners/gawk-e2e.yaml.
     runs-on: ${{ vars.RUNNER_LABEL_DISK || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # 25, up from 15: the R39 portal tier added two uncached image builds
+    # (gawk-admin's npm+Go multi-stage, the fake IdP) plus a second helm
+    # install and assert pass, and the first dispatch after that change hit
+    # the old ceiling with every step green — cancelled mid-install at 15:29.
+    timeout-minutes: 25
     # No job-level concurrency, and no `changes` gate either: this runs on
     # release-please PRs and on dispatch only, and both want the cluster tier
     # whatever the diff looks like. The workflow-level group supersedes a
@@ -1278,12 +1998,26 @@ jobs:
         run: |
           kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s
           kind load docker-image gawk-server:e2e
+      # maxSubscribers/maxTotalSubscribers are raised well above the chart
+      # defaults (15/50) because this job stacks tiers on one fleet: the R30
+      # steps hold 18 viewers for 600s, a STRIPED viewer holds up to 5 sessions
+      # each (see values.yaml's stripedDelivery note), and R39's step then
+      # attaches its own observing viewers. At the defaults their dials are
+      # refused for capacity, which failed the 4006 assertion for a reason that
+      # has nothing to do with the wire (run 32497862767: "6 session(s) never
+      # connected"). The cap is not what any assertion in this job is testing.
       - name: Install the relay chart (replicas=2, clusterMode, NodePort)
         run: |
           ./e2e/bin/gawk-devcert -out e2e/out/certs -hosts localhost,127.0.0.1 > e2e/out/devcert.txt
           CERT_HASH=$(openssl x509 -in e2e/out/certs/cert.pem -outform der | sha256sum | cut -d' ' -f1)
           echo "CERT_HASH=$CERT_HASH" >> "$GITHUB_ENV"
           kubectl create namespace gawk-e2e
+          # R39 (docs/42 §4.14): moderation is on for this tier, which is what
+          # installs the Ban CRD, gives the relay pods read-only watch access
+          # to it, and lights up the credential-gated admin API. The token is
+          # a throwaway for one cluster that lives ~15 minutes.
+          ADMIN_API_TOKEN=$(openssl rand -hex 16)
+          echo "ADMIN_API_TOKEN=$ADMIN_API_TOKEN" >> "$GITHUB_ENV"
           kubectl -n gawk-e2e create secret tls gawk-server-tls \
             --cert=e2e/out/certs/cert.pem --key=e2e/out/certs/key.pem
           # Throwaway fleet secrets (exercises the chart's replicas>1-requires-
@@ -1308,6 +2042,10 @@ jobs:
             --set config.resumeTokenKey="$(openssl rand -hex 32)" \
             --set config.statsKey="$(openssl rand -hex 32)" \
             --set config.connBurstLimit=50 \
+            --set config.maxSubscribers=120 \
+            --set config.maxTotalSubscribers=240 \
+            --set moderation.enabled=true \
+            --set moderation.adminApi.token="$ADMIN_API_TOKEN" \
             --set-json 'extraEnv=[{"name":"SSL_CERT_FILE","value":"/tls/tls.crt"}]' \
             --wait --timeout 180s
       - name: Publish the fixture and spread synthetic viewers
@@ -1391,12 +2129,84 @@ jobs:
               -duration 180s -ramp-ms 150 -insecure >> e2e/out/loadgen-dvr.log 2>&1 &
             ./e2e/cluster-assert.sh gawk-e2e 120
           }
+      # R39 (docs/42 §4.14, AP8). LAST, on purpose: it ends the broadcast every
+      # step above depends on, and then bans the publisher's IP. Running it
+      # earlier would take the origin/edge split out from under cluster-assert.
+      - name: Assert the fleet-wide kill, 451 enforcement and unban (R39)
+        run: ./e2e/moderation-assert.sh gawk-e2e "$BROADCAST_ID" "$ADMIN_API_TOKEN" 90
+      # R39 (docs/42 §11.1's kind-tier row): the PORTAL half of the tier —
+      # gawk-admin installed for real (waited install, so the migrate hook and
+      # /readyz gate genuinely converge), a throwaway Postgres, a TEST-ONLY
+      # OIDC issuer, and one kill driven through the portal's own API. This is
+      # the layer that covers the chart's actual RBAC: envtest proves Lease
+      # CAS and the CRD schema on every PR, but an authorizer only exists
+      # here. It runs AFTER moderation-assert on purpose — that script's
+      # charter is that the break-glass surface works with gawk-admin NOT
+      # installed.
+      - name: Build the gawk-admin image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-admin/deploy/Dockerfile
+          push: false
+          load: true
+          tags: gawk-admin:e2e
+      - name: Build the fake-IdP image (TEST ONLY, never published)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: dev/Dockerfile.fakeidp
+          push: false
+          load: true
+          tags: gawk-fakeidp:e2e
+      - name: Install gawk-admin with its Postgres and the fake IdP
+        run: |
+          # Postgres is pulled on the HOST and loaded, like every other image
+          # here: kind's inner containerd has no registry mirror and these
+          # runners cannot reach docker.io directly — the first run proved it
+          # with ImagePullBackOff ("lookup registry-1.docker.io ... server
+          # misbehaving") on the pod, while the host pull goes via the mirror.
+          #
+          # Loaded through ctr with an explicit platform, NOT `kind load`: the
+          # pulled image is a multi-arch index whose non-amd64 blobs `docker
+          # save` does not include, and kind's `--all-platforms` import dies
+          # on the missing digests ("content digest ... not found", run
+          # 33064724042) — taking the two locally BUILT (single-platform)
+          # images down with it when loaded in the same call.
+          docker pull postgres:18-alpine
+          kind load docker-image gawk-admin:e2e gawk-fakeidp:e2e
+          docker save postgres:18-alpine | docker exec --privileged -i kind-control-plane \
+            ctr --namespace=k8s.io images import --platform linux/amd64 --snapshotter=overlayfs -
+          kubectl -n gawk-e2e apply -f e2e/admin-fixtures.yaml
+          kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-admin-pg --timeout=120s
+          kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-fakeidp --timeout=120s
+          # Release name == chart name, so the Service is plain `gawk-admin`
+          # (the name admin-assert.sh forwards to). scanTarget names the RELAY
+          # release's headless metrics Service. replicaCount stays the chart's
+          # default 2, which makes the Lease election real on this tier too.
+          helm install gawk-admin gawk-admin/deploy/charts/gawk-admin -n gawk-e2e \
+            --set image.repository=gawk-admin \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --set externalUrl=http://127.0.0.1:18090 \
+            --set oidc.issuer=http://gawk-fakeidp:8080 \
+            --set oidc.clientId=gawk-admin-spa \
+            --set oidc.audience=gawk-admin \
+            --set postgres.dsn='postgres://gawk:gawk@gawk-admin-pg:5432/gawkadmin?sslmode=disable' \
+            --set relay.scanTarget=relay-gawk-server-metrics-headless \
+            --set relay.adminToken="$ADMIN_API_TOKEN" \
+            --wait --timeout 180s
+      - name: Drive a kill through the portal API (R39 — real RBAC)
+        run: ./e2e/admin-assert.sh gawk-e2e 120
       - name: Export cluster state on failure
         if: failure()
         run: |
+          kubectl -n gawk-e2e get bans -o yaml > e2e/out/bans.yaml 2>&1 || true
           kubectl -n gawk-e2e get pods -o wide > e2e/out/pods.txt 2>&1 || true
           kubectl -n gawk-e2e describe pods > e2e/out/describe.txt 2>&1 || true
           kubectl -n gawk-e2e get leases -o yaml > e2e/out/leases.yaml 2>&1 || true
+          kubectl -n gawk-e2e logs -l app.kubernetes.io/name=gawk-admin --tail=-1 --prefix > e2e/out/gawk-admin.log 2>&1 || true
+          kubectl -n gawk-e2e logs jobs/gawk-admin-migrate > e2e/out/gawk-admin-migrate.log 2>&1 || true
           kind export logs e2e/out/kind-logs || true
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -1472,6 +2282,7 @@ jobs:
       #
       # So every image now has to start and answer one request.
       - name: the image starts and serves
+        if: matrix.probe_path
         run: |
           set -euo pipefail
           docker run -d --name ci-smoke --network host \
@@ -1499,6 +2310,31 @@ jobs:
             exit 1
           fi
           echo "${{ matrix.tag }} started and served ${{ matrix.probe_path }}"
+
+      # gawk-admin is the one image that CANNOT serve a request from a bare
+      # `docker run`, and asserting that it does would be asserting a lie: it
+      # requires Kubernetes by design (docs/42 §4.14) — its whole job is writing
+      # Ban CRs, and a portal whose kill button records a row nothing enforces
+      # is worse than one that refuses to start.
+      #
+      # So the honest smoke is the failure itself. Reaching "kubernetes:" means
+      # the binary linked, the entrypoint is right, every flag parsed and the
+      # OIDC and Postgres construction ahead of it were wired — i.e. everything
+      # this job can prove without a cluster. A config error instead would mean
+      # the run_args no longer match the flag set; a panic or an empty log would
+      # mean the image is broken. The serving path itself is covered by the
+      # `admin` job and by the kind tier.
+      - name: the image runs and fails for the one documented reason
+        if: matrix.expect_exit_message
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm ${{ matrix.tag }} ${{ matrix.run_args }} 2>&1 || true)
+          echo "$out"
+          if ! grep -qF "${{ matrix.expect_exit_message }}" <<<"$out"; then
+            echo "::error::${{ matrix.tag }} did not fail with '${{ matrix.expect_exit_message }}'"
+            exit 1
+          fi
+          echo "${{ matrix.tag }} started, parsed its configuration and stopped where it must"
 
       # The cgo half, and the reason the base image matters: a binary can start
       # and still have an engine that fails to open. `sql: true` is only

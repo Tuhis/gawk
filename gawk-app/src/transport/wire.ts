@@ -151,6 +151,14 @@ export const CLOSE_CODE_PUBLISHER_SUPERSEDED = 4004;
 // death. Never sent to a primary. Mirrored from Go
 // wire.CloseCodeStripeLegOrphaned.
 export const CLOSE_CODE_STRIPE_LEG_ORPHANED = 4005;
+// The operator (or, later, R40's auto-tier) terminated this broadcast — sent
+// to the publisher being killed and to every viewer of it (R39, docs/42 §4.4).
+// TERMINAL in both roles: a viewer must not reconnect and a publisher must not
+// auto-resume, because the ID is banned for at least the kill cooldown and a
+// reclaim would only collect a 451. Distinct from 4000 precisely so the viewer
+// can be told a moderator ended the stream. Mirrored from Go
+// wire.CloseCodeTerminatedByOperator.
+export const CLOSE_CODE_TERMINATED_BY_OPERATOR = 4006;
 
 // Wire frameIds are uint32 and wrap; consumers must compare them with serial
 // arithmetic (RFC 1982 flavored), not `<`/`>`. `a` is ahead of `b` when the

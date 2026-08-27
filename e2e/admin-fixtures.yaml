@@ -1,0 +1,77 @@
+# TEST-ONLY fixtures for the kind tier's gawk-admin install (docs/42 §11.1's
+# kind-tier row): a throwaway single-pod Postgres — the database the chart
+# deliberately does not create (D3) — and gawk-fakeidp, the OIDC issuer that
+# mints the one operator token e2e/admin-assert.sh kills with. Neither is a
+# deployment pattern; docs/self-hosting.md §9 is that.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gawk-admin-pg
+  labels:
+    app: gawk-admin-pg
+spec:
+  containers:
+    - name: postgres
+      image: postgres:18-alpine
+      # The image is pulled on the host and `kind load`ed by the workflow —
+      # the kind node cannot reach docker.io on these runners.
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: POSTGRES_USER
+          value: gawk
+        - name: POSTGRES_PASSWORD
+          value: gawk
+        - name: POSTGRES_DB
+          value: gawkadmin
+      ports:
+        - containerPort: 5432
+      readinessProbe:
+        exec:
+          command: ["pg_isready", "-U", "gawk", "-d", "gawkadmin"]
+        periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gawk-admin-pg
+spec:
+  selector:
+    app: gawk-admin-pg
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gawk-fakeidp
+  labels:
+    app: gawk-fakeidp
+spec:
+  containers:
+    - name: fakeidp
+      image: gawk-fakeidp:e2e
+      imagePullPolicy: Never
+      # The -issuer is the IN-CLUSTER Service URL: go-oidc requires the
+      # discovery document's issuer to equal the configured one, and
+      # gawk-admin reaches it by this name; the assert script only ever mints
+      # through a port-forward, which does not care about the URL.
+      args: ["-addr", ":8080", "-issuer", "http://gawk-fakeidp:8080"]
+      ports:
+        - containerPort: 8080
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gawk-fakeidp
+spec:
+  selector:
+    app: gawk-fakeidp
+  ports:
+    - port: 8080
+      targetPort: 8080

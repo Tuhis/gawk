@@ -364,6 +364,7 @@ type ServerMetrics struct {
 	connections    *prometheus.CounterVec
 	rateLimited    prometheus.Counter
 	originRejected prometheus.Counter
+	terminations   prometheus.Counter
 }
 
 // Connection outcomes (closed enum; see docs/13 D3).
@@ -378,6 +379,12 @@ const (
 	// OutcomeDraining marks CONNECTs rejected 503 during the SIGTERM drain
 	// (R17 W1) — the pod is exiting and must not accept new sessions.
 	OutcomeDraining = "draining"
+	// OutcomeBanned marks publish attempts rejected 451 by an R39 moderation
+	// ban (docs/42 §4.3). Distinct from "unauthorized" on purpose: a banned
+	// broadcaster holds a perfectly valid secret and resume token, and
+	// conflating the two would hide an enforcement event inside the
+	// credential-failure rate every operator already watches.
+	OutcomeBanned = "banned"
 )
 
 // NewServerMetrics builds and registers the transport counters.
@@ -395,8 +402,17 @@ func NewServerMetrics(reg prometheus.Registerer) *ServerMetrics {
 			Name: "gawk_origin_rejected_total",
 			Help: "Sessions rejected by the Origin allowlist.",
 		}),
+		// R39 (docs/42 §4.3). Counted per BROADCAST killed on this pod, not
+		// per ban and not per closed session: one Ban CR can kill several
+		// broadcasts (an IP ban), and every pod that held the broadcast
+		// counts its own kill — which is what makes "did the whole fleet
+		// act?" a question the metric can answer.
+		terminations: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gawk_moderation_terminations_total",
+			Help: "Broadcasts this pod terminated on an operator ban (R39, close code 4006).",
+		}),
 	}
-	reg.MustRegister(m.connections, m.rateLimited, m.originRejected)
+	reg.MustRegister(m.connections, m.rateLimited, m.originRejected, m.terminations)
 	return m
 }
 
@@ -422,6 +438,22 @@ func (m *ServerMetrics) OriginRejected() {
 		return
 	}
 	m.originRejected.Inc()
+}
+
+// Termination records one broadcast killed by an operator ban (R39).
+func (m *ServerMetrics) Termination() {
+	if m == nil {
+		return
+	}
+	m.terminations.Inc()
+}
+
+// TerminationCount reads back the termination counter (test support).
+func (m *ServerMetrics) TerminationCount() float64 {
+	if m == nil {
+		return 0
+	}
+	return counterValue(m.terminations)
 }
 
 // ConnectionCount reads back a labeled connection counter (test support).
