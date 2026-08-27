@@ -215,9 +215,11 @@ services:
 
   # Namespace + the Ban CRD — the chart's own template, directive lines
   # stripped (the envtest trick), so the schema can never drift from the one
-  # deployments install.
+  # deployments install. Plain alpine (the config-gen image, already pulled):
+  # the API accepts application/yaml, so no gigabyte kubectl image is needed
+  # for two idempotent POSTs.
   kube-bootstrap:
-    image: alpine/k8s:1.34.1
+    image: alpine:3.21
     entrypoint: ["/bin/sh", "/dev-scripts/kube-bootstrap.sh"]
     volumes:
       - kube-pki:/kube:ro

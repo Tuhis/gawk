@@ -1637,12 +1637,12 @@ jobs:
   dev-stack:
     needs: changes
     if: needs.changes.outputs.dev_stack == 'true'
-    # The DISK pool since the portal joined the default lane (docs/41 §4.8):
-    # the default pool's tmpfs /var/lib/docker held relay+app, but building
-    # gawk-admin (node_modules + Go) and the fake IdP on top of them overflows
-    # it — the first run failed `go mod download` with ENOSPC. Same pool the
-    # e2e-cluster job uses, for the same reason.
-    runs-on: ${{ vars.RUNNER_LABEL_DISK || 'ubuntu-latest' }}
+    # Stays on the DEFAULT pool by owner decision: when the portal lane
+    # (docs/41 §4.8) outgrew the runners' RAM-backed /var/lib/docker (ENOSPC
+    # on the first run), the fix was sizing the dind tmpfs in the ioio repo's
+    # runner spec (clusters/baremetal/actions-runners/gawk.yaml), not moving
+    # this job to the disk pool.
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
