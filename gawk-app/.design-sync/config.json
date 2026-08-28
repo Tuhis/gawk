@@ -1,0 +1,97 @@
+{
+  "projectId": "f0ec84cc-cbb9-4fcf-b7da-43a73f883e84",
+  "shape": "package",
+  "pkg": "gawk-app",
+  "globalName": "GawkApp",
+  "srcDir": "src",
+  "tsconfig": "tsconfig.app.json",
+  "cssEntry": "src/styles/global.css",
+  "componentSrcMap": {
+    "Button": "src/ui/Button.tsx",
+    "IconButton": "src/ui/IconButton.tsx",
+    "GlassPanel": "src/ui/GlassPanel.tsx",
+    "ContextMenu": "src/ui/ContextMenu.tsx",
+    "StatsPanel": "src/ui/StatsPanel.tsx",
+    "UnsupportedBrowserModal": "src/ui/UnsupportedBrowserModal.tsx",
+    "FullscreenIcon": "src/ui/Icons.tsx",
+    "FullscreenExitIcon": "src/ui/Icons.tsx",
+    "LeaveIcon": "src/ui/Icons.tsx",
+    "GearIcon": "src/ui/Icons.tsx",
+    "CopyIcon": "src/ui/Icons.tsx",
+    "StopIcon": "src/ui/Icons.tsx",
+    "PlayIcon": "src/ui/Icons.tsx",
+    "StatsIcon": "src/ui/Icons.tsx",
+    "EyeIcon": "src/ui/Icons.tsx",
+    "SpeakerIcon": "src/ui/Icons.tsx",
+    "SpeakerMutedIcon": "src/ui/Icons.tsx",
+    "MoreIcon": "src/ui/Icons.tsx",
+    "PlusIcon": "src/ui/Icons.tsx",
+    "ServerIcon": "src/ui/Icons.tsx",
+    "CloseIcon": "src/ui/Icons.tsx",
+    "CodeInput": "src/features/landing/CodeInput.tsx",
+    "ServerChip": "src/features/servers/ServerChip.tsx",
+    "ServerIndicator": "src/features/servers/ServerIndicator.tsx",
+    "ServerPickerPanel": "src/features/servers/ServerPickerPanel.tsx",
+    "EncoderSettingsPanel": "src/features/stream/EncoderSettingsPanel.tsx",
+    "LadderPicker": "src/features/stream/LadderPicker.tsx",
+    "ServerSettings": "src/features/stream/ServerSettings.tsx",
+    "StatsGrid": "src/features/stream/StatsGrid.tsx",
+    "StatsOverlay": "src/features/viewer/StatsOverlay.tsx",
+    "ViewerSettingsPanel": "src/features/viewer/ViewerSettingsPanel.tsx",
+    "BroadcasterStatsOverlay": "src/features/broadcaster/BroadcasterStatsOverlay.tsx",
+    "BundledTerms": "src/features/terms/BundledTerms.tsx",
+    "CaptureControls": "src/features/loopback/components/CaptureControls.tsx",
+    "DebugShell": "src/features/debug/DebugShell.tsx",
+    "BroadcasterScreen": null,
+    "LandingPage": null,
+    "LoopbackPage": null,
+    "BroadcastPage": null,
+    "ViewPage": null,
+    "ViewerScreen": null,
+    "TermsPage": null,
+    "DebugIndex": null,
+    "DecodedPreview": null,
+    "SourcePreview": null,
+    "App": null
+  },
+  "overrides": {
+    "ViewerSettingsPanel": {
+      "cardMode": "column"
+    },
+    "BroadcasterStatsOverlay": {
+      "cardMode": "column"
+    },
+    "DebugShell": {
+      "cardMode": "column"
+    },
+    "StatsPanel": {
+      "cardMode": "column"
+    },
+    "LadderPicker": {
+      "cardMode": "column"
+    },
+    "ServerSettings": {
+      "cardMode": "column"
+    },
+    "StatsOverlay": {
+      "cardMode": "column"
+    },
+    "ContextMenu": {
+      "cardMode": "single",
+      "primaryStory": "WithStateAndReasons"
+    },
+    "UnsupportedBrowserModal": {
+      "cardMode": "single",
+      "primaryStory": "Webkit"
+    },
+    "ServerIndicator": {
+      "cardMode": "single",
+      "primaryStory": "ForeignTelemetry"
+    },
+    "ServerPickerPanel": {
+      "cardMode": "single",
+      "primaryStory": "SavedServers"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}
