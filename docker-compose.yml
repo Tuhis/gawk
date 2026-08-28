@@ -175,7 +175,7 @@ services:
   # SA signing keys, the static token, and the two kubeconfigs (container
   # and host). Idempotent: credentials persist in the kube-pki volume.
   kube-gen:
-    image: alpine/openssl:3.5.1
+    image: alpine/openssl:3.5.7
     entrypoint: ["/bin/sh", "/dev-scripts/kube-gen.sh"]
     environment:
       KUBE_API_PORT: "${KUBE_API_PORT:-6445}"
