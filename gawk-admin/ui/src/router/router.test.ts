@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { href, parseHash } from './router.ts';
+import { href, parseHash, useRoute } from './router.ts';
 
 describe('portal routes (§4.9)', () => {
   it('lands on broadcasts for an empty hash', () => {
@@ -38,5 +39,33 @@ describe('portal routes (§4.9)', () => {
 
   it('ignores a query inside the hash', () => {
     expect(parseHash('#/bans?state=all').view).toBe('bans');
+  });
+});
+
+describe('the live route (§4.9)', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  // The OIDC callback lands on `origin + pathname` with NO fragment — a
+  // redirect URI cannot carry one — and `session.ts` puts the deep link back
+  // with `history.replaceState` (§4.8). `replaceState` fires no `hashchange`,
+  // so a route snapshotted once at module load stays the empty callback hash
+  // and every deep link silently renders broadcasts.
+  it('reads a hash installed by replaceState, which fires no hashchange', () => {
+    window.history.replaceState(null, '', '#/relays');
+    const { result } = renderHook(() => useRoute());
+    expect(result.current.view).toBe('relays');
+  });
+
+  it('follows a hashchange', () => {
+    window.history.replaceState(null, '', '#/broadcasts');
+    const { result } = renderHook(() => useRoute());
+    expect(result.current.view).toBe('broadcasts');
+    act(() => {
+      window.history.replaceState(null, '', '#/webhooks');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(result.current.view).toBe('webhooks');
   });
 });

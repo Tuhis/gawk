@@ -48,10 +48,8 @@ export function href(view: ViewName): string {
 }
 
 const listeners = new Set<() => void>();
-let current = typeof window === 'undefined' ? '' : window.location.hash;
 
 function onHashChange() {
-  current = window.location.hash;
   for (const l of listeners) l();
 }
 
@@ -68,8 +66,25 @@ function subscribe(cb: () => void) {
   };
 }
 
-function getSnapshot() {
-  return current;
+/**
+ * Read `location.hash` on every render — deliberately, rather than caching it
+ * and updating the cache from `hashchange`.
+ *
+ * Not every hash change announces itself. The OIDC callback lands on
+ * `origin + pathname` with **no** fragment (a redirect URI cannot carry one),
+ * and `session.ts` restores the route the operator asked for with
+ * `history.replaceState` — which fires no `hashchange`. A cache seeded at
+ * module load therefore held the callback's empty hash for the life of the
+ * page: `#/relays` rendered Broadcasts, and the Relays nav link was then dead
+ * too, because its href already matched `location.hash` and clicking it fired
+ * no event either. That is every deep link, including the `portalUrl` in a
+ * webhook (§4.10).
+ *
+ * Safe with `useSyncExternalStore`: the snapshot is a string, compared with
+ * `Object.is`, so an unchanged hash is an unchanged snapshot.
+ */
+function getSnapshot(): string {
+  return typeof window === 'undefined' ? '' : window.location.hash;
 }
 
 /** The current route. Re-renders on back/forward and on any navigation. */
