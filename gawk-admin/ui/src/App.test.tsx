@@ -130,6 +130,30 @@ describe('the shell', () => {
     expect(await screen.findByRole('button', { name: 'Kill' })).toBeTruthy();
   });
 
+  // The deep link, end to end.
+  //
+  // A `#/relays` bookmark cannot reach the app the way it was typed: the OIDC
+  // redirect URI is `origin + pathname` with no fragment, so the callback load
+  // has an empty hash and `session.ts` puts the route back with
+  // `history.replaceState` (§4.8) — which fires no `hashchange`. The shell has
+  // to read the hash that is there when it renders, not one snapshotted at
+  // import. When it did not, `#/relays` rendered Broadcasts *and* the Relays
+  // nav link was then dead: its href already matched `location.hash`, so
+  // clicking it fired no event either.
+  it('renders the view a deep link names when the hash arrived via replaceState', async () => {
+    window.history.replaceState(null, '', '#/relays');
+    mount(OPERATOR);
+    expect(await screen.findByRole('heading', { name: 'Relays' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Broadcasts' })).toBeNull();
+  });
+
+  it('follows a nav link', async () => {
+    mount(OPERATOR);
+    await screen.findByRole('heading', { name: 'Broadcasts' });
+    fireEvent.click(screen.getByRole('link', { name: 'Relays' }));
+    expect(await screen.findByRole('heading', { name: 'Relays' })).toBeTruthy();
+  });
+
   // A dead /api/v1/me must not black out a moderation console: the portal comes
   // up degraded, on the documented default, with the failure on screen.
   it('still renders the views when the probe fails for a reason other than 403', async () => {
