@@ -92,9 +92,9 @@ export function BanDialog({
 
       <fieldset className={ui.field}>
         <legend className={ui.sub}>Duration</legend>
-        <div className={ui.row}>
+        <div className={ui.segmented}>
           {BAN_PRESETS.map((p, i) => (
-            <label key={p.label} className={ui.row}>
+            <label key={p.label} className={ui.segment}>
               <input
                 type="radio"
                 name="ban-duration"

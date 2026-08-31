@@ -1,17 +1,28 @@
 /*
   gawk-admin portal — design tokens.
 
-  A moderation console, not a product surface: no shared tokens with gawk-app,
-  no component library, and deliberately quiet. Colour carries exactly two
-  things, and neither is ever encoded by hue alone —
+  A moderation console, but no longer a visual stranger to the product it
+  moderates: the canvas, surfaces, radii and type scale are the gawk design
+  system's (`gawk-app/src/styles/global.css`), restated here rather than
+  imported — gawk-admin is a separate module with its own build, and a CSS
+  import across module boundaries would couple their release trains for no
+  gain. Keep the VALUES in step with gawk-app when the product palette moves;
+  the names are deliberately identical so a diff is trivial.
+
+  What stays admin-only is the meaning colour carries. Never hue alone —
 
     * Danger   -> red, and always beside the word ("kill", "banned", "failed").
+    * Caution  -> amber, and only on something that WORKED but needs reading
+                  (a 202, the shared-IP verdict). Never on a failure.
     * Liveness -> contrast. A live broadcast is at full contrast, an ended or
                   away one is recessed, so an active row cannot be mistaken for
                   a historical one at a glance.
+    * Accent   -> the active route and links. Nothing else; an operator console
+                  that accents everything accents nothing.
 
-  Everything else is greyscale, because the one thing an operator must never do
-  is act on the wrong row.
+  Light mode is kept. The gating manual pass is run from a phone (docs/42 §10)
+  and that phone is outdoors; the product surfaces are dark-only because they
+  sit behind a video frame, which is not this page's problem.
 
   System fonts only: the CSP is `default-src 'self'` and the embedded-assets
   rule forbids a webfont outright (docs/42 §4.8).
@@ -20,66 +31,73 @@
 :root {
   color-scheme: dark light;
 
-  --bg: #0b0c0e;
-  --bg-raised: #131519;
-  --panel: #16181d;
-  --panel-hover: #1b1e24;
-  --line: #262a32;
-  --line-strong: #333846;
+  /* ── Canvas & surfaces — near-black, layered grays ── */
+  --bg: #0a0b0d;
+  --surface-1: #121317;
+  --surface-2: #171920;
+  --border: #262a33;
+  --border-soft: #1c2028;
 
-  --text: #e9eaee;
-  --text-dim: #9aa0ab;
-  --text-dimmer: #6b7280;
+  /* ── Text ── */
+  --text: #e8eaed;
+  --muted: #9aa1ad;
+  --faint: #626873;
 
-  --ok: #3fb950;
-  --warn: #e3a83c;
-  --bad: #e5534b;
-  --accent: #58a6ff;
+  /* ── The single cool accent — links and the active route only ── */
+  --accent: #6b8afe;
+  --accent-hover: #86a0ff;
+  --accent-soft: rgba(107, 138, 254, 0.14);
 
-  --ok-bg: rgba(63, 185, 80, 0.12);
-  --warn-bg: rgba(227, 168, 60, 0.12);
-  --bad-bg: rgba(229, 83, 75, 0.12);
+  /* ── Status ── */
+  --live: #e5484d;
+  --danger: #e5484d;
+  --warning: #d0a215;
+  --ok: #30a46c;
 
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
-  --fs-lg: 15px;
+  /* ── Type scale (system stack) ── */
+  --fs-lg: 1.25rem;
+  --fs-md: 0.95rem;
+  --fs-sm: 0.8rem;
+  --fs-xs: 0.72rem;
 
-  --r-sm: 4px;
-  --r-md: 6px;
-  --r-lg: 10px;
+  /* ── Radius / shadow ── */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 
   --sp-1: 0.25rem;
   --sp-2: 0.5rem;
   --sp-3: 0.75rem;
   --sp-4: 1rem;
   --sp-6: 1.5rem;
-
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f7f8fa;
-    --bg-raised: #fff;
-    --panel: #fff;
-    --panel-hover: #f2f4f7;
-    --line: #e3e6ec;
-    --line-strong: #cdd2dc;
+    --surface-1: #fff;
+    --surface-2: #f2f4f7;
+    --border: #cdd2dc;
+    --border-soft: #e3e6ec;
 
     --text: #14161a;
-    --text-dim: #5a616e;
-    --text-dimmer: #878e9b;
+    --muted: #5a616e;
+    --faint: #878e9b;
 
+    --accent: #3355d8;
+    --accent-hover: #24409f;
+    --accent-soft: rgba(51, 85, 216, 0.12);
+
+    --live: #cf222e;
+    --danger: #cf222e;
+    --warning: #8a6100;
     --ok: #1a7f37;
-    --warn: #9a6700;
-    --bad: #cf222e;
-    --accent: #0969da;
 
-    --shadow: 0 1px 2px rgba(16, 22, 26, 0.1), 0 4px 12px rgba(16, 22, 26, 0.08);
+    --shadow: 0 1px 2px rgba(16, 22, 26, 0.1), 0 8px 24px rgba(16, 22, 26, 0.1);
   }
 }
 
@@ -98,13 +116,23 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: var(--fs-md);
+  font-size: var(--fs-sm);
   line-height: 1.5;
   -webkit-text-size-adjust: 100%;
 }
 
+::selection {
+  background: var(--accent-soft);
+}
+
 a {
   color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
 }
 
 button,
@@ -115,16 +143,23 @@ textarea {
   color: inherit;
 }
 
+/* The default button is QUIET — a bordered chip on the raised surface. Nothing
+   in this portal is a call to action; the accent-filled control gawk-app uses
+   for "Start a stream" would, here, be a fill on "Kill". The one emphatic
+   button is `.primary` in ui.module.css, and it is inverted, not accented. */
 button {
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: var(--r-sm);
   padding: var(--sp-1) var(--sp-3);
+  color: var(--muted);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 button:hover:not(:disabled) {
-  background: var(--panel-hover);
+  color: var(--text);
+  border-color: var(--faint);
 }
 
 button:disabled {
@@ -135,10 +170,26 @@ button:disabled {
 input,
 select,
 textarea {
-  background: var(--bg-raised);
-  border: 1px solid var(--line-strong);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
   border-radius: var(--r-sm);
   padding: var(--sp-1) var(--sp-2);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--faint);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 code,
