@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows/v1.1.1...gawk-broadcast-windows/v1.2.0) (2026-08-31)
+
+
+### Features
+
+* **r39:** admin portal for moderation ([#280](https://github.com/Tuhis/gawk/issues/280)) ([054d70b](https://github.com/Tuhis/gawk/commit/054d70b859ee98475654e6f6ea960b51e38b10af))
+
 ## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows-v1.1.0...gawk-broadcast-windows/v1.1.1) (2026-08-19)
 
 
