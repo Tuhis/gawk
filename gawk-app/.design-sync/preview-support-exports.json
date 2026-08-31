@@ -1,0 +1,14 @@
+{
+  "_comment": "Non-component exports the authored previews need to render a component truthfully \u2014 e.g. a zustand store whose DEFAULT state makes the component return null (ServerIndicator, ServerChip, ServerSettings, ServerPickerPanel all read useTransportStore). Read by .design-sync/gen-entry.mjs and merged into .ds-entry.ts. Kept out of config.json because the converter validates its top-level keys strictly. These are hooks/stores, so the converter's isComponentName filter keeps them OUT of the component list; they simply ride along on window.GawkApp for previews to drive.",
+  "exports": {
+    "src/state/transportStore": [
+      "useTransportStore"
+    ],
+    "src/state/broadcastSettingsStore": [
+      "useBroadcastSettingsStore"
+    ],
+    "src/state/pipelineStore": [
+      "usePipelineStore"
+    ]
+  }
+}
