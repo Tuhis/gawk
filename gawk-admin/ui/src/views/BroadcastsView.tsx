@@ -222,7 +222,7 @@ export function BroadcastsView({
         </p>
       ) : null}
 
-      <div className={ui.scroll}>
+      <div className={ui.tableCard}>
         <table className={ui.table}>
           <thead>
             <tr>
@@ -264,7 +264,7 @@ export function BroadcastsView({
                     <span className={ui.dim}>—</span>
                   ) : (
                     b.pods.map((p) => (
-                      <div key={p.pod} className={ui.dim}>
+                      <div key={p.pod} className={`${ui.dim} ${ui.nowrap}`}>
                         <span className={ui.mono}>{p.pod}</span> {p.role} · {p.viewersLocal}
                       </div>
                     ))

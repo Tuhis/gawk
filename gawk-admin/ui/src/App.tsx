@@ -76,7 +76,9 @@ function Portal() {
     <div className={styles.app}>
       <header className={styles.header}>
         <a className={styles.title} href={href('broadcasts')}>
-          gawk admin
+          <span className={styles.dot} aria-hidden="true" />
+          <span className={styles.wordmark}>gawk</span>
+          <span className={styles.tag}>admin</span>
         </a>
         <nav className={styles.nav}>
           {NAV.map((item) => (

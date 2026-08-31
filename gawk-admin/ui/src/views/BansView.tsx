@@ -124,8 +124,11 @@ export function BansView() {
     <section>
       <div className={ui.head}>
         <h1>Bans</h1>
-        <div className={ui.row}>
-          <label className={ui.row}>
+        {/* Still two radios, styled as a segmented control: it is a named
+            two-state choice, and swapping in buttons would cost the label
+            association and the arrow-key traversal for nothing visual. */}
+        <div className={ui.segmented}>
+          <label className={ui.segment}>
             <input
               type="radio"
               name="ban-filter"
@@ -134,7 +137,7 @@ export function BansView() {
             />
             Active
           </label>
-          <label className={ui.row}>
+          <label className={ui.segment}>
             <input
               type="radio"
               name="ban-filter"
@@ -170,7 +173,7 @@ export function BansView() {
         </p>
       ) : null}
 
-      <div className={ui.scroll}>
+      <div className={ui.tableCard}>
         <table className={ui.table}>
           <thead>
             <tr>

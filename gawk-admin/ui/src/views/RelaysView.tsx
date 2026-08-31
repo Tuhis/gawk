@@ -37,7 +37,10 @@ export function RelaysView() {
 
       {error ? <p className={ui.error}>{error}</p> : null}
 
-      {relays.map((r) => (
+      {/* Two-up on a wide screen: the config lists are short and identically
+          shaped, so one column per pod wastes the width. */}
+      <div className={ui.grid2}>
+        {relays.map((r) => (
         <article key={r.pod} className={ui.panel}>
           <div className={ui.row}>
             <strong className={ui.mono}>{r.pod}</strong>
@@ -53,7 +56,7 @@ export function RelaysView() {
           {r.error ? <p className={ui.error}>{r.error}</p> : null}
           {r.config ? (
             <div className={ui.scroll}>
-              <table className={ui.table}>
+              <table className={`${ui.table} ${ui.kv}`}>
                 <tbody>
                   {Object.entries(r.config)
                     .sort(([a], [b]) => a.localeCompare(b))
@@ -68,7 +71,8 @@ export function RelaysView() {
             </div>
           ) : null}
         </article>
-      ))}
+        ))}
+      </div>
 
       {!loading && relays.length === 0 && !error ? (
         <p className={ui.dim}>No relay pods answered.</p>

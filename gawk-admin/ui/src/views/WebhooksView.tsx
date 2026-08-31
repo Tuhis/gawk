@@ -89,7 +89,7 @@ export function WebhooksView() {
         <h1>Webhooks</h1>
         <span className={ui.sub}>{webhooks.length} configured</span>
         <span className={ui.spacer} />
-        <button type="button" onClick={() => setEditing('new')}>
+        <button type="button" className={ui.primary} onClick={() => setEditing('new')}>
           Add webhook
         </button>
       </div>
@@ -102,7 +102,7 @@ export function WebhooksView() {
         </p>
       ) : null}
 
-      <div className={ui.scroll}>
+      <div className={ui.tableCard}>
         <table className={ui.table}>
           <thead>
             <tr>
@@ -124,7 +124,7 @@ export function WebhooksView() {
                       <strong>{w.name}</strong>
                     </div>
                   </td>
-                  <td className={ui.mono}>{w.url}</td>
+                  <td className={`${ui.mono} ${ui.breakable}`}>{w.url}</td>
                   <td>
                     {w.enabled ? (
                       <span className={ui.badgeOk}>enabled</span>
