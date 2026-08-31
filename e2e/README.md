@@ -9,7 +9,7 @@ broadcaster surface. Assertions are **flow-shaped**
 (frames arrive/decode/render, drops bounded, zero loopback ingress loss) —
 never fps ceilings or latency numbers; see docs/25 Decision 6.
 
-This directory is top-level because the harness spans all three components;
+This directory is top-level because the harness spans multiple components;
 `gawk-app` deliberately grows no E2E deps.
 
 ## Tier 1 locally
