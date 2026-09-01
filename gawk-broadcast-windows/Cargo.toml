@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.1" # x-release-please-version
+version = "1.2.0" # x-release-please-version
 edition = "2024"
 publish = false
 # Matches the repository LICENSE. Declared here (and inherited by every crate)

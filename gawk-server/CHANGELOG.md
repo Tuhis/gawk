@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.25.0...gawk-server/v0.26.0) (2026-08-31)
+
+
+### Features
+
+* **r39:** admin portal for moderation ([#280](https://github.com/Tuhis/gawk/issues/280)) ([054d70b](https://github.com/Tuhis/gawk/commit/054d70b859ee98475654e6f6ea960b51e38b10af))
+
 ## [0.25.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.24.1...gawk-server/v0.25.0) (2026-08-19)
 
 

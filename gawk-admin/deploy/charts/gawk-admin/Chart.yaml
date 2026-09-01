@@ -14,5 +14,5 @@ type: application
 # while this file still baked in a 0.1.0 that GHCR never carries. The first
 # release PR rewrites both lines to 0.1.0, and from then on this file tracks
 # what is actually published.
-version: 0.0.0 # x-release-please-version
-appVersion: "0.0.0" # x-release-please-version
+version: 1.0.0 # x-release-please-version
+appVersion: "1.0.0" # x-release-please-version
