@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gawk — docs and design record</title>
+<meta name="description" content="A map into gawk's design record: one numbered design doc per milestone, with decisions, rejected alternatives and acceptance criteria.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<div class="glow docs-head">
+  <div class="wrap">
+    <nav class="nav">
+      <a class="nav-brand" href="./">gawk</a>
+      <div class="nav-links">
+        <a href="./">Overview</a>
+        <a href="https://gawk.ioio.fi" target="_blank" rel="noopener" class="hide-sm">gawk.ioio.fi</a>
+        <a class="btn-outline-sm" href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="docs-hero">
+      <div class="kicker">The design record</div>
+      <h1>Every decision, and every alternative that lost.</h1>
+      <p>Each milestone gets a numbered design doc: the decisions made, the alternatives rejected and why, and acceptance criteria. This page is a map into them.</p>
+    </header>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <section class="docs-section first">
+    <h2>Start here</h2>
+    <div class="doc-cards">
+      <a class="doc-card" href="https://github.com/Tuhis/gawk/blob/main/docs/03-single-client-e2e.md" target="_blank" rel="noopener">
+        <span class="ref">docs/03</span>
+        <span class="t">The end-to-end path</span>
+        <span class="d">One broadcaster, one viewer, real frames — the spine everything else hangs on.</span>
+      </a>
+      <a class="doc-card" href="https://github.com/Tuhis/gawk/blob/main/docs/12-worker-and-reliable-keyframes.md" target="_blank" rel="noopener">
+        <span class="ref">docs/12</span>
+        <span class="t">Reliable keyframes</span>
+        <span class="d">Why keyframes leave the datagram path, and how the relay store-and-forwards them without coupling the publisher to any slow subscriber.</span>
+      </a>
+      <a class="doc-card" href="https://github.com/Tuhis/gawk/blob/main/docs/22-relay-scale-out.md" target="_blank" rel="noopener">
+        <span class="ref">docs/22</span>
+        <span class="t">Scale-out and HA</span>
+        <span class="d">How one broadcast's audience spans pods, and what edge pull costs.</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="docs-section">
+    <h2>Quick links</h2>
+    <div class="links">
+      <div class="link-row"><a href="https://github.com/Tuhis/gawk/blob/main/docs/self-hosting.md" target="_blank" rel="noopener">Run it yourself</a><span>DNS, TLS, single-node and cluster mode, verification and upgrades.</span></div>
+      <div class="link-row"><a href="https://github.com/Tuhis/gawk/blob/main/docs/README.md" target="_blank" rel="noopener">Design docs index</a><span>One numbered doc per milestone, including the WebRTC trade-off discussion.</span></div>
+      <div class="link-row"><a href="https://github.com/Tuhis/gawk/blob/main/ROADMAP.md" target="_blank" rel="noopener">Roadmap</a><span>What is built, what is next, and the per-item status of every milestone.</span></div>
+      <div class="link-row"><a href="https://github.com/Tuhis/gawk/blob/main/BUGS.md" target="_blank" rel="noopener">Known bugs</a><span>Kept in the open, including the WebKit WebTransport refusal.</span></div>
+      <div class="link-row"><a href="https://github.com/Tuhis/gawk/blob/main/docs/gotchas.md" target="_blank" rel="noopener">Gotchas</a><span>Every entry there cost real debugging time.</span></div>
+      <div class="link-row"><a href="https://github.com/Tuhis/gawk/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a><span>DCO sign-off, no CLA. See also CODE-REVIEW.md and SECURITY.md.</span></div>
+    </div>
+  </section>
+
+  <section class="docs-section">
+    <h2>Components</h2>
+    <div class="components">
+      <div class="component"><div class="path">gawk-server/</div><p>The Go relay — WebTransport endpoint, pub/sub hub, cluster-mode federation. Image + Helm chart.</p></div>
+      <div class="component"><div class="path">gawk-app/</div><p>React SPA — landing/join, broadcaster, viewer. Image + Helm chart.</p></div>
+      <div class="component"><div class="path">gawk-broadcast/</div><p>Native Linux broadcaster in Go — GUI + CLI, GPU encode via the XDG portal and GStreamer. A binary you run, not a deployed component.</p></div>
+      <div class="component"><div class="path">gawk-broadcast-windows/</div><p>Native Windows broadcaster in Rust — Windows.Graphics.Capture and Media Foundation, single static EXE.</p></div>
+      <div class="component"><div class="path">gawk-telemetry/</div><p>Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default.</p></div>
+      <div class="component"><div class="path">gawk-admin/</div><p>Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default.</p></div>
+      <div class="component"><div class="path">e2e/</div><p>Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier.</p></div>
+      <div class="component"><div class="path">docs/</div><p>Numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria.</p></div>
+    </div>
+  </section>
+
+  <section class="docs-section licensing">
+    <h2>Licensing</h2>
+    <p>Apache-2.0 rather than MIT because this is a codec and transport project, and Apache-2.0 carries an explicit patent grant from every contributor. Every component ships a generated <code>THIRD-PARTY-NOTICES.md</code> listing what is actually linked into that artifact, and CI gates every dependency against a permissive allowlist. The one non-standard entry: the Windows broadcaster's GUI uses <a href="https://slint.dev" target="_blank" rel="noopener">Slint</a> under its Royalty-free Desktop License v2.0.</p>
+  </section>
+
+  <footer class="footer">
+    <span>Apache-2.0 — copyright (c) 2026 Juho Kuusisto.</span>
+    <span class="footer-links">
+      <a href="./">Overview</a>
+      <a href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">Repository</a>
+      <a href="https://gawk.ioio.fi" target="_blank" rel="noopener">gawk.ioio.fi</a>
+    </span>
+  </footer>
+</main>
+
+</body>
+</html>

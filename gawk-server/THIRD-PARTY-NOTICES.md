@@ -50,7 +50,7 @@ script for what counts as a dependency here and why.
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
 | `github.com/pmezard/go-difflib` | v1.0.1-0.20181226105442-5d4384ee4fb2 | `BSD-2-Clause` | Copyright (c) 2013, Patrick Mezard |
 | `github.com/prometheus/client_golang` | v1.24.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors<br>Copyright 2013-2015 Blake Mizerany, Björn Rabenstein<br>Copyright 2010 The Go Authors |
-| `github.com/prometheus/client_model` | v0.6.2 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
+| `github.com/prometheus/client_model` | v0.6.3 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
 | `github.com/prometheus/common` | v0.70.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
 | `github.com/prometheus/procfs` | v0.21.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2014-2015 The Prometheus Authors |
 | `github.com/quic-go/qpack` | v0.6.0 | `MIT` | Copyright 2019 Marten Seemann |
@@ -67,7 +67,7 @@ script for what counts as a dependency here and why.
 | `golang.org/x/term` | v0.45.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/text` | v0.40.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/time` | v0.14.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `google.golang.org/protobuf` | v1.36.12-0.20260120151049-f2248ac996af | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
+| `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
 | `gopkg.in/evanphx/json-patch.v4` | v4.13.0 | `BSD-3-Clause` | Copyright (c) 2014, Evan Phoenix |
 | `gopkg.in/inf.v0` | v0.9.1 | `BSD-3-Clause` | Copyright (c) 2012 Péter Surányi. Portions Copyright (c) 2009 The Go |
 | `gopkg.in/yaml.v3` | v3.0.1 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |

@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -112,11 +113,15 @@ func TestLeaseNameIsValidDNS1123AndRoundTrips(t *testing.T) {
 // Deadlines here are 15 s, not the 5 s they once were: these waits sit on an
 // informer round-trip (fake watch → reflector → DeltaFIFO → handler), and the
 // -race CI job runs every package concurrently — transport's QUIC minute
-// included — so multi-second goroutine starvation is real. TestInformerCallbacks
-// hit the old 5 s on OnLeaseDeleted with the event merely delayed, not lost
-// (run 33087092522, on a CSS-only commit). gawk-admin's kube tests settled on
-// 15 s for the same reason. A wait that PASSES still returns in milliseconds;
-// the deadline only prices the failure.
+// included — so multi-second goroutine starvation is real. gawk-admin's kube
+// tests settled on 15 s for the same reason. A wait that PASSES still returns
+// in milliseconds; the deadline only prices the failure.
+//
+// Raising the deadline is NOT a fix for a lost event, and it did not fix one
+// here: the 5 s → 15 s bump was made for TestInformerCallbacks (run
+// 33087092522) on the theory that OnLeaseDeleted was merely late, and the
+// same test failed again at 15 s (run 33539613765). It was never late — see
+// leaseWatchRegistered for what actually goes missing.
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -427,6 +432,25 @@ func TestJanitorDeletesOnlyStalePastGrace(t *testing.T) {
 	}
 }
 
+// leaseWatchRegistered returns a channel closed once a Lease watch has been
+// registered with the fake clientset's object tracker — i.e. from that point
+// on, every lease mutation is delivered to the informer. It must be installed
+// before the coordinator's informer starts.
+func leaseWatchRegistered(cs *fake.Clientset) <-chan struct{} {
+	registered := make(chan struct{})
+	var once sync.Once
+	gvr := coordv1.SchemeGroupVersion.WithResource("leases")
+	cs.PrependWatchReactor("leases", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		w, err := cs.Tracker().Watch(gvr, action.GetNamespace())
+		if err != nil {
+			return false, nil, err
+		}
+		once.Do(func() { close(registered) })
+		return true, w, nil
+	})
+	return registered
+}
+
 // The informer surfaces lease deletions (cluster-wide "broadcast ended") and
 // force-takes (holdership loss) as callbacks.
 func TestInformerCallbacks(t *testing.T) {
@@ -438,9 +462,23 @@ func TestInformerCallbacks(t *testing.T) {
 		o.OnLeaseDeleted = func(id string) { deleted.Store(id) }
 		o.OnLeaseLost = func(id string, newOrigin Origin) { lost.Store(id + "→" + newOrigin.Holder) }
 	})
+	watching := leaseWatchRegistered(cs)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go a.Run(ctx)
+
+	// Claim only once the informer's watch is registered with the fake
+	// tracker. The fake clientset has no resourceVersion continuity, so a
+	// watch that starts late simply never learns of the objects that
+	// changed before it: the reflector's initial List would come back empty,
+	// the lease's Add/Modify events would be dropped on the floor, and
+	// DeltaFIFO discards a Deleted delta for a key the store never knew —
+	// so OnLeaseDeleted would never fire, however long the test waits. That
+	// is the flake behind CI run 33539613765 (and the earlier 33087092522
+	// that was misdiagnosed as slowness and "fixed" by raising the deadline
+	// from 5 s to 15 s): OnLeaseLost still passed there because pod-a's own
+	// renew loop reports the loss independently of the informer.
+	<-watching
 
 	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
 		t.Fatalf("Claim: %v", err)
@@ -459,7 +497,7 @@ func TestInformerCallbacks(t *testing.T) {
 		_, err = cs.CoordinationV1().Leases("gawk").Update(ctx, updated, metav1.UpdateOptions{})
 		return err == nil
 	}, "force-take write")
-	waitFor(t, 15*time.Second, func() bool { return lost.Load() != nil }, "OnLeaseLost via informer")
+	waitFor(t, 15*time.Second, func() bool { return lost.Load() != nil }, "OnLeaseLost")
 	if got := lost.Load().(string); got != "K7XQ2M→pod-b" {
 		t.Errorf("OnLeaseLost = %q, want K7XQ2M→pod-b", got)
 	}
