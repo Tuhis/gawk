@@ -1199,3 +1199,17 @@ Add to it when a new gotcha lands in `docs/`.
   (517 bytes) parsed as malformed. Both were caught test-first in R37; size
   read limits from the wire package's max constants, never from the current
   biggest message. ([docs/40](40-relay-server-picker.md) SP8/SP9)
+- **An informer over the fake clientset loses every event that predates its
+  watch — permanently.** The fake tracker has no resourceVersion continuity,
+  so a late-starting reflector Lists whatever exists *now* and watches from
+  there; worse, `DeltaFIFO` drops a `Deleted` delta for a key its store never
+  knew, so the deletion of an object created before the watch fires no
+  `DeleteFunc` at all. In a test that starts the informer and immediately
+  mutates, that is a coin flip decided by goroutine scheduling — and under
+  `go test -race ./...`, with every package running at once, it lands wrong
+  on CI. `TestInformerCallbacks` flaked this way twice (runs 33087092522 and
+  33539613765) and the first was misread as slowness, because the *other*
+  callback under test (`OnLeaseLost`) also has a non-informer source: the
+  renew loop. Gate the first mutation on the watch actually being registered
+  (`leaseWatchRegistered` in `internal/cluster/cluster_test.go`); raising the
+  wait deadline can never fix a lost event.
