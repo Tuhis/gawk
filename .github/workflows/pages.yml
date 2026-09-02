@@ -1,0 +1,46 @@
+# Publishes site/ (the project landing page + docs map) to GitHub Pages.
+#
+# The site is plain static files — no build step, no framework — so the job
+# is upload + deploy. It runs only when site/ (or this file) changes on main,
+# which keeps it out of the way of the release pipeline: the site is not a
+# release-please component and carries no version. ci.yml's `changes` filter
+# already ignores site/, so a site-only PR runs nothing else.
+#
+# Pages must be configured to deploy from "GitHub Actions" (not a branch) —
+# repository Settings → Pages → Source, or
+#   gh api -X POST repos/Tuhis/gawk/pages -f build_type=workflow
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push supersedes a queued one but never
+# cancels an in-flight deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
