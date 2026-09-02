@@ -185,20 +185,21 @@ workflow files, and it is never merged.
 
 ## 5. The baseline
 
-Measured on 2026-09-02 (runs 33657115804 and 33657115803), and the floors are
-these rounded down and dropped by one:
+Measured on 2026-09-02 in the configuration that actually runs — race-free
+coverage, per D9 (runs 33665181002 and 33665181055). The floors are these
+rounded down and dropped by one:
 
 | Component | Coverage | Floor |
 |---|---|---|
 | `gawk-admin-ui` | 91.5% (681/744 lines) | 90 |
-| `gawk-server` | 82.0% (4258/5191 statements) | 81 |
+| `gawk-server` | 81.9% (4250/5191 statements) | 81 |
 | `gawk-broadcast-windows` | 80.3% (4987/6210 lines) | 79 |
 | `gawk-app` | 79.7% (6791/8518 lines) | 78 |
-| `gawk-admin` | 79.2% (1963/2479 statements) | 78 |
+| `gawk-admin` | 78.9% (1956/2479 statements) | 78 |
 | `gawk-telemetry` | 67.3% (2743/4076 statements) | 66 |
-| `gawk-broadcast` | 64.3% (2910/4523 statements) | 63 |
+| `gawk-broadcast` | 64.4% (2911/4523 statements) | 63 |
 | `gawk-telemetry-ui` | **18.7%** (215/1152 lines) | 17 |
-| **Aggregate** | **74.6%** (24548/32893) | — |
+| **Aggregate** | **74.6%** (24534/32893) | — |
 
 Two of these are findings rather than data points. `gawk-telemetry-ui` at
 18.7% is the dashboard SPA, which ships in an image and is tested like a

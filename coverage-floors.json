@@ -8,8 +8,9 @@
     "allowed but needs its reason in the commit body.",
     "null means 'measured and published, not yet gated' — the escape hatch for a",
     "component whose baseline has not been established.",
-    "Every floor below was set from the baselines measured in runs 33657115804 and",
-    "33657115803 on 2026-09-02: 82.0 / 79.7 / 64.3 / 80.3 / 67.3 / 18.7 / 79.2 / 91.5."
+    "Every floor below was set from the baselines measured in runs 33665181002 and",
+    "33665181055 on 2026-09-02, in the race-free coverage configuration docs/43 D9",
+    "describes: 81.9 / 79.7 / 64.4 / 80.3 / 67.3 / 18.7 / 78.9 / 91.5."
   ],
   "floors": {
     "gawk-admin": 78,
