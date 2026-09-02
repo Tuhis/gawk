@@ -1,11 +1,67 @@
 {
   "components": {
+    "gawk-admin": {
+      "component": "gawk-admin",
+      "covered": 1954,
+      "label": "admin",
+      "pct": 78.8,
+      "total": 2479,
+      "unit": "statements"
+    },
+    "gawk-admin-ui": {
+      "component": "gawk-admin-ui",
+      "covered": 681,
+      "label": "admin-ui",
+      "pct": 91.5,
+      "total": 744,
+      "unit": "lines"
+    },
+    "gawk-app": {
+      "component": "gawk-app",
+      "covered": 6791,
+      "label": "app",
+      "pct": 79.7,
+      "total": 8518,
+      "unit": "lines"
+    },
+    "gawk-broadcast": {
+      "component": "gawk-broadcast",
+      "covered": 2911,
+      "label": "broadcast-linux",
+      "pct": 64.4,
+      "total": 4523,
+      "unit": "statements"
+    },
     "gawk-broadcast-windows": {
       "component": "gawk-broadcast-windows",
       "covered": 4985,
       "label": "broadcast-windows",
       "pct": 80.3,
       "total": 6210,
+      "unit": "lines"
+    },
+    "gawk-server": {
+      "component": "gawk-server",
+      "covered": 4243,
+      "label": "relay",
+      "pct": 81.7,
+      "total": 5191,
+      "unit": "statements"
+    },
+    "gawk-telemetry": {
+      "component": "gawk-telemetry",
+      "covered": 2743,
+      "label": "telemetry",
+      "pct": 67.3,
+      "total": 4076,
+      "unit": "statements"
+    },
+    "gawk-telemetry-ui": {
+      "component": "gawk-telemetry-ui",
+      "covered": 215,
+      "label": "telemetry-ui",
+      "pct": 18.7,
+      "total": 1152,
       "unit": "lines"
     }
   }
