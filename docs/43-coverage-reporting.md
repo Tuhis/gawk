@@ -125,9 +125,11 @@ So each Go job runs `go test -race ./...` unchanged, then a second race-free
 run of the combination, and the `-race` gate goes back to exactly the command
 it used before R41.
 
-The rule is **enforced, not remembered**: `test_coverage.py` parses every
-workflow and fails if any `go test` line carries `-race` together with
-`-coverprofile` or `-cover`. Nothing about the combination looks wrong in
+The rule is **enforced, not remembered**: `test_coverage.py` scans every
+workflow and composite action, and fails if any `go test` line carries `-race`
+together with `-coverprofile` or `-cover`. It reads them as text with comments
+stripped, rather than parsing YAML, because PyYAML is not in the standard
+library and this tool runs in eight jobs that install nothing. Nothing about the combination looks wrong in
 review — it is the obvious way to collect coverage — and its symptom is a
 timeout in a test that has nothing to do with the change. `-cover` is in the
 pattern because `go test -cover -race` silently selects `-covermode=atomic`,

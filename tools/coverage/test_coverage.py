@@ -16,8 +16,6 @@ import sys
 import tempfile
 import unittest
 
-import yaml
-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import coverage  # noqa: E402
@@ -198,29 +196,36 @@ class TestNoWorkflowCombinesRaceWithCoverage(unittest.TestCase):
     workflow next.
     """
 
-    def workflow_run_steps(self):
-        workflows = pathlib.Path(coverage.REPO_ROOT, ".github", "workflows")
-        for path in sorted(workflows.glob("*.yml")):
-            spec = yaml.safe_load(path.read_text())
-            for job_name, job in (spec.get("jobs") or {}).items():
-                for step in job.get("steps") or []:
-                    run = step.get("run")
-                    if run:
-                        yield path.name, job_name, run
+    def ci_definition_lines(self):
+        """Every non-comment line of every workflow and composite action.
+
+        Read as text rather than parsed as YAML on purpose: PyYAML is not in
+        the standard library, and the rest of this tool deliberately depends on
+        nothing — it runs in eight jobs across four toolchains, and a pip
+        install in each of them to check one regex would cost more than the
+        check is worth. Comments are stripped so that the prose explaining this
+        very rule (which necessarily quotes the forbidden combination) does not
+        trip it.
+        """
+        root = pathlib.Path(coverage.REPO_ROOT, ".github")
+        for path in sorted(list(root.glob("workflows/*.yml")) + list(root.glob("actions/*/*.yml"))):
+            for number, raw in enumerate(path.read_text().splitlines(), 1):
+                line = raw.split("#", 1)[0]
+                if line.strip():
+                    yield path.relative_to(coverage.REPO_ROOT), number, line
 
     def test_no_go_test_asks_for_a_profile_under_the_race_detector(self) -> None:
-        for filename, job, run in self.workflow_run_steps():
-            for line in run.splitlines():
-                if "go test" not in line or "-race" not in line:
-                    continue
-                if "-coverprofile" in line or re.search(r"-cover(\s|$)", line):
-                    self.fail(
-                        f"{filename}:{job} runs `go test` with -race AND coverage:\n"
-                        f"    {line.strip()}\n"
-                        "Split them into two runs — see docs/43 D9. (`go test -cover`\n"
-                        "with -race silently selects -covermode=atomic, which is the\n"
-                        "expensive half of the combination.)"
-                    )
+        for path, number, line in self.ci_definition_lines():
+            if "go test" not in line or "-race" not in line:
+                continue
+            if "-coverprofile" in line or re.search(r"-cover(\s|$)", line):
+                self.fail(
+                    f"{path}:{number} runs `go test` with -race AND coverage:\n"
+                    f"    {line.strip()}\n"
+                    "Split them into two runs — see docs/43 D9. (`go test -cover`\n"
+                    "with -race silently selects -covermode=atomic, which is the\n"
+                    "expensive half of the combination.)"
+                )
 
 
 class TestFloorsFileItself(unittest.TestCase):
