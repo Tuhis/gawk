@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gawk — sub-500 ms game streaming in a browser tab</title>
+<meta name="description" content="Self-hosted, low-latency live game streaming. A broadcaster shares their screen; viewers join with a 6-character code and watch in a browser tab at sub-500 ms glass to glass.">
+<meta property="og:title" content="gawk — sub-500 ms game streaming in a browser tab">
+<meta property="og:description" content="Self-hosted, low-latency live game streaming over WebTransport + WebCodecs, with a horizontally scaling Go relay.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<header class="glow hero">
+  <div class="wrap">
+    <nav class="nav">
+      <a class="nav-brand" href="./">gawk</a>
+      <div class="nav-links">
+        <a href="#pipeline" class="hide-sm">Architecture</a>
+        <a href="#latency" class="hide-sm">Latency</a>
+        <a href="#run">Run it</a>
+        <a href="docs.html">Docs</a>
+        <a class="btn-outline-sm" href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </nav>
+  </div>
+
+  <div class="hero-grid">
+    <div>
+      <div class="eyebrow"><span class="dot"></span>Self-hosted live game streaming</div>
+      <h1>Sub-500 ms<br>glass to glass,<br>in a browser tab.</h1>
+      <p class="hero-lead">A broadcaster shares their screen. Viewers join with a 6-character code and watch — no accounts, no plugins, no native app required. Roughly <strong>50 ms measured</strong> on a hardware encode/decode path.</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://gawk.ioio.fi" target="_blank" rel="noopener">Stream on gawk.ioio.fi <span aria-hidden="true">→</span></a>
+        <a class="btn btn-outline" href="#run">Run your own</a>
+      </div>
+      <p class="hero-tags">WebTransport + WebCodecs · Go relay · Apache-2.0 · Chromium-first</p>
+    </div>
+
+    <div class="join-wrap" aria-hidden="true">
+      <div class="join-card">
+        <div class="join-brand">gawk</div>
+        <div class="join-title">Join a stream</div>
+        <div class="code" data-demo-code="5UP4XW">
+          <div class="code-ring"></div>
+          <div class="code-box"></div>
+          <div class="code-box"></div>
+          <div class="code-box"></div>
+          <div class="code-box"></div>
+          <div class="code-box"></div>
+          <div class="code-box"></div>
+        </div>
+        <p class="join-hint">enter the 6-character code</p>
+        <div class="join-btn">Join</div>
+        <div class="join-or"><span></span>or<span></span></div>
+        <div class="join-start">Start a stream <span aria-hidden="true">→</span></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section id="pipeline" class="section" style="border-top:1px solid var(--line)">
+    <div class="section-head">
+      <h2>The pipeline</h2>
+      <p>screen → encode → packets → relay → decode → screen</p>
+    </div>
+
+    <div class="pipeline">
+      <div class="pipeline-inner">
+        <div class="wire" aria-hidden="true">
+          <div class="pkt pkt-a"></div>
+          <div class="pkt pkt-b" style="animation-delay:0.85s"></div>
+          <div class="pkt pkt-c" style="animation-delay:1.7s"></div>
+          <div class="pkt pkt-a" style="animation-delay:2.55s"></div>
+        </div>
+        <div class="stages">
+          <div class="stage"><div class="stage-n">01</div><div class="stage-t">Capture</div><div class="stage-d">The broadcaster's screen, grabbed by the browser or by a native app</div></div>
+          <div class="stage"><div class="stage-n">02</div><div class="stage-t">Encode</div><div class="stage-d">Turned into video by the graphics card, not the CPU</div></div>
+          <div class="stage"><div class="stage-n">03</div><div class="stage-t">Split</div><div class="stage-d">Chopped into packets small enough to never queue up</div></div>
+          <div class="stage"><div class="stage-n">04</div><div class="stage-t">Relay</div><div class="stage-d">One Go server copies the packets out to every viewer</div></div>
+          <div class="stage"><div class="stage-n">05</div><div class="stage-t">Reassemble</div><div class="stage-d">The viewer puts them back in order and skips what got lost</div></div>
+          <div class="stage"><div class="stage-n">06</div><div class="stage-t">Show</div><div class="stage-d">Decoded and drawn straight onto the page, newest frame first</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cards cards-3">
+      <div class="card">
+        <h3>Drops beat stalls</h3>
+        <p>If a packet goes missing you lose one frame, which you won't notice. You never get a spinner or a stream that quietly falls behind. The frames that matter most travel on a guaranteed channel.</p>
+      </div>
+      <div class="card">
+        <h3>The server never touches the video</h3>
+        <p>It copies packets, nothing more — no re-encoding. It keeps the last full frame handy, so anyone who joins late sees a picture right away.</p>
+      </div>
+      <div class="card">
+        <h3>Why not WebRTC?</h3>
+        <p>A deliberate choice. Building lower down means owning the whole path instead of inheriting a heavy stack, and it was a real chance to use newer browser APIs. The trade-offs are written down in <a href="https://github.com/Tuhis/gawk/blob/main/docs/README.md" target="_blank" rel="noopener">the docs</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>The viewer decides what to trade</h2>
+    <p class="section-lead">Speed and reliability pull against each other, and the right answer depends on the connection you're on. So it isn't baked in: every viewer picks, from the player's own settings, and can switch mid-stream.</p>
+
+    <div class="cards cards-2">
+      <div class="mode mode-hl">
+        <div class="mode-tag"><span class="dot"></span>Lowest latency</div>
+        <h3>Live edge</h3>
+        <p>Stay as close to now as the network allows. Anything that arrives late is skipped rather than waited for. Best on a good connection, and the default.</p>
+      </div>
+      <div class="mode">
+        <div class="mode-tag"><span class="dot"></span>Guaranteed delivery</div>
+        <h3>Deep buffer</h3>
+        <p>Sit a little further back and let the server re-send whatever went missing. You give up some latency and get a picture that holds together on flaky Wi-Fi or mobile.</p>
+      </div>
+    </div>
+    <p class="section-note">Both modes are one control in the player, not a deployment setting. In between there are opt-ins that buy a bit of resilience for almost no delay — extra recovery data sent alongside the video, and the stream spread over several connections so one bad path can't take the picture down.</p>
+  </section>
+
+  <section class="section">
+    <h2>Any server, any viewer</h2>
+    <p class="section-lead">Viewers land on whichever server is free. If that one isn't hosting the broadcast, it fetches the stream from the one that is. Add servers and the audience grows with them — hundreds of broadcasts at once, and around a thousand people on one popular stream.</p>
+
+    <div class="fleet">
+      <div class="fleet-col">
+        <div class="fleet-label">Broadcasters</div>
+        <div class="fleet-node">Browser <small>· WebCodecs</small></div>
+        <div class="fleet-node">gawk-broadcast <small>· Linux, GPU</small></div>
+        <div class="fleet-node">gawk-broadcast.exe <small>· Windows, GPU</small></div>
+      </div>
+      <div class="fleet-link">
+        <div class="lbl">video packets</div>
+        <div class="pkt pkt-a" aria-hidden="true"></div>
+        <div class="pkt pkt-a" aria-hidden="true" style="animation-delay:0.8s"></div>
+      </div>
+      <div class="fleet-col fleet-relay">
+        <div class="fleet-label">Relay servers · Go</div>
+        <div class="fleet-node">Load balancer</div>
+        <div class="fleet-pods">
+          <div class="fleet-node host">hosting server</div>
+          <div class="fleet-node">other server</div>
+        </div>
+        <div class="fleet-foot">fetches from the host</div>
+      </div>
+      <div class="fleet-link">
+        <div class="pkt pkt-b" aria-hidden="true" style="animation-delay:0.4s"></div>
+        <div class="pkt pkt-b" aria-hidden="true" style="animation-delay:1.2s"></div>
+      </div>
+      <div class="fleet-col">
+        <div class="fleet-label">Viewers</div>
+        <div class="fleet-node">Browser tab <small>· joined by code</small></div>
+        <div class="fleet-node">~1,000 <small>on one stream</small></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="latency" class="section">
+    <h2>How fast is it, really</h2>
+    <div class="latency">
+      <div>
+        <div class="big-num"><span class="n">≈50</span><span class="u">ms</span></div>
+        <p>From the broadcaster's screen to the viewer's, measured on machines where the graphics card does the video work. The target is anything under 500 ms. If either end falls back to doing it in software it gets much slower — we've seen up to 2.5 seconds. That's what decides the number, more than the network.</p>
+        <p class="small">Both ends sync their clocks over the connection, so this is measured rather than estimated. How it was measured is written up in <a href="https://github.com/Tuhis/gawk/blob/main/docs/15-viewer-live-edge.md" target="_blank" rel="noopener">the docs</a>.</p>
+      </div>
+      <div class="scale">
+        <div class="scale-label">Order of magnitude</div>
+        <div class="scale-rows">
+          <div class="scale-row">
+            <div class="hd"><b>gawk on a graphics card</b><span class="v">≈50 ms</span></div>
+            <div class="bar"><div class="bar-hl" style="width:4%"></div></div>
+          </div>
+          <div class="scale-row dim">
+            <div class="hd"><span>The target</span><span class="v">&lt; 500 ms</span></div>
+            <div class="bar"><div style="width:22%;background:var(--line-3)"></div></div>
+          </div>
+          <div class="scale-row dim">
+            <div class="hd"><span>Falling back to software</span><span class="v">up to ≈2.5 s</span></div>
+            <div class="bar"><div style="width:100%;background:var(--line-2)"></div></div>
+          </div>
+        </div>
+        <p class="note">All three numbers are our own measurements. We haven't put gawk up against other streaming stacks, so there's no comparison here.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="run" class="section">
+    <h2>Run it</h2>
+    <p class="section-lead"><a href="https://gawk.ioio.fi" target="_blank" rel="noopener">gawk.ioio.fi</a> runs exactly this. The repository has everything you need to stand up your own.</p>
+
+    <div class="run-grid">
+      <div class="term">
+        <div class="term-hd">
+          <span>Try it in five minutes</span>
+          <button class="copy" type="button" data-copy-target="#snippet-compose">Copy</button>
+        </div>
+        <pre id="snippet-compose"><span class="p">$ </span>git clone https://github.com/Tuhis/gawk &amp;&amp; cd gawk
+<span class="p">$ </span>docker compose up</pre>
+        <p>Open <code>localhost:8080/#/broadcast</code>, pick a screen, and you get a 6-character code. Open the join link in a second tab and it connects. No browser flags to set, and the code still works after a restart. You need Docker and a Chromium browser.</p>
+      </div>
+      <div class="term">
+        <div class="term-hd">
+          <span>Host it for real</span>
+          <button class="copy" type="button" data-copy-target="#snippet-helm">Copy</button>
+        </div>
+        <pre id="snippet-helm"><span class="p">$ </span>helm upgrade --install gawk-server \
+    oci://ghcr.io/tuhis/charts/gawk-server \
+    --version &lt;X.Y.Z&gt; -n gawk -f relay-values.yaml
+<span class="p">$ </span>helm upgrade --install gawk-app \
+    oci://ghcr.io/tuhis/charts/gawk-app \
+    --version &lt;X.Y.Z&gt; -n gawk -f app-values.yaml</pre>
+        <p>Two charts, two images, versions always in step. Read the <a href="https://github.com/Tuhis/gawk/blob/main/docs/self-hosting.md" target="_blank" rel="noopener">self-hosting guide</a> first: your DNS and certificates decide whether it works at all, because this is fussier about them than a normal website. The compose stack above is for trying things out, not for production.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Browser support</h2>
+    <p class="section-lead">Chromium first, and if a browser can't join, the app says so on load instead of failing quietly.</p>
+    <div class="table">
+      <div class="row hd"><span>Engine</span><span>Viewing</span><span>Notes</span></div>
+      <div class="row">
+        <span class="engine">Chromium</span>
+        <span class="status ok">Full</span>
+        <span class="notes">The main target. Watching and broadcasting, everything on.</span>
+      </div>
+      <div class="row">
+        <span class="engine">Firefox</span>
+        <span class="status ok">Works</span>
+        <span class="notes">Works. A few things take a different route internally.</span>
+      </div>
+      <div class="row">
+        <span class="engine">WebKit<small>Safari everywhere, all iOS browsers</small></span>
+        <span class="status bad">Cannot join</span>
+        <span class="notes">It refuses the connection outright (<a href="https://github.com/Tuhis/gawk/blob/main/BUGS.md" target="_blank" rel="noopener">the details</a>), so the app checks on load and tells you. An iPhone playback path is built and documented, but nothing can reach it until this is fixed.</span>
+      </div>
+    </div>
+    <p>Broadcasting doesn't have to happen in a browser at all. There are <a href="https://github.com/Tuhis/gawk/blob/main/docs/19-linux-native-broadcaster.md" target="_blank" rel="noopener">native apps for Linux and Windows</a> that get more out of your graphics card and can share a single window along with just that app's audio. On Linux they're the way to broadcast, since browsers can't use the graphics card to encode there.</p>
+  </section>
+
+  <section class="section">
+    <h2>Also in the box</h2>
+    <div class="cards cards-4">
+      <div class="card card-sm"><h3>Sound</h3><p>Your whole system's audio, or just one app's, kept in step with the picture.</p></div>
+      <div class="card card-sm"><h3>Holds up on bad Wi-Fi</h3><p>Extra recovery data, a re-send buffer on the server, and the option to spread the stream over several connections.</p></div>
+      <div class="card card-sm"><h3>Diagnostics</h3><p>Per-session stats and a dashboard, for when you need to know why a stream misbehaved.</p></div>
+      <div class="card card-sm"><h3>Moderation</h3><p>Kill a broadcast across every server, and ban by an ID or an IP address.</p></div>
+      <div class="card card-sm"><h3>Metrics</h3><p>Prometheus metrics on a private port, plus a stats overlay on both ends you can copy in one click.</p></div>
+      <div class="card card-sm"><h3>Tested in a real browser</h3><p>Every change runs a headless Chrome that actually decodes relayed video, plus a two-server cluster test.</p></div>
+    </div>
+  </section>
+
+  <section class="section section-last">
+    <div class="cta">
+      <div class="cta-text">
+        <h2>Every decision is written down</h2>
+        <p>For each piece of work there's a document: what was decided, what was rejected, and why. Start with how a frame gets from one screen to another.</p>
+        <p>It's also the fastest way to bring an AI up to speed — the whole design is spelled out in prose, which is far easier to absorb than reading the code.</p>
+      </div>
+      <div class="cta-actions">
+        <a class="btn btn-primary" href="docs.html">Browse the docs <span aria-hidden="true">→</span></a>
+        <a class="btn btn-outline" href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">Star the repo</a>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span>Apache-2.0 — copyright (c) 2026 Juho Kuusisto. Contributions welcome under the DCO.</span>
+    <span class="footer-links">
+      <a href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">Repository</a>
+      <a href="https://github.com/Tuhis/gawk/blob/main/ROADMAP.md" target="_blank" rel="noopener">Roadmap</a>
+      <a href="https://github.com/Tuhis/gawk/blob/main/SECURITY.md" target="_blank" rel="noopener">Security</a>
+      <a href="https://gawk.ioio.fi" target="_blank" rel="noopener">gawk.ioio.fi</a>
+    </span>
+  </footer>
+</main>
+
+<script src="site.js"></script>
+</body>
+</html>
