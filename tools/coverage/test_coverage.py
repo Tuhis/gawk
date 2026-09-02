@@ -11,9 +11,12 @@ single-component push measured.
 
 import json
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
+
+import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -181,6 +184,43 @@ class TestFloorGate(unittest.TestCase):
         self.floors({"gawk-app": 70})
         with self.assertRaises(SystemExit):
             coverage.main(["check", self.rec("gawk-server", 99)])
+
+
+class TestNoWorkflowCombinesRaceWithCoverage(unittest.TestCase):
+    """D9's rule, enforced instead of remembered.
+
+    Adding `-coverprofile` to an existing `-race` invocation is the obvious way
+    to collect coverage and it cost this repository a CI outage: the two
+    instrumentations compound, `gawk-server/wire` went 134s -> 574s, and the
+    third run blew the 600s per-package timeout. Nothing about the combination
+    looks wrong in review, and its symptom is a timeout in an unrelated-looking
+    test — so the rule is checked here rather than trusted to whoever edits a
+    workflow next.
+    """
+
+    def workflow_run_steps(self):
+        workflows = pathlib.Path(coverage.REPO_ROOT, ".github", "workflows")
+        for path in sorted(workflows.glob("*.yml")):
+            spec = yaml.safe_load(path.read_text())
+            for job_name, job in (spec.get("jobs") or {}).items():
+                for step in job.get("steps") or []:
+                    run = step.get("run")
+                    if run:
+                        yield path.name, job_name, run
+
+    def test_no_go_test_asks_for_a_profile_under_the_race_detector(self) -> None:
+        for filename, job, run in self.workflow_run_steps():
+            for line in run.splitlines():
+                if "go test" not in line or "-race" not in line:
+                    continue
+                if "-coverprofile" in line or re.search(r"-cover(\s|$)", line):
+                    self.fail(
+                        f"{filename}:{job} runs `go test` with -race AND coverage:\n"
+                        f"    {line.strip()}\n"
+                        "Split them into two runs — see docs/43 D9. (`go test -cover`\n"
+                        "with -race silently selects -covermode=atomic, which is the\n"
+                        "expensive half of the combination.)"
+                    )
 
 
 class TestFloorsFileItself(unittest.TestCase):

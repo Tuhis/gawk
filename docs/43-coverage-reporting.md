@@ -125,6 +125,14 @@ So each Go job runs `go test -race ./...` unchanged, then a second race-free
 run of the combination, and the `-race` gate goes back to exactly the command
 it used before R41.
 
+The rule is **enforced, not remembered**: `test_coverage.py` parses every
+workflow and fails if any `go test` line carries `-race` together with
+`-coverprofile` or `-cover`. Nothing about the combination looks wrong in
+review — it is the obvious way to collect coverage — and its symptom is a
+timeout in a test that has nothing to do with the change. `-cover` is in the
+pattern because `go test -cover -race` silently selects `-covermode=atomic`,
+which is the expensive half.
+
 **`-covermode=set`, not `atomic`**, because the badge asks whether a statement
 ran and never how often. `set` stores a constant where `atomic` does an atomic
 increment, so the lost update `atomic` exists to prevent cannot change this
