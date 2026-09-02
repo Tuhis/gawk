@@ -3558,10 +3558,14 @@ reach (the Gio GUI, the Windows capture and encode stack) — they stay in the
 denominator, and the floors are set against a baseline that includes them.
 
 **Status**: designed + implemented 2026-09-02, chunks CV1–CV6
-([docs/43](docs/43-coverage-reporting.md)). First measured baselines:
-`gawk-app` 79.7%, `gawk-server` 81.7%, `gawk-admin-ui` 91.5%,
-`gawk-telemetry-ui` 18.7% — the dashboard SPA being the one component whose
-number is a finding rather than a datum.
+([docs/43](docs/43-coverage-reporting.md)). Measured baseline **74.6%
+aggregate** (24,548/32,893 units): `gawk-admin-ui` 91.5%, `gawk-server` 82.0%,
+`gawk-broadcast-windows` 80.3%, `gawk-app` 79.7%, `gawk-admin` 79.2%,
+`gawk-telemetry` 67.3%, `gawk-broadcast` 64.3%, `gawk-telemetry-ui` **18.7%**.
+The dashboard SPA is a finding rather than a datum — it ships in an image and
+is tested like a prototype; the floor gates it where it stands rather than
+blessing it. `gawk-broadcast` is the one number structurally depressed by code
+CI cannot reach (its Gio GUI needs a display).
 
 ---
 

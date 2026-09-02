@@ -60,6 +60,35 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(coverage.parse_llvm_cov(report), (300, 400))
 
 
+class TestEmptyReportIsAnError(unittest.TestCase):
+    """An empty report means the toolchain broke, not that coverage is 0%.
+
+    The case that motivated it: `cargo llvm-cov` losing its instrumentation
+    RUSTFLAGS to a target-specific override would produce a well-formed report
+    measuring nothing, and a 0.0% badge would look like a coverage collapse
+    rather than a broken job.
+    """
+
+    def test_normalise_refuses_a_report_with_no_units(self) -> None:
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        report = tmp / "llvm-cov.json"
+        report.write_text(json.dumps({"data": [{"totals": {"lines": {"count": 0, "covered": 0}}}]}))
+        with self.assertRaises(SystemExit):
+            coverage.main(
+                [
+                    "normalise",
+                    "llvm-cov",
+                    str(report),
+                    "--component",
+                    "gawk-broadcast-windows",
+                    "--label",
+                    "broadcast-windows",
+                    "--out",
+                    str(tmp / "out.json"),
+                ]
+            )
+
+
 class TestRecordAndColor(unittest.TestCase):
     def test_percentage_is_rounded_to_one_decimal(self) -> None:
         self.assertEqual(coverage.record("c", "l", 1, 3, "statements")["pct"], 33.3)

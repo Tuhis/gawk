@@ -7,16 +7,18 @@
     "cannot red the tree; raise one in the PR that earns it. Lowering a floor is",
     "allowed but needs its reason in the commit body.",
     "null means 'measured and published, not yet gated' — the escape hatch for a",
-    "component whose baseline has not been established."
+    "component whose baseline has not been established.",
+    "Every floor below was set from the baselines measured in runs 33657115804 and",
+    "33657115803 on 2026-09-02: 82.0 / 79.7 / 64.3 / 80.3 / 67.3 / 18.7 / 79.2 / 91.5."
   ],
   "floors": {
-    "gawk-server": null,
-    "gawk-app": null,
-    "gawk-broadcast": null,
-    "gawk-broadcast-windows": null,
-    "gawk-telemetry": null,
-    "gawk-telemetry-ui": null,
-    "gawk-admin": null,
-    "gawk-admin-ui": null
+    "gawk-admin": 78,
+    "gawk-admin-ui": 90,
+    "gawk-app": 78,
+    "gawk-broadcast": 63,
+    "gawk-broadcast-windows": 79,
+    "gawk-server": 81,
+    "gawk-telemetry": 66,
+    "gawk-telemetry-ui": 17
   }
 }

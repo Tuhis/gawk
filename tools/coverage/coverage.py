@@ -198,6 +198,16 @@ def cmd_badges(args: argparse.Namespace) -> int:
 
 def cmd_normalise(args: argparse.Namespace) -> int:
     covered, total = PARSERS[args.format](pathlib.Path(args.input))
+    # A report that measured nothing is a broken toolchain, not a component
+    # with no coverage — an uninstrumented `cargo llvm-cov` run, a vitest
+    # `include` that matches no file, a profile from a build that failed. All
+    # three would otherwise publish a plausible 0.0% badge and pass any floor
+    # that has not been set yet.
+    if total == 0:
+        raise SystemExit(
+            f"::error::{args.component}: {args.input} reports 0 measurable "
+            f"{UNITS[args.format]} — the report is empty, not the coverage"
+        )
     rec = record(args.component, args.label, covered, total, UNITS[args.format])
     pathlib.Path(args.out).write_text(json.dumps(rec, indent=2) + "\n")
     print(f"{rec['component']}: {rec['pct']}% ({covered}/{total} {rec['unit']})")

@@ -6,8 +6,8 @@ Single PR, because the parts do not stand alone: a measurement with nowhere to
 publish is a log line nobody reads, and a badge with no gate is decoration.
 
 **How to read this document**: §1 is the why, §2 the locked decisions, §3 the
-implementation as built, §4 the chunk table with acceptance criteria, §5 what
-the numbers do and do not mean, §6 operations.
+implementation as built, §4 the chunk table with acceptance criteria, §5 the
+measured baseline, §6 what the numbers do and do not mean, §7 operations.
 
 ---
 
@@ -151,7 +151,31 @@ workflow files, and it is never merged.
 | **CV5** | README badges | the aggregate renders in `README.md`; each component README carries its own, and `gawk-telemetry`/`gawk-admin` carry a second for their SPA |
 | **CV6** | This document, the ROADMAP row, the docs index | present, and `docs/README.md` lists this doc under Testing |
 
-## 5. What the numbers mean — and what they do not
+## 5. The baseline
+
+Measured on 2026-09-02 (runs 33657115804 and 33657115803), and the floors are
+these rounded down and dropped by one:
+
+| Component | Coverage | Floor |
+|---|---|---|
+| `gawk-admin-ui` | 91.5% (681/744 lines) | 90 |
+| `gawk-server` | 82.0% (4258/5191 statements) | 81 |
+| `gawk-broadcast-windows` | 80.3% (4987/6210 lines) | 79 |
+| `gawk-app` | 79.7% (6791/8518 lines) | 78 |
+| `gawk-admin` | 79.2% (1963/2479 statements) | 78 |
+| `gawk-telemetry` | 67.3% (2743/4076 statements) | 66 |
+| `gawk-broadcast` | 64.3% (2910/4523 statements) | 63 |
+| `gawk-telemetry-ui` | **18.7%** (215/1152 lines) | 17 |
+| **Aggregate** | **74.6%** (24548/32893) | — |
+
+Two of these are findings rather than data points. `gawk-telemetry-ui` at
+18.7% is the dashboard SPA, which ships in an image and is tested like a
+prototype; it deserves its own issue, not a floor that quietly blesses it.
+`gawk-broadcast` at 64.3% is the one number depressed by §6's second caveat —
+its Gio GUI is compiled into the profile and cannot be driven without a
+display.
+
+## 6. What the numbers mean — and what they do not
 
 Read the badges with three caveats, all structural:
 
@@ -175,7 +199,7 @@ A coverage number is a floor on how much of the code was executed, not a claim
 about how well it was checked. This is why the gate is a floor and not a
 target.
 
-## 6. Operations
+## 7. Operations
 
 **Raising a floor** is an ordinary PR editing `coverage-floors.json`. Do it in
 the PR that earns the coverage. **Lowering one** is allowed — a deliberate
