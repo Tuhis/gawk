@@ -1,5 +1,7 @@
 # gawk-broadcast-windows
 
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-broadcast-windows.json)](../docs/43-coverage-reporting.md)
+
 The native **Windows** broadcaster: share one application — its window
 plus **that app's own audio**, via WASAPI process loopback — or the whole
 desktop, hardware-encoded through Media Foundation, straight to the gawk

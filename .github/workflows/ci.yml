@@ -105,6 +105,7 @@ jobs:
       helm: ${{ steps.filter.outputs.helm }}
       e2e: ${{ steps.filter.outputs.e2e }}
       dev_stack: ${{ steps.filter.outputs.dev_stack }}
+      coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
       docker_any: ${{ steps.filter.outputs.docker_any }}
       docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
     steps:
@@ -206,6 +207,11 @@ jobs:
           # gawk-admin joined the default lane with the R39 portal (docs/41
           # §4.8), so its changes exercise the stack too.
           dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/)')
+          # R41 (docs/43): the coverage plumbing. Its own filter because the
+          # tool is what every component's floor gate depends on, and the
+          # floors file is the gate — an edit to either must run their tests
+          # even when no component's code moved.
+          coverage_tool=$(decide coverage_tool '^(tools/coverage/|coverage-floors\.json$)')
 
           # The docker matrix, filtered to the images whose inputs moved. It is
           # built HERE rather than declared in the `docker` job because a static
@@ -308,9 +314,18 @@ jobs:
             sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
           fi
       - run: go vet ./...
-      - run: go test -race ./...
+      # -covermode=atomic, not the default `set`: the counters are written from
+      # every goroutine the suite starts, and `set` under -race is a data race
+      # the detector will (correctly) fail the run on.
+      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
         env:
           CGO_ENABLED: "1"
+      - uses: ./.github/actions/coverage
+        with:
+          format: go
+          report: gawk-server/coverage.out
+          component: gawk-server
+          label: relay
 
   # The native Linux broadcaster (R14, docs/19). Separate from the `server`
   # job on purpose (Decision 1): the GUI shell imports Gio, so this job — and
@@ -439,7 +454,11 @@ jobs:
           fi
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      - run: go test -race ./...
+      # See the server job for -covermode=atomic. The GUI shell is compiled
+      # into the profile but barely executed by it — Gio needs a display — so
+      # this component's floor is set against a number that includes code CI
+      # structurally cannot reach (docs/43 §5).
+      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
       # docs/39 D7's claim, asked of the run rather than assumed: unlike the
       # portal/GPU half of this module, R35's audio control plane IS verifiable
       # on a runner — but only if the runner can actually host a PipeWire
@@ -469,6 +488,12 @@ jobs:
             exit 1
           fi
           echo "$out" | grep -cE '^ *--- PASS' | xargs echo "app-audio integration tests passed:"
+      - uses: ./.github/actions/coverage
+        with:
+          format: go
+          report: gawk-broadcast/coverage.out
+          component: gawk-broadcast
+          label: broadcast-linux
       # `go test` links the GUI package only as a test binary (its idle-redraw
       # guard, docs/19 finding 12). Building the shells is what proves the real
       # Gio window compiles and links — this job is the only place that
@@ -744,7 +769,16 @@ jobs:
           cache-dependency-path: gawk-app/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      # `test:coverage`, not `test`: one run, both jobs — the suite is the same
+      # one either way, and running it twice to get a number would double the
+      # slowest step in this job.
+      - run: npm run test:coverage
+      - uses: ./.github/actions/coverage
+        with:
+          format: vitest
+          report: gawk-app/coverage/coverage-summary.json
+          component: gawk-app
+          label: app
       - run: npm run build
 
   # Multi-module tidy gate. A dependency bump that lands in one module can
@@ -794,10 +828,23 @@ jobs:
       # is this tag. Building and testing it here is what stops the shipped
       # configuration from being the untested one — the sqlengine tests under
       # the tag drive a real DuckDB over real partitions.
+      # The coverage profile is taken from THIS run, not the untagged one
+      # above, and the package selection is widened to the whole module to make
+      # that possible. The reason is that the two configurations overlap on
+      # internal/sqlengine: merging their profiles would need the block sets to
+      # agree, which they do not (the tag changes which files compile), and
+      # measuring the untagged build alone would report the shipped query
+      # engine as dead code. What the image runs is what gets counted.
       - name: the deployed configuration (-tags duckdb)
-        run: go test -tags duckdb ./internal/sqlengine/...
+        run: go test -tags duckdb -covermode=atomic -coverprofile=coverage.out ./...
         env:
           CGO_ENABLED: "1"
+      - uses: ./.github/actions/coverage
+        with:
+          format: go
+          report: gawk-telemetry/coverage.out
+          component: gawk-telemetry
+          label: telemetry
 
   # The dashboard SPA (gawk-telemetry/ui). Its own job, mirroring the `app` job:
   # a TypeScript build is not a Go build, and coupling them would make a lint
@@ -824,7 +871,13 @@ jobs:
           cache-dependency-path: gawk-telemetry/ui/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - run: npm run test:coverage
+      - uses: ./.github/actions/coverage
+        with:
+          format: vitest
+          report: gawk-telemetry/ui/coverage/coverage-summary.json
+          component: gawk-telemetry-ui
+          label: telemetry-ui
       # `npm run build` is the only real typecheck: the root tsconfig is
       # solution-style, so a bare `tsc --noEmit` passes vacuously, and vitest
       # strips types rather than checking them.
@@ -905,7 +958,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 use -p path)" >> "$GITHUB_ENV"
-      - run: go test -race ./...
+      # See the server job for -covermode=atomic. This profile is the one the
+      # floor is checked against, so it deliberately comes from the run that
+      # HAS the database and the envtest binaries — the verbose re-run below
+      # covers two packages only and would understate the module badly.
+      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
         env:
           CGO_ENABLED: "1"
       # The guard on the guard. `go test` reports a skipped test as a pass, so
@@ -927,6 +984,12 @@ jobs:
             echo "::error::the envtest tests SKIPPED — KUBEBUILDER_ASSETS did not reach them, so the Lease/CRD tier proved nothing"
             exit 1
           fi
+      - uses: ./.github/actions/coverage
+        with:
+          format: go
+          report: gawk-admin/coverage.out
+          component: gawk-admin
+          label: admin
 
   # The moderation portal SPA (gawk-admin/ui). Its own job, mirroring
   # `telemetry-ui`: a TypeScript build is not a Go build, and coupling them
@@ -947,7 +1010,13 @@ jobs:
           cache-dependency-path: gawk-admin/ui/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - run: npm run test:coverage
+      - uses: ./.github/actions/coverage
+        with:
+          format: vitest
+          report: gawk-admin/ui/coverage/coverage-summary.json
+          component: gawk-admin-ui
+          label: admin-ui
       # `npm run build` is the only real typecheck: the root tsconfig is
       # solution-style, so a bare `tsc --noEmit` passes vacuously, and vitest
       # strips types rather than checking them.
@@ -2363,3 +2432,61 @@ jobs:
       - name: clean up the smoke container
         if: always()
         run: docker rm -f ci-smoke >/dev/null 2>&1 || true
+
+  # R41 (docs/43): the coverage plumbing's own tests. Small, but it is what
+  # every component's floor gate calls — a parser that quietly counted coverage
+  # blocks instead of statements would not fail, it would publish a plausible
+  # wrong number and then gate every PR against it.
+  coverage-tool:
+    needs: changes
+    if: needs.changes.outputs.coverage_tool == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: python3 -m unittest discover -s tools/coverage -v
+
+  # Publishes the badges the READMEs point at.
+  #
+  # Pushes to main only. A pull request must not move the numbers the README
+  # advertises — a branch's coverage is a proposal, not a fact about the
+  # project — and a fork PR could not push anyway. What makes a PR care about
+  # coverage is the floor check inside each component's own job, which needs no
+  # token and runs everywhere.
+  #
+  # `!cancelled()` rather than `success()`: on a path-filtered push most of
+  # these jobs are SKIPPED, which `success()` does not accept, and a component
+  # whose tests failed after its coverage was measured still measured it. The
+  # download tolerates finding nothing, and the writer treats an empty record
+  # set as "nothing moved".
+  coverage-badges:
+    needs: [server, broadcast, app, telemetry, telemetry-ui, admin, admin-ui]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+    # Shared with broadcast-windows.yml's job of the same name: the two
+    # workflows publish to one branch and both run on every push to main.
+    # Serialising them turns the push race into a queue, and the writer's
+    # retry loop covers what a queue cannot (a re-run, a dispatch, a
+    # concurrent write from a workflow that was not queued behind this one).
+    concurrency:
+      group: coverage-badges
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/records
+        # Every coverage job in this run may have been skipped by the path
+        # filter, and download-artifact treats "no artifact matched" as an
+        # error. That case is ordinary here, not a failure.
+        continue-on-error: true
+      - uses: ./.github/actions/publish-coverage-badges
+        with:
+          records-dir: ${{ runner.temp }}/records
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Minimum test coverage per component, in percent (R41, docs/43-coverage-reporting.md).",
+    "The component's OWN CI job enforces its floor, so a shortfall is reported by the",
+    "job that owns the code. Floors are set from a measured baseline rounded down to",
+    "the whole percent and then dropped by one, so that a single nondeterministic test",
+    "cannot red the tree; raise one in the PR that earns it. Lowering a floor is",
+    "allowed but needs its reason in the commit body.",
+    "null means 'measured and published, not yet gated' — the escape hatch for a",
+    "component whose baseline has not been established."
+  ],
+  "floors": {
+    "gawk-server": null,
+    "gawk-app": null,
+    "gawk-broadcast": null,
+    "gawk-broadcast-windows": null,
+    "gawk-telemetry": null,
+    "gawk-telemetry-ui": null,
+    "gawk-admin": null,
+    "gawk-admin-ui": null
+  }
+}

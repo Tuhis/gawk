@@ -1,0 +1,86 @@
+# Turns one component's coverage report into the repository's normalised
+# record, gates it against coverage-floors.json, and hands it to the badge
+# writer as an artifact (R41, docs/43-coverage-reporting.md).
+#
+# Why an action rather than three steps per job: eight components in four
+# toolchains report coverage, and the parsing, the gate and the artifact name
+# must be identical for all of them — the aggregate badge sums their counts, so
+# a job that names its artifact differently or skips the gate does not fail,
+# it silently drops out of the total.
+#
+# The gate runs HERE, inside the component's own job, and not in the badge
+# writer. Two reasons. A shortfall is then reported by the job that owns the
+# code, so the annotation lands on the right component instead of on a shared
+# publishing job at the end of the run. And the writer only runs on pushes to
+# main — a gate that lived there would never see a pull request, which is the
+# only place it can still change the outcome.
+name: Coverage
+description: Normalise a coverage report, enforce the component's floor, and upload it for the badge writer.
+
+inputs:
+  format:
+    description: 'Report format: go | vitest | llvm-cov'
+    required: true
+  report:
+    description: Path to the tool's report, relative to the workspace root
+    required: true
+  component:
+    description: Component key, exactly as spelled in coverage-floors.json
+    required: true
+  label:
+    description: Text on the left of the badge (e.g. "relay")
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Explicit rather than assumed: the `licenses` job already sets Python up
+    # by hand rather than relying on the image, and this action runs inside Go,
+    # Node and Rust jobs that have no reason to carry an interpreter.
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.14"
+    - name: Measure
+      shell: bash
+      env:
+        FORMAT: ${{ inputs.format }}
+        REPORT: ${{ inputs.report }}
+        COMPONENT: ${{ inputs.component }}
+        LABEL: ${{ inputs.label }}
+      run: |
+        set -euo pipefail
+        mkdir -p "${RUNNER_TEMP}/coverage"
+        # A missing report is a failure, not an empty record: `go test` writes
+        # no profile when the build fails, and a component silently reporting
+        # 0/0 would publish a 0.0% badge that looks like a coverage collapse.
+        if [ ! -s "$GITHUB_WORKSPACE/$REPORT" ]; then
+          echo "::error::$COMPONENT produced no coverage report at $REPORT"
+          exit 1
+        fi
+        python3 "$GITHUB_WORKSPACE/tools/coverage/coverage.py" normalise "$FORMAT" \
+          "$GITHUB_WORKSPACE/$REPORT" \
+          --component "$COMPONENT" --label "$LABEL" \
+          --out "${RUNNER_TEMP}/coverage/${COMPONENT}.json" | tee -a "$GITHUB_STEP_SUMMARY"
+    # Uploaded BEFORE the gate, deliberately. A push to main that lands below a
+    # floor is a real failure and must be red — but the badge should still show
+    # the number that is actually true, rather than leaving a stale higher one
+    # standing because the run that would have corrected it failed.
+    #
+    # One artifact per component, and never a shared name: artifact names are
+    # unique per run, so two jobs uploading under one name is a hard error on
+    # the second — and the writer pattern-matches `coverage-*` precisely so a
+    # new component needs no change there.
+    - uses: actions/upload-artifact@v7
+      with:
+        name: coverage-${{ inputs.component }}
+        path: ${{ runner.temp }}/coverage/${{ inputs.component }}.json
+        if-no-files-found: error
+        retention-days: 7
+    - name: Coverage is above the floor
+      shell: bash
+      env:
+        COMPONENT: ${{ inputs.component }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_WORKSPACE/tools/coverage/coverage.py" check \
+          "${RUNNER_TEMP}/coverage/${COMPONENT}.json"

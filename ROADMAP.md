@@ -59,6 +59,7 @@ feature set exists).
 | R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, **LD1–LD7 implemented 2026-08-17** — `docker compose up` gives a working broadcast with nothing to copy-paste; the relay's dev certificate now persists (`-dev-cert` + `-cert-file`), its hash reaches the frontend through `/config.js` so the chrome-free viewer route works in a fresh profile, and `dev/certs.sh` switches between the self-signed and ACME lanes. Profiles for a synthetic broadcaster, telemetry and Vite HMR; a `dev-stack` CI job that round-trips a datagram through the published port. The **Firefox pass is done** — it joins the default lane unchanged, which is why the mkcert lane was withdrawn (no browser does WebTransport over a locally-installed CA, [docs/41](docs/41-local-dev-stack.md) §6). **Remaining: lane C's live issuance** ([docs/41](docs/41-local-dev-stack.md) §10) |
 | R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | 🔧 designed 2026-08-20, **AP1–AP8 implemented 2026-08-20** — a fleet-wide kill that actually reaches every pod (`Ban` CRs the relays watch, close code 4006 terminal in all four wire mirrors, HTTP 451 on the publish path), durable ID/IP bans with longest-prefix CIDR matching, and **`gawk-admin`**: the fourth top-level module and fourth deployable — an OIDC-gated operator SPA over Postgres (the chart takes a connection to a database it does not create), horizontally scaled from v1 with leader-elected background work, signed multi-webhook notifications, and forward-only migrations applied by a Helm hook Job under an expand–contract policy CI enforces. Deliberately deviating from the sketch below, the portal is **internet-exposable behind OIDC** rather than internal-only, so a paged operator can judge and kill from a phone. Verified by the four modules' suites, `helm` render assertions, an image smoke run and a kind two-pod tier that applies a real `Ban` and watches both pods drop the broadcast. **Remaining: the manual pass on the reference deployment** — kill a real broadcast from a phone, end to end ([docs/42](docs/42-admin-moderation-portal.md) §11.3) |
 | R40 | [Automatic content flagging (NSFW keyframe screening)](#r40--automatic-content-flagging-nsfw-keyframe-screening) | 💡 proposed 2026-08-19, not started — no design doc yet; **depends on R39** (needs its kill/ban actuator) |
+| R41 | [Test coverage measurement and badges](#r41--test-coverage-measurement-and-badges) | 🔧 designed + **CV1–CV6 implemented 2026-09-02** — every component's job measures its own coverage, gates itself against a floor in `coverage-floors.json`, and pushes to `main` publish shields.io endpoints to an orphan `badges` branch (no third-party service, no token beyond `GITHUB_TOKEN`). Root README carries the size-weighted aggregate; each component README carries its own ([docs/43](docs/43-coverage-reporting.md)) |
 
 ---
 
@@ -3531,6 +3532,36 @@ enforcement machinery of its own (that is R39's job).
 
 **Status**: proposed 2026-08-19, not started — no design doc yet; blocked on
 R39. Chunk prefix `CF` is reserved for it (collides with nothing existing).
+
+---
+
+## R41 — Test coverage measurement and badges
+
+**Goal**: know how much of each component its own suite executes, keep that
+number from silently falling, and show it. Eight suites across four
+toolchains report coverage in four formats; one normaliser turns them into
+one record, each component's own CI job gates itself against a floor in
+`coverage-floors.json`, and pushes to `main` publish shields.io endpoints to
+an orphan `badges` branch that the root README and every component README
+point at.
+
+**Why a self-owned branch rather than Codecov**: CI here is publish-only and
+holds no credentials for anything else, and a coverage report is a file-by-file
+map of the source tree. The branch costs the PR diff-coverage comments a
+hosted service would give; the floor gate is what actually changes an outcome,
+and it needs no account. See [docs/43](docs/43-coverage-reporting.md) D1.
+
+**Non-goals**: a coverage target (the gate is a floor, not an aspiration);
+counting the E2E and kind tiers, which prove things unit tests cannot and
+belong to no single component; and excluding the paths CI structurally cannot
+reach (the Gio GUI, the Windows capture and encode stack) — they stay in the
+denominator, and the floors are set against a baseline that includes them.
+
+**Status**: designed + implemented 2026-09-02, chunks CV1–CV6
+([docs/43](docs/43-coverage-reporting.md)). First measured baselines:
+`gawk-app` 79.7%, `gawk-server` 81.7%, `gawk-admin-ui` 91.5%,
+`gawk-telemetry-ui` 18.7% — the dashboard SPA being the one component whose
+number is a finding rather than a datum.
 
 ---
 

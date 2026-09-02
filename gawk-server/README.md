@@ -1,5 +1,7 @@
 # gawk-server
 
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-server.json)](../docs/43-coverage-reporting.md)
+
 The Go WebTransport relay for gawk. Publishers (a broadcaster's browser or
 a native broadcaster) send encoded video as QUIC datagrams; the relay fans
 each broadcast out to its subscribers, caching the latest keyframe and

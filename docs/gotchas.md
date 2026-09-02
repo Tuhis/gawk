@@ -1123,6 +1123,20 @@ Add to it when a new gotcha lands in `docs/`.
 
 **CI / deployment**
 
+- **`go test -race` needs `-covermode=atomic`** when a profile is requested.
+  The default `set` mode writes its counters non-atomically from every
+  goroutine the suite starts, so the detector fails the run — on the coverage
+  instrumentation, not on the code under test.
+  ([docs/43](43-coverage-reporting.md))
+- **Vitest's v8 coverage reports only the files a test imported** unless
+  `coverage.include` is spelled out. A module with no test at all is then
+  missing from the *denominator* rather than counted as uncovered, so adding
+  an untested file raises the percentage. All three SPAs pin
+  `include: ['src/**/*.{ts,tsx}']`. ([docs/43](43-coverage-reporting.md))
+- **A workflow that publishes to a shared branch must merge, not replace.**
+  ci.yml is path-filtered, so most pushes measure one component; a badge
+  writer that published "what this run produced" would blank the other seven.
+  ([docs/43](43-coverage-reporting.md) D4)
 - **`cmd | grep -q` inverts a "this must fail" test under `set -o pipefail`**
   (which is GitHub Actions' default shell): the pipeline reports the *failing*
   command's status, so `if helm template … | grep -q 'expected error'` takes
