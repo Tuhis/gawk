@@ -238,9 +238,11 @@ infinite CI loop, so the reasons this one cannot are worth stating rather than
 trusting. There are three, and any one of them is sufficient:
 
 1. **The branch.** The writer pushes `git push origin badges` — an explicit
-   refspec, never `--all`, never `--tags`, never `main`. All three workflows
-   trigger on `push: branches: [main]`, so a push to `badges` matches no
-   trigger in the repository.
+   refspec, never `--all`, never `--tags`, never `main`. Every workflow in
+   `.github/workflows` restricts its push trigger to `branches: [main]`
+   (`ci.yml`, `broadcast-windows.yml`, `release-please.yml`, `pages.yml`), so a
+   push to `badges` matches no trigger in the repository. A new workflow would
+   have to opt into other branches to change this, which is a visible edit.
 2. **The token.** It runs as `secrets.GITHUB_TOKEN`, and GitHub does not start
    new workflow runs from events that token caused. This repository already
    depends on that rule in the opposite direction: `release-please.yml` chains
