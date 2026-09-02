@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/Tuhis/gawk/actions/workflows/ci.yml/badge.svg)](https://github.com/Tuhis/gawk/actions/workflows/ci.yml)
 [![Windows broadcaster CI](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml/badge.svg)](https://github.com/Tuhis/gawk/actions/workflows/broadcast-windows.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Ftotal.json)](docs/43-coverage-reporting.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 [![Relay](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-server*&label=relay)](https://github.com/Tuhis/gawk/releases)

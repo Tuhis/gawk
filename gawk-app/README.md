@@ -1,5 +1,7 @@
 # gawk-app
 
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-app.json)](../docs/43-coverage-reporting.md)
+
 React SPA frontend for the gawk game stream: screen capture, WebCodecs
 encode/decode, and WebTransport datagram transport to the relay. Requires
 a Chromium-based browser for broadcasting; viewing works on Chromium and

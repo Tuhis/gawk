@@ -1,5 +1,7 @@
 # gawk-telemetry
 
+[![Service coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-telemetry.json)](../docs/43-coverage-reporting.md) [![Dashboard coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-telemetry-ui.json)](../docs/43-coverage-reporting.md)
+
 Optional per-session diagnostics for a gawk relay fleet
 ([`../docs/33-telemetry-and-diagnostics.md`](../docs/33-telemetry-and-diagnostics.md)).
 

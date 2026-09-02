@@ -1,5 +1,7 @@
 # gawk-broadcast — native Linux broadcaster
 
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-broadcast.json)](../docs/43-coverage-reporting.md)
+
 Publish your screen to a gawk relay from Linux, **with hardware encode**.
 
 ```sh

@@ -107,6 +107,7 @@ Reading all forty-two is not the point. Three give you the shape of the system:
 | [`36`](36-telemetry-ui-history.md) | R31 — Telemetry UI v2: a diagnosis SPA |
 | [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, two certificate lanes |
 | [`42`](42-admin-moderation-portal.md) | R39 — Admin portal for moderation: fleet-wide kill, durable bans, `gawk-admin` |
+| [`43`](43-coverage-reporting.md) | R41 — Test coverage measurement, per-component floors and badges |
 
 ## Conventions
 

@@ -1,5 +1,7 @@
 # gawk-admin — the moderation portal
 
+[![Service coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-admin.json)](../docs/43-coverage-reporting.md) [![Portal coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-admin-ui.json)](../docs/43-coverage-reporting.md)
+
 The operator's enforcement surface: see every live broadcast on the fleet,
 **kill** one everywhere at once, **ban** its ID or its publisher's IP, and get
 paged about it. R39; the design, the decisions and the rejected alternatives

@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Minimum test coverage per component, in percent (R41, docs/43-coverage-reporting.md).",
+    "The component's OWN CI job enforces its floor, so a shortfall is reported by the",
+    "job that owns the code. Floors are set from a measured baseline rounded down to",
+    "the whole percent and then dropped by one, so that a single nondeterministic test",
+    "cannot red the tree; raise one in the PR that earns it. Lowering a floor is",
+    "allowed but needs its reason in the commit body.",
+    "null means 'measured and published, not yet gated' — the escape hatch for a",
+    "component whose baseline has not been established.",
+    "Every floor below was set from the baselines measured in runs 33665181002 and",
+    "33665181055 on 2026-09-02, in the race-free coverage configuration docs/43 D9",
+    "describes: 81.9 / 79.7 / 64.4 / 80.3 / 67.3 / 18.7 / 78.9 / 91.5."
+  ],
+  "floors": {
+    "gawk-admin": 78,
+    "gawk-admin-ui": 90,
+    "gawk-app": 78,
+    "gawk-broadcast": 63,
+    "gawk-broadcast-windows": 79,
+    "gawk-server": 81,
+    "gawk-telemetry": 66,
+    "gawk-telemetry-ui": 17
+  }
+}

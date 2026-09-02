@@ -113,12 +113,20 @@ on:
       - "gawk-broadcast-windows/**"
       - "gawk-server/wire/**"
       - ".github/actions/rust-windows-preflight/**"
+      - ".github/actions/coverage/**"
+      - ".github/actions/publish-coverage-badges/**"
+      - "tools/coverage/**"
+      - "coverage-floors.json"
       - ".github/workflows/broadcast-windows.yml"
   pull_request:
     paths:
       - "gawk-broadcast-windows/**"
       - "gawk-server/wire/**"
       - ".github/actions/rust-windows-preflight/**"
+      - ".github/actions/coverage/**"
+      - ".github/actions/publish-coverage-badges/**"
+      - "tools/coverage/**"
+      - "coverage-floors.json"
       - ".github/workflows/broadcast-windows.yml"
   # The recovery path this workflow lacked. attach-release-assets already
   # tolerates re-running an upload ("the whole recovery path if the upload half
@@ -242,14 +250,42 @@ jobs:
           ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/rust-windows-preflight
 
+      # R41 (docs/43): coverage for the Rust workspace. A prebuilt binary
+      # pinned by version and fetched from its release, exactly as the
+      # `licenses` job in ci.yml installs cargo-deny and for the same reason —
+      # `cargo install` would compile it on every run. Into RUNNER_TEMP because
+      # the self-hosted runner pods are not root.
+      #
+      # llvm-tools-preview is added rather than assumed: the runner image bakes
+      # a system LLVM for the clang-cl cross path, but cargo-llvm-cov needs the
+      # llvm-profdata that MATCHES rustc's LLVM, and a version skew there
+      # produces an unreadable profile rather than an error.
+      - name: Install cargo-llvm-cov
+        env:
+          CARGO_LLVM_COV_VERSION: "0.9.0"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${CARGO_LLVM_COV_VERSION}/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "${RUNNER_TEMP}/bin" cargo-llvm-cov
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+          rustup component add llvm-tools-preview
+          "${RUNNER_TEMP}/bin/cargo-llvm-cov" llvm-cov --version
+
       # Wire golden vectors, chunking, strict-parse rejections, GF(256)
       # parity, engine defaults, the encoder cascade policy, the SPS parser —
       # all headless and all portable, which is why they run here unchanged.
       # The three cfg(windows) WARP tests compile away; they were already
       # skipping on the hosted Windows runner (docs/38 F-6) and remain on the
       # on-hardware register.
+      #
+      # `--no-report` here and on the integration step, with one `report` at
+      # the end: the two steps run different test binaries over the same crates,
+      # and reporting per step would publish whichever ran last instead of what
+      # the job as a whole covered. The instrumented build replaces the plain
+      # one rather than adding to it — same compilation, different RUSTFLAGS.
       - name: Test
-        run: cargo test --workspace
+        run: cargo llvm-cov --workspace --no-report
 
       # See the server job in ci.yml — these tests run QUIC over loopback too.
       - name: Ensure UDP buffer limits for quic-go
@@ -282,7 +318,19 @@ jobs:
       # either way. Only a warm GOMODCACHE/GOCACHE would, and the place to put
       # one is the runner image, not actions/cache.
       - name: Integration — publish, reject, resume, supersede vs the real relay
-        run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
+        run: cargo llvm-cov --no-report -p gawk-engine --test relay_integration -- --ignored --test-threads=1
+
+      # One report over both tiers. --summary-only drops the per-file arrays:
+      # the badge needs the totals, and the full export of this workspace is
+      # megabytes of JSON to hand to an artifact nothing reads.
+      - name: Coverage report
+        run: cargo llvm-cov report --summary-only --json --output-path coverage-llvm.json
+      - uses: ./.github/actions/coverage
+        with:
+          format: llvm-cov
+          report: gawk-broadcast-windows/coverage-llvm.json
+          component: gawk-broadcast-windows
+          label: broadcast-windows
 
   build:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
@@ -467,3 +515,32 @@ jobs:
           # there. On a backfill it is the commit `build` compiled, and the gate
           # still refuses unless the component's tag points at exactly it.
           sha: ${{ needs.build.outputs.sha }}
+
+  # R41 (docs/43): this component's half of the badges branch.
+  #
+  # It cannot ride ci.yml's writer — artifacts do not cross workflows, and this
+  # workflow exists precisely because the Rust job's triggers are its own. The
+  # writer merges rather than replaces, so the two publishing paths do not
+  # fight over the other's numbers; the shared `concurrency` group keeps their
+  # pushes from racing on a commit that triggers both.
+  coverage-badges:
+    needs: test
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+    concurrency:
+      group: coverage-badges
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/records
+        continue-on-error: true
+      - uses: ./.github/actions/publish-coverage-badges
+        with:
+          records-dir: ${{ runner.temp }}/records
+          token: ${{ secrets.GITHUB_TOKEN }}

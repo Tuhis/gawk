@@ -26,3 +26,18 @@ dev/generated/*
 # negative test, which leaves one behind).
 __pycache__/
 *.pyc
+
+# R41 (docs/43): coverage reports. Produced by every `npm run test:coverage`,
+# `go test -coverprofile` and `cargo llvm-cov` run, published to the `badges`
+# branch by CI, and never committed to this one — the number a badge shows must
+# come from a CI run, not from whatever somebody's laptop last measured.
+#
+# The vitest output directories are listed one by one rather than as a bare
+# `coverage/`, which would also match `tools/coverage/` and
+# `.github/actions/coverage/` — the tooling itself — and silently leave them
+# out of the commit that adds them.
+/gawk-app/coverage/
+/gawk-admin/ui/coverage/
+/gawk-telemetry/ui/coverage/
+coverage.out
+coverage-llvm.json
