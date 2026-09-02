@@ -7,7 +7,8 @@ publish is a log line nobody reads, and a badge with no gate is decoration.
 
 **How to read this document**: §1 is the why, §2 the locked decisions, §3 the
 implementation as built, §4 the chunk table with acceptance criteria, §5 the
-measured baseline, §6 what the numbers do and do not mean, §7 operations.
+measured baseline, §6 what the numbers do and do not mean, §7 why CI writing
+to the repository cannot loop, §8 operations.
 
 ---
 
@@ -199,7 +200,37 @@ A coverage number is a floor on how much of the code was executed, not a claim
 about how well it was checked. This is why the gate is a floor and not a
 target.
 
-## 7. Operations
+## 7. Why CI writing to the repository cannot loop
+
+A workflow that pushes to its own repository is the classic way to build an
+infinite CI loop, so the reasons this one cannot are worth stating rather than
+trusting. There are three, and any one of them is sufficient:
+
+1. **The branch.** The writer pushes `git push origin badges` — an explicit
+   refspec, never `--all`, never `--tags`, never `main`. All three workflows
+   trigger on `push: branches: [main]`, so a push to `badges` matches no
+   trigger in the repository.
+2. **The token.** It runs as `secrets.GITHUB_TOKEN`, and GitHub does not start
+   new workflow runs from events that token caused. This repository already
+   depends on that rule in the opposite direction: `release-please.yml` chains
+   its publish jobs off job outputs precisely because *"tags created with
+   GITHUB_TOKEN do not trigger other workflows, so an `on: push: tags` publish
+   workflow would silently never run"*.
+3. **The content.** `badges` is an orphan branch holding JSON and a README.
+   The bootstrap wipes the tree it branched from, so there are no workflow
+   files on it to run even if something did trigger.
+
+And a fourth property that would bound a loop rather than prevent it: the
+writer exits without committing when the numbers are unchanged, so even a
+hypothetical self-trigger would have to produce *different* coverage on every
+iteration to keep going.
+
+The one change that would weaken this: swapping `GITHUB_TOKEN` for a PAT or a
+GitHub App token — a plausible future move if the branch ever needs to
+trigger something. That removes barrier 2 only; 1 and 3 still hold, and both
+would have to be broken as well before a loop became possible.
+
+## 8. Operations
 
 **Raising a floor** is an ordinary PR editing `coverage-floors.json`. Do it in
 the PR that earns the coverage. **Lowering one** is allowed — a deliberate
