@@ -104,6 +104,36 @@ already provisions it for the licence gates, and because the Go parser has to
 agree with `go tool cover` exactly (it does: 94.6% on `gawk-server/wire` from
 both).
 
+**D9 — Race detection and coverage are separate runs.** Adding a profile to the
+existing `-race` invocation looked free and was not. `gawk-server/wire` went
+from 134s to **574s** in CI, 26 seconds under the 600s per-package timeout, and
+the next run crossed it (run 33661450925, `panic: test timed out after 10m0s`
+in `TestRecoverAllErasurePairs`). The two instrumentations compound: the race
+detector shadows every access including the coverage counter writes, and that
+test drives the hottest loop in the repository — an exhaustive GF(256) erasure
+sweep. Measured per configuration on one machine:
+
+| `gawk-server/wire` | Time |
+|---|---|
+| `-race`, no coverage | 46s |
+| `-covermode=set`, no race | 2.0s |
+| `-covermode=atomic`, no race | 5.9s |
+| `-race -covermode=atomic` | **177s** |
+
+So each Go job runs `go test -race ./...` unchanged, then a second race-free
+`go test -covermode=set -coverprofile`. Two runs of a suite cost less than one
+run of the combination, and the `-race` gate goes back to exactly the command
+it used before R41.
+
+**`-covermode=set`, not `atomic`**, because the badge asks whether a statement
+ran and never how often. `set` stores a constant where `atomic` does an atomic
+increment, so the lost update `atomic` exists to prevent cannot change this
+answer — and the mode is measured above at a third of `atomic`'s cost. The
+consequence to know: coverage now comes from a race-free run, so a percentage
+can differ by a fraction of a point from what the `-race` run would have
+produced (locally, 81.7% against 82.0% for the relay) as concurrent tests
+schedule differently. Floors are set from the configuration that actually runs.
+
 ## 3. Implementation
 
 ```
@@ -118,18 +148,19 @@ Per component, what produces the number:
 
 | Component | Command | Unit |
 |---|---|---|
-| `gawk-server` | `go test -race -covermode=atomic -coverprofile` | statements |
+| `gawk-server` | `go test -covermode=set -coverprofile`, a second run beside `-race` (D9) | statements |
 | `gawk-broadcast` | same | statements |
-| `gawk-admin` | same, in the run that HAS Postgres and envtest | statements |
-| `gawk-telemetry` | `go test -tags duckdb -covermode=atomic -coverprofile ./...` (D6) | statements |
+| `gawk-admin` | same, in the job that HAS Postgres and envtest | statements |
+| `gawk-telemetry` | `go test -tags duckdb -covermode=set -coverprofile ./...` (D6) | statements |
 | `gawk-app` | `vitest run --coverage` (v8 provider) | lines |
 | `gawk-telemetry-ui` | same | lines |
 | `gawk-admin-ui` | same | lines |
 | `gawk-broadcast-windows` | `cargo llvm-cov --no-report` ×2 + `report` | lines |
 
-`-covermode=atomic` is not decoration: the default `set` mode writes its
-counters non-atomically from every goroutine a suite starts, which `-race`
-correctly reports as a data race.
+The Go jobs run their suite **twice**: once under `-race` with no profile,
+once under coverage with no `-race`. D9 has the measurements; the short version
+is that the two instrumentations compound badly enough to blow a package
+timeout.
 
 The vitest configs spell out `coverage.include` (`src/**/*.{ts,tsx}`). Left to
 the provider's default, v8 coverage reports only files a test actually

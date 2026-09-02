@@ -314,12 +314,22 @@ jobs:
             sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
           fi
       - run: go vet ./...
-      # -covermode=atomic, not the default `set`: the counters are written from
-      # every goroutine the suite starts, and `set` under -race is a data race
-      # the detector will (correctly) fail the run on.
-      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - run: go test -race ./...
         env:
           CGO_ENABLED: "1"
+      # COVERAGE IS A SECOND, RACE-FREE RUN. Measured on this package set, not
+      # assumed: combining -race with coverage instrumentation took `wire` from
+      # 134s to 574s in CI (run 33657115804) and then past the 600s per-package
+      # timeout in run 33661450925. The two instrumentations compound — the
+      # detector shadows every counter write, and wire's exhaustive GF(256)
+      # erasure test writes them in the hottest loop in the repository.
+      # Separated, the same package is 46s under -race and 3s under coverage.
+      #
+      # -covermode=set is what the metric actually needs: the badge asks
+      # whether a statement ran, never how often, and `set` stores a constant
+      # rather than incrementing — which is also why the mode `atomic` exists
+      # to fix (a lost increment under parallelism) cannot change this answer.
+      - run: go test -covermode=set -coverprofile=coverage.out ./...
       - uses: ./.github/actions/coverage
         with:
           format: go
@@ -454,11 +464,13 @@ jobs:
           fi
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      # See the server job for -covermode=atomic. The GUI shell is compiled
-      # into the profile but barely executed by it — Gio needs a display — so
-      # this component's floor is set against a number that includes code CI
-      # structurally cannot reach (docs/43 §5).
-      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - run: go test -race ./...
+      # Coverage in a second, race-free run — see the server job for why the
+      # two cannot share one invocation. The GUI shell is compiled into the
+      # profile but barely executed by it (Gio needs a display), so this
+      # component's floor is set against a number that includes code CI
+      # structurally cannot reach (docs/43 §6).
+      - run: go test -covermode=set -coverprofile=coverage.out ./...
       # docs/39 D7's claim, asked of the run rather than assumed: unlike the
       # portal/GPU half of this module, R35's audio control plane IS verifiable
       # on a runner — but only if the runner can actually host a PipeWire
@@ -836,7 +848,7 @@ jobs:
       # measuring the untagged build alone would report the shipped query
       # engine as dead code. What the image runs is what gets counted.
       - name: the deployed configuration (-tags duckdb)
-        run: go test -tags duckdb -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -tags duckdb -covermode=set -coverprofile=coverage.out ./...
         env:
           CGO_ENABLED: "1"
       - uses: ./.github/actions/coverage
@@ -958,13 +970,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 use -p path)" >> "$GITHUB_ENV"
-      # See the server job for -covermode=atomic. This profile is the one the
-      # floor is checked against, so it deliberately comes from the run that
-      # HAS the database and the envtest binaries — the verbose re-run below
-      # covers two packages only and would understate the module badly.
-      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - run: go test -race ./...
         env:
           CGO_ENABLED: "1"
+      # Coverage in a second, race-free run — see the server job. It stays in
+      # THIS job rather than a leaner one because the number has to come from a
+      # run that has the database and the envtest binaries; the verbose re-run
+      # below covers two packages only and would understate the module badly.
+      - run: go test -covermode=set -coverprofile=coverage.out ./...
       # The guard on the guard. `go test` reports a skipped test as a pass, so
       # a DSN that never reached the suite — a renamed service, a changed port,
       # an `env:` block that moved under the wrong key — would look exactly like
