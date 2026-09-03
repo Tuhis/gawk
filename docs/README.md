@@ -97,6 +97,7 @@ Reading all forty-two is not the point. Three give you the shape of the system:
 | [`29`](29-terms-and-conditions.md) | R23 — Terms & conditions |
 | [`31`](31-quick-start-links.md) | R26 — Quick-start broadcast links |
 | [`40`](40-relay-server-picker.md) | R37 — Streamlined relay server picker |
+| [`44`](44-rooms.md) | R42 — Rooms: static and dynamic collections of broadcasts, joined as participants |
 
 ## Testing, telemetry, operations
 
