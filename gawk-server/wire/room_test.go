@@ -41,6 +41,7 @@ const (
 	//   06 35 55 50 34 58 57          codeLen = 6, "5UP4XW"
 	//   00                            nameLen = 0
 	//   10 00 01 .. 0f                tokenLen = 16, creator token
+	//   06 1a 2b 3c 4d 5e 6f          keyLen = 6, room key
 	//   01                            attachCount = 1
 	//     06 41 42 43 44 45 46          idLen = 6, "ABCDEF"
 	//     05 74 75 68 69 73             labelLen = 5, "tuhis"
@@ -55,6 +56,7 @@ const (
 	goldenRoomStateDynamicHex = "0114" + "03" + "00" + "00000007" + "0001" +
 		"06355550345857" + "00" +
 		"10000102030405060708090a0b0c0d0e0f" +
+		"061a2b3c4d5e6f" +
 		"01" + "06414243444546" + "057475686973" + "01" + "00000003" +
 		"0001" + "0001" + "01" + "02" + "057475686973" + "00"
 
@@ -67,11 +69,12 @@ const (
 	//   09 54 75 68 69 73 52 6f 6f 6d         "TuhisRoom"
 	//   0b 54 75 68 69 73 27 20 72 6f 6f 6d   "Tuhis' room"
 	//   00                                    tokenLen = 0
+	//   00                                    keyLen = 0
 	//   00                                    attachCount = 0
 	//   00 01                                 participantCount = 1
 	//     00 02 00 00 06 76 69 65 77 65 72 00
 	goldenRoomStateStaticHex = "0114" + "04" + "00" + "00000000" + "0002" +
-		"095475686973526f6f6d" + "0b54756869732720726f6f6d" + "00" + "00" +
+		"095475686973526f6f6d" + "0b54756869732720726f6f6d" + "00" + "00" + "00" +
 		"0001" + "0002" + "00" + "00" + "06766965776572" + "00"
 
 	// RoomEvent ParticipantJoined, seq 8: id 3, native, streaming, "pc".
@@ -113,6 +116,7 @@ var (
 	goldenRoomHello = RoomHello{Protocol: 1, ClientKind: RoomClientWebBroadcaster, Nickname: "tuhis"}
 
 	goldenCreatorToken = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	goldenRoomKey      = []byte{0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f}
 	goldenResumeToken  = []byte{0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf}
 
 	goldenRoomStateDynamic = RoomState{
@@ -121,6 +125,7 @@ var (
 		YourID:       1,
 		Code:         "5UP4XW",
 		CreatorToken: goldenCreatorToken,
+		Key:          goldenRoomKey,
 		Attachments:  []RoomAttachment{{BroadcastID: "ABCDEF", Label: "tuhis", Live: true, ViewerCount: 3}},
 		Participants: []RoomParticipant{{ID: 1, Kind: RoomClientWebBroadcaster, Flags: RoomParticipantFlagStreaming, Nickname: "tuhis"}},
 	}
@@ -355,6 +360,14 @@ func TestRoomParsersReject(t *testing.T) {
 	}
 	if _, err := AppendRoomState(nil, RoomState{Code: "x", CreatorToken: []byte{1}}); !errors.Is(err, ErrBadRoomState) {
 		t.Fatalf("append token len: %v", err)
+	}
+	if _, err := AppendRoomState(nil, RoomState{Code: "x", Key: []byte{1, 2, 3}}); !errors.Is(err, ErrBadRoomState) {
+		t.Fatalf("append key len: %v", err)
+	}
+	bad = append([]byte{}, state...)
+	bad[35] = 0x03 // key length neither 0 nor 6
+	if _, err := ParseRoomState(bad); !errors.Is(err, ErrBadRoomState) {
+		t.Fatalf("state key len: %v", err)
 	}
 	if _, err := AppendRoomState(nil, RoomState{}); !errors.Is(err, ErrBadRoomState) {
 		t.Fatalf("append empty code: %v", err)

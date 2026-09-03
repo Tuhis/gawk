@@ -43,6 +43,11 @@ import (
 //	  ...      uint8 tokenLen      0 or RoomCreatorTokenSize, then the creator
 //	                               token — non-empty ONLY in the first
 //	                               snapshot after /room/new (docs/44 §4.4)
+//	  ...      uint8 keyLen        0 or RoomKeySize, then the room's HMAC'd
+//	                               key — the /statusz + telemetry handle for
+//	                               the room (docs/44 D16, §4.10), never the
+//	                               code; the client reports it, it cannot
+//	                               compute it
 //	  ...      uint8 attachCount   then that many Attachment records
 //	  ...      uint16 partCount    then that many Participant records
 //
@@ -135,6 +140,11 @@ const (
 	// token: the same truncated-HMAC construction as the resume token
 	// (docs/44 D8), with its own domain-separation prefix.
 	RoomCreatorTokenSize = 16
+	// RoomKeySize is the byte length of a room's HMAC'd key as carried in
+	// RoomState — the same 6-byte digest TelemetryHello carries for a
+	// broadcast (TelemetryBroadcastKeySize), so telemetry keys both kinds
+	// of object the same way.
+	RoomKeySize = 6
 	// ResumeTokenSize is the byte length of a broadcast resume token
 	// (R17 W2) as it appears inside a RoomCommand.Attach — the attach proof
 	// (docs/44 D9). 128 bits of HMAC-SHA256.
@@ -315,6 +325,9 @@ type RoomState struct {
 	Code         string
 	DisplayName  string
 	CreatorToken []byte
+	// Key is the room's HMAC'd handle (RoomKeySize bytes) or empty when
+	// the relay has none to give.
+	Key          []byte
 	Attachments  []RoomAttachment
 	Participants []RoomParticipant
 }
@@ -647,6 +660,9 @@ func AppendRoomState(dst []byte, s RoomState) ([]byte, error) {
 	if len(s.CreatorToken) != 0 && len(s.CreatorToken) != RoomCreatorTokenSize {
 		return nil, fmt.Errorf("%w: creator token %d bytes, want 0 or %d", ErrBadRoomState, len(s.CreatorToken), RoomCreatorTokenSize)
 	}
+	if len(s.Key) != 0 && len(s.Key) != RoomKeySize {
+		return nil, fmt.Errorf("%w: key %d bytes, want 0 or %d", ErrBadRoomState, len(s.Key), RoomKeySize)
+	}
 	if len(s.Attachments) > 255 {
 		return nil, fmt.Errorf("%w: %d attachments, max 255", ErrBadRoomState, len(s.Attachments))
 	}
@@ -665,6 +681,8 @@ func AppendRoomState(dst []byte, s RoomState) ([]byte, error) {
 	}
 	dst = append(dst, uint8(len(s.CreatorToken)))
 	dst = append(dst, s.CreatorToken...)
+	dst = append(dst, uint8(len(s.Key)))
+	dst = append(dst, s.Key...)
 	dst = append(dst, uint8(len(s.Attachments)))
 	for _, a := range s.Attachments {
 		if dst, err = appendRoomAttachment(dst, a, ErrBadRoomState); err != nil {
@@ -683,10 +701,10 @@ func AppendRoomState(dst []byte, s RoomState) ([]byte, error) {
 	return dst, nil
 }
 
-// ParseRoomState parses a RoomState message. The returned CreatorToken
-// aliases msg. Strict: exact length, reserved bits zero.
+// ParseRoomState parses a RoomState message. The returned CreatorToken and
+// Key alias msg. Strict: exact length, reserved bits zero.
 func ParseRoomState(msg []byte) (RoomState, error) {
-	if err := checkPrefix(msg, TypeRoomState, 15, "room state"); err != nil {
+	if err := checkPrefix(msg, TypeRoomState, 16, "room state"); err != nil {
 		return RoomState{}, err
 	}
 	r := &roomReader{buf: msg, off: 2}
@@ -712,6 +730,13 @@ func ParseRoomState(msg []byte) (RoomState, error) {
 	}
 	if len(tok) > 0 {
 		s.CreatorToken = tok
+	}
+	key := r.bytes8(ErrBadRoomState, "key", RoomKeySize)
+	if r.err == nil && len(key) != 0 && len(key) != RoomKeySize {
+		r.fail(ErrBadRoomState, "key %d bytes, want 0 or %d", len(key), RoomKeySize)
+	}
+	if len(key) > 0 {
+		s.Key = key
 	}
 	n := int(r.u8(ErrBadRoomState))
 	for i := 0; i < n && r.err == nil; i++ {

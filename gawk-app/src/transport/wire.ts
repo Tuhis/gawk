@@ -1215,6 +1215,9 @@ export const MAX_ROOM_REJECT_MESSAGE_LEN = 128;
 // Byte length of a dynamic room's creator token: the same truncated-HMAC
 // construction as the resume token (docs/44 D8), own domain-separation prefix.
 export const ROOM_CREATOR_TOKEN_SIZE = 16;
+// The room's HMAC'd key as carried in RoomState: the same 6-byte digest
+// TelemetryHello carries for a broadcast, so telemetry keys both the same way.
+export const ROOM_KEY_SIZE = 6;
 // Byte length of a broadcast resume token (R17 W2) as it appears inside a
 // RoomCommand Attach — the attach proof (docs/44 D9). 128 bits of HMAC-SHA256.
 export const RESUME_TOKEN_SIZE = 16;
@@ -1357,6 +1360,9 @@ export interface RoomState {
   // Empty except in the first snapshot after /room/new, where it is exactly
   // ROOM_CREATOR_TOKEN_SIZE bytes. A view of the input record on parse.
   creatorToken: Uint8Array;
+  // The room's HMAC'd key (ROOM_KEY_SIZE bytes) or empty — the /statusz and
+  // telemetry handle for the room, never the code. A view of the input.
+  key: Uint8Array;
   attachments: RoomAttachment[];
   participants: RoomParticipant[];
 }
@@ -1722,6 +1728,9 @@ export function encodeRoomState(s: RoomState): Uint8Array<ArrayBuffer> {
   if (s.creatorToken.length !== 0 && s.creatorToken.length !== ROOM_CREATOR_TOKEN_SIZE) {
     w.fail(`creator token ${s.creatorToken.length} bytes, want 0 or ${ROOM_CREATOR_TOKEN_SIZE}`);
   }
+  if (s.key.length !== 0 && s.key.length !== ROOM_KEY_SIZE) {
+    w.fail(`key ${s.key.length} bytes, want 0 or ${ROOM_KEY_SIZE}`);
+  }
   if (s.attachments.length > 255) w.fail(`${s.attachments.length} attachments, max 255`);
   if (s.participants.length > 65535) w.fail(`${s.participants.length} participants, max 65535`);
   w.u8(WIRE_VERSION, TYPE_ROOM_STATE, s.flags, s.caps);
@@ -1731,6 +1740,8 @@ export function encodeRoomState(s: RoomState): Uint8Array<ArrayBuffer> {
   w.str8(s.displayName, MAX_ROOM_DISPLAY_NAME_LEN, 'display name');
   w.u8(s.creatorToken.length);
   w.raw(s.creatorToken);
+  w.u8(s.key.length);
+  w.raw(s.key);
   w.u8(s.attachments.length);
   for (const a of s.attachments) w.attachment(a);
   w.u16(s.participants.length);
@@ -1742,7 +1753,7 @@ export function encodeRoomState(s: RoomState): Uint8Array<ArrayBuffer> {
 
 // Strict: exact length, reserved bits zero. creatorToken is a view of msg.
 export function parseRoomState(msg: Uint8Array): RoomState {
-  checkRoomPrefix(msg, TYPE_ROOM_STATE, 15, 'room state');
+  checkRoomPrefix(msg, TYPE_ROOM_STATE, 16, 'room state');
   const r = new RoomReader(msg, 'room state');
   const flags = r.u8();
   if ((flags & ~ROOM_STATE_FLAG_MASK) !== 0) {
@@ -1763,6 +1774,10 @@ export function parseRoomState(msg: Uint8Array): RoomState {
       `invalid room state: creator token ${creatorToken.length} bytes, want 0 or ${ROOM_CREATOR_TOKEN_SIZE}`,
     );
   }
+  const key = r.bytes8('key', ROOM_KEY_SIZE);
+  if (key.length !== 0 && key.length !== ROOM_KEY_SIZE) {
+    throw new WireError(`invalid room state: key ${key.length} bytes, want 0 or ${ROOM_KEY_SIZE}`);
+  }
   const attachments: RoomAttachment[] = [];
   const n = r.u8();
   for (let i = 0; i < n; i++) attachments.push(r.attachment());
@@ -1770,7 +1785,7 @@ export function parseRoomState(msg: Uint8Array): RoomState {
   const m = r.u16();
   for (let i = 0; i < m; i++) participants.push(r.participant());
   r.done();
-  return { flags, caps, seq, yourId, code, displayName, creatorToken, attachments, participants };
+  return { flags, caps, seq, yourId, code, displayName, creatorToken, key, attachments, participants };
 }
 
 // --- RoomEvent (0x15) -------------------------------------------------------

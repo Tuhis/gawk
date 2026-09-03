@@ -163,6 +163,9 @@ func TestRoomMintJoinAttachAndEnd(t *testing.T) {
 	}
 	code := st.Code
 	creatorToken := hex.EncodeToString(st.CreatorToken)
+	if hex.EncodeToString(st.Key) != r.ObfuscateID(strings.ToLower(code)) {
+		t.Fatalf("RoomState key %x is not the /statusz key of the room", st.Key)
+	}
 
 	// A viewer joins by code and sees the roster; the creator is told.
 	viewer := openControl(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/room/%s", port, strings.ToLower(code)), clientTLS, "viewer")

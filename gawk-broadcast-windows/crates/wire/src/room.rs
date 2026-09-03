@@ -112,6 +112,9 @@ pub const MAX_ROOM_REJECT_MESSAGE_LEN: usize = 128;
 /// truncated-HMAC construction as the resume token (docs/44 D8), with its own
 /// domain-separation prefix.
 pub const ROOM_CREATOR_TOKEN_SIZE: usize = 16;
+/// The room's HMAC'd key as carried in RoomState: the same 6-byte digest a
+/// TelemetryHello carries for a broadcast.
+pub const ROOM_KEY_SIZE: usize = 6;
 /// The byte length of a broadcast resume token (R17 W2) as it appears inside
 /// a RoomCommand.Attach — the attach proof (docs/44 D9). 128 bits of
 /// HMAC-SHA256.
@@ -265,6 +268,9 @@ pub struct RoomState<'a> {
     /// Empty, or exactly [`ROOM_CREATOR_TOKEN_SIZE`] bytes. Borrows the input
     /// on parse.
     pub creator_token: &'a [u8],
+    /// Empty, or exactly [`ROOM_KEY_SIZE`] bytes: the room's HMAC'd key, the
+    /// /statusz and telemetry handle, never the code. Borrows the input.
+    pub key: &'a [u8],
     pub attachments: Vec<RoomAttachment<'a>>,
     pub participants: Vec<RoomParticipant<'a>>,
 }
@@ -607,6 +613,7 @@ pub fn append_room_state(dst: &mut Vec<u8>, s: &RoomState<'_>) -> Result<(), Wir
         || s.caps & !ROOM_CAP_MASK != 0
         || s.code.is_empty()
         || (!s.creator_token.is_empty() && s.creator_token.len() != ROOM_CREATOR_TOKEN_SIZE)
+        || (!s.key.is_empty() && s.key.len() != ROOM_KEY_SIZE)
         || s.attachments.len() > 255
         || s.participants.len() > 65535
     {
@@ -625,6 +632,8 @@ pub fn append_room_state(dst: &mut Vec<u8>, s: &RoomState<'_>) -> Result<(), Wir
     )?;
     dst.push(s.creator_token.len() as u8);
     dst.extend_from_slice(s.creator_token);
+    dst.push(s.key.len() as u8);
+    dst.extend_from_slice(s.key);
     dst.push(s.attachments.len() as u8);
     for a in &s.attachments {
         append_room_attachment(dst, a, WireError::BadRoomState)?;
@@ -642,7 +651,7 @@ pub fn append_room_state(dst: &mut Vec<u8>, s: &RoomState<'_>) -> Result<(), Wir
 /// Parses a RoomState message. The returned `creator_token` and strings
 /// borrow `msg`. Strict: exact length, reserved bits zero.
 pub fn parse_room_state(msg: &[u8]) -> Result<RoomState<'_>, WireError> {
-    check_prefix(msg, TYPE_ROOM_STATE, 15)?;
+    check_prefix(msg, TYPE_ROOM_STATE, 16)?;
     let mut r = Reader::new(msg, WireError::BadRoomState);
     let flags = r.u8()?;
     if flags & !ROOM_STATE_FLAG_MASK != 0 {
@@ -661,6 +670,10 @@ pub fn parse_room_state(msg: &[u8]) -> Result<RoomState<'_>, WireError> {
     let display_name = r.str8(MAX_ROOM_DISPLAY_NAME_LEN)?;
     let creator_token = r.bytes8(ROOM_CREATOR_TOKEN_SIZE)?;
     if !creator_token.is_empty() && creator_token.len() != ROOM_CREATOR_TOKEN_SIZE {
+        return r.fail();
+    }
+    let key = r.bytes8(ROOM_KEY_SIZE)?;
+    if !key.is_empty() && key.len() != ROOM_KEY_SIZE {
         return r.fail();
     }
     let n = r.u8()? as usize;
@@ -684,6 +697,7 @@ pub fn parse_room_state(msg: &[u8]) -> Result<RoomState<'_>, WireError> {
         code,
         display_name,
         creator_token,
+        key,
         attachments,
         participants,
     })

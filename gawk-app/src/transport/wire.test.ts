@@ -60,6 +60,7 @@ import {
   MAX_ROOM_IDENTITY_LEN,
   MAX_ROOM_REJECT_MESSAGE_LEN,
   ROOM_CREATOR_TOKEN_SIZE,
+  ROOM_KEY_SIZE,
   RESUME_TOKEN_SIZE,
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_CLIENT_WEB_BROADCASTER,
@@ -1050,6 +1051,7 @@ const GOLDEN_ROOM_STATE_DYNAMIC_HEX =
   '0114' + '03' + '00' + '00000007' + '0001' +
   '06355550345857' + '00' +
   '10000102030405060708090a0b0c0d0e0f' +
+  '061a2b3c4d5e6f' +
   '01' + '06414243444546' + '057475686973' + '01' + '00000003' +
   '0001' + '0001' + '01' + '02' + '057475686973' + '00';
 // RoomState, static room, empty: flags attachOK (0x04), caps none, seq 0,
@@ -1057,7 +1059,7 @@ const GOLDEN_ROOM_STATE_DYNAMIC_HEX =
 // attachments, one participant (id 2, web-viewer, no flags, "viewer").
 const GOLDEN_ROOM_STATE_STATIC_HEX =
   '0114' + '04' + '00' + '00000000' + '0002' +
-  '095475686973526f6f6d' + '0b54756869732720726f6f6d' + '00' + '00' +
+  '095475686973526f6f6d' + '0b54756869732720726f6f6d' + '00' + '00' + '00' +
   '0001' + '0002' + '00' + '00' + '06766965776572' + '00';
 // RoomEvent ParticipantJoined, seq 8: id 3, native, streaming, "pc".
 const GOLDEN_ROOM_EVENT_JOINED_HEX = '011500000008' + '01' + '0003' + '02' + '02' + '027063' + '00';
@@ -1101,6 +1103,7 @@ const goldenRoomStateDynamic: RoomState = {
   code: '5UP4XW',
   displayName: '',
   creatorToken: goldenCreatorToken,
+  key: new Uint8Array([0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f]),
   attachments: [{ broadcastId: 'ABCDEF', label: 'tuhis', live: true, viewerCount: 3 }],
   participants: [
     { id: 1, kind: ROOM_CLIENT_WEB_BROADCASTER, flags: ROOM_PARTICIPANT_FLAG_STREAMING, nickname: 'tuhis', identity: '' },
@@ -1114,6 +1117,7 @@ const goldenRoomStateStatic: RoomState = {
   code: 'TuhisRoom',
   displayName: "Tuhis' room",
   creatorToken: new Uint8Array(0),
+  key: new Uint8Array(0),
   attachments: [],
   participants: [{ id: 2, kind: ROOM_CLIENT_WEB_VIEWER, flags: 0, nickname: 'viewer', identity: '' }],
 };
@@ -1139,6 +1143,7 @@ describe('room control protocol (R42)', () => {
     expect(MAX_ROOM_IDENTITY_LEN).toBe(64);
     expect(MAX_ROOM_REJECT_MESSAGE_LEN).toBe(128);
     expect(ROOM_CREATOR_TOKEN_SIZE).toBe(16);
+    expect(ROOM_KEY_SIZE).toBe(6);
     expect(RESUME_TOKEN_SIZE).toBe(16);
   });
 
@@ -1321,9 +1326,9 @@ describe('room control protocol (R42)', () => {
       }),
     ).toThrow(/participant kind/);
     // Reserved attachment flag bits and participant kinds reject on parse too
-    // (attachment flags at byte 49, participant kind at byte 58).
-    expect(() => parseRoomState(mutate(49, 0x03))).toThrow(/reserved attachment flag/);
-    expect(() => parseRoomState(mutate(58, 0x03))).toThrow(/participant kind/);
+    // (attachment flags at byte 56, participant kind at byte 65).
+    expect(() => parseRoomState(mutate(56, 0x03))).toThrow(/reserved attachment flag/);
+    expect(() => parseRoomState(mutate(65, 0x03))).toThrow(/participant kind/);
   });
 
   it('rejects malformed events strictly', () => {

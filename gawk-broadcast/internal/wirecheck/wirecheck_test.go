@@ -87,10 +87,11 @@ const (
 	goldenRoomStateDynamicHex = "0114" + "03" + "00" + "00000007" + "0001" +
 		"06355550345857" + "00" +
 		"10000102030405060708090a0b0c0d0e0f" +
+		"061a2b3c4d5e6f" +
 		"01" + "06414243444546" + "057475686973" + "01" + "00000003" +
 		"0001" + "0001" + "01" + "02" + "057475686973" + "00"
 	goldenRoomStateStaticHex = "0114" + "04" + "00" + "00000000" + "0002" +
-		"095475686973526f6f6d" + "0b54756869732720726f6f6d" + "00" + "00" +
+		"095475686973526f6f6d" + "0b54756869732720726f6f6d" + "00" + "00" + "00" +
 		"0001" + "0002" + "00" + "00" + "06766965776572" + "00"
 	// RoomEvent: parsed by this module's room supervisor. ParticipantJoined/
 	// Left drive the participant list; AttachmentUpdated/Removed are how it
@@ -333,6 +334,7 @@ func TestWireConstants(t *testing.T) {
 		{"MaxRoomIdentityLen", wire.MaxRoomIdentityLen, 64},
 		{"MaxRoomRejectMessageLen", wire.MaxRoomRejectMessageLen, 128},
 		{"RoomCreatorTokenSize", wire.RoomCreatorTokenSize, 16},
+		{"RoomKeySize", wire.RoomKeySize, 6},
 		{"ResumeTokenSize", wire.ResumeTokenSize, 16},
 	} {
 		if c.got != c.want {
@@ -643,6 +645,7 @@ var (
 		YourID:       1,
 		Code:         "5UP4XW",
 		CreatorToken: goldenRoomCreatorToken,
+		Key:          []byte{0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f},
 		Attachments:  []wire.RoomAttachment{{BroadcastID: "ABCDEF", Label: "tuhis", Live: true, ViewerCount: 3}},
 		Participants: []wire.RoomParticipant{{ID: 1, Kind: wire.RoomClientWebBroadcaster, Flags: wire.RoomParticipantFlagStreaming, Nickname: "tuhis"}},
 	}

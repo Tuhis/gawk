@@ -64,6 +64,7 @@ const GOLDEN_ROOM_STATE_DYNAMIC: &str = concat!(
     "06355550345857",
     "00",
     "10000102030405060708090a0b0c0d0e0f",
+    "061a2b3c4d5e6f",
     "01",
     "06414243444546",
     "057475686973",
@@ -87,6 +88,7 @@ const GOLDEN_ROOM_STATE_STATIC: &str = concat!(
     "0002",
     "095475686973526f6f6d",
     "0b54756869732720726f6f6d",
+    "00",
     "00",
     "00",
     "0001",
@@ -606,6 +608,7 @@ fn golden_room_state_dynamic_value() -> RoomState<'static> {
         code: "5UP4XW",
         display_name: "",
         creator_token: &GOLDEN_CREATOR_TOKEN,
+        key: &[0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f],
         attachments: vec![RoomAttachment {
             broadcast_id: "ABCDEF".to_string(),
             label: "tuhis",
@@ -1070,6 +1073,7 @@ fn wire_constants_are_pinned() {
     assert_eq!(MAX_ROOM_IDENTITY_LEN, 64);
     assert_eq!(MAX_ROOM_REJECT_MESSAGE_LEN, 128);
     assert_eq!(ROOM_CREATOR_TOKEN_SIZE, 16);
+    assert_eq!(ROOM_KEY_SIZE, 6);
     assert_eq!(RESUME_TOKEN_SIZE, 16);
     assert_eq!(BROADCAST_ID_LENGTH, 6);
 

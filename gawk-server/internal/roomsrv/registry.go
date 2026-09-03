@@ -18,6 +18,7 @@ package roomsrv
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -922,7 +923,7 @@ func (r *Registry) stateRecordLocked(rm *room, p *Participant) []byte {
 	if p.grants.AttachOK {
 		flags |= wire.RoomStateFlagAttachOK
 	}
-	st := wire.RoomState{Flags: flags, Seq: rm.seq, YourID: p.id, Code: rm.display, DisplayName: rm.name, CreatorToken: p.firstState}
+	st := wire.RoomState{Flags: flags, Seq: rm.seq, YourID: p.id, Code: rm.display, DisplayName: rm.name, CreatorToken: p.firstState, Key: r.roomKey(rm.code)}
 	for _, a := range rm.attachments {
 		st.Attachments = append(st.Attachments, a.record())
 	}
@@ -940,6 +941,18 @@ func (r *Registry) stateRecordLocked(rm *room, p *Participant) []byte {
 		return nil
 	}
 	return frame(rec)
+}
+
+// roomKey is the room's HMAC'd handle as raw bytes for RoomState (docs/44
+// D16): the obfuscator yields the same 12-hex digest /statusz is keyed by;
+// decoded here so the client can report it to telemetry. Nil when the
+// obfuscator is not the fleet HMAC (tests with the identity obfuscator).
+func (r *Registry) roomKey(code string) []byte {
+	key, err := hex.DecodeString(r.opts.Obfuscate(code))
+	if err != nil || len(key) != wire.RoomKeySize {
+		return nil
+	}
+	return key
 }
 
 func frame(msg []byte) []byte {
