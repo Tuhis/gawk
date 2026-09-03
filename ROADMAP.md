@@ -60,6 +60,7 @@ feature set exists).
 | R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | 🔧 designed 2026-08-20, **AP1–AP8 implemented 2026-08-20** — a fleet-wide kill that actually reaches every pod (`Ban` CRs the relays watch, close code 4006 terminal in all four wire mirrors, HTTP 451 on the publish path), durable ID/IP bans with longest-prefix CIDR matching, and **`gawk-admin`**: the fourth top-level module and fourth deployable — an OIDC-gated operator SPA over Postgres (the chart takes a connection to a database it does not create), horizontally scaled from v1 with leader-elected background work, signed multi-webhook notifications, and forward-only migrations applied by a Helm hook Job under an expand–contract policy CI enforces. Deliberately deviating from the sketch below, the portal is **internet-exposable behind OIDC** rather than internal-only, so a paged operator can judge and kill from a phone. Verified by the four modules' suites, `helm` render assertions, an image smoke run and a kind two-pod tier that applies a real `Ban` and watches both pods drop the broadcast. **Remaining: the manual pass on the reference deployment** — kill a real broadcast from a phone, end to end ([docs/42](docs/42-admin-moderation-portal.md) §11.3) |
 | R40 | [Automatic content flagging (NSFW keyframe screening)](#r40--automatic-content-flagging-nsfw-keyframe-screening) | 💡 proposed 2026-08-19, not started — no design doc yet; **depends on R39** (needs its kill/ban actuator) |
 | R41 | [Test coverage measurement and badges](#r41--test-coverage-measurement-and-badges) | 🔧 designed + **CV1–CV6 implemented 2026-09-02** — every component's job measures its own coverage, gates itself against a floor in `coverage-floors.json`, and pushes to `main` publish shields.io endpoints to an orphan `badges` branch (no third-party service, no token beyond `GITHUB_TOKEN`). Root README carries the size-weighted aggregate; each component README carries its own ([docs/43](docs/43-coverage-reporting.md)) |
+| R42 | [Rooms](#r42--rooms) | 🔧 designed 2026-09-03 (owner decisions D1–D20, chunks RM1–RM9) + **UI/UX design pass done 2026-09-03** in Claude Design — cinematic dock direction chosen, room view, states and phone frames drawn, private canvas linked from [docs/44](docs/44-rooms.md) §12; **not started**. Zero change to the media path; rooms are the first stateful control plane the fleet has needed |
 
 ---
 
@@ -3566,6 +3567,63 @@ The dashboard SPA is a finding rather than a datum — it ships in an image and
 is tested like a prototype; the floor gates it where it stands rather than
 blessing it. `gawk-broadcast` is the one number structurally depressed by code
 CI cannot reach (its Gio GUI needs a display).
+
+---
+
+## R42 — Rooms
+
+**Goal**: a **room** is a logical collection of broadcasts that people join
+*as participants* rather than as viewers of one stream. The broadcast is
+unchanged — `/publish`, `/subscribe`, the keyframe cache, the DVR ring and
+the cluster edge-pull path are untouched — and a room is control-plane
+state layered on top: which broadcasts are attached, who is present, and
+later what else the room can do. Two kinds: **static** rooms are
+preconfigured with a stable slug (`TuhisRoom`) and reached by link;
+**dynamic** rooms are minted on demand with a six-character code and joined
+from the same join box as a broadcast. A broadcaster can attach their
+broadcast to any room at any time, and their room experience is the
+participant view plus their own tile's controls.
+
+**Why this is wanted**: the common use is a friend group in a voice channel
+while one or more of them stream. Every extra streamer today is another
+code to paste and another tab, with nothing saying the tabs belong
+together. Multi-POV watching with instant switching and a roster is the
+missing piece on its own; the room model is also the object that voice
+(a Mumble bridge) and room chat attach to later, and the design reserves
+explicit hooks for both without building either.
+
+**Scope sketch** (settled with the owner, [docs/44](docs/44-rooms.md) §2):
+
+- Rooms are `Room` custom resources (the R39 `Ban` pattern) — static ones
+  written by `gawk-admin` or `kubectl`, dynamic ones written by the relay at
+  mint — carrying everything another pod needs to adopt the room, and
+  **never the participant list**. Home pod by consistent hash with lease
+  fencing; other pods proxy room control; media is never proxied.
+- Room control is one new WebTransport route, `CONNECT /room/{code}`, with
+  four new wire types (0x13–0x16) and close code 4007, mirrored in all four
+  wire implementations. Attach proof is the broadcast's existing resume
+  token; dynamic rooms carry a creator token, static rooms an attach secret.
+- Room view: grid by default, focus mode, and a "hide videos" mode that
+  keeps a participant in the room with no media sessions. It keeps the
+  viewer's cinematic language — video edge to edge, header and footer
+  overlays that fade on idle — with an optional, pinnable people-and-chat
+  side panel. Audio follows the mode: focus plays one POV, grid mixes every
+  tile with per-tile volume and a master. Nickname per session, no
+  accounts. Dynamic rooms are created only from a running broadcast; the
+  landing page is unchanged. Native broadcasters attach by flag/profile
+  and get an "open room view" action.
+- Every knob through `registryOptions`; `-rooms` defaults off, and
+  `-room-create-secret` is the hosted-deployment gate for dynamic-room
+  creation.
+
+**Non-goals**: voice, chat, input forwarding and room recording (hooks
+only); thumbnails for non-focused tiles (listed follow-up); accounts;
+cross-relay rooms; any change to the media wire.
+
+**Status**: designed 2026-09-03, chunks RM1–RM9, not started. The UI/UX
+design pass was done the same day in Claude Design ([docs/44](docs/44-rooms.md)
+§4.9 revision and §12); the canvas is a private artifact of the maintainer,
+linked from §12, and is the layout reference for RM4/RM5.
 
 ---
 
