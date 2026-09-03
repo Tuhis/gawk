@@ -301,6 +301,12 @@ type Options struct {
 	OnPublisherClosed  func(broadcastID string)
 	OnBroadcastExpired func(broadcastID string)
 
+	// IDReserved reports whether a freshly minted broadcast ID names a live
+	// room (R42, docs/44 §4.2): /publish never mints an ID that a room owns,
+	// which is the hub's half of keeping the two code namespaces disjoint
+	// (D3). Nil — the -rooms-off shape — reserves nothing.
+	IDReserved func(id string) bool
+
 	// StatsKey keys ObfuscateID (R17 W6, docs/22 Decision 14): 32 bytes,
 	// shared across the fleet so one broadcast keeps ONE obfuscated identity
 	// in every pod's /statusz and gawk_broadcast_* series. Empty falls back
@@ -871,11 +877,11 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 			if err != nil {
 				return "", nil, err
 			}
-			if _, exists := r.hubs[newID]; !exists {
+			if _, exists := r.hubs[newID]; !exists && !r.idReserved(newID) {
 				break
 			}
 		}
-		if _, exists := r.hubs[newID]; exists {
+		if _, exists := r.hubs[newID]; exists || r.idReserved(newID) {
 			return "", nil, errors.New("hub: collision limits exceeded minting ID")
 		}
 		id = newID
@@ -1056,6 +1062,34 @@ func (r *Registry) ViewerSubscribers(id string) int {
 		}
 	}
 	return n
+}
+
+// idReserved is the R42 mint-time mirror check (docs/44 §4.2).
+func (r *Registry) idReserved(id string) bool {
+	return r.opts.IDReserved != nil && r.opts.IDReserved(id)
+}
+
+// BroadcastState is the one-lock read a room needs about an attachment
+// (R42, docs/44 §4.7): known at all, publisher live (vs. away within the
+// grace), and the watching-human count. Three separate calls would race
+// each other across a grace expiry.
+func (r *Registry) BroadcastState(id string) (live bool, viewers int, known bool) {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return false, 0, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, exists := r.hubs[normID]
+	if !exists {
+		return false, 0, false
+	}
+	for s := range b.subs {
+		if !s.internal && !s.stripeLeg {
+			viewers++
+		}
+	}
+	return b.publisherActive, viewers, true
 }
 
 // newHubLocked creates and registers an empty hub. Caller holds r.mu.

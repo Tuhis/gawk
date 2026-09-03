@@ -40,7 +40,7 @@ func adminHandler(t *testing.T, cfg config.Config, auth *AdminAuth,
 	r := hub.NewRegistry(discardLog, hub.Options{})
 	promReg := metrics.NewBaseRegistry("test-version")
 	promReg.MustRegister(metrics.NewRegistryCollector(r))
-	h := Handler(r, promReg, discardLog, nil, &AdminOptions{
+	h := Handler(r, nil, promReg, discardLog, nil, &AdminOptions{
 		Registry:        r,
 		Config:          cfg,
 		Pod:             "gawk-server-abc123",
@@ -83,7 +83,7 @@ func TestAdminRoutesAreDarkWithoutACredential(t *testing.T) {
 			var h http.Handler
 			if tc.auth == nil && tc.admin == nil {
 				r := hub.NewRegistry(discardLog, hub.Options{})
-				h = Handler(r, metrics.NewBaseRegistry("v"), discardLog, nil, nil)
+				h = Handler(r, nil, metrics.NewBaseRegistry("v"), discardLog, nil, nil)
 			} else {
 				h, _ = adminHandler(t, config.Config{}, tc.auth, nil)
 			}
@@ -214,16 +214,16 @@ func TestStatuszStaysByteIdenticalOnBothListeners(t *testing.T) {
 	// The TCP ops listener, WITH the admin API enabled...
 	promReg := metrics.NewBaseRegistry("test-version")
 	promReg.MustRegister(metrics.NewRegistryCollector(r))
-	withAdmin := Handler(r, promReg, discardLog, nil, &AdminOptions{
+	withAdmin := Handler(r, nil, promReg, discardLog, nil, &AdminOptions{
 		Registry: r, Config: config.Config{AdminAPIToken: adminToken},
 		Auth: staticAuth(t, adminToken), Log: discardLog,
 	})
 	// ...the same listener with it disabled...
 	promReg2 := metrics.NewBaseRegistry("test-version")
 	promReg2.MustRegister(metrics.NewRegistryCollector(r))
-	withoutAdmin := Handler(r, promReg2, discardLog, nil, nil)
+	withoutAdmin := Handler(r, nil, promReg2, discardLog, nil, nil)
 	// ...and the H3 route, which is the bare shared handler.
-	h3 := StatuszHandler(r, discardLog)
+	h3 := StatuszHandler(r, nil, discardLog)
 
 	bodies := map[string]string{}
 	for name, h := range map[string]http.Handler{

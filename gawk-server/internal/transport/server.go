@@ -29,6 +29,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -113,6 +114,10 @@ type Server struct {
 	// once, behind an atomic, for the same reason `wiring` is. Read it
 	// through banSet.
 	bans atomic.Pointer[moderation.Set]
+	// rooms is the R42 room registry (docs/44); nil is the -rooms-off shape.
+	// Settable once, behind an atomic, like bans. Read it through
+	// roomRegistry.
+	rooms atomic.Pointer[roomsrv.Registry]
 	// now is the clock ban expiry is evaluated against; injectable so tests
 	// can step past an expiry without sleeping.
 	now func() time.Time
@@ -325,13 +330,21 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		w.Write([]byte("ok"))
 	})
 	// Same handler as the TCP ops endpoint (single definition; see ops).
-	mux.HandleFunc("GET /statusz", ops.StatuszHandler(r, log))
+	mux.HandleFunc("GET /statusz", ops.StatuszHandler(r, roomStatsSource{s}, log))
 	mux.HandleFunc("CONNECT /echo", s.handleEcho)
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)
 	mux.HandleFunc("CONNECT /publish/{id}", s.handlePublish)
 	mux.HandleFunc("CONNECT /subscribe/{id}", s.handleSubscribe)
 	// Pod-to-pod edge pull (R17 W4); 404s outright unless -cluster-mode is on.
 	mux.HandleFunc("CONNECT /internal/subscribe/{id}", s.handleInternalSubscribe)
+	// R42 rooms (docs/44 D17): the routes exist only with -rooms on, so a
+	// relay without rooms is byte-identical to pre-R42 — not even a 404
+	// handler of ours answers here. "new" is the literal mint route; the
+	// mux prefers it over the {code} pattern.
+	if cfg.Rooms {
+		mux.HandleFunc("CONNECT /room/new", s.handleRoomNew)
+		mux.HandleFunc("CONNECT /room/{code}", s.handleRoom)
+	}
 
 	s.wt = &webtransport.Server{
 		H3: &http3.Server{

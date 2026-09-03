@@ -26,6 +26,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 )
 
@@ -88,4 +89,39 @@ func (rt *resumeTokens) verify(normalizedID, tokenHex string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare(token, rt.mint(normalizedID)) == 1
+}
+
+// roomCreatorDomain is the domain-separation prefix of a room creator token
+// (R42, docs/44 D8): room codes come from the SAME alphabet and length as
+// broadcast IDs, so without it a broadcast's resume token would be the
+// creator token of an identically named room and vice versa. The broadcast
+// mint above stays byte-identical — every outstanding resume token keeps
+// verifying — and only the room construction is prefixed.
+const roomCreatorDomain = "gawk-room-creator-v1"
+
+// MintCreator returns the creator token for a normalized room code
+// (roomsrv.Tokens).
+func (rt *resumeTokens) MintCreator(code string) []byte {
+	mac := hmac.New(sha256.New, rt.key)
+	mac.Write([]byte(roomCreatorDomain))
+	mac.Write([]byte{0})
+	mac.Write([]byte(code))
+	return mac.Sum(nil)[:resumeTokenBytes]
+}
+
+// VerifyCreator reports whether token is the creator token for a normalized
+// room code (roomsrv.Tokens). Constant-time.
+func (rt *resumeTokens) VerifyCreator(code string, token []byte) bool {
+	return len(token) == resumeTokenBytes && subtle.ConstantTimeCompare(token, rt.MintCreator(code)) == 1
+}
+
+// VerifyResume reports whether token is the raw resume token for a
+// broadcast ID — the room attach proof (docs/44 D9; roomsrv.Tokens). The ID
+// is normalized here because the token is minted over the normalized form.
+func (rt *resumeTokens) VerifyResume(broadcastID string, token []byte) bool {
+	normID, err := broadcastid.Normalize(broadcastID)
+	if err != nil || len(token) != resumeTokenBytes {
+		return false
+	}
+	return subtle.ConstantTimeCompare(token, rt.mint(normID)) == 1
 }

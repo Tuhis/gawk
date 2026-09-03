@@ -16,6 +16,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
@@ -51,6 +52,48 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 	// them separately when -cluster-mode is on).
 	if got := registryOptions(cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("registryOptions(cfg) = %+v, want %+v", got, want)
+	}
+}
+
+// R42 (docs/44 RM2): every -room-* knob must reach roomsrv.Options in
+// production — the R2 rule, one registry over. Every value is deliberately
+// non-zero, and IDReserved on the hub side is asserted separately by
+// TestRoomsWiringReservesLiveRoomCodes.
+func TestRoomOptionsCarryAllKnobs(t *testing.T) {
+	cfg := config.Config{
+		Rooms:               true,
+		RoomEmptyGrace:      77 * time.Second,
+		MaxRooms:            3,
+		MaxRoomBroadcasts:   5,
+		MaxRoomParticipants: 11,
+		RoomCreateSecret:    "invite",
+	}
+	want := roomsrv.Options{
+		EmptyGrace:      77 * time.Second,
+		MaxRooms:        3,
+		MaxBroadcasts:   5,
+		MaxParticipants: 11,
+		CreateSecret:    "invite",
+	}
+	if got := roomOptions(cfg); !reflect.DeepEqual(got, want) {
+		t.Errorf("roomOptions(cfg) = %+v, want %+v", got, want)
+	}
+}
+
+// docs/44 §4.10: the startup line states the room knobs, and never the
+// create secret itself.
+func TestStartupLogStatesTheRoomKnobs(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	logStartup(log, config.Config{Rooms: true, MaxRooms: 12, RoomCreateSecret: "hunter2", RoomsFile: "/r.json"}, "v")
+	out := buf.String()
+	for _, want := range []string{"rooms=true", "max_rooms=12", "room_create_secret_set=true", "rooms_file=/r.json"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("startup log lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "hunter2") {
+		t.Errorf("startup log leaks the room create secret:\n%s", out)
 	}
 }
 

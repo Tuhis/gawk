@@ -25,6 +25,8 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/moderationsrc"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrc"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
@@ -75,6 +77,9 @@ func run() error {
 	// which is assigned right after the registry exists. Both hook paths are
 	// nil-safe until then (no publisher can connect before Run anyway).
 	var coord *cluster.Coordinator
+	// R42 rooms (docs/44): the registry is assigned right after the hub
+	// exists and closed over by the hub hooks below, exactly like coord.
+	var roomReg *roomsrv.Registry
 	hubOpts := registryOptions(cfg)
 	if cfg.ClusterMode {
 		hubOpts.OnPublisherClosed = func(id string) {
@@ -98,8 +103,32 @@ func run() error {
 			}
 		}
 	}
+	if cfg.Rooms {
+		// Rooms need both lifecycle hooks in single-pod mode too (an
+		// attachment flips to "away" and is removed on expiry — docs/44
+		// §4.4), so they chain onto whatever cluster mode installed.
+		hubOpts.OnPublisherClosed = chainHook(hubOpts.OnPublisherClosed, func(id string) {
+			if roomReg != nil {
+				roomReg.PublisherClosed(id)
+			}
+		})
+		hubOpts.OnBroadcastExpired = chainHook(hubOpts.OnBroadcastExpired, func(id string) {
+			if roomReg != nil {
+				roomReg.BroadcastExpired(id)
+			}
+		})
+		hubOpts.IDReserved = func(id string) bool { return roomReg != nil && roomReg.Has(id) }
+	}
 
 	r := hub.NewRegistry(log, hubOpts)
+	if cfg.Rooms {
+		ro := roomOptions(cfg)
+		ro.Broadcasts = hubBroadcasts{r}
+		ro.Obfuscate = r.ObfuscateID
+		ro.PodName = os.Getenv("POD_NAME")
+		ro.Log = log
+		roomReg = roomsrv.NewRegistry(ro)
+	}
 
 	// Prometheus wiring (R9, docs/13): runtime collectors + build info, the
 	// hub registry collector, and the transport connection counters — all
@@ -114,6 +143,9 @@ func run() error {
 	// which is how an operator tells "no bans" from "no moderation".
 	bans := moderation.NewSet()
 	promReg.MustRegister(metrics.NewModerationCollector(bans))
+	if roomReg != nil {
+		promReg.MustRegister(metrics.NewRoomCollector(roomReg))
+	}
 
 	// The WebTransport (UDP) server and the ops (TCP) listener run together;
 	// either one failing tears the other down.
@@ -135,6 +167,19 @@ func run() error {
 	}
 	if err := wireSubsystems(runCtx, cfg, srv, bans, log, buildCoord); err != nil {
 		return err
+	}
+	if roomReg != nil {
+		// Installed after the cluster wiring (SetRooms hands the registry
+		// the transport's token key), before Run — the same rule as
+		// SetModeration. The static-room file source starts last, like the
+		// ban source, for the same reason.
+		srv.SetRooms(roomReg)
+		go roomReg.RunRefresh(runCtx)
+		if cfg.RoomsFile != "" {
+			if err := roomsrc.StartFile(runCtx, cfg.RoomsFile, roomsrc.Options{Registry: roomReg, Log: log}); err != nil {
+				return err
+			}
+		}
 	}
 
 	// The R18 viewer-count pump (docs/23 Decision 4): one registry-wide
@@ -168,7 +213,7 @@ func run() error {
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(runCtx) }()
 	go func() {
-		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, promReg, log, srv.Ready, adminOpts), log)
+		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, roomStats(roomReg), promReg, log, srv.Ready, adminOpts), log)
 	}()
 
 	var firstErr error
@@ -291,7 +336,59 @@ func logStartup(log *slog.Logger, cfg config.Config, version string) {
 		"admin_oidc_roles_claim", cfg.AdminOIDCRolesClaim,
 		"admin_oidc_role", cfg.AdminOIDCRole,
 		"admin_api_enabled", cfg.AdminAPIToken != "" || cfg.AdminOIDCIssuer != "",
+		// R42 (docs/44 §4.10): the same confirmation surface for rooms. The
+		// create secret itself is never logged, only whether one gates
+		// minting.
+		"rooms", cfg.Rooms,
+		"room_empty_grace", cfg.RoomEmptyGrace,
+		"max_rooms", cfg.MaxRooms,
+		"max_room_broadcasts", cfg.MaxRoomBroadcasts,
+		"max_room_participants", cfg.MaxRoomParticipants,
+		"room_create_secret_set", cfg.RoomCreateSecret != "",
+		"rooms_file", cfg.RoomsFile,
 	)
+}
+
+// roomOptions maps the parsed config onto roomsrv.Options — the R42 twin of
+// registryOptions, under the same rule: every -room-* knob crosses here, and
+// TestRoomOptionsCarryAllKnobs asserts it. Wiring-only fields (Broadcasts,
+// Obfuscate, Log, cluster seams) are set by run.
+func roomOptions(cfg config.Config) roomsrv.Options {
+	return roomsrv.Options{
+		EmptyGrace:      cfg.RoomEmptyGrace,
+		MaxRooms:        cfg.MaxRooms,
+		MaxBroadcasts:   cfg.MaxRoomBroadcasts,
+		MaxParticipants: cfg.MaxRoomParticipants,
+		CreateSecret:    cfg.RoomCreateSecret,
+	}
+}
+
+// chainHook runs both hooks (either may be nil).
+func chainHook(a, b func(string)) func(string) {
+	if a == nil {
+		return b
+	}
+	return func(id string) {
+		a(id)
+		b(id)
+	}
+}
+
+// hubBroadcasts adapts the hub registry to roomsrv.BroadcastSource.
+type hubBroadcasts struct{ r *hub.Registry }
+
+func (h hubBroadcasts) BroadcastState(id string) (roomsrv.BroadcastState, bool) {
+	live, viewers, known := h.r.BroadcastState(id)
+	return roomsrv.BroadcastState{Live: live, Viewers: viewers}, known
+}
+
+// roomStats returns the /statusz rooms source, or a nil interface when
+// rooms are off (a typed nil pointer would render an empty section).
+func roomStats(reg *roomsrv.Registry) ops.RoomStatsSource {
+	if reg == nil {
+		return nil
+	}
+	return reg
 }
 
 // registryOptions maps the parsed config onto hub.Options. Every limit knob

@@ -81,6 +81,14 @@ type SanitizedConfig struct {
 	TelemetryReportInterval string `json:"telemetryReportInterval"`
 	TelemetryAdvertiseURL   string `json:"telemetryAdvertiseUrl"`
 
+	// Rooms (R42, docs/44 §4.10).
+	Rooms               bool   `json:"rooms"`
+	RoomEmptyGrace      string `json:"roomEmptyGrace"`
+	MaxRooms            int    `json:"maxRooms"`
+	MaxRoomBroadcasts   int    `json:"maxRoomBroadcasts"`
+	MaxRoomParticipants int    `json:"maxRoomParticipants"`
+	RoomsFile           string `json:"roomsFile"`
+
 	// Moderation (R39).
 	ModerationSource    string `json:"moderationSource"`
 	AdminOIDCIssuer     string `json:"adminOidcIssuer"`
@@ -97,6 +105,7 @@ type SanitizedConfig struct {
 	StatelessResetKey string `json:"statelessResetKey"`
 	TelemetryKey      string `json:"telemetryKey"`
 	AdminAPIToken     string `json:"adminApiToken"`
+	RoomCreateSecret  string `json:"roomCreateSecret"`
 	// ResumeTokenKey names the mode as well as the presence — see the
 	// placeholder comment above and ResumeTokenKeyMode.
 	ResumeTokenKey string `json:"resumeTokenKey"`
@@ -147,6 +156,13 @@ func (c Config) Sanitized() SanitizedConfig {
 		TelemetryReportInterval: dur(c.TelemetryReportInterval),
 		TelemetryAdvertiseURL:   c.TelemetryAdvertiseURL,
 
+		Rooms:               c.Rooms,
+		RoomEmptyGrace:      dur(c.RoomEmptyGrace),
+		MaxRooms:            c.MaxRooms,
+		MaxRoomBroadcasts:   c.MaxRoomBroadcasts,
+		MaxRoomParticipants: c.MaxRoomParticipants,
+		RoomsFile:           c.RoomsFile,
+
 		ModerationSource:    c.ModerationSource,
 		AdminOIDCIssuer:     c.AdminOIDCIssuer,
 		AdminOIDCAudience:   c.AdminOIDCAudience,
@@ -159,6 +175,7 @@ func (c Config) Sanitized() SanitizedConfig {
 		StatelessResetKey: setness(len(c.StatelessResetKey) > 0),
 		TelemetryKey:      setness(len(c.TelemetryKey) > 0),
 		AdminAPIToken:     setness(c.AdminAPIToken != ""),
+		RoomCreateSecret:  setness(c.RoomCreateSecret != ""),
 		ResumeTokenKey:    resumeTokenKeyRedaction(c),
 	}
 }
