@@ -99,6 +99,11 @@ spec:
               value: {{ .Values.links.appBaseUrl | quote }}
             - name: GAWK_ADMIN_TELEMETRY_BASE_URL
               value: {{ .Values.links.telemetryBaseUrl | quote }}
+            # R42 rooms: the SAME value that gates the Role's Room and Secret
+            # verbs (templates/rbac.yaml), so the binary never serves routes
+            # its ServiceAccount cannot act on.
+            - name: GAWK_ADMIN_ROOMS
+              value: {{ .Values.rooms.enabled | quote }}
             {{- with .Values.notifications.webhooks }}
             # Chart-defined webhooks (docs/42 D9). This knob carries names,
             # URLs and the NAME of each signing key's environment variable —

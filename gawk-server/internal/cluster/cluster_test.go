@@ -512,6 +512,65 @@ func TestInformerCallbacks(t *testing.T) {
 	}
 }
 
+// Lookup (R42, PR #302 review) is the fleet-wide "is this broadcast known,
+// live, in grace" answer a room needs about an attachment homed on another
+// pod, served from the lease informer's cache so a 1 Hz refresh over every
+// attachment never costs an API Get. Before the informer has synced it
+// answers "unknown" (a pre-sync cache is empty, not authoritative); once
+// synced: a held, renewing lease is live; a grace stamp (or a renewTime
+// gone stale — the crash case, no stamp ever written) is in grace; a
+// deleted lease is unknown again.
+func TestLookupServesTheLeaseCache(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	b := newTestCoordinator(t, cs, "pod-b", clock, nil)
+	if _, _, ok := b.Lookup("K7XQ2M"); ok || b.LeasesSynced() {
+		t.Fatal("Lookup answered before the informer ran")
+	}
+	watching := leaseWatchRegistered(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.Run(ctx)
+	<-watching // see TestInformerCallbacks: the fake tracker replays nothing
+	if !b.WaitLeaseSync(ctx) {
+		t.Fatal("WaitLeaseSync")
+	}
+	if _, _, ok := b.Lookup("K7XQ2M"); ok {
+		t.Fatal("Lookup found a lease nobody claimed")
+	}
+
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, ok := b.Lookup("k7xq2m"); return ok }, "pod-b to see the lease")
+	if origin, inGrace, _ := b.Lookup("k7xq2m"); origin.Holder != "pod-a" || origin.Generation != 1 || inGrace {
+		t.Fatalf("live lease = %+v inGrace=%v, want pod-a gen 1, not in grace", origin, inGrace)
+	}
+
+	// The publisher goes away: pod-a stamps the grace deadline.
+	if err := a.EnterGrace(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("EnterGrace: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, inGrace, ok := b.Lookup("K7XQ2M"); return ok && inGrace }, "pod-b to see the grace stamp")
+
+	// A crashed origin never stamps anything; its renewTime going stale is
+	// the same answer.
+	if _, err := a.Claim(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, inGrace, ok := b.Lookup("K7XQ2M"); return ok && !inGrace }, "pod-b to see the re-claim")
+	clock.Advance(2 * b.opts.LeaseDuration)
+	if _, inGrace, ok := b.Lookup("K7XQ2M"); !ok || !inGrace {
+		t.Fatalf("stale renewTime: ok=%v inGrace=%v, want known and in grace", ok, inGrace)
+	}
+
+	if err := a.Delete(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, ok := b.Lookup("K7XQ2M"); return !ok }, "pod-b to see the deletion")
+}
+
 // R17 post-review fix (PR #47, the 5-minute time bomb): a pod whose lease
 // was force-taken reaches its local grace expiry later and calls Delete with
 // a stale opinion — it must NOT delete the new origin's actively-renewed

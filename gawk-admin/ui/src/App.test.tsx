@@ -147,6 +147,21 @@ describe('the shell', () => {
     expect(screen.queryByRole('heading', { name: 'Broadcasts' })).toBeNull();
   });
 
+  // Rooms (R42) is default-off in the deployment: the link appears only when
+  // /api/v1/me says the feature is on, so the nav never offers a route that
+  // would answer 404.
+  it('offers the Rooms link only when the probe reports the feature', async () => {
+    mount(OPERATOR);
+    await screen.findByRole('heading', { name: 'Broadcasts' });
+    expect(screen.queryByRole('link', { name: 'Rooms' })).toBeNull();
+    cleanup();
+
+    mount({ ...OPERATOR, features: { rooms: true } });
+    await screen.findByRole('heading', { name: 'Broadcasts' });
+    fireEvent.click(await screen.findByRole('link', { name: 'Rooms' }));
+    expect(await screen.findByRole('heading', { name: 'Rooms' })).toBeTruthy();
+  });
+
   it('follows a nav link', async () => {
     mount(OPERATOR);
     await screen.findByRole('heading', { name: 'Broadcasts' });

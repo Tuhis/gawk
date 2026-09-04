@@ -89,16 +89,19 @@ const (
 // viewer, distinguished by Role. They are the same kind of thing (both are
 // sessions with tokens), which is why they share one table.
 type SessionView struct {
-	SessionID    string          `json:"sessionId"`
-	BroadcastKey string          `json:"broadcastKey"`
-	Role         string          `json:"role"`
-	Browser      string          `json:"browser,omitempty"`
-	OS           string          `json:"os,omitempty"`
-	AppVersion   string          `json:"appVersion,omitempty"`
-	StartedAtMs  int64           `json:"startedAtMs,omitempty"`
-	Severity     rules.Severity  `json:"severity"`
-	Verdict      string          `json:"verdict,omitempty"`
-	Findings     []rules.Finding `json:"findings,omitempty"`
+	SessionID    string `json:"sessionId"`
+	BroadcastKey string `json:"broadcastKey"`
+	// RoomKey (R42, RM8) is the HMAC'd room the client said it was in, or
+	// empty. A hint the client stated, not a relay-verified fact.
+	RoomKey     string          `json:"roomKey,omitempty"`
+	Role        string          `json:"role"`
+	Browser     string          `json:"browser,omitempty"`
+	OS          string          `json:"os,omitempty"`
+	AppVersion  string          `json:"appVersion,omitempty"`
+	StartedAtMs int64           `json:"startedAtMs,omitempty"`
+	Severity    rules.Severity  `json:"severity"`
+	Verdict     string          `json:"verdict,omitempty"`
+	Findings    []rules.Finding `json:"findings,omitempty"`
 	// Freshness is reported per SIDE because the two are refreshed by
 	// different mechanisms at different rates. Presenting them as one instant
 	// would be a lie a viewer's absence could hide behind.
@@ -256,6 +259,11 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 			textFacts:   map[string]string{},
 		}
 		b.sessions[a.SessionID] = s
+	}
+	// The room, like the rest of the identity, is the client's to state; a
+	// key that first arrives on a later batch still attaches (R42, RM8).
+	if s.view.RoomKey == "" && a.RoomKey != "" {
+		s.view.RoomKey = a.RoomKey
 	}
 	// Identity is the CLIENT's to state — the relay cannot know what browser is
 	// on the far end — but the relay routinely creates the row first: it is

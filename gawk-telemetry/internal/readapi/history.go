@@ -41,6 +41,11 @@ const MaxHistoryLimit = 2000
 type HistoryQuery struct {
 	From, To     time.Time
 	BroadcastKey string
+	// RoomKey (R42, RM8) scopes the page to one room's sessions — every
+	// broadcast attached to it, every viewer that watched from inside it.
+	// This filter plus client-side grouping by broadcastKey IS the rooms
+	// view; no separate rooms endpoint exists.
+	RoomKey      string
 	Role         string
 	Verdict      string
 	Browser      string
@@ -66,6 +71,9 @@ type HistoryQuery struct {
 // columns a human scanning a list needs and a model does not.
 type HistoryRow struct {
 	SessionSummary
+	// RoomKey (R42, RM8) is on the HISTORY row, not on SessionSummary: the
+	// summary is `/v1/sessions`' MCP default and UD1 keeps that byte-identical.
+	RoomKey      string `json:"roomKey,omitempty"`
 	AppVersion   string `json:"appVersion,omitempty"`
 	EndedAtMs    int64  `json:"endedAtMs,omitempty"`
 	DeliveryMode string `json:"deliveryMode,omitempty"`
@@ -145,6 +153,9 @@ func (a *API) historyRow(r rollup.Row, q HistoryQuery, rawFromMs int64, live map
 	if q.BroadcastKey != "" && r.BroadcastKey != q.BroadcastKey {
 		return HistoryRow{}, false
 	}
+	if q.RoomKey != "" && r.RoomKey != q.RoomKey {
+		return HistoryRow{}, false
+	}
 	if q.Role != "" && r.Role != q.Role {
 		return HistoryRow{}, false
 	}
@@ -191,6 +202,7 @@ func (a *API) historyRow(r rollup.Row, q HistoryQuery, rawFromMs int64, live map
 			Severity: sev, Stalls: r.Stalls, Reconnects: r.Reconnects,
 			RelayCoverage: r.RelayCoverage, Distrust: distrust,
 		},
+		RoomKey:    r.RoomKey,
 		AppVersion: r.AppVersion, EndedAtMs: r.EndedAt, DeliveryMode: delivery,
 		Findings: len(rep.Findings), Live: live[r.SessionID],
 		// A session that started before the boundary has no raw window left,
@@ -234,6 +246,9 @@ func sortHistory(rows []HistoryRow, q HistoryQuery) {
 // BroadcastRow is TH3's broadcast-level row.
 type BroadcastRow struct {
 	BroadcastSummary
+	// RoomKey (R42, RM8) is the room any of this broadcast's sessions reported.
+	// On the history row only, for the same UD1 reason as HistoryRow.RoomKey.
+	RoomKey string `json:"roomKey,omitempty"`
 	// Broadcaster names the broadcaster session, so a row links straight to the
 	// side that can explain a fleet-wide symptom.
 	Broadcaster string `json:"broadcasterSessionId,omitempty"`
@@ -271,6 +286,9 @@ func (a *API) SearchBroadcasts(q HistoryQuery) (*BroadcastPage, error) {
 		if q.BroadcastKey != "" && r.BroadcastKey != q.BroadcastKey {
 			continue
 		}
+		if q.RoomKey != "" && r.RoomKey != q.RoomKey {
+			continue
+		}
 		if q.AppVersion != "" && r.AppVersion != q.AppVersion {
 			continue
 		}
@@ -280,6 +298,9 @@ func (a *API) SearchBroadcasts(q HistoryQuery) (*BroadcastPage, error) {
 				BroadcastKey: r.BroadcastKey, WorstVerdict: rules.SeverityOK,
 			}}
 			byKey[r.BroadcastKey] = b
+		}
+		if b.RoomKey == "" && r.RoomKey != "" {
+			b.RoomKey = r.RoomKey
 		}
 		b.Sessions++
 		if r.Role == "viewer" {

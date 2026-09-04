@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,8 +17,14 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomcluster"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/rooms"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // R2 review finding F1: the hardening limits parsed by config.ParseFlags must
@@ -51,6 +58,48 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 	// them separately when -cluster-mode is on).
 	if got := registryOptions(cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("registryOptions(cfg) = %+v, want %+v", got, want)
+	}
+}
+
+// R42 (docs/44 RM2): every -room-* knob must reach roomsrv.Options in
+// production — the R2 rule, one registry over. Every value is deliberately
+// non-zero, and IDReserved on the hub side is asserted separately by
+// TestRoomsWiringReservesLiveRoomCodes.
+func TestRoomOptionsCarryAllKnobs(t *testing.T) {
+	cfg := config.Config{
+		Rooms:               true,
+		RoomEmptyGrace:      77 * time.Second,
+		MaxRooms:            3,
+		MaxRoomBroadcasts:   5,
+		MaxRoomParticipants: 11,
+		RoomCreateSecret:    "invite",
+	}
+	want := roomsrv.Options{
+		EmptyGrace:      77 * time.Second,
+		MaxRooms:        3,
+		MaxBroadcasts:   5,
+		MaxParticipants: 11,
+		CreateSecret:    "invite",
+	}
+	if got := roomOptions(cfg); !reflect.DeepEqual(got, want) {
+		t.Errorf("roomOptions(cfg) = %+v, want %+v", got, want)
+	}
+}
+
+// docs/44 §4.10: the startup line states the room knobs, and never the
+// create secret itself.
+func TestStartupLogStatesTheRoomKnobs(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	logStartup(log, config.Config{Rooms: true, MaxRooms: 12, RoomCreateSecret: "hunter2", RoomsFile: "/r.json"}, "v")
+	out := buf.String()
+	for _, want := range []string{"rooms=true", "max_rooms=12", "room_create_secret_set=true", "rooms_file=/r.json"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("startup log lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "hunter2") {
+		t.Errorf("startup log leaks the room create secret:\n%s", out)
 	}
 }
 
@@ -166,7 +215,7 @@ func TestWiringInstallsTheClusterBeforeTheBanSourceCanActuate(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err != nil {
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, nil); err != nil {
 		t.Fatalf("wireSubsystems: %v", err)
 	}
 	if !built {
@@ -198,7 +247,7 @@ func TestWiringWithoutClusterModeStillStartsTheBanSource(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err != nil {
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, nil); err != nil {
 		t.Fatalf("wireSubsystems: %v", err)
 	}
 	want := []string{"set-moderation", "ban-added"}
@@ -217,7 +266,7 @@ func TestWiringFailsBeforeStartingTheBanSourceWhenTheCoordinatorFails(t *testing
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err == nil {
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, nil); err == nil {
 		t.Fatal("wireSubsystems returned nil, want the coordinator error")
 	}
 	for _, call := range srv.calls() {
@@ -249,4 +298,124 @@ func (s *recordingWiredServer) SetModeration(*moderation.Set) { s.record("set-mo
 func (s *recordingWiredServer) SetCluster(transport.ClusterCoordinator, string) {
 	s.record("set-cluster")
 }
+func (s *recordingWiredServer) SetRoomCluster(transport.RoomCluster, string) {
+	s.record("set-room-cluster")
+}
 func (s *recordingWiredServer) HandleBanAdded(moderation.Record) { s.record("ban-added") }
+
+// R42 RM3: the room store is installed AFTER the cluster (its drain hook
+// chains onto SetCluster's lease release, and adoption reads the cluster
+// wiring) and its informer starts AFTER the ban source — the rule that
+// governs the ban source itself, one informer over: its first events reach
+// the transport and the registry within milliseconds of starting.
+func TestWiringInstallsTheRoomStoreAfterTheClusterAndStartsItsInformerLast(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bans.json")
+	if err := os.WriteFile(path, []byte(
+		`[{"target":{"type":"broadcastId","value":"ABC23Z"},"reason":"kill"}]`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	srv := &recordingWiredServer{}
+	cfg := config.Config{ClusterMode: true, Rooms: true, ModerationSource: "file:" + path}
+	buildCoord := func() (transport.ClusterCoordinator, string, error) { return nil, "pod-0", nil }
+	buildRooms := func() (transport.RoomCluster, string, func(), error) {
+		srv.record("build-rooms")
+		return nil, "pod-0", func() { srv.record("rooms-informer-started") }, nil
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, buildRooms); err != nil {
+		t.Fatalf("wireSubsystems: %v", err)
+	}
+	want := []string{"set-moderation", "set-cluster", "build-rooms", "set-room-cluster", "ban-added", "rooms-informer-started"}
+	if got := srv.calls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("wiring order = %v, want %v", got, want)
+	}
+
+	// A store that cannot be built fails the process before the ban source
+	// starts against a half-wired server.
+	srv = &recordingWiredServer{}
+	failing := func() (transport.RoomCluster, string, func(), error) {
+		return nil, "", nil, errors.New("no kubeconfig")
+	}
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, failing); err == nil {
+		t.Fatal("wireSubsystems returned nil, want the room store error")
+	}
+	for _, call := range srv.calls() {
+		if call == "set-room-cluster" || call == "ban-added" {
+			t.Errorf("%s ran after the room store failed to build", call)
+		}
+	}
+}
+
+// Without -cluster-mode there is no room store: run passes a nil builder,
+// and the wiring must not touch SetRoomCluster — single-pod mode stays
+// byte-identical (docs/44 §4.3).
+func TestWiringWithoutARoomBuilderNeverInstallsARoomStore(t *testing.T) {
+	srv := &recordingWiredServer{}
+	cfg := config.Config{Rooms: true, ModerationSource: "off"}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, nil, nil); err != nil {
+		t.Fatalf("wireSubsystems: %v", err)
+	}
+	if got := srv.calls(); !reflect.DeepEqual(got, []string{"set-moderation"}) {
+		t.Errorf("wiring calls = %v, want only set-moderation", got)
+	}
+}
+
+// R42 RM3: the rooms stats source is nil until the registry is on the
+// transport. run once read it BEFORE SetRooms, so a rooms-enabled relay
+// exported no /statusz rooms section and no room metric series while every
+// unit test stayed green — the R2 F1 blind spot again, one seam over. Real
+// transport.Server, not a fake: the nil-before-install behaviour under test
+// is the transport's own.
+func TestInstallRoomsReadsTheStatsSourceAfterTheInstall(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	r := hub.NewRegistry(log, hub.Options{MaxSubscribers: 1})
+	cfg := config.Config{Addr: "127.0.0.1:0", MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, Rooms: true}
+	srv := transport.New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, errors.New("no cert") },
+		log, metrics.NewServerMetrics(prometheus.NewRegistry()))
+	if src := srv.RoomStatsSource(); src != nil {
+		t.Fatalf("stats source before SetRooms = %v, want nil (the premise of the ordering rule)", src)
+	}
+	if got := installRooms(srv, nil); got != nil {
+		t.Fatalf("installRooms with -rooms off = %v, want a nil interface", got)
+	}
+	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: log})
+	src := installRooms(srv, reg)
+	if src == nil {
+		t.Fatal("installRooms returned nil with a registry: the stats source was read before the install")
+	}
+	if src.Stats() == nil {
+		t.Fatal("the installed source reports no rooms map")
+	}
+}
+
+// R42 review (PR #302): every cluster seam of roomsrv.Options must reach
+// production — the R2 rule again. The registry grew Unreserve (give a
+// reservation back on the local re-check race) and AttachSecret (resolve a
+// static room's secret per join so a rotation needs no CR bump); a seam
+// left nil is a silent no-op in cluster mode while every unit test stays
+// green. Before the store exists the seams fail closed: Reserve and
+// AttachSecret refuse (ErrUnavailable), the notifications are no-ops.
+func TestRoomClusterSeamsAreAllWiredAndFailClosedWithoutAStore(t *testing.T) {
+	var ro roomsrv.Options
+	wireRoomClusterSeams(&ro, func() *roomcluster.Store { return nil })
+	if ro.Reserve == nil || ro.Unreserve == nil || ro.AttachSecret == nil ||
+		ro.OnRoomEnded == nil || ro.OnRoomEmpty == nil || ro.OnAttachmentsChanged == nil {
+		t.Fatalf("a cluster seam is unwired: %+v", ro)
+	}
+	if !ro.UnknownIsExpired {
+		t.Fatal("cluster mode must let the refresh poll expire a broadcast with no hub here and no lease anywhere (PR #302 review)")
+	}
+	if err := ro.Reserve(context.Background(), &rooms.Room{}); !errors.Is(err, roomsrv.ErrUnavailable) {
+		t.Errorf("Reserve without a store = %v, want ErrUnavailable", err)
+	}
+	if _, found, err := ro.AttachSecret("tuhisroom"); err == nil || found {
+		t.Errorf("AttachSecret without a store = found=%v err=%v, want an error (fail closed)", found, err)
+	}
+	// No panics on the nil store.
+	ro.Unreserve(context.Background(), "k7xq2m")
+	ro.OnRoomEnded("k7xq2m", 0)
+	ro.OnRoomEmpty("k7xq2m", true)
+	ro.OnAttachmentsChanged("k7xq2m", nil)
+}

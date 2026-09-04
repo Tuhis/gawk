@@ -193,6 +193,19 @@ export function audioSinkSupported(): boolean {
   return typeof AudioContext !== 'undefined' && typeof AudioWorkletNode !== 'undefined';
 }
 
+// R42 (docs/44 §4.7): an injected output. By default a sink owns its own
+// AudioContext (the single viewer, unchanged); a room hands every tile the
+// SAME context and a destination node (the master gain), so N tiles mix
+// client-side into one output. The worklet module is per context and can be
+// registered only once per context ('gawk-audio' is already registered' is
+// what a second addModule throws), so the owner of a shared context provides
+// the one-shot registration rather than the sink calling addModule itself.
+export interface AudioOutput {
+  context: AudioContext;
+  destination: AudioNode;
+  ensureWorklet: () => Promise<void>;
+}
+
 // Field finding 7 (docs/20): the worklet posts a playhead report every ~250 ms
 // as long as its AudioContext is running — even while underrunning. A gap this
 // long means the context was suspended (Safari does this at will) or the
@@ -261,13 +274,16 @@ export class AudioSink {
   // a change in it (docs/20 field finding 11).
   private lastScheduleProbeMs: number | null = null;
   private lastReanchorAtMs = -Infinity;
+  // R42: the shared output, when this sink does not own its context.
+  private readonly output: AudioOutput | null;
 
   constructor(
     callbacks: AudioSinkCallbacks = {},
     profile?: AudioBufferProfile | (() => AudioBufferProfile),
-    opts: { now?: () => number } = {},
+    opts: { now?: () => number; output?: AudioOutput } = {},
   ) {
     this.cb = callbacks;
+    this.output = opts.output ?? null;
     const now = opts.now ?? (() => performance.now());
     this.now = now;
     this.buffer = new AudioJitterBuffer((chunk) => this.forward(chunk), profile, {
@@ -432,7 +448,10 @@ export class AudioSink {
   }
 
   private async build(sampleRate: number): Promise<void> {
-    const ctx = this.openContext(sampleRate);
+    // R42: a shared context is opened by its owner at whatever rate it chose;
+    // the worklet's per-chunk rate ratio (field finding 8) absorbs the
+    // mismatch exactly as it does when a browser hands back the device rate.
+    const ctx = this.output ? this.output.context : this.openContext(sampleRate);
     this.ctx = ctx;
     this.contextSampleRate = ctx.sampleRate ?? null;
     if (this.contextSampleRate !== null && this.contextSampleRate !== sampleRate) {
@@ -442,14 +461,13 @@ export class AudioSink {
         `AudioContext runs at ${this.contextSampleRate} Hz for ${sampleRate} Hz content; the worklet will resample.`,
       );
     }
-    const url = URL.createObjectURL(new Blob([PROCESSOR_SOURCE], { type: 'application/javascript' }));
-    try {
-      await ctx.audioWorklet.addModule(url);
-    } finally {
-      URL.revokeObjectURL(url);
+    if (this.output) {
+      await this.output.ensureWorklet();
+    } else {
+      await addWorkletModule(ctx);
     }
     if (this.disposed) {
-      void ctx.close();
+      if (!this.output) void ctx.close();
       return;
     }
     const node = new AudioWorkletNode(ctx, 'gawk-audio', { outputChannelCount: [2] });
@@ -490,7 +508,7 @@ export class AudioSink {
     const gain = ctx.createGain();
     gain.gain.value = this.muted ? 0 : this.volume;
     node.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.output ? this.output.destination : ctx.destination);
     this.node = node;
     this.gain = gain;
   }
@@ -654,6 +672,20 @@ export class AudioSink {
     this.teardownNodes();
     const ctx = this.ctx;
     this.ctx = null;
-    void ctx?.close().catch(() => {});
+    // A shared context belongs to its owner (the room's mixer); closing it
+    // here would silence every other tile.
+    if (!this.output) void ctx?.close().catch(() => {});
+  }
+}
+
+// Registers the worklet processor on a context, once. Exported for the R42
+// room mixer, which owns a shared context and must call this exactly once
+// for it (a second registration of 'gawk-audio' rejects).
+export async function addWorkletModule(ctx: AudioContext): Promise<void> {
+  const url = URL.createObjectURL(new Blob([PROCESSOR_SOURCE], { type: 'application/javascript' }));
+  try {
+    await ctx.audioWorklet.addModule(url);
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }

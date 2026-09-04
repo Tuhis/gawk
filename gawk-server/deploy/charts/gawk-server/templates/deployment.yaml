@@ -249,6 +249,32 @@ spec:
               value: {{ .Values.telemetry.advertiseUrl | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.rooms.enabled }}
+            # R42 (docs/44 §4.10): rooms on, with every limit plumbed — a
+            # knob missing here is a knob the relay silently runs at its
+            # default (CODE-REVIEW.md, the R1/R2 lesson).
+            - name: GAWK_ROOMS
+              value: "true"
+            - name: GAWK_ROOM_EMPTY_GRACE
+              value: {{ .Values.rooms.emptyGrace | quote }}
+            - name: GAWK_MAX_ROOMS
+              value: {{ .Values.rooms.maxRooms | quote }}
+            - name: GAWK_MAX_ROOM_BROADCASTS
+              value: {{ .Values.rooms.maxBroadcasts | quote }}
+            - name: GAWK_MAX_ROOM_PARTICIPANTS
+              value: {{ .Values.rooms.maxParticipants | quote }}
+            {{- if or .Values.rooms.createSecretRef .Values.rooms.createSecret }}
+            - name: GAWK_ROOM_CREATE_SECRET
+              {{- if .Values.rooms.createSecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.rooms.createSecretRef.name | quote }}
+                  key: {{ .Values.rooms.createSecretRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.rooms.createSecret | quote }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.moderation.enabled }}
             # R39 (docs/42 §4.3): where this pod reads enforcement from.
             # "k8s" watches Ban CRs in POD_NAMESPACE — independent of cluster

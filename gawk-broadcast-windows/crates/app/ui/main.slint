@@ -106,6 +106,19 @@ export component MainWindow inherits Window {
     in property <string> join-link: "";
     in property <string> copied-note: "";
 
+    // ----- room card (R42, docs/44 §4.8) -----
+    // The inputs persist to the config (settings-edited); the buttons act on
+    // the running session. Idle: the card says what the next start will do.
+    in-out property <string> room-input: "";       // a code, a slug, or a room link
+    in-out property <string> room-attach-key: "";
+    in-out property <string> room-label: "";
+    in-out property <string> room-nickname: "";
+    in property <bool> room-active: false;         // a room control session exists
+    in property <bool> room-attached: false;
+    in property <string> room-code: "";            // the joined/minted code
+    in property <string> room-status: "";
+    in property <string> room-link: "";
+
     // ----- thumbnail -----
     in property <image> thumbnail;
     in property <bool> show-thumbnail: false;
@@ -166,6 +179,9 @@ export component MainWindow inherits Window {
     callback add-server();
     callback remove-server();
     callback switch-to-system-audio();
+    callback room-attach();
+    callback room-new();
+    callback room-detach();
     callback open-link(string);
     callback quit-confirmed();
 
@@ -441,6 +457,122 @@ export component MainWindow inherits Window {
                         color: Palette.live;
                         font-size: 12px;
                         vertical-alignment: center;
+                    }
+                }
+            }
+
+            // ================= room (R42) =================
+            Card {
+                title: "ROOM";
+                if root.room-code != "": HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.room-code;
+                        color: Palette.text;
+                        font-size: 22px;
+                        font-family: "Consolas";
+                        letter-spacing: 3px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { }
+                    if root.room-link != "": Button {
+                        text: "Open room view";
+                        clicked => {
+                            root.open-link(root.room-link);
+                        }
+                    }
+                }
+                if root.room-status != "": Text {
+                    text: root.room-status;
+                    color: root.room-attached ? Palette.live : Palette.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if !root.room-active: VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Room code or link (blank = no room)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.room-input;
+                        placeholder-text: "K7XQ2M, lan-party, or https://…/#/room/…";
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    Text {
+                        text: "Attach key (static rooms only)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.room-attach-key;
+                        input-type: InputType.password;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Tile label";
+                                color: Palette.muted;
+                                font-size: 11px;
+                            }
+                            LineEdit {
+                                text <=> root.room-label;
+                                enabled: !root.busy;
+                                edited => {
+                                    root.settings-edited();
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Nickname";
+                                color: Palette.muted;
+                                font-size: 11px;
+                            }
+                            LineEdit {
+                                text <=> root.room-nickname;
+                                enabled: !root.busy;
+                                edited => {
+                                    root.settings-edited();
+                                }
+                            }
+                        }
+                    }
+                    if !root.busy && root.room-input != "": Text {
+                        text: "Joins this room when the broadcast starts.";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    if root.busy && !root.room-active: Button {
+                        text: "Attach";
+                        enabled: root.room-input != "";
+                        clicked => {
+                            root.room-attach();
+                        }
+                    }
+                    if root.busy && !root.room-active: Button {
+                        text: "New room";
+                        clicked => {
+                            root.room-new();
+                        }
+                    }
+                    if root.room-active: Button {
+                        text: root.room-attached ? "Detach" : "Leave room";
+                        clicked => {
+                            root.room-detach();
+                        }
                     }
                 }
             }

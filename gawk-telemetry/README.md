@@ -132,6 +132,23 @@ fingerprinting, and never any media. The client never reports the raw
 joinable broadcast ID — only the obfuscated key the relay handed it, which
 the session token's HMAC binds.
 
+## Rooms
+
+A session that started inside a room (R42, `docs/44-rooms.md`) reports the
+room's key — the relay's HMAC of the room code, handed over in `RoomState`,
+the same 12-hex shape as the broadcast key and never the joinable code
+itself. Ingest shape-checks it like `broadcastKey` but the session token
+does not cover it, so it is a grouping hint, not proof of membership. It is
+stored on every session line and on the permanent rollup row (additive; old
+files simply lack it), shows on the session view as a *room* chip, and the
+chip opens `#/room/<key>`: that room's sessions grouped by broadcast. On the
+read API it is `roomKey` on the session detail (`detail=1`) and on history
+rows, a `room=` filter on `/v1/history/sessions` and
+`/v1/history/broadcasts`, `GET /v1/history/rooms/{key}` for one room, and
+`POST /v1/resolve {"room": "<code>"}` to turn a code into its key (501
+without a stats key, like the broadcast form). `/v1/sessions` and
+`/v1/broadcasts` — the MCP defaults — do not change.
+
 ## Build & test
 
 ```sh

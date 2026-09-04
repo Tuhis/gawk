@@ -1,0 +1,900 @@
+/* R42 (docs/44 §4.9 revision): the cinematic dock. Video edge to edge in
+   the viewer's language; a header and a footer overlay that fade after the
+   viewer's idle period; an optional people-and-chat panel that pins.
+
+   Breakpoint: 720 px (--room-narrow, mirrored by NARROW_QUERY in
+   RoomScreen.tsx). Below it the grid degrades to focus, the panel becomes a
+   bottom sheet, and the focus strip shrinks. */
+
+.root {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  overflow: hidden;
+  cursor: default;
+  --strip-w: 12rem;
+  --strip-h: 6.75rem;
+  --strip-top: 4rem;
+  --strip-gap: 0.5rem;
+}
+
+.pseudoFullscreen {
+  height: 100dvh;
+  z-index: 100;
+}
+
+/* ── Stage: one flat list of tiles laid out by data-mode, so a mode switch
+   moves tiles instead of remounting them (each tile owns a media session). ── */
+.stage {
+  position: absolute;
+  inset: 0;
+}
+
+.stage[data-mode='grid'] {
+  display: grid;
+  gap: 2px;
+  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.stage[data-panel='true'] {
+  right: var(--panel-w, 340px);
+}
+
+/* ── Tile ── */
+.tile {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+  outline: none;
+}
+
+.stage[data-mode='focus'] .tile[data-variant='focus'] {
+  position: absolute;
+  inset: 0;
+}
+
+.stage[data-mode='focus'] .tile[data-variant='small'] {
+  position: absolute;
+  right: 1rem;
+  top: calc(var(--strip-top) + var(--i, 0) * (var(--strip-h) + var(--strip-gap)));
+  width: var(--strip-w);
+  height: var(--strip-h);
+  z-index: 12;
+  border-radius: var(--r-md);
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  cursor: pointer;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.stage[data-mode='focus'] .tile[data-variant='small']:hover {
+  border-color: var(--text);
+}
+
+.tile[data-own='true'] {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.tileCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* The number key badge + label, top-left of the tile while the chrome shows. */
+.tileHead {
+  position: absolute;
+  top: 0.6rem;
+  left: 0.6rem;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: calc(100% - 1.2rem);
+  transition: opacity var(--dur) var(--ease);
+}
+
+.tileKey {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.35rem;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--glass-border);
+}
+
+.tileLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--glass-border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.tileLabel[data-live='false'] {
+  color: var(--warning);
+}
+
+.tileWatching {
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bottom-right per-tile controls: the volume pill (grid), open full-screen. */
+.tileFoot {
+  position: absolute;
+  right: 0.6rem;
+  bottom: 0.6rem;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.volumePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.4rem 0.15rem 0.15rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--glass-border);
+}
+
+.volumePill input {
+  width: 4.5rem;
+  accent-color: var(--text);
+  cursor: pointer;
+}
+
+.chromeHidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Centred tile-state (connecting / offline / away). */
+.tileState {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-align: center;
+  padding: 1rem;
+  pointer-events: none;
+}
+
+.tile[data-variant='small'] .tileState {
+  font-size: var(--fs-xs);
+}
+
+.tile[data-variant='small'] .tileHead {
+  top: 0.35rem;
+  left: 0.35rem;
+}
+
+.tile[data-variant='small'] .tileLabel {
+  font-size: 0.62rem;
+  padding: 0.1rem 0.4rem;
+}
+
+/* The broadcaster's own glass bar inside their tile (docs/44 §4.9). */
+.ownBar {
+  position: absolute;
+  left: 50%;
+  bottom: 0.75rem;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 999px;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.ownBarLabel {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  font-weight: 600;
+  padding: 0 0.5rem 0 0.35rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ── Header overlay ── */
+.header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 1.1rem;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.headerHidden {
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+}
+
+.headerLeft,
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.code {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.7rem;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.count[data-live='true'] {
+  color: var(--text);
+}
+
+/* ── Footer overlay ── */
+.footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.footerHidden {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+.footerLeft,
+.footerRight {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+/* The Grid / Focus / Hide videos segmented control. */
+.segment {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.segmentBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segmentBtn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.segmentBtn[aria-checked='true'] {
+  color: #0a0b0d;
+  background: var(--text);
+}
+
+.segmentBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.presetPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.presetPill:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.presetCaret {
+  color: var(--muted);
+}
+
+.master {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: 0.35rem;
+}
+
+.masterVolume {
+  width: 5.5rem;
+  accent-color: var(--text);
+  cursor: pointer;
+}
+
+.leaveBtn {
+  color: var(--danger);
+}
+
+.leaveBtn:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+/* ── Centred cards (connecting / ended / error / hidden / empty) ── */
+.center {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.center[data-panel='true'] {
+  right: var(--panel-w, 340px);
+}
+
+.card {
+  width: min(90vw, 380px);
+  padding: 2rem 1.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.cardText {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.cardActions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+
+.spinnerSmall {
+  width: 22px;
+  height: 22px;
+  border-width: 2px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Reconnecting pill (same as the viewer's) ── */
+.topPill {
+  position: absolute;
+  top: 4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.85rem;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+}
+
+.pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.unmutePrompt {
+  position: absolute;
+  bottom: 5.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* ── People-and-chat panel ── */
+.panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: var(--panel-w, 340px);
+  border-radius: 0;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  text-align: left;
+  animation: panelIn var(--dur) var(--ease);
+}
+
+@keyframes panelIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.panelHeadActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.pinned {
+  color: var(--accent);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.rowLabel {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowSub {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.rowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex: none;
+}
+
+.rowActions :global(button),
+.rowActions a {
+  width: 1.9rem;
+  height: 1.9rem;
+  font-size: 1rem;
+}
+
+/* The reserved speaking indicator (docs/44 §4.11): a fixed-width slot so the
+   roster does not reflow when voice arrives. */
+.speaking {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--faint);
+}
+
+.speaking[data-on='true'] {
+  background: var(--ok);
+  border-color: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent);
+}
+
+.kind {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.kind[data-streaming='true'] {
+  color: var(--live);
+}
+
+.awayDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.liveDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.openLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-md);
+  color: var(--muted);
+}
+
+.openLink:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.nickForm {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.nickInput {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0.45rem 0.6rem;
+}
+
+.nickInput:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.chatArea {
+  min-height: 6rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  padding: 0.75rem;
+  color: var(--faint);
+  font-size: var(--fs-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.panelActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.panelFoot {
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ── Modals (nickname prompt) ── */
+.scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modalCenter {
+  position: absolute;
+  inset: 0;
+  z-index: 41;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  pointer-events: none;
+}
+
+.modal {
+  width: min(92vw, 360px);
+  padding: 1.75rem 1.5rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  text-align: center;
+  pointer-events: auto;
+}
+
+.modalTitle {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.modalForm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin-top: 0.5rem;
+}
+
+.modalInput {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0.6rem 0.75rem;
+  text-align: center;
+}
+
+.modalInput:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.modalActions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+}
+
+/* ── Narrow (phones): grid degrades to focus, the panel is a bottom sheet. ── */
+@media (max-width: 719px) {
+  .root {
+    --strip-w: 7.5rem;
+    --strip-h: 4.25rem;
+    --strip-top: 3.5rem;
+  }
+
+  .stage[data-panel='true'] {
+    right: 0;
+    bottom: 55vh;
+  }
+
+  .center[data-panel='true'] {
+    right: 0;
+    bottom: 55vh;
+  }
+
+  .panel {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: 55vh;
+    border-top: 1px solid var(--glass-border);
+    border-left: none;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    animation: sheetIn var(--dur) var(--ease);
+  }
+
+  .code {
+    max-width: 7.5rem;
+  }
+
+  .masterVolume {
+    display: none;
+  }
+}
+
+@keyframes sheetIn {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@media (pointer: coarse) {
+  .segmentBtn {
+    padding: 0.45rem 0.7rem;
+  }
+}

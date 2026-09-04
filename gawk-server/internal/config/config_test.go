@@ -35,6 +35,10 @@ func TestDefaults(t *testing.T) {
 		MaxBandwidthBytes:    0,
 		MaxKeyframeBytes:     8388608,
 		KeyframeWriteTimeout: time.Second,
+		RoomEmptyGrace:       time.Minute,
+		MaxRooms:             10,
+		MaxRoomBroadcasts:    4,
+		MaxRoomParticipants:  50,
 		DVRWindow:            3 * time.Second,
 		DVRMaxBytes:          24 << 20,
 		DVRMaxCatchup:        4,
@@ -517,6 +521,58 @@ func TestModerationSource(t *testing.T) {
 // R39 AP3 (docs/42 §4.3 table, §9): the admin-API knobs parse from flag and
 // env with flag-over-env precedence, carry working defaults for the
 // authorization policy, and reject the two shapes that fail SILENTLY.
+// R42 (docs/44 §4.10): every room knob parses from flag and env, flag wins,
+// -rooms defaults off, and each limit refuses a non-positive value.
+func TestRoomKnobs(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"-rooms",
+		"-room-empty-grace", "90s",
+		"-max-rooms", "3",
+		"-max-room-broadcasts", "2",
+		"-max-room-participants", "7",
+		"-room-create-secret", "invite",
+		"-rooms-file", "/etc/gawk/rooms.json",
+	}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if !cfg.Rooms || cfg.RoomEmptyGrace != 90*time.Second || cfg.MaxRooms != 3 || cfg.MaxRoomBroadcasts != 2 ||
+		cfg.MaxRoomParticipants != 7 || cfg.RoomCreateSecret != "invite" || cfg.RoomsFile != "/etc/gawk/rooms.json" {
+		t.Errorf("flags not carried through: %+v", cfg)
+	}
+	cfg, err = ParseFlags(nil, envMap(map[string]string{
+		"GAWK_ROOMS":                 "true",
+		"GAWK_ROOM_EMPTY_GRACE":      "45s",
+		"GAWK_MAX_ROOMS":             "4",
+		"GAWK_MAX_ROOM_BROADCASTS":   "3",
+		"GAWK_MAX_ROOM_PARTICIPANTS": "8",
+		"GAWK_ROOM_CREATE_SECRET":    "env-invite",
+		"GAWK_ROOMS_FILE":            "/env/rooms.json",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags(env): %v", err)
+	}
+	if !cfg.Rooms || cfg.RoomEmptyGrace != 45*time.Second || cfg.MaxRooms != 4 || cfg.MaxRoomBroadcasts != 3 ||
+		cfg.MaxRoomParticipants != 8 || cfg.RoomCreateSecret != "env-invite" || cfg.RoomsFile != "/env/rooms.json" {
+		t.Errorf("env fallback not honoured: %+v", cfg)
+	}
+	cfg, err = ParseFlags([]string{"-max-rooms", "9"}, envMap(map[string]string{"GAWK_MAX_ROOMS": "4"}))
+	if err != nil || cfg.MaxRooms != 9 {
+		t.Errorf("flag over env: %d, %v", cfg.MaxRooms, err)
+	}
+	if cfg.Rooms {
+		t.Error("-rooms must default off (docs/44 D17)")
+	}
+	for _, bad := range [][]string{
+		{"-room-empty-grace", "0s"}, {"-room-empty-grace", "soon"},
+		{"-max-rooms", "0"}, {"-max-room-broadcasts", "-1"}, {"-max-room-participants", "x"},
+	} {
+		if _, err := ParseFlags(bad, noEnv); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}
+
 func TestAdminAPIKnobs(t *testing.T) {
 	cfg, err := ParseFlags([]string{
 		"-admin-api-token", "tok",

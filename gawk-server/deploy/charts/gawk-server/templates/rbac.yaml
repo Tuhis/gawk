@@ -79,4 +79,48 @@ subjects:
     name: {{ include "gawk-server.fullname" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.rooms.enabled .Values.config.clusterMode }}
+---
+# R42 RM3 (docs/44 §4.3, §4.5): the relay WRITES rooms, unlike bans. A
+# dynamic room is minted by the relay (the CR create is the code
+# reservation), its status carries the home-pod lease every pod renews and
+# force-takes, and the room ends by CR deletion — so the full verb set on
+# `rooms` AND on `rooms/status` (the status subresource is a separate
+# endpoint; crd-room.yaml explains why the CR has one). `secrets` get, and
+# nothing more, because a static room's attach secret is a Secret reference
+# the home pod reads once when it claims the room; no list/watch, so a
+# compromised relay cannot enumerate the namespace's Secrets.
+#
+# Gated on rooms.enabled AND clusterMode: a single-pod relay with rooms on
+# uses no Kubernetes client at all (dynamic rooms in memory, static rooms
+# from -rooms-file), so it needs none of this. Bans above stay read-only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-rooms
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["rooms", "rooms/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-rooms
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gawk-server.fullname" . }}-rooms
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gawk-server.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- end }}

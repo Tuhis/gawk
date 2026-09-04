@@ -25,6 +25,57 @@ export interface Me {
     /** `-kill-cooldown` in seconds. Documented default 600 (§4.7, §4.12). */
     killCooldownSeconds?: number;
   };
+  /**
+   * Optional surfaces this deployment serves. `rooms` (R42, docs/44 D20) is
+   * default-off: with it off `/api/v1/rooms` answers 404, so the shell shows
+   * no navigation to it. Optional so an older binary reads as "nothing extra".
+   */
+  features?: {
+    rooms?: boolean;
+  };
+}
+
+export type RoomKind = 'static' | 'dynamic';
+
+/**
+ * `GET /api/v1/rooms` rows (R42). `name` is the raw code — a joinable secret
+ * exactly like a broadcast ID (docs/44 D16), portal-only. `key` is the fleet's
+ * HMAC'd handle, empty until a relay pod has homed the room; it is what a
+ * webhook's `?key=` deep link filters by.
+ */
+export interface Room {
+  name: string;
+  kind: RoomKind | '';
+  /** Display form: the slug as configured, or the upper-cased dynamic code. */
+  code: string;
+  displayName?: string;
+  maxBroadcasts?: number;
+  attachments: number;
+  homeHolder?: string;
+  key?: string;
+  createdAt?: string;
+  emptySince?: string;
+  /** Whether a static room is gated. The secret itself is never returned. */
+  hasAttachSecret: boolean;
+  /** Created by the portal; false for a `kubectl apply`'d room. */
+  managed: boolean;
+}
+
+export interface CreateRoomRequest {
+  code: string;
+  displayName?: string;
+  maxBroadcasts?: number;
+  withAttachSecret?: boolean;
+}
+
+/**
+ * The create (201) and rotate (200) body: the room plus the ONE-TIME attach
+ * secret. Absent when no secret was minted. This is the only place a secret
+ * is ever on the wire, and the view shows it exactly once.
+ */
+export interface RoomWithSecret {
+  room: Room;
+  attachSecret?: string;
 }
 
 export type BanTargetType = 'broadcastId' | 'ip';
@@ -250,6 +301,9 @@ export type ApiErrorCode =
   | 'source_immutable'
   | 'invalid_target'
   | 'ban_not_active'
+  | 'room_exists'
+  | 'room_not_static'
+  | 'room_not_dynamic'
   | 'unavailable'
   | 'internal';
 

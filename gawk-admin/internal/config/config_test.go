@@ -52,6 +52,36 @@ func TestDefaults(t *testing.T) {
 	if cfg.Namespace != "production" {
 		t.Errorf("Namespace = %q, want production (from POD_NAMESPACE)", cfg.Namespace)
 	}
+	// R42 rooms are OFF by default: the chart's rooms.enabled=false is also
+	// the RBAC posture (docs/44 D20), and the binary must not serve routes its
+	// ServiceAccount cannot act on.
+	if cfg.Rooms {
+		t.Error("Rooms = true by default, want off")
+	}
+}
+
+// -rooms / GAWK_ADMIN_ROOMS is a boolean knob with the flag beating the env,
+// like every other one here; it is what main.go keys the RoomClient on.
+func TestRoomsKnob(t *testing.T) {
+	env := minimal()
+	env["GAWK_ADMIN_ROOMS"] = "true"
+	cfg, err := ParseFlags(nil, envFrom(env))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if !cfg.Rooms {
+		t.Error("GAWK_ADMIN_ROOMS=true did not enable rooms")
+	}
+	cfg, err = ParseFlags([]string{"-rooms", "false"}, envFrom(env))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.Rooms {
+		t.Error("-rooms false did not beat GAWK_ADMIN_ROOMS=true")
+	}
+	if attrs := strings.Join(asStrings(cfg.LogAttrs()), " "); !strings.Contains(attrs, "rooms") {
+		t.Errorf("LogAttrs does not report rooms: %s", attrs)
+	}
 }
 
 // The default roles claim is the Keycloak client-roles path with the AUDIENCE
@@ -254,6 +284,7 @@ func TestInvalidScalars(t *testing.T) {
 		{"-log-level", "loud"},
 		{"-log-format", "yaml"},
 		{"-external-url", "admin.example.com"},
+		{"-rooms", "maybe"},
 	} {
 		if _, err := ParseFlags(args, envFrom(minimal())); err == nil {
 			t.Errorf("ParseFlags(%v) succeeded, want an error", args)

@@ -37,40 +37,48 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
 
-const crdTemplate = "../../../gawk-server/deploy/charts/gawk-server/templates/crd-ban.yaml"
+const (
+	crdTemplate = "../../../gawk-server/deploy/charts/gawk-server/templates/crd-ban.yaml"
+	// roomCRDTemplate is R42's Room CRD (docs/44 §4.3, RM3), shipped by the
+	// relay chart; envtest_rooms_test.go renders it beside the Ban one.
+	roomCRDTemplate = "../../../gawk-server/deploy/charts/gawk-server/templates/crd-room.yaml"
+)
 
 // renderedCRD turns the chart's templated CRD into plain YAML. The template's
 // only directives are the enabled-gate and the labels include, so stripping
 // every line carrying `{{` yields the exact schema the chart installs.
-func renderedCRD(t *testing.T) string {
+func renderedCRD(t *testing.T, templates ...string) string {
 	t.Helper()
-	raw, err := os.ReadFile(crdTemplate)
-	if err != nil {
-		t.Fatalf("read the chart's CRD template: %v", err)
-	}
-	var out []string
-	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.Contains(line, "{{") {
-			continue
-		}
-		out = append(out, line)
-	}
 	dir := t.TempDir()
-	path := filepath.Join(dir, "crd-ban.yaml")
-	if err := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o600); err != nil {
-		t.Fatalf("write rendered CRD: %v", err)
+	for _, tmpl := range templates {
+		raw, err := os.ReadFile(tmpl)
+		if err != nil {
+			t.Fatalf("read the chart's CRD template: %v", err)
+		}
+		var out []string
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.Contains(line, "{{") {
+				continue
+			}
+			out = append(out, line)
+		}
+		path := filepath.Join(dir, filepath.Base(tmpl))
+		if err := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o600); err != nil {
+			t.Fatalf("write rendered CRD: %v", err)
+		}
 	}
 	return dir
 }
 
-// startEnv boots one apiserver+etcd with the chart's CRD installed and a
-// namespace to work in.
-func startEnv(t *testing.T) (*rest.Config, string) {
+// startEnv boots one apiserver+etcd with the chart's CRD(s) installed and a
+// namespace to work in. The Ban CRD is always installed; extra templates are
+// rendered beside it.
+func startEnv(t *testing.T, extraCRDs ...string) (*rest.Config, string) {
 	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS is not set: skipping the envtest-backed test (run `setup-envtest use -p path` and export it)")
 	}
-	env := &envtest.Environment{CRDDirectoryPaths: []string{renderedCRD(t)}}
+	env := &envtest.Environment{CRDDirectoryPaths: []string{renderedCRD(t, append([]string{crdTemplate}, extraCRDs...)...)}}
 	cfg, err := env.Start()
 	if err != nil {
 		t.Fatalf("start envtest: %v", err)

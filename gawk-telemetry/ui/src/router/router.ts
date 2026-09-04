@@ -25,6 +25,7 @@ export type ViewName =
   | 'live'
   | 'session'
   | 'broadcast'
+  | 'room'
   | 'history'
   | 'explore'
   | 'fleet'
@@ -67,6 +68,11 @@ export function parseHash(hash: string): Route {
       return { view: 'session', id: second ?? '', params, raw };
     case 'broadcast':
       return { view: 'broadcast', id: second ?? '', params, raw };
+    case 'room':
+      // R42 (RM8): `#/room/<key>` is what the session view's Room chip links
+      // to. Same tolerance as `session`: a malformed key still lands on the
+      // room view, which says so.
+      return { view: 'room', id: second ?? '', params, raw };
     case 'history':
     case 'explore':
     case 'fleet':
@@ -83,6 +89,11 @@ export function isSessionId(id: string | undefined): boolean {
 }
 
 export function isBroadcastKey(key: string | undefined): boolean {
+  return !!key && BROADCAST_KEY.test(key);
+}
+
+/** A room key has the broadcast key's shape: the same 6-byte HMAC, hex. */
+export function isRoomKey(key: string | undefined): boolean {
   return !!key && BROADCAST_KEY.test(key);
 }
 

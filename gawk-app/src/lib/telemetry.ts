@@ -114,6 +114,10 @@ export interface TelemetryBatch<T> {
   // must be able to tell a truncated session from a complete one; the rollup
   // records it (docs/33 §4.5 "Data quality").
   truncated?: true;
+  // R42 (docs/44 §4.10, RM8): the room this session was opened inside, as
+  // the relay's HMAC'd 6-byte key in hex (12 characters) — never the code.
+  // Absent outside a room; the ingest treats it as optional.
+  roomKey?: string;
 }
 
 // What one delivery attempt concluded. `retryable` separates "later" from
@@ -183,6 +187,8 @@ export class TelemetryCollector<T> {
   // Set once a batch has been abandoned: further failures are not worth
   // logging, and the session's coverage is already imperfect.
   private givenUp = false;
+  // R42: the HMAC'd room key (hex) stamped on every batch while set.
+  private roomKey: string | null = null;
 
   constructor(options: TelemetryCollectorOptions<T>) {
     this.opts = {
@@ -369,6 +375,7 @@ export class TelemetryCollector<T> {
       samples: this.samples,
       events: this.events,
       ...(this.truncated ? { truncated: true as const } : {}),
+      ...(this.roomKey === null ? {} : { roomKey: this.roomKey }),
     };
     this.samples = [];
     this.events = [];
@@ -417,6 +424,15 @@ export class TelemetryCollector<T> {
   // after begin(); a flush blocked by requireAdvertisedUrl unblocks here.
   setAdvertisedUrl(url: string): void {
     this.advertisedUrl = url;
+  }
+
+  // R42 (docs/44 §4.10): group this session with its room. The key is the
+  // relay's HMAC over the code (RoomState.key), handed over because a client
+  // cannot compute it; hex-encoded here, and the raw code never travels.
+  // Legal before or after begin() — the room's control session and the
+  // tile's media session race — and null clears it.
+  setRoomKey(hex: string | null): void {
+    this.roomKey = hex === null || hex === '' ? null : hex;
   }
 
   // True while batches are actually leaving for a relay-advertised (foreign)

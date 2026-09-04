@@ -14,8 +14,11 @@ export function LandingPage() {
   const [code, setCode] = useState('');
   const valid = isValidBroadcastId(code);
 
+  // R42 (docs/44 D19): a typed code may name a room or a broadcast; the
+  // #/join/ resolver asks the relay and lands on whichever it is. No
+  // "start a room" here on purpose — rooms are made from a running broadcast.
   const join = (id: string = code) => {
-    if (isValidBroadcastId(id)) window.location.hash = `#/view/${id}`;
+    if (isValidBroadcastId(id)) window.location.hash = `#/join/${id}`;
   };
 
   return (

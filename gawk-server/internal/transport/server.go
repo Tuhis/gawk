@@ -29,6 +29,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -89,6 +90,11 @@ type ClusterCoordinator interface {
 	// OriginGeneration reports whether this pod holds the broadcast's lease
 	// and at which generation — the internal route's 404/409 fence (W4).
 	OriginGeneration(broadcastID string) (int64, bool)
+	// Lookup is Resolve's cached, non-blocking twin (R42): the broadcast's
+	// lease as the informer last saw it — ok false before the informer
+	// synced or with no lease at all, inGrace once the origin is away.
+	// The room refresh asks it for every off-pod attachment at 1 Hz.
+	Lookup(broadcastID string) (origin cluster.Origin, inGrace bool, ok bool)
 }
 
 // Server wraps a webtransport.Server with the gawk routes.
@@ -113,6 +119,13 @@ type Server struct {
 	// once, behind an atomic, for the same reason `wiring` is. Read it
 	// through banSet.
 	bans atomic.Pointer[moderation.Set]
+	// rooms is the R42 room registry (docs/44); nil is the -rooms-off shape.
+	// Settable once, behind an atomic, like bans. Read it through
+	// roomRegistry.
+	rooms atomic.Pointer[roomsrv.Registry]
+	// roomCluster is the R42 RM3 cluster wiring for rooms (roomcluster.go);
+	// nil without -cluster-mode. Same discipline as `wiring`.
+	roomCluster atomic.Pointer[roomClusterWiring]
 	// now is the clock ban expiry is evaluated against; injectable so tests
 	// can step past an expiry without sleeping.
 	now func() time.Time
@@ -121,6 +134,12 @@ type Server struct {
 	// session registers here and unregisters when its handler returns.
 	sessMu   sync.Mutex
 	sessions map[drainSession]struct{}
+	// roomSessions indexes local room control sessions by normalized code
+	// (lease loss closes one room's sessions); proxiedRooms counts the
+	// sessions this pod forwards to other homes (/statusz "proxy" rows).
+	// Both under sessMu.
+	roomSessions map[string]map[drainSession]struct{}
+	proxiedRooms map[string]*proxiedRoom
 	// Live publisher sessions by broadcast ID (R17 W5): the demote path
 	// closes the stale one when the broadcast's Lease is force-taken.
 	publishers map[string]*publisherSession
@@ -325,13 +344,24 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		w.Write([]byte("ok"))
 	})
 	// Same handler as the TCP ops endpoint (single definition; see ops).
-	mux.HandleFunc("GET /statusz", ops.StatuszHandler(r, log))
+	mux.HandleFunc("GET /statusz", ops.StatuszHandler(r, roomStatsSource{s}, log))
 	mux.HandleFunc("CONNECT /echo", s.handleEcho)
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)
 	mux.HandleFunc("CONNECT /publish/{id}", s.handlePublish)
 	mux.HandleFunc("CONNECT /subscribe/{id}", s.handleSubscribe)
 	// Pod-to-pod edge pull (R17 W4); 404s outright unless -cluster-mode is on.
 	mux.HandleFunc("CONNECT /internal/subscribe/{id}", s.handleInternalSubscribe)
+	// R42 rooms (docs/44 D17): the routes exist only with -rooms on, so a
+	// relay without rooms is byte-identical to pre-R42 — not even a 404
+	// handler of ours answers here. "new" is the literal mint route; the
+	// mux prefers it over the {code} pattern.
+	if cfg.Rooms {
+		mux.HandleFunc("CONNECT /room/new", s.handleRoomNew)
+		mux.HandleFunc("CONNECT /room/{code}", s.handleRoom)
+		// Pod-to-pod room proxying (RM3); 404s outright unless -cluster-mode
+		// installed the room store.
+		mux.HandleFunc("CONNECT /internal/room/{code}", s.handleInternalRoom)
+	}
 
 	s.wt = &webtransport.Server{
 		H3: &http3.Server{

@@ -45,6 +45,61 @@ import {
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_STRIPE_LEG_ORPHANED,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
+  CLOSE_CODE_ROOM_ENDED,
+  TYPE_ROOM_HELLO,
+  TYPE_ROOM_STATE,
+  TYPE_ROOM_EVENT,
+  TYPE_ROOM_COMMAND,
+  ROOM_PROTOCOL_VERSION,
+  ROOM_RECORD_HEADER_SIZE,
+  MAX_ROOM_RECORD_SIZE,
+  MAX_ROOM_NICKNAME_LEN,
+  MAX_ROOM_CODE_LEN,
+  MAX_ROOM_DISPLAY_NAME_LEN,
+  MAX_ROOM_LABEL_LEN,
+  MAX_ROOM_IDENTITY_LEN,
+  MAX_ROOM_REJECT_MESSAGE_LEN,
+  ROOM_CREATOR_TOKEN_SIZE,
+  ROOM_KEY_SIZE,
+  RESUME_TOKEN_SIZE,
+  ROOM_CLIENT_WEB_VIEWER,
+  ROOM_CLIENT_WEB_BROADCASTER,
+  ROOM_CLIENT_NATIVE,
+  ROOM_STATE_FLAG_DYNAMIC,
+  ROOM_STATE_FLAG_CREATOR,
+  ROOM_STATE_FLAG_ATTACH_OK,
+  ROOM_PARTICIPANT_FLAG_STREAMING,
+  ROOM_EVENT_PARTICIPANT_JOINED,
+  ROOM_EVENT_PARTICIPANT_LEFT,
+  ROOM_EVENT_ATTACHMENT_UPDATED,
+  ROOM_EVENT_ATTACHMENT_REMOVED,
+  ROOM_EVENT_ROOM_ENDING,
+  ROOM_EVENT_COMMAND_REJECTED,
+  ROOM_COMMAND_ATTACH,
+  ROOM_COMMAND_DETACH,
+  ROOM_COMMAND_SET_NICKNAME,
+  ROOM_COMMAND_END_ROOM,
+  ROOM_COMMAND_RESYNC,
+  ROOM_END_REASON_CREATOR,
+  ROOM_DETACH_REASON_EXPIRED,
+  ROOM_REJECT_LIMIT,
+  RoomUnknownKindError,
+  RoomRecordReader,
+  encodeRoomRecord,
+  parseRoomRecordLength,
+  encodeRoomHello,
+  parseRoomHello,
+  encodeRoomState,
+  parseRoomState,
+  encodeRoomEvent,
+  parseRoomEvent,
+  encodeRoomCommand,
+  parseRoomCommand,
+  normalizeBroadcastId,
+  type RoomHello,
+  type RoomState,
+  type RoomEvent,
+  type RoomCommand,
   VIDEO_CHUNK_HEADER_SIZE,
   WIRE_VERSION,
   WireError,
@@ -200,6 +255,11 @@ describe('constants', () => {
     expect(CLOSE_CODE_ORIGIN_MOVED).toBe(4003);
     expect(CLOSE_CODE_STRIPE_LEG_ORPHANED).toBe(4005);
     expect(CLOSE_CODE_TERMINATED_BY_OPERATOR).toBe(4006);
+    expect(CLOSE_CODE_ROOM_ENDED).toBe(4007);
+    expect(TYPE_ROOM_HELLO).toBe(0x13);
+    expect(TYPE_ROOM_STATE).toBe(0x14);
+    expect(TYPE_ROOM_EVENT).toBe(0x15);
+    expect(TYPE_ROOM_COMMAND).toBe(0x16);
     expect(TYPE_RELIABLE_CARRIER).toBe(0x0a);
     expect(TYPE_DELIVERY_ACK).toBe(0x0c);
     expect(DELIVERY_ACK_SIZE).toBe(5);
@@ -969,5 +1029,418 @@ describe('telemetry endpoint (0x12)', () => {
 
     expect(() => encodeTelemetryEndpoint('http://insecure.example/x')).toThrow(/https/);
     expect(() => encodeTelemetryEndpoint('not a url')).toThrow(/non-URL byte|parse/);
+  });
+});
+
+// --- R42 room control protocol (0x13–0x16) (docs/44 §4.6) -------------------
+// Golden vectors restated byte-identically from gawk-server/wire/room_test.go
+// (the same concatenation pieces, so a diff against Go lines up). Do not
+// regenerate them from code; if they change, the wire format changed.
+
+// RoomHello: protocol 1, clientKind 1 (web-broadcaster), wantCaps 0,
+// nickname "tuhis".
+const GOLDEN_ROOM_HELLO_HEX = '0113010100057475686973';
+// One room record framing the golden RoomHello (11 bytes).
+const GOLDEN_ROOM_RECORD_HEX = '000b' + GOLDEN_ROOM_HELLO_HEX;
+// RoomState, dynamic room right after /room/new: flags dynamic|creator
+// (0x03), caps none, seq 7, yourID 1, code "5UP4XW", no display name,
+// creator token 00..0f, one attachment (ABCDEF, label "tuhis", live,
+// 3 viewers), one participant (id 1, web-broadcaster, streaming, "tuhis",
+// no identity).
+const GOLDEN_ROOM_STATE_DYNAMIC_HEX =
+  '0114' + '03' + '00' + '00000007' + '0001' +
+  '06355550345857' + '00' +
+  '10000102030405060708090a0b0c0d0e0f' +
+  '061a2b3c4d5e6f' +
+  '01' + '06414243444546' + '057475686973' + '01' + '00000003' +
+  '0001' + '0001' + '01' + '02' + '057475686973' + '00';
+// RoomState, static room, empty: flags attachOK (0x04), caps none, seq 0,
+// yourID 2, code "TuhisRoom", display name "Tuhis' room", no token, no
+// attachments, one participant (id 2, web-viewer, no flags, "viewer").
+const GOLDEN_ROOM_STATE_STATIC_HEX =
+  '0114' + '04' + '00' + '00000000' + '0002' +
+  '095475686973526f6f6d' + '0b54756869732720726f6f6d' + '00' + '00' + '00' +
+  '0001' + '0002' + '00' + '00' + '06766965776572' + '00';
+// RoomEvent ParticipantJoined, seq 8: id 3, native, streaming, "pc".
+const GOLDEN_ROOM_EVENT_JOINED_HEX = '011500000008' + '01' + '0003' + '02' + '02' + '027063' + '00';
+// RoomEvent ParticipantLeft, seq 9, id 3.
+const GOLDEN_ROOM_EVENT_LEFT_HEX = '011500000009' + '02' + '0003';
+// RoomEvent AttachmentUpdated, seq 13: ABCDEF, "tuhis", AWAY, 12 viewers.
+const GOLDEN_ROOM_EVENT_ATTACHMENT_UPDATED_HEX =
+  '01150000000d' + '12' + '06414243444546' + '057475686973' + '00' + '0000000c';
+// RoomEvent AttachmentRemoved, seq 10: ABCDEF, reason expired (2).
+const GOLDEN_ROOM_EVENT_ATTACHMENT_REMOVED_HEX = '01150000000a' + '11' + '06414243444546' + '02';
+// RoomEvent RoomEnding, seq 11, reason creator (2).
+const GOLDEN_ROOM_EVENT_ENDING_HEX = '01150000000b' + '20' + '02';
+// RoomEvent CommandRejected, seq 12: command attach (1), reason limit (1),
+// message "room full".
+const GOLDEN_ROOM_EVENT_REJECTED_HEX = '01150000000c' + '30' + '01' + '01' + '09726f6f6d2066756c6c';
+// RoomCommand Attach: ABCDEF, resume token a0..af, label "tuhis".
+const GOLDEN_ROOM_COMMAND_ATTACH_HEX =
+  '0116' + '01' + '06414243444546' + '10a0a1a2a3a4a5a6a7a8a9aaabacadaeaf' + '057475686973';
+// RoomCommand Detach ABCDEF.
+const GOLDEN_ROOM_COMMAND_DETACH_HEX = '0116' + '02' + '06414243444546';
+// RoomCommand SetNickname "tuhis".
+const GOLDEN_ROOM_COMMAND_NICK_HEX = '0116' + '03' + '057475686973';
+// RoomCommand EndRoom / Resync: no payload.
+const GOLDEN_ROOM_COMMAND_END_HEX = '011604';
+const GOLDEN_ROOM_COMMAND_RESYNC_HEX = '011605';
+
+const goldenRoomHello: RoomHello = {
+  protocol: 1,
+  clientKind: ROOM_CLIENT_WEB_BROADCASTER,
+  wantCaps: 0,
+  nickname: 'tuhis',
+};
+const goldenCreatorToken = fromHex('000102030405060708090a0b0c0d0e0f');
+const goldenResumeToken = fromHex('a0a1a2a3a4a5a6a7a8a9aaabacadaeaf');
+
+const goldenRoomStateDynamic: RoomState = {
+  flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR,
+  caps: 0,
+  seq: 7,
+  yourId: 1,
+  code: '5UP4XW',
+  displayName: '',
+  creatorToken: goldenCreatorToken,
+  key: new Uint8Array([0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f]),
+  attachments: [{ broadcastId: 'ABCDEF', label: 'tuhis', live: true, viewerCount: 3 }],
+  participants: [
+    { id: 1, kind: ROOM_CLIENT_WEB_BROADCASTER, flags: ROOM_PARTICIPANT_FLAG_STREAMING, nickname: 'tuhis', identity: '' },
+  ],
+};
+const goldenRoomStateStatic: RoomState = {
+  flags: ROOM_STATE_FLAG_ATTACH_OK,
+  caps: 0,
+  seq: 0,
+  yourId: 2,
+  code: 'TuhisRoom',
+  displayName: "Tuhis' room",
+  creatorToken: new Uint8Array(0),
+  key: new Uint8Array(0),
+  attachments: [],
+  participants: [{ id: 2, kind: ROOM_CLIENT_WEB_VIEWER, flags: 0, nickname: 'viewer', identity: '' }],
+};
+
+function catchError(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (err) {
+    return err;
+  }
+  throw new Error('expected a throw');
+}
+
+describe('room control protocol (R42)', () => {
+  it('exposes the mirrored constants', () => {
+    expect(ROOM_PROTOCOL_VERSION).toBe(1);
+    expect(ROOM_RECORD_HEADER_SIZE).toBe(2);
+    expect(MAX_ROOM_RECORD_SIZE).toBe(16384);
+    expect(MAX_ROOM_NICKNAME_LEN).toBe(32);
+    expect(MAX_ROOM_CODE_LEN).toBe(32);
+    expect(MAX_ROOM_DISPLAY_NAME_LEN).toBe(64);
+    expect(MAX_ROOM_LABEL_LEN).toBe(32);
+    expect(MAX_ROOM_IDENTITY_LEN).toBe(64);
+    expect(MAX_ROOM_REJECT_MESSAGE_LEN).toBe(128);
+    expect(ROOM_CREATOR_TOKEN_SIZE).toBe(16);
+    expect(ROOM_KEY_SIZE).toBe(6);
+    expect(RESUME_TOKEN_SIZE).toBe(16);
+  });
+
+  it('encodes and parses the golden RoomHello byte-identically', () => {
+    expect(toHex(encodeRoomHello(goldenRoomHello))).toBe(GOLDEN_ROOM_HELLO_HEX);
+    expect(parseRoomHello(fromHex(GOLDEN_ROOM_HELLO_HEX))).toEqual(goldenRoomHello);
+  });
+
+  it('frames and unframes the golden room record', () => {
+    const want = fromHex(GOLDEN_ROOM_RECORD_HEX);
+    expect(toHex(encodeRoomRecord(fromHex(GOLDEN_ROOM_HELLO_HEX)))).toBe(GOLDEN_ROOM_RECORD_HEX);
+    expect(parseRoomRecordLength(want)).toBe(11);
+    expect(() => parseRoomRecordLength(new Uint8Array([0x00]))).toThrow(WireError);
+    expect(() => parseRoomRecordLength(new Uint8Array([0x00, 0x00]))).toThrow(WireError);
+    expect(() => parseRoomRecordLength(new Uint8Array([0x00, 0x01]))).toThrow(WireError);
+    expect(() => parseRoomRecordLength(new Uint8Array([0xff, 0xff]))).toThrow(WireError);
+    expect(() => encodeRoomRecord(new Uint8Array(1))).toThrow(WireError);
+    expect(() => encodeRoomRecord(new Uint8Array(MAX_ROOM_RECORD_SIZE + 1))).toThrow(WireError);
+    // The inclusive upper boundary frames.
+    expect(encodeRoomRecord(new Uint8Array(MAX_ROOM_RECORD_SIZE)).length).toBe(
+      ROOM_RECORD_HEADER_SIZE + MAX_ROOM_RECORD_SIZE,
+    );
+  });
+
+  it.each([
+    ['dynamic', GOLDEN_ROOM_STATE_DYNAMIC_HEX, goldenRoomStateDynamic],
+    ['static', GOLDEN_ROOM_STATE_STATIC_HEX, goldenRoomStateStatic],
+  ] satisfies [string, string, RoomState][])('encodes and parses the golden %s RoomState', (_name, hex, want) => {
+    expect(toHex(encodeRoomState(want))).toBe(hex);
+    const got = parseRoomState(fromHex(hex));
+    expect(got).toEqual(want);
+    expect(toHex(got.creatorToken)).toBe(toHex(want.creatorToken));
+  });
+
+  it.each([
+    [
+      'joined',
+      GOLDEN_ROOM_EVENT_JOINED_HEX,
+      {
+        seq: 8,
+        kind: ROOM_EVENT_PARTICIPANT_JOINED,
+        participant: { id: 3, kind: ROOM_CLIENT_NATIVE, flags: ROOM_PARTICIPANT_FLAG_STREAMING, nickname: 'pc', identity: '' },
+      },
+    ],
+    ['left', GOLDEN_ROOM_EVENT_LEFT_HEX, { seq: 9, kind: ROOM_EVENT_PARTICIPANT_LEFT, participant: { id: 3 } }],
+    [
+      'attachment updated',
+      GOLDEN_ROOM_EVENT_ATTACHMENT_UPDATED_HEX,
+      {
+        seq: 13,
+        kind: ROOM_EVENT_ATTACHMENT_UPDATED,
+        attachment: { broadcastId: 'ABCDEF', label: 'tuhis', live: false, viewerCount: 12 },
+      },
+    ],
+    [
+      'attachment removed',
+      GOLDEN_ROOM_EVENT_ATTACHMENT_REMOVED_HEX,
+      {
+        seq: 10,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'ABCDEF' },
+        reason: ROOM_DETACH_REASON_EXPIRED,
+      },
+    ],
+    ['ending', GOLDEN_ROOM_EVENT_ENDING_HEX, { seq: 11, kind: ROOM_EVENT_ROOM_ENDING, reason: ROOM_END_REASON_CREATOR }],
+    [
+      'rejected',
+      GOLDEN_ROOM_EVENT_REJECTED_HEX,
+      {
+        seq: 12,
+        kind: ROOM_EVENT_COMMAND_REJECTED,
+        command: ROOM_COMMAND_ATTACH,
+        reason: ROOM_REJECT_LIMIT,
+        message: 'room full',
+      },
+    ],
+  ] satisfies [string, string, RoomEvent][])('encodes and parses the golden %s RoomEvent', (_name, hex, want) => {
+    expect(toHex(encodeRoomEvent(want))).toBe(hex);
+    expect(parseRoomEvent(fromHex(hex))).toEqual(want);
+  });
+
+  it.each([
+    [
+      'attach',
+      GOLDEN_ROOM_COMMAND_ATTACH_HEX,
+      { kind: ROOM_COMMAND_ATTACH, broadcastId: 'ABCDEF', resumeToken: goldenResumeToken, label: 'tuhis' },
+    ],
+    ['detach', GOLDEN_ROOM_COMMAND_DETACH_HEX, { kind: ROOM_COMMAND_DETACH, broadcastId: 'ABCDEF' }],
+    ['nick', GOLDEN_ROOM_COMMAND_NICK_HEX, { kind: ROOM_COMMAND_SET_NICKNAME, nickname: 'tuhis' }],
+    ['end', GOLDEN_ROOM_COMMAND_END_HEX, { kind: ROOM_COMMAND_END_ROOM }],
+    ['resync', GOLDEN_ROOM_COMMAND_RESYNC_HEX, { kind: ROOM_COMMAND_RESYNC }],
+  ] satisfies [string, string, RoomCommand][])('encodes and parses the golden %s RoomCommand', (_name, hex, want) => {
+    expect(toHex(encodeRoomCommand(want))).toBe(hex);
+    expect(parseRoomCommand(fromHex(hex))).toEqual(want);
+  });
+
+  // The docs/44 §4.11 reserved ranges: an unknown kind is reported as such
+  // with the header fields filled in, so a reader can skip the record and a
+  // relay can answer ROOM_REJECT_UNSUPPORTED.
+  it('reports reserved kinds with the header fields filled in', () => {
+    const ev = catchError(() => parseRoomEvent(fromHex('0115000000014041')));
+    expect(ev).toBeInstanceOf(RoomUnknownKindError);
+    expect(ev).toBeInstanceOf(WireError);
+    expect((ev as RoomUnknownKindError).seq).toBe(1);
+    expect((ev as RoomUnknownKindError).kind).toBe(0x40);
+
+    const cmd = catchError(() => parseRoomCommand(fromHex('01165000')));
+    expect(cmd).toBeInstanceOf(RoomUnknownKindError);
+    expect((cmd as RoomUnknownKindError).kind).toBe(0x50);
+    expect((cmd as RoomUnknownKindError).seq).toBeUndefined();
+
+    expect(() => encodeRoomEvent({ seq: 0, kind: 0x4f } as unknown as RoomEvent)).toThrow(RoomUnknownKindError);
+    expect(() => encodeRoomCommand({ kind: 0x5f } as unknown as RoomCommand)).toThrow(RoomUnknownKindError);
+  });
+
+  it('rejects malformed hellos strictly', () => {
+    const hello = fromHex(GOLDEN_ROOM_HELLO_HEX);
+    // Trailing bytes are a framing error on strict messages.
+    expect(() => parseRoomHello(fromHex(GOLDEN_ROOM_HELLO_HEX + '00'))).toThrow(/trailing/);
+    const mutate = (i: number, v: number): Uint8Array => {
+      const bad = hello.slice();
+      bad[i] = v;
+      return bad;
+    };
+    expect(() => parseRoomHello(mutate(2, 2))).toThrow(/protocol/);
+    expect(() => parseRoomHello(mutate(3, 3))).toThrow(/client kind/);
+    expect(() => parseRoomHello(mutate(4, 0x04))).toThrow(/reserved capability/);
+    expect(() => parseRoomHello(mutate(5, 0x20))).toThrow(/overruns/);
+    expect(() => parseRoomHello(mutate(6, 0xff))).toThrow(/UTF-8/);
+    expect(() => parseRoomHello(hello.subarray(0, 5))).toThrow(/too short/);
+    expect(() => parseRoomHello(fromHex('02' + GOLDEN_ROOM_HELLO_HEX.slice(2)))).toThrow(/version/);
+    expect(() => parseRoomHello(fromHex(GOLDEN_ROOM_STATE_STATIC_HEX))).toThrow(/type/);
+    expect(() => encodeRoomHello({ ...goldenRoomHello, nickname: 'x'.repeat(MAX_ROOM_NICKNAME_LEN + 1) })).toThrow(
+      WireError,
+    );
+    expect(() => encodeRoomHello({ ...goldenRoomHello, nickname: '\ud800' })).toThrow(/UTF-8/);
+    expect(() => encodeRoomHello({ ...goldenRoomHello, protocol: 2 })).toThrow(WireError);
+    expect(() => encodeRoomHello({ ...goldenRoomHello, clientKind: 3 })).toThrow(WireError);
+    expect(() => encodeRoomHello({ ...goldenRoomHello, wantCaps: 0x04 })).toThrow(WireError);
+    // A multi-byte nickname is measured in UTF-8 bytes, like Go's len().
+    expect(parseRoomHello(encodeRoomHello({ ...goldenRoomHello, nickname: 'ääää' })).nickname).toBe('ääää');
+  });
+
+  it('rejects malformed states strictly', () => {
+    const state = fromHex(GOLDEN_ROOM_STATE_DYNAMIC_HEX);
+    const mutate = (i: number, v: number): Uint8Array => {
+      const bad = state.slice();
+      bad[i] = v;
+      return bad;
+    };
+    expect(() => parseRoomState(mutate(2, 0x08))).toThrow(/reserved flag/);
+    expect(() => parseRoomState(mutate(3, 0x04))).toThrow(/reserved capability/);
+    expect(() => parseRoomState(state.subarray(0, state.length - 1))).toThrow(/truncated/);
+    expect(() => parseRoomState(fromHex(GOLDEN_ROOM_STATE_DYNAMIC_HEX + '00'))).toThrow(/trailing/);
+    expect(() => parseRoomState(mutate(17, 0x05))).toThrow(/creator token/); // token length neither 0 nor 16
+    expect(() => parseRoomState(mutate(10, 0x00))).toThrow(WireError); // empty code (then misaligned)
+    expect(() => parseRoomState(state.subarray(0, 14))).toThrow(/too short/);
+    expect(() => encodeRoomState({ ...goldenRoomStateDynamic, creatorToken: new Uint8Array([1]) })).toThrow(
+      /creator token/,
+    );
+    expect(() => encodeRoomState({ ...goldenRoomStateDynamic, code: '' })).toThrow(/empty code/);
+    expect(() => encodeRoomState({ ...goldenRoomStateDynamic, flags: 0x08 })).toThrow(/reserved flag/);
+    expect(() => encodeRoomState({ ...goldenRoomStateDynamic, caps: 0x04 })).toThrow(/reserved capability/);
+    expect(() =>
+      encodeRoomState({
+        ...goldenRoomStateDynamic,
+        attachments: [{ broadcastId: '0OIL11', label: '', live: false, viewerCount: 0 }],
+      }),
+    ).toThrow(/broadcast id/);
+    expect(() =>
+      encodeRoomState({
+        ...goldenRoomStateDynamic,
+        participants: [{ id: 1, kind: 0, flags: 0x80, nickname: '', identity: '' }],
+      }),
+    ).toThrow(/reserved participant flag/);
+    expect(() =>
+      encodeRoomState({
+        ...goldenRoomStateDynamic,
+        participants: [{ id: 1, kind: 3, flags: 0, nickname: '', identity: '' }],
+      }),
+    ).toThrow(/participant kind/);
+    // Reserved attachment flag bits and participant kinds reject on parse too
+    // (attachment flags at byte 56, participant kind at byte 65).
+    expect(() => parseRoomState(mutate(56, 0x03))).toThrow(/reserved attachment flag/);
+    expect(() => parseRoomState(mutate(65, 0x03))).toThrow(/participant kind/);
+  });
+
+  it('rejects malformed events strictly', () => {
+    const ev = fromHex(GOLDEN_ROOM_EVENT_JOINED_HEX);
+    expect(() => parseRoomEvent(fromHex(GOLDEN_ROOM_EVENT_JOINED_HEX + '00'))).toThrow(/trailing/);
+    expect(() => parseRoomEvent(ev.subarray(0, 6))).toThrow(/too short/);
+    expect(() => parseRoomEvent(ev.subarray(0, ev.length - 1))).toThrow(/truncated|overruns/);
+    expect(() => parseRoomEvent(fromHex(GOLDEN_ROOM_COMMAND_ATTACH_HEX))).toThrow(/type/);
+    // A reserved kind with the wrong header length is still a short-message
+    // error, never an unknown-kind one.
+    expect(() => parseRoomEvent(fromHex('011500000001'))).toThrow(/too short/);
+  });
+
+  it('rejects malformed commands strictly and normalizes broadcast IDs', () => {
+    const cmd = fromHex(GOLDEN_ROOM_COMMAND_ATTACH_HEX);
+    const bad = cmd.slice();
+    bad[10] = 0x0f; // token length 15
+    expect(() => parseRoomCommand(bad)).toThrow(/resume token/);
+    expect(() =>
+      encodeRoomCommand({ kind: ROOM_COMMAND_ATTACH, broadcastId: 'ABCDEF', resumeToken: new Uint8Array([1]), label: '' }),
+    ).toThrow(/resume token/);
+    // Broadcast IDs normalize on parse: a lower-case ID on the wire is
+    // accepted and returned upper-case, so the relay never compares raw.
+    const lower = parseRoomCommand(fromHex('0116' + '02' + '06616263646566'));
+    expect(lower).toEqual({ kind: ROOM_COMMAND_DETACH, broadcastId: 'ABCDEF' });
+    expect(() => parseRoomCommand(fromHex('0116' + '02' + '06304f494c3131'))).toThrow(/broadcast id/);
+    expect(() => parseRoomCommand(fromHex('011604ff'))).toThrow(/trailing/);
+    expect(() => parseRoomCommand(fromHex('0116'))).toThrow(/too short/);
+    // ...and on encode.
+    expect(toHex(encodeRoomCommand({ kind: ROOM_COMMAND_DETACH, broadcastId: 'abcdef' }))).toBe(
+      GOLDEN_ROOM_COMMAND_DETACH_HEX,
+    );
+    expect(() => encodeRoomCommand({ kind: ROOM_COMMAND_DETACH, broadcastId: '0OIL11' })).toThrow(/broadcast id/);
+    expect(() => encodeRoomCommand({ kind: ROOM_COMMAND_DETACH, broadcastId: 'ABCDE' })).toThrow(/broadcast id/);
+  });
+
+  it('normalizes broadcast IDs like the relay', () => {
+    expect(normalizeBroadcastId('23456a')).toBe('23456A');
+    expect(normalizeBroadcastId('234567')).toBe('234567');
+    for (const bad of ['2345', '2345678', '23456O', '234560', '23456I', '234561', '23456L', '23456l', 'ßßß']) {
+      expect(() => normalizeBroadcastId(bad)).toThrow(WireError);
+    }
+  });
+
+  it('returns creator and resume tokens as views of the input record', () => {
+    const state = fromHex(GOLDEN_ROOM_STATE_DYNAMIC_HEX);
+    const tok = parseRoomState(state).creatorToken;
+    expect(tok.buffer).toBe(state.buffer);
+    expect(toHex(tok)).toBe('000102030405060708090a0b0c0d0e0f');
+    const cmd = fromHex(GOLDEN_ROOM_COMMAND_ATTACH_HEX);
+    const parsed = parseRoomCommand(cmd);
+    expect(parsed.kind).toBe(ROOM_COMMAND_ATTACH);
+    if (parsed.kind === ROOM_COMMAND_ATTACH) expect(parsed.resumeToken.buffer).toBe(cmd.buffer);
+  });
+});
+
+describe('room record reader (R42)', () => {
+  it('reassembles records split across arbitrary chunk boundaries', () => {
+    const a = encodeRoomRecord(fromHex(GOLDEN_ROOM_HELLO_HEX));
+    const b = encodeRoomRecord(fromHex(GOLDEN_ROOM_STATE_DYNAMIC_HEX));
+    const c = encodeRoomRecord(fromHex(GOLDEN_ROOM_COMMAND_END_HEX));
+    const stream = new Uint8Array(a.length + b.length + c.length);
+    stream.set(a, 0);
+    stream.set(b, a.length);
+    stream.set(c, a.length + b.length);
+
+    // Every possible split point yields the same three records.
+    for (let split = 0; split <= stream.length; split++) {
+      const reader = new RoomRecordReader();
+      const records = [...reader.push(stream.subarray(0, split)), ...reader.push(stream.subarray(split))];
+      expect(records.map(toHex)).toEqual([
+        GOLDEN_ROOM_HELLO_HEX,
+        GOLDEN_ROOM_STATE_DYNAMIC_HEX,
+        GOLDEN_ROOM_COMMAND_END_HEX,
+      ]);
+      expect(reader.hasPartial()).toBe(false);
+    }
+  });
+
+  it('returns copies that own their buffers and reports a partial record', () => {
+    const reader = new RoomRecordReader();
+    const record = encodeRoomRecord(fromHex(GOLDEN_ROOM_HELLO_HEX));
+    expect(reader.push(record.subarray(0, 5))).toEqual([]);
+    expect(reader.hasPartial()).toBe(true);
+    const [got] = reader.push(record.subarray(5));
+    expect(got.byteOffset).toBe(0);
+    expect(got.buffer.byteLength).toBe(11);
+    expect(toHex(got)).toBe(GOLDEN_ROOM_HELLO_HEX);
+    expect(reader.hasPartial()).toBe(false);
+  });
+
+  it('throws on a zero, one-byte, or oversize declared length', () => {
+    expect(() => new RoomRecordReader().push(new Uint8Array([0x00, 0x00, 0x01]))).toThrow(WireError);
+    expect(() => new RoomRecordReader().push(new Uint8Array([0x00, 0x01, 0x01]))).toThrow(WireError);
+    const oversize = new Uint8Array(2);
+    new DataView(oversize.buffer).setUint16(0, MAX_ROOM_RECORD_SIZE + 1);
+    expect(() => new RoomRecordReader().push(oversize)).toThrow(WireError);
+    // A one-byte push is not a decision yet: the length is unknown.
+    const reader = new RoomRecordReader();
+    expect(reader.push(new Uint8Array([0x00]))).toEqual([]);
+    expect(reader.hasPartial()).toBe(true);
+  });
+
+  it('feeds parsed messages straight to the typed parsers', () => {
+    const reader = new RoomRecordReader();
+    const [hello, ev] = reader.push(
+      new Uint8Array([
+        ...encodeRoomRecord(encodeRoomHello(goldenRoomHello)),
+        ...encodeRoomRecord(fromHex(GOLDEN_ROOM_EVENT_ENDING_HEX)),
+      ]),
+    );
+    expect(parseRoomHello(hello)).toEqual(goldenRoomHello);
+    expect(parseRoomEvent(ev)).toEqual({ seq: 11, kind: ROOM_EVENT_ROOM_ENDING, reason: ROOM_END_REASON_CREATOR });
   });
 });

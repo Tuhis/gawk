@@ -154,6 +154,17 @@ export function SessionView({ sessionId }: Props) {
             broadcast {timeline.broadcastKey} →
           </a>
         )}
+        {timeline.roomKey && (
+          // R42 (RM8): a session that started inside a room says so, and the
+          // chip is the way to every other session of that room.
+          <a
+            className={styles.subtitle}
+            href={href('room', timeline.roomKey)}
+            title="Every session of this room, grouped by broadcast"
+          >
+            room {timeline.roomKey} →
+          </a>
+        )}
         <span className={styles.spacer} />
         <div className={styles.controls}>
           <button

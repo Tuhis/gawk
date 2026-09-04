@@ -57,6 +57,25 @@ pub enum WireError {
     BadTelemetryEndpoint,
     /// A frame shape parity cannot cover (k, n, or width out of range).
     ParityUnsupported,
+    /// A room record whose length prefix is below 2 or exceeds
+    /// MaxRoomRecordSize — framing corruption; abandon the stream.
+    BadRoomRecord,
+    /// A RoomHello that fails validation (protocol, client kind, reserved
+    /// capability bits, nickname bound/UTF-8, or inexact length).
+    BadRoomHello,
+    /// A RoomState that fails validation (reserved bits, bounds, token size,
+    /// broadcast ID, or inexact length).
+    BadRoomState,
+    /// A RoomEvent of a KNOWN kind that fails validation.
+    BadRoomEvent,
+    /// A RoomCommand of a KNOWN kind that fails validation.
+    BadRoomCommand,
+    /// A RoomEvent or RoomCommand of a kind this implementation does not
+    /// know — the docs/44 §4.11 reserved ranges. Carries the header fields
+    /// already read (`seq` is 0 for commands, which have none) so a reader
+    /// skips the record without losing its place; a relay answers
+    /// ROOM_REJECT_UNSUPPORTED. Also returned by append for an unknown kind.
+    UnknownRoomKind { seq: u32, kind: u8 },
 }
 
 impl fmt::Display for WireError {
@@ -110,6 +129,15 @@ impl fmt::Display for WireError {
             Self::BadRelayIdentity => write!(f, "wire: invalid relay identity"),
             Self::BadTelemetryEndpoint => write!(f, "wire: invalid telemetry endpoint"),
             Self::ParityUnsupported => write!(f, "wire: parity unsupported for this frame"),
+            Self::BadRoomRecord => write!(f, "wire: invalid room record"),
+            Self::BadRoomHello => write!(f, "wire: invalid room hello"),
+            Self::BadRoomState => write!(f, "wire: invalid room state"),
+            Self::BadRoomEvent => write!(f, "wire: invalid room event"),
+            Self::BadRoomCommand => write!(f, "wire: invalid room command"),
+            Self::UnknownRoomKind { seq, kind } => write!(
+                f,
+                "wire: unknown room event/command kind: 0x{kind:02x} at seq {seq}"
+            ),
         }
     }
 }

@@ -160,7 +160,7 @@ impl Sender {
         }
     }
 
-    fn current_relay(&self) -> Arc<dyn RelaySession> {
+    pub(crate) fn current_relay(&self) -> Arc<dyn RelaySession> {
         self.relay.lock().unwrap().clone()
     }
 

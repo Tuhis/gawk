@@ -18,15 +18,35 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 )
+
+// RoomStatsSource is the /statusz rooms section (R42, docs/44 §4.10): rows
+// keyed by the per-process HMAC of the code, never the code. An interface so
+// ops keeps its one-way dependency shape; roomsrv.Registry implements it.
+type RoomStatsSource interface {
+	Stats() map[string]roomsrv.RoomStats
+}
+
+// statusz is the /statusz document: the hub snapshot, flattened as before,
+// plus the rooms section — omitted entirely with -rooms off, so the
+// pre-R42 document is byte-identical (docs/44 D17).
+type statusz struct {
+	hub.RegistryStats
+	Rooms map[string]roomsrv.RoomStats `json:"rooms,omitempty"`
+}
 
 // StatuszHandler serves the registry snapshot as JSON — the single definition
 // shared by the H3 route (transport) and the TCP ops endpoint, so the two can
-// never drift.
-func StatuszHandler(r *hub.Registry, log *slog.Logger) http.HandlerFunc {
+// never drift. rooms may be nil (no rooms section).
+func StatuszHandler(r *hub.Registry, rooms RoomStatsSource, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(r.Stats()); err != nil {
+		doc := statusz{RegistryStats: r.Stats()}
+		if rooms != nil {
+			doc.Rooms = rooms.Stats()
+		}
+		if err := json.NewEncoder(w).Encode(doc); err != nil {
 			log.Warn("statusz encode failed", "err", err)
 		}
 	}
@@ -43,7 +63,7 @@ func StatuszHandler(r *hub.Registry, log *slog.Logger) http.HandlerFunc {
 // so those paths 404 exactly as they did before R39. Everything else on this
 // mux is unauthenticated and unchanged: /statusz in particular stays
 // HMAC-only and byte-identical.
-func Handler(r *hub.Registry, g prometheus.Gatherer, log *slog.Logger, ready func() bool, admin *AdminOptions) http.Handler {
+func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log *slog.Logger, ready func() bool, admin *AdminOptions) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok"))
@@ -55,7 +75,7 @@ func Handler(r *hub.Registry, g prometheus.Gatherer, log *slog.Logger, ready fun
 		}
 		w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("GET /statusz", StatuszHandler(r, log))
+	mux.HandleFunc("GET /statusz", StatuszHandler(r, rooms, log))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(g, promhttp.HandlerOpts{}))
 	if registerAdmin(mux, admin) {
 		log.Info("relay admin API enabled on the ops listener",

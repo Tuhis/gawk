@@ -43,6 +43,100 @@ const GOLDEN_RELAY_IDENTITY_NO_NAME: &str = "01110006312e34322e3000";
 // URL "https://gawk.example.com/api/telemetry/v1/ingest" (48 bytes, u16 BE).
 const GOLDEN_TELEMETRY_ENDPOINT: &str = "011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374";
 
+// R42 room control protocol (docs/44 §4.6), from gawk-server/wire/room_test.go.
+// Field-by-field breakdowns live in that file's comments; the pieces below are
+// the same literal pieces, concatenated by the compiler — never computed.
+//
+// RoomHello: protocol 1, clientKind 1 (web-broadcaster), wantCaps 0, "tuhis".
+const GOLDEN_ROOM_HELLO: &str = "0113010100057475686973";
+// One room record framing the golden RoomHello (11 bytes).
+const GOLDEN_ROOM_RECORD: &str = concat!("000b", "0113010100057475686973");
+// RoomState, dynamic room right after /room/new: flags dynamic|creator, seq 7,
+// yourID 1, code "5UP4XW", no display name, creator token 00..0f, one
+// attachment (ABCDEF, "tuhis", live, 3 viewers), one participant (id 1,
+// web-broadcaster, streaming, "tuhis", no identity).
+const GOLDEN_ROOM_STATE_DYNAMIC: &str = concat!(
+    "0114",
+    "03",
+    "00",
+    "00000007",
+    "0001",
+    "06355550345857",
+    "00",
+    "10000102030405060708090a0b0c0d0e0f",
+    "061a2b3c4d5e6f",
+    "01",
+    "06414243444546",
+    "057475686973",
+    "01",
+    "00000003",
+    "0001",
+    "0001",
+    "01",
+    "02",
+    "057475686973",
+    "00"
+);
+// RoomState, static room, empty: flags attachOK, seq 0, yourID 2, code
+// "TuhisRoom", display name "Tuhis' room", no token, no attachments, one
+// participant (id 2, web-viewer, no flags, "viewer").
+const GOLDEN_ROOM_STATE_STATIC: &str = concat!(
+    "0114",
+    "04",
+    "00",
+    "00000000",
+    "0002",
+    "095475686973526f6f6d",
+    "0b54756869732720726f6f6d",
+    "00",
+    "00",
+    "00",
+    "0001",
+    "0002",
+    "00",
+    "00",
+    "06766965776572",
+    "00"
+);
+// RoomEvent ParticipantJoined, seq 8: id 3, native, streaming, "pc".
+const GOLDEN_ROOM_EVENT_JOINED: &str =
+    concat!("011500000008", "01", "0003", "02", "02", "027063", "00");
+// RoomEvent ParticipantLeft, seq 9, id 3.
+const GOLDEN_ROOM_EVENT_LEFT: &str = concat!("011500000009", "02", "0003");
+// RoomEvent AttachmentUpdated, seq 13: ABCDEF, "tuhis", AWAY, 12 viewers.
+const GOLDEN_ROOM_EVENT_ATTACHMENT_UPDATED: &str = concat!(
+    "01150000000d",
+    "12",
+    "06414243444546",
+    "057475686973",
+    "00",
+    "0000000c"
+);
+// RoomEvent AttachmentRemoved, seq 10: ABCDEF, reason expired (2).
+const GOLDEN_ROOM_EVENT_ATTACHMENT_REMOVED: &str =
+    concat!("01150000000a", "11", "06414243444546", "02");
+// RoomEvent RoomEnding, seq 11, reason creator (2).
+const GOLDEN_ROOM_EVENT_ENDING: &str = concat!("01150000000b", "20", "02");
+// RoomEvent CommandRejected, seq 12: command attach (1), reason limit (1),
+// message "room full".
+const GOLDEN_ROOM_EVENT_REJECTED: &str =
+    concat!("01150000000c", "30", "01", "01", "09726f6f6d2066756c6c");
+// RoomCommand Attach: ABCDEF, resume token a0..af, label "tuhis".
+const GOLDEN_ROOM_COMMAND_ATTACH: &str = concat!(
+    "0116",
+    "01",
+    "06414243444546",
+    "10a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+    "057475686973"
+);
+// RoomCommand Detach ABCDEF.
+const GOLDEN_ROOM_COMMAND_DETACH: &str = concat!("0116", "02", "06414243444546");
+// RoomCommand SetNickname "tuhis".
+const GOLDEN_ROOM_COMMAND_NICK: &str = concat!("0116", "03", "057475686973");
+// RoomCommand EndRoom / Resync: no payload.
+const GOLDEN_ROOM_COMMAND_END: &str = "011604";
+const GOLDEN_ROOM_COMMAND_RESYNC: &str = "011605";
+
 // Cross-implementation parity-symbol vectors, generated 2026-07-30 by running
 // gawk-server/wire's ComputeParity (Go) over the inputs below — pinning that
 // this GF(2^8) port and the Go original compute identical P and Q bytes:
@@ -489,6 +583,429 @@ fn golden_telemetry_endpoint() {
     assert_eq!(parse_telemetry_endpoint(&trailing).unwrap(), URL);
 }
 
+// --- R42 room control protocol ----------------------------------------------
+
+const GOLDEN_CREATOR_TOKEN: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const GOLDEN_RESUME_TOKEN_BYTES: [u8; 16] = [
+    0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+];
+
+fn golden_room_hello_value() -> RoomHello<'static> {
+    RoomHello {
+        protocol: 1,
+        client_kind: ROOM_CLIENT_WEB_BROADCASTER,
+        want_caps: 0,
+        nickname: "tuhis",
+    }
+}
+
+fn golden_room_state_dynamic_value() -> RoomState<'static> {
+    RoomState {
+        flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR,
+        caps: 0,
+        seq: 7,
+        your_id: 1,
+        code: "5UP4XW",
+        display_name: "",
+        creator_token: &GOLDEN_CREATOR_TOKEN,
+        key: &[0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f],
+        attachments: vec![RoomAttachment {
+            broadcast_id: "ABCDEF".to_string(),
+            label: "tuhis",
+            live: true,
+            viewer_count: 3,
+        }],
+        participants: vec![RoomParticipant {
+            id: 1,
+            kind: ROOM_CLIENT_WEB_BROADCASTER,
+            flags: ROOM_PARTICIPANT_FLAG_STREAMING,
+            nickname: "tuhis",
+            identity: "",
+        }],
+    }
+}
+
+fn golden_room_state_static_value() -> RoomState<'static> {
+    RoomState {
+        flags: ROOM_STATE_FLAG_ATTACH_OK,
+        your_id: 2,
+        code: "TuhisRoom",
+        display_name: "Tuhis' room",
+        participants: vec![RoomParticipant {
+            id: 2,
+            kind: ROOM_CLIENT_WEB_VIEWER,
+            nickname: "viewer",
+            ..RoomParticipant::default()
+        }],
+        ..RoomState::default()
+    }
+}
+
+#[test]
+fn golden_room_hello() {
+    let mut got = Vec::new();
+    append_room_hello(&mut got, &golden_room_hello_value()).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_ROOM_HELLO);
+    let bytes = from_hex(GOLDEN_ROOM_HELLO);
+    let h = parse_room_hello(&bytes).unwrap();
+    assert_eq!(h, golden_room_hello_value());
+}
+
+#[test]
+fn golden_room_record() {
+    let hello = from_hex(GOLDEN_ROOM_HELLO);
+    let mut got = Vec::new();
+    append_room_record(&mut got, &hello).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_ROOM_RECORD);
+    assert_eq!(parse_room_record_length(&got).unwrap(), 11);
+
+    assert_eq!(
+        parse_room_record_length(&[0, 0]),
+        Err(WireError::BadRoomRecord)
+    );
+    assert_eq!(
+        parse_room_record_length(&[0xff, 0xff]),
+        Err(WireError::BadRoomRecord)
+    );
+    assert!(matches!(
+        parse_room_record_length(&[0x00]),
+        Err(WireError::ShortDatagram { len: 1, need: 2 })
+    ));
+    assert_eq!(
+        append_room_record(&mut Vec::new(), &vec![0; MAX_ROOM_RECORD_SIZE + 1]),
+        Err(WireError::BadRoomRecord)
+    );
+}
+
+#[test]
+fn golden_room_state() {
+    for (hex, want) in [
+        (GOLDEN_ROOM_STATE_DYNAMIC, golden_room_state_dynamic_value()),
+        (GOLDEN_ROOM_STATE_STATIC, golden_room_state_static_value()),
+    ] {
+        let mut got = Vec::new();
+        append_room_state(&mut got, &want).unwrap();
+        assert_eq!(to_hex(&got), hex);
+        let bytes = from_hex(hex);
+        let s = parse_room_state(&bytes).unwrap();
+        assert_eq!(s, want);
+    }
+}
+
+#[test]
+fn golden_room_events() {
+    let cases: [(&str, RoomEvent<'_>); 6] = [
+        (
+            GOLDEN_ROOM_EVENT_JOINED,
+            RoomEvent {
+                seq: 8,
+                kind: ROOM_EVENT_PARTICIPANT_JOINED,
+                participant: RoomParticipant {
+                    id: 3,
+                    kind: ROOM_CLIENT_NATIVE,
+                    flags: ROOM_PARTICIPANT_FLAG_STREAMING,
+                    nickname: "pc",
+                    identity: "",
+                },
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_EVENT_LEFT,
+            RoomEvent {
+                seq: 9,
+                kind: ROOM_EVENT_PARTICIPANT_LEFT,
+                participant: RoomParticipant {
+                    id: 3,
+                    ..RoomParticipant::default()
+                },
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_EVENT_ATTACHMENT_UPDATED,
+            RoomEvent {
+                seq: 13,
+                kind: ROOM_EVENT_ATTACHMENT_UPDATED,
+                attachment: RoomAttachment {
+                    broadcast_id: "ABCDEF".to_string(),
+                    label: "tuhis",
+                    live: false,
+                    viewer_count: 12,
+                },
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_EVENT_ATTACHMENT_REMOVED,
+            RoomEvent {
+                seq: 10,
+                kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+                attachment: RoomAttachment {
+                    broadcast_id: "ABCDEF".to_string(),
+                    ..RoomAttachment::default()
+                },
+                reason: ROOM_DETACH_REASON_EXPIRED,
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_EVENT_ENDING,
+            RoomEvent {
+                seq: 11,
+                kind: ROOM_EVENT_ROOM_ENDING,
+                reason: ROOM_END_REASON_CREATOR,
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_EVENT_REJECTED,
+            RoomEvent {
+                seq: 12,
+                kind: ROOM_EVENT_COMMAND_REJECTED,
+                command: ROOM_COMMAND_ATTACH,
+                reason: ROOM_REJECT_LIMIT,
+                message: "room full",
+                ..RoomEvent::default()
+            },
+        ),
+    ];
+    for (hex, want) in cases {
+        let mut got = Vec::new();
+        append_room_event(&mut got, &want).unwrap();
+        assert_eq!(to_hex(&got), hex);
+        let bytes = from_hex(hex);
+        let e = parse_room_event(&bytes).unwrap();
+        assert_eq!(e, want);
+    }
+}
+
+#[test]
+fn golden_room_commands() {
+    let cases: [(&str, RoomCommand<'_>); 5] = [
+        (
+            GOLDEN_ROOM_COMMAND_ATTACH,
+            RoomCommand {
+                kind: ROOM_COMMAND_ATTACH,
+                broadcast_id: "ABCDEF".to_string(),
+                resume_token: &GOLDEN_RESUME_TOKEN_BYTES,
+                label: "tuhis",
+                nickname: "",
+            },
+        ),
+        (
+            GOLDEN_ROOM_COMMAND_DETACH,
+            RoomCommand {
+                kind: ROOM_COMMAND_DETACH,
+                broadcast_id: "ABCDEF".to_string(),
+                ..RoomCommand::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_COMMAND_NICK,
+            RoomCommand {
+                kind: ROOM_COMMAND_SET_NICKNAME,
+                nickname: "tuhis",
+                ..RoomCommand::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_COMMAND_END,
+            RoomCommand {
+                kind: ROOM_COMMAND_END_ROOM,
+                ..RoomCommand::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_COMMAND_RESYNC,
+            RoomCommand {
+                kind: ROOM_COMMAND_RESYNC,
+                ..RoomCommand::default()
+            },
+        ),
+    ];
+    for (hex, want) in cases {
+        let mut got = Vec::new();
+        append_room_command(&mut got, &want).unwrap();
+        assert_eq!(to_hex(&got), hex);
+        let bytes = from_hex(hex);
+        let c = parse_room_command(&bytes).unwrap();
+        assert_eq!(c, want);
+    }
+}
+
+// The docs/44 §4.11 reserved ranges: an unknown kind is reported as such
+// with the header fields filled in, so a reader can skip the record and a
+// relay can answer ROOM_REJECT_UNSUPPORTED.
+#[test]
+fn room_reserved_kinds_are_distinguishable() {
+    assert_eq!(
+        parse_room_event(&from_hex("0115000000014041")),
+        Err(WireError::UnknownRoomKind { seq: 1, kind: 0x40 })
+    );
+    assert_eq!(
+        parse_room_command(&from_hex("01165000")),
+        Err(WireError::UnknownRoomKind { seq: 0, kind: 0x50 })
+    );
+    assert_eq!(
+        append_room_event(
+            &mut Vec::new(),
+            &RoomEvent {
+                kind: 0x4f,
+                ..RoomEvent::default()
+            }
+        ),
+        Err(WireError::UnknownRoomKind { seq: 0, kind: 0x4f })
+    );
+    assert_eq!(
+        append_room_command(
+            &mut Vec::new(),
+            &RoomCommand {
+                kind: 0x5f,
+                ..RoomCommand::default()
+            }
+        ),
+        Err(WireError::UnknownRoomKind { seq: 0, kind: 0x5f })
+    );
+}
+
+#[test]
+fn room_parsers_reject() {
+    let hello = from_hex(GOLDEN_ROOM_HELLO);
+    // Trailing bytes are a framing error on strict messages.
+    let mut trailing = hello.clone();
+    trailing.push(0x00);
+    assert_eq!(parse_room_hello(&trailing), Err(WireError::BadRoomHello));
+    for (idx, val) in [
+        (2, 2u8),  // protocol
+        (3, 3),    // client kind
+        (4, 0x04), // reserved cap bit
+        (5, 0x20), // nick overrun
+        (6, 0xff), // invalid UTF-8
+    ] {
+        let mut bad = hello.clone();
+        bad[idx] = val;
+        assert_eq!(
+            parse_room_hello(&bad),
+            Err(WireError::BadRoomHello),
+            "hello byte {idx} = {val:#04x}"
+        );
+    }
+    let long_nick = "a".repeat(MAX_ROOM_NICKNAME_LEN + 1);
+    assert_eq!(
+        append_room_hello(
+            &mut Vec::new(),
+            &RoomHello {
+                protocol: 1,
+                nickname: &long_nick,
+                ..RoomHello::default()
+            }
+        ),
+        Err(WireError::BadRoomHello)
+    );
+
+    let state = from_hex(GOLDEN_ROOM_STATE_DYNAMIC);
+    for (idx, val) in [
+        (2, 0x08u8), // reserved state flag
+        (3, 0x04),   // reserved cap
+        (17, 0x05),  // mis-frames the token length (neither 0 nor 16)
+    ] {
+        let mut bad = state.clone();
+        bad[idx] = val;
+        assert_eq!(
+            parse_room_state(&bad),
+            Err(WireError::BadRoomState),
+            "state byte {idx} = {val:#04x}"
+        );
+    }
+    assert_eq!(
+        parse_room_state(&state[..state.len() - 1]),
+        Err(WireError::BadRoomState)
+    );
+    assert_eq!(
+        append_room_state(
+            &mut Vec::new(),
+            &RoomState {
+                code: "x",
+                creator_token: &[1],
+                ..RoomState::default()
+            }
+        ),
+        Err(WireError::BadRoomState)
+    );
+    assert_eq!(
+        append_room_state(&mut Vec::new(), &RoomState::default()),
+        Err(WireError::BadRoomState)
+    );
+    assert_eq!(
+        append_room_state(
+            &mut Vec::new(),
+            &RoomState {
+                code: "x",
+                attachments: vec![RoomAttachment {
+                    broadcast_id: "0OIL11".to_string(),
+                    ..RoomAttachment::default()
+                }],
+                ..RoomState::default()
+            }
+        ),
+        Err(WireError::BadRoomState)
+    );
+    assert_eq!(
+        append_room_state(
+            &mut Vec::new(),
+            &RoomState {
+                code: "x",
+                participants: vec![RoomParticipant {
+                    flags: 0x80,
+                    ..RoomParticipant::default()
+                }],
+                ..RoomState::default()
+            }
+        ),
+        Err(WireError::BadRoomState)
+    );
+
+    let ev = from_hex(GOLDEN_ROOM_EVENT_JOINED);
+    let mut trailing = ev.clone();
+    trailing.push(0);
+    assert_eq!(parse_room_event(&trailing), Err(WireError::BadRoomEvent));
+    assert!(matches!(
+        parse_room_event(&ev[..6]),
+        Err(WireError::ShortDatagram { len: 6, need: 7 })
+    ));
+
+    let cmd = from_hex(GOLDEN_ROOM_COMMAND_ATTACH);
+    let mut bad = cmd.clone();
+    bad[10] = 0x0f; // token length 15
+    assert_eq!(parse_room_command(&bad), Err(WireError::BadRoomCommand));
+    assert_eq!(
+        append_room_command(
+            &mut Vec::new(),
+            &RoomCommand {
+                kind: ROOM_COMMAND_ATTACH,
+                broadcast_id: "ABCDEF".to_string(),
+                resume_token: &[1],
+                ..RoomCommand::default()
+            }
+        ),
+        Err(WireError::BadRoomCommand)
+    );
+    // Broadcast IDs normalize on parse: a lower-case ID on the wire is
+    // accepted and returned upper-case, so the relay never compares raw.
+    let lower_bytes = from_hex(concat!("0116", "02", "06616263646566"));
+    let lower = parse_room_command(&lower_bytes).unwrap();
+    assert_eq!(lower.broadcast_id, "ABCDEF");
+    assert_eq!(
+        parse_room_command(&from_hex(concat!("0116", "02", "06304f494c3131"))),
+        Err(WireError::BadRoomCommand)
+    );
+    assert_eq!(
+        parse_room_command(&from_hex("011604ff")),
+        Err(WireError::BadRoomCommand)
+    );
+}
+
 // The constants the engine's chunking, buffering and refusal limits are built
 // on. A change to any of these is a protocol change, not a tuning knob —
 // update the relay, both native broadcasters and the viewer together.
@@ -513,6 +1030,10 @@ fn wire_constants_are_pinned() {
     assert_eq!(TYPE_STRIPE_STATE, 0x10);
     assert_eq!(TYPE_RELAY_IDENTITY, 0x11);
     assert_eq!(TYPE_TELEMETRY_ENDPOINT, 0x12);
+    assert_eq!(TYPE_ROOM_HELLO, 0x13);
+    assert_eq!(TYPE_ROOM_STATE, 0x14);
+    assert_eq!(TYPE_ROOM_EVENT, 0x15);
+    assert_eq!(TYPE_ROOM_COMMAND, 0x16);
 
     assert_eq!(MAX_DATAGRAM_SIZE, 1200);
     assert_eq!(VIDEO_CHUNK_HEADER_SIZE, 20);
@@ -542,6 +1063,19 @@ fn wire_constants_are_pinned() {
     assert_eq!(MAX_STRIPE_LEGS, 4);
     assert_eq!(CAP_PARITY_CHUNKS, 1 << 0);
     assert_eq!(CAP_STRIPED_DELIVERY, 1 << 1);
+    assert_eq!(ROOM_PROTOCOL_VERSION, 1);
+    assert_eq!(ROOM_RECORD_HEADER_SIZE, 2);
+    assert_eq!(MAX_ROOM_RECORD_SIZE, 16384);
+    assert_eq!(MAX_ROOM_NICKNAME_LEN, 32);
+    assert_eq!(MAX_ROOM_CODE_LEN, 32);
+    assert_eq!(MAX_ROOM_DISPLAY_NAME_LEN, 64);
+    assert_eq!(MAX_ROOM_LABEL_LEN, 32);
+    assert_eq!(MAX_ROOM_IDENTITY_LEN, 64);
+    assert_eq!(MAX_ROOM_REJECT_MESSAGE_LEN, 128);
+    assert_eq!(ROOM_CREATOR_TOKEN_SIZE, 16);
+    assert_eq!(ROOM_KEY_SIZE, 6);
+    assert_eq!(RESUME_TOKEN_SIZE, 16);
+    assert_eq!(BROADCAST_ID_LENGTH, 6);
 
     assert_eq!(CLOSE_CODE_BROADCAST_ENDED, 4000);
     assert_eq!(CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE, 4001);
@@ -550,6 +1084,7 @@ fn wire_constants_are_pinned() {
     assert_eq!(CLOSE_CODE_PUBLISHER_SUPERSEDED, 4004);
     assert_eq!(CLOSE_CODE_STRIPE_LEG_ORPHANED, 4005);
     assert_eq!(CLOSE_CODE_TERMINATED_BY_OPERATOR, 4006);
+    assert_eq!(CLOSE_CODE_ROOM_ENDED, 4007);
 
     assert_eq!(BROADCAST_ID_ALPHABET, "23456789ABCDEFGHJKMNPQRSTUVWXYZ");
     assert_eq!(BROADCAST_ID_ALPHABET.len(), 31);

@@ -115,6 +115,12 @@ type Coordinator struct {
 
 	mu   sync.Mutex
 	held map[string]*heldLease
+	// leaseStore is the informer's cache, published by runInformer so
+	// Lookup can answer from it without an API round trip; nil until Run.
+	leaseStore cache.Store
+	// leaseSynced closes once the informer's initial list has landed in
+	// leaseStore — before that the cache is empty, not authoritative.
+	leaseSynced chan struct{}
 }
 
 type heldLease struct {
@@ -148,7 +154,7 @@ func New(opts Options) (*Coordinator, error) {
 	if opts.Log == nil {
 		opts.Log = slog.Default()
 	}
-	return &Coordinator{opts: opts, held: make(map[string]*heldLease)}, nil
+	return &Coordinator{opts: opts, held: make(map[string]*heldLease), leaseSynced: make(chan struct{})}, nil
 }
 
 // leaseName maps a broadcast ID onto a Lease name. Lease names must be
@@ -488,6 +494,54 @@ func (c *Coordinator) Resolve(ctx context.Context, broadcastID string) (Origin, 
 	return parseOrigin(lease), nil
 }
 
+// Lookup is Resolve's cached, non-blocking twin (R42, docs/44 §4.5): the
+// broadcast's lease as the informer last saw it. ok is false before the
+// informer has synced (LeasesSynced) and when no lease exists — the
+// fleet-wide "no such broadcast". inGrace is true once the origin stamped
+// a grace deadline (EnterGrace) or, the crash case that never stamps one,
+// once its renewTime went stale. A room's 1 Hz refresh asks this for every
+// attachment homed on another pod, which is why it must not be a Get.
+func (c *Coordinator) Lookup(broadcastID string) (origin Origin, inGrace bool, ok bool) {
+	c.mu.Lock()
+	store := c.leaseStore
+	c.mu.Unlock()
+	if store == nil || !c.LeasesSynced() {
+		return Origin{}, false, false
+	}
+	obj, exists, err := store.GetByKey(c.opts.Namespace + "/" + leaseName(broadcastID))
+	if err != nil || !exists {
+		return Origin{}, false, false
+	}
+	lease, isLease := obj.(*coordv1.Lease)
+	if !isLease {
+		return Origin{}, false, false
+	}
+	return parseOrigin(lease), lease.Annotations[annotationGraceDeadline] != "" || c.renewStale(lease), true
+}
+
+// LeasesSynced reports whether the lease informer has completed its initial
+// list, i.e. whether Lookup's "no lease" means anything.
+func (c *Coordinator) LeasesSynced() bool {
+	select {
+	case <-c.leaseSynced:
+		return true
+	default:
+		return false
+	}
+}
+
+// WaitLeaseSync blocks until the lease informer has synced or ctx ends;
+// false means ctx ended first. Callers that turn "unknown" into an action
+// (the room refresh's expiry) wait here before their first poll.
+func (c *Coordinator) WaitLeaseSync(ctx context.Context) bool {
+	select {
+	case <-c.leaseSynced:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Held reports whether this pod currently believes it holds the broadcast's
 // lease at the given generation (the W4 generation fence for the internal
 // subscribe route).
@@ -528,6 +582,16 @@ func (c *Coordinator) runInformer(ctx context.Context) {
 		}),
 	)
 	informer := factory.Coordination().V1().Leases().Informer()
+	// The same cache serves Lookup (R42): publish it before the informer
+	// runs, and flag it authoritative once the initial list has landed.
+	c.mu.Lock()
+	c.leaseStore = informer.GetStore()
+	c.mu.Unlock()
+	go func() {
+		if cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+			close(c.leaseSynced)
+		}
+	}()
 	_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		DeleteFunc: func(obj any) {
 			lease, ok := obj.(*coordv1.Lease)

@@ -10,6 +10,7 @@ import { ExploreView } from './views/ExploreView.tsx';
 import { FleetView } from './views/FleetView.tsx';
 import { HistoryView } from './views/HistoryView.tsx';
 import { LiveView } from './views/LiveView.tsx';
+import { RoomView } from './views/RoomView.tsx';
 import { RulesView } from './views/RulesView.tsx';
 import { SessionView } from './views/SessionView.tsx';
 import { SqlView } from './views/SqlView.tsx';
@@ -87,6 +88,8 @@ function Route({ route }: { route: ReturnType<typeof useRoute> }) {
       return <SessionView sessionId={route.id ?? ''} />;
     case 'broadcast':
       return <BroadcastView broadcastKey={route.id ?? ''} />;
+    case 'room':
+      return <RoomView roomKey={route.id ?? ''} />;
     case 'history':
       return <HistoryView />;
     case 'explore':

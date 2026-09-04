@@ -26,6 +26,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -163,6 +165,19 @@ type ui struct {
 	resPick dropdown
 	fpsPick dropdown
 
+	// R42's room card (docs/44 §4.8): code-or-link and attach-secret
+	// fields, the tile label and nickname, and the four actions.
+	roomCode   textInput
+	roomSecret textInput
+	roomLabel  textInput
+	nickname   textInput
+	roomAttach widget.Clickable
+	roomDetach widget.Clickable
+	roomNew    widget.Clickable
+	roomOpen   widget.Clickable
+	// openURL launches the browser; a seam so tests never spawn one.
+	openURL func(string)
+
 	// R35's whose-audio card. appBtns is one clickable per listed application,
 	// grown as the live list does; the two fixed rows and the mid-session
 	// switch have their own.
@@ -199,6 +214,12 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	u.appURL.SetText(cfg.AppURL)
 	u.secret.ed.Mask = '•'
 	u.telemetry.SetText(cfg.TelemetryURL)
+	u.roomCode.SetText(cfg.Room)
+	u.roomSecret.SetText(cfg.RoomAttachSecret)
+	u.roomSecret.ed.Mask = '•'
+	u.roomLabel.SetText(cfg.RoomLabel)
+	u.nickname.SetText(cfg.Nickname)
+	u.openURL = openInBrowser
 	if cfg.BitrateBps > 0 {
 		u.bitrate.SetText(strconv.FormatFloat(float64(cfg.BitrateBps)/1e6, 'f', -1, 64))
 	}
@@ -364,6 +385,8 @@ func (u *ui) layout(gtx layout.Context) layout.Dimensions {
 				layout.Rigid(u.audioCard),
 				layout.Rigid(u.code),
 				layout.Rigid(spacer(12)),
+				layout.Rigid(u.roomCard),
+				layout.Rigid(spacer(12)),
 				layout.Rigid(u.errorBox),
 				layout.Rigid(spacer(12)),
 				layout.Rigid(u.settings),
@@ -447,6 +470,27 @@ func (u *ui) handleEvents(gtx layout.Context) {
 	if u.switchSys.Clicked(gtx) {
 		u.app.SwitchToSystemAudio(context.Background())
 	}
+	// R42: the room card. Attach persists the room (so the next start
+	// attaches too) and joins now when live; Detach forgets it; New room
+	// mints from the live broadcast; Open room view hands the grant to the
+	// SPA through the browser.
+	if u.roomAttach.Clicked(gtx) {
+		u.saveRoomFields()
+		u.app.AttachRoom(u.roomCode.Text(), u.roomSecret.Text())
+	}
+	if u.roomDetach.Clicked(gtx) {
+		u.app.DetachRoom()
+		u.roomCode.SetText("")
+	}
+	if u.roomNew.Clicked(gtx) {
+		u.saveRoomFields()
+		u.app.NewRoom()
+	}
+	if u.roomOpen.Clicked(gtx) {
+		if link := u.app.RoomViewLink(); link != "" {
+			u.openURL(link)
+		}
+	}
 	if u.copyDia.Clicked(gtx) {
 		gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(u.app.Diagnostics()))})
 		u.copied = "Diagnostics copied"
@@ -473,7 +517,41 @@ func (u *ui) save() {
 	if i := u.fpsPick.sel; i >= 0 {
 		u.cfg.Fps = fpsRungs[i].fps
 	}
+	// R42: a room typed into the card but not yet attached still means
+	// "attach on start" — the CLI's -room, the profile's `room` field.
+	u.cfg.Room = gawkapp.RoomCodeFromInput(u.roomCode.Text())
+	u.cfg.RoomAttachSecret = strings.TrimSpace(u.roomSecret.Text())
+	u.applyRoomFields()
 	u.saveCfg()
+}
+
+// applyRoomFields copies the label and nickname fields into the config.
+func (u *ui) applyRoomFields() {
+	u.cfg.RoomLabel = strings.TrimSpace(u.roomLabel.Text())
+	u.cfg.Nickname = strings.TrimSpace(u.nickname.Text())
+}
+
+// saveRoomFields persists the label and nickname ahead of a room action, so
+// the engine's next attach or mint carries what the card shows.
+func (u *ui) saveRoomFields() {
+	u.applyRoomFields()
+	u.saveCfg()
+}
+
+// openInBrowser launches the system browser at url, the Windows sibling's
+// open_in_browser in Go: xdg-open on Linux, open on macOS. Fire and
+// forget — a browser that fails to start is not this window's error.
+func openInBrowser(url string) {
+	if url == "" {
+		return
+	}
+	cmd := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		cmd = "open"
+	}
+	if err := exec.Command(cmd, url).Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "could not open the browser:", err)
+	}
 }
 
 // saveCfg persists the config, non-fatally: the broadcast can still run, the
@@ -815,6 +893,113 @@ func (u *ui) code(gtx layout.Context) layout.Dimensions {
 				)
 			}),
 		)
+	})
+}
+
+// roomCard is R42's room control (docs/44 §4.8): where this broadcast sits
+// in a room, and the four things a broadcaster can do about it. The status
+// line is derived in internal/app from the relay's own events, so
+// "attached", "away" and "ended" mean what the relay says, not what was
+// clicked.
+func (u *ui) roomCard(gtx layout.Context) layout.Dimensions {
+	state, _ := u.app.State()
+	live := state == gawkapp.StateLive
+	r := u.app.Room()
+	inRoom := r.Status != gawkapp.RoomNone && r.Status != gawkapp.RoomError && r.Status != gawkapp.RoomEnded
+	return card(gtx, func(gtx layout.Context) layout.Dimensions {
+		children := []layout.FlexChild{
+			layout.Rigid(label(u.th, "Room")),
+			layout.Rigid(spacer(4)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				line := r.Status.String()
+				if r.Code != "" && r.Status != gawkapp.RoomNone {
+					line += " · " + r.Code
+				}
+				if inRoom && r.Status != gawkapp.RoomJoining {
+					line += fmt.Sprintf(" · %d broadcast(s), %d participant(s)", r.Broadcasts, r.Participants)
+				}
+				if r.Status == gawkapp.RoomNone && r.Configured != "" && !live {
+					line = "Will attach to " + r.Configured + " on start"
+				}
+				t := material.Body2(u.th, line)
+				t.Color = colText
+				if r.Status == gawkapp.RoomAttached {
+					t.Color = colLive
+				}
+				return t.Layout(gtx)
+			}),
+		}
+		if r.Error != "" {
+			children = append(children,
+				layout.Rigid(spacer(4)),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					t := material.Body2(u.th, r.Error)
+					t.Color = colError
+					return t.Layout(gtx)
+				}),
+			)
+		}
+		children = append(children,
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return u.roomCode.Layout(gtx, u.th, "Room code, slug, or a room link")
+			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return u.roomSecret.Layout(gtx, u.th, "Attach secret (static rooms only)")
+			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return u.roomLabel.Layout(gtx, u.th, "Tile label")
+					}),
+					layout.Rigid(spacerW(8)),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return u.nickname.Layout(gtx, u.th, "Nickname")
+					}),
+				)
+			}),
+			layout.Rigid(spacer(10)),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				row := []layout.FlexChild{}
+				if inRoom {
+					row = append(row, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return u.secondaryBtn(&u.roomDetach, "Detach", colDanger).Layout(gtx)
+					}))
+				} else {
+					row = append(row, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return material.Button(u.th, &u.roomAttach, "Attach").Layout(gtx)
+					}))
+				}
+				if live && !inRoom {
+					// A room is minted *from* a live broadcast; idle there is
+					// nothing to mint from.
+					row = append(row,
+						layout.Rigid(spacerW(8)),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return u.secondaryBtn(&u.roomNew, "New room", colButton).Layout(gtx)
+						}),
+					)
+				}
+				if inRoom && u.app.RoomViewLink() != "" {
+					row = append(row,
+						layout.Rigid(spacerW(8)),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return u.secondaryBtn(&u.roomOpen, "Open room view", colButton).Layout(gtx)
+						}),
+					)
+				}
+				return layout.Flex{}.Layout(gtx, row...)
+			}),
+		)
+		if inRoom && u.app.RoomViewLink() == "" {
+			children = append(children,
+				layout.Rigid(spacer(6)),
+				layout.Rigid(caption(u.th, "Set the app URL below to open the room view.")),
+			)
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	})
 }
 

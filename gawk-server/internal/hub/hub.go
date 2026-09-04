@@ -301,6 +301,12 @@ type Options struct {
 	OnPublisherClosed  func(broadcastID string)
 	OnBroadcastExpired func(broadcastID string)
 
+	// IDReserved reports whether a freshly minted broadcast ID names a live
+	// room (R42, docs/44 §4.2): /publish never mints an ID that a room owns,
+	// which is the hub's half of keeping the two code namespaces disjoint
+	// (D3). Nil — the -rooms-off shape — reserves nothing.
+	IDReserved func(id string) bool
+
 	// StatsKey keys ObfuscateID (R17 W6, docs/22 Decision 14): 32 bytes,
 	// shared across the fleet so one broadcast keeps ONE obfuscated identity
 	// in every pod's /statusz and gawk_broadcast_* series. Empty falls back
@@ -871,11 +877,11 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 			if err != nil {
 				return "", nil, err
 			}
-			if _, exists := r.hubs[newID]; !exists {
+			if _, exists := r.hubs[newID]; !exists && !r.idReserved(newID) {
 				break
 			}
 		}
-		if _, exists := r.hubs[newID]; exists {
+		if _, exists := r.hubs[newID]; exists || r.idReserved(newID) {
 			return "", nil, errors.New("hub: collision limits exceeded minting ID")
 		}
 		id = newID
@@ -1049,6 +1055,57 @@ func (r *Registry) ViewerSubscribers(id string) int {
 	if !exists {
 		return 0
 	}
+	return b.externalHumansLocked()
+}
+
+// idReserved is the R42 mint-time mirror check (docs/44 §4.2).
+func (r *Registry) idReserved(id string) bool {
+	return r.opts.IDReserved != nil && r.opts.IDReserved(id)
+}
+
+// BroadcastState is the one-lock read a room needs about an attachment
+// (R42, docs/44 §4.7): known at all, publisher live (vs. away within the
+// grace), and the fleet-global viewer count G (R18, docs/23 Decision 5) —
+// on an origin the aggregate globalViewersLocked computes, on an edge the G
+// its origin last sent down (PR #302 review: the pod-local human count
+// would show a room tile only the viewers that happen to share the home
+// pod). Three separate calls would race each other across a grace expiry.
+func (r *Registry) BroadcastState(id string) (live bool, viewers int, known bool) {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return false, 0, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, exists := r.hubs[normID]
+	if !exists {
+		return false, 0, false
+	}
+	if b.edge {
+		return b.publisherActive, b.edgeGlobalViewersLocked(), true
+	}
+	return b.publisherActive, int(b.globalViewersLocked()), true
+}
+
+// edgeGlobalViewersLocked is an edge hub's view of G: the cached ViewerCount
+// datagram its origin last sent (Decision 5c — forwarded verbatim, so it is
+// parsed back here rather than tracked separately). Before the first one
+// arrives — a fresh pull, or the cache cleared by an upstream loss — the
+// local human count stands in: an undercount that heals within a pump tick,
+// never a 0 while someone here is watching. Caller holds r.mu.
+func (b *broadcastHub) edgeGlobalViewersLocked() int {
+	if b.cachedViewerCount != nil {
+		if g, err := wire.ParseViewerCount(b.cachedViewerCount); err == nil {
+			return int(g)
+		}
+	}
+	return b.externalHumansLocked()
+}
+
+// externalHumansLocked counts the watching humans on this hub: external
+// subscribers minus R30 stripe legs (one viewer's extra connection is not
+// an extra viewer). Caller holds r.mu.
+func (b *broadcastHub) externalHumansLocked() int {
 	n := 0
 	for s := range b.subs {
 		if !s.internal && !s.stripeLeg {

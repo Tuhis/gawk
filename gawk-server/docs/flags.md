@@ -52,8 +52,31 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-admin-oidc-audience` | `GAWK_ADMIN_OIDC_AUDIENCE` | (empty; must be set together with `-admin-oidc-issuer`) |
 | `-admin-oidc-roles-claim` | `GAWK_ADMIN_OIDC_ROLES_CLAIM` | `resource_access.{audience}.roles` (`{audience}` substituted; may not be blank once OIDC is configured) |
 | `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLE` | `operator` (may not be blank once OIDC is configured) |
+| `-rooms` | `GAWK_ROOMS` | `false` |
+| `-room-empty-grace` | `GAWK_ROOM_EMPTY_GRACE` | `60s` |
+| `-max-rooms` | `GAWK_MAX_ROOMS` | `10` |
+| `-max-room-broadcasts` | `GAWK_MAX_ROOM_BROADCASTS` | `4` |
+| `-max-room-participants` | `GAWK_MAX_ROOM_PARTICIPANTS` | `50` |
+| `-room-create-secret` | `GAWK_ROOM_CREATE_SECRET` | (empty = anyone with a live broadcast may mint a dynamic room) |
+| `-rooms-file` | `GAWK_ROOMS_FILE` | (empty; JSON array of static rooms for non-Kubernetes deployments) |
 
 ## Notes on the non-obvious ones
+
+**`-rooms` is off by default and off means byte-identical** to a relay
+without R42 ([docs/44](../../docs/44-rooms.md) D17): the `/room/` routes
+are not registered, no registry is built, `/statusz` has no `rooms`
+section and no `gawk_room*` series exist. With it on, a dynamic room is
+minted by a live broadcaster (`CONNECT /room/new`, gated by
+`-room-create-secret` when set and by `-max-rooms`), joined by its
+six-character code (`CONNECT /room/{code}`), and ends after
+`-room-empty-grace` with nobody in it — keep that grace longer than a
+client reconnect interval, or a pod drain ends every room it hosted.
+Static rooms come from `Room` CRs in cluster mode (`rooms.enabled` in the
+chart) or from `-rooms-file` elsewhere: a JSON array of
+`{"code": "TuhisRoom", "displayName": "...", "attachSecret": "...",
+"maxBroadcasts": 4}` objects, reloaded on change and on SIGHUP exactly like
+`-moderation-source=file`. Room codes are joinable secrets like broadcast
+IDs and are keyed by the same `-stats-key` HMAC everywhere they appear.
 
 **`-keepalive-period` is what keeps idle viewers connected** while the
 broadcaster is away: QUIC PINGs reset both endpoints' idle timers. Raising

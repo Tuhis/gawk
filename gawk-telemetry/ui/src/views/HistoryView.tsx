@@ -221,7 +221,11 @@ export function HistoryView() {
   );
 }
 
-function Row({ row }: { row: HistoryRow }) {
+/**
+ * One history row as a link to its session. Exported for the room view (R42),
+ * which lists the same rows grouped by broadcast — one row shape, one renderer.
+ */
+export function Row({ row }: { row: HistoryRow }) {
   return (
     <a className={styles.row} href={href('session', row.sessionId)}>
       <span className={styles.cSev}>

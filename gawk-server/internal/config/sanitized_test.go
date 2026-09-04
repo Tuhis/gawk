@@ -29,6 +29,7 @@ var (
 		"TelemetryKey",
 		"StatelessResetKey",
 		"AdminAPIToken",
+		"RoomCreateSecret",
 	}
 	publicFields = []string{
 		"Addr", "CertFile", "KeyFile", "DevCert", "DevCertHosts",
@@ -43,6 +44,8 @@ var (
 		"StripedDelivery", "ModerationSource", "AdminOIDCIssuer",
 		"AdminOIDCAudience", "AdminOIDCRolesClaim", "AdminOIDCRole",
 		"MaxIdleTimeout", "KeepAlivePeriod", "BroadcastGrace",
+		"Rooms", "RoomEmptyGrace", "MaxRooms", "MaxRoomBroadcasts",
+		"MaxRoomParticipants", "RoomsFile",
 	}
 )
 
