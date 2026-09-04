@@ -702,7 +702,9 @@ func AppendRoomState(dst []byte, s RoomState) ([]byte, error) {
 }
 
 // ParseRoomState parses a RoomState message. The returned CreatorToken and
-// Key alias msg. Strict: exact length, reserved bits zero.
+// Key alias msg (no copy, like every other parser here): a caller that
+// keeps the state past the record buffer's lifetime must copy them. Strict:
+// exact length, reserved bits zero.
 func ParseRoomState(msg []byte) (RoomState, error) {
 	if err := checkPrefix(msg, TypeRoomState, 16, "room state"); err != nil {
 		return RoomState{}, err

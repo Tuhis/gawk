@@ -145,6 +145,19 @@ type Options struct {
 	// ErrUnavailable and ErrMaxRooms pass through; any other error means
 	// "taken", and minting retries with a fresh code.
 	Reserve func(ctx context.Context, room *rooms.Room) error
+	// Unreserve undoes a Reserve whose code turned out to be taken locally
+	// between the pre-check and the insert (an adoption racing the mint):
+	// the store deletes the CR and stops renewing its lease. Nil in
+	// single-pod mode.
+	Unreserve func(ctx context.Context, code string)
+	// AttachSecret resolves a static room's attach secret at join time
+	// (review finding 3: the portal rotates the Secret in place, so a
+	// cached copy on a homed room would keep admitting the old one).
+	// found=false means "this room has no Secret reference; use the
+	// definition's inline secret"; an error means the reference exists but
+	// could not be read — the join fails closed with ErrUnavailable. Nil
+	// means inline secrets only (file source, tests).
+	AttachSecret func(code string) (secret string, found bool, err error)
 }
 
 // Registry is the single-pod room registry.
@@ -176,7 +189,10 @@ type room struct {
 	attachments  []*attachment // in attach order
 	emptyTimer   *time.Timer
 	emptySince   time.Time
-	ended        bool
+	// emptyGen counts timer arms: a callback whose generation is stale
+	// (a Join stopped it too late, a Leave re-armed) must not fire.
+	emptyGen uint64
+	ended    bool
 }
 
 type attachment struct {
@@ -284,6 +300,10 @@ type StaticRoom struct {
 	DisplayName   string
 	AttachSecret  string
 	MaxBroadcasts int
+	// Attachments seeds a static room being ADOPTED from its CR
+	// (status.attachments, docs/44 §4.3 "rebuilt by the home pod on
+	// adoption"); ignored on an update of a room this pod already holds.
+	Attachments []rooms.Attachment
 }
 
 // UpsertStatic creates or updates a static room. Participants of an updated
@@ -298,12 +318,14 @@ func (r *Registry) UpsertStatic(def StaticRoom) error {
 	if display == "" {
 		display = strings.TrimSpace(def.Code)
 	}
+	states := r.prefetchStates(def.Attachments)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rm, ok := r.rooms[norm]
 	if ok {
 		if rm.kind != rooms.KindStatic {
-			return fmt.Errorf("%w: %s is a dynamic room", ErrAlreadyAttached, norm)
+			// No code in the text: callers log this error (D16).
+			return fmt.Errorf("%w: the code names a live dynamic room", ErrAlreadyAttached)
 		}
 		rm.display = display
 		rm.name = def.DisplayName
@@ -311,12 +333,40 @@ func (r *Registry) UpsertStatic(def StaticRoom) error {
 		rm.maxBroadcasts = def.MaxBroadcasts
 		return nil
 	}
-	r.rooms[norm] = &room{
+	rm = &room{
 		code: norm, display: display, name: def.DisplayName, kind: rooms.KindStatic,
 		attachSecret: def.AttachSecret, maxBroadcasts: def.MaxBroadcasts,
 		createdAt: r.opts.Now(), nextPID: 1, participants: make(map[uint16]*Participant),
 	}
+	r.rooms[norm] = rm
+	for i := range states {
+		if _, taken := r.attached[states[i].id]; taken {
+			continue
+		}
+		r.attachLocked(rm, states[i].id, states[i].label, states[i].state, 0)
+	}
 	return nil
+}
+
+// prefetchStates asks the hub about each CR attachment BEFORE the registry
+// lock is taken: the hub's mint path calls back into Has under its own
+// lock, so querying it under r.mu is the AB/BA deadlock the review found.
+type prefetched struct {
+	id, label string
+	state     BroadcastState
+}
+
+func (r *Registry) prefetchStates(list []rooms.Attachment) []prefetched {
+	out := make([]prefetched, 0, len(list))
+	for _, at := range list {
+		id, err := broadcastid.Normalize(at.BroadcastID)
+		if err != nil {
+			continue
+		}
+		state, _ := r.opts.Broadcasts.BroadcastState(id)
+		out = append(out, prefetched{id: id, label: at.Label, state: state})
+	}
+	return out
 }
 
 // ReplaceStatic makes the set of static rooms exactly defs: new ones are
@@ -367,11 +417,28 @@ func (r *Registry) CheckJoin(code, creatorToken string, attachSecret string, hav
 	if err != nil {
 		return Grants{}, ErrNotFound
 	}
+	// The attach secret is resolved per join (review finding 3), and
+	// outside the lock: the resolver may read a Kubernetes Secret.
+	var (
+		resolved string
+		found    bool
+	)
+	if haveAttachSecret && r.opts.AttachSecret != nil {
+		var err error
+		resolved, found, err = r.opts.AttachSecret(norm)
+		if err != nil {
+			return Grants{}, fmt.Errorf("%w: attach secret: %v", ErrUnavailable, err)
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rm, ok := r.rooms[norm]
 	if !ok || rm.ended {
 		return Grants{}, ErrNotFound
+	}
+	expected := rm.attachSecret
+	if found {
+		expected = resolved
 	}
 	var g Grants
 	if creatorToken != "" {
@@ -384,10 +451,10 @@ func (r *Registry) CheckJoin(code, creatorToken string, attachSecret string, hav
 	switch {
 	case rm.kind == rooms.KindDynamic:
 		g.AttachOK = true
-	case rm.attachSecret == "":
+	case expected == "" && !found:
 		g.AttachOK = true
 	case haveAttachSecret:
-		if subtle.ConstantTimeCompare([]byte(attachSecret), []byte(rm.attachSecret)) != 1 {
+		if expected == "" || subtle.ConstantTimeCompare([]byte(attachSecret), []byte(expected)) != 1 {
 			return Grants{}, fmt.Errorf("%w: attach secret", ErrForbidden)
 		}
 		g.AttachOK = true
@@ -464,7 +531,8 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		}
 		if other, taken := r.attached[id]; taken {
 			r.mu.Unlock()
-			return MintResult{}, fmt.Errorf("%w: %s", ErrAlreadyAttached, other)
+			_ = other // the other room's code stays out of the error text (D16)
+			return MintResult{}, fmt.Errorf("%w: broadcast is in another room", ErrAlreadyAttached)
 		}
 		if r.dynamicCountLocked() >= r.opts.MaxRooms {
 			r.mu.Unlock()
@@ -494,6 +562,11 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 			r.mu.Lock()
 			if _, taken := r.rooms[norm]; taken {
 				r.mu.Unlock()
+				// The CR was created and its lease is being renewed; give
+				// both back or the slot counts against -max-rooms forever.
+				if r.opts.Unreserve != nil {
+					r.opts.Unreserve(ctx, norm)
+				}
 				continue
 			}
 		}
@@ -575,13 +648,22 @@ func (r *Registry) Join(code string, hello wire.RoomHello, grants Grants, creato
 		r.mu.Unlock()
 		return nil, ErrFull
 	}
+	// IDs are per-room and wrap after 65535 joins (a long-lived static
+	// room gets there); skip any ID a live participant still holds.
+	pid := rm.nextPID
+	for {
+		if _, live := rm.participants[pid]; pid != 0 && !live {
+			break
+		}
+		pid++
+	}
 	p := &Participant{
 		reg: r, room: rm, conn: conn,
-		id: rm.nextPID, kind: hello.ClientKind,
+		id: pid, kind: hello.ClientKind,
 		grants: grants, firstState: creatorToken,
 		outbox: make(chan []byte, outboxDepth), closed: make(chan struct{}),
 	}
-	rm.nextPID++
+	rm.nextPID = pid + 1
 	if rm.nextPID == 0 {
 		rm.nextPID = 1
 	}
@@ -999,10 +1081,15 @@ func (r *Registry) startEmptyGraceLocked(rm *room) {
 	}
 	rm.emptySince = r.opts.Now()
 	code := rm.code
+	rm.emptyGen++
+	gen := rm.emptyGen
 	rm.emptyTimer = r.opts.AfterFunc(r.opts.EmptyGrace, func() {
+		// Only THIS arm may end the room: a callback that lost the lock
+		// race to a Join+Leave pair sees a newer generation and yields to
+		// the fresh grace (the reload-at-expiry case, docs/44 D7).
 		r.mu.Lock()
 		cur, ok := r.rooms[code]
-		expired := ok && cur == rm && len(rm.participants) == 0 && rm.emptyTimer != nil
+		expired := ok && cur == rm && len(rm.participants) == 0 && rm.emptyTimer != nil && rm.emptyGen == gen
 		r.mu.Unlock()
 		if expired {
 			r.EndRoom(code, wire.RoomEndReasonEmpty)
@@ -1137,22 +1224,39 @@ func (r *Registry) setLive(id string, live bool) {
 // Refresh re-reads every attachment's state from the hub and pushes an
 // AttachmentUpdated for each change (viewer counts, and the live flag in
 // case a hook was missed). RunRefresh calls it on a ticker.
+//
+// The hub is queried with r.mu RELEASED: hub.StartPublish holds the hub
+// lock while it asks IDReserved → Has, which takes r.mu, so asking the hub
+// under r.mu is an AB/BA deadlock (review finding 1). Snapshot, query,
+// re-lock, re-find — an attachment may have gone in between.
 func (r *Registry) Refresh() {
+	type probe struct {
+		rm *room
+		id string
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var probes []probe
 	for _, rm := range r.rooms {
 		for _, a := range rm.attachments {
-			state, known := r.opts.Broadcasts.BroadcastState(a.id)
-			if !known {
-				// The expiry hook handles removal; a missed one is caught
-				// by the next hook delivery, never by a poll.
-				continue
-			}
-			if state.Live != a.live || state.Viewers != a.viewers {
+			probes = append(probes, probe{rm: rm, id: a.id})
+		}
+	}
+	r.mu.Unlock()
+	for _, p := range probes {
+		state, known := r.opts.Broadcasts.BroadcastState(p.id)
+		if !known {
+			// The expiry hook handles removal; a missed one is caught by
+			// the next hook delivery, never by a poll.
+			continue
+		}
+		r.mu.Lock()
+		if !p.rm.ended {
+			if a := p.rm.find(p.id); a != nil && (state.Live != a.live || state.Viewers != a.viewers) {
 				a.live, a.viewers = state.Live, state.Viewers
-				r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventAttachmentUpdated, Attachment: a.record()}, 0)
+				r.broadcastLocked(p.rm, wire.RoomEvent{Kind: wire.RoomEventAttachmentUpdated, Attachment: a.record()}, 0)
 			}
 		}
+		r.mu.Unlock()
 	}
 }
 
@@ -1217,6 +1321,7 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 	if err != nil {
 		return false
 	}
+	states := r.prefetchStates(cr.Status.Attachments)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.rooms[norm]; exists {
@@ -1230,16 +1335,11 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 	if cr.Status.CreatedAt != nil {
 		rm.createdAt = cr.Status.CreatedAt.Time
 	}
-	for _, at := range cr.Status.Attachments {
-		id, err := broadcastid.Normalize(at.BroadcastID)
-		if err != nil {
+	for i := range states {
+		if _, taken := r.attached[states[i].id]; taken {
 			continue
 		}
-		if _, taken := r.attached[id]; taken {
-			continue
-		}
-		state, _ := r.opts.Broadcasts.BroadcastState(id)
-		r.attachLocked(rm, id, at.Label, state, 0)
+		r.attachLocked(rm, states[i].id, states[i].label, states[i].state, 0)
 	}
 	r.rooms[norm] = rm
 	r.startEmptyGraceLocked(rm)

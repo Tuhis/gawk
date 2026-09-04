@@ -626,6 +626,24 @@ the manual pass outcome.
   defaults) stay byte-identical; the key is on the session detail, the
   history surface (`room=` filter, `GET /v1/history/rooms/{key}`) and the
   live projection, all `omitempty`.
+- **The `#/join/<code>` probe joins as a real participant.** Resolving a
+  typed code is a `CONNECT /room/<code>` (D19), so a code that IS a room
+  produces a momentary `guest-N` join/leave on that room's roster before
+  the resolver lands in the room view proper, and a full room (429) is
+  indistinguishable from "not a room" and falls through to the viewer's
+  "streamer offline". A resolve-only hello is a candidate follow-up; the
+  cost today is one roster blink per typed code.
+- **Attach secrets are resolved at join time, not cached on the home
+  pod** (review finding): the portal rotates a static room's Secret in
+  place without touching the CR, so a homed room must re-read the Secret
+  for every join that presents one (one Get; unreadable → 503, fail
+  closed). The file source keeps its inline secret.
+- **A dynamic room whose home crashed while populated is janitored on
+  the stale lease alone** (review finding): nothing would ever stamp
+  `emptySince` on it, and an interested participant re-dials and adopts
+  within the client reconnect window, so a lease stale past the long
+  window with no adoption *is* an empty room. The first stale sighting
+  stamps `emptySince`; the next pass deletes.
 - **Post-upgrade close codes 400 and 404 exist alongside 4007**: 400 for a
   session that broke the control protocol (no hello, malformed record),
   404 for a room that ended between the pre-upgrade check and the hello.

@@ -214,6 +214,10 @@ func roomJoinStatus(err error) (int, string) {
 		return http.StatusForbidden, metrics.OutcomeUnauthorized
 	case errors.Is(err, roomsrv.ErrFull):
 		return http.StatusTooManyRequests, metrics.OutcomeLimitRejected
+	case errors.Is(err, roomsrv.ErrUnavailable):
+		// The static room's Secret could not be read (docs/44 §6: fail
+		// closed, like mint and attach when the API server is away).
+		return http.StatusServiceUnavailable, metrics.OutcomeError
 	}
 	return http.StatusInternalServerError, metrics.OutcomeError
 }
