@@ -1196,6 +1196,18 @@ Add to it when a new gotcha lands in `docs/`.
   reactor (`installCAS` / `installRoomCAS`) last-writer-wins and hides
   exactly this. ([docs/44](44-rooms.md) §11.1)
 
+- **Never name a shell variable `HOME` in an e2e script.** `rooms-assert.sh`
+  used `HOME` for the home pod and set it to `""`; every child `kubectl`
+  from that line on had no `~/.kube/config`, fell back to the runner pod's
+  in-cluster config and talked to the **host cluster** — where `rooms` is
+  "no such resource type", `bans` (which prod has) still resolves, kind's
+  pods do not exist and the raw path answers Forbidden for the ARC service
+  account. Three kind runs read as a broken CRD or a kubectl cache race
+  before the raw-path read carried the service-account name. The fix is a
+  rename; the lesson is that "kubectl sees a different cluster" is on the
+  list whenever a kind assert contradicts the relay's own logs.
+  ([docs/44](44-rooms.md) §11.2, PR #302)
+
 **CI / deployment**
 
 - **`-race` and a coverage profile in one `go test` run compound

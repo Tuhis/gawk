@@ -704,7 +704,7 @@ the manual pass outcome.
 | RM2 `-rooms` off byte-identical | `TestRoomsOffLeavesNoRoute` (no route, no `/statusz` section), the full pre-R42 suite green, chart "rooms off renders nothing" |
 | RM3 two claimants ⇒ one holder; stale generation loses; janitor | `internal/roomcluster/store_test.go` |
 | RM3 proxy and `/internal/room` vocabulary | `internal/transport/roomcluster_test.go` (two servers in-process) |
-| RM3 kind two-pod tier | `e2e/rooms-assert.sh` in the `e2e-cluster` job: static CR joinable on both pods, `status.key` written, CR delete → 4007, home pod killed → re-dialled joiner lands with attachments whole and the lease at a higher generation |
+| RM3 kind two-pod tier | `e2e/rooms-assert.sh` in the `e2e-cluster` job: static CR joinable on both pods, `status.key` written, second joiner proxied to the home, CR delete → 4007, dynamic room minted on the pod that is not its publisher's origin, home pod killed → re-dialled joiner lands with attachments whole and the lease at a higher generation. **Ran green 2026-09-05** (dispatch 33919073089, PR #302), after three runs lost to the harness shadowing `HOME` (docs/gotchas.md) |
 | RM4 routing, modes, hide-videos closes every media session | `routing.test.ts`, `RoomScreen.test.tsx` (hide-videos: zero `/subscribe` sessions, control session kept), `room-session.test.ts`, `App.room.test.tsx` (`?rt=` hand-off before first render) |
 | RM4 browser E2E | `node e2e/run.mjs --rooms` (two pubsims, grid → focus by key → hide-videos asserted on the relay's subscriber counts) |
 | RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
