@@ -1,13 +1,6 @@
 package main
 
-import (
-	"io"
-	"log/slog"
-	"testing"
-	"time"
-
-	"github.com/Tuhis/gawk/gawk-server/internal/hub"
-)
+import "testing"
 
 // chainHook is what lets the room registry ride the hub's publisher hooks
 // without displacing whatever the cluster coordinator already installed
@@ -29,42 +22,6 @@ func TestChainHookRunsBothHooksInOrder(t *testing.T) {
 	}
 }
 
-// nopConn is the least a hub subscriber needs: the room adapter only
-// counts it, no media ever reaches it here.
-type nopConn struct{}
-
-func (nopConn) SendDatagram([]byte) error                       { return nil }
-func (nopConn) OpenKeyframeStream() (hub.KeyframeStream, error) { return nil, io.ErrClosedPipe }
-func (nopConn) OpenCarrierStream() (hub.KeyframeStream, error)  { return nil, io.ErrClosedPipe }
-func (nopConn) CloseWithError(uint32, string) error             { return nil }
-
-// hubBroadcasts is the registry's only view of a broadcast (docs/44 D1:
-// an attachment is a broadcast ID the hub is asked about). Against a real
-// hub: unknown → not known; publishing → live with the viewer count;
-// publisher gone within the grace → known but away.
-func TestHubBroadcastsReportsLiveViewersAndKnown(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := hub.NewRegistry(log, hub.Options{BroadcastGrace: time.Hour})
-	src := hubBroadcasts{r}
-
-	if st, known := src.BroadcastState("ZZZZZZ"); known || st.Live || st.Viewers != 0 {
-		t.Fatalf("unknown broadcast: %+v, known=%v", st, known)
-	}
-	id, p, err := r.StartPublish("")
-	if err != nil {
-		t.Fatalf("StartPublish: %v", err)
-	}
-	if st, known := src.BroadcastState(id); !known || !st.Live || st.Viewers != 0 {
-		t.Fatalf("fresh publisher: %+v, known=%v", st, known)
-	}
-	if _, err := r.Subscribe(id, nopConn{}); err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-	if st, known := src.BroadcastState(id); !known || !st.Live || st.Viewers != 1 {
-		t.Fatalf("with a viewer: %+v, known=%v", st, known)
-	}
-	p.Close()
-	if st, known := src.BroadcastState(id); !known || st.Live || st.Viewers != 1 {
-		t.Fatalf("publisher away within the grace: %+v, known=%v", st, known)
-	}
-}
+// The registry's broadcast source is the transport's (RoomBroadcasts):
+// its single-pod and cluster shapes are pinned in internal/transport
+// (TestRoomBroadcastsAnswersLocalHubThenOriginLease).

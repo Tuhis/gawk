@@ -37,7 +37,7 @@ func newRoomOutcomeServer(t *testing.T, cfg config.Config, withRegistry bool, mu
 	if !withRegistry {
 		return srv, sm, r, nil
 	}
-	opts := roomsrv.Options{Broadcasts: hubBroadcastsAdapter{r}, Obfuscate: r.ObfuscateID, Log: discardLog}
+	opts := roomsrv.Options{Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: discardLog}
 	if mutate != nil {
 		mutate(&opts)
 	}

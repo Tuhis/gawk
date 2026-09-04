@@ -15,22 +15,28 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	coordv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientfeatures "k8s.io/client-go/features"
 	clientfeaturestesting "k8s.io/client-go/features/testing"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
@@ -48,6 +54,7 @@ type roomPod struct {
 	hub   *hub.Registry
 	reg   *roomsrv.Registry
 	store *roomcluster.Store
+	coord *cluster.Coordinator
 	done  chan error
 }
 
@@ -55,9 +62,18 @@ func (p *roomPod) url(path string) string { return fmt.Sprintf("https://127.0.0.
 
 type roomFleet struct {
 	client    *dynamicfake.FakeDynamicClient
+	cs        *fake.Clientset
 	cert      tls.Certificate
 	pool      *x509.CertPool
 	clientTLS *tls.Config
+	// leaseWatches receives one token per Lease watch registered with the
+	// fake tracker (see cluster_test.go's leaseWatchRegistered: a watch
+	// that starts late never learns of earlier objects, so a pod must not
+	// be handed out before its lease informer is actually watching).
+	leaseWatches chan struct{}
+	// broadcastGrace is the hub's (and the lease's) grace; the lifecycle
+	// test shortens it before starting its pods.
+	broadcastGrace time.Duration
 }
 
 func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
@@ -72,12 +88,28 @@ func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
 	pool.AddCert(cert.Leaf)
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{rooms.GroupVersionResource: rooms.ListKind}, objs...)
-	return &roomFleet{client: client, cert: cert, pool: pool,
-		clientTLS: &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}}}
+	f := &roomFleet{client: client, cs: fake.NewClientset(), cert: cert, pool: pool,
+		clientTLS:      &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}},
+		leaseWatches:   make(chan struct{}, 16),
+		broadcastGrace: 5 * time.Minute}
+	gvr := coordv1.SchemeGroupVersion.WithResource("leases")
+	f.cs.PrependWatchReactor("leases", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		w, err := f.cs.Tracker().Watch(gvr, action.GetNamespace())
+		if err != nil {
+			return false, nil, err
+		}
+		f.leaseWatches <- struct{}{}
+		return true, w, nil
+	})
+	return f
 }
 
-// startRoomPod boots one pod with rooms + the cluster room store wired the
-// way main does it, the store's informer running and synced.
+// startRoomPod boots one pod with rooms, the R17 origin coordinator and
+// the cluster room store wired the way main does it: the hub's lifecycle
+// hooks stamp/delete the broadcast lease and move the local registry, the
+// room registry's broadcast source is the transport's fleet-wide one, both
+// informers are running and synced, and the refresh poll runs (after the
+// lease sync, as main orders it).
 func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName string) *roomPod {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -92,7 +124,7 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 		MaxSubscribers:     4,
 		MaxIdleTimeout:     30 * time.Second,
 		KeepAlivePeriod:    10 * time.Second,
-		BroadcastGrace:     5 * time.Minute,
+		BroadcastGrace:     f.broadcastGrace,
 		InternalPSK:        "fleet-psk",
 		InternalServerName: "localhost",
 		ResumeTokenKey:     []byte(strings.Repeat("k", 32)),
@@ -100,14 +132,47 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 		Rooms:              true,
 		ClusterMode:        true,
 	}
-	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: cfg.MaxSubscribers, BroadcastGrace: cfg.BroadcastGrace, StatsKey: cfg.StatsKey})
-	srv := New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &f.cert, nil }, discardLog,
+	// The hooks close over the late-bound coordinator and registry, as in
+	// main: cluster mode's lease stamp/delete first, then the room hook.
+	var (
+		coord *cluster.Coordinator
+		reg   *roomsrv.Registry
+		srv   *Server
+	)
+	r := hub.NewRegistry(discardLog, hub.Options{
+		MaxSubscribers: cfg.MaxSubscribers, BroadcastGrace: cfg.BroadcastGrace, StatsKey: cfg.StatsKey,
+		// Errors are dropped as main only logs them (and the hooks can fire
+		// during teardown, after the test has ended).
+		OnPublisherClosed: func(id string) {
+			_ = coord.EnterGrace(context.Background(), id)
+			reg.PublisherClosed(id)
+		},
+		OnBroadcastExpired: func(id string) {
+			_ = coord.Delete(context.Background(), id)
+			reg.BroadcastExpired(id)
+		},
+		IDReserved: func(id string) bool { return reg.Has(id) },
+	})
+	coord, err = cluster.New(cluster.Options{
+		Client: f.cs, Namespace: "gawk", PodName: podName, AdvertiseAddr: cfg.Addr,
+		BroadcastGrace: cfg.BroadcastGrace, Log: discardLog,
+		OnLeaseDeleted: func(id string) { srv.HandleLeaseDeleted(id) },
+		OnLeaseLost:    func(id string, o cluster.Origin) { srv.HandleLeaseLost(id, o) },
+		RenewInterval:  50 * time.Millisecond, LeaseDuration: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("cluster.New: %v", err)
+	}
+	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &f.cert, nil }, discardLog,
 		metrics.NewServerMetrics(prometheus.NewRegistry()))
 	srv.drainSleep = func(time.Duration) {}
+	srv.SetCluster(coord, podName)
+	srv.edgeManager().dial = newEdgeDialer(cfg.InternalServerName, cfg.InternalPSK, f.pool, discardLog)
 
 	var store *roomcluster.Store
-	reg := roomsrv.NewRegistry(roomsrv.Options{
-		Broadcasts: hubBroadcastsAdapter{r}, Obfuscate: r.ObfuscateID, Log: discardLog, EmptyGrace: time.Hour, PodName: podName,
+	reg = roomsrv.NewRegistry(roomsrv.Options{
+		Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: discardLog, EmptyGrace: time.Hour, PodName: podName,
+		RefreshInterval: 100 * time.Millisecond, UnknownIsExpired: true,
 		Reserve:              func(ctx context.Context, room *rooms.Room) error { return store.Reserve(ctx, room) },
 		OnRoomEnded:          func(code string, reason uint8) { store.RoomEnded(code, reason) },
 		OnRoomEmpty:          func(code string, empty bool) { store.RoomEmpty(code, empty) },
@@ -126,12 +191,22 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 	// The fleet's cert is self-signed: point the proxy dialer at its pool.
 	srv.roomClusterWiring().dial = newRoomProxyDialer(cfg.InternalServerName, cfg.InternalPSK, f.pool)
 	srv.SetRooms(reg)
+	go coord.Run(ctx)
+	select {
+	case <-f.leaseWatches:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("%s: lease informer never registered its watch", podName)
+	}
+	if !coord.WaitLeaseSync(ctx) {
+		t.Fatalf("%s: lease informer never synced", podName)
+	}
 	go store.Run(ctx)
 	waitFor(t, 15*time.Second, store.HasSynced, podName+" room informer sync")
+	go reg.RunRefresh(ctx)
 
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
-	return &roomPod{name: podName, port: port, srv: srv, hub: r, reg: reg, store: store, done: done}
+	return &roomPod{name: podName, port: port, srv: srv, hub: r, reg: reg, store: store, coord: coord, done: done}
 }
 
 func (f *roomFleet) roomCR(t *testing.T, name string) *rooms.Room {
@@ -286,7 +361,8 @@ func TestRoomProxyPipesAndAdoptsAfterTheHomeDrains(t *testing.T) {
 	// home's own 4002 rides through the pipe), never 4007.
 	aCancel()
 	select {
-	case <-a.done:
+	case err := <-a.done:
+		t.Logf("DEBUG pod-a Run returned: %v; holding=%v", err, func() bool { _, h := a.store.Holding(code); return h }())
 	case <-time.After(10 * time.Second):
 		t.Fatal("pod-a did not drain")
 	}
@@ -401,5 +477,140 @@ func TestRoomLeaseLossClosesLocalSessionsNonTerminally(t *testing.T) {
 	expectStatus(t, ctx, a.url("/room/"+code), f.clientTLS, http.StatusNotFound)
 	if _, held := a.store.Holding(code); held {
 		t.Fatal("the proxied join made pod-a claim against a live home")
+	}
+}
+
+// RoomBroadcasts is the registry's only view of a broadcast (docs/44 D1).
+// Single-pod shape (no SetCluster): the local hub is the whole answer —
+// unknown stays unknown, publishing is live with the viewer count, gone
+// within the grace is known but away. Cluster shape: the origin lease
+// answers for what no local hub knows — held is live, in grace is away,
+// and the viewer count is 0 (G is computed on the origin), while a local
+// hub still wins when there is one.
+func TestRoomBroadcastsAnswersLocalHubThenOriginLease(t *testing.T) {
+	cfg := config.Config{MaxSubscribers: 5, MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, BroadcastGrace: time.Hour}
+	srv, _, r := newOutcomeServer(t, cfg, hub.Options{BroadcastGrace: time.Hour})
+	src := srv.RoomBroadcasts()
+
+	if st, known := src.BroadcastState("ZZZZZZ"); known || st.Live || st.Viewers != 0 {
+		t.Fatalf("unknown broadcast: %+v, known=%v", st, known)
+	}
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	if st, known := src.BroadcastState(id); !known || !st.Live || st.Viewers != 0 {
+		t.Fatalf("fresh publisher: %+v, known=%v", st, known)
+	}
+	if _, err := r.Subscribe(id, nopHubConn{}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if st, known := src.BroadcastState(id); !known || !st.Live || st.Viewers != 1 {
+		t.Fatalf("with a viewer: %+v, known=%v", st, known)
+	}
+	p.Close()
+	if st, known := src.BroadcastState(id); !known || st.Live || st.Viewers != 1 {
+		t.Fatalf("publisher away within the grace: %+v, known=%v", st, known)
+	}
+
+	// Cluster shape: leases answer for what the hub does not know.
+	srv.SetCluster(&fakeCoordinator{leases: map[string]fakeLease{
+		"LIVEAA":  {origin: cluster.Origin{Holder: "pod-b", Addr: "10.0.0.2:4433", Generation: 3}},
+		"GRACEA":  {origin: cluster.Origin{Holder: "pod-b"}, inGrace: true},
+		"DRAINED": {origin: cluster.Origin{}}, // released holder: the broadcaster is mid-reconnect
+	}}, "pod-a")
+	if st, known := src.BroadcastState("LIVEAA"); !known || !st.Live || st.Viewers != 0 {
+		t.Fatalf("lease held elsewhere: %+v, known=%v, want known+live with 0 viewers", st, known)
+	}
+	if st, known := src.BroadcastState("GRACEA"); !known || st.Live {
+		t.Fatalf("lease in grace: %+v, known=%v, want known+away", st, known)
+	}
+	if st, known := src.BroadcastState("DRAINED"); !known || st.Live {
+		t.Fatalf("lease without a holder: %+v, known=%v, want known+away", st, known)
+	}
+	if _, known := src.BroadcastState("ZZZZZZ"); known {
+		t.Fatal("no lease anywhere must stay unknown")
+	}
+	// The local hub still answers first — with its own live/away and G.
+	if st, known := src.BroadcastState(id); !known || st.Live || st.Viewers != 1 {
+		t.Fatalf("local hub in cluster mode: %+v, known=%v", st, known)
+	}
+}
+
+// nopHubConn is the least a hub subscriber needs: the source only counts
+// it, no media ever reaches it here.
+type nopHubConn struct{}
+
+func (nopHubConn) SendDatagram([]byte) error                       { return nil }
+func (nopHubConn) OpenKeyframeStream() (hub.KeyframeStream, error) { return nil, io.ErrClosedPipe }
+func (nopHubConn) OpenCarrierStream() (hub.KeyframeStream, error)  { return nil, io.ErrClosedPipe }
+func (nopHubConn) CloseWithError(uint32, string) error             { return nil }
+
+// PR #302 review, finding A: the broadcast source must answer fleet-wide.
+// The publisher is on pod A; the mint lands on pod B (no session affinity
+// on the Service makes that the common case), so B has no hub for the
+// broadcast — and answered 404 before the origin lease was consulted. Now
+// the mint succeeds with the attachment live, a joiner on B sees it live,
+// and the lifecycle follows the lease rather than the hub hooks (which
+// fire on A, the origin, not on B, the home): the publisher leaving A
+// stamps the lease's grace and B's refresh flips the tile to away; A's
+// grace expiry deletes the lease and B's refresh removes the attachment
+// with reason expired and drops it from the CR (docs/44 §6).
+func TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	f := newRoomFleet(t)
+	f.broadcastGrace = 2 * time.Second
+	a := f.startRoomPod(t, ctx, "pod-a")
+	b := f.startRoomPod(t, ctx, "pod-b")
+
+	pub, id, tokenHex := dialPublisherHandshake(t, ctx, a.port, f.clientTLS)
+	waitFor(t, 15*time.Second, func() bool { _, _, ok := b.coord.Lookup(id); return ok }, "pod-b to see the origin lease")
+	if _, _, known := b.hub.BroadcastState(id); known {
+		t.Fatal("pod-b has a hub for a broadcast nobody there watches; the test would not exercise the lease path")
+	}
+
+	creator := openControl(t, ctx, b.url("/room/new?broadcast="+id+"&resume="+tokenHex+"&label=pc"), f.clientTLS, "tuhis")
+	st := creator.nextState(t)
+	if len(st.Attachments) != 1 || st.Attachments[0].BroadcastID != id || !st.Attachments[0].Live || st.Attachments[0].ViewerCount != 0 {
+		t.Fatalf("mint on the non-origin pod: attachments = %+v, want the broadcast live with 0 viewers (G is pod-local off-origin)", st.Attachments)
+	}
+	code := strings.ToLower(st.Code)
+	if _, held := b.store.Holding(code); !held {
+		t.Fatal("the mint did not make pod-b the home")
+	}
+	joiner := openControl(t, ctx, b.url("/room/"+code), f.clientTLS, "viewer")
+	if jst := joiner.nextState(t); len(jst.Attachments) != 1 || !jst.Attachments[0].Live {
+		t.Fatalf("joiner state = %+v, want the attachment live", jst)
+	}
+	if e := creator.nextEvent(t, wire.RoomEventParticipantJoined); e.Participant.Nickname != "viewer" {
+		t.Fatalf("home saw %+v", e)
+	}
+
+	// The publisher leaves pod A: its hub hook stamps the lease's grace
+	// (the hook lands in A's registry, which does not hold the room), and
+	// pod B's refresh reads the stamp within its interval.
+	pub.CloseWithError(0, "")
+	if e := creator.nextEvent(t, wire.RoomEventAttachmentUpdated); e.Attachment.BroadcastID != id || e.Attachment.Live {
+		t.Fatalf("after the publisher left: %+v, want away", e)
+	}
+	if e := joiner.nextEvent(t, wire.RoomEventAttachmentUpdated); e.Attachment.Live {
+		t.Fatalf("joiner after the publisher left: %+v, want away", e)
+	}
+
+	// A's grace expiry deletes the lease; B's refresh sees no hub and no
+	// lease and expires the attachment.
+	if e := creator.nextEvent(t, wire.RoomEventAttachmentRemoved); e.Attachment.BroadcastID != id || e.Reason != wire.RoomDetachReasonExpired {
+		t.Fatalf("after the grace: %+v, want removed with reason expired", e)
+	}
+	if e := joiner.nextEvent(t, wire.RoomEventAttachmentRemoved); e.Reason != wire.RoomDetachReasonExpired {
+		t.Fatalf("joiner after the grace: %+v", e)
+	}
+	if _, _, ok := b.coord.Lookup(id); ok {
+		t.Fatal("the origin lease outlived the broadcast grace")
+	}
+	waitFor(t, 15*time.Second, func() bool { return len(f.roomCR(t, code).Status.Attachments) == 0 }, "the CR to drop the dead broadcast")
+	if len(b.reg.Attachments(code)) != 0 {
+		t.Fatalf("pod-b registry still lists %+v", b.reg.Attachments(code))
 	}
 }

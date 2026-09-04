@@ -133,19 +133,6 @@ func run() error {
 	}
 
 	r := hub.NewRegistry(log, hubOpts)
-	if cfg.Rooms {
-		ro := roomOptions(cfg)
-		ro.Broadcasts = hubBroadcasts{r}
-		ro.Obfuscate = r.ObfuscateID
-		ro.PodName = os.Getenv("POD_NAME")
-		ro.Log = log
-		if cfg.ClusterMode {
-			// The store is built later (buildRooms below) and read through
-			// the closure, as the hub's lease hooks read coord.
-			wireRoomClusterSeams(&ro, func() *roomcluster.Store { return roomStore })
-		}
-		roomReg = roomsrv.NewRegistry(ro)
-	}
 
 	// Prometheus wiring (R9, docs/13): runtime collectors + build info, the
 	// hub registry collector, and the transport connection counters — all
@@ -166,6 +153,23 @@ func run() error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	srv := transport.New(cfg, r, getCert, log, sm)
+	if cfg.Rooms {
+		ro := roomOptions(cfg)
+		// The registry's view of a broadcast is the transport's: the local
+		// hub first and, in cluster mode, the origin lease through the
+		// coordinator SetCluster installs below (docs/44 §4.5, PR #302
+		// review) — read late-bound, so the registry can exist before it.
+		ro.Broadcasts = srv.RoomBroadcasts()
+		ro.Obfuscate = r.ObfuscateID
+		ro.PodName = os.Getenv("POD_NAME")
+		ro.Log = log
+		if cfg.ClusterMode {
+			// The store is built later (buildRooms below) and read through
+			// the closure, as the hub's lease hooks read coord.
+			wireRoomClusterSeams(&ro, func() *roomcluster.Store { return roomStore })
+		}
+		roomReg = roomsrv.NewRegistry(ro)
+	}
 	// Publishing `coord` — the variable the hub's lease hooks above close
 	// over — is part of the cluster wiring, so it happens here rather than at
 	// the call site: wireSubsystems only guarantees the ORDER, and both
@@ -208,9 +212,20 @@ func run() error {
 		promReg.MustRegister(metrics.NewRoomCollector(roomStats))
 	}
 	if roomReg != nil {
+		// The refresh poll turns "no lease" into an expiry in cluster mode
+		// (UnknownIsExpired), so it must not run against a lease cache that
+		// has not synced yet — an empty cache is not "no leases". Until
+		// then the source answers unknown (mint 404s for the informer's
+		// first second on a fresh pod), which is honest but must not remove
+		// an adopted room's attachments.
+		go func() {
+			if coord != nil && !coord.WaitLeaseSync(runCtx) {
+				return
+			}
+			roomReg.RunRefresh(runCtx)
+		}()
 		// The static-room file source starts last, like the ban source,
 		// for the same reason.
-		go roomReg.RunRefresh(runCtx)
 		if cfg.RoomsFile != "" {
 			if err := roomsrc.StartFile(runCtx, cfg.RoomsFile, roomsrc.Options{Registry: roomReg, Log: log}); err != nil {
 				return err
@@ -432,7 +447,14 @@ func roomOptions(cfg config.Config) roomsrv.Options {
 // status writes follow the room's life. Before the store exists the gates
 // fail closed and the notifications are no-ops. One function so a test can
 // prove every seam is wired (CODE-REVIEW.md: the R2 F1 blind spot).
+//
+// It also flips the registry's refresh into its cluster shape: with the
+// broadcast source fleet-wide (transport.Server.RoomBroadcasts), "unknown"
+// means no hub here and no origin lease anywhere — the broadcast is gone,
+// and the poll removes the attachment, because the hub's expiry hook fires
+// on the origin pod, not on the room's home (docs/44 §4.5, §11.1).
 func wireRoomClusterSeams(ro *roomsrv.Options, store func() *roomcluster.Store) {
+	ro.UnknownIsExpired = true
 	ro.Reserve = func(ctx context.Context, room *rooms.Room) error {
 		st := store()
 		if st == nil {
@@ -478,14 +500,6 @@ func chainHook(a, b func(string)) func(string) {
 		a(id)
 		b(id)
 	}
-}
-
-// hubBroadcasts adapts the hub registry to roomsrv.BroadcastSource.
-type hubBroadcasts struct{ r *hub.Registry }
-
-func (h hubBroadcasts) BroadcastState(id string) (roomsrv.BroadcastState, bool) {
-	live, viewers, known := h.r.BroadcastState(id)
-	return roomsrv.BroadcastState{Live: live, Viewers: viewers}, known
 }
 
 // installRooms puts the room registry on the transport and returns the

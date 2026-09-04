@@ -532,12 +532,24 @@ func TestEnsureEdgeSelfAndFluxShortCircuit(t *testing.T) {
 type fakeCoordinator struct {
 	heldID  string
 	heldGen int64
+	// leases is what Lookup answers (R42 RoomBroadcasts); nil means no
+	// lease for anything.
+	leases map[string]fakeLease
+}
+
+type fakeLease struct {
+	origin  cluster.Origin
+	inGrace bool
 }
 
 func (f *fakeCoordinator) Claim(context.Context, string, bool) (int64, error) { return 0, nil }
 func (f *fakeCoordinator) ReleaseAll(context.Context)                         {}
 func (f *fakeCoordinator) Resolve(context.Context, string) (cluster.Origin, error) {
 	return cluster.Origin{}, cluster.ErrNotFound
+}
+func (f *fakeCoordinator) Lookup(id string) (cluster.Origin, bool, bool) {
+	l, ok := f.leases[id]
+	return l.origin, l.inGrace, ok
 }
 func (f *fakeCoordinator) OriginGeneration(id string) (int64, bool) {
 	if id == f.heldID {

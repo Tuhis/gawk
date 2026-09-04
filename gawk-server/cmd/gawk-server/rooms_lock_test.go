@@ -1,14 +1,21 @@
 package main
 
 import (
+	"crypto/tls"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
+	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
 )
 
@@ -27,8 +34,13 @@ func TestHubAndRoomRegistryNeverDeadlock(t *testing.T) {
 		BroadcastGrace: time.Minute,
 		IDReserved:     func(id string) bool { return roomReg != nil && roomReg.Has(id) },
 	})
+	// The broadcast source is the transport's, as in run: single-pod shape
+	// here (no SetCluster), so it is the local hub behind one more call.
+	cfg := config.Config{Addr: "127.0.0.1:0", MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, Rooms: true}
+	srv := transport.New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, errors.New("no cert") },
+		discardLog, metrics.NewServerMetrics(prometheus.NewRegistry()))
 	roomReg = roomsrv.NewRegistry(roomsrv.Options{
-		Broadcasts: hubBroadcasts{r},
+		Broadcasts: srv.RoomBroadcasts(),
 		Obfuscate:  r.ObfuscateID,
 		Log:        discardLog,
 		EmptyGrace: time.Hour,

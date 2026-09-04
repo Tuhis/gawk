@@ -55,6 +55,42 @@ func (s *Server) SetRooms(reg *roomsrv.Registry) {
 
 func (s *Server) roomRegistry() *roomsrv.Registry { return s.rooms.Load() }
 
+// RoomBroadcasts is the registry's view of a broadcast (docs/44 D1: an
+// attachment is a broadcast ID the relay is asked about), answered
+// fleet-wide (PR #302 review). The local hub answers first — it knows
+// live/away and the R18 global viewer count G. Otherwise, in cluster mode,
+// the origin lease as the coordinator's informer last saw it: held and
+// renewing is known+live, in grace (the origin stamped it, or its renewals
+// went stale) is known+away, no lease is unknown. Without cluster wiring
+// the answer stops at the local hub, byte-identical to single-pod R42.
+//
+// The source reads the coordinator through the server's late-bound wiring,
+// so main can build the registry before SetCluster runs.
+func (s *Server) RoomBroadcasts() roomsrv.BroadcastSource { return roomBroadcasts{s} }
+
+type roomBroadcasts struct{ s *Server }
+
+func (b roomBroadcasts) BroadcastState(id string) (roomsrv.BroadcastState, bool) {
+	live, viewers, known := b.s.registry.BroadcastState(id)
+	if known {
+		return roomsrv.BroadcastState{Live: live, Viewers: viewers}, true
+	}
+	coord := b.s.clusterCoord()
+	if coord == nil {
+		return roomsrv.BroadcastState{}, false
+	}
+	origin, inGrace, ok := coord.Lookup(id)
+	if !ok {
+		return roomsrv.BroadcastState{}, false
+	}
+	// Viewers is 0 here on purpose: G is computed on the origin pod and
+	// reaches this pod only through an edge session, which exists only
+	// while someone here is watching — and then the local hub answered
+	// above. The viewer count is the one number that stays pod-local for
+	// an unwatched-here attachment (docs/44 §11.1).
+	return roomsrv.BroadcastState{Live: origin.Holder != "" && !inGrace}, true
+}
+
 // roomStatsSource lets the H3 /statusz route (built in New, before SetRooms
 // runs) read the registry installed later. A nil registry yields nil, which
 // omits the rooms section.

@@ -648,6 +648,38 @@ the manual pass outcome.
   session that broke the control protocol (no hello, malformed record),
   404 for a room that ended between the pre-upgrade check and the hello.
   Neither is reconnected.
+- **The broadcast source is fleet-wide in cluster mode** (review
+  finding, PR #302). The registry asks the transport
+  (`Server.RoomBroadcasts`) about an attachment, and the transport answers
+  from the local hub first, then from the origin lease as the R17
+  coordinator's informer last saw it (`Coordinator.Lookup`, the cached
+  twin of `Resolve` — the 1 Hz refresh over every attachment must never
+  cost an API Get). So a `/room/new` or an `Attach` evaluated on a pod
+  that is neither the broadcaster's nor a watcher's — without session
+  affinity, the common case on two pods — resolves the same way
+  `/subscribe` does: a held, renewing lease is *known, live*; a lease the
+  origin stamped into grace (or whose renewals went stale, the crash
+  case) is *known, away*; no lease is *unknown*. Lifecycle follows suit:
+  the hub hooks (`PublisherClosed` → away, `BroadcastExpired` → removed)
+  fire on the **origin** pod, which need not be the room's home, so on
+  the home the refresh poll is the lifecycle for an off-pod attachment —
+  it flips the tile to away when the lease enters grace and, with
+  `roomsrv.Options.UnknownIsExpired` (set only by the cluster seams),
+  removes the attachment with reason expired once the lease is gone,
+  notifying participants and rewriting `status.attachments`. §6's "away
+  within the broadcast grace; detached and removed from the CR after it"
+  now holds across pods. Two consequences worth knowing: the poll starts
+  only after the lease informer has synced (an empty cache is not "no
+  leases"; until then mint and attach answer 404 for an off-pod
+  broadcast — the informer's first second on a fresh pod), and the
+  **viewer count is the one number that stays pod-local**: the tile
+  shows the R18 fleet-global G when this pod has a hub for the broadcast
+  (origin or edge — `hub.Registry.BroadcastState` reports G, not the
+  local human count, as of this fix), and **0 for an off-pod broadcast
+  nobody on the home pod watches**, since G is computed on the origin and
+  reaches other pods only through an edge session. Single-pod mode is
+  byte-identical: no coordinator, local hub only, the hooks own the
+  lifecycle.
 
 ### 11.2 Verified by
 
@@ -658,6 +690,7 @@ the manual pass outcome.
 | RM2 mint disjoint from live broadcasts and vice versa | `roomsrv` `TestMintIsDisjointFromLiveBroadcasts`, transport `TestPublishNeverMintsALiveRoomCode` |
 | RM2 wrong token refused | `TestAttachRequiresProofAndGrant`, transport `TestRoomMintJoinAttachAndEnd` (bad proof → `CommandRejected`), `TestRoomJoinStatusVocabulary` (403s) |
 | RM2 grace survives a shorter reconnect | `TestEmptyGraceSurvivesAReconnectShorterThanIt` |
+| Fleet-wide broadcast source: mint on a pod other than the publisher's, away within the refresh interval, removed after the broadcast grace, CR rewritten (review, PR #302) | transport `TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease` (two in-process pods, real coordinators on one fake clientset) and `TestRoomBroadcastsAnswersLocalHubThenOriginLease`; `cluster` `TestLookupServesTheLeaseCache`; `roomsrv` `TestRefreshExpiresUnknownAttachmentsInClusterMode`; `hub` `TestBroadcastStateReportsFleetGlobalViewers` (G, not the local count) |
 | RM2 every knob reaches the registry | `TestRoomOptionsCarryAllKnobs`, `TestRoomKnobs`, `TestSanitizedCoversEveryConfigField` |
 | RM2 `-rooms` off byte-identical | `TestRoomsOffLeavesNoRoute` (no route, no `/statusz` section), the full pre-R42 suite green, chart "rooms off renders nothing" |
 | RM3 two claimants ⇒ one holder; stale generation loses; janitor | `internal/roomcluster/store_test.go` |

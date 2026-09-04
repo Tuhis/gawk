@@ -561,6 +561,74 @@ func TestBroadcastLifecycleHooks(t *testing.T) {
 	f.reg.BroadcastExpired("ZZZZZZ")
 }
 
+// In cluster mode the hub hooks that move an attachment (PublisherClosed →
+// away, BroadcastExpired → removed) fire on the broadcast's ORIGIN pod,
+// which need not be the room's home (PR #302 review, registry.go ~1248).
+// The home learns of the expiry only through the poll: with
+// UnknownIsExpired, a source that stops knowing a broadcast — no local hub
+// and no lease anywhere — removes the attachment with reason expired,
+// tells the participants, and hands the cluster seam the shrunk list so
+// the CR stops naming a dead broadcast. Without the flag (single-pod mode)
+// the poll keeps ignoring unknowns: there the expiry hook is the whole
+// lifecycle.
+func TestRefreshExpiresUnknownAttachmentsInClusterMode(t *testing.T) {
+	changed := make(chan []rooms.Attachment, 4)
+	f := newFixture(t, func(o *Options) {
+		o.UnknownIsExpired = true
+		o.OnAttachmentsChanged = func(_ string, list []rooms.Attachment) { changed <- list }
+	})
+	res := f.mint(t, "ABCDEF")
+	_, c := f.join(t, res.Code, "v", Grants{}, nil)
+	c.nextState(t)
+	drainAttachments(changed)
+
+	// Lease in grace on another pod: away, still attached.
+	f.bc.set("ABCDEF", BroadcastState{Live: false})
+	f.reg.Refresh()
+	if e := c.nextEvent(t, wire.RoomEventAttachmentUpdated); e.Attachment.Live {
+		t.Fatalf("away not reflected: %+v", e)
+	}
+	// Lease gone: expired.
+	f.bc.del("ABCDEF")
+	f.reg.Refresh()
+	if e := c.nextEvent(t, wire.RoomEventAttachmentRemoved); e.Reason != wire.RoomDetachReasonExpired || e.Attachment.BroadcastID != "ABCDEF" {
+		t.Fatalf("expired: %+v", e)
+	}
+	if _, taken := f.reg.attached["ABCDEF"]; taken {
+		t.Fatal("expired broadcast still reserved")
+	}
+	select {
+	case list := <-changed:
+		if len(list) != 0 {
+			t.Fatalf("OnAttachmentsChanged = %+v, want the attachment dropped", list)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnAttachmentsChanged never fired for the poll-driven expiry")
+	}
+	f.reg.Refresh() // nothing left to expire; no event, no panic
+
+	// Single-pod mode: the poll leaves an unknown attachment alone.
+	g := newFixture(t, nil)
+	gres := g.mint(t, "QWERTY")
+	_, gc := g.join(t, gres.Code, "v", Grants{}, nil)
+	gc.nextState(t)
+	g.bc.del("QWERTY")
+	g.reg.Refresh()
+	if _, taken := g.reg.attached["QWERTY"]; !taken {
+		t.Fatal("single-pod Refresh removed an attachment the expiry hook owns")
+	}
+}
+
+func drainAttachments(ch chan []rooms.Attachment) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
 func TestSeqIsMonotonicAndStatsAreKeyedByHMAC(t *testing.T) {
 	f := newFixture(t, func(o *Options) { o.Obfuscate = func(s string) string { return "key-" + s } })
 	res := f.mint(t, "ABCDEF")

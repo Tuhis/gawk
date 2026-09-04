@@ -380,7 +380,7 @@ func TestInstallRoomsReadsTheStatsSourceAfterTheInstall(t *testing.T) {
 	if got := installRooms(srv, nil); got != nil {
 		t.Fatalf("installRooms with -rooms off = %v, want a nil interface", got)
 	}
-	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: hubBroadcasts{r}, Obfuscate: r.ObfuscateID, Log: log})
+	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: log})
 	src := installRooms(srv, reg)
 	if src == nil {
 		t.Fatal("installRooms returned nil with a registry: the stats source was read before the install")
@@ -403,6 +403,9 @@ func TestRoomClusterSeamsAreAllWiredAndFailClosedWithoutAStore(t *testing.T) {
 	if ro.Reserve == nil || ro.Unreserve == nil || ro.AttachSecret == nil ||
 		ro.OnRoomEnded == nil || ro.OnRoomEmpty == nil || ro.OnAttachmentsChanged == nil {
 		t.Fatalf("a cluster seam is unwired: %+v", ro)
+	}
+	if !ro.UnknownIsExpired {
+		t.Fatal("cluster mode must let the refresh poll expire a broadcast with no hub here and no lease anywhere (PR #302 review)")
 	}
 	if err := ro.Reserve(context.Background(), &rooms.Room{}); !errors.Is(err, roomsrv.ErrUnavailable) {
 		t.Errorf("Reserve without a store = %v, want ErrUnavailable", err)

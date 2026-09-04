@@ -448,3 +448,53 @@ func TestViewerCountKeepaliveContinuesWhilePublisherAway(t *testing.T) {
 	r.PumpViewerCounts(t0.Add(2 * ViewerCountKeepalive))
 	waitViewerCounts(t, f, []uint32{1, 1, 1})
 }
+
+// BroadcastState (R42, docs/44 §4.7) reports the R18 fleet-global viewer
+// count G, not the pod-local human count (PR #302 review, the minor on
+// roomsrv.BroadcastState.Viewers): on an origin that is globalViewersLocked
+// — local humans plus every attached edge's reported downstream count — and
+// on an edge it is the G the origin last sent down. Before an edge has
+// received any G it answers with its local humans (an undercount that heals
+// within a pump tick), never 0 while someone here is watching.
+func TestBroadcastStateReportsFleetGlobalViewers(t *testing.T) {
+	origin := NewRegistry(discardLog, Options{})
+	id, pub, err := origin.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	defer pub.Close()
+	for range 2 {
+		if _, err := origin.Subscribe(id, &fakeSender{}); err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+	}
+	edgeSub, err := origin.SubscribeInternal(id, &fakeSender{})
+	if err != nil {
+		t.Fatalf("SubscribeInternal: %v", err)
+	}
+	if live, viewers, known := origin.BroadcastState(id); !known || !live || viewers != 2 {
+		t.Fatalf("origin before the edge reports: live=%v viewers=%d known=%v, want true/2/true", live, viewers, known)
+	}
+	edgeSub.RecordDownstreamViewers(3)
+	if _, viewers, _ := origin.BroadcastState(id); viewers != 5 {
+		t.Fatalf("origin G = %d, want 5 (2 local + 3 behind the edge)", viewers)
+	}
+
+	// The edge pod: one local viewer, then the origin's G arrives.
+	edge := NewRegistry(discardLog, Options{})
+	edgeID, edgePub, err := edge.EdgePublish(id)
+	if err != nil {
+		t.Fatalf("EdgePublish: %v", err)
+	}
+	defer edgePub.Close()
+	if _, err := edge.Subscribe(edgeID, &fakeSender{}); err != nil {
+		t.Fatalf("edge Subscribe: %v", err)
+	}
+	if live, viewers, known := edge.BroadcastState(edgeID); !known || !live || viewers != 1 {
+		t.Fatalf("edge before any G: live=%v viewers=%d known=%v, want true/1/true", live, viewers, known)
+	}
+	edgePub.HandleDatagram(wire.AppendViewerCount(nil, 5))
+	if _, viewers, _ := edge.BroadcastState(edgeID); viewers != 5 {
+		t.Fatalf("edge G = %d, want the 5 its origin sent", viewers)
+	}
+}

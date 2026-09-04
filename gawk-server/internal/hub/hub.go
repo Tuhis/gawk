@@ -1055,13 +1055,7 @@ func (r *Registry) ViewerSubscribers(id string) int {
 	if !exists {
 		return 0
 	}
-	n := 0
-	for s := range b.subs {
-		if !s.internal && !s.stripeLeg {
-			n++
-		}
-	}
-	return n
+	return b.externalHumansLocked()
 }
 
 // idReserved is the R42 mint-time mirror check (docs/44 §4.2).
@@ -1071,8 +1065,11 @@ func (r *Registry) idReserved(id string) bool {
 
 // BroadcastState is the one-lock read a room needs about an attachment
 // (R42, docs/44 §4.7): known at all, publisher live (vs. away within the
-// grace), and the watching-human count. Three separate calls would race
-// each other across a grace expiry.
+// grace), and the fleet-global viewer count G (R18, docs/23 Decision 5) —
+// on an origin the aggregate globalViewersLocked computes, on an edge the G
+// its origin last sent down (PR #302 review: the pod-local human count
+// would show a room tile only the viewers that happen to share the home
+// pod). Three separate calls would race each other across a grace expiry.
 func (r *Registry) BroadcastState(id string) (live bool, viewers int, known bool) {
 	normID, err := broadcastid.Normalize(id)
 	if err != nil {
@@ -1084,12 +1081,38 @@ func (r *Registry) BroadcastState(id string) (live bool, viewers int, known bool
 	if !exists {
 		return false, 0, false
 	}
-	for s := range b.subs {
-		if !s.internal && !s.stripeLeg {
-			viewers++
+	if b.edge {
+		return b.publisherActive, b.edgeGlobalViewersLocked(), true
+	}
+	return b.publisherActive, int(b.globalViewersLocked()), true
+}
+
+// edgeGlobalViewersLocked is an edge hub's view of G: the cached ViewerCount
+// datagram its origin last sent (Decision 5c — forwarded verbatim, so it is
+// parsed back here rather than tracked separately). Before the first one
+// arrives — a fresh pull, or the cache cleared by an upstream loss — the
+// local human count stands in: an undercount that heals within a pump tick,
+// never a 0 while someone here is watching. Caller holds r.mu.
+func (b *broadcastHub) edgeGlobalViewersLocked() int {
+	if b.cachedViewerCount != nil {
+		if g, err := wire.ParseViewerCount(b.cachedViewerCount); err == nil {
+			return int(g)
 		}
 	}
-	return b.publisherActive, viewers, true
+	return b.externalHumansLocked()
+}
+
+// externalHumansLocked counts the watching humans on this hub: external
+// subscribers minus R30 stripe legs (one viewer's extra connection is not
+// an extra viewer). Caller holds r.mu.
+func (b *broadcastHub) externalHumansLocked() int {
+	n := 0
+	for s := range b.subs {
+		if !s.internal && !s.stripeLeg {
+			n++
+		}
+	}
+	return n
 }
 
 // newHubLocked creates and registers an empty hub. Caller holds r.mu.

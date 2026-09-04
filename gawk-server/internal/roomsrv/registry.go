@@ -132,6 +132,13 @@ type Options struct {
 	AfterFunc func(time.Duration, func()) *time.Timer
 	// RefreshInterval paces RunRefresh; zero means DefaultRefreshInterval.
 	RefreshInterval time.Duration
+	// UnknownIsExpired makes Refresh treat a broadcast its source no longer
+	// knows as gone: the attachment is removed with reason expired. Set
+	// only in cluster mode, where the source is fleet-wide (local hub, else
+	// the origin lease) and the hub's expiry hook fires on the ORIGIN pod,
+	// which need not be the room's home (docs/44 §4.5). In single-pod mode
+	// the hook is the whole lifecycle and the poll ignores unknowns.
+	UnknownIsExpired bool
 	// OnRoomEnded / OnRoomEmpty / OnAttachmentsChanged are the cluster
 	// seams (RM3): a store reacts to them to delete the CR, stamp
 	// emptySince, or rewrite status.attachments. All optional, all called
@@ -1223,7 +1230,11 @@ func (r *Registry) setLive(id string, live bool) {
 
 // Refresh re-reads every attachment's state from the hub and pushes an
 // AttachmentUpdated for each change (viewer counts, and the live flag in
-// case a hook was missed). RunRefresh calls it on a ticker.
+// case a hook was missed). RunRefresh calls it on a ticker. With
+// UnknownIsExpired (cluster mode) it is also the expiry path for an
+// attachment homed away from its origin: no local hub and no lease means
+// the broadcast is gone fleet-wide, and the attachment goes the way
+// BroadcastExpired takes it.
 //
 // The hub is queried with r.mu RELEASED: hub.StartPublish holds the hub
 // lock while it asks IDReserved → Has, which takes r.mu, so asking the hub
@@ -1245,8 +1256,16 @@ func (r *Registry) Refresh() {
 	for _, p := range probes {
 		state, known := r.opts.Broadcasts.BroadcastState(p.id)
 		if !known {
-			// The expiry hook handles removal; a missed one is caught by
-			// the next hook delivery, never by a poll.
+			if r.opts.UnknownIsExpired {
+				// Cluster mode: the origin's expiry hook landed on the
+				// origin pod's registry, not here. The fleet-wide source
+				// saying "unknown" is the same fact, so take the same
+				// path (participants told, the CR's list rewritten).
+				r.BroadcastExpired(p.id)
+				continue
+			}
+			// Single-pod mode: the expiry hook handles removal; a missed
+			// one is caught by the next hook delivery, never by a poll.
 			continue
 		}
 		r.mu.Lock()

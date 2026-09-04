@@ -90,6 +90,11 @@ type ClusterCoordinator interface {
 	// OriginGeneration reports whether this pod holds the broadcast's lease
 	// and at which generation — the internal route's 404/409 fence (W4).
 	OriginGeneration(broadcastID string) (int64, bool)
+	// Lookup is Resolve's cached, non-blocking twin (R42): the broadcast's
+	// lease as the informer last saw it — ok false before the informer
+	// synced or with no lease at all, inGrace once the origin is away.
+	// The room refresh asks it for every off-pod attachment at 1 Hz.
+	Lookup(broadcastID string) (origin cluster.Origin, inGrace bool, ok bool)
 }
 
 // Server wraps a webtransport.Server with the gawk routes.

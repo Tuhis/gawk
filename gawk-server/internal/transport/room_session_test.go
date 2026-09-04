@@ -32,7 +32,7 @@ func TestRoomSessionClosedBeforeControlStream(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 	cfg := config.Config{MaxSubscribers: 5, MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, BroadcastGrace: 5 * time.Minute, Rooms: true}
 	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, cfg, log)
-	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: hubBroadcastsAdapter{r}, Obfuscate: r.ObfuscateID, Log: discardLog, EmptyGrace: time.Hour})
+	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: discardLog, EmptyGrace: time.Hour})
 	srv.SetRooms(reg)
 	if err := reg.UpsertStatic(roomsrv.StaticRoom{Code: "abc"}); err != nil {
 		t.Fatal(err)

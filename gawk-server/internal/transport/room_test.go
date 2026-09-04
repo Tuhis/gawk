@@ -28,13 +28,6 @@ import (
 // 4007 on room end, the /statusz section — and the -rooms-off shape, in
 // which none of it is routable.
 
-type hubBroadcastsAdapter struct{ r *hub.Registry }
-
-func (h hubBroadcastsAdapter) BroadcastState(id string) (roomsrv.BroadcastState, bool) {
-	live, viewers, known := h.r.BroadcastState(id)
-	return roomsrv.BroadcastState{Live: live, Viewers: viewers}, known
-}
-
 // startRoomServer starts a relay with -rooms on and returns the room
 // registry it was given.
 func startRoomServer(t *testing.T, ctx context.Context, mutate func(*roomsrv.Options)) (port int, clientTLS *tls.Config, r *hub.Registry, srv *Server, reg *roomsrv.Registry) {
@@ -42,7 +35,7 @@ func startRoomServer(t *testing.T, ctx context.Context, mutate func(*roomsrv.Opt
 	cfg := config.Config{MaxSubscribers: 5, MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, BroadcastGrace: 5 * time.Minute, Rooms: true}
 	var tlsCfg *tls.Config
 	port, tlsCfg, r, _, srv = startTestServerCfgLogSrv(t, ctx, cfg, discardLog)
-	opts := roomsrv.Options{Broadcasts: hubBroadcastsAdapter{r}, Obfuscate: r.ObfuscateID, Log: discardLog, EmptyGrace: time.Hour}
+	opts := roomsrv.Options{Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: discardLog, EmptyGrace: time.Hour}
 	if mutate != nil {
 		mutate(&opts)
 	}
@@ -266,7 +259,7 @@ func TestRoomJoinLogsTheNormalizedKey(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 	cfg := config.Config{MaxSubscribers: 5, MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, BroadcastGrace: 5 * time.Minute, Rooms: true}
 	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, cfg, log)
-	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: hubBroadcastsAdapter{r}, Obfuscate: r.ObfuscateID, Log: log, EmptyGrace: time.Hour})
+	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: log, EmptyGrace: time.Hour})
 	srv.SetRooms(reg)
 	if err := reg.UpsertStatic(roomsrv.StaticRoom{Code: "TuhisRoom"}); err != nil {
 		t.Fatal(err)
