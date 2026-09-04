@@ -61,6 +61,8 @@ export interface Report {
 export interface SessionView {
   sessionId: string;
   broadcastKey: string;
+  /** R42: the HMAC'd room the client said it was in. Absent outside a room. */
+  roomKey?: string;
   role: 'broadcaster' | 'viewer' | string;
   browser?: string;
   os?: string;
@@ -155,6 +157,8 @@ export interface Timeline {
   note?: string;
   // Present only with `detail=1`; see the Go type's comment on why.
   broadcastKey?: string;
+  /** R42: the HMAC'd room this session reported, detail-only like broadcastKey. */
+  roomKey?: string;
   startedAtMs?: number;
   endedAtMs?: number;
   clockOffsetMs?: number;
@@ -203,6 +207,8 @@ export interface SessionSummary {
 }
 
 export interface HistoryRow extends SessionSummary {
+  /** R42: the HMAC'd room, on the history row only (the MCP summary never moves). */
+  roomKey?: string;
   appVersion?: string;
   endedAtMs?: number;
   deliveryMode?: string;
@@ -221,6 +227,8 @@ export interface HistoryPage {
 
 export interface BroadcastRow {
   broadcastKey: string;
+  /** R42: the room any of this broadcast's sessions reported. */
+  roomKey?: string;
   sessions: number;
   viewers: number;
   firstSeenMs: number;

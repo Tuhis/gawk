@@ -33,6 +33,9 @@ import (
 func TestR31DefaultsAreByteIdentical(t *testing.T) {
 	f := newFixture(t)
 	sid := "00a1a2a3a4a5a6a7a8a9aaab"
+	// Seeded INSIDE a room (R42, RM8), so this test also proves the room key
+	// stays out of the default — a room-less seed would pass vacuously.
+	f.roomKey = "0a1b2c3d4e5f"
 	f.seed(t, sid, "viewer", healthyViewerStats(300), []ingest.Event{{TMs: 1000, Kind: "watching"}})
 
 	viaGo, err := f.api.GetSession(sid, nil, 0)
@@ -55,11 +58,16 @@ func TestR31DefaultsAreByteIdentical(t *testing.T) {
 	}
 	for _, key := range []string{
 		"broadcastKey", "startedAtMs", "endedAtMs", "clockOffsetMs",
-		"step", "fromMs", "toMs", "available", "truncated",
+		"step", "fromMs", "toMs", "available", "truncated", "roomKey",
 	} {
 		if _, present := got[key]; present {
 			t.Errorf("default get_session response carries R31's %q; UD1 says it must not", key)
 		}
+	}
+	// Nor may it leak through the stored event records, which are returned
+	// verbatim and now carry the key on disk (R42, RM8).
+	if strings.Contains(string(a), "roomKey") {
+		t.Errorf("default get_session response mentions roomKey somewhere:\n%s", a)
 	}
 
 	// The HTTP default must match the Go default too, since MCP and curl are

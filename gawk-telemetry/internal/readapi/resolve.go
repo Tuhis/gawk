@@ -50,10 +50,15 @@ func obfuscate(statsKey []byte, code string) string {
 
 type resolveRequest struct {
 	Code string `json:"code"`
+	// Room (R42, RM8) is a room code — a dynamic six-character one or a static
+	// slug. Exactly one of Code and Room is expected; the response carries the
+	// key that matches the field that was sent.
+	Room string `json:"room"`
 }
 
 type resolveResponse struct {
-	BroadcastKey string `json:"broadcastKey"`
+	BroadcastKey string `json:"broadcastKey,omitempty"`
+	RoomKey      string `json:"roomKey,omitempty"`
 }
 
 // handleResolve serves POST /v1/resolve. POST rather than GET, with the code in
@@ -68,6 +73,22 @@ func (a *API) handleResolve(w http.ResponseWriter, r *http.Request) {
 	var req resolveRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&req); err != nil {
 		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	if req.Room != "" {
+		// R42 (RM8): a room key is the SAME construction over the room's
+		// normalized code — roomsrv keys /statusz, metrics and the RoomState
+		// `key` field with Registry.ObfuscateID(rooms.NormalizeCode(code)).
+		// NormalizeCode LOWER-cases (the code doubles as a DNS-1123 CR name),
+		// where broadcast IDs upper-case; getting that wrong would resolve
+		// every room to a key that matches nothing. Only the case rule is
+		// mirrored, not the slug alphabet — same reasoning as maxCodeLen.
+		room := strings.ToLower(strings.TrimSpace(req.Room))
+		if room == "" || len(room) > maxCodeLen {
+			http.Error(w, "room must be 1..64 characters", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, resolveResponse{RoomKey: obfuscate(a.statsKey, room)}, nil)
 		return
 	}
 	// Upper-casing mirrors broadcastid.Normalize's tolerance, so a code pasted

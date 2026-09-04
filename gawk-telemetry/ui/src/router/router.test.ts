@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { href, isBroadcastKey, isSessionId, parseHash } from './router.ts';
+import { href, isBroadcastKey, isRoomKey, isSessionId, parseHash } from './router.ts';
 
 // TH1's tests, and the first one is the whole reason the chunk exists.
 //
@@ -28,6 +28,23 @@ describe('the dead permalink (TH1, UD6)', () => {
     const route = parseHash('#/broadcast/1a2b3c4d5e6f');
     expect(route.view).toBe('broadcast');
     expect(isBroadcastKey(route.id)).toBe(true);
+  });
+
+  it('resolves the session view’s Room chip (R42, RM8)', () => {
+    // `href('room', key)` is what SessionView emits; the same string must parse
+    // back to the room view with the key intact, and a malformed key still
+    // lands on the room view so it can say so.
+    const url = href('room', '0a1b2c3d4e5f');
+    expect(url).toBe('#/room/0a1b2c3d4e5f');
+    const route = parseHash(url);
+    expect(route.view).toBe('room');
+    expect(route.id).toBe('0a1b2c3d4e5f');
+    expect(isRoomKey(route.id)).toBe(true);
+
+    const bad = parseHash('#/room/ABC234');
+    expect(bad.view).toBe('room');
+    expect(isRoomKey(bad.id)).toBe(false);
+    expect(isRoomKey(undefined)).toBe(false);
   });
 
   it('routes a MALFORMED session id to the session view, not to the fleet page', () => {
