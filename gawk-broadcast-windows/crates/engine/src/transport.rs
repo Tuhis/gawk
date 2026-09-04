@@ -9,6 +9,8 @@ use crate::relay::{
     BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, RelaySession, SendDatagramError,
     ServerStream, SessionClose, StartError, StartPhase,
 };
+use crate::room::{RoomConn, RoomDialer};
+use std::sync::Arc;
 use std::time::Duration;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::error::{ConnectingError, ConnectionError};
@@ -33,6 +35,21 @@ pub struct WtSession {
 /// status (401/403/404/409/429); a dial that never got an HTTP answer
 /// carries status 0.
 pub async fn dial(url: &str, origin: &str, insecure: bool) -> Result<WtSession, StartError> {
+    let (endpoint, conn) = connect(url, origin, insecure, "publish").await?;
+    Ok(WtSession {
+        _endpoint: endpoint,
+        conn,
+    })
+}
+
+/// The shared CONNECT: one endpoint per session (the endpoint drives the
+/// connection's I/O and must outlive it), the Origin header, the keepalive.
+async fn connect(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+    what: &str,
+) -> Result<(Endpoint<Client>, wtransport::Connection), StartError> {
     let connect_err = |status: u16, message: String| StartError {
         phase: StartPhase::Connect,
         status,
@@ -58,15 +75,105 @@ pub async fn dial(url: &str, origin: &str, insecure: bool) -> Result<WtSession, 
         .build();
 
     match endpoint.connect(options).await {
-        Ok(conn) => Ok(WtSession {
-            _endpoint: endpoint,
-            conn,
-        }),
+        Ok(conn) => Ok((endpoint, conn)),
         Err(ConnectingError::SessionRejected(status)) => Err(connect_err(
             status,
-            format!("the relay refused the publish request (status {status})"),
+            format!("the relay refused the {what} request (status {status})"),
         )),
         Err(e) => Err(connect_err(0, e.to_string())),
+    }
+}
+
+/// A live room control session (R42): the connection plus its ONE
+/// bidirectional stream, opened by this client right after the upgrade.
+/// The halves sit behind async mutexes so the [`RoomConn`] seam can be
+/// `&self` — reads and writes are independent, and the room loop reads on
+/// a detached task while it writes commands.
+pub struct WtRoomConn {
+    _endpoint: Endpoint<Client>,
+    conn: wtransport::Connection,
+    send: tokio::sync::Mutex<wtransport::SendStream>,
+    recv: tokio::sync::Mutex<wtransport::RecvStream>,
+}
+
+/// Dials a room route (`/room/new` or `/room/{code}`) and opens the control
+/// stream. Statuses surface exactly as for [`dial`].
+pub async fn dial_room(url: &str, origin: &str, insecure: bool) -> Result<WtRoomConn, StartError> {
+    let (endpoint, conn) = connect(url, origin, insecure, "room").await?;
+    let stream_err = |e: String| StartError {
+        phase: StartPhase::Connect,
+        status: 0,
+        message: format!("could not open the room control stream: {e}"),
+    };
+    let (send, recv) = conn
+        .open_bi()
+        .await
+        .map_err(|e| stream_err(e.to_string()))?
+        .await
+        .map_err(|e| stream_err(e.to_string()))?;
+    Ok(WtRoomConn {
+        _endpoint: endpoint,
+        conn,
+        send: tokio::sync::Mutex::new(send),
+        recv: tokio::sync::Mutex::new(recv),
+    })
+}
+
+impl RoomConn for WtRoomConn {
+    fn write(&self, record: &[u8]) -> BoxFuture<'_, Result<(), String>> {
+        let record = record.to_vec();
+        Box::pin(async move {
+            self.send
+                .lock()
+                .await
+                .write_all(&record)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn read(&self, n: usize) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+        Box::pin(async move {
+            let mut buf = vec![0u8; n];
+            self.recv
+                .lock()
+                .await
+                .read_exact(&mut buf)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(buf)
+        })
+    }
+
+    fn closed(&self) -> BoxFuture<'_, SessionClose> {
+        Box::pin(async { close_cause(&self.conn).await })
+    }
+}
+
+/// The transport-backed [`RoomDialer`]: the seam's production side.
+pub struct WtRoomDialer {
+    pub origin: String,
+    pub insecure: bool,
+}
+
+impl RoomDialer for WtRoomDialer {
+    fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RoomConn>, StartError>> {
+        let url = url.to_owned();
+        Box::pin(async move {
+            let conn = dial_room(&url, &self.origin, self.insecure).await?;
+            Ok(Arc::new(conn) as Arc<dyn RoomConn>)
+        })
+    }
+}
+
+async fn close_cause(conn: &wtransport::Connection) -> SessionClose {
+    match conn.closed().await {
+        ConnectionError::ApplicationClosed(close) => {
+            // The capsule's error code is the relay's application close
+            // code (4000/4002/4004…) verbatim.
+            SessionClose::Code(close.code().into_inner() as u32)
+        }
+        other => SessionClose::Abrupt(other.to_string()),
     }
 }
 
@@ -113,16 +220,11 @@ impl RelaySession for WtSession {
     }
 
     fn closed(&self) -> BoxFuture<'_, SessionClose> {
-        Box::pin(async {
-            match self.conn.closed().await {
-                ConnectionError::ApplicationClosed(close) => {
-                    // The capsule's error code is the relay's application
-                    // close code (4000/4002/4004…) verbatim.
-                    SessionClose::Code(close.code().into_inner() as u32)
-                }
-                other => SessionClose::Abrupt(other.to_string()),
-            }
-        })
+        Box::pin(async { close_cause(&self.conn).await })
+    }
+
+    fn close(&self) {
+        self.conn.close(VarInt::from_u32(0), b"");
     }
 }
 

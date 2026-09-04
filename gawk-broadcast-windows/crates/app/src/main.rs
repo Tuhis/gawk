@@ -135,6 +135,13 @@ struct Shell {
     /// The upload-bandwidth watchdog, fed 1 Hz; fresh per broadcast.
     uplink: gawk_engine::uplink::UplinkMonitor,
     uplink_warned: bool,
+    /// R42: the grant the "Open room view" link carries — the creator token
+    /// (hex) of a room this session minted, or the static room's attach
+    /// key. In memory only: it is a one-broadcast affair.
+    room_grant: String,
+    /// Set when the user clicked Detach/Leave, so the RoomDetached that
+    /// follows is read as "we left" rather than "the creator removed us".
+    room_leaving: bool,
 }
 
 fn creds() -> Box<dyn config::Credentials> {
@@ -241,6 +248,8 @@ fn main() {
         health_countdown: 0,
         uplink: gawk_engine::uplink::UplinkMonitor::new(),
         uplink_warned: false,
+        room_grant: String::new(),
+        room_leaving: false,
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -350,6 +359,10 @@ fn seed_server_fields(ui: &MainWindow, cfg: &Config) {
 
 fn seed_settings(ui: &MainWindow, cfg: &Config) {
     seed_server_fields(ui, cfg);
+    ui.set_room_input(cfg.room.clone().into());
+    ui.set_room_attach_key(cfg.room_attach_secret.clone().into());
+    ui.set_room_label(cfg.room_label.clone().into());
+    ui.set_room_nickname(cfg.nickname.clone().into());
     ui.set_set_app_url(cfg.app_url.clone().into());
     ui.set_set_telemetry(cfg.telemetry_url.clone().into());
     ui.set_set_bitrate(if cfg.bitrate_bps == 0 {
@@ -413,6 +426,12 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config) {
         // saved against (F9). An empty secret removes the record.
         cfg.set_default_secret(&secret);
     }
+    // The room card: stored as typed (a pasted link is reduced to its code
+    // at dial time, so the user sees what they pasted).
+    cfg.room = ui.get_room_input().trim().to_string();
+    cfg.room_attach_secret = ui.get_room_attach_key().trim().to_string();
+    cfg.room_label = ui.get_room_label().trim().to_string();
+    cfg.nickname = ui.get_room_nickname().trim().to_string();
     cfg.app_url = ui.get_set_app_url().trim().to_string();
     cfg.telemetry_url = ui.get_set_telemetry().trim().to_string();
     cfg.bitrate_bps = parse_bitrate_mbps(ui.get_set_bitrate().as_str());
@@ -700,6 +719,73 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         });
     }
     {
+        // R42: join (and attach to) the room in the card while live. The
+        // static room's attach key doubles as the room-view grant.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_room_attach(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                read_settings(&ui, &mut sh.cfg);
+                save_config(&mut sh);
+                let Some(code) = gawk_engine::parse_room_code(&sh.cfg.room) else {
+                    ui.set_room_status("That is not a room code or room link.".into());
+                    return;
+                };
+                let Some(session) = sh.session.clone() else {
+                    return;
+                };
+                let key = sh.cfg.room_attach_secret.clone();
+                sh.room_grant = key.clone();
+                sh.room_leaving = false;
+                drop(sh);
+                log::info!("room join requested");
+                session.room_join(&code, &key, "");
+                ui.set_room_active(true);
+                ui.set_room_attached(false);
+                ui.set_room_code("".into());
+                ui.set_room_link("".into());
+                ui.set_room_status("Joining the room…".into());
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_room_new(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                let Some(session) = sh.session.clone() else {
+                    return;
+                };
+                sh.room_grant.clear();
+                sh.room_leaving = false;
+                drop(sh);
+                log::info!("room mint requested");
+                session.room_create();
+                ui.set_room_active(true);
+                ui.set_room_attached(false);
+                ui.set_room_code("".into());
+                ui.set_room_link("".into());
+                ui.set_room_status("Creating a room…".into());
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_room_detach(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                sh.room_leaving = true;
+                if let Some(session) = sh.session.clone() {
+                    session.room_detach();
+                }
+                ui.set_room_status("Leaving the room…".into());
+            }
+        });
+    }
+    {
         ui.on_open_link(move |link| open_in_browser(link.as_str()));
     }
     {
@@ -831,6 +917,34 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     ui.set_state_label("Starting…".into());
     ui.set_copied_note("".into());
 
+    // R42: the configured room is joined from the start; the attach lands
+    // once the identity does (the engine's own latch). A pasted link is
+    // reduced to its code here; junk is reported instead of dialed.
+    let room_code = match (
+        sh.cfg.room.trim().is_empty(),
+        gawk_engine::parse_room_code(&sh.cfg.room),
+    ) {
+        (true, _) => String::new(),
+        (false, Some(code)) => code,
+        (false, None) => {
+            ui.set_room_status(
+                "The room field is not a room code or room link — not joining.".into(),
+            );
+            String::new()
+        }
+    };
+    sh.room_grant = if room_code.is_empty() {
+        String::new()
+    } else {
+        sh.cfg.room_attach_secret.clone()
+    };
+    sh.room_leaving = false;
+    reset_room_ui(ui);
+    if !room_code.is_empty() {
+        ui.set_room_active(true);
+        ui.set_room_status("Joining the room…".into());
+    }
+
     let scfg = SessionConfig {
         relay_url: sh.cfg.resolve_relay_url(),
         broadcast_id,
@@ -838,6 +952,12 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         publish_secret: sh.cfg.resolve_publish_secret(),
         origin: sh.cfg.resolve_origin(),
         insecure: false,
+        room_code,
+        room_new: false,
+        room_attach_secret: sh.cfg.room_attach_secret.clone(),
+        room_create_secret: String::new(),
+        room_label: sh.cfg.room_label.clone(),
+        nickname: sh.cfg.nickname.clone(),
     };
     let clock: Arc<dyn gawk_engine::clock::Clock> = sh.clock.clone();
     let msg_tx = sh.msg_tx.clone();
@@ -1124,7 +1244,115 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             ui.set_status_line("".into());
         }
         EngineEvent::Ended { error } => end_broadcast(ui, shell, error),
+
+        // --- R42 rooms ---
+        EngineEvent::RoomState(s) => {
+            let sh = shell.borrow();
+            let attached = s.has(&sh.broadcast_id);
+            let link = gawk_engine::room_link(&sh.cfg.resolve_app_url(), &s.code, &sh.room_grant);
+            // Never the code: the HMAC'd key is the log handle.
+            log::info!(
+                "room state: key {} · {} broadcasts · {} participants · attached {attached}",
+                s.key_hex,
+                s.attachments.len(),
+                s.participants
+            );
+            drop(sh);
+            ui.set_room_active(true);
+            ui.set_room_attached(attached);
+            ui.set_room_code(s.code.clone().into());
+            ui.set_room_link(link.into());
+            ui.set_room_status(room_status_text(&s, attached).into());
+        }
+        EngineEvent::RoomCreated {
+            code,
+            creator_token_hex,
+        } => {
+            let mut sh = shell.borrow_mut();
+            sh.room_grant = creator_token_hex;
+            let link = gawk_engine::room_link(&sh.cfg.resolve_app_url(), &code, &sh.room_grant);
+            drop(sh);
+            log::info!("room minted");
+            ui.set_room_code(code.into());
+            ui.set_room_link(link.into());
+        }
+        EngineEvent::RoomAttached => {
+            log::info!("attached to the room");
+            ui.set_room_attached(true);
+        }
+        EngineEvent::RoomDetached { reason } => {
+            let mut sh = shell.borrow_mut();
+            let left = sh.room_leaving;
+            sh.room_leaving = false;
+            drop(sh);
+            log::info!("detached from the room: {reason}");
+            ui.set_room_attached(false);
+            if left {
+                reset_room_ui(ui);
+                ui.set_room_status("Left the room.".into());
+            } else {
+                ui.set_room_status(format!("Not attached — {reason}.").into());
+            }
+        }
+        EngineEvent::RoomEnded { reason } => {
+            log::warn!("room session over: {reason}");
+            shell.borrow_mut().room_leaving = false;
+            reset_room_ui(ui);
+            ui.set_room_status(format!("Room over — {reason}.").into());
+        }
+        EngineEvent::RoomRejected { reason, message } => {
+            log::warn!("room command rejected: {reason} ({message})");
+            ui.set_room_status(format!("The relay refused: {reason} ({message}).").into());
+        }
+        EngineEvent::RoomReconnecting { attempt } => {
+            ui.set_room_status(
+                if attempt > 1 {
+                    format!("Reconnecting to the room… (attempt {attempt})")
+                } else {
+                    "Reconnecting to the room…".to_string()
+                }
+                .into(),
+            );
+        }
     }
+}
+
+/// The room card back to "no room session": the inputs stay, the live
+/// picture goes.
+fn reset_room_ui(ui: &MainWindow) {
+    ui.set_room_active(false);
+    ui.set_room_attached(false);
+    ui.set_room_code("".into());
+    ui.set_room_link("".into());
+    ui.set_room_status("".into());
+}
+
+/// The room status line: what the room holds and whether we are in it.
+fn room_status_text(s: &gawk_engine::room::RoomSummary, attached: bool) -> String {
+    let n = s.attachments.len();
+    let live = s.attachments.iter().filter(|a| a.live).count();
+    let broadcasts = match (n, live) {
+        (0, _) => "no broadcasts".to_string(),
+        (n, l) if n == l => format!("{n} broadcast{}", if n == 1 { "" } else { "s" }),
+        (n, l) => format!("{n} broadcasts ({l} live)"),
+    };
+    let me = if attached {
+        "attached"
+    } else if s.attach_ok {
+        "not attached yet"
+    } else {
+        "attach not allowed here (attach key?)"
+    };
+    format!(
+        "{}{} · {broadcasts} · {} in the room · {me}",
+        if s.creator { "Your room" } else { "In room" },
+        if s.display_name.is_empty() {
+            String::new()
+        } else {
+            format!(" “{}”", s.display_name)
+        },
+        s.participants
+    )
 }
 
 fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<String>) {
@@ -1148,7 +1376,12 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     }
     sh.reporter.event("ended", "");
     sh.reporter.finish();
+    // The room session lives as long as the broadcast it attaches; the
+    // engine already stopped it.
+    sh.room_grant.clear();
+    sh.room_leaving = false;
     drop(sh);
+    reset_room_ui(ui);
 
     ui.set_busy(false);
     ui.set_live(false);
@@ -1655,6 +1888,42 @@ mod tests {
         cfg.selected_server = "Juho's homelab".into();
         assert_eq!(cfg.resolve_relay_url(), "https://relay.example:4433");
         assert_eq!(cfg.resolve_publish_secret(), "s1");
+    }
+
+    #[test]
+    fn room_status_reads_as_a_sentence() {
+        use gawk_engine::room::{RoomAttachmentInfo, RoomSummary};
+        let mut s = RoomSummary {
+            code: "K7XQ2M".into(),
+            attach_ok: true,
+            participants: 3,
+            ..RoomSummary::default()
+        };
+        assert_eq!(
+            room_status_text(&s, false),
+            "In room · no broadcasts · 3 in the room · not attached yet"
+        );
+        s.creator = true;
+        s.attachments = vec![
+            RoomAttachmentInfo {
+                broadcast_id: "K7XQ2M".into(),
+                live: true,
+                ..RoomAttachmentInfo::default()
+            },
+            RoomAttachmentInfo {
+                broadcast_id: "ABCDEF".into(),
+                live: false,
+                ..RoomAttachmentInfo::default()
+            },
+        ];
+        assert_eq!(
+            room_status_text(&s, true),
+            "Your room · 2 broadcasts (1 live) · 3 in the room · attached"
+        );
+        s.attach_ok = false;
+        s.display_name = "LAN party".into();
+        assert!(room_status_text(&s, false).starts_with("Your room “LAN party” · "));
+        assert!(room_status_text(&s, false).ends_with("attach key?)"));
     }
 
     #[test]

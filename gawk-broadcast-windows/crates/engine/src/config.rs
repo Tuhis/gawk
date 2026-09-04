@@ -83,6 +83,17 @@ pub struct Config {
     /// The selected profile's name; blank, `"default"`, or unknown ⇒ the
     /// built-in default (docs/40 §4.1.1).
     pub selected_server: String,
+    /// R42 rooms (docs/44 §4.8): the room code or static slug to join and
+    /// attach to on every start (blank = no room). Same key as the Linux
+    /// broadcaster's profile field.
+    pub room: String,
+    /// A static room's attach key — a credential (DPAPI-wrapped on Windows,
+    /// like the publish secret).
+    pub room_attach_secret: String,
+    /// The tile label this broadcast carries in a room (blank = none).
+    pub room_label: String,
+    /// The room nickname (blank = the relay assigns one).
+    pub nickname: String,
 }
 
 impl Config {
@@ -388,6 +399,7 @@ pub fn load(path: &Path, creds: &dyn Credentials) -> (Config, Option<String>) {
         Ok(mut cfg) => {
             cfg.publish_secret = creds.unwrap(&cfg.publish_secret);
             cfg.last_resume_token = creds.unwrap(&cfg.last_resume_token);
+            cfg.room_attach_secret = creds.unwrap(&cfg.room_attach_secret);
             for p in &mut cfg.servers {
                 p.publish_secret = creds.unwrap(&p.publish_secret);
             }
@@ -470,6 +482,7 @@ pub fn save(path: &Path, cfg: &Config, creds: &dyn Credentials) -> Result<(), St
     let mut stored = cfg.clone();
     stored.publish_secret = creds.wrap(&cfg.publish_secret);
     stored.last_resume_token = creds.wrap(&cfg.last_resume_token);
+    stored.room_attach_secret = creds.wrap(&cfg.room_attach_secret);
     for p in &mut stored.servers {
         p.publish_secret = creds.wrap(&p.publish_secret);
     }
@@ -613,6 +626,58 @@ mod tests {
         let (loaded, _) = load(&path, &Reversing);
         assert_eq!(loaded.publish_secret, "s3cret");
         assert_eq!(loaded.last_resume_token, "deadbeef");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- R42 rooms (docs/44 §4.8) --------------------------------------------
+
+    #[test]
+    fn room_fields_round_trip_with_the_attach_key_wrapped() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-room-{}", std::process::id()));
+        let path = dir.join("broadcast.json");
+        let cfg = Config {
+            room: "lan-party".into(),
+            room_attach_secret: "k3y".into(),
+            room_label: "Juho's PC".into(),
+            nickname: "Juho".into(),
+            ..Default::default()
+        };
+        save(&path, &cfg, &Reversing).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        // The Linux profile's key names; the attach key is a credential.
+        assert!(raw.contains("\"room\": \"lan-party\""), "{raw}");
+        assert!(
+            raw.contains("\"roomAttachSecret\": \"wrapped:k3y\""),
+            "{raw}"
+        );
+        assert!(raw.contains("\"roomLabel\": \"Juho's PC\""), "{raw}");
+        assert!(raw.contains("\"nickname\": \"Juho\""), "{raw}");
+        assert!(
+            !raw.contains("\"k3y\""),
+            "attach key on disk in the clear: {raw}"
+        );
+
+        let (loaded, warn) = load(&path, &Reversing);
+        assert!(warn.is_none());
+        assert_eq!(loaded, cfg);
+        // Migration leaves the room fields alone.
+        let mut migrated = loaded.clone();
+        migrate(&mut migrated);
+        assert_eq!(migrated.room, "lan-party");
+        assert_eq!(migrated.room_attach_secret, "k3y");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_pre_rooms_config_loads_with_no_room() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-noroom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(&path, br#"{"lastBroadcastId": "K7XQ2M"}"#).unwrap();
+        let (cfg, warn) = load(&path, &Plaintext);
+        assert!(warn.is_none());
+        assert_eq!(cfg.last_broadcast_id, "K7XQ2M");
+        assert!(cfg.room.is_empty() && cfg.room_attach_secret.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

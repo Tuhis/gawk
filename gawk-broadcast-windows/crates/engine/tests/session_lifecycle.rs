@@ -53,6 +53,7 @@ fn config() -> SessionConfig {
         publish_secret: String::new(),
         origin: "https://localhost".into(),
         insecure: true,
+        ..SessionConfig::default()
     }
 }
 
