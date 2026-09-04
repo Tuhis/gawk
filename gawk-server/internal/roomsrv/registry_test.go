@@ -649,6 +649,75 @@ func TestAdoptDynamicRebuildsAttachments(t *testing.T) {
 	}
 }
 
+// slowConn takes a while to put a record on the wire and records the
+// order in which writes complete and the close arrives.
+type slowConn struct {
+	mu     sync.Mutex
+	order  []string
+	closed bool
+	code   uint32
+}
+
+func (s *slowConn) Write(_ context.Context, rec []byte) error {
+	time.Sleep(20 * time.Millisecond)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kind := "record"
+	if len(rec) > 3 && rec[3] == wire.TypeRoomEvent {
+		if e, err := wire.ParseRoomEvent(rec[wire.RoomRecordHeaderSize:]); err == nil && e.Kind == wire.RoomEventRoomEnding {
+			kind = "ending-written"
+		}
+	}
+	s.order = append(s.order, kind)
+	return nil
+}
+
+func (s *slowConn) Close(code uint32, _ string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		s.closed, s.code = true, code
+		s.order = append(s.order, "close")
+	}
+}
+
+func (s *slowConn) snapshot() ([]string, uint32, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.order...), s.code, s.closed
+}
+
+// docs/44 §4.4 step 4: the RoomEnding event is what the client shows and
+// the 4007 close is what it acts on, so the record must be ON THE WIRE
+// before the close. closeAfterDrain used to close as soon as the outbox
+// was EMPTY — which is the instant the writer dequeues the record, before
+// it is written — so a fast writer lost the race and the client saw the
+// close with no RoomEnding (and, with webtransport-go discarding unread
+// stream data on session close, never the record at all). The transport
+// suite's end-room tests failed deterministically in isolation on it. The
+// fix is the in-order sentinel plus closeSettle; this test pins the order,
+// the transport suite pins that the client actually receives the record.
+func TestEndRoomWritesRoomEndingBeforeTheClose(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		f := newFixture(t, nil)
+		res := f.mint(t, "ABCDEF")
+		c := &slowConn{}
+		if _, err := f.reg.Join(res.Code, wire.RoomHello{Protocol: 1, Nickname: "v"}, Grants{}, nil, c); err != nil {
+			t.Fatal(err)
+		}
+		f.reg.EndRoom(res.Code, wire.RoomEndReasonCreator)
+		waitFor(t, func() bool { _, _, closed := c.snapshot(); return closed }, "close")
+		order, code, _ := c.snapshot()
+		if code != wire.CloseCodeRoomEnded {
+			t.Fatalf("close code = %d, want 4007", code)
+		}
+		n := len(order)
+		if n < 2 || order[n-1] != "close" || order[n-2] != "ending-written" {
+			t.Fatalf("run %d: order = %v, want RoomEnding written and then the close", i, order)
+		}
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

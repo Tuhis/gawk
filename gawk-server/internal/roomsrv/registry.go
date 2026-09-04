@@ -536,6 +536,11 @@ type Participant struct {
 	outbox    chan []byte
 	closed    chan struct{}
 	leaveOnce sync.Once
+	// closeCode / closeReason are what the writer closes with when it
+	// reaches the nil sentinel closeAfterDrain queued; set before the
+	// sentinel is sent, read after it is received (the channel orders them).
+	closeCode   uint32
+	closeReason string
 }
 
 // ID is the participant's per-room ID.
@@ -625,6 +630,13 @@ func (p *Participant) Leave() {
 // writeLoop drains the outbox onto the conn. It ends when the participant
 // leaves; a write error ends the session (the transport's read loop then
 // calls Leave).
+// closeSettle is how long the writer holds a room-ending close after the
+// RoomEnding record went out, so the record reaches the client's reader
+// before the session close discards it (see writeLoop). Long enough to put
+// them in different packets and scheduling slots on any path; short enough
+// that "room ended" still lands within one UI frame of the event.
+const closeSettle = 250 * time.Millisecond
+
 func (p *Participant) writeLoop() {
 	ctx := context.Background()
 	for {
@@ -632,6 +644,22 @@ func (p *Participant) writeLoop() {
 		case <-p.closed:
 			return
 		case rec := <-p.outbox:
+			if rec == nil {
+				// closeAfterDrain's sentinel: everything queued before it
+				// has been written. Hold closeSettle before the close so
+				// the client READS it too — a session close resets every
+				// stream (webtransport-go: CancelRead on session close,
+				// which discards unread data), so a record and a close
+				// that share a packet lose the record. The drain's window
+				// before 4002 exists for the same reason (docs/22).
+				select {
+				case <-time.After(closeSettle):
+				case <-p.closed:
+				}
+				p.conn.Close(p.closeCode, p.closeReason)
+				p.Leave()
+				return
+			}
 			if err := p.conn.Write(ctx, rec); err != nil {
 				p.conn.Close(uint32(500), "control write failed")
 				return
@@ -1035,20 +1063,24 @@ func (r *Registry) EndRoom(code string, reason uint8) {
 // closeAfterDrain closes the conn once queued records are written (or after
 // a short bound), then marks the participant gone.
 func (p *Participant) closeAfterDrain(code uint32, reason string) {
-	go func() {
-		deadline := time.After(2 * time.Second)
-		for len(p.outbox) > 0 {
-			select {
-			case <-deadline:
-				p.conn.Close(code, reason)
-				p.Leave()
-				return
-			case <-time.After(5 * time.Millisecond):
-			}
-		}
-		p.conn.Close(code, reason)
-		p.Leave()
-	}()
+	// In-order, through the writer: a nil record is the sentinel the
+	// writeLoop turns into the close once every record queued ahead of it
+	// is on the wire. Polling "outbox empty" was not the same thing — the
+	// outbox empties the instant the writer DEQUEUES the last record,
+	// before its Write returns, and a client whose session closed mid-write
+	// never sees the RoomEnding the close was supposed to follow.
+	p.closeCode, p.closeReason = code, reason
+	select {
+	case p.outbox <- nil:
+	default:
+		// The outbox is full: this participant is not draining, and the
+		// eviction rule (enqueueLocked) already applies. Close now rather
+		// than wait on a writer that may be stuck behind it.
+		go func() {
+			p.conn.Close(code, reason)
+			p.Leave()
+		}()
+	}
 }
 
 // PublisherClosed is the hub's OnPublisherClosed hook: the broadcast's

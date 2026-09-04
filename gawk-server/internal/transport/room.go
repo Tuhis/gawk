@@ -14,6 +14,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
+	"github.com/Tuhis/gawk/gawk-server/rooms"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -59,13 +60,7 @@ func (s *Server) roomRegistry() *roomsrv.Registry { return s.rooms.Load() }
 // omits the rooms section.
 type roomStatsSource struct{ s *Server }
 
-func (r roomStatsSource) Stats() map[string]roomsrv.RoomStats {
-	reg := r.s.roomRegistry()
-	if reg == nil {
-		return nil
-	}
-	return reg.Stats()
-}
+func (r roomStatsSource) Stats() map[string]roomsrv.RoomStats { return r.s.RoomStats() }
 
 // roomRejectBanned is rejectBanned for the room route: same 451, same log
 // discipline (no raw code, no ban reason at Warn).
@@ -176,21 +171,23 @@ func (s *Server) handleRoom(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	// Normalize before anything hashes it: the room_key in every log line
+	// must be the key /statusz, RoomState and the CR's status.key publish,
+	// and those hash the normalized code. A code that does not normalize
+	// stays as typed and 404s in CheckJoin.
+	if norm, err := rooms.NormalizeCode(code); err == nil {
+		code = norm
+	}
+	// Cluster mode (RM3, docs/44 §4.5): a room homed on another pod is
+	// proxied there; a room with no live home is adopted first. Either way
+	// the join gate below runs on the home.
+	if s.roomHomedElsewhere(w, r, code) {
+		return
+	}
 	q := r.URL.Query()
 	grants, err := reg.CheckJoin(code, q.Get("creator"), q.Get("attach"), q.Has("attach"))
 	if err != nil {
-		var status int
-		var outcome string
-		switch {
-		case errors.Is(err, roomsrv.ErrNotFound):
-			status, outcome = http.StatusNotFound, metrics.OutcomeNotFound
-		case errors.Is(err, roomsrv.ErrForbidden):
-			status, outcome = http.StatusForbidden, metrics.OutcomeUnauthorized
-		case errors.Is(err, roomsrv.ErrFull):
-			status, outcome = http.StatusTooManyRequests, metrics.OutcomeLimitRejected
-		default:
-			status, outcome = http.StatusInternalServerError, metrics.OutcomeError
-		}
+		status, outcome := roomJoinStatus(err)
 		s.metrics.Connection(route, outcome)
 		s.log.Warn("room join rejected pre-upgrade", "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"),
 			"room_key", s.broadcastKey(code), "status", status, "err", err)
@@ -207,12 +204,29 @@ func (s *Server) handleRoom(w http.ResponseWriter, r *http.Request) {
 	s.serveRoomSession(r, sess, reg, code, grants, nil)
 }
 
+// roomJoinStatus maps CheckJoin's sentinels onto the join route's status
+// vocabulary (docs/44 §4.2); shared by the public and the internal route.
+func roomJoinStatus(err error) (int, string) {
+	switch {
+	case errors.Is(err, roomsrv.ErrNotFound):
+		return http.StatusNotFound, metrics.OutcomeNotFound
+	case errors.Is(err, roomsrv.ErrForbidden):
+		return http.StatusForbidden, metrics.OutcomeUnauthorized
+	case errors.Is(err, roomsrv.ErrFull):
+		return http.StatusTooManyRequests, metrics.OutcomeLimitRejected
+	}
+	return http.StatusInternalServerError, metrics.OutcomeError
+}
+
 // serveRoomSession runs one control session to completion: accept the
 // client's bidirectional stream, read RoomHello, join, then pump commands
 // until the session or the room ends.
 func (s *Server) serveRoomSession(r *http.Request, sess *webtransport.Session, reg *roomsrv.Registry, code string, grants roomsrv.Grants, creatorToken []byte) {
 	const route = "room"
 	defer s.trackSession(sess)()
+	if norm, err := rooms.NormalizeCode(code); err == nil {
+		defer s.trackRoomSession(norm, sess)()
+	}
 	s.metrics.Connection(route, metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", route, "room_key", s.broadcastKey(code))
 

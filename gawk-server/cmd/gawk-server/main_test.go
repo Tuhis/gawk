@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,9 +17,12 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // R2 review finding F1: the hardening limits parsed by config.ParseFlags must
@@ -209,7 +213,7 @@ func TestWiringInstallsTheClusterBeforeTheBanSourceCanActuate(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err != nil {
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, nil); err != nil {
 		t.Fatalf("wireSubsystems: %v", err)
 	}
 	if !built {
@@ -241,7 +245,7 @@ func TestWiringWithoutClusterModeStillStartsTheBanSource(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err != nil {
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, nil); err != nil {
 		t.Fatalf("wireSubsystems: %v", err)
 	}
 	want := []string{"set-moderation", "ban-added"}
@@ -260,7 +264,7 @@ func TestWiringFailsBeforeStartingTheBanSourceWhenTheCoordinatorFails(t *testing
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord); err == nil {
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, nil); err == nil {
 		t.Fatal("wireSubsystems returned nil, want the coordinator error")
 	}
 	for _, call := range srv.calls() {
@@ -292,4 +296,94 @@ func (s *recordingWiredServer) SetModeration(*moderation.Set) { s.record("set-mo
 func (s *recordingWiredServer) SetCluster(transport.ClusterCoordinator, string) {
 	s.record("set-cluster")
 }
+func (s *recordingWiredServer) SetRoomCluster(transport.RoomCluster, string) {
+	s.record("set-room-cluster")
+}
 func (s *recordingWiredServer) HandleBanAdded(moderation.Record) { s.record("ban-added") }
+
+// R42 RM3: the room store is installed AFTER the cluster (its drain hook
+// chains onto SetCluster's lease release, and adoption reads the cluster
+// wiring) and its informer starts AFTER the ban source — the rule that
+// governs the ban source itself, one informer over: its first events reach
+// the transport and the registry within milliseconds of starting.
+func TestWiringInstallsTheRoomStoreAfterTheClusterAndStartsItsInformerLast(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bans.json")
+	if err := os.WriteFile(path, []byte(
+		`[{"target":{"type":"broadcastId","value":"ABC23Z"},"reason":"kill"}]`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	srv := &recordingWiredServer{}
+	cfg := config.Config{ClusterMode: true, Rooms: true, ModerationSource: "file:" + path}
+	buildCoord := func() (transport.ClusterCoordinator, string, error) { return nil, "pod-0", nil }
+	buildRooms := func() (transport.RoomCluster, string, func(), error) {
+		srv.record("build-rooms")
+		return nil, "pod-0", func() { srv.record("rooms-informer-started") }, nil
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, buildRooms); err != nil {
+		t.Fatalf("wireSubsystems: %v", err)
+	}
+	want := []string{"set-moderation", "set-cluster", "build-rooms", "set-room-cluster", "ban-added", "rooms-informer-started"}
+	if got := srv.calls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("wiring order = %v, want %v", got, want)
+	}
+
+	// A store that cannot be built fails the process before the ban source
+	// starts against a half-wired server.
+	srv = &recordingWiredServer{}
+	failing := func() (transport.RoomCluster, string, func(), error) {
+		return nil, "", nil, errors.New("no kubeconfig")
+	}
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, buildCoord, failing); err == nil {
+		t.Fatal("wireSubsystems returned nil, want the room store error")
+	}
+	for _, call := range srv.calls() {
+		if call == "set-room-cluster" || call == "ban-added" {
+			t.Errorf("%s ran after the room store failed to build", call)
+		}
+	}
+}
+
+// Without -cluster-mode there is no room store: run passes a nil builder,
+// and the wiring must not touch SetRoomCluster — single-pod mode stays
+// byte-identical (docs/44 §4.3).
+func TestWiringWithoutARoomBuilderNeverInstallsARoomStore(t *testing.T) {
+	srv := &recordingWiredServer{}
+	cfg := config.Config{Rooms: true, ModerationSource: "off"}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := wireSubsystems(context.Background(), cfg, srv, moderation.NewSet(), log, nil, nil); err != nil {
+		t.Fatalf("wireSubsystems: %v", err)
+	}
+	if got := srv.calls(); !reflect.DeepEqual(got, []string{"set-moderation"}) {
+		t.Errorf("wiring calls = %v, want only set-moderation", got)
+	}
+}
+
+// R42 RM3: the rooms stats source is nil until the registry is on the
+// transport. run once read it BEFORE SetRooms, so a rooms-enabled relay
+// exported no /statusz rooms section and no room metric series while every
+// unit test stayed green — the R2 F1 blind spot again, one seam over. Real
+// transport.Server, not a fake: the nil-before-install behaviour under test
+// is the transport's own.
+func TestInstallRoomsReadsTheStatsSourceAfterTheInstall(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	r := hub.NewRegistry(log, hub.Options{MaxSubscribers: 1})
+	cfg := config.Config{Addr: "127.0.0.1:0", MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, Rooms: true}
+	srv := transport.New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, errors.New("no cert") },
+		log, metrics.NewServerMetrics(prometheus.NewRegistry()))
+	if src := srv.RoomStatsSource(); src != nil {
+		t.Fatalf("stats source before SetRooms = %v, want nil (the premise of the ordering rule)", src)
+	}
+	if got := installRooms(srv, nil); got != nil {
+		t.Fatalf("installRooms with -rooms off = %v, want a nil interface", got)
+	}
+	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: hubBroadcasts{r}, Obfuscate: r.ObfuscateID, Log: log})
+	src := installRooms(srv, reg)
+	if src == nil {
+		t.Fatal("installRooms returned nil with a registry: the stats source was read before the install")
+	}
+	if src.Stats() == nil {
+		t.Fatal("the installed source reports no rooms map")
+	}
+}

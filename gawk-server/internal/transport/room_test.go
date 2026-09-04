@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -250,6 +251,44 @@ func TestRoomMintJoinAttachAndEnd(t *testing.T) {
 		t.Fatal("ended room still joinable")
 	} else if rsp == nil || rsp.StatusCode != http.StatusNotFound {
 		t.Fatalf("ended room: %v (err %v)", rsp, err)
+	}
+}
+
+// The HMAC'd room key is the ONE handle an operator can carry between the
+// relay log, /statusz, RoomState.key and the CR's status.key — so a join by
+// an un-normalized code (upper-case, as the join box types it) must log the
+// same key those surfaces publish. It hashed the raw path value before,
+// which made a room's log lines ungreppable by its /statusz key.
+func TestRoomJoinLogsTheNormalizedKey(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg := config.Config{MaxSubscribers: 5, MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, BroadcastGrace: 5 * time.Minute, Rooms: true}
+	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, cfg, log)
+	reg := roomsrv.NewRegistry(roomsrv.Options{Broadcasts: hubBroadcastsAdapter{r}, Obfuscate: r.ObfuscateID, Log: log, EmptyGrace: time.Hour})
+	srv.SetRooms(reg)
+	if err := reg.UpsertStatic(roomsrv.StaticRoom{Code: "TuhisRoom"}); err != nil {
+		t.Fatal(err)
+	}
+	c := openControl(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/room/TUHISROOM", port), clientTLS, "shouty")
+	st := c.nextState(t)
+	want := r.ObfuscateID("tuhisroom")
+	if hex.EncodeToString(st.Key) != want {
+		t.Fatalf("RoomState key = %x, want the normalized key %s", st.Key, want)
+	}
+	c.sess.CloseWithError(0, "")
+	waitFor(t, 5*time.Second, func() bool { return strings.Contains(logs.String(), "room session ended") }, "session end log line")
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(line, "room_key=") {
+			continue
+		}
+		if !strings.Contains(line, "room_key="+want) {
+			t.Fatalf("log line carries a room_key that is not the normalized key %s: %s", want, line)
+		}
+	}
+	if !strings.Contains(logs.String(), "room_key="+want) {
+		t.Fatal("no log line carries the room key at all")
 	}
 }
 

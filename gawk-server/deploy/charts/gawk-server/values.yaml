@@ -171,6 +171,15 @@ rooms:
   # chart when rooms.enabled is on, gawk-admin or kubectl writes them). A
   # file source (-rooms-file) exists for non-Kubernetes deployments and is
   # not exposed here on purpose: on a cluster the CR is the only source.
+  #
+  # With config.clusterMode the relay also WRITES Room CRs (docs/44 §4.5):
+  # dynamic rooms are minted as CRs, every room carries a home-pod lease on
+  # its status, and a room homed on another pod is proxied there over
+  # /internal/room/ with the internalPsk. rbac.yaml grants rooms +
+  # rooms/status (full verbs) and secrets get, only with both switches on;
+  # the pod identity (POD_NAME, POD_IP, POD_NAMESPACE) already rides
+  # clusterMode. Without clusterMode a rooms-enabled relay uses no
+  # Kubernetes client at all.
 
 certificate:
   # cert-manager Certificate for the relay's public name. The server's

@@ -118,6 +118,9 @@ type Server struct {
 	// Settable once, behind an atomic, like bans. Read it through
 	// roomRegistry.
 	rooms atomic.Pointer[roomsrv.Registry]
+	// roomCluster is the R42 RM3 cluster wiring for rooms (roomcluster.go);
+	// nil without -cluster-mode. Same discipline as `wiring`.
+	roomCluster atomic.Pointer[roomClusterWiring]
 	// now is the clock ban expiry is evaluated against; injectable so tests
 	// can step past an expiry without sleeping.
 	now func() time.Time
@@ -126,6 +129,12 @@ type Server struct {
 	// session registers here and unregisters when its handler returns.
 	sessMu   sync.Mutex
 	sessions map[drainSession]struct{}
+	// roomSessions indexes local room control sessions by normalized code
+	// (lease loss closes one room's sessions); proxiedRooms counts the
+	// sessions this pod forwards to other homes (/statusz "proxy" rows).
+	// Both under sessMu.
+	roomSessions map[string]map[drainSession]struct{}
+	proxiedRooms map[string]*proxiedRoom
 	// Live publisher sessions by broadcast ID (R17 W5): the demote path
 	// closes the stale one when the broadcast's Lease is force-taken.
 	publishers map[string]*publisherSession
@@ -344,6 +353,9 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 	if cfg.Rooms {
 		mux.HandleFunc("CONNECT /room/new", s.handleRoomNew)
 		mux.HandleFunc("CONNECT /room/{code}", s.handleRoom)
+		// Pod-to-pod room proxying (RM3); 404s outright unless -cluster-mode
+		// installed the room store.
+		mux.HandleFunc("CONNECT /internal/room/{code}", s.handleInternalRoom)
 	}
 
 	s.wt = &webtransport.Server{

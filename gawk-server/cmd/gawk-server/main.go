@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -25,11 +26,13 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/moderationsrc"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomcluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrc"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/rooms"
 )
 
 // Stamped at build time via -ldflags "-X main.version=..." (see
@@ -80,6 +83,10 @@ func run() error {
 	// R42 rooms (docs/44): the registry is assigned right after the hub
 	// exists and closed over by the hub hooks below, exactly like coord.
 	var roomReg *roomsrv.Registry
+	// RM3: the cluster room store (Room CRs + home leases), assigned by the
+	// wiring step in cluster mode and nil otherwise. The registry's cluster
+	// seams and the hub's mirror check close over it, nil-safe like coord.
+	var roomStore *roomcluster.Store
 	hubOpts := registryOptions(cfg)
 	if cfg.ClusterMode {
 		hubOpts.OnPublisherClosed = func(id string) {
@@ -117,7 +124,12 @@ func run() error {
 				roomReg.BroadcastExpired(id)
 			}
 		})
-		hubOpts.IDReserved = func(id string) bool { return roomReg != nil && roomReg.Has(id) }
+		// The mirror check consults the local registry AND, in cluster mode,
+		// the Room CR cache: a room homed on another pod still reserves its
+		// code fleet-wide (docs/44 §4.2).
+		hubOpts.IDReserved = func(id string) bool {
+			return (roomReg != nil && roomReg.Has(id)) || (roomStore != nil && roomStore.Known(id))
+		}
 	}
 
 	r := hub.NewRegistry(log, hubOpts)
@@ -127,6 +139,31 @@ func run() error {
 		ro.Obfuscate = r.ObfuscateID
 		ro.PodName = os.Getenv("POD_NAME")
 		ro.Log = log
+		if cfg.ClusterMode {
+			// The four cluster seams (docs/44 §4.3, §4.5): the CR create is
+			// the code reservation; status writes follow the room's life.
+			ro.Reserve = func(ctx context.Context, room *rooms.Room) error {
+				if roomStore == nil {
+					return roomsrv.ErrUnavailable
+				}
+				return roomStore.Reserve(ctx, room)
+			}
+			ro.OnRoomEnded = func(code string, reason uint8) {
+				if roomStore != nil {
+					roomStore.RoomEnded(code, reason)
+				}
+			}
+			ro.OnRoomEmpty = func(code string, empty bool) {
+				if roomStore != nil {
+					roomStore.RoomEmpty(code, empty)
+				}
+			}
+			ro.OnAttachmentsChanged = func(code string, list []rooms.Attachment) {
+				if roomStore != nil {
+					roomStore.AttachmentsChanged(code, list)
+				}
+			}
+		}
 		roomReg = roomsrv.NewRegistry(ro)
 	}
 
@@ -143,9 +180,6 @@ func run() error {
 	// which is how an operator tells "no bans" from "no moderation".
 	bans := moderation.NewSet()
 	promReg.MustRegister(metrics.NewModerationCollector(bans))
-	if roomReg != nil {
-		promReg.MustRegister(metrics.NewRoomCollector(roomReg))
-	}
 
 	// The WebTransport (UDP) server and the ops (TCP) listener run together;
 	// either one failing tears the other down.
@@ -165,15 +199,37 @@ func run() error {
 		go coord.Run(runCtx)
 		return c, podName, nil
 	}
-	if err := wireSubsystems(runCtx, cfg, srv, bans, log, buildCoord); err != nil {
+	// RM3: the room store is built from the same in-cluster client shape
+	// as the coordinator and published here for the same reason coord is.
+	// Its informer is the LAST thing wireSubsystems starts (its first
+	// events reach the registry and the transport within milliseconds).
+	var buildRooms func() (transport.RoomCluster, string, func(), error)
+	if cfg.ClusterMode && cfg.Rooms {
+		buildRooms = func() (transport.RoomCluster, string, func(), error) {
+			st, podName, rerr := buildRoomStore(cfg, roomReg, r.ObfuscateID, srv.HandleRoomLeaseLost, log)
+			if rerr != nil {
+				return nil, "", nil, rerr
+			}
+			roomStore = st
+			return st, podName, func() { go st.Run(runCtx) }, nil
+		}
+	}
+	if err := wireSubsystems(runCtx, cfg, srv, bans, log, buildCoord, buildRooms); err != nil {
 		return err
 	}
+	// Installed after the cluster wiring (SetRooms hands the registry the
+	// transport's token key), before Run — the same rule as SetModeration.
+	// The stats source is read AFTER the install (installRooms pins the
+	// order): it is nil until the registry is on the transport, and reading
+	// it first silently dropped the /statusz section and every room series
+	// from a rooms-enabled relay while the unit suite stayed green.
+	roomStats := installRooms(srv, roomReg)
+	if roomStats != nil {
+		promReg.MustRegister(metrics.NewRoomCollector(roomStats))
+	}
 	if roomReg != nil {
-		// Installed after the cluster wiring (SetRooms hands the registry
-		// the transport's token key), before Run — the same rule as
-		// SetModeration. The static-room file source starts last, like the
-		// ban source, for the same reason.
-		srv.SetRooms(roomReg)
+		// The static-room file source starts last, like the ban source,
+		// for the same reason.
 		go roomReg.RunRefresh(runCtx)
 		if cfg.RoomsFile != "" {
 			if err := roomsrc.StartFile(runCtx, cfg.RoomsFile, roomsrc.Options{Registry: roomReg, Log: log}); err != nil {
@@ -213,7 +269,7 @@ func run() error {
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(runCtx) }()
 	go func() {
-		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, roomStats(roomReg), promReg, log, srv.Ready, adminOpts), log)
+		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, roomStats, promReg, log, srv.Ready, adminOpts), log)
 	}()
 
 	var firstErr error
@@ -242,6 +298,7 @@ func run() error {
 type wiredServer interface {
 	SetModeration(*moderation.Set)
 	SetCluster(transport.ClusterCoordinator, string)
+	SetRoomCluster(transport.RoomCluster, string)
 	HandleBanAdded(moderation.Record)
 }
 
@@ -261,6 +318,14 @@ type wiredServer interface {
 //
 // buildCoord is the seam: it builds AND publishes the coordinator (see run),
 // so "cluster wiring is complete" is one step rather than two.
+//
+// buildRooms (R42 RM3) is the same seam for the cluster room store: nil
+// unless -cluster-mode AND -rooms. It returns the store, the pod name, and
+// a start function for its informer, which runs AFTER the ban source for
+// the reason the ban source runs after SetCluster: the informer's first
+// events call into the transport (adoption, lease loss) and the registry,
+// and SetRoomCluster chains the drain hook onto SetCluster's, so both must
+// be installed before anything can fire.
 func wireSubsystems(
 	ctx context.Context,
 	cfg config.Config,
@@ -268,6 +333,7 @@ func wireSubsystems(
 	bans *moderation.Set,
 	log *slog.Logger,
 	buildCoord func() (transport.ClusterCoordinator, string, error),
+	buildRooms func() (transport.RoomCluster, string, func(), error),
 ) error {
 	srv.SetModeration(bans)
 
@@ -279,7 +345,17 @@ func wireSubsystems(
 		srv.SetCluster(coord, podName)
 	}
 
-	return moderationsrc.Start(ctx, moderationsrc.Options{
+	var startRooms func()
+	if buildRooms != nil {
+		store, podName, start, err := buildRooms()
+		if err != nil {
+			return err
+		}
+		srv.SetRoomCluster(store, podName)
+		startRooms = start
+	}
+
+	if err := moderationsrc.Start(ctx, moderationsrc.Options{
 		Source: cfg.ModerationSource,
 		Set:    bans,
 		Log:    log,
@@ -287,7 +363,13 @@ func wireSubsystems(
 		// and independently of -cluster-mode — a single-pod relay kills just
 		// as well as a fleet, and each pod acts on its own event.
 		OnBanAdded: srv.HandleBanAdded,
-	})
+	}); err != nil {
+		return err
+	}
+	if startRooms != nil {
+		startRooms()
+	}
+	return nil
 }
 
 func logStartup(log *slog.Logger, cfg config.Config, version string) {
@@ -382,13 +464,24 @@ func (h hubBroadcasts) BroadcastState(id string) (roomsrv.BroadcastState, bool) 
 	return roomsrv.BroadcastState{Live: live, Viewers: viewers}, known
 }
 
-// roomStats returns the /statusz rooms source, or a nil interface when
-// rooms are off (a typed nil pointer would render an empty section).
-func roomStats(reg *roomsrv.Registry) ops.RoomStatsSource {
+// installRooms puts the room registry on the transport and returns the
+// rooms stats source for /statusz and the metrics collector — the
+// transport's "proxy" rows merged over the registry's "home" rows (docs/44
+// §4.10). Nil with -rooms off, so neither the /statusz section nor the room
+// series exist. One function rather than two calls in run because the
+// ORDER is the contract: the source does not exist before the install.
+func installRooms(srv roomsServer, reg *roomsrv.Registry) metrics.RoomStatsSource {
 	if reg == nil {
 		return nil
 	}
-	return reg
+	srv.SetRooms(reg)
+	return srv.RoomStatsSource()
+}
+
+// roomsServer is the transport slice installRooms needs.
+type roomsServer interface {
+	SetRooms(*roomsrv.Registry)
+	RoomStatsSource() metrics.RoomStatsSource
 }
 
 // registryOptions maps the parsed config onto hub.Options. Every limit knob
@@ -459,6 +552,49 @@ func buildCoordinator(cfg config.Config, onLeaseDeleted func(string), onLeaseLos
 		return nil, "", err
 	}
 	return coord, podName, nil
+}
+
+// buildRoomStore constructs the cluster room store (R42 RM3, docs/44 §4.5)
+// from the in-cluster config and the downward-API pod identity, exactly as
+// buildCoordinator does for the origin registry. Only called with both
+// -cluster-mode and -rooms on: a single-pod relay with rooms never touches
+// the k8s API (docs/44 §4.3, "non-cluster mode"). The Room CRD and the
+// `rooms`/`rooms/status`/`secrets` RBAC ride the chart's rooms.enabled.
+func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(string) string, onLeaseLost func(string), log *slog.Logger) (*roomcluster.Store, string, error) {
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, "", fmt.Errorf("rooms in cluster-mode require in-cluster kubernetes config: %w", err)
+	}
+	client, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, "", err
+	}
+	podName := os.Getenv("POD_NAME")
+	podIP := os.Getenv("POD_IP")
+	namespace := os.Getenv("POD_NAMESPACE")
+	if podName == "" || podIP == "" || namespace == "" {
+		return nil, "", fmt.Errorf("rooms in cluster-mode require POD_NAME, POD_IP and POD_NAMESPACE (downward API)")
+	}
+	_, port, err := net.SplitHostPort(cfg.Addr)
+	if err != nil {
+		return nil, "", fmt.Errorf("cluster-mode: cannot derive advertise port from -addr %q: %w", cfg.Addr, err)
+	}
+	store, err := roomcluster.New(roomcluster.Options{
+		Client:        client,
+		Namespace:     namespace,
+		PodName:       podName,
+		AdvertiseAddr: net.JoinHostPort(podIP, port),
+		MaxRooms:      cfg.MaxRooms,
+		EmptyGrace:    cfg.RoomEmptyGrace,
+		Registry:      reg,
+		Obfuscate:     obfuscate,
+		Log:           log,
+		OnLeaseLost:   onLeaseLost,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return store, podName, nil
 }
 
 // resumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
